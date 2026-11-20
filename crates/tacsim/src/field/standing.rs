@@ -190,6 +190,25 @@ fn live(w: &World, who: ObjId) -> bool {
     })
 }
 
+/// Parse the victim principal IDs encoded onto a standing receipt cause written by
+/// [`at_demotion`] (`{prefix}{s}{v}:{subject}:{v1}[.{v2}...]`). Returns `None` for legacy receipts
+/// that carry no victim suffix (M33).
+#[must_use]
+pub(crate) fn cause_victims(prefix: &str, cause: &str) -> Option<Vec<ObjId>> {
+    let tail = cause.strip_prefix(prefix)?;
+    let mut parts = tail.split(':');
+    let _parties = parts.next()?;
+    let _subject = parts.next()?;
+    let raw_victims = parts.next()?;
+    if raw_victims.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    raw_victims
+        .split('.')
+        .map(|s| s.parse::<u32>().ok().filter(|id| *id > 0).map(ObjId))
+        .collect()
+}
+
 /// **At demotion** (this module's head): write each pair's standing, offer the void of friendly
 /// fire to its leader (or void it, for a director raid), and forget the site's tally. Called by
 /// `close::on_ended` while the host still holds the field. `void` is a void end, which writes
@@ -203,11 +222,17 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
     if void || counts.is_empty() {
         return;
     }
-    let Some((parties, ordinal)) = ctx
+    let Some((parties, units, ordinal)) = ctx
         .w
         .module_state::<FieldBook>()
         .and_then(|book| book.hosted(site))
-        .map(|hosted| (hosted.live.parties.clone(), hosted.live.field.ordinal))
+        .map(|hosted| {
+            (
+                hosted.live.parties.clone(),
+                hosted.live.units.clone(),
+                hosted.live.field.ordinal,
+            )
+        })
     else {
         return;
     };
@@ -217,6 +242,15 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
     let prefix = cause_prefix(site, ordinal);
     let site_name = crate::surface::act::site_name(ctx.w, site);
     let party = |id: PartyId| parties.iter().find(|row| row.party == id);
+    let members_of = |row: &super::record::FieldParty| {
+        let mut out: BTreeSet<ObjId> = super::parties::principals(row).into_iter().collect();
+        for unit in units.iter().filter(|u| u.party == row.party) {
+            if let Some((pilot, _)) = unit.pilot {
+                out.insert(pilot);
+            }
+        }
+        out
+    };
     // Doc 40 cut FR.2 (Q-40-16): the window rides each grant, written once with it. Doc 45 cut
     // AP.2 (Q-45-20): for a leader who is not there it ends 28 IC days on, and the offer runs
     // from their return.
@@ -230,10 +264,23 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
             VOID_WINDOW_IC_S
         }),
     };
+    let mut fire_pairs: BTreeSet<(ObjId, ObjId)> = BTreeSet::new();
     for ((shooter, victim), rounds) in counts {
         let (Some(by), Some(at)) = (party(shooter), party(victim)) else {
             continue;
         };
+        let friendly = friends.contains(&(shooter.min(victim), shooter.max(victim)));
+        if !(friendly && by.director) {
+            let shooter_members = members_of(by);
+            let victim_members = members_of(at);
+            for &s in &shooter_members {
+                for &v in &victim_members {
+                    if s != v {
+                        fire_pairs.insert((s.min(v), s.max(v)));
+                    }
+                }
+            }
+        }
         let factions: BTreeSet<mush_faction::FactionId> = super::parties::principals(at)
             .into_iter()
             .flat_map(|who| mush_faction::open_factions(ctx.w, who))
@@ -249,7 +296,6 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
         if effects.is_empty() {
             continue;
         }
-        let friendly = friends.contains(&(shooter.min(victim), shooter.max(victim)));
         let voidable_by = by.leader.filter(|leader| friendly && live(ctx.w, *leader));
         let window = voidable_by.map(|leader| window_for(ctx.w, leader));
         let names = faction_names(ctx.w, &effects);
@@ -263,13 +309,28 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
             .into_iter()
             .filter(|who| live(ctx.w, *who))
             .collect();
+        let victim_ids: Vec<ObjId> = super::parties::principals(at)
+            .into_iter()
+            .filter(|who| live(ctx.w, *who))
+            .collect();
         for subject in subjects {
-            let cause = format!(
+            let mut cause = format!(
                 "{prefix}{}{}:{}",
                 shooter.letter().to_ascii_lowercase(),
                 victim.letter().to_ascii_lowercase(),
                 subject.0
             );
+            if !victim_ids.is_empty() {
+                let mut sep = ':';
+                for victim_id in &victim_ids {
+                    let piece = format!("{sep}{}", victim_id.0);
+                    if cause.len().saturating_add(piece.len()) > mush_faction::MAX_CAUSE_LEN {
+                        break;
+                    }
+                    cause.push_str(&piece);
+                    sep = '.';
+                }
+            }
             match mush_faction::record_voidable_standing(
                 ctx,
                 &cause,
@@ -312,6 +373,11 @@ pub(crate) fn at_demotion(ctx: &mut Ctx<'_>, site: &CanonicalId, void: bool) {
         }
         let line = VOID_OFFERED.replace("{party}", &victim.letter().to_string());
         ctx.out.sys_to_actor(leader, "tacsim.field", line);
+    }
+    if !fire_pairs.is_empty()
+        && let Some(book) = ctx.w.module_state_mut::<FieldBook>()
+    {
+        book.record_fire_pairs(site.clone(), ordinal, fire_pairs);
     }
 }
 
@@ -472,6 +538,12 @@ mod tests {
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b":".contains(&b)),
             "{cause}"
+        );
+        // M33: encoded victim principals parse back cleanly, while legacy causes return None.
+        assert_eq!(cause_victims(&prefix, &cause), None);
+        assert_eq!(
+            cause_victims(&prefix, &format!("{prefix}ab:10:20.30")),
+            Some(vec![ObjId(20), ObjId(30)])
         );
     }
 

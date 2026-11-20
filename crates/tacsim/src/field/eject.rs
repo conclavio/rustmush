@@ -53,10 +53,17 @@ pub const EJECT_CAPTURED: &str = "The pickup that comes for you is the {carrier}
 /// The eject's capture, told to the captor: `{who}`, `{carrier}`.
 pub const EJECT_CAPTOR_TOLD: &str = "Your people pick {who} out of the cockpit and carry them aboard the {carrier}: you hold them now. +ship/captives lists them; +ship/release <who> lets one go.";
 
-/// **The ejects asked of running fields** (RAM): each unit and the pilot who asked. A restart
+/// One in-flight eject request, tagged with its site so field close/void purges it cleanly (M32).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingEject {
+    pub pilot: ObjId,
+    pub site: CanonicalId,
+}
+
+/// **The ejects asked of running fields** (RAM): each unit and the pending eject. A restart
 /// before the answer loses the request, and the pilot asks again.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct EjectBook(pub BTreeMap<ObjId, ObjId>);
+pub(crate) struct EjectBook(pub BTreeMap<ObjId, PendingEject>);
 
 /// **`+sortie/eject`** (this module's head).
 ///
@@ -92,7 +99,33 @@ pub(crate) fn eject_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .w
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .and_then(|registry| registry.seat_of_pilot(actor));
-    let Some((task, unit)) = seat else {
+    let running: Option<(MatchId, ObjId, CanonicalId)> = if let Some((task, unit)) = seat {
+        let site = ctx
+            .w
+            .module_state::<super::FieldBook>()
+            .and_then(|book| book.site_of_task(task).cloned())
+            .ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
+        Some((task, unit, site))
+    } else if let Some(unit) = seated_unit(ctx.w, actor)
+        && let Some(site) = super::field_of_unit(ctx.w, unit)
+    {
+        // M31: pilot is physically seated in a unit under an active field mark (e.g. after
+        // `absent::hand_over` unbound the pilot on incapacitation/unfit admission). Always route
+        // via `ArenaMsg::Eject` instead of falling through to `after_field`.
+        let task = ctx
+            .w
+            .module_state::<super::FieldBook>()
+            .and_then(|book| book.hosted(&site))
+            .filter(|hosted| hosted.live.units.iter().any(|row| row.unit == unit))
+            .map(|hosted| hosted.task)
+            .ok_or_else(|| {
+                CmdError::msg("That field is not running yet; eject once it opens or settles.")
+            })?;
+        Some((task, unit, site))
+    } else {
+        None
+    };
+    let Some((task, unit, site)) = running else {
         return after_field(ctx, actor);
     };
     if !super::crew::inside(ctx.w, actor, unit) {
@@ -114,7 +147,7 @@ pub(crate) fn eject_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .offer(task, crate::arena_task::ArenaMsg::Eject { unit })
         .map_err(|_| CmdError::msg("The field is busy; try the eject again."))?;
     if let Some(book) = ctx.w.module_state_mut::<EjectBook>() {
-        book.0.insert(unit, actor);
+        book.0.insert(unit, PendingEject { pilot: actor, site });
     }
     ctx.out.sys_to_actor(
         actor,
@@ -135,6 +168,17 @@ fn after_field(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<(), CmdError> {
         crate::surface::act::Where::Bay { .. } | crate::surface::act::Where::Elsewhere => None,
     }
     .ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
+    // M31 defense-in-depth: never resolve an eject against pre-field cells while a field runs.
+    if super::field_of_unit(ctx.w, unit).is_some()
+        || ctx
+            .w
+            .module_state::<super::FieldBook>()
+            .is_some_and(|book| book.hosted(&site).is_some())
+    {
+        return Err(CmdError::msg(
+            "That field is still running; eject once it opens or settles.",
+        ));
+    }
     let cells = mush_tactics::module::unit_of(ctx.w, unit)
         .ok_or_else(|| CmdError::msg(EJECT_NOT_FLYING))?;
     if !super::crew::doomed(cells) {
@@ -169,13 +213,14 @@ pub(crate) fn on_ejected(
     unit: ObjId,
     outcome: Result<EjectRead, EjectRefusal>,
 ) {
-    let Some(pilot) = ctx
+    let Some(pending) = ctx
         .w
         .module_state_mut::<EjectBook>()
         .and_then(|book| book.0.remove(&unit))
     else {
         return;
     };
+    let pilot = pending.pilot;
     let read = match outcome {
         Ok(read) => read,
         Err(EjectRefusal::NotDoomed) => {
@@ -195,19 +240,26 @@ pub(crate) fn on_ejected(
             return;
         }
     };
-    // The pilot must still sit where they asked from.
-    let seated = ctx
+    // The pilot must still sit where they asked from (either bound in `ArenaRegistry` or
+    // physically seated in `unit` after `absent::hand_over` unbound the pilot controls).
+    let Some(site) = ctx.w.module_state::<super::FieldBook>().and_then(|book| {
+        let site = book.site_of_task(task)?;
+        let hosted = book.hosted(site)?;
+        hosted
+            .live
+            .units
+            .iter()
+            .any(|row| row.unit == unit)
+            .then(|| site.clone())
+    }) else {
+        return;
+    };
+    let bound = ctx
         .w
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .and_then(|registry| registry.seat_of_pilot(pilot))
         == Some((task, unit));
-    let Some(site) = ctx
-        .w
-        .module_state::<super::FieldBook>()
-        .and_then(|book| book.site_of_task(task).cloned())
-    else {
-        return;
-    };
+    let seated = bound || seated_unit(ctx.w, pilot) == Some(unit);
     if !seated || !super::crew::inside(ctx.w, pilot, unit) {
         return;
     }
@@ -486,5 +538,81 @@ mod tests {
             .map(|at| draw(&site, 3, ObjId(40), at * 100))
             .collect();
         assert!(spread.len() > 32, "the pulse moves the draw: {spread:?}");
+    }
+
+    #[test]
+    fn m31_unbound_pilot_under_field_mark_does_not_fall_through_to_after_field() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..crate::TacsimConfig::default()
+            })),
+        ]);
+        let hull = tw
+            .world_mut()
+            .create(
+                ObjKind::Thing,
+                "Rig",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("hull");
+        let cab = tw
+            .world_mut()
+            .create(ObjKind::Thing, "Cab", mush_core::GOD, Some(hull))
+            .expect("cab");
+        let pilot = tw
+            .world_mut()
+            .create(ObjKind::Player, "Pilot", mush_core::GOD, Some(cab))
+            .expect("pilot");
+
+        tw.exec_ok(
+            mush_core::GOD,
+            &format!("@spatial/station #{}=cockpit,pilot", hull.0),
+        );
+        tw.exec_ok(
+            mush_core::GOD,
+            &format!("@spatial/assign #{}=cockpit,#{}", hull.0, pilot.0),
+        );
+        // Mark the hull as deployed in an active field while the pilot is NOT bound in
+        // ArenaRegistry (simulating `absent::hand_over` after incapacitation).
+        mush_sim::deployed::mark(
+            tw.world_mut(),
+            hull,
+            mush_sim::deployed::DeployedMark {
+                match_id: 0,
+                arena: "ahuna_flank".into(),
+                field: Some(mush_sim::deployed::DeployedField {
+                    site: "ahuna_flank".into(),
+                    ordinal: 1,
+                }),
+            },
+        );
+
+        let mut out = mush_core::Outbox::new();
+        let err = {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: pilot,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            eject_cmd(&mut ctx)
+                .expect_err("must not fall through to after_field while field-marked")
+        };
+        assert!(
+            err.to_string().contains("not running yet"),
+            "unexpected refusal: {err}"
+        );
+        assert!(
+            crew_of(tw.world(), pilot).is_none(),
+            "must never write capture-free stranded record against pre-field state"
+        );
     }
 }

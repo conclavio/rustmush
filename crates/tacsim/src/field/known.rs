@@ -108,10 +108,32 @@ pub(crate) fn sensed<'r>(
         .collect()
 }
 
-/// **The pulses' notes** (module state): field site → party → the object numbers its seated units
-/// have held.
+/// Maximum cached per-site LOS results in [`Sightings`] (M36.2).
+const MAX_LOS_CACHE_PER_SITE: usize = 4_096;
+
+/// Cache key for static-terrain LOS checks in [`SiteLosCache`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct LosKey {
+    from: (i64, i64),
+    eye_cm: u32,
+    target: (i64, i64),
+}
+
+/// Per-site cached LOS trace outcomes keyed by [`LosKey`] for one running field `task`
+/// (terrain is immutable for a given `task`).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Sightings(pub BTreeMap<CanonicalId, BTreeMap<PartyId, BTreeSet<u32>>>);
+pub(crate) struct SiteLosCache {
+    task: Option<MatchId>,
+    results: BTreeMap<LosKey, bool>,
+}
+
+/// **The pulses' notes** (module state): field site → party → the object numbers its seated units
+/// have held, plus a bounded per-site LOS cache to avoid redundant raycasts on static objects.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Sightings {
+    pub seen: BTreeMap<CanonicalId, BTreeMap<PartyId, BTreeSet<u32>>>,
+    los: BTreeMap<CanonicalId, SiteLosCache>,
+}
 
 /// **Note what one pulse's frames hold** (the bridge's branch, every pulse of a field).
 pub(crate) fn note(
@@ -119,6 +141,9 @@ pub(crate) fn note(
     task: MatchId,
     frames: &[(ObjId, crate::arena::step::Frame)],
 ) {
+    if frames.is_empty() {
+        return;
+    }
     let Some(site) = ctx
         .w
         .module_state::<FieldBook>()
@@ -126,36 +151,103 @@ pub(crate) fn note(
     else {
         return;
     };
-    let Some(record) = super::close::site_record(ctx, &site).filter(|r| !r.objects.is_empty())
-    else {
-        return;
+    // M36.2: borrow `&SiteRecord` without cloning the whole site record every pulse, and collect
+    // only the tiny `(id, near_cell)` metadata needed to test unseen objects.
+    let objects: Vec<(u32, (i64, i64), i64)> = {
+        let Some(record) = super::close::site_record_ref(ctx, &site) else {
+            return;
+        };
+        if record.objects.is_empty() {
+            return;
+        }
+        record
+            .objects
+            .iter()
+            .map(|object| {
+                (
+                    object.id,
+                    object.pose.cell(),
+                    i64::from(object.footprint.max(1)),
+                )
+            })
+            .collect()
     };
     let mut held: Vec<(PartyId, u32)> = Vec::new();
+    let mut cache_updates: Vec<(LosKey, bool)> = Vec::new();
     if let Some(terrain) = ctx
         .w
         .module_state::<crate::arena_bridge::ArenaRegistry>()
         .and_then(|registry| registry.arena_of(task))
         .map(|arena| &arena.terrain)
     {
+        let notes = ctx.w.module_state::<Sightings>();
+        let site_seen = notes.and_then(|n| n.seen.get(&site));
+        let site_cache = notes
+            .and_then(|n| n.los.get(&site))
+            .filter(|cache| cache.task == Some(task));
         for (_, frame) in frames {
             let Some((x, y)) = frame.cell else {
                 continue;
             };
-            let eye = ((i64::from(x), i64::from(y)), frame.sensor_height_cm);
-            held.extend(
-                sensed(terrain, eye, &record)
-                    .into_iter()
-                    .map(|object| (frame.party, object.id)),
-            );
+            let from = (i64::from(x), i64::from(y));
+            let eye_cm = frame.sensor_height_cm;
+            let party_seen = site_seen.and_then(|s| s.get(&frame.party));
+            for &(id, (cx, cy), side) in &objects {
+                if party_seen.is_some_and(|ids| ids.contains(&id)) {
+                    continue;
+                }
+                let (x0, y0) = (cx - side / 2, cy - side / 2);
+                let target = (
+                    from.0.clamp(x0, x0 + side - 1),
+                    from.1.clamp(y0, y0 + side - 1),
+                );
+                if cells_apart(from, target) > SIGHT_CELLS {
+                    continue;
+                }
+                let key = LosKey {
+                    from,
+                    eye_cm,
+                    target,
+                };
+                let visible = if let Some(cached) =
+                    site_cache.and_then(|cache| cache.results.get(&key).copied())
+                {
+                    cached
+                } else {
+                    let result = clear(terrain, (from, eye_cm), target);
+                    cache_updates.push((key, result));
+                    result
+                };
+                if visible {
+                    held.push((frame.party, id));
+                }
+            }
         }
     }
-    if held.is_empty() {
+    if held.is_empty() && cache_updates.is_empty() {
         return;
     }
     if let Some(notes) = ctx.w.module_state_mut::<Sightings>() {
-        let site_notes = notes.0.entry(site).or_default();
-        for (party, id) in held {
-            site_notes.entry(party).or_default().insert(id);
+        if !cache_updates.is_empty() {
+            let cache = notes.los.entry(site.clone()).or_default();
+            if cache.task != Some(task) {
+                cache.results.clear();
+                cache.task = Some(task);
+            }
+            for (key, result) in cache_updates {
+                if cache.results.len() >= MAX_LOS_CACHE_PER_SITE
+                    && !cache.results.contains_key(&key)
+                {
+                    break;
+                }
+                cache.results.insert(key, result);
+            }
+        }
+        if !held.is_empty() {
+            let site_notes = notes.seen.entry(site).or_default();
+            for (party, id) in held {
+                site_notes.entry(party).or_default().insert(id);
+            }
         }
     }
 }
@@ -295,7 +387,7 @@ pub(crate) fn learned_at_close(
     let notes: BTreeMap<PartyId, BTreeSet<u32>> = ctx
         .w
         .module_state::<Sightings>()
-        .and_then(|notes| notes.0.get(site).cloned())
+        .and_then(|notes| notes.seen.get(site).cloned())
         .unwrap_or_default();
     let terrain = ctx
         .w
@@ -375,9 +467,85 @@ pub(crate) fn learned_at_close(
         .collect()
 }
 
-/// Forget the field on `site`'s notes (it closed).
+/// Forget the field on `site`'s notes and cached LOS entries (it closed).
 pub(crate) fn forget(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     if let Some(notes) = ctx.w.module_state_mut::<Sightings>() {
-        notes.0.remove(site);
+        notes.seen.remove(site);
+        notes.los.remove(site);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m36_sightings_forget_clears_both_seen_objects_and_los_cache() {
+        let site = CanonicalId::new("ahuna_flank").expect("site");
+        let other = CanonicalId::new("urvara_reach").expect("other");
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..crate::TacsimConfig::default()
+            }),
+        )]);
+        {
+            let sightings = tw
+                .world_mut()
+                .module_state_mut::<Sightings>()
+                .expect("sightings");
+            sightings
+                .seen
+                .entry(site.clone())
+                .or_default()
+                .entry(PartyId::from_letter('A').expect("party"))
+                .or_default()
+                .insert(7);
+            sightings
+                .los
+                .entry(site.clone())
+                .or_default()
+                .results
+                .insert(
+                    LosKey {
+                        from: (1, 1),
+                        eye_cm: 300,
+                        target: (2, 2),
+                    },
+                    true,
+                );
+            sightings
+                .los
+                .entry(other.clone())
+                .or_default()
+                .results
+                .insert(
+                    LosKey {
+                        from: (3, 3),
+                        eye_cm: 300,
+                        target: (4, 4),
+                    },
+                    false,
+                );
+        }
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            forget(&mut ctx, &site);
+        }
+        let sightings = tw.world().module_state::<Sightings>().expect("sightings");
+        assert!(!sightings.seen.contains_key(&site));
+        assert!(!sightings.los.contains_key(&site));
+        assert!(sightings.los.contains_key(&other));
     }
 }

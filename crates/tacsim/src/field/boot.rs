@@ -369,6 +369,7 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
             super::crew::check_in_aboard(ctx, site, row.unit, &row.aboard);
         }
     }
+    super::purge_site_ephemera(ctx, site, None);
     super::record::delete(ctx, site);
     if let Some(record) = super::close::site_record(ctx, site)
         && record

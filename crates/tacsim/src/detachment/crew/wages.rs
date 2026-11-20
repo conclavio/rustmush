@@ -9,8 +9,10 @@
 //!   day.
 //! - **Grace** is EX.4's: [`mush_economy::PLAYER_OWED_MIN_GRACE`] periods, 28 IC days (28 real
 //!   hours). A day the employer cannot pay accrues as arrears, a one-term debt under the same
-//!   name, paid when the account is funded. **A missed wage never ends the contract**: nothing
-//!   here unseats, unhires or moves the crew member.
+//!   name, paid when the account is funded. During grace, a missed wage never ends the contract;
+//!   once the recurring obligation passes grace into delinquency (or the employer loses their
+//!   active credit account with no live wage), `tick` terminates the hire at port and returns
+//!   the crew member to their pool room while leaving accrued arrears for collection.
 //! - **The wage ends with the contract** (doc 42's capture exit, `tacsim_crew_captured`); what
 //!   accrued stands as its debt, and is collected at a port fire once the employer's account
 //!   covers it (`collect_ended`, doc 48 cut EX.7b).
@@ -258,8 +260,9 @@ fn live(o: &Obligation) -> bool {
 
 /// One wage the contracts want: who pays whom how much.
 struct Want {
+    contract: CrewContract,
     debtor: PrincipalId,
-    debit: AccountId,
+    debit: Option<AccountId>,
     credit: AccountId,
     amount: Amount,
 }
@@ -285,7 +288,7 @@ fn wanted(ctx: &Ctx<'_>) -> BTreeMap<String, Want> {
         }
         // Doc 48 cut EX.7b: a hire whose exit is owed (a discharge's, or a capture's) has left;
         // its wage is not opened again while the roster's half lands.
-        if crate::field::npc_exit_of(ctx.w, contract.npc).is_some() {
+        if crate::field::crew::exit_applies(ctx.w, &contract) {
             continue;
         }
         let Some((_, credit)) = payee(ctx.w, &contract.terms) else {
@@ -294,17 +297,15 @@ fn wanted(ctx: &Ctx<'_>) -> BTreeMap<String, Want> {
         let Some(amount) = daily_wage(ctx.w, &contract.terms) else {
             continue;
         };
-        let Some(debit) = crate::port::credit::own_account(ctx.w, contract.employer).map(|a| a.id)
-        else {
-            continue;
-        };
-        if debit == credit {
+        let debit = crate::port::credit::own_account(ctx.w, contract.employer).map(|a| a.id);
+        if debit == Some(credit) {
             continue;
         }
         out.insert(
             wage_namespace(contract.npc),
             Want {
                 debtor: PrincipalId::Object(contract.employer),
+                contract,
                 debit,
                 credit,
                 amount,
@@ -330,20 +331,37 @@ fn live_wages(w: &World) -> BTreeMap<String, Obligation> {
         .collect()
 }
 
+/// Whether a live recurring obligation still matches `want` (preserving an active obligation
+/// even if the employer's account was frozen/closed so delinquency still accrues).
+fn obligation_matches_want(o: &Obligation, want: &Want) -> bool {
+    o.debtor == want.debtor
+        && o.credit_account == want.credit
+        && (want.debit.is_none() || want.debit == Some(o.debit_account))
+}
+
 /// **Keep every wage in step with the contracts** (doc 48 cut EX.7): open a wage for each
-/// contract that has none, and end a wage whose contract is gone or changed hands. Never panics; a
-/// refusal is logged and retried next fire.
+/// contract that has none, end a wage whose contract is gone or changed hands, and terminate
+/// hires whose recurring wage reached delinquency past grace. Never panics; a refusal is logged
+/// and retried next fire.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let wanted = wanted(ctx);
-    let live = live_wages(ctx.w);
+    let mut live = live_wages(ctx.w);
+    let mut terminated = BTreeSet::new();
     for (ns, o) in &live {
         match wanted.get(ns) {
-            Some(want)
-                if want.debtor == o.debtor
-                    && want.debit == o.debit_account
-                    && want.credit == o.credit_account =>
-            {
-                if want.amount != o.amount
+            Some(want) if obligation_matches_want(o, want) => {
+                if o.status == ObligationStatus::Delinquent {
+                    if super::discharge::terminate_delinquent(ctx, &want.contract) {
+                        if let Err(error) = mush_economy::cancel_obligation(ctx, o.id, ns) {
+                            tracing::warn!(
+                                obligation = o.id.0,
+                                %error,
+                                "tacsim: a delinquent wage did not end"
+                            );
+                        }
+                        terminated.insert(ns.clone());
+                    }
+                } else if want.amount != o.amount
                     && let Err(error) =
                         mush_economy::reprice_player_obligation(ctx, o.id, ns, want.amount)
                 {
@@ -359,15 +377,23 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     }
     let now_ic = ctx.w.world_ic_now().at;
     for (ns, want) in wanted {
-        if live.get(&ns).is_some_and(|o| {
-            o.debtor == want.debtor
-                && o.debit_account == want.debit
-                && o.credit_account == want.credit
-        }) {
+        if terminated.contains(&ns) {
             continue;
         }
+        if live
+            .get(&ns)
+            .is_some_and(|o| obligation_matches_want(o, &want))
+        {
+            continue;
+        }
+        let Some(debit) = want.debit else {
+            // Employer lost their active credit account before any wage opened: terminate rather
+            // than allowing free permanent crew retention.
+            let _ = super::discharge::terminate_delinquent(ctx, &want.contract);
+            continue;
+        };
         let spec = mush_economy::ObligationSpec {
-            debit_account: want.debit,
+            debit_account: debit,
             credit_account: want.credit,
             amount: want.amount,
             schedule: mush_economy::EconomicSchedule::new(
@@ -385,6 +411,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if let Err(error) = mush_economy::create_player_obligation(ctx, spec, &ns) {
             tracing::warn!(%ns, %error, "tacsim: a wage was not opened");
         }
+    }
+    for ns in &terminated {
+        live.remove(ns);
     }
     collect_ended(ctx, &live);
 }
@@ -1078,5 +1107,163 @@ mod tests {
             .module_state::<EconomyStore>()
             .is_some_and(|store| store.snapshot().obligation(other).is_some());
         assert!(recorded);
+    }
+
+    #[test]
+    fn m27_frozen_account_keeps_obligation_and_delinquency_terminates_at_port() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..crate::TacsimConfig::default()
+            }),
+        )]);
+        let pool = tw
+            .world_mut()
+            .create(ObjKind::Room, "Slack Line", mush_core::GOD, None)
+            .expect("pool");
+        let elsewhere = tw
+            .world_mut()
+            .create(ObjKind::Room, "Concourse", mush_core::GOD, None)
+            .expect("elsewhere");
+        let employer = tw
+            .world_mut()
+            .create(ObjKind::Player, "Employer", mush_core::GOD, Some(pool))
+            .expect("employer");
+        let npc = tw
+            .world_mut()
+            .create(ObjKind::Npc, "Mendes", mush_core::GOD, Some(elsewhere))
+            .expect("npc");
+        tw.world_mut().get_mut(npc).expect("npc").home = Some(pool);
+
+        let terms = HireTerms {
+            schema: 1,
+            port: mush_core::CanonicalId::new("ceres").expect("ceres"),
+            mission_scope: NpcMissionScope::SubordinateOperator,
+            duties: BTreeSet::from([CrewDuty::Mining]),
+        };
+        let contract = CrewContract {
+            schema: 1,
+            npc,
+            employer,
+            hired_at: mush_core::ClockStamp {
+                clock: mush_core::ClockRef::WorldIc { generation: 1 },
+                at: 100,
+            },
+            terms_hash: terms.digest().expect("digest"),
+            terms,
+        };
+        let want_without_account = Want {
+            contract: contract.clone(),
+            debtor: PrincipalId::Object(employer),
+            debit: None,
+            credit: AccountId(202),
+            amount: Amount::from_minor(1_000),
+        };
+        let live_obligation = Obligation {
+            id: mush_economy::ObligationId(7),
+            debtor: PrincipalId::Object(employer),
+            creditor: PrincipalId::Organization(OrgId(77)),
+            debit_account: AccountId(101),
+            credit_account: AccountId(202),
+            amount: Amount::from_minor(1_000),
+            schedule: mush_economy::EconomicSchedule::new(
+                mush_economy::EconomicClock::WorldIc,
+                86_500,
+                Some(IC_DAY),
+                mush_economy::MAX_CATCH_UP_CAP,
+            ),
+            grace: mush_economy::GracePolicy::new(mush_economy::PLAYER_OWED_MIN_GRACE),
+            status: ObligationStatus::Grace {
+                missed: 3,
+                deadline: mush_economy::EconomicDeadline {
+                    clock: mush_economy::EconomicClock::WorldIc,
+                    at: 86_500,
+                },
+            },
+            minted_by: None,
+            periods_settled: 3,
+            history: Vec::new(),
+            missed_total: 3,
+            settled_total: 0,
+            service_terms: None,
+            forgiven_total: 0,
+            suspensions: BTreeSet::new(),
+            notify_on_success: false,
+            cause: mush_economy::ObligationCause::Ruleset {
+                namespace: SmolStr::new(wage_namespace(npc)),
+            },
+            arrears: None,
+            revision: 1,
+        };
+        // A frozen/closed employer account (`debit: None`) must NOT cause `tick` to cancel the
+        // existing recurring wage obligation while the contract stands.
+        assert!(obligation_matches_want(
+            &live_obligation,
+            &want_without_account
+        ));
+
+        // When the NPC is held in custody, delinquency termination defers cleanly.
+        crate::field::crew::hold_for_tests(
+            tw.world_mut(),
+            crate::field::CrewRecord {
+                format: crate::field::crew::CREW_FORMAT,
+                character: npc,
+                location: crate::field::CrewLocation::Captured {
+                    carrier: ObjId(99),
+                    captor: ObjId(88),
+                    since_ic: 100,
+                },
+                condition: crate::field::CrewCondition::Fit,
+                at_ic: 100,
+                organizer: Some(employer),
+                extraction: None,
+                treatment: None,
+                resolve_permille: None,
+            },
+        );
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            assert!(!super::super::discharge::terminate_delinquent(
+                &mut ctx, &contract
+            ));
+        }
+        assert!(crate::field::npc_exit_of(tw.world(), npc).is_none());
+        assert_eq!(
+            tw.world().get(npc).and_then(|o| o.location),
+            Some(elsewhere)
+        );
+
+        // Once not held back, delinquency termination returns the NPC to the pool room and owes NpcExit.
+        crate::field::crew::clear_for_tests(tw.world_mut());
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            assert!(super::super::discharge::terminate_delinquent(
+                &mut ctx, &contract
+            ));
+        }
+        assert_eq!(tw.world().get(npc).and_then(|o| o.location), Some(pool));
+        let exit = crate::field::npc_exit_of(tw.world(), npc).expect("owed exit");
+        assert_eq!(exit.organizer, employer);
     }
 }

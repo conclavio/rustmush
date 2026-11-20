@@ -23,6 +23,9 @@ pub(crate) struct Walk {
     /// Scheduling only (doc 44 unit MW.14a): what an NPC commander last sent each slot and the
     /// world second before which it does not send that again ([`super::commander::Sent`]).
     sent: super::commander::Sent,
+    /// Scheduling only (M36.4): candidate pocket offset for `mine()` so each tick performs at
+    /// most one `drive_cmd` instead of up to 8 synchronous A* drives in a single tick.
+    mine_attempt: BTreeMap<ObjId, (u64, u8)>,
 }
 
 pub(crate) fn tick(ctx: &mut Ctx<'_>, fire: &mut Fire, walk: &mut Walk, budget: u32) -> u32 {
@@ -34,6 +37,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, fire: &mut Fire, walk: &mut Walk, budget: 
     else {
         return 0;
     };
+    // M34: flush any committed lapse notices promptly on the 1s surface tick before NPC
+    // commanders potentially issue replacement orders.
+    runtime::flush_committed_lapses(ctx, &h);
     let Ok(Some(index)) = ctx.action_state(&h.index, &()) else {
         return 0;
     };
@@ -43,6 +49,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>, fire: &mut Fire, walk: &mut Walk, budget: 
     walk.replies.retain(|unit, _| index.units.contains(unit));
     walk.postures.retain(|unit, _| index.units.contains(unit));
     walk.sent.retain(|(unit, _), _| index.units.contains(unit));
+    walk.mine_attempt
+        .retain(|unit, _| index.units.contains(unit));
     let mut units = index
         .units
         .iter()
@@ -433,13 +441,15 @@ fn visit(
             }
             match objective {
                 Some(FieldObjective::Advance { to }) => {
-                    act::drive_cmd(ctx, &rig, &format!("{},{}", to.0, to.1), true)
+                    act::drive_cmd(ctx, &rig, &format!("{},{}", to.0, to.1), true).map(|()| true)
                 }
                 Some(FieldObjective::Withdraw) => {
-                    act::act_cmd(ctx, &rig, ActKind::Recover, false, true, None)
+                    act::act_cmd(ctx, &rig, ActKind::Recover, false, true, None).map(|()| true)
                 }
                 Some(FieldObjective::Mine { family }) => mine(
                     ctx,
+                    walk,
+                    unit,
                     &rig,
                     &stand.site,
                     stand.cell,
@@ -449,8 +459,7 @@ fn visit(
                 ),
                 _ => return Ok(false),
             }
-            .map_err(|e| e.to_string())?;
-            Ok(true)
+            .map_err(|e| e.to_string())
         })();
         match result {
             Ok(submitted) => Ok(submitted),
@@ -736,20 +745,24 @@ pub(super) fn dispatch<T: Submitted>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mine(
     ctx: &mut Ctx<'_>,
+    walk: &mut Walk,
+    unit: ObjId,
     rig: &act::RigAt,
     site: &mush_core::CanonicalId,
     cell: (i64, i64),
     family: Option<OreFamily>,
     record: Option<&crate::surface::excursion::RigRecord>,
     sequence: u64,
-) -> Result<(), mush_core::CmdError> {
+) -> Result<bool, mush_core::CmdError> {
     let linked = record.and_then(|r| r.field_work.as_deref()).filter(|w| {
         w.sequence == sequence && rig.crew.as_ref().is_some_and(|c| c.flight == w.flight)
     });
     if linked.is_some_and(|w| w.mined) {
-        return act::act_cmd(ctx, rig, ActKind::Recover, false, true, None);
+        walk.mine_attempt.remove(&unit);
+        return act::act_cmd(ctx, rig, ActKind::Recover, false, true, None).map(|()| true);
     }
     let row = ctx
         .w
@@ -767,43 +780,81 @@ fn mine(
         })
         .cloned();
     if row.as_ref().is_none_or(|r| !r.has_coverage()) {
-        return act::act_cmd(ctx, rig, ActKind::Scan, false, true, None);
+        return act::act_cmd(ctx, rig, ActKind::Scan, false, true, None).map(|()| true);
     }
     if row.as_ref().is_none_or(|r| r.sounded_pockets() == 0) {
-        return act::act_cmd(ctx, rig, ActKind::Sound, false, true, None);
+        return act::act_cmd(ctx, rig, ActKind::Sound, false, true, None).map(|()| true);
     }
     let context = chart::site_context(ctx.w, site)
         .map_err(|_| mush_core::CmdError::msg("Own readings unavailable."))?;
     let scheme = context.scheme();
-    let mut cache = BTreeMap::new();
-    let mut candidates = Vec::new();
-    for y in 0..scheme.pockets() {
-        for x in 0..scheme.pockets() {
-            if let Some(classes) =
-                crate::surface::plan::read_classes(&context, row.as_ref(), (x, y), &mut cache)
-            {
-                let wanted = family.or_else(|| {
-                    OreFamily::ALL
-                        .into_iter()
-                        .find(|f| crate::surface::geology::by_family(classes, *f) != Word::Barren)
-                });
-                if let Some(f) = wanted
-                    .filter(|f| crate::surface::geology::by_family(classes, *f) != Word::Barren)
-                {
-                    let target = (x * 4 + 2, y * 4 + 2);
-                    candidates.push((
-                        (target.0 - cell.0).abs() + (target.1 - cell.1).abs(),
-                        x,
-                        y,
-                        f,
-                    ));
+    // M36.4: iterate only sounded pockets recorded in `row.blocks` and sort by distance before
+    // lazily evaluating geology (`read_classes`), instead of scanning all 16,384 grid pockets and
+    // deriving up to 256 fields upfront.
+    let mut sounded = Vec::new();
+    if let Some(row_ref) = row.as_ref() {
+        for (block_key, block) in &row_ref.blocks {
+            let Some(letter) = block_key.chars().next() else {
+                continue;
+            };
+            let Some(bytes) = block.bytes() else {
+                continue;
+            };
+            for (index, byte) in bytes.into_iter().enumerate() {
+                if chart::cell_tier(byte) != chart::TIER_R2 {
+                    continue;
                 }
+                let Some((x, y)) = scheme.pocket_of_block_index(letter, index) else {
+                    continue;
+                };
+                let target = (x * 4 + 2, y * 4 + 2);
+                let dist = (target.0 - cell.0)
+                    .abs()
+                    .saturating_add((target.1 - cell.1).abs());
+                sounded.push((dist, x, y));
             }
         }
     }
-    candidates.sort_by_key(|c| (c.0, c.1, c.2));
-    for (_, x, y, f) in candidates.into_iter().take(8) {
+    sounded.sort_unstable();
+    let offset = walk
+        .mine_attempt
+        .get(&unit)
+        .filter(|(seq, _)| *seq == sequence)
+        .map_or(0usize, |(_, idx)| usize::from(*idx));
+    let mut cache = BTreeMap::new();
+    let mut matched = 0usize;
+    let mut chosen: Option<(i64, i64, OreFamily)> = None;
+    let mut has_next = false;
+    for (_, x, y) in sounded {
+        let Some(classes) =
+            crate::surface::plan::read_classes(&context, row.as_ref(), (x, y), &mut cache)
+        else {
+            continue;
+        };
+        let wanted = family.or_else(|| {
+            OreFamily::ALL
+                .into_iter()
+                .find(|f| crate::surface::geology::by_family(classes, *f) != Word::Barren)
+        });
+        let Some(f) =
+            wanted.filter(|f| crate::surface::geology::by_family(classes, *f) != Word::Barren)
+        else {
+            continue;
+        };
+        if matched == offset {
+            chosen = Some((x, y, f));
+        } else if matched == offset.saturating_add(1) && matched < 8 {
+            has_next = true;
+            break;
+        }
+        matched = matched.saturating_add(1);
+        if matched >= 8 {
+            break;
+        }
+    }
+    if let Some((x, y, f)) = chosen {
         if scheme.pocket_of_cell(cell) == Some((x, y)) {
+            walk.mine_attempt.remove(&unit);
             return act::mine_cmd(
                 ctx,
                 rig,
@@ -814,15 +865,24 @@ fn mine(
                 },
                 "1",
                 true,
-            );
+            )
+            .map(|()| true);
         }
-        let Some(address) = scheme.pocket_address(x, y) else {
-            continue;
-        };
-        if act::drive_cmd(ctx, rig, &address, true).is_ok() {
-            return Ok(());
+        // M36.4: issue at most one synchronous `drive_cmd` per tick; if this pocket is blocked
+        // and another candidate exists within the top-8 window, advance the cursor for next tick.
+        if let Some(address) = scheme.pocket_address(x, y)
+            && act::drive_cmd(ctx, rig, &address, true).is_ok()
+        {
+            walk.mine_attempt.remove(&unit);
+            return Ok(true);
+        }
+        if has_next {
+            let next_offset = u8::try_from(offset.saturating_add(1)).unwrap_or(8);
+            walk.mine_attempt.insert(unit, (sequence, next_offset));
+            return Ok(false);
         }
     }
+    walk.mine_attempt.remove(&unit);
     Err(mush_core::CmdError::msg(
         "No reachable ore in this operator's own sounding.",
     ))

@@ -142,9 +142,10 @@ pub(super) fn selected(
 }
 
 /// The unit `actor` operates under a field flight: the standing reservation's
-/// slot first; else a unit they hold a station on (bounded by their own billets,
-/// and still found once a returned flight leaves the index), then the open
-/// flights of the bounded flight index.
+/// slot first, then O(1) indexed checks over `SpatialState::derived::assignments_by_actor`,
+/// interior spatial ancestors, and `FocusState` (M36.6: `selected()` requires physical occupancy
+/// and a station assignment on the unit, eliminating the O(1024) `FlightIndex` scan on
+/// non-detachment `+tv` commands).
 fn unit_of(world: &World, read: &mut impl Read, h: &SortieHandles, actor: ObjId) -> Option<ObjId> {
     let flown = |read: &mut _, unit: ObjId| {
         prepare::current(read, h, unit).is_ok_and(|(_, f)| f.operator == actor)
@@ -169,18 +170,41 @@ fn unit_of(world: &World, read: &mut impl Read, h: &SortieHandles, actor: ObjId)
             return Some(unit);
         }
     }
-    let seated = world
-        .module_state::<mush_sim::SpatialState>()
-        .and_then(|s| s.derived.assignments_by_actor.get(&actor))
-        .into_iter()
-        .flatten()
-        .copied()
-        .find(|unit| flown(read, *unit));
-    if seated.is_some() {
-        return seated;
+    if let Some(state) = world.module_state::<mush_sim::SpatialState>() {
+        if let Some(seated) = state
+            .derived
+            .assignments_by_actor
+            .get(&actor)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|unit| flown(read, *unit))
+        {
+            return Some(seated);
+        }
+        let start = if state.is_placed(actor) {
+            Some(actor)
+        } else {
+            world
+                .get(actor)
+                .and_then(|o| o.location)
+                .map(|room| state.derived.member_of.get(&room).copied().unwrap_or(room))
+        };
+        if let Some(start) = start
+            && let Ok(ancestors) = mush_sim::graph::ancestors(state, start)
+            && let Some(host) = ancestors.into_iter().find(|unit| flown(read, *unit))
+        {
+            return Some(host);
+        }
     }
-    let index = read.get(&h.index, &()).ok()??;
-    index.units.into_iter().find(|unit| flown(read, *unit))
+    if let Some(focus) = world
+        .module_state::<mush_sim::focus::FocusState>()
+        .and_then(|f| f.focus_of_actor(actor))
+        && flown(read, focus.unit)
+    {
+        return Some(focus.unit);
+    }
+    None
 }
 fn own_rig(
     world: &World,

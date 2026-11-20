@@ -302,9 +302,33 @@ fn evaluate(
     } else {
         None
     };
-    let change = book
+    let mut change = book
         .apply(actor, &input.operation.change)
         .map_err(|e| e.to_string())?;
+    // M29: preserve prior explicit Declined responses across draft edits so trivial edits cannot
+    // re-insert a declined draft into the recipient's bounded invitation inbox. Explicit
+    // `+sortie/accept` on the edited draft still restores the invitation.
+    if let PlanningOperation::EditDraft { id, .. } = &input.operation.change
+        && let Some(prev) = book.drafts.get(id)
+        && let Some(next) = change.book.drafts.get_mut(id)
+    {
+        for (declined_actor, consent) in &prev.consents {
+            if consent.state == ConsentState::Declined
+                && next.assigned_player(*declined_actor).is_some()
+            {
+                next.consents.insert(
+                    *declined_actor,
+                    mush_tactics::detachment::planning::Consent {
+                        actor: *declined_actor,
+                        revision: next.revision,
+                        plan_hash: next.plan_hash.clone(),
+                        state: ConsentState::Declined,
+                    },
+                );
+            }
+        }
+        change.book.validate().map_err(|e| e.to_string())?;
+    }
     let old_players = players(book.drafts.get(&change.affected));
     for character in players(change.book.drafts.get(&change.affected)) {
         if !old_players.contains(&character) && !live_player(world, character) {
@@ -321,9 +345,9 @@ fn players(draft: Option<&Draft>) -> BTreeSet<ObjId> {
                 let PlannedController::Player { character } = slot.controller else {
                     return None;
                 };
-                // A decline frees this player's bounded inbox. The assignment
-                // remains readable by its exact reference; accepting restores it.
-                // A material edit clears declarations and may invite them again.
+                // A decline frees this player's bounded inbox and persists across draft edits.
+                // The assignment remains readable by its exact reference; explicit acceptance
+                // restores it.
                 let declined = d.consents.get(&character).is_some_and(|consent| {
                     consent.revision == d.revision
                         && consent.plan_hash == d.plan_hash
@@ -361,8 +385,18 @@ fn invitation_changes(
             if !after.drafts.remove(&reference) {
                 return Err(OwnerReadError::Integrity);
             }
-        } else if !after.drafts.insert(reference) {
-            return Err(OwnerReadError::Integrity);
+        } else {
+            let from_organizer = after
+                .drafts
+                .iter()
+                .filter(|d| d.organizer == reference.organizer)
+                .count();
+            if from_organizer >= families::MAX_INVITATIONS_PER_ORGANIZER {
+                return Err(OwnerReadError::Limit);
+            }
+            if !after.drafts.insert(reference) {
+                return Err(OwnerReadError::Integrity);
+            }
         }
         if prior.is_some() {
             after.revision = after.revision.checked_add(1).ok_or(OwnerReadError::Limit)?;

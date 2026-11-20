@@ -181,7 +181,16 @@ pub struct FieldBook {
     /// **Who has what in each running field** (doc 45 cut AP.1; [`notice`]), by site: read at
     /// each snapshot, reported and forgotten at the close.
     pub(crate) stakes: BTreeMap<CanonicalId, notice::Stakes>,
+    /// Cached decoded snapshot for raider lift/morale checks, keyed by site (M36.1).
+    pub(crate) raider_decoded: BTreeMap<CanonicalId, raiders::CachedDecode>,
+    /// Bounded pairwise fire ledger `(site, ordinal) -> {(min_actor, max_actor)}` recorded at
+    /// demotion for pairwise capture hostility checks (M33).
+    fire_pairs: BTreeMap<(CanonicalId, u32), BTreeSet<(ObjId, ObjId)>>,
+    fire_pair_order: std::collections::VecDeque<(CanonicalId, u32)>,
 }
+
+/// Maximum number of recent `(site, ordinal)` fields retained in RAM for pairwise fire attribution.
+const MAX_FIRE_PAIR_FIELDS: usize = 64;
 
 impl FieldBook {
     /// **The next task key** (RAM only): `u64::MAX`, then one less each time. The OOC centre
@@ -227,6 +236,44 @@ impl FieldBook {
     pub(crate) fn forget_snapshot(&mut self, site: &CanonicalId) {
         self.snapshots.remove(site);
         self.lift_checked.remove(site);
+        self.raider_decoded.remove(site);
+    }
+
+    /// Record pairwise fire actors for `(site, ordinal)` in a bounded FIFO map (M33).
+    pub(crate) fn record_fire_pairs(
+        &mut self,
+        site: CanonicalId,
+        ordinal: u32,
+        pairs: BTreeSet<(ObjId, ObjId)>,
+    ) {
+        if pairs.is_empty() {
+            return;
+        }
+        let key = (site, ordinal);
+        if !self.fire_pairs.contains_key(&key) {
+            while self.fire_pair_order.len() >= MAX_FIRE_PAIR_FIELDS {
+                if let Some(evicted) = self.fire_pair_order.pop_front() {
+                    self.fire_pairs.remove(&evicted);
+                }
+            }
+            self.fire_pair_order.push_back(key.clone());
+        }
+        self.fire_pairs.entry(key).or_default().extend(pairs);
+    }
+
+    /// Whether `a` and `b` exchanged non-voided fire in `(site, ordinal)` (M33).
+    #[must_use]
+    pub(crate) fn had_fire_pair(
+        &self,
+        site: &CanonicalId,
+        ordinal: u32,
+        a: ObjId,
+        b: ObjId,
+    ) -> bool {
+        let pair = (a.min(b), a.max(b));
+        self.fire_pairs
+            .get(&(site.clone(), ordinal))
+            .is_some_and(|pairs| pairs.contains(&pair))
     }
 
     /// Whether a resume is held for `site` (or the boot is still to decide it).
@@ -234,6 +281,38 @@ impl FieldBook {
     pub(crate) fn pending(&self, site: &CanonicalId) -> bool {
         self.held.contains_key(site) || self.boot_marks.contains_key(site)
     }
+}
+
+/// Purge all site-scoped ephemeral RAM structures when a field closes or voids (M32).
+pub(crate) fn purge_site_ephemera(ctx: &mut Ctx<'_>, site: &CanonicalId, task: Option<MatchId>) {
+    if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
+        book.arrivals.remove(site);
+        book.launching.remove(site);
+        book.relaunch.remove(site);
+        book.rejoining.remove(site);
+        book.fire.remove(site);
+        book.tally.remove(site);
+        book.stakes.remove(site);
+        book.forget_snapshot(site);
+    }
+    if let Some(book) = ctx.w.module_state_mut::<eject::EjectBook>() {
+        book.0.retain(|_, pending| pending.site != *site);
+    }
+    if let Some(book) = ctx.w.module_state_mut::<exit::ExitBook>() {
+        book.0.retain(|_, asked| asked.site != *site || asked.out);
+    }
+    if let Some(owed) = ctx.w.module_state_mut::<exit::OwedRejoins>() {
+        owed.0.remove(site);
+    }
+    if let Some(task) = task
+        && let Some(destroyed) = ctx.w.module_state_mut::<boarding::Destroyed>()
+    {
+        destroyed.0.remove(&task);
+    }
+    if let Some(boarding) = ctx.w.module_state_mut::<boarding::Boarding>() {
+        boarding.0.retain(|_, board| board.site != *site);
+    }
+    known::forget(ctx, site);
 }
 
 /// **Whether task `task` is a field's**, and so not a match's (the bridge's one branch).
@@ -422,6 +501,7 @@ pub(crate) fn on_snapshot(ctx: &mut Ctx<'_>, task: MatchId, snapshot: Arc<crate:
         return;
     };
     book.snapshots.insert(site.clone(), document.clone());
+    book.raider_decoded.remove(&site);
     // Doc 32 §15 (the review's CF-6): the opening shot as it stands at this snapshot, so a
     // resume that rewinds to it owes the shot again if it had not left yet.
     let fire = book.fire.get(&site).cloned();
@@ -518,5 +598,207 @@ pub(crate) fn on_frames(
     if let Some(weapon) = weapon {
         let fire = crate::arena::intents::IntentKind::Fire { weapon, slot: None };
         let _ = crate::arena_bridge::forward_intent(ctx, pending.pilot, pending.shooter, fire);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m32_purge_site_ephemera_clears_transit_sets_eject_unfinished_exit_and_destroyed() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..crate::TacsimConfig::default()
+            }),
+        )]);
+        let site = CanonicalId::new("ahuna_flank").expect("site");
+        let other_site = CanonicalId::new("urvara_reach").expect("other site");
+        let task = MatchId(9001);
+        let other_task = MatchId(9002);
+
+        {
+            let fb = tw
+                .world_mut()
+                .module_state_mut::<FieldBook>()
+                .expect("field book");
+            fb.arrivals
+                .entry(site.clone())
+                .or_default()
+                .insert(ObjId(10));
+            fb.launching
+                .entry(site.clone())
+                .or_default()
+                .insert(ObjId(11));
+            fb.relaunch
+                .entry(site.clone())
+                .or_default()
+                .insert(ObjId(12));
+            fb.rejoining
+                .entry(site.clone())
+                .or_default()
+                .insert(ObjId(13));
+            fb.rejoining
+                .entry(other_site.clone())
+                .or_default()
+                .insert(ObjId(14));
+        }
+        {
+            let ejects = tw
+                .world_mut()
+                .module_state_mut::<eject::EjectBook>()
+                .expect("ejects");
+            ejects.0.insert(
+                ObjId(20),
+                eject::PendingEject {
+                    pilot: ObjId(21),
+                    site: site.clone(),
+                },
+            );
+            ejects.0.insert(
+                ObjId(22),
+                eject::PendingEject {
+                    pilot: ObjId(23),
+                    site: other_site.clone(),
+                },
+            );
+        }
+        {
+            let exits = tw
+                .world_mut()
+                .module_state_mut::<exit::ExitBook>()
+                .expect("exits");
+            exits.0.insert(
+                ObjId(30),
+                exit::Exiting {
+                    requester: ObjId(31),
+                    site: site.clone(),
+                    then: exit::Then::Raider,
+                    out: false,
+                    carrier: None,
+                    quiet: false,
+                },
+            );
+            exits.0.insert(
+                ObjId(32),
+                exit::Exiting {
+                    requester: ObjId(33),
+                    site: site.clone(),
+                    then: exit::Then::Raider,
+                    out: true,
+                    carrier: None,
+                    quiet: false,
+                },
+            );
+            exits.0.insert(
+                ObjId(34),
+                exit::Exiting {
+                    requester: ObjId(35),
+                    site: other_site.clone(),
+                    then: exit::Then::Raider,
+                    out: false,
+                    carrier: None,
+                    quiet: false,
+                },
+            );
+        }
+        {
+            let rejoins = tw
+                .world_mut()
+                .module_state_mut::<exit::OwedRejoins>()
+                .expect("rejoins");
+            rejoins
+                .0
+                .entry(site.clone())
+                .or_default()
+                .insert(ObjId(40), ObjId(41));
+        }
+        {
+            let destroyed = tw
+                .world_mut()
+                .module_state_mut::<boarding::Destroyed>()
+                .expect("destroyed");
+            destroyed.0.entry(task).or_default().insert(ObjId(50));
+            destroyed.0.entry(other_task).or_default().insert(ObjId(51));
+        }
+        {
+            let boarding_book = tw
+                .world_mut()
+                .module_state_mut::<boarding::Boarding>()
+                .expect("boarding");
+            boarding_book.0.insert(
+                ObjId(60),
+                boarding::Board {
+                    site: site.clone(),
+                    carrier: ObjId(61),
+                    requester: ObjId(62),
+                    then: exit::Then::Rig {
+                        slot: 1,
+                        quiet: false,
+                    },
+                },
+            );
+        }
+
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            purge_site_ephemera(&mut ctx, &site, Some(task));
+        }
+
+        let fb = tw.world().module_state::<FieldBook>().expect("field book");
+        assert!(!fb.arrivals.contains_key(&site));
+        assert!(!fb.launching.contains_key(&site));
+        assert!(!fb.relaunch.contains_key(&site));
+        assert!(!fb.rejoining.contains_key(&site));
+        assert!(fb.rejoining.contains_key(&other_site));
+
+        let ejects = tw
+            .world()
+            .module_state::<eject::EjectBook>()
+            .expect("ejects");
+        assert!(!ejects.0.contains_key(&ObjId(20)));
+        assert!(ejects.0.contains_key(&ObjId(22)));
+
+        let exits = tw.world().module_state::<exit::ExitBook>().expect("exits");
+        assert!(
+            !exits.0.contains_key(&ObjId(30)),
+            "unfinished withdraw must be purged on close"
+        );
+        assert!(
+            exits.0.contains_key(&ObjId(32)),
+            "already-out exit stays for exit::tick continuation"
+        );
+        assert!(exits.0.contains_key(&ObjId(34)));
+
+        let rejoins = tw
+            .world()
+            .module_state::<exit::OwedRejoins>()
+            .expect("rejoins");
+        assert!(!rejoins.0.contains_key(&site));
+
+        let destroyed = tw
+            .world()
+            .module_state::<boarding::Destroyed>()
+            .expect("destroyed");
+        assert!(!destroyed.0.contains_key(&task));
+        assert!(destroyed.0.contains_key(&other_task));
+
+        let boarding_book = tw
+            .world()
+            .module_state::<boarding::Boarding>()
+            .expect("boarding");
+        assert!(!boarding_book.0.contains_key(&ObjId(60)));
     }
 }

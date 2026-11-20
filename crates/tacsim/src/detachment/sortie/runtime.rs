@@ -85,54 +85,194 @@ pub(super) struct Intent {
 }
 #[derive(Clone, Default)]
 struct Pending(BTreeMap<ObjId, Intent>);
-/// **The lapses already told** (doc 45 unit AP.8; RAM): operation, slot and order sequence. A
-/// submission that is refused at its final take is made again and tells nothing twice; a
-/// restart between the line and the write's commit tells it once more.
-#[derive(Clone, Default)]
-struct ToldLapses(std::collections::BTreeSet<(OperationId, u16, u64)>);
+/// Maximum entries kept in [`ToldLapses`] and [`PendingLapses`].
+const MAX_LAPSE_BOOK: usize = 256;
 
-/// **Tell the lapses a submission records** (doc 45 unit AP.8; Q-45-13): the leader who gave
-/// each order, on the reconnect queue when they are not on watch (the notices doc 45 unit AP.1
-/// uses), and the roster's leader after the write when that is another player.
-fn tell_lapses(ctx: &mut Ctx<'_>, snapshot: &prepare::Snapshot) {
-    use crate::port_tick::{NoticeLevel, notify_budget};
+/// **The lapses already told** (doc 45 unit AP.8; RAM): bounded FIFO deduplication by
+/// `(operation, slot, order sequence)` so capacity pressure evicts only the oldest entry instead
+/// of wiping the whole set (M34).
+#[derive(Clone, Default)]
+struct ToldLapses {
+    order: std::collections::VecDeque<(OperationId, u16, u64)>,
+    seen: std::collections::BTreeSet<(OperationId, u16, u64)>,
+}
+
+impl ToldLapses {
+    fn insert(&mut self, key: (OperationId, u16, u64)) -> bool {
+        if self.seen.contains(&key) {
+            return false;
+        }
+        while self.order.len() >= MAX_LAPSE_BOOK {
+            if let Some(oldest) = self.order.pop_front() {
+                self.seen.remove(&oldest);
+            }
+        }
+        self.seen.insert(key);
+        self.order.push_back(key);
+        true
+    }
+}
+
+/// One staged lapse waiting for its authoritative commit before notifying players (M34).
+#[derive(Clone)]
+struct PendingLapse {
+    submitter: ObjId,
+    queued_at: i64,
+    operation: OperationId,
+    leader: Option<mush_tactics::detachment::Leader>,
+    lapse: super::field_orders::NewLapse,
+}
+
+/// Staged lapses awaiting authoritative commit confirmation (RAM, bounded FIFO).
+#[derive(Clone, Default)]
+struct PendingLapses(std::collections::VecDeque<PendingLapse>);
+
+/// Stage newly computed lapses for post-commit delivery instead of notifying speculatively before
+/// the authoritative bundle lands (M34).
+fn queue_lapses(ctx: &mut Ctx<'_>, submitter: ObjId, snapshot: &prepare::Snapshot) {
     let Some((operation, leader, lapses)) = snapshot.new_lapses() else {
         return;
     };
-    let lead = leader
-        .filter(|leader| leader.kind == mush_tactics::detachment::LeaderKind::Player)
-        .map(|leader| leader.character);
-    for super::field_orders::NewLapse {
-        slot,
-        sequence,
-        issuer,
-        directive,
-    } in lapses
-    {
-        let fresh = ctx.w.module_state_mut::<ToldLapses>().is_some_and(|told| {
-            if told.0.len() >= 256 {
-                told.0.clear();
-            }
-            told.0.insert((operation, slot.get(), sequence))
+    let queued_at = ctx.w.now();
+    let Some(pending) = ctx.w.module_state_mut::<PendingLapses>() else {
+        return;
+    };
+    for lapse in lapses {
+        let already = pending.0.iter().any(|p| {
+            p.operation == operation
+                && p.lapse.slot == lapse.slot
+                && p.lapse.sequence == lapse.sequence
         });
-        if !fresh {
+        if already {
             continue;
         }
-        let fill = |line: &str| {
-            line.replace(
-                "{order}",
-                &super::field_commands::directive_text(&directive),
-            )
-            .replace("{slot}", &slot.get().to_string())
-        };
-        notify_budget(ctx, issuer, &fill(super::ORDER_LAPSED), NoticeLevel::Trip);
-        if let Some(lead) = lead.filter(|lead| *lead != issuer) {
+        while pending.0.len() >= MAX_LAPSE_BOOK {
+            pending.0.pop_front();
+        }
+        pending.0.push_back(PendingLapse {
+            submitter,
+            queued_at,
+            operation,
+            leader,
+            lapse,
+        });
+    }
+}
+
+/// Deliver staged lapse notices only after `OperationRecord` in `ActionStateStore` confirms the
+/// lapse committed, dropping failed or expired staged notices cleanly (M34).
+pub(super) fn flush_committed_lapses(ctx: &mut Ctx<'_>, handles: &SortieHandles) {
+    use crate::port_tick::{NoticeLevel, notify_budget};
+    let staged = ctx
+        .w
+        .module_state_mut::<PendingLapses>()
+        .map(|p| std::mem::take(&mut p.0))
+        .unwrap_or_default();
+    if staged.is_empty() {
+        return;
+    }
+    let now = ctx.w.now();
+    let mut keep = std::collections::VecDeque::new();
+    for entry in staged {
+        let committed = ctx
+            .action_state(&handles.operations, &entry.operation)
+            .ok()
+            .flatten()
+            .and_then(|op| op.orders.as_deref())
+            .is_some_and(|orders| {
+                orders
+                    .lapse_of(entry.lapse.slot, entry.lapse.sequence)
+                    .is_some()
+            });
+        if committed {
+            let key = (
+                entry.operation,
+                entry.lapse.slot.get(),
+                entry.lapse.sequence,
+            );
+            let fresh = ctx
+                .w
+                .module_state_mut::<ToldLapses>()
+                .is_some_and(|told| told.insert(key));
+            if !fresh {
+                continue;
+            }
+            let lead = entry
+                .leader
+                .filter(|leader| leader.kind == mush_tactics::detachment::LeaderKind::Player)
+                .map(|leader| leader.character);
+            let fill = |line: &str| {
+                line.replace(
+                    "{order}",
+                    &super::field_commands::directive_text(&entry.lapse.directive),
+                )
+                .replace("{slot}", &entry.lapse.slot.get().to_string())
+            };
             notify_budget(
                 ctx,
-                lead,
-                &fill(super::ORDER_LAPSED_LEAD),
+                entry.lapse.issuer,
+                &fill(super::ORDER_LAPSED),
                 NoticeLevel::Trip,
             );
+            if let Some(lead) = lead.filter(|lead| *lead != entry.lapse.issuer) {
+                notify_budget(
+                    ctx,
+                    lead,
+                    &fill(super::ORDER_LAPSED_LEAD),
+                    NoticeLevel::Trip,
+                );
+            }
+            continue;
+        }
+        let still_valid_age = now
+            .checked_sub(entry.queued_at)
+            .is_some_and(|age| (0..=300).contains(&age));
+        let still_pending =
+            ctx.authoritative_pending(entry.submitter) || pending(ctx.w, entry.submitter).is_some();
+        if still_valid_age && still_pending {
+            keep.push_back(entry);
+        }
+    }
+    if !keep.is_empty()
+        && let Some(pending_lapses) = ctx.w.module_state_mut::<PendingLapses>()
+    {
+        for entry in keep {
+            if pending_lapses.0.len() >= MAX_LAPSE_BOOK {
+                pending_lapses.0.pop_front();
+            }
+            pending_lapses.0.push_back(entry);
+        }
+    }
+}
+
+/// Evict expired (>300s) and already-settled entries from `Pending` so committed or stale
+/// deployment intents never occupy the 256-slot global queue for 300s (M34).
+pub(super) fn prune_settled(ctx: &mut Ctx<'_>, handles: &SortieHandles) {
+    let entries: Vec<(ObjId, Intent)> = ctx
+        .w
+        .module_state::<Pending>()
+        .map(|q| q.0.iter().map(|(a, i)| (*a, i.clone())).collect())
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return;
+    }
+    let now = ctx.w.now();
+    let mut evict = Vec::new();
+    for (actor, intent) in entries {
+        let expired = !now
+            .checked_sub(intent.utc)
+            .is_some_and(|age| (0..=300).contains(&age));
+        let settled = !ctx.authoritative_pending(actor)
+            && prepare::snapshot_unregistered(ctx.w, &mut &*ctx, handles, actor, &intent).is_err();
+        if expired || settled {
+            evict.push((actor, intent));
+        }
+    }
+    if let Some(queue) = ctx.w.module_state_mut::<Pending>() {
+        for (actor, intent) in evict {
+            if queue.0.get(&actor) == Some(&intent) {
+                queue.0.remove(&actor);
+            }
         }
     }
 }
@@ -330,6 +470,7 @@ pub(crate) fn register(
     )?;
     reg.state(Pending::default());
     reg.state(ToldLapses::default());
+    reg.state(PendingLapses::default());
     reg.state(handles);
     super::tick::register(reg)
 }
@@ -849,47 +990,31 @@ pub(super) fn finish_submit(ctx: &mut Ctx<'_>, flight: &Flight) -> Result<(), St
     )
 }
 pub(super) fn enqueue(ctx: &mut Ctx<'_>, actor: ObjId, command: Command) -> Result<(), String> {
+    let handles = ctx
+        .w
+        .module_state::<SortieHandles>()
+        .filter(|h| h.enabled)
+        .cloned()
+        .ok_or("Deployment unavailable.")?;
+    // M34: flush any lapses that already committed before validating/replacing operation state.
+    flush_committed_lapses(ctx, &handles);
     if ctx.authoritative_pending(actor)
         || ctx.authoritative_commit_pending()
         || ctx.authoritative_queue_full()
     {
         return Err("An authoritative request is already pending.".into());
     }
-    let action = ctx
-        .w
-        .module_state::<SortieHandles>()
-        .filter(|h| h.enabled)
-        .ok_or("Deployment unavailable.")?
-        .action
-        .clone();
     let intent = Intent {
         utc: ctx.w.now(),
         ic: ctx.w.world_ic_now(),
         command,
     };
-    let now = intent.utc;
-    let queue = ctx
-        .w
-        .module_state_mut::<Pending>()
-        .ok_or("Deployment unavailable.")?;
-    queue.0.retain(|_, i| {
-        now.checked_sub(i.utc)
-            .is_some_and(|age| (0..=300).contains(&age))
-    });
-    if queue.0.len() >= 256 && !queue.0.contains_key(&actor) {
-        return Err("Deployment is busy.".into());
-    }
-    queue.0.insert(actor, intent.clone());
-    let handles = ctx
-        .w
-        .module_state::<SortieHandles>()
-        .cloned()
-        .ok_or("Deployment unavailable.")?;
+    // M34: validate caller rights and prepare snapshot BEFORE touching the global 256-slot
+    // `Pending` queue, so invalid/rejected requests can never pollute queue capacity.
     if actor == ctx.actor {
         super::commands::check_caller_rights(ctx, &intent.command)?;
     }
-    let snapshot = prepare::snapshot(ctx.w, &mut &*ctx, &handles, actor, &intent)?;
-    tell_lapses(ctx, &snapshot);
+    let snapshot = prepare::snapshot_unregistered(ctx.w, &mut &*ctx, &handles, actor, &intent)?;
     let digest = digest(actor, &intent).map_err(|e| e.to_string())?.to_hex();
     // A return/cancel/relaunch cycle can complete within one wall-clock second.
     // Its new owner preimages must not reuse the first departure's receipt.
@@ -898,10 +1023,20 @@ pub(super) fn enqueue(ctx: &mut Ctx<'_>, actor: ObjId, command: Command) -> Resu
         snapshot.hash.to_hex()
     ))
     .map_err(|e| e.to_string())?;
+    prune_settled(ctx, &handles);
+    let queue = ctx
+        .w
+        .module_state_mut::<Pending>()
+        .ok_or("Deployment unavailable.")?;
+    if queue.0.len() >= 256 && !queue.0.contains_key(&actor) {
+        return Err("Deployment is busy.".into());
+    }
+    queue.0.insert(actor, intent);
+    queue_lapses(ctx, actor, &snapshot);
     ctx.out.defer(Deferred::AuthoritativeSubmit(Box::new(
         AuthoritativeSubmit {
             actor,
-            action,
+            action: handles.action,
             subject: PerceivedRef::SelfActor,
             targets: Vec::new(),
             parameters: json!({"request":digest}),
@@ -909,4 +1044,35 @@ pub(super) fn enqueue(ctx: &mut Ctx<'_>, actor: ObjId, command: Command) -> Resu
         },
     )));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m34_told_lapses_evicts_fifo_instead_of_clearing_all_entries() {
+        let mut told = ToldLapses::default();
+        let op = OperationId {
+            organizer: ObjId(1),
+            draft: mush_tactics::detachment::planning::PlanId(1),
+            activation: 1,
+        };
+        for seq in 1..=u64::try_from(MAX_LAPSE_BOOK).expect("cap") {
+            assert!(told.insert((op, 1, seq)));
+        }
+        assert!(!told.insert((op, 1, 1)), "duplicate rejected");
+        // Inserting one beyond cap evicts ONLY seq 1, keeping 2..=256 deduplicated.
+        let overflow = u64::try_from(MAX_LAPSE_BOOK + 1).expect("cap+1");
+        assert!(told.insert((op, 1, overflow)));
+        assert_eq!(told.seen.len(), MAX_LAPSE_BOOK);
+        assert!(
+            !told.insert((op, 1, 2)),
+            "recent entries must remain deduplicated after overflow"
+        );
+        assert!(
+            told.insert((op, 1, 1)),
+            "only the oldest entry was evicted by FIFO"
+        );
+    }
 }

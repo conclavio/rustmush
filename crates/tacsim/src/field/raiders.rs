@@ -1055,21 +1055,22 @@ pub const RAIDER_LIFTED: &str =
 /// paced, at the field's snapshots ([`lift_check_paced`]); a field holding no raider's carrier
 /// decodes nothing.
 pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
-    let Some(live) = ctx
+    let Some((task, live)) = ctx
         .w
         .module_state::<super::FieldBook>()
         .and_then(|book| book.hosted(site))
-        .map(|hosted| hosted.live.clone())
+        .map(|hosted| (hosted.task, hosted.live.clone()))
     else {
         return;
     };
     let record = super::close::site_record(ctx, site);
-    // The last snapshot, decoded once for every carrier: its returns, and the arena itself for
-    // the director's idle trigger (doc 36 cut GC.11) and the crews' morale (doc 42b cut SU.3).
+    // The last snapshot, decoded once for every carrier (and cached in `FieldBook` across calls
+    // on the same snapshot, e.g. multiple raider board/yield exits): its returns, and the arena
+    // itself for the director's idle trigger (doc 36 cut GC.11) and the crews' morale (SU.3).
     let mut decoded: Option<Decoded> = None;
     // Doc 42b cut SU.3 (Q-42b-8): each crew's morale, after the decode and before any carrier's
     // withdrawal reading.
-    morale(ctx, site, &live, record.as_ref(), &mut decoded);
+    morale(ctx, site, task, &live, record.as_ref(), &mut decoded);
     let carriers: Vec<ObjId> = live
         .units
         .iter()
@@ -1117,11 +1118,12 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         if refused && !crate::surface::raid::director_raid(ctx.w, carrier) {
             continue;
         }
-        let decoded =
-            decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone(), &live.held));
+        let decoded = decoded.get_or_insert_with(|| {
+            decode(ctx, site, task, live.at_ms, live.homes.clone(), &live.held)
+        });
         let condition = |unit: ObjId| {
             decoded
-                .as_ref()
+                .as_deref()
                 .and_then(|(_, returns)| returns.iter().find(|back| back.unit == unit))
                 .and_then(|back| super::close::condition_now(ctx, back))
         };
@@ -1152,7 +1154,7 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         }
         if !down {
             // Doc 36 cut GC.11 (Q-36-55): a director raid turns for home on its triggers.
-            let in_reach = decoded.as_ref().is_some_and(|(arena, _)| {
+            let in_reach = decoded.as_deref().is_some_and(|(arena, _)| {
                 live.party_of(carrier)
                     .is_some_and(|party| arena.party_holds_armed_hostile_in_reach(party))
             });
@@ -1181,7 +1183,7 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
         }
         // Doc 36 cut GC.3 (Q-36-8): a barge whose drive is destroyed stays on the ground.
         let grounded = decoded
-            .as_ref()
+            .as_deref()
             .and_then(|(_, returns)| returns.iter().find(|back| back.unit == carrier))
             .and_then(|back| {
                 crate::carrier_damage::spec_of(ctx.w, &back.cells)
@@ -1205,8 +1207,18 @@ pub(crate) fn lift_check(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     }
 }
 
+/// Cached decoded snapshot held on [`super::FieldBook`] so repeated raider checks on the same
+/// snapshot (e.g. multiple board/yield exits) do not re-decode the snapshot (M36.1).
+#[derive(Clone, Debug)]
+pub(crate) struct CachedDecode {
+    pub task: crate::arena_task::MatchId,
+    pub at_ms: i64,
+    pub homes_len: usize,
+    pub decoded: std::sync::Arc<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)>,
+}
+
 /// The last snapshot decoded, once a pass: `None` when it did not decode.
-type Decoded = Option<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)>;
+type Decoded = Option<std::sync::Arc<(crate::arena::Arena, Vec<crate::arena::damage::UnitReturn>)>>;
 
 /// **How many of `raider`'s hulls yielded from `carrier`** (doc 42b cut SU.3, Q-42b-16).
 fn yielded_of(w: &World, raider: &str, carrier: ObjId) -> usize {
@@ -1332,6 +1344,7 @@ fn under_own_power(state: &crate::arena::state::UnitState) -> bool {
 fn morale(
     ctx: &mut Ctx<'_>,
     site: &CanonicalId,
+    task: crate::arena_task::MatchId,
     live: &super::record::FieldLive,
     record: Option<&crate::surface::site_record::SiteRecord>,
     decoded: &mut Option<Decoded>,
@@ -1364,8 +1377,9 @@ fn morale(
     if candidates.is_empty() {
         return;
     }
-    let decoded = decoded.get_or_insert_with(|| decode(ctx, site, live.homes.clone(), &live.held));
-    let Some((arena, returns)) = decoded.as_ref() else {
+    let decoded = decoded
+        .get_or_insert_with(|| decode(ctx, site, task, live.at_ms, live.homes.clone(), &live.held));
+    let Some((arena, returns)) = decoded.as_deref() else {
         return;
     };
     let conditions: BTreeMap<ObjId, Option<LeftCondition>> = live
@@ -1640,27 +1654,61 @@ pub(crate) fn keep_yielded(
 }
 
 /// **The last snapshot of `site`'s field, decoded** on its own ground (its `homes` and its `held`
-/// walls from the live record; doc 36a §11 #1), with its units' returns, when it decodes:
-/// `close::snapshot_returns`' read, keeping the arena.
+/// walls from the live record; doc 36a §11 #1), with its units' returns, when it decodes.
+/// Reuses `ArenaRegistry::arena_of(task)` instead of rebuilding the 512x512 terrain grid from
+/// geology and caches the decoded `(Arena, Vec<UnitReturn>)` per `(site, task, at_ms, homes_len)`
+/// in [`super::FieldBook`] (M36.1).
 fn decode(
-    ctx: &Ctx<'_>,
+    ctx: &mut Ctx<'_>,
     site: &CanonicalId,
+    task: crate::arena_task::MatchId,
+    at_ms: i64,
     homes: Vec<crate::arena::state::EntryZone>,
     held: &[super::record::HeldWall],
 ) -> Decoded {
+    let homes_len = homes.len();
+    if let Some(cached) = ctx
+        .w
+        .module_state::<super::FieldBook>()
+        .and_then(|book| book.raider_decoded.get(site))
+        .filter(|c| c.task == task && c.at_ms == at_ms && c.homes_len == homes_len)
+    {
+        return Some(std::sync::Arc::clone(&cached.decoded));
+    }
     let document = ctx
         .w
         .module_state::<super::FieldBook>()
         .and_then(|book| book.snapshot(site).cloned())?;
-    let record = super::close::site_record(ctx, site)?;
-    let ground = super::admit::ground_with_held(ctx.w, site, &record, homes, held).ok()?;
+    let ground = if let Some(mut def) = ctx
+        .w
+        .module_state::<crate::arena_bridge::ArenaRegistry>()
+        .and_then(|registry| registry.arena_of(task).cloned())
+    {
+        def.homes = homes;
+        def
+    } else {
+        let record = super::close::site_record_ref(ctx, site)?;
+        super::admit::ground_with_held(ctx.w, site, record, homes, held).ok()?
+    };
     let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
         crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
         |store| store.config().arena.snapshot_max_bytes,
     );
     let arena = crate::arena::Snapshot::decode_with_limit(&document, ground, limit).ok()?;
     let returns = arena.returned_units();
-    Some((arena, returns))
+    let shared = std::sync::Arc::new((arena, returns));
+    if let Some(book) = ctx.w.module_state_mut::<super::FieldBook>() {
+        book.raider_decoded.insert(
+            site.clone(),
+            CachedDecode {
+                task,
+                at_ms,
+                homes_len,
+                decoded: std::sync::Arc::clone(&shared),
+            },
+        );
+    }
+    Some(shared)
 }
 
 /// **A raider's carrier is out of its field** (`super::exit`'s continuation for

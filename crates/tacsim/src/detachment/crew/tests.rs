@@ -66,3 +66,82 @@ fn malformed_and_wrong_identity_contracts_cannot_make_a_crew_member_available() 
     check!(invalid.validate().is_err());
     Ok(())
 }
+
+#[test]
+fn m28_npc_exit_scopes_contracts_and_generates_distinct_frozen_clock_keys() -> TestResult {
+    let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+        crate::TacsimRuleset::with_config(crate::TacsimConfig {
+            enabled: true,
+            ..crate::TacsimConfig::default()
+        }),
+    )]);
+    let npc = ObjId(7);
+    let employer_a = ObjId(8);
+    let employer_b = ObjId(9);
+    let terms = HireTerms {
+        schema: 1,
+        port: CanonicalId::new("ceres")?,
+        mission_scope: NpcMissionScope::SubordinateOperator,
+        duties: BTreeSet::from([CrewDuty::Mining]),
+    };
+    let contract_old = CrewContract {
+        schema: 1,
+        npc,
+        employer: employer_a,
+        hired_at: ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at: 100,
+        },
+        terms_hash: terms.digest()?,
+        terms: terms.clone(),
+    };
+    let contract_new_same = CrewContract {
+        hired_at: ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at: 250,
+        },
+        ..contract_old.clone()
+    };
+    let contract_other_employer = CrewContract {
+        employer: employer_b,
+        ..contract_old.clone()
+    };
+    let mut out = mush_core::Outbox::new();
+    {
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: employer_a,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        crate::field::crew::owe_npc_exit(
+            &mut ctx,
+            crate::field::NpcExit {
+                format: crate::field::crew::NPC_EXIT_FORMAT,
+                npc,
+                organizer: employer_a,
+                recovered_ic: 200,
+            },
+        );
+    }
+    check!(crate::field::crew::exit_applies(tw.world(), &contract_old));
+    check!(
+        !crate::field::crew::exit_applies(tw.world(), &contract_new_same),
+        "stale exit must not destroy or hide a newer contract from the same employer"
+    );
+    check!(
+        !crate::field::crew::exit_applies(tw.world(), &contract_other_employer),
+        "stale exit must not hide or block a contract held by a different employer"
+    );
+
+    // Frozen IC & wall clocks must still get distinct monotonic sequences for idempotency keys.
+    let s1 = crate::field::crew::next_exit_seq(tw.world_mut());
+    let s2 = crate::field::crew::next_exit_seq(tw.world_mut());
+    check!(s1 > 0 && s2 > s1);
+    Ok(())
+}

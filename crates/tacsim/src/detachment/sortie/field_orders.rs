@@ -917,6 +917,7 @@ pub(super) fn lapse_due(
 
 /// **A lapse a write records for the first time** (doc 45 unit AP.8): what its submission
 /// tells.
+#[derive(Clone)]
 pub(super) struct NewLapse {
     /// The recipient's slot.
     pub slot: Slot,

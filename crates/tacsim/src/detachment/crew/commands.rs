@@ -140,7 +140,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .action_state(&handles.contracts, &npc)
             .map_err(|_| unavailable())?
             .filter(|c| c.employer == ctx.actor || c.npc == ctx.actor)
-            .filter(|_| crate::field::npc_exit_of(ctx.w, npc).is_none())
+            .filter(|c| !crate::field::crew::exit_applies(ctx.w, c))
             .cloned();
         let Some(contract) = contract else {
             let debt =

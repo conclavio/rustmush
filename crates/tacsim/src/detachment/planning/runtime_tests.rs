@@ -116,9 +116,33 @@ fn full_invitation_index_refuses_the_whole_proposal() -> TestResult {
 }
 
 #[test]
-fn decline_releases_inbox_capacity_and_reaccept_or_edit_invites_again() -> TestResult {
-    let owner = ObjId(1);
-    let player = ObjId(2);
+fn decline_releases_inbox_capacity_and_persists_across_edits() -> TestResult {
+    struct EnabledTacsim;
+    impl mush_core::GameModule for EnabledTacsim {
+        fn name(&self) -> &'static str {
+            crate::NS
+        }
+        fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), ModError> {
+            let mut store = crate::TacsimStore::default();
+            store.cfg.enabled = true;
+            reg.state(store);
+            Ok(())
+        }
+    }
+    let mut world = Engine::with_modules(
+        World::new_minimal(),
+        mush_core::Registry::new(),
+        vec![Box::new(EnabledTacsim)],
+    )?
+    .world;
+    world.set_now(1_000);
+    let owner = world.create(
+        mush_core::ObjKind::Player,
+        "Organizer",
+        mush_core::GOD,
+        None,
+    )?;
+    let player = world.create(mush_core::ObjKind::Player, "Invitee", mush_core::GOD, None)?;
     let before = PlanningBook::new(owner)?;
     let created = before.apply(
         owner,
@@ -171,39 +195,121 @@ fn decline_releases_inbox_capacity_and_reaccept_or_edit_invites_again() -> TestR
         added.first().ok_or("accepted invitation")?.after.drafts,
         initial_index.drafts
     );
+    // M29: editing a declined draft through `evaluate` preserves `ConsentState::Declined` so
+    // trivial edits cannot re-insert the draft into the victim's invitation inbox.
     let mut changed_plan = draft.plan.clone();
     changed_plan.slots.first_mut().ok_or("slot")?.role = Some("support".into());
-    let edited = declined.book.apply(
-        owner,
-        &PlanningOperation::EditDraft {
-            id: draft.id,
-            expected_revision: draft.revision,
-            plan: changed_plan,
+    let edit_intent = PendingIntent {
+        at: 1_000,
+        before_revision: declined.book.revision,
+        operation: Operation {
+            organizer: owner,
+            change: PlanningOperation::EditDraft {
+                id: draft.id,
+                expected_revision: draft.revision,
+                plan: changed_plan,
+            },
+        },
+    };
+    let (edited, _) = evaluate(&world, &declined.book, owner, &edit_intent)?;
+    let edited_draft = edited.book.drafts.get(&draft.id).ok_or("edited draft")?;
+    check_eq!(
+        edited_draft.consents.get(&player).map(|c| c.state),
+        Some(ConsentState::Declined)
+    );
+    check!(
+        invitation_changes(&declined.book, &edited.book, edited.affected, |_| {
+            Ok(Some(empty_index.clone()))
+        })?
+        .is_empty(),
+        "editing a declined draft must not re-insert into the recipient's inbox"
+    );
+    // Explicit acceptance on the edited draft still restores the invitation cleanly.
+    let reaccepted = edited.book.apply(
+        player,
+        &PlanningOperation::Declare {
+            id: edited_draft.id,
+            expected_revision: edited_draft.revision,
+            expected_hash: edited_draft.plan_hash.clone(),
+            state: ConsentState::Accepted,
         },
     )?;
-    let reinvited = invitation_changes(&declined.book, &edited.book, edited.affected, |_| {
+    let restored = invitation_changes(&edited.book, &reaccepted.book, reaccepted.affected, |_| {
         Ok(Some(empty_index.clone()))
     })?;
     check_eq!(
-        reinvited.first().ok_or("revised invitation")?.after.drafts,
+        restored.first().ok_or("restored invitation")?.after.drafts,
         initial_index.drafts
     );
-    let discarded = declined.book.apply(
+    // Discarding a declined draft (even after edit) must not hit integrity errors.
+    let discarded = edited.book.apply(
         owner,
         &PlanningOperation::DiscardDraft {
-            id: draft.id,
-            expected_revision: draft.revision,
+            id: edited_draft.id,
+            expected_revision: edited_draft.revision,
         },
     )?;
     check!(
-        invitation_changes(
-            &declined.book,
-            &discarded.book,
-            discarded.affected,
-            |_| Err(OwnerReadError::Integrity)
-        )?
+        invitation_changes(&edited.book, &discarded.book, discarded.affected, |_| Err(
+            OwnerReadError::Integrity
+        ))?
         .is_empty(),
-        "discarding a declined assignment must not remove the same index twice"
+        "discarding a declined edited assignment must not remove the same index twice"
+    );
+    Ok(())
+}
+
+#[test]
+fn m29_per_organizer_invitation_cap_limits_single_organizer_slots() -> TestResult {
+    let org_a = ObjId(10);
+    let org_b = ObjId(20);
+    let victim = ObjId(30);
+    let mut book_a = PlanningBook::new(org_a)?;
+    let mut victim_index: Option<InvitationIndex> = None;
+
+    for n in 0..families::MAX_INVITATIONS_PER_ORGANIZER {
+        let next = book_a.apply(
+            org_a,
+            &PlanningOperation::CreateDraft {
+                plan: plan(victim)?,
+            },
+        )?;
+        let changes = invitation_changes(&book_a, &next.book, next.affected, |_| {
+            Ok(victim_index.clone())
+        })?;
+        check_eq!(changes.len(), 1);
+        victim_index = Some(changes[0].after.clone());
+        check_eq!(victim_index.as_ref().map(|i| i.drafts.len()), Some(n + 1));
+        book_a = next.book;
+    }
+
+    // One more draft from the same organizer to the same victim must hit the per-organizer cap.
+    let third = book_a.apply(
+        org_a,
+        &PlanningOperation::CreateDraft {
+            plan: plan(victim)?,
+        },
+    )?;
+    let err = invitation_changes(&book_a, &third.book, third.affected, |_| {
+        Ok(victim_index.clone())
+    });
+    check_eq!(err.err(), Some(OwnerReadError::Limit));
+
+    // A different organizer can still invite the same victim cleanly.
+    let book_b = PlanningBook::new(org_b)?;
+    let other = book_b.apply(
+        org_b,
+        &PlanningOperation::CreateDraft {
+            plan: plan(victim)?,
+        },
+    )?;
+    let changes_b = invitation_changes(&book_b, &other.book, other.affected, |_| {
+        Ok(victim_index.clone())
+    })?;
+    check_eq!(changes_b.len(), 1);
+    check_eq!(
+        changes_b[0].after.drafts.len(),
+        families::MAX_INVITATIONS_PER_ORGANIZER + 1
     );
     Ok(())
 }

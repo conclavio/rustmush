@@ -60,7 +60,8 @@ pub(crate) struct Demoted {
 
 /// **The units the last snapshot holds**, as returns (the void rule), when it decodes on the
 /// field's own ground (its `homes` and its `held` walls from its live record, doc 32 cut CF.6b;
-/// doc 36a §11 #1).
+/// doc 36a §11 #1). When `task` is still registered in `ArenaRegistry`, reuses its existing
+/// `ArenaDefinition` rather than rebuilding the site's terrain grid from scratch (M36.1).
 pub(crate) fn snapshot_returns(
     ctx: &Ctx<'_>,
     site: &CanonicalId,
@@ -68,9 +69,29 @@ pub(crate) fn snapshot_returns(
     homes: Vec<crate::arena::state::EntryZone>,
     held: &[super::record::HeldWall],
 ) -> Option<Vec<UnitReturn>> {
+    snapshot_returns_for(ctx, None, site, document, homes, held)
+}
+
+pub(crate) fn snapshot_returns_for(
+    ctx: &Ctx<'_>,
+    task: Option<MatchId>,
+    site: &CanonicalId,
+    document: Option<&serde_json::Value>,
+    homes: Vec<crate::arena::state::EntryZone>,
+    held: &[super::record::HeldWall],
+) -> Option<Vec<UnitReturn>> {
     let document = document?;
-    let record = site_record(ctx, site)?;
-    let ground = super::admit::ground_with_held(ctx.w, site, &record, homes, held).ok()?;
+    let ground = if let Some(mut def) = task.and_then(|task| {
+        ctx.w
+            .module_state::<crate::arena_bridge::ArenaRegistry>()
+            .and_then(|registry| registry.arena_of(task).cloned())
+    }) {
+        def.homes = homes;
+        def
+    } else {
+        let record = site_record_ref(ctx, site)?;
+        super::admit::ground_with_held(ctx.w, site, record, homes, held).ok()?
+    };
     let limit = ctx.w.module_state::<crate::store::TacsimStore>().map_or(
         crate::arena::snapshot_capacity::SNAPSHOT_MAX_BYTES,
         |store| store.config().arena.snapshot_max_bytes,
@@ -80,15 +101,19 @@ pub(crate) fn snapshot_returns(
         .map(|arena| arena.returned_units())
 }
 
-/// The site's record as the family holds it.
-pub(crate) fn site_record(ctx: &Ctx<'_>, site: &CanonicalId) -> Option<SiteRecord> {
+/// Borrow the site's record from the family without cloning.
+pub(crate) fn site_record_ref<'a>(ctx: &'a Ctx<'a>, site: &CanonicalId) -> Option<&'a SiteRecord> {
     let handles = ctx.w.module_state::<crate::port::families::PortHandles>()?;
     let key = crate::surface::site_record::SiteKey(site.clone());
     ctx.action_state(&handles.families.sites, &key)
         .ok()
         .flatten()
-        .cloned()
         .filter(|record| record.key() == key)
+}
+
+/// The site's record as the family holds it.
+pub(crate) fn site_record(ctx: &Ctx<'_>, site: &CanonicalId) -> Option<SiteRecord> {
+    site_record_ref(ctx, site).cloned()
 }
 
 /// **A field's `Ended`** (the bridge's branch): check every unit in, untrack the task, owe the
@@ -113,7 +138,8 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
             .and_then(|book| book.hosted(&site))
             .map(|hosted| (hosted.live.homes.clone(), hosted.live.held.clone()))
             .unwrap_or_default();
-        snapshot_returns(ctx, &site, document.as_ref(), homes, &held).unwrap_or_default()
+        snapshot_returns_for(ctx, Some(task), &site, document.as_ref(), homes, &held)
+            .unwrap_or_default()
     } else {
         units.to_vec()
     };
@@ -188,17 +214,16 @@ pub(crate) fn on_ended(ctx: &mut Ctx<'_>, task: MatchId, end: MatchEnd, units: &
     let ordinal = ctx
         .w
         .module_state_mut::<FieldBook>()
-        .and_then(|book| {
-            book.fire.remove(&site);
-            book.forget_snapshot(&site);
-            book.live.remove(&site)
-        })
+        .and_then(|book| book.live.remove(&site))
         .map(|hosted| {
             // Doc 23 cut D-23-18: a mind checked in at the ramp whose `exit` has not yet laid it
             // on its epoch record rides the close instead.
             carry_unwritten(&mut demoted.minds, hosted.live.carried);
             hosted.live.field.ordinal
         });
+    // M32: purge all site-scoped transit sets, in-flight ejects, unfinished exits, and destroyed
+    // hull records for this task so closed fields never leak RAM or permanently lock hulls.
+    super::purge_site_ephemera(ctx, &site, Some(task));
     super::record::delete(ctx, &site);
     if let Some(record) = site_record(ctx, &site) {
         super::admit::owe_close(ctx, &site, &record, Some(demoted), learned);
@@ -551,14 +576,17 @@ pub(crate) fn set_down_docked_wrecks(ctx: &mut Ctx<'_>) {
         let Some((site, ..)) = crate::surface::tick::hull_view_berth(ctx.w, carrier) else {
             continue;
         };
-        let in_field = ctx
+        // M36.3: `FieldProvider` rejects `set_down` whenever any field is open on `site` (its
+        // close indexes the site), so skip sites with a hosted or open field instead of repeatedly
+        // running `set_down_on_pad`/`wreck_bay_rigs` and submitting doomed actions every second.
+        let field_open = ctx
             .w
             .module_state::<FieldBook>()
-            .and_then(|book| book.hosted(&site))
-            .is_some_and(|hosted| hosted.live.units.iter().any(|row| row.unit == carrier));
-        if in_field
-            || site_record(ctx, &site)
-                .is_some_and(|record| record.units.iter().any(|row| row.unit == carrier))
+            .is_some_and(|book| book.hosted(&site).is_some());
+        if field_open
+            || site_record_ref(ctx, &site).is_some_and(|record| {
+                record.open_field().is_some() || record.units.iter().any(|row| row.unit == carrier)
+            })
         {
             continue;
         }
