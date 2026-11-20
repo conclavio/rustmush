@@ -474,11 +474,10 @@ fn territory_control_contests_and_covert_holdings() {
     // The de jure / de facto split is public knowledge here.
     let out = run(&mut engine, bob, "+territory");
     let text = joined(&out);
-    assert!(text.contains("Undertow (de facto)"), "{text}");
-    assert!(
-        text.contains("Camarilla (de jure, contested by Undertow)"),
-        "{text}"
-    );
+    // Doc 50 cut KC.0a (Q-50-9): each hold carries the IC date it began.
+    assert!(text.contains("Undertow (de facto since "), "{text}");
+    assert!(text.contains("Camarilla (de jure since "), "{text}");
+    assert!(text.contains(", contested by Undertow)"), "{text}");
 
     // A covert hold: outsiders never see it; the holder's officers do.
     run(
@@ -488,13 +487,13 @@ fn territory_control_contests_and_covert_holdings() {
     );
     let out = run(&mut engine, bob, "+territory");
     assert!(
-        !joined(&out).contains("Undertow (covert)"),
+        !joined(&out).contains("Undertow (covert since "),
         "covert hold leaked to outsider: {}",
         joined(&out)
     );
     let out = run(&mut engine, nick, "+territory");
     assert!(
-        joined(&out).contains("Undertow (covert)"),
+        joined(&out).contains("Undertow (covert since "),
         "the holder's officer knows their own holdings: {}",
         joined(&out)
     );

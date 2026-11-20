@@ -23,6 +23,8 @@ non-member. A hidden faction looks like no faction at all.
                       of hold at once — a **de jure** claim (the Republic
                       still claims the yard) alongside a **de facto** hold
                       (a house actually runs it), with contests marked.
+                      Each hold shows the IC date it began. A region has
+                      one de facto holder at most; claims can be several.
                       Covert holds show only to the holder's officers.
   +intel              Includes your factions' shared intel pools when your
                       rank clears you to read them — see `help intel`.
@@ -126,6 +128,8 @@ Discovery happens in play.
                               An empty right-hand side clears it.
   @faction/control <region>=<f>/<kind>[/strength:<n>][/vis:<v>]
                               Kinds: dejure, defacto, covert, economic.
+                              A de facto hold moves the prior de facto holder
+                              out; a new hold is dated today, IC.
   @faction/uncontrol <region>=<f>/<kind>
   @faction/contest <region>=<holder>/<kind>/<challenger>   (toggle)
 

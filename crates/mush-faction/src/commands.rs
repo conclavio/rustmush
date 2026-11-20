@@ -893,6 +893,8 @@ fn parse_control_spec(
     Ok((faction, kind, strength, vis))
 }
 
+/// `@faction/control` writes through the one control write (doc 50 cut KC.0a, Q-50-50): a de
+/// facto hold moves the prior holder out, and a new hold is dated in IC time.
 fn faction_control(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let region = resolve_region(ctx, ctx.args.lhs())?;
     let rhs = rhs_required(
@@ -900,37 +902,43 @@ fn faction_control(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "@faction/control <region>=<faction>/<kind>[/strength:<n>][/vis:<v>]",
     )?;
     let (faction, kind, strength, vis) = parse_control_spec(ctx, &rhs)?;
-    let now = ctx.w.now();
-    let records = {
-        let st = state(ctx);
-        let recs = st.control.entry(region.id).or_default();
-        if let Some(existing) = recs
-            .iter_mut()
-            .find(|r| r.faction == faction.id && r.kind == kind)
-        {
-            if let Some(s) = strength {
-                existing.strength = s;
-            }
-            if let Some(v) = vis {
-                existing.visibility = v;
-            }
-        } else {
-            recs.push(ControlRecord {
-                region: region.id,
-                faction: faction.id,
-                kind,
-                strength: strength.unwrap_or(1),
-                contested_by: Vec::new(),
-                visibility: vis.unwrap_or_default(),
-                since: now,
-            });
-        }
-        recs.clone()
+    let change = crate::control::write_control(
+        ctx,
+        crate::control::ControlWrite {
+            region: region.id,
+            faction: faction.id,
+            kind,
+            strength,
+            visibility: vis,
+        },
+    )
+    .map_err(CmdError::msg)?;
+    let moved: Vec<String> = {
+        let st = state_ref(ctx);
+        change
+            .displaced
+            .iter()
+            .map(|f| {
+                st.factions
+                    .get(f)
+                    .map_or_else(|| format!("#{f}"), |f| f.name.to_string())
+            })
+            .collect()
     };
-    persist_control(ctx.out, region.id, &records);
+    let moved = if moved.is_empty() {
+        String::new()
+    } else {
+        format!(" {} no longer holds it de facto.", moved.join(", "))
+    };
     info(
         ctx,
-        format!("{} holds {} ({}).", faction.name, region.name, kind.label()),
+        format!(
+            "{} holds {} ({}) since {}.{moved}",
+            faction.name,
+            region.name,
+            kind.label(),
+            change.record.since_date()
+        ),
     );
     Ok(())
 }
@@ -1646,9 +1654,10 @@ fn cmd_territory(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                             .map(|c| c.name.to_string())
                             .collect();
                         Some(format!(
-                            "{} ({}{})",
+                            "{} ({} since {}{})",
                             holder.name,
                             rec.kind.label(),
+                            rec.since_date(),
                             if contested.is_empty() {
                                 String::new()
                             } else {
@@ -1829,7 +1838,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "+territory".into(),
             shape: ArgShape::Raw,
             help: "+territory [<region>]  --  The territory map as you know it: each region and \
-                   who is known to hold it (de jure claims, de facto holds, contests). Covert \
+                   who is known to hold it (de jure claims, de facto holds, contests), each with \
+                   the IC date its hold began. A region has one de facto holder at most. Covert \
                    holds show only to the holder's officers and staff."
                 .into(),
             ..CommandSpec::default()

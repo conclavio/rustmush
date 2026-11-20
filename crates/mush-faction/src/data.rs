@@ -508,8 +508,20 @@ pub struct ControlRecord {
     /// Who may learn this record exists (relative to the *holding* faction).
     #[serde(default)]
     pub visibility: Visibility,
-    /// When the hold began (unix seconds).
-    pub since: i64,
+    /// **The IC date the hold began** (doc 50 cut KC.0a, Q-50-50): IC seconds from the
+    /// world's clock seam (`World::game_now_unix`), set when this faction took this kind of hold
+    /// and kept while it goes on holding it. `+territory` shows it, and the reason clause of
+    /// Q-50-9 names it.
+    pub since_ic: i64,
+}
+
+impl ControlRecord {
+    /// The IC date the hold began, as a player reads it: `"March 1, 2350"`.
+    #[must_use]
+    pub fn since_date(&self) -> String {
+        let d = mush_core::clock::CivilDate::from_ic_seconds(self.since_ic);
+        format!("{} {}, {}", d.month_name(), d.day, d.year)
+    }
 }
 
 /// The live faction registry state, held in a module state slot on the
@@ -558,6 +570,17 @@ impl FactionState {
         self.members
             .range((who, FactionId(0))..=(who, FactionId(u64::MAX)))
             .map(|(_, m)| m)
+    }
+
+    /// **The de facto holder of `region`** (doc 50 cut KC.0a, Q-50-50): the one de facto record,
+    /// truth, with no visibility filter. A flip moves the prior holder out, so there is at most
+    /// one.
+    #[must_use]
+    pub fn de_facto(&self, region: RegionId) -> Option<&ControlRecord> {
+        self.control
+            .get(&region)?
+            .iter()
+            .find(|r| r.kind == ControlKind::DeFacto)
     }
 
     /// All members of one faction (full scan; rosters are small).
@@ -982,14 +1005,15 @@ mod tests {
             strength: 3,
             contested_by: vec![FactionId(4)],
             visibility: Visibility::Public,
-            since: 1000,
+            since_ic: 1000,
         };
         let json = serde_json::to_string(&rec).unwrap();
         let back: ControlRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back, rec);
         // Sparse docs default sensibly.
         let sparse: ControlRecord =
-            serde_json::from_str(r#"{"region":1,"faction":2,"kind":"de_jure","since":5}"#).unwrap();
+            serde_json::from_str(r#"{"region":1,"faction":2,"kind":"de_jure","since_ic":5}"#)
+                .unwrap();
         assert_eq!(sparse.kind, ControlKind::DeJure);
         assert_eq!(sparse.strength, 1);
         assert!(sparse.contested_by.is_empty());
