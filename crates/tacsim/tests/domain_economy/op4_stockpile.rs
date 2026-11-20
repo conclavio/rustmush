@@ -80,6 +80,23 @@ fn vcc01(rig: &Rig) -> HaulerRow {
         .expect("VCC-01's row")
 }
 
+/// A hull's sailing plan's log and its orders' states, for a failure's message.
+fn plan_log(rig: &Rig, hull: ObjId) -> String {
+    match tacsim::port::orders::orders_state(rig.tw.world(), hull) {
+        tacsim::port::orders::OrdersState::Present(doc) => format!(
+            "state {:?}, hold {:?}, orders {:?}, log {:?}",
+            doc.state,
+            doc.hold,
+            doc.orders
+                .iter()
+                .map(|o| (o.id, o.state, format!("{:?}", o.what)))
+                .collect::<Vec<_>>(),
+            doc.log.iter().map(|l| l.text.clone()).collect::<Vec<_>>()
+        ),
+        _ => "no plan".to_owned(),
+    }
+}
+
 /// Port fires (31 s apart), every submission they stage landed.
 fn fires(rig: &mut Rig, n: usize) {
     for _ in 0..n {
@@ -272,8 +289,9 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
     let done = haul::haul_of(rig.tw.world(), job.contract).expect("the haul");
     assert!(
         matches!(done.stage, HaulStage::Delivered | HaulStage::Closed),
-        "{done:?}\n{:?}",
-        house(&rig)
+        "{done:?}\n{:?}\n{}",
+        house(&rig),
+        plan_log(&rig, ObjId(vcc01(&rig).hull.expect("a hull")))
     );
     assert!(
         matches!(
