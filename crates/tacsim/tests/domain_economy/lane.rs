@@ -88,7 +88,7 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 50 cut KC.0: v45, the regions block (was `c8e6fd26…` at v44).
 /// Doc 50 cut OP.1: v46, the Isidis Concession (was `ecb08a2c…` at v45).
 /// Doc 50 cut KC.2: v47, the Kirkwood terms row and the Republic customs office (was `865dd33d…` at v46).
-const LANE_DIGEST: &str = "7eeb0fe0be09ea5371b508c8b29ab3f7b6e76604dbbba39333ce40536f7ab384";
+const LANE_DIGEST: &str = "4b67bcaef90858c36bc95ac28f0bc30facf90509d3c57c5063a2dee9d65f4334";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";

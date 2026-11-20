@@ -111,7 +111,9 @@ pub struct TermsRow {
 pub struct RestrictedGood {
     /// The good.
     pub good: CanonicalId,
-    /// The paper that lifts the restriction (a license kind).
+    /// The paper that lifts the restriction. `freeport_prospecting` stands for the Kirkwood
+    /// picket's two-paper test (Q-50-32, Q-50-65): a Freeport Registry prospecting license **and**
+    /// a registered claim, both held. KC.2 carries and checks it; nothing reads it until LW.1.
     pub paper: CanonicalId,
 }
 

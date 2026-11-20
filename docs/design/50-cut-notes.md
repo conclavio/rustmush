@@ -473,6 +473,11 @@ must land after OP.1's.
 - **Lane v47:**
   - the Kirkwood row's `terms.republic` (payee `republic_customs`, 20‰, floor 50 cr);
   - the customs office row;
+  - **for LW.1**, the Ceres row's `terms.freeport`: payee `freeport_registry`, `strategic_ore`
+    restricted unless `freeport_prospecting`. That paper id stands for the picket's two-paper
+    test (Q-50-32, Q-50-65): a Freeport Registry prospecting license and a registered claim, both
+    held. It is inert in KC.2: the duty reads only the Kirkwood row's transit duty and payee, and
+    nothing reads `restricted` until LW.1;
   - relay v38, re-signed to require it.
 
 **Tests.** In `tests/domain_world/voyage.rs`, on the picket rig:
