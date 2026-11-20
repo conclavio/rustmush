@@ -1070,8 +1070,19 @@ pub fn check_out_space_unit(
     let mark = DeployedMark::field(site_key, ordinal.max(1));
     let marker = mush_tactics::custody::check_out(ctx, hull, mark)
         .map_err(|e| format!("space check_out failed for #{}: {e}", hull.0))?;
-    space_ship_from_tactical_unit(&marker.snapshot, ship_id, callsign, party, pos_m, vel_mmps)
-        .map_err(|e| format!("space ship construction failed for #{}: {e}", hull.0))
+    match space_ship_from_tactical_unit(&marker.snapshot, ship_id, callsign, party, pos_m, vel_mmps)
+    {
+        Ok(ship) => Ok(ship),
+        Err(e) => {
+            // HIGH-47: never leak DeployedMark custody when ship construction fails after check_out.
+            let _ = mush_tactics::custody::check_in(ctx, hull, None);
+            let _ = mush_sim::deployed::clear(ctx.w, hull);
+            Err(format!(
+                "space ship construction failed for #{}: {e}",
+                hull.0
+            ))
+        }
+    }
 }
 
 /// Check in a hull [`TacticalUnit`] from a space bubble via

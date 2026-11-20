@@ -1247,21 +1247,21 @@ impl SiteRecord {
                 crate::surface::claim::MAX_UNLAWFUL
             ));
         }
-        if self.land_grants.len() > crate::surface::claim::MAX_LAND_GRANTS {
+        if self.land_grants.len() > crate::surface::claim::MAX_SITE_LAND_GRANTS {
             return Err(format!(
                 "a site record keeps at most {} recovery delegations",
-                crate::surface::claim::MAX_LAND_GRANTS
+                crate::surface::claim::MAX_SITE_LAND_GRANTS
             ));
         }
-        if self.consent_asks.len() > crate::surface::claim::MAX_LAND_GRANTS {
+        if self.consent_asks.len() > crate::surface::claim::MAX_SITE_LAND_GRANTS {
             return Err(format!(
                 "a site record keeps at most {} consent asks",
-                crate::surface::claim::MAX_LAND_GRANTS
+                crate::surface::claim::MAX_SITE_LAND_GRANTS
             ));
         }
         if self.custody.iter().any(|row| {
             row.evidence.len() > crate::surface::claim::MAX_EVIDENCE
-                || row.told.len() > crate::surface::claim::MAX_WITNESSES
+                || row.told.len() > crate::surface::claim::MAX_TOLD
                 || row.pin.as_ref().is_some_and(|pin| {
                     pin.witnesses.len() > crate::surface::claim::MAX_WITNESSES
                         || pin.answerers.len() > crate::surface::claim::MAX_WITNESSES

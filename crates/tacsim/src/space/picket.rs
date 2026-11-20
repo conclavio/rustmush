@@ -1812,15 +1812,33 @@ pub fn spawn_kirkwood_picket_ships_in_world(
     )
     .ok()?;
 
-    let leader = super::tick::reuse_or_create_npc_commander(
+    let rollback_corvette = |ctx: &mut Ctx<'_>, hull: ObjId| {
+        let _ = mush_tactics::custody::check_in(ctx, hull, None);
+        let _ = mush_sim::deployed::clear(ctx.w, hull);
+    };
+
+    let Some(leader) = super::tick::reuse_or_create_npc_commander(
         ctx,
         &cast.raider.commander,
         cast.raider.organization.as_deref(),
-    )?;
-    let raider_hull = super::tick::reuse_or_create_npc_hull(ctx, &cast.raider.hull_name, leader)?;
-    super::custody::create_stock_space_unit_in_world(ctx, raider_hull, &cast.raider.unit).ok()?;
+    ) else {
+        rollback_corvette(ctx, corvette_hull);
+        return None;
+    };
+    let Some(raider_hull) =
+        super::tick::reuse_or_create_npc_hull(ctx, &cast.raider.hull_name, leader)
+    else {
+        rollback_corvette(ctx, corvette_hull);
+        return None;
+    };
+    if super::custody::create_stock_space_unit_in_world(ctx, raider_hull, &cast.raider.unit)
+        .is_err()
+    {
+        rollback_corvette(ctx, corvette_hull);
+        return None;
+    }
     super::custody::ensure_space_hull_titled(ctx, raider_hull, leader);
-    let mut raider = super::custody::check_out_space_unit(
+    let Ok(mut raider) = super::custody::check_out_space_unit(
         ctx,
         raider_hull,
         &site_id,
@@ -1830,8 +1848,10 @@ pub fn spawn_kirkwood_picket_ships_in_world(
         BELT_RAIDER_PARTY,
         cast.raider.pos_m,
         cast.raider.vel_mmps,
-    )
-    .ok()?;
+    ) else {
+        rollback_corvette(ctx, corvette_hull);
+        return None;
+    };
 
     configure_corvette_and_raider_ships(&mut corvette, &mut raider);
 

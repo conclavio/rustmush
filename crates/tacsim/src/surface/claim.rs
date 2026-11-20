@@ -98,6 +98,10 @@ pub const SALVAGE_VERB: &str = "+salvage";
 pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. +salvage/ask <site>/<block> [go] asks a block's landholder for consent to recover off it, by the registry's notice; 28 IC days of silence is consent. +salvage/refuse <site>/<block>=<who> [go] refuses one for 28 IC days. +salvage/forsale lists the hulls the recovery houses have restored for sale, at their reference price; +salvage/buy <hull> [go] buys one, her title passing at the next settlement. Bare, each previews and commits nothing; go commits exactly the preview.";
 /// The most witnesses a pin keeps.
 pub const MAX_WITNESSES: usize = 16;
+/// The most notice recipients a filed claim keeps (HIGH-56): strictly above `MAX_WITNESSES + 1`
+/// so the primary answerer, the block's landholder, a full pinned answerer list, and a full live
+/// answerer list all fit without truncation.
+pub const MAX_TOLD: usize = MAX_WITNESSES * 2 + 2;
 /// The most delivered or read evidence records one custody keeps.
 pub const MAX_EVIDENCE: usize = 16;
 /// The most entries the site's evidence log keeps; past it the oldest goes.
@@ -233,8 +237,12 @@ pub const REFUSED_NOTICE: &str =
 pub const CLAIM_REFUSED: &str = "Block {block}'s landholder has refused you recovery there; the registry will not take your claim while the refusal stands.";
 /// No such block: `{block}`.
 pub const NO_SUCH_BLOCK: &str = "There is no block {block} on the lane's sites.";
-/// The most recovery delegations one site's record keeps.
+/// The most recovery delegations (or consent asks) one block and landholder keep.
 pub const MAX_LAND_GRANTS: usize = 32;
+/// The site-wide ceiling on recovery delegations (or consent asks) across all blocks on a site
+/// (HIGH-55): bounds record size without allowing one block's churn to FIFO-evict another
+/// landholder's active grants or refusals.
+pub const MAX_SITE_LAND_GRANTS: usize = 256;
 /// The most repairs at risk one claim keeps.
 pub const MAX_AT_RISK: usize = 16;
 
@@ -1226,30 +1234,44 @@ fn open_claim(
     })
 }
 
-/// **A block's recovery delegation written** (doc 41 Q-41-21): one row a block, landholder and
-/// grantee, replaced; past [`MAX_LAND_GRANTS`] the oldest goes.
+/// **A block's recovery delegation written** (doc 41 Q-41-21; HIGH-55): one row per block,
+/// landholder and grantee, replaced in place. Only expired delegations or rows from a superseded
+/// holding on the same block are evicted — never active delegations of this or another landholder.
 fn put_land_grant(
     record: &mut SiteRecord,
     actor: ObjId,
     grant: &LandGrant,
+    now_ic: i64,
 ) -> Result<(), &'static str> {
     if grant.landholder != actor || grant.to.0 == 0 || grant.to == actor {
         return Err("claim_not_landholder");
     }
     record.land_grants.retain(|kept| {
-        !(kept.letter == grant.letter && kept.landholder == grant.landholder && kept.to == grant.to)
+        let same_row = kept.letter == grant.letter
+            && kept.landholder == grant.landholder
+            && kept.to == grant.to;
+        let expired = kept.until_ic.is_some_and(|until| until <= now_ic);
+        let superseded = kept.letter == grant.letter
+            && (kept.landholder != grant.landholder || kept.registered_ic != grant.registered_ic);
+        !(same_row || expired || superseded)
     });
-    record.land_grants.push(grant.clone());
-    while record.land_grants.len() > MAX_LAND_GRANTS {
-        record.land_grants.remove(0);
+    let scoped_count = record
+        .land_grants
+        .iter()
+        .filter(|kept| kept.letter == grant.letter && kept.landholder == grant.landholder)
+        .count();
+    if scoped_count >= MAX_LAND_GRANTS || record.land_grants.len() >= MAX_SITE_LAND_GRANTS {
+        return Err("claim_grants_full");
     }
+    record.land_grants.push(grant.clone());
     Ok(())
 }
 
-/// **A consent ask or refusal written** (doc 41 cut RS.10): one row a block, landholder and
-/// asker, replaced. An ask is the asker's own, refused while a refusal stands; a refusal is the
-/// landholder's, and voids any delegation it gave the asker on the block. Past
-/// [`MAX_LAND_GRANTS`] the oldest goes.
+/// **A consent ask or refusal written** (doc 41 cut RS.10; HIGH-55): one row per block,
+/// landholder and asker, replaced in place. An ask is the asker's own, refused while a refusal
+/// stands; a refusal is the landholder's, and voids any delegation it gave the asker on the block.
+/// Only expired refusals or rows from a superseded holding on the same block are pruned; active
+/// refusals and other landholders' rows are never FIFO-evicted.
 fn put_ask(
     record: &mut SiteRecord,
     actor: ObjId,
@@ -1281,12 +1303,67 @@ fn put_ask(
         }
         "asked"
     };
-    record.consent_asks.retain(|kept| !same(kept));
-    record.consent_asks.push(ask.clone());
-    while record.consent_asks.len() > MAX_LAND_GRANTS {
-        record.consent_asks.remove(0);
+    record.consent_asks.retain(|kept| {
+        let lapsed_refusal = kept.refused_ic.is_some() && !kept.refuses(now_ic);
+        let superseded = kept.letter == ask.letter
+            && (kept.landholder != ask.landholder || kept.registered_ic != ask.registered_ic);
+        !(same(kept) || lapsed_refusal || superseded)
+    });
+    let scoped_count = record
+        .consent_asks
+        .iter()
+        .filter(|kept| kept.letter == ask.letter && kept.landholder == ask.landholder)
+        .count();
+    let over_cap =
+        scoped_count >= MAX_LAND_GRANTS || record.consent_asks.len() >= MAX_SITE_LAND_GRANTS;
+    if over_cap {
+        // A landholder recording a refusal may displace the oldest unrefused ask on their own
+        // block so ask spam cannot prevent recording a refusal; active refusals and other
+        // blocks' rows are never evicted.
+        if ask.refused_ic.is_some()
+            && let Some(pos) = record.consent_asks.iter().position(|kept| {
+                kept.letter == ask.letter
+                    && kept.landholder == ask.landholder
+                    && kept.refused_ic.is_none()
+            })
+        {
+            record.consent_asks.remove(pos);
+        } else {
+            return Err("claim_asks_full");
+        }
     }
+    record.consent_asks.push(ask.clone());
     Ok(word.to_owned())
+}
+
+/// Whether `actor` currently faces a standing landholder refusal for the block pinned on `pin`.
+fn standing_refusal_for_pin(
+    record: &SiteRecord,
+    pin: Option<&TenurePin>,
+    actor: ObjId,
+    now_ic: i64,
+) -> bool {
+    let Some(GroundTenure::Owned {
+        landholder,
+        claim_id: Some(block),
+    }) = pin.map(|p| &p.tenure)
+    else {
+        return false;
+    };
+    let Some(letter) = block
+        .rsplit('/')
+        .next()
+        .and_then(|l| l.chars().next())
+        .map(|l| l.to_ascii_uppercase())
+    else {
+        return false;
+    };
+    record.consent_asks.iter().any(|ask| {
+        ask.letter == letter
+            && ask.landholder == *landholder
+            && ask.asker == actor
+            && ask.refuses(now_ic)
+    })
 }
 
 /// **A claim order's prepare** (the tow provider's `claim` op): every fact re-checked against
@@ -1303,13 +1380,23 @@ pub(crate) fn prepare(
     now_ic: i64,
 ) -> Result<String, &'static str> {
     if let ClaimOrder::AuthorizeBlock { grant, .. } = order {
-        put_land_grant(record, actor, grant)?;
+        put_land_grant(record, actor, grant, now_ic)?;
         return Ok("authorized".to_owned());
     }
     if let ClaimOrder::Ask { ask, .. } | ClaimOrder::Refuse { ask, .. } = order {
         return put_ask(record, actor, ask, now_ic);
     }
     let hull = order.hull();
+    if matches!(order, ClaimOrder::File { .. }) {
+        let refused = record
+            .custody
+            .iter()
+            .find(|row| row.hull == hull)
+            .is_some_and(|row| standing_refusal_for_pin(record, row.pin.as_ref(), actor, now_ic));
+        if refused {
+            return Err("claim_refused");
+        }
+    }
     let custody = custody_mut(record, hull).ok_or("claim_no_custody")?;
     match order {
         ClaimOrder::File {
@@ -1332,7 +1419,7 @@ pub(crate) fn prepare(
             custody.file = Some(Box::new(claim));
             custody.at_risk.clear();
             custody.told.clone_from(told);
-            custody.told.truncate(MAX_WITNESSES);
+            custody.told.truncate(MAX_TOLD);
             Ok("filed".to_owned())
         }
         ClaimOrder::Contest {
@@ -1461,7 +1548,14 @@ pub(crate) fn prepare(
             window_end,
             now_real,
             ..
-        } => settle(record, hull, *settlement, (*window_end, *now_real), now_ic),
+        } => settle(
+            record,
+            actor,
+            hull,
+            *settlement,
+            (*window_end, *now_real),
+            now_ic,
+        ),
         ClaimOrder::AuthorizeBlock { .. } | ClaimOrder::Ask { .. } | ClaimOrder::Refuse { .. } => {
             Err("claim_no_custody")
         }
@@ -1473,12 +1567,16 @@ pub(crate) fn prepare(
 /// vacated claim's custody is void), and a vacated claim is written to the evidence log.
 fn settle(
     record: &mut SiteRecord,
+    actor: ObjId,
     hull: ObjId,
     settlement: Settlement,
     (window_end, now_real): (i64, i64),
     now_ic: i64,
 ) -> Result<String, &'static str> {
     let custody = custody_mut(record, hull).ok_or("claim_no_custody")?;
+    if custody.holder != actor {
+        return Err("claim_not_custodian");
+    }
     if settlement == Settlement::Withdrawn {
         custody.claim = ClaimSeam::Owed;
         custody.file = None;
@@ -1822,7 +1920,7 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
             };
             custody.file = Some(Box::new(claim));
             custody.told.clone_from(told);
-            custody.told.truncate(MAX_WITNESSES);
+            custody.told.truncate(MAX_TOLD);
             Some(true)
         }
         ClaimOrder::Contest {
@@ -2150,6 +2248,26 @@ pub(crate) fn tow_files_salvage(ctx: &mut Ctx<'_>, word: &str) -> Result<(), Cmd
     claim_cmd(ctx, word, true)
 }
 
+/// Assemble the IC-mail notice list for a salvage claim filing (HIGH-56): push the primary
+/// pinned answerer and the block's landholder before the variable-length pinned/live answerer
+/// lists, skipping the claimant and duplicates, bounded by [`MAX_TOLD`] (`> MAX_WITNESSES + 1`).
+fn build_told(actor: ObjId, pin: Option<&TenurePin>, now_answering: &[ObjId]) -> Vec<ObjId> {
+    let mut told: Vec<ObjId> = Vec::new();
+    for who in pin
+        .and_then(|p| p.answering)
+        .into_iter()
+        .chain(pin.and_then(TenurePin::landholder))
+        .chain(pin.into_iter().flat_map(|p| p.answerers.iter().copied()))
+        .chain(now_answering.iter().copied())
+    {
+        if who != actor && !told.contains(&who) {
+            told.push(who);
+        }
+    }
+    told.truncate(MAX_TOLD);
+    told
+}
+
 fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
     let (site, row) = named(ctx, word)?;
     let label = name(ctx.w, row.hull);
@@ -2198,21 +2316,11 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
             )));
         }
     }
-    // Doc 41 Q-41-22, Q-41-28: everyone who answered for the title at the attach and everyone
-    // who answers for it now, then the landholder.
+    // Doc 41 Q-41-22, Q-41-28 (HIGH-56): push the primary answerer and block's landholder before
+    // the variable-length pinned and live answerer lists, bounded by MAX_TOLD (> MAX_WITNESSES + 1)
+    // so landholder notice is never truncated into a defect.
     let now_answering = title_of(ctx.w, row.hull).1;
-    let mut told: Vec<ObjId> = Vec::new();
-    for who in answering
-        .into_iter()
-        .chain(pin.iter().flat_map(|p| p.answerers.iter().copied()))
-        .chain(now_answering)
-        .chain(pin.as_ref().and_then(TenurePin::landholder))
-    {
-        if who != ctx.actor && !told.contains(&who) {
-            told.push(who);
-        }
-    }
-    told.truncate(MAX_WITNESSES);
+    let told = build_told(ctx.actor, pin.as_ref(), &now_answering);
     let registry = registry_name(ctx.w);
     let secs = window_secs(ctx.w);
     let window_text = window_words(secs);
@@ -2898,7 +3006,7 @@ fn report_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), 
 }
 
 /// **Whether `who` stands aboard `carrier`**: physical bay access (P-3).
-fn aboard(w: &World, who: ObjId, carrier: ObjId) -> bool {
+pub(crate) fn aboard(w: &World, who: ObjId, carrier: ObjId) -> bool {
     let Some(at) = w.get(who).and_then(|o| o.location) else {
         return false;
     };
@@ -4193,5 +4301,197 @@ mod tests {
             Consent::Asked
         );
         assert!(record.check().is_ok());
+    }
+
+    #[test]
+    fn high55_active_refusals_and_grants_are_never_fifo_evicted_across_blocks() {
+        let site = CanonicalId::new("tacsim.port.urvara").expect("an id");
+        let mut record = SiteRecord::new(site.clone());
+        let holder_a = ObjId(40);
+        let holder_b = ObjId(41);
+        let refused_asker = ObjId(20);
+        // Block A records an active refusal against ObjId(20) and an active LandGrant for ObjId(21).
+        let refusal = ClaimOrder::Refuse {
+            site: site.clone(),
+            place: ObjId(99),
+            ask: ConsentAsk {
+                letter: 'A',
+                landholder: holder_a,
+                registered_ic: 100,
+                asker: refused_asker,
+                asked_ic: 100,
+                refused_ic: Some(200),
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, holder_a, &refusal, 200).as_deref(),
+            Ok("refused")
+        );
+        let grant_a = ClaimOrder::AuthorizeBlock {
+            site: site.clone(),
+            place: ObjId(99),
+            grant: LandGrant {
+                letter: 'A',
+                landholder: holder_a,
+                registered_ic: 100,
+                to: ObjId(21),
+                until_ic: None,
+                issued_ic: 200,
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, holder_a, &grant_a, 200).as_deref(),
+            Ok("authorized")
+        );
+
+        // Flood block B with MAX_LAND_GRANTS asks and grants — block A's active refusal & grant survive.
+        for idx in 0..MAX_LAND_GRANTS {
+            let asker = ObjId(1000 + u32::try_from(idx).unwrap_or(0));
+            let ask_b = ClaimOrder::Ask {
+                site: site.clone(),
+                place: ObjId(98),
+                ask: ConsentAsk {
+                    letter: 'B',
+                    landholder: holder_b,
+                    registered_ic: 100,
+                    asker,
+                    asked_ic: 210,
+                    refused_ic: None,
+                },
+            };
+            assert_eq!(
+                prepare(&mut record, asker, &ask_b, 210).as_deref(),
+                Ok("asked")
+            );
+            let grant_b = ClaimOrder::AuthorizeBlock {
+                site: site.clone(),
+                place: ObjId(98),
+                grant: LandGrant {
+                    letter: 'B',
+                    landholder: holder_b,
+                    registered_ic: 100,
+                    to: asker,
+                    until_ic: None,
+                    issued_ic: 210,
+                },
+            };
+            assert_eq!(
+                prepare(&mut record, holder_b, &grant_b, 210).as_deref(),
+                Ok("authorized")
+            );
+        }
+
+        // Another ask or grant on full block B is rejected rather than evicting block A or B's active rows.
+        let overflow_asker = ObjId(9999);
+        let overflow_ask = ClaimOrder::Ask {
+            site: site.clone(),
+            place: ObjId(98),
+            ask: ConsentAsk {
+                letter: 'B',
+                landholder: holder_b,
+                registered_ic: 100,
+                asker: overflow_asker,
+                asked_ic: 220,
+                refused_ic: None,
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, overflow_asker, &overflow_ask, 220),
+            Err("claim_asks_full")
+        );
+        let overflow_grant = ClaimOrder::AuthorizeBlock {
+            site: site.clone(),
+            place: ObjId(98),
+            grant: LandGrant {
+                letter: 'B',
+                landholder: holder_b,
+                registered_ic: 100,
+                to: overflow_asker,
+                until_ic: None,
+                issued_ic: 220,
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, holder_b, &overflow_grant, 220),
+            Err("claim_grants_full")
+        );
+        // Even while block B is saturated with pending asks, block B's landholder can still record a refusal!
+        let refusal_b = ClaimOrder::Refuse {
+            site: site.clone(),
+            place: ObjId(98),
+            ask: ConsentAsk {
+                letter: 'B',
+                landholder: holder_b,
+                registered_ic: 100,
+                asker: overflow_asker,
+                asked_ic: 220,
+                refused_ic: Some(220),
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, holder_b, &refusal_b, 220).as_deref(),
+            Ok("refused")
+        );
+
+        // Block A's active refusal & grant are completely intact, and ClaimOrder::File is blocked by the refusal.
+        assert_eq!(
+            consent_on(&record, 'A', (holder_a, 100), refused_asker, 220),
+            Consent::Refused
+        );
+        assert!(
+            record
+                .land_grants
+                .iter()
+                .any(|g| { g.letter == 'A' && g.landholder == holder_a && g.to == ObjId(21) })
+        );
+        let owned_pin = pin_on(GroundTenure::Owned {
+            landholder: holder_a,
+            claim_id: Some(smol_str::SmolStr::new("urvara/A")),
+        });
+        record.custody.push(custody(owned_pin));
+        let file = file_on(&record, 77);
+        assert_eq!(
+            prepare(&mut record, refused_asker, &file, 220),
+            Err("claim_refused"),
+            "standing landholder refusal must block ClaimOrder::File in prepare"
+        );
+        assert!(record.check().is_ok());
+    }
+
+    #[test]
+    fn high56_landholder_notice_is_pushed_first_and_never_truncated_into_defect() {
+        let landholder = ObjId(500);
+        let claimant = ObjId(20);
+        let mut pin = pin_on(GroundTenure::Owned {
+            landholder,
+            claim_id: Some(smol_str::SmolStr::new("urvara/F")),
+        });
+        pin.title = Some(PrincipalId::Organization(mush_org::OrgId(9)));
+        pin.answering = Some(ObjId(100));
+        // Fill pin.answerers to MAX_WITNESSES distinct actors.
+        pin.answerers = (0..MAX_WITNESSES)
+            .map(|i| ObjId(100 + u32::try_from(i).unwrap_or(0)))
+            .collect();
+        // Plus distinct live answerers so combined list exceeds MAX_WITNESSES.
+        let now_answering: Vec<ObjId> = (0..MAX_WITNESSES)
+            .map(|i| ObjId(200 + u32::try_from(i).unwrap_or(0)))
+            .collect();
+
+        let told = build_told(claimant, Some(&pin), &now_answering);
+        assert_eq!(told.first().copied(), Some(ObjId(100)));
+        assert_eq!(told.get(1).copied(), Some(landholder));
+        assert!(told.len() > MAX_WITNESSES + 1);
+        assert!(told.len() <= MAX_TOLD);
+        for who in &pin.answerers {
+            assert!(told.contains(who), "pinned answerer {who:?} must be kept");
+        }
+
+        let record = filed_record(pin, told);
+        assert!(record.check().is_ok());
+        assert_eq!(
+            procedure_defect(&record.custody[0], None),
+            None,
+            "landholder and all pinned answerers must be notified with zero procedure defect"
+        );
     }
 }

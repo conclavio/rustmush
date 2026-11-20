@@ -661,7 +661,7 @@ pub(super) fn plan_fixed(
                         FixedPlan::of(Ok(planned))
                     }
                 }
-                PlanActInner::Drive(planned) => {
+                PlanActInner::Drive(planned, _) => {
                     if !has_battery {
                         return FixedPlan::refused("tv_dark");
                     }
@@ -703,6 +703,18 @@ pub(super) fn plan_fixed(
             }
             fixed
         }
+        PlanMove::Pass { step, update } => FixedPlan {
+            ok: true,
+            plan: Some(PlanFixed {
+                no: plan.no,
+                seq: plan.seq,
+                step,
+                word: "plan_end".to_owned(),
+                update,
+                end: None,
+            }),
+            ..FixedPlan::default()
+        },
         PlanMove::End { why, update } => FixedPlan {
             ok: true,
             plan: Some(PlanFixed {
@@ -715,7 +727,7 @@ pub(super) fn plan_fixed(
             }),
             ..FixedPlan::default()
         },
-        PlanMove::Wait(_) => FixedPlan::refused("plan_waits"),
+        PlanMove::PreviewDrive { .. } | PlanMove::Wait(_) => FixedPlan::refused("plan_waits"),
     }
 }
 
