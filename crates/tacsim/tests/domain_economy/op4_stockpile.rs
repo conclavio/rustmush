@@ -288,9 +288,23 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
         Some(job.contract),
         "{row:?}"
     );
-    // She flies it there: by Stickney, then to Isidis, and delivers.
+    // She flies it there: by Stickney, then to Isidis, and delivers. Where she lay, each time it
+    // changed, is kept for a failure's message.
+    let hull = ObjId(row.hull.expect("a hull"));
+    let mut whereabouts: Vec<String> = Vec::new();
     for _ in 0..(30 * 24) {
         ahead(&mut rig, 3_600);
+        let here = match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
+            tacsim::port::ship::Berth::Docked { def, .. } => format!("docked at {}", def.venue),
+            tacsim::port::ship::Berth::UnderWay => "under way".to_owned(),
+            tacsim::port::ship::Berth::Elsewhere => "elsewhere".to_owned(),
+        };
+        if whereabouts.last().is_none_or(|last| !last.ends_with(&here)) {
+            whereabouts.push(format!(
+                "IC day {}: {here}",
+                ic_now(&rig.tw).div_euclid(DAY)
+            ));
+        }
         let stage = haul::haul_of(rig.tw.world(), job.contract).map(|j| j.stage);
         if matches!(stage, Some(HaulStage::Delivered | HaulStage::Closed)) {
             break;
@@ -299,9 +313,9 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
     let done = haul::haul_of(rig.tw.world(), job.contract).expect("the haul");
     assert!(
         matches!(done.stage, HaulStage::Delivered | HaulStage::Closed),
-        "{done:?}\n{:?}\n{}",
+        "{done:?}\n{whereabouts:?}\n{:?}\n{}",
         house(&rig),
-        plan_log(&rig, ObjId(vcc01(&rig).hull.expect("a hull")))
+        plan_log(&rig, hull)
     );
     assert!(
         matches!(
