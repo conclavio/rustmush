@@ -2752,6 +2752,10 @@ fn sm12a_only_the_mill_restocks() {
 /// `.debit(` in the bay's draw (`port/bay_work/act.rs`), the space rounds a ship's rearm buys
 /// from the workshop's stores, taken out of the storefront in the draw's own bundle beside the
 /// hold's: matter leaving the world into her magazines (the census's `loaded`), never made.
+/// **Doc 50 unit CR**: the customs seizure's `.debit(` became the inventory's `seize`, a release
+/// and a debit in one write, so cargo under a haul's hold can be taken. It takes the hold's exact
+/// lots of the ore with `.consume_products(`. Both are the same matter leaving the world, moved,
+/// not added. The yard's escrow consumes kits and parts that way too (`port/works.rs`).
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");
@@ -2794,8 +2798,18 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
             // Doc 48 unit EX.9: a house's day of consumption.
             ("tacsim/src/port/consume.rs".to_owned(), 1),
             ("tacsim/src/port/mill.rs".to_owned(), 2),
-            ("tacsim/src/space/customs.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 3),
+        ]
+    );
+    assert_eq!(
+        occurrences(&files, ".seize(txn, endpoint, "),
+        vec![("tacsim/src/space/customs.rs".to_owned(), 1)]
+    );
+    assert_eq!(
+        occurrences(&files, ".consume_products("),
+        vec![
+            ("tacsim/src/port/works.rs".to_owned(), 1),
+            ("tacsim/src/space/customs.rs".to_owned(), 1),
         ]
     );
 }

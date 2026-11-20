@@ -136,45 +136,45 @@ id = "mush-bot/tests::fr7_round::fr7_the_rounds_story_at_512"
 tier = "nightly"
 job = "fr7-round-story"
 
-# M7: the six Registry-rating stories, at the schedule's 500 ms pulse (the owner's
-# call, 2026-11-19: since doc 49 CC.1 and CC.2 a market story's rating at production's
-# 1,000 ms no longer fits a hosted runner's 6 hours).
+# M7: the six Registry-rating stories, at the schedule's 250 ms pulse (the owner's
+# call, 2026-11-20: since doc 49 CC.1 and CC.2 a market story's rating at production's
+# 1,000 ms no longer fits a hosted runner's 6 hours, and at 500 ms it overran its guard).
 [[test]]
 id = "tacsim/src/minds/bulk/original_purchase_integration_tests.rs::genuine_registry_original_purchase_grant_refund_and_paired_recovery"
 tier = "nightly"
 job = "mind-commerce-acceptance"
-config = "MIND_PULSE_MS=500"
+config = "MIND_PULSE_MS=250"
 
 [[test]]
 id = "mush-server/src/world_task/submission_disposition/tests/paid_purchase.rs::genuine_registry_purchase_writer_unknown_expiry_and_recovery"
 tier = "nightly"
 job = "mind-commerce-acceptance"
-config = "MIND_PULSE_MS=500"
+config = "MIND_PULSE_MS=250"
 
 [[test]]
 id = "tacsim/src/minds/bulk/conduct_integration_tests.rs::genuine_safe_conduct_service_result_and_complete_cold_inverse"
 tier = "nightly"
 job = "mind-commerce-acceptance"
-config = "MIND_PULSE_MS=500"
+config = "MIND_PULSE_MS=250"
 
 [[test]]
 id = "tacsim/src/hardware/flow/launch/story.rs::named_coprates_real_save_rate_house_sale_and_membership_fences"
 tier = "nightly"
 job = "mind-commerce-acceptance"
-config = "MIND_PULSE_MS=500"
+config = "MIND_PULSE_MS=250"
 
 [[test]]
 id = "mush-server/src/world_task/submission_disposition/tests/player_market_story.rs::player_market_commands_story_two_accounts_alt_stale_tiny_and_restart"
 tier = "nightly"
 job = "mind-commerce-acceptance"
-config = "MIND_PULSE_MS=500"
+config = "MIND_PULSE_MS=250"
 note = "Owner: the M7 market story (doc 17g C2a). Red at production pace on the nightlies of 10-30, 10-31 and 11-02, each time the story's own timing, not the product: the holder's renewal (#230), the engine's busy back-pressure on a typed step (c56dfcde) and the buyer's recall notice (8245c88e). Green on 11-03 and 11-04 (10-28 and 10-29 not re-read)."
 
 [[test]]
 id = "mush-server/src/world_task/submission_disposition/tests/player_market_typed.rs::typed_market_story_quote_pay_complete_panels_resale_and_restart"
 tier = "nightly"
 job = "mind-commerce-acceptance"
-config = "MIND_PULSE_MS=500"
+config = "MIND_PULSE_MS=250"
 
 # M8: the gate's stories over the combined world (the S.4b cuts' too).
 [[test]]
