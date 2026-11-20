@@ -28,6 +28,8 @@ namespace TacSim.Core
         public JsonKind Kind { get; private set; }
         private bool _boolVal;
         private long _intVal;
+        private ulong _ulongVal;
+        private bool _hasUlongVal;
         private double _floatVal;
         private string _strVal;
         private List<JsonNode> _arrVal;
@@ -58,7 +60,13 @@ namespace TacSim.Core
         }
 
         public static JsonNode FromBool(bool v) => new JsonNode(JsonKind.Bool) { _boolVal = v };
-        public static JsonNode FromLong(long v) => new JsonNode(JsonKind.Int) { _intVal = v, _floatVal = v };
+        public static JsonNode FromLong(long v) => new JsonNode(JsonKind.Int) { _intVal = v, _ulongVal = v >= 0 ? (ulong)v : 0UL, _floatVal = v };
+        public static JsonNode FromULong(ulong v)
+        {
+            if (v <= (ulong)long.MaxValue)
+                return FromLong((long)v);
+            return new JsonNode(JsonKind.Int) { _intVal = long.MaxValue, _ulongVal = v, _hasUlongVal = true, _floatVal = v };
+        }
         public static JsonNode FromDouble(double v)
         {
             if (!IsFiniteDouble(v))
@@ -80,17 +88,37 @@ namespace TacSim.Core
         public bool AsBool(bool fallback = false)
         {
             if (Kind == JsonKind.Bool) return _boolVal;
-            if (Kind == JsonKind.Int) return _intVal != 0;
+            if (Kind == JsonKind.Int) return _hasUlongVal ? _ulongVal != 0 : _intVal != 0;
             return fallback;
         }
 
         public long AsLong(long fallback = 0)
         {
-            if (Kind == JsonKind.Int) return _intVal;
+            if (Kind == JsonKind.Int) return _hasUlongVal ? long.MaxValue : _intVal;
             if (Kind == JsonKind.Float)
                 return TryDoubleToLong(_floatVal, out long lv) ? lv : fallback;
             if (Kind == JsonKind.String && long.TryParse(_strVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out long p))
                 return p;
+            return fallback;
+        }
+
+        public ulong AsULong(ulong fallback = 0)
+        {
+            if (Kind == JsonKind.Int)
+            {
+                if (_hasUlongVal) return _ulongVal;
+                return _intVal >= 0 ? (ulong)_intVal : fallback;
+            }
+            if (Kind == JsonKind.Float)
+            {
+                if (!IsFiniteDouble(_floatVal) || _floatVal < 0.0)
+                    return fallback;
+                double rounded = Math.Round(_floatVal);
+                if (rounded >= 18446744073709551616.0) return ulong.MaxValue;
+                return (ulong)rounded;
+            }
+            if (Kind == JsonKind.String && ulong.TryParse(_strVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out ulong u))
+                return u;
             return fallback;
         }
 
@@ -106,7 +134,8 @@ namespace TacSim.Core
         {
             if (Kind == JsonKind.Float)
                 return IsFiniteDouble(_floatVal) ? _floatVal : fallback;
-            if (Kind == JsonKind.Int) return _intVal;
+            if (Kind == JsonKind.Int)
+                return _hasUlongVal ? (double)_ulongVal : _intVal;
             if (Kind == JsonKind.String &&
                 double.TryParse(_strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out double p) &&
                 IsFiniteDouble(p))
@@ -119,7 +148,7 @@ namespace TacSim.Core
         public string AsString(string fallback = null)
         {
             if (Kind == JsonKind.String) return _strVal;
-            if (Kind == JsonKind.Int) return _intVal.ToString(CultureInfo.InvariantCulture);
+            if (Kind == JsonKind.Int) return _hasUlongVal ? _ulongVal.ToString(CultureInfo.InvariantCulture) : _intVal.ToString(CultureInfo.InvariantCulture);
             if (Kind == JsonKind.Float) return _floatVal.ToString(CultureInfo.InvariantCulture);
             if (Kind == JsonKind.Bool) return _boolVal ? "true" : "false";
             return fallback;
@@ -175,17 +204,15 @@ namespace TacSim.Core
 
         public string Str(string key, string fallback = null) => this[key].AsString(fallback);
         public long Long(string key, long fallback = 0) => this[key].AsLong(fallback);
+        public ulong ULong(string key, ulong fallback = 0) => this[key].AsULong(fallback);
         public int Int(string key, int fallback = 0) => this[key].AsInt(fallback);
         public double Double(string key, double fallback = 0.0) => this[key].AsDouble(fallback);
         public float Float(string key, float fallback = 0f) => this[key].AsFloat(fallback);
         public bool Bool(string key, bool fallback = false) => this[key].AsBool(fallback);
 
-        public JsonNode Clone()
-        {
-            return Clone(0);
-        }
+        public JsonNode Clone() => CloneInternal(0);
 
-        private JsonNode Clone(int depth)
+        private JsonNode CloneInternal(int depth)
         {
             if (depth > MaxDepth)
                 throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
@@ -193,7 +220,7 @@ namespace TacSim.Core
             {
                 case JsonKind.Null: return Null;
                 case JsonKind.Bool: return FromBool(_boolVal);
-                case JsonKind.Int: return FromLong(_intVal);
+                case JsonKind.Int: return _hasUlongVal ? FromULong(_ulongVal) : FromLong(_intVal);
                 case JsonKind.Float: return FromDouble(_floatVal);
                 case JsonKind.String: return FromString(_strVal);
                 case JsonKind.Array:
@@ -201,7 +228,7 @@ namespace TacSim.Core
                     if (depth >= MaxDepth)
                         throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
                     var copy = NewArray();
-                    foreach (var el in _arrVal) copy.Add((el ?? Null).Clone(depth + 1));
+                    foreach (var el in _arrVal) copy.Add((el ?? Null).CloneInternal(depth + 1));
                     return copy;
                 }
                 case JsonKind.Object:
@@ -209,7 +236,7 @@ namespace TacSim.Core
                     if (depth >= MaxDepth)
                         throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
                     var copy = NewObject();
-                    foreach (var kv in _objVal) copy[kv.Key] = (kv.Value ?? Null).Clone(depth + 1);
+                    foreach (var kv in _objVal) copy[kv.Key] = (kv.Value ?? Null).CloneInternal(depth + 1);
                     return copy;
                 }
                 default: return Null;
@@ -253,7 +280,9 @@ namespace TacSim.Core
                     sb.Append(_boolVal ? "true" : "false");
                     break;
                 case JsonKind.Int:
-                    sb.Append(_intVal.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(_hasUlongVal
+                        ? _ulongVal.ToString(CultureInfo.InvariantCulture)
+                        : _intVal.ToString(CultureInfo.InvariantCulture));
                     break;
                 case JsonKind.Float:
                     if (!IsFiniteDouble(_floatVal))
@@ -325,6 +354,9 @@ namespace TacSim.Core
                 return Null;
             int idx = 0;
             var node = ParseValue(json, ref idx, 0);
+            SkipWs(json, ref idx);
+            if (idx < json.Length)
+                throw new FormatException($"Unexpected trailing character '{json[idx]}' at {idx}");
             return node ?? Null;
         }
 
@@ -343,7 +375,8 @@ namespace TacSim.Core
             if (depth > MaxDepth)
                 throw new FormatException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
             SkipWs(s, ref i);
-            if (i >= s.Length) return Null;
+            if (i >= s.Length)
+                throw new FormatException($"Unexpected end of JSON input at {i}");
             char c = s[i];
             switch (c)
             {
@@ -373,8 +406,10 @@ namespace TacSim.Core
             var obj = NewObject();
             i++; // '{'
             SkipWs(s, ref i);
-            if (i < s.Length && s[i] == '}') { i++; return obj; }
-            while (i < s.Length)
+            if (i >= s.Length)
+                throw new FormatException($"Unterminated JSON object at {i}");
+            if (s[i] == '}') { i++; return obj; }
+            while (true)
             {
                 SkipWs(s, ref i);
                 if (i >= s.Length || s[i] != '"')
@@ -386,11 +421,12 @@ namespace TacSim.Core
                 i++;
                 obj[key] = ParseValue(s, ref i, depth);
                 SkipWs(s, ref i);
-                if (i < s.Length && s[i] == ',') { i++; continue; }
-                if (i < s.Length && s[i] == '}') { i++; return obj; }
+                if (i >= s.Length)
+                    throw new FormatException($"Unterminated JSON object at {i}");
+                if (s[i] == ',') { i++; continue; }
+                if (s[i] == '}') { i++; return obj; }
                 throw new FormatException($"Expected ',' or '}}' at {i}");
             }
-            throw new FormatException("Unterminated JSON object");
         }
 
         private static JsonNode ParseArray(string s, ref int i, int depth)
@@ -400,16 +436,38 @@ namespace TacSim.Core
             var arr = NewArray();
             i++; // '['
             SkipWs(s, ref i);
-            if (i < s.Length && s[i] == ']') { i++; return arr; }
-            while (i < s.Length)
+            if (i >= s.Length)
+                throw new FormatException($"Unterminated JSON array at {i}");
+            if (s[i] == ']') { i++; return arr; }
+            while (true)
             {
                 arr.Add(ParseValue(s, ref i, depth));
                 SkipWs(s, ref i);
-                if (i < s.Length && s[i] == ',') { i++; continue; }
-                if (i < s.Length && s[i] == ']') { i++; return arr; }
+                if (i >= s.Length)
+                    throw new FormatException($"Unterminated JSON array at {i}");
+                if (s[i] == ',') { i++; continue; }
+                if (s[i] == ']') { i++; return arr; }
                 throw new FormatException($"Expected ',' or ']' at {i}");
             }
-            throw new FormatException("Unterminated JSON array");
+        }
+
+        private static bool TryParseStrictHex4(string s, int offset, out int value)
+        {
+            value = 0;
+            if (offset + 4 > s.Length) return false;
+            int acc = 0;
+            for (int k = 0; k < 4; k++)
+            {
+                char ch = s[offset + k];
+                int d;
+                if (ch >= '0' && ch <= '9') d = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
+                else if (ch >= 'A' && ch <= 'F') d = 10 + (ch - 'A');
+                else return false;
+                acc = (acc << 4) | d;
+            }
+            value = acc;
+            return true;
         }
 
         private static string ParseString(string s, ref int i)
@@ -420,8 +478,12 @@ namespace TacSim.Core
             {
                 char c = s[i++];
                 if (c == '"') return sb.ToString();
-                if (c == '\\' && i < s.Length)
+                if (c < 0x20)
+                    throw new FormatException($"Unescaped control character 0x{(int)c:x2} in JSON string at {i - 1}");
+                if (c == '\\')
                 {
+                    if (i >= s.Length)
+                        throw new FormatException($"Unterminated escape sequence in JSON string at {i}");
                     char esc = s[i++];
                     switch (esc)
                     {
@@ -434,15 +496,13 @@ namespace TacSim.Core
                         case 'r': sb.Append('\r'); break;
                         case 't': sb.Append('\t'); break;
                         case 'u':
-                            if (i + 4 <= s.Length && int.TryParse(s.Substring(i, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int code))
-                            {
-                                sb.Append((char)code);
-                                i += 4;
-                            }
+                            if (!TryParseStrictHex4(s, i, out int code))
+                                throw new FormatException($"Invalid \\uXXXX escape in JSON string at {i}");
+                            sb.Append((char)code);
+                            i += 4;
                             break;
                         default:
-                            sb.Append(esc);
-                            break;
+                            throw new FormatException($"Invalid escape sequence '\\{esc}' in JSON string at {i - 1}");
                     }
                 }
                 else
@@ -457,31 +517,57 @@ namespace TacSim.Core
         {
             int start = i;
             bool isFloat = false;
-            if (s[i] == '-') i++;
-            while (i < s.Length && s[i] >= '0' && s[i] <= '9') i++;
+            bool negative = false;
+            if (s[i] == '-')
+            {
+                negative = true;
+                i++;
+            }
+            if (i >= s.Length || s[i] < '0' || s[i] > '9')
+                throw new FormatException($"Invalid JSON number at {start}");
+            if (s[i] == '0')
+            {
+                i++;
+                if (i < s.Length && s[i] >= '0' && s[i] <= '9')
+                    throw new FormatException($"Leading zero in JSON number at {start}");
+            }
+            else
+            {
+                while (i < s.Length && s[i] >= '0' && s[i] <= '9') i++;
+            }
             if (i < s.Length && s[i] == '.')
             {
                 isFloat = true;
                 i++;
+                int fracStart = i;
                 while (i < s.Length && s[i] >= '0' && s[i] <= '9') i++;
+                if (i == fracStart)
+                    throw new FormatException($"Missing fractional digits in JSON number at {start}");
             }
             if (i < s.Length && (s[i] == 'e' || s[i] == 'E'))
             {
                 isFloat = true;
                 i++;
                 if (i < s.Length && (s[i] == '+' || s[i] == '-')) i++;
+                int expStart = i;
                 while (i < s.Length && s[i] >= '0' && s[i] <= '9') i++;
+                if (i == expStart)
+                    throw new FormatException($"Missing exponent digits in JSON number at {start}");
             }
             string slice = s.Substring(start, i - start);
-            if (!isFloat && long.TryParse(slice, NumberStyles.Integer, CultureInfo.InvariantCulture, out long lval))
-                return FromLong(lval);
-            if (double.TryParse(slice, NumberStyles.Float, CultureInfo.InvariantCulture, out double dval))
+            if (!isFloat)
             {
-                if (!IsFiniteDouble(dval))
-                    throw new FormatException($"Non-finite JSON number '{slice}'");
+                if (long.TryParse(slice, NumberStyles.Integer, CultureInfo.InvariantCulture, out long lval))
+                    return FromLong(lval);
+                if (!negative && ulong.TryParse(slice, NumberStyles.Integer, CultureInfo.InvariantCulture, out ulong uval))
+                    return FromULong(uval);
+            }
+            if (double.TryParse(slice, NumberStyles.Float, CultureInfo.InvariantCulture, out double dval) &&
+                IsFiniteDouble(dval))
+            {
                 return FromDouble(dval);
             }
-            throw new FormatException($"Invalid JSON number '{slice}'");
+            throw new FormatException($"Out-of-range or invalid JSON number '{slice}' at {start}");
         }
     }
 }

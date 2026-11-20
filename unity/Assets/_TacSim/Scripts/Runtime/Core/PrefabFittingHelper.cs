@@ -13,6 +13,67 @@ namespace TacSim.Core
     public static class PrefabFittingHelper
     {
         private static readonly Dictionary<Material, Material> UrpCache = new Dictionary<Material, Material>();
+        private static readonly Dictionary<Texture, Material> OverrideAlbedoCache = new Dictionary<Texture, Material>();
+        private static GameObject _inactiveStagingRoot;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetCachesOnSubsystemInit()
+        {
+            ClearCache();
+        }
+
+        public static void ClearCache()
+        {
+            foreach (var kv in UrpCache)
+            {
+                if (kv.Value != null)
+                {
+                    if (Application.isPlaying) UnityEngine.Object.Destroy(kv.Value);
+                    else UnityEngine.Object.DestroyImmediate(kv.Value);
+                }
+            }
+            UrpCache.Clear();
+
+            foreach (var kv in OverrideAlbedoCache)
+            {
+                if (kv.Value != null)
+                {
+                    if (Application.isPlaying) UnityEngine.Object.Destroy(kv.Value);
+                    else UnityEngine.Object.DestroyImmediate(kv.Value);
+                }
+            }
+            OverrideAlbedoCache.Clear();
+
+            if (_inactiveStagingRoot != null)
+            {
+                if (Application.isPlaying) UnityEngine.Object.Destroy(_inactiveStagingRoot);
+                else UnityEngine.Object.DestroyImmediate(_inactiveStagingRoot);
+                _inactiveStagingRoot = null;
+            }
+        }
+
+        private static GameObject InstantiateInactiveAndPrepare(
+            GameObject prefab,
+            Transform targetParent,
+            string instanceName,
+            bool keepColliders,
+            Texture overrideAlbedo)
+        {
+            // Instantiate under an inactive staging container so vendor demo Awake()/OnEnable() NEVER run
+            // before foreign MonoBehaviours are stripped!
+            if (_inactiveStagingRoot == null)
+            {
+                _inactiveStagingRoot = new GameObject("__TacSimPrefabStaging");
+                _inactiveStagingRoot.SetActive(false);
+                _inactiveStagingRoot.hideFlags = HideFlags.HideAndDontSave;
+            }
+
+            var inst = UnityEngine.Object.Instantiate(prefab, _inactiveStagingRoot.transform);
+            inst.name = instanceName;
+            PrepareInstance(inst, keepColliders, overrideAlbedo);
+            inst.transform.SetParent(targetParent, false);
+            return inst;
+        }
 
         public static GameObject SpawnGrounded(
             GameObject prefab,
@@ -27,12 +88,11 @@ namespace TacSim.Core
         {
             if (prefab == null) return null;
 
-            var inst = UnityEngine.Object.Instantiate(prefab, parent);
-            inst.name = instanceName;
+            var inst = InstantiateInactiveAndPrepare(prefab, parent, instanceName, keepColliders, overrideAlbedo);
+            Vector3 authoredScale = inst.transform.localScale;
+            if (authoredScale.sqrMagnitude < 1e-6f) authoredScale = Vector3.one;
             inst.transform.SetPositionAndRotation(floorWorldPos, worldRot);
-            inst.transform.localScale = Vector3.one;
-
-            PrepareInstance(inst, keepColliders, overrideAlbedo);
+            inst.transform.localScale = authoredScale;
 
             if (!TryComputeRendererBounds(inst, out Bounds b))
                 return inst;
@@ -51,7 +111,7 @@ namespace TacSim.Core
 
             if (Mathf.Abs(scaleFactor - 1f) > 0.001f)
             {
-                inst.transform.localScale = Vector3.one * scaleFactor;
+                inst.transform.localScale = authoredScale * scaleFactor;
                 TryComputeRendererBounds(inst, out b);
             }
 
@@ -77,14 +137,13 @@ namespace TacSim.Core
         {
             if (prefab == null) return null;
 
-            var inst = UnityEngine.Object.Instantiate(prefab, parent);
-            inst.name = instanceName;
+            var inst = InstantiateInactiveAndPrepare(prefab, parent, instanceName, keepColliders, overrideAlbedo);
+            Vector3 authoredScale = inst.transform.localScale;
+            if (authoredScale.sqrMagnitude < 1e-6f) authoredScale = Vector3.one;
             // Measure unrotated mesh bounds first so 3/4 yaw rotations don't inflate AABB dimensions,
             // and scale BOTH miniature vendor prefabs (e.g. MSGDI ~0.5m ships/cradles) and oversized prefabs to target world meters!
             inst.transform.SetPositionAndRotation(centerWorldPos, Quaternion.identity);
-            inst.transform.localScale = Vector3.one;
-
-            PrepareInstance(inst, keepColliders, overrideAlbedo);
+            inst.transform.localScale = authoredScale;
 
             if (TryComputeRendererBounds(inst, out Bounds b))
             {
@@ -93,7 +152,7 @@ namespace TacSim.Core
                     float maxAxis = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
                     if (maxAxis > 0.0005f && (scaleUpToTarget || maxAxis > maxDimensionM))
                     {
-                        inst.transform.localScale = Vector3.one * (maxDimensionM / maxAxis);
+                        inst.transform.localScale = authoredScale * (maxDimensionM / maxAxis);
                     }
                 }
                 inst.transform.rotation = worldRot;
@@ -144,8 +203,8 @@ namespace TacSim.Core
                     ns.StartsWith("UnityEngine", StringComparison.Ordinal))
                     continue;
 
-                if (Application.isPlaying) UnityEngine.Object.Destroy(mb);
-                else UnityEngine.Object.DestroyImmediate(mb);
+                mb.enabled = false;
+                UnityEngine.Object.DestroyImmediate(mb);
             }
 
             var animators = inst.GetComponentsInChildren<Animator>(true);
@@ -169,7 +228,7 @@ namespace TacSim.Core
 
         public static void SanitizeRenderersForUrp(GameObject root, Texture overrideAlbedo = null)
         {
-            Shader urpLit = Shader.Find("Universal Render Pipeline/Lit");
+            Shader urpLit = UrpMaterialFactory.FindSafeLitShader();
             if (urpLit == null) return;
 
             var renderers = root.GetComponentsInChildren<Renderer>(true);
@@ -194,10 +253,14 @@ namespace TacSim.Core
 
                     if (overrideAlbedo != null)
                     {
-                        var custom = new Material(urpLit) { name = root.name + "_URP" };
-                        custom.SetTexture("_BaseMap", overrideAlbedo);
-                        custom.SetColor("_BaseColor", Color.white);
-                        custom.SetFloat("_Smoothness", 0.32f);
+                        if (!OverrideAlbedoCache.TryGetValue(overrideAlbedo, out Material custom) || custom == null)
+                        {
+                            custom = new Material(urpLit) { name = $"TacSim_Override_{overrideAlbedo.name}_URP" };
+                            if (custom.HasProperty("_BaseMap")) custom.SetTexture("_BaseMap", overrideAlbedo);
+                            if (custom.HasProperty("_BaseColor")) custom.SetColor("_BaseColor", Color.white);
+                            if (custom.HasProperty("_Smoothness")) custom.SetFloat("_Smoothness", 0.32f);
+                            OverrideAlbedoCache[overrideAlbedo] = custom;
+                        }
                         list.Add(custom);
                         changed = true;
                         continue;
@@ -212,8 +275,7 @@ namespace TacSim.Core
                                             shName.StartsWith("Shader Graphs/", StringComparison.Ordinal) ||
                                             shName.StartsWith("Sprites/", StringComparison.Ordinal) ||
                                             shName.StartsWith("UI/", StringComparison.Ordinal) ||
-                                            shName.StartsWith("TextMeshPro/", StringComparison.Ordinal) ||
-                                            shName.StartsWith("Particles/", StringComparison.Ordinal));
+                                            shName.StartsWith("TextMeshPro/", StringComparison.Ordinal));
                     bool needsUpgrade = !isUrpCompatible;
 
                     if (!needsUpgrade)

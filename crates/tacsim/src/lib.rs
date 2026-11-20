@@ -161,6 +161,9 @@ pub mod match_;
 /// test refuses the interpreter's name there; the arena reaches a mind only
 /// through its [`arena::mind::MindRunner`] seam.
 pub mod minds;
+// Doc 50 cut OP.0: the operation frame TacSim reaches through the composition root (the
+// module's own docs say how).
+pub mod operations;
 pub mod pack;
 pub mod port;
 pub mod port_tick;

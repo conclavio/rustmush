@@ -123,8 +123,18 @@ export class PictureStore {
 
   /** A `space.docking` keyframe (`SF.18`). */
   observeSpaceDocking(data: unknown): void {
-    const active = (data as { active?: unknown; seated?: unknown } | null);
-    const cleared = data === null || active?.active === false || active?.seated === false;
+    const active = data as {
+      active?: unknown;
+      seated?: unknown;
+      closed?: unknown;
+      refused?: unknown;
+    } | null;
+    const cleared =
+      data === null ||
+      active?.active === false ||
+      active?.seated === false ||
+      active?.closed === true ||
+      active?.refused === true;
     this.spaceDockingData = cleared ? null : data;
     if (this.spaceDockingData !== null) {
       this.spaceMode = "docking";

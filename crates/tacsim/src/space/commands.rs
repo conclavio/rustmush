@@ -310,6 +310,20 @@ pub fn helm_crew_aboard(w: &World, hull: ObjId) -> Vec<ObjId> {
     crew.into_iter().collect()
 }
 
+/// **Who has `hull`'s helm** (doc 50 unit CR; doc 50a A-10e): the member of her crew aboard
+/// ([`helm_crew_aboard`]) whose station controls the movement channel, else the first of them;
+/// `None` with nobody of her crew aboard.
+#[must_use]
+pub fn helm_pilot_aboard(w: &World, hull: ObjId) -> Option<ObjId> {
+    let crew = helm_crew_aboard(w, hull);
+    crew.iter()
+        .copied()
+        .find(|actor| {
+            seat_role_for_actor(w, hull, *actor).is_some_and(|role| role.grants_channel("movement"))
+        })
+        .or_else(|| crew.first().copied())
+}
+
 /// Return all crew members (`ObjKind::Player` or seated bridge crew) currently aboard `hull` (`SF.R13`).
 #[must_use]
 pub fn all_aboard_crew_for_hull(w: &World, hull: ObjId) -> Vec<ObjId> {
@@ -754,6 +768,30 @@ pub fn observe_bubble_contacts(
     out
 }
 
+fn accel_vec_thrust_permille(thrust_mmps2: [i64; 3], max_accel_mmps2: i64) -> u32 {
+    let [ax, ay, az] = thrust_mmps2;
+    if ax == 0 && ay == 0 && az == 0 {
+        return 0;
+    }
+    let mag_sq = i128::from(ax)
+        .saturating_mul(i128::from(ax))
+        .saturating_add(i128::from(ay).saturating_mul(i128::from(ay)))
+        .saturating_add(i128::from(az).saturating_mul(i128::from(az)));
+    let mag = super::weapons::isqrt_i128(mag_sq).max(1);
+    let denom = i128::from(max_accel_mmps2.max(1));
+    let permille = mag.saturating_mul(1_000).saturating_add(denom / 2) / denom;
+    u32::try_from(permille.clamp(1, 1_000)).unwrap_or(1_000)
+}
+
+fn ship_thrust_permille(ship: &SpaceShipState) -> u32 {
+    let vec = if ship.thrust_mmps2 != [0, 0, 0] {
+        ship.thrust_mmps2
+    } else {
+        ship.thrust_mps2.map(|v| v.saturating_mul(1_000))
+    };
+    accel_vec_thrust_permille(vec, super::view::drive_mmps2(ship))
+}
+
 /// Emit viewer-filtered `space.holotank`, `space.cockpit`, and `space.docking` panel frames to
 /// every crew member aboard `hull` (`SF.R13`, `SF.R16`, `D-35-10`, `D-35-14`, `D-35-15`).
 pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
@@ -764,6 +802,14 @@ pub(crate) fn push_space_panels(ctx: &mut Ctx<'_>, hull: ObjId) {
             .map(|active| {
                 let own_ship_id = active.carrier_ship_id_for(hull);
                 let mut cockpit = active.bubble.cockpit_feed(own_ship_id);
+                if let Some(obs) = active.bubble.ships.get(own_ship_id)
+                    && let Some(feed) = cockpit.as_object_mut()
+                {
+                    feed.insert(
+                        "thrust_permille".into(),
+                        serde_json::json!(ship_thrust_permille(obs)),
+                    );
+                }
                 // Doc 49 unit CC.9: her mounts and her lock, the rows `+tac/status` prints.
                 if let Some(picture) = super::view::fire_picture(&active.bubble, own_ship_id)
                     && let Some(feed) = cockpit.as_object_mut()
@@ -1061,6 +1107,17 @@ pub(crate) fn build_tier1_space_panel_payloads(
     {
         heat_permille = heat_permille.max(cs.frontier_bloom_heat.saturating_mul(10).min(1_000));
     }
+    let thrust_permille = if let Some(ff) = book.free_flight_for_hull(hull) {
+        accel_vec_thrust_permille(ff.thrust_mmps2, super::view::drive_mmps2(&tier1_ship))
+    } else if book
+        .cluster_sessions
+        .get(&hull)
+        .is_some_and(|cs| cs.approaching_rock.is_some())
+    {
+        350
+    } else {
+        0
+    };
     let mut cockpit = serde_json::json!({
         "callsign": callsign,
         "site_id": site_id,
@@ -1072,6 +1129,7 @@ pub(crate) fn build_tier1_space_panel_payloads(
         "prograde_pitch_deg": f64::from(cam_pitch_deg),
         "delta_v_mps": tier1_dv_mps,
         "heat_permille": heat_permille,
+        "thrust_permille": thrust_permille,
         "hull_pct": hull_pct,
         "pdc_mode": "AUTO",
         "emcon": "STD",
@@ -7515,6 +7573,84 @@ fn mine_drones(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 #[allow(dead_code)]
 fn _keep_bubble_import(_: &LocalSpaceBubble) {}
+
+#[cfg(test)]
+mod thrust_permille_tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn space_cockpit_thrust_permille_tracks_ship_and_tier1_burn_state() -> TestResult {
+        let mut ship = SpaceShipState::new_dray(
+            "ship.10".to_owned(),
+            "Dray".to_owned(),
+            crate::arena::party::PartyId::BLUE,
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        check_eq!(ship_thrust_permille(&ship), 0);
+
+        let max_a = super::super::view::drive_mmps2(&ship);
+        ship.thrust_mmps2 = [max_a / 2, 0, 0];
+        let half = ship_thrust_permille(&ship);
+        check!((495..=505).contains(&half));
+
+        ship.thrust_mmps2 = [max_a, 0, 0];
+        check_eq!(ship_thrust_permille(&ship), 1_000);
+
+        // Over-rated thrust vector clamps cleanly at 1000 permille.
+        ship.thrust_mmps2 = [max_a * 2, 0, 0];
+        check_eq!(ship_thrust_permille(&ship), 1_000);
+
+        // Tier-1 free-flight cockpit payload emits live `thrust_permille`.
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let hull =
+            tw.world_mut()
+                .create(mush_core::ObjKind::Thing, "M/V Test Dray", ObjId(1), None)?;
+        let Some(book) = tw.world_mut().module_state_mut::<SpaceBubbleBook>() else {
+            return crate::test_checks::failed("SpaceBubbleBook missing from TacsimRuleset");
+        };
+        book.free_flights.insert(
+            hull,
+            super::super::tick::SpaceFreeFlightRecord {
+                hull,
+                origin_place: mush_core::CanonicalId::new("ceres_freeport")?,
+                target_place: mush_core::CanonicalId::new("stickney_yards")?,
+                pos_km: [414_000_000, 0, 0],
+                vel_mps: [1_000, 0, 0],
+                thrust_mmps2: [0, 0, 0],
+                burn_remaining_ic_s: None,
+                guidance: super::super::tick::FreeFlightGuidanceMode::Manual,
+                braking_flipped: false,
+                decoupled_at_ic_s: 0,
+                last_ic_s: 0,
+                cluster_arrival_ic_s: None,
+                prepaid_unflown_t: 0,
+            },
+        );
+
+        let Some((_, idle_cockpit)) = build_tier1_space_panel_payloads(tw.world(), hull) else {
+            return crate::test_checks::failed("expected tier1 cockpit payload when idle");
+        };
+        check_eq!(idle_cockpit["thrust_permille"], serde_json::json!(0));
+
+        if let Some(b) = tw.world_mut().module_state_mut::<SpaceBubbleBook>()
+            && let Some(ff) = b.free_flight_for_hull_mut(hull)
+        {
+            // ~50% burn of default Dray max_accel_mmps2 (645 mm/s^2)
+            ff.thrust_mmps2 = [323, 0, 0];
+            ff.burn_remaining_ic_s = Some(60);
+        }
+        let Some((_, burning_cockpit)) = build_tier1_space_panel_payloads(tw.world(), hull) else {
+            return crate::test_checks::failed("expected tier1 cockpit payload when burning");
+        };
+        let burn_val = burning_cockpit["thrust_permille"].as_u64().unwrap_or(0);
+        check!((490..=510).contains(&burn_val));
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod review_48e_tests {

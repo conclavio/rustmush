@@ -54,10 +54,12 @@
 
 pub mod bond;
 pub mod commands;
+pub mod declare;
 pub mod facts;
 pub mod formation;
 pub mod ids;
 pub mod notice;
+pub mod probe;
 pub mod record;
 pub mod recovery;
 pub mod recoverycmd;
@@ -78,6 +80,7 @@ use std::sync::Arc;
 use mush_core::module::{GameModule, ModError, ModuleBootData, ModuleCtx, Registrar, TickCadence};
 
 pub use commands::{CAPABILITIES, OUTCOME_VOCABULARY};
+pub use declare::{BondTerms, Declaration, DeclareError, declare_and_activate};
 pub use facts::CampaignFactProvider;
 pub use formation::{
     CategoryId, Composition, FormationAuthority, FormationError, FormationKind, FormationNode,
@@ -87,9 +90,11 @@ pub use formation::{
 pub use ids::{FormationId, OperationId, formation_key, operation_key};
 pub use notice::{
     DEFENDER_NOTICE, DEFENDER_SUBJECT, DefenderLetter, DefenderNotice, DefenderNoticeFn,
+    MAX_NOTICE_RECIPIENTS,
 };
+pub use probe::{CloseProbe, CloseProbes};
 pub use record::{
-    AudienceSpec, Bond, Consequence, ConsumerId, MAX_CONSUMER_ATTEMPTS, MAX_LABEL_BYTES,
+    AudienceSpec, Bond, Consequence, ConsumerId, Favors, MAX_CONSUMER_ATTEMPTS, MAX_LABEL_BYTES,
     MAX_LEGAL_TARGETS, MAX_OBJECTIVE_BYTES, MAX_OPERATION_PARTICIPANTS, MAX_OUTCOME_NAME_BYTES,
     MAX_SIDES, MAX_STAKES, OPERATION_NOTICE_MAX, OPERATION_NOTICE_MIN, ObjectiveKind,
     ObjectiveSpec, OperationDoc, OperationRuntime, OperationState, OperationTerms, Participation,
@@ -106,7 +111,7 @@ pub use recovery::{
 };
 pub use recoverycmd::{GrantOutcome, NO_SUCH_APPLICANT, NOT_ENABLED, grant_key};
 pub use render::{
-    Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, lens_for, visible_operation,
+    Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, lens_for, member_of, visible_operation,
 };
 pub use seat::{
     CrewComplement, DriverToken, EligibilitySpec, FallbackSpec, GrantState, MAX_CREW_NAMED,
@@ -128,6 +133,7 @@ pub use store::{
 pub use terms::operation_consent_hash;
 pub use tick::{
     MAX_SEATS_PER_FIRE, MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, TICK_PERIOD_SECS, TICK_TAG,
+    close_outcome,
 };
 
 /// The campaign module. Hand one to the composition root.
@@ -147,6 +153,9 @@ pub struct CampaignModule {
     /// **Doc 45 cut AP.1** — how an operation's notice reaches its eligible defenders
     /// ([`notice`]). `None` says the line to a connected defender and keeps nothing.
     defender_notice: Option<Arc<DefenderNoticeFn>>,
+    /// **Doc 50 cut OP.0** — the owner's answer to a close-only objective ([`probe`]). `None`
+    /// leaves every such objective unanswered, so it waits and pages at its close.
+    close_probe: Option<Arc<dyn CloseProbe>>,
 }
 
 impl CampaignModule {
@@ -191,6 +200,16 @@ impl CampaignModule {
     #[must_use]
     pub fn with_defender_notice(mut self, post: Arc<DefenderNoticeFn>) -> CampaignModule {
         self.defender_notice = Some(post);
+        self
+    }
+
+    /// **The composition seam a close-only objective is answered through** (doc 50 cut OP.0;
+    /// Q-50-57 item 3), on [`CampaignModule::with_formation_kinds`]' shape: the composition root
+    /// builds the [`CloseProbe`] over the owner's public API, so `mush-campaign` takes no ruleset
+    /// edge.
+    #[must_use]
+    pub fn with_close_probe(mut self, probe: Arc<dyn CloseProbe>) -> CampaignModule {
+        self.close_probe = Some(probe);
         self
     }
 
@@ -243,6 +262,12 @@ impl GameModule for CampaignModule {
         reg.state(match self.defender_notice.clone() {
             Some(post) => DefenderNotice::new(post),
             None => DefenderNotice::default(),
+        });
+        // Doc 50 cut OP.0: the close probe, carried in world state so the tick reaches it.
+        // Unwired, a close-only objective waits and pages at its close.
+        reg.state(match self.close_probe.clone() {
+            Some(probe) => CloseProbes::new(probe),
+            None => CloseProbes::default(),
         });
         // E7r1 R3: `@recovery`, in its own classified group (K8.5), and the module
         // default restored after it.

@@ -66,8 +66,10 @@
 )]
 
 mod commands;
+mod control;
 mod data;
 mod econ;
+mod lifecycle;
 mod reputation;
 mod sim;
 mod sim_commands;
@@ -83,19 +85,21 @@ use mush_core::module::{
 use mush_core::{Ctx, Flags, ObjId};
 use smol_str::SmolStr;
 
+pub use control::{ControlChange, ControlWrite, write_control};
 pub use data::{
     ControlKind, ControlRecord, EdgeKind, Faction, FactionEdge, FactionId, FactionMembership,
     FactionState, MAX_NAME_LEN, META_KEY, NS, Principal, Region, RegionId, ResourceChange, Stance,
     StanceRow, StanceSide, Visibility, control_key, fac_key, member_key, region_key, stance_key,
 };
 pub use econ::{LinkError, backing_org};
+pub use lifecycle::{ClockAdvance, MAX_CAUSE_LEN, advance_clock_by_cause, reopen_front, set_clock};
 pub use reputation::{
     AttackIncident, PUBLIC_ATTACK_PENALTY, StandingEffect, StandingReceipt, StandingView,
     VoidWindow, ensure_organization_faction, open_factions, public_standing,
     publish_attack_incident, record_standing, record_voidable_standing, report_attack_incident,
     standing_causes, standing_receipt, void_standing, voidable_causes,
 };
-pub use sim::{Clock, ClockId, Front, FrontId, SimState};
+pub use sim::{Clock, ClockId, Front, FrontId, MAX_CLOCK_CAUSES, SimState};
 pub use standing::FactionStandingProvider;
 
 use data::{persist_control, persist_del, persist_faction, persist_region};
@@ -247,8 +251,10 @@ fn on_canon_recorded(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 }
 
 /// Advance clock `id` by `n` segments; if it completes, fire its consequence.
-/// The single path staff `@clock/advance` and the canon observer both use, so
-/// completion is handled identically. Persists the clock.
+/// The single path staff `@clock/advance`, the canon observer and the typed owner call
+/// ([`advance_clock_by_cause`]) all use, so completion is handled identically. Persists the
+/// clock; when this fills the front's last clock, the front is marked resolved (doc 50 cut
+/// KC.0a, Q-50-51: one completion path).
 pub(crate) fn advance_clock(ctx: &mut Ctx<'_>, id: ClockId, n: u8) -> bool {
     let outcome = {
         let Some(sim) = ctx.w.module_state_mut::<SimState>() else {
@@ -264,49 +270,58 @@ pub(crate) fn advance_clock(ctx: &mut Ctx<'_>, id: ClockId, n: u8) -> bool {
     sim::persist_clock(ctx.out, &clock);
     if completed {
         fire_consequence(ctx, &clock);
+        resolve_if_complete(ctx, clock.front);
     }
     completed
+}
+
+/// Mark `front` resolved when every clock on it has completed (doc 50 cut KC.0a, Q-50-51).
+fn resolve_if_complete(ctx: &mut Ctx<'_>, front: FrontId) {
+    let resolved = {
+        let Some(sim) = ctx.w.module_state_mut::<SimState>() else {
+            return;
+        };
+        let done = sim
+            .clocks
+            .values()
+            .filter(|c| c.front == front)
+            .all(|c| c.completed);
+        let Some(f) = sim.fronts.get_mut(&front) else {
+            return;
+        };
+        if !done || f.resolved {
+            return;
+        }
+        f.resolved = true;
+        f.clone()
+    };
+    sim::persist_front(ctx.out, &resolved);
 }
 
 /// Fire a completed clock's consequence: optionally flip a territory
 /// [`ControlRecord`] to the faction, then record a durable canon event so the
 /// world (and the chronicle) learns of it.
 fn fire_consequence(ctx: &mut Ctx<'_>, clock: &Clock) {
-    let now = ctx.w.now();
     let ic = ctx.w.game_now_unix();
 
-    // Optional territory flip: the faction takes the region.
+    // Optional territory flip: the faction takes the region, through the one control write
+    // (doc 50 cut KC.0a, Q-50-50): a de facto flip moves the prior holder out, and the hold is
+    // dated in IC time. A region or faction gone since the clock was set flips nothing.
     if let Some((region, kind)) = clock.on_complete_control {
-        let updated = {
-            let Some(fac) = ctx.w.module_state_mut::<FactionState>() else {
-                return;
-            };
-            if fac.regions.contains_key(&region) && fac.factions.contains_key(&clock.faction) {
-                let recs = fac.control.entry(region).or_default();
-                // Replace any existing (faction, kind) hold, then add the new one.
-                recs.retain(|r| !(r.faction == clock.faction && r.kind == kind));
-                recs.push(ControlRecord {
-                    region,
-                    faction: clock.faction,
-                    kind,
-                    strength: 3,
-                    contested_by: Vec::new(),
-                    // Inherit the clock's visibility: a covert operation that
-                    // seizes a region produces a covert hold, not a world-visible
-                    // one. Hardcoding Public here would announce a secret op's
-                    // result on `+territory` to everyone — the exact leak this
-                    // whole model exists to prevent.
-                    visibility: clock.visibility,
-                    since: now,
-                });
-                Some((region, recs.clone()))
-            } else {
-                None
-            }
-        };
-        if let Some((region, recs)) = updated {
-            persist_control(ctx.out, region, &recs);
-        }
+        // Inherit the clock's visibility: a covert operation that seizes a region produces a
+        // covert hold, not a world-visible one. Hardcoding Public here would announce a secret
+        // op's result on `+territory` to everyone — the exact leak this whole model exists to
+        // prevent.
+        let _ = control::write_control(
+            ctx,
+            ControlWrite {
+                region,
+                faction: clock.faction,
+                kind,
+                strength: Some(3),
+                visibility: Some(clock.visibility),
+            },
+        );
     }
 
     // The canon consequence — a distinct, reserved kind ([`CONSEQUENCE_KIND`])
@@ -843,6 +858,7 @@ fn open_front_clock(
         consequence: consequence.into(),
         on_complete_control: None,
         completed: false,
+        causes: Vec::new(),
     };
     simulation.fronts.insert(id, front.clone());
     simulation.clocks.insert(clock_id, clock.clone());

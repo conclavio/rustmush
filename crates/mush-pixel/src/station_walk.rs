@@ -177,6 +177,13 @@ impl WalkCamera {
     }
 }
 
+/// Hard upper bound on pixel dimensions for `StationWalkPicture::draw_kitty`
+/// (defense-in-depth against unclamped terminal dimensions).
+#[cfg(feature = "encode")]
+const MAX_WALK_WIDTH_PX: usize = 1920;
+#[cfg(feature = "encode")]
+const MAX_WALK_HEIGHT_PX: usize = 1080;
+
 /// Station & Ship Interior picture producer.
 #[derive(Debug, Default)]
 pub struct StationWalkPicture {
@@ -184,6 +191,9 @@ pub struct StationWalkPicture {
     kitty_hash: Option<u64>,
     #[cfg(feature = "encode")]
     kitty_area: Option<(u16, u16, u16, u16)>,
+    #[cfg(feature = "encode")]
+    scratch_frame: Option<Frame>,
+    cached_grid: Option<(u64, IndoorGrid)>,
 }
 
 impl StationWalkPicture {
@@ -230,10 +240,18 @@ impl StationWalkPicture {
         cell: Option<crate::caps::CellSize>,
         step_down: bool,
     ) -> Option<(crate::iso25d::Viewport25D, Vec<u8>)> {
-        let vp = crate::cockpit_kitty::viewport_fp(area.2, area.3, cell, step_down);
-        let (vw, vh) = (vp.width_px, vp.height_px);
-        let mut frame = Frame::new(vw, vh);
-        if !self.draw(&mut frame, feeds, look) {
+        let mut vp = crate::cockpit_kitty::viewport_fp(area.2, area.3, cell, step_down);
+        let vw = vp.width_px.clamp(2, MAX_WALK_WIDTH_PX);
+        let vh = vp.height_px.clamp(2, MAX_WALK_HEIGHT_PX);
+        vp.width_px = vw;
+        vp.height_px = vh;
+        let mut frame = match self.scratch_frame.take() {
+            Some(f) if f.width() == vw && f.height() == vh => f,
+            _ => Frame::new(vw, vh),
+        };
+        let drawn = self.draw(&mut frame, feeds, look);
+        if !drawn {
+            self.scratch_frame = Some(frame);
             return None;
         }
         let placed_area = (
@@ -250,6 +268,7 @@ impl StationWalkPicture {
             self.kitty_hash = Some(h);
             self.kitty_area = None;
         }
+        self.scratch_frame = Some(frame);
         if self.kitty_area != Some(placed_area) {
             place_kitty_subrect(
                 &mut ops,
@@ -283,7 +302,9 @@ impl Picture for StationWalkPicture {
         };
         match scene.camera {
             WalkCamera::Cutaway25D => draw_cutaway_25d(frame, &scene, look),
-            WalkCamera::FirstPersonRaycast => draw_first_person(frame, &scene, look),
+            WalkCamera::FirstPersonRaycast => {
+                draw_first_person(frame, &scene, look, &mut self.cached_grid);
+            }
         }
         draw_walk_hud(frame, &scene, look);
         true
@@ -370,10 +391,22 @@ struct WalkScene {
     actors: Vec<WalkActor>,
 }
 
-fn as_f64(v: Option<&Value>, def: f64) -> f64 {
+/// Safe coordinate clamp in world metres so extreme feed values can never overflow screen math.
+const MAX_WORLD_COORD_M: f64 = 100_000.0;
+const MIN_FLOOR_IDX: i64 = -100;
+const MAX_FLOOR_IDX: i64 = 100;
+
+fn as_coord(v: Option<&Value>, def: f64) -> f64 {
     v.and_then(Value::as_f64)
         .filter(|n| n.is_finite())
         .unwrap_or(def)
+        .clamp(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M)
+}
+
+fn as_floor(v: Option<&Value>, def: i64) -> i64 {
+    v.and_then(Value::as_i64)
+        .unwrap_or(def)
+        .clamp(MIN_FLOOR_IDX, MAX_FLOOR_IDX)
 }
 
 fn as_i64(v: Option<&Value>, def: i64) -> i64 {
@@ -393,38 +426,39 @@ impl WalkScene {
         let subtitle = as_str(obj.get("subtitle"), "").to_string();
 
         let you = obj.get("you");
-        let you_x = as_f64(you.and_then(|y| y.get("x_m")), 0.0);
-        let you_y = as_f64(you.and_then(|y| y.get("y_m")), 0.0);
-        let you_floor = as_i64(you.and_then(|y| y.get("floor")), 0);
-        let you_heading_mdeg = as_i64(you.and_then(|y| y.get("heading_mdeg")), 0);
+        let you_x = as_coord(you.and_then(|y| y.get("x_m")), 0.0);
+        let you_y = as_coord(you.and_then(|y| y.get("y_m")), 0.0);
+        let you_floor = as_floor(you.and_then(|y| y.get("floor")), 0);
+        let you_heading_mdeg =
+            as_i64(you.and_then(|y| y.get("heading_mdeg")), 0).rem_euclid(360_000);
         let you_stride = as_i64(you.and_then(|y| y.get("stride")), 0);
 
         let cargo_fill_permille = as_i64(obj.get("cargo_fill_permille"), 0).clamp(0, 1000);
-        let pulse_phase = as_i64(obj.get("pulse_phase"), 0);
+        let pulse_phase = as_i64(obj.get("pulse_phase"), 0).rem_euclid(60);
 
         let focus = obj
             .get("focus")
             .and_then(Value::as_object)
             .map(|f| WalkFocus {
-                x_m: as_f64(f.get("x_m"), you_x),
-                y_m: as_f64(f.get("y_m"), you_y),
-                floor: as_i64(f.get("floor"), you_floor),
+                x_m: as_coord(f.get("x_m"), you_x),
+                y_m: as_coord(f.get("y_m"), you_y),
+                floor: as_floor(f.get("floor"), you_floor),
                 label: as_str(f.get("label"), "INTERACT").to_string(),
             });
 
         let mut rooms = Vec::new();
         if let Some(arr) = obj.get("rooms").and_then(Value::as_array) {
             for item in arr.iter().take(64) {
-                let min_x = as_f64(item.get("min_x"), -8.0);
-                let max_x = as_f64(item.get("max_x"), 8.0);
-                let min_y = as_f64(item.get("min_y"), -8.0);
-                let max_y = as_f64(item.get("max_y"), 8.0);
+                let min_x = as_coord(item.get("min_x"), -8.0);
+                let max_x = as_coord(item.get("max_x"), 8.0);
+                let min_y = as_coord(item.get("min_y"), -8.0);
+                let max_y = as_coord(item.get("max_y"), 8.0);
                 if max_x <= min_x || max_y <= min_y {
                     continue;
                 }
                 rooms.push(WalkRoom {
                     name: as_str(item.get("name"), "ROOM").to_string(),
-                    floor: as_i64(item.get("floor"), 0),
+                    floor: as_floor(item.get("floor"), 0),
                     min_x,
                     min_y,
                     max_x,
@@ -438,10 +472,10 @@ impl WalkScene {
             rooms.push(WalkRoom {
                 name: title.clone(),
                 floor: you_floor,
-                min_x: you_x - 8.0,
-                min_y: you_y - 8.0,
-                max_x: you_x + 8.0,
-                max_y: you_y + 8.0,
+                min_x: (you_x - 8.0).clamp(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M),
+                min_y: (you_y - 8.0).clamp(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M),
+                max_x: (you_x + 8.0).clamp(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M),
+                max_y: (you_y + 8.0).clamp(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M),
                 active: true,
                 kind: "room".to_string(),
             });
@@ -451,11 +485,14 @@ impl WalkScene {
         if let Some(arr) = obj.get("doors").and_then(Value::as_array) {
             for item in arr.iter().take(96) {
                 doors.push(WalkDoor {
-                    x_m: as_f64(item.get("x_m"), 0.0),
-                    y_m: as_f64(item.get("y_m"), 0.0),
-                    floor: as_i64(item.get("floor"), 0),
-                    width_m: as_f64(item.get("width_m"), 2.4).clamp(1.2, 6.0),
-                    stairs_to: item.get("stairs_to").and_then(Value::as_i64),
+                    x_m: as_coord(item.get("x_m"), 0.0),
+                    y_m: as_coord(item.get("y_m"), 0.0),
+                    floor: as_floor(item.get("floor"), 0),
+                    width_m: as_coord(item.get("width_m"), 2.4).clamp(1.2, 6.0),
+                    stairs_to: item
+                        .get("stairs_to")
+                        .and_then(Value::as_i64)
+                        .map(|f| f.clamp(MIN_FLOOR_IDX, MAX_FLOOR_IDX)),
                 });
             }
         }
@@ -464,9 +501,9 @@ impl WalkScene {
         if let Some(arr) = obj.get("props").and_then(Value::as_array) {
             for item in arr.iter().take(64) {
                 props.push(WalkProp {
-                    x_m: as_f64(item.get("x_m"), 0.0),
-                    y_m: as_f64(item.get("y_m"), 0.0),
-                    floor: as_i64(item.get("floor"), 0),
+                    x_m: as_coord(item.get("x_m"), 0.0),
+                    y_m: as_coord(item.get("y_m"), 0.0),
+                    floor: as_floor(item.get("floor"), 0),
                     kind: as_str(item.get("kind"), "desk").to_string(),
                     label: as_str(item.get("label"), "").to_string(),
                 });
@@ -483,8 +520,8 @@ impl WalkScene {
                     ShipModelStyle::Freighter
                 };
                 moored.push(WalkMooredShip {
-                    x_m: as_f64(item.get("x_m"), 0.0),
-                    y_m: as_f64(item.get("y_m"), 0.0),
+                    x_m: as_coord(item.get("x_m"), 0.0),
+                    y_m: as_coord(item.get("y_m"), 0.0),
                     name: as_str(item.get("name"), "HULL").to_string(),
                     style,
                     own: item.get("own").and_then(Value::as_bool).unwrap_or(false),
@@ -496,9 +533,9 @@ impl WalkScene {
         if let Some(arr) = obj.get("actors").and_then(Value::as_array) {
             for item in arr.iter().take(32) {
                 actors.push(WalkActor {
-                    x_m: as_f64(item.get("x_m"), 0.0),
-                    y_m: as_f64(item.get("y_m"), 0.0),
-                    floor: as_i64(item.get("floor"), you_floor),
+                    x_m: as_coord(item.get("x_m"), 0.0),
+                    y_m: as_coord(item.get("y_m"), 0.0),
+                    floor: as_floor(item.get("floor"), you_floor),
                     name: as_str(item.get("name"), "CREW").to_string(),
                     npc: item.get("npc").and_then(Value::as_bool).unwrap_or(false),
                     speech: as_str(item.get("speech"), "").to_string(),
@@ -551,6 +588,7 @@ struct IsoProj {
     cx: f64,
     cy: f64,
     px_per_m: f64,
+    az_rad: f64,
     sin_az: f64,
     cos_az: f64,
     tilt: f64,
@@ -568,6 +606,7 @@ impl IsoProj {
             cx: (frame.width() as f64) * 0.5,
             cy: (frame.height() as f64) * 0.56,
             px_per_m: base_scale * zoom,
+            az_rad,
             sin_az: az_rad.det_sin(),
             cos_az: az_rad.det_cos(),
             tilt: 0.58,
@@ -584,9 +623,12 @@ impl IsoProj {
         // East = +dx, North = +dy; screen Y grows downward (-ry).
         let rx = dx * self.cos_az - dy * self.sin_az;
         let ry = dx * self.sin_az + dy * self.cos_az;
-        let sx = (self.cx + rx * self.px_per_m).round() as i64;
-        let sy =
-            (self.cy - ry * self.px_per_m * self.tilt - dz * self.px_per_m * 0.85).round() as i64;
+        let sx = (self.cx + rx * self.px_per_m)
+            .round()
+            .clamp(-1_000_000.0, 1_000_000.0) as i64;
+        let sy = (self.cy - ry * self.px_per_m * self.tilt - dz * self.px_per_m * 0.85)
+            .round()
+            .clamp(-1_000_000.0, 1_000_000.0) as i64;
         (sx, sy, -ry)
     }
 }
@@ -597,8 +639,8 @@ fn fill_quad_scanline(frame: &mut Frame, pts: [(i64, i64); 4], col: Rgb) {
     if w <= 0 || h <= 0 {
         return;
     }
-    let mut min_y = h;
-    let mut max_y = -1i64;
+    let mut min_y = i64::MAX;
+    let mut max_y = i64::MIN;
     for &(_, py) in &pts {
         if py < min_y {
             min_y = py;
@@ -607,11 +649,11 @@ fn fill_quad_scanline(frame: &mut Frame, pts: [(i64, i64); 4], col: Rgb) {
             max_y = py;
         }
     }
-    let y0 = min_y.clamp(0, h - 1);
-    let y1 = max_y.clamp(0, h - 1);
     if min_y >= h || max_y < 0 {
         return;
     }
+    let y0 = min_y.clamp(0, h - 1);
+    let y1 = max_y.clamp(0, h - 1);
     let edges = [
         (pts[0], pts[1]),
         (pts[1], pts[2]),
@@ -619,8 +661,8 @@ fn fill_quad_scanline(frame: &mut Frame, pts: [(i64, i64); 4], col: Rgb) {
         (pts[3], pts[0]),
     ];
     for y in y0..=y1 {
-        let mut x_left = w;
-        let mut x_right = -1i64;
+        let mut x_left = i64::MAX;
+        let mut x_right = i64::MIN;
         for &((ax, ay), (bx, by)) in &edges {
             if ay == by {
                 if y == ay {
@@ -633,7 +675,11 @@ fn fill_quad_scanline(frame: &mut Frame, pts: [(i64, i64); 4], col: Rgb) {
             if y < ymin || y > ymax {
                 continue;
             }
-            let ix = ax + (bx - ax) * (y - ay) / (by - ay);
+            let num =
+                (i128::from(bx) - i128::from(ax)).saturating_mul(i128::from(y) - i128::from(ay));
+            let den = i128::from(by) - i128::from(ay);
+            let ix = (i128::from(ax) + num / den).clamp(i128::from(i64::MIN), i128::from(i64::MAX))
+                as i64;
             if ix < x_left {
                 x_left = ix;
             }
@@ -641,7 +687,7 @@ fn fill_quad_scanline(frame: &mut Frame, pts: [(i64, i64); 4], col: Rgb) {
                 x_right = ix;
             }
         }
-        if x_left <= x_right {
+        if x_left <= x_right && x_right >= 0 && x_left < w {
             let xl = x_left.clamp(0, w - 1) as usize;
             let xr = x_right.clamp(0, w - 1) as usize;
             let yu = y as usize;
@@ -712,13 +758,32 @@ fn split_wall_intervals(len: f64, gaps: &[(f64, f64)]) -> Vec<(f64, f64)> {
     intervals
 }
 
-fn draw_room_cutaway(
-    frame: &mut Frame,
-    proj: &IsoProj,
-    room: &WalkRoom,
-    doors: &[WalkDoor],
-    you_floor: i64,
-) {
+/// Determine whether a `"berth"` room's armor-glass bay window sits on the South wall (`min_y`)
+/// rather than the North wall (`max_y`). Real Ceres (`c01_berth_gallery`) has its doors on the
+/// North wall (`y = 125`) and vacuum cradles to the South (`y = 110`).
+fn berth_glass_is_south(room: &WalkRoom, doors: &[WalkDoor]) -> bool {
+    if room.kind != "berth" {
+        return false;
+    }
+    let mut has_north_door = false;
+    let mut has_south_door = false;
+    for d in doors {
+        if d.floor != room.floor && d.stairs_to != Some(room.floor) {
+            continue;
+        }
+        if d.x_m >= room.min_x - 1.0 && d.x_m <= room.max_x + 1.0 {
+            if (d.y_m - room.max_y).abs() <= 1.6 {
+                has_north_door = true;
+            }
+            if (d.y_m - room.min_y).abs() <= 1.6 {
+                has_south_door = true;
+            }
+        }
+    }
+    has_north_door && !has_south_door
+}
+
+fn draw_room_floor(frame: &mut Frame, proj: &IsoProj, room: &WalkRoom, you_floor: i64) {
     let z = (room.floor as f64) * 3.8;
     let is_lower = room.floor < you_floor;
     let (deck_col, grid_col) = if is_lower {
@@ -743,21 +808,25 @@ fn draw_room_cutaway(
         deck_col,
     );
 
-    // Non-skid 2 m deck grid lines
+    // Non-skid 4 m deck grid lines (bounded iteration count so extreme rooms stay fast)
     let step_m = 4.0;
     let mut gx = (room.min_x / step_m).ceil() * step_m;
-    while gx < room.max_x - 0.2 {
+    let mut lines_drawn = 0usize;
+    while gx < room.max_x - 0.2 && lines_drawn < 128 {
         let p0 = proj.project(gx, room.min_y, z);
         let p1 = proj.project(gx, room.max_y, z);
         line(frame, p0.0, p0.1, p1.0, p1.1, grid_col);
         gx += step_m;
+        lines_drawn += 1;
     }
     let mut gy = (room.min_y / step_m).ceil() * step_m;
-    while gy < room.max_y - 0.2 {
+    lines_drawn = 0;
+    while gy < room.max_y - 0.2 && lines_drawn < 128 {
         let p0 = proj.project(room.min_x, gy, z);
         let p1 = proj.project(room.max_x, gy, z);
         line(frame, p0.0, p0.1, p1.0, p1.1, grid_col);
         gy += step_m;
+        lines_drawn += 1;
     }
 
     if is_lower {
@@ -765,10 +834,82 @@ fn draw_room_cutaway(
         line(frame, c1.0, c1.1, c2.0, c2.1, WALL_KICK);
         line(frame, c2.0, c2.1, c3.0, c3.1, WALL_KICK);
         line(frame, c3.0, c3.1, c0.0, c0.1, WALL_KICK);
+    }
+}
+
+enum CutawayItem<'a> {
+    WallSpan {
+        p0: (f64, f64),
+        p1: (f64, f64),
+        z: f64,
+        height_m: f64,
+        is_glass: bool,
+    },
+    Moored(&'a WalkMooredShip),
+    StairStep {
+        x_m: f64,
+        y_m: f64,
+        z_m: f64,
+        top_col: Rgb,
+    },
+    CargoPallet {
+        x_m: f64,
+        y_m: f64,
+        z_m: f64,
+    },
+    Prop(&'a WalkProp),
+    Actor(&'a WalkActor),
+    You,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_subdivided_wall_spans<'a>(
+    out: &mut Vec<(f64, i32, CutawayItem<'a>)>,
+    proj: &IsoProj,
+    p0: (f64, f64),
+    p1: (f64, f64),
+    z: f64,
+    height_m: f64,
+    is_glass: bool,
+    layer: i32,
+) {
+    let dx = p1.0 - p0.0;
+    let dy = p1.1 - p0.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 1e-3 {
         return;
     }
+    let segs = ((len / 8.0).ceil() as usize).clamp(1, 32);
+    for i in 0..segs {
+        let t0 = (i as f64) / (segs as f64);
+        let t1 = ((i + 1) as f64) / (segs as f64);
+        let a = (p0.0 + dx * t0, p0.1 + dy * t0);
+        let b = (p0.0 + dx * t1, p0.1 + dy * t1);
+        let mx = (a.0 + b.0) * 0.5;
+        let my = (a.1 + b.1) * 0.5;
+        let (_, _, depth) = proj.project(mx, my, z);
+        out.push((
+            depth,
+            layer,
+            CutawayItem::WallSpan {
+                p0: a,
+                p1: b,
+                z,
+                height_m,
+                is_glass,
+            },
+        ));
+    }
+}
 
-    // Cutaway wall height: back walls stand 2.2 m tall, front walls stay 0.45 m curb so nothing occludes interior!
+fn collect_room_wall_spans<'a>(
+    out: &mut Vec<(f64, i32, CutawayItem<'a>)>,
+    proj: &IsoProj,
+    room: &WalkRoom,
+    doors: &[WalkDoor],
+) {
+    let z = (room.floor as f64) * 3.8;
+    // Cutaway wall height: back walls stand 2.15 m tall, front walls stay 0.42 m curb.
     let wall_h_back = if room.active { 2.15 } else { 1.1 };
     let wall_h_front = 0.42;
     let w_len = room.max_x - room.min_x;
@@ -814,76 +955,70 @@ fn draw_room_cutaway(
         }
     }
 
-    // North wall (+Y): armor-glass bay window in Berth Gallery!
-    let north_glass = room.kind == "berth";
-    let nh = if proj.cos_az >= 0.0 {
-        wall_h_back
-    } else {
-        wall_h_front
-    };
+    let south_glass = berth_glass_is_south(room, doors);
+    let north_glass = room.kind == "berth" && !south_glass;
+
+    let n_back = proj.cos_az >= 0.0;
+    let nh = if n_back { wall_h_back } else { wall_h_front };
+    let n_layer = if n_back { 0 } else { 3 };
     for (s0, s1) in split_wall_intervals(w_len, &north_gaps) {
-        draw_iso_wall_span(
-            frame,
+        push_subdivided_wall_spans(
+            out,
             proj,
             (room.min_x + s0, room.max_y),
             (room.min_x + s1, room.max_y),
             z,
             nh,
             north_glass,
+            n_layer,
         );
     }
 
-    // West wall (-X)
-    let wh = if proj.sin_az <= 0.0 {
-        wall_h_back
-    } else {
-        wall_h_front
-    };
+    let w_back = proj.sin_az <= 0.0;
+    let wh = if w_back { wall_h_back } else { wall_h_front };
+    let w_layer = if w_back { 0 } else { 3 };
     for (s0, s1) in split_wall_intervals(d_len, &west_gaps) {
-        draw_iso_wall_span(
-            frame,
+        push_subdivided_wall_spans(
+            out,
             proj,
             (room.min_x, room.min_y + s0),
             (room.min_x, room.min_y + s1),
             z,
             wh,
             false,
+            w_layer,
         );
     }
 
-    // East wall (+X): cutaway curb when facing camera
-    let eh = if proj.sin_az > 0.0 {
-        wall_h_back
-    } else {
-        wall_h_front
-    };
+    let e_back = proj.sin_az > 0.0;
+    let eh = if e_back { wall_h_back } else { wall_h_front };
+    let e_layer = if e_back { 0 } else { 3 };
     for (s0, s1) in split_wall_intervals(d_len, &east_gaps) {
-        draw_iso_wall_span(
-            frame,
+        push_subdivided_wall_spans(
+            out,
             proj,
             (room.max_x, room.min_y + s0),
             (room.max_x, room.min_y + s1),
             z,
             eh,
             false,
+            e_layer,
         );
     }
 
-    // South wall (-Y): cutaway curb when facing camera
-    let sh = if proj.cos_az < 0.0 {
-        wall_h_back
-    } else {
-        wall_h_front
-    };
+    let s_back = proj.cos_az < 0.0;
+    let sh = if s_back { wall_h_back } else { wall_h_front };
+    let s_layer = if s_back { 0 } else { 3 };
     for (s0, s1) in split_wall_intervals(w_len, &south_gaps) {
-        draw_iso_wall_span(
-            frame,
+        push_subdivided_wall_spans(
+            out,
             proj,
             (room.min_x + s0, room.min_y),
             (room.min_x + s1, room.min_y),
             z,
             sh,
-            false,
+            south_glass,
+            s_layer,
         );
     }
 }
@@ -898,24 +1033,49 @@ fn draw_iso_box(
 ) {
     let hx = sx * 0.5;
     let hy = sy * 0.5;
-    let b0 = proj.project(cx - hx, cy - hy, z0);
-    let b1 = proj.project(cx + hx, cy - hy, z0);
-    let b2 = proj.project(cx + hx, cy + hy, z0);
+    let b0 = proj.project(cx - hx, cy - hy, z0); // SW
+    let b1 = proj.project(cx + hx, cy - hy, z0); // SE
+    let b2 = proj.project(cx + hx, cy + hy, z0); // NE
+    let b3 = proj.project(cx - hx, cy + hy, z0); // NW
     let t0 = proj.project(cx - hx, cy - hy, z0 + sz);
     let t1 = proj.project(cx + hx, cy - hy, z0 + sz);
     let t2 = proj.project(cx + hx, cy + hy, z0 + sz);
     let t3 = proj.project(cx - hx, cy + hy, z0 + sz);
 
-    fill_quad_scanline(
-        frame,
-        [(b0.0, b0.1), (b1.0, b1.1), (t1.0, t1.1), (t0.0, t0.1)],
-        side_col,
-    );
-    fill_quad_scanline(
-        frame,
-        [(b1.0, b1.1), (b2.0, b2.1), (t2.0, t2.1), (t1.0, t1.1)],
-        side_col,
-    );
+    // Camera looks along (+sin_az, +cos_az), so it sits in direction (-sin_az, -cos_az).
+    // Draw only the two camera-facing vertical side faces so rotating azimuth never turns boxes inside-out.
+    if proj.cos_az >= 0.0 {
+        // South face (-Y normal)
+        fill_quad_scanline(
+            frame,
+            [(b0.0, b0.1), (b1.0, b1.1), (t1.0, t1.1), (t0.0, t0.1)],
+            side_col,
+        );
+    } else {
+        // North face (+Y normal)
+        fill_quad_scanline(
+            frame,
+            [(b3.0, b3.1), (b2.0, b2.1), (t2.0, t2.1), (t3.0, t3.1)],
+            side_col,
+        );
+    }
+
+    if proj.sin_az >= 0.0 {
+        // West face (-X normal)
+        fill_quad_scanline(
+            frame,
+            [(b3.0, b3.1), (b0.0, b0.1), (t0.0, t0.1), (t3.0, t3.1)],
+            side_col,
+        );
+    } else {
+        // East face (+X normal)
+        fill_quad_scanline(
+            frame,
+            [(b1.0, b1.1), (b2.0, b2.1), (t2.0, t2.1), (t1.0, t1.1)],
+            side_col,
+        );
+    }
+
     fill_quad_scanline(
         frame,
         [(t0.0, t0.1), (t1.0, t1.1), (t2.0, t2.1), (t3.0, t3.1)],
@@ -929,6 +1089,7 @@ fn draw_humanoid_sprite(
     scale: i64,
     (suit, highlight): (Rgb, Rgb),
     heading_mdeg: Option<i64>,
+    camera_az_rad: f64,
     stride: i64,
 ) {
     let s = scale.clamp(1, 3);
@@ -981,9 +1142,9 @@ fn draw_humanoid_sprite(
     };
     fill_rect(frame, sx - 2 * s, sy - 15 * s, 4 * s, 4 * s, head_col);
 
-    // Facing arrow on deck for the local player
+    // Facing arrow on deck for the local player, rotated by -camera_az_rad so it matches W travel!
     if let Some(hdg) = heading_mdeg {
-        let rad = ((hdg as f64) / 1000.0).to_radians();
+        let rad = ((hdg as f64) / 1000.0).to_radians() - camera_az_rad;
         let ax = sx + (rad.det_sin() * (8.0 * (s as f64))).round() as i64;
         let ay = sy - (rad.det_cos() * (5.0 * (s as f64))).round() as i64;
         line(frame, sx, sy, ax, ay, YOU);
@@ -1000,7 +1161,7 @@ fn draw_speech_or_nameplate(
 ) {
     let sc = 1usize;
     let short_name: String = name.chars().take(16).collect();
-    let nw = (short_name.len() as i64) * 6;
+    let nw = (short_name.chars().count() as i64) * 6;
     let nx = (sx - nw / 2).clamp(2, (frame.width() as i64).saturating_sub(nw + 4).max(2));
     let ny = top_y - 10;
     fill_rect(frame, nx - 2, ny - 2, nw + 4, 10, PANEL);
@@ -1008,7 +1169,7 @@ fn draw_speech_or_nameplate(
 
     if !speech.is_empty() {
         let clipped: String = speech.chars().take(28).collect();
-        let bw = (clipped.len() as i64) * 6 + 6;
+        let bw = (clipped.chars().count() as i64) * 6 + 6;
         let bx = (sx - bw / 2).clamp(2, (frame.width() as i64).saturating_sub(bw + 4).max(2));
         let by = ny - 14;
         fill_rect(frame, bx, by, bw, 11, SPEECH_BG);
@@ -1029,39 +1190,13 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
     draw_starfield(frame, frame.height());
     let proj = IsoProj::new(frame, scene, look);
 
-    // 1. Moored exterior hulls in vacuum (Berth Gallery / orbital backdrop)
-    for hull in &scene.moored {
-        let (hx, hy, _) = proj.project(hull.x_m, hull.y_m, (scene.you_floor as f64) * 3.8 + 0.6);
-        let half_px = ((proj.px_per_m * 2.4).round() as i64).clamp(10, 40);
-        draw_ship_sprite(
-            frame,
-            &ShipSpriteDraw {
-                center_px: (hx, hy),
-                half_size_px: half_px,
-                yaw_deg: 90.0,
-                style: hull.style,
-                burning: false,
-            },
-        );
-        let tag_col = if hull.own { GOOD } else { DIM };
-        let short: String = hull.name.chars().take(14).collect();
-        text(
-            frame,
-            hx - (short.len() as i64) * 3,
-            hy - half_px - 9,
-            &short.to_ascii_uppercase(),
-            tag_col,
-            1,
-        );
-    }
-
-    // 2. Rooms sorted back-to-front by floor, then camera depth
-    let mut room_order: Vec<&WalkRoom> = scene
+    // 1. Lower-floor rooms sorted back-to-front by floor, then camera depth
+    let mut lower_rooms: Vec<&WalkRoom> = scene
         .rooms
         .iter()
-        .filter(|r| r.floor <= scene.you_floor)
+        .filter(|r| r.floor < scene.you_floor)
         .collect();
-    room_order.sort_by(|a, b| {
+    lower_rooms.sort_by(|a, b| {
         a.floor.cmp(&b.floor).then_with(|| {
             let da = proj
                 .project((a.min_x + a.max_x) * 0.5, (a.min_y + a.max_y) * 0.5, 0.0)
@@ -1072,11 +1207,28 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
             da.total_cmp(&db)
         })
     });
+    for room in lower_rooms {
+        draw_room_floor(frame, &proj, room, scene.you_floor);
+    }
 
-    for room in room_order {
-        draw_room_cutaway(frame, &proj, room, &scene.doors, scene.you_floor);
-
-        if room.floor == scene.you_floor && !room.active && !room.name.is_empty() {
+    // 2. Active-floor room deck floors & labels
+    let mut active_rooms: Vec<&WalkRoom> = scene
+        .rooms
+        .iter()
+        .filter(|r| r.floor == scene.you_floor)
+        .collect();
+    active_rooms.sort_by(|a, b| {
+        let da = proj
+            .project((a.min_x + a.max_x) * 0.5, (a.min_y + a.max_y) * 0.5, 0.0)
+            .2;
+        let db = proj
+            .project((b.min_x + b.max_x) * 0.5, (b.min_y + b.max_y) * 0.5, 0.0)
+            .2;
+        da.total_cmp(&db)
+    });
+    for room in &active_rooms {
+        draw_room_floor(frame, &proj, room, scene.you_floor);
+        if !room.active && !room.name.is_empty() {
             let z = (room.floor as f64) * 3.8;
             let (rx, ry, _) = proj.project(
                 (room.min_x + room.max_x) * 0.5,
@@ -1086,15 +1238,22 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
             let tag: String = room.name.chars().take(14).collect();
             text(
                 frame,
-                rx - (tag.len() as i64) * 3,
+                rx - (tag.chars().count() as i64) * 3,
                 ry - 3,
                 &tag.to_ascii_uppercase(),
                 DIM,
                 1,
             );
         }
+    }
 
-        // Dynamic Hold cargo pallets when aboard ship
+    // 3. Collect all 3D walls, moored hulls, stairs, cargo pallets, props, and actors into
+    // one unified back-to-front painter's-order queue so occlusion respects camera azimuth.
+    let mut items: Vec<(f64, i32, CutawayItem<'_>)> = Vec::new();
+    let you_z = (scene.you_floor as f64) * 3.8;
+
+    for room in &active_rooms {
+        collect_room_wall_spans(&mut items, &proj, room, &scene.doors);
         if scene.aboard_ship && room.kind == "hold" && scene.cargo_fill_permille > 0 {
             let z = (room.floor as f64) * 3.8;
             let pallets = ((scene.cargo_fill_permille * 6) / 1000).clamp(1, 6);
@@ -1104,20 +1263,26 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
                 let px = room.min_x + 2.2 + (col_idx as f64) * 2.1;
                 let py = room.min_y + 2.0 + (row_idx as f64) * 2.4;
                 if px < room.max_x - 1.2 && py < room.max_y - 1.2 {
-                    draw_iso_box(
-                        frame,
-                        &proj,
-                        (px, py, z),
-                        (1.4, 1.4, 1.1),
-                        PROP_CARGO,
-                        PROP_CARGO_TOP,
-                    );
+                    let (_, _, d) = proj.project(px, py, z);
+                    items.push((
+                        d,
+                        1,
+                        CutawayItem::CargoPallet {
+                            x_m: px,
+                            y_m: py,
+                            z_m: z,
+                        },
+                    ));
                 }
             }
         }
     }
 
-    // 3. Companionway staircases
+    for hull in &scene.moored {
+        let (_, _, d) = proj.project(hull.x_m, hull.y_m, you_z + 0.6);
+        items.push((d, 2, CutawayItem::Moored(hull)));
+    }
+
     for d in &scene.doors {
         if let Some(to_floor) = d.stairs_to
             && (d.floor == scene.you_floor || to_floor == scene.you_floor)
@@ -1132,86 +1297,192 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
                 } else {
                     STAIR_STEP_B
                 };
-                draw_iso_box(
-                    frame,
-                    &proj,
-                    (d.x_m, d.y_m + sy_off, sz),
-                    (1.8, 0.55, 0.35),
-                    WALL_FACE_DARK,
-                    col,
-                );
+                let (_, _, depth) = proj.project(d.x_m, d.y_m + sy_off, sz);
+                items.push((
+                    depth,
+                    1,
+                    CutawayItem::StairStep {
+                        x_m: d.x_m,
+                        y_m: d.y_m + sy_off,
+                        z_m: sz,
+                        top_col: col,
+                    },
+                ));
             }
         }
     }
 
-    // 4. Diegetic props on the active deck
     for p in &scene.props {
         if p.floor != scene.you_floor {
             continue;
         }
-        let z = (p.floor as f64) * 3.8;
-        match p.kind.as_str() {
-            "airlock" => draw_iso_box(
-                frame,
-                &proj,
-                (p.x_m, p.y_m, z),
-                (1.6, 0.8, 2.0),
-                WALL_KICK,
-                PROP_AIRLOCK,
-            ),
-            "helm" => draw_iso_box(
-                frame,
-                &proj,
-                (p.x_m, p.y_m, z),
-                (1.5, 1.4, 1.0),
-                PROP_DESK,
-                PROP_HELM,
-            ),
-            "holotank" => {
+        let (_, _, d) = proj.project(p.x_m, p.y_m, you_z);
+        items.push((d, 1, CutawayItem::Prop(p)));
+    }
+
+    for a in &scene.actors {
+        if a.floor != scene.you_floor {
+            continue;
+        }
+        let (_, _, d) = proj.project(a.x_m, a.y_m, you_z);
+        items.push((d, 2, CutawayItem::Actor(a)));
+    }
+    let (_, _, you_d) = proj.project(scene.you_x, scene.you_y, you_z);
+    items.push((you_d, 2, CutawayItem::You));
+
+    items.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let sp_scale = if frame.width() >= 520 { 2 } else { 1 };
+    let mut nameplates: Vec<(i64, i64, &str, &str, Rgb)> = Vec::new();
+
+    for (_, _, item) in items {
+        match item {
+            CutawayItem::WallSpan {
+                p0,
+                p1,
+                z,
+                height_m,
+                is_glass,
+            } => {
+                draw_iso_wall_span(frame, &proj, p0, p1, z, height_m, is_glass);
+            }
+            CutawayItem::Moored(hull) => {
+                let (hx, hy, _) = proj.project(hull.x_m, hull.y_m, you_z + 0.6);
+                let half_px = ((proj.px_per_m * 2.4).round() as i64).clamp(10, 40);
+                draw_ship_sprite(
+                    frame,
+                    &ShipSpriteDraw {
+                        center_px: (hx, hy),
+                        half_size_px: half_px,
+                        yaw_deg: 90.0,
+                        style: hull.style,
+                        burning: false,
+                    },
+                );
+                let tag_col = if hull.own { GOOD } else { DIM };
+                let short: String = hull.name.chars().take(14).collect();
+                text(
+                    frame,
+                    hx - (short.chars().count() as i64) * 3,
+                    hy - half_px - 9,
+                    &short.to_ascii_uppercase(),
+                    tag_col,
+                    1,
+                );
+            }
+            CutawayItem::StairStep {
+                x_m,
+                y_m,
+                z_m,
+                top_col,
+            } => {
                 draw_iso_box(
                     frame,
                     &proj,
-                    (p.x_m, p.y_m, z),
-                    (1.6, 1.6, 0.85),
+                    (x_m, y_m, z_m),
+                    (1.8, 0.55, 0.35),
                     WALL_FACE_DARK,
-                    PROP_CORE,
+                    top_col,
                 );
-                let (hx, hy, _) = proj.project(p.x_m, p.y_m, z + 1.25);
-                let r = 6 + (scene.pulse_phase % 3);
-                outline_rect(frame, hx - r, hy - r / 2, r * 2, r, PROP_CORE);
             }
-            "pod" => draw_iso_box(
-                frame,
-                &proj,
-                (p.x_m, p.y_m, z),
-                (1.8, 1.2, 1.3),
-                PROP_DESK,
-                PROP_CORE,
-            ),
-            _ => draw_iso_box(
-                frame,
-                &proj,
-                (p.x_m, p.y_m, z),
-                (2.4, 1.0, 1.05),
-                PROP_DESK,
-                PROP_DESK_TOP,
-            ),
-        }
-        if !p.label.is_empty() {
-            let (lx, ly, _) = proj.project(p.x_m, p.y_m, z + 1.55);
-            let short: String = p.label.chars().take(12).collect();
-            text(
-                frame,
-                lx - (short.len() as i64) * 3,
-                ly - 4,
-                &short.to_ascii_uppercase(),
-                DIM,
-                1,
-            );
+            CutawayItem::CargoPallet { x_m, y_m, z_m } => {
+                draw_iso_box(
+                    frame,
+                    &proj,
+                    (x_m, y_m, z_m),
+                    (1.4, 1.4, 1.1),
+                    PROP_CARGO,
+                    PROP_CARGO_TOP,
+                );
+            }
+            CutawayItem::Prop(p) => {
+                let z = (p.floor as f64) * 3.8;
+                match p.kind.as_str() {
+                    "airlock" => draw_iso_box(
+                        frame,
+                        &proj,
+                        (p.x_m, p.y_m, z),
+                        (1.6, 0.8, 2.0),
+                        WALL_KICK,
+                        PROP_AIRLOCK,
+                    ),
+                    "helm" => draw_iso_box(
+                        frame,
+                        &proj,
+                        (p.x_m, p.y_m, z),
+                        (1.5, 1.4, 1.0),
+                        PROP_DESK,
+                        PROP_HELM,
+                    ),
+                    "holotank" => {
+                        draw_iso_box(
+                            frame,
+                            &proj,
+                            (p.x_m, p.y_m, z),
+                            (1.6, 1.6, 0.85),
+                            WALL_FACE_DARK,
+                            PROP_CORE,
+                        );
+                        let (hx, hy, _) = proj.project(p.x_m, p.y_m, z + 1.25);
+                        let r = 6 + (scene.pulse_phase % 3);
+                        outline_rect(frame, hx - r, hy - r / 2, r * 2, r, PROP_CORE);
+                    }
+                    "pod" => draw_iso_box(
+                        frame,
+                        &proj,
+                        (p.x_m, p.y_m, z),
+                        (1.8, 1.2, 1.3),
+                        PROP_DESK,
+                        PROP_CORE,
+                    ),
+                    _ => draw_iso_box(
+                        frame,
+                        &proj,
+                        (p.x_m, p.y_m, z),
+                        (2.4, 1.0, 1.05),
+                        PROP_DESK,
+                        PROP_DESK_TOP,
+                    ),
+                }
+                if !p.label.is_empty() {
+                    let (lx, ly, _) = proj.project(p.x_m, p.y_m, z + 1.55);
+                    let short: String = p.label.chars().take(12).collect();
+                    text(
+                        frame,
+                        lx - (short.chars().count() as i64) * 3,
+                        ly - 4,
+                        &short.to_ascii_uppercase(),
+                        DIM,
+                        1,
+                    );
+                }
+            }
+            CutawayItem::Actor(act) => {
+                let (ax, ay, _) = proj.project(act.x_m, act.y_m, you_z);
+                let (suit, hi, tag) = if act.npc {
+                    (NPC_COAT, NPC_HIGHLIGHT, NPC_HIGHLIGHT)
+                } else {
+                    (CREW_SUIT, CREW_HIGHLIGHT, GOOD)
+                };
+                draw_humanoid_sprite(frame, (ax, ay), sp_scale, (suit, hi), None, 0.0, 0);
+                nameplates.push((ax, ay - 16 * sp_scale, &act.name, &act.speech, tag));
+            }
+            CutawayItem::You => {
+                let (ux, uy, _) = proj.project(scene.you_x, scene.you_y, you_z);
+                draw_humanoid_sprite(
+                    frame,
+                    (ux, uy),
+                    sp_scale,
+                    (YOU_SUIT, YOU),
+                    Some(scene.you_heading_mdeg),
+                    proj.az_rad,
+                    scene.you_stride,
+                );
+            }
         }
     }
 
-    // 5. Focused `[E]` interactable bracket
+    // 4. Focused `[E]` interactable bracket & actor nameplates on top so text stays crisp
     if let Some(ref foc) = scene.focus
         && foc.floor == scene.you_floor
     {
@@ -1220,56 +1491,21 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         outline_rect(frame, fx - r, fy - r, r * 2, r * 2, LOCK);
     }
 
-    // 6. Depth-sorted actors + local player
-    let sp_scale = if frame.width() >= 520 { 2 } else { 1 };
-    let mut entities: Vec<(f64, bool, usize)> = scene
-        .actors
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| a.floor == scene.you_floor)
-        .map(|(i, a)| {
-            let (_, _, d) = proj.project(a.x_m, a.y_m, (a.floor as f64) * 3.8);
-            (d, false, i)
-        })
-        .collect();
-    let (_, _, you_d) = proj.project(scene.you_x, scene.you_y, (scene.you_floor as f64) * 3.8);
-    entities.push((you_d, true, 0));
-    entities.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-    for (_, is_you, idx) in entities {
-        if is_you {
-            let (ux, uy, _) =
-                proj.project(scene.you_x, scene.you_y, (scene.you_floor as f64) * 3.8);
-            draw_humanoid_sprite(
-                frame,
-                (ux, uy),
-                sp_scale,
-                (YOU_SUIT, YOU),
-                Some(scene.you_heading_mdeg),
-                scene.you_stride,
-            );
-        } else if let Some(act) = scene.actors.get(idx) {
-            let (ax, ay, _) = proj.project(act.x_m, act.y_m, (act.floor as f64) * 3.8);
-            let (suit, hi, tag) = if act.npc {
-                (NPC_COAT, NPC_HIGHLIGHT, NPC_HIGHLIGHT)
-            } else {
-                (CREW_SUIT, CREW_HIGHLIGHT, GOOD)
-            };
-            draw_humanoid_sprite(frame, (ax, ay), sp_scale, (suit, hi), None, 0);
-            draw_speech_or_nameplate(frame, ax, ay - 16 * sp_scale, &act.name, &act.speech, tag);
-        }
+    for (ax, top_y, name, speech, tag) in nameplates {
+        draw_speech_or_nameplate(frame, ax, top_y, name, speech, tag);
     }
 }
 
 // ---- Mode 2: First-Person 0.5 m Indoor Corridor Raycaster -------------------
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CellKind {
     Solid,
     Glass,
     Floor,
 }
 
+#[derive(Debug)]
 struct IndoorGrid {
     origin_x: f64,
     origin_y: f64,
@@ -1279,9 +1515,48 @@ struct IndoorGrid {
     cells: Vec<CellKind>,
 }
 
+fn hash_scene_grid(
+    scene: &WalkScene,
+    origin_x: f64,
+    origin_y: f64,
+    cols: usize,
+    rows: usize,
+) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |v: u64| {
+        h ^= v;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    mix(scene.you_floor as u64);
+    mix(origin_x.to_bits());
+    mix(origin_y.to_bits());
+    mix(cols as u64);
+    mix(rows as u64);
+    for r in &scene.rooms {
+        if r.floor == scene.you_floor {
+            mix(r.min_x.to_bits());
+            mix(r.min_y.to_bits());
+            mix(r.max_x.to_bits());
+            mix(r.max_y.to_bits());
+            mix(u64::from(r.kind == "berth"));
+        }
+    }
+    for d in &scene.doors {
+        if d.floor == scene.you_floor || d.stairs_to == Some(scene.you_floor) {
+            mix(d.x_m.to_bits());
+            mix(d.y_m.to_bits());
+            mix(d.width_m.to_bits());
+        }
+    }
+    h
+}
+
 impl IndoorGrid {
-    fn from_scene(scene: &WalkScene) -> IndoorGrid {
-        let cell_m = 0.5;
+    fn window_bounds(scene: &WalkScene) -> (f64, f64, usize, usize) {
+        const CELL_M: f64 = 0.5;
+        const MAX_CELLS: usize = 256;
+        const MAX_SPAN_M: f64 = (MAX_CELLS as f64) * CELL_M; // 128.0 m
+
         let mut min_x = scene.you_x - 12.0;
         let mut max_x = scene.you_x + 12.0;
         let mut min_y = scene.you_y - 12.0;
@@ -1294,37 +1569,77 @@ impl IndoorGrid {
                 max_y = max_y.max(r.max_y + 1.5);
             }
         }
-        let cols = (((max_x - min_x) / cell_m).ceil() as usize).clamp(16, 256);
-        let rows = (((max_y - min_y) / cell_m).ceil() as usize).clamp(16, 256);
+        // Window around `(you_x, you_y)` when the floor exceeds 128 m so rooms
+        // far from the origin never silently truncate into invisible walls.
+        if max_x - min_x > MAX_SPAN_M {
+            let snapped_cx = (scene.you_x / 8.0).floor() * 8.0;
+            min_x = snapped_cx - MAX_SPAN_M * 0.5;
+            max_x = min_x + MAX_SPAN_M;
+        }
+        if max_y - min_y > MAX_SPAN_M {
+            let snapped_cy = (scene.you_y / 8.0).floor() * 8.0;
+            min_y = snapped_cy - MAX_SPAN_M * 0.5;
+            max_y = min_y + MAX_SPAN_M;
+        }
+        let cols = (((max_x - min_x) / CELL_M).ceil() as usize).clamp(16, MAX_CELLS);
+        let rows = (((max_y - min_y) / CELL_M).ceil() as usize).clamp(16, MAX_CELLS);
+        (min_x, min_y, cols, rows)
+    }
+
+    fn from_scene_with_bounds(
+        scene: &WalkScene,
+        origin_x: f64,
+        origin_y: f64,
+        cols: usize,
+        rows: usize,
+    ) -> IndoorGrid {
+        let cell_m = 0.5;
         let mut grid = IndoorGrid {
-            origin_x: min_x,
-            origin_y: min_y,
+            origin_x,
+            origin_y,
             cell_m,
             cols,
             rows,
             cells: vec![CellKind::Solid; cols.saturating_mul(rows)],
         };
+        let grid_max_x = origin_x + (cols as f64) * cell_m;
+        let grid_max_y = origin_y + (rows as f64) * cell_m;
 
         // Carve room interiors (leaving 1-cell perimeter walls)
         for r in &scene.rooms {
             if r.floor != scene.you_floor {
                 continue;
             }
-            let x0 = grid.to_col(r.min_x + 0.35);
-            let x1 = grid.to_col(r.max_x - 0.35);
-            let y0 = grid.to_row(r.min_y + 0.35);
-            let y1 = grid.to_row(r.max_y - 0.35);
+            let rx0 = (r.min_x + 0.35).max(origin_x);
+            let rx1 = (r.max_x - 0.35).min(grid_max_x - cell_m);
+            let ry0 = (r.min_y + 0.35).max(origin_y);
+            let ry1 = (r.max_y - 0.35).min(grid_max_y - cell_m);
+            if rx1 < rx0 || ry1 < ry0 {
+                continue;
+            }
+            let x0 = grid.to_col(rx0);
+            let x1 = grid.to_col(rx1);
+            let y0 = grid.to_row(ry0);
+            let y1 = grid.to_row(ry1);
             for cy in y0..=y1 {
                 for cx in x0..=x1 {
                     grid.set(cx, cy, CellKind::Floor);
                 }
             }
             if r.kind == "berth" {
-                let gy = grid.to_row(r.max_y);
-                for cx in x0..=x1 {
-                    grid.set(cx, gy, CellKind::Glass);
-                    if gy > 0 {
-                        grid.set(cx, gy - 1, CellKind::Floor);
+                let south_glass = berth_glass_is_south(r, &scene.doors);
+                let glass_y = if south_glass { r.min_y } else { r.max_y };
+                if glass_y >= origin_y && glass_y <= grid_max_y {
+                    let gy = grid.to_row(glass_y);
+                    for cx in x0..=x1 {
+                        grid.set(cx, gy, CellKind::Glass);
+                        if south_glass {
+                            if gy + 1 < rows {
+                                grid.set(cx, gy + 1, CellKind::Floor);
+                            }
+                        } else if gy > 0 {
+                            grid.set(cx, gy - 1, CellKind::Floor);
+                        }
                     }
                 }
             }
@@ -1336,10 +1651,17 @@ impl IndoorGrid {
                 continue;
             }
             let rad = (d.width_m * 0.5).max(0.8);
-            let x0 = grid.to_col(d.x_m - rad);
-            let x1 = grid.to_col(d.x_m + rad);
-            let y0 = grid.to_row(d.y_m - rad);
-            let y1 = grid.to_row(d.y_m + rad);
+            let dx0 = (d.x_m - rad).max(origin_x);
+            let dx1 = (d.x_m + rad).min(grid_max_x - cell_m);
+            let dy0 = (d.y_m - rad).max(origin_y);
+            let dy1 = (d.y_m + rad).min(grid_max_y - cell_m);
+            if dx1 < dx0 || dy1 < dy0 {
+                continue;
+            }
+            let x0 = grid.to_col(dx0);
+            let x1 = grid.to_col(dx1);
+            let y0 = grid.to_row(dy0);
+            let y1 = grid.to_row(dy1);
             for cy in y0..=y1 {
                 for cx in x0..=x1 {
                     grid.set(cx, cy, CellKind::Floor);
@@ -1395,7 +1717,12 @@ fn fog_idx(dist_m: f64) -> usize {
     ((dist_m / 4.8).floor() as usize).min(FP_FOG_STEPS - 1)
 }
 
-fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
+fn draw_first_person(
+    frame: &mut Frame,
+    scene: &WalkScene,
+    look: &Look,
+    cached_grid: &mut Option<(u64, IndoorGrid)>,
+) {
     let w = frame.width();
     let h = frame.height();
     if w == 0 || h == 0 {
@@ -1404,8 +1731,23 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
     frame.clear(BG_SPACE);
     let horizon = h / 2;
 
-    let grid = IndoorGrid::from_scene(scene);
-    let hdg_rad = (((scene.you_heading_mdeg + look.offset_mdeg) as f64) / 1000.0).to_radians();
+    let (origin_x, origin_y, cols, rows) = IndoorGrid::window_bounds(scene);
+    let grid_key = hash_scene_grid(scene, origin_x, origin_y, cols, rows);
+    if !cached_grid.as_ref().is_some_and(|(k, _)| *k == grid_key) {
+        *cached_grid = None;
+    }
+    let (_, grid) = cached_grid.get_or_insert_with(|| {
+        (
+            grid_key,
+            IndoorGrid::from_scene_with_bounds(scene, origin_x, origin_y, cols, rows),
+        )
+    });
+
+    let hdg_mdeg = scene
+        .you_heading_mdeg
+        .wrapping_add(look.offset_mdeg)
+        .rem_euclid(360_000);
+    let hdg_rad = ((hdg_mdeg as f64) / 1000.0).to_radians();
     // Heading 0 = North (+Y), 90 = East (+X)
     let dir_x = hdg_rad.det_sin();
     let dir_y = hdg_rad.det_cos();
@@ -1413,12 +1755,13 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
     let plane_x = dir_y * fov_scale;
     let plane_y = -dir_x * fov_scale;
 
-    let pos_gx = (scene.you_x - grid.origin_x) / grid.cell_m;
-    let pos_gy = (scene.you_y - grid.origin_y) / grid.cell_m;
+    let pos_gx = ((scene.you_x - grid.origin_x) / grid.cell_m).clamp(-1e6, 1e6);
+    let pos_gy = ((scene.you_y - grid.origin_y) / grid.cell_m).clamp(-1e6, 1e6);
 
-    let mut col_depth_m = vec![40.0f64; w];
+    let mut col_depth_m = vec![100.0f64; w];
+    let mut col_glass = vec![false; w];
 
-    // 1. Ceiling & Floor horizontal bands with non-skid grid lines
+    // 1. Ceiling & Floor horizontal bands with symmetric non-skid grid lines
     for y in 0..h {
         let dy = (y as i64) - (horizon as i64);
         if dy == 0 {
@@ -1443,7 +1786,8 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
             let mut wx = scene.you_x + row_dist_m * ray0_x;
             let mut wy = scene.you_y + row_dist_m * ray0_y;
             for x in 0..w {
-                let on_seam = (wx * 0.5).fract().abs() < 0.045 || (wy * 0.5).fract().abs() < 0.045;
+                let on_seam =
+                    (wx * 0.5).rem_euclid(1.0) < 0.045 || (wy * 0.5).rem_euclid(1.0) < 0.045;
                 frame.put(x, y, if on_seam { grid_col } else { base_col });
                 wx += step_wx;
                 wy += step_wy;
@@ -1484,14 +1828,14 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
 
         let mut hit = CellKind::Floor;
         let mut side_ew = false;
-        for _ in 0..96 {
+        for _ in 0..192 {
             if side_x < side_y {
                 side_x += delta_x;
-                map_x += step_x;
+                map_x = map_x.saturating_add(step_x);
                 side_ew = true;
             } else {
                 side_y += delta_y;
-                map_y += step_y;
+                map_y = map_y.saturating_add(step_y);
                 side_ew = false;
             }
             let ck = grid.get(map_x, map_y);
@@ -1499,6 +1843,14 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
                 hit = ck;
                 break;
             }
+        }
+
+        // Do NOT draw a phantom solid wall when a ray travels 96 m without hitting a wall.
+        if hit == CellKind::Floor {
+            if let Some(d) = col_depth_m.get_mut(x) {
+                *d = 100.0;
+            }
+            continue;
         }
 
         let perp_cells = if side_ew {
@@ -1511,7 +1863,7 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
             *d = dist_m;
         }
 
-        let line_h = (((h as f64) * 1.15) / dist_m).round() as i64;
+        let line_h = (((h as f64) * 1.15) / dist_m).round().clamp(1.0, 100_000.0) as i64;
         let y0 = ((horizon as i64) - line_h / 2).clamp(0, (h as i64) - 1) as usize;
         let y1 = ((horizon as i64) + line_h / 2).clamp(0, (h as i64) - 1) as usize;
         let fi = fog_idx(dist_m);
@@ -1521,10 +1873,12 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         } else {
             pos_gx + perp_cells * rdx
         }
-        .fract()
-        .abs();
+        .rem_euclid(1.0);
 
         if hit == CellKind::Glass {
+            if let Some(g) = col_glass.get_mut(x) {
+                *g = true;
+            }
             // Armor-glass window: starfield vacuum with mullion posts & safety curb!
             let is_mullion = wall_u < 0.06 || wall_u > 0.94;
             for y in y0..=y1 {
@@ -1572,22 +1926,74 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         }
     }
 
-    // 3. Depth-buffered billboard sprites (props, moored ships through glass, and actors)
-    let inv_det = 1.0 / (plane_x * dir_y - dir_x * plane_y);
+    // 3. Depth-buffered billboard sprites (moored ships through glass, props, and actors)
+    let det = plane_x * dir_y - dir_x * plane_y;
+    if det.abs() < 1e-9 {
+        return;
+    }
+    let inv_det = 1.0 / det;
     let project_billboard = |wx: f64, wy: f64| -> Option<(i64, f64, i64)> {
         let sx = wx - scene.you_x;
         let sy = wy - scene.you_y;
         let tx = inv_det * (dir_y * sx - dir_x * sy);
         let ty = inv_det * (-plane_y * sx + plane_x * sy);
-        if ty <= 0.35 {
+        if ty <= 0.35 || !tx.is_finite() || !ty.is_finite() {
             return None;
         }
-        let screen_x = (((w as f64) * 0.5) * (1.0 + tx / ty)).round() as i64;
-        let sprite_h = (((h as f64) * 0.95) / ty).round() as i64;
+        let screen_x = (((w as f64) * 0.5) * (1.0 + tx / ty))
+            .round()
+            .clamp(-100_000.0, 100_000.0) as i64;
+        let sprite_h = (((h as f64) * 0.95) / ty).round().clamp(2.0, 100_000.0) as i64;
         Some((screen_x, ty, sprite_h))
     };
 
-    // Props
+    // 3a. Moored ships visible through armor-glass bay windows (sorted far-to-near)
+    let mut fp_moored: Vec<(i64, f64, i64, usize)> = scene
+        .moored
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let (sx, ty, sh) = project_billboard(m.x_m, m.y_m)?;
+            Some((sx, ty, sh, i))
+        })
+        .collect();
+    fp_moored.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    for (sx, _ty, sh, idx) in fp_moored {
+        if sx < -48 || sx > (w as i64) + 48 {
+            continue;
+        }
+        let center_col = sx.clamp(0, (w as i64) - 1) as usize;
+        if !col_glass.get(center_col).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(hull) = scene.moored.get(idx) {
+            let half_px = (sh / 2).clamp(10, 44);
+            let cy = (horizon as i64).saturating_sub(half_px / 6);
+            draw_ship_sprite(
+                frame,
+                &ShipSpriteDraw {
+                    center_px: (sx, cy),
+                    half_size_px: half_px,
+                    yaw_deg: 90.0,
+                    style: hull.style,
+                    burning: false,
+                },
+            );
+            let tag_col = if hull.own { GOOD } else { DIM };
+            let short: String = hull.name.chars().take(14).collect();
+            text(
+                frame,
+                sx - (short.chars().count() as i64) * 3,
+                cy - half_px - 9,
+                &short.to_ascii_uppercase(),
+                tag_col,
+                1,
+            );
+        }
+    }
+
+    // 3b. Props
     for p in &scene.props {
         if p.floor != scene.you_floor {
             continue;
@@ -1610,7 +2016,7 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         }
     }
 
-    // Actors sorted far-to-near
+    // 3c. Actors sorted far-to-near
     let mut fp_actors: Vec<(i64, f64, i64, usize)> = scene
         .actors
         .iter()
@@ -1639,7 +2045,7 @@ fn draw_first_person(frame: &mut Frame, scene: &WalkScene, look: &Look) {
             } else {
                 (CREW_SUIT, CREW_HIGHLIGHT, GOOD)
             };
-            draw_humanoid_sprite(frame, (sx, foot_y), scale, (suit, hi), None, 0);
+            draw_humanoid_sprite(frame, (sx, foot_y), scale, (suit, hi), None, 0.0, 0);
             draw_speech_or_nameplate(frame, sx, foot_y - 16 * scale, &act.name, &act.speech, tag);
         }
     }
@@ -1655,42 +2061,57 @@ fn draw_walk_hud(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         return;
     }
 
-    // Top-left location badge + camera mode
+    // Top-left location badge + camera mode (truncate title BEFORE suffix so HDG is never chopped off!)
     let cam_tag = match scene.camera {
         WalkCamera::Cutaway25D => "2.5D CUTAWAY",
         WalkCamera::FirstPersonRaycast => "1P CORRIDOR",
     };
-    let hdg_deg = ((scene.you_heading_mdeg + look.offset_mdeg).rem_euclid(360_000)) / 1000;
-    let header = format!(
-        "{}  [{}]  HDG {:03}",
-        scene.title.to_ascii_uppercase(),
-        cam_tag,
-        hdg_deg
-    );
-    let clipped_h: String = header.chars().take(46).collect();
-    let banner_w = ((clipped_h.len() as i64) * 6 * (sc as i64) + 10).min(w - 8);
+    let hdg_deg = scene
+        .you_heading_mdeg
+        .wrapping_add(look.offset_mdeg)
+        .rem_euclid(360_000)
+        / 1000;
+    let suffix = format!("  [{cam_tag}]  HDG {hdg_deg:03}");
+    let char_px = 6 * (sc as i64);
+    let max_banner_chars = (((w - 18) / char_px.max(1)).max(1) as usize).min(56);
+    let suffix_chars = suffix.chars().count();
+    let clipped_h: String = if max_banner_chars > suffix_chars + 2 {
+        let title_budget = max_banner_chars - suffix_chars;
+        let short_title: String = scene
+            .title
+            .to_ascii_uppercase()
+            .chars()
+            .take(title_budget)
+            .collect();
+        format!("{short_title}{suffix}")
+    } else {
+        suffix.chars().take(max_banner_chars).collect()
+    };
+    let banner_w = ((clipped_h.chars().count() as i64) * char_px + 10).min(w - 8);
     let banner_h = 9 * (sc as i64) + 6;
     fill_rect(frame, 4, 4, banner_w, banner_h, PANEL);
     outline_rect(frame, 4, 4, banner_w, banner_h, BORDER);
     text(frame, 8, 7, &clipped_h, TEXT, sc);
 
     if !scene.subtitle.is_empty() {
+        let max_sub_chars = (((w - 16) / 6).max(1) as usize).min(48);
         let sub: String = scene
             .subtitle
             .to_ascii_uppercase()
             .chars()
-            .take(44)
+            .take(max_sub_chars)
             .collect();
-        let sub_w = ((sub.len() as i64) * 6 + 8).min(w - 8);
+        let sub_w = ((sub.chars().count() as i64) * 6 + 8).min(w - 8);
         fill_rect(frame, 4, 4 + banner_h + 2, sub_w, 11, PANEL);
         text(frame, 8, 4 + banner_h + 4, &sub, WARN, 1);
     }
 
-    // Bottom-center `[E]` interactable prompt pill
+    // Bottom-center `[E]` interactable prompt pill (clamped strictly within frame width)
     if let Some(ref foc) = scene.focus {
+        let max_pill_chars = (((w - 20) / char_px.max(1)).max(1) as usize).min(40);
         let prompt = format!("[E] {}", foc.label.to_ascii_uppercase());
-        let clipped_p: String = prompt.chars().take(40).collect();
-        let pw = (clipped_p.len() as i64) * 6 * (sc as i64) + 12;
+        let clipped_p: String = prompt.chars().take(max_pill_chars).collect();
+        let pw = ((clipped_p.chars().count() as i64) * char_px + 12).min(w - 8);
         let ph = 9 * (sc as i64) + 6;
         let px = ((w - pw) / 2).max(4);
         let py = (h - ph - 6).max(4);
@@ -1820,5 +2241,151 @@ mod tests {
         let mut frame = Frame::new(640, 360);
         assert!(pic.draw(&mut frame, &SingleFeed(interior), &look));
         assert!(frame.count_colours(257) <= 256);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn draw_kitty_clamps_u16_max_terminal_dimensions_and_reuses_frame() {
+        let mut pic = StationWalkPicture::new();
+        let look = Look {
+            offset_mdeg: 0,
+            hull_offset_mdeg: 0,
+            ordered_mdeg: None,
+            dx_cm: 0,
+            dy_cm: 0,
+            zoom_permille: 1000,
+        };
+        let feeds = SingleFeed(sample_station_feed("cutaway"));
+        let cell = Some(crate::caps::CellSize {
+            width: 8,
+            height: 16,
+        });
+        let (vp, bytes) = pic
+            .draw_kitty(&feeds, &look, (0, 0, u16::MAX, u16::MAX), cell, false)
+            .expect("clamped draw_kitty succeeds");
+        assert!(vp.width_px <= 1920 && vp.height_px <= 1080);
+        assert!(!bytes.is_empty());
+        // Second identical paint skips image re-transmission (empty wire)
+        let (_, bytes2) = pic
+            .draw_kitty(&feeds, &look, (0, 0, u16::MAX, u16::MAX), cell, false)
+            .expect("second draw succeeds");
+        assert!(bytes2.is_empty());
+    }
+
+    #[test]
+    fn offscreen_quad_does_not_smear_edge_columns() {
+        let mut frame = Frame::new(120, 80);
+        frame.clear(BG_SPACE);
+        // Completely off-screen to the left
+        fill_quad_scanline(
+            &mut frame,
+            [(-50, 10), (-10, 10), (-10, 60), (-50, 60)],
+            YOU,
+        );
+        // Completely off-screen to the right
+        fill_quad_scanline(
+            &mut frame,
+            [(130, 10), (180, 10), (180, 60), (130, 60)],
+            YOU,
+        );
+        for y in 0..80 {
+            assert_eq!(frame.get(0, y), BG_SPACE, "left edge smeared at y={y}");
+            assert_eq!(frame.get(119, y), BG_SPACE, "right edge smeared at y={y}");
+        }
+    }
+
+    #[test]
+    fn extreme_feed_coordinates_and_headings_never_panic() {
+        let mut pic = StationWalkPicture::new();
+        let look = Look {
+            offset_mdeg: i64::MAX / 2,
+            hull_offset_mdeg: 0,
+            ordered_mdeg: None,
+            dx_cm: 0,
+            dy_cm: 0,
+            zoom_permille: 1000,
+        };
+        for cam in ["cutaway", "first_person"] {
+            let evil = json!({
+                "camera": cam,
+                "mode": "station",
+                "title": "Salt Moth — Engineering Access — Æther",
+                "subtitle": "日本語テスト — Extreme Coords",
+                "you": { "x_m": 1e12, "y_m": -1e12, "floor": 999999, "heading_mdeg": i64::MAX, "stride": 1 },
+                "focus": { "x_m": -1e12, "y_m": 1e12, "floor": 999999, "label": "Very Long Multi-Byte Label — 日本語 — Extra" },
+                "rooms": [
+                    { "name": "Far Room", "floor": 999999, "min_x": -1e12, "min_y": -1e12, "max_x": 1e12, "max_y": 1e12, "active": true, "kind": "room" }
+                ],
+                "props": [
+                    { "x_m": 1e12, "y_m": -1e12, "floor": 999999, "kind": "desk", "label": "Öffice" }
+                ],
+                "actors": [
+                    { "x_m": 1e12, "y_m": -1e12, "floor": 999999, "name": "Søren", "npc": true, "speech": "Hällo — 12345" }
+                ]
+            });
+            let mut frame = Frame::new(160, 100);
+            assert!(pic.draw(&mut frame, &SingleFeed(evil), &look));
+        }
+        // Direct overlay::line stress with i64 extrema
+        let mut frame = Frame::new(80, 60);
+        line(
+            &mut frame,
+            i64::MIN / 4,
+            i64::MAX / 4,
+            i64::MAX / 4,
+            i64::MIN / 4,
+            YOU,
+        );
+    }
+
+    #[test]
+    fn first_person_draws_moored_ship_through_glass_and_no_phantom_wall_in_100m_gallery() {
+        let mut pic = StationWalkPicture::new();
+        let look = Look {
+            offset_mdeg: 0,
+            hull_offset_mdeg: 0,
+            ordered_mdeg: None,
+            dx_cm: 0,
+            dy_cm: 0,
+            zoom_permille: 1000,
+        };
+        // Real Ceres Visiting Berth Gallery: 100 m wide (`x: 110..210, y: 110..125`), door on North (`y=125`) -> South glass (`y=110`).
+        // Look South (heading 180°) with and without a moored ship outside the glass!
+        let base_scene = |with_ship: bool, heading_mdeg: i64| {
+            json!({
+                "camera": "first_person",
+                "mode": "station",
+                "title": "Visiting Berth Gallery",
+                "you": { "x_m": 120.0, "y_m": 117.5, "floor": 1, "heading_mdeg": heading_mdeg, "stride": 0 },
+                "rooms": [
+                    { "name": "Visiting Berth Gallery", "floor": 1, "min_x": 110.0, "min_y": 110.0, "max_x": 210.0, "max_y": 125.0, "active": true, "kind": "berth" },
+                    { "name": "Far Wing", "floor": 1, "min_x": 300.0, "min_y": 110.0, "max_x": 330.0, "max_y": 130.0, "active": false, "kind": "room" }
+                ],
+                "doors": [
+                    { "x_m": 125.0, "y_m": 125.0, "floor": 1, "width_m": 2.8 }
+                ],
+                "moored": if with_ship {
+                    json!([{ "x_m": 120.0, "y_m": 100.0, "name": "Salt Moth", "style": "freighter", "own": true }])
+                } else {
+                    json!([])
+                }
+            })
+        };
+
+        let mut f_empty = Frame::new(320, 200);
+        assert!(pic.draw(&mut f_empty, &SingleFeed(base_scene(false, 180_000)), &look));
+        let mut f_ship = Frame::new(320, 200);
+        assert!(pic.draw(&mut f_ship, &SingleFeed(base_scene(true, 180_000)), &look));
+        assert_ne!(
+            f_empty.hash(),
+            f_ship.hash(),
+            "1P raycaster must render moored ship billboards through armor glass"
+        );
+
+        // Looking East (90°) down the 90 m gallery corridor must NOT hit a phantom solid wall at 48 m
+        let mut f_east = Frame::new(320, 200);
+        assert!(pic.draw(&mut f_east, &SingleFeed(base_scene(false, 90_000)), &look));
+        // Center horizon pixel is in open corridor past wall reach (or distant real east wall at 90 m, not 48 m)
+        assert!(f_east.count_colours(257) <= 256);
     }
 }

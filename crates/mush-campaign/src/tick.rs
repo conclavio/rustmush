@@ -43,7 +43,8 @@ use mush_canon::CanonState;
 use mush_core::{ClockStamp, Ctx, SceneId};
 
 use crate::ids::OperationId;
-use crate::record::{ObjectiveKind, OperationDoc, OperationState, PauseReason};
+use crate::probe::CloseProbes;
+use crate::record::{Favors, ObjectiveKind, OperationDoc, OperationState, PauseReason};
 use crate::settle;
 use crate::store::{CampaignStore, TickStats, persist_meta, put_operation};
 
@@ -215,7 +216,14 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
     // `hold` field. `Bond::hold` is unhashed execution bookkeeping that a lost write
     // can null while the reservation itself stands — and a null `hold` used to skip
     // the funding check entirely, which is the one place the field was authority.
-    if let Some(bond) = &doc.terms.bond
+    //
+    // **Only once a bond can have been placed** (doc 50 §4.3; doc 50a A-2g). A bond is placed by
+    // activation, so a `Declared` operation carrying `@op/terms bond=` has no hold yet *by
+    // design*. Cut 9 asked this of every live state, so any fire between the terms edit and
+    // `@op/activate` paused the operation "unfunded", activation never cleared the pause, and
+    // the operation never ran.
+    if !matches!(doc.runtime.state, OperationState::Declared)
+        && let Some(bond) = &doc.terms.bond
         && !bond.amount.is_zero()
         && crate::bond::live_hold(ctx, id).is_none()
     {
@@ -289,6 +297,39 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
     }
     // (i) the objective, evaluated against DURABLE state — a pull.
     if matches!(doc.runtime.state, OperationState::Running) {
+        // Doc 50 Q-50-57 item 3: a close-only objective is read at the close and never
+        // before, and its polarity decides whose success a met probe is.
+        if let ObjectiveKind::ProbeAtClose { probe, met_favors } = &doc.terms.objective.kind {
+            if !closed {
+                return if pushed { Step::Worked } else { Step::Skipped };
+            }
+            let answer = ctx
+                .w
+                .module_state::<CloseProbes>()
+                .and_then(|seam| seam.read(ctx.w, probe, id));
+            let Some(met) = answer else {
+                // A wait, never a verdict: reading "cannot tell" as "not met" would hand a
+                // broken probe's operation to whichever side that favors.
+                settle::page(
+                    ctx,
+                    smol_str::SmolStr::new(format!("op:{}:probe", id.0)),
+                    &format!("operation {id}'s close probe `{probe}` gave no answer"),
+                    &format!(
+                        "operation {id}'s window has closed and its objective is read from the \
+                         probe `{probe}`, which answered nothing (no probe is composed, or its \
+                         owner cannot tell yet). It waits and asks again each fire. If the owner \
+                         cannot answer, decide it by hand with `@op/resolve {id}=success` or \
+                         `=failure`"
+                    ),
+                );
+                return if pushed { Step::Worked } else { Step::Skipped };
+            };
+            let outcome = close_outcome(met, *met_favors);
+            return match settle::enter_resolving(ctx, id, outcome) {
+                true => Step::Worked,
+                false => Step::Paused,
+            };
+        }
         let met = objective_met(ctx, &doc, closed);
         if met {
             return match settle::enter_resolving(ctx, id, "success") {
@@ -330,11 +371,25 @@ fn step(ctx: &mut Ctx<'_>, id: OperationId, stats: &mut TickStats) -> Step {
     if pushed { Step::Worked } else { Step::Skipped }
 }
 
+/// **The outcome a close-only objective resolves to** (doc 50 Q-50-57 item 3): the declarer's
+/// word, `success` or `failure`, from whether the probe was met and whose success that is.
+#[must_use]
+pub fn close_outcome(met: bool, met_favors: Favors) -> &'static str {
+    match (met, met_favors) {
+        (true, Favors::Declarer) | (false, Favors::Defenders) => "success",
+        (false, Favors::Declarer) | (true, Favors::Defenders) => "failure",
+    }
+}
+
 /// Evaluate one operation's objective against durable state. Exhaustive, total, and
 /// free of `?`, `unwrap` and panicking indexing.
+///
+/// A [`ObjectiveKind::ProbeAtClose`] objective is never "met" here: `step` reads it at the
+/// close, and only there, through [`close_outcome`].
 #[must_use]
 pub(crate) fn objective_met(ctx: &Ctx<'_>, doc: &OperationDoc, window_closed: bool) -> bool {
     match &doc.terms.objective.kind {
+        ObjectiveKind::ProbeAtClose { .. } => false,
         ObjectiveKind::WindowElapsed => window_closed,
         ObjectiveKind::Muster { minimum } => {
             window_closed && doc.runtime.participants.len() >= usize::from(*minimum)

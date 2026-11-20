@@ -95,7 +95,15 @@ pub struct Clock {
     /// Whether the clock has completed (fired its consequence).
     #[serde(default)]
     pub completed: bool,
+    /// **The cause ids that moved this clock** through the typed owner call (doc 50 cut KC.0a,
+    /// Q-50-51), newest last, at most [`MAX_CLOCK_CAUSES`]: a cause already here moves the clock
+    /// no further, so a retried call is harmless.
+    #[serde(default)]
+    pub causes: Vec<SmolStr>,
 }
+
+/// The most cause ids a clock keeps; the oldest goes first.
+pub const MAX_CLOCK_CAUSES: usize = 64;
 
 impl Clock {
     /// Advance by `n` segments (saturating at `segments`). Returns whether this
@@ -350,6 +358,7 @@ mod tests {
             consequence: "the waterfront falls".into(),
             on_complete_control: None,
             completed: false,
+            causes: Vec::new(),
         }
     }
 

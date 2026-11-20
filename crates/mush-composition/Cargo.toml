@@ -43,5 +43,11 @@ serde_json.workspace = true
 smol_str.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+# Doc 50 cut OP.0: the operation frame's seam test (`tests/op0_frame.rs`) runs the campaign,
+# economy and org modules over `TestWorld`. Not a crate edge.
+mush-proto.workspace = true
+mush-testkit.workspace = true
+
 [lints]
 workspace = true

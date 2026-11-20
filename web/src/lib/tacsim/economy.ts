@@ -439,6 +439,24 @@ export function formatHaulPostCommand(
     : `+haul/post ${q} ${g} to=${p} fee=${f}`;
 }
 
+export const SURVEY_OFFERS: readonly { id: string; label: string }[] = [
+  { id: "ahuna-a", label: "Ahuna Flank · Block A (ahuna-a)" },
+  { id: "kerwan-f", label: "Kerwan Floor · Block F (kerwan-f)" },
+  { id: "juling-k", label: "Juling Shadow · Block K (juling-k)" },
+  { id: "occator-p", label: "Occator Rim · Block P (occator-p)" },
+];
+
+export const SIMULATOR_CHASSIS_IDS: readonly { id: string; label: string }[] = SIM_UNIT_CHASSIS;
+
+export function isValidHullDbref(hullRef: string | null | undefined): boolean {
+  return typeof hullRef === "string" && /^#\d+$/.test(hullRef.trim());
+}
+
+export function formatSurveyAcceptCommand(surveyId: string, commit = true): string {
+  const clean = surveyId.trim() || SURVEY_OFFERS[0]!.id;
+  return commit ? `+survey/accept ${clean} go` : `+survey/accept ${clean}`;
+}
+
 /**
  * `+escort/post` takes the hull as one word, its dbref (`#123`): never a name
  * or `ship` (48e L8, clients:G4; `tacsim::services::escort::hull_word`).
@@ -446,13 +464,13 @@ export function formatHaulPostCommand(
  * button rather than send a line the server can only refuse.
  */
 export function formatEscortPostCommand(
-  hullDbref: string | null,
+  hullDbref: string | null | undefined,
   destPort: string,
   feeCredits: number,
   commit = true,
 ): string | null {
   const h = (hullDbref ?? "").trim();
-  if (!/^#\d+$/.test(h)) return null;
+  if (!isValidHullDbref(h)) return null;
   const p = destPort.trim() || "stickney";
   const f = Math.max(1, Math.trunc(feeCredits));
   return commit

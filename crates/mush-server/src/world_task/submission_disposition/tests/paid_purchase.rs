@@ -43,14 +43,16 @@ const QUOTE_SECONDS: i64 = 30;
 // rated trial cases: each ends at 241,500 ms where it ended at 58,500). At
 // production's 1,000 ms pulse that is about 4 h 10 min (about 7 s a lease on
 // the hosted runner), past this guard: the nightly of 2026-11-18 met it at
-// lease ~2,050. So the nightly runs at 500 ms (the owner's call, 2026-11-19):
-// about 15 leases a minute on conclav.dev (whose 1,000 ms pace matched the
-// hosted runner's), a rating of about 2 h 20 min inside this guard.
+// lease ~2,050. So the nightly runs at 250 ms (the owner's call, 2026-11-20):
+// about 25 leases a minute on conclav.dev (whose 1,000 ms pace matched the
+// hosted runner's), a rating of about 1 h 25 min inside this guard. The two
+// market stories rate a longer certificate (~3,780 leases): about 2 h 36 min
+// at 250 ms, where 500 ms (about 15 a minute, 4 h 12 min) overran the guard.
 const REGISTRY_GUARD: Duration = Duration::from_secs(14_400);
 /// The stories' maintenance pulse when `MIND_PULSE_MS` is unset: a lease
 /// about a third of a second, a certificate about twelve minutes.
 const STORY_PULSE_MS: u64 = 50;
-/// Production's pulse, `MIND_PULSE_MS=1000`: the four-hour run (the nightly's is 500).
+/// Production's pulse, `MIND_PULSE_MS=1000`: the four-hour run (the nightly's is 250).
 const PRODUCTION_PULSE_MS: u64 = 1_000;
 
 /// Sets the proving service's maintenance pulse

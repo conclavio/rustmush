@@ -2319,7 +2319,13 @@ fn vf_c1c_the_attacker_may_resolve_a_non_forfeit_outcome_and_a_side_may_not() {
     ok(&mut tw, attacker, &format!("@op/resolve {}=failure", id.0));
     fire_n(&mut tw, 8);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
-    assert_eq!(held(&tw, acct), 0, "a failure releases the bond");
+    // Doc 50 OP.0: a failure forfeits the bond to its beneficiary, and this bond names none,
+    // so it is released.
+    assert_eq!(
+        held(&tw, acct),
+        0,
+        "a failure with no beneficiary releases the bond"
+    );
     assert_eq!(bal(&tw, acct), 1_000);
 }
 

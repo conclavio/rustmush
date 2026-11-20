@@ -2,14 +2,16 @@
 //! (Track 4 Phase 4B: SSH Kitty Graphics & ANSI TUI parity with Unity & Web 3D).
 //!
 //! Owns the per-connection spatial avatar state (`x_m`, `y_m`, `floor`,
-//! `heading_mdeg`), canonical station & 3-deck ship interior layouts (enriched
-//! lazily from `tacsim.content`), doorway wall-collision + hysteresis +
-//! shortest-path BFS exit command dispatch, `[E]` interactable focus & Bridge
-//! Helm flight handoff, `port.trade` decoding + 1-click Quote-to-Accept buy
-//! state machine, and the interactive Ratatui Port Drawers (`Trade`, `Sailing`,
-//! `Co-op`, `Simulator`, `NPC Talk`).
+//! `heading_mdeg`), canonical station & multi-deck ship interior layouts
+//! (loaded dynamically from `tacsim.content` neighborhood, unit, and market
+//! packs with canonical built-in fallbacks), doorway wall-collision +
+//! hysteresis + shortest-path BFS exit command dispatch, `[E]` interactable
+//! focus & Bridge Helm flight handoff, `port.trade` decoding + 1-click
+//! Quote-to-Accept buy state machine, and the interactive Ratatui Port Drawers
+//! (`Exchange`, `Jobs`, `Works`, `Sailing`, `Co-op`, `Simulator`, `Talk`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use mush_pixel::station_walk::WalkCamera;
@@ -21,6 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use serde_json::{Value, json};
 
+use super::backend::sanitize_control_sequences as sanitize;
 use super::keys::{Arrow, Key};
 
 /// Panel/query name for port trade & stowage telemetry.
@@ -31,9 +34,16 @@ pub const TACSIM_CONTENT_FEED: &str = "tacsim.content";
 const WALK_SPEED_MPS: f64 = 5.4;
 const TURN_MDEG_PER_S: i64 = 135_000;
 const HYSTERESIS_M: f64 = 0.85;
+const STAIR_TRIGGER_RADIUS_M: f64 = 1.65;
+const STAIR_LANDING_CLEARANCE_M: f64 = 2.2;
 const MOVE_STEP_COOLDOWN: Duration = Duration::from_millis(220);
 const PENDING_MOVE_TIMEOUT: Duration = Duration::from_millis(2400);
 const SPEECH_TTL: Duration = Duration::from_millis(8500);
+const MAX_SPEECH_BUBBLES: usize = 64;
+const MAX_SPEECH_CHARS: usize = 64;
+const DRAWER_LOG_CAP: usize = 64;
+const HOLOTANK_PULSE_INTERVAL: Duration = Duration::from_millis(500); // ~2 Hz (`SSH-H-01`)
+const MAX_PACK_REQUESTS_PER_SESSION: usize = 64;
 
 const QTY_PRESETS: [i64; 5] = [1, 5, 10, 25, 0]; // 0 = MAX FIT
 
@@ -79,12 +89,12 @@ impl PortDrawerKind {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            PortDrawerKind::Trade => "Exchange",
+            PortDrawerKind::Trade => "Trade",
             PortDrawerKind::Jobs => "Jobs",
             PortDrawerKind::Industry => "Works",
-            PortDrawerKind::Sailing => "Sailing",
-            PortDrawerKind::Coop => "Co-op",
-            PortDrawerKind::Sim => "Simulator",
+            PortDrawerKind::Sailing => "Sail",
+            PortDrawerKind::Coop => "Coop",
+            PortDrawerKind::Sim => "Sim",
             PortDrawerKind::Npc => "Talk",
         }
     }
@@ -122,10 +132,11 @@ impl RoomGeom {
     }
 
     fn contains(&self, x: f64, y: f64, margin: f64) -> bool {
-        x >= self.min_x + margin
-            && x <= self.max_x - margin
-            && y >= self.min_y + margin
-            && y <= self.max_y - margin
+        let half_w = (self.max_x - self.min_x) * 0.5;
+        let half_h = (self.max_y - self.min_y) * 0.5;
+        let mx = margin.min((half_w - 0.1).max(0.0));
+        let my = margin.min((half_h - 0.1).max(0.0));
+        x >= self.min_x + mx && x <= self.max_x - mx && y >= self.min_y + my && y <= self.max_y - my
     }
 }
 
@@ -139,6 +150,9 @@ struct PortalGeom {
     floor: i64,
     width_m: f64,
     stairs_to: Option<i64>,
+    /// True when the portal connects two non-adjacent rooms (e.g. OOC `welcome_hall -> simulator_lobby`),
+    /// so walking onto the doorway transitions directly to the target room's landing point.
+    teleport: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -168,6 +182,31 @@ struct ActorEntry {
     floor: i64,
 }
 
+#[derive(Clone, Debug)]
+struct DockedHullInfo {
+    id: String,
+    name: String,
+    unit: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SimulatorSlotInfo {
+    team: String,
+    index: u64,
+    pilot_name: String,
+    unit: String,
+    seated: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SimulatorState {
+    arena: String,
+    match_state: String,
+    my_team: Option<String>,
+    my_unit: Option<String>,
+    slots: Vec<SimulatorSlotInfo>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StowageState {
     pub cargo_kg: i64,
@@ -187,6 +226,7 @@ pub struct AskRow {
     pub listing_id: i64,
     pub good_id: String,
     pub good_name: String,
+    pub vendor_name: String,
     pub quantity: i64,
     pub unit_price_minor: i64,
     pub unit_mass_kg: i64,
@@ -198,8 +238,10 @@ pub struct BidRow {
     pub listing_id: i64,
     pub good_id: String,
     pub good_name: String,
+    pub vendor_name: String,
     pub quantity_wanted: i64,
     pub unit_price_minor: i64,
+    pub funded: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -214,6 +256,8 @@ struct PendingQuote {
     listing_id: i64,
     quantity: i64,
     max_unit_price_minor: i64,
+    authorized_total_minor: i64,
+    prior_quote_ids: HashSet<String>,
     created_at: Instant,
 }
 
@@ -221,14 +265,25 @@ struct PendingQuote {
 struct OwnQuoteRow {
     quote_id: String,
     listing_id: i64,
+    quantity: i64,
     unit_price_minor: i64,
+    total_minor: Option<i64>,
     expired: bool,
 }
 
-/// The lane's venue words (48e L8, clients:G7): every `port` entry's `venue` in
-/// `crates/tacsim/content/lane/ceres_phobos.json`, with its location's label.
-/// `+ship/undock`, `+ship/plan` and `+ship/order depart` take exactly these;
-/// `vesta`, `pallas`, `hygiea` and `juno` name no venue and were refused.
+#[derive(Clone, Debug)]
+struct PendingInteraction {
+    action: InteractAction,
+    target_room: String,
+    manifest_panels: Vec<String>,
+    created_at: Instant,
+}
+
+/// The lane's venue words (48e L8, clients:G7 / `H-40`): every `port` entry's
+/// `venue` in `crates/tacsim/content/lane/ceres_phobos.json`, with its
+/// location's label. `+ship/undock`, `+ship/plan` and `+ship/order depart` take
+/// exactly these; `vesta`, `pallas`, `hygiea` and `juno` name no venue and were
+/// refused.
 const CORRIDORS: [(&str, &str, &str); 12] = [
     ("ceres", "Ceres Freeport", "Ceres port"),
     ("stickney", "Stickney Yards", "Phobos port"),
@@ -315,15 +370,30 @@ const DOC48_INDUSTRY_ACTIONS: [(&str, &str); 10] = [
 pub struct PortWalkState {
     camera: WalkCamera,
     pack_id: String,
+    ship_unit_id: String,
     rooms: Vec<RoomGeom>,
     portals: Vec<PortalGeom>,
     ship_rooms: Vec<RoomGeom>,
     ship_portals: Vec<PortalGeom>,
+    neighborhood_cache: HashMap<String, (Vec<RoomGeom>, Vec<PortalGeom>)>,
+    unit_cache: HashMap<String, (Vec<RoomGeom>, Vec<PortalGeom>)>,
+    manifest_packs: HashMap<String, String>,
+    manifest_gen: u64,
+    in_flight_packs: HashSet<String>,
+    loaded_packs: HashMap<String, String>,
+    missing_packs: HashMap<String, u64>,
+    total_pack_requests: usize,
+    pending_pack_requests: Vec<String>,
+    pending_followup_queries: Vec<(String, Value)>,
 
     aboard_ship: bool,
     seated_at_helm: bool,
     hull_name: String,
+    own_hull_id: Option<String>,
     own_hull_name: String,
+    own_hull_docked_here: bool,
+    berth_docked_hulls: Vec<DockedHullInfo>,
+    simulator: Option<SimulatorState>,
     docked: bool,
     server_location_key: String,
     active_location_key: String,
@@ -335,6 +405,8 @@ pub struct PortWalkState {
     you_heading_mdeg: i64,
     you_stride: i64,
     pulse_phase: i64,
+    last_pulse_at: Option<Instant>,
+    scene_gen: u64,
 
     held_fwd: i8,
     held_strafe: i8,
@@ -343,7 +415,12 @@ pub struct PortWalkState {
     last_step_at: Option<Instant>,
     pending_move_target: Option<(String, Instant)>,
     next_move_allowed_at: Option<Instant>,
+    pending_interaction: Option<PendingInteraction>,
+    /// Prevents instant floor-0 <-> floor-1 ping-pong right after traversing a stair/warp portal.
+    portal_rearm: Option<(f64, f64, i64)>,
     pending_orders: Vec<String>,
+    last_room_view: Option<RoomView>,
+    last_self_name: Option<String>,
 
     actors: Vec<ActorEntry>,
     speech_bubbles: HashMap<String, (String, Instant)>,
@@ -351,17 +428,21 @@ pub struct PortWalkState {
     focus_idx: usize,
 
     // Trade & Goods
-    goods_meta: HashMap<String, (String, i64, i64)>, // id -> (name, mass_kg, vol_dm3)
+    goods_meta: HashMap<String, (String, i64, i64)>, // id -> (label, mass_kg, vol_l)
     credits_minor: i64,
+    balance_text: String,
+    current_venue: Option<String>,
+    port_name: String,
     stowage: StowageState,
+    stowage_loaded: bool,
     asks: Vec<AskRow>,
     bids: Vec<BidRow>,
+    trade_next_after: Option<u64>,
+    awaiting_trade_page: bool,
     cargo_lots: Vec<CargoLotRow>,
     own_quotes: Vec<OwnQuoteRow>,
     pending_quote: Option<PendingQuote>,
     content_asked: bool,
-    /// Every `tacsim.content` pack id asked for: each is asked for once.
-    packs_requested: HashSet<String>,
     trade_asked_at: Option<Instant>,
 
     // Interactive Ratatui Drawer
@@ -370,12 +451,13 @@ pub struct PortWalkState {
     cursor_row: usize,
     qty_preset_idx: usize,
     corridor_idx: usize,
-    round_trip: bool,
+    queue_depart: bool,
     hull_suggestion_idx: usize,
     custom_hull_input: String,
     editing_hull_name: bool,
     selected_npc_name: String,
     drawer_log: VecDeque<String>,
+    drawer_log_scroll: usize,
 }
 
 impl Default for PortWalkState {
@@ -389,27 +471,44 @@ impl PortWalkState {
     pub fn new() -> PortWalkState {
         let (rooms, portals) = builtin_ceres_layout();
         let (ship_rooms, ship_portals) = builtin_dray_layout();
-        PortWalkState {
+        let mut st = PortWalkState {
             camera: WalkCamera::Cutaway25D,
             pack_id: "neighborhood.ceres_freeport".to_string(),
+            ship_unit_id: "dray".to_string(),
             rooms,
             portals,
             ship_rooms,
             ship_portals,
+            neighborhood_cache: HashMap::new(),
+            unit_cache: HashMap::new(),
+            manifest_packs: HashMap::new(),
+            manifest_gen: 0,
+            in_flight_packs: HashSet::new(),
+            loaded_packs: HashMap::new(),
+            missing_packs: HashMap::new(),
+            total_pack_requests: 0,
+            pending_pack_requests: Vec::new(),
+            pending_followup_queries: Vec::new(),
             aboard_ship: false,
             seated_at_helm: false,
             hull_name: String::new(),
+            own_hull_id: None,
             own_hull_name: String::new(),
+            own_hull_docked_here: false,
+            berth_docked_hulls: Vec::new(),
+            simulator: None,
             docked: true,
             server_location_key: "room.c03_arrivals".to_string(),
             active_location_key: "room.c03_arrivals".to_string(),
             room_title: "Port Watch Arrivals".to_string(),
-            you_x: 0.0,
-            you_y: 0.0,
-            you_floor: 0,
+            you_x: 125.0,
+            you_y: 152.5,
+            you_floor: 1,
             you_heading_mdeg: 0,
             you_stride: 0,
             pulse_phase: 0,
+            last_pulse_at: None,
+            scene_gen: 1,
             held_fwd: 0,
             held_strafe: 0,
             held_turn: 0,
@@ -417,34 +516,37 @@ impl PortWalkState {
             last_step_at: None,
             pending_move_target: None,
             next_move_allowed_at: None,
+            pending_interaction: None,
+            portal_rearm: None,
             pending_orders: Vec::new(),
+            last_room_view: None,
+            last_self_name: None,
             actors: Vec::new(),
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
             goods_meta: default_goods_meta(),
             credits_minor: 0,
-            stowage: StowageState {
-                max_cargo_kg: 50_000,
-                max_cargo_m3: 180.0,
-                max_reaction_kg: 12_000,
-                max_stores_days: 120,
-                ..StowageState::default()
-            },
+            balance_text: String::new(),
+            current_venue: None,
+            port_name: String::new(),
+            stowage: StowageState::default(),
+            stowage_loaded: false,
             asks: Vec::new(),
             bids: Vec::new(),
+            trade_next_after: None,
+            awaiting_trade_page: false,
             cargo_lots: Vec::new(),
             own_quotes: Vec::new(),
             pending_quote: None,
             content_asked: false,
-            packs_requested: HashSet::new(),
             trade_asked_at: None,
             drawer: None,
             trade_subtab: 0,
             cursor_row: 0,
             qty_preset_idx: 1, // default 5 units
             corridor_idx: 0,
-            round_trip: true,
+            queue_depart: true,
             hull_suggestion_idx: 0,
             custom_hull_input: HULL_SUGGESTIONS
                 .first()
@@ -454,7 +556,20 @@ impl PortWalkState {
             editing_hull_name: false,
             selected_npc_name: String::new(),
             drawer_log: VecDeque::new(),
-        }
+            drawer_log_scroll: 0,
+        };
+        st.snap_to_room("room.c03_arrivals");
+        st
+    }
+
+    fn bump_scene(&mut self) {
+        self.scene_gen = self.scene_gen.wrapping_add(1);
+    }
+
+    /// Monotonic generation counter incremented only when the rendered walk scene changes (`SSH-H-01`).
+    #[must_use]
+    pub fn scene_generation(&self) -> u64 {
+        self.scene_gen
     }
 
     #[must_use]
@@ -474,6 +589,11 @@ impl PortWalkState {
 
     pub fn set_seated_at_helm(&mut self, seated: bool) {
         self.seated_at_helm = seated;
+    }
+
+    /// Cancel active free-text hull-name editing (e.g. when `Ctrl+G` toggles pixel view, `SSH-M-06`).
+    pub fn cancel_hull_edit(&mut self) {
+        self.editing_hull_name = false;
     }
 
     #[must_use]
@@ -504,16 +624,74 @@ impl PortWalkState {
         std::mem::take(&mut self.pending_orders)
     }
 
+    /// Drain any pending on-demand `tacsim.content` pack requests queued when switching neighborhoods/hulls,
+    /// plus any follow-up queries scheduled when a queued interaction resumes after room acknowledgement.
+    pub fn drain_pack_queries(&mut self, manifest_panels: &[String]) -> Vec<(String, Value)> {
+        let mut out = Vec::new();
+        for (feed, args) in std::mem::take(&mut self.pending_followup_queries) {
+            if manifest_panels.is_empty() || manifest_panels.iter().any(|p| p == &feed) {
+                out.push((feed, args));
+            }
+        }
+        if !manifest_panels.iter().any(|p| p == TACSIM_CONTENT_FEED) {
+            self.pending_pack_requests.clear();
+            return out;
+        }
+        for pack_id in std::mem::take(&mut self.pending_pack_requests) {
+            if self.try_enqueue_pack(&pack_id) {
+                out.push((
+                    TACSIM_CONTENT_FEED.to_string(),
+                    json!({ "op": "pack", "id": pack_id }),
+                ));
+            }
+        }
+        out
+    }
+
+    fn is_pack_loaded_current(&self, id: &str) -> bool {
+        let Some(loaded_sha) = self.loaded_packs.get(id) else {
+            return false;
+        };
+        if let Some(manifest_sha) = self.manifest_packs.get(id)
+            && !manifest_sha.is_empty()
+            && !loaded_sha.is_empty()
+        {
+            return loaded_sha == manifest_sha;
+        }
+        true
+    }
+
+    fn try_enqueue_pack(&mut self, id: &str) -> bool {
+        if id.is_empty()
+            || self.is_pack_loaded_current(id)
+            || self.in_flight_packs.contains(id)
+            || self.missing_packs.get(id) == Some(&self.manifest_gen)
+            || self.total_pack_requests >= MAX_PACK_REQUESTS_PER_SESSION
+        {
+            return false;
+        }
+        self.in_flight_packs.insert(id.to_string());
+        self.total_pack_requests = self.total_pack_requests.saturating_add(1);
+        true
+    }
+
+    fn reset_stowage(&mut self) {
+        self.stowage = StowageState::default();
+        self.stowage_loaded = false;
+        self.cargo_lots.clear();
+    }
+
     /// Tick using internal `last_tick` timestamp and queue any emitted movement commands.
+    /// Returns `true` ONLY when the visual scene actually changed (`SSH-H-01`).
     pub fn tick_at(&mut self, now: Instant) -> bool {
         let dt = self.last_tick.map_or(Duration::from_millis(50), |t| {
             now.saturating_duration_since(t)
         });
         self.last_tick = Some(now);
-        let moved = self.held_fwd != 0 || self.held_strafe != 0 || self.held_turn != 0;
+        let before = self.scene_gen;
         let cmds = self.tick(dt, now);
         self.pending_orders.extend(cmds);
-        moved
+        self.scene_gen != before
     }
 
     /// Lazily enqueue `tacsim.content` and `port.trade` queries only when the
@@ -527,14 +705,16 @@ impl PortWalkState {
         let has_content = manifest_panels.iter().any(|p| p == TACSIM_CONTENT_FEED);
         if has_content && !self.content_asked {
             self.content_asked = true;
-            out.push((TACSIM_CONTENT_FEED.to_string(), json!({})));
+            out.push((TACSIM_CONTENT_FEED.to_string(), json!({ "op": "manifest" })));
         }
+        out.extend(self.drain_pack_queries(manifest_panels));
         let has_trade = manifest_panels.iter().any(|p| p == PORT_TRADE_FEED);
         let trade_due = self
             .trade_asked_at
             .is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(3));
         if has_trade && trade_due {
             self.trade_asked_at = Some(now);
+            self.awaiting_trade_page = false;
             out.push((PORT_TRADE_FEED.to_string(), json!({})));
         }
     }
@@ -547,19 +727,39 @@ impl PortWalkState {
         now: Instant,
     ) {
         if self.drawer.is_some() {
-            self.drawer = None;
-            self.editing_hull_name = false;
+            self.close_drawer();
             return;
         }
-        let default_kind = if self.pack_id.contains("ooc") {
+        let key = self.active_location_key.as_str();
+        let default_kind = if self.pack_id.contains("ooc")
+            || key.contains("simulator")
+            || key.contains("sim_red")
+            || key.contains("sim_blue")
+        {
             PortDrawerKind::Sim
-        } else if self.active_location_key.contains("coop") {
+        } else if key.contains("coop") || key.contains("registry") {
             PortDrawerKind::Coop
-        } else if self.active_location_key.contains("dockmaster")
-            || self.active_location_key.contains("berth")
-            || self.active_location_key == "bridge"
+        } else if key.contains("dockmaster")
+            || key.contains("harbourmaster")
+            || key.contains("berth")
+            || key == "bridge"
         {
             PortDrawerKind::Sailing
+        } else if key.contains("works")
+            || key.contains("yard")
+            || key.contains("service")
+            || key.contains("clearing")
+            || key.contains("tycho")
+            || key.contains("receiving")
+            || key.contains("maintenance")
+        {
+            PortDrawerKind::Industry
+        } else if key.contains("slack")
+            || key.contains("shift_board")
+            || key.contains("arrivals")
+            || key.contains("customs")
+        {
+            PortDrawerKind::Jobs
         } else if !self.actors.is_empty() && self.asks.is_empty() {
             if let Some(first_npc) = self
                 .actors
@@ -586,6 +786,7 @@ impl PortWalkState {
         self.stop_motion();
         self.drawer = Some(kind);
         self.cursor_row = 0;
+        self.drawer_log_scroll = 0;
         self.editing_hull_name = false;
         self.ensure_queries(manifest_panels, queries, now);
     }
@@ -593,55 +794,121 @@ impl PortWalkState {
     pub fn close_drawer(&mut self) {
         self.drawer = None;
         self.editing_hull_name = false;
+        self.drawer_log_scroll = 0;
     }
 
     /// Observe a live `RoomView` from the server.
     pub fn observe_room(&mut self, view: &RoomView, self_name: Option<&str>) {
         let was_aboard = self.aboard_ship;
-        self.room_title.clone_from(&view.name);
+        let clean_name = sanitize(&view.name);
+        self.room_title = clean_name.clone();
+        let clean_self = self_name.map(sanitize);
+        self.last_room_view = Some(view.clone());
+        self.last_self_name.clone_from(&clean_self);
 
         let tac = view.ambient.get("tacsim").and_then(Value::as_object);
         let atlas = view.ambient.get("atlas").and_then(Value::as_object);
 
+        let mut received_room_stowage = false;
         if let Some(st) = tac
             .and_then(|t| t.get("stowage").or_else(|| t.get("own_stowage")))
             .and_then(Value::as_object)
         {
             self.decode_stowage_obj(st);
+            received_room_stowage = true;
         }
 
-        if let Some(own_h) = tac
-            .and_then(|t| t.get("own_hull_name"))
-            .and_then(Value::as_str)
-        {
-            self.own_hull_name = own_h.to_string();
+        if let Some(t) = tac {
+            if let Some(own_h_val) = t.get("own_hull_name") {
+                if let Some(own_h) = own_h_val.as_str() {
+                    let clean_h = sanitize(own_h);
+                    if !self.own_hull_name.is_empty()
+                        && self.own_hull_name != clean_h
+                        && !received_room_stowage
+                    {
+                        self.own_hull_id = None;
+                        self.reset_stowage();
+                    }
+                    self.own_hull_name = clean_h;
+                } else if own_h_val.is_null() {
+                    self.own_hull_id = None;
+                    self.own_hull_name.clear();
+                    if !received_room_stowage {
+                        self.reset_stowage();
+                    }
+                }
+            }
+            if let Some(docked_here) = t.get("own_hull_docked_here").and_then(Value::as_bool) {
+                self.own_hull_docked_here = docked_here;
+            }
         }
 
-        // Detect ship interior vs station room
+        // Detect ship interior vs station room authoritatively (`SSH-M-06`):
+        // Trust `ambient.tacsim.mode == "interior"` when ambient metadata is present;
+        // never let `" - "` inside a station room title falsely trigger ship interior mode.
         let mode_str = tac
             .and_then(|t| t.get("mode"))
             .and_then(Value::as_str)
             .unwrap_or("");
-        let comp_from_tac = tac
-            .and_then(|t| t.get("room"))
-            .and_then(Value::as_str)
-            .and_then(|r| self.match_ship_compartment(r));
-        let comp_from_title = view
-            .name
-            .rsplit_once(" - ")
-            .and_then(|(_, right)| self.match_ship_compartment(right));
+        let is_interior = if mode_str == "interior" {
+            true
+        } else if tac.is_some() || atlas.is_some() {
+            false
+        } else {
+            clean_name
+                .rsplit_once(" - ")
+                .and_then(|(_, right)| self.match_ship_compartment(right))
+                .is_some()
+        };
 
-        if mode_str == "interior" || comp_from_tac.is_some() || comp_from_title.is_some() {
+        if is_interior {
+            // Load unit-specific interior layout if known & cached, or queue its pack.
+            if let Some(unit_raw) = tac.and_then(|t| t.get("unit")).and_then(Value::as_str) {
+                let slug = normalize_unit_slug(&sanitize(unit_raw));
+                if !slug.is_empty() && slug != self.ship_unit_id {
+                    self.ship_unit_id = slug.clone();
+                    self.missing_packs.remove(&slug);
+                    if let Some((sr, sp)) = self.unit_cache.get(&slug).cloned() {
+                        self.ship_rooms = sr;
+                        self.ship_portals = sp;
+                    } else {
+                        let (sr, sp) = builtin_dray_layout();
+                        self.ship_rooms = sr;
+                        self.ship_portals = sp;
+                        if !self.is_pack_loaded_current(&slug) {
+                            self.pending_pack_requests.push(slug);
+                        }
+                    }
+                }
+            }
+
+            let comp_from_tac = tac
+                .and_then(|t| t.get("room"))
+                .and_then(Value::as_str)
+                .map(sanitize)
+                .and_then(|r| self.match_ship_compartment(&r));
+            let comp_from_title = clean_name
+                .rsplit_once(" - ")
+                .and_then(|(_, right)| self.match_ship_compartment(right));
             let comp = comp_from_tac
                 .or(comp_from_title)
                 .unwrap_or_else(|| "airlock".to_string());
+
             self.aboard_ship = true;
-            self.hull_name = tac
+            let new_hull_name = tac
                 .and_then(|t| t.get("hull_name"))
                 .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| view.name.split_once(" - ").map(|(h, _)| h.to_string()))
+                .map(sanitize)
+                .or_else(|| clean_name.split_once(" - ").map(|(h, _)| h.to_string()))
                 .unwrap_or_else(|| "Charter Hull".to_string());
+            if !self.hull_name.is_empty()
+                && self.hull_name != new_hull_name
+                && !received_room_stowage
+            {
+                self.own_hull_id = None;
+                self.reset_stowage();
+            }
+            self.hull_name = new_hull_name;
             self.docked = tac
                 .and_then(|t| t.get("docked"))
                 .and_then(Value::as_bool)
@@ -649,12 +916,18 @@ impl PortWalkState {
             if comp != "bridge" {
                 self.seated_at_helm = false;
             }
+            if !was_aboard {
+                self.pending_move_target = None;
+                self.pending_interaction = None;
+            }
             self.server_location_key.clone_from(&comp);
             if let Some((pt, _)) = &self.pending_move_target
                 && pt == &comp
             {
                 self.pending_move_target = None;
             }
+            let now = self.last_tick.unwrap_or_else(Instant::now);
+            self.advance_pending_interaction_move(now);
             if !was_aboard
                 || !self
                     .ship_rooms
@@ -664,39 +937,111 @@ impl PortWalkState {
             {
                 self.snap_to_room(&comp);
             }
-            self.rebuild_actors_and_interactables(view, self_name);
+            self.rebuild_actors_and_interactables(view, clean_self.as_deref());
+            self.resume_pending_interaction_if_arrived(now);
+            self.bump_scene();
             return;
         }
 
         // Station / OOC room
         self.aboard_ship = false;
         self.seated_at_helm = false;
-
-        let want_ooc = atlas
-            .and_then(|a| a.get("pack"))
-            .and_then(Value::as_str)
-            .is_some_and(|p| p.contains("ooc"))
-            || view.name.to_ascii_lowercase().contains("simulator")
-            || view.name.to_ascii_lowercase().contains("pod bay");
-        let want_pack = if want_ooc {
-            "neighborhood.ooc_sim_centre"
-        } else {
-            "neighborhood.ceres_freeport"
-        };
-        if self.pack_id != want_pack {
-            self.pack_id = want_pack.to_string();
-            let (r, p) = if want_ooc {
-                builtin_ooc_layout()
-            } else {
-                builtin_ceres_layout()
-            };
-            self.rooms = r;
-            self.portals = p;
+        if was_aboard {
+            self.pending_move_target = None;
+            self.pending_interaction = None;
         }
 
-        let entry = atlas
+        let atlas_pack = atlas
+            .and_then(|a| {
+                a.get("pack")
+                    .or_else(|| a.get("neighborhood_pack"))
+                    .and_then(Value::as_str)
+            })
+            .map(sanitize)
+            .filter(|s| !s.is_empty());
+
+        let want_pack = if let Some(p) = atlas_pack {
+            p
+        } else if mode_str == "simulator"
+            || clean_name.to_ascii_lowercase().contains("simulator")
+            || clean_name.to_ascii_lowercase().contains("red room")
+            || clean_name.to_ascii_lowercase().contains("blue room")
+        {
+            "neighborhood.ooc_area".to_string()
+        } else {
+            "neighborhood.ceres_freeport".to_string()
+        };
+
+        let atlas_entry = atlas
             .and_then(|a| a.get("entry"))
             .and_then(Value::as_str)
+            .map(sanitize)
+            .filter(|s| !s.is_empty());
+
+        if self.pack_id != want_pack {
+            self.pack_id = want_pack.clone();
+            self.missing_packs.remove(&want_pack);
+            if let Some((r, p)) = self.neighborhood_cache.get(&want_pack).cloned() {
+                self.rooms = r;
+                self.portals = p;
+            } else if want_pack == "neighborhood.ooc_area" || want_pack.contains("ooc") {
+                let (r, p) = builtin_ooc_layout();
+                self.rooms = r;
+                self.portals = p;
+                if !self.is_pack_loaded_current(&want_pack) {
+                    self.pending_pack_requests.push(want_pack.clone());
+                }
+            } else if want_pack == "neighborhood.ceres_freeport" {
+                let (r, p) = builtin_ceres_layout();
+                self.rooms = r;
+                self.portals = p;
+                if !self.is_pack_loaded_current(&want_pack) {
+                    self.pending_pack_requests.push(want_pack.clone());
+                }
+            } else {
+                // Unknown/non-Ceres port whose neighborhood pack hasn't arrived yet:
+                // create a placeholder room for the real entry (never falsely render Ceres!)
+                // and queue an immediate `tacsim.content` pack request.
+                let fallback_entry = atlas_entry
+                    .clone()
+                    .unwrap_or_else(|| "room.current".to_string());
+                let kind = classify_room_kind(&fallback_entry, false, "indoor");
+                self.rooms = vec![RoomGeom {
+                    entry_id: fallback_entry,
+                    name: clean_name.clone(),
+                    floor: 0,
+                    min_x: -12.0,
+                    min_y: -10.0,
+                    max_x: 12.0,
+                    max_y: 10.0,
+                    kind,
+                }];
+                self.portals = Vec::new();
+                if !self.is_pack_loaded_current(&want_pack) {
+                    self.pending_pack_requests.push(want_pack.clone());
+                }
+            }
+        }
+
+        // If the player moves to another room inside an uncached non-Ceres/non-OOC port
+        // before its neighborhood pack arrives, keep the single placeholder synced to the
+        // new `atlas_entry` so `server_location_key` snaps cleanly once the pack lands.
+        if !self.neighborhood_cache.contains_key(&self.pack_id)
+            && self.pack_id != "neighborhood.ceres_freeport"
+            && self.pack_id != "neighborhood.ooc_area"
+            && !self.pack_id.contains("ooc")
+            && let Some(ref e) = atlas_entry
+            && !self.rooms.iter().any(|r| r.entry_id == *e)
+            && self.rooms.len() == 1
+        {
+            let kind = classify_room_kind(e, false, "indoor");
+            self.rooms[0].entry_id.clone_from(e);
+            self.rooms[0].name.clone_from(&clean_name);
+            self.rooms[0].kind = kind;
+        }
+
+        let entry = atlas_entry
+            .as_deref()
             .and_then(|e| {
                 self.rooms
                     .iter()
@@ -704,12 +1049,12 @@ impl PortWalkState {
                     .map(|r| r.entry_id.clone())
             })
             .or_else(|| {
-                let lower = view.name.trim().to_ascii_lowercase();
+                let lower = clean_name.trim().to_ascii_lowercase();
                 self.rooms
                     .iter()
                     .find(|r| {
-                        r.name.to_ascii_lowercase() == lower
-                            || lower.contains(&r.name.to_ascii_lowercase())
+                        let rlow = r.name.to_ascii_lowercase();
+                        rlow == lower || (!rlow.is_empty() && lower.contains(&rlow))
                     })
                     .map(|r| r.entry_id.clone())
             })
@@ -722,6 +1067,8 @@ impl PortWalkState {
         {
             self.pending_move_target = None;
         }
+        let now = self.last_tick.unwrap_or_else(Instant::now);
+        self.advance_pending_interaction_move(now);
         if was_aboard
             || !self
                 .rooms
@@ -730,7 +1077,6 @@ impl PortWalkState {
         {
             self.snap_to_room(&entry);
         } else if self.active_location_key != entry && self.pending_move_target.is_none() {
-            // Snap when teleported or server moved us independently
             let dist = self.find_room(&entry).map_or(99.0, |r| {
                 let (cx, cy) = r.center();
                 ((cx - self.you_x).powi(2) + (cy - self.you_y).powi(2)).sqrt()
@@ -742,10 +1088,13 @@ impl PortWalkState {
             }
         }
 
-        self.rebuild_actors_and_interactables(view, self_name);
+        self.rebuild_actors_and_interactables(view, clean_self.as_deref());
+        self.resume_pending_interaction_if_arrived(now);
+        self.bump_scene();
     }
 
     /// Observe narrative speech for 2.5D/1P actor speech bubbles and drawer transcript.
+    /// Always prunes expired bubbles and caps size even when `StationWalk` is closed (`SSH-H-03`).
     pub fn observe_narrative(
         &mut self,
         _kind: NarrativeKind,
@@ -753,102 +1102,365 @@ impl PortWalkState {
         plain_text: &str,
         now: Instant,
     ) {
-        let trimmed = plain_text.trim();
+        self.speech_bubbles.retain(|_, (_, exp)| *exp > now);
+        let clean = sanitize(plain_text);
+        let trimmed = clean.trim();
         if trimmed.is_empty() {
             return;
         }
         if let Some(act) = actor {
+            let clean_actor = sanitize(&act.name);
+            let clean_id = sanitize(&act.id.to_string());
+            let bubble = truncate_str(trimmed, MAX_SPEECH_CHARS);
             let exp = now + SPEECH_TTL;
-            self.speech_bubbles
-                .insert(act.id.to_string(), (trimmed.to_string(), exp));
-            self.speech_bubbles
-                .insert(act.name.to_ascii_lowercase(), (trimmed.to_string(), exp));
+            self.insert_speech_bubble(clean_id, bubble.clone(), exp);
+            if !clean_actor.is_empty() {
+                self.insert_speech_bubble(clean_actor.to_ascii_lowercase(), bubble, exp);
+            }
+            self.bump_scene();
         }
         if self.drawer.is_some() {
-            let line = match actor {
-                Some(a) => format!("{}: {trimmed}", a.name),
-                None => trimmed.to_string(),
-            };
-            self.push_drawer_log(line);
+            let actor_prefix = actor.map(|a| sanitize(&a.name));
+            for part in trimmed.lines() {
+                let p = part.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                let line = match actor_prefix.as_deref() {
+                    Some(name) if !name.is_empty() => format!("{name}: {p}"),
+                    _ => p.to_string(),
+                };
+                self.push_drawer_log(line);
+            }
         }
+    }
+
+    fn insert_speech_bubble(&mut self, key: String, text: String, exp: Instant) {
+        if key.is_empty() {
+            return;
+        }
+        if !self.speech_bubbles.contains_key(&key) {
+            while self.speech_bubbles.len() >= MAX_SPEECH_BUBBLES {
+                let oldest = self
+                    .speech_bubbles
+                    .iter()
+                    .min_by_key(|(_, (_, e))| *e)
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(k) => {
+                        self.speech_bubbles.remove(&k);
+                    }
+                    None => break,
+                }
+            }
+        }
+        self.speech_bubbles.insert(key, (text, exp));
     }
 
     pub fn observe_sys(&mut self, text: &str) {
-        if self.drawer.is_some() && !text.trim().is_empty() {
-            self.push_drawer_log(text.trim().to_string());
+        if self.drawer.is_none() {
+            return;
+        }
+        for raw_line in text.lines() {
+            let clean = sanitize(raw_line);
+            let trimmed = clean.trim();
+            if !trimmed.is_empty() {
+                self.push_drawer_log(trimmed.to_string());
+            }
         }
     }
 
-    /// Observe `port.trade` panel/query keyframe and run 1-click Quote-to-Accept verification.
-    pub fn observe_port_trade(
-        &mut self,
-        data: &Value,
-        now: Instant,
-    ) -> (Vec<String>, Vec<(String, Value)>) {
-        let mut cmds = Vec::new();
+    /// Observe `port.trade` panel/query keyframe against live `crates/tacsim/src/client_sync.rs`
+    /// (`build_port_trade_frame`) and run 1-click Quote-to-Accept verification (`SSH-H-02`, `C-20`).
+    ///
+    /// Any auto-accepted `+market/accept` command is queued once into `self.pending_orders`
+    /// (retrieved via [`take_orders`](Self::take_orders)); returns only follow-up queries (`SSH-L-02`).
+    pub fn observe_port_trade(&mut self, data: &Value, now: Instant) -> Vec<(String, Value)> {
         let mut queries = Vec::new();
         let Some(obj) = data.as_object() else {
-            return (cmds, queries);
+            return queries;
         };
+        let mut visual_changed = false;
 
-        // The keys are the server's (`tacsim::client_sync::build_port_trade_frame`;
-        // 48e L8, clients:G3): `balance_minor`, `listings[]` split on `side`,
-        // `open_quotes[]` and `ship.stowage` with its `items[]`.
-        if let Some(cr) = obj.get("balance_minor").and_then(Value::as_i64) {
+        if let Some(cr) = obj
+            .get("balance_minor")
+            .or_else(|| obj.get("credits_minor"))
+            .and_then(Value::as_i64)
+        {
             self.credits_minor = cr;
         }
-        let stowage = obj
-            .get("ship")
-            .and_then(|ship| ship.get("stowage"))
-            .and_then(Value::as_object);
-        if let Some(st) = stowage {
-            self.decode_stowage_obj(st);
+        if let Some(bt) = obj.get("balance_text").and_then(Value::as_str) {
+            self.balance_text = sanitize(bt);
+        }
+        if let Some(venue_val) = obj.get("venue") {
+            if venue_val.is_null() {
+                self.current_venue = None;
+            } else if let Some(v) = venue_val.as_str() {
+                let clean_v = sanitize(v);
+                self.current_venue = if clean_v.is_empty() {
+                    None
+                } else {
+                    Some(clean_v)
+                };
+            }
+        }
+        if let Some(pn_val) = obj.get("port_name") {
+            if pn_val.is_null() {
+                self.port_name.clear();
+            } else if let Some(pn) = pn_val.as_str() {
+                self.port_name = sanitize(pn);
+            }
+        }
+        self.trade_next_after = obj.get("next_after").and_then(Value::as_u64);
+
+        // Live `port.trade.ship` (`client_sync.rs:1296-1327`)
+        if let Some(ship_val) = obj.get("ship") {
+            if ship_val.is_null() {
+                if !self.own_hull_name.is_empty()
+                    || self.own_hull_id.is_some()
+                    || self.stowage_loaded
+                    || self.stowage.cargo_kg != 0
+                    || !self.cargo_lots.is_empty()
+                {
+                    visual_changed = true;
+                }
+                self.own_hull_id = None;
+                self.own_hull_name.clear();
+                self.reset_stowage();
+            } else if let Some(ship_obj) = ship_val.as_object() {
+                let new_hull_id = ship_obj
+                    .get("hull_id")
+                    .map(|v| match v {
+                        Value::String(s) => sanitize(s),
+                        Value::Number(n) => n.to_string(),
+                        _ => String::new(),
+                    })
+                    .filter(|s| !s.is_empty());
+                let new_hull_name = ship_obj
+                    .get("hull_name")
+                    .and_then(Value::as_str)
+                    .map(sanitize);
+                let ship_changed = match (&self.own_hull_id, &new_hull_id) {
+                    (Some(old), Some(new)) => old != new,
+                    (None, Some(_)) => !self.own_hull_name.is_empty() || self.stowage_loaded,
+                    _ => new_hull_name
+                        .as_deref()
+                        .is_some_and(|n| !self.own_hull_name.is_empty() && self.own_hull_name != n),
+                };
+                if let Some(hid) = new_hull_id {
+                    if self.own_hull_id.as_deref() != Some(hid.as_str()) {
+                        visual_changed = true;
+                    }
+                    self.own_hull_id = Some(hid);
+                }
+                if let Some(clean_h) = new_hull_name
+                    && self.own_hull_name != clean_h
+                {
+                    self.own_hull_name = clean_h;
+                    visual_changed = true;
+                }
+                if let Some(unit) = ship_obj.get("unit").and_then(Value::as_str) {
+                    let slug = normalize_unit_slug(&sanitize(unit));
+                    if !slug.is_empty() && !self.is_pack_loaded_current(&slug) {
+                        self.pending_pack_requests.push(slug);
+                    }
+                }
+                let stowage_val = ship_obj.get("stowage");
+                if let Some(st) = stowage_val.and_then(Value::as_object) {
+                    let old_kg = self.stowage.cargo_kg;
+                    if ship_changed {
+                        self.reset_stowage();
+                    }
+                    self.decode_stowage_obj(st);
+                    if ship_changed || self.stowage.cargo_kg != old_kg {
+                        visual_changed = true;
+                    }
+                } else if ship_changed || stowage_val.is_some_and(Value::is_null) {
+                    self.reset_stowage();
+                    visual_changed = true;
+                }
+            }
         }
 
-        if let Some(rows) = obj.get("listings").and_then(Value::as_array) {
-            self.asks.clear();
-            self.bids.clear();
-            for item in rows.iter().take(128) {
-                let lid = item.get("id").and_then(Value::as_i64).unwrap_or(0);
+        // Legacy top-level `stowage` fallback
+        if let Some(stowage_val) = obj.get("stowage") {
+            if stowage_val.is_null() {
+                if self.stowage_loaded || self.stowage.cargo_kg != 0 || !self.cargo_lots.is_empty()
+                {
+                    visual_changed = true;
+                }
+                self.reset_stowage();
+            } else if let Some(st) = stowage_val.as_object() {
+                let old_kg = self.stowage.cargo_kg;
+                self.decode_stowage_obj(st);
+                if self.stowage.cargo_kg != old_kg {
+                    visual_changed = true;
+                }
+            }
+        }
+
+        // Live `port.trade.berth` (`port/ship.rs:1593-1647`)
+        if let Some(berth_val) = obj.get("berth") {
+            if berth_val.is_null() {
+                if !self.berth_docked_hulls.is_empty() {
+                    self.berth_docked_hulls.clear();
+                    visual_changed = true;
+                }
+            } else if let Some(berth) = berth_val.as_object() {
+                if let Some(dh_arr) = berth.get("docked_hulls").and_then(Value::as_array) {
+                    let mut parsed = Vec::new();
+                    for item in dh_arr.iter().take(16) {
+                        let id = item
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(sanitize)
+                            .unwrap_or_default();
+                        let name = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(sanitize)
+                            .unwrap_or_default();
+                        let unit = item
+                            .get("unit")
+                            .and_then(Value::as_str)
+                            .map(sanitize)
+                            .unwrap_or_default();
+                        if !name.is_empty() {
+                            parsed.push(DockedHullInfo { id, name, unit });
+                        }
+                    }
+                    self.berth_docked_hulls = parsed;
+                    visual_changed = true;
+                }
+                if let Some(own_name_val) = berth.get("own_hull_name") {
+                    if let Some(n) = own_name_val.as_str() {
+                        let clean = sanitize(n);
+                        if self.own_hull_name != clean {
+                            self.own_hull_name = clean;
+                            visual_changed = true;
+                        }
+                    } else if own_name_val.is_null() && obj.get("ship").is_none() {
+                        self.own_hull_name.clear();
+                        visual_changed = true;
+                    }
+                }
+                if let Some(dh) = berth.get("own_hull_docked_here").and_then(Value::as_bool) {
+                    self.own_hull_docked_here = dh;
+                }
+            }
+        }
+
+        // Live `port.trade.simulator` (`port/ship.rs:1652-1706`)
+        if let Some(sim_val) = obj.get("simulator") {
+            if sim_val.is_null() {
+                self.simulator = None;
+            } else if let Some(sim_obj) = sim_val.as_object() {
+                let mut slots = Vec::new();
+                if let Some(s_arr) = sim_obj.get("slots").and_then(Value::as_array) {
+                    for s in s_arr.iter().take(16) {
+                        slots.push(SimulatorSlotInfo {
+                            team: s
+                                .get("team")
+                                .and_then(Value::as_str)
+                                .map(sanitize)
+                                .unwrap_or_default(),
+                            index: s.get("index").and_then(Value::as_u64).unwrap_or(0),
+                            pilot_name: s
+                                .get("pilot_name")
+                                .and_then(Value::as_str)
+                                .map(sanitize)
+                                .unwrap_or_default(),
+                            unit: s
+                                .get("unit")
+                                .and_then(Value::as_str)
+                                .map(sanitize)
+                                .unwrap_or_default(),
+                            seated: s.get("seated").and_then(Value::as_bool).unwrap_or(false),
+                        });
+                    }
+                }
+                self.simulator = Some(SimulatorState {
+                    arena: sim_obj
+                        .get("arena")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default(),
+                    match_state: sim_obj
+                        .get("match_state")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default(),
+                    my_team: sim_obj.get("my_team").and_then(Value::as_str).map(sanitize),
+                    my_unit: sim_obj.get("my_unit").and_then(Value::as_str).map(sanitize),
+                    slots,
+                });
+            }
+        }
+
+        // Live `port.trade.listings[]` (`client_sync.rs:1280-1292`; 48e L8, clients:G3)
+        if let Some(listings_arr) = obj.get("listings").and_then(Value::as_array) {
+            let append = std::mem::take(&mut self.awaiting_trade_page);
+            if !append {
+                self.asks.clear();
+                self.bids.clear();
+            }
+            for item in listings_arr.iter().take(128) {
+                let lid = item
+                    .get("id")
+                    .or_else(|| item.get("listing_id"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 let gid = item
                     .get("good")
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+                    .map(sanitize)
+                    .unwrap_or_default();
                 if lid <= 0 || gid.is_empty() {
                     continue;
                 }
-                let (meta_name, mass_kg, vol_dm3) = self
-                    .goods_meta
-                    .get(&gid)
-                    .cloned()
-                    .unwrap_or_else(|| (gid.clone(), 25, 40));
+                let side = item.get("side").and_then(Value::as_str).unwrap_or("ask");
+                let (meta_name, mass_kg, vol_dm3) = self.lookup_goods_meta(&gid);
                 let gname = item
                     .get("good_label")
                     .and_then(Value::as_str)
-                    .filter(|l| !l.is_empty())
-                    .map_or(meta_name, str::to_string);
+                    .map(sanitize)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(meta_name);
+                let vendor_name = item
+                    .get("vendor_name")
+                    .and_then(Value::as_str)
+                    .map(sanitize)
+                    .unwrap_or_default();
                 let qty = item
                     .get("available_qty")
+                    .or_else(|| item.get("quantity"))
+                    .or_else(|| item.get("qty"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
                 let price = item
                     .get("unit_price_minor")
+                    .or_else(|| item.get("price_minor"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
-                if item.get("side").and_then(Value::as_str) == Some("bid") {
-                    self.bids.push(BidRow {
-                        listing_id: lid,
-                        good_id: gid,
-                        good_name: gname,
-                        quantity_wanted: qty,
-                        unit_price_minor: price,
-                    });
-                } else {
+                let funded = item.get("funded").and_then(Value::as_bool).unwrap_or(true);
+                if side == "bid" {
+                    if !self.bids.iter().any(|b| b.listing_id == lid) && self.bids.len() < 256 {
+                        self.bids.push(BidRow {
+                            listing_id: lid,
+                            good_id: gid,
+                            good_name: gname,
+                            vendor_name,
+                            quantity_wanted: qty,
+                            unit_price_minor: price,
+                            funded,
+                        });
+                    }
+                } else if !self.asks.iter().any(|a| a.listing_id == lid) && self.asks.len() < 256 {
                     self.asks.push(AskRow {
                         listing_id: lid,
                         good_id: gid,
                         good_name: gname,
+                        vendor_name,
                         quantity: qty,
                         unit_price_minor: price,
                         unit_mass_kg: mass_kg,
@@ -856,107 +1468,236 @@ impl PortWalkState {
                     });
                 }
             }
-        }
-
-        if let Some(items) = stowage
-            .and_then(|st| st.get("items"))
-            .and_then(Value::as_array)
-        {
-            self.cargo_lots.clear();
-            for item in items.iter().take(64) {
-                let gid = item
-                    .get("good")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let qty = item.get("qty").and_then(Value::as_i64).unwrap_or(0);
-                if gid.is_empty() || qty <= 0 {
-                    continue;
-                }
-                let gname = self
-                    .goods_meta
-                    .get(&gid)
-                    .map_or_else(|| gid.clone(), |(n, _, _)| n.clone());
-                self.cargo_lots.push(CargoLotRow {
-                    good_id: gid,
-                    good_name: gname,
-                    quantity: qty,
-                });
-            }
-        }
-
-        if let Some(q_arr) = obj.get("open_quotes").and_then(Value::as_array) {
-            self.own_quotes.clear();
-            for q in q_arr.iter().take(16) {
-                let qid = q
-                    .get("quote_id")
-                    .and_then(Value::as_u64)
-                    .map(|n| n.to_string())
-                    .unwrap_or_default();
-                let lid = q.get("listing_id").and_then(Value::as_i64).unwrap_or(0);
-                let uprice = q
-                    .get("unit_price_minor")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
-                if !qid.is_empty() {
-                    // The server sends only live quotes (`build_open_quotes_json`).
-                    self.own_quotes.push(OwnQuoteRow {
-                        quote_id: qid,
+        } else {
+            // Legacy separate `asks` / `bids` fallback
+            if let Some(asks_arr) = obj.get("asks").and_then(Value::as_array) {
+                self.asks.clear();
+                for item in asks_arr.iter().take(64) {
+                    let lid = item
+                        .get("listing_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    let gid = item
+                        .get("good")
+                        .or_else(|| item.get("good_id"))
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    if lid <= 0 || gid.is_empty() {
+                        continue;
+                    }
+                    let (gname, mass_kg, vol_dm3) = self.lookup_goods_meta(&gid);
+                    let qty = item
+                        .get("available_qty")
+                        .or_else(|| item.get("quantity"))
+                        .or_else(|| item.get("qty"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    let price = item
+                        .get("unit_price_minor")
+                        .or_else(|| item.get("price_minor"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    self.asks.push(AskRow {
                         listing_id: lid,
-                        unit_price_minor: uprice,
-                        expired: false,
+                        good_id: gid,
+                        good_name: gname,
+                        vendor_name: String::new(),
+                        quantity: qty,
+                        unit_price_minor: price,
+                        unit_mass_kg: mass_kg,
+                        unit_vol_dm3: vol_dm3,
+                    });
+                }
+            }
+
+            if let Some(bids_arr) = obj.get("bids").and_then(Value::as_array) {
+                self.bids.clear();
+                for item in bids_arr.iter().take(64) {
+                    let lid = item
+                        .get("listing_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    let gid = item
+                        .get("good")
+                        .or_else(|| item.get("good_id"))
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    if lid <= 0 || gid.is_empty() {
+                        continue;
+                    }
+                    let (gname, _, _) = self.lookup_goods_meta(&gid);
+                    let qty = item
+                        .get("available_qty")
+                        .or_else(|| item.get("quantity_wanted"))
+                        .or_else(|| item.get("quantity"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    let price = item
+                        .get("unit_price_minor")
+                        .or_else(|| item.get("price_minor"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    self.bids.push(BidRow {
+                        listing_id: lid,
+                        good_id: gid,
+                        good_name: gname,
+                        vendor_name: String::new(),
+                        quantity_wanted: qty,
+                        unit_price_minor: price,
+                        funded: true,
                     });
                 }
             }
         }
 
-        // Verify pending 1-click Quote -> Accept
+        // Legacy top-level `cargo` / `lots` fallback if `ship.stowage.items` was not present
+        if let Some(cargo_arr) = obj
+            .get("cargo")
+            .or_else(|| obj.get("lots"))
+            .and_then(Value::as_array)
+        {
+            self.decode_cargo_items_arr(cargo_arr);
+        }
+
+        // Live `port.trade.open_quotes[]` (`client_sync.rs:1188-1220`), fallback `own.quotes` / `quotes`
+        if let Some(q_arr) = obj
+            .get("open_quotes")
+            .or_else(|| obj.get("own").and_then(|o| o.get("quotes")))
+            .or_else(|| obj.get("quotes"))
+            .and_then(Value::as_array)
+        {
+            self.own_quotes.clear();
+            for q in q_arr.iter().take(64) {
+                let qid = q
+                    .get("quote_id")
+                    .or_else(|| q.get("id"))
+                    .map(|v| match v {
+                        Value::String(s) => sanitize(s),
+                        Value::Number(n) => n.to_string(),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default();
+                let lid = q.get("listing_id").and_then(Value::as_i64).unwrap_or(0);
+                let qty = q
+                    .get("quantity")
+                    .or_else(|| q.get("qty"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let uprice = q
+                    .get("unit_price_minor")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let total_minor = q.get("total_minor").and_then(Value::as_i64);
+                let expired = q.get("expired").and_then(Value::as_bool).unwrap_or(false);
+                if !qid.is_empty() {
+                    // The server sends only live quotes (`build_open_quotes_json`).
+                    self.own_quotes.push(OwnQuoteRow {
+                        quote_id: qid,
+                        listing_id: lid,
+                        quantity: qty,
+                        unit_price_minor: uprice,
+                        total_minor,
+                        expired,
+                    });
+                }
+            }
+        }
+
+        // Verify pending 1-click Quote -> Accept: require exact `listing_id`, exact `quantity`,
+        // a fresh `quote_id` not present prior to `+market/quote`, and total <= authorized total.
         if let Some(pq) = self.pending_quote.clone() {
             if now.saturating_duration_since(pq.created_at) > Duration::from_secs(12) {
                 self.pending_quote = None;
-            } else if let Some(matched) = self
-                .own_quotes
-                .iter()
-                .find(|q| !q.expired && (q.listing_id == 0 || q.listing_id == pq.listing_id))
-            {
+            } else if let Some(matched) = self.own_quotes.iter().find(|q| {
+                !q.expired
+                    && q.listing_id > 0
+                    && q.listing_id == pq.listing_id
+                    && q.quantity > 0
+                    && q.quantity == pq.quantity
+                    && !pq.prior_quote_ids.contains(&q.quote_id)
+            }) {
                 self.pending_quote = None;
-                if matched.unit_price_minor <= pq.max_unit_price_minor {
+                let effective_total = matched
+                    .total_minor
+                    .or_else(|| matched.unit_price_minor.checked_mul(matched.quantity));
+                let within_authorized = matched.unit_price_minor >= 0
+                    && matched.unit_price_minor <= pq.max_unit_price_minor
+                    && effective_total
+                        .is_some_and(|tot| tot >= 0 && tot <= pq.authorized_total_minor);
+                if within_authorized {
                     let accept = format!("+market/accept {}", matched.quote_id);
                     self.push_drawer_log(format!(
                         "[QUOTE VERIFIED] Accepting #{} ({} units)...",
-                        matched.quote_id, pq.quantity
+                        matched.quote_id, matched.quantity
                     ));
-                    self.pending_orders.push(accept.clone());
-                    cmds.push(accept);
+                    self.pending_orders.push(accept);
+                    self.awaiting_trade_page = false;
                     queries.push((PORT_TRADE_FEED.to_string(), json!({})));
                 } else {
                     self.push_drawer_log(format!(
-                        "[PRICE MOVED] Quote {} > expected {}; purchase halted.",
+                        "[PRICE MOVED] Quote {} (total {}) > expected {} (max total {}); purchase halted.",
                         format_credits(matched.unit_price_minor),
-                        format_credits(pq.max_unit_price_minor)
+                        effective_total.map_or_else(|| "overflow".to_string(), format_credits),
+                        format_credits(pq.max_unit_price_minor),
+                        format_credits(pq.authorized_total_minor),
                     ));
                 }
             }
         }
 
-        (cmds, queries)
+        if visual_changed {
+            self.bump_scene();
+        }
+        queries
     }
 
-    /// Observe `tacsim.content` manifest or pack JSON keyframe.
+    /// Observe `tacsim.content` manifest or pack JSON keyframe (`SSH-C-02`, `C-18`).
+    /// Always requests packs with `{"op":"pack","id":id}` and deduplicates requests so
+    /// manifests never trigger an infinite request storm.
     pub fn observe_tacsim_content(&mut self, data: &Value) -> Vec<(String, Value)> {
         let mut followups = Vec::new();
         let Some(obj) = data.as_object() else {
             return followups;
         };
-        // A manifest: ask once for the goods pack and the current neighbourhood,
-        // wherever they sit in it. The server answers a pack only to
-        // `{ "op": "pack", "id": .. }` (48e L8, clients:G1).
-        if let Some(packs) = obj.get("packs").and_then(Value::as_array) {
-            for p in packs {
-                let id = p.get("id").and_then(Value::as_str).unwrap_or("");
-                if (id == "goods" || id == self.pack_id)
-                    && self.packs_requested.insert(id.to_string())
-                {
+        let op = obj.get("op").and_then(Value::as_str);
+        if op == Some("manifest") || (op != Some("pack") && obj.get("packs").is_some()) {
+            if let Some(packs) = obj.get("packs").and_then(Value::as_array) {
+                let mut next_manifest = HashMap::new();
+                for p in packs {
+                    let id = p
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let sha = p
+                        .get("sha256")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    next_manifest.insert(id, sha);
+                }
+                if next_manifest != self.manifest_packs {
+                    self.manifest_packs = next_manifest;
+                    self.manifest_gen = self.manifest_gen.wrapping_add(1);
+                }
+            }
+            // Request only the packs we actually need right now (goods, active neighborhood, active ship unit).
+            let wanted = [
+                "goods".to_string(),
+                self.pack_id.clone(),
+                self.ship_unit_id.clone(),
+            ];
+            for id in wanted {
+                let available =
+                    self.manifest_packs.is_empty() || self.manifest_packs.contains_key(&id);
+                if available && self.try_enqueue_pack(&id) {
                     followups.push((
                         TACSIM_CONTENT_FEED.to_string(),
                         json!({ "op": "pack", "id": id }),
@@ -965,60 +1706,328 @@ impl PortWalkState {
             }
             return followups;
         }
+
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .unwrap_or_default();
+        let requested_id = obj
+            .get("requested_id")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .unwrap_or_default();
+        let effective_id = if !id.is_empty() {
+            id.clone()
+        } else {
+            requested_id.clone()
+        };
+        if !id.is_empty() {
+            self.in_flight_packs.remove(&id);
+        }
+        if !requested_id.is_empty() {
+            self.in_flight_packs.remove(&requested_id);
+        }
+
         if obj.get("found").and_then(Value::as_bool) == Some(false) {
+            // Do NOT mark missing packs as loaded; record the current manifest generation so
+            // duplicate identical manifests don't spin, while a new manifest/revision or revisit retries.
+            if !effective_id.is_empty() {
+                self.missing_packs
+                    .insert(effective_id.clone(), self.manifest_gen);
+            }
+            if !requested_id.is_empty() && requested_id != effective_id {
+                self.missing_packs.insert(requested_id, self.manifest_gen);
+            }
             return followups;
         }
-        let id = obj.get("id").and_then(Value::as_str).unwrap_or("");
-        let parsed_pack = obj
-            .get("json")
-            .and_then(Value::as_str)
-            .and_then(|s| serde_json::from_str::<Value>(s).ok());
+
+        let category = obj.get("category").and_then(Value::as_str).unwrap_or("");
+        let parsed_pack = match obj.get("json") {
+            Some(Value::String(s)) => serde_json::from_str::<Value>(s).ok(),
+            Some(v @ Value::Object(_)) => Some(v.clone()),
+            _ => obj.get("pack").cloned(),
+        };
         let Some(pack_val) = parsed_pack else {
             return followups;
         };
-        if id == "goods" {
-            self.observe_goods_pack(&pack_val);
+
+        let pack_sha = obj
+            .get("sha256")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                self.manifest_packs
+                    .get(&effective_id)
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_default();
+        if !effective_id.is_empty() {
+            self.loaded_packs
+                .insert(effective_id.clone(), pack_sha.clone());
+            self.missing_packs.remove(&effective_id);
         }
+        if !requested_id.is_empty() && requested_id != effective_id {
+            self.loaded_packs.insert(requested_id.clone(), pack_sha);
+            self.missing_packs.remove(&requested_id);
+        }
+
+        // 1. Goods pack (`goods.json`: `goods[]` with `measures["si.mass_kg"]`, `measures["si.volume_l"]`)
+        if effective_id == "goods" || category == "market" || pack_val.get("goods").is_some() {
+            self.parse_goods_pack(&pack_val);
+            return followups;
+        }
+
+        // 2. Neighborhood pack (`neighborhood.*`: `entries` with `kind: "room"` & `kind: "exit"`)
+        if category == "neighborhood" || effective_id.starts_with("neighborhood.") {
+            if let Some((rooms, portals)) = parse_neighborhood_pack(&pack_val) {
+                let key = if effective_id.is_empty() {
+                    self.pack_id.clone()
+                } else {
+                    effective_id.clone()
+                };
+                self.neighborhood_cache
+                    .insert(key.clone(), (rooms.clone(), portals.clone()));
+                if !self.aboard_ship && key == self.pack_id {
+                    self.rooms = rooms;
+                    self.portals = portals;
+                    let target = self.server_location_key.clone();
+                    if self.rooms.iter().any(|r| r.entry_id == target) {
+                        self.snap_to_room(&target);
+                    } else if let Some(by_name) = self
+                        .rooms
+                        .iter()
+                        .find(|r| {
+                            let rlow = r.name.to_ascii_lowercase();
+                            let tlow = self.room_title.trim().to_ascii_lowercase();
+                            rlow == tlow || (!rlow.is_empty() && tlow.contains(&rlow))
+                        })
+                        .map(|r| r.entry_id.clone())
+                    {
+                        self.server_location_key.clone_from(&by_name);
+                        self.snap_to_room(&by_name);
+                    } else if let Some(first) = self.rooms.first().map(|r| r.entry_id.clone()) {
+                        self.snap_to_room(&first);
+                    }
+                    self.rebuild_last_room_interactions();
+                    self.bump_scene();
+                }
+            }
+            return followups;
+        }
+
+        // 3. Ship Unit interior pack (`entries.*.def.interior`)
+        if (category == "unit" || has_unit_interior(&pack_val))
+            && let Some((sr, sp)) = parse_unit_interior_pack(&pack_val)
+        {
+            let slug = normalize_unit_slug(&effective_id);
+            if !slug.is_empty() {
+                self.unit_cache
+                    .insert(slug.clone(), (sr.clone(), sp.clone()));
+            }
+            if slug == self.ship_unit_id || (self.aboard_ship && slug.is_empty()) {
+                self.ship_rooms = sr;
+                self.ship_portals = sp;
+                if self.aboard_ship {
+                    let target = self.server_location_key.clone();
+                    if self.ship_rooms.iter().any(|r| r.entry_id == target) {
+                        self.snap_to_room(&target);
+                    }
+                    self.rebuild_last_room_interactions();
+                }
+                self.bump_scene();
+            }
+        }
+
         followups
     }
 
-    /// Read the `goods` pack (`crates/tacsim/content/market/goods.json`): `goods[]`
-    /// rows of `id`, `label` and `measures` keyed `si.mass_kg` and `si.volume_l`.
-    fn observe_goods_pack(&mut self, pack: &Value) {
-        let Some(rows) = pack.get("goods").and_then(Value::as_array) else {
-            return;
-        };
-        for row in rows {
-            let Some(gid) = row.get("id").and_then(Value::as_str) else {
-                continue;
-            };
-            let name = row
-                .get("label")
-                .and_then(Value::as_str)
-                .unwrap_or(gid)
-                .to_string();
-            let measure = |key: &str| {
-                row.get("measures")
-                    .and_then(|m| m.get(key))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0)
-            };
-            let mass = measure("si.mass_kg");
-            let vol = measure("si.volume_l");
-            self.goods_meta.insert(gid.to_string(), (name, mass, vol));
+    fn rebuild_last_room_interactions(&mut self) {
+        if let Some(view) = self.last_room_view.clone() {
+            let self_name = self.last_self_name.clone();
+            self.rebuild_actors_and_interactables(&view, self_name.as_deref());
         }
+    }
+
+    fn parse_goods_pack(&mut self, pack_val: &Value) {
+        if let Some(goods_arr) = pack_val.get("goods").and_then(Value::as_array) {
+            for item in goods_arr {
+                let Some(gid_raw) = item.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let gid = sanitize(gid_raw);
+                if gid.is_empty() {
+                    continue;
+                }
+                let label = item
+                    .get("label")
+                    .or_else(|| item.get("name"))
+                    .and_then(Value::as_str)
+                    .map(sanitize)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| gid.clone());
+                let measures = item.get("measures").and_then(Value::as_object);
+                let mass = measures
+                    .and_then(|m| m.get("si.mass_kg"))
+                    .or_else(|| item.get("unit_mass_kg"))
+                    .or_else(|| item.get("mass_kg"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1000)
+                    .max(1);
+                let vol = measures
+                    .and_then(|m| m.get("si.volume_l"))
+                    .or_else(|| item.get("unit_volume_dm3"))
+                    .or_else(|| item.get("volume_dm3"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1000)
+                    .max(1);
+                self.goods_meta.insert(gid, (label, mass, vol));
+            }
+            self.refresh_trade_rows_from_goods_meta();
+            return;
+        }
+        // Legacy `entries` fallback
+        if let Some(entries) = pack_val.get("entries").and_then(Value::as_object) {
+            for (gid, gval) in entries {
+                let clean_gid = sanitize(gid);
+                let name = gval
+                    .get("label")
+                    .or_else(|| gval.get("name"))
+                    .and_then(Value::as_str)
+                    .map(sanitize)
+                    .unwrap_or_else(|| clean_gid.clone());
+                let mass = gval
+                    .get("unit_mass_kg")
+                    .or_else(|| gval.get("mass_kg"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1000)
+                    .max(1);
+                let vol = gval
+                    .get("unit_volume_dm3")
+                    .or_else(|| gval.get("volume_dm3"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1000)
+                    .max(1);
+                self.goods_meta.insert(clean_gid, (name, mass, vol));
+            }
+            self.refresh_trade_rows_from_goods_meta();
+        }
+    }
+
+    fn refresh_trade_rows_from_goods_meta(&mut self) {
+        let mut changed = false;
+        let asks_meta: Vec<Option<(String, i64, i64)>> = self
+            .asks
+            .iter()
+            .map(|a| self.lookup_goods_meta_opt(&a.good_id))
+            .collect();
+        for (ask, meta) in self.asks.iter_mut().zip(asks_meta) {
+            if let Some((label, mass_kg, vol_dm3)) = meta {
+                if ask.unit_mass_kg != mass_kg || ask.unit_vol_dm3 != vol_dm3 {
+                    ask.unit_mass_kg = mass_kg;
+                    ask.unit_vol_dm3 = vol_dm3;
+                    changed = true;
+                }
+                if (ask.good_name.is_empty() || ask.good_name == ask.good_id)
+                    && ask.good_name != label
+                {
+                    ask.good_name = label;
+                    changed = true;
+                }
+            }
+        }
+        let bids_meta: Vec<Option<(String, i64, i64)>> = self
+            .bids
+            .iter()
+            .map(|b| self.lookup_goods_meta_opt(&b.good_id))
+            .collect();
+        for (bid, meta) in self.bids.iter_mut().zip(bids_meta) {
+            if let Some((label, _, _)) = meta
+                && (bid.good_name.is_empty() || bid.good_name == bid.good_id)
+                && bid.good_name != label
+            {
+                bid.good_name = label;
+                changed = true;
+            }
+        }
+        let lots_meta: Vec<Option<(String, i64, i64)>> = self
+            .cargo_lots
+            .iter()
+            .map(|l| self.lookup_goods_meta_opt(&l.good_id))
+            .collect();
+        for (lot, meta) in self.cargo_lots.iter_mut().zip(lots_meta) {
+            if let Some((label, _, _)) = meta
+                && (lot.good_name.is_empty() || lot.good_name == lot.good_id)
+                && lot.good_name != label
+            {
+                lot.good_name = label;
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_scene();
+        }
+    }
+
+    fn lookup_goods_meta_opt(&self, gid: &str) -> Option<(String, i64, i64)> {
+        if let Some(v) = self.goods_meta.get(gid) {
+            return Some(v.clone());
+        }
+        let stripped = gid
+            .strip_prefix("tacsim:")
+            .or_else(|| gid.strip_prefix("tacsim."))
+            .unwrap_or(gid);
+        if let Some(v) = self.goods_meta.get(stripped) {
+            return Some(v.clone());
+        }
+        None
+    }
+
+    fn lookup_goods_meta(&self, gid: &str) -> (String, i64, i64) {
+        self.lookup_goods_meta_opt(gid)
+            .unwrap_or_else(|| (gid.to_string(), 1000, 1000))
     }
 
     /// Advance 20 Hz continuous avatar walking, turning, doorway collision, and BFS room sync.
     pub fn tick(&mut self, dt: Duration, now: Instant) -> Vec<String> {
         let mut cmds = Vec::new();
+        let before_bubbles = self.speech_bubbles.len();
         self.speech_bubbles.retain(|_, (_, exp)| *exp > now);
-        self.pulse_phase = (self.pulse_phase + 1) % 60;
+        if self.speech_bubbles.len() != before_bubbles {
+            self.bump_scene();
+        }
+
+        // Throttle bridge holotank pulse animation to ~2 Hz and ONLY when on a ship bridge
+        // in 2.5D cutaway mode so idle SSH sessions produce zero PNG re-encodes (`SSH-H-01`).
+        if self.aboard_ship
+            && self.camera == WalkCamera::Cutaway25D
+            && self.active_location_key == "bridge"
+        {
+            match self.last_pulse_at {
+                None => {
+                    self.last_pulse_at = Some(now);
+                }
+                Some(t) if now.saturating_duration_since(t) >= HOLOTANK_PULSE_INTERVAL => {
+                    self.last_pulse_at = Some(now);
+                    self.pulse_phase = (self.pulse_phase + 1) % 3;
+                    self.bump_scene();
+                }
+                Some(_) => {}
+            }
+        }
 
         if let Some((_, sent_at)) = &self.pending_move_target
             && now.saturating_duration_since(*sent_at) > PENDING_MOVE_TIMEOUT
         {
             self.pending_move_target = None;
+            self.pending_interaction = None;
+        }
+        if let Some(pi) = &self.pending_interaction
+            && now.saturating_duration_since(pi.created_at) > PENDING_MOVE_TIMEOUT * 2
+        {
+            self.pending_interaction = None;
         }
 
         if self.drawer.is_some() {
@@ -1029,7 +2038,10 @@ impl PortWalkState {
         if self.held_turn != 0 {
             let delta =
                 ((TURN_MDEG_PER_S as f64) * secs * f64::from(self.held_turn)).round() as i64;
-            self.you_heading_mdeg = (self.you_heading_mdeg + delta).rem_euclid(360_000);
+            if delta != 0 {
+                self.you_heading_mdeg = (self.you_heading_mdeg + delta).rem_euclid(360_000);
+                self.bump_scene();
+            }
         }
 
         if self.held_fwd != 0 || self.held_strafe != 0 {
@@ -1045,9 +2057,13 @@ impl PortWalkState {
     }
 
     /// Handle a key while either a Port Drawer OR `PictureKind::StationWalk` is active.
+    ///
+    /// `arrows_held` is true when Kitty keyboard protocol is pushed (arrow press/release supported);
+    /// `letters_held` is true when Kitty flag 8 is active (letter press/release supported, `SSH-M-01`).
     pub fn handle_key(
         &mut self,
         key: Key,
+        arrows_held: bool,
         letters_held: bool,
         manifest_panels: &[String],
         now: Instant,
@@ -1078,14 +2094,17 @@ impl PortWalkState {
         match key {
             Key::Esc => {
                 self.stop_motion();
+                self.pending_interaction = None;
                 out.close_pixel_view = true;
             }
             Key::Char('v' | 'V') => {
                 self.camera = self.camera.next();
+                self.bump_scene();
             }
             Key::Tab => {
                 if !self.interactables.is_empty() {
                     self.focus_idx = (self.focus_idx + 1) % self.interactables.len();
+                    self.bump_scene();
                 }
             }
             Key::Char('e' | 'E') => {
@@ -1094,6 +2113,17 @@ impl PortWalkState {
             Key::Char('m' | 'M') => {
                 self.open_drawer(
                     PortDrawerKind::Trade,
+                    manifest_panels,
+                    &mut out.queries,
+                    now,
+                );
+            }
+            Key::Char('j' | 'J') => {
+                self.open_drawer(PortDrawerKind::Jobs, manifest_panels, &mut out.queries, now);
+            }
+            Key::Char('i' | 'I') => {
+                self.open_drawer(
+                    PortDrawerKind::Industry,
                     manifest_panels,
                     &mut out.queries,
                     now,
@@ -1115,82 +2145,130 @@ impl PortWalkState {
                 if self.held_fwd > 0 {
                     self.held_fwd = 0;
                 }
+                out.redraw = false;
             }
             Key::Release(Arrow::Down) | Key::CharRelease('s' | 'S') => {
                 if self.held_fwd < 0 {
                     self.held_fwd = 0;
                 }
+                out.redraw = false;
             }
             Key::Release(Arrow::Left) | Key::CharRelease('a' | 'A') => {
                 if self.held_turn < 0 {
                     self.held_turn = 0;
                 }
+                out.redraw = false;
             }
             Key::Release(Arrow::Right) | Key::CharRelease('d' | 'D') => {
                 if self.held_turn > 0 {
                     self.held_turn = 0;
                 }
+                out.redraw = false;
             }
             Key::CharRelease('q' | 'Q') => {
                 if self.held_strafe < 0 {
                     self.held_strafe = 0;
                 }
+                out.redraw = false;
             }
             Key::CharRelease('x' | 'X') => {
                 if self.held_strafe > 0 {
                     self.held_strafe = 0;
                 }
+                out.redraw = false;
             }
-            Key::CharRepeat('w' | 'W' | 's' | 'S' | 'a' | 'A' | 'd' | 'D') if letters_held => {
+            // Suppress OS key-repeats when Kitty hold-release is active (`SSH-M-01`)
+            Key::Repeat(Arrow::Up | Arrow::Down | Arrow::Left | Arrow::Right) if arrows_held => {
+                out.redraw = false;
+            }
+            Key::CharRepeat(
+                'w' | 'W' | 's' | 'S' | 'a' | 'A' | 'd' | 'D' | 'q' | 'Q' | 'x' | 'X',
+            ) if letters_held => {
                 out.redraw = false;
             }
             Key::Up | Key::Repeat(Arrow::Up) => {
-                if letters_held {
+                if arrows_held {
                     self.held_fwd = 1;
+                    out.redraw = false;
+                } else {
+                    self.step_avatar(1.35, 0.0, now, &mut out.commands);
                 }
-                self.step_avatar(1.35, 0.0, now, &mut out.commands);
             }
             Key::Down | Key::Repeat(Arrow::Down) => {
-                if letters_held {
+                if arrows_held {
                     self.held_fwd = -1;
+                    out.redraw = false;
+                } else {
+                    self.step_avatar(-1.15, 0.0, now, &mut out.commands);
                 }
-                self.step_avatar(-1.15, 0.0, now, &mut out.commands);
             }
             Key::Char('w' | 'W') | Key::CharRepeat('w' | 'W') => {
                 if letters_held {
                     self.held_fwd = 1;
+                    out.redraw = false;
+                } else {
+                    self.step_avatar(1.35, 0.0, now, &mut out.commands);
                 }
-                self.step_avatar(1.35, 0.0, now, &mut out.commands);
             }
             Key::Char('s' | 'S') | Key::CharRepeat('s' | 'S') => {
                 if letters_held {
                     self.held_fwd = -1;
+                    out.redraw = false;
+                } else {
+                    self.step_avatar(-1.15, 0.0, now, &mut out.commands);
                 }
-                self.step_avatar(-1.15, 0.0, now, &mut out.commands);
             }
-            Key::Left
-            | Key::Repeat(Arrow::Left)
-            | Key::Char('a' | 'A')
-            | Key::CharRepeat('a' | 'A') => {
+            Key::Left | Key::Repeat(Arrow::Left) => {
+                if arrows_held {
+                    self.held_turn = -1;
+                    out.redraw = false;
+                } else {
+                    self.you_heading_mdeg = (self.you_heading_mdeg - 22_500).rem_euclid(360_000);
+                    self.bump_scene();
+                }
+            }
+            Key::Right | Key::Repeat(Arrow::Right) => {
+                if arrows_held {
+                    self.held_turn = 1;
+                    out.redraw = false;
+                } else {
+                    self.you_heading_mdeg = (self.you_heading_mdeg + 22_500).rem_euclid(360_000);
+                    self.bump_scene();
+                }
+            }
+            Key::Char('a' | 'A') | Key::CharRepeat('a' | 'A') => {
                 if letters_held {
                     self.held_turn = -1;
+                    out.redraw = false;
+                } else {
+                    self.you_heading_mdeg = (self.you_heading_mdeg - 22_500).rem_euclid(360_000);
+                    self.bump_scene();
                 }
-                self.you_heading_mdeg = (self.you_heading_mdeg - 22_500).rem_euclid(360_000);
             }
-            Key::Right
-            | Key::Repeat(Arrow::Right)
-            | Key::Char('d' | 'D')
-            | Key::CharRepeat('d' | 'D') => {
+            Key::Char('d' | 'D') | Key::CharRepeat('d' | 'D') => {
                 if letters_held {
                     self.held_turn = 1;
+                    out.redraw = false;
+                } else {
+                    self.you_heading_mdeg = (self.you_heading_mdeg + 22_500).rem_euclid(360_000);
+                    self.bump_scene();
                 }
-                self.you_heading_mdeg = (self.you_heading_mdeg + 22_500).rem_euclid(360_000);
             }
-            Key::Char('q' | 'Q') => {
-                self.step_avatar(0.0, -1.2, now, &mut out.commands);
+            Key::Char('q' | 'Q') | Key::CharRepeat('q' | 'Q') => {
+                if letters_held {
+                    self.held_strafe = -1;
+                    out.redraw = false;
+                } else {
+                    self.step_avatar(0.0, -1.2, now, &mut out.commands);
+                }
             }
-            Key::Char('x' | 'X') => {
-                self.step_avatar(0.0, 1.2, now, &mut out.commands);
+            Key::Char('x' | 'X') | Key::CharRepeat('x' | 'X') => {
+                if letters_held {
+                    self.held_strafe = 1;
+                    out.redraw = false;
+                } else {
+                    self.step_avatar(0.0, 1.2, now, &mut out.commands);
+                }
             }
             _ => {
                 out.consumed = false;
@@ -1281,34 +2359,56 @@ impl PortWalkState {
             }));
         }
 
+        // Render REAL moored ships from `port.trade.berth.docked_hulls` outside the active
+        // berth gallery's exterior glass side (never fabricated ships, `SSH-H-02`).
         let mut moored_json = Vec::new();
-        if !self.aboard_ship && self.pack_id == "neighborhood.ceres_freeport" {
-            let own_title = if self.own_hull_name.is_empty() {
-                "Charter Cradle 01"
+        if !self.aboard_ship
+            && let Some(berth_room) = self.rooms.iter().find(|r| r.kind == "berth")
+        {
+            let south_glass = self.room_glass_is_south(berth_room);
+            let moored_y = if south_glass {
+                berth_room.min_y - 10.0
             } else {
-                self.own_hull_name.as_str()
+                berth_room.max_y + 10.0
             };
-            moored_json.push(json!({
-                "x_m": -10.0,
-                "y_m": 43.0,
-                "name": own_title,
-                "style": "freighter",
-                "own": !self.own_hull_name.is_empty(),
-            }));
-            moored_json.push(json!({
-                "x_m": 6.0,
-                "y_m": 44.0,
-                "name": "Cold Comfort",
-                "style": "corvette",
-                "own": false,
-            }));
-            moored_json.push(json!({
-                "x_m": 20.0,
-                "y_m": 43.5,
-                "name": "Ninth Ledger",
-                "style": "freighter",
-                "own": false,
-            }));
+            let span_x = (berth_room.max_x - berth_room.min_x).max(12.0);
+            if !self.berth_docked_hulls.is_empty() {
+                let count = self.berth_docked_hulls.len().min(8);
+                for (idx, hull) in self.berth_docked_hulls.iter().take(count).enumerate() {
+                    let frac = ((idx as f64) + 1.0) / ((count as f64) + 1.0);
+                    let hx = berth_room.min_x + span_x * frac;
+                    let u_low = hull.unit.to_ascii_lowercase();
+                    let style = if u_low.contains("corvette")
+                        || u_low.contains("cutter")
+                        || u_low.contains("raider")
+                    {
+                        "corvette"
+                    } else {
+                        "freighter"
+                    };
+                    let is_own = self
+                        .own_hull_id
+                        .as_deref()
+                        .is_some_and(|oid| !oid.is_empty() && oid == hull.id)
+                        || (!self.own_hull_name.is_empty() && hull.name == self.own_hull_name);
+                    moored_json.push(json!({
+                        "x_m": hx,
+                        "y_m": moored_y,
+                        "name": hull.name,
+                        "style": style,
+                        "own": is_own,
+                    }));
+                }
+            } else if self.own_hull_docked_here && !self.own_hull_name.is_empty() {
+                let (cx, _) = berth_room.center();
+                moored_json.push(json!({
+                    "x_m": cx,
+                    "y_m": moored_y,
+                    "name": self.own_hull_name,
+                    "style": "freighter",
+                    "own": true,
+                }));
+            }
         }
 
         let actors_json: Vec<Value> = self
@@ -1341,7 +2441,7 @@ impl PortWalkState {
         });
 
         let cargo_permille = if self.stowage.max_cargo_kg > 0 {
-            ((self.stowage.cargo_kg * 1000) / self.stowage.max_cargo_kg).clamp(0, 1000)
+            (self.stowage.cargo_kg.saturating_mul(1000) / self.stowage.max_cargo_kg).clamp(0, 1000)
         } else {
             0
         };
@@ -1381,6 +2481,25 @@ impl PortWalkState {
         })
     }
 
+    fn room_glass_is_south(&self, room: &RoomGeom) -> bool {
+        let mut has_north_door = false;
+        let mut has_south_door = false;
+        for p in &self.portals {
+            if p.floor != room.floor && p.stairs_to != Some(room.floor) {
+                continue;
+            }
+            if p.x_m >= room.min_x - 1.0 && p.x_m <= room.max_x + 1.0 {
+                if (p.y_m - room.max_y).abs() <= 1.6 {
+                    has_north_door = true;
+                }
+                if (p.y_m - room.min_y).abs() <= 1.6 {
+                    has_south_door = true;
+                }
+            }
+        }
+        has_north_door && !has_south_door
+    }
+
     /// HUD top status line and bottom legend when `PictureKind::StationWalk` is active.
     #[must_use]
     pub fn hud_lines(&self, encoder_name: &str) -> (String, String) {
@@ -1393,16 +2512,19 @@ impl PortWalkState {
         } else {
             "Spaceport"
         };
-        let top = format!(
-            "{mode_word} ({cam_name})  |  {}  |  {}  |  drawing {encoder_name}",
-            self.room_title,
+        let wallet = if self.balance_text.is_empty() {
             format_credits(self.credits_minor)
+        } else {
+            self.balance_text.clone()
+        };
+        let top = format!(
+            "{mode_word} ({cam_name})  |  {}  |  {wallet}  |  drawing {encoder_name}",
+            self.room_title,
         );
         let bottom = if self.drawer.is_some() {
-            "Tab: switch drawer   Up/Down: select   [/]: qty   Enter: execute   Esc: back to walk"
-                .to_string()
+            "Tab: tab  Up/Dn: row  [/]: qty  PgUp/PgDn: log  Enter: run  Esc: close".to_string()
         } else {
-            "WASD/Arrows: walk   v: 2.5D/1P   Tab/e: [E] interact   m: trade   k: sailing   o: co-op   Enter: chat   Esc: close"
+            "WASD/Arr: walk  v: 2.5D/1P  Tab/e: [E]  m:trade j:jobs i:works k:sail o:coop  Enter:chat  Esc:close"
                 .to_string()
         };
         (top, bottom)
@@ -1448,20 +2570,23 @@ impl PortWalkState {
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            for (idx, it) in self.interactables.iter().take(6).enumerate() {
-                let focused = idx == self.focus_idx;
-                let prefix = if focused { "[E] > " } else { "      " };
-                let style = if focused {
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Gray)
-                };
-                near_lines.push(Line::from(Span::styled(
-                    format!("{prefix}{}", it.label),
-                    style,
-                )));
+            let win = visible_window(self.interactables.len(), self.focus_idx, 6);
+            for idx in win {
+                if let Some(it) = self.interactables.get(idx) {
+                    let focused = idx == self.focus_idx;
+                    let prefix = if focused { "[E] > " } else { "      " };
+                    let style = if focused {
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    near_lines.push(Line::from(Span::styled(
+                        format!("{prefix}{}", it.label),
+                        style,
+                    )));
+                }
             }
         }
         draw_titled_col(
@@ -1476,11 +2601,11 @@ impl PortWalkState {
     /// Draw the Port Services Drawer as a centered modal overlay when invoked via `Ctrl+T`
     /// in plain ANSI SSH TUI mode (when Kitty/Sixel pixel view is closed).
     pub fn draw_modal_overlay(&self, frame: &mut Frame<'_>, body: Rect, utf8: bool) {
-        if self.drawer.is_none() || body.width < 60 || body.height < 12 {
+        if self.drawer.is_none() || body.width < 30 || body.height < 8 {
             return;
         }
-        let w = body.width.saturating_sub(8).min(108);
-        let h = body.height.saturating_sub(2).min(24);
+        let w = body.width.saturating_sub(4).min(108);
+        let h = body.height.saturating_sub(2).min(26);
         let x = body.x + (body.width.saturating_sub(w)) / 2;
         let y = body.y + (body.height.saturating_sub(h)) / 2;
         let rect = Rect::new(x, y, w, h);
@@ -1539,11 +2664,22 @@ impl PortWalkState {
             Key::Tab => {
                 self.drawer = Some(kind.next());
                 self.cursor_row = 0;
+                self.drawer_log_scroll = 0;
                 return out;
             }
             Key::BackTab => {
                 self.drawer = Some(kind.prev());
                 self.cursor_row = 0;
+                self.drawer_log_scroll = 0;
+                return out;
+            }
+            Key::PgUp => {
+                let max_scroll = self.drawer_log.len().saturating_sub(1);
+                self.drawer_log_scroll = self.drawer_log_scroll.saturating_add(4).min(max_scroll);
+                return out;
+            }
+            Key::PgDn => {
+                self.drawer_log_scroll = self.drawer_log_scroll.saturating_sub(4);
                 return out;
             }
             _ => {}
@@ -1577,54 +2713,35 @@ impl PortWalkState {
                     }
                     Key::Char('r') => {
                         self.trade_asked_at = None;
+                        self.awaiting_trade_page = false;
                         self.ensure_queries(manifest_panels, &mut out.queries, now);
                     }
-                    Key::Enter | Key::Char('b' | 's') => {
-                        if self.trade_subtab == 0 {
-                            if let Some(ask) = self.asks.get(self.cursor_row).cloned() {
-                                let max_fit = self.max_fit_for_ask(&ask);
-                                let preset =
-                                    QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
-                                let want_qty = if preset == 0 {
-                                    max_fit.max(1)
-                                } else {
-                                    preset.min(ask.quantity.max(1))
-                                };
-                                self.pending_quote = Some(PendingQuote {
-                                    listing_id: ask.listing_id,
-                                    quantity: want_qty,
-                                    max_unit_price_minor: ask.unit_price_minor,
-                                    created_at: now,
-                                });
-                                out.commands
-                                    .push(format!("+market/quote {}={want_qty}", ask.listing_id));
-                                out.queries.push((PORT_TRADE_FEED.to_string(), json!({})));
-                                self.push_drawer_log(format!(
-                                    "[QUOTE] Requesting {want_qty} x {} @ {}...",
-                                    ask.good_name,
-                                    format_credits(ask.unit_price_minor)
-                                ));
-                            }
-                        } else if let Some(bid) = self.bids.get(self.cursor_row).cloned() {
-                            let held = self
-                                .cargo_lots
-                                .iter()
-                                .filter(|c| c.good_id == bid.good_id)
-                                .map(|c| c.quantity)
-                                .sum::<i64>();
-                            let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
-                            let sell_qty = if preset == 0 {
-                                held.min(bid.quantity_wanted).max(1)
-                            } else {
-                                preset.min(bid.quantity_wanted.max(1))
-                            };
-                            out.commands
-                                .push(format!("+market/sell {}={sell_qty}", bid.listing_id));
-                            out.queries.push((PORT_TRADE_FEED.to_string(), json!({})));
+                    Key::Char('>' | 'p') => {
+                        if let Some(after) = self.trade_next_after {
+                            self.awaiting_trade_page = true;
+                            out.queries
+                                .push((PORT_TRADE_FEED.to_string(), json!({ "after": after })));
                             self.push_drawer_log(format!(
-                                "[SELL] Selling {sell_qty} x {} into bid #{}...",
-                                bid.good_name, bid.listing_id
+                                "[TRADE] Loading next page after #{after}..."
                             ));
+                        }
+                    }
+                    // Strictly bind `b` to Buy Asks, `s` to Sell Bids, and `Enter` to active subtab (`SSH-M-05`).
+                    Key::Char('b' | 'B') => {
+                        if self.trade_subtab == 0 {
+                            self.execute_trade_buy(now, &mut out);
+                        }
+                    }
+                    Key::Char('s' | 'S') => {
+                        if self.trade_subtab == 1 {
+                            self.execute_trade_sell(&mut out);
+                        }
+                    }
+                    Key::Enter => {
+                        if self.trade_subtab == 0 {
+                            self.execute_trade_buy(now, &mut out);
+                        } else {
+                            self.execute_trade_sell(&mut out);
                         }
                     }
                     _ => {}
@@ -1676,7 +2793,7 @@ impl PortWalkState {
                     self.corridor_idx = (self.corridor_idx + 1).min(CORRIDORS.len() - 1);
                 }
                 Key::Char('r') => {
-                    self.round_trip = !self.round_trip;
+                    self.queue_depart = !self.queue_depart;
                 }
                 Key::Char('u') => {
                     if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
@@ -1685,14 +2802,29 @@ impl PortWalkState {
                     }
                 }
                 Key::Char('d') => {
-                    if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
-                        out.commands.push(format!("+helm/dock {dest_id}"));
-                        self.push_drawer_log(format!("> +helm/dock {dest_id}"));
+                    // Guard `+helm/dock` while ashore (`SSH-L-01`); while underway in space
+                    // (`!self.docked`), prefer the selected corridor (`H-40`) over any stale venue.
+                    if !self.aboard_ship {
+                        self.push_drawer_log(
+                            "[Sailing] Board your ship before issuing +helm/dock.".to_string(),
+                        );
+                    } else if let Some(target_id) = if !self.docked {
+                        CORRIDORS
+                            .get(self.corridor_idx)
+                            .map(|(id, _, _)| *id)
+                            .or(self.current_venue.as_deref())
+                    } else {
+                        self.current_venue
+                            .as_deref()
+                            .or_else(|| CORRIDORS.get(self.corridor_idx).map(|(id, _, _)| *id))
+                    } {
+                        out.commands.push(format!("+helm/dock {target_id}"));
+                        self.push_drawer_log(format!("> +helm/dock {target_id}"));
                     }
                 }
                 Key::Enter => {
                     if let Some((dest_id, label, _)) = CORRIDORS.get(self.corridor_idx) {
-                        let cmd = if self.round_trip {
+                        let cmd = if self.queue_depart {
                             format!("+ship/order depart {dest_id}")
                         } else {
                             format!("+ship/plan {dest_id}")
@@ -1742,6 +2874,10 @@ impl PortWalkState {
                     if let Some(&(label, cmd)) = SIM_LOADOUTS.get(self.cursor_row) {
                         out.commands.push(cmd.to_string());
                         self.push_drawer_log(format!("[SIM] {label} ({cmd})"));
+                        if cmd == "SIM START" {
+                            // Close drawer proactively so entering cockpit never traps keys (`SSH-C-04`).
+                            self.close_drawer();
+                        }
                     }
                 }
                 _ => {}
@@ -1782,6 +2918,107 @@ impl PortWalkState {
         out
     }
 
+    fn execute_trade_buy(&mut self, now: Instant, out: &mut WalkKeyOutcome) {
+        let Some(ask) = self.asks.get(self.cursor_row).cloned() else {
+            return;
+        };
+        if ask.quantity <= 0 {
+            self.push_drawer_log(format!("[BUY] #{} has no available stock.", ask.listing_id));
+            return;
+        }
+        let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
+        let want_qty = if preset == 0 {
+            if !self.stowage_loaded {
+                self.push_drawer_log(
+                    "[BUY] Hold stowage unavailable; press r to refresh before using Max Fit."
+                        .to_string(),
+                );
+                return;
+            }
+            let max_fit = self.max_fit_for_ask(&ask);
+            if max_fit <= 0 {
+                self.push_drawer_log(format!(
+                    "[BUY] Cannot fit or afford 1 unit of {} (max fit: 0).",
+                    ask.good_name
+                ));
+                return;
+            }
+            max_fit
+        } else {
+            preset.min(ask.quantity)
+        };
+        if want_qty <= 0 {
+            return;
+        }
+        let Some(authorized_total_minor) = ask.unit_price_minor.checked_mul(want_qty) else {
+            self.push_drawer_log("[BUY] Quote total overflow; purchase halted.".to_string());
+            return;
+        };
+        let prior_quote_ids = self.own_quotes.iter().map(|q| q.quote_id.clone()).collect();
+        self.pending_quote = Some(PendingQuote {
+            listing_id: ask.listing_id,
+            quantity: want_qty,
+            max_unit_price_minor: ask.unit_price_minor,
+            authorized_total_minor,
+            prior_quote_ids,
+            created_at: now,
+        });
+        // Canonical server syntax (`mush-market/src/commands.rs:700-711`): `+market/quote <id>=<qty>` (`C-20`).
+        out.commands
+            .push(format!("+market/quote {}={want_qty}", ask.listing_id));
+        self.awaiting_trade_page = false;
+        out.queries.push((PORT_TRADE_FEED.to_string(), json!({})));
+        self.push_drawer_log(format!(
+            "[QUOTE] Requesting {want_qty} x {} @ {}...",
+            ask.good_name,
+            format_credits(ask.unit_price_minor)
+        ));
+    }
+
+    fn execute_trade_sell(&mut self, out: &mut WalkKeyOutcome) {
+        let Some(bid) = self.bids.get(self.cursor_row).cloned() else {
+            return;
+        };
+        if bid.quantity_wanted <= 0 {
+            self.push_drawer_log(format!("[SELL] Bid #{} is already filled.", bid.listing_id));
+            return;
+        }
+        if !self.stowage_loaded {
+            self.push_drawer_log(
+                "[SELL] Hold stowage unavailable; press r to refresh before selling.".to_string(),
+            );
+            return;
+        }
+        let held = self
+            .cargo_lots
+            .iter()
+            .filter(|c| c.good_id == bid.good_id)
+            .map(|c| c.quantity)
+            .sum::<i64>();
+        if held <= 0 {
+            self.push_drawer_log(format!("[SELL] Hold carries 0 units of {}.", bid.good_name));
+            return;
+        }
+        let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
+        let sell_qty = if preset == 0 {
+            held.min(bid.quantity_wanted)
+        } else {
+            preset.min(held).min(bid.quantity_wanted)
+        };
+        if sell_qty <= 0 {
+            return;
+        }
+        // Canonical server syntax (`mush-market/src/commands.rs:889-910`): `+market/sell <id>=<qty>` (`C-20`).
+        out.commands
+            .push(format!("+market/sell {}={sell_qty}", bid.listing_id));
+        self.awaiting_trade_page = false;
+        out.queries.push((PORT_TRADE_FEED.to_string(), json!({})));
+        self.push_drawer_log(format!(
+            "[SELL] Selling {sell_qty} x {} into bid #{}...",
+            bid.good_name, bid.listing_id
+        ));
+    }
+
     fn trigger_focused_interactable(
         &mut self,
         manifest_panels: &[String],
@@ -1791,10 +3028,36 @@ impl PortWalkState {
         let Some(target) = self.interactables.get(self.focus_idx).cloned() else {
             return;
         };
-        // Flush any unreached room transition before triggering an action!
-        self.flush_pending_move_steps(&mut out.commands);
+        // Keep at most ONE movement command in flight; if a room transition is still
+        // unacknowledged, defer the interaction until authoritative `OutputEvent::Room` lands.
+        if self.pending_move_target.is_some()
+            || self.active_location_key != self.server_location_key
+        {
+            if self.pending_move_target.is_none() {
+                let from = self.server_location_key.clone();
+                let dest = self.active_location_key.clone();
+                let _ = self.try_send_single_move_hop(&from, &dest, now, &mut out.commands);
+            }
+            self.pending_interaction = Some(PendingInteraction {
+                action: target.action,
+                target_room: self.active_location_key.clone(),
+                manifest_panels: manifest_panels.to_vec(),
+                created_at: now,
+            });
+            return;
+        }
 
-        match target.action {
+        self.execute_interact_action(target.action, manifest_panels, now, out);
+    }
+
+    fn execute_interact_action(
+        &mut self,
+        action: InteractAction,
+        manifest_panels: &[String],
+        now: Instant,
+        out: &mut WalkKeyOutcome,
+    ) {
+        match action {
             InteractAction::OpenDrawer(kind) => {
                 self.open_drawer(kind, manifest_panels, &mut out.queries, now);
             }
@@ -1813,7 +3076,68 @@ impl PortWalkState {
         }
     }
 
+    fn try_send_single_move_hop(
+        &mut self,
+        from_id: &str,
+        target_id: &str,
+        now: Instant,
+        cmds: &mut Vec<String>,
+    ) -> bool {
+        if from_id == target_id || self.pending_move_target.is_some() {
+            return false;
+        }
+        if let Some((cmd, hop_room)) = self.first_bfs_step(from_id, target_id) {
+            self.pending_move_target = Some((hop_room, now));
+            self.next_move_allowed_at = Some(now + MOVE_STEP_COOLDOWN);
+            cmds.push(cmd);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn advance_pending_interaction_move(&mut self, now: Instant) {
+        let Some(target_room) = self
+            .pending_interaction
+            .as_ref()
+            .map(|pi| pi.target_room.clone())
+        else {
+            return;
+        };
+        if self.server_location_key == target_room || self.pending_move_target.is_some() {
+            return;
+        }
+        let from = self.server_location_key.clone();
+        let mut step_cmds = Vec::new();
+        if self.try_send_single_move_hop(&from, &target_room, now, &mut step_cmds) {
+            self.pending_orders.extend(step_cmds);
+        } else {
+            self.pending_interaction = None;
+        }
+    }
+
+    fn resume_pending_interaction_if_arrived(&mut self, now: Instant) {
+        let arrived = self.pending_interaction.as_ref().is_some_and(|pi| {
+            self.pending_move_target.is_none() && self.server_location_key == pi.target_room
+        });
+        if !arrived {
+            return;
+        }
+        let Some(pi) = self.pending_interaction.take() else {
+            return;
+        };
+        let mut out = WalkKeyOutcome::default();
+        self.execute_interact_action(pi.action, &pi.manifest_panels, now, &mut out);
+        self.pending_orders.extend(out.commands);
+        self.pending_followup_queries.extend(out.queries);
+    }
+
     fn step_avatar(&mut self, fwd_m: f64, strafe_m: f64, now: Instant, cmds: &mut Vec<String>) {
+        let old_x = self.you_x;
+        let old_y = self.you_y;
+        let old_floor = self.you_floor;
+        let old_loc = self.active_location_key.clone();
+
         let rad = ((self.you_heading_mdeg as f64) / 1000.0).to_radians();
         let dx = rad.sin() * fwd_m + rad.cos() * strafe_m;
         let dy = rad.cos() * fwd_m - rad.sin() * strafe_m;
@@ -1836,30 +3160,60 @@ impl PortWalkState {
             self.you_y = cand_y;
         }
 
-        // Check stairway portals first (changes floor + room!)
+        // Clear stair/teleport re-arm latch once the avatar has walked clear of the return portal.
+        if let Some((rx, ry, rfloor)) = self.portal_rearm {
+            let d = ((self.you_x - rx).powi(2) + (self.you_y - ry).powi(2)).sqrt();
+            if rfloor != self.you_floor || d >= STAIR_LANDING_CLEARANCE_M {
+                self.portal_rearm = None;
+            }
+        }
+
+        // Check stairway & non-adjacent doorway portals first (`SSH-C-02`: guarded against ping-pong!)
         let active_portals = if self.aboard_ship {
             &self.ship_portals
         } else {
             &self.portals
         };
-        let mut stepped_stair: Option<(i64, String)> = None;
+        let mut stepped_portal: Option<(i64, String, f64, f64)> = None;
         for p in active_portals {
-            if p.from_room == self.active_location_key
-                && let Some(dest_floor) = p.stairs_to
-                && ((p.x_m - self.you_x).powi(2) + (p.y_m - self.you_y).powi(2)).sqrt() <= 1.65
+            if p.from_room != self.active_location_key {
+                continue;
+            }
+            let is_trigger_portal = p.stairs_to.is_some() || p.teleport;
+            if !is_trigger_portal {
+                continue;
+            }
+            if let Some((rx, ry, rfloor)) = self.portal_rearm
+                && rfloor == p.floor
+                && ((p.x_m - rx).powi(2) + (p.y_m - ry).powi(2)).sqrt() < 1.0
             {
-                stepped_stair = Some((dest_floor, p.to_room.clone()));
+                continue;
+            }
+            let dist = ((p.x_m - self.you_x).powi(2) + (p.y_m - self.you_y).powi(2)).sqrt();
+            if dist <= STAIR_TRIGGER_RADIUS_M {
+                let dest_floor = p.stairs_to.unwrap_or(p.floor);
+                stepped_portal = Some((dest_floor, p.to_room.clone(), p.x_m, p.y_m));
                 break;
             }
         }
-        if let Some((dest_floor, dest_room)) = stepped_stair {
+        if let Some((dest_floor, dest_room, from_px, from_py)) = stepped_portal {
+            let prev_room = self.active_location_key.clone();
             self.you_floor = dest_floor;
-            self.active_location_key = dest_room;
-            if let Some(rm) = self.find_room(&self.active_location_key).cloned() {
-                let (cx, cy) = rm.center();
-                self.you_x = (self.you_x * 0.4) + (cx * 0.6);
-                self.you_y = (self.you_y * 0.4) + (cy * 0.6);
+            self.active_location_key = dest_room.clone();
+            // Place avatar cleanly inside `dest_room`, strictly > STAIR_TRIGGER_RADIUS_M from
+            // any return portal leaving `dest_room` so stepping onto a stair NEVER ping-pongs (`SSH-C-02`).
+            let return_portal = self.active_portals().iter().find(|rp| {
+                rp.from_room == dest_room
+                    && rp.to_room == prev_room
+                    && (rp.stairs_to.is_some() || rp.teleport)
+            });
+            let (ret_x, ret_y) = return_portal.map_or((from_px, from_py), |rp| (rp.x_m, rp.y_m));
+            if let Some(rm) = self.find_room(&dest_room).cloned() {
+                let (lx, ly) = safe_stair_landing(&rm, ret_x, ret_y);
+                self.you_x = lx;
+                self.you_y = ly;
             }
+            self.portal_rearm = Some((ret_x, ret_y, dest_floor));
         } else {
             // Check horizontal room transition with hysteresis
             let still_inside_current = self.find_room(&self.active_location_key).is_some_and(|r| {
@@ -1884,6 +3238,15 @@ impl PortWalkState {
             }
         }
 
+        if self.active_location_key != old_loc
+            && self
+                .pending_interaction
+                .as_ref()
+                .is_some_and(|pi| pi.target_room != self.active_location_key)
+        {
+            self.pending_interaction = None;
+        }
+
         // 1-in-flight BFS server movement synchronization
         if self.active_location_key != self.server_location_key
             && self.pending_move_target.is_none()
@@ -1897,27 +3260,21 @@ impl PortWalkState {
         }
 
         self.refresh_nearest_focus();
+        if (self.you_x - old_x).abs() > 1e-6
+            || (self.you_y - old_y).abs() > 1e-6
+            || self.you_floor != old_floor
+            || self.active_location_key != old_loc
+        {
+            self.bump_scene();
+        }
     }
 
-    fn flush_pending_move_steps(&mut self, cmds: &mut Vec<String>) {
-        if self.active_location_key == self.server_location_key {
-            return;
+    fn active_portals(&self) -> &[PortalGeom] {
+        if self.aboard_ship {
+            &self.ship_portals
+        } else {
+            &self.portals
         }
-        let mut cur = self.server_location_key.clone();
-        for _ in 0..8 {
-            if cur == self.active_location_key {
-                break;
-            }
-            let Some((cmd, next_room)) = self.first_bfs_step(&cur, &self.active_location_key)
-            else {
-                break;
-            };
-            cmds.push(cmd);
-            cur = next_room;
-        }
-        self.server_location_key
-            .clone_from(&self.active_location_key);
-        self.pending_move_target = None;
     }
 
     fn is_walkable(&self, x: f64, y: f64, floor: i64) -> bool {
@@ -1932,11 +3289,7 @@ impl PortWalkState {
         {
             return true;
         }
-        let portals = if self.aboard_ship {
-            &self.ship_portals
-        } else {
-            &self.portals
-        };
+        let portals = self.active_portals();
         portals.iter().any(|p| {
             (p.floor == floor || p.stairs_to == Some(floor))
                 && ((p.x_m - x).powi(2) + (p.y_m - y).powi(2)).sqrt() <= (p.width_m * 0.65).max(1.3)
@@ -1954,6 +3307,7 @@ impl PortWalkState {
 
     fn snap_to_room(&mut self, entry_id: &str) {
         self.active_location_key = entry_id.to_string();
+        self.portal_rearm = None;
         if let Some(r) = self.find_room(entry_id).cloned() {
             let (cx, cy) = r.center();
             self.you_x = cx;
@@ -1966,19 +3320,15 @@ impl PortWalkState {
         if from_id == to_id {
             return None;
         }
-        let portals = if self.aboard_ship {
-            &self.ship_portals
-        } else {
-            &self.portals
-        };
+        let portals = self.active_portals();
         let mut queue: VecDeque<(String, Option<(String, String)>)> = VecDeque::new();
-        let mut visited: HashMap<String, bool> = HashMap::new();
+        let mut visited: HashSet<String> = HashSet::new();
         queue.push_back((from_id.to_string(), None));
-        visited.insert(from_id.to_string(), true);
+        visited.insert(from_id.to_string());
 
         while let Some((cur, first_hop)) = queue.pop_front() {
             for p in portals {
-                if p.from_room != cur || visited.contains_key(&p.to_room) {
+                if p.from_room != cur || visited.contains(&p.to_room) {
                     continue;
                 }
                 let hop = first_hop
@@ -1987,7 +3337,7 @@ impl PortWalkState {
                 if p.to_room == to_id {
                     return Some(hop);
                 }
-                visited.insert(p.to_room.clone(), true);
+                visited.insert(p.to_room.clone());
                 queue.push_back((p.to_room.clone(), Some(hop)));
             }
         }
@@ -2003,16 +3353,21 @@ impl PortWalkState {
         }
         if lower.contains("bridge") {
             Some("bridge".to_string())
-        } else if lower.contains("airlock") {
+        } else if lower.contains("airlock") || lower.contains("lock") {
             Some("airlock".to_string())
+        } else if lower.contains("passage") || lower.contains("spine") {
+            Some("passage".to_string())
+        } else if lower.contains("crew")
+            || lower.contains("bunk")
+            || lower.contains("galley")
+            || lower.contains("quarter")
+            || lower.contains("mess")
+        {
+            Some("crew".to_string())
         } else if lower.contains("hold") || lower.contains("cargo") {
             Some("hold".to_string())
-        } else if lower.contains("eng") {
+        } else if lower.contains("eng") || lower.contains("drive") || lower.contains("crawlway") {
             Some("engineering".to_string())
-        } else if lower.contains("mess") || lower.contains("galley") {
-            Some("mess".to_string())
-        } else if lower.contains("quarter") || lower.contains("bunk") {
-            Some("quarters".to_string())
         } else {
             None
         }
@@ -2022,131 +3377,204 @@ impl PortWalkState {
         self.actors.clear();
         self.interactables.clear();
 
-        let (rcx, rcy, rfloor, rmin_y, rmax_y) =
-            self.find_room(&self.active_location_key)
-                .map_or((0.0, 0.0, 0, -6.0, 6.0), |r| {
-                    let (cx, cy) = r.center();
-                    (cx, cy, r.floor, r.min_y, r.max_y)
-                });
+        let (rcx, rcy, rfloor, rmin_x, rmax_x, rmin_y, rmax_y) = self
+            .find_room(&self.active_location_key)
+            .map_or((0.0, 0.0, 0, -6.0, 6.0, -6.0, 6.0), |r| {
+                let (cx, cy) = r.center();
+                (cx, cy, r.floor, r.min_x, r.max_x, r.min_y, r.max_y)
+            });
 
-        // Collect dormant NPC IDs so unstaffed desks stay empty
-        let mut dormant = HashMap::new();
-        if let Some(d_arr) = view.ambient.get("dormant_npcs").and_then(Value::as_array) {
-            for d in d_arr {
-                if let Some(s) = d.as_str() {
-                    dormant.insert(s.to_ascii_lowercase(), true);
-                }
-            }
-        }
+        let clamp_in_room = |x: f64, y: f64| -> (f64, f64) {
+            let x0 = (rmin_x + 1.2).min(rcx);
+            let x1 = (rmax_x - 1.2).max(rcx);
+            let y0 = (rmin_y + 1.2).min(rcy);
+            let y1 = (rmax_y - 1.2).max(rcy);
+            (x.clamp(x0, x1), y.clamp(y0, y1))
+        };
 
-        // Actors from `ambient.npcs` + `ambient.players` (falling back to `view.contents`)
+        // Live server schema (`crates/mush-npc/src/module.rs:4500-4592`):
+        // `RoomView.ambient["occupants"] = { "npcs": ["#12"], "dormant": ["#13"], "players": ["#14"], "things": ["#15"] }`.
         let mut idx = 0usize;
-        if let Some(npcs) = view.ambient.get("npcs").and_then(Value::as_array) {
-            for n in npcs.iter().take(12) {
-                let id = n
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let name = n
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if name.is_empty()
-                    || dormant.contains_key(&id.to_ascii_lowercase())
-                    || dormant.contains_key(&name.to_ascii_lowercase())
+        if let Some(occ) = view.ambient.get("occupants").and_then(Value::as_object) {
+            let id_set = |key: &str| -> HashSet<String> {
+                occ.get(key)
+                    .and_then(Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(Value::as_str)
+                            .map(|s| sanitize(s).to_ascii_lowercase())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let npc_ids = id_set("npcs");
+            let dormant_ids = id_set("dormant");
+            let player_ids = id_set("players");
+            let thing_ids = id_set("things");
+
+            for item in &view.contents {
+                let id_str = sanitize(&item.id.to_string());
+                let id_low = id_str.to_ascii_lowercase();
+                let name = sanitize(&item.name);
+                if name.is_empty() || dormant_ids.contains(&id_low) || thing_ids.contains(&id_low) {
+                    continue;
+                }
+                if npc_ids.contains(&id_low) {
+                    let angle = (idx as f64) * 1.25 + 0.5;
+                    let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.6, rcy + angle.sin() * 2.2);
+                    self.actors.push(ActorEntry {
+                        id: id_str,
+                        name: name.clone(),
+                        npc: true,
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                    });
+                    self.interactables.push(InteractableTarget {
+                        label: format!("Talk to {name}"),
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                        action: InteractAction::OpenNpc { name },
+                    });
+                    idx += 1;
+                } else if player_ids.contains(&id_low)
+                    && !self_name.is_some_and(|me| me.eq_ignore_ascii_case(&name))
                 {
-                    continue;
+                    let angle = (idx as f64) * 1.25 + 0.9;
+                    let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.4, rcy + angle.sin() * 2.0);
+                    self.actors.push(ActorEntry {
+                        id: id_str,
+                        name: name.clone(),
+                        npc: false,
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                    });
+                    self.interactables.push(InteractableTarget {
+                        label: format!("Greet {name}"),
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                        action: InteractAction::OpenNpc { name },
+                    });
+                    idx += 1;
                 }
-                let angle = (idx as f64) * 1.25 + 0.5;
-                let ax = rcx + angle.cos() * 2.6;
-                let ay = rcy + angle.sin() * 2.2;
-                self.actors.push(ActorEntry {
-                    id,
-                    name: name.clone(),
-                    npc: true,
-                    x_m: ax,
-                    y_m: ay,
-                    floor: rfloor,
-                });
-                self.interactables.push(InteractableTarget {
-                    label: format!("Talk to {name}"),
-                    x_m: ax,
-                    y_m: ay,
-                    floor: rfloor,
-                    action: InteractAction::OpenNpc { name },
-                });
-                idx += 1;
             }
-        }
-
-        if let Some(players) = view.ambient.get("players").and_then(Value::as_array) {
-            for p in players.iter().take(12) {
-                let id = p
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let name = p
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if name.is_empty() || self_name.is_some_and(|me| me.eq_ignore_ascii_case(&name)) {
-                    continue;
+        } else {
+            // Legacy fallback when `ambient["occupants"]` is absent (e.g. older fixtures)
+            let mut dormant = HashSet::new();
+            if let Some(d_arr) = view.ambient.get("dormant_npcs").and_then(Value::as_array) {
+                for d in d_arr {
+                    if let Some(s) = d.as_str() {
+                        dormant.insert(sanitize(s).to_ascii_lowercase());
+                    }
                 }
-                let angle = (idx as f64) * 1.25 + 0.9;
-                let ax = rcx + angle.cos() * 2.4;
-                let ay = rcy + angle.sin() * 2.0;
-                self.actors.push(ActorEntry {
-                    id,
-                    name: name.clone(),
-                    npc: false,
-                    x_m: ax,
-                    y_m: ay,
-                    floor: rfloor,
-                });
-                self.interactables.push(InteractableTarget {
-                    label: format!("Greet {name}"),
-                    x_m: ax,
-                    y_m: ay,
-                    floor: rfloor,
-                    action: InteractAction::OpenNpc { name },
-                });
-                idx += 1;
             }
-        }
-
-        if self.actors.is_empty() {
-            for item in view.contents.iter().take(8) {
-                if self_name.is_some_and(|me| me.eq_ignore_ascii_case(&item.name)) {
-                    continue;
+            let has_explicit =
+                view.ambient.contains_key("npcs") || view.ambient.contains_key("players");
+            if let Some(npcs) = view.ambient.get("npcs").and_then(Value::as_array) {
+                for n in npcs.iter().take(12) {
+                    let id = n
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    let name = n
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    if name.is_empty()
+                        || dormant.contains(&id.to_ascii_lowercase())
+                        || dormant.contains(&name.to_ascii_lowercase())
+                    {
+                        continue;
+                    }
+                    let angle = (idx as f64) * 1.25 + 0.5;
+                    let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.6, rcy + angle.sin() * 2.2);
+                    self.actors.push(ActorEntry {
+                        id,
+                        name: name.clone(),
+                        npc: true,
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                    });
+                    self.interactables.push(InteractableTarget {
+                        label: format!("Talk to {name}"),
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                        action: InteractAction::OpenNpc { name },
+                    });
+                    idx += 1;
                 }
-                if dormant.contains_key(&item.name.to_ascii_lowercase()) {
-                    continue;
+            }
+            if let Some(players) = view.ambient.get("players").and_then(Value::as_array) {
+                for p in players.iter().take(12) {
+                    let id = p
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    let name = p
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(sanitize)
+                        .unwrap_or_default();
+                    if name.is_empty() || self_name.is_some_and(|me| me.eq_ignore_ascii_case(&name))
+                    {
+                        continue;
+                    }
+                    let angle = (idx as f64) * 1.25 + 0.9;
+                    let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.4, rcy + angle.sin() * 2.0);
+                    self.actors.push(ActorEntry {
+                        id,
+                        name: name.clone(),
+                        npc: false,
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                    });
+                    self.interactables.push(InteractableTarget {
+                        label: format!("Greet {name}"),
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                        action: InteractAction::OpenNpc { name },
+                    });
+                    idx += 1;
                 }
-                let angle = (idx as f64) * 1.3 + 0.6;
-                let ax = rcx + angle.cos() * 2.5;
-                let ay = rcy + angle.sin() * 2.0;
-                self.actors.push(ActorEntry {
-                    id: item.id.to_string(),
-                    name: item.name.clone(),
-                    npc: true,
-                    x_m: ax,
-                    y_m: ay,
-                    floor: rfloor,
-                });
-                self.interactables.push(InteractableTarget {
-                    label: format!("Talk to {}", item.name),
-                    x_m: ax,
-                    y_m: ay,
-                    floor: rfloor,
-                    action: InteractAction::OpenNpc {
-                        name: item.name.clone(),
-                    },
-                });
-                idx += 1;
+            }
+            if !has_explicit {
+                for item in view.contents.iter().take(8) {
+                    let name = sanitize(&item.name);
+                    if name.is_empty()
+                        || self_name.is_some_and(|me| me.eq_ignore_ascii_case(&name))
+                        || dormant.contains(&name.to_ascii_lowercase())
+                    {
+                        continue;
+                    }
+                    let angle = (idx as f64) * 1.3 + 0.6;
+                    let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.5, rcy + angle.sin() * 2.0);
+                    self.actors.push(ActorEntry {
+                        id: sanitize(&item.id.to_string()),
+                        name: name.clone(),
+                        npc: true,
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                    });
+                    self.interactables.push(InteractableTarget {
+                        label: format!("Talk to {name}"),
+                        x_m: ax,
+                        y_m: ay,
+                        floor: rfloor,
+                        action: InteractAction::OpenNpc { name },
+                    });
+                    idx += 1;
+                }
             }
         }
 
@@ -2178,7 +3606,7 @@ impl PortWalkState {
                         InteractableTarget {
                             label: "Disembark to Berth (+ship/leave)".to_string(),
                             x_m: rcx,
-                            y_m: rmin_y + 1.0,
+                            y_m: rmax_y - 1.0,
                             floor: rfloor,
                             action: InteractAction::Command("+ship/leave".to_string()),
                         },
@@ -2200,18 +3628,21 @@ impl PortWalkState {
             }
         } else {
             let key = self.active_location_key.as_str();
-            if key.contains("coop") {
+            if key.contains("coop") || key.contains("registry") {
                 self.interactables.insert(
                     0,
                     InteractableTarget {
-                        label: "Co-op Charter & Enrollment Desk".to_string(),
+                        label: "Co-op Charter & Registry Desk".to_string(),
                         x_m: rcx,
                         y_m: rmax_y - 1.8,
                         floor: rfloor,
                         action: InteractAction::OpenDrawer(PortDrawerKind::Coop),
                     },
                 );
-            } else if key.contains("exchange") || key.contains("chandlery") {
+            } else if key.contains("exchange")
+                || key.contains("chandlery")
+                || key.contains("commissary")
+            {
                 self.interactables.insert(
                     0,
                     InteractableTarget {
@@ -2222,7 +3653,18 @@ impl PortWalkState {
                         action: InteractAction::OpenDrawer(PortDrawerKind::Trade),
                     },
                 );
-            } else if key.contains("slack") || key.contains("arrivals") {
+                self.interactables.push(InteractableTarget {
+                    label: "Port Works, Shipyard & 24-Wk Trends".to_string(),
+                    x_m: (rcx + 3.0).min(rmax_x - 1.5),
+                    y_m: rmax_y - 1.8,
+                    floor: rfloor,
+                    action: InteractAction::OpenDrawer(PortDrawerKind::Industry),
+                });
+            } else if key.contains("slack")
+                || key.contains("shift_board")
+                || key.contains("arrivals")
+                || key.contains("customs")
+            {
                 self.interactables.insert(
                     0,
                     InteractableTarget {
@@ -2233,7 +3675,14 @@ impl PortWalkState {
                         action: InteractAction::OpenDrawer(PortDrawerKind::Jobs),
                     },
                 );
-            } else if key.contains("works") || key.contains("yard") || key.contains("service") {
+            } else if key.contains("works")
+                || key.contains("yard")
+                || key.contains("service")
+                || key.contains("clearing")
+                || key.contains("tycho")
+                || key.contains("receiving")
+                || key.contains("maintenance")
+            {
                 self.interactables.insert(
                     0,
                     InteractableTarget {
@@ -2244,7 +3693,25 @@ impl PortWalkState {
                         action: InteractAction::OpenDrawer(PortDrawerKind::Industry),
                     },
                 );
-            } else if key.contains("dockmaster") {
+            } else if key.contains("concourse") {
+                self.interactables.insert(
+                    0,
+                    InteractableTarget {
+                        label: "Port Works, Jobs & Directory Kiosk".to_string(),
+                        x_m: rcx,
+                        y_m: rcy,
+                        floor: rfloor,
+                        action: InteractAction::OpenDrawer(PortDrawerKind::Industry),
+                    },
+                );
+                self.interactables.push(InteractableTarget {
+                    label: "Open Jobs, Haulage & Crew Board".to_string(),
+                    x_m: (rcx - 3.0).max(rmin_x + 1.5),
+                    y_m: rcy,
+                    floor: rfloor,
+                    action: InteractAction::OpenDrawer(PortDrawerKind::Jobs),
+                });
+            } else if key.contains("dockmaster") || key.contains("harbourmaster") {
                 self.interactables.insert(
                     0,
                     InteractableTarget {
@@ -2256,17 +3723,29 @@ impl PortWalkState {
                     },
                 );
             } else if key.contains("berth") {
+                let hatch_y = if self
+                    .find_room(key)
+                    .is_some_and(|r| self.room_glass_is_south(r))
+                {
+                    rmin_y + 1.2
+                } else {
+                    rmax_y - 1.2
+                };
                 self.interactables.insert(
                     0,
                     InteractableTarget {
                         label: "Board Cradled Hull (+ship/board)".to_string(),
                         x_m: rcx,
-                        y_m: rmax_y - 1.2,
+                        y_m: hatch_y,
                         floor: rfloor,
                         action: InteractAction::Command("+ship/board".to_string()),
                     },
                 );
-            } else if self.pack_id.contains("ooc") {
+            } else if self.pack_id.contains("ooc")
+                || key.contains("simulator")
+                || key.contains("sim_red")
+                || key.contains("sim_blue")
+            {
                 self.interactables.insert(
                     0,
                     InteractableTarget {
@@ -2307,36 +3786,110 @@ impl PortWalkState {
         }
     }
 
-    /// Decode `ship.stowage` as `tacsim::port::ship::hull_stowage_json` writes it.
+    /// Decode live `hull_stowage_json` (`crates/tacsim/src/port/ship.rs:1763-1773`) with legacy fallbacks.
     fn decode_stowage_obj(&mut self, st: &serde_json::Map<String, Value>) {
-        let int = |key: &str| st.get(key).and_then(Value::as_i64);
-        if let Some(v) = int("cargo_kg") {
+        self.stowage_loaded = true;
+        if let Some(v) = st.get("cargo_kg").and_then(Value::as_i64) {
             self.stowage.cargo_kg = v;
         }
-        if let Some(v) = int("cargo_limit_kg") {
+        if let Some(v) = st
+            .get("cargo_limit_kg")
+            .or_else(|| st.get("max_cargo_kg"))
+            .and_then(Value::as_i64)
+            .filter(|&n| n > 0)
+        {
             self.stowage.max_cargo_kg = v;
         }
-        if let Some(v) = int("cargo_l") {
-            self.stowage.cargo_m3 = v as f64 / 1000.0;
+        if let Some(v) = st.get("cargo_l").and_then(Value::as_f64) {
+            self.stowage.cargo_m3 = v / 1000.0;
+        } else if let Some(v) = st.get("cargo_m3").and_then(Value::as_f64) {
+            self.stowage.cargo_m3 = v;
         }
-        if let Some(v) = int("cargo_limit_l") {
-            self.stowage.max_cargo_m3 = v as f64 / 1000.0;
+        if let Some(v) = st
+            .get("cargo_limit_l")
+            .and_then(Value::as_f64)
+            .filter(|&n| n > 0.0)
+        {
+            self.stowage.max_cargo_m3 = v / 1000.0;
+        } else if let Some(v) = st
+            .get("max_cargo_m3")
+            .and_then(Value::as_f64)
+            .filter(|&n| n > 0.0)
+        {
+            self.stowage.max_cargo_m3 = v;
         }
-        if let Some(v) = int("tank_kg") {
+        if let Some(v) = st
+            .get("tank_kg")
+            .or_else(|| st.get("reaction_kg"))
+            .or_else(|| st.get("fuel_kg"))
+            .and_then(Value::as_i64)
+        {
             self.stowage.reaction_kg = v;
         }
-        if let Some(v) = int("tank_limit_kg") {
+        if let Some(v) = st
+            .get("tank_limit_kg")
+            .or_else(|| st.get("max_reaction_kg"))
+            .or_else(|| st.get("max_fuel_kg"))
+            .and_then(Value::as_i64)
+            .filter(|&n| n > 0)
+        {
             self.stowage.max_reaction_kg = v;
         }
-        if let Some(v) = int("stores_days") {
+        if let Some(v) = st.get("stores_days").and_then(Value::as_i64).or_else(|| {
+            st.get("stores_person_days")
+                .and_then(Value::as_f64)
+                .map(|f| f.round() as i64)
+        }) {
             self.stowage.stores_days = v;
         }
-        if let Some(v) = int("stores_limit_days") {
+        if let Some(v) = st
+            .get("stores_limit_days")
+            .and_then(Value::as_i64)
+            .filter(|&n| n > 0)
+        {
             self.stowage.max_stores_days = v;
+        }
+        if let Some(items) = st.get("items").and_then(Value::as_array) {
+            self.decode_cargo_items_arr(items);
+        }
+    }
+
+    fn decode_cargo_items_arr(&mut self, arr: &[Value]) {
+        self.cargo_lots.clear();
+        for item in arr.iter().take(64) {
+            let gid = item
+                .get("good")
+                .or_else(|| item.get("good_id"))
+                .and_then(Value::as_str)
+                .map(sanitize)
+                .unwrap_or_default();
+            let qty = item
+                .get("qty")
+                .or_else(|| item.get("quantity"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if gid.is_empty() || qty <= 0 {
+                continue;
+            }
+            let (gname, _, _) = self.lookup_goods_meta(&gid);
+            self.cargo_lots.push(CargoLotRow {
+                good_id: gid,
+                good_name: gname,
+                quantity: qty,
+            });
         }
     }
 
     fn max_fit_for_ask(&self, ask: &AskRow) -> i64 {
+        if !self.stowage_loaded
+            || self.stowage.max_cargo_kg <= 0
+            || self.stowage.max_cargo_m3 <= 0.0
+        {
+            return 0;
+        }
+        let (unit_mass_kg, unit_vol_dm3) = self
+            .lookup_goods_meta_opt(&ask.good_id)
+            .map_or((ask.unit_mass_kg, ask.unit_vol_dm3), |(_, m, v)| (m, v));
         let by_avail = ask.quantity.max(0);
         let by_cash = if ask.unit_price_minor > 0 {
             (self.credits_minor.max(0)) / ask.unit_price_minor
@@ -2344,15 +3897,15 @@ impl PortWalkState {
             by_avail
         };
         let free_kg = (self.stowage.max_cargo_kg - self.stowage.cargo_kg).max(0);
-        let by_mass = if ask.unit_mass_kg > 0 {
-            free_kg / ask.unit_mass_kg
+        let by_mass = if unit_mass_kg > 0 {
+            free_kg / unit_mass_kg
         } else {
             by_avail
         };
         let free_dm3 =
             ((self.stowage.max_cargo_m3 - self.stowage.cargo_m3).max(0.0) * 1000.0).floor() as i64;
-        let by_vol = if ask.unit_vol_dm3 > 0 {
-            free_dm3 / ask.unit_vol_dm3
+        let by_vol = if unit_vol_dm3 > 0 {
+            free_dm3 / unit_vol_dm3
         } else {
             by_avail
         };
@@ -2360,19 +3913,46 @@ impl PortWalkState {
     }
 
     fn push_drawer_log(&mut self, line: String) {
-        self.drawer_log.push_back(line);
-        while self.drawer_log.len() > 4 {
+        let clean = sanitize(&line);
+        if clean.is_empty() {
+            return;
+        }
+        self.drawer_log.push_back(clean);
+        while self.drawer_log.len() > DRAWER_LOG_CAP {
             self.drawer_log.pop_front();
         }
+        self.drawer_log_scroll = 0;
     }
 
     fn stowage_gauge_lines(&self, utf8: bool) -> Vec<Line<'static>> {
         let st = &self.stowage;
+        let wallet = if self.balance_text.is_empty() {
+            format_credits(self.credits_minor)
+        } else {
+            self.balance_text.clone()
+        };
+        if !self.stowage_loaded {
+            return vec![
+                Line::from(vec![
+                    Span::styled("Wallet: ", Style::default().fg(Color::Gray)),
+                    Span::styled(
+                        wallet,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+                gauge_row("Hold Mass", 0.0, 1.0, "--".to_string(), utf8),
+                gauge_row("Packed Vol", 0.0, 1.0, "--".to_string(), utf8),
+                gauge_row("Reaction", 0.0, 1.0, "--".to_string(), utf8),
+                gauge_row("Stores", 0.0, 1.0, "--".to_string(), utf8),
+            ];
+        }
         vec![
             Line::from(vec![
                 Span::styled("Wallet: ", Style::default().fg(Color::Gray)),
                 Span::styled(
-                    format_credits(self.credits_minor),
+                    wallet,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -2426,7 +4006,8 @@ impl PortWalkState {
             PortDrawerKind::Sim,
             PortDrawerKind::Npc,
         ];
-        let mut title_spans = vec![Span::raw(" Port Services: ")];
+        // Compact tab bar fits cleanly inside 69-col inner width at the 120-col floor (`SSH-M-04`).
+        let mut title_spans = vec![Span::raw(" Port: ")];
         for t in all_tabs {
             if t == active {
                 title_spans.push(Span::styled(
@@ -2437,7 +4018,7 @@ impl PortWalkState {
                 ));
             } else {
                 title_spans.push(Span::styled(
-                    format!(" {}  ", t.label()),
+                    format!("{} ", t.label()),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
@@ -2452,15 +4033,38 @@ impl PortWalkState {
             return;
         }
 
+        let inner_h = usize::from(inner.height);
+        let inner_w = usize::from(inner.width);
+
+        // Reserve dedicated bottom viewport for `drawer_log` so 24-week `+market/history` and
+        // multi-line output are ALWAYS visible and scrollable via PgUp/PgDn (`SSH-H-05`).
+        let log_total = self.drawer_log.len();
+        let (log_rows, log_hdr_rows) = if log_total == 0 {
+            (0usize, 0usize)
+        } else if inner_h >= 14 {
+            let want = if self.drawer_log_scroll > 0 {
+                (inner_h / 2).clamp(4, 12)
+            } else {
+                (inner_h / 3).clamp(3, 8)
+            };
+            (want.min(log_total), 1usize)
+        } else if inner_h >= 7 {
+            (2usize.min(log_total), 1usize)
+        } else {
+            (1usize.min(log_total), 0usize)
+        };
+        let main_budget = inner_h.saturating_sub(log_rows + log_hdr_rows).max(1);
+
         let mut lines: Vec<Line<'static>> = Vec::new();
         match active {
             PortDrawerKind::Trade => {
-                for g in self.stowage_gauge_lines(utf8).into_iter().take(3) {
+                let gauge_count = if main_budget >= 7 { 3 } else { 1 };
+                for g in self.stowage_gauge_lines(utf8).into_iter().take(gauge_count) {
                     lines.push(g);
                 }
                 let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
                 let qty_word = if preset == 0 {
-                    "Max Fit".to_string()
+                    "Max".to_string()
                 } else {
                     format!("{preset}")
                 };
@@ -2478,28 +4082,93 @@ impl PortWalkState {
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
+                let more_tag = if self.trade_next_after.is_some() {
+                    " >:more"
+                } else {
+                    ""
+                };
+                let count_tag = if self.trade_subtab == 0 {
+                    format!(
+                        "{}/{}",
+                        self.cursor_row.saturating_add(1).min(self.asks.len()),
+                        self.asks.len()
+                    )
+                } else {
+                    format!(
+                        "{}/{}",
+                        self.cursor_row.saturating_add(1).min(self.bids.len()),
+                        self.bids.len()
+                    )
+                };
                 lines.push(Line::from(vec![
-                    Span::styled(" < ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("Buy Asks", buy_style),
-                    Span::raw(" | "),
-                    Span::styled("Sell Bids", sell_style),
-                    Span::styled(" >   ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("<", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Buy(b)", buy_style),
+                    Span::raw("|"),
+                    Span::styled("Sell(s)", sell_style),
+                    Span::styled("> ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
-                        format!("Lot Qty ([/]): {qty_word}   r: refresh"),
+                        format!("Qty[/]:{qty_word} [{count_tag}] r:ref{more_tag}"),
                         Style::default().fg(Color::Cyan),
                     ),
                 ]));
 
+                let list_rows = main_budget.saturating_sub(lines.len()).max(1);
                 if self.trade_subtab == 0 {
                     if self.asks.is_empty() {
                         lines.push(Line::from(Span::styled(
-                            "No standing asks loaded yet (press r at a port exchange).",
+                            "No asks loaded (press r at a port exchange).",
                             Style::default().fg(Color::DarkGray),
                         )));
                     } else {
-                        for (idx, ask) in self.asks.iter().take(6).enumerate() {
+                        for idx in visible_window(self.asks.len(), self.cursor_row, list_rows) {
+                            if let Some(ask) = self.asks.get(idx) {
+                                let sel = idx == self.cursor_row;
+                                let fit_text = if self.stowage_loaded {
+                                    self.max_fit_for_ask(ask).to_string()
+                                } else {
+                                    "--".to_string()
+                                };
+                                let mark = if sel { "> " } else { "  " };
+                                let st = if sel {
+                                    Style::default()
+                                        .fg(Color::White)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(Color::Gray)
+                                };
+                                let row = format!(
+                                    "{mark}#{:<4} {:<16} {:>5} {:>10} fit:{fit_text}",
+                                    ask.listing_id,
+                                    truncate_str(&ask.good_name, 16),
+                                    ask.quantity,
+                                    format_credits(ask.unit_price_minor)
+                                );
+                                lines.push(Line::from(Span::styled(
+                                    truncate_str(&row, inner_w),
+                                    st,
+                                )));
+                            }
+                        }
+                    }
+                } else if self.bids.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "No bids loaded (press r at a port exchange).",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                } else {
+                    for idx in visible_window(self.bids.len(), self.cursor_row, list_rows) {
+                        if let Some(bid) = self.bids.get(idx) {
                             let sel = idx == self.cursor_row;
-                            let fit = self.max_fit_for_ask(ask);
+                            let hold_text = if self.stowage_loaded {
+                                self.cargo_lots
+                                    .iter()
+                                    .filter(|c| c.good_id == bid.good_id)
+                                    .map(|c| c.quantity)
+                                    .sum::<i64>()
+                                    .to_string()
+                            } else {
+                                "--".to_string()
+                            };
                             let mark = if sel { "> " } else { "  " };
                             let st = if sel {
                                 Style::default()
@@ -2508,211 +4177,256 @@ impl PortWalkState {
                             } else {
                                 Style::default().fg(Color::Gray)
                             };
-                            lines.push(Line::from(Span::styled(
-                                format!(
-                                    "{mark}#{:<4} {:<18} {:>5} avail  {:>10}/u  (fit: {fit})",
-                                    ask.listing_id,
-                                    truncate_str(&ask.good_name, 18),
-                                    ask.quantity,
-                                    format_credits(ask.unit_price_minor)
-                                ),
-                                st,
-                            )));
-                        }
-                    }
-                } else if self.bids.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "No standing bids loaded yet (press r at a port exchange).",
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                } else {
-                    for (idx, bid) in self.bids.iter().take(6).enumerate() {
-                        let sel = idx == self.cursor_row;
-                        let held: i64 = self
-                            .cargo_lots
-                            .iter()
-                            .filter(|c| c.good_id == bid.good_id)
-                            .map(|c| c.quantity)
-                            .sum();
-                        let mark = if sel { "> " } else { "  " };
-                        let st = if sel {
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::Gray)
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!(
-                                "{mark}#{:<4} {:<18} wants {:>5}  {:>10}/u  (in hold: {held})",
+                            let row = format!(
+                                "{mark}#{:<4} {:<16} {:>5} {:>10} hold:{hold_text}",
                                 bid.listing_id,
-                                truncate_str(&bid.good_name, 18),
+                                truncate_str(&bid.good_name, 16),
                                 bid.quantity_wanted,
                                 format_credits(bid.unit_price_minor)
-                            ),
-                            st,
-                        )));
+                            );
+                            lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
+                        }
                     }
                 }
             }
             PortDrawerKind::Jobs => {
                 lines.push(Line::from(Span::styled(
-                    "Open Jobs, Crew & Lockers — Up/Down select, Enter run, o: +locker/open",
+                    truncate_str("Jobs & Crew — Up/Dn Enter:run  o:+locker/open", inner_w),
                     Style::default().fg(Color::Cyan),
                 )));
-                for (idx, &(label, cmd)) in DOC48_JOB_ACTIONS.iter().enumerate() {
-                    let sel = idx == self.cursor_row.min(DOC48_JOB_ACTIONS.len() - 1);
-                    let mark = if sel { "> " } else { "  " };
-                    let st = if sel {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{mark}{label:<30} ({cmd})"),
-                        st,
-                    )));
+                let list_rows = main_budget.saturating_sub(lines.len()).max(1);
+                let cur = self.cursor_row.min(DOC48_JOB_ACTIONS.len() - 1);
+                for idx in visible_window(DOC48_JOB_ACTIONS.len(), cur, list_rows) {
+                    if let Some(&(label, cmd)) = DOC48_JOB_ACTIONS.get(idx) {
+                        let sel = idx == cur;
+                        let mark = if sel { "> " } else { "  " };
+                        let st = if sel {
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let row = format!("{mark}{label:<26} ({cmd})");
+                        lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
+                    }
                 }
             }
             PortDrawerKind::Industry => {
                 lines.push(Line::from(Span::styled(
-                    "Works, Shipyard & 24-Week Trends — Up/Down select, Enter run, m: +market/mine",
-                    Style::default().fg(Color::Cyan),
-                )));
-                for (idx, &(label, cmd)) in DOC48_INDUSTRY_ACTIONS.iter().enumerate() {
-                    let sel = idx == self.cursor_row.min(DOC48_INDUSTRY_ACTIONS.len() - 1);
-                    let mark = if sel { "> " } else { "  " };
-                    let st = if sel {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{mark}{label:<30} ({cmd})"),
-                        st,
-                    )));
-                }
-            }
-            PortDrawerKind::Sailing => {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "Action: {} (r toggles)   Enter: run   u: +ship/undock   d: +helm/dock",
-                        if self.round_trip {
-                            "Queue Depart (+ship/order)"
-                        } else {
-                            "Dry-Run Passage (+ship/plan)"
-                        }
+                    truncate_str(
+                        "Works, Yard & 24wk — Up/Dn Enter:run  m:+market/mine",
+                        inner_w,
                     ),
                     Style::default().fg(Color::Cyan),
                 )));
-                for (idx, &(_, name, desc)) in CORRIDORS.iter().enumerate() {
-                    let sel = idx == self.cursor_idx_clamped(CORRIDORS.len());
-                    let mark = if sel { "> " } else { "  " };
-                    let st = if sel {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{mark}{name:<20} {desc}"),
-                        st,
-                    )));
+                let list_rows = main_budget.saturating_sub(lines.len()).max(1);
+                let cur = self.cursor_row.min(DOC48_INDUSTRY_ACTIONS.len() - 1);
+                for idx in visible_window(DOC48_INDUSTRY_ACTIONS.len(), cur, list_rows) {
+                    if let Some(&(label, cmd)) = DOC48_INDUSTRY_ACTIONS.get(idx) {
+                        let sel = idx == cur;
+                        let mark = if sel { "> " } else { "  " };
+                        let st = if sel {
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let row = format!("{mark}{label:<26} ({cmd})");
+                        lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
+                    }
+                }
+            }
+            PortDrawerKind::Sailing => {
+                let mode_lbl = if self.queue_depart {
+                    "Depart (+ship/order)"
+                } else {
+                    "Dry-Run (+ship/plan)"
+                };
+                lines.push(Line::from(Span::styled(
+                    truncate_str(&format!("Mode: {mode_lbl} (r toggle)  Enter:run"), inner_w),
+                    Style::default().fg(Color::Cyan),
+                )));
+                lines.push(Line::from(Span::styled(
+                    truncate_str("u: +ship/undock   d: +helm/dock (aboard)", inner_w),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                let list_rows = main_budget.saturating_sub(lines.len()).max(1);
+                let cur = self.cursor_idx_clamped(CORRIDORS.len());
+                for idx in visible_window(CORRIDORS.len(), cur, list_rows) {
+                    if let Some(&(_, name, desc)) = CORRIDORS.get(idx) {
+                        let sel = idx == cur;
+                        let mark = if sel { "> " } else { "  " };
+                        let st = if sel {
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let row = format!("{mark}{name:<19} {desc}");
+                        lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
+                    }
                 }
             }
             PortDrawerKind::Coop => {
                 lines.push(Line::from(Span::styled(
-                    "First Captains' Lay Charter: zero upfront cash; cooperative lay settles from voyage margin.",
+                    truncate_str(
+                        "First Captains' Lay: zero cash upfront; lay settles from margin.",
+                        inner_w,
+                    ),
                     Style::default().fg(Color::Gray),
                 )));
                 let edit_tag = if self.editing_hull_name {
-                    " (TYPING - Enter submits, Esc stops)"
+                    " [TYPING: Enter=ok Esc=cancel]"
                 } else {
-                    " (r: cycle suggestion, n: type custom, Enter: enroll)"
+                    " (r:next  n:edit  Enter:enroll)"
                 };
-                lines.push(Line::from(vec![
-                    Span::styled("Hull Name: ", Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        self.custom_hull_input.clone(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(edit_tag, Style::default().fg(Color::DarkGray)),
-                ]));
+                let hull_line = format!("Hull: {}{edit_tag}", self.custom_hull_input);
                 lines.push(Line::from(Span::styled(
-                    "Keys: Enter -> +coop/enroll <name>   t -> +coop (terms)   s -> +coop/statement",
+                    truncate_str(&hull_line, inner_w),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    truncate_str(
+                        "Keys: Enter:+coop/enroll  t:+coop  s:+coop/statement",
+                        inner_w,
+                    ),
                     Style::default().fg(Color::Green),
                 )));
             }
             PortDrawerKind::Sim => {
+                let sim_hdr = if let Some(ref sim) = self.simulator {
+                    let team = sim.my_team.as_deref().unwrap_or("none");
+                    let unit = sim.my_unit.as_deref().unwrap_or("-");
+                    format!(
+                        "Sim [{} / {}] team:{team} unit:{unit} ({} slots)",
+                        sim.arena,
+                        sim.match_state,
+                        sim.slots.len()
+                    )
+                } else {
+                    "Simulator Pod Bay — select slot and press Enter:".to_string()
+                };
                 lines.push(Line::from(Span::styled(
-                    "Simulator Center Pod Bay — select a training slot and press Enter:",
+                    truncate_str(&sim_hdr, inner_w),
                     Style::default().fg(Color::Cyan),
                 )));
-                for (idx, &(label, cmd)) in SIM_LOADOUTS.iter().enumerate() {
-                    let sel = idx == self.cursor_row.min(SIM_LOADOUTS.len() - 1);
-                    let mark = if sel { "> " } else { "  " };
-                    let st = if sel {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
+                if let Some(ref sim) = self.simulator
+                    && !sim.slots.is_empty()
+                {
+                    let summary: Vec<String> = sim
+                        .slots
+                        .iter()
+                        .take(6)
+                        .map(|s| {
+                            let tag = s
+                                .team
+                                .chars()
+                                .next()
+                                .map_or('?', |c| c.to_ascii_uppercase());
+                            let pilot = if s.pilot_name.is_empty() {
+                                "open"
+                            } else {
+                                s.pilot_name.as_str()
+                            };
+                            let seated = if s.seated { "*" } else { "" };
+                            if s.unit.is_empty() {
+                                format!("[{tag}{} {pilot}{seated}]", s.index)
+                            } else {
+                                format!("[{tag}{} {pilot}/{}{seated}]", s.index, s.unit)
+                            }
+                        })
+                        .collect();
                     lines.push(Line::from(Span::styled(
-                        format!("{mark}{label:<34} ({cmd})"),
-                        st,
+                        truncate_str(&format!("Roster: {}", summary.join(" ")), inner_w),
+                        Style::default().fg(Color::DarkGray),
                     )));
+                }
+                let list_rows = main_budget.saturating_sub(lines.len()).max(1);
+                let cur = self.cursor_row.min(SIM_LOADOUTS.len() - 1);
+                for idx in visible_window(SIM_LOADOUTS.len(), cur, list_rows) {
+                    if let Some(&(label, cmd)) = SIM_LOADOUTS.get(idx) {
+                        let sel = idx == cur;
+                        let mark = if sel { "> " } else { "  " };
+                        let st = if sel {
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let row = format!("{mark}{label:<28} ({cmd})");
+                        lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
+                    }
                 }
             }
             PortDrawerKind::Npc => {
                 let speaker = if self.selected_npc_name.is_empty() {
                     "Room".to_string()
                 } else {
-                    format!("{} (n cycles speaker)", self.selected_npc_name)
+                    format!("{} (n: next)", self.selected_npc_name)
                 };
                 lines.push(Line::from(Span::styled(
-                    format!("Speaking with: {speaker}"),
+                    truncate_str(&format!("Speaking with: {speaker}"), inner_w),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )));
-                for (idx, &(topic, q)) in NPC_TOPICS.iter().enumerate() {
-                    let sel = idx == self.cursor_row.min(NPC_TOPICS.len() - 1);
-                    let mark = if sel { "> " } else { "  " };
-                    let st = if sel {
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
+                let list_rows = main_budget.saturating_sub(lines.len()).max(1);
+                let cur = self.cursor_row.min(NPC_TOPICS.len() - 1);
+                for idx in visible_window(NPC_TOPICS.len(), cur, list_rows) {
+                    if let Some(&(topic, q)) = NPC_TOPICS.get(idx) {
+                        let sel = idx == cur;
+                        let mark = if sel { "> " } else { "  " };
+                        let st = if sel {
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        let row = format!("{mark}{topic:<20} \"{q}\"");
+                        lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
+                    }
+                }
+            }
+        }
+
+        // Clip main content to `main_budget` so log footer is NEVER pushed off-screen (`SSH-H-05`).
+        lines.truncate(main_budget);
+
+        if log_rows > 0 {
+            let max_scroll = log_total.saturating_sub(log_rows);
+            let scroll = self.drawer_log_scroll.min(max_scroll);
+            let end = log_total.saturating_sub(scroll);
+            let start = end.saturating_sub(log_rows);
+            if log_hdr_rows > 0 {
+                let hdr = format!(
+                    "--- Output ({}-{} of {}, PgUp/PgDn) ---",
+                    start + 1,
+                    end,
+                    log_total
+                );
+                lines.push(Line::from(Span::styled(
+                    truncate_str(&hdr, inner_w),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            for idx in start..end {
+                if let Some(log_ln) = self.drawer_log.get(idx) {
                     lines.push(Line::from(Span::styled(
-                        format!("{mark}{topic:<22} \"{q}\""),
-                        st,
+                        truncate_str(&format!("  {log_ln}"), inner_w),
+                        Style::default().fg(Color::Yellow),
                     )));
                 }
             }
         }
 
-        for log_ln in &self.drawer_log {
-            lines.push(Line::from(Span::styled(
-                format!("  {log_ln}"),
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-
-        let max_rows = usize::from(inner.height);
-        frame.render_widget(
-            Paragraph::new(lines.into_iter().take(max_rows).collect::<Vec<_>>()),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn cursor_idx_clamped(&self, len: usize) -> usize {
@@ -2722,6 +4436,698 @@ impl PortWalkState {
             self.corridor_idx.min(len - 1)
         }
     }
+}
+
+// ---- Geometry, Pack Parsers & Canonical Built-in Layouts --------------------
+
+fn visible_window(total: usize, cursor: usize, max_rows: usize) -> Range<usize> {
+    if total == 0 || max_rows == 0 {
+        return 0..0;
+    }
+    let visible = max_rows.min(total);
+    let cur = cursor.min(total - 1);
+    let half = visible / 2;
+    let start = cur.saturating_sub(half).min(total - visible);
+    start..(start + visible)
+}
+
+/// Compute a landing position inside `room` strictly further than `STAIR_TRIGGER_RADIUS_M`
+/// from `(ret_x, ret_y)` whenever the room geometry permits (`SSH-C-02`).
+fn safe_stair_landing(room: &RoomGeom, ret_x: f64, ret_y: f64) -> (f64, f64) {
+    let (cx, cy) = room.center();
+    let dist_center = ((cx - ret_x).powi(2) + (cy - ret_y).powi(2)).sqrt();
+    if dist_center >= STAIR_LANDING_CLEARANCE_M {
+        return (cx, cy);
+    }
+    let pad_x = 0.8_f64.min((room.max_x - room.min_x) * 0.25);
+    let pad_y = 0.8_f64.min((room.max_y - room.min_y) * 0.25);
+    let x0 = room.min_x + pad_x;
+    let x1 = room.max_x - pad_x;
+    let y0 = room.min_y + pad_y;
+    let y1 = room.max_y - pad_y;
+    let candidates = [
+        (cx, y1),
+        (cx, y0),
+        (x1, cy),
+        (x0, cy),
+        (x0, y0),
+        (x1, y1),
+        (x0, y1),
+        (x1, y0),
+    ];
+    let mut best = (cx, cy);
+    let mut best_d = dist_center;
+    for (px, py) in candidates {
+        let d = ((px - ret_x).powi(2) + (py - ret_y).powi(2)).sqrt();
+        if d > best_d {
+            best = (px, py);
+            best_d = d;
+        }
+    }
+    // Pull slightly toward center if the corner is very far, while keeping >= clearance
+    let dx = best.0 - ret_x;
+    let dy = best.1 - ret_y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len > STAIR_LANDING_CLEARANCE_M + 0.4 {
+        let frac = (STAIR_LANDING_CLEARANCE_M + 0.35) / len;
+        let nx = (ret_x + dx * frac).clamp(x0, x1);
+        let ny = (ret_y + dy * frac).clamp(y0, y1);
+        if ((nx - ret_x).powi(2) + (ny - ret_y).powi(2)).sqrt() >= STAIR_LANDING_CLEARANCE_M {
+            return (nx, ny);
+        }
+    }
+    best
+}
+
+fn normalize_unit_slug(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let tail = trimmed
+        .strip_prefix("tacsim.unit.")
+        .or_else(|| trimmed.strip_prefix("unit."))
+        .unwrap_or(trimmed);
+    tail.to_ascii_lowercase()
+}
+
+fn classify_room_kind(entry_id: &str, is_dock: bool, atlas_kind: &str) -> &'static str {
+    let low = entry_id.to_ascii_lowercase();
+    if is_dock || low.contains("berth") {
+        "berth"
+    } else if low.contains("sim_red") || low.contains("sim_blue") || low.contains("pod") {
+        "pod"
+    } else if atlas_kind == "circulation" || low.contains("concourse") {
+        "corridor"
+    } else if low.contains("freight") || low.contains("hold") {
+        "hold"
+    } else if low.contains("bridge") {
+        "bridge"
+    } else if low.contains("eng") {
+        "eng"
+    } else if low.contains("registry")
+        || low.contains("exchange")
+        || low.contains("chandlery")
+        || low.contains("commissary")
+        || low.contains("dockmaster")
+        || low.contains("harbourmaster")
+        || low.contains("clearing")
+        || low.contains("tycho")
+        || low.contains("service")
+        || low.contains("arrivals")
+        || low.contains("customs")
+        || low.contains("simulator_lobby")
+    {
+        "desk"
+    } else {
+        "room"
+    }
+}
+
+/// Extract the cleanest short MUSH exit alias from a semicolon-separated exit name string,
+/// e.g. `"Pressure Lobby <N>;n;north;lobby"` -> `"n"`, `"Inner Hatch <I>;inner;in"` -> `"inner"`.
+fn extract_exit_command(raw_name: &str) -> String {
+    let clean = sanitize(raw_name);
+    let mut parts = clean.split(';').map(str::trim).filter(|s| !s.is_empty());
+    let first = parts.next().unwrap_or("");
+    if let Some(alias) = parts.next() {
+        return alias.to_ascii_lowercase();
+    }
+    if let (Some(lt), Some(gt)) = (first.find('<'), first.find('>'))
+        && gt > lt + 1
+    {
+        return first[lt + 1..gt].trim().to_ascii_lowercase();
+    }
+    first.to_ascii_lowercase()
+}
+
+fn parse_footprint_rect(fp: &Value) -> Option<(f64, f64, f64, f64)> {
+    const LIMIT: f64 = 10_000.0;
+    let obj = fp.as_object()?;
+    if let Some(rect) = obj.get("rect").and_then(Value::as_array)
+        && rect.len() == 2
+    {
+        let p0 = rect.first()?.as_array()?;
+        let p1 = rect.get(1)?.as_array()?;
+        let x0 = p0.first()?.as_f64()?.clamp(-LIMIT, LIMIT);
+        let y0 = p0.get(1)?.as_f64()?.clamp(-LIMIT, LIMIT);
+        let x1 = p1.first()?.as_f64()?.clamp(-LIMIT, LIMIT);
+        let y1 = p1.get(1)?.as_f64()?.clamp(-LIMIT, LIMIT);
+        let (min_x, max_x) = (x0.min(x1), x0.max(x1));
+        let (min_y, max_y) = (y0.min(y1), y0.max(y1));
+        if max_x > min_x && max_y > min_y {
+            return Some((min_x, min_y, max_x, max_y));
+        }
+    }
+    if let Some(poly) = obj.get("polygon").and_then(Value::as_array)
+        && !poly.is_empty()
+    {
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for pt in poly {
+            let Some(arr) = pt.as_array() else {
+                continue;
+            };
+            if let (Some(x), Some(y)) = (
+                arr.first().and_then(Value::as_f64),
+                arr.get(1).and_then(Value::as_f64),
+            ) {
+                let x = x.clamp(-LIMIT, LIMIT);
+                let y = y.clamp(-LIMIT, LIMIT);
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+        if min_x.is_finite() && max_x > min_x && max_y > min_y {
+            return Some((min_x, min_y, max_x, max_y));
+        }
+    }
+    if let Some(anchor) = obj.get("anchor").and_then(Value::as_object)
+        && let Some(pt) = anchor.get("point").and_then(Value::as_array)
+    {
+        let x = pt.first()?.as_f64()?.clamp(-LIMIT, LIMIT);
+        let y = pt.get(1)?.as_f64()?.clamp(-LIMIT, LIMIT);
+        let r = anchor
+            .get("radius_m")
+            .and_then(Value::as_f64)
+            .unwrap_or(5.0)
+            .clamp(2.0, 200.0);
+        return Some((x - r, y - r, x + r, y + r));
+    }
+    None
+}
+
+fn parse_surface_floor(surface: Option<&Value>) -> i64 {
+    match surface {
+        // `surface: "ground"` sits at floor 0 (matching `W3D-H6` / OOC Hall floor 0).
+        Some(Value::String(_)) | None => 0,
+        Some(Value::Object(map)) => map
+            .get("floor")
+            .and_then(Value::as_array)
+            .and_then(|arr| arr.get(1))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(-100, 100),
+        _ => 0,
+    }
+}
+
+type PortalEndpoints = (Option<(f64, f64)>, Option<(f64, f64)>);
+
+fn parse_portal_at_endpoints(portal: Option<&Value>) -> PortalEndpoints {
+    let Some(at) = portal.and_then(|p| p.get("at")).and_then(Value::as_array) else {
+        return (None, None);
+    };
+    // Form 1: `[[x0, y0, z0], [x1, y1, z1]]`
+    if at.len() == 2
+        && let (Some(a), Some(b)) = (
+            at.first().and_then(Value::as_array),
+            at.get(1).and_then(Value::as_array),
+        )
+        && let (Some(ax), Some(ay), Some(bx), Some(by)) = (
+            a.first().and_then(Value::as_f64),
+            a.get(1).and_then(Value::as_f64),
+            b.first().and_then(Value::as_f64),
+            b.get(1).and_then(Value::as_f64),
+        )
+    {
+        return (Some((ax, ay)), Some((bx, by)));
+    }
+    // Form 2: `[x, y, z]`
+    if at.len() >= 2
+        && let (Some(x), Some(y)) = (
+            at.first().and_then(Value::as_f64),
+            at.get(1).and_then(Value::as_f64),
+        )
+    {
+        return (Some((x, y)), Some((x, y)));
+    }
+    (None, None)
+}
+
+fn clamp_point_inside_room(room: &RoomGeom, x: f64, y: f64) -> (f64, f64) {
+    let pad_x = 1.0_f64.min((room.max_x - room.min_x) * 0.25);
+    let pad_y = 1.0_f64.min((room.max_y - room.min_y) * 0.25);
+    (
+        x.clamp(room.min_x + pad_x, room.max_x - pad_x),
+        y.clamp(room.min_y + pad_y, room.max_y - pad_y),
+    )
+}
+
+fn shared_edge_midpoint(a: &RoomGeom, b: &RoomGeom) -> Option<(f64, f64)> {
+    const TOL: f64 = 1.5;
+    // Touch along vertical edge (East/West)
+    if (a.max_x - b.min_x).abs() <= TOL || (b.max_x - a.min_x).abs() <= TOL {
+        let ov_min = a.min_y.max(b.min_y);
+        let ov_max = a.max_y.min(b.max_y);
+        if ov_max > ov_min + 0.5 {
+            let x = if (a.max_x - b.min_x).abs() <= TOL {
+                (a.max_x + b.min_x) * 0.5
+            } else {
+                (b.max_x + a.min_x) * 0.5
+            };
+            return Some((x, (ov_min + ov_max) * 0.5));
+        }
+    }
+    // Touch along horizontal edge (North/South)
+    if (a.max_y - b.min_y).abs() <= TOL || (b.max_y - a.min_y).abs() <= TOL {
+        let ov_min = a.min_x.max(b.min_x);
+        let ov_max = a.max_x.min(b.max_x);
+        if ov_max > ov_min + 0.5 {
+            let y = if (a.max_y - b.min_y).abs() <= TOL {
+                (a.max_y + b.min_y) * 0.5
+            } else {
+                (b.max_y + a.min_y) * 0.5
+            };
+            return Some(((ov_min + ov_max) * 0.5, y));
+        }
+    }
+    None
+}
+
+fn boundary_point_toward(from: &RoomGeom, to: &RoomGeom) -> (f64, f64) {
+    let (fcx, fcy) = from.center();
+    let (tcx, tcy) = to.center();
+    let dx = tcx - fcx;
+    let dy = tcy - fcy;
+    if dx.abs() >= dy.abs() {
+        let x = if dx >= 0.0 {
+            from.max_x - 1.0
+        } else {
+            from.min_x + 1.0
+        };
+        (x.clamp(from.min_x + 0.8, from.max_x - 0.8), fcy)
+    } else {
+        let y = if dy >= 0.0 {
+            from.max_y - 1.0
+        } else {
+            from.min_y + 1.0
+        };
+        (fcx, y.clamp(from.min_y + 0.8, from.max_y - 0.8))
+    }
+}
+
+/// Parse a real projected `neighborhood.*` pack from `tacsim.content` into walkable rooms & portals (`SSH-C-02`).
+fn parse_neighborhood_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<PortalGeom>)> {
+    let entries = pack_val.get("entries")?.as_object()?;
+    let mut rooms: Vec<RoomGeom> = Vec::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+
+    for (entry_id, row) in entries {
+        if row.get("kind").and_then(Value::as_str) != Some("room") {
+            continue;
+        }
+        let Some(def) = row.get("def").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some((min_x, min_y, max_x, max_y)) =
+            def.get("footprint").and_then(parse_footprint_rect)
+        else {
+            continue;
+        };
+        let clean_id = sanitize(entry_id);
+        let name = def
+            .get("name")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| clean_id.clone());
+        let floor = parse_surface_floor(def.get("surface"));
+        let is_dock = def
+            .get("markers")
+            .and_then(Value::as_array)
+            .is_some_and(|arr| arr.iter().any(|m| m.as_str() == Some("port.dock")));
+        let atlas_kind = def.get("kind").and_then(Value::as_str).unwrap_or("indoor");
+        let kind = classify_room_kind(&clean_id, is_dock, atlas_kind);
+
+        let idx = rooms.len();
+        by_id.insert(clean_id.clone(), idx);
+        rooms.push(RoomGeom {
+            entry_id: clean_id,
+            name,
+            floor,
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            kind,
+        });
+    }
+
+    if rooms.is_empty() {
+        return None;
+    }
+
+    let mut portals: Vec<PortalGeom> = Vec::new();
+    for row in entries.values() {
+        if row.get("kind").and_then(Value::as_str) != Some("exit") {
+            continue;
+        }
+        let Some(def) = row.get("def").and_then(Value::as_object) else {
+            continue;
+        };
+        // Skip hidden / staff-locked exits in player walk geometry.
+        if def.get("lock").and_then(Value::as_str) == Some("staff")
+            || def.get("visibility").and_then(Value::as_str) == Some("hidden")
+            || def
+                .get("portal")
+                .and_then(|p| p.get("visibility"))
+                .and_then(Value::as_str)
+                == Some("hidden")
+        {
+            continue;
+        }
+        let Some(from_id) = def.get("from").and_then(Value::as_str).map(sanitize) else {
+            continue;
+        };
+        let Some(to_id) = def.get("to").and_then(Value::as_str).map(sanitize) else {
+            continue;
+        };
+        let (Some(&idx_a), Some(&idx_b)) = (by_id.get(&from_id), by_id.get(&to_id)) else {
+            continue;
+        };
+        let ra = &rooms[idx_a];
+        let rb = &rooms[idx_b];
+
+        let names = def.get("names").and_then(Value::as_array);
+        let cmd_ab = names
+            .and_then(|arr| arr.first())
+            .and_then(Value::as_str)
+            .map(extract_exit_command)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| to_id.clone());
+        let cmd_ba = names
+            .and_then(|arr| arr.get(1))
+            .and_then(Value::as_str)
+            .map(extract_exit_command)
+            .filter(|s| !s.is_empty());
+
+        let portal_def = def.get("portal");
+        let (at_a, at_b) = parse_portal_at_endpoints(portal_def);
+
+        if ra.floor != rb.floor {
+            let (ax, ay) = match at_a {
+                Some((x, y)) => clamp_point_inside_room(ra, x, y),
+                None => ra.center(),
+            };
+            let (bx, by) = match at_b {
+                Some((x, y)) => clamp_point_inside_room(rb, x, y),
+                None => rb.center(),
+            };
+            portals.push(PortalGeom {
+                from_room: from_id.clone(),
+                to_room: to_id.clone(),
+                command: cmd_ab,
+                x_m: ax,
+                y_m: ay,
+                floor: ra.floor,
+                width_m: 2.8,
+                stairs_to: Some(rb.floor),
+                teleport: false,
+            });
+            if let Some(rev) = cmd_ba {
+                portals.push(PortalGeom {
+                    from_room: to_id,
+                    to_room: from_id,
+                    command: rev,
+                    x_m: bx,
+                    y_m: by,
+                    floor: rb.floor,
+                    width_m: 2.8,
+                    stairs_to: Some(ra.floor),
+                    teleport: false,
+                });
+            }
+        } else if let Some((mx, my)) = shared_edge_midpoint(ra, rb) {
+            portals.push(PortalGeom {
+                from_room: from_id.clone(),
+                to_room: to_id.clone(),
+                command: cmd_ab,
+                x_m: mx,
+                y_m: my,
+                floor: ra.floor,
+                width_m: 2.8,
+                stairs_to: None,
+                teleport: false,
+            });
+            if let Some(rev) = cmd_ba {
+                portals.push(PortalGeom {
+                    from_room: to_id,
+                    to_room: from_id,
+                    command: rev,
+                    x_m: mx,
+                    y_m: my,
+                    floor: rb.floor,
+                    width_m: 2.8,
+                    stairs_to: None,
+                    teleport: false,
+                });
+            }
+        } else {
+            // Non-adjacent horizontal portal (e.g. OOC `welcome_hall <-> simulator_lobby`)
+            let (ax, ay) = boundary_point_toward(ra, rb);
+            let (bx, by) = boundary_point_toward(rb, ra);
+            portals.push(PortalGeom {
+                from_room: from_id.clone(),
+                to_room: to_id.clone(),
+                command: cmd_ab,
+                x_m: ax,
+                y_m: ay,
+                floor: ra.floor,
+                width_m: 2.8,
+                stairs_to: None,
+                teleport: true,
+            });
+            if let Some(rev) = cmd_ba {
+                portals.push(PortalGeom {
+                    from_room: to_id,
+                    to_room: from_id,
+                    command: rev,
+                    x_m: bx,
+                    y_m: by,
+                    floor: rb.floor,
+                    width_m: 2.8,
+                    stairs_to: None,
+                    teleport: true,
+                });
+            }
+        }
+    }
+
+    Some((rooms, portals))
+}
+
+fn has_unit_interior(pack_val: &Value) -> bool {
+    pack_val
+        .get("entries")
+        .and_then(Value::as_object)
+        .is_some_and(|entries| {
+            entries.values().any(|row| {
+                row.get("kind").and_then(Value::as_str) == Some("unit")
+                    && row.get("def").and_then(|d| d.get("interior")).is_some()
+            })
+        })
+}
+
+/// Parse a real ship `unit` pack (`entries.*.def.interior`) into walkable rooms & portals (`SSH-C-02`).
+fn parse_unit_interior_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<PortalGeom>)> {
+    let entries = pack_val.get("entries")?.as_object()?;
+    let interior = entries.values().find_map(|row| {
+        (row.get("kind").and_then(Value::as_str) == Some("unit"))
+            .then(|| row.get("def").and_then(|d| d.get("interior")))
+            .flatten()
+    })?;
+    let raw_rooms = interior.get("rooms")?.as_array()?;
+    let raw_exits = interior.get("exits")?.as_array()?;
+
+    // Collect walkable compartments with authored names.
+    let mut walkable_names: HashMap<String, String> = HashMap::new();
+    let mut walkable_order: Vec<String> = Vec::new();
+    for r in raw_rooms {
+        let kind = r.get("kind").and_then(Value::as_str).unwrap_or("walkable");
+        if kind != "walkable" {
+            continue;
+        }
+        let Some(id) = r.get("id").and_then(Value::as_str).map(sanitize) else {
+            continue;
+        };
+        let name = r
+            .get("name")
+            .and_then(Value::as_str)
+            .map(sanitize)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| id.clone());
+        walkable_order.push(id.clone());
+        walkable_names.insert(id, name);
+    }
+    if walkable_order.is_empty() {
+        return None;
+    }
+
+    // Assign canonical footprints for standard compartments (`airlock`, `passage`, `crew`, `bridge`,
+    // `hold`, `engineering`) and lay out any additional walkable compartments cleanly alongside.
+    let mut rooms: Vec<RoomGeom> = Vec::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut extra_idx = 0usize;
+
+    for id in &walkable_order {
+        let name = walkable_names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.clone());
+        let (floor, min_x, min_y, max_x, max_y, kind) = match id.as_str() {
+            "airlock" => (0, -3.5, 5.0, 3.5, 11.0, "room"),
+            "passage" => (0, -4.0, -5.0, 4.0, 5.0, "corridor"),
+            "crew" => (0, -4.5, -12.0, 4.5, -5.0, "room"),
+            "bridge" => (1, -4.5, -1.0, 4.5, 9.0, "bridge"),
+            "hold" => (-1, -5.5, -6.0, 5.5, 6.0, "hold"),
+            "engineering" => (-2, -4.5, -8.0, 4.5, 2.0, "eng"),
+            _ => {
+                let col = (extra_idx as f64) + 1.0;
+                extra_idx += 1;
+                (
+                    0,
+                    4.0 + (col - 1.0) * 8.0,
+                    -4.0,
+                    4.0 + col * 8.0,
+                    4.0,
+                    "room",
+                )
+            }
+        };
+        let idx = rooms.len();
+        by_id.insert(id.clone(), idx);
+        rooms.push(RoomGeom {
+            entry_id: id.clone(),
+            name,
+            floor,
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            kind,
+        });
+    }
+
+    let mut portals: Vec<PortalGeom> = Vec::new();
+    for ex in raw_exits {
+        let Some(from_id) = ex.get("from").and_then(Value::as_str).map(sanitize) else {
+            continue;
+        };
+        let Some(to_id) = ex.get("to").and_then(Value::as_str).map(sanitize) else {
+            continue;
+        };
+        let (Some(&idx_a), Some(&idx_b)) = (by_id.get(&from_id), by_id.get(&to_id)) else {
+            continue;
+        };
+        let ra = &rooms[idx_a];
+        let rb = &rooms[idx_b];
+        let names = ex.get("names").and_then(Value::as_array);
+        let cmd_ab = names
+            .and_then(|arr| arr.first())
+            .and_then(Value::as_str)
+            .map(extract_exit_command)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| to_id.clone());
+        let cmd_ba = names
+            .and_then(|arr| arr.get(1))
+            .and_then(Value::as_str)
+            .map(extract_exit_command)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| from_id.clone());
+
+        if ra.floor != rb.floor {
+            // Place inter-deck ladders well clear (> 2.2 m) of each compartment's center (`SSH-C-02`).
+            let (ax, ay, bx, by) = match (from_id.as_str(), to_id.as_str()) {
+                ("passage", "bridge") => (0.0, 2.8, 0.0, 0.5),
+                ("passage", "hold") => (0.0, -2.8, 0.0, 3.8),
+                ("hold", "engineering") => (0.0, -3.8, 0.0, 0.5),
+                _ => {
+                    let (acx, acy) = ra.center();
+                    let (bcx, bcy) = rb.center();
+                    (
+                        acx,
+                        (acy + 2.5).clamp(ra.min_y + 1.0, ra.max_y - 1.0),
+                        bcx,
+                        (bcy - 2.5).clamp(rb.min_y + 1.0, rb.max_y - 1.0),
+                    )
+                }
+            };
+            portals.push(PortalGeom {
+                from_room: from_id.clone(),
+                to_room: to_id.clone(),
+                command: cmd_ab,
+                x_m: ax,
+                y_m: ay,
+                floor: ra.floor,
+                width_m: 2.0,
+                stairs_to: Some(rb.floor),
+                teleport: false,
+            });
+            portals.push(PortalGeom {
+                from_room: to_id,
+                to_room: from_id,
+                command: cmd_ba,
+                x_m: bx,
+                y_m: by,
+                floor: rb.floor,
+                width_m: 2.0,
+                stairs_to: Some(ra.floor),
+                teleport: false,
+            });
+        } else if let Some((mx, my)) = shared_edge_midpoint(ra, rb) {
+            portals.push(PortalGeom {
+                from_room: from_id.clone(),
+                to_room: to_id.clone(),
+                command: cmd_ab,
+                x_m: mx,
+                y_m: my,
+                floor: ra.floor,
+                width_m: 2.0,
+                stairs_to: None,
+                teleport: false,
+            });
+            portals.push(PortalGeom {
+                from_room: to_id,
+                to_room: from_id,
+                command: cmd_ba,
+                x_m: mx,
+                y_m: my,
+                floor: rb.floor,
+                width_m: 2.0,
+                stairs_to: None,
+                teleport: false,
+            });
+        } else {
+            let (ax, ay) = boundary_point_toward(ra, rb);
+            let (bx, by) = boundary_point_toward(rb, ra);
+            portals.push(PortalGeom {
+                from_room: from_id.clone(),
+                to_room: to_id.clone(),
+                command: cmd_ab,
+                x_m: ax,
+                y_m: ay,
+                floor: ra.floor,
+                width_m: 2.0,
+                stairs_to: None,
+                teleport: true,
+            });
+            portals.push(PortalGeom {
+                from_room: to_id,
+                to_room: from_id,
+                command: cmd_ba,
+                x_m: bx,
+                y_m: by,
+                floor: rb.floor,
+                width_m: 2.0,
+                stairs_to: None,
+                teleport: true,
+            });
+        }
+    }
+
+    Some((rooms, portals))
 }
 
 // ---- Formatting & Canonical Built-in Layouts --------------------------------
@@ -2815,131 +5221,144 @@ fn draw_comms_col(frame: &mut Frame<'_>, area: Rect, comms: &dyn Fn(usize) -> Ve
     );
 }
 
+/// Canonical goods metadata matching `crates/tacsim/content/market/goods.json` (`SSH-H-02`).
 fn default_goods_meta() -> HashMap<String, (String, i64, i64)> {
     let mut m = HashMap::new();
-    m.insert("water_ice".to_string(), ("Water Ice".to_string(), 50, 55));
-    m.insert(
-        "reaction_water".to_string(),
-        ("Reaction Water".to_string(), 50, 50),
-    );
-    m.insert(
-        "crew_stores".to_string(),
-        ("Crew Stores".to_string(), 20, 35),
-    );
-    m.insert(
-        "ore_concentrate".to_string(),
-        ("Ore Concentrate".to_string(), 80, 30),
-    );
-    m.insert(
-        "hull_plate".to_string(),
-        ("Hull Plate".to_string(), 100, 25),
-    );
-    m.insert(
-        "machine_spares".to_string(),
-        ("Machine Spares".to_string(), 40, 60),
-    );
-    m.insert(
-        "volatiles".to_string(),
-        ("Refined Volatiles".to_string(), 35, 55),
-    );
-    m.insert(
-        "med_supplies".to_string(),
-        ("Medical Supplies".to_string(), 15, 30),
-    );
+    for &(id, label, mass_kg, vol_l) in &[
+        ("metals", "metal concentrate", 1000_i64, 400_i64),
+        ("volatiles", "water ice", 1000, 1400),
+        ("structural_alloys", "structural alloy stock", 1000, 300),
+        ("industrial_parts", "yard fittings, crated", 1000, 2300),
+        ("propellant", "reaction mass", 1000, 1000),
+        ("provisions", "voyage provisions", 4, 10),
+        ("instrument_boards", "instrument boards, crated", 1000, 2550),
+        ("carbon_feedstock", "carbon billet, pressed", 1000, 600),
+        ("metal_ore", "metal ore, run-of-mine", 1000, 500),
+        ("ice_ore", "ice ore, run-of-mine", 1000, 1000),
+        ("carbon_ore", "carbon ore, run-of-mine", 1000, 1200),
+        ("strategic_ore", "strategic ore, run-of-mine", 1000, 600),
+        ("ammo_ap_30", "30 mm AP rounds", 1, 1),
+        ("ammo_ball_762", "7.62 mm ball, boxed", 3, 3),
+        ("ammo_he_105", "105 mm HE rounds", 21, 30),
+        ("ammo_missile", "anti-armor missiles, canistered", 50, 100),
+    ] {
+        m.insert(id.to_string(), (label.to_string(), mass_kg, vol_l));
+    }
     m
 }
 
+/// Canonical Ceres Freeport fallback matching `crates/tacsim/content/atlas/neighborhood.ceres_freeport.json` (`SSH-C-02`).
 fn builtin_ceres_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
     let rooms = vec![
         RoomGeom {
+            entry_id: "room.c01_berth_gallery".into(),
+            name: "Visiting Berth Gallery".into(),
+            floor: 1,
+            min_x: 110.0,
+            min_y: 110.0,
+            max_x: 210.0,
+            max_y: 125.0,
+            kind: "berth",
+        },
+        RoomGeom {
+            entry_id: "room.c02_pressure".into(),
+            name: "Pressure Lobby".into(),
+            floor: 1,
+            min_x: 110.0,
+            min_y: 125.0,
+            max_x: 140.0,
+            max_y: 140.0,
+            kind: "room",
+        },
+        RoomGeom {
             entry_id: "room.c03_arrivals".into(),
             name: "Port Watch Arrivals".into(),
-            floor: 0,
-            min_x: -10.0,
-            min_y: -8.0,
-            max_x: 10.0,
-            max_y: 8.0,
+            floor: 1,
+            min_x: 110.0,
+            min_y: 140.0,
+            max_x: 140.0,
+            max_y: 165.0,
             kind: "desk",
         },
         RoomGeom {
-            entry_id: "room.c06_concourse".into(),
-            name: "Station Concourse".into(),
-            floor: 0,
-            min_x: 10.0,
-            min_y: -10.0,
-            max_x: 34.0,
-            max_y: 10.0,
+            entry_id: "room.c04_concourse".into(),
+            name: "Freeport Concourse".into(),
+            floor: 1,
+            min_x: 140.0,
+            min_y: 140.0,
+            max_x: 175.0,
+            max_y: 165.0,
             kind: "corridor",
         },
         RoomGeom {
-            entry_id: "room.c08_coop".into(),
+            entry_id: "room.c05_registry".into(),
             name: "Registry & Co-op Desk".into(),
-            floor: 0,
-            min_x: -8.0,
-            min_y: 8.0,
-            max_x: 10.0,
-            max_y: 22.0,
+            floor: 1,
+            min_x: 110.0,
+            min_y: 165.0,
+            max_x: 140.0,
+            max_y: 190.0,
+            kind: "desk",
+        },
+        RoomGeom {
+            entry_id: "room.c06_clearing".into(),
+            name: "Ceres Clearing Office".into(),
+            floor: 1,
+            min_x: 140.0,
+            min_y: 165.0,
+            max_x: 175.0,
+            max_y: 190.0,
             kind: "desk",
         },
         RoomGeom {
             entry_id: "room.c07_exchange".into(),
             name: "Exchange Hall".into(),
-            floor: 0,
-            min_x: 12.0,
-            min_y: 10.0,
-            max_x: 34.0,
-            max_y: 26.0,
+            floor: 1,
+            min_x: 175.0,
+            min_y: 140.0,
+            max_x: 210.0,
+            max_y: 165.0,
             kind: "desk",
         },
         RoomGeom {
-            entry_id: "room.c09_chandlery".into(),
-            name: "Port Chandlery".into(),
-            floor: 0,
-            min_x: 34.0,
-            min_y: -8.0,
-            max_x: 50.0,
-            max_y: 8.0,
+            entry_id: "room.c08_chandlery".into(),
+            name: "Co-op Chandlery".into(),
+            floor: 1,
+            min_x: 175.0,
+            min_y: 125.0,
+            max_x: 210.0,
+            max_y: 140.0,
             kind: "desk",
         },
         RoomGeom {
-            entry_id: "room.c10_canteen".into(),
-            name: "Watch Canteen".into(),
-            floor: 0,
-            min_x: 12.0,
-            min_y: -24.0,
-            max_x: 32.0,
-            max_y: -10.0,
+            entry_id: "room.c09_tycho".into(),
+            name: "Tycho Mutual Agency".into(),
+            floor: 1,
+            min_x: 175.0,
+            min_y: 165.0,
+            max_x: 210.0,
+            max_y: 190.0,
+            kind: "desk",
+        },
+        RoomGeom {
+            entry_id: "room.c10_slack_line".into(),
+            name: "The Slack Line".into(),
+            floor: 1,
+            min_x: 140.0,
+            min_y: 125.0,
+            max_x: 175.0,
+            max_y: 140.0,
             kind: "room",
         },
         RoomGeom {
-            entry_id: "room.c04_freight".into(),
-            name: "Freight Deck".into(),
-            floor: -1,
-            min_x: -12.0,
-            min_y: -10.0,
-            max_x: 14.0,
-            max_y: 10.0,
-            kind: "hold",
-        },
-        RoomGeom {
-            entry_id: "room.c11_dockmaster".into(),
+            entry_id: "room.c14_dockmaster".into(),
             name: "Dockmaster's Office".into(),
-            floor: 1,
-            min_x: -10.0,
-            min_y: 6.0,
-            max_x: 10.0,
-            max_y: 22.0,
+            floor: 0,
+            min_x: 110.0,
+            min_y: 140.0,
+            max_x: 140.0,
+            max_y: 165.0,
             kind: "desk",
-        },
-        RoomGeom {
-            entry_id: "room.c05_berths".into(),
-            name: "Visiting Berth Gallery".into(),
-            floor: 1,
-            min_x: -22.0,
-            min_y: 22.0,
-            max_x: 28.0,
-            max_y: 36.0,
-            kind: "berth",
         },
     ];
 
@@ -2957,6 +5376,7 @@ fn builtin_ceres_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
                 floor: f_a,
                 width_m: 2.8,
                 stairs_to: stairs_ab,
+                teleport: false,
             });
             portals.push(PortalGeom {
                 from_room: b.into(),
@@ -2967,86 +5387,107 @@ fn builtin_ceres_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
                 floor: f_b,
                 width_m: 2.8,
                 stairs_to: stairs_ba,
+                teleport: false,
             });
         };
 
     link(
-        "room.c03_arrivals",
-        "room.c06_concourse",
-        "e",
-        "w",
-        10.0,
-        0.0,
-        0,
-        0,
-    );
-    link(
-        "room.c03_arrivals",
-        "room.c08_coop",
+        "room.c01_berth_gallery",
+        "room.c02_pressure",
         "n",
         "s",
-        0.0,
-        8.0,
-        0,
-        0,
-    );
-    link(
-        "room.c03_arrivals",
-        "room.c04_freight",
-        "d",
-        "u",
-        -5.0,
-        -4.0,
-        0,
-        -1,
-    );
-    link(
-        "room.c06_concourse",
-        "room.c07_exchange",
-        "n",
-        "s",
-        22.0,
-        10.0,
-        0,
-        0,
-    );
-    link(
-        "room.c06_concourse",
-        "room.c09_chandlery",
-        "e",
-        "w",
-        34.0,
-        0.0,
-        0,
-        0,
-    );
-    link(
-        "room.c06_concourse",
-        "room.c10_canteen",
-        "s",
-        "n",
-        22.0,
-        -10.0,
-        0,
-        0,
-    );
-    link(
-        "room.c03_arrivals",
-        "room.c11_dockmaster",
-        "u",
-        "d",
-        5.0,
-        6.0,
-        0,
+        125.0,
+        125.0,
+        1,
         1,
     );
     link(
-        "room.c11_dockmaster",
-        "room.c05_berths",
+        "room.c02_pressure",
+        "room.c03_arrivals",
         "n",
         "s",
-        0.0,
-        22.0,
+        125.0,
+        140.0,
+        1,
+        1,
+    );
+    link(
+        "room.c03_arrivals",
+        "room.c04_concourse",
+        "e",
+        "w",
+        140.0,
+        152.5,
+        1,
+        1,
+    );
+    link(
+        "room.c03_arrivals",
+        "room.c05_registry",
+        "n",
+        "s",
+        125.0,
+        165.0,
+        1,
+        1,
+    );
+    link(
+        "room.c03_arrivals",
+        "room.c14_dockmaster",
+        "d",
+        "u",
+        125.0,
+        150.0,
+        1,
+        0,
+    );
+    link(
+        "room.c04_concourse",
+        "room.c06_clearing",
+        "n",
+        "s",
+        157.5,
+        165.0,
+        1,
+        1,
+    );
+    link(
+        "room.c04_concourse",
+        "room.c07_exchange",
+        "x",
+        "w",
+        175.0,
+        152.5,
+        1,
+        1,
+    );
+    link(
+        "room.c04_concourse",
+        "room.c10_slack_line",
+        "s",
+        "n",
+        157.5,
+        140.0,
+        1,
+        1,
+    );
+    link(
+        "room.c07_exchange",
+        "room.c08_chandlery",
+        "s",
+        "n",
+        192.5,
+        140.0,
+        1,
+        1,
+    );
+    link(
+        "room.c07_exchange",
+        "room.c09_tycho",
+        "n",
+        "s",
+        192.5,
+        165.0,
         1,
         1,
     );
@@ -3054,102 +5495,295 @@ fn builtin_ceres_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
     (rooms, portals)
 }
 
+/// Canonical OOC Area fallback matching `crates/mush-atlas/content/neighborhood.ooc_area.json` (`SSH-C-02`).
 fn builtin_ooc_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
     let rooms = vec![
         RoomGeom {
-            entry_id: "room.ooc_lobby".into(),
-            name: "Simulator Center Lobby".into(),
+            entry_id: "room.welcome_hall".into(),
+            name: "Welcome Hall".into(),
             floor: 0,
-            min_x: -10.0,
-            min_y: -8.0,
-            max_x: 10.0,
-            max_y: 8.0,
+            min_x: 30.0,
+            min_y: 75.0,
+            max_x: 60.0,
+            max_y: 100.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.tutorial_moving".into(),
+            name: "Tutorial: Moving".into(),
+            floor: 0,
+            min_x: 60.0,
+            min_y: 75.0,
+            max_x: 85.0,
+            max_y: 100.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.tutorial_talking".into(),
+            name: "Tutorial: Talking".into(),
+            floor: 0,
+            min_x: 85.0,
+            min_y: 75.0,
+            max_x: 110.0,
+            max_y: 100.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.tutorial_building".into(),
+            name: "Tutorial: Building".into(),
+            floor: 0,
+            min_x: 85.0,
+            min_y: 50.0,
+            max_x: 110.0,
+            max_y: 75.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.lounge".into(),
+            name: "Lounge".into(),
+            floor: 0,
+            min_x: 30.0,
+            min_y: 50.0,
+            max_x: 85.0,
+            max_y: 75.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.bus_stop".into(),
+            name: "Bus Stop (OOC)".into(),
+            floor: 0,
+            min_x: 40.0,
+            min_y: 25.0,
+            max_x: 100.0,
+            max_y: 45.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.bus".into(),
+            name: "Studio Tour Bus".into(),
+            floor: 0,
+            min_x: 41.0,
+            min_y: 22.0,
+            max_x: 53.0,
+            max_y: 25.0,
+            kind: "room",
+        },
+        RoomGeom {
+            entry_id: "room.simulator_lobby".into(),
+            name: "Simulator Lobby".into(),
+            floor: 0,
+            min_x: 118.0,
+            min_y: 60.0,
+            max_x: 138.0,
+            max_y: 90.0,
             kind: "desk",
         },
         RoomGeom {
-            entry_id: "room.ooc_podbay".into(),
-            name: "Pod Bay".into(),
+            entry_id: "room.sim_red".into(),
+            name: "Red Room".into(),
             floor: 0,
-            min_x: -12.0,
-            min_y: 8.0,
-            max_x: 12.0,
-            max_y: 24.0,
+            min_x: 118.0,
+            min_y: 90.0,
+            max_x: 138.0,
+            max_y: 108.0,
+            kind: "pod",
+        },
+        RoomGeom {
+            entry_id: "room.sim_blue".into(),
+            name: "Blue Room".into(),
+            floor: 0,
+            min_x: 118.0,
+            min_y: 32.0,
+            max_x: 138.0,
+            max_y: 60.0,
             kind: "pod",
         },
     ];
-    let portals = vec![
-        PortalGeom {
-            from_room: "room.ooc_lobby".into(),
-            to_room: "room.ooc_podbay".into(),
-            command: "n".into(),
-            x_m: 0.0,
-            y_m: 8.0,
+
+    let mut portals = Vec::new();
+    let mut link = |a: &str, b: &str, cmd_ab: &str, cmd_ba: &str, x: f64, y: f64| {
+        portals.push(PortalGeom {
+            from_room: a.into(),
+            to_room: b.into(),
+            command: cmd_ab.into(),
+            x_m: x,
+            y_m: y,
             floor: 0,
-            width_m: 3.0,
+            width_m: 2.8,
             stairs_to: None,
-        },
-        PortalGeom {
-            from_room: "room.ooc_podbay".into(),
-            to_room: "room.ooc_lobby".into(),
-            command: "s".into(),
-            x_m: 0.0,
-            y_m: 8.0,
+            teleport: false,
+        });
+        portals.push(PortalGeom {
+            from_room: b.into(),
+            to_room: a.into(),
+            command: cmd_ba.into(),
+            x_m: x,
+            y_m: y,
             floor: 0,
-            width_m: 3.0,
+            width_m: 2.8,
             stairs_to: None,
-        },
-    ];
+            teleport: false,
+        });
+    };
+
+    link(
+        "room.welcome_hall",
+        "room.tutorial_moving",
+        "m",
+        "w",
+        60.0,
+        87.5,
+    );
+    link(
+        "room.tutorial_moving",
+        "room.tutorial_talking",
+        "t",
+        "m",
+        85.0,
+        87.5,
+    );
+    link(
+        "room.tutorial_talking",
+        "room.tutorial_building",
+        "b",
+        "t",
+        97.5,
+        75.0,
+    );
+    link(
+        "room.tutorial_building",
+        "room.lounge",
+        "lounge",
+        "b",
+        85.0,
+        62.5,
+    );
+    link(
+        "room.welcome_hall",
+        "room.lounge",
+        "lounge",
+        "w",
+        45.0,
+        75.0,
+    );
+    link("room.bus_stop", "room.bus", "bus", "ooc", 47.0, 25.0);
+    link(
+        "room.simulator_lobby",
+        "room.sim_red",
+        "r",
+        "lobby",
+        128.0,
+        90.0,
+    );
+    link(
+        "room.simulator_lobby",
+        "room.sim_blue",
+        "b",
+        "lobby",
+        128.0,
+        60.0,
+    );
+
+    // Non-adjacent corridor doorways (lounge <-> bus_stop, welcome_hall <-> simulator_lobby)
+    portals.push(PortalGeom {
+        from_room: "room.lounge".into(),
+        to_room: "room.bus_stop".into(),
+        command: "bs".into(),
+        x_m: 70.0,
+        y_m: 51.0,
+        floor: 0,
+        width_m: 2.8,
+        stairs_to: None,
+        teleport: true,
+    });
+    portals.push(PortalGeom {
+        from_room: "room.bus_stop".into(),
+        to_room: "room.lounge".into(),
+        command: "lounge".into(),
+        x_m: 70.0,
+        y_m: 44.0,
+        floor: 0,
+        width_m: 2.8,
+        stairs_to: None,
+        teleport: true,
+    });
+    portals.push(PortalGeom {
+        from_room: "room.welcome_hall".into(),
+        to_room: "room.simulator_lobby".into(),
+        command: "simulator".into(),
+        x_m: 59.0,
+        y_m: 82.0,
+        floor: 0,
+        width_m: 2.8,
+        stairs_to: None,
+        teleport: true,
+    });
+    portals.push(PortalGeom {
+        from_room: "room.simulator_lobby".into(),
+        to_room: "room.welcome_hall".into(),
+        command: "w".into(),
+        x_m: 119.0,
+        y_m: 75.0,
+        floor: 0,
+        width_m: 2.8,
+        stairs_to: None,
+        teleport: true,
+    });
+
     (rooms, portals)
 }
 
+/// Canonical Dray interior fallback matching `crates/tacsim/content/units/dray.json` (`SSH-C-02`):
+/// `airlock <-> passage <-> {bridge(u), crew(aft), hold(d) <-> engineering(d)}`, with all stairs
+/// separated > 2.2 m from room centers so zero floor ping-pong can occur.
 fn builtin_dray_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
     let rooms = vec![
         RoomGeom {
             entry_id: "engineering".into(),
-            name: "Engineering".into(),
-            floor: -1,
+            name: "Engineering Access".into(),
+            floor: -2,
             min_x: -4.5,
-            min_y: -12.0,
+            min_y: -8.0,
             max_x: 4.5,
-            max_y: -2.0,
+            max_y: 2.0,
             kind: "eng",
+        },
+        RoomGeom {
+            entry_id: "hold".into(),
+            name: "Cargo Hold".into(),
+            floor: -1,
+            min_x: -5.5,
+            min_y: -6.0,
+            max_x: 5.5,
+            max_y: 6.0,
+            kind: "hold",
         },
         RoomGeom {
             entry_id: "airlock".into(),
             name: "Airlock".into(),
             floor: 0,
-            min_x: -3.2,
-            min_y: -11.0,
-            max_x: 3.2,
-            max_y: -5.0,
+            min_x: -3.5,
+            min_y: 5.0,
+            max_x: 3.5,
+            max_y: 11.0,
             kind: "room",
         },
         RoomGeom {
-            entry_id: "hold".into(),
-            name: "Cargo Hold".into(),
+            entry_id: "passage".into(),
+            name: "Central Passage".into(),
             floor: 0,
-            min_x: -5.5,
+            min_x: -4.0,
             min_y: -5.0,
-            max_x: 5.5,
-            max_y: 7.0,
-            kind: "hold",
+            max_x: 4.0,
+            max_y: 5.0,
+            kind: "corridor",
         },
         RoomGeom {
-            entry_id: "mess".into(),
-            name: "Mess & Galley".into(),
-            floor: 1,
+            entry_id: "crew".into(),
+            name: "Crew Compartment".into(),
+            floor: 0,
             min_x: -4.5,
-            min_y: -5.0,
-            max_x: 4.5,
-            max_y: 2.0,
-            kind: "room",
-        },
-        RoomGeom {
-            entry_id: "quarters".into(),
-            name: "Crew Quarters".into(),
-            floor: 1,
-            min_x: -4.5,
-            min_y: -11.0,
+            min_y: -12.0,
             max_x: 4.5,
             max_y: -5.0,
             kind: "room",
@@ -3158,44 +5792,141 @@ fn builtin_dray_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
             entry_id: "bridge".into(),
             name: "Bridge".into(),
             floor: 1,
-            min_x: -4.0,
-            min_y: 2.0,
-            max_x: 4.0,
-            max_y: 9.5,
+            min_x: -4.5,
+            min_y: -1.0,
+            max_x: 4.5,
+            max_y: 9.0,
             kind: "bridge",
         },
     ];
 
     let mut portals = Vec::new();
-    let mut link =
-        |a: &str, b: &str, cmd_ab: &str, cmd_ba: &str, x: f64, y: f64, f_a: i64, f_b: i64| {
-            portals.push(PortalGeom {
-                from_room: a.into(),
-                to_room: b.into(),
-                command: cmd_ab.into(),
-                x_m: x,
-                y_m: y,
-                floor: f_a,
-                width_m: 2.0,
-                stairs_to: (f_a != f_b).then_some(f_b),
-            });
-            portals.push(PortalGeom {
-                from_room: b.into(),
-                to_room: a.into(),
-                command: cmd_ba.into(),
-                x_m: x,
-                y_m: y,
-                floor: f_b,
-                width_m: 2.0,
-                stairs_to: (f_a != f_b).then_some(f_a),
-            });
-        };
+    let link_horiz = |portals: &mut Vec<PortalGeom>,
+                      a: &str,
+                      b: &str,
+                      cmd_ab: &str,
+                      cmd_ba: &str,
+                      x: f64,
+                      y: f64,
+                      f: i64| {
+        portals.push(PortalGeom {
+            from_room: a.into(),
+            to_room: b.into(),
+            command: cmd_ab.into(),
+            x_m: x,
+            y_m: y,
+            floor: f,
+            width_m: 2.0,
+            stairs_to: None,
+            teleport: false,
+        });
+        portals.push(PortalGeom {
+            from_room: b.into(),
+            to_room: a.into(),
+            command: cmd_ba.into(),
+            x_m: x,
+            y_m: y,
+            floor: f,
+            width_m: 2.0,
+            stairs_to: None,
+            teleport: false,
+        });
+    };
+    #[allow(clippy::too_many_arguments)]
+    let link_stair = |portals: &mut Vec<PortalGeom>,
+                      a: &str,
+                      b: &str,
+                      cmd_ab: &str,
+                      cmd_ba: &str,
+                      ax: f64,
+                      ay: f64,
+                      f_a: i64,
+                      bx: f64,
+                      by: f64,
+                      f_b: i64| {
+        portals.push(PortalGeom {
+            from_room: a.into(),
+            to_room: b.into(),
+            command: cmd_ab.into(),
+            x_m: ax,
+            y_m: ay,
+            floor: f_a,
+            width_m: 2.0,
+            stairs_to: Some(f_b),
+            teleport: false,
+        });
+        portals.push(PortalGeom {
+            from_room: b.into(),
+            to_room: a.into(),
+            command: cmd_ba.into(),
+            x_m: bx,
+            y_m: by,
+            floor: f_b,
+            width_m: 2.0,
+            stairs_to: Some(f_a),
+            teleport: false,
+        });
+    };
 
-    link("airlock", "hold", "fore", "aft", 0.0, -5.0, 0, 0);
-    link("hold", "engineering", "d", "u", 0.0, -3.5, 0, -1);
-    link("hold", "mess", "u", "d", 0.0, 1.0, 0, 1);
-    link("mess", "quarters", "aft", "fore", 0.0, -5.0, 1, 1);
-    link("mess", "bridge", "fore", "aft", 0.0, 2.0, 1, 1);
+    link_horiz(
+        &mut portals,
+        "airlock",
+        "passage",
+        "inner",
+        "airlock",
+        0.0,
+        5.0,
+        0,
+    );
+    link_horiz(
+        &mut portals,
+        "passage",
+        "crew",
+        "crew",
+        "passage",
+        0.0,
+        -5.0,
+        0,
+    );
+    link_stair(
+        &mut portals,
+        "passage",
+        "bridge",
+        "bridge",
+        "passage",
+        0.0,
+        2.8,
+        0,
+        0.0,
+        0.5,
+        1,
+    );
+    link_stair(
+        &mut portals,
+        "passage",
+        "hold",
+        "hold",
+        "passage",
+        0.0,
+        -2.8,
+        0,
+        0.0,
+        3.8,
+        -1,
+    );
+    link_stair(
+        &mut portals,
+        "hold",
+        "engineering",
+        "engineering",
+        "hold",
+        0.0,
+        -3.8,
+        -1,
+        0.0,
+        0.5,
+        -2,
+    );
 
     (rooms, portals)
 }
@@ -3226,6 +5957,86 @@ mod tests {
         }
     }
 
+    /// Real `build_port_trade_frame` fixture matching `crates/tacsim/src/client_sync.rs:1280-1347`
+    /// and `crates/tacsim/src/port/ship.rs:1593-1773`.
+    fn live_port_trade_fixture() -> Value {
+        json!({
+            "schema": { "id": "port.trade", "version": 1 },
+            "enabled": true,
+            "venue": "ceres",
+            "port_name": "Ceres Freeport",
+            "aboard_docked_port": null,
+            "balance_minor": 150_000,
+            "balance_text": "1,500.00cr",
+            "listings": [
+                {
+                    "id": 42,
+                    "side": "ask",
+                    "good": "volatiles",
+                    "good_label": "water ice",
+                    "vendor_name": "Occator W&P",
+                    "is_personal": false,
+                    "funded": true,
+                    "unit_price_minor": 10_000,
+                    "price_text": "100.00cr",
+                    "available_qty": 50
+                },
+                {
+                    "id": 43,
+                    "side": "bid",
+                    "good": "metals",
+                    "good_label": "metal concentrate",
+                    "vendor_name": "Freeport Exchange",
+                    "is_personal": false,
+                    "funded": true,
+                    "unit_price_minor": 21_000,
+                    "price_text": "210.00cr",
+                    "available_qty": 30
+                }
+            ],
+            "next_after": 99,
+            "open_quotes": [],
+            "ship": {
+                "hull_id": "#401",
+                "hull_name": "Salt Moth",
+                "mark": "FPC-D-0401",
+                "unit": "tacsim.unit.dray",
+                "class": "hauler",
+                "docked": true,
+                "port": "ceres_freeport",
+                "standing": "charter",
+                "sales": 1,
+                "buyout_minor": 12_000_000,
+                "buyout_text": "120,000.00cr",
+                "stowage": {
+                    "cargo_kg": 4_000,
+                    "cargo_limit_kg": 100_000,
+                    "cargo_l": 1_600,
+                    "cargo_limit_l": 120_000,
+                    "tank_kg": 40_000,
+                    "tank_limit_kg": 80_000,
+                    "stores_days": 20,
+                    "stores_limit_days": 120,
+                    "items": [
+                        { "good": "metals", "qty": 4 }
+                    ]
+                }
+            },
+            "berth": {
+                "port_entry": "ceres_freeport",
+                "docked_count": 2,
+                "docked_hulls": [
+                    { "id": "#401", "name": "Salt Moth", "mark": "FPC-D-0401", "unit": "tacsim.unit.dray" },
+                    { "id": "#402", "name": "Copperfinch", "mark": "FPC-D-0402", "unit": "tacsim.unit.corvette" }
+                ],
+                "own_hull": "#401",
+                "own_hull_name": "Salt Moth",
+                "own_hull_docked_here": true
+            },
+            "simulator": null
+        })
+    }
+
     #[test]
     fn walking_across_threshold_emits_canonical_exit_command() {
         let mut st = PortWalkState::new();
@@ -3235,11 +6046,11 @@ mod tests {
             Some("Pilot"),
         );
 
-        // Turn North (heading 0) and walk through the north doorway (y = 8.0) into Registry & Co-op Desk!
+        // Walk North (heading 0) from c03_arrivals center (125, 152.5) through the north doorway (y = 165) into c05_registry!
         let mut emitted = Vec::new();
-        for i in 0..12 {
+        for i in 0..16 {
             let t = now + Duration::from_millis(250 * i);
-            let out = st.handle_key(Key::Char('w'), false, &[], t);
+            let out = st.handle_key(Key::Char('w'), false, false, &[], t);
             emitted.extend(out.commands);
         }
         assert_eq!(emitted, vec!["n".to_string()]);
@@ -3315,6 +6126,186 @@ mod tests {
     }
 
     #[test]
+    fn one_click_quote_and_sell_use_live_client_sync_schema_and_equals_syntax() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let _ = st.observe_port_trade(&live_port_trade_fixture(), now);
+
+        assert_eq!(st.credits_minor(), 150_000);
+        assert_eq!(st.stowage().cargo_kg, 4_000);
+        assert_eq!(st.stowage().max_cargo_kg, 100_000);
+        assert!((st.stowage().cargo_m3 - 1.6).abs() < 1e-6);
+        assert!((st.stowage().max_cargo_m3 - 120.0).abs() < 1e-6);
+        assert_eq!(st.stowage().reaction_kg, 40_000);
+        assert_eq!(st.stowage().max_reaction_kg, 80_000);
+        assert_eq!(st.asks.len(), 1);
+        assert_eq!(st.bids.len(), 1);
+        assert_eq!(st.cargo_lots.len(), 1);
+        assert_eq!(st.trade_next_after, Some(99));
+
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        // Pressing `s` on Buy tab does NOT buy (`SSH-M-05`)
+        assert!(
+            st.handle_key(Key::Char('s'), false, false, &[], now)
+                .commands
+                .is_empty()
+        );
+        // Pressing `b` or `Enter` emits `+market/quote <id>=<qty>` (`C-20`)
+        let buy_out = st.handle_key(Key::Char('b'), false, false, &[], now);
+        assert_eq!(buy_out.commands, vec!["+market/quote 42=5"]);
+
+        // Matching live `open_quotes` arrives -> auto-emits `+market/accept 77` ONCE in `pending_orders`!
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 77,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "market": "ceres",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(200),
+        );
+        assert_eq!(st.take_orders(), vec!["+market/accept 77"]);
+        assert!(st.take_orders().is_empty());
+
+        // Switch to Sell Bids tab: pressing `b` does NOT sell (`SSH-M-05`), pressing `s` emits `+market/sell <id>=<qty>` (`C-20`)
+        let _ = st.handle_key(Key::Right, false, false, &[], now);
+        assert!(
+            st.handle_key(Key::Char('b'), false, false, &[], now)
+                .commands
+                .is_empty()
+        );
+        // Set qty preset to Max Fit (index 4): held is 4 -> sells 4!
+        st.qty_preset_idx = 4;
+        let sell_out = st.handle_key(Key::Char('s'), false, false, &[], now);
+        assert_eq!(sell_out.commands, vec!["+market/sell 43=4"]);
+
+        // With 0 cargo held, Max Fit refuses locally instead of sending qty 1 (`SSH-M-05`)
+        st.cargo_lots.clear();
+        let zero_sell = st.handle_key(Key::Char('s'), false, false, &[], now);
+        assert!(zero_sell.commands.is_empty());
+    }
+
+    #[test]
+    fn tacsim_content_sends_op_pack_without_manifest_storm_and_loads_real_packs() {
+        let mut st = PortWalkState::new();
+        // 1. Manifest arrives with 20+ packs (including goods, ceres, dray, stickney)
+        let manifest = json!({
+            "op": "manifest",
+            "packs": [
+                { "id": "arena.proving_ground", "category": "arena" },
+                { "id": "goods", "category": "market" },
+                { "id": "neighborhood.ceres_freeport", "category": "neighborhood" },
+                { "id": "neighborhood.stickney_yards", "category": "neighborhood" },
+                { "id": "dray", "category": "unit" }
+            ]
+        });
+        let q1 = st.observe_tacsim_content(&manifest);
+        assert!(!q1.is_empty());
+        for (feed, params) in &q1 {
+            assert_eq!(feed, TACSIM_CONTENT_FEED);
+            assert_eq!(params.get("op").and_then(Value::as_str), Some("pack"));
+            assert!(params.get("id").and_then(Value::as_str).is_some());
+        }
+        // Receiving the manifest a second time MUST NOT storm duplicate requests (`C-18`)
+        let q2 = st.observe_tacsim_content(&manifest);
+        assert!(
+            q2.is_empty(),
+            "duplicate manifest must not re-request packs: {q2:?}"
+        );
+
+        // 2. Real `goods.json` pack decodes `goods[]` and `measures["si.mass_kg"]` (`C-18`)
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "goods",
+            "category": "market",
+            "json": serde_json::to_string(&json!({
+                "goods": [{
+                    "id": "rare_alloy",
+                    "label": "Rare Alloy Ingot",
+                    "measures": { "si.mass_kg": 1500, "si.volume_l": 500 }
+                }]
+            })).unwrap()
+        }));
+        assert_eq!(
+            st.lookup_goods_meta("rare_alloy"),
+            ("Rare Alloy Ingot".to_string(), 1500, 500)
+        );
+
+        // 3. Entering non-Ceres port (`neighborhood.stickney_yards`) + receiving its pack switches geometry (`SSH-C-02`)
+        st.observe_room(
+            &RoomView {
+                id: "#500".into(),
+                name: "Republic Customs Hall".into(),
+                zone: None,
+                desc: "Stickney customs.".into(),
+                contents: Vec::new(),
+                exits: Vec::new(),
+                ambient: std::collections::BTreeMap::from([(
+                    "atlas".into(),
+                    json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p03_customs" }),
+                )]),
+            },
+            Some("Pilot"),
+        );
+        let stickney_q = st.drain_pack_queries(&[TACSIM_CONTENT_FEED.to_string()]);
+        assert_eq!(
+            stickney_q,
+            vec![(
+                TACSIM_CONTENT_FEED.to_string(),
+                json!({ "op": "pack", "id": "neighborhood.stickney_yards" })
+            )]
+        );
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "neighborhood.stickney_yards",
+            "category": "neighborhood",
+            "json": serde_json::to_string(&json!({
+                "entries": {
+                    "room.p03_customs": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Republic Customs Hall",
+                            "footprint": { "rect": [[100, 140], [130, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    },
+                    "room.p04_concourse": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Yard Concourse",
+                            "footprint": { "rect": [[130, 140], [170, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    },
+                    "exit.p03_p04": {
+                        "kind": "exit",
+                        "def": {
+                            "from": "room.p03_customs",
+                            "to": "room.p04_concourse",
+                            "names": ["Concourse <C>;c;concourse", "Customs <CH>;ch;customs"],
+                            "portal": { "mode": "door" }
+                        }
+                    }
+                }
+            })).unwrap()
+        }));
+        assert_eq!(st.rooms.len(), 2);
+        assert_eq!(st.active_location_key, "room.p03_customs");
+        assert_eq!(
+            st.first_bfs_step("room.p03_customs", "room.p04_concourse"),
+            Some(("c".to_string(), "room.p04_concourse".to_string()))
+        );
+    }
+
+    #[test]
     fn one_click_quote_verifies_price_and_emits_accept() {
         let mut frame = trade_fixture();
         frame["open_quotes"] = json!([]);
@@ -3326,7 +6317,7 @@ mod tests {
         let now = Instant::now();
         let _ = st.observe_port_trade(&frame, now);
         st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
-        let buy_out = st.handle_key(Key::Enter, false, &[], now);
+        let buy_out = st.handle_key(Key::Enter, false, false, &[], now);
         // The quantity rides right of `=`: `+market/quote 42 5` quotes one unit.
         assert_eq!(
             buy_out.commands,
@@ -3339,20 +6330,24 @@ mod tests {
             "quantity": want, "unit_price_minor": price, "total_minor": price * want,
             "price_text": "", "total_text": "", "expires_at": 0
         }]);
-        let (cmds, _) = st.observe_port_trade(&frame, now + Duration::from_millis(200));
-        assert_eq!(cmds, vec!["+market/accept 77"]);
+        let _ = st.observe_port_trade(&frame, now + Duration::from_millis(200));
+        assert_eq!(st.take_orders(), vec!["+market/accept 77"]);
     }
 
     #[test]
     fn selling_into_a_bid_puts_the_quantity_right_of_equals() {
-        let frame = trade_fixture();
-        let bid_id = first_listing(&frame, "bid")["id"].as_i64().expect("bid id");
+        let mut frame = trade_fixture();
+        let bid = first_listing(&frame, "bid").clone();
+        let bid_id = bid["id"].as_i64().expect("bid id");
+        let bid_good = bid["good"].as_str().expect("bid good").to_string();
+        // Stock the ship's hold with the bid's good so the local zero-held guard (`SSH-M-05`) permits selling.
+        frame["ship"]["stowage"]["items"] = json!([{ "good": bid_good, "qty": 5 }]);
         let mut st = PortWalkState::new();
         let now = Instant::now();
         let _ = st.observe_port_trade(&frame, now);
         st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
-        let _ = st.handle_key(Key::Right, false, &[], now);
-        let out = st.handle_key(Key::Enter, false, &[], now);
+        let _ = st.handle_key(Key::Right, false, false, &[], now);
+        let out = st.handle_key(Key::Enter, false, false, &[], now);
         assert_eq!(out.commands.len(), 1);
         let line = &out.commands[0];
         let qty = line
@@ -3402,6 +6397,151 @@ mod tests {
     }
 
     #[test]
+    fn ship_stairs_do_not_ping_pong_between_floors() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_room(
+            &sample_room(
+                "Salt Moth - Central Passage",
+                "",
+                Some(json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "passage",
+                    "hull_name": "Salt Moth",
+                    "docked": true
+                })),
+            ),
+            Some("Pilot"),
+        );
+        assert_eq!(st.active_location_key, "passage");
+        assert_eq!(st.you_floor, 0);
+
+        // Walk North toward the bridge ladder at (0, 2.8)
+        for i in 0..3 {
+            let _ = st.handle_key(
+                Key::Char('w'),
+                false,
+                false,
+                &[],
+                now + Duration::from_millis(250 * i),
+            );
+        }
+        assert_eq!(st.active_location_key, "bridge");
+        assert_eq!(st.you_floor, 1);
+
+        // Stepping zero / idling or continuing forward MUST NOT ping-pong back to floor 0 (`SSH-C-02`)!
+        let cmds = st.tick(Duration::from_millis(50), now + Duration::from_millis(800));
+        assert!(cmds.is_empty());
+        assert_eq!(st.active_location_key, "bridge");
+        assert_eq!(st.you_floor, 1);
+    }
+
+    #[test]
+    fn occupants_and_escape_sanitization_and_speech_bubble_bound() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let mut amb = std::collections::BTreeMap::new();
+        amb.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c01_berth_gallery" }),
+        );
+        amb.insert(
+            "occupants".into(),
+            json!({
+                "npcs": ["#11"],
+                "dormant": ["#12"],
+                "players": ["#13"],
+                "things": ["#14"]
+            }),
+        );
+        st.observe_room(
+            &RoomView {
+                id: "#201".into(),
+                name: "Visiting \x1b]52;c;ZGF0YQ==\x07Berth Gallery".into(),
+                zone: None,
+                desc: "Glass gallery.".into(),
+                contents: vec![
+                    ObjRef {
+                        id: "#11".into(),
+                        name: "Henrik\x1b[31m".into(),
+                    },
+                    ObjRef {
+                        id: "#12".into(),
+                        name: "Dormant Clerk".into(),
+                    },
+                    ObjRef {
+                        id: "#13".into(),
+                        name: "Kira\x1b_Ga=t;AAAA\x1b\\".into(),
+                    },
+                    ObjRef {
+                        id: "#14".into(),
+                        name: "Berth Board".into(),
+                    },
+                ],
+                exits: Vec::new(),
+                ambient: amb,
+            },
+            Some("Pilot"),
+        );
+        assert_eq!(st.room_title, "Visiting Berth Gallery");
+        assert_eq!(
+            st.actors.len(),
+            2,
+            "dormant NPC and inanimate thing excluded"
+        );
+        assert_eq!(st.actors[0].name, "Henrik");
+        assert!(st.actors[0].npc);
+        assert_eq!(st.actors[1].name, "Kira");
+        assert!(!st.actors[1].npc);
+
+        // Speech bubbles stay bounded <= 64 even when StationWalk tick() never runs (`SSH-H-03`).
+        for i in 0..120 {
+            let act = ObjRef {
+                id: format!("#{i}"),
+                name: format!("Speaker{i}"),
+            };
+            st.observe_narrative(
+                NarrativeKind::Say,
+                Some(&act),
+                &format!("\x1b[31mMessage {i} {}", "x".repeat(200)),
+                now + Duration::from_millis(i as u64),
+            );
+        }
+        assert!(st.speech_bubbles.len() <= MAX_SPEECH_BUBBLES);
+        for (txt, _) in st.speech_bubbles.values() {
+            assert!(!txt.contains('\x1b'));
+            assert!(txt.chars().count() <= MAX_SPEECH_CHARS);
+        }
+    }
+
+    #[test]
+    fn drawer_log_retains_24_week_history_and_sailing_uses_canonical_ports() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.open_drawer(PortDrawerKind::Industry, &[], &mut Vec::new(), now);
+        let history_25 = (0..25)
+            .map(|w| format!("Week {w:02}: volatiles 100.00cr"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        st.observe_sys(&history_25);
+        assert_eq!(
+            st.drawer_log.len(),
+            25,
+            "all 25 lines of +market/history kept"
+        );
+
+        // Canonical ports (`H-40`) plus lane extraction venues (`clients:G7`) — no invalid legacy slugs.
+        let ids: Vec<&str> = CORRIDORS.iter().map(|(id, _, _)| *id).collect();
+        for major in ["ceres", "stickney", "luna", "deimos", "titan"] {
+            assert!(ids.contains(&major), "missing canonical port {major}");
+        }
+        for invalid in ["vesta", "pallas", "hygiea", "juno"] {
+            assert!(!ids.contains(&invalid), "unexpected legacy slug {invalid}");
+        }
+    }
+
+    #[test]
     fn corridor_destinations_are_exactly_the_lanes_venue_words() {
         let lane: Value = serde_json::from_str(include_str!(
             "../../../tacsim/content/lane/ceres_phobos.json"
@@ -3438,16 +6578,23 @@ mod tests {
             ),
             Some("Pilot"),
         );
-        // Walk forward toward helm couch at y = 8.3 and press `e`
+        // Walk forward toward helm couch at y = 7.8 and press `e`
         for i in 0..4 {
             let _ = st.handle_key(
                 Key::Char('w'),
+                false,
                 false,
                 &[],
                 now + Duration::from_millis(50 * i),
             );
         }
-        let out = st.handle_key(Key::Char('e'), false, &[], now + Duration::from_millis(300));
+        let out = st.handle_key(
+            Key::Char('e'),
+            false,
+            false,
+            &[],
+            now + Duration::from_millis(300),
+        );
         assert!(out.enter_helm_cockpit);
         assert_eq!(out.commands, vec!["+helm/station command"]);
         assert!(st.seated_at_helm());
@@ -3458,17 +6605,733 @@ mod tests {
         let mut st = PortWalkState::new();
         let now = Instant::now();
         st.open_drawer(PortDrawerKind::Jobs, &[], &mut Vec::new(), now);
-        let jobs_out = st.handle_key(Key::Enter, false, &[], now);
+        let jobs_out = st.handle_key(Key::Enter, false, false, &[], now);
         assert_eq!(jobs_out.commands, vec!["+market/jobs"]);
 
-        let locker_out = st.handle_key(Key::Char('o'), false, &[], now);
+        let locker_out = st.handle_key(Key::Char('o'), false, false, &[], now);
         assert_eq!(locker_out.commands, vec!["+locker/open"]);
 
-        let _ = st.handle_key(Key::Tab, false, &[], now);
+        let _ = st.handle_key(Key::Tab, false, false, &[], now);
         assert_eq!(st.drawer, Some(PortDrawerKind::Industry));
-        let _ = st.handle_key(Key::Down, false, &[], now);
-        let _ = st.handle_key(Key::Down, false, &[], now);
-        let hist_out = st.handle_key(Key::Enter, false, &[], now);
+        let _ = st.handle_key(Key::Down, false, false, &[], now);
+        let _ = st.handle_key(Key::Down, false, false, &[], now);
+        let hist_out = st.handle_key(Key::Enter, false, false, &[], now);
         assert_eq!(hist_out.commands, vec!["+market/history tacsim:volatiles"]);
+    }
+
+    #[test]
+    fn kitty_arrow_repeat_and_strafe_and_server_location_sync_behave_cleanly() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_room(
+            &sample_room("Port Watch Arrivals", "room.c03_arrivals", None),
+            Some("Pilot"),
+        );
+        let y0 = st.you_y;
+
+        // `SSH-M-01`: Under `arrows_held = true`, pressing `Key::Up` starts continuous hold
+        // without double discrete jumping, and `Key::Repeat(Arrow::Up)` is suppressed.
+        let _ = st.handle_key(Key::Up, true, true, &[], now);
+        assert_eq!(st.held_fwd, 1);
+        assert!(
+            (st.you_y - y0).abs() < 1e-6,
+            "hold start must not double-step before tick"
+        );
+        let _ = st.handle_key(
+            Key::Repeat(Arrow::Up),
+            true,
+            true,
+            &[],
+            now + Duration::from_millis(50),
+        );
+        assert!(
+            (st.you_y - y0).abs() < 1e-6,
+            "Key::Repeat(Arrow::Up) must not double-step under Kitty hold mode"
+        );
+        let _ = st.handle_key(
+            Key::Release(Arrow::Up),
+            true,
+            true,
+            &[],
+            now + Duration::from_millis(100),
+        );
+        assert_eq!(st.held_fwd, 0);
+
+        // `SSH-M-01`: `q`/`x` wire cleanly to `held_strafe` when `letters_held = true`
+        let _ = st.handle_key(
+            Key::Char('q'),
+            true,
+            true,
+            &[],
+            now + Duration::from_millis(120),
+        );
+        assert_eq!(st.held_strafe, -1);
+        let _ = st.handle_key(
+            Key::CharRelease('q'),
+            true,
+            true,
+            &[],
+            now + Duration::from_millis(160),
+        );
+        assert_eq!(st.held_strafe, 0);
+
+        // `SSH-M-02`: crossing a portal emits the exit command while leaving
+        // `server_location_key` at the unconfirmed room until `observe_room` confirms!
+        let mut emitted = Vec::new();
+        for i in 0..16 {
+            let out = st.handle_key(
+                Key::Char('w'),
+                false,
+                false,
+                &[],
+                now + Duration::from_millis(250 * (i + 1)),
+            );
+            emitted.extend(out.commands);
+        }
+        assert_eq!(emitted, vec!["n".to_string()]);
+        assert_eq!(st.active_location_key, "room.c05_registry");
+        assert_eq!(
+            st.server_location_key, "room.c03_arrivals",
+            "server_location_key must wait for authoritative OutputEvent::Room"
+        );
+    }
+
+    #[test]
+    fn sailing_dock_clears_stale_venue_manifest_uses_explicit_op_and_uncached_move_preserves_entry()
+    {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+
+        // 1. `ensure_queries` sends explicit `{"op": "manifest"}` to `tacsim.content`
+        let mut init_q = Vec::new();
+        st.ensure_queries(&[TACSIM_CONTENT_FEED.to_string()], &mut init_q, now);
+        assert_eq!(
+            init_q,
+            vec![(TACSIM_CONTENT_FEED.to_string(), json!({ "op": "manifest" }))]
+        );
+
+        // 2. Docked at Ceres (`venue: "ceres"`), then undock into space (`venue: null`),
+        // select `stickney` in Sailing drawer, and press `d` -> emits `+helm/dock stickney` (`H-40`)
+        let _ = st.observe_port_trade(&live_port_trade_fixture(), now);
+        assert_eq!(st.current_venue.as_deref(), Some("ceres"));
+        st.observe_room(
+            &sample_room(
+                "Salt Moth - Bridge",
+                "",
+                Some(json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": false
+                })),
+            ),
+            Some("Pilot"),
+        );
+        let _ = st.observe_port_trade(
+            &json!({ "venue": null, "port_name": null }),
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(st.current_venue, None);
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut Vec::new(), now);
+        // Move from index 0 (`ceres`) -> index 1 (`stickney`)
+        let _ = st.handle_key(Key::Down, false, false, &[], now);
+        let dock_out = st.handle_key(Key::Char('d'), false, false, &[], now);
+        assert_eq!(dock_out.commands, vec!["+helm/dock stickney"]);
+
+        // 3. Moving between two rooms of an uncached non-Ceres port BEFORE its pack arrives
+        // preserves the latest `atlas_entry` and snaps to it once the pack loads.
+        st.observe_room(
+            &RoomView {
+                id: "#500".into(),
+                name: "Republic Customs Hall".into(),
+                zone: None,
+                desc: "Customs.".into(),
+                contents: Vec::new(),
+                exits: Vec::new(),
+                ambient: std::collections::BTreeMap::from([(
+                    "atlas".into(),
+                    json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p03_customs" }),
+                )]),
+            },
+            Some("Pilot"),
+        );
+        assert_eq!(st.server_location_key, "room.p03_customs");
+        st.observe_room(
+            &RoomView {
+                id: "#501".into(),
+                name: "Yard Concourse".into(),
+                zone: None,
+                desc: "Concourse.".into(),
+                contents: Vec::new(),
+                exits: Vec::new(),
+                ambient: std::collections::BTreeMap::from([(
+                    "atlas".into(),
+                    json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p04_concourse" }),
+                )]),
+            },
+            Some("Pilot"),
+        );
+        assert_eq!(st.server_location_key, "room.p04_concourse");
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "neighborhood.stickney_yards",
+            "category": "neighborhood",
+            "json": serde_json::to_string(&json!({
+                "entries": {
+                    "room.p03_customs": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Republic Customs Hall",
+                            "footprint": { "rect": [[100, 140], [130, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    },
+                    "room.p04_concourse": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Yard Concourse",
+                            "footprint": { "rect": [[130, 140], [170, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    }
+                }
+            })).unwrap()
+        }));
+        assert_eq!(st.server_location_key, "room.p04_concourse");
+        assert_eq!(st.active_location_key, "room.p04_concourse");
+    }
+
+    #[test]
+    fn pending_quote_requires_fresh_exact_listing_quantity_and_authorized_total() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let mut initial = live_port_trade_fixture();
+        // Seed a pre-existing quote on the exact same listing & qty BEFORE `+market/quote` is sent.
+        initial["open_quotes"] = json!([
+            {
+                "quote_id": 70,
+                "listing_id": 42,
+                "good": "volatiles",
+                "market": "ceres",
+                "quantity": 5,
+                "unit_price_minor": 10_000,
+                "total_minor": 50_000
+            }
+        ]);
+        let _ = st.observe_port_trade(&initial, now);
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        let buy = st.handle_key(Key::Char('b'), false, false, &[], now);
+        assert_eq!(buy.commands, vec!["+market/quote 42=5"]);
+        assert!(st.pending_quote.is_some());
+
+        // Pre-existing quote (#70), missing listing_id (#71), and wrong quantity (#72) must ALL be ignored.
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 70,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    },
+                    {
+                        "quote_id": 71,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    },
+                    {
+                        "quote_id": 72,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 2,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 20_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(100),
+        );
+        assert!(
+            st.take_orders().is_empty(),
+            "stale, wildcard-listing, and mismatched-qty quotes must never be accepted"
+        );
+        assert!(st.pending_quote.is_some());
+
+        // A fresh quote matching exact listing_id, exact quantity, and total <= authorized IS accepted.
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 70,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    },
+                    {
+                        "quote_id": 74,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 50_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(200),
+        );
+        assert_eq!(st.take_orders(), vec!["+market/accept 74"]);
+        assert!(st.pending_quote.is_none());
+
+        // A fresh exact-listing/qty quote whose total_minor exceeds authorized_total MUST halt without accepting.
+        let buy2 = st.handle_key(
+            Key::Char('b'),
+            false,
+            false,
+            &[],
+            now + Duration::from_millis(300),
+        );
+        assert_eq!(buy2.commands, vec!["+market/quote 42=5"]);
+        let _ = st.observe_port_trade(
+            &json!({
+                "open_quotes": [
+                    {
+                        "quote_id": 75,
+                        "listing_id": 42,
+                        "good": "volatiles",
+                        "quantity": 5,
+                        "unit_price_minor": 10_000,
+                        "total_minor": 55_000
+                    }
+                ]
+            }),
+            now + Duration::from_millis(400),
+        );
+        assert!(st.take_orders().is_empty());
+        assert!(
+            st.pending_quote.is_none(),
+            "total exceeding authorized_total must clear pending_quote instead of accepting"
+        );
+    }
+
+    #[test]
+    fn installing_neighborhood_pack_rebuilds_desks_and_occupants_on_real_floor() {
+        let mut st = PortWalkState::new();
+        let mut amb = std::collections::BTreeMap::new();
+        amb.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.stickney_yards", "entry": "room.p03_customs" }),
+        );
+        amb.insert(
+            "occupants".into(),
+            json!({ "npcs": ["#91"], "dormant": [], "players": [], "things": [] }),
+        );
+        st.observe_room(
+            &RoomView {
+                id: "#500".into(),
+                name: "Republic Customs Hall".into(),
+                zone: None,
+                desc: "Stickney customs.".into(),
+                contents: vec![ObjRef {
+                    id: "#91".into(),
+                    name: "Inspector Vance".into(),
+                }],
+                exits: Vec::new(),
+                ambient: amb,
+            },
+            Some("Pilot"),
+        );
+
+        // Before real pack lands, placeholder geometry puts everything on floor 0 near (0, 0).
+        assert_eq!(st.you_floor, 0);
+        assert!(!st.interactables.is_empty());
+        assert!(st.interactables.iter().all(|it| it.floor == 0));
+        assert_eq!(st.actors.len(), 1);
+        assert_eq!(st.actors[0].floor, 0);
+
+        // Installing the real neighborhood pack (floor 1, rect [100..130, 140..165]) must
+        // IMMEDIATELY rebuild desks AND occupants onto floor 1 inside the real bounds.
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "neighborhood.stickney_yards",
+            "category": "neighborhood",
+            "json": serde_json::to_string(&json!({
+                "entries": {
+                    "room.p03_customs": {
+                        "kind": "room",
+                        "def": {
+                            "name": "Republic Customs Hall",
+                            "footprint": { "rect": [[100, 140], [130, 165]] },
+                            "surface": { "floor": ["structure.yard_rim", 1] }
+                        }
+                    }
+                }
+            })).unwrap()
+        }));
+
+        assert_eq!(st.you_floor, 1);
+        assert!((100.0..=130.0).contains(&st.you_x));
+        assert!((140.0..=165.0).contains(&st.you_y));
+        assert!(
+            st.interactables.len() >= 2,
+            "expected customs Jobs desk + Inspector Vance NPC interactable"
+        );
+        for it in &st.interactables {
+            assert_eq!(it.floor, 1, "stale placeholder floor on {:?}", it.label);
+            assert!(
+                (100.0..=130.0).contains(&it.x_m) && (140.0..=165.0).contains(&it.y_m),
+                "stale placeholder coords ({}, {}) on {:?}",
+                it.x_m,
+                it.y_m,
+                it.label
+            );
+        }
+        assert_eq!(st.actors.len(), 1);
+        assert_eq!(st.actors[0].name, "Inspector Vance");
+        assert_eq!(st.actors[0].floor, 1);
+        assert!((100.0..=130.0).contains(&st.actors[0].x_m));
+        assert!((140.0..=165.0).contains(&st.actors[0].y_m));
+    }
+
+    #[test]
+    fn interacting_during_unacknowledged_move_keeps_single_flight_and_resumes_on_room_ack() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_room(
+            &sample_room("Port Watch Arrivals", "room.c03_arrivals", None),
+            Some("Pilot"),
+        );
+
+        // Walk North across doorway into `room.c05_registry` -> sends `"n"` once.
+        let mut emitted = Vec::new();
+        for i in 0..16 {
+            let out = st.handle_key(
+                Key::Char('w'),
+                false,
+                false,
+                &[],
+                now + Duration::from_millis(250 * i),
+            );
+            emitted.extend(out.commands);
+        }
+        assert_eq!(emitted, vec!["n"]);
+        assert_eq!(st.active_location_key, "room.c05_registry");
+        assert_eq!(st.server_location_key, "room.c03_arrivals");
+        assert!(st.pending_move_target.is_some());
+
+        // Pressing `e` while `room.c05_registry` ack is still pending MUST NOT resend `"n"`.
+        let panels = vec![PORT_TRADE_FEED.to_string()];
+        let press_e = st.handle_key(
+            Key::Char('e'),
+            false,
+            false,
+            &panels,
+            now + Duration::from_secs(5),
+        );
+        assert!(
+            press_e.commands.is_empty(),
+            "must never duplicate an in-flight exit command: {:?}",
+            press_e.commands
+        );
+        assert!(
+            st.drawer.is_none(),
+            "interaction must wait for authoritative Room acknowledgement"
+        );
+        assert!(st.pending_interaction.is_some());
+
+        // Once authoritative Room ack for `room.c05_registry` arrives, queued interaction resumes.
+        st.observe_room(
+            &sample_room("Charter Registry", "room.c05_registry", None),
+            Some("Pilot"),
+        );
+        assert!(st.pending_move_target.is_none());
+        assert!(st.pending_interaction.is_none());
+        assert!(st.drawer.is_some());
+        st.close_drawer();
+
+        // Multi-hop single-flight test: server at `c03_arrivals`, predicted 2 hops away at `c07_exchange`.
+        st.observe_room(
+            &sample_room("Port Watch Arrivals", "room.c03_arrivals", None),
+            Some("Pilot"),
+        );
+        st.active_location_key = "room.c07_exchange".to_string();
+        assert!(st.pending_move_target.is_none());
+
+        let first_hop = st.handle_key(
+            Key::Char('e'),
+            false,
+            false,
+            &panels,
+            now + Duration::from_secs(6),
+        );
+        assert_eq!(
+            first_hop.commands.len(),
+            1,
+            "multi-hop interact must send at most ONE movement command in flight"
+        );
+        let (hop1_cmd, hop1_room) = st
+            .first_bfs_step("room.c03_arrivals", "room.c07_exchange")
+            .unwrap();
+        assert_eq!(first_hop.commands, vec![hop1_cmd]);
+        assert!(st.drawer.is_none());
+
+        // Intermediate hop ack dispatches the second hop (still 1 in flight, drawer not yet open).
+        st.observe_room(
+            &sample_room("Intermediate Concourse", &hop1_room, None),
+            Some("Pilot"),
+        );
+        let (hop2_cmd, hop2_room) = st.first_bfs_step(&hop1_room, "room.c07_exchange").unwrap();
+        assert_eq!(hop2_room, "room.c07_exchange");
+        assert_eq!(st.take_orders(), vec![hop2_cmd]);
+        assert!(st.drawer.is_none());
+
+        // Final Room ack completes the walk and resumes the queued interaction.
+        st.observe_room(
+            &sample_room("Port Commodity Exchange", "room.c07_exchange", None),
+            Some("Pilot"),
+        );
+        assert!(st.pending_move_target.is_none());
+        assert!(st.pending_interaction.is_none());
+        assert!(st.drawer.is_some());
+    }
+
+    #[test]
+    fn missing_pack_found_false_does_not_permanently_mark_loaded_and_retries_on_new_manifest() {
+        let mut st = PortWalkState::new();
+        let manifest_v1 = json!({
+            "op": "manifest",
+            "packs": [
+                { "id": "goods", "category": "market", "sha256": "aaa111" },
+                { "id": "neighborhood.stickney_yards", "category": "neighborhood", "sha256": "bbb111" }
+            ]
+        });
+        let q1 = st.observe_tacsim_content(&manifest_v1);
+        assert_eq!(
+            q1,
+            vec![(
+                TACSIM_CONTENT_FEED.to_string(),
+                json!({ "op": "pack", "id": "goods" })
+            )]
+        );
+
+        // Server answers `found: false` (e.g. pack temporarily absent or raced).
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": false,
+            "id": "goods"
+        }));
+        assert!(
+            !st.loaded_packs.contains_key("goods"),
+            "found:false must NEVER permanently mark a pack as loaded"
+        );
+        assert!(!st.in_flight_packs.contains("goods"));
+
+        // Repeating the exact same manifest must NOT storm duplicate retries.
+        let q_dup = st.observe_tacsim_content(&manifest_v1);
+        assert!(q_dup.is_empty(), "same manifest must not storm: {q_dup:?}");
+
+        // A new manifest revision (updated sha256) MUST retry `goods` and load it cleanly!
+        let manifest_v2 = json!({
+            "op": "manifest",
+            "packs": [
+                { "id": "goods", "category": "market", "sha256": "aaa222" },
+                { "id": "neighborhood.stickney_yards", "category": "neighborhood", "sha256": "bbb111" }
+            ]
+        });
+        let q2 = st.observe_tacsim_content(&manifest_v2);
+        assert_eq!(
+            q2,
+            vec![(
+                TACSIM_CONTENT_FEED.to_string(),
+                json!({ "op": "pack", "id": "goods" })
+            )]
+        );
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "goods",
+            "sha256": "aaa222",
+            "category": "market",
+            "json": serde_json::to_string(&json!({
+                "goods": [{
+                    "id": "volatiles",
+                    "label": "Water Ice",
+                    "measures": { "si.mass_kg": 1000, "si.volume_l": 1000 }
+                }]
+            })).unwrap()
+        }));
+        assert_eq!(
+            st.loaded_packs.get("goods").map(String::as_str),
+            Some("aaa222")
+        );
+    }
+
+    #[test]
+    fn ship_change_or_null_stowage_resets_hold_and_blocks_trade_until_fresh_snapshot() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+
+        // Fresh state starts unloaded (no fake 100,000 kg defaults).
+        assert!(!st.stowage_loaded);
+
+        // Load Ship A (#401, Salt Moth) with 4t metals & 100t hold.
+        let _ = st.observe_port_trade(&live_port_trade_fixture(), now);
+        assert!(st.stowage_loaded);
+        assert_eq!(st.stowage.max_cargo_kg, 100_000);
+        assert_eq!(st.cargo_lots.len(), 1);
+        assert!(st.max_fit_for_ask(&st.asks[0]) > 0);
+
+        // Switch to Ship B (#402, Copperfinch) with `stowage: null` -> MUST wipe Ship A's hold!
+        let _ = st.observe_port_trade(
+            &json!({
+                "ship": {
+                    "hull_id": "#402",
+                    "hull_name": "Copperfinch",
+                    "unit": "tacsim.unit.corvette",
+                    "docked": true,
+                    "stowage": null
+                }
+            }),
+            now + Duration::from_secs(1),
+        );
+        assert!(!st.stowage_loaded);
+        assert_eq!(st.stowage.cargo_kg, 0);
+        assert_eq!(st.stowage.max_cargo_kg, 0);
+        assert!(st.cargo_lots.is_empty());
+        assert_eq!(st.max_fit_for_ask(&st.asks[0]), 0);
+
+        // Max Fit buy and Sell MUST both refuse while stowage is unloaded.
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        st.qty_preset_idx = 4; // Max Fit
+        let blocked_buy = st.handle_key(
+            Key::Char('b'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(2),
+        );
+        assert!(blocked_buy.commands.is_empty());
+
+        let _ = st.handle_key(Key::Right, false, false, &[], now + Duration::from_secs(2));
+        let blocked_sell = st.handle_key(
+            Key::Char('s'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(2),
+        );
+        assert!(blocked_sell.commands.is_empty());
+
+        // Fresh stowage for Ship B (10t hold, 2t metals) re-enables Max Fit and Sell accurately.
+        let _ = st.observe_port_trade(
+            &json!({
+                "ship": {
+                    "hull_id": "#402",
+                    "hull_name": "Copperfinch",
+                    "stowage": {
+                        "cargo_kg": 2_000,
+                        "cargo_limit_kg": 10_000,
+                        "cargo_l": 2_000,
+                        "cargo_limit_l": 10_000,
+                        "items": [{ "good": "metals", "qty": 2 }]
+                    }
+                }
+            }),
+            now + Duration::from_secs(3),
+        );
+        assert!(st.stowage_loaded);
+        let sell_b = st.handle_key(
+            Key::Char('s'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(3),
+        );
+        assert_eq!(sell_b.commands, vec!["+market/sell 43=2"]);
+
+        // `ship: null` clears active hull and resets stowage.
+        let _ = st.observe_port_trade(&json!({ "ship": null }), now + Duration::from_secs(4));
+        assert!(!st.stowage_loaded);
+        assert!(st.cargo_lots.is_empty());
+    }
+
+    #[test]
+    fn max_fit_uses_live_goods_catalogue_weights_after_goods_pack_arrives() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+
+        // Trade frame arrives BEFORE `goods` pack: heavy 30t hauler power plant initially falls back to 1,000 kg.
+        let _ = st.observe_port_trade(
+            &json!({
+                "enabled": true,
+                "venue": "ceres",
+                "balance_minor": 100_000_000,
+                "listings": [
+                    {
+                        "id": 99,
+                        "side": "ask",
+                        "good": "tacsim.part.plant.hauler_mk1",
+                        "good_label": "hauler power plant",
+                        "vendor_name": "Freeport Yard",
+                        "unit_price_minor": 100_000,
+                        "available_qty": 100
+                    }
+                ],
+                "ship": {
+                    "hull_id": "#401",
+                    "hull_name": "Salt Moth",
+                    "stowage": {
+                        "cargo_kg": 4_000,
+                        "cargo_limit_kg": 100_000,
+                        "cargo_l": 4_000,
+                        "cargo_limit_l": 120_000,
+                        "items": []
+                    }
+                }
+            }),
+            now,
+        );
+        assert_eq!(st.asks.len(), 1);
+        assert_eq!(st.max_fit_for_ask(&st.asks[0]), 96);
+
+        // Real `goods` pack lands with 30,000 kg / 30,000 L for `tacsim.part.plant.hauler_mk1`.
+        let _ = st.observe_tacsim_content(&json!({
+            "op": "pack",
+            "found": true,
+            "id": "goods",
+            "category": "market",
+            "json": serde_json::to_string(&json!({
+                "goods": [{
+                    "id": "tacsim.part.plant.hauler_mk1",
+                    "label": "hauler power plant",
+                    "measures": { "si.mass_kg": 30_000, "si.volume_l": 30_000 }
+                }]
+            })).unwrap()
+        }));
+
+        // Free hold is 96,000 kg / 116,000 L -> 96,000 / 30,000 = 3 units (NOT 96!).
+        assert_eq!(st.asks[0].unit_mass_kg, 30_000);
+        assert_eq!(st.asks[0].unit_vol_dm3, 30_000);
+        assert_eq!(st.max_fit_for_ask(&st.asks[0]), 3);
+
+        // Executing Max Fit buy immediately quotes 3 units, not 96.
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut Vec::new(), now);
+        st.qty_preset_idx = 4; // Max Fit
+        let buy = st.handle_key(
+            Key::Char('b'),
+            false,
+            false,
+            &[],
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(buy.commands, vec!["+market/quote 99=3"]);
     }
 }

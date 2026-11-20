@@ -711,12 +711,21 @@ namespace TacSim.Tests
                 Assert.Greater(updateEvents, beforeColdSwitch, "Cold-server switch must still fire OnPacksUpdated so loaded models invalidate");
                 Assert.IsFalse(tradeState.GoodsCatalog.Exists(g => g.Label == "Server A Metal"), "Cold-server switch must evict Server A models from loaded catalog");
 
-                // Switching back to Server A with warm disk cache MUST hydrate packs AND fire OnPacksUpdated!
-                int beforeWarm = updateEvents;
+                // Switching back to Server A with warm disk cache MUST keep cached bytes private until
+                // the current session's live manifest authorizes the pack ID & digest (no pre-manifest leakage!),
+                // and then hydrate from cache with zero outbound downloads and fire OnPacksUpdated!
                 sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Warm disk cache must stay private until live manifest authorizes each pack");
+                int beforeWarmManifest = updateEvents;
+                using (var wsWarm = new MushWsClient())
+                {
+                    var warmManifest = JsonNode.Parse($@"{{""op"":""manifest"",""packs"":[{{""id"":""goods"",""category"":""economy"",""sha256"":""{shaA}"",""bytes"":{serverAGoods.Length}}}]}}");
+                    sync.HandleWebSocketContentPanel(wsWarm, warmManifest, nowRealtime: 4f);
+                    Assert.AreEqual(0, wsWarm.OutboundQueueCount, "Authorized warm-cache pack must not be re-downloaded");
+                }
                 Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out string warmJson));
                 Assert.AreEqual(serverAGoods, warmJson);
-                Assert.Greater(updateEvents, beforeWarm, "Warm-cache activation must raise OnPacksUpdated so already-constructed models refresh");
+                Assert.Greater(updateEvents, beforeWarmManifest, "Manifest-authorized warm-cache activation must raise OnPacksUpdated so already-constructed models refresh");
 
                 // Pruning check: delivering an authoritative empty manifest MUST delete removed packs from memory AND saved manifest!
                 var emptyManifest = JsonNode.Parse(@"{""op"":""manifest"",""packs"":[]}");
@@ -725,9 +734,15 @@ namespace TacSim.Tests
                     sync.HandleWebSocketContentPanel(wsPrune, emptyManifest, nowRealtime: 5f);
                 }
                 Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Pruned pack must be evicted from memory");
-                // Re-hydrating Server A's disk cache proves `goods` was also removed from persisted manifest.json
+                // Re-hydrating Server A's disk cache and presenting a manifest requesting `goods` proves it was deleted from disk manifest (must re-fetch!)
                 sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
                 Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Pruned pack must not reappear from disk manifest");
+                using (var wsAfterPrune = new MushWsClient())
+                {
+                    var manifestAfterPrune = JsonNode.Parse($@"{{""op"":""manifest"",""packs"":[{{""id"":""goods"",""category"":""economy"",""sha256"":""{shaA}"",""bytes"":{serverAGoods.Length}}}]}}");
+                    sync.HandleWebSocketContentPanel(wsAfterPrune, manifestAfterPrune, nowRealtime: 6f);
+                    Assert.AreEqual(1, wsAfterPrune.OutboundQueueCount, "Pruned pack must no longer be cached on disk and must require re-fetch");
+                }
 
                 // Inter-batch pacing check: 37-pack manifest with instantaneous completions at t=10f MUST emit strictly 4 requests at t=10f!
                 sync.InitializeDiskCacheForServer("https://server-c.example.com", tempDir);
@@ -2270,6 +2285,54 @@ namespace TacSim.Tests
         }
 
         [Test]
+        public void Remediation_UC01_StandaloneBuilderResolvesDirectories_AndStagesRealPacksFromUnityCwd()
+        {
+            string prevCwd = System.IO.Directory.GetCurrentDirectory();
+            string tempOut = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimStageTest_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                // Locate <repo>/unity to replicate the Unity Editor working directory where File.Exists previously failed!
+                string dir = prevCwd;
+                string unityDir = null;
+                for (int i = 0; i < 6 && !string.IsNullOrEmpty(dir); i++)
+                {
+                    string candidate = System.IO.Path.Combine(dir, "unity");
+                    if (System.IO.Directory.Exists(candidate) &&
+                        System.IO.Directory.Exists(System.IO.Path.Combine(dir, "crates", "tacsim", "content")))
+                    {
+                        unityDir = candidate;
+                        break;
+                    }
+                    dir = System.IO.Directory.GetParent(dir)?.FullName;
+                }
+                Assert.IsNotNull(unityDir, "Expected <repo>/unity directory alongside crates/tacsim/content");
+                System.IO.Directory.SetCurrentDirectory(unityDir);
+
+                Assert.IsTrue(System.IO.Directory.Exists(TacSimContentLoader.ResolveRepoContentPath("atlas")), "atlas directory must resolve from unity/ cwd");
+                Assert.IsTrue(System.IO.Directory.Exists(TacSimContentLoader.ResolveRepoContentPath("cast")), "cast directory must resolve from unity/ cwd");
+                Assert.IsTrue(System.IO.Directory.Exists(TacSimContentLoader.ResolveRepoContentPath("units")), "units directory must resolve from unity/ cwd");
+
+                int staged = TacSim.Editor.TacSimStandaloneBuilder.StageEmbeddedFallbackPacks(tempOut, refreshAssetDatabase: false);
+                Assert.GreaterOrEqual(staged, 15, "Standalone builder must stage neighborhoods, casts, units, regions, arenas, and goods");
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "neighborhood.ceres_freeport.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "neighborhood.stickney_yards.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "neighborhood.ooc_area.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "cast.ceres_freeport.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "dray.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "dray_p.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "goods.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "arena.mars_canyon.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "region.occator_rim.json")));
+            }
+            finally
+            {
+                System.IO.Directory.SetCurrentDirectory(prevCwd);
+                if (System.IO.Directory.Exists(tempOut))
+                    System.IO.Directory.Delete(tempOut, recursive: true);
+            }
+        }
+
+        [Test]
         public void Security_U3_JsonDepthAndNumericGuards_PreventStackOverflowAndNonFiniteValues()
         {
             // Depth 64 must parse; depth 65 (and deep 4000-level nesting) must throw FormatException without StackOverflowException.
@@ -2335,11 +2398,13 @@ namespace TacSim.Tests
                 Assert.AreEqual(MushWsClient.MaxInboundQueueCount, ws.InboundQueueCount);
                 ws.Disconnect();
 
-                // Outbound queue cap (256)
-                for (int i = 0; i < MushWsClient.MaxOutboundQueueCount + 50; i++)
-                    ws.SendLine("look");
-                Assert.AreEqual(MushWsClient.MaxOutboundQueueCount, ws.OutboundQueueCount);
-                ws.Disconnect();
+                // Outbound queue cap (256) on a fresh pre-disconnect test client
+                using (var wsOut = new MushWsClient())
+                {
+                    for (int i = 0; i < MushWsClient.MaxOutboundQueueCount + 50; i++)
+                        wsOut.SendLine("look");
+                    Assert.AreEqual(MushWsClient.MaxOutboundQueueCount, wsOut.OutboundQueueCount);
+                }
 
                 // Panel feed map cap (64)
                 for (int i = 0; i < MushWsClient.MaxPanelFeeds + 20; i++)
@@ -2516,6 +2581,808 @@ namespace TacSim.Tests
         }
 
         [Test]
+        public void Remediation_UC02_UH16_StationWallsCutAllMultiDoorways_AndSealPartialOverlapVoid()
+        {
+            var rootGo = new UnityEngine.GameObject("TestMultiDoorStation");
+            try
+            {
+                var sw = rootGo.AddComponent<StationWorldController>();
+
+                // U-C02: Stickney Yards `room.p04_concourse` has 4 north doorways along y=155
+                sw.BuildStation(null, "neighborhood.stickney_yards");
+                Assert.AreEqual("neighborhood.stickney_yards", sw.LoadedPackId);
+                var concourseTr = rootGo.transform.Find("room.p04_concourse");
+                Assert.IsNotNull(concourseTr);
+
+                var pack = sw.Pack;
+                var northDoorCentersX = new List<float>();
+                foreach (var ex in pack.Exits)
+                {
+                    if (ex.FromRoom == "room.p04_concourse" &&
+                        pack.Rooms.TryGetValue(ex.ToRoom, out var dst) &&
+                        System.Math.Abs(dst.MinY - 155f) < 0.6f)
+                    {
+                        northDoorCentersX.Add(ex.PortalA.sqrMagnitude > 0.01f ? ex.PortalA.x : (dst.MinX + dst.MaxX) * 0.5f);
+                    }
+                }
+                Assert.GreaterOrEqual(northDoorCentersX.Count, 4, "Stickney concourse must have 4 north exits");
+
+                // Every colliding wall along north edge (atlas y=155 -> unity z=155-OriginY) must leave all 4 doorway centers unobstructed!
+                float northZ = sw.AtlasToUnity(0f, 0f, 155f).z;
+                for (int i = 0; i < concourseTr.childCount; i++)
+                {
+                    var ch = concourseTr.GetChild(i);
+                    if (!ch.name.StartsWith("Wall_H_Seg")) continue;
+                    if (UnityEngine.Mathf.Abs(ch.position.z - northZ) > 0.5f) continue;
+                    if (ch.GetComponent<UnityEngine.BoxCollider>() == null) continue;
+                    float segMinX = ch.position.x - ch.localScale.x * 0.5f;
+                    float segMaxX = ch.position.x + ch.localScale.x * 0.5f;
+                    for (int d = 0; d < northDoorCentersX.Count; d++)
+                    {
+                        float doorUnityX = sw.AtlasToUnity(northDoorCentersX[d], 0f, 155f).x;
+                        Assert.IsFalse(doorUnityX > segMinX + 0.1f && doorUnityX < segMaxX - 0.1f,
+                            $"Wall segment [{segMinX:F1}..{segMaxX:F1}] seals Stickney doorway at x={doorUnityX:F1}");
+                    }
+                }
+
+                // U-H16: Aitken Highport `room.l08_receiving` (x=140..210, y=140) overlaps `l12_dockmaster` (140..185)
+                // and MUST still build a residual south wall covering x=185..210!
+                sw.BuildStation(null, "neighborhood.aitken_highport");
+                var recvTr = rootGo.transform.Find("room.l08_receiving");
+                Assert.IsNotNull(recvTr);
+                float southZ = sw.AtlasToUnity(0f, 0f, 140f).z;
+                float expectedMidX = sw.AtlasToUnity(197.5f, 0f, 140f).x;
+                bool foundResidualSouthWall = false;
+                for (int i = 0; i < recvTr.childCount; i++)
+                {
+                    var ch = recvTr.GetChild(i);
+                    if (!ch.name.StartsWith("Wall_H")) continue;
+                    if (UnityEngine.Mathf.Abs(ch.position.z - southZ) > 0.5f) continue;
+                    float segMinX = ch.position.x - ch.localScale.x * 0.5f;
+                    float segMaxX = ch.position.x + ch.localScale.x * 0.5f;
+                    if (expectedMidX >= segMinX && expectedMidX <= segMaxX)
+                        foundResidualSouthWall = true;
+                }
+                Assert.IsTrue(foundResidualSouthWall, "Aitken l08_receiving must seal residual south wall across x=185..210");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Remediation_UC03_UH18_OocGroundSurfaceFloor0_TransitPortalArch_AndUniformPropRoots()
+        {
+            var rootGo = new UnityEngine.GameObject("TestOocStation");
+            try
+            {
+                var ooc = TacSimContentLoader.LoadNeighborhoodPackById("neighborhood.ooc_area");
+                Assert.IsNotNull(ooc);
+                Assert.AreEqual(0, ooc.Rooms["room.welcome_hall"].FloorIndex);
+                Assert.AreEqual(0, ooc.Rooms["room.bus_stop"].FloorIndex, "\"surface\": \"ground\" must map to FloorIndex 0");
+                Assert.AreEqual(0, ooc.Rooms["room.simulator_lobby"].FloorIndex, "\"surface\": \"ground\" must map to FloorIndex 0");
+                Assert.AreEqual(0, ooc.Rooms["room.sim_red"].FloorIndex);
+                Assert.AreEqual(0, ooc.Rooms["room.sim_blue"].FloorIndex);
+                Assert.AreEqual(0f, ooc.GetFloorElevationY(ooc.Rooms["room.simulator_lobby"].FloorIndex), 0.001f);
+
+                var sw = rootGo.AddComponent<StationWorldController>();
+                sw.BuildStation(null, "neighborhood.ooc_area");
+
+                bool foundTransitArch = false;
+                bool foundSelectorRoot = false;
+                bool foundKioskRoot = false;
+                int uniformSimPods = 0;
+
+                var allTr = rootGo.GetComponentsInChildren<UnityEngine.Transform>(true);
+                for (int i = 0; i < allTr.Length; i++)
+                {
+                    var tr = allTr[i];
+                    if (tr.name.StartsWith("TransitPortal_")) foundTransitArch = true;
+                    if (tr.name == "SimulatorSelectorConsole")
+                    {
+                        foundSelectorRoot = true;
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.localScale, "SimulatorSelectorConsole root must have uniform scale");
+                    }
+                    if (tr.name == "ReturnToIcKiosk")
+                    {
+                        foundKioskRoot = true;
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.localScale, "ReturnToIcKiosk root must have uniform scale");
+                    }
+                    if (tr.name.StartsWith("RED_Pod_") || tr.name.StartsWith("BLUE_Pod_"))
+                    {
+                        Assert.AreEqual(UnityEngine.Vector3.one, tr.localScale, $"{tr.name} root must have uniform scale");
+                        uniformSimPods++;
+                    }
+                }
+
+                Assert.IsTrue(foundTransitArch, "Non-adjacent OOC exit.hall_simulator_lobby must spawn explicit TransitPortalArch");
+                Assert.IsTrue(foundSelectorRoot);
+                Assert.IsTrue(foundKioskRoot);
+                Assert.AreEqual(12, uniformSimPods);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Remediation_UC04_UH15_UH17_UH18_UH19_ShipHysteresis_HalcyonRelay_PersistentAnchor_AndHoloTank()
+        {
+            var rootGo = new UnityEngine.GameObject("TestShipFixes");
+            try
+            {
+                var ship = rootGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(null, "dray_p");
+
+                // U-C04: Vertical hysteresis must NOT trap player in lower deck room!
+                UnityEngine.Vector3 bridgeFloorWorld = ship.transform.position + new UnityEngine.Vector3(0f, 1.85f, 8.0f);
+                Assert.AreEqual("bridge", ship.TryFindContainingCompartment(bridgeFloorWorld, currentCompId: "passage", hysteresisM: 0.55f),
+                    "Standing on Bridge deck (Y=+1.85m) must never be trapped in 'passage'");
+
+                UnityEngine.Vector3 passageFloorWorld = ship.transform.position + new UnityEngine.Vector3(0f, -1.55f, 2.0f);
+                Assert.AreEqual("passage", ship.TryFindContainingCompartment(passageFloorWorld, currentCompId: "hold", hysteresisM: 0.55f),
+                    "Standing on Passage deck (Y=-1.55m) must never be trapped in 'hold'");
+
+                // U-H15: Engineering & Bay meet flush at Z=-14.0 and floor Y=-5.3
+                var eng = ship.Template.Compartments["engineering"];
+                var bay = ship.Template.Compartments["bay"];
+                Assert.AreEqual(eng.LocalCenter.z - eng.LocalSize.z * 0.5f, bay.LocalCenter.z + bay.LocalSize.z * 0.5f, 0.01f,
+                    "Engineering aft bulkhead and Bay forward bulkhead must meet flush with zero 0.5m chasm");
+                Assert.AreEqual(eng.LocalCenter.y - eng.LocalSize.y * 0.5f, bay.LocalCenter.y - bay.LocalSize.y * 0.5f, 0.01f,
+                    "Engineering and Bay floors must be flush");
+
+                // U-H18: Unscaled airlock & holotank roots
+                var allTr = rootGo.GetComponentsInChildren<UnityEngine.Transform>(true);
+                bool checkedLock = false, checkedPedestal = false;
+                for (int i = 0; i < allTr.Length; i++)
+                {
+                    if (allTr[i].name == "OuterAirlockDoor") { checkedLock = true; Assert.AreEqual(UnityEngine.Vector3.one, allTr[i].localScale); }
+                    if (allTr[i].name == "HoloTankPedestal") { checkedPedestal = true; Assert.AreEqual(UnityEngine.Vector3.one, allTr[i].localScale); }
+                }
+                Assert.IsTrue(checkedLock);
+                Assert.IsTrue(checkedPedestal);
+
+                // U-H19: HoloTank observer subtraction, (dy, dz, dx) axis match, disc clamp, and torpedoes[]
+                var holoJson = JsonNode.Parse(@"{
+                    ""range_km"": 100.0,
+                    ""contacts"": [
+                        { ""id"": ""ship.1"", ""you"": true, ""x_km"": 10.0, ""y_km"": 20.0, ""z_km"": 5.0 },
+                        { ""id"": ""ahead_1"", ""you"": false, ""x_km"": 60.0, ""y_km"": 20.0, ""z_km"": 5.0, ""relation"": ""hostile"" },
+                        { ""id"": ""far_1"", ""you"": false, ""x_km"": 5000.0, ""y_km"": 5000.0, ""z_km"": 0.0, ""relation"": ""neutral"" }
+                    ],
+                    ""torpedoes"": [
+                        { ""id"": ""t1"", ""x_km"": 10.0, ""y_km"": 40.0, ""z_km"": 5.0, ""tti_s"": 12 }
+                    ]
+                }");
+                ship.PopulateHoloBlips(holoJson);
+                var blipsRoot = ship.transform.Find("HoloTankPedestal")?.Find("HoloTankContacts");
+                Assert.IsNotNull(blipsRoot);
+                Assert.AreEqual(4, blipsRoot.childCount, "Expected own-ship center blip + 2 external contacts + 1 torpedo blip");
+                var aheadBlip = blipsRoot.GetChild(1);
+                Assert.Greater(aheadBlip.localPosition.z, 0.25f, "+dx_km ahead maps to +Z on holotank matching SpaceFlightController");
+                Assert.AreEqual(0f, aheadBlip.localPosition.x, 0.02f);
+                var farBlip = blipsRoot.GetChild(2);
+                float farRadius = UnityEngine.Mathf.Sqrt(farBlip.localPosition.x * farBlip.localPosition.x + farBlip.localPosition.z * farBlip.localPosition.z);
+                Assert.LessOrEqual(farRadius, 0.71f, "Distant blips must clamp within holotank disc radius");
+                var torpBlip = blipsRoot.GetChild(3);
+                Assert.Greater(torpBlip.localPosition.x, 0.1f, "+dy_km starboard torpedo maps to +X");
+
+                // U-H17 & U-H15: BridgeCameraAnchor survives rebuild + Halcyon has valid 'relay' compartment bounds
+                var originalAnchor = ship.BridgeCameraAnchor;
+                Assert.IsNotNull(originalAnchor);
+                int rebuiltEvents = 0;
+                ship.OnInteriorRebuilt += () => rebuiltEvents++;
+                ship.BuildInterior(null, "halcyon");
+                Assert.AreSame(originalAnchor, ship.BridgeCameraAnchor, "BridgeCameraAnchor must persist across interior rebuilds");
+                Assert.AreEqual(1, rebuiltEvents);
+                Assert.IsTrue(ship.Template.Compartments.ContainsKey("relay"), "Halcyon must expose its 'relay' compartment");
+                Assert.Greater(ship.Template.Compartments["relay"].LocalCenter.x, 3.0f, "Halcyon relay must sit starboard off passage, not detached at Z=-48");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Remediation_UC05_UH24_OocArenaLiveSchema_Verbs_OriginWindow_AndTerrainElevation()
+        {
+            var rootGo = new UnityEngine.GameObject("TestArenaFixes");
+            try
+            {
+                var arena = rootGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var emitted = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emitted.Add;
+
+                // U-H24: Windowed arena.map with OriginCell (50, 60) + vertex-exact elevation sampling
+                int[] elevCm = new int[16];
+                for (int i = 0; i < 16; i++) elevCm[i] = i * 200;
+                string encElev = TacSimTerrainDecoder.EncodeZigzagLeb128DeltaElevCm(elevCm);
+                var mapNode = JsonNode.Parse($@"{{
+                    ""match"": 88,
+                    ""surface"": ""mars_canyon"",
+                    ""biome"": ""desert"",
+                    ""cell_cm"": 1000,
+                    ""width"": 4,
+                    ""height"": 4,
+                    ""origin_cell"": [50, 60],
+                    ""rows"": [[["":"", 4]], [["":"", 4]], [["":"", 4]], [["":"", 4]]],
+                    ""spots"": [{{ ""letter"": ""A"", ""name"": ""West Ford"", ""cell"": [52, 62] }}],
+                    ""elev"": {{ ""encoding"": ""zigzag-leb128-delta"", ""unit_cm"": 1, ""data"": ""{encElev}"" }}
+                }}");
+                arena.ApplyLiveArenaMap(mapNode);
+                Assert.IsNotNull(arena.TerrainGrid);
+                Assert.AreEqual(0f, arena.TerrainGrid.SampleElevationMeters(0f, 0f), 0.001f);
+                Assert.AreEqual(2.0f, arena.TerrainGrid.SampleElevationMeters(10f, 0f), 0.001f,
+                    "Elevation at vertex (1,0) must match ElevMeters[1] with zero -0.5 cell offset");
+
+                UnityEngine.Vector3 localFromWorld = arena.ArenaWorldMetersToLocalPos(520f, 630f);
+                Assert.AreEqual(20f, localFromWorld.x, 0.01f, "OriginCellX=50 (500m) must be subtracted from world X");
+                Assert.AreEqual(30f, localFromWorld.z, 0.01f, "OriginCellY=60 (600m) must be subtracted from world Y");
+
+                // U-C05: Live frames.rs cockpit schema: string ecm, viewer-relative facing, array odds[]
+                var liveFrame = JsonNode.Parse(@"{
+                    ""match"": 88,
+                    ""seated"": true,
+                    ""callsign"": ""R1"",
+                    ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"",
+                    ""x_m"": 515,
+                    ""y_m"": 615,
+                    ""heading"": 90,
+                    ""ecm"": ""off"",
+                    ""contacts"": [
+                        {
+                            ""tag"": ""B1"",
+                            ""side"": ""B"",
+                            ""kind"": ""tank"",
+                            ""cell"": [52, 62],
+                            ""range_m"": 240,
+                            ""bearing"": 45,
+                            ""facing"": ""front_right"",
+                            ""odds"": [
+                                { ""weapon"": ""ac10"", ""p_permille"": 640, ""percent"": 64 },
+                                { ""weapon"": ""mg"", ""p_permille"": 400, ""percent"": 40 }
+                            ]
+                        }
+                    ]
+                }");
+                arena.ApplyLiveCockpitFrame(liveFrame);
+                Assert.IsTrue(arena.State.HasEcm);
+                Assert.IsTrue(arena.State.EmconSilent, "ecm=='off' means EMCON silent");
+                Assert.AreEqual(1, arena.State.Contacts.Count);
+                Assert.AreEqual(64, arena.State.Contacts[0].HitOddsPct, "Array odds[] must decode max hit percent");
+                Assert.AreNotEqual(0f, arena.State.Contacts[0].FacingDeg, "Viewer-relative 'front_right' must compute world heading");
+
+                // Valid server verbs for stop, emcon toggle, and squad advance
+                arena.ExecuteCockpitAction("stop");
+                arena.ExecuteCockpitAction("emcon");
+                arena.ExecuteCockpitAction("order all advance");
+                Assert.AreEqual("speed 0", emitted[0]);
+                Assert.AreEqual("emcon on", emitted[1], "When silent, EMCON toggle emits 'emcon on'");
+                Assert.AreEqual("order all advance A", emitted[2], "Advance must supply key spot letter");
+
+                // Flip ecm -> "on" and verify toggle emits "emcon off"
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{""match"":88,""seated"":true,""callsign"":""R1"",""party"":""R"",""ecm"":""on""}"));
+                Assert.IsFalse(arena.State.EmconSilent);
+                emitted.Clear();
+                arena.ExecuteCockpitAction("emcon");
+                Assert.AreEqual("emcon off", emitted[0]);
+
+                // ecm -> null clears HasEcm
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{""match"":88,""seated"":true,""callsign"":""R1"",""party"":""R"",""ecm"":null}"));
+                Assert.IsFalse(arena.State.HasEcm);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Remediation_UH01_UH07_TacSimJsonDepthLimit_StrictGrammar_AndU64()
+        {
+            // U-H01: Depth > MaxDepth (64) throws FormatException instead of StackOverflowException
+            string deep = new string('[', 80) + new string(']', 80);
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse(deep));
+
+            // U-H07: Strict JSON EOF, containers, numbers, and escapes
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("{\"a\":1} trailing"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("{\"a\":1"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("[1,2"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("-"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("1e400"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("01"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("\"\\x\""));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("\"\\u 41 \""));
+
+            // U-H07: Full unsigned 64-bit integer precision (> long.MaxValue)
+            ulong big = 18446744073709551610UL;
+            var node = JsonNode.Parse($"{{\"id\":{big}}}");
+            Assert.AreEqual(big, node.ULong("id"));
+            var roundTripped = JsonNode.Parse(node.ToJson());
+            Assert.AreEqual(big, roundTripped.ULong("id"));
+        }
+
+        [Test]
+        public void Remediation_UH02_UnityPackageExtractorSecurityGuards()
+        {
+            string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimPkgSec_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                // 1. Decompression / entry size bomb cap
+                byte[] bigPayload = new byte[512];
+                using (var bomb = BuildSyntheticUnityPackage(
+                    ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/asset", bigPayload),
+                    ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Big.bin\n"))))
+                {
+                    Assert.Throws<System.IO.InvalidDataException>(() =>
+                        UnityPackageArchiveExtractor.ExtractPackageStream(bomb, tempDir, maxSingleEntryBytes: 128, maxTotalUncompressedBytes: 256));
+                }
+
+                // 2. Block overwriting Assets/_TacSim/ and any Editor/*.cs script
+                using (var maliciousPkg = BuildSyntheticUnityPackage(
+                    ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/asset", System.Text.Encoding.UTF8.GetBytes("// evil")),
+                    ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/_TacSim/Scripts/Runtime/Evil.cs\n")),
+                    ("cccccccccccccccccccccccccccccccc/asset", System.Text.Encoding.UTF8.GetBytes("// rce")),
+                    ("cccccccccccccccccccccccccccccccc/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Editor/AutoRun.cs\n"))))
+                {
+                    int extracted = UnityPackageArchiveExtractor.ExtractPackageStream(maliciousPkg, tempDir);
+                    Assert.AreEqual(0, extracted, "Package must never overwrite Assets/_TacSim or Editor/*.cs scripts");
+                }
+                Assert.IsFalse(System.IO.File.Exists(System.IO.Path.Combine(tempDir, "Assets", "_TacSim", "Scripts", "Runtime", "Evil.cs")));
+                Assert.IsFalse(System.IO.File.Exists(System.IO.Path.Combine(tempDir, "Assets", "Vendor", "Editor", "AutoRun.cs")));
+            }
+            finally
+            {
+                if (System.IO.Directory.Exists(tempDir))
+                    System.IO.Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
+        [Test]
+        public void Remediation_UH04_UH06_UH08_UH09_NetAuthProtocolAndContentSyncHardening()
+        {
+            // U-H06: wss:// normalization, non-JSON 502 error handling, token redaction
+            Assert.AreEqual("https://play.conclav.io", MushAuthClient.NormalizeBaseUrl("wss://play.conclav.io"));
+            Assert.AreEqual("http://127.0.0.1:8080", MushAuthClient.NormalizeBaseUrl("ws://127.0.0.1:8080"));
+            string htmlErr = MushAuthClient.ExtractErrorMessageFromResponse(502, "<html><body>502 Bad Gateway</body></html>", "HTTP 502");
+            StringAssert.Contains("502", htmlErr);
+            string redacted = MushAuthClient.RedactSensitiveTokens("Failed with Bearer rustmush.v1.SuperSecret999 token");
+            StringAssert.DoesNotContain("SuperSecret999", redacted);
+            StringAssert.Contains("[REDACTED]", redacted);
+
+            // U-H04: Strict HTTP 401 detection (no port :4010 false positive)
+            Assert.IsFalse(MushWsClient.IsAuthRejectionException(new System.Exception("Connection refused to 127.0.0.1:4010")));
+            Assert.IsTrue(MushWsClient.IsAuthRejectionException(new System.Exception("The server returned status code '401' when status code '101' was expected.")));
+
+            // U-H08: ANSI/idx256 color support (legacy uGUI-safe tags only — never literal <u>), RichText string hex injection block, base_sequence=0 & stale snapshot <= & schema_version
+            var rich = JsonNode.Parse(@"{
+                ""spans"": [
+                    { ""text"": ""Red"", ""style"": { ""fg"": { ""ansi"": 1 }, ""underline"": true } },
+                    { ""text"": ""256"", ""style"": { ""fg"": { ""idx256"": 196 } } },
+                    { ""text"": ""Inject7"", ""style"": { ""fg"": ""#a><b>x"" } },
+                    { ""text"": ""Inject9"", ""style"": { ""fg"": ""#a><b>xxx"" } }
+                ]
+            }");
+            string markup = MushProtocol.RenderRichTextToUnityMarkup(rich);
+            StringAssert.Contains("<color=#CC4444><i>Red</i></color>", markup);
+            StringAssert.DoesNotContain("<u>", markup, "Legacy UnityEngine.UI.Text does not support <u> tags");
+            StringAssert.Contains("<color=#FF0000>256</color>", markup);
+            StringAssert.DoesNotContain("<b>x", markup, "7-char malformed string color must never inject RichText tags");
+            StringAssert.DoesNotContain("<b>xxx", markup, "9-char malformed string color must never inject RichText tags");
+            StringAssert.Contains("Inject7", markup);
+            StringAssert.Contains("Inject9", markup);
+
+            // Dynamic corridor port resolution for action:start_docking
+            Assert.AreEqual("stickney", TacSimGameCoordinator.ResolveDockingTargetPort("stickney_orbit", null, null, "neighborhood.ceres_freeport", "luna"));
+            Assert.AreEqual("luna", TacSimGameCoordinator.ResolveDockingTargetPort(null, "aitken_highport", null, "neighborhood.ceres_freeport", "ceres"));
+            Assert.AreEqual("deimos", TacSimGameCoordinator.ResolveDockingTargetPort(null, null, null, "neighborhood.voltaire_station", null));
+            Assert.AreEqual("titan", TacSimGameCoordinator.ResolveDockingTargetPort(null, null, null, "neighborhood.ooc_area", "titan"));
+            Assert.AreEqual("ceres", TacSimGameCoordinator.ResolveDockingTargetPort(null, null, null, "neighborhood.ooc_area", null));
+
+            var cursor = new ViewStreamCursor();
+            Assert.AreEqual(ViewCursorDisposition.ApplySnapshot,
+                MushProtocol.EvaluateViewCursor(cursor, JsonNode.Parse(@"{""view"":""v"",""generation"":""g1"",""sequence"":5,""schema_version"":1,""data"":{}}")));
+            Assert.AreEqual(ViewCursorDisposition.IgnoreDuplicateOrStale,
+                MushProtocol.EvaluateViewCursor(cursor, JsonNode.Parse(@"{""view"":""v"",""generation"":""g1"",""sequence"":5,""schema_version"":1,""data"":{}}")),
+                "Duplicate snapshot sequence (==) must be ignored");
+            Assert.AreEqual(ViewCursorDisposition.NeedsResubscribe,
+                MushProtocol.EvaluateViewCursor(cursor, JsonNode.Parse(@"{""view"":""v"",""generation"":""g1"",""base_sequence"":0,""sequence"":6,""data"":{}}")),
+                "base_sequence: 0 must not bypass contiguity check when cursor.LastSequence == 5");
+            Assert.AreEqual(ViewCursorDisposition.ApplySnapshot,
+                MushProtocol.EvaluateViewCursor(cursor, JsonNode.Parse(@"{""view"":""v"",""generation"":""g1"",""sequence"":5,""schema_version"":2,""data"":{}}")),
+                "Incremented schema_version snapshot must be accepted");
+
+            Assert.AreEqual("abcd1234", MushProtocol.NormalizeListingCode("ABCD1234"));
+            Assert.IsNull(MushProtocol.NormalizeListingCode("not-hex!"));
+
+            // U-H09: Manifest-pinned SHA256 rejection & offline retry preservation
+            try
+            {
+                string goodJson = @"{""id"":""pinned_pack"",""v"":1}";
+                string goodSha = TacSimContentSync.ComputeSha256Hex(goodJson);
+                string evilJson = @"{""id"":""pinned_pack"",""v"":999}";
+                string evilSha = TacSimContentSync.ComputeSha256Hex(evilJson);
+
+                var sync = new TacSimContentSync();
+                using (var ws = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{
+                        ""op"":""manifest"",
+                        ""packs"":[{{""id"":""pinned_pack"",""category"":""unit"",""sha256"":""{goodSha}"",""bytes"":{goodJson.Length}}}]
+                    }}"), nowRealtime: 1f);
+                    sync.PumpPackQueue(ws, nowRealtime: 1f);
+
+                    // Reply with tampered JSON and self-consistent evil SHA (or empty SHA) MUST be rejected against manifest pin!
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{
+                        ""op"":""pack"",""found"":true,""id"":""pinned_pack"",""sha256"":""{evilSha}"",""json"":{JsonNode.FromString(evilJson).ToJson()}
+                    }}"), nowRealtime: 2f);
+                    Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("pinned_pack", out _), "Tampered pack must not bypass manifest-pinned SHA256");
+
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{
+                        ""op"":""pack"",""found"":true,""id"":""pinned_pack"",""sha256"":"""",""json"":{JsonNode.FromString(evilJson).ToJson()}
+                    }}"), nowRealtime: 3f);
+                    Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("pinned_pack", out _), "Empty reply SHA256 must never skip verification");
+
+                    // Disconnecting must pause retries instead of draining attempts offline
+                    ws.Disconnect();
+                    int beforeOffline = ws.OutboundQueueCount;
+                    for (int step = 1; step <= 10; step++)
+                        sync.PumpPackQueue(ws, nowRealtime: 10f + step * 10f);
+                    Assert.AreEqual(beforeOffline, ws.OutboundQueueCount, "Offline PumpPackQueue must not drain retries");
+                }
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+            }
+        }
+
+        [Test]
+        public void Remediation_UH12_UH13_UH14_UH20_UH21_UH22_UH23_WorldSpaceDockingSurfaceFixes()
+        {
+            var rootGo = new UnityEngine.GameObject("TestSpaceDockSurface");
+            try
+            {
+                // U-H12: Trade state berth.docked_hulls, stale quote exclusion, full-hold == 0
+                var trade = new TacSimTradeAndShipState();
+                var berthFeed = JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""open_quotes"": [{""quote_id"": 10, ""listing_id"": 4, ""quantity"": 5, ""total_minor"": 50000}],
+                    ""berth"": {
+                        ""docked_hulls"": [{""id"":""#301"",""name"":""Copper Lantern"",""mark"":""FPC-D-0411"",""unit"":""dray""}]
+                    },
+                    ""ship"": { ""stowage"": { ""cargo_kg"": 100000, ""cargo_limit_kg"": 100000, ""cargo_l"": 120000, ""cargo_limit_l"": 120000, ""tank_kg"": 80000, ""tank_limit_kg"": 80000, ""stores_days"": 120, ""stores_limit_days"": 120 } }
+                }");
+                trade.ApplyPortTradeFeed(berthFeed);
+                Assert.IsTrue(trade.HasAuthoritativeBerthFeed);
+                Assert.AreEqual(1, trade.BerthDockedHulls.Count);
+                Assert.AreEqual("Copper Lantern", trade.BerthDockedHulls[0].Name);
+                Assert.AreEqual(0, trade.ComputeMaxAdditionalUnitsForHold("volatiles"), "Full hold must return 0 max buy units");
+
+                // Pre-existing open quote #10 must NOT auto-accept for a newly started BeginOneClickBuy!
+                trade.BeginOneClickBuy(4UL, 5, currentTimeS: 20f, displayedUnitPriceMinor: 10000);
+                Assert.IsFalse(trade.TryResolvePendingQuoteFromFeed(berthFeed, 21f, out string staleAccept, out _));
+                Assert.IsNull(staleAccept);
+
+                // U-H12: 0 docked hulls hides all placeholder cradles
+                var stationGo = new UnityEngine.GameObject("BerthStation");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                var station = stationGo.AddComponent<StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+                station.ApplyBerthDockedHulls(new List<TacSimDockedHullRef>());
+                var allStationTr = stationGo.GetComponentsInChildren<UnityEngine.Transform>(true);
+                int activeCradleShips = 0;
+                for (int i = 0; i < allStationTr.Length; i++)
+                {
+                    if (allStationTr[i].name.StartsWith("MooredShip_") && allStationTr[i].gameObject.activeSelf)
+                        activeCradleShips++;
+                }
+                Assert.AreEqual(0, activeCradleShips, "0 docked hulls must hide all placeholder exterior cradles");
+
+                // U-H13 & U-H20 & U-H21: SpaceFlightController KeyboardSuspended, refused guard, torpedoes, roll sign, pooling
+                var spaceGo = new UnityEngine.GameObject("SpaceTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                space.StartDockingFromFeed(JsonNode.Parse(@"{
+                    ""session_id"": ""dock.99"",
+                    ""dx_mm"": 10, ""dy_mm"": 10, ""dz_mm"": 100,
+                    ""dampeners"": false,
+                    ""max_frames"": 600,
+                    ""start_pose"": { ""dx_mm"": 750, ""dy_mm"": -300, ""dz_mm"": 2800 }
+                }"));
+                // U-H22: FromFeed seeds from start_pose with DampenersOn=true and respects max_frames=600
+                Assert.IsNotNull(space.ActiveDockingSession);
+                Assert.AreEqual(750L, space.ActiveDockingSession.DxMm, "FromFeed must seed from start_pose");
+                Assert.IsTrue(space.ActiveDockingSession.DampenersOn, "FromFeed with start_pose must start DampenersOn=true matching replay_docking_tape");
+                Assert.AreEqual(600, space.ActiveDockingSession.EffectiveMaxFrames);
+
+                // U-H13: KeyboardSuspended blocks Backspace abort & hotkeys
+                space.KeyboardSuspended = true;
+                Assert.IsFalse(space.ProcessDockingHotkeys(keyXDown: true, keyGDown: true, keyBackspaceDown: true));
+                Assert.IsFalse(space.HasPendingDockingAbort);
+                Assert.AreEqual(default(DockingControlInput), space.SamplePilotDockingInput());
+                space.KeyboardSuspended = false;
+                Assert.IsTrue(space.ProcessDockingHotkeys(keyXDown: false, keyGDown: false, keyBackspaceDown: true));
+                Assert.IsTrue(space.HasPendingDockingAbort);
+
+                // U-H20: Refused cockpit ignored; holotank torpedoes rendered; contact Transform reused across updates
+                space.ApplyCockpitFeed(JsonNode.Parse(@"{""yaw_deg"":45,""pitch_deg"":10,""roll_deg"":30,""speed_mps"":10}"));
+                space.ApplyCockpitFeed(JsonNode.Parse(@"{""refused"":true,""yaw_deg"":180}"));
+                Assert.AreEqual(45f, space.ShipYawDeg, 0.01f, "Refused cockpit frame must not overwrite ship state");
+                space.ApplyCockpitFeed(JsonNode.Parse(@"{""yaw_deg"":45,""pitch_deg"":10,""roll_deg"":30,""speed_mps"":35}"));
+                Assert.Greater(space.ThrottlePermille, 0f, "Speed delta without thrust_permille must activate drive plume");
+
+                // U-H21: Positive roll_deg rolls +Z positive (matching bubble.rs starboard UP)
+                var posRoll = SpaceFlightController.ComputePlayerShipRotation(0f, 0f, 30f);
+                var negRoll = SpaceFlightController.ComputePlayerShipRotation(0f, 0f, -30f);
+                Assert.Greater(posRoll.z, 0f);
+                Assert.Less(negRoll.z, 0f);
+
+                var holoWithTorp = JsonNode.Parse(@"{
+                    ""contacts"": [
+                        {""id"":""ship.1"",""you"":true,""x_km"":0,""y_km"":0,""z_km"":0},
+                        {""id"":""raider.1"",""label"":""Corsair"",""kind"":""ship"",""relation"":""hostile"",""you"":false,""x_km"":20,""y_km"":5,""z_km"":0,""vx_kms"":-0.2,""vy_kms"":0.1,""vz_kms"":0}
+                    ],
+                    ""torpedoes"": [{""id"":""t9"",""x_km"":10,""y_km"":2,""z_km"":0,""target_x_km"":0,""target_y_km"":0,""target_z_km"":0,""tti_s"":14}]
+                }");
+                space.ApplyHolotankFeed(holoWithTorp);
+                Assert.AreEqual(1, space.LiveTorpedoCount);
+                var contactsContainer = spaceGo.transform.Find("OrbitalContacts");
+                var contactFirst = contactsContainer.Find("NavalContact_raider.1");
+                Assert.IsNotNull(contactFirst);
+                space.ApplyHolotankFeed(holoWithTorp);
+                Assert.AreSame(contactFirst, contactsContainer.Find("NavalContact_raider.1"), "Pooling must reuse existing contact Transform");
+
+                // U-H13: Player avatar hides visuals when suspended for vehicle stage
+                var playerGo = new UnityEngine.GameObject("PlayerVisTest", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                var player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                var spawner = playerGo.AddComponent<TacSim.Character.CharacterVisualSpawner>();
+                player.VisualSpawner = spawner;
+                spawner.BuildPlayerVisual(null, PlayerAvatarPreset.StellarTrooperFemale);
+                player.SetStagePhysicsSuspended(true);
+                Assert.IsTrue(player.AreVisualsHidden);
+                player.SetStagePhysicsSuspended(false);
+                Assert.IsFalse(player.AreVisualsHidden);
+
+                // U-H14 & U-H23: site.map '=' maps to Ice, landed pad survives null hull mark, TvRec decoded
+                var surfGo = new UnityEngine.GameObject("SurfaceTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                var siteFrame1 = JsonNode.Parse(@"{
+                    ""width"": 4, ""height"": 4, ""cell_cm"": 1000, ""origin_cell"": [10, 10], ""you"": [2, 2],
+                    ""rows"": [[["","", 2], [""="", 2]], [["","", 4]], [["","", 4]], [["","", 4]]],
+                    ""site"": { ""site"": ""Occator Rim"", ""addressed"": 1, ""marks"": { ""hull"": [1, 1] }, ""rigs"": [{""slot"":1,""cell"":[12,12],""charge_pct"":80,""hopper"":""2 of 6 t""}] }
+                }");
+                surf.ApplySiteMapFrame(siteFrame1);
+                Assert.AreEqual(TerrainCellClass.Ice, surf.TerrainGrid.GetCellClass(2, 0), "site.map '=' must decode as Ice");
+                Assert.IsTrue(surf.IsPadVisible);
+
+                // Second frame: rover moves onto hull cell -> server emits marks.hull = null; carrier pad MUST stay visible!
+                var siteFrame2 = JsonNode.Parse(@"{
+                    ""width"": 4, ""height"": 4, ""cell_cm"": 1000, ""origin_cell"": [10, 10], ""you"": [1, 1],
+                    ""rows"": [[["","", 2], [""="", 2]], [["","", 4]], [["","", 4]], [["","", 4]]],
+                    ""site"": { ""site"": ""Occator Rim"", ""addressed"": 1, ""marks"": { ""hull"": null }, ""rigs"": [{""slot"":1,""cell"":[11,11],""charge_pct"":78,""hopper"":""2 of 6 t""}] }
+                }");
+                surf.ApplySiteMapFrame(siteFrame2);
+                Assert.IsTrue(surf.IsPadVisible, "Landed carrier pad must remain visible when rover covers 'H' cell");
+
+                // U-H23: TvRec tv.status decoding (`pose`, `state: "held"`)
+                surf.ApplyTvStatusFrame(JsonNode.Parse(@"{
+                    ""rig"": { ""slot"": 1, ""site"": ""occator_rim"", ""state"": ""held"", ""pose"": { ""x_cm"": 12500, ""y_cm"": 13500, ""heading_mdeg"": 90000 } }
+                }"));
+                Assert.IsTrue(surf.RigOnGround);
+                Assert.IsTrue(surf.IsRigHeld, "TvRec state=='held' must flag IsRigHeld");
+                Assert.AreEqual(12, surf.AuthoritativeSiteCellX);
+                Assert.AreEqual(13, surf.AuthoritativeSiteCellY);
+
+                // U-H12: Coordinator EnsureSubsystems() idempotency, R1..R6 1-based slot index, and empty slots clear
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                coord.Audio = rootGo.AddComponent<TacSimAudioSynthesizer>();
+                coord.StationWorld = station;
+                var shipGo2 = new UnityEngine.GameObject("IdemShip");
+                shipGo2.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo2.AddComponent<ShipInteriorController>();
+                coord.SpaceStage = space;
+                coord.SurfaceStage = surf;
+                var arenaGo2 = new UnityEngine.GameObject("IdemArena");
+                arenaGo2.transform.SetParent(rootGo.transform, false);
+                coord.ArenaStage = arenaGo2.AddComponent<TacSim.Arena.OocArenaController>();
+                var camGo2 = new UnityEngine.GameObject("IdemCam", typeof(UnityEngine.Camera));
+                camGo2.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo2.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo2.GetComponent<UnityEngine.Camera>();
+                coord.Player = player;
+                var hudGo2 = new UnityEngine.GameObject("IdemHud");
+                hudGo2.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo2.AddComponent<TacSim.UI.TacSimHudController>();
+
+                coord.EnsureSubsystems();
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var wsField = typeof(TacSimGameCoordinator).GetField("_ws", flags);
+                var ws1 = wsField.GetValue(coord);
+                coord.EnsureSubsystems();
+                Assert.AreSame(ws1, wsField.GetValue(coord), "Re-calling EnsureSubsystems() must not replace/leak _ws");
+
+                var applySimAmbient = typeof(TacSimGameCoordinator).GetMethod("ApplySimulatorRoomAmbient", flags);
+                var applySimTrade = typeof(TacSimGameCoordinator).GetMethod("ApplySimulatorTradeRoster", flags);
+                var amb = new TacSimRoomAmbient
+                {
+                    Mode = "simulator",
+                    SimMatchState = "boarding",
+                    SimSlots = new List<TacSimSimulatorSlot> { new TacSimSimulatorSlot { Team = "red", Index = 1, PilotName = "Vance", Unit = "line_tank", Seated = true } }
+                };
+                applySimAmbient.Invoke(coord, new object[] { amb });
+                StringAssert.Contains("R1", coord.ArenaStage.LiveLobbySlotSummary, "1-based server slot index 1 must render R1, never R2");
+                StringAssert.DoesNotContain("R2", coord.ArenaStage.LiveLobbySlotSummary);
+
+                applySimTrade.Invoke(coord, new object[] { JsonNode.Parse(@"{""match_state"":""idle"",""slots"":[]}") });
+                Assert.AreEqual(string.Empty, coord.ArenaStage.LiveLobbySlotSummary, "Empty port.trade.simulator.slots must clear stale lobby summary");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void PR693_Net_Auth401UnitySafe_CancelBeforeConfirm_AndStubInputFieldContract()
+        {
+            // Item 1: Unity 6000 (.NET Standard 2.1) safe 401 auth rejection detection
+            Assert.IsFalse(MushWsClient.IsAuthRejectionException(new System.Net.Http.HttpRequestException("Connection refused to 127.0.0.1:4010")));
+            Assert.IsTrue(MushWsClient.IsAuthRejectionException(new System.Net.Http.HttpRequestException("Response status code does not indicate success: 401 (Unauthorized).")));
+            Assert.IsTrue(MushWsClient.IsAuthRejectionException(new System.Exception("HTTP/1.1 401 Unauthorized")));
+            Assert.IsTrue(MushWsClient.IsAuthRejectionException(new System.Exception("Server closed with close code 4401")));
+            Assert.IsFalse(MushWsClient.IsAuthRejectionException(new System.Exception("HTTP/1.1 503 Service Unavailable")));
+
+            // Item 2: InputField.isFocused must be read-only (matching real Unity 6000 CS0200),
+            // and InputField.text must strip embedded NULs & fire onValueChanged.
+            var isFocusedProp = typeof(UnityEngine.UI.InputField).GetProperty("isFocused");
+            Assert.IsNotNull(isFocusedProp);
+            Assert.IsNull(isFocusedProp.GetSetMethod(nonPublic: false), "InputField.isFocused must not expose a public setter");
+            var camMainProp = typeof(UnityEngine.Camera).GetProperty("main");
+            Assert.IsNotNull(camMainProp);
+            Assert.IsNull(camMainProp.GetSetMethod(nonPublic: false), "Camera.main must be get-only matching real Unity");
+            Assert.IsNotNull(typeof(UnityEngine.UI.InputField).GetMethod("ActivateInputField"));
+            Assert.IsNotNull(typeof(UnityEngine.UI.InputField).GetMethod("DeactivateInputField"));
+            Assert.IsNotNull(typeof(UnityEngine.UI.InputField).GetMethod("SetTextWithoutNotify"));
+
+            var inputGo = new UnityEngine.GameObject("StubInputFieldContract");
+            try
+            {
+                var field = inputGo.AddComponent<UnityEngine.UI.InputField>();
+                var observed = new List<string>();
+                field.onValueChanged.AddListener(v => observed.Add(v));
+                field.text = "hello\0world";
+                Assert.AreEqual("helloworld", field.text, "InputField.text must strip embedded NUL characters");
+                Assert.AreEqual(1, observed.Count);
+                Assert.AreEqual("helloworld", observed[0]);
+
+                field.SetTextWithoutNotify("silent\0update");
+                Assert.AreEqual("silentupdate", field.text);
+                Assert.AreEqual(1, observed.Count, "SetTextWithoutNotify must not invoke onValueChanged");
+
+                field.ActivateInputField();
+                field.DeactivateInputField();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(inputGo);
+            }
+
+            // Item 7: Closing/cancelling a confirm prompt MUST encode Cancel (abstention), NOT Confirm(false) (disagreement)
+            var cancelConfirm = JsonNode.Parse(MushProtocol.BuildChoiceResponse(42UL, "__cancel__", "ep-9", "confirm"));
+            Assert.AreEqual("respond", cancelConfirm.Str("t"));
+            Assert.AreEqual(42L, cancelConfirm["d"].Long("id"));
+            Assert.AreEqual("ep-9", cancelConfirm["d"].Str("epoch"));
+            Assert.AreEqual("cancel", cancelConfirm["d"]["choice"].Str("t"), "Closing a confirm prompt must emit RespondChoice::Cancel");
+            Assert.IsFalse(cancelConfirm["d"]["choice"].ContainsKey("d"), "Cancel variant must carry no boolean payload");
+
+            var confirmTrue = JsonNode.Parse(MushProtocol.BuildChoiceResponse(42UL, "true", "ep-9", "confirm"));
+            Assert.AreEqual("confirm", confirmTrue["d"]["choice"].Str("t"));
+            Assert.IsTrue(confirmTrue["d"]["choice"].Bool("d", false));
+
+            var confirmFalse = JsonNode.Parse(MushProtocol.BuildChoiceResponse(42UL, "false", "ep-9", "confirm"));
+            Assert.AreEqual("confirm", confirmFalse["d"]["choice"].Str("t"));
+            Assert.IsFalse(confirmFalse["d"]["choice"].Bool("d", true));
+
+            var parsedConfirm = MushProtocol.ParseRequest(JsonNode.Parse(@"{""epoch"":""ep-9"",""id"":42,""kind"":""confirm"",""prompt"":""Proceed?""}"));
+            Assert.AreEqual(2, parsedConfirm.Options.Count);
+            Assert.AreEqual("true", parsedConfirm.Options[0].Key);
+            Assert.AreEqual("Confirm", parsedConfirm.Options[0].Label);
+            Assert.AreEqual("false", parsedConfirm.Options[1].Key);
+            Assert.AreEqual("Decline", parsedConfirm.Options[1].Label);
+        }
+
+        [Test]
+        public void PR693_ContentSync_StaffManifestDoesNotLeakToRegularCharacterSession()
+        {
+            string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimStaffLeakTest_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                string staffWingJson = @"{""id"":""neighborhood.staff_wing"",""entries"":{""room.staff_secret"":{""kind"":""room""}}}";
+                string staffWingSha = TacSimContentSync.ComputeSha256Hex(staffWingJson);
+                string staffFreeportJson = @"{""id"":""neighborhood.ceres_freeport"",""projection"":""staff""}";
+                string staffFreeportSha = TacSimContentSync.ComputeSha256Hex(staffFreeportJson);
+                string playerFreeportJson = @"{""id"":""neighborhood.ceres_freeport"",""projection"":""player""}";
+                string playerFreeportSha = TacSimContentSync.ComputeSha256Hex(playerFreeportJson);
+                string sharedGoodsJson = @"{""goods"":[{""id"":""volatiles"",""label"":""Water Ice""}]}";
+                string sharedGoodsSha = TacSimContentSync.ComputeSha256Hex(sharedGoodsJson);
+
+                // Session 1: Staff character logs into dev1.conclav.io and caches staff-only + staff-projected packs on disk.
+                var staffSync = new TacSimContentSync();
+                staffSync.InitializeDiskCacheForServer("https://dev1.conclav.io", tempDir);
+                using (var wsStaff = new MushWsClient())
+                {
+                    var staffManifest = JsonNode.Parse($@"{{
+                        ""op"":""manifest"",
+                        ""packs"":[
+                            {{""id"":""neighborhood.staff_wing"",""category"":""atlas"",""sha256"":""{staffWingSha}"",""bytes"":{staffWingJson.Length}}},
+                            {{""id"":""neighborhood.ceres_freeport"",""category"":""atlas"",""sha256"":""{staffFreeportSha}"",""bytes"":{staffFreeportJson.Length}}},
+                            {{""id"":""goods"",""category"":""economy"",""sha256"":""{sharedGoodsSha}"",""bytes"":{sharedGoodsJson.Length}}}
+                        ]
+                    }}");
+                    staffSync.HandleWebSocketContentPanel(wsStaff, staffManifest, nowRealtime: 1f);
+                    staffSync.HandleWebSocketContentPanel(wsStaff, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""neighborhood.staff_wing"",""category"":""atlas"",""sha256"":""{staffWingSha}"",""json"":{JsonNode.FromString(staffWingJson).ToJson()}}}"), 1.1f);
+                    staffSync.HandleWebSocketContentPanel(wsStaff, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""neighborhood.ceres_freeport"",""category"":""atlas"",""sha256"":""{staffFreeportSha}"",""json"":{JsonNode.FromString(staffFreeportJson).ToJson()}}}"), 1.2f);
+                    staffSync.HandleWebSocketContentPanel(wsStaff, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""goods"",""category"":""economy"",""sha256"":""{sharedGoodsSha}"",""json"":{JsonNode.FromString(sharedGoodsJson).ToJson()}}}"), 1.3f);
+                }
+                Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.staff_wing", out _));
+                Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.ceres_freeport", out string staffLoaded));
+                Assert.AreEqual(staffFreeportJson, staffLoaded);
+
+                // Session 2: Regular non-staff character logs into the SAME server & cache directory.
+                var playerSync = new TacSimContentSync();
+                playerSync.InitializeDiskCacheForServer("https://dev1.conclav.io", tempDir);
+
+                // Before current session's live manifest arrives, ZERO cached packs from the staff session may be registered!
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.staff_wing", out _), "Staff-only pack must not be pre-registered from disk cache");
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.ceres_freeport", out _), "Staff-projected neighborhood must not be pre-registered before live manifest");
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _), "Cached goods pack must stay private until live manifest authorizes its digest");
+
+                // Current regular character's live manifest authorizes ONLY `goods` (same digest) and `neighborhood.ceres_freeport` (player digest).
+                using (var wsPlayer = new MushWsClient())
+                {
+                    var playerManifest = JsonNode.Parse($@"{{
+                        ""op"":""manifest"",
+                        ""packs"":[
+                            {{""id"":""neighborhood.ceres_freeport"",""category"":""atlas"",""sha256"":""{playerFreeportSha}"",""bytes"":{playerFreeportJson.Length}}},
+                            {{""id"":""goods"",""category"":""economy"",""sha256"":""{sharedGoodsSha}"",""bytes"":{sharedGoodsJson.Length}}}
+                        ]
+                    }}");
+                    playerSync.HandleWebSocketContentPanel(wsPlayer, playerManifest, nowRealtime: 10f);
+
+                    // `goods` matched both ID and digest -> authorized immediately from warm disk cache with zero fetch!
+                    Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out string authorizedGoods));
+                    Assert.AreEqual(sharedGoodsJson, authorizedGoods);
+
+                    // `neighborhood.staff_wing` was omitted -> NEVER registered!
+                    Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.staff_wing", out _), "Staff-only pack must stay excluded after regular manifest");
+
+                    // `neighborhood.ceres_freeport` had a staff digest mismatch -> staff version NOT registered; exactly 1 fetch queued for player version!
+                    Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.ceres_freeport", out _), "Mismatched staff projection must not be registered while player projection downloads");
+                    Assert.AreEqual(1, wsPlayer.OutboundQueueCount, "Only the mismatched pack should be fetched over WebSocket");
+
+                    // Deliver player-projected `neighborhood.ceres_freeport` -> registered cleanly!
+                    playerSync.HandleWebSocketContentPanel(wsPlayer, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""neighborhood.ceres_freeport"",""category"":""atlas"",""sha256"":""{playerFreeportSha}"",""json"":{JsonNode.FromString(playerFreeportJson).ToJson()}}}"), 10.1f);
+                    Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("neighborhood.ceres_freeport", out string loadedPlayer));
+                    Assert.AreEqual(playerFreeportJson, loadedPlayer);
+                }
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+                try { if (System.IO.Directory.Exists(tempDir)) System.IO.Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Test]
         public void Security_U7_LoopbackChecks_NonLoopbackWsGuard_AndNonJsonAuthErrorHandling()
         {
             // 0.0.0.0 must NOT be classified as loopback.
@@ -2543,6 +3410,356 @@ namespace TacSim.Tests
             Assert.AreEqual("<html>502 Bad Gateway</html>", MushAuthClient.ExtractErrorMessage("<html>502 Bad Gateway</html>", "HTTP 502"));
             Assert.AreEqual("invalid credentials", MushAuthClient.ExtractErrorMessage(@"{""error"":""invalid credentials""}", "HTTP 401"));
             Assert.AreEqual("HTTP 500", MushAuthClient.ExtractErrorMessage("", "HTTP 500"));
+        }
+
+        [Test]
+        public void PR693_Coordinator_UnseatedPassengerDoesNotEnterPilotDockingUi()
+        {
+            var rootGo = new UnityEngine.GameObject("PR693DockingPassengerTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var spaceGo = new UnityEngine.GameObject("Space");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SpaceStage = spaceGo.AddComponent<SpaceFlightController>();
+                coord.SpaceStage.BuildSpaceStage(null);
+
+                var stationGo = new UnityEngine.GameObject("Station");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                coord.StationWorld = stationGo.AddComponent<StationWorldController>();
+
+                var shipGo = new UnityEngine.GameObject("Ship");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo.AddComponent<ShipInteriorController>();
+
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                coord.CameraRig.SetMode(TacSim.Character.CameraRigMode.ThirdPersonWalk);
+
+                var playerGo = new UnityEngine.GameObject("Player", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                coord.Player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                coord.Player.IsSeatedAtHelm = false;
+
+                var audioGo = new UnityEngine.GameObject("Audio");
+                audioGo.transform.SetParent(rootGo.transform, false);
+                coord.Audio = audioGo.AddComponent<TacSimAudioSynthesizer>();
+
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.Hud.BuildHud();
+                coord.Hud.ShowLoginOverlay(false);
+
+                var stageDirector = new TacSimStageDirector(
+                    coord.StationWorld,
+                    coord.ShipInterior,
+                    coord.SpaceStage,
+                    null,
+                    null,
+                    coord.CameraRig,
+                    coord.Player,
+                    coord.Audio,
+                    coord.Hud);
+
+                var dockingFrame = JsonNode.Parse(@"{
+                    ""session_id"": ""dock.passenger.1"",
+                    ""dx_mm"": 200, ""dy_mm"": -100, ""dz_mm"": 1500,
+                    ""max_frames"": 600,
+                    ""start_pose"": { ""dx_mm"": 200, ""dy_mm"": -100, ""dz_mm"": 1500 }
+                }");
+
+                // 1. Unseated passenger aboard ship receives broadcast `space.docking`:
+                // must NOT enter docking session, bow camera, or walk suspension!
+                coord.HandleDockingPanelFrame(dockingFrame);
+                stageDirector.SyncFrame(isAboardShip: true, isTextInputFocused: false);
+
+                Assert.IsFalse(coord.SpaceStage.IsDockingActive, "Unseated passenger must not activate pilot docking session");
+                Assert.AreEqual(TacSim.Character.CameraRigMode.ThirdPersonWalk, coord.CameraRig.Mode, "Unseated passenger must stay in ThirdPersonWalk camera");
+                Assert.IsFalse(coord.Player.InputSuspended, "Unseated passenger walking must not be suspended by another pilot's docking broadcast");
+                Assert.IsTrue(coord.CameraRig.OrbitInputEnabled, "Unseated passenger orbit camera must stay enabled");
+
+                // 2. Seated helm pilot receives `space.docking`: enters BowDockingCollar & docking session!
+                coord.Player.IsSeatedAtHelm = true;
+                coord.HandleDockingPanelFrame(dockingFrame);
+                stageDirector.SyncFrame(isAboardShip: true, isTextInputFocused: false);
+
+                Assert.IsTrue(coord.SpaceStage.IsDockingActive, "Seated helm pilot must activate docking session");
+                Assert.AreEqual(TacSim.Character.CameraRigMode.BowDockingCollar, coord.CameraRig.Mode, "Seated helm pilot must switch to BowDockingCollar");
+                Assert.IsTrue(coord.Player.InputSuspended, "Seated helm pilot walking must be suspended during docking");
+                Assert.IsFalse(coord.CameraRig.OrbitInputEnabled);
+
+                // 3. Defense-in-depth: if player unseats while a docking session still exists, stage director does not suspend walking.
+                coord.Player.IsSeatedAtHelm = false;
+                stageDirector.SyncFrame(isAboardShip: true, isTextInputFocused: false);
+                Assert.IsFalse(coord.Player.InputSuspended, "Unseated player must never have walking suspended by SpaceStage.IsDockingActive");
+
+                // 4. Terminal docking frame always closes an active docking session cleanly.
+                coord.HandleDockingPanelFrame(JsonNode.Parse(@"{""refused"":true,""closed"":true,""outcome"":""clamped""}"));
+                Assert.IsFalse(coord.SpaceStage.IsDockingActive, "Terminal closed frame must close active docking session");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void PR693_WorldBillboard_CameraFacingOffsetNeverCrossesRoomWallBounds()
+        {
+            var disabledPriorMainCams = new List<UnityEngine.Camera>();
+            var rootGo = new UnityEngine.GameObject("PR693BillboardBoundsTest");
+            try
+            {
+                // Disable any pre-existing MainCamera in the scene so our tagged test camera resolves as Camera.main
+                // (Camera.main is get-only in real Unity 6000.6.7f1).
+                while (UnityEngine.Camera.main != null)
+                {
+                    var existing = UnityEngine.Camera.main;
+                    existing.enabled = false;
+                    disabledPriorMainCams.Add(existing);
+                }
+
+                var camGo = new UnityEngine.GameObject("OutsideCam", typeof(UnityEngine.Camera));
+                camGo.tag = "MainCamera";
+                camGo.transform.SetParent(rootGo.transform, false);
+                var testCam = camGo.GetComponent<UnityEngine.Camera>();
+                Assert.AreSame(testCam, UnityEngine.Camera.main, "Active MainCamera-tagged test camera must resolve as Camera.main");
+
+                var actorGo = new UnityEngine.GameObject("CornerActor");
+                actorGo.transform.SetParent(rootGo.transform, false);
+                var bbGo = new UnityEngine.GameObject("Billboard");
+                bbGo.transform.SetParent(actorGo.transform, false);
+                var bb = bbGo.AddComponent<WorldBillboard>();
+                bb.SetRoomSafeBounds(-10f, 10f, -10f, 10f, wallMarginM: 1.5f);
+
+                var lateUpdate = typeof(WorldBillboard).GetMethod("LateUpdate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                Assert.IsNotNull(lateUpdate);
+
+                // Reproduce exact native Unity failure: actor at SE corner (9.8, -9.8) with Camera.main further SE!
+                actorGo.transform.position = new UnityEngine.Vector3(9.8f, 0f, -9.8f);
+                camGo.transform.position = new UnityEngine.Vector3(12f, 2f, -20f);
+                lateUpdate.Invoke(bb, null);
+                Assert.LessOrEqual(bbGo.transform.position.x, 8.5001f, "Camera-facing offset must not push billboard past east safe bound");
+                Assert.GreaterOrEqual(bbGo.transform.position.z, -8.5001f, "Camera-facing offset must not push billboard past south safe bound");
+
+                // Opposite NW corner with camera outside NW wall
+                actorGo.transform.position = new UnityEngine.Vector3(-9.8f, 0f, 9.8f);
+                camGo.transform.position = new UnityEngine.Vector3(-20f, 2f, 20f);
+                lateUpdate.Invoke(bb, null);
+                Assert.GreaterOrEqual(bbGo.transform.position.x, -8.5001f, "Camera-facing offset must not push billboard past west safe bound");
+                Assert.LessOrEqual(bbGo.transform.position.z, 8.5001f, "Camera-facing offset must not push billboard past north safe bound");
+
+                // Actor in room interior still shifts toward camera within safe bounds
+                actorGo.transform.position = new UnityEngine.Vector3(0f, 0f, 0f);
+                camGo.transform.position = new UnityEngine.Vector3(0f, 2f, -5f);
+                lateUpdate.Invoke(bb, null);
+                Assert.Less(bbGo.transform.position.z, -0.20f, "Interior billboard should still apply camera-facing offset");
+                Assert.GreaterOrEqual(bbGo.transform.position.z, -8.5001f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+                for (int i = 0; i < disabledPriorMainCams.Count; i++)
+                {
+                    if (disabledPriorMainCams[i] != null)
+                        disabledPriorMainCams[i].enabled = true;
+                }
+            }
+        }
+
+        [Test]
+        public void PR693_StandaloneBuilder_ValidatesBeforeSwapAndFailsOnIncompleteOrUndeletableRetiredPack()
+        {
+            string tempOut = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimStagingSafety_" + System.Guid.NewGuid().ToString("N"));
+            string emptySrc = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimEmptyContent_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                System.IO.Directory.CreateDirectory(tempOut);
+                System.IO.Directory.CreateDirectory(emptySrc);
+
+                // 1. Pre-existing staged files MUST remain untouched when source content is incomplete, AND build must fail!
+                string prevGoodPath = System.IO.Path.Combine(tempOut, "previous_good.json");
+                System.IO.File.WriteAllText(prevGoodPath, "{\"ok\":true}");
+
+                Assert.Throws<UnityEditor.Build.BuildFailedException>(() =>
+                    TacSim.Editor.TacSimStandaloneBuilder.StageEmbeddedFallbackPacksFromRoots(
+                        tempOut,
+                        tacsimContentRoot: emptySrc,
+                        mushAtlasContentRoot: emptySrc,
+                        refreshAssetDatabase: false));
+                Assert.IsTrue(System.IO.File.Exists(prevGoodPath), "Failed staging must not wipe previously staged packs before validating replacement set");
+
+                // 2. When a retired file CANNOT be deleted, staging MUST throw BuildFailedException instead of silently retaining it!
+                string retiredLockedPath = System.IO.Path.Combine(tempOut, "retired_locked.json");
+                System.IO.File.WriteAllText(retiredLockedPath, "{\"retired\":true}");
+
+                string tacsimRoot = System.IO.Path.GetDirectoryName(TacSimContentLoader.ResolveRepoContentPath("atlas"));
+                string atlasRoot = System.IO.Path.GetDirectoryName(TacSimContentLoader.ResolveMushAtlasContentPath("neighborhood.ooc_area.json"));
+
+                Assert.Throws<UnityEditor.Build.BuildFailedException>(() =>
+                    TacSim.Editor.TacSimStandaloneBuilder.StageEmbeddedFallbackPacksFromRoots(
+                        tempOut,
+                        tacsimContentRoot: tacsimRoot,
+                        mushAtlasContentRoot: atlasRoot,
+                        refreshAssetDatabase: false,
+                        deleteFile: path => throw new System.IO.IOException($"Locked file: {path}")));
+
+                // 3. Clean staging succeeds and removes all retired files (including .meta sidecars) cleanly!
+                string retiredMetaPath = retiredLockedPath + ".meta";
+                System.IO.File.WriteAllText(retiredMetaPath, "fileFormatVersion: 2");
+                int staged = TacSim.Editor.TacSimStandaloneBuilder.StageEmbeddedFallbackPacksFromRoots(
+                    tempOut,
+                    tacsimContentRoot: tacsimRoot,
+                    mushAtlasContentRoot: atlasRoot,
+                    refreshAssetDatabase: false);
+                Assert.GreaterOrEqual(staged, 15);
+                Assert.IsFalse(System.IO.File.Exists(prevGoodPath), "Retired previous_good.json must be removed on clean swap");
+                Assert.IsFalse(System.IO.File.Exists(retiredLockedPath), "Retired pack must be removed on clean swap");
+                Assert.IsFalse(System.IO.File.Exists(retiredMetaPath), "Retired pack .meta sidecar must be removed on clean swap");
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "goods.json")));
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempOut, "dray.json")));
+            }
+            finally
+            {
+                try { if (System.IO.Directory.Exists(tempOut)) System.IO.Directory.Delete(tempOut, recursive: true); } catch { }
+                try { if (System.IO.Directory.Exists(emptySrc)) System.IO.Directory.Delete(emptySrc, recursive: true); } catch { }
+            }
+        }
+
+        [Test]
+        public void PR693_WsClient_CoalescesTelemetryPreservesReliableEventsAndGuardsStaleEpochSendFailure()
+        {
+            // Item 8A: Telemetry flood (3,000 frames) coalesces to O(1) without dropping reliable invoke_result / request events!
+            using (var ws = new MushWsClient())
+            {
+                var invokeIds = new List<ulong>();
+                var requestIds = new List<ulong>();
+                int latestCockpitYaw = -1;
+                int latestHoloTick = -1;
+
+                ws.OnInvokeResultReceived += (id, _, _) => invokeIds.Add(id);
+                ws.OnServerRequestReceived += req => requestIds.Add(req.Id);
+                ws.OnPanelUpdated += (feed, data) =>
+                {
+                    if (feed == "space.cockpit") latestCockpitYaw = data.Int("yaw_deg", -1);
+                    if (feed == "space.holotank") latestHoloTick = data.Int("tick", -1);
+                };
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":1,""ts"":10,""t"":""invoke_result"",""d"":{""id"":101,""result"":{""service"":""mind"",""result"":{""status"":""saved""}}}}"));
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":2,""ts"":11,""t"":""request"",""d"":{""epoch"":""e1"",""id"":202,""kind"":""confirm"",""prompt"":""Confirm?""}}"));
+
+                for (int i = 0; i < 1500; i++)
+                {
+                    ulong seqA = (ulong)(3 + i * 2);
+                    ulong seqB = (ulong)(4 + i * 2);
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{""seq"":{seqA},""ts"":20,""t"":""panel"",""d"":{{""feed"":""space.cockpit"",""kind"":""keyframe"",""data"":{{""yaw_deg"":{i}}}}}}}"));
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{""seq"":{seqB},""ts"":20,""t"":""panel"",""d"":{{""feed"":""space.holotank"",""kind"":""keyframe"",""data"":{{""tick"":{i}}}}}}}"));
+                }
+
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":3003,""ts"":30,""t"":""invoke_result"",""d"":{""id"":102,""result"":{""service"":""mind"",""result"":{""status"":""checked""}}}}"));
+
+                Assert.IsFalse(ws.InboundOverflowDetected, "Replaceable telemetry bursts must coalesce instead of overflowing");
+                Assert.AreEqual(2, ws.PendingTelemetryInboundCount, "3,000 cockpit/holotank frames must coalesce to 2 latest entries");
+                Assert.AreEqual(3, ws.PendingReliableInboundCount, "All 3 reliable events must remain queued");
+
+                ws.PumpMainThread();
+
+                CollectionAssert.AreEqual(new ulong[] { 101UL, 102UL }, invokeIds, "No reliable invoke_result may be dropped under telemetry backpressure");
+                CollectionAssert.AreEqual(new ulong[] { 202UL }, requestIds, "No reliable server request may be dropped under telemetry backpressure");
+                Assert.AreEqual(1499, latestCockpitYaw, "Latest coalesced space.cockpit keyframe must be delivered");
+                Assert.AreEqual(1499, latestHoloTick, "Latest coalesced space.holotank keyframe must be delivered");
+                Assert.AreEqual(3003UL, ws.LastSeq);
+            }
+
+            // Item 8B: Terminal space.docking (closed: true) must supersede earlier queued open docking frame!
+            using (var ws = new MushWsClient())
+            {
+                bool sawClosedLast = false;
+                ws.OnPanelUpdated += (feed, data) =>
+                {
+                    if (feed == "space.docking")
+                        sawClosedLast = data.Bool("closed", false);
+                };
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":10,""ts"":1,""t"":""panel"",""d"":{""feed"":""space.docking"",""kind"":""keyframe"",""data"":{""session_id"":""s1""}}}"));
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":11,""ts"":2,""t"":""panel"",""d"":{""feed"":""space.docking"",""kind"":""keyframe"",""data"":{""closed"":true,""refused"":true,""outcome"":""clamped""}}}"));
+                ws.PumpMainThread();
+                Assert.IsTrue(sawClosedLast, "Terminal closed space.docking frame must not be overwritten by earlier queued open frame");
+            }
+
+            // Item 8B-delta: A reliable panel delta invalidation must not discard an earlier queued telemetry keyframe for the same feed
+            using (var ws = new MushWsClient())
+            {
+                int yawSeen = -1;
+                ws.OnPanelUpdated += (feed, data) => { if (feed == "space.cockpit") yawSeen = data.Int("yaw_deg", -1); };
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":10,""ts"":1,""t"":""panel"",""d"":{""feed"":""space.cockpit"",""kind"":""keyframe"",""data"":{""yaw_deg"":77}}}"));
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":11,""ts"":2,""t"":""panel"",""d"":{""feed"":""space.cockpit"",""kind"":""delta"",""data"":{}}}"));
+                ws.PumpMainThread();
+                Assert.AreEqual(77, yawSeen, "Panel delta must not drop earlier queued keyframe for the same feed");
+            }
+
+            // Item 8C: Genuine reliable queue overflow (> 2,048 reliable events) MUST NOT evict oldest events or advance _lastSeq past omitted events!
+            using (var ws = new MushWsClient())
+            {
+                var receivedIds = new List<ulong>();
+                ws.OnInvokeResultReceived += (id, _, _) => receivedIds.Add(id);
+
+                int totalInjected = MushWsClient.MaxInboundQueueSize + 50;
+                for (int i = 1; i <= totalInjected; i++)
+                {
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{""seq"":{i},""ts"":50,""t"":""invoke_result"",""d"":{{""id"":{i},""result"":{{""service"":""mind"",""result"":{{""status"":""ok""}}}}}}}}"));
+                }
+
+                Assert.IsTrue(ws.InboundOverflowDetected, "Exceeding MaxInboundQueueSize with reliable events must latch overflow for resync");
+                Assert.AreEqual(MushWsClient.MaxInboundQueueSize, ws.PendingReliableInboundCount);
+
+                for (int pump = 0; pump < 40 && ws.PendingReliableInboundCount > 0; pump++)
+                    ws.PumpMainThread();
+
+                Assert.AreEqual(MushWsClient.MaxInboundQueueSize, receivedIds.Count);
+                Assert.AreEqual(1UL, receivedIds[0], "Oldest reliable event (seq=1) must NEVER be silently dropped");
+                Assert.AreEqual((ulong)MushWsClient.MaxInboundQueueSize, receivedIds[receivedIds.Count - 1]);
+                Assert.AreEqual((ulong)MushWsClient.MaxInboundQueueSize, ws.LastSeq, "_lastSeq must NEVER advance past unqueued events on overflow");
+            }
+
+            // Item 9: Failed send on a stale socket epoch MUST NOT clear _isConnected or enqueue a drop for the new epoch!
+            using (var ws = new MushWsClient())
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var epochField = typeof(MushWsClient).GetField("_sessionEpoch", flags);
+                var connectedField = typeof(MushWsClient).GetField("_isConnected", flags);
+                var dropsField = typeof(MushWsClient).GetField("_socketDrops", flags);
+                var failMethod = typeof(MushWsClient).GetMethod(
+                    "HandleSocketLoopFailureForEpoch",
+                    flags,
+                    null,
+                    new[] { typeof(long), typeof(int?), typeof(string) },
+                    null);
+                Assert.IsNotNull(epochField);
+                Assert.IsNotNull(connectedField);
+                Assert.IsNotNull(dropsField);
+                Assert.IsNotNull(failMethod);
+
+                // Active connection is on epoch 2
+                epochField.SetValue(ws, 2L);
+                connectedField.SetValue(ws, true);
+
+                // Old socket from epoch 1 hits a send exception -> MUST NOT disable epoch 2!
+                bool staleHandled = (bool)failMethod.Invoke(ws, new object[] { 1L, null, "WebSocket send failed (aborted)" });
+                Assert.IsFalse(staleHandled, "Stale epoch failure must be ignored");
+                Assert.IsTrue((bool)connectedField.GetValue(ws), "Stale socket send failure must NOT clear _isConnected for active epoch 2");
+                var drops = dropsField.GetValue(ws) as System.Collections.Concurrent.ConcurrentQueue<(long epoch, int? code, string message)>;
+                Assert.IsNotNull(drops);
+                Assert.AreEqual(0, drops.Count, "Stale socket send failure must NOT enqueue a socket drop");
+
+                // Current socket on epoch 2 fails -> MUST mark disconnected and enqueue drop!
+                bool currentHandled = (bool)failMethod.Invoke(ws, new object[] { 2L, null, "WebSocket send failed (broken pipe)" });
+                Assert.IsTrue(currentHandled, "Current epoch failure must be handled");
+                Assert.IsFalse((bool)connectedField.GetValue(ws), "Current epoch failure must set _isConnected = false");
+                Assert.AreEqual(1, drops.Count, "Current epoch failure must enqueue drop for reconnect");
+            }
         }
     }
 }

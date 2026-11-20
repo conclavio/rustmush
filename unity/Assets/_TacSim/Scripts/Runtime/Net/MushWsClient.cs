@@ -3,8 +3,11 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using TacSim.Core;
@@ -37,14 +40,22 @@ namespace TacSim.Net
     {
         public const int CloseCodeBadSession = 4401;
         public const int CloseCodeTokenCooloff = 4429;
-        public const int MaxInboundMessageBytes = 4 * 1024 * 1024;
-        public const int MaxInboundQueueCount = 2048;
+        public const int MaxInboundFrameBytes = 4 * 1024 * 1024;
+        public const int MaxInboundMessageBytes = MaxInboundFrameBytes;
+        public const int MaxOutboundFrameBytes = 272 * 1024;
+        public const int MaxInboundQueueSize = 2048;
+        public const int MaxInboundQueueCount = MaxInboundQueueSize;
         public const int MaxOutboundQueueCount = 256;
+        public const int MaxOutboundQueueSize = MaxOutboundQueueCount;
         public const int MaxPanelFeeds = 64;
         public const int MaxViewCursors = 64;
         public const int MaxAdvertisedPanels = 128;
         public const int MaxReplyUnwrapDepth = 1;
+        private const int ConnectTimeoutMs = 15000;
         private static readonly float[] BackoffSeconds = { 0.5f, 1.0f, 2.0f, 5.0f, 15.0f };
+        private static readonly Regex Http401Regex = new Regex(
+            @"(?<![0-9])(HTTP/\d(?:\.\d)?\s+401|status\s+code\s*:?\s*['""]?401['""]?|401\s*\(?\s*Unauthorized\s*\)?|close\s+code\s*4401|'\s*401\s*')(?![0-9])",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         public static MushWsClient LatestInstance { get; private set; }
         public static event Action<MushWsClient> OnInstanceCreated;
@@ -55,14 +66,57 @@ namespace TacSim.Net
             OnInstanceCreated?.Invoke(this);
         }
 
-        private ClientWebSocket _ws;
-        private CancellationTokenSource _cts;
-        private readonly ConcurrentQueue<(long epoch, MushEnvelope env)> _inbound = new ConcurrentQueue<(long, MushEnvelope)>();
+        private sealed class SocketRuntime
+        {
+            public readonly ClientWebSocket Socket;
+            public readonly CancellationTokenSource Cts;
+            public int RemainingLoops = 2;
+
+            public SocketRuntime(ClientWebSocket socket, CancellationTokenSource cts)
+            {
+                Socket = socket;
+                Cts = cts;
+            }
+
+            public void ReleaseLoop()
+            {
+                if (Interlocked.Decrement(ref RemainingLoops) == 0)
+                {
+                    try { Socket.Dispose(); } catch { /* ignore */ }
+                    try { Cts.Dispose(); } catch { /* ignore */ }
+                }
+            }
+        }
+
+        private readonly object _socketLock = new object();
+        private readonly object _inboundLock = new object();
+        private readonly SemaphoreSlim _connectGate = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _outboundSignal = new SemaphoreSlim(0);
+        private SocketRuntime _runtime;
+        private readonly Queue<(long epoch, MushEnvelope env)> _reliableInbound = new Queue<(long, MushEnvelope)>();
+        private readonly Dictionary<string, (long epoch, MushEnvelope env)> _latestTelemetry = new Dictionary<string, (long, MushEnvelope)>(StringComparer.Ordinal);
+        private readonly Queue<string> _telemetryOrder = new Queue<string>();
+        private bool _inboundOverflowDetected;
+        private readonly ConcurrentQueue<string> _priorityOutbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> _outbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<(long epoch, int? code, string message)> _socketDrops = new ConcurrentQueue<(long, int?, string)>();
         private readonly Dictionary<string, JsonNode> _panelFeeds = new Dictionary<string, JsonNode>(StringComparer.Ordinal);
         private readonly Dictionary<string, ViewStreamCursor> _viewCursors = new Dictionary<string, ViewStreamCursor>(StringComparer.Ordinal);
         private readonly HashSet<string> _advertisedPanels = new HashSet<string>(StringComparer.Ordinal);
+
+        private static readonly HashSet<string> ReplaceableTelemetryFeeds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "space.cockpit",
+            "space.holotank",
+            "space.docking",
+            "arena.cockpit",
+            "arena.observer",
+            "arena.replay",
+            "arena.map",
+            "site.map",
+            "tv.status",
+            "sky.chart"
+        };
 
         private MushAuthSession _activeAuth;
         private string _activeCharKey;
@@ -70,21 +124,46 @@ namespace TacSim.Net
         private ulong _nextQueryId = 1;
         private long _sessionEpoch;
         private volatile bool _isConnected;
+        private bool _hasAttemptedConnect;
+        private bool _subscribedForCurrentSocket;
         private bool _intentionalDisconnect = true;
         private bool _reconnectInFlight;
         private int _reconnectAttempt;
+        private int _consecutiveParseErrors;
         private double _nextReconnectAtMonotonicSec = -1.0;
 
         private static double MonotonicSeconds() =>
             Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
-        public bool IsConnected => _isConnected && _ws != null && _ws.State == WebSocketState.Open;
+        public bool IsConnected
+        {
+            get
+            {
+                if (!_isConnected) return false;
+                lock (_socketLock)
+                {
+                    return _runtime != null && _runtime.Socket.State == WebSocketState.Open;
+                }
+            }
+        }
+
+        /// <summary>
+        /// True when a live socket is open OR on a freshly constructed offline test client before any
+        /// Connect/Disconnect lifecycle transition (preserving headless unit tests that inspect outbound queues).
+        /// </summary>
+        public bool CanEnqueueOutbound =>
+            IsConnected || (!_hasAttemptedConnect && State == MushWsConnectionState.Disconnected);
+
         public MushWsConnectionState State { get; private set; } = MushWsConnectionState.Disconnected;
         public ulong LastSeq => _lastSeq;
-        public int InboundQueueCount => _inbound.Count;
-        public int OutboundQueueCount => _outbound.Count;
+        public int InboundQueueCount { get { lock (_inboundLock) { return _reliableInbound.Count + _latestTelemetry.Count; } } }
+        public int OutboundQueueCount => _priorityOutbound.Count + _outbound.Count;
         public int PanelFeedCount => _panelFeeds.Count;
         public int ViewCursorCount => _viewCursors.Count;
+        public int ReconnectAttemptCount => _reconnectAttempt;
+        public bool InboundOverflowDetected { get { lock (_inboundLock) { return _inboundOverflowDetected; } } }
+        public int PendingReliableInboundCount { get { lock (_inboundLock) { return _reliableInbound.Count; } } }
+        public int PendingTelemetryInboundCount { get { lock (_inboundLock) { return _latestTelemetry.Count; } } }
         public MushObjRef ActiveCharacter { get; private set; }
         public string ConnectedServer { get; private set; }
         public IReadOnlyCollection<string> AdvertisedPanels => _advertisedPanels;
@@ -111,6 +190,39 @@ namespace TacSim.Net
             if (closeCode == CloseCodeTokenCooloff)
                 return WsCloseDisposition.Cooloff60s;
             return WsCloseDisposition.ReconnectBackoff;
+        }
+
+        private static bool HasUnauthorizedHttpStatus(Exception ex)
+        {
+            if (ex == null) return false;
+            if (ex is WebException we && we.Response is HttpWebResponse hwr && hwr.StatusCode == HttpStatusCode.Unauthorized)
+                return true;
+            if (ex is HttpRequestException)
+            {
+                // Unity's .NET Standard 2.1 profile does not expose HttpRequestException.StatusCode at compile time;
+                // inspect it dynamically so .NET 5+/8 runtimes still check StatusCode while Unity 6000 compiles cleanly.
+                var prop = ex.GetType().GetProperty("StatusCode");
+                if (prop != null)
+                {
+                    object val = prop.GetValue(ex, null);
+                    if (val is HttpStatusCode code && code == HttpStatusCode.Unauthorized)
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        public static bool IsAuthRejectionException(Exception ex)
+        {
+            for (Exception cur = ex; cur != null; cur = cur.InnerException)
+            {
+                if (HasUnauthorizedHttpStatus(cur))
+                    return true;
+                string msg = cur.Message;
+                if (!string.IsNullOrEmpty(msg) && Http401Regex.IsMatch(msg))
+                    return true;
+            }
+            return false;
         }
 
         public static string BuildWsQuery(string characterKey, ulong lastSeq)
@@ -175,23 +287,33 @@ namespace TacSim.Net
 
         public async Task ConnectAsync(MushAuthSession auth, string characterKey, bool resetResume = true)
         {
-            CloseSocketOnly();
-            _activeAuth = auth;
-            _activeCharKey = characterKey;
-            _intentionalDisconnect = false;
-            _reconnectInFlight = false;
-            _nextReconnectAtMonotonicSec = -1.0;
-
-            if (resetResume)
+            await _connectGate.WaitAsync();
+            try
             {
-                _lastSeq = 0;
-                _reconnectAttempt = 0;
-                _panelFeeds.Clear();
-                _viewCursors.Clear();
-                _advertisedPanels.Clear();
-            }
+                _hasAttemptedConnect = true;
+                CloseSocketOnly();
+                _activeAuth = auth;
+                _activeCharKey = characterKey;
+                _intentionalDisconnect = false;
+                _reconnectInFlight = false;
+                _nextReconnectAtMonotonicSec = -1.0;
 
-            await OpenSocketInternalAsync(isReconnect: !resetResume && _lastSeq > 0);
+                if (resetResume)
+                {
+                    _lastSeq = 0;
+                    _reconnectAttempt = 0;
+                    _consecutiveParseErrors = 0;
+                    _panelFeeds.Clear();
+                    _viewCursors.Clear();
+                    _advertisedPanels.Clear();
+                }
+
+                await OpenSocketInternalAsync(isReconnect: !resetResume && _lastSeq > 0);
+            }
+            finally
+            {
+                _connectGate.Release();
+            }
         }
 
         private async Task OpenSocketInternalAsync(bool isReconnect)
@@ -200,16 +322,18 @@ namespace TacSim.Net
                 throw new InvalidOperationException("No active session credentials.");
 
             CloseSocketOnly();
-            while (_outbound.TryDequeue(out _)) { }
+            DrainQueue(_priorityOutbound);
+            DrainQueue(_outbound);
 
             long epoch = Interlocked.Increment(ref _sessionEpoch);
-            while (_inbound.TryDequeue(out _)) { }
-            while (_socketDrops.TryDequeue(out _)) { }
+            ClearInboundQueues();
+            DrainQueue(_socketDrops);
+            _subscribedForCurrentSocket = false;
 
-            _cts = new CancellationTokenSource();
-            _ws = new ClientWebSocket();
-            _ws.Options.AddSubProtocol($"rustmush.v1.{_activeAuth.Token}");
-            _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+            var cts = new CancellationTokenSource();
+            var ws = new ClientWebSocket();
+            ws.Options.AddSubProtocol($"rustmush.v1.{_activeAuth.Token}");
+            ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
 
             var uri = BuildValidatedWebSocketUri(
                 _activeAuth.BaseHttpUrl,
@@ -222,54 +346,91 @@ namespace TacSim.Net
                 ? $"Reconnecting to {uri.Host} (resume seq {_lastSeq})..."
                 : $"Connecting to {uri.Host}...");
 
-            await _ws.ConnectAsync(uri, _cts.Token);
-            _isConnected = true;
-            _reconnectAttempt = 0;
+            try
+            {
+                using (var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+                {
+                    timeoutCts.CancelAfter(ConnectTimeoutMs);
+                    await ws.ConnectAsync(uri, timeoutCts.Token);
+                }
+            }
+            catch
+            {
+                try { ws.Dispose(); } catch { /* ignore */ }
+                try { cts.Dispose(); } catch { /* ignore */ }
+                throw;
+            }
+
+            var rt = new SocketRuntime(ws, cts);
+            bool activated = false;
+            lock (_socketLock)
+            {
+                if (!_intentionalDisconnect && Interlocked.Read(ref _sessionEpoch) == epoch)
+                {
+                    _runtime = rt;
+                    _isConnected = true;
+                    activated = true;
+                }
+            }
+            if (!activated)
+            {
+                try { ws.Abort(); } catch { /* ignore */ }
+                try { ws.Dispose(); } catch { /* ignore */ }
+                try { cts.Dispose(); } catch { /* ignore */ }
+                return;
+            }
+
+            // NOTE (U-H04): Do NOT reset _reconnectAttempt here; wait until the server actually completes `hello`
+            // so immediate 1012/1013 post-upgrade closes still obey exponential backoff instead of 2 Hz storms.
             _nextReconnectAtMonotonicSec = -1.0;
             State = MushWsConnectionState.Online;
 
             // Declare structured true_color Web client capabilities immediately upon attach
-            EnqueueRaw(MushProtocol.BuildCapsCommand(120, 40));
+            EnqueuePriorityRaw(MushProtocol.BuildCapsCommand(120, 40));
             OnConnectionStatusChanged?.Invoke($"Connected to {uri.Host}");
 
-            var capturedWs = _ws;
-            var capturedToken = _cts.Token;
-            _ = Task.Run(() => ReceiveLoopAsync(capturedWs, capturedToken, epoch));
-            _ = Task.Run(() => SendLoopAsync(capturedWs, capturedToken));
+            _ = Task.Run(() => ReceiveLoopAsync(rt, epoch));
+            _ = Task.Run(() => SendLoopAsync(rt, epoch));
         }
 
         public void Disconnect()
         {
+            _hasAttemptedConnect = true;
             Interlocked.Increment(ref _sessionEpoch);
             _intentionalDisconnect = true;
             _nextReconnectAtMonotonicSec = -1.0;
             _reconnectInFlight = false;
+            _subscribedForCurrentSocket = false;
             State = MushWsConnectionState.Disconnected;
-            while (_inbound.TryDequeue(out _)) { }
-            while (_socketDrops.TryDequeue(out _)) { }
-            while (_outbound.TryDequeue(out _)) { }
+            ClearInboundQueues();
+            DrainQueue(_socketDrops);
+            DrainQueue(_priorityOutbound);
+            DrainQueue(_outbound);
             CloseSocketOnly();
         }
 
         private void CloseSocketOnly()
         {
-            _isConnected = false;
-            if (_cts != null)
+            SocketRuntime prev;
+            lock (_socketLock)
             {
-                try { _cts.Cancel(); } catch { /* ignore */ }
-                _cts.Dispose();
-                _cts = null;
+                _isConnected = false;
+                prev = _runtime;
+                _runtime = null;
             }
-            if (_ws != null)
+            if (prev != null)
             {
-                try { _ws.Dispose(); } catch { /* ignore */ }
-                _ws = null;
+                // Cancel + abort only; SocketRuntime.ReleaseLoop() disposes once both background loops exit.
+                try { prev.Cts.Cancel(); } catch { /* ignore */ }
+                try { prev.Socket.Abort(); } catch { /* ignore */ }
             }
         }
 
         public void Dispose()
         {
             Disconnect();
+            if (ReferenceEquals(LatestInstance, this))
+                LatestInstance = null;
         }
 
         public void SendLine(string commandLine)
@@ -293,7 +454,8 @@ namespace TacSim.Net
         public ulong SendMindMarketListings(string afterCode = null)
         {
             ulong id = _nextQueryId++;
-            EnqueueRaw(MushProtocol.BuildMindMarketQueryCommand(id, "listings", afterListingCode: afterCode));
+            string safeCode = MushProtocol.NormalizeListingCode(afterCode);
+            EnqueueRaw(MushProtocol.BuildMindMarketQueryCommand(id, "listings", afterListingCode: safeCode));
             return id;
         }
 
@@ -308,9 +470,10 @@ namespace TacSim.Net
         {
             ulong id = _nextQueryId++;
             string encoded = MushProtocol.BuildMindInvokeCommand(id, mindRequest);
-            if (Encoding.UTF8.GetByteCount(encoded) > 272 * 1024)
+            if (Encoding.UTF8.GetByteCount(encoded) > MaxOutboundFrameBytes)
                 return 0;
-            EnqueueRaw(encoded);
+            if (!EnqueueRaw(encoded))
+                return 0;
             return id;
         }
 
@@ -332,20 +495,14 @@ namespace TacSim.Net
             if (env != null)
             {
                 _intentionalDisconnect = false;
-                EnqueueInbound(Interlocked.Read(ref _sessionEpoch), env);
+                EnqueueInboundBounded(Interlocked.Read(ref _sessionEpoch), env);
             }
-        }
-
-        private bool EnqueueInbound(long epoch, MushEnvelope env)
-        {
-            if (env == null || _inbound.Count >= MaxInboundQueueCount)
-                return false;
-            _inbound.Enqueue((epoch, env));
-            return true;
         }
 
         public bool TryDequeueOutbound(out string rawJson)
         {
+            if (_priorityOutbound.TryDequeue(out rawJson))
+                return true;
             return _outbound.TryDequeue(out rawJson);
         }
 
@@ -360,7 +517,7 @@ namespace TacSim.Net
 
             if (_intentionalDisconnect)
             {
-                while (_inbound.TryDequeue(out _)) { }
+                ClearInboundQueues();
                 return;
             }
 
@@ -370,17 +527,26 @@ namespace TacSim.Net
             }
 
             int processed = 0;
-            while (processed < 64 && _inbound.TryDequeue(out var item))
+            while (processed < 64 && !_intentionalDisconnect && TryDequeueNextInbound(currentEpoch, out var env, out bool isCoalescedTelemetry))
             {
-                if (item.epoch != currentEpoch || _intentionalDisconnect)
-                    continue;
                 processed++;
-                var env = item.env;
                 // Never overwrite _lastSeq with 0 (out-of-band hello/resumed/ping frames carry seq: 0),
-                // but accept lower sequence numbers after a non-replayed fresh incarnation.
+                // accept lower sequence numbers after a non-replayed fresh incarnation on reliable frames,
+                // and never let coalesced telemetry rewind _lastSeq below already-dispatched reliable events
+                // or advance _lastSeq past an overflow gap.
                 if (env.Seq > 0)
-                    _lastSeq = env.Seq;
-                DispatchEvent(env.EventType, env.Data);
+                {
+                    if (isCoalescedTelemetry)
+                    {
+                        if (!InboundOverflowDetected && env.Seq > _lastSeq)
+                            _lastSeq = env.Seq;
+                    }
+                    else
+                    {
+                        _lastSeq = env.Seq;
+                    }
+                }
+                DispatchEvent(env);
             }
         }
 
@@ -388,6 +554,7 @@ namespace TacSim.Net
         {
             if (_intentionalDisconnect) return;
 
+            string safeDetail = MushAuthClient.RedactSensitiveTokens(detail);
             var disp = ClassifyCloseCode(closeCode);
             if (disp == WsCloseDisposition.FatalSessionEnded)
             {
@@ -395,7 +562,7 @@ namespace TacSim.Net
                 _activeAuth = null;
                 _lastSeq = 0;
                 State = MushWsConnectionState.SessionEnded;
-                string reason = string.IsNullOrWhiteSpace(detail) ? "Session ended or credentials expired." : detail;
+                string reason = string.IsNullOrWhiteSpace(safeDetail) ? "Session ended or credentials expired." : safeDetail;
                 OnConnectionStatusChanged?.Invoke($"Session ended (4401): {reason}");
                 OnFatalSessionEnded?.Invoke(reason);
                 return;
@@ -411,18 +578,24 @@ namespace TacSim.Net
             else
             {
                 int idx = Math.Min(_reconnectAttempt, BackoffSeconds.Length - 1);
-                delaySec = BackoffSeconds[idx];
+                float baseDelay = BackoffSeconds[idx];
+                // Deterministic lightweight +/-15% jitter avoids reconnect thundering herds.
+                float jitterFactor = 0.85f + (((_reconnectAttempt * 37 + Environment.TickCount) & 0xFF) / 255f) * 0.30f;
+                delaySec = baseDelay * jitterFactor;
                 _reconnectAttempt++;
             }
 
             State = MushWsConnectionState.Reconnecting;
             _nextReconnectAtMonotonicSec = MonotonicSeconds() + delaySec;
-            OnConnectionStatusChanged?.Invoke($"{detail} — reconnecting in {delaySec:0.#}s...");
+            OnConnectionStatusChanged?.Invoke($"{safeDetail} — reconnecting in {delaySec:0.#}s...");
         }
 
         private async Task AttemptAutoReconnectAsync()
         {
             if (_intentionalDisconnect || _activeAuth == null || _reconnectInFlight)
+                return;
+
+            if (!await _connectGate.WaitAsync(0))
                 return;
 
             _reconnectInFlight = true;
@@ -433,25 +606,26 @@ namespace TacSim.Net
             }
             catch (Exception ex)
             {
-                // Detect HTTP 401 / 4401 refusal surfaced during WebSocket upgrade
-                string msg = ex.Message ?? string.Empty;
-                if (msg.Contains("401") || msg.Contains("4401"))
+                if (IsAuthRejectionException(ex))
                 {
                     HandleSocketDroppedOnMainThread(CloseCodeBadSession, "Session token expired; please sign in again.");
                 }
                 else
                 {
-                    HandleSocketDroppedOnMainThread(null, $"Reconnect failed ({ex.Message})");
+                    string safeMsg = MushAuthClient.RedactSensitiveTokens(ex.Message);
+                    HandleSocketDroppedOnMainThread(null, $"Reconnect failed ({safeMsg})");
                 }
             }
             finally
             {
                 _reconnectInFlight = false;
+                _connectGate.Release();
             }
         }
 
         private void SubscribeStandardPanels()
         {
+            _subscribedForCurrentSocket = true;
             foreach (string feed in _advertisedPanels)
             {
                 if (feed == "space.cockpit" || feed == "space.holotank" || feed == "space.docking" || feed == "sky.chart" ||
@@ -462,7 +636,13 @@ namespace TacSim.Net
             }
         }
 
-        private void DispatchEvent(string type, JsonNode d)
+        private void DispatchEvent(MushEnvelope env)
+        {
+            if (env == null) return;
+            DispatchEvent(env.EventType, env.Data, env.PongAlreadySent);
+        }
+
+        private void DispatchEvent(string type, JsonNode d, bool pongAlreadySent = false)
         {
             int replyDepth = 0;
             while (type == "reply")
@@ -480,6 +660,8 @@ namespace TacSim.Net
             switch (type)
             {
                 case "hello":
+                    _reconnectAttempt = 0;
+                    _consecutiveParseErrors = 0;
                     ConnectedServer = d.Str("server", "rustmush");
                     _advertisedPanels.Clear();
                     var panels = d["panels"].AsArray();
@@ -498,12 +680,14 @@ namespace TacSim.Net
                     break;
 
                 case "resumed":
+                    _reconnectAttempt = 0;
                     if (!d.Bool("replayed", true))
                     {
                         _lastSeq = 0;
                         _panelFeeds.Clear();
                         _viewCursors.Clear();
-                        SubscribeStandardPanels();
+                        if (!_subscribedForCurrentSocket)
+                            SubscribeStandardPanels();
                         SendLine("look");
                     }
                     break;
@@ -513,8 +697,11 @@ namespace TacSim.Net
                     break;
 
                 case "ping":
-                    ulong nonce = (ulong)Math.Max(0L, d.Long("nonce", 0));
-                    EnqueueRaw(MushProtocol.BuildPongCommand(nonce));
+                    if (!pongAlreadySent)
+                    {
+                        ulong nonce = d.ULong("nonce", 0);
+                        EnqueuePriorityRaw(MushProtocol.BuildPongCommand(nonce));
+                    }
                     break;
 
                 case "room":
@@ -557,6 +744,51 @@ namespace TacSim.Net
                     }
                     break;
 
+                case "mail_notice":
+                {
+                    int unread = d.Int("unread", d.Int("count", 0));
+                    string summary = MushProtocol.FlattenRichText(d["text"]);
+                    string msg = !string.IsNullOrEmpty(summary)
+                        ? $"[MAIL] {summary}"
+                        : (unread > 0 ? $"[MAIL] You have {unread} unread message(s)." : "[MAIL] New mail notification.");
+                    string rich = $"<color=#FFCC66>{MushProtocol.EscapeUnityRichText(msg)}</color>";
+                    OnSystemLineWithMarkupReceived?.Invoke(msg, rich);
+                    OnSystemLineReceived?.Invoke(msg);
+                    break;
+                }
+
+                case "who":
+                {
+                    var entries = d["entries"].AsArray() ?? d["players"].AsArray();
+                    if (entries != null)
+                    {
+                        var names = new List<string>(entries.Count);
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            var e = entries[i];
+                            string nm = e.IsObject ? e.Str("name", e.Str("character", string.Empty)) : e.AsString(string.Empty);
+                            if (!string.IsNullOrEmpty(nm)) names.Add(nm);
+                        }
+                        string plain = $"[WHO] {names.Count} online" + (names.Count > 0 ? ": " + string.Join(", ", names) : ".");
+                        string rich = $"<color=#99CCEE>{MushProtocol.EscapeUnityRichText(plain)}</color>";
+                        OnSystemLineWithMarkupReceived?.Invoke(plain, rich);
+                        OnSystemLineReceived?.Invoke(plain);
+                    }
+                    break;
+                }
+
+                case "prompt":
+                {
+                    string promptPlain = MushProtocol.FlattenRichText(d["text"].IsNull ? d : d["text"]);
+                    string promptRich = MushProtocol.RenderRichTextToUnityMarkup(d["text"].IsNull ? d : d["text"]);
+                    if (!string.IsNullOrEmpty(promptPlain))
+                    {
+                        OnSystemLineWithMarkupReceived?.Invoke(promptPlain, promptRich);
+                        OnSystemLineReceived?.Invoke(promptPlain);
+                    }
+                    break;
+                }
+
                 case "weather":
                     string wxPlain = MushProtocol.FlattenRichText(d["text"]);
                     string wxRich = MushProtocol.RenderRichTextToUnityMarkup(d["text"]);
@@ -578,7 +810,7 @@ namespace TacSim.Net
                 case "invoke_result":
                     if (d != null && d.IsObject && d["result"].IsObject)
                     {
-                        ulong invId = (ulong)Math.Max(0L, d.Long("id", 0));
+                        ulong invId = d.ULong("id", 0);
                         string svc = d["result"].Str("service", string.Empty);
                         var resNode = d["result"]["result"];
                         OnInvokeResultReceived?.Invoke(invId, svc, resNode != null ? resNode.Clone() : JsonNode.Null);
@@ -665,7 +897,8 @@ namespace TacSim.Net
                 case ViewCursorDisposition.NeedsResubscribe:
                 {
                     _viewCursors.Remove(viewId);
-                    SendPanelSubscribe(viewId);
+                    if (_advertisedPanels.Contains(viewId))
+                        SendPanelSubscribe(viewId);
                     break;
                 }
                 case ViewCursorDisposition.IgnoreDuplicateOrStale:
@@ -673,18 +906,217 @@ namespace TacSim.Net
             }
         }
 
-        private void EnqueueRaw(string json)
+        private bool EnqueuePriorityRaw(string json)
         {
-            if (string.IsNullOrEmpty(json) || _outbound.Count >= MaxOutboundQueueCount) return;
-            _outbound.Enqueue(json);
+            if (string.IsNullOrEmpty(json)) return false;
+            if (Encoding.UTF8.GetByteCount(json) > MaxOutboundFrameBytes) return false;
+            if (!CanEnqueueOutbound) return false;
+            while (_priorityOutbound.Count >= 64 && _priorityOutbound.TryDequeue(out _)) { }
+            _priorityOutbound.Enqueue(json);
+            _outboundSignal.Release();
+            return true;
         }
 
-        private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct, long epoch)
+        private bool EnqueueRaw(string json)
         {
+            if (string.IsNullOrEmpty(json)) return false;
+            if (Encoding.UTF8.GetByteCount(json) > MaxOutboundFrameBytes) return false;
+            if (!CanEnqueueOutbound) return false;
+            if (_outbound.Count >= MaxOutboundQueueSize)
+                return false;
+            _outbound.Enqueue(json);
+            _outboundSignal.Release();
+            return true;
+        }
+
+        public static bool TryGetReplaceableTelemetryKey(MushEnvelope env, out string key)
+        {
+            key = null;
+            if (env == null || env.Data == null || !env.Data.IsObject)
+                return false;
+
+            if (env.EventType == "panel")
+            {
+                string kind = env.Data.Str("kind", "keyframe");
+                if (kind == "delta")
+                    return false;
+                string feed = env.Data.Str("feed", string.Empty);
+                if (!ReplaceableTelemetryFeeds.Contains(feed))
+                    return false;
+                var payload = env.Data["data"];
+                if (feed == "space.docking" && payload != null && payload.IsObject &&
+                    (payload.Bool("closed", false) || payload.Bool("refused", false)))
+                    return false;
+                if (feed == "tv.status" && payload != null && payload.IsObject && payload.Bool("cleared", false))
+                    return false;
+                key = "panel:" + feed;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryGetReplaceableViewId(MushEnvelope env, out string viewId)
+        {
+            viewId = null;
+            if (env == null || env.EventType != "view" || env.Data == null || !env.Data.IsObject)
+                return false;
+            string id = env.Data.Str("view", string.Empty);
+            if (!ReplaceableTelemetryFeeds.Contains(id))
+                return false;
+            viewId = id;
+            return true;
+        }
+
+        private bool EnqueueInboundBounded(long epoch, MushEnvelope env)
+        {
+            if (env == null) return true;
+            lock (_inboundLock)
+            {
+                if (_inboundOverflowDetected)
+                    return false;
+
+                if (TryGetReplaceableTelemetryKey(env, out string telemetryKey))
+                {
+                    bool isNewKey = !_latestTelemetry.ContainsKey(telemetryKey);
+                    _latestTelemetry[telemetryKey] = (epoch, env);
+                    if (isNewKey)
+                        _telemetryOrder.Enqueue(telemetryKey);
+                    return true;
+                }
+
+                // Preserve causal ordering when a reliable terminal keyframe or reset event supersedes queued telemetry,
+                // without letting a delta invalidation drop an earlier queued keyframe for the same feed.
+                if (env.EventType == "panel" && env.Data != null && env.Data.IsObject &&
+                    env.Data.Str("kind", "keyframe") != "delta")
+                {
+                    string feed = env.Data.Str("feed", string.Empty);
+                    if (!string.IsNullOrEmpty(feed))
+                        _latestTelemetry.Remove("panel:" + feed);
+                }
+                else if (env.EventType == "disconnect" ||
+                         (env.EventType == "resumed" && env.Data != null && env.Data.IsObject && !env.Data.Bool("replayed", true)))
+                {
+                    _latestTelemetry.Clear();
+                    _telemetryOrder.Clear();
+                }
+
+                if (_reliableInbound.Count >= MaxInboundQueueSize)
+                    CompactReplaceableViewsLocked();
+
+                if (_reliableInbound.Count >= MaxInboundQueueSize)
+                {
+                    // Never drop queued reliable events or advance _lastSeq past an omitted gap;
+                    // latch overflow so ReceiveLoopAsync triggers a clean reconnect/resync from _lastSeq.
+                    _inboundOverflowDetected = true;
+                    return false;
+                }
+
+                _reliableInbound.Enqueue((epoch, env));
+                return true;
+            }
+        }
+
+        private void CompactReplaceableViewsLocked()
+        {
+            if (_reliableInbound.Count == 0) return;
+
+            var items = _reliableInbound.ToArray();
+            var lastIndexByView = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (TryGetReplaceableViewId(items[i].env, out string viewId))
+                    lastIndexByView[viewId] = i;
+            }
+            if (lastIndexByView.Count == 0)
+                return;
+
+            _reliableInbound.Clear();
+            for (int i = 0; i < items.Length; i++)
+            {
+                if (TryGetReplaceableViewId(items[i].env, out string viewId) && lastIndexByView[viewId] != i)
+                    continue;
+                _reliableInbound.Enqueue(items[i]);
+            }
+        }
+
+        private bool TryDequeueNextInbound(long currentEpoch, out MushEnvelope env, out bool isCoalescedTelemetry)
+        {
+            lock (_inboundLock)
+            {
+                while (_reliableInbound.Count > 0)
+                {
+                    var item = _reliableInbound.Dequeue();
+                    if (item.epoch != currentEpoch)
+                        continue;
+                    env = item.env;
+                    isCoalescedTelemetry = false;
+                    return true;
+                }
+
+                while (_telemetryOrder.Count > 0)
+                {
+                    string key = _telemetryOrder.Dequeue();
+                    if (!_latestTelemetry.TryGetValue(key, out var item))
+                        continue;
+                    _latestTelemetry.Remove(key);
+                    if (item.epoch != currentEpoch)
+                        continue;
+                    env = item.env;
+                    isCoalescedTelemetry = true;
+                    return true;
+                }
+            }
+            env = null;
+            isCoalescedTelemetry = false;
+            return false;
+        }
+
+        private void ClearInboundQueues()
+        {
+            lock (_inboundLock)
+            {
+                _reliableInbound.Clear();
+                _latestTelemetry.Clear();
+                _telemetryOrder.Clear();
+                _inboundOverflowDetected = false;
+            }
+        }
+
+        private static void DrainQueue<T>(ConcurrentQueue<T> q)
+        {
+            while (q.TryDequeue(out _)) { }
+        }
+
+        private bool HandleSocketLoopFailureForEpoch(long epoch, SocketRuntime rt, int? closeCode, string message)
+        {
+            bool isCurrent;
+            lock (_socketLock)
+            {
+                isCurrent = Interlocked.Read(ref _sessionEpoch) == epoch &&
+                            (rt == null || ReferenceEquals(_runtime, rt));
+                if (isCurrent)
+                    _isConnected = false;
+            }
+            if (!isCurrent)
+                return false;
+            _socketDrops.Enqueue((epoch, closeCode, message));
+            return true;
+        }
+
+        internal bool HandleSocketLoopFailureForEpoch(long epoch, int? closeCode, string message)
+        {
+            return HandleSocketLoopFailureForEpoch(epoch, null, closeCode, message);
+        }
+
+        private async Task ReceiveLoopAsync(SocketRuntime rt, long epoch)
+        {
+            var ws = rt.Socket;
+            var ct = rt.Cts.Token;
             var buffer = new byte[16384];
             try
             {
-                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
+                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open && Interlocked.Read(ref _sessionEpoch) == epoch)
                 {
                     using (var ms = new MemoryStream())
                     {
@@ -694,27 +1126,24 @@ namespace TacSim.Net
                             res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                             if (res.MessageType == WebSocketMessageType.Close)
                             {
-                                _isConnected = false;
                                 int? closeCode = res.CloseStatus.HasValue ? (int)res.CloseStatus.Value : (int?)null;
                                 string desc = !string.IsNullOrEmpty(res.CloseStatusDescription)
-                                    ? res.CloseStatusDescription
+                                    ? MushAuthClient.RedactSensitiveTokens(res.CloseStatusDescription)
                                     : $"WebSocket closed ({(closeCode.HasValue ? closeCode.Value.ToString() : "EOF")})";
-                                _socketDrops.Enqueue((epoch, closeCode, desc));
+                                HandleSocketLoopFailureForEpoch(epoch, rt, closeCode, desc);
                                 return;
                             }
                             if (!TryValidateInboundFrame(res.MessageType, ms.Length, res.Count, out WebSocketCloseStatus closeStatus, out string frameErr))
                             {
-                                _isConnected = false;
-                                try
-                                {
-                                    await ws.CloseAsync(closeStatus, frameErr, CancellationToken.None);
-                                }
-                                catch { /* ignore close errors */ }
-                                _socketDrops.Enqueue((epoch, (int)closeStatus, frameErr));
+                                try { ws.Abort(); } catch { /* ignore */ }
+                                HandleSocketLoopFailureForEpoch(epoch, rt, (int)closeStatus, frameErr);
                                 return;
                             }
                             ms.Write(buffer, 0, res.Count);
                         } while (!res.EndOfMessage);
+
+                        if (Interlocked.Read(ref _sessionEpoch) != epoch)
+                            return;
 
                         if (res.MessageType == WebSocketMessageType.Text)
                         {
@@ -722,11 +1151,33 @@ namespace TacSim.Net
                             try
                             {
                                 var env = MushProtocol.ParseEnvelope(json);
-                                if (env != null) EnqueueInbound(epoch, env);
+                                if (env != null)
+                                {
+                                    _consecutiveParseErrors = 0;
+                                    // Answer keepalive pings immediately on the priority lane so heavy frames never starve heartbeats.
+                                    if (env.EventType == "ping" && env.Data != null && env.Data.IsObject && Interlocked.Read(ref _sessionEpoch) == epoch)
+                                    {
+                                        ulong nonce = env.Data.ULong("nonce", 0);
+                                        EnqueuePriorityRaw(MushProtocol.BuildPongCommand(nonce));
+                                        env.PongAlreadySent = true;
+                                    }
+                                    if (!EnqueueInboundBounded(epoch, env))
+                                    {
+                                        try { ws.Abort(); } catch { /* ignore */ }
+                                        HandleSocketLoopFailureForEpoch(epoch, rt, null, "Inbound reliable queue overflow; resyncing session");
+                                        return;
+                                    }
+                                }
                             }
-                            catch (FormatException)
+                            catch (Exception)
                             {
-                                // Drop malformed or excessively nested JSON frames safely.
+                                // Isolate malformed frame without tearing down the socket or trapping ?resume=<_lastSeq>.
+                                if (Interlocked.Read(ref _sessionEpoch) == epoch)
+                                {
+                                    int errs = Interlocked.Increment(ref _consecutiveParseErrors);
+                                    if (errs >= 3)
+                                        _lastSeq = 0;
+                                }
                             }
                         }
                     }
@@ -735,32 +1186,48 @@ namespace TacSim.Net
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _isConnected = false;
-                _socketDrops.Enqueue((epoch, null, $"WebSocket interrupted ({ex.Message})"));
+                string safeMsg = MushAuthClient.RedactSensitiveTokens(ex.Message);
+                HandleSocketLoopFailureForEpoch(epoch, rt, null, $"WebSocket interrupted ({safeMsg})");
+            }
+            finally
+            {
+                rt.ReleaseLoop();
             }
         }
 
-        private async Task SendLoopAsync(ClientWebSocket ws, CancellationToken ct)
+        private async Task SendLoopAsync(SocketRuntime rt, long epoch)
         {
+            var ws = rt.Socket;
+            var ct = rt.Cts.Token;
             try
             {
-                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
+                while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open && Interlocked.Read(ref _sessionEpoch) == epoch)
                 {
+                    if (_priorityOutbound.TryDequeue(out string prioMsg))
+                    {
+                        byte[] bytes = Encoding.UTF8.GetBytes(prioMsg);
+                        await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct);
+                        continue;
+                    }
                     if (_outbound.TryDequeue(out string msg))
                     {
                         byte[] bytes = Encoding.UTF8.GetBytes(msg);
                         await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct);
+                        continue;
                     }
-                    else
-                    {
-                        await Task.Delay(12, ct);
-                    }
+                    await _outboundSignal.WaitAsync(100, ct);
                 }
             }
             catch (OperationCanceledException) { }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // ReceiveLoopAsync handles socket drop notification on the session epoch queue.
+                try { ws.Abort(); } catch { /* ignore */ }
+                string safeMsg = MushAuthClient.RedactSensitiveTokens(ex.Message);
+                HandleSocketLoopFailureForEpoch(epoch, rt, null, $"WebSocket send failed ({safeMsg})");
+            }
+            finally
+            {
+                rt.ReleaseLoop();
             }
         }
     }

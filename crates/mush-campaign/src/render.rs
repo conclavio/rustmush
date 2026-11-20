@@ -85,6 +85,24 @@ pub(crate) fn acts_for(w: &World, who: ObjId, principal: &PrincipalId) -> bool {
     }
 }
 
+/// **Whether `who` is an active member of the organization `principal` names** (doc 50 cut
+/// OP.0, Q-50-57 item 2). A defender organization's members are told of an operation and may
+/// read its notice; this is that question and no other. It is never authority to *act* for the
+/// organization (`acts_for` still fails closed for one), and an object principal is nobody's
+/// member.
+#[must_use]
+pub fn member_of(w: &World, who: ObjId, principal: &PrincipalId) -> bool {
+    let PrincipalId::Organization(org) = principal else {
+        return false;
+    };
+    w.module_state::<mush_org::OrgStore>().is_some_and(|store| {
+        store
+            .state()
+            .membership(*org, who)
+            .is_some_and(|m| m.status == mush_org::MembershipStatus::Active)
+    })
+}
+
 /// **The one lens function.** Every projection — `@op/show`, `@op/consumers`, the
 /// listing, `@op/join`'s conflict refusal, and any future feed — asks this and
 /// nothing else.
@@ -128,7 +146,8 @@ pub fn lens_for(w: &World, doc: &OperationDoc, who: ObjId) -> Lens {
         .members()
         .iter()
         .chain(doc.terms.eligible_defenders.members.iter())
-        .any(|p| acts_for(w, who, p));
+        // Doc 50 OP.0: a member of a defender (or audience) organization is in the audience.
+        .any(|p| acts_for(w, who, p) || member_of(w, who, p));
     match (&doc.terms.visibility, audience_member) {
         // Public is a notice to everyone. It is deliberately NOT the plan.
         (EconomicVisibility::Public, _) => Lens::Notice,

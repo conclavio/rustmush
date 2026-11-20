@@ -11,22 +11,83 @@ namespace TacSim.Core
     public static class UrpMaterialFactory
     {
         private static readonly Dictionary<string, Material> Cache = new Dictionary<string, Material>();
+        private static Shader _cachedFallbackShader;
 
-        private static Shader FindLitShader()
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStaticCachesOnSubsystemInit()
+        {
+            ClearCache();
+        }
+
+        public static void ClearCache()
+        {
+            foreach (var kv in Cache)
+            {
+                if (kv.Value != null)
+                {
+                    if (Application.isPlaying) Object.Destroy(kv.Value);
+                    else Object.DestroyImmediate(kv.Value);
+                }
+            }
+            Cache.Clear();
+            DestroyProceduralTex(ref _proceduralBulkheadTex);
+            DestroyProceduralTex(ref _proceduralBulkheadNormal);
+            DestroyProceduralTex(ref _proceduralDeckTex);
+            DestroyProceduralTex(ref _proceduralDeckNormal);
+            DestroyProceduralTex(ref _proceduralCeilingTex);
+            DestroyProceduralTex(ref _proceduralCeilingNormal);
+            _cachedFallbackShader = null;
+        }
+
+        private static void DestroyProceduralTex(ref Texture2D tex)
+        {
+            if (tex == null) return;
+            if (Application.isPlaying) Object.Destroy(tex);
+            else Object.DestroyImmediate(tex);
+            tex = null;
+        }
+
+        public static Shader FindSafeLitShader()
         {
             Shader s = Shader.Find("Universal Render Pipeline/Lit");
             if (s != null) return s;
             s = Shader.Find("Universal Render Pipeline/Simple Lit");
             if (s != null) return s;
-            return Shader.Find("Standard");
+            s = Shader.Find("Universal Render Pipeline/Unlit");
+            if (s != null) return s;
+            s = Shader.Find("Standard");
+            if (s != null) return s;
+            s = Shader.Find("Sprites/Default");
+            if (s != null) return s;
+            s = Shader.Find("Hidden/Internal-Colored");
+            if (s != null) return s;
+            if (_cachedFallbackShader != null) return _cachedFallbackShader;
+            _cachedFallbackShader = Shader.Find("Hidden/InternalErrorShader");
+            return _cachedFallbackShader;
         }
 
-        private static Shader FindUnlitShader()
+        public static Shader FindSafeUnlitShader()
         {
             Shader s = Shader.Find("Universal Render Pipeline/Unlit");
             if (s != null) return s;
-            return Shader.Find("Unlit/Color");
+            s = Shader.Find("Unlit/Color");
+            if (s != null) return s;
+            s = Shader.Find("Sprites/Default");
+            if (s != null) return s;
+            return FindSafeLitShader();
         }
+
+        private static Material CreateMaterialSafe(Shader shader, string name)
+        {
+            Shader resolved = shader != null ? shader : FindSafeLitShader();
+            if (resolved != null)
+                return new Material(resolved) { name = name };
+            Debug.LogError($"[UrpMaterialFactory] No compatible shader found for material '{name}'.");
+            return new Material(Shader.Find("Hidden/InternalErrorShader")) { name = name };
+        }
+
+        private static Shader FindLitShader() => FindSafeLitShader();
+        private static Shader FindUnlitShader() => FindSafeUnlitShader();
 
         public static Material GetOpaque(string key, Color albedo, float smoothness = 0.35f, float metallic = 0.25f)
         {
@@ -34,7 +95,7 @@ namespace TacSim.Core
             if (Cache.TryGetValue(fullKey, out Material existing) && existing != null)
                 return existing;
 
-            var mat = new Material(FindLitShader()) { name = $"TacSim_{key}" };
+            var mat = CreateMaterialSafe(FindLitShader(), $"TacSim_{key}");
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", albedo);
             if (mat.HasProperty("_Color")) mat.SetColor("_Color", albedo);
             if (mat.HasProperty("_Smoothness")) mat.SetFloat("_Smoothness", smoothness);
@@ -50,7 +111,7 @@ namespace TacSim.Core
             if (Cache.TryGetValue(fullKey, out Material existing) && existing != null)
                 return existing;
 
-            var mat = new Material(FindLitShader()) { name = $"TacSim_Emissive_{key}" };
+            var mat = CreateMaterialSafe(FindLitShader(), $"TacSim_Emissive_{key}");
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", baseColor);
             if (mat.HasProperty("_Color")) mat.SetColor("_Color", baseColor);
             mat.EnableKeyword("_EMISSION");
@@ -72,7 +133,7 @@ namespace TacSim.Core
             if (Cache.TryGetValue(fullKey, out Material existing) && existing != null)
                 return existing;
 
-            var mat = new Material(FindLitShader()) { name = $"TacSim_Glass_{key}" };
+            var mat = CreateMaterialSafe(FindLitShader(), $"TacSim_Glass_{key}");
             if (mat.HasProperty("_Surface")) mat.SetFloat("_Surface", 1f); // Transparent in URP Lit
             if (mat.HasProperty("_Blend")) mat.SetFloat("_Blend", 0f);
             mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
@@ -109,11 +170,14 @@ namespace TacSim.Core
             if (Cache.TryGetValue(fullKey, out Material existing) && existing != null)
                 return existing;
 
-            Texture useAlbedo = albedo != null ? albedo : (isFloor ? GetOrBuildProceduralDeckTex() : GetOrBuildProceduralBulkheadTex());
-            Texture useNormal = normalMap != null ? normalMap : (albedo == null ? (isFloor ? GetOrBuildProceduralDeckNormal() : GetOrBuildProceduralBulkheadNormal()) : null);
-            useAlbedo.wrapMode = TextureWrapMode.Repeat;
+            bool usingProcAlbedo = albedo == null;
+            Texture useAlbedo = !usingProcAlbedo ? albedo : (isFloor ? GetOrBuildProceduralDeckTex() : GetOrBuildProceduralBulkheadTex());
+            bool usingProcNormal = normalMap == null && usingProcAlbedo;
+            Texture useNormal = normalMap != null ? normalMap : (usingProcNormal ? (isFloor ? GetOrBuildProceduralDeckNormal() : GetOrBuildProceduralBulkheadNormal()) : null);
+            if (usingProcAlbedo && useAlbedo != null)
+                useAlbedo.wrapMode = TextureWrapMode.Repeat;
 
-            var mat = new Material(FindLitShader()) { name = $"TacSim_PBR_{key}" };
+            var mat = CreateMaterialSafe(FindLitShader(), $"TacSim_PBR_{key}");
             Color effectiveTint = albedo != null
                 ? Color.Lerp(Color.white, tint * 2.2f, 0.55f)
                 : tint * 1.95f;
@@ -130,7 +194,8 @@ namespace TacSim.Core
 
             if (useNormal != null && mat.HasProperty("_BumpMap"))
             {
-                useNormal.wrapMode = TextureWrapMode.Repeat;
+                if (usingProcNormal)
+                    useNormal.wrapMode = TextureWrapMode.Repeat;
                 mat.SetTexture("_BumpMap", useNormal);
                 mat.SetTextureScale("_BumpMap", cleanScale);
                 if (mat.HasProperty("_BumpScale")) mat.SetFloat("_BumpScale", 0.85f);
@@ -138,7 +203,6 @@ namespace TacSim.Core
             }
             if (metallicMap != null && mat.HasProperty("_MetallicGlossMap"))
             {
-                metallicMap.wrapMode = TextureWrapMode.Repeat;
                 mat.SetTexture("_MetallicGlossMap", metallicMap);
                 mat.SetTextureScale("_MetallicGlossMap", cleanScale);
                 mat.EnableKeyword("_METALLICSPECGLOSSMAP");
@@ -161,7 +225,7 @@ namespace TacSim.Core
                 return existing;
 
             EnsureProceduralCeilingMaps();
-            var mat = new Material(FindLitShader()) { name = $"TacSim_Ceiling_{key}" };
+            var mat = CreateMaterialSafe(FindLitShader(), $"TacSim_Ceiling_{key}");
             Color col = new Color(tint.r * 1.15f, tint.g * 1.18f, tint.b * 1.22f, 1f);
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", col);
             if (mat.HasProperty("_Color")) mat.SetColor("_Color", col);
@@ -487,7 +551,7 @@ namespace TacSim.Core
             if (Cache.TryGetValue(fullKey, out Material existing) && existing != null)
                 return existing;
 
-            var mat = new Material(FindUnlitShader()) { name = $"TacSim_Holo_{key}" };
+            var mat = CreateMaterialSafe(FindUnlitShader(), $"TacSim_Holo_{key}");
             if (mat.HasProperty("_Surface")) mat.SetFloat("_Surface", 1f);
             mat.SetOverrideTag("RenderType", "Transparent");
             mat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
@@ -502,7 +566,7 @@ namespace TacSim.Core
 
         public static Material CreateTexturedLit(string name, Texture2D albedoTex, float smoothness = 0.14f, float metallic = 0.06f)
         {
-            var mat = new Material(FindLitShader()) { name = $"TacSim_Tex_{name}" };
+            var mat = CreateMaterialSafe(FindLitShader(), $"TacSim_Tex_{name}");
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", Color.white);
             if (mat.HasProperty("_Color")) mat.SetColor("_Color", Color.white);
             if (mat.HasProperty("_BaseMap")) mat.SetTexture("_BaseMap", albedoTex);

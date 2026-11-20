@@ -24,32 +24,32 @@ namespace TacSim.Editor
         private static readonly string[] CuratedVerticalSlicePackages =
         {
             // Ida Faber Player & Station Cast Characters
-            @"Ida Faber\3D ModelsCharactersHumanoidsSci-Fi\Stellar Trooper Sci-Fi Characters.unitypackage",
-            @"Ida Faber\3D ModelsCharactersHumanoidsSci-Fi\Cyberpunk Street Fighter.unitypackage",
-            @"Ida Faber\3D ModelsCharactersHumanoidsHumans\Techwear Girls.unitypackage",
-            @"Ida Faber\3D ModelsCharactersHumanoidsSci-Fi\Stellar Girl Astra.unitypackage",
-            @"Ida Faber\3D ModelsCharactersHumanoidsSci-Fi\Stellar Girl Celeste.unitypackage",
+            "Ida Faber/3D ModelsCharactersHumanoidsSci-Fi/Stellar Trooper Sci-Fi Characters.unitypackage",
+            "Ida Faber/3D ModelsCharactersHumanoidsSci-Fi/Cyberpunk Street Fighter.unitypackage",
+            "Ida Faber/3D ModelsCharactersHumanoidsHumans/Techwear Girls.unitypackage",
+            "Ida Faber/3D ModelsCharactersHumanoidsSci-Fi/Stellar Girl Astra.unitypackage",
+            "Ida Faber/3D ModelsCharactersHumanoidsSci-Fi/Stellar Girl Celeste.unitypackage",
 
             // Walkable Ship Interior
-            @"Vattalus Assets\3D ModelsVehiclesSpace\Spaceship with Full Interior Fenris Frigate.unitypackage",
+            "Vattalus Assets/3D ModelsVehiclesSpace/Spaceship with Full Interior Fenris Frigate.unitypackage",
 
             // Ceres Freeport & Phobos Stickney Station Architecture
-            @"DOTTEAM\3D ModelsEnvironmentsSci-Fi\Sci-Fi Heavy Station Kit base AUGMENTED.unitypackage",
-            @"DOTTEAM\3D ModelsEnvironmentsSci-Fi\Sci-Fi Heavy Station Kit hangars AUGMENTED.unitypackage",
-            @"DOTTEAM\3D ModelsEnvironmentsSci-Fi\Sci-Fi Heavy Station Kit dugout AUGMENTED.unitypackage",
+            "DOTTEAM/3D ModelsEnvironmentsSci-Fi/Sci-Fi Heavy Station Kit base AUGMENTED.unitypackage",
+            "DOTTEAM/3D ModelsEnvironmentsSci-Fi/Sci-Fi Heavy Station Kit hangars AUGMENTED.unitypackage",
+            "DOTTEAM/3D ModelsEnvironmentsSci-Fi/Sci-Fi Heavy Station Kit dugout AUGMENTED.unitypackage",
 
             // Orbital Space Hulls, Corvettes, Berths, Asteroids, Planets & Thruster VFX
-            @"MSGDI\3D ModelsVehiclesSpace\Spaceship Freighters.unitypackage",
-            @"MSGDI\3D ModelsVehiclesSpace\Spaceship Shipyards.unitypackage",
-            @"MSGDI\3D ModelsVehiclesSpace\Spaceship Mining Operation.unitypackage",
-            @"MSGDI\3D ModelsVehiclesSpace\Spaceship Pirate Fleet Collection I.unitypackage",
-            @"Galactica Studio\3D ModelsEnvironmentsSci-Fi\Solar System Planet Creator.unitypackage",
-            @"FORGE3D\Particle Systems\Sci-Fi Effects.unitypackage",
+            "MSGDI/3D ModelsVehiclesSpace/Spaceship Freighters.unitypackage",
+            "MSGDI/3D ModelsVehiclesSpace/Spaceship Shipyards.unitypackage",
+            "MSGDI/3D ModelsVehiclesSpace/Spaceship Mining Operation.unitypackage",
+            "MSGDI/3D ModelsVehiclesSpace/Spaceship Pirate Fleet Collection I.unitypackage",
+            "Galactica Studio/3D ModelsEnvironmentsSci-Fi/Solar System Planet Creator.unitypackage",
+            "FORGE3D/Particle Systems/Sci-Fi Effects.unitypackage",
 
             // Slice 3 & OOC Red vs Blue Arena: Slava Z Rovers, Tanks & Biped Mechs
-            @"Slava Z\3D ModelsCharactersRobots\Mech Constructor Spiders and Tanks.unitypackage",
-            @"Slava Z\3D ModelsCharactersRobots\Mech Constructor Light and Medium Robots.unitypackage",
-            @"Slava Z\3D ModelsVehiclesAir\Sci-Fi Vehicle Constructor.unitypackage"
+            "Slava Z/3D ModelsCharactersRobots/Mech Constructor Spiders and Tanks.unitypackage",
+            "Slava Z/3D ModelsCharactersRobots/Mech Constructor Light and Medium Robots.unitypackage",
+            "Slava Z/3D ModelsVehiclesAir/Sci-Fi Vehicle Constructor.unitypackage"
         };
 
         private static readonly string[] NestedUrpUpgradePatterns =
@@ -136,7 +136,7 @@ namespace TacSim.Editor
             int extractedAssets = 0;
             foreach (string rel in CuratedVerticalSlicePackages)
             {
-                string fullPath = Path.Combine(vaultRoot, rel);
+                string fullPath = Path.Combine(vaultRoot, rel.Replace('/', Path.DirectorySeparatorChar));
                 if (!File.Exists(fullPath))
                 {
                     Debug.LogWarning($"[TacSim Importer] Skipping missing package: {fullPath}");
@@ -266,6 +266,10 @@ namespace TacSim.Editor
                 bool hadEmission = mat.IsKeywordEnabled("_EMISSION");
                 Texture emissionMap = mat.HasProperty("_EmissionMap") ? mat.GetTexture("_EmissionMap") : null;
                 Color emissionColor = mat.HasProperty("_EmissionColor") ? mat.GetColor("_EmissionColor") : Color.black;
+                float standardMode = mat.HasProperty("_Mode") ? mat.GetFloat("_Mode") : 0f;
+                float cutoff = mat.HasProperty("_Cutoff") ? mat.GetFloat("_Cutoff") : 0.5f;
+                bool isLegacyTransparent = shaderName.IndexOf("Transparent", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isLegacyCutout = shaderName.IndexOf("Cutout", StringComparison.OrdinalIgnoreCase) >= 0;
 
                 mat.shader = urpLit;
                 if (mainTex != null && mat.HasProperty("_BaseMap"))
@@ -290,6 +294,35 @@ namespace TacSim.Editor
                 if (mat.HasProperty("_Smoothness")) mat.SetFloat("_Smoothness", smoothness);
                 if (occlusion != null && mat.HasProperty("_OcclusionMap"))
                     mat.SetTexture("_OcclusionMap", occlusion);
+
+                // Preserve Standard _Mode (0=Opaque, 1=Cutout, 2=Fade, 3=Transparent) & _Cutoff in URP Lit!
+                int modeInt = Mathf.RoundToInt(standardMode);
+                if (modeInt == 1 || (modeInt == 0 && isLegacyCutout))
+                {
+                    if (mat.HasProperty("_Surface")) mat.SetFloat("_Surface", 0f);
+                    if (mat.HasProperty("_AlphaClip")) mat.SetFloat("_AlphaClip", 1f);
+                    if (mat.HasProperty("_Cutoff")) mat.SetFloat("_Cutoff", cutoff);
+                    mat.EnableKeyword("_ALPHATEST_ON");
+                    mat.DisableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                    mat.SetOverrideTag("RenderType", "TransparentCutout");
+                    mat.SetInt("_ZWrite", 1);
+                    mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.AlphaTest;
+                }
+                else if (modeInt == 2 || modeInt == 3 || (modeInt == 0 && isLegacyTransparent))
+                {
+                    bool premul = modeInt == 3;
+                    if (mat.HasProperty("_Surface")) mat.SetFloat("_Surface", 1f);
+                    if (mat.HasProperty("_Blend")) mat.SetFloat("_Blend", premul ? 1f : 0f);
+                    if (mat.HasProperty("_AlphaClip")) mat.SetFloat("_AlphaClip", 0f);
+                    mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                    if (premul) mat.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+                    else mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                    mat.SetOverrideTag("RenderType", "Transparent");
+                    mat.SetInt("_SrcBlend", premul ? (int)UnityEngine.Rendering.BlendMode.One : (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                    mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                    mat.SetInt("_ZWrite", 0);
+                    mat.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                }
 
                 if (hadEmission || emissionMap != null || emissionColor.maxColorComponent > 0.01f)
                 {
@@ -331,30 +364,37 @@ namespace TacSim.Editor
                 if (cur == null || cur.name.IndexOf("Placeholder", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     var so = new SerializedObject(mat);
-                    var texEnvs = so.FindProperty("m_SavedProperties.m_TexEnvs");
-                    Texture replacement = null;
-                    if (texEnvs != null && texEnvs.isArray)
+                    try
                     {
-                        for (int i = 0; i < texEnvs.arraySize; i++)
+                        var texEnvs = so.FindProperty("m_SavedProperties.m_TexEnvs");
+                        Texture replacement = null;
+                        if (texEnvs != null && texEnvs.isArray)
                         {
-                            var elem = texEnvs.GetArrayElementAtIndex(i);
-                            string key = elem.FindPropertyRelative("first")?.stringValue;
-                            if (key == "_BaseColor_Map" || key == "_BaseColorMap" || key == "_BaseMap")
+                            for (int i = 0; i < texEnvs.arraySize; i++)
                             {
-                                var texObj = elem.FindPropertyRelative("second.m_Texture")?.objectReferenceValue as Texture;
-                                if (texObj != null && texObj.name.IndexOf("Placeholder", StringComparison.OrdinalIgnoreCase) < 0)
+                                var elem = texEnvs.GetArrayElementAtIndex(i);
+                                string key = elem.FindPropertyRelative("first")?.stringValue;
+                                if (key == "_BaseColor_Map" || key == "_BaseColorMap" || key == "_BaseMap")
                                 {
-                                    replacement = texObj;
-                                    break;
+                                    var texObj = elem.FindPropertyRelative("second.m_Texture")?.objectReferenceValue as Texture;
+                                    if (texObj != null && texObj.name.IndexOf("Placeholder", StringComparison.OrdinalIgnoreCase) < 0)
+                                    {
+                                        replacement = texObj;
+                                        break;
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    if (replacement != null)
+                        if (replacement != null)
+                        {
+                            mat.SetTexture("_Basecolor_Map", replacement);
+                            dirty = true;
+                        }
+                    }
+                    finally
                     {
-                        mat.SetTexture("_Basecolor_Map", replacement);
-                        dirty = true;
+                        (so as IDisposable)?.Dispose();
                     }
                 }
 

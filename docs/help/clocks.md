@@ -23,7 +23,9 @@ You don't advance clocks directly — your scenes and actions do.
 ## Staff
 
   @front              List fronts. @front/create <faction>=<title> ;
-                      @front/resolve <id>
+                      @front/resolve <id> ; @front/reopen <id>
+                      A front resolves itself when its last clock fills;
+                      a reopened front's clocks advance again.
   @clock              List clocks. @clock/create <front-id>=<title>/<segments>
   @clock/set <id>=<field>:<value>
                         on:<canon kind>   auto-advance when such a canon event
@@ -38,12 +40,18 @@ You don't advance clocks directly — your scenes and actions do.
                                           inherits the clock's visibility — a
                                           covert clock makes a covert hold, seen
                                           only by the holder's officers and staff.
+                                          A de facto flip moves the prior de
+                                          facto holder out.
+                        filled:<n>        set the count below full; a completed
+                                          clock can then fill and fire again
+                                          (on an open front)
   @clock/advance <id>[=<n>]   advance by n (default 1). Completing a clock fires
                               its consequence: the canon line and any territory
                               flip.
   @clock/del <id>
 
-A completed clock is frozen — it fires its consequence once. The consequence is
+A completed clock is frozen — it fires its consequence once, until staff set it
+back with filled:<n>. The consequence is
 recorded in the chronicle (see help chronicle) at the clock's visibility, and an
 officers-only clock's completion is shown only to officers, not to the whole
 membership. `front.progress` is reserved for these consequence lines: a clock

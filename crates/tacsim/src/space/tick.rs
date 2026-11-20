@@ -4645,17 +4645,10 @@ fn step_active_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
         super::commands::sync_bubble_propellant_to_ledger(ctx, hull);
     }
 
+    // Doc 50 unit CR (doc 50a A-10e): a hull past the boundary is ruled as `+helm/run` is,
+    // with her pilot as the officer, and the incident follows the landed ruling.
     for hull in ran_picket_hulls {
-        let front_id = super::picket::record_ran_the_picket_incident(ctx, hull, hull).map(|f| f.0);
-        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(active) = book.active_for_hull_mut(hull)
-            && let Some(picket) = active.picket.as_mut()
-        {
-            picket.set_inspection_outcome_for(
-                hull,
-                super::picket::PicketInspectionOutcome::RanThePicket { front_id },
-            );
-        }
+        super::customs::file_breach(ctx, hull);
     }
 
     if !combat_reports.is_empty()

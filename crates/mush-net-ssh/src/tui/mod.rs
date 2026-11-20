@@ -294,19 +294,13 @@ impl TuiSession {
         self.app.pixel_interval()
     }
 
-    /// The bytes that free the picture's image when the view is open — to
-    /// send before leaving the alternate screen.
+    /// The bytes that free the picture's images (both legacy `IMAGE_ID` and all
+    /// retained Kitty compositors including `IMAGE_ID_STATION_WALK = 189`) when
+    /// leaving the TUI (`@notui` / detach / disconnect) — sent before leaving
+    /// the alternate screen (`SSH-H-04`).
     #[must_use]
-    pub fn pixel_close_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        if self.app.pixel_active() && self.app.pixel_shown() == Some(Encoder::Kitty) {
-            bytes.extend(mush_pixel::kitty::delete_bytes(pixel::IMAGE_ID));
-        }
-        // Doc 21 cut G.4: never leave the terminal in the keyboard protocol.
-        if self.app.pixel_keyboard_pushed() {
-            bytes.extend_from_slice(b"\x1b[<u");
-        }
-        bytes
+    pub fn pixel_close_bytes(&mut self) -> Vec<u8> {
+        self.app.pixel_close_bytes()
     }
 
     /// The view's helm orders since the last call (doc 21 cut G.4): what the
@@ -589,11 +583,6 @@ mod tests {
                 && !turned.contains("\x1b_Ga=t,f=100,t=d,i=144"),
             "{turned:?}"
         );
-        // Leaving the TUI with the view open frees the image first.
-        assert_eq!(
-            sess.pixel_close_bytes(),
-            b"\x1b_Ga=d,d=I,i=1,q=2;\x1b\\".to_vec()
-        );
         // Esc is the palette's, as everywhere: the picture stays.
         sess.feed_input(b"\x1b");
         assert!(sess.pixel_active(), "Esc closes nothing of the picture's");
@@ -628,6 +617,13 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&sess.pixel_frame()).contains("\x1b_Ga=p,i=140,p=40"),
             "shown again"
+        );
+        // Leaving the TUI with the view open frees both legacy `i=1` AND retained `i=140` (`SSH-H-04`).
+        let leave_bytes = String::from_utf8_lossy(&sess.pixel_close_bytes()).into_owned();
+        assert!(
+            leave_bytes.contains("\x1b_Ga=d,d=I,i=1,q=2;\x1b\\")
+                && leave_bytes.contains("\x1b_Ga=d,d=I,i=140,q=2;\x1b\\"),
+            "pixel_close_bytes must free legacy and retained Kitty IDs: {leave_bytes:?}"
         );
         // A terminal that answers DA1 first never draws the picture.
         let mut plain = TuiSession::new(wide, TuiManifest::default());
@@ -1020,5 +1016,41 @@ mod tests {
             "a full repaint over the picture"
         );
         assert!(!closed.contains("\x1b_G"), "no kitty delete");
+    }
+
+    #[test]
+    fn station_walk_pixel_close_bytes_frees_image_id_189_on_notui_detach() {
+        let mut caps = caps();
+        caps.width = 120;
+        caps.height = 40;
+        let mut sess = TuiSession::new(caps, TuiManifest::default());
+        let _ = sess.probe_bytes();
+        sess.feed_input(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
+        sess.apply_event(&OutputEvent::Room(mush_proto::RoomView {
+            id: "#207".into(),
+            name: "Exchange Hall".into(),
+            zone: None,
+            desc: "Trading floor.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "atlas".into(),
+                serde_json::json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c07_exchange" }),
+            )]),
+        }));
+        sess.feed_input(b"\x07");
+        assert!(sess.pixel_active());
+        let _ = sess.paint();
+        let frame = String::from_utf8_lossy(&sess.pixel_frame()).into_owned();
+        assert!(
+            frame.contains("i=189"),
+            "StationWalk must upload IMAGE_ID_STATION_WALK (189): {frame:?}"
+        );
+
+        let close_bytes = String::from_utf8_lossy(&sess.pixel_close_bytes()).into_owned();
+        assert!(
+            close_bytes.contains("\x1b_Ga=d,d=I,i=189,q=2;\x1b\\"),
+            "`pixel_close_bytes` on @notui/detach must delete IMAGE_ID_STATION_WALK (189): {close_bytes:?}"
+        );
     }
 }

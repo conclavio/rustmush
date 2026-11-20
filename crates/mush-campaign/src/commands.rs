@@ -34,9 +34,9 @@ use crate::bond::BondError;
 use crate::formation::{FormationNode, MAX_FORMATION_DEPTH, Strictness};
 use crate::ids::{FormationId, OperationId};
 use crate::record::{
-    AudienceSpec, Bond, Consequence, MAX_LEGAL_TARGETS, MAX_OPERATION_PARTICIPANTS, MAX_SIDES,
-    MAX_STAKES, OPERATION_NOTICE_MIN, ObjectiveKind, ObjectiveSpec, OperationDoc, OperationRuntime,
-    OperationState, OperationTerms, Participation, SideSpec, UnitRef,
+    AudienceSpec, Bond, Consequence, Favors, MAX_LEGAL_TARGETS, MAX_OPERATION_PARTICIPANTS,
+    MAX_SIDES, MAX_STAKES, OPERATION_NOTICE_MIN, ObjectiveKind, ObjectiveSpec, OperationDoc,
+    OperationRuntime, OperationState, OperationTerms, Participation, SideSpec, UnitRef,
 };
 use crate::render::{
     self, Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, is_staff, visible_operation,
@@ -165,8 +165,10 @@ fn may_commit_unit(ctx: &Ctx<'_>, unit: UnitRef) -> bool {
 /// **Who may resolve**: staff for every outcome, and the issuer for an outcome that
 /// neither takes a player's money nor abandons the operation.
 ///
-/// `forfeit` and `abort` are **staff's alone**. `forfeit` is the only path that moves
-/// a bond to somebody else, and the tick never produces it; `abort` records an
+/// `forfeit` and `abort` are **staff's alone**. `forfeit` is the one word that moves a
+/// bond to somebody else whatever the issuer's objective did; `failure` also forfeits
+/// since doc 50 OP.0 (Q-50-57 item 5), and the issuer may still choose it, because it
+/// concedes their own bond to the beneficiary their own terms named; `abort` records an
 /// abandonment, which is the one resolution allowed to drain past a broken consent
 /// surface — §4.0g (viii) said it was staff's and only the *branch selection* was
 /// (C7), so a non-staff caller passing the word still reached `enter_resolving` and
@@ -175,7 +177,7 @@ fn may_resolve(ctx: &Ctx<'_>, doc: &OperationDoc, outcome: &str) -> bool {
     if is_staff(ctx.w, ctx.actor) {
         return true;
     }
-    if settle::outcome_forfeits(outcome) || settle::outcome_abandons(outcome) {
+    if outcome.trim() == "forfeit" || settle::outcome_abandons(outcome) {
         return false;
     }
     render::acts_for(ctx.w, ctx.actor, &doc.terms.attacker)
@@ -195,6 +197,19 @@ fn parse_obj(text: &str) -> Option<ObjId> {
     let raw = text.trim();
     let raw = raw.strip_prefix('#').unwrap_or(raw);
     raw.parse::<u32>().ok().map(ObjId)
+}
+
+/// A principal in a terms field: `#<obj>` or `org:<id>` (doc 50 cut OP.0, Q-50-57 item 2).
+fn parse_principal(text: &str) -> Option<PrincipalId> {
+    let raw = text.trim();
+    if let Some(org) = raw.strip_prefix("org:") {
+        return org
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(|n| PrincipalId::Organization(mush_org::OrgId(n)));
+    }
+    parse_obj(raw).map(PrincipalId::Object)
 }
 
 // ---- E7c9: B8 — @op ------------------------------------------------------
@@ -465,50 +480,48 @@ fn op_terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// A bond whose beneficiary account is nonexistent, closed, or on a different
 /// instrument was an operation that activated normally and could never finish.
 fn check_bond_accounts(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdError> {
-    let Some(bond) = &terms.bond else {
-        return Ok(());
-    };
-    let Some(store) = ctx.w.module_state::<mush_economy::EconomyStore>() else {
-        return Err(CmdError::msg(
-            "The economy is not available, so a bond cannot be checked.",
-        ));
+    match bond_accounts_refusal(ctx.w, terms, is_staff(ctx.w, ctx.actor)) {
+        Some(why) => Err(CmdError::msg(why)),
+        None => Ok(()),
+    }
+}
+
+/// `check_bond_accounts`' question, shared with the compiled declaration
+/// (`crate::declare`): why `terms`' bond accounts are refused, or `None`. `staff` lifts only
+/// the rule that the bond is on the issuer's own account.
+pub(crate) fn bond_accounts_refusal(
+    w: &mush_core::World,
+    terms: &OperationTerms,
+    staff: bool,
+) -> Option<&'static str> {
+    let bond = terms.bond.as_ref()?;
+    let Some(store) = w.module_state::<mush_economy::EconomyStore>() else {
+        return Some("The economy is not available, so a bond cannot be checked.");
     };
     let snapshot = store.snapshot();
     let Some(account) = snapshot.account(bond.account) else {
-        return Err(CmdError::msg(
-            "That bond names an account that does not exist.",
-        ));
+        return Some("That bond names an account that does not exist.");
     };
     if !matches!(account.status, mush_economy::AccountStatus::Active) {
-        return Err(CmdError::msg(
-            "That bond names an account that is not active.",
-        ));
+        return Some("That bond names an account that is not active.");
     }
     // The bond is a reservation on the ISSUER's own account, so the refusal arrives
     // here rather than at `@op/activate`.
-    if account.owner != terms.attacker && !is_staff(ctx.w, ctx.actor) {
-        return Err(CmdError::msg(
-            "A bond is a reservation on the issuer's own account.",
-        ));
+    if account.owner != terms.attacker && !staff {
+        return Some("A bond is a reservation on the issuer's own account.");
     }
     if let Some((_, beneficiary)) = &bond.forfeit_to {
         let Some(paid) = snapshot.account(*beneficiary) else {
-            return Err(CmdError::msg(
-                "That forfeit names an account that does not exist.",
-            ));
+            return Some("That forfeit names an account that does not exist.");
         };
         if !matches!(paid.status, mush_economy::AccountStatus::Active) {
-            return Err(CmdError::msg(
-                "That forfeit names an account that is not active.",
-            ));
+            return Some("That forfeit names an account that is not active.");
         }
         if paid.instrument != account.instrument {
-            return Err(CmdError::msg(
-                "That forfeit account holds a different instrument from the bond's.",
-            ));
+            return Some("That forfeit account holds a different instrument from the bond's.");
         }
     }
-    Ok(())
+    None
 }
 
 /// **A stake may only promise what something can actually settle** (E7 cut 9 fold,
@@ -522,23 +535,33 @@ fn check_bond_accounts(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdE
 /// this operation's own source. So the stake is validated where it is written: the
 /// named contract must exist and must already carry that attestor set.
 fn check_outcome_stakes(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdError> {
+    match outcome_stakes_refusal(ctx.w, terms) {
+        Some(why) => Err(CmdError::msg(why)),
+        None => Ok(()),
+    }
+}
+
+/// `check_outcome_stakes`' question, shared with the compiled declaration
+/// (`crate::declare`): why `terms`' outcome stakes are refused, or `None`.
+pub(crate) fn outcome_stakes_refusal(
+    w: &mush_core::World,
+    terms: &OperationTerms,
+) -> Option<String> {
     let source = SmolStr::new(settle::canon_source(terms.operation));
     for stake in &terms.stakes {
         let Consequence::Outcome { contract, .. } = stake else {
             continue;
         };
-        let Some(store) = ctx.w.module_state::<mush_economy::EconomyStore>() else {
-            return Err(CmdError::msg(
-                "The economy is not available, so that stake cannot be checked.",
-            ));
+        let Some(store) = w.module_state::<mush_economy::EconomyStore>() else {
+            return Some(
+                "The economy is not available, so that stake cannot be checked.".to_owned(),
+            );
         };
         let Some(record) = store
             .snapshot()
             .contract(mush_economy::ContractId(*contract))
         else {
-            return Err(CmdError::msg(
-                "That stake names a contract that does not exist.",
-            ));
+            return Some("That stake names a contract that does not exist.".to_owned());
         };
         let attests = record
             .consent
@@ -557,14 +580,13 @@ fn check_outcome_stakes(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), Cmd
                 _ => false,
             });
         if !attests {
-            return Err(CmdError::msg(format!(
-                "Contract #{contract} carries no `{}` attestor naming `{source}`, so this \
-                 operation's resolution could never settle it.",
+            return Some(format!(
+                "Contract #{contract} carries no `{}` attestor naming `{source}`, so this                  operation's resolution could never settle it.",
                 settle::KIND_OPERATION_RESOLVED
-            )));
+            ));
         }
     }
-    Ok(())
+    None
 }
 
 fn bad(field: &str, usage: &str) -> CmdError {
@@ -577,7 +599,12 @@ fn apply_field(terms: &mut OperationTerms, field: &str, value: &str) -> Result<(
         "objective" => terms.objective.summary = SmolStr::new(value),
         "objective.kind" => {
             terms.objective.kind = parse_objective(value)
-                .ok_or_else(|| bad(field, "`window`, `muster:<n>` or `canon:<kind>:<source>`"))?;
+                .ok_or_else(|| {
+                    bad(
+                        field,
+                        "`window`, `muster:<n>`, `canon:<kind>:<source>` or                          `probe:<name>:<declarer|defenders>`",
+                    )
+                })?;
         }
         "target" => {
             if terms.legal_targets.len() >= MAX_LEGAL_TARGETS {
@@ -648,37 +675,30 @@ fn apply_field(terms: &mut OperationTerms, field: &str, value: &str) -> Result<(
             if value == "none" {
                 bond.forfeit_to = None;
             } else {
-                let (who, account) = value
-                    .split_once(':')
-                    .ok_or_else(|| bad(field, "`#<obj>:<account>`"))?;
-                let who = parse_obj(who).ok_or_else(|| bad(field, "`#<obj>:<account>`"))?;
-                let account: u64 = account
-                    .trim()
-                    .parse()
-                    .map_err(|_| bad(field, "`#<obj>:<account>`"))?;
-                bond.forfeit_to = Some((PrincipalId::Object(who), AccountId(account)));
+                // The account is the text after the LAST colon, so `org:<id>:<account>` parses.
+                let usage = "`#<obj>:<account>` or `org:<id>:<account>`";
+                let (who, account) = value.rsplit_once(':').ok_or_else(|| bad(field, usage))?;
+                let who = parse_principal(who).ok_or_else(|| bad(field, usage))?;
+                let account: u64 = account.trim().parse().map_err(|_| bad(field, usage))?;
+                bond.forfeit_to = Some((who, AccountId(account)));
             }
         }
         "side" => {
-            let (name, who) = value
-                .split_once(':')
-                .ok_or_else(|| bad(field, "`<name>:#<obj>`"))?;
-            let who = parse_obj(who).ok_or_else(|| bad(field, "`<name>:#<obj>`"))?;
+            let usage = "`<name>:#<obj>` or `<name>:org:<id>`";
+            let (name, who) = value.split_once(':').ok_or_else(|| bad(field, usage))?;
+            let who = parse_principal(who).ok_or_else(|| bad(field, usage))?;
             if terms.sides.len() >= MAX_SIDES {
                 return Err(bad(field, "at most 8 sides"));
             }
             terms.sides.push(SideSpec {
                 name: SmolStr::new(name.trim()),
-                principal: PrincipalId::Object(who),
+                principal: who,
             });
         }
         "sides" if value == "none" => terms.sides.clear(),
         "defender" => {
-            let who = parse_obj(value).ok_or_else(|| bad(field, "`#<obj>`"))?;
-            terms
-                .eligible_defenders
-                .members
-                .push(PrincipalId::Object(who));
+            let who = parse_principal(value).ok_or_else(|| bad(field, "`#<obj>` or `org:<id>`"))?;
+            terms.eligible_defenders.members.push(who);
         }
         "defenders" if value == "none" => terms.eligible_defenders.members.clear(),
         "visibility" => {
@@ -738,6 +758,19 @@ fn parse_objective(value: &str) -> Option<ObjectiveKind> {
             .parse()
             .ok()
             .map(|minimum| ObjectiveKind::Muster { minimum });
+    }
+    // Doc 50 OP.0 (Q-50-57 item 3): read once at the close, from the composed probe.
+    if let Some(rest) = value.strip_prefix("probe:") {
+        let (probe, favors) = rest.rsplit_once(':')?;
+        let met_favors = match favors.trim() {
+            "declarer" => Favors::Declarer,
+            "defenders" => Favors::Defenders,
+            _ => return None,
+        };
+        return Some(ObjectiveKind::ProbeAtClose {
+            probe: SmolStr::new(probe.trim()),
+            met_favors,
+        });
     }
     if let Some(rest) = value.strip_prefix("canon:") {
         let (kind, source) = rest.split_once(':')?;
@@ -809,6 +842,12 @@ fn op_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let mut runtime = doc.runtime;
     runtime.state = OperationState::Activated;
+    // Doc 50 §4.3 (doc 50a A-2g): the bond is placed now, so an "unfunded" pause a cut-9 tick
+    // left on the declared operation no longer describes it. The tick no longer pauses a
+    // declared operation at all; this clears one stored before that fix.
+    if runtime.paused == Some(crate::record::PauseReason::Unfunded) {
+        runtime.paused = None;
+    }
     runtime.revision = runtime.revision.saturating_add(1);
     put_operation(ctx, OperationDoc { terms, runtime });
     ctx.out.info(
@@ -1629,7 +1668,29 @@ mod tests {
                 source: SmolStr::new_static("run:9#1"),
             })
         );
-        for bad in ["", "muster", "muster:x", "canon:onlykind", "nope"] {
+        assert_eq!(
+            parse_objective("probe:isidis.tank_farm:defenders"),
+            Some(ObjectiveKind::ProbeAtClose {
+                probe: SmolStr::new_static("isidis.tank_farm"),
+                met_favors: Favors::Defenders,
+            })
+        );
+        assert_eq!(
+            parse_objective("probe:a:b:declarer"),
+            Some(ObjectiveKind::ProbeAtClose {
+                probe: SmolStr::new_static("a:b"),
+                met_favors: Favors::Declarer,
+            })
+        );
+        for bad in [
+            "",
+            "muster",
+            "muster:x",
+            "canon:onlykind",
+            "nope",
+            "probe:onlyname",
+            "probe:x:nobody",
+        ] {
             assert_eq!(parse_objective(bad), None, "{bad}");
         }
     }

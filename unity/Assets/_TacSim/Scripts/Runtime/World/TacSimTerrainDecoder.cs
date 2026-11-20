@@ -92,6 +92,24 @@ namespace TacSim.World
         public int SiteToLocalCellX(int siteX) => Mathf.Clamp((siteX - OriginCellX) / Math.Max(1, SpanCells), 0, Math.Max(0, Width - 1));
         public int SiteToLocalCellY(int siteY) => Mathf.Clamp((siteY - OriginCellY) / Math.Max(1, SpanCells), 0, Math.Max(0, Height - 1));
 
+        public int LocalPosToSiteCellX(float localX)
+        {
+            int span = Math.Max(1, SpanCells);
+            float siteCellM = Mathf.Max(0.1f, CellSizeM / span);
+            int maxOffset = Math.Max(0, Width * span - 1);
+            int offset = Mathf.Clamp(Mathf.FloorToInt(localX / siteCellM), 0, maxOffset);
+            return OriginCellX + offset;
+        }
+
+        public int LocalPosToSiteCellY(float localZ)
+        {
+            int span = Math.Max(1, SpanCells);
+            float siteCellM = Mathf.Max(0.1f, CellSizeM / span);
+            int maxOffset = Math.Max(0, Height * span - 1);
+            int offset = Mathf.Clamp(Mathf.FloorToInt(localZ / siteCellM), 0, maxOffset);
+            return OriginCellY + offset;
+        }
+
         public ArenaZoneRect RedEntryZone;
         public ArenaZoneRect BlueEntryZone;
         public string HoldSpotLetter = "B";
@@ -104,8 +122,9 @@ namespace TacSim.World
             if (ElevMeters == null || ElevMeters.Length == 0 || Width <= 0 || Height <= 0)
                 return 0f;
 
-            float gx = Mathf.Clamp(localX / Mathf.Max(0.1f, CellSizeM) - 0.5f, 0f, Width - 1.001f);
-            float gy = Mathf.Clamp(localZ / Mathf.Max(0.1f, CellSizeM) - 0.5f, 0f, Height - 1.001f);
+            // Match BuildSingleChunk vertex placement: vertex (gx, gy) sits at (gx * CellSizeM, gy * CellSizeM).
+            float gx = Mathf.Clamp(localX / Mathf.Max(0.1f, CellSizeM), 0f, Width - 1.001f);
+            float gy = Mathf.Clamp(localZ / Mathf.Max(0.1f, CellSizeM), 0f, Height - 1.001f);
 
             int x0 = Mathf.Clamp(Mathf.FloorToInt(gx), 0, Width - 1);
             int y0 = Mathf.Clamp(Mathf.FloorToInt(gy), 0, Height - 1);
@@ -465,7 +484,8 @@ namespace TacSim.World
                 {
                     int i = y * w + x;
                     char g = glyphs[i];
-                    TerrainCellClass cls = ClassFromGlyph(g);
+                    // site.map uses '=' for planetary surface Ice (site_map.rs:967,2318), whereas arena.map uses '=' for Road.
+                    TerrainCellClass cls = g == '=' ? TerrainCellClass.Ice : ClassFromGlyph(g);
                     if (hasHullCell && x == hullFx && y == hullFy)
                         cls = TerrainCellClass.Platform;
                     else if (g == ',' || g == '.' || g == ' ' || g == '+')
@@ -880,11 +900,21 @@ namespace TacSim.World
             int seed = 2605;
             float reliefM = 3.8f;
 
-            if (safeSlug && !string.IsNullOrEmpty(path) && File.Exists(path))
+            string regionJsonText = null;
+            if (safeSlug && TacSimContentLoader.TryGetSyncedOrResourceJson($"region.{clean}", out string syncedRegionJson))
+            {
+                regionJsonText = syncedRegionJson;
+            }
+            else if (safeSlug && !string.IsNullOrEmpty(path) && File.Exists(path))
+            {
+                regionJsonText = File.ReadAllText(path);
+            }
+
+            if (!string.IsNullOrEmpty(regionJsonText))
             {
                 try
                 {
-                    var root = JsonNode.Parse(File.ReadAllText(path));
+                    var root = JsonNode.Parse(regionJsonText);
                     var entries = root["entries"].AsObject();
                     if (entries != null)
                     {
@@ -1164,8 +1194,51 @@ namespace TacSim.World
             }
 
             tex.SetPixels32(pixels);
-            tex.Apply(updateMipmaps: true, makeNoLongerReadable: false);
+            tex.Apply(updateMipmaps: true, makeNoLongerReadable: true);
             return UrpMaterialFactory.CreateTexturedLit(grid.Id, tex, smoothness: 0.15f, metallic: 0.05f);
+        }
+
+        /// <summary>
+        /// Regenerates the terrain splatmap Texture2D/Material in-place on an existing chunk hierarchy
+        /// (for same-window `site.map` updates such as radar/seismic scans, ore-family toggles, and claims)
+        /// while destroying the superseded GPU Material and Texture2D cleanly.
+        /// </summary>
+        public static void RefreshTerrainSplatMaterial(DecodedTerrainGrid grid, Transform terrainRoot, bool showTacticalGrid = true)
+        {
+            if (grid == null || terrainRoot == null) return;
+            var renderers = terrainRoot.GetComponentsInChildren<MeshRenderer>(includeInactive: true);
+            if (renderers == null || renderers.Length == 0) return;
+
+            var oldMats = new HashSet<Material>();
+            var oldTexs = new HashSet<Texture>();
+            Material newMat = CreateTerrainSplatMaterial(grid, showTacticalGrid);
+
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var mr = renderers[i];
+                if (mr == null) continue;
+                var prev = mr.sharedMaterial;
+                if (prev != null && prev != newMat)
+                {
+                    oldMats.Add(prev);
+                    if (prev.mainTexture != null && prev.mainTexture.name.StartsWith("Splat_", StringComparison.Ordinal))
+                        oldTexs.Add(prev.mainTexture);
+                }
+                mr.sharedMaterial = newMat;
+            }
+
+            foreach (var mat in oldMats)
+            {
+                if (mat == null) continue;
+                if (Application.isPlaying) UnityEngine.Object.Destroy(mat);
+                else UnityEngine.Object.DestroyImmediate(mat);
+            }
+            foreach (var tex in oldTexs)
+            {
+                if (tex == null) continue;
+                if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
+                else UnityEngine.Object.DestroyImmediate(tex);
+            }
         }
 
         /// <summary>

@@ -21,7 +21,7 @@ on:
     inputs:
       # The M7 acceptance stories' Registry pace (`mind-commerce-acceptance`):
       # empty, the default, is the fast path (a 50 ms maintenance pulse, a
-      # genuine rating in minutes); `500` is the nightly schedule's pulse;
+      # genuine rating in minutes); `250` is the nightly schedule's pulse;
       # `1000` is production's, now too slow for a hosted runner's 6 hours.
       # `gh workflow run CI --ref <branch> -f mind_pulse_ms=1000`.
       mind_pulse_ms:
@@ -85,9 +85,11 @@ jobs:
     # six for the two market stories (7 and 10 s a lease). Since 2026-10-28 their
     # harness reads `MIND_PULSE_MS` (`paid_purchase::mind_pulse`): unset or
     # empty is a 50 ms pulse, a rating in minutes; `1000` is production's pace.
-    # The owner's rule (2026-11-19, replacing "always at production's pace"):
-    # the nightly schedule runs at a 500 ms pulse, half production's, because a
-    # production-pace market story no longer fits a hosted runner's 6 hours
+    # The owner's rule (2026-11-20, replacing "always at production's pace"):
+    # the nightly schedule runs at a 250 ms pulse, a quarter of production's,
+    # because a production-pace market story no longer fits a hosted runner's
+    # 6 hours, and at 500 ms the two market stories' ratings (~3,780 leases,
+    # about 4 h 12 min) still overran their 4 h guard
     # (Sunday's weekly run too: it is the nightly as well); a hand dispatch is fast unless it says
     # `-f mind_pulse_ms=<ms>` (the `MIND_PULSE_MS` env on the story step).
     # Production pacing is untouched: the pulse is not a file key.
@@ -145,9 +147,9 @@ jobs:
       # or timing waiver replaces those correctness checks.
       - name: Execute the exact M7 story
         env:
-          # The nightly run at 500 ms (the owner's call); a dispatch at the input's
+          # The nightly run at 250 ms (the owner's call); a dispatch at the input's
           # (empty = the fast path). The tacsim stories do not read it.
-          MIND_PULSE_MS: ${{ github.event_name == 'schedule' && '500' || inputs.mind_pulse_ms }}
+          MIND_PULSE_MS: ${{ github.event_name == 'schedule' && '250' || inputs.mind_pulse_ms }}
         # `--nocapture`: a passing story's `M7_*` lines (its rating's wall,
         # `M7_STORY_RATED`) are otherwise swallowed by the harness and only a
         # failure shows them (run 40707221516's typed story).

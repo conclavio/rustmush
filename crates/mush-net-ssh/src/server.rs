@@ -1290,13 +1290,6 @@ impl ConnHandler {
 
     // ---- TUI (milestone M15) --------------------------------------------
 
-    /// Pulse the repaint signal so the output pump renders a fresh frame
-    /// without waiting for a world event (input edits, resize).
-    fn fire_repaint(&self) {
-        let notify = Arc::clone(&self.lock().repaint);
-        notify.notify_one();
-    }
-
     /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
     /// repaint / submit / detach. Painting is left to the pump (fired via the
     /// repaint signal) so there is one steady-state frame writer, and invokes /
@@ -1310,52 +1303,14 @@ impl ConnHandler {
                 None => return Ok(()),
             }
         };
-        if result.detach {
-            return self.queue_line("@notui".to_owned());
-        }
-        // One burst can carry typed requests AND submitted lines (17g cut
-        // C3b's review): a form's Enter, then the screen's `Enter type` and
-        // the line's own Enter in the same read — key repeat, a slow link.
-        // Everything the burst produced is forwarded in order onto the bounded
-        // FIFO command worker, capped at `MAX_TUI_BURST_OPS` per packet so a
-        // hostile burst cannot stall the event loop or flood the queue (SSH-M3).
-        let mut budget = MAX_TUI_BURST_OPS;
-        for (id, request) in result.invokes {
-            if budget == 0 {
-                break;
-            }
-            budget -= 1;
-            self.queue_action(GameAction::Invoke { id, request })?;
-        }
-        for (name, args) in result.queries {
-            if budget == 0 {
-                break;
-            }
-            budget -= 1;
-            self.queue_action(GameAction::Query { name, args })?;
-        }
-        for (id, epoch, choice) in result.responds {
-            if budget == 0 {
-                break;
-            }
-            budget -= 1;
-            self.queue_action(GameAction::Respond { id, epoch, choice })?;
-        }
-        if !result.submit.is_empty() {
-            // Show the cleared input line immediately; the world's echo
-            // repaints again via the pump.
-            self.fire_repaint();
-            // A burst can carry more than one line (a multi-line paste); each
-            // is forwarded in order so none is dropped.
-            for line in result.submit {
-                self.queue_line(line)?;
-            }
-            return Ok(());
-        }
-        if result.redraw {
-            self.fire_repaint();
-        }
-        Ok(())
+        dispatch_tui_input_result(result, &self.shared, self.commands.as_ref())
+    }
+
+    /// Pulse the repaint signal so the output pump renders a fresh frame
+    /// without waiting for a world event (input edits, resize).
+    fn fire_repaint(&self) {
+        let notify = Arc::clone(&self.lock().repaint);
+        notify.notify_one();
     }
 
     async fn welcome_line(
@@ -1631,7 +1586,7 @@ impl ConnHandler {
                     sh.mode = Mode::InGame;
                     Arc::clone(&sh.repaint)
                 };
-                let (tx, mut commands) = mpsc::channel::<GameAction>(64);
+                let (tx, mut commands) = mpsc::channel::<GameAction>(128);
                 self.commands = Some(tx);
                 let mut worker = GameCommands {
                     hooks: Arc::clone(&self.hooks),
@@ -2499,9 +2454,12 @@ impl Handler for ConnHandler {
     }
 }
 
-/// Bounded per-connection action dispatched to the background `GameCommands`
-/// worker so neither line mode nor TUI mode ever awaits hooks inside a russh
-/// callback (SSH-M3).
+/// Bounded per-connection action processed sequentially by [`GameCommands`] so
+/// neither line mode nor TUI mode ever awaits hooks inside a russh callback
+/// (SSH-M3), and follow-up read-only queries emitted alongside submitted
+/// commands (e.g. `+market/quote` + `port.trade` refresh) never race ahead of
+/// the command they refresh.
+#[derive(Debug)]
 enum GameAction {
     Line(String),
     Invoke {
@@ -2517,6 +2475,98 @@ enum GameAction {
         epoch: String,
         choice: mush_proto::RespondChoice,
     },
+}
+
+/// Dispatch one decoded TUI input burst synchronously onto the bounded FIFO
+/// command channel so slow hooks never stall `russh::Session::run` (SSH-M3):
+/// typed invokes/responds first (preserving 17g cut C3b), then submitted lines
+/// followed on the SAME FIFO channel by any follow-up queries emitted alongside
+/// them so commands execute before refresh queries read world state, capped at
+/// [`MAX_TUI_BURST_OPS`] invokes + responds + queries per packet.
+fn dispatch_tui_input_result(
+    result: crate::tui::InputResult,
+    shared: &Mutex<Shared>,
+    commands: Option<&mpsc::Sender<GameAction>>,
+) -> Result<(), russh::Error> {
+    let queue_action = |action: GameAction| -> Result<(), russh::Error> {
+        let Some(tx) = commands else {
+            return Err(russh::Error::Disconnect);
+        };
+        tx.try_send(action).map_err(|_| russh::Error::Disconnect)
+    };
+    if result.detach {
+        return queue_action(GameAction::Line("@notui".to_owned()));
+    }
+    let mut budget = MAX_TUI_BURST_OPS;
+    for (id, request) in result.invokes {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        queue_action(GameAction::Invoke { id, request })?;
+    }
+    for (id, epoch, choice) in result.responds {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        queue_action(GameAction::Respond { id, epoch, choice })?;
+    }
+    if !result.submit.is_empty() {
+        // Show the cleared input line immediately; the world's echo
+        // repaints again via the pump.
+        let notify = Arc::clone(&connection_state(shared).repaint);
+        notify.notify_one();
+        // A burst can carry more than one line (a multi-line paste); each
+        // is forwarded in order so none is dropped.
+        for line in result.submit {
+            queue_action(GameAction::Line(line))?;
+        }
+        for (name, args) in result.queries {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            queue_action(GameAction::Query { name, args })?;
+        }
+        return Ok(());
+    }
+    for (name, args) in result.queries {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        queue_action(GameAction::Query { name, args })?;
+    }
+    if result.redraw {
+        let notify = Arc::clone(&connection_state(shared).repaint);
+        notify.notify_one();
+    }
+    Ok(())
+}
+
+/// Dispatch output-pump follow-up side effects after dropping the connection
+/// lock: typed invokes, then control lines (e.g. auto-accepted `+market/accept`
+/// or resumed room interactions), then follow-up refresh queries so commands
+/// always land ahead of the queries that observe their outcome.
+async fn flush_pump_side_effects(
+    hooks: &dyn SshHooks,
+    shared: &Mutex<Shared>,
+    conn_id: u64,
+    generation: u64,
+    invokes: Vec<(u64, mush_proto::InvokeRequest)>,
+    lines: Vec<String>,
+    queries: Vec<(String, serde_json::Value)>,
+) {
+    for (id, request) in invokes {
+        hooks.invoke(conn_id, id, request).await;
+    }
+    for line in lines {
+        hooks.control_line(conn_id, line).await;
+    }
+    for (name, args) in queries {
+        submit_query(hooks, shared, conn_id, name, args, Some(generation)).await;
+    }
 }
 
 // Connected typed commands may wait on persistence, restart, or output fences.
@@ -2617,7 +2667,7 @@ impl GameCommands {
             // before the screen it sits on goes away.
             let mut out = sh
                 .tui
-                .as_ref()
+                .as_mut()
                 .map(|t| t.pixel_close_bytes())
                 .unwrap_or_default();
             // Doc 21 cut G.4: a turn in progress stops where it was shown.
@@ -3383,6 +3433,9 @@ fn spawn_output_pump(
                             Mode::Tui if reply_wire_boundary(&ev) => {
                                 let mut bytes = Vec::new();
                                 if done {
+                                    if let Some(t) = sh.tui.as_mut() {
+                                        bytes.extend(t.pixel_close_bytes());
+                                    }
                                     bytes.extend_from_slice(TuiSession::leave_bytes());
                                     sh.tui = None;
                                     sh.mode = Mode::InGame;
@@ -3432,6 +3485,9 @@ fn spawn_output_pump(
                                             t.apply_stamped_event(&next.event, Some(next.seq)),
                                         );
                                     }
+                                }
+                                if let Some(t) = sh.tui.as_mut() {
+                                    lines.extend(t.pixel_take_orders());
                                 }
                                 sh.tui.as_mut().map(|t| t.paint()).unwrap_or_default()
                             }
@@ -3496,23 +3552,16 @@ fn spawn_output_pump(
             // locally, and a `Hello` names feeds to hydrate: ask the ordinary
             // read-only query seam after the connection lock has dropped; the
             // TUI de-duplicates resyncs until a valid replacement arrives.
-            for (id, request) in invokes {
-                hooks.invoke(conn_id, id, request).await;
-            }
-            for (name, args) in queries {
-                submit_query(
-                    hooks.as_ref(),
-                    &shared,
-                    conn_id,
-                    name,
-                    args,
-                    Some(generation),
-                )
-                .await;
-            }
-            for line in lines {
-                hooks.control_line(conn_id, line).await;
-            }
+            flush_pump_side_effects(
+                hooks.as_ref(),
+                &shared,
+                conn_id,
+                generation,
+                invokes,
+                lines,
+                queries,
+            )
+            .await;
 
             if !bytes.is_empty() {
                 let sent = bytes.len();
@@ -3577,14 +3626,23 @@ fn spawn_output_pump(
             return;
         }
         // If the connection tore down while still on the alternate screen,
-        // restore it so the client is never stuck there (invariant T5).
-        let was_tui = matches!(shared.lock().expect("conn state poisoned").mode, Mode::Tui);
-        if was_tui {
-            let _ = tokio::time::timeout(
-                WRITE_TIMEOUT,
-                handle.data(channel, TuiSession::leave_bytes().to_vec()),
-            )
-            .await;
+        // free retained Kitty images & restore it so the client is never stuck there (invariant T5).
+        let teardown_bytes = {
+            let mut sh = shared.lock().expect("conn state poisoned");
+            if matches!(sh.mode, Mode::Tui) {
+                let mut out = sh
+                    .tui
+                    .as_mut()
+                    .map(|t| t.pixel_close_bytes())
+                    .unwrap_or_default();
+                out.extend_from_slice(TuiSession::leave_bytes());
+                Some(out)
+            } else {
+                None
+            }
+        };
+        if let Some(bytes) = teardown_bytes {
+            let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, bytes)).await;
         }
 
         // Close in channel order, after the last data. A connection-level
@@ -4076,6 +4134,178 @@ mod tests {
         }
         assert!(!serving.is_finished());
         serving.abort();
+    }
+
+    struct RecordingHooks {
+        events: Mutex<Vec<String>>,
+    }
+
+    impl RecordingHooks {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn push(&self, entry: String) {
+            self.events.lock().unwrap().push(entry);
+        }
+
+        fn snapshot(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl SshHooks for RecordingHooks {
+        fn auth_account<'a>(
+            &'a self,
+            _account: &'a str,
+            _password: &'a str,
+        ) -> futures::future::BoxFuture<'a, AuthResult> {
+            Box::pin(async { AuthResult::BadCreds })
+        }
+
+        fn create_account<'a>(
+            &'a self,
+            _account: &'a str,
+            _password: &'a str,
+        ) -> futures::future::BoxFuture<'a, Result<(), crate::hooks::CreateErr>> {
+            Box::pin(async { Err(crate::hooks::CreateErr::Taken) })
+        }
+
+        fn connect_character<'a>(
+            &'a self,
+            _conn: NewConn,
+            _account: &'a str,
+            _character: u64,
+        ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn line(&self, _conn: u64, line: String) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("line:{line}"));
+            })
+        }
+
+        fn control_line(&self, _conn: u64, line: String) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("control_line:{line}"));
+            })
+        }
+
+        fn invoke(
+            &self,
+            _conn: u64,
+            id: u64,
+            _request: mush_proto::InvokeRequest,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("invoke:{id}"));
+            })
+        }
+
+        fn query(
+            &self,
+            _conn: u64,
+            _id: u64,
+            name: String,
+            _args: serde_json::Value,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                self.push(format!("query:{name}"));
+            })
+        }
+
+        fn disconnected(&self, _conn: u64) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+
+        fn is_ip_blocked(&self, _addr: IpAddr) -> bool {
+            false
+        }
+
+        fn block_reason(&self, _addr: IpAddr) -> Option<crate::hooks::BlockReason> {
+            None
+        }
+
+        fn auth_failed(&self, _addr: IpAddr) {}
+    }
+
+    #[tokio::test]
+    async fn dispatch_tui_input_result_queues_commands_strictly_before_followup_queries() {
+        let hooks = RecordingHooks::new();
+        let shared = Mutex::new(line_mode_shared());
+        let (tx, mut rx) = mpsc::channel::<GameAction>(32);
+
+        let result = crate::tui::InputResult {
+            submit: vec!["+market/quote 42=5".to_owned()],
+            queries: vec![("port.trade".to_owned(), serde_json::json!({}))],
+            redraw: true,
+            ..Default::default()
+        };
+        dispatch_tui_input_result(result, &shared, Some(&tx)).unwrap();
+
+        // Must NOT have dispatched `port.trade` eagerly ahead of `+market/quote 42=5`.
+        assert!(
+            hooks.snapshot().is_empty(),
+            "follow-up queries paired with submit must wait behind the submitted command"
+        );
+
+        // Query-only inputs (no submit) also enqueue non-blockingly onto the FIFO queue (SSH-M3).
+        let query_only = crate::tui::InputResult {
+            queries: vec![(
+                "tacsim.content".to_owned(),
+                serde_json::json!({"op": "manifest"}),
+            )],
+            ..Default::default()
+        };
+        dispatch_tui_input_result(query_only, &shared, Some(&tx)).unwrap();
+
+        // Drain the FIFO command queue in exact consumer order.
+        drop(tx);
+        while let Some(action) = rx.recv().await {
+            match action {
+                GameAction::Line(line) => hooks.line(1, line).await,
+                GameAction::Invoke { id, request } => hooks.invoke(1, id, request).await,
+                GameAction::Query { name, args } => {
+                    submit_query(&hooks, &shared, 1, name, args, None).await;
+                }
+                GameAction::Respond { id, epoch, choice } => {
+                    hooks.respond(1, id, epoch, choice).await;
+                }
+            }
+        }
+        assert_eq!(
+            hooks.snapshot(),
+            vec![
+                "line:+market/quote 42=5",
+                "query:port.trade",
+                "query:tacsim.content",
+            ],
+            "submitted trade command must execute strictly before port.trade refresh query"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_pump_side_effects_runs_control_lines_before_refresh_queries() {
+        let hooks = RecordingHooks::new();
+        let shared = Mutex::new(line_mode_shared());
+        flush_pump_side_effects(
+            &hooks,
+            &shared,
+            1,
+            0,
+            Vec::new(),
+            vec!["+market/accept 77".to_owned()],
+            vec![("port.trade".to_owned(), serde_json::json!({}))],
+        )
+        .await;
+        assert_eq!(
+            hooks.snapshot(),
+            vec!["control_line:+market/accept 77", "query:port.trade"],
+            "auto-accept control line must run strictly before follow-up refresh query"
+        );
     }
 
     #[test]
