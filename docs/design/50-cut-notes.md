@@ -615,7 +615,62 @@ on KC.2. No lane bump.
 
 ## KC.4
 
-Not built.
+The Co-op's enrollment share by control (Q-50-7). Stacked on KC.3. **A lane bump: lane v48 and
+relay v39**, from KC.2's v47.
+
+**Survey.**
+- The share was one number, the lane programme's `share_permille` (250). It is frozen on the
+  enrollment at `+coop/enroll` (`EnrolPlan.share_permille`) and read by the proceeds at every
+  sale.
+- Two lines of copy said "a quarter": the registrar's line (`REGISTRAR_LINE`, shown by `+coop`)
+  and the `+coop` help (`COOP_HELP`).
+- `+coop`'s terms line printed the programme's permille. `docs/help/coop.md` describes the share
+  in the same words.
+
+**Built.**
+- A terms row gains `coop_share_permille: Option<u16>`, checked at 1,000 at most. Lane v48 sets
+  300 on the Republic's Kirkwood row.
+- `port::coop::signing_share_permille(w, programme_share) -> u32` gives the share a new
+  enrollment signs at: the Kirkwood approach's live terms row's `coop_share_permille` when the
+  holder's row sets one, else the programme's. `+coop/enroll` freezes it on the enrollment.
+  Standing enrollments keep what they signed at; the proceeds still read the enrollment.
+- **The copy:**
+  - `REGISTRAR_LINE` is a template (`{share}`), filled by `registrar_line(permille)` with
+    `share_words` ("a quarter" at 250, "three tenths" at 300, "half" at 500, else the permille).
+  - `+coop`'s terms line prints the signing share.
+  - `COOP_HELP` and `docs/help/coop.md` say the share is a quarter, or more while a holder of the
+    Kirkwood approach sets it so, fixed at signing.
+- **Lane v48:**
+  - the Republic row's `coop_share_permille: 300`;
+  - relay v39, re-signed to require it;
+  - `lane_chain::strip_coop_share` as the chain's new head, with
+    `kc4_strip_coop_share_rebuilds_the_published_v47` holding KC.2's digest;
+  - no venue word or other client-pinned list moved, so the SSH and web pins are unchanged.
+
+**Tests.**
+- `tests/domain_economy/coop.rs`,
+  `kc4_new_enrollments_sign_at_the_holders_share_and_standing_ones_keep_theirs`:
+  - under the Co-op's hold, `+coop` offers a quarter and 250‰, and the first captain signs at 250;
+  - after the flip, `+coop` offers three tenths and 300‰, and the second captain signs at 300;
+  - the first captain's enrollment keeps 250.
+- `ic6_enrol_once…` reads the registrar line through `registrar_line(250)`.
+- Mutation-checked on conclav.dev; each failed the story and was undone by a reverse edit:
+  - the signing share ignoring the row;
+  - "three tenths" spelled as a quarter.
+- Lane pins moved to v48 and relay v39: `lane.rs`, `cost_lane.rs`, `sites.rs`, `drones.rs`,
+  `mill.rs`, `stations.rs`, `boot_parity.rs`, `relay_registry.rs`.
+- Green on conclav.dev: clippy `-D warnings` on tacsim, every tacsim binary, mush-server
+  `split_boundary` and `commerce_composition`, and mush-bot's `coop_sentences` (the registrar
+  line's last sentence, which the bot mirrors, is unchanged). Locally: rustdoc in both modes, the
+  contract guards and the help lint.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- The share is read from the Kirkwood approach's terms (the region the flip changes), whichever
+  port the Co-op signs at.
+- Shares with no word of their own print as permille in the registrar's line.
+
+**Not built.**
+- Nothing of Q-50-7 is left. The Co-op's other terms (stake, buyout) are unchanged by control.
 
 ## LW.1
 

@@ -11,7 +11,9 @@ reads the terms and how many Drays are free, from anywhere.
 
   the stake       the working cash the Co-op puts in your account
   the share       the part of your trading margin over the Co-op's reference
-                  prices that goes to the Co-op on every sale
+                  prices that goes to the Co-op on every sale: a quarter, or
+                  more while a holder of the Kirkwood approach sets it so;
+                  fixed on your papers when you sign
   the buyout      the price at which the hull becomes yours, fixed on your
                   papers when you sign
   one at a time   one charter per account at a time: no other character on
