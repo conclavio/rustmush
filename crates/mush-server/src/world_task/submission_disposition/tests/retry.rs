@@ -438,3 +438,38 @@ async fn plain_transient_keeps_existing_refusal_and_cannot_enter_observed_retry(
     check!(driver.retry_after.is_none());
     Ok(())
 }
+
+/// Doc 43c §3.3 (TS.10c): the world task refuses a paused test clock over a
+/// store that does not live wholly in process memory. `TransientPreflightStore`
+/// forwards to a memory store but does not claim `holds_process_memory`, as
+/// Redis does not; the spawn refuses it before any task starts.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[should_panic(expected = "refuses TimeSource::Tokio")]
+async fn ts10c_the_world_task_refuses_a_paused_clock_over_a_store_it_cannot_pause() {
+    let deps = crate::world_task::ServerDeps {
+        store: Arc::new(TransientPreflightStore::new(0)),
+        time: mush_config::TimeSource::tokio_at(1_900_000_000_000),
+        ..crate::world_task::ServerDeps::in_memory()
+    };
+    let _ = crate::world_task::spawn_persist_with_gateway(
+        crate::world_task::boot_engine(),
+        deps,
+        |_| -> crate::world_task::Gateway { Arc::new(crate::world_task::tests::BlackholeGateway) },
+    );
+}
+
+/// The same store on the System clock spawns: the guard refuses only the
+/// paused arm.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ts10c_the_system_clock_spawns_over_any_store() {
+    let deps = crate::world_task::ServerDeps {
+        store: Arc::new(TransientPreflightStore::new(0)),
+        ..crate::world_task::ServerDeps::in_memory()
+    };
+    let handles = crate::world_task::spawn_persist_with_gateway(
+        crate::world_task::boot_engine(),
+        deps,
+        |_| -> crate::world_task::Gateway { Arc::new(crate::world_task::tests::BlackholeGateway) },
+    );
+    drop(handles);
+}

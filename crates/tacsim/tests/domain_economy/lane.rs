@@ -82,7 +82,10 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 48 unit EX.3: v38, the port orgs' market roles (was `f668f711…` at v37).
 /// Doc 48 unit PL.8: v41, the workshops' part bids (was `80a752d6…` at v40; `622abacb…` at v39;
 /// `3e569568…` at v38).
-const LANE_DIGEST: &str = "3ba2ea9d1fb4c83daf19a0ef1d9044a9bc95edcf7cdee9cf0d726b8b1c20036a";
+/// Doc 48 unit EX.9: v42, the consumers' rows (was `3ba2ea9d…` at v41).
+/// Doc 48 unit EX.10: v43, the hauling house and Deimos's consumers (was `7c9b9614…` at v42).
+/// Doc 48e lane L4: v44, the consumers' refresh and Titan's ice (was `8a4361c4…` at v43).
+const LANE_DIGEST: &str = "c8e6fd26b4759a8c02fff8cf8fbb62691dcc73d408ca9d518d4f35b8865ca3fd";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -362,6 +365,115 @@ fn floor_strip_licence_grace_rebuilds_the_published_v29() {
     );
 }
 
+/// **Doc 48e lane L4 (lane v44)**: every consumer's bid refreshes at most at its intake (exchange
+/// G19: a filled consumer bid reopens), and the Titan Concession buys ice and mills it into the
+/// volatiles its provisions farm draws (production G21).
+#[test]
+fn e48_consumers_refresh_and_titan_makes_its_volatiles() {
+    let doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    let mut consumers = 0;
+    for (entry, body) in doc["entries"].as_object().expect("entries") {
+        for vendor in body["def"]["vendors"].as_array().into_iter().flatten() {
+            if vendor.get("consume").is_none() {
+                continue;
+            }
+            consumers += 1;
+            for bid in vendor["bids"].as_array().into_iter().flatten() {
+                let refresh = &bid["refresh"];
+                assert!(
+                    refresh["per_ic_day"].as_u64().is_some_and(|n| n > 0)
+                        && refresh["cap"] == bid["intake"],
+                    "{entry} {}: {bid}",
+                    vendor["org"]
+                );
+            }
+        }
+    }
+    assert_eq!(
+        consumers, 4,
+        "the Board, the Reserve, Syrtis Bonded and the Selk Townships"
+    );
+    let titan = doc["entries"]["titan_port"]["def"]["vendors"]
+        .as_array()
+        .and_then(|vendors| vendors.iter().find(|v| v["org"] == "titan_concession"))
+        .expect("the Titan Concession");
+    assert!(
+        titan["bids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|bid| bid["good"] == "ice_ore" && bid.get("refresh").is_some()),
+        "{titan}"
+    );
+    assert!(
+        titan["mill"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|mill| mill["ore"] == "ice_ore" && mill["into"] == "volatiles"),
+        "{titan}"
+    );
+}
+
+/// **Doc 48e lane L4: `strip_refresh_and_ice` rebuilds the published v43** — the shipped v44
+/// less the consumers' `refresh` rows (exchange G19) and Titan's ice bid and ice mill
+/// (production G21), re-signed at 43, is EX.10's lane digest.
+#[test]
+fn e48_strip_refresh_and_ice_rebuilds_the_published_v43() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 43.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_refresh_and_ice(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_refresh_and_ice(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v43 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "8a4361c420f12d99bfe8368043ba2e0ec5d03337ea3d87cc87d7a38cf14b77b9"
+    );
+}
+
+/// **Doc 48 unit EX.10: `strip_hauling` rebuilds the published v42** — the shipped v43 less
+/// the Vesta Carrying Company (its org and its `hauler` block) and the Deimos reserve's `consume`
+/// rows, re-signed at 42, is EX.9's lane digest.
+#[test]
+fn ex10_strip_hauling_rebuilds_the_published_v42() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 42.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_hauling(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_hauling(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v42 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "7c9b96141cb0557f36182630c5be161ca9a132778441e36ab9278ee33b2a91aa"
+    );
+}
+
+/// **Doc 48 unit EX.9: `strip_consumption` rebuilds the published v41** — the shipped v42 less
+/// the consumers' `consume` rows, re-signed at 41, is PL.8's lane digest.
+#[test]
+fn ex9_strip_consumption_rebuilds_the_published_v41() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 41.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_consumption(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_consumption(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v41 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "3ba2ea9d1fb4c83daf19a0ef1d9044a9bc95edcf7cdee9cf0d726b8b1c20036a"
+    );
+}
+
 /// **Doc 48 unit PL.8: `strip_parts_market` rebuilds the published v40** — the shipped v41 less
 /// the workshops' part bids (Stickney Yards' light plant back at 4,000), re-signed at 40, is
 /// PL.6's lane digest.
@@ -589,8 +701,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        41,
-        "lane v41 since doc 48 unit PL.8 (v40 at doc 48 unit PL.6, v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        44,
+        "lane v44 since doc 48e lane L4 (v43 at doc 48 unit EX.10, v42 at doc 48 unit EX.9, v41 at doc 48 unit PL.8, v40 at doc 48 unit PL.6, v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
@@ -1861,17 +1973,18 @@ fn sm10_lane_v12_carries_the_fees_the_syndicate_and_the_paper() {
     assert_eq!(syndicate[0].name, "Pallas Syndicate");
     assert_eq!(syndicate[0].capital_major, 50_000);
     assert_eq!(syndicate[0].faction.as_str(), "syndicate");
-    // Appended last, and doc 39 cut IN.5's Freeport Works after it.
+    // Appended last, and doc 39 cut IN.5's Freeport Works after it (doc 48 unit EX.10's Vesta
+    // Carrying Company after both).
     let tail: Vec<&str> = ceres
         .orgs
         .iter()
         .rev()
-        .take(2)
+        .take(3)
         .map(|org| org.id.as_str())
         .collect();
     assert_eq!(
         tail,
-        ["freeport_works", "pallas_syndicate"],
+        ["vesta_carriers", "freeport_works", "pallas_syndicate"],
         "appended last"
     );
     let Some(PackEntry::Port(occator)) = pack.entry(&cid("occator_port")) else {

@@ -42,13 +42,19 @@ suspend a registration; `+enduser` then says so, and staff can tell you why.
 +core
 +core/buy <I|II|III> [go]
 +core/fit <core>=<hull> [go]
++core/sell <core>[=go]
++core/offer #<core or ship>=<player> price=<n>
++core/offer #<core or ship>=withdraw
++core/offers
++core/accept #<core or ship>[=go]
 ```
 
 The counter does the shop's half of every step below for you, and submits your own steps
 when you have said go to the price. `+core/buy II` says what a Class II core costs and how
 long the shop works on it; `+core/buy II go` orders it. The shop draws a certified die, your
 payment goes in, the hours run, and the core is delivered into your hands, titled to you.
-You may order from anywhere. Class III needs your end-user registration (above).
+The price is paid from your free credit: money held on your account does not count. You may
+order from anywhere. Class III needs your end-user registration (above).
 
 `+core/fit <core>=<hull>` fits a governed core you hold, new or one a fitting displaced
 earlier, to a hull titled to you: a Dray or a prospector rig. Sign it where the shop stands,
@@ -58,6 +64,21 @@ displaces comes back to your hands. A Co-op charter is the Co-op's hull: `+coop/
 makes her yours first. A ship with a mind sealed aboard is held as she is; `+ship/mind off`
 first. `+core` reads where the shop stands, the cores in your hands and what the counter is
 doing for you. The Co-op's yard does not re-dress a cored Dray as a Dray-P.
+
+`+core/sell <core>` quotes what the shop pays for a governed core in your hands, one a
+fitting displaced or one never fitted: a share of its catalog price. `+core/sell <core>=go`
+sells it. The shop pays your own credit account and takes the core and its title. Say it
+where the shop stands, as you sign a fitting. A fitted core, a destroyed core and a core you
+do not hold are not bought, and the shop buys only while its till can pay.
+
+`+core/offer #<core>=<player> price=<n>` offers a governed core in your hands to one
+player, by its object number, for 28 days. Name your ship instead (`#<ship>`) to offer
+her with the core fitted in her: both titles and her hold pass together. This is the
+only way a cored hull is sold; `+market/post` will not list her. The price is in
+centicredits; the venue takes 3% and the Registry 1%. `+core/offer #<core>=withdraw`
+withdraws your offer, and `+core/offers` lists the offers to and from you. The buyer
+reads an offer made to them with `+core/accept #<core>`, and `+core/accept #<core>=go`
+buys it, paying from their own credit account as the core and its title pass to them.
 
 The steps the counter takes are the offers below, which `+act` also reaches.
 

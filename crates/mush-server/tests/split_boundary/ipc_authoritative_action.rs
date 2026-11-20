@@ -1458,6 +1458,7 @@ fn boot_world() -> mush_server::world_task::PersistHandles {
             metrics: Arc::new(mush_config::metrics::Metrics::new()),
             quarantine_spool: mush_server::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         |_| -> mush_server::world_task::Gateway { Arc::new(BlackholeGateway) },
     )

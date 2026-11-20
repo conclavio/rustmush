@@ -26,6 +26,7 @@ import {
 import {
   beginOneClickBuy,
   computeMaxFitQuantity,
+  CORRIDOR_DESTINATIONS,
   decodePortTradeFeed,
   emptyPortTradeSnapshot,
   parseGoodsJson,
@@ -33,6 +34,13 @@ import {
   resolvePendingQuoteFromFeed,
   TACSIM_CONTENT_FEED,
 } from "./trade";
+import {
+  decodeSpaceFireFeed,
+  formatHeldLockSummary,
+  formatMountAtLockEffect,
+  formatMountMeta,
+  formatMountStateLabel,
+} from "./space-fire";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
@@ -158,79 +166,85 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
   });
 });
 
+describe("Corridor destinations (48e L8, clients:G7)", () => {
+  it("offers exactly the lane's venue words", () => {
+    const lane = JSON.parse(readRepoContent("lane/ceres_phobos.json")) as {
+      entries: Record<string, { kind: string; def: Record<string, any> }>;
+    };
+    const venues = Object.values(lane.entries)
+      .filter((e) => e.kind === "port")
+      .map((e) => e.def["venue"] as string)
+      .sort();
+    expect(CORRIDOR_DESTINATIONS.map((d) => d.id).sort()).toEqual(venues);
+  });
+});
+
 describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
-  it("decodes goods.json + port.trade, computes MAX FIT, and guards 1-click Quote-to-Accept", () => {
+  it("decodes a real port.trade frame, computes MAX FIT, and guards 1-click Quote-to-Accept", () => {
     const goods = parseGoodsJson(readRepoContent("market/goods.json"));
     expect(goods.size).toBeGreaterThanOrEqual(6);
 
-    const feed1 = decodePortTradeFeed(
-      {
-        venue: { id: "ceres.exchange", label: "Freeport Commodity Exchange", port: "Ceres" },
-        credit: { minor: 50_000, text: "500.00 Cr" },
-        asks: [
-          {
-            id: 41,
-            side: "ask",
-            good: "volatiles",
-            vendor: "Occator Ice",
-            qty: 80,
-            unit: "t",
-            execution_price_minor: 10_000,
-            execution_price_text: "100.00 Cr",
-          },
-        ],
-        bids: [
-          {
-            id: 52,
-            side: "bid",
-            good: "metals",
-            vendor: "Freeport Works",
-            qty: 40,
-            unit: "t",
-            execution_price_minor: 22_000,
-            execution_price_text: "220.00 Cr",
-          },
-        ],
-        stowage: {
-          cargo_kg: 10_000,
-          cargo_max_kg: 100_000,
-          cargo_l: 14_000,
-          cargo_max_l: 120_000,
-          propellant_kg: 40_000,
-          propellant_max_kg: 80_000,
-          provisions_crew_days: 30,
-          provisions_max_crew_days: 120,
-        },
-      },
-      goods,
-      emptyPortTradeSnapshot(),
-    );
+    // 48e L8 (clients:G2): a frame the server built, held to the live shape by
+    // tacsim's `port_trade_frame_matches_the_clients_shared_fixture`.
+    const frame = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, "web/src/lib/fixtures/port/port_trade.json"), "utf-8"),
+    ) as Record<string, any>;
+    const listings = frame.listings as Array<Record<string, any>>;
+    const askRow = listings.find((r) => r.side === "ask")!;
+    const bidRow = listings.find((r) => r.side === "bid")!;
+    const stow = frame.ship.stowage as Record<string, any>;
 
-    expect(feed1.asks).toHaveLength(1);
-    expect(feed1.bids).toHaveLength(1);
-    const ask = feed1.asks[0]!;
-    // 500 Cr / 100 Cr per t = 5 t affordable
-    expect(computeMaxFitQuantity(ask, goods, feed1.stowage, feed1.creditsMinor)).toBe(5);
+    const feed1 = decodePortTradeFeed(frame, goods, emptyPortTradeSnapshot());
+    expect(feed1.creditsMinor).toBe(frame.balance_minor);
+    expect(feed1.creditsText).toBe(frame.balance_text);
+    expect(feed1.portName).toBe(frame.port_name);
+    expect(feed1.asks.length + feed1.bids.length).toBe(listings.length);
+    expect(feed1.bids.length).toBeGreaterThan(0);
+    const ask = feed1.asks.find((a) => a.listingId === askRow.id)!;
+    expect(ask.quantity).toBe(askRow.available_qty);
+    expect(ask.itemName).toBe(askRow.good_label);
+    expect(ask.vendorName).toBe(askRow.vendor_name);
+    expect(feed1.bids.find((b) => b.listingId === bidRow.id)?.quantity).toBe(bidRow.available_qty);
+    expect(feed1.quotes.map((q) => q.quoteId)).toEqual(
+      (frame.open_quotes as Array<Record<string, any>>).map((q) => q.quote_id),
+    );
+    expect(feed1.hullName).toBe(frame.ship.hull_name);
+    expect(feed1.hullId).toBe(frame.ship.hull_id);
+    expect(feed1.stowage.cargoMaxKg).toBe(Math.max(1, stow.cargo_limit_kg));
+    expect(feed1.stowage.cargoMaxL).toBe(Math.max(1, stow.cargo_limit_l));
+    expect(feed1.stowage.propellantMaxKg).toBe(Math.max(1, stow.tank_limit_kg));
+    expect(feed1.stowage.provisionsMaxCrewDays).toBe(stow.stores_limit_days);
+    expect(feed1.stowage.cargoLines.map((l) => [l.good, l.qty])).toEqual(
+      (stow.items as Array<Record<string, any>>).map((i) => [i.good, i.qty]),
+    );
+    expect(feed1.hasMore).toBe(frame.next_after !== null);
+    expect(feed1.nextAfterId).toBe(frame.next_after);
+
+    // MAX FIT: the wallet bounds it at floor(balance / price), the listing at its stock.
+    const expectFit = Math.max(
+      1,
+      Math.min(ask.quantity, Math.floor(feed1.creditsMinor / ask.unitPriceMinor)),
+    );
+    expect(computeMaxFitQuantity(ask, goods, feed1.stowage, feed1.creditsMinor)).toBeLessThanOrEqual(
+      expectFit,
+    );
 
     const started = beginOneClickBuy(ask, 4, 1_000)!;
-    expect(started.quoteCommand).toBe("+market/quote 41=4");
+    expect(started.quoteCommand).toBe(`+market/quote ${ask.listingId}=4`);
 
     // Matching quote at <= maxUnitPriceMinor auto-accepts
-    const withGoodQuote = decodePortTradeFeed(
-      { quotes: [{ id: 901, listing_id: 41, qty: 4, unit_price_minor: 10_000 }] },
-      goods,
-      feed1,
-    );
+    const quoteRow = (price: number, id: number) => ({
+      open_quotes: [
+        { quote_id: id, listing_id: ask.listingId, quantity: 4, unit_price_minor: price, total_minor: price * 4 },
+      ],
+    });
+    const withGoodQuote = decodePortTradeFeed(quoteRow(ask.unitPriceMinor, 901), goods, feed1);
     const okRes = resolvePendingQuoteFromFeed(withGoodQuote, started.latch, 1_500);
     expect(okRes.acceptCommand).toBe("+market/accept 901");
     expect(okRes.priceWarning).toBeNull();
 
     // Quote whose price moved above maxUnitPriceMinor refuses auto-accept and warns
-    const withMovedQuote = decodePortTradeFeed(
-      { quotes: [{ id: 902, listing_id: 41, qty: 4, unit_price_minor: 13_500 }] },
-      goods,
-      feed1,
-    );
+    const withMovedQuote = decodePortTradeFeed(quoteRow(ask.unitPriceMinor + 3_500, 902), goods, feed1);
     const warnRes = resolvePendingQuoteFromFeed(withMovedQuote, started.latch, 1_500);
     expect(warnRes.acceptCommand).toBeNull();
     expect(warnRes.priceWarning).toContain("Quote #902 moved");
@@ -332,10 +346,111 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
     await tick();
 
     expect(app.tacsim.seatedAtBridgeHelm).toBe(true);
+
+    // Deliver a Doc 49 CC.9 `space.cockpit` frame while seated at Bridge Helm
+    socket.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.cockpit",
+          kind: "keyframe",
+          data: {
+            active: true,
+            yaw_deg: 20,
+            thrust_permille: 500,
+            emcon: "ACTIVE",
+            fire: {
+              mounts: [
+                {
+                  id: "laser_dorsal",
+                  family: "laser",
+                  ready_in_ms: 0,
+                  state: "ready",
+                  mode: "offence",
+                  damage: 98,
+                },
+                {
+                  id: "rail_spinal",
+                  family: "spinal",
+                  ready_in_ms: 2400,
+                  state: "cycling",
+                  rounds: 31,
+                  rounds_max: 32,
+                  flight_ms: 2200,
+                },
+              ],
+              lock_id: "raider.7.1",
+              lock: {
+                id: "raider.7.1",
+                label: "Belt Raider",
+                range_m: 42_000,
+                facet: "top",
+              },
+            },
+          },
+        },
+      } as OutputEvent,
+      4,
+    );
+    await tick();
+
+    expect(screen.getByText(/Strike Band: Top/)).toBeTruthy();
+    expect(screen.getByText("98 dmg")).toBeTruthy();
+    expect(screen.getByText("Spinal · 31/32")).toBeTruthy();
+    expect(screen.getByText("Cycling 2.4s")).toBeTruthy();
+
+    const laserDefBtn = screen.getByRole("button", { name: "Laser Defense" });
+    await fireEvent.click(laserDefBtn);
+    expect(socket.sent.some((raw) => raw.includes("+tac/pdc point"))).toBe(true);
+
     const standBtns = screen.getAllByRole("button", { name: "Stand From Helm" });
     expect(standBtns.length).toBeGreaterThanOrEqual(1);
     await fireEvent.click(standBtns[0]!);
     await tick();
     expect(app.tacsim.seatedAtBridgeHelm).toBe(false);
+  });
+
+  it("decodes all four Doc 49 CC.9 space mount families, persistent magazines, and 5-band hull aspect", () => {
+    const snap = decodeSpaceFireFeed({
+      emcon: "SILENT",
+      thrust_permille: 350,
+      mining: {
+        matched_rock: "b",
+        approaching_rock: null,
+        active_drones: 2,
+        laser: { rock: "b" },
+      },
+      fire: {
+        mounts: [
+          { id: "laser_1", family: "laser", state: "ready", ready_in_ms: 0, mode: "offence", damage: 112 },
+          { id: "laser_2", family: "laser", state: "ready", ready_in_ms: 0, mode: "defence" },
+          { id: "tube_1", family: "tubes", state: "ready", ready_in_ms: 0, rounds: 3, rounds_max: 4 },
+          { id: "spinal_1", family: "spinal", state: "too_hot", ready_in_ms: 0, rounds: 15, rounds_max: 16, flight_ms: 1800 },
+          { id: "pdc_1", family: "point_defence", state: "ready", ready_in_ms: 0, rounds: 4000 },
+        ],
+        lock_id: "corsair.2",
+        lock: { id: "corsair.2", label: "Red Corsair", range_m: 18_500, facet: "rear" },
+      },
+    });
+
+    expect(snap.mounts).toHaveLength(5);
+    expect(formatMountMeta(snap.mounts[0]!)).toBe("Laser · Offense");
+    expect(formatMountAtLockEffect(snap.mounts[0]!)).toBe("112 dmg");
+    expect(formatMountMeta(snap.mounts[1]!)).toBe("Laser · Defense");
+    expect(formatMountStateLabel(snap.mounts[1]!)).toBe("Defense Screen");
+    expect(formatMountMeta(snap.mounts[2]!)).toBe("Tubes · 3/4");
+    expect(formatMountMeta(snap.mounts[3]!)).toBe("Spinal · 15/16");
+    expect(formatMountStateLabel(snap.mounts[3]!)).toBe("Too Hot");
+    expect(formatMountAtLockEffect(snap.mounts[3]!)).toBe("1.8s flight");
+    expect(formatMountMeta(snap.mounts[4]!)).toBe("Point Defense · 4000 left");
+    expect(formatHeldLockSummary(snap)).toBe(
+      "Lock: Red Corsair (corsair.2) · 18.5 km · Strike Band: Rear",
+    );
+    expect(snap.mining).toEqual({
+      matchedRock: "B",
+      approachingRock: null,
+      activeDrones: 2,
+      laserRock: "B",
+    });
   });
 });

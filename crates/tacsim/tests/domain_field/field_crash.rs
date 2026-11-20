@@ -67,13 +67,11 @@ async fn until_dropping(
     secs: u64,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> (bool, usize) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-    let (mut beat, mut dropped) = (0_u32, 0);
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let mut pace = crate::field_host_rig::Pace::new(secs);
+    let mut dropped = 0;
+    while let Some(owed) = pace.beat().await {
         pump(rig, rx, lines);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             dropped += second_dropping(rig, op);
         }
         if done(rig, lines) {
@@ -128,7 +126,7 @@ async fn wreck_east(
 /// admitted again, the close lands, and B's wreck is on the record where it fell. Then, with the
 /// cap one below everyone on the ground, a second field still admits them all: the wreck is not
 /// counted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf_review_a_crash_before_the_close_lands_keeps_the_wreck_and_the_cap_skips_it() {
     let mut rig = stocked_tuned(tune);
@@ -260,7 +258,7 @@ async fn cf_review_a_crash_before_the_close_lands_keeps_the_wreck_and_the_cap_sk
 /// at its carrier's ramp: it is checked in and out of the live record, but its `exit` never
 /// reaches the site record before the server goes down. The field resumes; the boot owes the exit
 /// again from the live record, the record names it, and C's recover passes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn cf_review_a_crash_before_the_exit_lands_owes_it_again_and_the_recover_passes() {
     let mut rig = stocked_tuned(tune);
     let (a, _, _) = on_pad(&mut rig, 1);
@@ -409,7 +407,7 @@ fn controller(rig: &Rig, task: tacsim::arena_task::MatchId, unit: ObjId) -> Opti
 /// its head destroyed: incapacitated in the field's first frames, B asks for extraction. When the
 /// extraction lands, the field is still running and the arena is told B's seat is released: the
 /// world's mirror hands the hull to its mind and B is no pilot of the task.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn cf_review_an_extraction_out_of_a_running_field_releases_the_seat() {
     let mut rig = stocked_tuned(tune);
     let (a, _, _) = on_pad(&mut rig, 1);

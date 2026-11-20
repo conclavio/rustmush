@@ -169,6 +169,7 @@ fn boot(
             metrics,
             quarantine_spool: QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         move |_| -> Gateway { gateway },
     )

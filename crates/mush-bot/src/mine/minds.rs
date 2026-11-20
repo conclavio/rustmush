@@ -592,6 +592,13 @@ pub mod exchange {
     pub const MINE_HEAD: &str = "Your listings:";
     /// `mush_market::seller::MINE_NONE`.
     pub const MINE_NONE: &str = "You have nothing listed.";
+    /// `mush_market::seller::MINE_AS_ORG`'s head (doc 48e): an organization's listings follow.
+    pub const MINE_AS_ORG: &str = "Listed as ";
+    /// `mush_market::seller::POST_BUSY`'s tail (doc 48e): the last order is still landing.
+    pub const POST_BUSY: &str = "still being handled; try again in a moment. Nothing was listed.";
+    /// `mush_market::seller::POST_QUEUE_FULL` (doc 48e): the exchange is busy.
+    pub const POST_QUEUE_FULL: &str =
+        "The exchange is busy right now; try again in a moment. Nothing was listed.";
     /// `mush_market::seller::MINE_COUNT`'s tail.
     pub const MINE_COUNT: &str = " listings a seller may.";
     /// `mush_market::seller::NO_SUCH_LOT`.
@@ -658,7 +665,7 @@ pub mod exchange {
 /// held to the game's own text below.
 pub mod jobs {
     /// `mush_market::services::JOBS_USAGE`.
-    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|haul|escort]";
+    pub const JOBS_USAGE: &str = "Usage: +market/jobs [retrieval|passage|survey|crew|haul|escort]";
     /// `mush_market::services::JOBS_NO_VENUE`.
     pub const JOBS_NO_VENUE: &str = "You are not at a market here; name one with market=";
     /// `mush_market::services::JOBS_NONE`.
@@ -730,6 +737,44 @@ pub mod crew {
     pub const BOARD_TAKE: &str = "page ";
 }
 
+/// **A discharge at a port** (doc 48 cut EX.7b): `+sortie/discharge`
+/// (`tacsim::detachment::crew::discharge`). No lane reads them yet; each is held to the game's
+/// own text below.
+pub mod discharge {
+    /// `tacsim::detachment::crew::discharge::DISCHARGE_USAGE`'s head.
+    pub const DISCHARGE_USAGE: &str = "Usage: +sortie/discharge #<npc>";
+    /// `tacsim::detachment::crew::discharge::NOT_YOURS`.
+    pub const NOT_YOURS: &str =
+        "No crew contract of yours names that character: only the employer discharges a hire.";
+    /// `tacsim::detachment::crew::discharge::AT_PORT`.
+    pub const AT_PORT: &str =
+        "Discharge a hire from a port's station: its hall settles the final wage.";
+    /// `tacsim::detachment::crew::discharge::ON_SORTIE`'s tail. Partial: the name before it.
+    pub const ON_SORTIE: &str = " is out on a sortie: ";
+    /// `tacsim::detachment::crew::discharge::IN_FIELD`'s tail. Partial: the name before it.
+    pub const IN_FIELD: &str = " is in an open field: ";
+    /// `tacsim::detachment::crew::discharge::CAPTIVE`'s tail. Partial: the name before it.
+    pub const CAPTIVE: &str = " is in custody: ";
+    /// `tacsim::detachment::crew::discharge::BUSY`.
+    pub const BUSY: &str =
+        "One of your requests is still being settled: discharge again in a moment.";
+    /// `tacsim::detachment::crew::discharge::NOT_NOW`.
+    pub const NOT_NOW: &str = "The hiring hall cannot settle a discharge just now";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_PAID`'s tail. Partial: the payee before.
+    pub const DISCHARGED_PAID: &str = " as the final wage.";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_OWING`'s middle. Partial: the debt after.
+    pub const DISCHARGED_OWING: &str = " is discharged: the final wage, ";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_PART`'s middle. Partial: the debt after.
+    pub const DISCHARGED_PART: &str = " of the final wage is paid and ";
+    /// `tacsim::detachment::crew::discharge::DISCHARGED_FREE`'s tail.
+    pub const DISCHARGED_FREE: &str = " is discharged: no wage was charged, so nothing is owed.";
+    /// `tacsim::detachment::crew::discharge::RETURNED`'s head. Partial: the name and room after.
+    pub const RETURNED: &str = "The contract is ended. ";
+    /// `tacsim::detachment::crew::discharge::STANDING_DEBT`'s tail.
+    pub const STANDING_DEBT: &str =
+        " of its wage is your debt, collected when your account covers it.";
+}
+
 /// **The price history** (doc 48 cut EX.8): `+market/history` (`mush_market::history`). No lane
 /// reads them yet; each is held to the game's own text below.
 pub mod history {
@@ -764,6 +809,8 @@ pub mod hull_sale {
     pub const HULL_HOLD_LADEN: &str = "hold must be empty before she is listed";
     /// `tacsim::port::hull_sale::HULL_HOLD_DARK`'s tail.
     pub const HULL_HOLD_DARK: &str = "hold cannot be read just now; nothing was listed.";
+    /// `tacsim::port::hull_sale::HULL_ELSEWHERE`'s tail.
+    pub const HULL_ELSEWHERE: &str = "she is listed and sold only where she lies.";
     /// `tacsim::port::hull_sale::HULL_IN_BAY`'s tail.
     pub const HULL_IN_BAY: &str = "stow her before she is listed.";
     /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
@@ -888,6 +935,10 @@ pub mod escort {
     pub const TOLD_KEPT: &str = "of the journey. The fee follows.";
     /// `tacsim::services::escort::TOLD_FAILED`.
     pub const TOLD_FAILED: &str = "has failed, and its fee is not paid:";
+    /// `tacsim::services::escort::TOLD_UNSTARTED`.
+    pub const TOLD_UNSTARTED: &str = "is called off: her journey never began within";
+    /// `tacsim::services::escort::NO_FIELD`.
+    pub const NO_FIELD: &str = "; a sortie escort names a field site.";
     /// `tacsim::services::escort::WHY_WRECKED`.
     pub const WHY_WRECKED: &str = "she was wrecked";
     /// `tacsim::services::escort::WHY_CAPTURED`.
@@ -944,6 +995,8 @@ pub mod core_resale {
     pub const RESALE_NO_OFFER: &str = "No offer of that stands for you.";
     /// `tacsim::hardware::sale::resale::RESALE_LAPSED`.
     pub const RESALE_LAPSED: &str = "That offer has lapsed; ask the seller to offer it again.";
+    /// `tacsim::hardware::sale::resale::RESALE_APART`'s tail.
+    pub const RESALE_APART: &str = "where you and its seller both stand; meet them, then accept.";
     /// `tacsim::hardware::sale::resale::RESALE_CHANGED`'s tail.
     pub const RESALE_CHANGED: &str = "what it sells has changed since it was made";
     /// `tacsim::hardware::sale::resale::RESALE_QUOTE`'s middle.
@@ -985,6 +1038,20 @@ pub mod scrap {
 /// `tacsim::port::locker`) and the venue gate's new refusals (`tacsim::port::market`). No lane
 /// reads them yet; each is held to the game's own text below.
 pub mod venue {
+    /// `mush_market::trade::WHOLE_LOT`'s head (doc 48e): an exact lot is quoted whole.
+    pub const WHOLE_LOT: &str = "That lot is sold whole: quote it at ";
+    /// `tacsim::port::market::MOVE_NOT_AT_VENUE` (doc 48e): a move from outside any port.
+    pub const MOVE_NOT_AT_VENUE: &str =
+        "You move goods between your stores only where you stand in a port.";
+    /// `tacsim::port::market::MOVE_CHARTER_CARGO`'s middle (doc 48e): charter cargo stays aboard.
+    pub const MOVE_CHARTER_CARGO: &str = "chartered hold is sold from there";
+    /// `tacsim::port::market::MOVE_HULL_ON_SALE`'s tail (doc 48e): a listed hull takes nothing.
+    pub const MOVE_HULL_ON_SALE: &str = " is for sale, so nothing goes into her hold.";
+    /// `tacsim::port::proceeds::CHARTER_ASK_AS_ORG`'s tail (doc 48e): charter cargo is listed by
+    /// its pilot.
+    pub const CHARTER_ASK_AS_ORG: &str = "chartered hold is listed by its pilot alone";
+    /// `tacsim::port::market::MOVE_INTO_SCRAP` (doc 48e).
+    pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
     /// `tacsim::port::locker::LOCKER_OPENED`'s tail: a locker opened.
     pub const LOCKER_OPENED: &str = "Goods you buy here with no hold docked go into it.";
     /// `tacsim::port::locker::LOCKER_ALREADY`'s tail.
@@ -1050,6 +1117,14 @@ pub const PARTIAL: &[&str] = &[
     "jobs::TERM_TODAY",
     "history::HISTORY_ROW",
     "history::HISTORY_NO_PRICE",
+    // The crew family's short needles (48e L8, clients:G14: crew joined the table); the
+    // crew module's own docs say what a reader uses beside each.
+    "crew::OFFER_WAGE",
+    "crew::WAGE_LINE",
+    "crew::LISTED",
+    "crew::BOARD_SUBJECT",
+    "crew::BOARD_TAKE",
+    "exchange::MINE_AS_ORG",
 ];
 
 /// The needle length, in characters after trimming, below which a row must be in [`PARTIAL`].
@@ -1107,6 +1182,28 @@ mod tests {
             BOARD_TAKE,
         )
     }
+    const DISCHARGE_RS: &str = include_str!("../../../tacsim/src/detachment/crew/discharge.rs");
+
+    fn discharge_rows() -> Vec<Row> {
+        use super::discharge as bot;
+        use tacsim::detachment::crew::discharge as game;
+        rows!("";
+            DISCHARGE_USAGE,
+            NOT_YOURS,
+            AT_PORT,
+            ON_SORTIE,
+            IN_FIELD,
+            CAPTIVE,
+            BUSY,
+            NOT_NOW,
+            DISCHARGED_PAID,
+            DISCHARGED_OWING,
+            DISCHARGED_PART,
+            DISCHARGED_FREE,
+            RETURNED,
+            STANDING_DEBT,
+        )
+    }
     const HAUL_RS: &str = include_str!("../../../tacsim/src/services/haul.rs");
     const ESCORT_RS: &str = include_str!("../../../tacsim/src/services/escort.rs");
 
@@ -1128,6 +1225,22 @@ mod tests {
                 NOT_AT_VENUE,
                 VENUE_UNPLACED,
                 LOCKER_ELSEWHERE,
+                MOVE_NOT_AT_VENUE,
+                MOVE_CHARTER_CARGO,
+                MOVE_HULL_ON_SALE,
+                MOVE_INTO_SCRAP,
+            )
+        });
+        rows.extend({
+            use mush_market as game;
+            rows!("";
+                WHOLE_LOT,
+            )
+        });
+        rows.extend({
+            use tacsim::port::proceeds as game;
+            rows!("";
+                CHARTER_ASK_AS_ORG,
             )
         });
         rows
@@ -1223,7 +1336,10 @@ mod tests {
             BID_WITHDRAWN,
             MINE_HEAD,
             MINE_NONE,
+            MINE_AS_ORG,
             MINE_COUNT,
+            POST_BUSY,
+            POST_QUEUE_FULL,
             NO_SUCH_LOT,
             NO_SUCH_VAULT,
             LOT_HELD,
@@ -1271,6 +1387,7 @@ mod tests {
             HULL_CORED,
             HULL_HOLD_LADEN,
             HULL_HOLD_DARK,
+            HULL_ELSEWHERE,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
         )
@@ -1353,6 +1470,8 @@ mod tests {
             TOLD_STARTED,
             TOLD_KEPT,
             TOLD_FAILED,
+            TOLD_UNSTARTED,
+            NO_FIELD,
             WHY_WRECKED,
             WHY_CAPTURED,
             WHY_LEFT,
@@ -1397,6 +1516,7 @@ mod tests {
             RESALE_NO_OWN_OFFER,
             RESALE_NO_OFFER,
             RESALE_LAPSED,
+            RESALE_APART,
             RESALE_CHANGED,
             RESALE_QUOTE,
             RESALE_QUOTE_HULL,
@@ -1673,7 +1793,8 @@ mod tests {
     /// Every family's rows, each name qualified as `family::NAME`, for the checks across the
     /// whole table.
     fn all_rows() -> Vec<(String, &'static str, &'static str)> {
-        let families: [(&str, Vec<Row>); 18] = [
+        // 48e L8 (clients:G14): crew and discharge joined the cross-family checks.
+        let families: [(&str, Vec<Row>); 20] = [
             ("end_user", end_user_rows()),
             ("renewal", renewal_rows()),
             ("claim", claim_rows()),
@@ -1692,6 +1813,8 @@ mod tests {
             ("venue", venue_rows()),
             ("scrap", scrap_rows()),
             ("coop", coop_rows()),
+            ("crew", crew_rows()),
+            ("discharge", discharge_rows()),
         ];
         families
             .into_iter()
@@ -2285,6 +2408,24 @@ mod tests {
     #[test]
     fn crew_needles_are_distinct() {
         distinct(&qualified("crew", crew_rows()), &[]);
+    }
+    // Doc 48 cut EX.7b: a discharge at a port.
+    #[test]
+    fn discharge_needles_are_in_step() {
+        in_step("discharge", &discharge_rows());
+    }
+    #[test]
+    fn discharge_census() {
+        census(
+            "discharge.rs",
+            DISCHARGE_RS,
+            &discharge_rows(),
+            &[("NPC_TOLD", "said to the NPC's own role, never to a player")],
+        );
+    }
+    #[test]
+    fn discharge_needles_are_distinct() {
+        distinct(&qualified("discharge", discharge_rows()), &[]);
     }
     #[test]
     fn jobs_needles_are_distinct() {

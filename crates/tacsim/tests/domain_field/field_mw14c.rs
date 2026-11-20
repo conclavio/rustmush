@@ -58,7 +58,8 @@
 //!   in real time beside it, so a fight can be waited out with the world's clock stopped
 //!   ([`stopped`]) and the dwell then counted second by second ([`tick`]).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use mush_core::ObjId;
 use mush_tactics::detachment::{DetachmentRoster, LeaderKind, OrderBook, Response, Slot};
@@ -308,7 +309,7 @@ async fn ticks(field: &mut Field, most: u32, mut done: impl FnMut(&mut Rig) -> b
 }
 
 /// **The arena runs and the world's clock stands still**: the egress is pumped until `done`
-/// holds or `secs` of real time pass, and `each` is run once a real second (a player's `LOCK`
+/// holds or `secs` of tokio time pass, and `each` is run once a second of it (a player's `LOCK`
 /// and `FIRE`). No world second passes, so nothing a dwell is measured in moves.
 async fn stopped(
     field: &mut Field,
@@ -511,7 +512,7 @@ fn issued_ic_ms(field: &mut Field, slot: u16, sequence: u64) -> Option<u64> {
 }
 
 /// **Story 1** (this module's head): the dwell, the loss, and the organiser's read.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn mw14c_a_posture_stands_for_the_dwell_and_a_loss_withdraws_at_once() {
     let at = &AHUNA_FLANK;
@@ -841,7 +842,7 @@ async fn work_point(at: &'static Ground, work: (u16, u16), drive: bool) {
 }
 
 /// **Story 2 at 256** on Ahuna Flank ([`work_point`]): the miner's unread pocket.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_a_plans_work_point_is_advanced_to() {
     let at = &AHUNA_FLANK;
     let work = (
@@ -853,7 +854,7 @@ async fn mw14c_a_plans_work_point_is_advanced_to() {
 
 /// **Story 2 at 512** on Urvara Reach ([`work_point`]): a cell past 255 on both axes, which no
 /// 256 site holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_a_plans_work_point_is_advanced_to_at_512() {
     work_point(&URVARA_REACH, (262, 268), false).await;
 }
@@ -915,7 +916,14 @@ fn engagements_commanded(lines: &[LedgerEvent], unit: ObjId) -> usize {
 }
 
 /// **Story 3** (this module's head): a player leader's `CONCENTRATE`, jammed, taken and ended.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+///
+/// **On the paused clock, world and arena at the production rate** (doc 43 TS.10a). The host
+/// answers the order by reading the hull's frame at its visits (`field::orders::concentrate`).
+/// The intruder is fragile, so the first round kills it, and the kill can fall between two
+/// visits: the first visit that sees the order stand finds its row already destroyed. That is
+/// WILCO, the order done (the owner's ruling, 2026-11-19); NEGATIVE is for a hull that holds no
+/// row for it. This story is that rule's acceptance at the production rate.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn mw14c_a_leaders_concentrate_puts_a_hull_that_holds_the_contact_on_it() {
     let mut setup = close_in(escorted());
@@ -1065,7 +1073,7 @@ async fn mw14c_a_leaders_concentrate_puts_a_hull_that_holds_the_contact_on_it() 
 }
 
 /// **Story 4** (this module's head): a hull that does not hold the contact keeps its order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_a_hull_that_does_not_hold_the_contact_keeps_its_order() {
     let at = &AHUNA_FLANK;
     let mut setup = close_in(escorted());
@@ -1175,7 +1183,7 @@ async fn mw14c_a_hull_that_does_not_hold_the_contact_keeps_its_order() {
 /// its leader (doc 45 unit AP.8, Q-45-13; the second reader's finding). The lapse scan reads a
 /// slot's delivered order, which is the `CONCENTRATE` the hull declined; the order the hull is
 /// flying is the ADVANCE under it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_the_order_under_a_concentrate_lapses_with_its_leader() {
     let at = &AHUNA_FLANK;
     let mut setup = close_in(escorted());
@@ -1352,7 +1360,7 @@ async fn to_the_concentrate(field: &mut Field) -> String {
 }
 
 /// **Story 5** (this module's head): an NPC-led roster concentrates on the party that fired.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired() {
     let mut field = armed_roster().await;
     let okonkwo = field.flown.operator(1);
@@ -1452,7 +1460,7 @@ async fn mw14c_an_npc_led_roster_concentrates_on_the_party_that_fired() {
 
 /// **Story 6** (this module's head): an absent player's unit is sent no `CONCENTRATE` and
 /// does not fire first.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_an_absent_players_unit_is_sent_no_concentrate_and_does_not_fire_first() {
     let at = &AHUNA_FLANK;
     let mut setup = close_in(Plan {
@@ -1566,7 +1574,7 @@ async fn mw14c_an_absent_players_unit_is_sent_no_concentrate_and_does_not_fire_f
 }
 
 /// **Story 7** (this module's head): a restart with the NPC leading gives the same next order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_a_restart_with_the_npc_leading_gives_the_same_next_order() {
     let at = &AHUNA_FLANK;
     let mut setup = at_the_ramp(at, npc_plan());
@@ -1729,7 +1737,7 @@ async fn run_to_the_concentrate() -> (Vec<String>, Vec<String>) {
 /// **Story 8** (this module's head): the same run twice gives the same orders. The commander
 /// keeps no state but the roster's order book, and its rule reads no clock and no dice: the
 /// dwell is read off the book's own stamps.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14c_the_same_run_gives_the_same_orders_twice() {
     let first = run_to_the_concentrate().await;
     let second = run_to_the_concentrate().await;

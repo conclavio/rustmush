@@ -68,7 +68,7 @@ fn hurt(cells: &mush_tactics::TacticalUnit) -> bool {
 }
 
 /// **CF.3's gate** (doc 32 §6; Q-CF-19, Q-CF-38, Q-H10).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf3_a_carrier_takes_a_hit_in_a_field_and_the_damage_shows_in_port() {
     let mut rig = stocked_tuned(tune);
@@ -295,7 +295,7 @@ fn every_carrier_is_past_twice_any_tugs_tonnage() {
 /// CF.7): without the leave-behind confirmation a live lift is refused, naming the rig it would
 /// leave; with it the carrier is removed from the field outright, its pilot's departure files,
 /// and the rig it left stays in the field.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
     let mut rig = stocked_tuned(tune);
@@ -386,7 +386,7 @@ async fn f6_a_carrier_lifts_out_of_a_running_field_only_on_the_confirmation() {
 /// joins it at the next pulse (its `mind_sealed` line on the black box) beside the pad, where the
 /// armed hull's sensors hold it as a second contact; its arrival is a row in the presence
 /// picture, the field runs on, and its rig's launch is refused while the field runs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc1_a_carrier_arriving_mid_field_is_admitted_at_its_pad_and_cannot_launch() {
     let mut rig = stocked_tuned(tune);
@@ -622,13 +622,10 @@ async fn until_refusing(
     secs: u64,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-    let mut beat = 0_u32;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    let mut pace = crate::field_host_rig::Pace::new(secs);
+    while let Some(owed) = pace.beat().await {
         pump_refusing(rig, rx, lines, refused);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             let _ = second(rig);
         }
         if done(rig, lines) {
@@ -678,7 +675,7 @@ fn settled(rig: &Rig, hull: ObjId) -> bool {
 /// third settles after that and takes the next free letter, never a letter in use (the old
 /// `nth(len)` reused the last party's). The live record passes its own check throughout, and a
 /// restart resumes the field with every arrival in it under the same letters.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival() {
     let mut rig = stocked_tuned(lasting);
@@ -880,7 +877,7 @@ async fn gc1b_a_refused_middle_party_never_lends_its_letter_to_the_next_arrival(
 /// CF.2's line, where the launch half once counted only the rigs out (none) and let a third unit
 /// down for the field to refuse at the opening. The site still promotes: B's fire at the carrier
 /// opens a field of exactly those two.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc_review_the_ramp_refuses_a_launch_the_field_could_not_hold() {
     let mut rig = stocked_tuned(capped);
     let (a, a_row, a_tvs) = on_pad(&mut rig, 1);

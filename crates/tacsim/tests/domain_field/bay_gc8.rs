@@ -255,7 +255,7 @@ pub(crate) fn in_bay(rig: &Rig, tv: ObjId, room: ObjId) -> bool {
     )
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
     let mut rig = stocked();
     let (pilot, row, escort, prospect) = leased(&mut rig);
@@ -516,7 +516,7 @@ async fn gc8_the_refit_run_at_stickney_and_an_armour_patch_in_the_bay() {
 
 /// **The rights** (Q-36-33) at Ceres' workshop (C14, Occator's): a stranger may do nothing; the
 /// lessee berths and repairs; a holder of Occator's `unit.maintain_refit` repairs too.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8_who_may_have_a_hull_worked_on() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = leased(&mut rig);
@@ -597,6 +597,46 @@ async fn gc8_who_may_have_a_hull_worked_on() {
 
 /// **A mechanic with Occator's `unit.maintain_refit`**, enrolled, funded, standing in `room`.
 /// The `floor` line of a `+bay` quote (doc 39 cut IN.4).
+/// **48e review rounds:G3: a rearm takes whole boxes only** (A-14: a reload conserves rounds).
+/// The escort's coaxial gun loads 100 rounds a box of ball: short by 50 it has no rearm, where it
+/// once drew a whole box and lost the other 50; short by 150 it loads one box, 100 rounds, and
+/// waits on the rest.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn rounds_g3_a_rearm_takes_whole_boxes_and_loses_none() {
+    let mut rig = stocked();
+    let (_, _, escort, _) = leased(&mut rig);
+    let u = unit(&rig, escort);
+    let gun = component_id(&u, "machine_gun");
+    let (_, max) = magazine(&u, &gun);
+    let rearm = |rig: &Rig| {
+        tacsim::port::bay_work::quote_here(rig.tw.world(), escort)
+            .expect("a quote")
+            .1
+            .jobs
+            .into_iter()
+            .find_map(|job| match job.job {
+                tacsim::port::bay_work::BayJob::Rearm {
+                    component,
+                    rounds,
+                    units,
+                    ..
+                } if component == gun => Some((rounds, units)),
+                _ => None,
+            })
+    };
+    let short = |by: i64| UnitMutationOp::SetCell {
+        addr: CellAddr::Component {
+            component: gun.clone(),
+            cell: mush_tactics::CellId::new("ammo").expect("the ammo cell"),
+        },
+        value: max - by,
+    };
+    damage(&mut rig, escort, vec![short(50)]);
+    assert_eq!(rearm(&rig), None, "less than a box short: it waits");
+    damage(&mut rig, escort, vec![short(150)]);
+    assert_eq!(rearm(&rig), Some((100, 1)), "one box, its hundred rounds");
+}
+
 pub(crate) fn floor_line(quote: &str) -> &str {
     quote
         .lines()
@@ -663,7 +703,7 @@ pub(crate) fn lot_record(rig: &mut Rig, lot: mush_inventory::LotId) -> Option<mu
 /// claim is vacated (the staff fixture standing in for GC.5/GC.6's contest), so it is hot and
 /// the bay refuses to fit it; the clean cannon is fitted back from its lot, which the work
 /// consumes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = leased(&mut rig);
@@ -684,6 +724,8 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
     let (cannon, gun) = (component_id(&u, "cannon"), component_id(&u, "machine_gun"));
 
     // (1) The machine gun comes off into the hold, with its provenance.
+    let (held, _) = magazine(&u, &gun);
+    let boxes = hold_pool(&mut rig.tw, vault, "ammo_ball_762");
     let out = settled(
         &mut rig,
         mechanic,
@@ -696,6 +738,13 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
     assert_eq!(lot.endpoint(), EndpointRef(vault), "in the Dray's hold");
     assert_eq!(lot.commodity().as_str(), "tacsim.part.weapon.mg_coax");
     assert_eq!(lot.quantity(), 1);
+    // 48e review rounds:G12 (A-14): its rounds come off with it, whole boxes into the hold.
+    assert!(held >= 100, "the gun holds at least a box: {held}");
+    assert_eq!(
+        hold_pool(&mut rig.tw, vault, "ammo_ball_762"),
+        boxes + u64::try_from(held / 100).expect("rounds"),
+        "the gun's {held} rounds are in the hold"
+    );
     let part = provenance(&mut rig, gun_lot);
     let strip = part.stripped().expect("a stripped part").clone();
     assert_eq!(strip.parent_hull, escort);
@@ -789,7 +838,7 @@ async fn gc8b_a_stripped_part_carries_its_provenance_and_a_hot_part_is_refused()
 /// stock and each salvageable part a lot with its provenance in its stores, the Dray's hold
 /// untouched; the hull is an irrecoverable shell and its berth free. The lessee may not scrap a
 /// leased hull; remains are scrapped on the site (GC.6).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = leased(&mut rig);
@@ -895,4 +944,37 @@ async fn gc8b_scrap_breaks_a_workshop_hull_into_alloys_and_parts() {
     let again = run(&mut rig.tw, pilot, &format!("+bay/scrap #{}", spare.0));
     assert!(again.contains("has been scrapped"), "{again}");
     // Remains are scrapped where they lie on the site (doc 36 cut GC.6, `field_gc6.rs`).
+}
+
+/// **48e review rounds:G9: a re-leased rig keeps the rounds its last lessee left** (A-14). Occator
+/// restores a returned rig before its next lease, which once refilled its magazines from nothing;
+/// now the next lessee takes it with what was left, and rearms at the bay.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn rounds_g9_a_re_leased_rig_keeps_the_rounds_left_in_it() {
+    let mut rig = stocked();
+    let (pilot, _, escort, _) = leased(&mut rig);
+    let u = unit(&rig, escort);
+    let gun = component_id(&u, "machine_gun");
+    let (_, max) = magazine(&u, &gun);
+    damage(
+        &mut rig,
+        escort,
+        vec![UnitMutationOp::SetCell {
+            addr: CellAddr::Component {
+                component: gun.clone(),
+                cell: mush_tactics::CellId::new("ammo").expect("the ammo cell"),
+            },
+            value: max - 150,
+        }],
+    );
+    at_counter(&mut rig, pilot);
+    let back = run(&mut rig.tw, pilot, "+tv/1 lease return go");
+    assert!(back.contains("OWP-ES-01"), "{back}");
+    let again = run(&mut rig.tw, pilot, "+tv/lease escort go");
+    assert!(again.contains("leases you OWP-ES-01"), "{again}");
+    assert_eq!(
+        magazine(&unit(&rig, escort), &gun).0,
+        max - 150,
+        "the rounds the last lessee left, not a refill"
+    );
 }

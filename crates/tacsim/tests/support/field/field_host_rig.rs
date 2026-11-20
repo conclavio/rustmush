@@ -295,7 +295,74 @@ pub(crate) fn second_with(rig: &mut Rig, composed: bool) -> Vec<String> {
         .collect()
 }
 
-/// Pump and tick until `done` holds or `secs` of wall time pass; answers whether it held.
+/// **The field rigs' wait-loop pace** (doc 43 unit TS.10a; doc 43c §1): one 25-ms tokio beat at
+/// a time until a deadline `secs` of tokio time away, answering at each beat how many world
+/// seconds the loop owes the world.
+///
+/// - **On a paused clock** (`#[tokio::test(flavor = "current_thread", start_paused = true)]`)
+///   the world is owed one second for each second of virtual time the arena has seen, so the
+///   world and the arena it hosts keep one clock. The deadline is virtual too: a field that holds
+///   for 90 s costs its pulses' CPU, not 90 s of wall.
+/// - **On a running clock** (the multi-thread tests and the dispatch stories, whose Registry and
+///   minds run in real time) it is the loop as it was: one world second every eighth beat, so the
+///   world runs five fake seconds to each real one of the arena's. A test that leans on that ratio
+///   pairs two clocks; converting its module to the paused clock is what shows it.
+pub(crate) struct Pace {
+    deadline: tokio::time::Instant,
+    paused: bool,
+    beat: u32,
+    next_second: tokio::time::Instant,
+}
+
+/// One beat of [`Pace`].
+pub(crate) const BEAT: Duration = Duration::from_millis(25);
+
+impl Pace {
+    /// A pace whose deadline is `secs` of tokio time from now.
+    pub(crate) fn new(secs: u64) -> Self {
+        let now = tokio::time::Instant::now();
+        Self {
+            deadline: now + Duration::from_secs(secs),
+            paused: clock_is_paused(),
+            beat: 0,
+            next_second: now + Duration::from_secs(1),
+        }
+    }
+
+    /// Sleep one beat, unless the deadline has passed (`None`); answers the world seconds owed.
+    pub(crate) async fn beat(&mut self) -> Option<u32> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return None;
+        }
+        tokio::time::sleep(BEAT).await;
+        self.beat = self.beat.wrapping_add(1);
+        if !self.paused {
+            return Some(u32::from(self.beat.is_multiple_of(8)));
+        }
+        let now = tokio::time::Instant::now();
+        let mut owed = 0;
+        while self.next_second <= now {
+            owed += 1;
+            self.next_second += Duration::from_secs(1);
+        }
+        Some(owed)
+    }
+}
+
+/// **Whether tokio's clock is paused** on this runtime: a paused clock does not move while the
+/// thread works without yielding (it auto-advances only when the runtime parks), and a running
+/// one does. Spins on the std clock for 50 µs; never parks the runtime.
+pub(crate) fn clock_is_paused() -> bool {
+    let tokio_then = tokio::time::Instant::now();
+    let spun = std::time::Instant::now();
+    while spun.elapsed() < Duration::from_micros(50) {
+        std::hint::spin_loop();
+    }
+    tokio::time::Instant::now() == tokio_then
+}
+
+/// Pump and tick until `done` holds or `secs` of tokio time pass ([`Pace`]); answers whether it
+/// held.
 pub(crate) async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
@@ -325,13 +392,10 @@ pub(crate) async fn until_with(
     composed: bool,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-    let mut beat = 0_u32;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    let mut pace = Pace::new(secs);
+    while let Some(owed) = pace.beat().await {
         pump(rig, rx, lines);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             let _ = second_with(rig, composed);
         }
         if done(rig, lines) {

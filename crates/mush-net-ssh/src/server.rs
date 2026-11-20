@@ -618,6 +618,7 @@ impl Ingress {
             auth_deadline,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
             pending_strikes: 0,
+            closing: false,
             attested: None,
         }
     }
@@ -840,6 +841,10 @@ pub(crate) struct ConnHandler {
     /// Consecutive pre-connect inputs that arrived while the channel's window
     /// was exhausted (see [`PENDING_STRIKES`]).
     pending_strikes: u8,
+    /// Set once [`close_polite`](Self::close_polite) initiates disconnect so
+    /// remaining actions in the same packet and any subsequent channel data are
+    /// ignored immediately (HIGH-8).
+    closing: bool,
     /// Doc 29: the account the trusted ingress's preamble bound to this
     /// connection, after the doorway attested the player holds a key that
     /// [`SshHooks::auth_account_key`] accepted. `auth_none` for exactly
@@ -1144,6 +1149,10 @@ impl ConnHandler {
     /// Farewell + close channel + disconnect, and the cut [`DISCONNECT_GRACE`]
     /// later for a client that does not take the disconnect for an answer.
     fn close_polite(&mut self, session: &mut Session, msg: &str) -> Result<(), russh::Error> {
+        if self.closing {
+            return Ok(());
+        }
+        self.closing = true;
         if !msg.is_empty() {
             self.write_text(session, msg)?;
         }
@@ -1454,6 +1463,9 @@ impl ConnHandler {
         chars: &[CharSummary],
         line: &str,
     ) -> Result<(), russh::Error> {
+        if self.flood.check(Instant::now()) == FloodVerdict::Throttled {
+            return self.write_text(session, "You're doing that too fast.");
+        }
         let pick = line.trim();
         if pick.is_empty() {
             return self.print_char_select(session, account, chars);
@@ -1690,6 +1702,9 @@ impl ConnHandler {
     // ---- quit confirmation ----------------------------------------------
 
     async fn begin_quit_confirm(&mut self, session: &mut Session) -> Result<(), russh::Error> {
+        if self.flood.check(Instant::now()) == FloodVerdict::Throttled {
+            return self.write_text(session, "You're doing that too fast.");
+        }
         let current = self.lock().mode.clone();
         if let Mode::QuitConfirm { prev } = current {
             // Second ^D confirms.
@@ -1995,8 +2010,8 @@ impl Handler for ConnHandler {
             let base = sh.base_echo;
             sh.editor.set_mode(base);
             sh.term = Some(term.to_owned());
-            sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
-            sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
+            sh.width = caps::clamp_pty_dim(col_width, caps::MAX_WIDTH);
+            sh.height = caps::clamp_pty_dim(row_height, caps::MAX_HEIGHT);
             if let Some(cell) = cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
             {
                 sh.cell_size = Some(cell);
@@ -2040,8 +2055,8 @@ impl Handler for ConnHandler {
         if self.channel == Some(channel) {
             let (caps, is_tui) = {
                 let mut sh = self.lock();
-                sh.width = u16::try_from(col_width).unwrap_or(u16::MAX);
-                sh.height = u16::try_from(row_height).unwrap_or(u16::MAX);
+                sh.width = caps::clamp_pty_dim(col_width, caps::MAX_WIDTH);
+                sh.height = caps::clamp_pty_dim(row_height, caps::MAX_HEIGHT);
                 if let Some(cell) =
                     cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
                 {
@@ -2200,7 +2215,7 @@ impl Handler for ConnHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.channel != Some(channel) {
+        if self.channel != Some(channel) || self.closing {
             return Ok(());
         }
         if let Some(input) = &mut self.exec_input {
@@ -2244,6 +2259,9 @@ impl Handler for ConnHandler {
             session.data(channel, echo)?;
         }
         for action in actions {
+            if self.closing {
+                break;
+            }
             match action {
                 EditorAction::Submit(line) => self.handle_line(session, line).await?,
                 EditorAction::EofQuit => self.begin_quit_confirm(session).await?,
@@ -3798,5 +3816,34 @@ mod tests {
         }
         assert!(!serving.is_finished());
         serving.abort();
+    }
+
+    #[test]
+    fn cell_size_from_pty_px_clamps_extreme_ratios_and_rejects_zero() {
+        assert_eq!(cell_size_from_pty_px(0, 24, 800, 480), None);
+        assert_eq!(cell_size_from_pty_px(80, 0, 800, 480), None);
+        assert_eq!(cell_size_from_pty_px(80, 24, 0, 480), None);
+        assert_eq!(cell_size_from_pty_px(80, 24, 800, 0), None);
+        assert_eq!(
+            cell_size_from_pty_px(80, 24, 800, 480),
+            Some(CellSize {
+                width: 10,
+                height: 20
+            })
+        );
+        assert_eq!(
+            cell_size_from_pty_px(10_000, 1, 10_000, 50_000),
+            Some(CellSize {
+                width: CellSize::MIN_WIDTH,
+                height: CellSize::MAX_HEIGHT,
+            })
+        );
+        assert_eq!(
+            cell_size_from_pty_px(1, 10_000, 50_000, 10_000),
+            Some(CellSize {
+                width: CellSize::MAX_WIDTH,
+                height: CellSize::MIN_HEIGHT,
+            })
+        );
     }
 }

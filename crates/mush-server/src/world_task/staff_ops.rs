@@ -774,6 +774,126 @@ pub(super) fn human_duration(mut s: i64) -> String {
     }
 }
 
+/// Maximum concurrent store-backed ops one non-staff actor may have in flight
+/// in `staff_ops` (queued or executing), preventing a single player from
+/// monopolizing `STAFF_OPS_CAPACITY`.
+pub(super) const MAX_STAFF_OPS_PER_PLAYER: usize = 2;
+
+/// Maximum concurrent store-backed ops one Wizard+ actor may have in flight
+/// (generous for legitimate staff bursts while still bounding one actor).
+pub(super) const MAX_STAFF_OPS_PER_STAFF: usize = 8;
+
+/// Tracks per-actor in-flight counts for the bounded `staff_ops` executor
+/// channel. Incremented on enqueue in `world_task` and decremented
+/// automatically via [`StaffActorPermit`]'s `Drop` when execution finishes or
+/// when an item is dropped on full/closed send or shutdown.
+#[derive(Clone, Debug, Default)]
+pub(super) struct StaffInFlight {
+    counts: Arc<std::sync::Mutex<std::collections::HashMap<ObjId, usize>>>,
+}
+
+impl StaffInFlight {
+    pub(super) fn try_acquire(&self, actor: ObjId, limit: usize) -> Option<StaffActorPermit> {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = counts.entry(actor).or_insert(0);
+        if *entry >= limit {
+            return None;
+        }
+        *entry += 1;
+        Some(StaffActorPermit {
+            tracker: self.clone(),
+            actor,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn count(&self, actor: ObjId) -> usize {
+        self.counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&actor)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// RAII permit holding one per-actor slot in [`StaffInFlight`].
+pub(super) struct StaffActorPermit {
+    tracker: StaffInFlight,
+    actor: ObjId,
+}
+
+impl Drop for StaffActorPermit {
+    fn drop(&mut self) {
+        let mut counts = self
+            .tracker
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&self.actor) {
+            if *count <= 1 {
+                counts.remove(&self.actor);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
+
+/// Enqueue one `StaffWork` item without EVER blocking `world_task`: enforces
+/// the per-actor in-flight cap and uses non-blocking `try_send` so a full
+/// `staff_ops` queue cannot deadlock `world_task` ↔ `staff_ops_loop`.
+fn enqueue_staff_work(
+    world: &World,
+    gateway: &Gateway,
+    staff_ops: &mpsc::Sender<StaffWork>,
+    in_flight: &StaffInFlight,
+    actor: ObjId,
+    cmd_label: &str,
+    build: impl FnOnce(StaffActorPermit) -> StaffWork,
+) {
+    let cap = if mush_core::perm::has_role(world, actor, Role::Wizard) {
+        MAX_STAFF_OPS_PER_STAFF
+    } else {
+        MAX_STAFF_OPS_PER_PLAYER
+    };
+    let Some(permit) = in_flight.try_acquire(actor, cap) else {
+        tracing::warn!(
+            %actor,
+            cap,
+            cmd = cmd_label,
+            "per-actor staff_ops in-flight cap reached; refusing op"
+        );
+        send_sys(
+            gateway,
+            actor,
+            "Too many pending requests; please try again shortly.",
+        );
+        return;
+    };
+    match staff_ops.try_send(build(permit)) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            tracing::warn!(
+                %actor,
+                cmd = cmd_label,
+                "staff_ops queue full; refusing op without blocking world_task"
+            );
+            send_sys(gateway, actor, "Server busy; please try again shortly.");
+        }
+        Err(TrySendError::Closed(_)) => {
+            send_sys(
+                gateway,
+                actor,
+                &format!("{cmd_label} failed: staff executor gone."),
+            );
+        }
+    }
+}
+
 /// Hand off the staff ops the step's command handlers queued. Ban ops
 /// (set/clear/list) go to the **sequential** [`staff_ops_loop`] so two
 /// staff commands issued in order can never race in the store; `@dump`
@@ -781,11 +901,17 @@ pub(super) fn human_duration(mut s: i64) -> String {
 /// `@shutdown` returns `true` — the caller (the world loop) then steps
 /// `ControlMsg::Shutdown` and exits. Every op is audit-logged with the
 /// requesting actor.
-pub(super) async fn run_staff_ops(
+///
+/// Strictly synchronous: never `.await`s on the bounded `staff_ops` channel
+/// inside single-writer `world_task`, breaking the `world_task` ↔
+/// `staff_ops_loop` AB-BA deadlock.
+pub(super) fn run_staff_ops(
     _deps: &ServerDeps,
+    world: &World,
     gateway: &Gateway,
     writer: &StoreWriter,
     staff_ops: &mpsc::Sender<StaffWork>,
+    in_flight: &StaffInFlight,
     ops: Vec<StaffOp>,
 ) -> bool {
     let mut shutdown = false;
@@ -798,33 +924,53 @@ pub(super) async fn run_staff_ops(
                 ref reason,
             } => {
                 tracing::info!(%actor, %ip, ?until_unix, reason, "@siteban requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@siteban failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@siteban",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::ClearBan { ref ip } | StaffOpKind::LiftTempban { ref ip, .. } => {
                 tracing::info!(%actor, %ip, operation = ?op.kind, "@siteban pardon requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(
-                        gateway,
-                        actor,
-                        "@siteban pardon failed: staff executor gone.",
-                    );
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@siteban pardon",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::ListBans => {
                 tracing::info!(%actor, "@siteban list requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@siteban failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@siteban",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::NewPassword { target, .. } => {
                 // Audit: actor + target only — the op's password never
                 // reaches a log (Secret redacts even derived Debug).
                 tracing::info!(%actor, %target, "@newpassword requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@newpassword failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@newpassword",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::AddSshKey {
                 ref fingerprint, ..
@@ -833,29 +979,53 @@ pub(super) async fn run_staff_ops(
                 // line never reached this op — the command handler validated
                 // and normalized it, queuing only the public key (S7).
                 tracing::info!(%actor, fingerprint, "@sshkey/add requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@sshkey",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::ListSshKeys { .. } => {
                 tracing::info!(%actor, "@sshkey/list requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@sshkey",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::DelSshKey { ref which, .. } => {
                 tracing::info!(%actor, which, "@sshkey/del requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@sshkey failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@sshkey",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::NewChar { ref name, .. } => {
                 // Audit: actor + the requested name (both public). The account
                 // is resolved store-side in the executor (invariant N1).
                 tracing::info!(%actor, name, "@newchar requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@newchar failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@newchar",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             // The Discord identity family (D1): the operational trace carries
             // the actor and the target character only — never a code, never
@@ -865,9 +1035,15 @@ pub(super) async fn run_staff_ops(
             | StaffOpKind::DiscordUnlinkSelf { .. }
             | StaffOpKind::DiscordSet { .. } => {
                 tracing::info!(%actor, kind = ?op.kind, "@discord self-service op requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@discord failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@discord",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             // D3: the follow verbs are the gateway bridge's to answer; the
             // control crosses the seam fire-and-forget and the bridge tells the
@@ -897,28 +1073,44 @@ pub(super) async fn run_staff_ops(
             | StaffOpKind::DiscordUnlink { target, .. }
             | StaffOpKind::DiscordBan { target, .. } => {
                 tracing::info!(%actor, %target, kind = ?op.kind, "@discord staff op requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@discord failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@discord",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::DiscordUnban { .. } => {
                 tracing::info!(%actor, "@discord/unban requested");
-                if staff_ops.send(StaffWork::Op(op)).await.is_err() {
-                    send_sys(gateway, actor, "@discord failed: staff executor gone.");
-                }
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@discord",
+                    |permit| StaffWork::Op { op, permit },
+                );
             }
             StaffOpKind::Dump => {
                 tracing::info!(%actor, "@dump requested");
-                if staff_ops
-                    .send(StaffWork::Dump {
+                let writer_clone = writer.clone();
+                enqueue_staff_work(
+                    world,
+                    gateway,
+                    staff_ops,
+                    in_flight,
+                    actor,
+                    "@dump",
+                    |permit| StaffWork::Dump {
                         actor,
-                        writer: writer.clone(),
-                    })
-                    .await
-                    .is_err()
-                {
-                    send_sys(gateway, actor, "@dump failed: staff executor gone.");
-                }
+                        writer: writer_clone,
+                        permit,
+                    },
+                );
             }
             StaffOpKind::Shutdown => {
                 tracing::info!(%actor, "@shutdown requested");
@@ -947,11 +1139,35 @@ pub(super) async fn run_newpassword(
     store: &dyn ObjectStore,
     gateway: &Gateway,
     world: &mpsc::WeakSender<WorldMsg>,
+    actor: ObjId,
     target: ObjId,
     name: &str,
     by: &str,
     password: &str,
 ) -> String {
+    if let Err(refusal) =
+        staff_role_recheck(world, actor, Role::Wizard, &[target], "@newpassword").await
+    {
+        return refusal;
+    }
+    let account = match store.list_accounts().await {
+        Ok(accounts) => accounts
+            .into_iter()
+            .find(|a| a.characters.iter().any(|c| c.id == target)),
+        Err(e) => return format!("@newpassword failed: {e}"),
+    };
+    let Some(account) = account else {
+        return format!("@newpassword: {name} is not linked to any account.");
+    };
+    // Account-wide rank check: changing a password affects EVERY character on
+    // the account, so refuse if any character on that account outranks `actor`
+    // or is `GOD` (`#1`) when `actor != GOD`.
+    let account_chars: Vec<ObjId> = account.characters.iter().map(|c| c.id).collect();
+    if let Err(refusal) =
+        staff_role_recheck(world, actor, Role::Wizard, &account_chars, "@newpassword").await
+    {
+        return refusal;
+    }
     let hash = {
         let password = password.to_string();
         match tokio::task::spawn_blocking(move || mush_config::accounts::hash_password(&password))
@@ -961,15 +1177,6 @@ pub(super) async fn run_newpassword(
             Ok(Err(e)) => return format!("@newpassword failed: {e}."),
             Err(e) => return format!("@newpassword failed: hashing task failed: {e}."),
         }
-    };
-    let account = match store.list_accounts().await {
-        Ok(accounts) => accounts
-            .into_iter()
-            .find(|a| a.characters.iter().any(|c| c.id == target)),
-        Err(e) => return format!("@newpassword failed: {e}"),
-    };
-    let Some(account) = account else {
-        return format!("@newpassword: {name} is not linked to any account.");
     };
     match store.set_account_password(&account.name, &hash).await {
         Ok(true) => {}
@@ -1366,8 +1573,15 @@ pub(super) fn siteban_latency_note() -> String {
 /// it follows. Confirmations are delivered to the requesting actor after
 /// the store acknowledged. Exits when the world loop drops its sender.
 pub(super) enum StaffWork {
-    Op(StaffOp),
-    Dump { actor: ObjId, writer: StoreWriter },
+    Op {
+        op: StaffOp,
+        permit: StaffActorPermit,
+    },
+    Dump {
+        actor: ObjId,
+        writer: StoreWriter,
+        permit: StaffActorPermit,
+    },
     Barrier(oneshot::Sender<Result<(), WorldReadError>>),
 }
 
@@ -1386,26 +1600,39 @@ pub(super) async fn staff_ops_loop(
     // split mode they resolve on the gateway process (this sink emits a
     // fire-and-forget `CloseWebSessions` instead).
     while let Some(work) = rx.recv().await {
-        let op = match work {
+        let (op, permit) = match work {
             StaffWork::Barrier(reply) => {
                 let _ = reply.send(Ok(()));
                 continue;
             }
-            StaffWork::Dump { actor, writer } => {
-                let (done, done_rx) = oneshot::channel();
-                let text = if writer.send(StoreJob::Bgsave { done }).await.is_err() {
-                    "@dump failed: store writer gone.".to_owned()
-                } else {
-                    match done_rx.await {
-                        Ok(Ok(())) => "@dump: snapshot acknowledged by the store.".to_owned(),
-                        Ok(Err(error)) => format!("@dump failed: {error}"),
-                        Err(_) => "@dump failed: store writer gone.".to_owned(),
+            StaffWork::Dump {
+                actor,
+                writer,
+                permit,
+            } => {
+                let text = match staff_role_recheck(&world, actor, Role::Wizard, &[], "@dump").await
+                {
+                    Err(refusal) => refusal,
+                    Ok(()) => {
+                        let (done, done_rx) = oneshot::channel();
+                        if writer.send(StoreJob::Bgsave { done }).await.is_err() {
+                            "@dump failed: store writer gone.".to_owned()
+                        } else {
+                            match done_rx.await {
+                                Ok(Ok(())) => {
+                                    "@dump: snapshot acknowledged by the store.".to_owned()
+                                }
+                                Ok(Err(error)) => format!("@dump failed: {error}"),
+                                Err(_) => "@dump failed: store writer gone.".to_owned(),
+                            }
+                        }
                     }
                 };
                 send_sys(&gateway, actor, &text);
+                drop(permit);
                 continue;
             }
-            StaffWork::Op(op) => op,
+            StaffWork::Op { op, permit } => (op, permit),
         };
         let actor = op.actor;
         let text = match op.kind {
@@ -1413,67 +1640,98 @@ pub(super) async fn staff_ops_loop(
                 ip,
                 until_unix,
                 reason,
-            } => match store.set_ban(&ip.to_string(), until_unix, &reason).await {
-                Ok(()) => {
-                    guard.set_siteban(ip, until_unix);
-                    let head = match until_unix {
-                        None => format!("@siteban: {ip} banned permanently."),
-                        Some(until) => format!("@siteban: {ip} banned until unix {until}."),
-                    };
-                    format!("{head} {}", siteban_latency_note())
-                }
-                Err(e) => format!("@siteban failed: {e}"),
-            },
-            StaffOpKind::ClearBan { ip } => match store.clear_ban(&ip.to_string()).await {
-                Ok(removed) => {
-                    guard.clear_siteban(ip);
-                    if removed {
-                        format!("@siteban: ban on {ip} lifted. {}", siteban_latency_note())
-                    } else {
-                        format!("@siteban: no ban on {ip}.")
+            } => match staff_role_recheck(&world, actor, Role::Wizard, &[], "@siteban").await {
+                Err(refusal) => refusal,
+                Ok(()) => match store.set_ban(&ip.to_string(), until_unix, &reason).await {
+                    Ok(()) => {
+                        guard.set_siteban(ip, until_unix);
+                        let head = match until_unix {
+                            None => format!("@siteban: {ip} banned permanently."),
+                            Some(until) => format!("@siteban: {ip} banned until unix {until}."),
+                        };
+                        format!("{head} {}", siteban_latency_note())
                     }
-                }
-                Err(e) => format!("@siteban/clear failed: {e}"),
+                    Err(e) => format!("@siteban failed: {e}"),
+                },
             },
+            StaffOpKind::ClearBan { ip } => {
+                match staff_role_recheck(&world, actor, Role::Wizard, &[], "@siteban/clear").await {
+                    Err(refusal) => refusal,
+                    Ok(()) => match store.clear_ban(&ip.to_string()).await {
+                        Ok(removed) => {
+                            guard.clear_siteban(ip);
+                            if removed {
+                                format!("@siteban: ban on {ip} lifted. {}", siteban_latency_note())
+                            } else {
+                                format!("@siteban: no ban on {ip}.")
+                            }
+                        }
+                        Err(e) => format!("@siteban/clear failed: {e}"),
+                    },
+                }
+            }
             StaffOpKind::NewPassword {
                 target,
                 name,
                 by,
                 password,
-            } => run_newpassword(&*store, &gateway, &world, target, &name, &by, &password.0).await,
+            } => {
+                run_newpassword(
+                    &*store,
+                    &gateway,
+                    &world,
+                    actor,
+                    target,
+                    &name,
+                    &by,
+                    &password.0,
+                )
+                .await
+            }
             StaffOpKind::LiftTempban { ip, issued_unix_ms } => {
-                let lift = mush_store::TempbanLift::new(ip, issued_unix_ms);
-                match store.put_tempban_lift(lift.clone()).await {
+                match staff_role_recheck(&world, actor, Role::Wizard, &[], "@siteban/lift").await {
+                    Err(refusal) => refusal,
                     Ok(()) => {
-                        guard.apply_tempban_lift(
-                            ip,
-                            &lift.id,
-                            lift.issued_unix_ms,
-                            lift.expires_unix,
-                        );
-                        format!(
-                            "@siteban/lift: password-tempban pardon published for {ip}'s network. Sitebans remain in force. {}",
-                            siteban_latency_note()
-                        )
+                        let lift = mush_store::TempbanLift::new(ip, issued_unix_ms);
+                        match store.put_tempban_lift(lift.clone()).await {
+                            Ok(()) => {
+                                guard.apply_tempban_lift(
+                                    ip,
+                                    &lift.id,
+                                    lift.issued_unix_ms,
+                                    lift.expires_unix,
+                                );
+                                format!(
+                                    "@siteban/lift: password-tempban pardon published for {ip}'s network. Sitebans remain in force. {}",
+                                    siteban_latency_note()
+                                )
+                            }
+                            Err(e) => format!("@siteban/lift failed: {e}"),
+                        }
                     }
-                    Err(e) => format!("@siteban/lift failed: {e}"),
                 }
             }
-            StaffOpKind::ListBans => match store.get_bans().await {
-                Ok(bans) if bans.is_empty() => "No active sitebans.".to_string(),
-                Ok(mut bans) => {
-                    bans.sort_by(|a, b| a.ip.cmp(&b.ip));
-                    let mut text = String::from("Active sitebans:");
-                    for b in bans {
-                        let until = b
-                            .until_unix
-                            .map_or_else(|| "permanent".to_string(), |u| format!("until unix {u}"));
-                        text.push_str(&format!("\n  {}  {}  {}", b.ip, until, b.reason));
-                    }
-                    text
+            StaffOpKind::ListBans => {
+                match staff_role_recheck(&world, actor, Role::Wizard, &[], "@siteban").await {
+                    Err(refusal) => refusal,
+                    Ok(()) => match store.get_bans().await {
+                        Ok(bans) if bans.is_empty() => "No active sitebans.".to_string(),
+                        Ok(mut bans) => {
+                            bans.sort_by(|a, b| a.ip.cmp(&b.ip));
+                            let mut text = String::from("Active sitebans:");
+                            for b in bans {
+                                let until = b.until_unix.map_or_else(
+                                    || "permanent".to_string(),
+                                    |u| format!("until unix {u}"),
+                                );
+                                text.push_str(&format!("\n  {}  {}  {}", b.ip, until, b.reason));
+                            }
+                            text
+                        }
+                        Err(e) => format!("@siteban list failed: {e}"),
+                    },
                 }
-                Err(e) => format!("@siteban list failed: {e}"),
-            },
+            }
             StaffOpKind::AddSshKey {
                 actor: subject,
                 openssh,
@@ -1496,7 +1754,7 @@ pub(super) async fn staff_ops_loop(
                 run_discord_link_mint(&*store, subject).await
             }
             StaffOpKind::DiscordUnlinkSelf { actor: subject } => {
-                run_discord_unlink(&gateway, &*store, subject, false).await
+                run_discord_unlink(&gateway, &*store, None, subject).await
             }
             // Answered on the world loop through the gateway control (D3); it is
             // never queued to this executor, so this arm only keeps the match
@@ -1529,24 +1787,33 @@ pub(super) async fn staff_ops_loop(
                     Err(text) => text,
                 }
             }
-            StaffOpKind::DiscordUnlink { target, .. } => {
-                run_discord_unlink(&gateway, &*store, target, true).await
+            StaffOpKind::DiscordUnlink { actor: by, target } => {
+                run_discord_unlink(&gateway, &*store, Some((&world, by)), target).await
             }
             StaffOpKind::DiscordBan {
                 actor: by,
                 target,
                 reason,
-            } => run_discord_ban(&gateway, &*store, by, target, &reason).await,
-            StaffOpKind::DiscordUnban { target, .. } => run_discord_unban(&*store, target).await,
+            } => run_discord_ban(&gateway, &*store, &world, by, target, &reason).await,
+            StaffOpKind::DiscordUnban { actor: by, target } => {
+                match staff_role_recheck(&world, by, Role::Wizard, &[], "@discord/unban").await {
+                    Ok(()) => run_discord_unban(&*store, target).await,
+                    Err(refusal) => refusal,
+                }
+            }
             // Dump/Shutdown and the local ops never enter this queue (see
             // run_staff_ops / run_local_staff_ops).
             StaffOpKind::Dump
             | StaffOpKind::Shutdown
             | StaffOpKind::Boot { .. }
             | StaffOpKind::Ps
-            | StaffOpKind::Stats => continue,
+            | StaffOpKind::Stats => {
+                drop(permit);
+                continue;
+            }
         };
         send_sys(&gateway, actor, &text);
+        drop(permit);
     }
     tracing::debug!("staff op executor drained and exiting");
 }
@@ -1644,9 +1911,16 @@ pub(super) async fn run_discord_link_mint(store: &dyn ObjectStore, subject: ObjI
 pub(super) async fn run_discord_unlink(
     gateway: &Gateway,
     store: &dyn ObjectStore,
+    staff: Option<(&mpsc::WeakSender<WorldMsg>, ObjId)>,
     target: ObjId,
-    by_staff: bool,
 ) -> String {
+    let by_staff = staff.is_some();
+    if let Some((world, by)) = staff
+        && let Err(refusal) =
+            staff_role_recheck(world, by, Role::Wizard, &[target], "@discord/unlink").await
+    {
+        return refusal;
+    }
     let whose = if by_staff {
         "that account"
     } else {
@@ -1659,6 +1933,14 @@ pub(super) async fn run_discord_unlink(
         }
         Err(e) => return format!("@discord/unlink failed: {e}"),
     };
+    if let Some((world, by)) = staff {
+        let account_chars: Vec<ObjId> = account.characters.iter().map(|c| c.id).collect();
+        if let Err(refusal) =
+            staff_role_recheck(world, by, Role::Wizard, &account_chars, "@discord/unlink").await
+        {
+            return refusal;
+        }
+    }
     let Some(link) = account.discord.as_ref() else {
         return format!("@discord/unlink: {whose} has no Discord link.");
     };
@@ -1824,21 +2106,75 @@ pub(super) async fn run_discord_show(store: &dyn ObjectStore, target: ObjId) -> 
     )
 }
 
+/// Re-check a staff role (and optionally every character on a target account)
+/// on the world loop before executing a queued privileged staff op.
+///
+/// Fails closed if the caller was demoted, if any character in `targets`
+/// outranks `actor` (or is `GOD` when `actor != GOD`), or if the world task is
+/// busy or gone.
+pub(super) async fn staff_role_recheck(
+    world: &mpsc::WeakSender<WorldMsg>,
+    actor: ObjId,
+    min_role: Role,
+    targets: &[ObjId],
+    command: &'static str,
+) -> Result<(), String> {
+    let Some(world) = world.upgrade().map(|tx| WorldHandle {
+        tx,
+        shutdown: None,
+        direct_actions: None,
+    }) else {
+        return Err(format!(
+            "{command}: the world is shutting down; nothing was done."
+        ));
+    };
+    match world
+        .recheck_staff_role(actor, min_role, targets.to_vec())
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(
+                %actor,
+                command,
+                target_count = targets.len(),
+                "staff op refused at execution: role or account-rank check failed"
+            );
+            Err(format!("{command}: Permission denied."))
+        }
+        Err(e) => Err(format!(
+            "{command}: authorization could not be re-checked ({e}); nothing was done."
+        )),
+    }
+}
+
 /// `@discord/ban <player>=<reason>` — ban the target's linked Discord user by
 /// snowflake (the link stays so `@discord/unban <player>` can find it; the
 /// bridge refuses link, follow and relay while the ban stands).
 pub(super) async fn run_discord_ban(
     gateway: &Gateway,
     store: &dyn ObjectStore,
+    world: &mpsc::WeakSender<WorldMsg>,
     by: ObjId,
     target: ObjId,
     reason: &str,
 ) -> String {
+    if let Err(refusal) =
+        staff_role_recheck(world, by, Role::Wizard, &[target], "@discord/ban").await
+    {
+        return refusal;
+    }
     let account = match account_of_actor(store, target).await {
         Ok(Some(a)) => a,
         Ok(None) => return format!("@discord/ban: {target} is not linked to an account."),
         Err(e) => return format!("@discord/ban failed: {e}"),
     };
+    let account_chars: Vec<ObjId> = account.characters.iter().map(|c| c.id).collect();
+    if let Err(refusal) =
+        staff_role_recheck(world, by, Role::Wizard, &account_chars, "@discord/ban").await
+    {
+        return refusal;
+    }
     let who = account_char_name(&account, target);
     let Some(link) = account.discord.as_ref() else {
         return format!("@discord/ban: {who} has no linked Discord user to ban.");

@@ -306,6 +306,10 @@ pub struct IndustryStore {
     /// [`Self::open_orders`], so a facility's sale can ask whether an order is open there. The
     /// market's listing runs in the market's context, which may not read `industry.workorder`.
     open_at: BTreeMap<ObjId, BTreeSet<crate::workorder::WorkOrderId>>,
+    /// **Doc 48e (services G17)** — the orders at each facility that are past their draft (and any
+    /// org approval) and not yet terminal: the ones that hold a slot. A `Draft` escrows nothing,
+    /// so a facility's running costs (tacsim's `port::upkeep`) bill only these as worked.
+    worked_at: BTreeMap<ObjId, BTreeSet<crate::workorder::WorkOrderId>>,
     /// **WS02-S5b** — `Draft` orders the last complete sweep found no longer
     /// matching the recipe authority, and why.
     ///
@@ -416,13 +420,23 @@ impl IndustryStore {
     }
 
     /// **Doc 48 unit PL.9** — note one work order at `facility` as live or terminal, as
-    /// [`Self::note_work_order`] does by requester.
+    /// [`Self::note_work_order`] does by requester; `worked` when it is also past its draft
+    /// ([`Self::worked_orders_at`]).
     pub fn note_facility_order(
         &mut self,
         facility: ObjId,
         order: crate::workorder::WorkOrderId,
         open: bool,
+        worked: bool,
     ) {
+        if open && worked {
+            self.worked_at.entry(facility).or_default().insert(order);
+        } else if let Some(live) = self.worked_at.get_mut(&facility) {
+            live.remove(&order);
+            if live.is_empty() {
+                self.worked_at.remove(&facility);
+            }
+        }
         if open {
             self.open_at.entry(facility).or_default().insert(order);
         } else if let Some(live) = self.open_at.get_mut(&facility) {
@@ -438,6 +452,13 @@ impl IndustryStore {
     #[must_use]
     pub fn open_orders_at(&self, facility: ObjId) -> usize {
         self.open_at.get(&facility).map_or(0, BTreeSet::len)
+    }
+
+    /// **Doc 48e (services G17)** — how many orders at `facility` are past their draft and not
+    /// terminal: [`Self::open_orders_at`] less its drafts. A facility's worked slots.
+    #[must_use]
+    pub fn worked_orders_at(&self, facility: ObjId) -> usize {
+        self.worked_at.get(&facility).map_or(0, BTreeSet::len)
     }
 
     /// How many requesters currently hold a live order (the index's observable).
@@ -881,6 +902,7 @@ pub fn reconcile(
     let mut open_orders: BTreeMap<SmolStr, BTreeSet<crate::workorder::WorkOrderId>> =
         BTreeMap::new();
     let mut open_at: BTreeMap<ObjId, BTreeSet<crate::workorder::WorkOrderId>> = BTreeMap::new();
+    let mut worked_at: BTreeMap<ObjId, BTreeSet<crate::workorder::WorkOrderId>> = BTreeMap::new();
     // WS02-S5b: the drafts whose pinned lines the authority no longer publishes,
     // gathered on the same walk and under the same page budget.
     let mut drifted: BTreeMap<crate::workorder::WorkOrderId, DraftDrift> = BTreeMap::new();
@@ -921,6 +943,12 @@ pub fn reconcile(
                     .entry(order.facility())
                     .or_default()
                     .insert(order.id());
+                if holds_slot(order.state()) {
+                    worked_at
+                        .entry(order.facility())
+                        .or_default()
+                        .insert(order.id());
+                }
             }
             // WS02-S5b: only a `Draft` is asked. Past the submit the pin is what
             // the reservation, the production plan and the delivery mint all ran
@@ -1029,6 +1057,7 @@ pub fn reconcile(
     if orders_complete {
         store.open_orders = open_orders;
         store.open_at = open_at;
+        store.worked_at = worked_at;
         // Same rule, same reason: a truncated walk under-marks, and an
         // under-marking set is a refusal that silently stops being made. Keep the
         // last complete answer rather than installing a partial one.
@@ -1144,7 +1173,13 @@ impl WorldObserver for WorkOrderIndex {
         if owner != self.work_orders.owner() || family != self.work_orders.descriptor().id() {
             return;
         }
-        let mut notes: Vec<(PrincipalId, ObjId, crate::workorder::WorkOrderId, bool)> = Vec::new();
+        let mut notes: Vec<(
+            PrincipalId,
+            ObjId,
+            crate::workorder::WorkOrderId,
+            bool,
+            bool,
+        )> = Vec::new();
         for key in keys.iter().take(MAX_INDEX_NOTES) {
             let Some(id) = crate::workorder::WorkOrderId::parse(key) else {
                 continue;
@@ -1160,6 +1195,7 @@ impl WorldObserver for WorkOrderIndex {
                 order.facility(),
                 order.id(),
                 !order.state().is_terminal(),
+                holds_slot(order.state()),
             ));
         }
         if keys.len() > MAX_INDEX_NOTES {
@@ -1171,9 +1207,9 @@ impl WorldObserver for WorkOrderIndex {
             );
         }
         if let Some(store) = ctx.w.module_state_mut::<IndustryStore>() {
-            for (requester, facility, order, open) in notes {
+            for (requester, facility, order, open, worked) in notes {
                 store.note_work_order(&requester, order, open);
-                store.note_facility_order(facility, order, open);
+                store.note_facility_order(facility, order, open, worked);
             }
         }
     }
@@ -1354,4 +1390,44 @@ pub fn install_authored_facility(
         store.put_facility(facility);
     }
     Ok(())
+}
+
+/// **Whether an order in `state` holds one of its facility's slots** (doc 48e, services G17):
+/// past its draft and any org approval it waits on, so its budget is held, and not yet
+/// terminal. A draft or an order awaiting approval has reserved nothing.
+fn holds_slot(state: &crate::workorder::WorkOrderState) -> bool {
+    !state.is_terminal()
+        && !matches!(
+            state,
+            crate::workorder::WorkOrderState::Draft
+                | crate::workorder::WorkOrderState::AwaitingApproval { .. }
+        )
+}
+
+#[cfg(test)]
+mod worked_index_tests {
+    use super::*;
+    use crate::workorder::WorkOrderId;
+
+    /// **Doc 48e (services G17): a draft holds no slot.** The facility index counts a draft as
+    /// open (it still blocks a sale) but not as worked (it is never billed as busy); once
+    /// submitted it is both, and at its end neither.
+    #[test]
+    fn g17_a_draft_is_open_but_not_worked() {
+        let mut store = IndustryStore::default();
+        let (facility, order) = (ObjId(7), WorkOrderId(1));
+        store.note_facility_order(facility, order, true, false);
+        assert_eq!(store.open_orders_at(facility), 1);
+        assert_eq!(store.worked_orders_at(facility), 0, "a draft is not worked");
+        store.note_facility_order(facility, order, true, true);
+        assert_eq!(store.open_orders_at(facility), 1);
+        assert_eq!(store.worked_orders_at(facility), 1, "a submitted order is");
+        store.note_facility_order(facility, order, false, true);
+        assert_eq!(store.open_orders_at(facility), 0);
+        assert_eq!(
+            store.worked_orders_at(facility),
+            0,
+            "a closed order is neither"
+        );
+    }
 }

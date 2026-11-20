@@ -46,6 +46,12 @@ pub struct HouseDeployment {
     /// absent, and with no policy, the House's filings are not attested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_agent: Option<ObjId>,
+    /// **Doc 48 unit EX.9 (Q-48-55): the House's stipend**, minor credits an IC day, paid by the
+    /// export faucet (`tacsim.export`) into the House's treasury (its root-scope account) once an
+    /// IC day (`crate::port::upkeep`). Absent or 0, no stipend; skipped when absent, so a
+    /// deployment without one serializes, and its `launch_deployment` descriptor reads, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stipend_minor_per_ic_day: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

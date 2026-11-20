@@ -275,7 +275,7 @@ the site has settled:
   that opens over the site stops the work, and the work goes on when the
   field settles. Nothing is paid between players.
 - **The load.** Beside its carrier's ramp, `+tv/<n> load go` lifts the casualty
-  into the bay, where `+bay` quotes its repair (`help ships`). Loaded into your
+  into the bay, where `+bay` quotes its repair (`help space`). Loaded into your
   own party's or a Friend's carrier, it is home. Loaded into anyone else's, it
   is in that carrier's custody with a salvage claim owed, never its title, and
   anyone still aboard is taken captive (see *Crew*). The custodian files the claim

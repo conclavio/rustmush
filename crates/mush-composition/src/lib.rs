@@ -405,6 +405,8 @@ fn compose_server_modules<E>(
                 module
                     .with_pool_capacity(Arc::new(tacsim::port::market::PortCapacity))
                     .with_indivisible_goods(Arc::new(tacsim::port_tick::PartGoods))
+                    // Doc 48e (exchange G7): a player's `@inv/move` is the ports' to judge.
+                    .with_move_policy(Arc::new(tacsim::port::market::PortMovePolicy))
             } else {
                 module
             };

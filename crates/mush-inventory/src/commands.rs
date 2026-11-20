@@ -221,7 +221,11 @@ fn submit(
 ///
 /// # Errors
 /// [`ModError`] if registration collides.
-pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result<(), ModError> {
+pub fn register(
+    reg: &mut Registrar<'_>,
+    families: &InventoryFamilies,
+    move_policy: Option<Arc<dyn crate::provider::MovePolicy>>,
+) -> Result<(), ModError> {
     // K8.5: declare the lane before the first command. One registration, one
     // class, and the ceiling of the nine switches is `Authoritative`.
     reg.classify_commands(CommandCompatibility::Authoritative);
@@ -251,7 +255,7 @@ pub fn register(reg: &mut Registrar<'_>, families: &InventoryFamilies) -> Result
                 .to_owned(),
             ..CommandSpec::default()
         },
-        Arc::new(move |ctx: &mut Ctx<'_>| dispatch(ctx, &families)),
+        Arc::new(move |ctx: &mut Ctx<'_>| dispatch(ctx, &families, move_policy.as_ref())),
     )?;
     // ---- E7r2: P2 — `@salvage`, in the SAME `Authoritative` group ----
     //
@@ -410,7 +414,11 @@ fn salvage_recover(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn dispatch(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError> {
+fn dispatch(
+    ctx: &mut Ctx<'_>,
+    families: &InventoryFamilies,
+    move_policy: Option<&Arc<dyn crate::provider::MovePolicy>>,
+) -> Result<(), CmdError> {
     // E7c2 fold B4: NO per-command `store::reconcile`. Rebuilding three whole
     // typed families on the world single-writer for every read switch cost
     // ~12 k record visits per command and grew with the tree's pool count
@@ -433,7 +441,7 @@ fn dispatch(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdEr
         return quarantine(ctx);
     }
     if ctx.switches.has("move") {
-        return move_stock(ctx);
+        return move_stock(ctx, move_policy);
     }
     if ctx.switches.has("split") {
         return split(ctx, families);
@@ -778,7 +786,10 @@ fn reservations(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), C
 
 // ---- the five mutations, every one through B1's seam ----
 
-fn move_stock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+fn move_stock(
+    ctx: &mut Ctx<'_>,
+    move_policy: Option<&Arc<dyn crate::provider::MovePolicy>>,
+) -> Result<(), CmdError> {
     let lhs = ctx.args.lhs().to_owned();
     let rhs = ctx.args.rhs().unwrap_or("").to_owned();
     let (slot, quantity) = lhs
@@ -791,6 +802,15 @@ fn move_stock(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (from, commodity) =
         parse_slot(slot).ok_or_else(|| CmdError::msg("Usage: <endpoint>/<commodity>:<n>"))?;
     let to = parse_endpoint(&rhs).ok_or_else(|| CmdError::msg(NO_SUCH_ENDPOINT))?;
+    // Doc 48e (exchange G7; 48d C-03): a player's move is the game's to judge (where they stand,
+    // which vaults, what is under sale); staff move as before.
+    if let Some(policy) = move_policy
+        && !mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty)
+    {
+        policy
+            .admit(ctx.w, ctx.actor, from, to)
+            .map_err(CmdError::msg)?;
+    }
     submit(
         ctx,
         InventoryVerb::Move,

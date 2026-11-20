@@ -2334,7 +2334,7 @@ fn hold_figures(
         .filter_map(|(_, comp)| comp.limits.get(&mass).copied())
         .sum();
     let read = |endpoint: mush_inventory::record::EndpointRef, good: &mush_core::CanonicalId| {
-        crate::port_tick::read_pool(ctx, endpoint, good)
+        crate::port_tick::read_held(ctx, endpoint, good)
     };
     let read_rig = |tv: ObjId| crate::port::site_map::SurfaceReads::rig(ctx, tv);
     let free = crate::port::ship::hold_unreserved_kg(w, &view, &[], &read, &read_rig)?;

@@ -27,7 +27,7 @@ const DISENGAGE_S: u32 = 60;
 const FIGHT_CYCLES: u32 = 10;
 
 /// **CF.6's raider gate** (doc 32 §6; Q-CF-23, Q-CF-41, Q-CF-42, Q-CF-44).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf6_a_seeded_raider_fights_with_nobody_connected_until_it_is_destroyed() {
     // The fight runs to the raider's destruction, so a lull while the guard and a raider hull
@@ -289,7 +289,7 @@ fn crews_of(rig: &Rig, hulls: &[ObjId]) -> Vec<ObjId> {
 /// **CF.6b's gate** (doc 32's "CF.6b as built"; Q-CF-18, Q-CF-44, Q-CF-47): the raider launches
 /// from its own carrier, fires on an escort while the prospector's carrier stands on its pad, and
 /// its leader's WITHDRAW takes every hull home up the carrier's ramp and out of the field.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn cf6b_the_raider_launches_fires_past_a_carrier_on_its_pad_and_withdraws_up_its_ramp() {
     let mut rig = stocked_tuned(tune);
@@ -451,7 +451,7 @@ async fn cf6b_the_raider_launches_fires_past_a_carrier_on_its_pad_and_withdraws_
 /// its hulls where they launched, the Dray-P aboard its pad — each party's home its own carrier's
 /// ramp (the Dray-P's `(256, 252)`, off the pad its pad room puts at `(256, 256)`), on a 512 site
 /// record.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn s1_a_field_promotes_on_the_512_site() {
     const URVARA: &str = "urvara_port";

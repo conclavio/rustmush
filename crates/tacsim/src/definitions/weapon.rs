@@ -133,7 +133,9 @@ pub struct WeaponDef {
     /// keeps [`AUTOMATIC_DEFENCE_FLOOR_MS`] where every other mount is held to
     /// [`CYCLE_FLOOR_MS`]. Absent (and so `false`) on every shipped ground
     /// mount, and written only when set, so a pack that does not set it signs
-    /// as it did.
+    /// as it did. **Refused at load for now** (doc 48e kernel G13): no ground
+    /// fire path answers incoming rounds on its own, so a mount set so would be
+    /// an ordinary gun under the 1 s floor.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub automatic_defence: bool,
     /// Why these numbers.
@@ -218,6 +220,15 @@ impl WeaponDef {
                     },
                     self.cycle_ms
                 ),
+            ));
+        }
+        // Doc 48e kernel G13: no ground fire path answers incoming rounds on its own yet, so a
+        // mount marked automatic would be an ordinary gun under the 1 s floor, typed and fired
+        // by players and minds. It is refused at load until that path exists.
+        if self.automatic_defence {
+            return Err(DefinitionError::value(
+                entry,
+                "automatic_defence: no ground mount fires on its own yet, so none may be marked                  automatic (it would be a 1 s gun a player could fire)",
             ));
         }
         if self.burst_rounds == 0 || self.burst_rounds > MAX_BURST_ROUNDS {

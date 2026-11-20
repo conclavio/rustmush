@@ -24,17 +24,17 @@ use crate::hull_resale_ex2::{account_of, balance, captain, mint};
 
 /// **A captain at Ceres with her own credit account**: a Co-op charter (her enrolment opens the
 /// account), so she also pays her charter's berth, which [`berth_paid`] reads.
-fn employer(rig: &mut Rig, name: &str, seed: i64, hull: &str) -> ObjId {
+pub(crate) fn employer(rig: &mut Rig, name: &str, seed: i64, hull: &str) -> ObjId {
     captain(rig, name, seed, hull).0
 }
 
 /// What `who` has paid in berth so far, minor units.
-fn berth_paid(rig: &Rig, who: ObjId) -> i64 {
+pub(crate) fn berth_paid(rig: &Rig, who: ObjId) -> i64 {
     crate::driving_rig::berth_paid(rig.tw.world(), &PrincipalId::Object(who))
 }
 
 /// Staff take `who`'s whole balance away: a captain who cannot pay.
-fn broke(rig: &mut Rig, who: ObjId) {
+pub(crate) fn broke(rig: &mut Rig, who: ObjId) {
     let account = account_of(rig, who);
     let left = balance(rig, account);
     let sink = port_map(&rig.tw, "ceres_port")
@@ -52,14 +52,14 @@ fn broke(rig: &mut Rig, who: ObjId) {
 }
 
 /// An IC day at 24:1, real seconds.
-const IC_DAY_REAL: i64 = 3_600;
+pub(crate) const IC_DAY_REAL: i64 = 3_600;
 /// The shipped rating, a unit operator.
-const MENDES: &str = "Ilya Mendes";
+pub(crate) const MENDES: &str = "Ilya Mendes";
 /// The shipped officer, a detachment commander.
-const OKONKWO: &str = "Sana Okonkwo";
+pub(crate) const OKONKWO: &str = "Sana Okonkwo";
 
 /// The NPC named `name`.
-fn npc(rig: &Rig, name: &str) -> ObjId {
+pub(crate) fn npc(rig: &Rig, name: &str) -> ObjId {
     rig.tw
         .world()
         .iter()
@@ -69,7 +69,7 @@ fn npc(rig: &Rig, name: &str) -> ObjId {
 }
 
 /// The port authority's account at Ceres, which keeps the hiring hall.
-fn authority(rig: &Rig) -> AccountId {
+pub(crate) fn authority(rig: &Rig) -> AccountId {
     let map = port_map(&rig.tw, "ceres_port");
     let row = map
         .orgs
@@ -82,7 +82,7 @@ fn authority(rig: &Rig) -> AccountId {
 
 /// **Hire `who`'s `npc`** where the NPC stands, through the line `+sortie/crew` prints; what the
 /// offers said.
-fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) -> String {
+pub(crate) fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) -> String {
     let room = rig
         .tw
         .world()
@@ -107,7 +107,7 @@ fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) -> String {
 }
 
 /// `npc`'s wage, as `who` owes it.
-fn wage(rig: &Rig, who: ObjId, npc: ObjId) -> Option<Obligation> {
+pub(crate) fn wage(rig: &Rig, who: ObjId, npc: ObjId) -> Option<Obligation> {
     let ns = tacsim::detachment::crew::wages::wage_namespace(npc);
     mush_economy::player_obligations_of(rig.tw.world(), &PrincipalId::Object(who), &ns)
         .into_iter()
@@ -115,7 +115,7 @@ fn wage(rig: &Rig, who: ObjId, npc: ObjId) -> Option<Obligation> {
 }
 
 /// One IC day at 24:1: every tick fires once.
-fn day(rig: &mut Rig) {
+pub(crate) fn day(rig: &mut Rig) {
     sweep(&mut rig.tw, IC_DAY_REAL);
 }
 

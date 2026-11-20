@@ -15,7 +15,8 @@
 // that has held its course since her last think, since a hull that burns is not where the
 // round was aimed; and a salvo of two torpedoes at each reload, only at a hull radiating for
 // a fight. Her second laser stands in defence, as her fit starts it. She closes only until
-// she is closing at 50 m/s, and holds her drive from there.
+// she is closing at 50 m/s, and holds her drive from there: her closing speed, along the line
+// between them, so a hull that runs from her is chased (doc 48e kernel G8).
 fn think(v, c) {
     let target = ();
     let target_range = 0;
@@ -95,13 +96,12 @@ fn think(v, c) {
     }
 
     // She closes until she is closing at 50 m/s, then holds her drive: a burn left standing
-    // would carry her past the hull ever faster (doc 49 unit CC.8).
+    // would carry her past the hull ever faster (doc 49 unit CC.8). It is the closing speed,
+    // along the line between them: a hull opening the range is not fast, and she chases it
+    // (doc 48e kernel G8).
     let fast = false;
-    if s != () && more != () {
-        let rx = more.vx_cms - s.vx_cms;
-        let ry = more.vy_cms - s.vy_cms;
-        let rz = more.vz_cms - s.vz_cms;
-        fast = rx * rx + ry * ry + rz * rz >= 25000000;
+    if more != () {
+        fast = more.closing_cms >= 5000;
     }
     if fast {
         if !("closing" in this) || this.closing != false {

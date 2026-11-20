@@ -477,8 +477,11 @@ fn newpassword_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError
     if ctx.w.get(target).is_none_or(|o| o.kind != ObjKind::Player) {
         return Err(CmdError::msg("Only players have passwords."));
     }
-    // Rank still matters: nobody resets a password above their own role.
-    if perm::role_of(ctx.w, target) > perm::role_of(ctx.w, ctx.actor) {
+    // Rank still matters: nobody resets a password above their own role, and
+    // nobody other than God may reset God's password.
+    if (target == mush_core::GOD && ctx.actor != mush_core::GOD)
+        || perm::role_of(ctx.w, target) > perm::role_of(ctx.w, ctx.actor)
+    {
         return Err(CmdError::msg("Permission denied."));
     }
     mush_config::accounts::validate_password(password)
@@ -744,6 +747,30 @@ pub(crate) fn recheck_privilege(
     false
 }
 
+/// Re-check a staff role (and optionally that `actor` is not outranked by any
+/// character in `targets` — e.g. every character on a resolved account) on the
+/// world loop for a queued off-loop staff executor operation.
+///
+/// Pure read over `World`: refuses if `actor` has lost `min_role`, if any
+/// target in `targets` outranks `actor`, or if any target is `GOD` (`#1`) when
+/// `actor != GOD`.
+#[must_use]
+pub(crate) fn check_staff_role(w: &World, actor: ObjId, min_role: Role, targets: &[ObjId]) -> bool {
+    let actor_role = perm::role_of(w, actor);
+    if actor_role < min_role {
+        return false;
+    }
+    for &target in targets {
+        if target == mush_core::GOD && actor != mush_core::GOD {
+            return false;
+        }
+        if perm::role_of(w, target) > actor_role {
+            return false;
+        }
+    }
+    true
+}
+
 /// `@discord` — the Discord identity family (D1). Self-service forms act on
 /// the CALLER's own account, resolved store-side (invariant N1); the staff
 /// forms are Wizard-gated in the handler (the spec is `Role::Player` so the
@@ -821,6 +848,11 @@ fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("Permission denied."));
         }
         let target = resolve_actor(ctx.w, &lhs)?;
+        if (target == mush_core::GOD && actor != mush_core::GOD)
+            || perm::role_of(ctx.w, target) > perm::role_of(ctx.w, actor)
+        {
+            return Err(CmdError::msg("Permission denied."));
+        }
         let reason = if rhs.is_empty() {
             None
         } else {
@@ -847,6 +879,11 @@ fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("Usage: @discord/ban <player>=<reason>."));
         }
         let target = resolve_actor(ctx.w, &lhs)?;
+        if (target == mush_core::GOD && actor != mush_core::GOD)
+            || perm::role_of(ctx.w, target) > perm::role_of(ctx.w, actor)
+        {
+            return Err(CmdError::msg("Permission denied."));
+        }
         let reason = checked_audit_reason(&rhs, "Usage: @discord/ban <player>=<reason>.")?;
         discord_audit(
             ctx,
@@ -1993,5 +2030,76 @@ mod tests {
                 kind: StaffOpKind::Dump
             }]
         );
+    }
+
+    #[test]
+    fn wizard_cannot_target_god_for_newpassword_discord_unlink_or_discord_ban() {
+        let (mut engine, queue) = engine_with_staff_and_privileges();
+        let wiz = engine
+            .world
+            .create(ObjKind::Player, "Wanda", GOD, Some(LIMBO))
+            .unwrap();
+        engine
+            .world
+            .set_flag(wiz, mush_core::Flags::WIZARD, true)
+            .unwrap();
+        let mortal = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+
+        for cmd in [
+            "@newpassword God=supersecretpass99",
+            "@discord/unlink God=trying to unlink god",
+            "@discord/ban God=trying to ban god",
+        ] {
+            let out = run(&mut engine, wiz, cmd);
+            assert!(
+                sys_texts(&out)
+                    .iter()
+                    .any(|t| t.contains("Permission denied")),
+                "{cmd}: {:?}",
+                sys_texts(&out)
+            );
+            assert!(queue.drain().is_empty(), "{cmd} must not queue an op");
+        }
+        assert!(
+            audit_actions(&engine).is_empty(),
+            "refused rank violations must not write successful unlink/ban audits"
+        );
+
+        // Wizard CAN target a mortal character.
+        let out = run(&mut engine, wiz, "@discord/unlink Nick=routine");
+        assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
+        assert_eq!(queue.drain().len(), 1);
+        let out = run(&mut engine, wiz, "@discord/ban Nick=spam");
+        assert!(sys_texts(&out).is_empty(), "{:?}", sys_texts(&out));
+        assert_eq!(queue.drain().len(), 1);
+
+        // check_staff_role enforces min_role AND account-wide max role / GOD protection.
+        assert!(check_staff_role(
+            &engine.world,
+            wiz,
+            Role::Wizard,
+            &[mortal]
+        ));
+        assert!(!check_staff_role(
+            &engine.world,
+            wiz,
+            Role::Wizard,
+            &[mortal, GOD]
+        ));
+        assert!(check_staff_role(
+            &engine.world,
+            GOD,
+            Role::Wizard,
+            &[mortal, GOD]
+        ));
+        assert!(!check_staff_role(
+            &engine.world,
+            mortal,
+            Role::Wizard,
+            &[mortal]
+        ));
     }
 }

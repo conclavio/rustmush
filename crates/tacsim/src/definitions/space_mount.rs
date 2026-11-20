@@ -41,8 +41,10 @@ pub const MAX_SPACE_RANGE_M: i64 = 2_000_000;
 
 /// The shortest a space mount may cycle, wall milliseconds: one bubble substep
 /// (`crate::space::bubble::MAX_SUBSTEP_MS`). A shorter cycle would fire as often as the bubble
-/// happened to step. The 5 s floor for a mount a player or a mind fires (Q-49-19) is the
-/// palette's (doc 49 unit CC.8), not the format's.
+/// happened to step. It binds the automatic cycles, a laser's defence mode and point defence;
+/// a mount a player or a mind fires (tubes, a laser in offence, a spinal gun) is held to the
+/// ground's 5 s floor, [`crate::definitions::weapon::CYCLE_FLOOR_MS`] (Q-49-2, Q-49-19; doc 48e
+/// kernel G1), so no content edit brings back a one-second gun in space either.
 pub const SPACE_CYCLE_FLOOR_MS: u32 = 250;
 
 /// The slowest a space mount may cycle: an hour.
@@ -280,6 +282,17 @@ fn cycle(entry: &str, field: &str, value: u32) -> Result<(), DefinitionError> {
     )
 }
 
+/// A cycle a player or a mind fires on: at least the 5 s floor (doc 48e kernel G1).
+fn fired_cycle(entry: &str, field: &str, value: u32) -> Result<(), DefinitionError> {
+    bounded(
+        entry,
+        field,
+        value,
+        crate::definitions::weapon::CYCLE_FLOOR_MS,
+        MAX_SPACE_CYCLE_MS,
+    )
+}
+
 fn reach(entry: &str, field: &str, value: i64) -> Result<(), DefinitionError> {
     bounded(entry, field, value, 1, MAX_SPACE_RANGE_M)
 }
@@ -304,7 +317,7 @@ impl SpaceMountDef {
         match &self.family {
             SpaceMountFamily::Tubes(tubes) => {
                 bounded(entry, "salvo", tubes.salvo, 1, MAX_SALVO)?;
-                cycle(entry, "reload_ms", tubes.reload_ms)?;
+                fired_cycle(entry, "reload_ms", tubes.reload_ms)?;
                 bounded(
                     entry,
                     "accel_mps2",
@@ -334,7 +347,7 @@ impl SpaceMountDef {
                     ));
                 }
                 if let Some(mode) = laser.modes.offence {
-                    cycle(entry, "modes.offence.cycle_ms", mode.cycle_ms)?;
+                    fired_cycle(entry, "modes.offence.cycle_ms", mode.cycle_ms)?;
                 }
                 if let Some(mode) = laser.modes.defence {
                     cycle(entry, "modes.defence.cycle_ms", mode.cycle_ms)?;
@@ -351,7 +364,7 @@ impl SpaceMountDef {
                 reach(entry, "max_range_m", spinal.max_range_m)?;
                 damage(entry, "round_damage", spinal.round_damage)?;
                 heat(entry, spinal.heat_per_shot_permille)?;
-                cycle(entry, "cycle_ms", spinal.cycle_ms)?;
+                fired_cycle(entry, "cycle_ms", spinal.cycle_ms)?;
             }
             SpaceMountFamily::PointDefence(pd) => {
                 reach(entry, "envelope_m", pd.envelope_m)?;
@@ -646,7 +659,7 @@ mod tests {
                 defence_range_m: 45_000,
                 heat_per_shot_permille: 140,
                 modes: LaserModesDef {
-                    offence: Some(LaserModeDef { cycle_ms: 1_000 }),
+                    offence: Some(LaserModeDef { cycle_ms: 5_000 }),
                     defence: None,
                 },
             }),
@@ -733,6 +746,28 @@ mod tests {
             tubes.reload_ms = SPACE_CYCLE_FLOOR_MS - 1;
         }
         assert!(fast.check("row").is_err(), "no cycle under one substep");
+    }
+
+    /// **Doc 48e kernel G1: a mount a player or a mind fires keeps the 5 s floor**, in space as
+    /// on the ground; the automatic cycles (a laser in defence, point defence) keep the substep.
+    #[test]
+    fn g1_a_fired_space_mount_keeps_the_five_second_floor() {
+        let floor = crate::definitions::weapon::CYCLE_FLOOR_MS;
+        let mut tubes = tubes_row();
+        if let SpaceMountFamily::Tubes(def) = &mut tubes.family {
+            def.reload_ms = floor - 1;
+        }
+        assert!(tubes.check("row").is_err(), "a tube under 5 s");
+        let mut offence = laser_row();
+        if let SpaceMountFamily::Laser(def) = &mut offence.family {
+            def.modes.offence = Some(LaserModeDef { cycle_ms: 1_000 });
+        }
+        assert!(offence.check("row").is_err(), "a one-second offence laser");
+        let mut defence = laser_row();
+        if let SpaceMountFamily::Laser(def) = &mut defence.family {
+            def.modes.defence = Some(LaserModeDef { cycle_ms: 1_000 });
+        }
+        assert!(defence.check("row").is_ok(), "defence is automatic");
     }
 
     #[test]

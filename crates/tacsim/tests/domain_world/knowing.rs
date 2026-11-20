@@ -517,7 +517,14 @@ fn drain(tw: &mut TestWorld) -> Vec<AuthoritativeSubmit> {
 }
 
 fn land_all(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
+    // Doc 48 unit EX.10: a hauling house's helm files the market legs a player's plan would,
+    // and as a player's they may be refused (a paid draw landed past its deadline).
+    let helms = tacsim::port::hauler::helms(rig.tw.world());
     for submit in queued {
+        if helms.contains(&submit.actor) {
+            let _ = land(rig, submit);
+            continue;
+        }
         land(rig, submit).unwrap_or_else(|error| {
             panic!(
                 "{} by #{} did not land: {error}",
@@ -3609,6 +3616,25 @@ fn survey_relationship(
         })
 }
 
+/// **Doc 48 unit EX.9: what the organisation owning `account` has paid in running costs** in
+/// all, minor units (0 for any other owner): a lane house's money moves by it across IC days.
+fn upkept(tw: &TestWorld, account: u64) -> i64 {
+    let owner = tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .account(mush_economy::AccountId(account))
+                .map(|a| a.owner.clone())
+        });
+    match owner {
+        Some(mush_org::PrincipalId::Organization(org)) => {
+            tacsim::port::upkeep::paid_by(tw.world(), org)
+        }
+        _ => 0,
+    }
+}
+
 fn survey_money(tw: &TestWorld, account: u64) -> (i64, i64) {
     let economy = tw
         .world()
@@ -4312,6 +4338,10 @@ fn survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract() {
     );
     let sponsor = survey_money(&rig.tw, accepted.sponsor_account);
     let payee = survey_money(&rig.tw, accepted.payee);
+    let upkeep = (
+        upkept(&rig.tw, accepted.payee),
+        upkept(&rig.tw, accepted.sponsor_account),
+    );
     rig = reboot(rig, &[pilot]);
     let (_, queued) = advance_to(&mut rig, accepted.deadline_ic + 86_401);
     land_quietly(&mut rig, &queued);
@@ -4325,9 +4355,14 @@ fn survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract() {
         survey_contract(&rig.tw, accepted.contract),
         mush_economy::ContractState::Expired
     );
-    assert_eq!(survey_money(&rig.tw, accepted.payee), payee);
+    // Doc 48 unit EX.9: Occator's account pays its running costs over the IC days.
+    let paid = survey_money(&rig.tw, accepted.payee);
+    let payee_upkept = upkept(&rig.tw, accepted.payee) - upkeep.0;
+    assert_eq!((paid.0 + payee_upkept, paid.1), payee);
+    let funded = survey_money(&rig.tw, accepted.sponsor_account);
+    let sponsor_upkept = upkept(&rig.tw, accepted.sponsor_account) - upkeep.1;
     assert_eq!(
-        survey_money(&rig.tw, accepted.sponsor_account),
+        (funded.0 + sponsor_upkept, funded.1),
         (sponsor.0, sponsor.1 - 50_000)
     );
     let renewed = accept_commission(&mut rig, pilot, "juling-k");
@@ -4416,6 +4451,7 @@ fn survey_commission_uncommitted_filing_stays_unfunded_and_expires_after_restart
         .account
         .expect("Occator's credit account");
     let before = survey_money(&rig.tw, sponsor);
+    let upkeep = upkept(&rig.tw, sponsor);
     let (out, queued) = command(&mut rig, pilot, "+survey/accept occator-p go");
     assert_eq!(queued.len(), 1, "{out}");
     let (contract, deadline) = rig
@@ -4465,7 +4501,12 @@ fn survey_commission_uncommitted_filing_stays_unfunded_and_expires_after_restart
         mush_economy::ContractState::Expired
     );
     assert!(commission(&mut rig.tw, "occator-p").is_none());
-    assert_eq!(survey_money(&rig.tw, sponsor), before);
+    // Doc 48 unit EX.9: Occator's account pays its running costs over the IC days.
+    let after = survey_money(&rig.tw, sponsor);
+    assert_eq!(
+        (after.0 + upkept(&rig.tw, sponsor) - upkeep, after.1),
+        before
+    );
     let retry = accept_commission(&mut rig, pilot, "occator-p");
     assert_eq!(
         occator_standing(&rig.tw, pilot),

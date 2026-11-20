@@ -231,6 +231,58 @@ pub fn sale_payouts(
     Some(out)
 }
 
+/// **The venue's rows on a sale into a person's bid** (doc 48e, exchange G4): its cut and levy
+/// ([`sale_fee_rows`]), none when the bidder bids as the venue's own house
+/// ([`VenueFees::house_lists`], TacSim's buy-back desk), as a house's listings pay none.
+#[must_use]
+pub fn bid_fee_rows(
+    w: &World,
+    listing: &crate::Listing,
+    gross: Amount,
+) -> Vec<(AccountId, Amount)> {
+    let house = crate::module::venue_fees(w)
+        .is_some_and(|seam| seam.house_lists(w, &listing.market, &listing.seller));
+    if house {
+        return Vec::new();
+    }
+    sale_fee_rows(w, &listing.market, gross)
+}
+
+/// **The payouts of a sale into a bid** (doc 48e, exchange G4 and G26): the seller's account
+/// `gross` less every other row (when that is more than nothing), then `fees` (the venue's cut
+/// and levy, on a person's bid only) and the proceeds policy's `cuts`, each an exact payout.
+/// `None` when the rows come to more than `gross`. The sale's builder writes these, and a
+/// personal bidder's standing acceptance requires exactly these.
+#[must_use]
+pub fn bid_sale_payouts(
+    seller: AccountId,
+    gross: Amount,
+    fees: &[(AccountId, Amount)],
+    cuts: &[crate::record::ProceedsCut],
+) -> Option<Vec<PayoutShare>> {
+    let rows: Vec<(AccountId, Amount)> = fees
+        .iter()
+        .copied()
+        .chain(cuts.iter().map(|c| (c.to, c.amount)))
+        .collect();
+    let taken = rows
+        .iter()
+        .try_fold(0_i64, |sum, (_, a)| sum.checked_add(a.minor()))?;
+    let net = gross.minor().checked_sub(taken).filter(|n| *n >= 0)?;
+    let mut out = Vec::with_capacity(rows.len().saturating_add(1));
+    if net > 0 {
+        out.push(PayoutShare {
+            to: seller,
+            share: Share::Exact(Amount::from_minor(net)),
+        });
+    }
+    out.extend(rows.into_iter().map(|(to, amount)| PayoutShare {
+        to,
+        share: Share::Exact(amount),
+    }));
+    Some(out)
+}
+
 /// **A proceeds policy's cuts on a person's lot ask** (doc 48 cut EX.4; Q-48-56, doc 48b G-7):
 /// the policy (TacSim's Co-op share) is asked about an ask from a person's lot exactly as about
 /// a sale into a bid, reading `w` only, so the builder and the standing acceptance ask the same
@@ -246,6 +298,26 @@ pub fn ask_policy_cuts(
     quantity: u64,
     price: Amount,
 ) -> Result<Vec<(AccountId, Amount)>, MarketError> {
+    Ok(ask_policy_proceeds(w, listing, buyer, quantity, price)?
+        .map(|p| p.cuts.into_iter().map(|c| (c.to, c.amount)).collect())
+        .unwrap_or_default())
+}
+
+/// **The proceeds policy's whole answer on a person's lot ask** ([`ask_policy_cuts`]' rows with
+/// their labels and the basis they were measured on; doc 48e, exchange G5): frozen on the
+/// ask's quote at the accept, so the policy is told of the sale when it settles, as of a sale
+/// into a bid. `None` where [`ask_policy_cuts`] has no rows to ask for.
+///
+/// # Errors
+///
+/// As [`ask_policy_cuts`].
+pub fn ask_policy_proceeds(
+    w: &World,
+    listing: &crate::Listing,
+    buyer: &PrincipalId,
+    quantity: u64,
+    price: Amount,
+) -> Result<Option<crate::module::Proceeds>, MarketError> {
     let (
         crate::Supply::Lot {
             endpoint,
@@ -255,13 +327,13 @@ pub fn ask_policy_cuts(
         PrincipalId::Object(seller),
     ) = (&listing.source, &listing.seller)
     else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     if !listing.is_personal() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let Some(policy) = crate::module::proceeds_policy(w) else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let gross = gross_of(price, quantity)?;
     let terms = crate::module::SaleTerms {
@@ -288,10 +360,11 @@ pub fn ask_policy_cuts(
             return Err(MarketError::bad(crate::trade::UNSETTLEABLE));
         }
     }
-    if p.cuts.len() > crate::record::MAX_PROCEEDS_CUTS || sum > gross.minor() {
+    if p.cuts.len() > crate::record::MAX_PROCEEDS_CUTS || sum > gross.minor() || p.basis.minor() < 0
+    {
         return Err(MarketError::bad(crate::trade::UNSETTLEABLE));
     }
-    Ok(p.cuts.into_iter().map(|c| (c.to, c.amount)).collect())
+    Ok(Some(p))
 }
 
 /// **A person's ask's payouts** (doc 48 cut EX.4): [`sale_payouts`] over the policy's cuts, the

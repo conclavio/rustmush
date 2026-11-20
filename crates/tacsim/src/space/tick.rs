@@ -2880,6 +2880,50 @@ fn handle_crew_linkdead(ctx: &mut Ctx<'_>, player: ObjId) {
     begin_linkdead_for_hull(ctx, hull, true);
 }
 
+/// **Doc 48 unit EX.10: a house's crewless hull under way, the house's mind at her helm.** Her
+/// link-loss record opens with the grace already spent, so the backup mind holds her helm from
+/// the start (doc 35 §11): on a corridor she flies her filed passage, at an interdicted leg the
+/// picket's bubble opens on her as on a crewed hull and the seat answers the hail, and the record
+/// ends when she docks. A hull with a record already, or not on a journey, is left as she is.
+pub(crate) fn cover_house_hull(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let on_journey = ctx
+        .w
+        .module_state::<JourneyBook>()
+        .is_some_and(|jb| jb.get(hull).is_some());
+    if !on_journey
+        || ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .is_none_or(|book| book.linkdead_hulls.contains_key(&hull))
+    {
+        return;
+    }
+    let ic_now_s = ctx.w.world_ic_now().at;
+    let wall_now_s = ctx.w.now();
+    let queued_return_port = super::commands::return_port_for_hull(ctx.w, hull);
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        book.linkdead_hulls.insert(
+            hull,
+            SpaceLinkdeadState {
+                hull,
+                grace_started_wall_s: wall_now_s,
+                grace_started_ic_s: ic_now_s,
+                pdc_held: true,
+                grace_expired: true,
+                queued_return_port,
+                mind_memory: Vec::new(),
+                mind_last_trace: None,
+                mind_contacts: super::view::ContactBook::default(),
+                mind_think_seq: 0,
+                backup_act: super::backup::BackupAct::MakingForPort,
+                return_retry_at_wall_s: 0,
+                next_think_at_wall_s: 0,
+            },
+        );
+    }
+    persist_space_state(ctx);
+}
+
 /// Cut `hull`'s drive and open her linkdead record (`D-35-7`): the grace starts now, and the
 /// crew are told so when `announce_grace`. A hull that has a record already is left as she is.
 fn begin_linkdead_for_hull(ctx: &mut Ctx<'_>, hull: ObjId, announce_grace: bool) {
@@ -3432,6 +3476,53 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
     }
 }
 
+/// **Check a towed derelict in at the port with what the bubble did to her** (48e review
+/// rounds:G10, Q-CF-35). A derelict still holding a marker (towed out of a bubble that stays
+/// open, its tug one of several carriers) is checked in with her bubble ship's plan, so the
+/// damage and the rounds spent there stay; with no bubble ship, with an empty IC plan. Never
+/// with `None`, which restores her as she was at check-out. A derelict with no marker was
+/// checked in when her bubble closed: nothing to do.
+fn check_in_towed_derelict(ctx: &mut Ctx<'_>, derelict_hull: ObjId, at_ic: i64) {
+    if mush_tactics::custody::marker_of(ctx.w, derelict_hull).is_none() {
+        return;
+    }
+    let ship = ctx.w.module_state::<SpaceBubbleBook>().and_then(|book| {
+        book.by_domain.values().find_map(|active| {
+            active
+                .bubble
+                .ships
+                .iter()
+                .find(|(id, _)| active.hull_for_ship_id(id) == Some(derelict_hull))
+                .map(|(_, ship)| ship.clone())
+        })
+    });
+    let checked = match ship {
+        Some(ship) => check_in_space_unit(ctx, derelict_hull, &ship, at_ic).map(|_| ()),
+        None => mush_tactics::module::unit_of(ctx.w, derelict_hull)
+            .map(mush_tactics::TacticalUnit::revision)
+            .ok_or_else(|| "no unit".to_owned())
+            .and_then(|revision| {
+                mush_tactics::UnitMutationPlan::new(
+                    Vec::new(),
+                    Some(revision),
+                    Some(SmolStr::new_static("space:tow-delivery")),
+                )
+                .map_err(|e| e.to_string())
+            })
+            .and_then(|plan| {
+                mush_tactics::custody::check_in(ctx, derelict_hull, Some(&plan))
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }),
+    };
+    if let Err(error) = checked {
+        tracing::warn!(
+            hull = derelict_hull.0, %error,
+            "tacsim: a towed derelict's check-in at the port failed"
+        );
+    }
+}
+
 /// Complete port delivery for any active tow on `tug_hull` once `tug_hull` is berthed at a port
 /// (`SF.R19`, `Q-36-46`, `D-35-12`; doc 41 cut RS.8).
 ///
@@ -3450,7 +3541,7 @@ pub fn deliver_active_tow_at_port(ctx: &mut Ctx<'_>, tug_hull: ObjId, now: &Cloc
         return;
     };
     let derelict_hull = tow.derelict_hull;
-    let _ = mush_tactics::custody::check_in(ctx, derelict_hull, None);
+    check_in_towed_derelict(ctx, derelict_hull, now.at);
     if let Some((port_domain, port_pose)) = mush_sim::pose_of(ctx.w, tug_hull) {
         let _ = mush_sim::dock_carrier_at_destination(
             ctx,

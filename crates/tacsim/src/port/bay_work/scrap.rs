@@ -749,6 +749,21 @@ pub fn scrap_vault_owner(w: &World, vault: mush_economy::VaultId, venue: &str) -
     }
 }
 
+/// **Whether `vault` is a scrap vault at any venue** (doc 48e, exchange G15): the yard alone
+/// fills one, so no purchase, bid or move names it as a destination.
+#[must_use]
+pub fn is_scrap_vault(w: &World, vault: mush_economy::VaultId) -> bool {
+    w.module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().vault(vault).cloned())
+        .is_some_and(|v| {
+            matches!(v.owner, PrincipalId::Object(_))
+                && v.name
+                    .as_str()
+                    .strip_prefix("scrap at ")
+                    .is_some_and(|venue| v.name.as_str() == scrap_vault_name(venue))
+        })
+}
+
 /// A scrap vault's name at `venue`.
 fn scrap_vault_name(venue: &str) -> String {
     format!("scrap at {venue}")

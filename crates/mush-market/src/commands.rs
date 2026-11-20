@@ -63,7 +63,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             help: "+market/history <catalog>:<code> [market=<venue>]\n\
                    \x20                                 the houses' ask and bid for a good at \
                    this venue, an IC week a row, for the last 24 IC weeks.\n\
-                   +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]\n\
+                   +market/jobs [retrieval|passage|survey|crew|haul|escort] [market=<venue>]\n\
                    \x20                                 the jobs posted on this board: what \
                    each pays, any bond its taker escrows, when it is due, and the command \
                    that takes it.\n\
@@ -704,10 +704,19 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(refuse(ctx, NO_SUCH_LISTING));
     };
     let remote = lhs.contains("remote") || rhs.contains("remote");
+    // Doc 48e (exchange G1): an omitted quantity is one unit, or an exact lot's whole quantity
+    // (it sells whole).
+    let whole = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(listing))
+        .filter(|l| l.source.exact_lot().is_some())
+        .map(|l| l.quantity);
     let quantity = rhs
         .split_whitespace()
         .next()
         .and_then(|s| s.parse::<u64>().ok())
+        .or(whole)
         .unwrap_or(1);
     let req = QuoteRequest {
         listing,
@@ -1420,7 +1429,32 @@ fn mine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<MarketStore>()
         .map(|s| s.personal_listings_of(&me).cloned().collect())
         .unwrap_or_default();
-    if mine.is_empty() {
+    // Doc 48e (exchange G29; 48d H-27): what the actor listed `as=<org>` (PL.9), under each
+    // organization it acts for.
+    let orgs: std::collections::BTreeSet<mush_org::OrgId> = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .map(|st| {
+            st.state()
+                .member_orgs(ctx.actor)
+                .chain(st.state().grant_orgs(ctx.actor))
+                .collect()
+        })
+        .unwrap_or_default();
+    let as_orgs: Vec<Vec<crate::record::Listing>> = orgs
+        .into_iter()
+        .map(mush_org::PrincipalId::Organization)
+        .filter(|org| mush_economy::acts_for(ctx.w, ctx.actor, org))
+        .filter_map(|org| {
+            let listed: Vec<crate::record::Listing> = ctx
+                .w
+                .module_state::<MarketStore>()
+                .map(|s| s.personal_listings_of(&org).cloned().collect())
+                .unwrap_or_default();
+            (!listed.is_empty()).then_some(listed)
+        })
+        .collect();
+    if mine.is_empty() && as_orgs.is_empty() {
         info(ctx, crate::seller::MINE_NONE);
         return Ok(());
     }
@@ -1431,6 +1465,14 @@ fn mine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .replace("{n}", &mine.len().to_string())
             .replace("{cap}", &crate::record::MAX_LISTINGS_PER_SELLER.to_string()),
     );
+    for listed in &as_orgs {
+        let name = listed
+            .first()
+            .map(|l| crate::seller::seller_name(ctx.w, l))
+            .unwrap_or_default();
+        out.push(crate::seller::MINE_AS_ORG.replace("{org}", &name));
+        out.extend(listed.iter().map(|l| listing_line(ctx, l)));
+    }
     lines(ctx, out);
     Ok(())
 }
@@ -1970,7 +2012,9 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             // Doc 18 cut IC0: a lot listing stands no longer than the hold behind it
             // (`RESERVATION_TTL_IC_DAYS`); `api::list_goods` cuts the real-time window
             // to the hold's at the world's rate, and this is the day count's own cap.
-            let days = if matches!(source, Supply::Lot { .. }) {
+            // Doc 48e (exchange G28; 48d Low): an exact lot's hold has no clock, so it is not
+            // cut (`api::list_goods`' own rule, Q-48-54).
+            let days = if matches!(source, Supply::Lot { .. }) && source.exact_lot().is_none() {
                 days.min(mush_inventory::RESERVATION_TTL_IC_DAYS)
             } else {
                 days

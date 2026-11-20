@@ -51,6 +51,10 @@ pub const NEAR_PERMILLE: i64 = 900;
 /// **Departed together** (provisional): two hulls on one route that left within this many IC
 /// seconds of each other fly one passage. One IC hour, 150 real seconds at 24:1.
 pub const TOGETHER_IC: i64 = 3_600;
+/// **How far the contract's term runs past the watch's** (48e services:G2), IC seconds: one IC
+/// day. The host decides a taken escort at [`ESCORT_TERM_IC_DAYS`] (calls off one that never
+/// started, fails one that did) before the economy's expiry can forfeit the bond on its own.
+pub const DECIDE_LEAD_IC: i64 = DAY;
 /// IC seconds in an IC day.
 const DAY: i64 = 86_400;
 /// The channel lines go out on.
@@ -74,6 +78,8 @@ pub const ESCORT_HELP: &str = "+escort                                your escor
                                        bubble in space, the same field in a sortie. A link drop\n\
                                        inside the grace does not count against you. The job\n\
                                        fails if she is wrecked or captured, or you leave.\n\
+                                       If her journey has not begun in 28 IC days, the job is\n\
+                                       called off and the fee and any bond come back.\n\
 +escort/withdraw <job> [go]            withdraw an escort nobody has taken; the fee comes back.\n\
 A fee over 10,000 cr asks the escort for a bond of a fifth of it.";
 /// The post's preview (`{name}`, `{journey}`, `{fee}`, `{days}`).
@@ -121,6 +127,11 @@ pub const TOLD_KEPT: &str =
     "Escort {job} is kept: near her for {near} of the journey. The fee follows.";
 /// The notice of a failed escort (`{job}`, `{why}`).
 pub const TOLD_FAILED: &str = "Escort {job} has failed, and its fee is not paid: {why}.";
+/// The notice of an escort called off because she never set out within the term (`{job}`,
+/// `{days}`): the fee and the escort's bond go back (48e services:G2).
+pub const TOLD_UNSTARTED: &str = "Escort {job} is called off: her journey never began within {days} IC      days. The fee and any bond are back in the accounts they came from.";
+/// The refusal for `field=` at a port with no field (48e services:G2; `{port}`).
+pub const NO_FIELD: &str = "There is no field at {port}; a sortie escort names a field site.";
 /// Why: wrecked.
 pub const WHY_WRECKED: &str = "she was wrecked";
 /// Why: captured.
@@ -478,8 +489,18 @@ fn left(w: &World, job: &EscortJob, escort: ObjId) -> bool {
         return false;
     }
     match &job.journey {
-        Journey::Passage { to, .. } => {
-            super::docked_venue(w, escort).is_some_and(|v| v.as_str() != to.as_str())
+        Journey::Passage { from, to } => {
+            // Still docked at the origin inside the departure gap is not leaving (48e
+            // services:G3): `near_in_space` counts a passage flown together within
+            // [`TOGETHER_IC`] of hers.
+            let now = w.world_ic_now().at;
+            let setting_out = job
+                .watch
+                .as_ref()
+                .is_some_and(|watch| now.saturating_sub(watch.started_ic) <= TOGETHER_IC);
+            super::docked_venue(w, escort).is_some_and(|v| {
+                v.as_str() != to.as_str() && !(setting_out && v.as_str() == from.as_str())
+            })
         }
         Journey::Field { site } => !near_in_field(w, site, escort),
     }
@@ -546,12 +567,55 @@ fn step(ctx: &mut Ctx<'_>, job: &mut EscortJob) -> bool {
     }
 }
 
-/// The watch over a taken job.
+/// **One fire's interval into the watch**; the interval, IC seconds.
+///
+/// The interval counts to the journey's time, and to the near time when `is_near`. A field
+/// journey's **closing interval** (`field_closed`: the fire that finds the field journey ended)
+/// counts to neither (owner's ruling, 2026-11-19, on doc 43 TS.10a's question): once the field is
+/// gone the host cannot see where the escort was, so the keep or fail is decided on what was
+/// counted before it. A field journey with nothing counted before its close (watched on one fire,
+/// ended on the next) counts that interval as it always has, so its outcome is today's
+/// (provisional, flagged for the owner in doc 48's EX.6 cut note). A passage's closing interval
+/// counts as before: the passage's record outlives the arrival, so [`near_in_space`] still reads
+/// it.
+fn count(watch: &mut Watch, now: i64, is_near: bool, field_closed: bool) -> i64 {
+    let dt = now.saturating_sub(watch.last_ic).max(0);
+    watch.last_ic = now;
+    if field_closed && watch.journey_ic > 0 {
+        return dt;
+    }
+    watch.journey_ic = watch.journey_ic.saturating_add(dt);
+    if is_near {
+        watch.near_ic = watch.near_ic.saturating_add(dt);
+    }
+    dt
+}
+
+/// **The watch over a taken job.** Each fire's interval is counted by [`count`], which leaves a
+/// field journey's closing interval out; the outcome is decided when the journey ends.
 fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
     let Some(escort) = job.with else {
         job.stage = EscortStage::Closed;
         return true;
     };
+    if live && job.stage == EscortStage::Taken && job.due_ic.is_some_and(|due| now >= due) {
+        // The term ran out and her journey never began (48e services:G2): no escort was owed,
+        // so the job is called off and the unwind returns the fee and the escort's bond. The
+        // contract's term runs [`DECIDE_LEAD_IC`] past this, so the host always gets here first.
+        if !matches!(
+            mush_economy::cancel_job(ctx, ContractId(job.contract)),
+            Ok(true)
+        ) {
+            // The economy refused (frozen, or busy): try again at the next fire.
+            return false;
+        }
+        job.stage = EscortStage::Closed;
+        let line = TOLD_UNSTARTED
+            .replace("{job}", &job.job())
+            .replace("{days}", &ESCORT_TERM_IC_DAYS.to_string());
+        tell_both(ctx, job, &line);
+        return true;
+    }
     if !live || job.due_ic.is_some_and(|due| now >= due) {
         // The term ran out before the journey ended: the fact never holds.
         fail(
@@ -592,15 +656,11 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
     }
     let is_near = near(ctx.w, job, escort) || within_grace(ctx.w, escort);
     let left_it = !ended && left(ctx.w, job, escort);
+    let in_field = matches!(job.journey, Journey::Field { .. });
     let Some(watch) = job.watch.as_mut() else {
         return false;
     };
-    let dt = now.saturating_sub(watch.last_ic).max(0);
-    watch.last_ic = now;
-    watch.journey_ic = watch.journey_ic.saturating_add(dt);
-    if is_near {
-        watch.near_ic = watch.near_ic.saturating_add(dt);
-    }
+    let dt = count(watch, now, is_near, in_field && ended);
     let permille = watch.permille();
     if left_it {
         fail(ctx, job, WHY_LEFT);
@@ -764,11 +824,20 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
                 to: SmolStr::new(to.as_str()),
             }
         }
-        (None, Some(site)) => Journey::Field {
-            site: SmolStr::new(
-                super::entry_word(ctx.w, site).ok_or_else(|| NO_PORT.replace("{port}", site))?,
-            ),
-        },
+        (None, Some(site)) => {
+            let entry =
+                super::entry_word(ctx.w, site).ok_or_else(|| NO_PORT.replace("{port}", site))?;
+            // A sortie runs only where the port has a field (48e services:G2).
+            let has_field = crate::port::market::ports(ctx.w)
+                .into_iter()
+                .any(|(e, def, _)| e.as_str() == entry && def.site.is_some());
+            if !has_field {
+                return Err(NO_FIELD.replace("{port}", site));
+            }
+            Journey::Field {
+                site: SmolStr::new(entry),
+            }
+        }
         _ => return Err(ESCORT_USAGE.to_owned()),
     };
     if let Some(open) = escorts(ctx.w).into_iter().find(|j| {
@@ -807,7 +876,10 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
             poster_account: account,
             fee: Amount::from_minor(fee),
             fact: fact_of(peeked),
-            deadline_ic: now.saturating_add(window).saturating_add(term),
+            deadline_ic: now
+                .saturating_add(window)
+                .saturating_add(term)
+                .saturating_add(DECIDE_LEAD_IC),
         },
     )
     .map_err(|error| POST_FAILED.replace("{why}", &error.to_string()))?;
@@ -893,7 +965,7 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
             acceptor: taker.clone(),
             account,
             bond: (job.bond_minor > 0).then(|| Amount::from_minor(job.bond_minor)),
-            term_ic: Some(term),
+            term_ic: Some(term.saturating_add(DECIDE_LEAD_IC)),
         },
     )
     .map_err(|error| ACCEPT_FAILED.replace("{why}", &error.to_string()))?;
@@ -994,5 +1066,44 @@ mod tests {
         assert!(watch.permille() >= NEAR_PERMILLE);
         assert_eq!(Watch::default().permille(), 0, "no journey, no share");
         assert_eq!(percent(899), "89%");
+    }
+
+    /// **Doc 48 cut EX.6, the owner's ruling (2026-11-19)**: a field journey's closing interval
+    /// counts to neither the journey nor the near time; the outcome is decided on what came
+    /// before it. A passage's closing interval, and a field journey with nothing counted before
+    /// its close, count as they always have.
+    #[test]
+    fn ex6_a_field_journeys_closing_interval_is_not_counted() {
+        let running = Watch {
+            started_ic: 0,
+            last_ic: 140,
+            journey_ic: 140,
+            near_ic: 140,
+        };
+        // The field closed: the escort reads far, and that interval is not counted.
+        let mut field = running.clone();
+        assert_eq!(count(&mut field, 175, false, true), 35);
+        assert_eq!(
+            (field.last_ic, field.journey_ic, field.near_ic),
+            (175, 140, 140)
+        );
+        assert!(
+            field.permille() >= NEAR_PERMILLE,
+            "kept on what came before"
+        );
+        // A passage's arrival (or any interval while the journey runs) counts.
+        let mut passage = running;
+        assert_eq!(count(&mut passage, 175, false, false), 35);
+        assert_eq!((passage.journey_ic, passage.near_ic), (175, 140));
+        assert!(passage.permille() < NEAR_PERMILLE);
+        // Nothing counted before the close: that interval counts, as it always has.
+        let mut first = Watch {
+            started_ic: 100,
+            last_ic: 100,
+            journey_ic: 0,
+            near_ic: 0,
+        };
+        assert_eq!(count(&mut first, 130, false, true), 30);
+        assert_eq!((first.journey_ic, first.near_ic), (30, 0));
     }
 }

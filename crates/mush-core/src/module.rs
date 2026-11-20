@@ -186,6 +186,45 @@ pub struct ModuleOp {
     pub op: ModuleWrite,
 }
 
+impl ModuleOp {
+    /// The namespace-relative key targeted by this write.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match &self.op {
+            ModuleWrite::JsonSet { key, .. }
+            | ModuleWrite::Del { key }
+            | ModuleWrite::StreamAppend { key, .. } => key.as_str(),
+        }
+    }
+
+    /// Validate that this op's namespace and key satisfy the store's envelope
+    /// bounds ([`MAX_MODULE_NAMESPACE_BYTES`], no `:` separator in namespace,
+    /// non-empty, and [`MAX_MODULE_KEY_BYTES`]).
+    ///
+    /// Enforced as defense-in-depth at [`Ctx::persist`] and during deferred
+    /// drain so no malformed module key can reach the store writer and latch a
+    /// permanent integrity freeze.
+    pub fn validate_key_envelope(&self) -> Result<(), &'static str> {
+        if self.ns.is_empty() {
+            return Err("empty module namespace");
+        }
+        if self.ns.contains(':') {
+            return Err("module namespace contains reserved ':'");
+        }
+        if self.ns.len() > MAX_MODULE_NAMESPACE_BYTES {
+            return Err("module namespace exceeds MAX_MODULE_NAMESPACE_BYTES");
+        }
+        let key = self.key();
+        if key.is_empty() {
+            return Err("empty module key");
+        }
+        if key.len() > MAX_MODULE_KEY_BYTES {
+            return Err("module key exceeds MAX_MODULE_KEY_BYTES");
+        }
+        Ok(())
+    }
+}
+
 /// A module's persisted data, loaded by the driver **out-of-band at module
 /// load time** (never during play) through the store's read API and handed
 /// to [`GameModule::on_world_loaded`]. `mush-core` only defines the shape.
@@ -2801,7 +2840,9 @@ impl Registry {
 
     /// Whether `who` (acting on behalf of `module`, when set) may write the
     /// attribute `name`: unnamespaced attrs are always fine, module-owned
-    /// namespaces admit the owning module and Wizards+ only.
+    /// namespaces admit the owning module and Wizards+ only (except the
+    /// `"script"` module's `script:` namespace, which admits `Builder`+ so
+    /// builders can author scripts while blocking plain `Player`s).
     #[must_use]
     pub fn may_write_attr(&self, w: &World, who: ObjId, module: Option<&str>, name: &str) -> bool {
         let Some((ns, _)) = name.split_once(':') else {
@@ -2810,7 +2851,12 @@ impl Registry {
         let Some(owner) = self.attr_ns_owner(ns) else {
             return true;
         };
-        module == Some(owner.as_str()) || crate::perm::has_role(w, who, crate::flags::Role::Wizard)
+        let min_role = if owner.as_str() == "script" && ns.eq_ignore_ascii_case("script") {
+            crate::flags::Role::Builder
+        } else {
+            crate::flags::Role::Wizard
+        };
+        module == Some(owner.as_str()) || crate::perm::has_role(w, who, min_role)
     }
 
     /// The attribute prefixes `look <keyword>` tries after the bare
@@ -6355,6 +6401,15 @@ impl Ctx<'_> {
         {
             return;
         }
+        if let Err(reason) = op.validate_key_envelope() {
+            tracing::error!(
+                ns = %op.ns,
+                key_len = op.key().len(),
+                reason,
+                "refused invalid module persistence op before queueing"
+            );
+            return;
+        }
         self.out.defer(Deferred::Persist(op));
     }
 
@@ -6366,6 +6421,15 @@ impl Ctx<'_> {
     /// spelling for the writes that check would misread, and it lives in
     /// `mush-core` alone (`pub(crate)`), so a module cannot reach it.
     pub(crate) fn persist_engine_owned(&mut self, op: ModuleOp) {
+        if let Err(reason) = op.validate_key_envelope() {
+            tracing::error!(
+                ns = %op.ns,
+                key_len = op.key().len(),
+                reason,
+                "refused invalid engine-owned module persistence op before queueing"
+            );
+            return;
+        }
         self.out.defer(Deferred::Persist(op));
     }
 

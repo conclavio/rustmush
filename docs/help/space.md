@@ -99,12 +99,15 @@ Space engagements combine three offensive mount classes with distinct flight pro
 +tac/torp [<contact>[=<count>]]
 +tac/railgun [<contact>]
 +tac/pdc <auto|manual|point|offense>
++tac/pdc <laser>=<point|offense>
 ```
 
 - `+tac/beam [<contact>]` fires your lasers in offense at a detected hostile contact. Its effective reach is `25 km`: inside it a pulse does at least half its close-range damage, and past it less and less. A pulse still lands out to the laser's full reach (`150 km` on a turret, `100 km` on the customs corvette's heavier laser), but there it is a token, a point or two: enough to answer fire, not to hurt a hull. Lasers are for drones and soft targets; the torpedoes and the spinal gun hurt a hull. A laser in offense cycles in `5 s`, and each pulse builds hull heat.
 - `+tac/torp [<contact>[=<count>]]` launches a torpedo salvo (default `1`) at a detected hostile contact (`10–500 km` envelope, accelerating under 3D proportional navigation before ballistic coast).
 - `+tac/railgun [<contact>]` fires spinal or turret railguns at a detected hostile contact along a world-frame lead solution (`10–250 km` envelope; countered by lateral jinking thrust during time-of-flight).
-- `+tac/pdc <auto|manual|point|offense>` configures point-defense autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire.
+- `+tac/pdc <auto|manual|point|offense>` configures point-defense autocannons or dual-mode laser mounts to intercept incoming torpedoes automatically, stand in manual/point mode, or switch dual-mode mounts to offensive fire. Each laser says whether it switched: one her fit does not allow in that mode stays as it was.
+- `+tac/pdc <laser>=<point|offense>` switches one laser by its id, so one can stand in point defense while another fires.
+- A salvo or a round the ship refuses (cycling, an empty magazine, too hot, a lock past reach) says so and why; nothing left the mount.
 
 When fire disables a hull's drive or structure, the vessel remains in place as an open-epoch derelict with its flight recorder and cargo intact for salvage and towing.
 
@@ -122,7 +125,7 @@ pdc_port       point def 4000 left       ready
 Lock raider.7.1 (Belt Raider): 42.0 km, her top band faces you.
 ```
 
-- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offence` fires at your lock, and `defence` stops incoming torpedoes inside `45 km` on its own, on its own `4 s` cycle. Switch with `+tac/pdc offense` or `+tac/pdc point`; your fit says which modes each laser may take. A switch never fires early: the new mode's cycle starts when you switch, so a laser switched to defense stops nothing for `4 s`, and one switched to offense waits `5 s`. Switch back to offense within `5 s` of its last offense pulse and it keeps what was left of that cycle instead. Point defense shows the rounds left in its drum; a rotary fires a burst every `0.5 s` at a torpedo in its last `4 km`.
+- **Rounds/mode** shows the rounds left of what your fit stows. A laser keeps no magazine, so it shows its mode: `offense` fires at your lock, and `defense` stops incoming torpedoes inside `45 km` on its own, on its own `4 s` cycle. Switch with `+tac/pdc offense` or `+tac/pdc point`; your fit says which modes each laser may take. A switch never fires early: the new mode's cycle starts when you switch, so a laser switched to defense stops nothing for `4 s`, and one switched to offense waits `5 s`. Switch back to offense within `5 s` of its last offense pulse and it keeps what was left of that cycle instead. Point defense shows the rounds left in its drum; a rotary fires a burst every `0.5 s` at a torpedo in its last `4 km`.
 - **Ready** shows `ready`, how long the mount's cycle has to run, or what holds it back: `empty`, `down` (damage has put a rotary out of action), `too hot` (one more shot would take your heat past its ceiling), or `past reach` (your lock lies beyond the mount's reach).
 - **At the lock** shows, for a lock your sensors hold within the mount's reach, the damage one laser pulse lands at that range, and how long a spinal round takes to fly there. The longer it flies, the more time she has to burn out of its path.
 - **The lock row** shows how far off your lock is, and which of her five hull bands faces you: `front`, `left`, `right`, `rear` or `top`. That band takes what you land. If your sensors lose her, the row says so.

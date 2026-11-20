@@ -240,6 +240,7 @@ async fn boot_with_pilots(tag: &str, ai_fill: bool, more: &[(ObjId, &str)]) -> S
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             metrics: Arc::new(mush_net_web::Metrics::new()),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
     let accounts = Arc::new(Accounts::new(Arc::clone(&store), handles.handle.clone(), 6));

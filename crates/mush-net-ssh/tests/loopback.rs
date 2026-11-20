@@ -63,6 +63,8 @@ struct MockHooks {
     /// Every release, with the admission it balanced — proof that the slot
     /// a connection took is given back when it ends, however it ends.
     released: Mutex<Vec<Admission>>,
+    /// Every [`ClientCaps`] snapshot observed on connect or resize.
+    caps_history: Mutex<Vec<mush_proto::ClientCaps>>,
 }
 
 impl MockHooks {
@@ -234,6 +236,7 @@ impl SshHooks for MockHooks {
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let tx = conn.tx.clone();
+            self.caps_history.lock().unwrap().push(conn.caps);
             self.connected_chars
                 .lock()
                 .unwrap()
@@ -490,6 +493,10 @@ impl SshHooks for MockHooks {
 
     fn release_connection(&self, _addr: IpAddr, admission: Admission) {
         self.released.lock().unwrap().push(admission);
+    }
+
+    fn caps_changed(&self, _conn: u64, caps: mush_proto::ClientCaps) {
+        self.caps_history.lock().unwrap().push(caps);
     }
 }
 
@@ -2955,6 +2962,222 @@ async fn an_in_game_connection_outlives_every_deadline() {
         hooks.releases().is_empty(),
         "an in-game connection keeps its slot: {:?}",
         hooks.releases()
+    );
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// HIGH-8: a pre-auth packet containing hundreds of `^D` bytes closes cleanly
+/// once (stopping after the confirming second `^D`) rather than spawning a
+/// timer task and farewell per byte.
+#[tokio::test]
+async fn preauth_ctrl_d_burst_closes_once_and_stops_processing() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("ctrl-d-burst", Arc::clone(&hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_none("play")
+            .await
+            .expect("auth-none")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("connect <account> <password>").await;
+
+    let burst = vec![0x04u8; 512];
+    term.channel.data(&burst[..]).await.expect("send ^D burst");
+    term.expect("Goodbye.").await;
+
+    // Drain until channel closes cleanly.
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+    loop {
+        match tokio::time::timeout_at(deadline, term.channel.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => {
+                term.seen.push_str(&String::from_utf8_lossy(&data));
+            }
+            Ok(Some(ChannelMsg::Close)) | Ok(None) => break,
+            Ok(Some(_)) => {}
+            Err(_) => panic!("timed out waiting for channel close after ^D burst"),
+        }
+    }
+    let clean = strip_ansi(&term.seen);
+    assert_eq!(
+        clean.matches("Goodbye.").count(),
+        1,
+        "expected exactly one farewell, got: {clean:?}"
+    );
+    assert_eq!(
+        clean.matches("Really disconnect?").count(),
+        1,
+        "expected exactly one confirmation prompt, got: {clean:?}"
+    );
+}
+
+/// HIGH-8: `charselect_line` and `begin_quit_confirm` share the pre-auth flood
+/// bucket with `welcome_line`.
+#[tokio::test]
+async fn charselect_and_quit_confirm_are_flood_throttled() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "duo",
+        "pw123",
+        vec![
+            CharSummary {
+                key: 7,
+                name: "Zoe".to_owned(),
+            },
+            CharSummary {
+                key: 8,
+                name: "Max".to_owned(),
+            },
+        ],
+    );
+    let addr = start_server("preauth-flood", Arc::clone(&hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // 1. Char-select flood triggers throttle.
+    let mut handle = russh::client::connect(Arc::clone(&config), addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_password("duo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("Characters on duo:").await;
+    let spam = "bogus\r".repeat(10);
+    term.channel.data(spam.as_bytes()).await.expect("send spam");
+    term.expect("You're doing that too fast.").await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+
+    // 2. Repeated `^D` + cancel on welcome triggers throttle.
+    let mut handle2 = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle2
+            .authenticate_none("play")
+            .await
+            .expect("auth-none")
+            .success()
+    );
+    let mut term2 = Term {
+        channel: open_shell_on(&handle2).await,
+        seen: String::new(),
+    };
+    term2.expect("connect <account> <password>").await;
+    let quit_spam = "\x04n\r".repeat(8);
+    term2
+        .channel
+        .data(quit_spam.as_bytes())
+        .await
+        .expect("send ^D cancel spam");
+    term2.expect("You're doing that too fast.").await;
+    let _ = handle2
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// CRIT-2: oversized SSH PTY dimensions are clamped to `MAX_WIDTH × MAX_HEIGHT`
+/// at `pty_request` and `window_change_request`, while `0 × 0` still resolves to
+/// `DEFAULT_WIDTH × DEFAULT_HEIGHT`.
+#[tokio::test]
+async fn pty_and_window_change_clamp_oversized_dims_and_preserve_zero_default() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "solo",
+        "pw123",
+        vec![CharSummary {
+            key: 1,
+            name: "Ada".to_owned(),
+        }],
+    );
+    let addr = start_server("pty-clamp", Arc::clone(&hooks)).await;
+    let config = Arc::new(russh::client::Config::default());
+
+    // Oversized PTY -> clamped to 400×200; oversized resize -> stays 400×200;
+    // zero resize -> defaults to 80×24.
+    let mut handle = russh::client::connect(config, addr, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_password("solo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let ch = handle.channel_open_session().await.expect("open");
+    ch.request_pty(false, "xterm-256color", 65_535, 65_535, 65_535, 1, &[])
+        .await
+        .expect("pty");
+    ch.request_shell(false).await.expect("shell");
+    let mut term = Term {
+        channel: ch,
+        seen: String::new(),
+    };
+    term.expect("Welcome, solo!").await;
+    assert_eq!(
+        hooks
+            .caps_history
+            .lock()
+            .unwrap()
+            .first()
+            .map(|c| (c.width, c.height)),
+        Some((mush_net_ssh::MAX_WIDTH, mush_net_ssh::MAX_HEIGHT))
+    );
+
+    term.channel
+        .window_change(99_999, 99_999, 1, 99_999)
+        .await
+        .expect("window_change oversized");
+    wait_until("oversized resize recorded", Duration::from_secs(5), || {
+        hooks.caps_history.lock().unwrap().len() >= 2
+    })
+    .await;
+    assert_eq!(
+        hooks
+            .caps_history
+            .lock()
+            .unwrap()
+            .get(1)
+            .map(|c| (c.width, c.height)),
+        Some((mush_net_ssh::MAX_WIDTH, mush_net_ssh::MAX_HEIGHT))
+    );
+
+    term.channel
+        .window_change(0, 0, 0, 0)
+        .await
+        .expect("window_change zero");
+    wait_until("zero resize recorded", Duration::from_secs(5), || {
+        hooks.caps_history.lock().unwrap().len() >= 3
+    })
+    .await;
+    assert_eq!(
+        hooks
+            .caps_history
+            .lock()
+            .unwrap()
+            .get(2)
+            .map(|c| (c.width, c.height)),
+        Some((mush_net_ssh::DEFAULT_WIDTH, mush_net_ssh::DEFAULT_HEIGHT))
     );
 
     let _ = handle

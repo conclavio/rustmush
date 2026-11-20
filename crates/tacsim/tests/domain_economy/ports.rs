@@ -631,14 +631,14 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_670_100_000,
-        "16,701,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_710_100_000,
+        "17,101,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
          SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000, \
          Freeport Works' 1,000,000 (doc 39 cut IN.5), Stickney Yards' 50,000 raise (IN.7's, in \
          doc 39 cut IN.9's lane v27), Tycho Mutual's 450,000 raise (doc 41 cut RS.6a's lane v28), \
-         the Trust's 250,000 raise (doc 39 cut IN.10's lane v29) and the two passengers' one-time \
-         500cr purses"
+         the Trust's 250,000 raise (doc 39 cut IN.10's lane v29), the Vesta Carrying Company's \
+         400,000 (doc 48 unit EX.10's lane v43) and the two passengers' one-time 500cr purses"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -691,7 +691,8 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
     let stickney = port_map(&tw, "stickney_port");
     // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh. Doc 20 cut SM.10: the Pallas
     // Syndicate, a Ceres lane org, its eighth. Doc 39 cut IN.5: Freeport Works its ninth.
-    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 12);
+    // Doc 48 unit EX.10: the Vesta Carrying Company its tenth.
+    assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 13);
     sweep(&mut tw, 3_600);
     let snapshot = economy(&tw).snapshot();
     let treasury = snapshot
@@ -2027,9 +2028,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // unit PL.3 (lane v37): Stickney Yards' three space munitions asks, its alloys bid
     // and its seven munitions processes. Doc 48 unit PL.5 (lane v39): Kasei's strategic-ore ask
     // and Stickney Yards' instrument-board ask. Doc 48 unit PL.8 (lane v41): Occator's thirteen
-    // part bids and Stickney Yards' twelve more (its light plant's was there).
+    // part bids and Stickney Yards' twelve more (its light plant's was there). Doc 48e lane L4
+    // (lane v44): Titan's ice bid and ice mill.
     assert_eq!(
-        commerce_lines, 115,
+        commerce_lines, 117,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();

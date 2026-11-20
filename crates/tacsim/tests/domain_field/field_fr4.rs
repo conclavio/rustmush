@@ -255,13 +255,13 @@ async fn segments_on(ground: &Ground) {
 }
 
 /// **FR.4 at 256**: Ahuna Flank.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr4_ahuna_a_field_rolls_resumes_from_the_head_and_keeps_every_chunk() {
     segments_on(&AHUNA_FLANK).await;
 }
 
 /// **FR.4 at 512**: Urvara Reach.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr4_urvara_a_field_rolls_resumes_from_the_head_and_keeps_every_chunk() {
     segments_on(&URVARA_REACH).await;
 }

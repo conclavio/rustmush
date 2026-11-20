@@ -245,6 +245,22 @@ pub fn bid_price_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
     )
 }
 
+/// **The most [`bid_price_major`] can read**, major units: the factored price under the
+/// premium's cap, with no reach read. `priced` rises with the premium and the premium never
+/// passes its cap, so the bid's price is never above this. The intake drip uses it to pass
+/// over a row cheaply: a house that funds the row's unfilled intake at this price funds it at
+/// the real one too.
+#[must_use]
+pub fn bid_price_ceiling_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
+    let base = factored(
+        bid.price_major,
+        factor_of(w, def, &bid.good, mush_market::PriceSide::Bid),
+    );
+    def.premium
+        .as_ref()
+        .map_or(base, |policy| priced(base, policy.cap_permille))
+}
+
 // ---- doc 19 cut A.4b: the emergency bids ----------------------------------------
 
 /// How often the stock clerk takes a port's emergency reading, real seconds: once
@@ -454,12 +470,14 @@ pub fn ask_price_major(w: &World, def: &PortDef, good: &CanonicalId, authored_ma
 #[must_use]
 pub fn throttled(w: &World, org: mush_org::OrgId) -> bool {
     let debtor = mush_org::PrincipalId::Organization(org);
-    w.module_state::<mush_economy::EconomyStore>()
-        .is_some_and(|e| {
-            e.snapshot().obligations().any(|o| {
-                o.debtor == debtor && o.status == mush_economy::ObligationStatus::Delinquent
+    // Doc 48 unit EX.9 (Q-48-39): a house owing running costs, or with a facility mothballed.
+    crate::port::upkeep::in_arrears(w, org)
+        || w.module_state::<mush_economy::EconomyStore>()
+            .is_some_and(|e| {
+                e.snapshot().obligations().any(|o| {
+                    o.debtor == debtor && o.status == mush_economy::ObligationStatus::Delinquent
+                })
             })
-        })
 }
 
 /// The minor units of `major` on this world's credit.
@@ -553,8 +571,18 @@ pub(crate) fn weekly_step(ctx: &mut mush_core::Ctx<'_>, map: &crate::port::PortM
                 continue;
             }
             let endpoint = mush_inventory::EndpointRef(mush_economy::VaultId(row.vault));
-            let Ok(held) = crate::port_tick::read_pool(ctx, endpoint, &bid.good) else {
-                continue;
+            // Doc 48e, production G30: a part bid steps with the sound lots it holds. A worn lot
+            // the scrap desk took in is scrap, not stock the bid fills, and no yard order or bay
+            // replace takes it (`stock::store_lots`), so it no longer pushes the bid down.
+            let held = if crate::port_tick::is_part(&bid.good) {
+                let claimed = crate::port::bay_work::claimed_store_lots(ctx.w);
+                let sound = crate::port::stock::store_lots(ctx, row, &bid.good, &claimed);
+                u64::try_from(sound.len()).unwrap_or(u64::MAX)
+            } else {
+                let Ok(held) = crate::port_tick::read_pool(ctx, endpoint, &bid.good) else {
+                    continue;
+                };
+                held
             };
             let intake = bid.intake;
             let current = latest.map_or(PAR_PERMILLE, |(_, p)| p.factor_permille);

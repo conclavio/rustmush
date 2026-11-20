@@ -76,6 +76,11 @@ pub const MAX_VENDOR_ROWS: usize = 24;
 /// The most mill rows one vendor may author (doc 20 cut SM.12a; doc 48 unit PL.3: 4 → 8, so
 /// Stickney Yards' seven munitions processes fit).
 pub const MAX_VENDOR_MILLS: usize = 8;
+/// **The most consumption rows one vendor authors** (doc 48 unit EX.9).
+pub const MAX_VENDOR_CONSUMES: usize = 4;
+/// **The largest daily export share one consumption row may name**, whole credits an IC day (doc
+/// 48 unit EX.9): a bound on a typo, ten times Q-48-22's whole lane's starting budget.
+pub const MAX_EXPORT_MAJOR_PER_IC_DAY: u64 = 500_000;
 /// The most tonnes of ore (and so of product) one mill ratio may name (doc 20
 /// cut SM.12a): `1 <= product <= ore <= MAX_MILL_RATIO`.
 pub const MAX_MILL_RATIO: u32 = 100;
@@ -241,6 +246,95 @@ pub struct PortDef {
     /// brings its own bill). Absent everywhere but Stickney Yards. Boxed, as `works` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yard: Option<Box<WorksDef>>,
+    /// **Doc 48 unit EX.10 (Q-48-20)** — the port's NPC hauling house: an org of this entry whose
+    /// hulls, seeded at this port, carry goods between the lane's ports when a price gap pays
+    /// for the trip (`crate::port::hauler`). Absent everywhere but Ceres. Boxed, as `yard` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hauler: Option<Box<HaulerDef>>,
+}
+
+/// The most hulls one hauling house runs (doc 48 unit EX.10).
+pub const MAX_HAULER_HULLS: usize = 8;
+/// The most goods one hauling house carries.
+pub const MAX_HAULER_GOODS: usize = 8;
+
+/// **An NPC hauling house** (doc 48 unit EX.10; Q-48-20, Q-48-41): `marks` hulls of `design`
+/// seeded at the port for `org`, each carrying one of `goods` from a lane port's house ask to
+/// another's house bid, at most `lot` units a trip, whenever the gap pays for the trip's fuel and
+/// stores by `margin_permille` of what the trip lays out. Provisional figures.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HaulerDef {
+    /// The house: one of this entry's orgs.
+    pub org: CanonicalId,
+    /// The design its hulls are seeded as (a ship).
+    pub design: CanonicalId,
+    /// Its hulls, 1..=[`MAX_HAULER_HULLS`] of them, each with a distinct registry mark and the
+    /// lane port it is seeded and based at.
+    pub hulls: Vec<HaulerHullDef>,
+    /// The goods it carries, 1..=[`MAX_HAULER_GOODS`] of them, distinct.
+    pub goods: Vec<CanonicalId>,
+    /// The most units one trip carries, `1..=mush_market::MAX_QUANTITY`.
+    pub lot: u64,
+    /// The least profit a trip must clear, per mille of what it lays out, `0..=5000`.
+    pub margin_permille: u32,
+    /// What each hull's helm keeps in hand between trips, whole credits; the rest goes home.
+    pub float_major: u64,
+}
+
+/// **One hauler hull** (doc 48 unit EX.10): its mark and the port entry it is seeded at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HaulerHullDef {
+    /// Its registry mark: 1 to 16 of A-Z, 0-9 and -.
+    pub mark: String,
+    /// The lane port entry it is seeded and based at.
+    pub home: CanonicalId,
+}
+
+impl HaulerDef {
+    /// The block's own bounds.
+    ///
+    /// # Errors
+    ///
+    /// The first rule broken, as a sentence.
+    pub fn check(&self) -> Result<(), String> {
+        if self.hulls.is_empty() || self.hulls.len() > MAX_HAULER_HULLS {
+            return Err(format!("hauler: 1..={MAX_HAULER_HULLS} hulls"));
+        }
+        let mut seen = BTreeSet::new();
+        for mark in self.hulls.iter().map(|hull| &hull.mark) {
+            let ok = !mark.is_empty()
+                && mark.len() <= 16
+                && mark
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-');
+            if !ok || !seen.insert(mark.as_str()) {
+                return Err(format!(
+                    "hauler: mark `{mark}` must be 1 to 16 of A-Z, 0-9 and -, and named once"
+                ));
+            }
+        }
+        let goods: BTreeSet<&CanonicalId> = self.goods.iter().collect();
+        if self.goods.is_empty()
+            || self.goods.len() > MAX_HAULER_GOODS
+            || goods.len() != self.goods.len()
+        {
+            return Err(format!(
+                "hauler: 1..={MAX_HAULER_GOODS} goods, each named once"
+            ));
+        }
+        if !(1..=mush_market::MAX_QUANTITY).contains(&self.lot) {
+            return Err(format!(
+                "hauler: lot must be 1..={}",
+                mush_market::MAX_QUANTITY
+            ));
+        }
+        if self.margin_permille > 5_000 {
+            return Err("hauler: margin_permille must be 0..=5000".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// "the workshop's", "the works'": a facility block's possessive, for the shared-room sentence.
@@ -1194,6 +1288,29 @@ pub struct VendorDef {
     /// empty, so a vendor without a mill re-encodes byte-identically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mill: Vec<MillDef>,
+    /// **Doc 48 unit EX.9 (Q-48-19, Q-48-40): what the house's people use up**, once an IC day a
+    /// row (`crate::port::consume`), and the export faucet's daily share that pays it back.
+    /// Skipped when empty, so a vendor that consumes nothing re-encodes byte-identically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consume: Vec<ConsumeDef>,
+}
+
+/// **One consumption row** (doc 48 unit EX.9; Q-48-19, Q-48-36, Q-48-40): the house uses up
+/// `per_ic_day` units of `good` from its storefront each IC day (what it holds, when less), and
+/// the export faucet pays it back the good's authored price for what it used, at most
+/// `export_major_per_ic_day` an IC day. The good is one of the vendor's bids (it consumes what it
+/// buys) or one of its asks (the Habitat Board's provisions, drawn off its own ask as an
+/// own-stock mill draws). Provisional figures, sized from the census (Q-48-36).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumeDef {
+    /// The good used up.
+    pub good: CanonicalId,
+    /// Units an IC day, `1..=mush_market::MAX_QUANTITY`.
+    pub per_ic_day: u64,
+    /// The export faucet's share for this row, whole credits an IC day,
+    /// `0..=`[`MAX_EXPORT_MAJOR_PER_IC_DAY`]: the most it pays back in one IC day.
+    pub export_major_per_ic_day: u64,
 }
 
 /// **What a mill row converts** (doc 39 cut IN.5; §4.3's rule, Q-39-6): a one-input house
@@ -1577,6 +1694,16 @@ impl PortDef {
     ///
     /// The first rule broken, as its detail.
     pub fn check(&self) -> Result<(), String> {
+        // Doc 48 unit EX.10: the hauling house's bounds, and its org one of the entry's.
+        if let Some(hauler) = &self.hauler {
+            hauler.check()?;
+            if !self.orgs.iter().any(|org| org.id == hauler.org) {
+                return Err(format!(
+                    "hauler: org {} is not one of this port's orgs",
+                    hauler.org
+                ));
+            }
+        }
         // Doc 19 cut A.4: the premium's bounds.
         if let Some(premium) = &self.premium
             && (premium.k_permille > MAX_PREMIUM_PERMILLE
@@ -2401,6 +2528,46 @@ impl PortDef {
         Ok(())
     }
 
+    /// **A vendor's consumption rows** (doc 48 unit EX.9): at most [`MAX_VENDOR_CONSUMES`]; no good
+    /// named twice; each one of the vendor's bids or asks; `per_ic_day` `1..=MAX_QUANTITY`; the
+    /// export share at most [`MAX_EXPORT_MAJOR_PER_IC_DAY`].
+    fn check_vendor_consumes(
+        vendor: &VendorDef,
+        asks: &BTreeSet<&CanonicalId>,
+        bids: &BTreeSet<&CanonicalId>,
+    ) -> Result<(), String> {
+        let org = &vendor.org;
+        if vendor.consume.len() > MAX_VENDOR_CONSUMES {
+            return Err(format!(
+                "vendor {org}: at most {MAX_VENDOR_CONSUMES} consume rows"
+            ));
+        }
+        let mut seen: BTreeSet<&CanonicalId> = BTreeSet::new();
+        for row in &vendor.consume {
+            let good = &row.good;
+            if !seen.insert(good) {
+                return Err(format!("vendor {org}: consume {good} is authored twice"));
+            }
+            if !asks.contains(good) && !bids.contains(good) {
+                return Err(format!(
+                    "vendor {org}: consume {good} is neither one of its bids nor one of its asks"
+                ));
+            }
+            if !(1..=mush_market::MAX_QUANTITY).contains(&row.per_ic_day) {
+                return Err(format!(
+                    "vendor {org}: consume {good}: per_ic_day must be 1..={}",
+                    mush_market::MAX_QUANTITY
+                ));
+            }
+            if row.export_major_per_ic_day > MAX_EXPORT_MAJOR_PER_IC_DAY {
+                return Err(format!(
+                    "vendor {org}: consume {good}: export_major_per_ic_day must be at most {MAX_EXPORT_MAJOR_PER_IC_DAY}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// **A vendor's mill rows** (doc 20 cut SM.12a; §7.3 "The mill"), checked in
     /// this order: at most [`MAX_VENDOR_MILLS`] rows; no ore and no product named
     /// twice; the ore one of the vendor's bids or (doc 48 unit PL.1, an own-stock mill)
@@ -2593,6 +2760,7 @@ impl PortDef {
             }
         }
         self.check_vendor_mills(vendor, &asks, &bids)?;
+        Self::check_vendor_consumes(vendor, &asks, &bids)?;
         let lines = vendor
             .asks
             .iter()
@@ -3293,6 +3461,7 @@ mod tests {
             authority: None,
             release_fee_cr: None,
             yard: None,
+            hauler: None,
         }
     }
 
@@ -3526,6 +3695,7 @@ mod tests {
             }],
             bids: Vec::new(),
             mill: Vec::new(),
+            consume: Vec::new(),
         };
         let mut def = port();
         def.vendors.push(vendor.clone());
@@ -3558,6 +3728,7 @@ mod tests {
             asks: Vec::new(),
             bids: Vec::new(),
             mill: Vec::new(),
+            consume: Vec::new(),
         };
         let mut def = port();
         def.vendors.push(vendor(
@@ -3635,6 +3806,7 @@ mod tests {
             authority: None,
             release_fee_cr: None,
             yard: None,
+            hauler: None,
         }
     }
 
@@ -3794,6 +3966,7 @@ mod tests {
                 .collect(),
             bids,
             mill: Vec::new(),
+            consume: Vec::new(),
         }
     }
 
@@ -4110,6 +4283,56 @@ mod tests {
         );
         vendor.mill = mills;
         vendor
+    }
+
+    /// **Doc 48 unit EX.9**: each consumption rule refuses at load with its sentence.
+    #[test]
+    fn ex9_each_consume_rule_refuses_with_its_sentence() {
+        let with = |rows: Vec<(&str, u64, u64)>| {
+            let mut vendor = sm12a_vendor(Vec::new());
+            vendor.consume = rows
+                .into_iter()
+                .map(|(good, per_ic_day, export)| ConsumeDef {
+                    good: cid(good),
+                    per_ic_day,
+                    export_major_per_ic_day: export,
+                })
+                .collect();
+            let mut def = port();
+            def.vendors.push(vendor);
+            refused(&def)
+        };
+        // A bid's good and an ask's good.
+        assert_eq!(
+            with(vec![("metal_ore", 10, 700), ("metals", 4, 0)]),
+            "accepted"
+        );
+        assert_eq!(
+            with(vec![("metal_ore", 1, 0); MAX_VENDOR_CONSUMES + 1]),
+            "vendor coop: at most 4 consume rows"
+        );
+        assert_eq!(
+            with(vec![("metal_ore", 1, 0), ("metal_ore", 2, 0)]),
+            "vendor coop: consume metal_ore is authored twice"
+        );
+        assert_eq!(
+            with(vec![("carbon_ore", 1, 0)]),
+            "vendor coop: consume carbon_ore is neither one of its bids nor one of its asks"
+        );
+        for bad in [0, mush_market::MAX_QUANTITY + 1] {
+            assert_eq!(
+                with(vec![("metal_ore", bad, 0)]),
+                "vendor coop: consume metal_ore: per_ic_day must be 1..=100000",
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            with(vec![("metal_ore", 1, MAX_EXPORT_MAJOR_PER_IC_DAY + 1)]),
+            "vendor coop: consume metal_ore: export_major_per_ic_day must be at most 500000"
+        );
+        // A vendor that consumes nothing re-encodes without the field.
+        let quiet = serde_json::to_value(sm12a_vendor(Vec::new())).expect("encodes");
+        assert!(quiet.get("consume").is_none());
     }
 
     /// **Doc 20 cut SM.12a (§7.3 "The mill")**: each mill rule refuses at load with

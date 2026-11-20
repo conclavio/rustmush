@@ -94,6 +94,7 @@
   } from "$lib/pixel/local";
   import { storageGet, storageSet } from "$lib/storage";
   import { detachmentKeyPrefill } from "$lib/detachment";
+  import { tacsimAudio } from "$lib/tacsim/audio";
   import { untrack } from "svelte";
 
   let {
@@ -139,10 +140,34 @@
   }
 
   let glassOn = $state(storageGet(COCKPIT_GLASS_KEY) !== "off");
+  let audioMuted = $state(tacsimAudio.muted);
 
   function toggleGlass(): void {
     glassOn = !glassOn;
     storageSet(COCKPIT_GLASS_KEY, glassOn ? "on" : "off");
+  }
+
+  function toggleAudio(): void {
+    audioMuted = tacsimAudio.toggleMuted();
+    if (!audioMuted) tacsimAudio.playUiChime();
+  }
+
+  function runDockOrder(cmd: string, repeat = false): void {
+    const mask = dockOrderToInputMask(cmd);
+    const stepped =
+      mask !== null && local !== null
+        ? local.stepDocking(app.picture.spaceDockingData, mask)
+        : null;
+    if (stepped !== null) {
+      local?.forget();
+      if (stepped.clamped && submittedDockingSessionId !== stepped.session_id) {
+        submittedDockingSessionId = stepped.session_id;
+        tacsimAudio.playDockClamp();
+        app.helm(stepped.tape_command);
+      }
+    } else if (!repeat) {
+      app.helm(cmd);
+    }
   }
 
   /** Canopy glass damage level (`0` intact, `1` starred, `2` spiderwebbed) derived from hull armour. */
@@ -839,25 +864,14 @@
           lookTo(wrapMdeg(app.picture.lookMdeg + skey.deltaMdeg));
           local?.forget();
           break;
-        case "dockOrder": {
-          const mask = dockOrderToInputMask(skey.cmd);
-          const stepped =
-            mask !== null && local !== null
-              ? local.stepDocking(app.picture.spaceDockingData, mask)
-              : null;
-          if (stepped !== null) {
-            local?.forget();
-            if (stepped.clamped && submittedDockingSessionId !== stepped.session_id) {
-              submittedDockingSessionId = stepped.session_id;
-              app.helm(stepped.tape_command);
-            }
-          } else if (!ev.repeat) {
+        case "dockOrder":
+          runDockOrder(skey.cmd, ev.repeat);
+          break;
+        case "spaceOrder":
+          if (!ev.repeat) {
+            tacsimAudio.playForCommand(skey.cmd);
             app.helm(skey.cmd);
           }
-          break;
-        }
-        case "spaceOrder":
-          if (!ev.repeat) app.helm(skey.cmd);
           break;
         case "look":
           if (!ev.repeat) lookTurn = lookTurn === skey.dir ? 0 : skey.dir;
@@ -919,7 +933,10 @@
         if (!ev.repeat) toggleGlass();
         break;
       case "scan":
-        if (!ev.repeat) scanLock();
+        if (!ev.repeat) {
+          tacsimAudio.playRadarPing();
+          scanLock();
+        }
         break;
       case "startup":
         if (!ev.repeat) app.helm("STARTUP");
@@ -944,12 +961,18 @@
         }
         break;
       case "volley":
-        if (!ev.repeat) app.helm("FIRE ALL");
+        if (!ev.repeat) {
+          tacsimAudio.playRailgunCrack();
+          app.helm("FIRE ALL");
+        }
         break;
       case "fireSlot":
         if (!ev.repeat) {
           const w = frame?.weapons[key.slot];
-          if (w?.id) app.helm(`FIRE ${w.id}`);
+          if (w?.id) {
+            tacsimAudio.playForCommand(`FIRE ${w.id}`);
+            app.helm(`FIRE ${w.id}`);
+          }
         }
         break;
       case "lock":
@@ -1247,6 +1270,14 @@
         >{#if spaceMode === "docking"}WASD translate · Arrows pitch/yaw · Q E roll · R F closure · X dampeners · v view{:else if spaceMode === "holotank"}a d / , . orbit · z x c fire · r scan · + − zoom · v view{:else if spaceMode === "space_cockpit"}q e / , . look · z x c fire · r scan · + − zoom · v view{:else}a d turn · w s speed · x stop · q e look · c centre · v view · f free/hold · g volley · t T lock · n scan ·
         b glass · z startup · m emcon · l auto-target · F auto-fire · y N answer · F1–F6 order{/if}</span
       >
+      <button
+        type="button"
+        class="toggle cam-btn"
+        class:active={!audioMuted}
+        aria-pressed={!audioMuted}
+        title="Toggle procedural diegetic audio"
+        onclick={toggleAudio}>{audioMuted ? "Sfx Off" : "Sfx On"}</button
+      >
     {/if}
     <button type="button" class="toggle" onclick={toggle}>
       {wanted ? "Hide the picture" : "Show the picture"}
@@ -1254,43 +1285,43 @@
   </header>
   {#if wanted && spaceMode === "docking"}
     <div class="dock-toolbar" role="group" aria-label="6-DOF docking controls">
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS UP")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK TRANS UP")}
         >Trans Up (W)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS DOWN")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK TRANS DOWN")}
         >Trans Down (S)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS LEFT")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK TRANS LEFT")}
         >Trans Left (A)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK TRANS RIGHT")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK TRANS RIGHT")}
         >Trans Right (D)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK PITCH UP")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK PITCH UP")}
         >Pitch Up (↑)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK PITCH DOWN")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK PITCH DOWN")}
         >Pitch Down (↓)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK YAW LEFT")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK YAW LEFT")}
         >Yaw Left (←)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK YAW RIGHT")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK YAW RIGHT")}
         >Yaw Right (→)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK ROLL CCW")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK ROLL CCW")}
         >Roll CCW (Q)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK ROLL CW")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK ROLL CW")}
         >Roll CW (E)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK CLOSURE FORWARD")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK CLOSURE FORWARD")}
         >Closure + (R)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK CLOSURE REVERSE")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK CLOSURE REVERSE")}
         >Closure − (F)</button
       >
-      <button type="button" class="toggle zoom-btn" onclick={() => app.helm("DOCK DAMPENERS TOGGLE")}
+      <button type="button" class="toggle zoom-btn" onclick={() => runDockOrder("+helm/dock DOCK DAMPENERS TOGGLE")}
         >Dampeners (X)</button
       >
     </div>

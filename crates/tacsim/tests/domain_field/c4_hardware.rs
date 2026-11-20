@@ -610,8 +610,10 @@ fn fund_till(world: &mut M8World, minor: i64) {
 ///
 /// 1. the fitted core, the destroyed core and the core the other character holds are each
 ///    refused, each in its own words, nothing paid and nothing moved;
-/// 2. the stored core is quoted at half its catalogue price (the market's core entry,
-///    `CoreClass::finished_minor`, at the buy-back's 500 permille) and sold: the shop's
+/// 2. from the berth gallery the shop stands at (the fitting's own place rule, and the one
+///    place a player can walk to), the stored core is quoted at half its catalog price (the
+///    market's core entry, `CoreClass::finished_minor`, at the buy-back's 500 permille) and
+///    sold: the shop's
 ///    integrator pays the pilot, takes the core into its completed-work container and holds its
 ///    title, unencumbered; the economy holds one sale receipt and the kernel one sale record;
 /// 3. the market's custody-only `+market/sell` refuses a governed core outright;
@@ -694,7 +696,15 @@ fn co13_a_stored_core_is_sold_with_its_title() {
     stand(&mut world, pilot, tv);
     let (out, _) = sell(&mut world, &format!("+core/sell #{}", second.0));
     assert!(out.contains(tacsim::hardware::sale::SALE_NOT_HERE), "{out}");
-    stand(&mut world, pilot, factory);
+    // At the shop is the fitting's rule (doc 47 CO.6): in it, or on the deck it stands on. No
+    // player verb takes a character into the shop's object, so the sale itself is made from
+    // the berth gallery the launch stands the shop at, where a captain can walk.
+    let deck = place_of(&world, factory);
+    assert_ne!(
+        deck, pilot,
+        "the shop stands in a room, not in staff's hands"
+    );
+    stand(&mut world, pilot, deck);
 
     // 2. The stored core: quoted, then sold with its title. The shop's till holds only the
     // fees it has earned, less than the price: refused in its own words until staff top it up
@@ -774,6 +784,11 @@ fn co13_a_stored_core_is_sold_with_its_title() {
             .map(|r| r.core),
         Some(second)
     );
+    stand(&mut world, pilot, deck);
+    let (out, landed) = sell(&mut world, &format!("+core/sell #{}=go", second.0));
+    assert!(out.contains(tacsim::hardware::sale::SALE_NOT_HELD), "{out}");
+    assert!(landed.is_empty());
+    // And inside the shop, where staff can still carry a seller, the answer is the same.
     stand(&mut world, pilot, factory);
     let (out, landed) = sell(&mut world, &format!("+core/sell #{}=go", second.0));
     assert!(out.contains(tacsim::hardware::sale::SALE_NOT_HELD), "{out}");

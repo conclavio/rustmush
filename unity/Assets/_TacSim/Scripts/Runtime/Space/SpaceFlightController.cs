@@ -9,6 +9,33 @@ using UnityEngine.EventSystems;
 namespace TacSim.Space
 {
     /// <summary>
+    /// Authoritative Doc 49 (`CC.9`) per-mount telemetry row from `space.cockpit.fire.mounts[]`.
+    /// </summary>
+    public sealed class SpaceMountTelemetry
+    {
+        public string Id = string.Empty;
+        public string Family = string.Empty; // "laser" | "tubes" | "spinal" | "point_defence"
+        public string State = "ready";       // "down" | "empty" | "cycling" | "too_hot" | "past_reach" | "ready"
+        public int ReadyInMs;
+        public string Mode = string.Empty;   // normalized US: "offense" | "defense" | ""
+        public int Rounds = -1;              // -1 when mount has no magazine (e.g. laser)
+        public int RoundsMax = -1;           // -1 when drum max is omitted (e.g. rotary PDC)
+        public int DamageAtLock = -1;        // deterministic laser pulse damage at held lock range
+        public int FlightMsAtLock = -1;      // deterministic spinal slug flight time (ms) at held lock range
+    }
+
+    /// <summary>
+    /// Authoritative Doc 49 (`CC.8` / `CC.9`) held target lock &amp; 5-band hull aspect from `space.cockpit.fire.lock`.
+    /// </summary>
+    public sealed class SpaceLockTelemetry
+    {
+        public string ShipId = string.Empty;
+        public string Label = string.Empty;
+        public long RangeM;
+        public string Facet = "front";       // "front" | "left" | "right" | "rear" | "top"
+    }
+
+    /// <summary>
     /// Renders authoritative 3D Orbital Space Flight (player ship hull + fusion plume, rotating body,
     /// server-perceived Zero-G Ore Asteroids &amp; Naval Contacts from `space.holotank` / `space.cockpit`,
     /// 3D Mining Laser &amp; Collector Drones) AND drives the 60 Hz 6-DOF Bow Docking Collar Mini-Game
@@ -35,6 +62,8 @@ namespace TacSim.Space
         public string EmconPosture { get; private set; } = "standard";
         public string SelectedRockId { get; private set; } = string.Empty;
         public string LockedContactId { get; private set; } = string.Empty;
+        public IReadOnlyList<SpaceMountTelemetry> FireMounts => _fireMounts;
+        public SpaceLockTelemetry ActiveLock { get; private set; }
 
         /// <summary>
         /// Fired when the local 60 Hz integrator reaches a terminal contact (`(tapeCommand, isClampCandidate)`).
@@ -45,6 +74,7 @@ namespace TacSim.Space
         public event Action<string> OnDockingEndedByServer;
         public event Action<string> OnSpaceAlert;
         public event Action<string, bool> OnOrbitalTargetClicked; // (designator, isAsteroid)
+        public event Action OnSpaceTelemetryChanged;
 
         private Transform _ceresBody;
         private Transform _mainDrivePlume;
@@ -55,6 +85,11 @@ namespace TacSim.Space
         private readonly Dictionary<string, Transform> _namedOrbitalTargets = new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _knownRockIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<Transform> _collectorDrones = new List<Transform>();
+        private readonly List<SpaceMountTelemetry> _fireMounts = new List<SpaceMountTelemetry>(8);
+
+        private Transform _lockAspectIndicator;
+        private Transform _lockAspectSectorPlate;
+        private TextMeshPro _lockAspectLabel;
 
         private LineRenderer _activeBeamRenderer;
         private Transform _activeBeamEndGlow;
@@ -135,6 +170,8 @@ namespace TacSim.Space
             _namedOrbitalTargets.Clear();
             _knownRockIds.Clear();
             _collectorDrones.Clear();
+            _fireMounts.Clear();
+            ActiveLock = null;
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
             HasClusterMiningTelemetry = false;
@@ -298,6 +335,51 @@ namespace TacSim.Space
             torpGo.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("TorpFlare", new Color(1f, 0.45f, 0.15f), new Color(1f, 0.55f, 0.2f) * 2.8f);
             _activeTorpedoVisual = torpGo.transform;
             _activeTorpedoVisual.gameObject.SetActive(false);
+
+            BuildLockAspectIndicator();
+        }
+
+        private void BuildLockAspectIndicator()
+        {
+            var root = new GameObject("LockedAspectIndicator");
+            root.transform.SetParent(transform, false);
+            _lockAspectIndicator = root.transform;
+
+            var ring = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ring.name = "AspectBaseRing";
+            ring.transform.SetParent(_lockAspectIndicator, false);
+            ring.transform.localScale = new Vector3(26f, 0.12f, 26f);
+            var rc = ring.GetComponent<Collider>();
+            if (rc != null) { if (Application.isPlaying) Destroy(rc); else DestroyImmediate(rc); }
+            ring.GetComponent<MeshRenderer>().sharedMaterial =
+                UrpMaterialFactory.GetHologramUnlit("LockAspectRing", new Color(1.0f, 0.62f, 0.18f, 0.24f));
+
+            var sector = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            sector.name = "StrikeBandArc";
+            sector.transform.SetParent(_lockAspectIndicator, false);
+            sector.transform.localPosition = new Vector3(0f, 0.35f, 12.5f);
+            sector.transform.localScale = new Vector3(9.5f, 1.4f, 1.6f);
+            var sc = sector.GetComponent<Collider>();
+            if (sc != null) { if (Application.isPlaying) Destroy(sc); else DestroyImmediate(sc); }
+            sector.GetComponent<MeshRenderer>().sharedMaterial =
+                UrpMaterialFactory.GetEmissive("StrikeBandGlow", new Color(1.0f, 0.36f, 0.22f), new Color(1.0f, 0.45f, 0.25f) * 2.4f);
+            _lockAspectSectorPlate = sector.transform;
+
+            var bbGo = new GameObject("AspectCallout");
+            bbGo.transform.SetParent(_lockAspectIndicator, false);
+            bbGo.transform.localPosition = new Vector3(0f, 12.8f, 0f);
+            var bb = bbGo.AddComponent<WorldBillboard>();
+            var txtGo = new GameObject("Label");
+            txtGo.transform.SetParent(bbGo.transform, false);
+            _lockAspectLabel = txtGo.AddComponent<TextMeshPro>();
+            _lockAspectLabel.fontSize = 14f;
+            _lockAspectLabel.color = new Color(1.0f, 0.78f, 0.36f);
+            _lockAspectLabel.alignment = TextAlignmentOptions.Center;
+            _lockAspectLabel.textWrappingMode = TextWrappingModes.NoWrap;
+            _lockAspectLabel.rectTransform.sizeDelta = new Vector2(60f, 6f);
+            bb.NameplateText = _lockAspectLabel;
+
+            _lockAspectIndicator.gameObject.SetActive(false);
         }
 
         /// <summary>
@@ -409,6 +491,9 @@ namespace TacSim.Space
 
             if (!string.IsNullOrEmpty(LockedContactId) && !HasPerceivedContact(LockedContactId))
                 LockedContactId = string.Empty;
+
+            SyncLockedAspectIndicator();
+            OnSpaceTelemetryChanged?.Invoke();
         }
 
         public static Vector3 ComputeRelativeStageOffset(
@@ -720,6 +805,69 @@ namespace TacSim.Space
             BowDockingCameraAnchor.localRotation = Quaternion.identity;
         }
 
+        public static string NormalizeLaserModeWord(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+            string lower = raw.Trim().ToLowerInvariant();
+            if (lower == "offence" || lower == "offense") return "offense";
+            if (lower == "defence" || lower == "defense" || lower == "point") return "defense";
+            return lower;
+        }
+
+        public static void ParseSpaceFireTelemetry(
+            JsonNode fireObj,
+            List<SpaceMountTelemetry> mountsOut,
+            out SpaceLockTelemetry lockOut)
+        {
+            mountsOut?.Clear();
+            lockOut = null;
+            if (fireObj == null || !fireObj.IsObject)
+                return;
+
+            var mountsArr = fireObj["mounts"].AsArray();
+            if (mountsArr != null && mountsOut != null)
+            {
+                for (int i = 0; i < mountsArr.Count; i++)
+                {
+                    var m = mountsArr[i];
+                    if (!m.IsObject) continue;
+                    string id = m.Str("id", string.Empty).Trim();
+                    if (string.IsNullOrEmpty(id)) continue;
+
+                    mountsOut.Add(new SpaceMountTelemetry
+                    {
+                        Id = id,
+                        Family = m.Str("family", "laser").Trim().ToLowerInvariant(),
+                        State = m.Str("state", "ready").Trim().ToLowerInvariant(),
+                        ReadyInMs = Math.Max(0, m.Int("ready_in_ms", 0)),
+                        Mode = NormalizeLaserModeWord(m.Str("mode", string.Empty)),
+                        Rounds = m.ContainsKey("rounds") && !m["rounds"].IsNull ? m.Int("rounds", -1) : -1,
+                        RoundsMax = m.ContainsKey("rounds_max") && !m["rounds_max"].IsNull ? m.Int("rounds_max", -1) : -1,
+                        DamageAtLock = m.ContainsKey("damage") && !m["damage"].IsNull ? m.Int("damage", -1) : -1,
+                        FlightMsAtLock = m.ContainsKey("flight_ms") && !m["flight_ms"].IsNull ? m.Int("flight_ms", -1) : -1,
+                    });
+                }
+            }
+
+            var lockNode = fireObj["lock"];
+            if (lockNode.IsObject)
+            {
+                string lockId = lockNode.Str("id", string.Empty).Trim();
+                if (!string.IsNullOrEmpty(lockId))
+                {
+                    string facet = lockNode.Str("facet", "front").Trim().ToLowerInvariant();
+                    if (string.IsNullOrEmpty(facet)) facet = "front";
+                    lockOut = new SpaceLockTelemetry
+                    {
+                        ShipId = lockId,
+                        Label = lockNode.Str("label", lockId).Trim(),
+                        RangeM = Math.Max(0L, lockNode.Long("range_m", 0L)),
+                        Facet = facet,
+                    };
+                }
+            }
+        }
+
         public static bool ExtractLockedContactIdFromFireNode(JsonNode fireObj, out string lockId, out bool explicitClear)
         {
             lockId = string.Empty;
@@ -792,12 +940,23 @@ namespace TacSim.Space
             }
             EmconPosture = cockpit.Str("emcon", EmconPosture);
 
-            if (ExtractLockedContactIdFromFireNode(cockpit["fire"], out string serverLock, out bool clearLock))
+            var fireNode = cockpit["fire"];
+            if (fireNode.IsObject)
             {
-                if (!string.IsNullOrEmpty(serverLock))
-                    LockedContactId = serverLock;
-                else if (clearLock)
-                    LockedContactId = string.Empty;
+                ParseSpaceFireTelemetry(fireNode, _fireMounts, out var parsedLock);
+                ActiveLock = parsedLock;
+                if (ExtractLockedContactIdFromFireNode(fireNode, out string serverLock, out bool clearLock))
+                {
+                    if (!string.IsNullOrEmpty(serverLock))
+                        LockedContactId = serverLock;
+                    else if (clearLock)
+                        LockedContactId = string.Empty;
+                }
+            }
+            else
+            {
+                _fireMounts.Clear();
+                ActiveLock = null;
             }
 
             ParseClusterMiningState(
@@ -844,6 +1003,82 @@ namespace TacSim.Space
             if (PlayerShipTransform != null)
                 PlayerShipTransform.rotation = Quaternion.Euler(-ShipPitchDeg, ShipYawDeg, -ShipRollDeg);
             UpdateDrivePlume();
+            SyncLockedAspectIndicator();
+            OnSpaceTelemetryChanged?.Invoke();
+        }
+
+        private void SyncLockedAspectIndicator()
+        {
+            if (_lockAspectIndicator == null)
+                return;
+
+            string lockTargetId = ActiveLock != null && !string.IsNullOrEmpty(ActiveLock.ShipId)
+                ? ActiveLock.ShipId
+                : LockedContactId;
+            Transform targetTr = ResolveExactTarget(lockTargetId);
+            if (targetTr == null)
+            {
+                _lockAspectIndicator.gameObject.SetActive(false);
+                return;
+            }
+
+            _lockAspectIndicator.position = targetTr.position;
+            _lockAspectIndicator.rotation = targetTr.rotation;
+
+            string facet = ActiveLock != null && !string.IsNullOrEmpty(ActiveLock.Facet)
+                ? ActiveLock.Facet
+                : "front";
+
+            if (_lockAspectSectorPlate != null)
+            {
+                switch (facet)
+                {
+                    case "rear":
+                        _lockAspectSectorPlate.localPosition = new Vector3(0f, 0.35f, -12.5f);
+                        _lockAspectSectorPlate.localRotation = Quaternion.identity;
+                        _lockAspectSectorPlate.localScale = new Vector3(9.5f, 1.4f, 1.6f);
+                        break;
+                    case "left":
+                        _lockAspectSectorPlate.localPosition = new Vector3(-12.5f, 0.35f, 0f);
+                        _lockAspectSectorPlate.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                        _lockAspectSectorPlate.localScale = new Vector3(9.5f, 1.4f, 1.6f);
+                        break;
+                    case "right":
+                        _lockAspectSectorPlate.localPosition = new Vector3(12.5f, 0.35f, 0f);
+                        _lockAspectSectorPlate.localRotation = Quaternion.Euler(0f, 90f, 0f);
+                        _lockAspectSectorPlate.localScale = new Vector3(9.5f, 1.4f, 1.6f);
+                        break;
+                    case "top":
+                        _lockAspectSectorPlate.localPosition = new Vector3(0f, 6.4f, 0f);
+                        _lockAspectSectorPlate.localRotation = Quaternion.identity;
+                        _lockAspectSectorPlate.localScale = new Vector3(9.0f, 0.65f, 9.0f);
+                        break;
+                    default: // "front"
+                        _lockAspectSectorPlate.localPosition = new Vector3(0f, 0.35f, 12.5f);
+                        _lockAspectSectorPlate.localRotation = Quaternion.identity;
+                        _lockAspectSectorPlate.localScale = new Vector3(9.5f, 1.4f, 1.6f);
+                        break;
+                }
+            }
+
+            if (_lockAspectLabel != null)
+            {
+                if (ActiveLock != null)
+                {
+                    string rangeStr = ActiveLock.RangeM >= 1000
+                        ? $"{ActiveLock.RangeM / 1000f:0.0} KM"
+                        : $"{ActiveLock.RangeM} M";
+                    string lbl = string.IsNullOrEmpty(ActiveLock.Label) ? ActiveLock.ShipId : ActiveLock.Label;
+                    _lockAspectLabel.text = MushProtocolLiteEscape(
+                        $"LOCK: {lbl.ToUpperInvariant()} · {rangeStr} · [{facet.ToUpperInvariant()} BAND]");
+                }
+                else
+                {
+                    _lockAspectLabel.text = MushProtocolLiteEscape($"LOCK: {lockTargetId.ToUpperInvariant()}");
+                }
+            }
+
+            _lockAspectIndicator.gameObject.SetActive(true);
         }
 
         public void SetLocalHelmPreview(float yawDeg, float pitchDeg, float throttlePermille)

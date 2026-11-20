@@ -8,7 +8,8 @@ is brought up in three boots, and this script walks all of them (the runbook is
 deploy/README.md, "Named launch and the player market"):
 
   1. PLAIN. No launch. As #1: the Republic, the system accounts, the three
-     Houses, the Basin importer and its fitting shop, the Tether back room (the
+     Houses, the Basin importer and its fitting shop (its buy-back named in
+     the document and its till funded), the Tether back room (the
      ungoverning shop), the Registry, the staff login that holds the stock
      agent, the clerk and the Registry operator, and each House's procurement
      agent on a login of its own. Then <DATA_DIR>/launch.json is written in
@@ -17,10 +18,12 @@ deploy/README.md, "Named launch and the player market"):
      only beside its document).
   2. INITIALIZE. The seven Registry grants to every operator, then the four
      initialize actions. The document's mode is set to `active`.
-  3. ACTIVE. `@mind/launch` must name every operator `ready`. The counter is
-     given its door from the Registry's desk at Ceres Freeport (a dug room has
-     no exit, and the market's verbs are refused anywhere else). Then the major
-     NPCs are enabled (Q-44-47).
+  3. ACTIVE. `@mind/launch` must name every operator `ready`. The fitting shop
+     is stood at Ceres Freeport's berth gallery (it fits a hull only where it
+     stands) and `+core` is read there. The counter is given its door from the
+     Registry's desk at Ceres Freeport (a dug room has no exit, and the
+     market's verbs are refused anywhere else). The major NPCs are enabled
+     (Q-44-47).
 
 Then the instance's own unit is started, and on it: `@mind/launch` again, the
 LLM routes' check, and last the dev launch's seed: one line rated by the
@@ -129,6 +132,30 @@ DEPOT_STOCK = [
     {"commodity": "instrument_boards", "units": 112},
     {"commodity": "strategic_ore", "units": 88},
 ]
+# The fitting shop's place (doc 47 cut CO.6, default 1). The shop is an object, and it fits a
+# hull only where it stands: a ship docked at the berth it stands at, her captain on the deck
+# beside her. Until it stands somewhere `+core/fit` fits nothing. Provisional, the owner's to
+# move: Ceres Freeport's berth gallery, where the Co-op's Drays and every House's hulls dock
+# and where the stories' rig stands it. Five ports have a room of this name; the port's own
+# name, as `+atlas` heads a room's map, picks the one.
+SHOP_PORT = "Ceres Freeport"
+SHOP_ROOM = "Visiting Berth Gallery"
+# The shop's buy-back (doc 47 cut CO.13; doc 48 section 4.3): `+core/sell` and the player core
+# resale (`+core/offer`, doc 48 unit EX.2b) compose only where the document names the rate, per
+# mille of a core's catalog price. Provisional: the stories' 500
+# (tacsim::hardware::sale::BUY_BACK_PERMILLE), so 1,500cr, 4,000cr and 12,500cr for a Class I,
+# II and III core.
+BUY_BACK_PERMILLE = 500
+# The shop pays for a core it buys out of the integrator's account, which opens at 0 and
+# otherwise holds only the fees the shop has earned. Provisional (--shop-till): 50,000cr, four
+# Class III cores' worth. Nothing refills it but the shop's own fees.
+SHOP_TILL_MINOR = 5_000_000
+# The game's own sentences the shop's check reads, as needles (crates/tacsim/src/hardware:
+# CORE_SHOP and CORE_NO_SUCH_CORE in counter.rs, SALE_NOT_CORE in sale.rs, where a test holds
+# these lines to those constants).
+CORE_STANDS = "stands at"
+CORE_NO_SUCH_CORE = "You hold no governed core called"
+SALE_NOT_CORE = "That is not a governed core."
 TRUST = "Co-op First Captain Trust"
 # The counter's door (doc 44 unit MW.19). The counter is a room the bring-up
 # digs, and a dug room has no exit: until this, no player could walk to it, so
@@ -816,9 +843,13 @@ class Staff:
 
     # ---- objects
 
-    def find(self, name):
+    def find_all(self, name):
+        """Every object of exactly this name, lowest id first."""
         rows = re.findall(r"^(.+)\(#(\d+)\)$", self.s.ask(f"@find {name}"), re.M)
-        ids = sorted(int(number) for found, number in rows if found.strip() == name)
+        return sorted(int(number) for found, number in rows if found.strip() == name)
+
+    def find(self, name):
+        ids = self.find_all(name)
         return ids[0] if ids else None
 
     def room(self, name):
@@ -905,6 +936,10 @@ def identities(box, staff):
         staff.fund(faucet, treasury, FILING_FEE_MINOR)
         houses[key] = {"organization": org, "scope": publication, "treasury": treasury,
                        "publisher": 1, "source_name": source}
+        # Doc 48 unit EX.9 (Q-48-55): the House's daily stipend from the export faucet, paid
+        # into its root-scope treasury once an IC day; 0 pays none.
+        if box.args.house_stipend > 0:
+            houses[key]["stipend_minor_per_ic_day"] = box.args.house_stipend
         # Procurement (doc 17h cut M8f, Q-44-8): the agent on a login of its
         # own, at the counter, a member of the Republic, holding the House's
         # licences on the root scope up to the month's budget and attesting on
@@ -930,6 +965,10 @@ def identities(box, staff):
     supplier = staff.org_account(basin, "Basin", die_stock)
     integrator = staff.org_account(basin, "Basin", factory_scope)
     staff.facility(shop, ("core_integration", "core_refit"), basin, "Basin", factory_scope)
+    # Doc 47 cut CO.13 (doc 48 section 4.3): the shop pays for a core it buys back out of the
+    # integrator's account, which would otherwise open at 0. The shop itself is stood at its
+    # berth in the Active boot (`fitting_shop`).
+    staff.fund(faucet, integrator, box.args.shop_till)
 
     # The ungoverning shop (doc 17h cut M8g; HardwareCoordinates.ungovern): the
     # Tether back room, chartered `core_ungovern` and never `core_refit`.
@@ -966,6 +1005,7 @@ def identities(box, staff):
             "supplier_account": supplier,
             "integrator": {"account": integrator, "organization": basin, "scope": factory_scope},
             "factory": shop, "output_container": output,
+            "buy_back_permille": BUY_BACK_PERMILLE,
             "depot_stock": DEPOT_STOCK,
             "ungovern": {
                 "provider": {"account": back_account, "organization": tether, "scope": backroom},
@@ -1078,6 +1118,59 @@ def counter_door(staff, document):
             f"(#{desk}) to the counter (#{counter}), and '{COUNTER_BACK.split(';')[0]}' back")
     else:
         say(f"the counter (#{counter}) has its door from the {COUNTER_DESK} (#{desk})")
+
+
+def fitting_shop(staff, document):
+    """The fitting shop stood at its berth, and the counter read there (doc 47
+    cuts CO.6 and CO.13).
+
+    The shop is the object the document names as `hardware.factory`, made in
+    #1's hands, and `+core/fit` fits a hull only where it stands. So it is
+    stood in SHOP_PORT's berth gallery, where ships dock, and locked to #1,
+    since a thing left in a room is otherwise anybody's to pick up. Then #1
+    reads the counter from the gallery, as a captain beside her docked ship
+    does: `+core` must say where the shop stands, `+core/fit` must get past
+    the place to the core it was asked for, and, where the document names a
+    buy-back, `+core/sell` must do the same. A document an older run wrote
+    names none, and is left as it is: the rate is part of the launch's
+    identity. #1 is left in Limbo."""
+    shop = document["hardware"]["factory"]
+    gallery = None
+    for room in staff.find_all(SHOP_ROOM):
+        staff.s.ask(f"@teleport #{room}")
+        if f"{SHOP_PORT} — " in staff.s.ask("+atlas"):
+            gallery = room
+            break
+    if gallery is None:
+        staff.s.ask("@teleport #0")
+        raise Stop(f"no room named '{SHOP_ROOM}' that +atlas places in {SHOP_PORT}: the fitting shop "
+                   f"(#{shop}) stands nowhere, and +core/fit fits nothing until it stands at a berth")
+    staff.s.do(f"@teleport #{shop}=#{gallery}", r"Teleported\.")
+    staff.s.do(f"@lock #{shop}=#1", r"Locked\.")
+    status = staff.s.ask("+core")
+    fit = staff.s.ask(f"+core/fit #{shop}=#{shop}")
+    sale = staff.s.ask(f"+core/sell #{shop}")
+    staff.s.ask("@teleport #0")
+    if f"{CORE_STANDS} {SHOP_ROOM}" not in status:
+        raise Stop(f"the fitting shop (#{shop}) was stood in #{gallery} and +core does not say so:\n"
+                   f"{status.strip()}")
+    if CORE_NO_SUCH_CORE not in fit:
+        raise Stop(f"+core/fit, typed beside the fitting shop (#{shop}) in #{gallery}, does not "
+                   f"reach the shop:\n{fit.strip()}")
+    rate = document["hardware"].get("buy_back_permille")
+    if rate is None:
+        say(f"the fitting shop (#{shop}) stands at the {SHOP_ROOM} (#{gallery}) of {SHOP_PORT}: "
+            "+core/fit answers there. This document names no buy-back, so +core/sell and "
+            "+core/offer are not composed until the next wipe's bring-up")
+        return
+    if SALE_NOT_CORE not in sale:
+        raise Stop(f"the document names a buy-back of {rate} per mille and +core/sell, typed "
+                   f"beside the fitting shop (#{shop}) in #{gallery}, does not reach it:\n"
+                   f"{sale.strip()}")
+    till = staff.balance(document["hardware"]["integrator"]["account"])
+    say(f"the fitting shop (#{shop}) stands at the {SHOP_ROOM} (#{gallery}) of {SHOP_PORT}: "
+        f"+core/fit answers there, and +core/sell buys cores back at {rate} per mille from a "
+        f"till of {till} minor credits")
 
 
 def major_npcs(box):
@@ -1502,6 +1595,8 @@ def bring_up(box, password):
         return_hulls(box, staff)
         # Doc 47 cut CO.9: the Houses' own hulls.
         seed_house_hulls(box, staff, document)
+        # Doc 47 cuts CO.6 and CO.13: the fitting shop at its berth, and read there.
+        fitting_shop(staff, document)
         # Last, so that a world with no desk to hang the door on stops here with
         # the NPCs enabled, every lent hull back and the Houses' hulls laid up.
         counter_door(staff, document)
@@ -1537,10 +1632,12 @@ def checks_on_the_unit(box, password):
 
 
 def door_on_the_unit(box, password):
-    """A box that was brought up before the counter had a door: hang it on the
-    running world. The one step a second run on a live box writes."""
+    """A box that was brought up before the fitting shop had a place or the
+    counter a door: stand the one and hang the other on the running world. The
+    two steps a second run on a live box writes."""
     staff = staff_on_the_unit(box, password)
     try:
+        fitting_shop(staff, box.read_document())
         counter_door(staff, box.read_document())
     finally:
         staff.close()
@@ -1606,6 +1703,9 @@ def main():
                              "rate), or a named House source")
     parser.add_argument("--purchase-house", default="meridiani", choices=[h[0] for h in HOUSES],
                         help="the House whose purchase is waited for")
+    parser.add_argument("--shop-till", type=int, default=SHOP_TILL_MINOR,
+                        help="the fitting shop's till, which pays for the cores +core/sell buys "
+                             "back, minor credits (5,000,000 = 50,000cr; 0 funds none)")
     parser.add_argument("--house-hulls", type=int, default=3,
                         help="the hulls of its own each House is seeded at Ceres Freeport (3; 0 "
                              "seeds none)")
@@ -1613,6 +1713,9 @@ def main():
                         help="the design each House's hulls are seeded as (dray)")
     parser.add_argument("--procurement-budget", type=int, default=200_000,
                         help="each House's monthly budget and its treasury's funding, minor credits")
+    parser.add_argument("--house-stipend", type=int, default=50_000,
+                        help="each House's stipend from the export faucet, minor credits an IC "
+                             "day (50,000 = 500cr; 0 pays none; doc 48 unit EX.9)")
     parser.add_argument("--no-npcs", action="store_true", help="leave the major NPCs parked")
     parser.add_argument("--no-seed", action="store_true", help="rate and list no line (and buy none)")
     parser.add_argument("--no-purchase", action="store_true", help="do not wait for a House's purchase")

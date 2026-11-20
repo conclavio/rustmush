@@ -71,6 +71,9 @@ namespace TacSim.UI
         /// </summary>
         public bool IsInitialized { get; private set; }
         public TacSimMissionOverlays Overlays { get; private set; }
+        public TacSimEconomyPanels EconomyPanels { get; private set; }
+        public TradeTerminalTab ActiveTradeTab { get; private set; } = TradeTerminalTab.Exchange;
+
         public bool IsModalOpen =>
             (_modalPanel != null && _modalPanel.activeSelf) ||
             (_tradePanel != null && _tradePanel.activeSelf) ||
@@ -79,6 +82,8 @@ namespace TacSim.UI
         public bool IsTextInputFocused =>
             (_chatInput != null && _chatInput.isFocused) ||
             (_npcSayInput != null && _npcSayInput.isFocused) ||
+            (EconomyPanels != null && EconomyPanels.IsAnyInputFocused) ||
+            TacSimMindTerminal.IsAnyInputFocused ||
             (_loginPanel != null && _loginPanel.activeSelf);
 
         private Font _uiFont;
@@ -134,11 +139,32 @@ namespace TacSim.UI
         private Text _storesBarLabel;
         private GameObject _exchangeTabBody;
         private GameObject _sailingTabBody;
-        private Image _exchangeTabBtnImg;
-        private Image _sailingTabBtnImg;
+        private readonly List<Image> _tradeTabBtnImages = new List<Image>();
         private Transform _listingsContentRoot;
         private readonly List<Image> _qtyPresetImages = new List<Image>();
         private readonly List<Image> _destPortImages = new List<Image>();
+
+        /// <summary>
+        /// The Ceres-Phobos lane's 12 venue words (crates/tacsim/content/lane/ceres_phobos.json),
+        /// labelled with the port name and its body. These are the only words `+ship/plan`,
+        /// `+ship/order depart`, `+ship/undock` and `+helm/dock` accept as a destination.
+        /// </summary>
+        public static readonly (string code, string label)[] CorridorDestinations =
+        {
+            ("ceres", "Ceres Freeport (Ceres)"),
+            ("stickney", "Stickney Yards (Phobos)"),
+            ("luna", "Aitken Highport (Luna)"),
+            ("deimos", "Voltaire Anchorage (Deimos)"),
+            ("titan", "Ligeia Terminal (Titan)"),
+            ("commons", "Freeport Commons (Ceres)"),
+            ("kerwan", "Kerwan Floor (Ceres)"),
+            ("ahuna", "Ahuna Flank (Ceres)"),
+            ("juling", "Juling Shadow (Ceres)"),
+            ("occator", "Occator Rim (Ceres)"),
+            ("rheasilvia", "Rheasilvia Commons (Vesta)"),
+            ("urvara", "Urvara Reach (Ceres)")
+        };
+
         private Text _sailingPlanOutputText;
         private readonly List<string> _sailingEchoLines = new List<string>();
 
@@ -184,6 +210,7 @@ namespace TacSim.UI
             _avatarButtons.Clear();
             _qtyPresetImages.Clear();
             _destPortImages.Clear();
+            _tradeTabBtnImages.Clear();
             _lastQuickActionKey = null;
             _lastQuickActionSeated = null;
 
@@ -347,15 +374,28 @@ namespace TacSim.UI
             BuildGaugeCell(gaugesStrip.transform, 2, "REACTION TANK", "0 / 80 t", new Color(0.92f, 0.58f, 0.18f), out _tankBarFill, out _tankBarLabel);
             BuildGaugeCell(gaugesStrip.transform, 3, "CREW STORES", "0 / 120 d", new Color(0.68f, 0.55f, 0.95f), out _storesBarFill, out _storesBarLabel);
 
-            // Mode Tabs: [1] Commodity Exchange & Chandlery | [2] Sailing Plan & Corridor Route
+            // Mode Tabs: [0] Exchange | [1] 24w History | [2] Jobs & Crew | [3] Works & Yard | [4] Sailing Plan
             var tabStrip = CreatePanel(_tradePanel.transform, "TerminalTabs", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -146f), new Vector2(-16f, -112f), Color.clear);
-            var exBtn = CreateButton(tabStrip.transform, "COMMODITY EXCHANGE & CHANDLERY", new Color(0.16f, 0.46f, 0.58f), () => SwitchTradeTab(sailingTab: false));
-            SetRect(exBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.5f, 1f), Vector2.zero, new Vector2(-4f, 0f));
-            _exchangeTabBtnImg = exBtn.GetComponent<Image>();
+            var tabHlg = tabStrip.AddComponent<HorizontalLayoutGroup>();
+            tabHlg.spacing = 6f;
+            tabHlg.childControlWidth = true;
+            tabHlg.childControlHeight = true;
+            tabHlg.childForceExpandWidth = true;
 
-            var sailBtn = CreateButton(tabStrip.transform, "SAILING PLAN & CORRIDOR ROUTE", new Color(0.12f, 0.24f, 0.34f), () => SwitchTradeTab(sailingTab: true));
-            SetRect(sailBtn.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), new Vector2(1f, 1f), new Vector2(4f, 0f), Vector2.zero);
-            _sailingTabBtnImg = sailBtn.GetComponent<Image>();
+            (TradeTerminalTab tab, string label)[] tabs =
+            {
+                (TradeTerminalTab.Exchange, "EXCHANGE BOOK"),
+                (TradeTerminalTab.History, "24W HISTORY"),
+                (TradeTerminalTab.Jobs, "JOBS & CREW"),
+                (TradeTerminalTab.Industry, "WORKS & YARD"),
+                (TradeTerminalTab.Sailing, "SAILING PLAN")
+            };
+            for (int i = 0; i < tabs.Length; i++)
+            {
+                var capturedTab = tabs[i].tab;
+                var tb = CreateButton(tabStrip.transform, tabs[i].label, new Color(0.14f, 0.34f, 0.46f), () => SwitchTradeTerminalTab(capturedTab, autoQuery: true));
+                _tradeTabBtnImages.Add(tb.GetComponent<Image>());
+            }
 
             // ---- TAB 1: EXCHANGE & CHANDLERY ----
             _exchangeTabBody = CreatePanel(_tradePanel.transform, "ExchangeTabBody", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(16f, 14f), new Vector2(-16f, -154f), Color.clear);
@@ -433,20 +473,26 @@ namespace TacSim.UI
             var pLbl = CreateText(portStrip.transform, "CORRIDOR PORT:", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.75f, 0.88f, 0.96f));
             SetRect(pLbl.rectTransform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(12f, 0f), new Vector2(142f, 0f));
 
-            (string code, string label)[] ports =
-            {
-                ("stickney", "Stickney Yards (Phobos)"),
-                ("aitken", "Aitken Highport (Luna)"),
-                ("occator", "Occator Rim"),
-                ("rheasilvia", "Rheasilvia (Vesta)")
-            };
+            // 12 venues share the strip right of the label: each button takes 1/12 of it, and its
+            // text shrinks to fit (best fit) instead of overflowing.
+            var portButtons = CreatePanel(portStrip.transform, "CorridorPortButtons", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(148f, 4f), new Vector2(-4f, -4f), Color.clear);
+            var ports = CorridorDestinations;
             for (int i = 0; i < ports.Length; i++)
             {
                 int idx = i;
                 string pCode = ports[i].code;
-                float x0 = 148f + i * 190f;
-                var pb = CreateButton(portStrip.transform, ports[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
-                SetRect(pb.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(x0, 4f), new Vector2(x0 + 184f, -4f));
+                float a0 = (float)i / ports.Length;
+                float a1 = (float)(i + 1) / ports.Length;
+                var pb = CreateButton(portButtons.transform, ports[i].label, new Color(0.14f, 0.26f, 0.38f), () => SelectDestinationPort(idx, pCode));
+                SetRect(pb.GetComponent<RectTransform>(), new Vector2(a0, 0f), new Vector2(a1, 1f), new Vector2(2f, 0f), new Vector2(-2f, 0f));
+                var pbText = pb.GetComponentInChildren<Text>();
+                if (pbText != null)
+                {
+                    pbText.horizontalOverflow = HorizontalWrapMode.Wrap;
+                    pbText.resizeTextForBestFit = true;
+                    pbText.resizeTextMinSize = 8;
+                    pbText.resizeTextMaxSize = 13;
+                }
                 _destPortImages.Add(pb.GetComponent<Image>());
             }
 
@@ -501,6 +547,18 @@ namespace TacSim.UI
             sailScroll.horizontal = false;
             sailScroll.vertical = true;
             sailScroll.movementType = ScrollRect.MovementType.Clamped;
+
+            EconomyPanels = new TacSimEconomyPanels(
+                _uiFont,
+                cmd => OnCommandSubmitted?.Invoke(cmd),
+                () => _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.SelectedDestinationPort)
+                    ? _boundTradeState.SelectedDestinationPort
+                    : "stickney",
+                // `+bay` resolves `ship` to the helm hull itself.
+                () => "ship",
+                // `+escort/post` takes only `#<dbref>`; empty when no helm hull is known.
+                () => _boundTradeState != null ? _boundTradeState.ShipHullId : string.Empty);
+            EconomyPanels.BuildSubPanels(_tradePanel.transform);
 
             _sailingTabBody.SetActive(false);
             _tradePanel.SetActive(false);
@@ -1062,7 +1120,7 @@ namespace TacSim.UI
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged += RefreshTradeTerminal;
             SelectTradeQuantityPreset(1, 10);
-            SelectDestinationPort(0, "stickney");
+            SelectDestinationPort(CorridorDestinationIndex("stickney"), "stickney");
         }
 
         public void OpenTradeAndSailingModal(string header, bool openSailingTab)
@@ -1078,13 +1136,40 @@ namespace TacSim.UI
 
         private void SwitchTradeTab(bool sailingTab)
         {
-            _tradeSailingTabActive = sailingTab;
-            if (_exchangeTabBody != null) _exchangeTabBody.SetActive(!sailingTab);
-            if (_sailingTabBody != null) _sailingTabBody.SetActive(sailingTab);
-            if (_exchangeTabBtnImg != null)
-                _exchangeTabBtnImg.color = !sailingTab ? new Color(0.20f, 0.58f, 0.74f, 1f) : new Color(0.11f, 0.22f, 0.32f, 0.9f);
-            if (_sailingTabBtnImg != null)
-                _sailingTabBtnImg.color = sailingTab ? new Color(0.20f, 0.58f, 0.74f, 1f) : new Color(0.11f, 0.22f, 0.32f, 0.9f);
+            SwitchTradeTerminalTab(sailingTab ? TradeTerminalTab.Sailing : TradeTerminalTab.Exchange, autoQuery: false);
+        }
+
+        public void SwitchTradeTerminalTab(TradeTerminalTab tab, bool autoQuery = true)
+        {
+            ActiveTradeTab = tab;
+            _tradeSailingTabActive = tab == TradeTerminalTab.Sailing;
+            if (_exchangeTabBody != null) _exchangeTabBody.SetActive(tab == TradeTerminalTab.Exchange);
+            if (EconomyPanels?.HistoryTabBody != null) EconomyPanels.HistoryTabBody.SetActive(tab == TradeTerminalTab.History);
+            if (EconomyPanels?.JobsTabBody != null) EconomyPanels.JobsTabBody.SetActive(tab == TradeTerminalTab.Jobs);
+            if (EconomyPanels?.IndustryTabBody != null) EconomyPanels.IndustryTabBody.SetActive(tab == TradeTerminalTab.Industry);
+            if (_sailingTabBody != null) _sailingTabBody.SetActive(tab == TradeTerminalTab.Sailing);
+
+            for (int i = 0; i < _tradeTabBtnImages.Count; i++)
+            {
+                if (_tradeTabBtnImages[i] == null) continue;
+                _tradeTabBtnImages[i].color = ((int)tab == i)
+                    ? new Color(0.20f, 0.58f, 0.74f, 1f)
+                    : new Color(0.11f, 0.22f, 0.32f, 0.9f);
+            }
+
+            if (autoQuery)
+            {
+                if (tab == TradeTerminalTab.History)
+                    OnCommandSubmitted?.Invoke($"+market/history tacsim:{(EconomyPanels != null ? EconomyPanels.SelectedHistoryGood : "volatiles")}");
+                else if (tab == TradeTerminalTab.Jobs)
+                    OnCommandSubmitted?.Invoke("+market/jobs");
+                else if (tab == TradeTerminalTab.Industry)
+                    OnCommandSubmitted?.Invoke("+works");
+                else if (tab == TradeTerminalTab.Sailing)
+                    OnCommandSubmitted?.Invoke("+ship/orders");
+            }
+
+            EconomyPanels?.IngestEchoLines(_sailingEchoLines);
             RefreshTradeTerminal();
         }
 
@@ -1110,6 +1195,17 @@ namespace TacSim.UI
             }
             if (_tradePanel != null && _tradePanel.activeSelf)
                 RebuildListingCards();
+        }
+
+        /// <summary>Index of a venue word in <see cref="CorridorDestinations"/>, or -1.</summary>
+        public static int CorridorDestinationIndex(string portCode)
+        {
+            for (int i = 0; i < CorridorDestinations.Length; i++)
+            {
+                if (string.Equals(CorridorDestinations[i].code, portCode, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            return -1;
         }
 
         private void SelectDestinationPort(int index, string portCode)
@@ -1340,13 +1436,17 @@ namespace TacSim.UI
                     foreach (string sub in richLine.Split('\n'))
                     {
                         if (string.IsNullOrWhiteSpace(sub)) continue;
-                        _sailingEchoLines.Add(sub.TrimEnd('\r'));
+                        string clean = sub.TrimEnd('\r');
+                        _sailingEchoLines.Add(clean);
+                        // A history reply runs past the shared 24-line log; it keeps its own copy.
+                        EconomyPanels?.HistoryReply.Ingest(clean);
                     }
                     while (_sailingEchoLines.Count > 24)
                         _sailingEchoLines.RemoveAt(0);
                 }
                 if (_tradeSailingTabActive)
                     RefreshSailingOutputBox();
+                EconomyPanels?.IngestEchoLines(_sailingEchoLines);
             }
 
             if (_modalPanel == null || !_modalPanel.activeSelf || _modalBodyText == null)

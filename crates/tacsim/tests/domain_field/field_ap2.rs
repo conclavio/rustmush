@@ -349,26 +349,26 @@ async fn waiting_gate(at: &At, then: Then) {
 }
 
 /// **AP.2 at 256**: a leader offline at the demotion is offered the void on login and takes it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap2_ahuna_an_absent_leader_is_offered_the_void_on_login_and_takes_it() {
     waiting_gate(&AHUNA_FLANK, Then::Taken).await;
 }
 
 /// **AP.2 at 256**: 28 IC days after the demotion the offer is gone.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap2_ahuna_the_offer_is_gone_28_ic_days_after_the_demotion() {
     waiting_gate(&AHUNA_FLANK, Then::Capped).await;
 }
 
 /// **AP.2 at 512**: a leader offline at the demotion is offered the void on login and takes it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap2_urvara_an_absent_leader_is_offered_the_void_on_login_and_takes_it() {
     waiting_gate(&URVARA_REACH, Then::Taken).await;
 }
 
 /// **AP.2 at 512**: ten IC minutes after the return the offer lapses, and a later return inside
 /// the 28 IC days offers it again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap2_urvara_the_offer_runs_ten_ic_minutes_from_each_return() {
     waiting_gate(&URVARA_REACH, Then::LetLapse).await;
 }

@@ -1150,7 +1150,9 @@ fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
             format!(
                 "Original blank stock issued: {}; blanks received: {}; blanks issued: {} / {limit}; fabrication receipts: {} / {limit}.",
                 b.as_ref().is_some_and(|b| b.stocked),
-                b.as_ref().map_or(0, |b| b.blanks.len()),
+                // Doc 48e, production G32: the blanks themselves, not their receipts.
+                b.as_ref()
+                    .map_or(0, |b| b.blanks.values().map(|r| r.qty).sum::<u64>()),
                 b.as_ref().map_or(0, Fabrications::issued),
                 b.as_ref().map_or(0, |b| b.receipts.len())
             ),

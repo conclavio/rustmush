@@ -23,8 +23,11 @@ you cannot also use it or list it twice. A listing stands for 14 days unless
 you name `days=`, and up to 90.
 
 A buyer quotes it with `+market/quote`, and takes it up with `+market/accept`
-into a vault of their own. Their payment is held first, the lot itself moves to
-them, and you are paid once the deal settles. You do not need to be there.
+into a vault of their own. A lot is sold whole: a quote names all of it, and
+`+market/quote <listing>` with no quantity does. The buyer's payment is held
+first, the lot itself moves to them, and you are paid once it has moved. If it
+never moves, the buyer's money comes back within the hour and the lot stays
+yours. You do not need to be there.
 
 ## Listing a hull
 
@@ -33,8 +36,8 @@ them, and you are paid once the deal settles. You do not need to be there.
 lists a hull whose title you hold, at one price for the whole of her. Her hold
 must be empty (her fuel and stores go with her), she must be out of the bay,
 with nothing in flight and no leased rig aboard. A hull with a governed core
-fitted cannot be listed yet: the core sells only through its own sale, which
-is not open.
+fitted is not listed here: she sells only with her core, by private offer to
+one player, `+core/offer #<hull>=<player> price=<n>` (see `help hardware`).
 
 While she is listed, and while a purchase of her is settling, the bay will not
 strip her, scrap her or fit anything to her. A buyer is quoted on her as she
@@ -49,9 +52,10 @@ her.
 
 lists a port's refinery, works or yard whose title you hold, or with `as=<org>`
 one an organization you act for holds; the organization is paid. It is sold only
-when idle: no order open there and nothing in its stores. The relay foundry,
-the workshops and the medical rooms are not for sale, nor is a facility whose
-stores a vendor trades from.
+when idle: no order open there and nothing in its stores. A facility that owes
+running costs is sold only once they are paid. While it is listed it takes no new
+order. The relay foundry, the workshops and the medical rooms are not for sale,
+nor is a facility whose stores a vendor trades from.
 
 When the sale settles, the facility passes to the buyer with its stores, and
 its takings are paid to the buyer from then on. The buyer sets who may order
@@ -61,6 +65,8 @@ stays open to every customer.
 
 A fee is fixed when an order is booked. If the owner raises it before the work
 starts, the order is canceled, and its booking fee and bill go back to the
+customer. Once the work starts, a margin raised later does not raise what a
+canceled order forfeits. An owner who orders at their own facility books as any
 customer.
 
 ## Posting a bid
@@ -89,7 +95,8 @@ something between themselves at an agreed price.
 lot is yours to use again; a bid gives back whatever it still holds. A bid also
 gives its hold back on its own when it lapses.
 
-`+market/mine` lists your listings and bids, and how many more you may post.
+`+market/mine` lists your listings and bids, and how many more you may post,
+then what you listed for each organization you act for.
 
 ## Limits
 
@@ -107,6 +114,12 @@ owes. A locker holds 20 t and 40 m3, and costs 1 cr an IC day for each tonne
 it holds, taken from your own account. A day you cannot pay is owed as arrears,
 and paid once your account is funded.
 
+`@inv/move <vault>/<good>:<n>=<vault>` moves goods between your own stores
+where you stand in a port: the hold of a hull of yours docked there, and your
+locker there. The goods must fit where they go. Cargo in a chartered hold stays
+aboard, since it is sold from there and the Co-op's share is paid on it. A hull
+you have listed for sale takes nothing more into her hold.
+
 A market that belongs to no port, such as a counter, trades only with people
 standing at it.
 
@@ -114,13 +127,16 @@ standing at it.
 
 Goods in a Co-op chartered hold may go on a personal ask. When they sell, the
 Co-op takes its share of the margin over its reference price, as it does on a
-sale into a house's bid, and you are paid the rest.
+sale into a house's bid, and you are paid the rest. The pilot lists them as
+themself, never `as=<org>`.
 
 ## Fees
 
 At a port, the port's authority takes a listing fee of 1% of what you list (at
 least 10 cr), once, when you post it, and 3% of each sale. A further 1% of each
-sale is a levy to the port's treasury. A house's own listings pay none of these.
+sale is a levy to the port's treasury. A sale into a player's bid pays the same
+3% and 1%, out of what the seller receives. A house's own listings pay none of
+these.
 
 ## Berths
 
@@ -132,7 +148,7 @@ sale at that port. A house's own hulls at their home port owe nothing.
 
 ## The job board
 
-  +market/jobs [retrieval|passage|survey|haul|escort] [market=<venue>]
+  +market/jobs [retrieval|passage|survey|crew|haul|escort] [market=<venue>]
 
 Lists the jobs posted at the port you stand in, or at the market you name.
 Each job says what it pays, any bond you would escrow, when it is due, and the
@@ -185,6 +201,43 @@ Shows a house's ask and bid for a good at this venue, an IC week a row, newest
 first, for the last 24 IC weeks (about a real week). A good reads as
 tacsim:<good>, for example +market/history tacsim:metals.
 
+## What the houses use up
+
+Some houses use up what they buy. Syrtis Bonded at Deimos and the Selk
+Townships Board at Titan build off-map, so each IC day they use up some of the
+structural alloys and instrument boards their bids took in. The Lunar Habitat
+Board feeds its people from its own provisions. A house that uses its stores up
+wants more, so its bid stays open and its price comes back up.
+
+Off-map buyers pay these houses back for what they use, so their bids stay
+funded. That is the only money that comes into the lane after it opens: it
+reaches you when you sell into their bids.
+
+## Haulers
+
+The Vesta Carrying Company of Ceres runs two Drays between the lane's ports. A
+hauler buys a lot from one port's house and sells it to a house one route
+away, whenever the price gap pays for the trip's fuel and stores with some
+margin left. Its trips are real passages: a hauler bound from Ceres to Stickney
+meets the Kirkwood picket like any other ship, and can be stopped there.
+
+Deimos makes nothing of its own. What reaches it, from the haulers or from you,
+is used up there, and its houses bid for more.
+
+## Running costs
+
+A port facility (a refinery, works, yard or workshop) costs its owner money
+every IC day. An hour a slot is working costs its full share of the facility's
+daily cost, and the fee you pay covers it. An idle hour costs a tenth of that. A
+refinery nobody can book pays for each batch it refines instead. The money goes
+out of the game, to nobody.
+
+An owner who cannot pay goes into debt, and the facility is mothballed. It
+takes no orders of its own, but your order still runs, and its fee pays the
+debt first. The owner's prices rise and its bids stop, as for any house in
+debt. It reopens once the debt is paid and the owner has seven IC days of
+running costs in hand.
+
 ## Used parts
 
 Each port's workshop bids for every part its bay fits, at 60% of the part's
@@ -195,7 +248,8 @@ under a salvage claim stays where it lies, and nobody buys it.
 
 The parts a workshop takes in, from its bids and from the hulls it scraps, go
 up on its board as lot asks at the reference price, one of each part at a time.
-A worn part is not listed.
+A worn part is not listed, and no yard order or bay replace takes one from the
+stores. A yard order buys its parts from the workshop's stores at its port.
 
 ## Hauls
 
@@ -224,6 +278,9 @@ Posts a job to escort your hull on her next passage from the port she lies at,
 or on her next sortie in a field. Whoever takes it with +escort/accept <job>
 with=<hull> must stay near her for nine tenths of the journey: on the same
 passage or in the same bubble in space, in the same field in a sortie. A link
-drop inside the linkdead grace does not count against the escort. The job
-fails if she is wrecked or captured, or the escort leaves her. +escort lists
-your escorts.
+drop inside the linkdead grace does not count against the escort, and neither
+does an escort still at the port of departure in the hour after she leaves. The
+job fails if she is wrecked or captured, or the escort leaves her. If her
+journey has not begun within 28 IC days of the acceptance, the job is called
+off: the fee and the escort's bond come back. A field= sortie names a port
+with a field. +escort lists your escorts.

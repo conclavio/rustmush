@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 41,
+    "version": 44,
     "kind": "campaign_seed",
-    "digest": "3ba2ea9d1fb4c83daf19a0ef1d9044a9bc95edcf7cdee9cf0d726b8b1c20036a",
+    "digest": "c8e6fd26b4759a8c02fff8cf8fbb62691dcc73d408ca9d518d4f35b8865ca3fd",
     "requires": []
   },
   "entries": {
@@ -2749,7 +2749,8 @@
           { "id": "tycho_mutual", "name": "Tycho Mutual Assurance & Salvage", "capital_major": 50000, "faction": "concord", "raises": [ 450000 ], "roles": [ "acceptor" ] },
           { "id": "freeport_registry", "name": "Freeport Registry", "capital_major": 50000, "faction": "freeport", "roles": [ "acceptor" ] },
           { "id": "pallas_syndicate", "name": "Pallas Syndicate", "capital_major": 50000, "faction": "syndicate" },
-          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport", "roles": [ "acceptor" ] }
+          { "id": "freeport_works", "name": "Freeport Works", "capital_major": 1000000, "faction": "freeport", "roles": [ "acceptor" ] },
+          { "id": "vesta_carriers", "name": "Vesta Carrying Company", "capital_major": 400000, "faction": "freeport" }
         ],
         "programme": {
           "id": "coop.first_captain",
@@ -2874,7 +2875,11 @@
         "yard": { "room": "neighborhood.ceres_freeport.room.c01_berth_gallery", "operator": "freeport_works",
                   "capabilities": ["tacsim.yard"], "slots": 2, "customers": "public",
                   "cost": { "capital_major": 5000000, "lifetime_years": 30, "upkeep_permille": 20,
-                            "staff": 8, "wage_major": 150, "margin_permille": 250 } }
+                            "staff": 8, "wage_major": 150, "margin_permille": 250 } },
+        "hauler": { "org": "vesta_carriers", "design": "tacsim.unit.dray",
+                    "hulls": [ { "mark": "VCC-01", "home": "ceres_port" }, { "mark": "VCC-02", "home": "luna_port" } ],
+                    "goods": ["volatiles", "carbon_feedstock", "structural_alloys", "instrument_boards"],
+                    "lot": 40, "margin_permille": 100, "float_major": 2000 }
       }
     },
     "stickney_port": {
@@ -3025,9 +3030,10 @@
             "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.albrecht_sato",
             "stock": [ { "good": "provisions", "qty": 1000, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["chandlery"] } ],
-            "bids":  [ { "good": "volatiles", "price_major": 195, "intake": 4100, "boards": ["receiving", "exchange"] },
-                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving", "exchange"] } ],
-            "mill":  [ { "kind": "process", "ore": "volatiles", "into": "provisions", "ratio": { "ore": 5, "product": 1000 }, "with": { "good": "carbon_feedstock", "per_ratio": 1 }, "batch_t": 5, "per_ic_day_t": 5, "floor_t": 1000 } ] },
+            "bids":  [ { "good": "volatiles", "price_major": 195, "intake": 4100, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 5, "cap": 4100 } },
+                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 1, "cap": 300 } } ],
+            "mill":  [ { "kind": "process", "ore": "volatiles", "into": "provisions", "ratio": { "ore": 5, "product": 1000 }, "with": { "good": "carbon_feedstock", "per_ratio": 1 }, "batch_t": 5, "per_ic_day_t": 5, "floor_t": 1000 } ],
+            "consume": [ { "good": "provisions", "per_ic_day": 16, "export_major_per_ic_day": 160 } ] },
           { "org": "crisium_instruments", "storefront": "neighborhood.aitken_highport.item.crisium_cage",
             "agent": "luna_port.clerk", "signatory": "neighborhood.aitken_highport.npc.okafor_thistlewood",
             "stock": [ { "good": "instrument_boards", "qty": 2080, "grade": 50, "issue": 1 } ],
@@ -3077,12 +3083,16 @@
                        { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "propellant", "price_major": 60, "boards": ["commissary", "harbourmaster"] },
                        { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ],
-            "bids":  [ { "good": "volatiles", "price_major": 190, "intake": 900, "boards": ["receiving"] },
-                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving"] } ] },
+            "bids":  [ { "good": "volatiles", "price_major": 190, "intake": 900, "boards": ["receiving"], "refresh": { "per_ic_day": 15, "cap": 900 } },
+                       { "good": "carbon_feedstock", "price_major": 380, "intake": 300, "boards": ["receiving"], "refresh": { "per_ic_day": 5, "cap": 300 } } ],
+            "consume": [ { "good": "volatiles", "per_ic_day": 15, "export_major_per_ic_day": 2850 },
+                         { "good": "carbon_feedstock", "per_ic_day": 5, "export_major_per_ic_day": 1900 } ] },
           { "org": "syrtis_bonded", "storefront": "neighborhood.voltaire_anchorage.item.syrtis_cage",
             "agent": "deimos_port.clerk", "signatory": "neighborhood.voltaire_anchorage.npc.strand_villanueva",
-            "bids":  [ { "good": "structural_alloys", "price_major": 460, "intake": 2400, "boards": ["receiving", "exchange"] },
-                       { "good": "instrument_boards", "price_major": 1100, "intake": 1600, "boards": ["receiving", "exchange"] } ] }
+            "bids":  [ { "good": "structural_alloys", "price_major": 460, "intake": 2400, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 40, "cap": 2400 } },
+                       { "good": "instrument_boards", "price_major": 1100, "intake": 1600, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 26, "cap": 1600 } } ],
+            "consume": [ { "good": "structural_alloys", "per_ic_day": 40, "export_major_per_ic_day": 18400 },
+                         { "good": "instrument_boards", "per_ic_day": 26, "export_major_per_ic_day": 28600 } ] }
         ],
         "routes": { "stickney": [ "voltaire_stickney" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
@@ -3124,17 +3134,21 @@
                        { "good": "volatiles", "price_major": 40, "boards": ["exchange", "yard"] },
                        { "good": "propellant", "price_major": 30, "boards": ["exchange", "yard", "dockmaster"] },
                        { "good": "provisions", "price_major": 20, "boards": ["commissary"] } ],
-            "bids":  [ { "good": "carbon_ore", "price_major": 55, "intake": 120, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 20, "cap": 120 } } ],
+            "bids":  [ { "good": "carbon_ore", "price_major": 55, "intake": 120, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 20, "cap": 120 } },
+                       { "good": "ice_ore", "price_major": 12, "intake": 240, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 40, "cap": 240 } } ],
             "mill":  [ { "ore": "carbon_ore", "into": "carbon_feedstock", "ratio": { "ore": 5, "product": 4 }, "batch_t": 20, "per_ic_day_t": 20, "floor_t": 600 },
-                       { "kind": "process", "ore": "volatiles", "into": "provisions", "ratio": { "ore": 5, "product": 1000 }, "with": { "good": "carbon_feedstock", "per_ratio": 1 }, "batch_t": 5, "per_ic_day_t": 5, "floor_t": 1000 } ] },
+                       { "kind": "process", "ore": "volatiles", "into": "provisions", "ratio": { "ore": 5, "product": 1000 }, "with": { "good": "carbon_feedstock", "per_ratio": 1 }, "batch_t": 5, "per_ic_day_t": 5, "floor_t": 1000 },
+                       { "ore": "ice_ore", "into": "volatiles", "ratio": { "ore": 5, "product": 2 }, "batch_t": 20, "per_ic_day_t": 40 } ] },
           { "org": "concession_stores", "storefront": "neighborhood.ligeia_terminal.item.stores_locker",
             "agent": "titan_port.clerk", "signatory": "neighborhood.ligeia_terminal.npc.oyelowo_krauss",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "provisions", "price_major": 20, "boards": ["commissary"] } ] },
           { "org": "selk_townships", "storefront": "neighborhood.ligeia_terminal.item.townships_cage",
             "agent": "titan_port.clerk", "signatory": "neighborhood.ligeia_terminal.npc.tupou_lindahl",
-            "bids":  [ { "good": "structural_alloys", "price_major": 760, "intake": 720, "boards": ["receiving", "exchange"] },
-                       { "good": "instrument_boards", "price_major": 1500, "intake": 480, "boards": ["receiving", "exchange"] } ] }
+            "bids":  [ { "good": "structural_alloys", "price_major": 760, "intake": 720, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 12, "cap": 720 } },
+                       { "good": "instrument_boards", "price_major": 1500, "intake": 480, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 8, "cap": 480 } } ],
+            "consume": [ { "good": "structural_alloys", "per_ic_day": 12, "export_major_per_ic_day": 9120 },
+                         { "good": "instrument_boards", "per_ic_day": 8, "export_major_per_ic_day": 12000 } ] }
         ],
         "routes": { "deimos": [ "ligeia_voltaire" ], "luna": [ "ligeia_aitken" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },

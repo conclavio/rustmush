@@ -242,6 +242,12 @@ fn ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her() {
         &format!("+bay/fit #{}=visual_sensor {part}", hull.0),
     );
     assert!(fit.contains(tacsim::port::bay_work::UNDER_SALE), "{fit}");
+    // Doc 48e (exchange G24; 48d M-04): no other bay order either.
+    let order = run(&mut rig.tw, seller, &format!("+bay/order #{}=all", hull.0));
+    assert!(
+        order.contains(tacsim::port::bay_work::UNDER_SALE),
+        "{order}"
+    );
     let twice = run(
         &mut rig.tw,
         seller,
@@ -274,7 +280,7 @@ fn ex2_a_captain_sells_her_hull_while_away_and_her_hold_goes_with_her() {
         sale.acceptances
     );
     assert!(
-        mush_market::sells_title_of(&sale, hull),
+        mush_market::sells_title_of(&sale, hull, &PrincipalId::Object(seller)),
         "the one asset sale"
     );
     sweep(&mut rig.tw, 31);

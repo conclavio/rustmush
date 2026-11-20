@@ -1925,6 +1925,9 @@ Stacked on EX.5 (#657), built 2026-11-18 on `claude/ex6-haul-escort`, cut from E
       300 s grace and not yet handed to its mind.
     - **It ends** when she arrives or docks anywhere else (a passage), or leaves the field. It is
       kept at 90% near (`NEAR_PERMILLE`).
+    - **A field journey's closing interval is not counted** (the owner's ruling, 2026-11-19; see
+      "The closing interval" below): the fire that finds the field journey ended adds nothing to
+      either time, and the keep or fail is decided on what came before it.
     - **It fails at once** when she is wrecked (a derelict in space, a wreck in a field) or
       captured (yielded, doc 42b), or when the escort leaves: docked elsewhere while she is under
       way, or out of the field while she is in it, outside the grace. It also fails when the term
@@ -2042,6 +2045,44 @@ the guard; it is still refused by the family below it.
 - Cargo insurance (Q-48-42's later coverage product).
 - No story runs the passage half of the escort: the space near rule is reached only by its code.
 
+### The closing interval (2026-11-19): the owner's ruling on Q-48-46's near rule
+
+**The fault** (found by doc 43 TS.10a, which put the field stories on one clock with the arena).
+The watch steps on the port tick. The fire that finds a field journey ended reads the escort out
+of a field that is gone, so the whole interval since the last fire was counted far. At the
+production rate that one interval was 5 of the story's 35 IC seconds, and an escort that was in
+the field the whole time failed at 85%. Any field journey under about 50 s could never be kept.
+
+**The ruling**, in the owner's words "Yes, fix both", on this recommendation: do not count the
+closing interval, since the host cannot see where the escort was once the field is gone.
+
+- **Built** (`services::escort::count`, called by `watch`): on the fire that finds a field
+  journey ended, that interval is added to neither the journey's time nor the near time. The
+  keep or fail is decided on what was counted before it.
+- **Unchanged:** the wrecked and captured checks, the term running out, the escort leaving while
+  she is still in the field, the linkdead grace, and the 90% bar.
+- **Flagged for the owner: a field journey with nothing counted before its close.** The watch
+  starts on one fire and finds the journey ended on the next, so the closing interval is its only
+  interval. That interval is counted as before, which keeps today's outcome: kept only if the
+  escort was inside the linkdead grace on that fire, failed at 0% otherwise. Not counting it would
+  leave a journey of no time, and "kept or failed on nothing" is a game question.
+- **The passage's closing interval does not have the fault**, read from the code; no story flies
+  a passage escort. On a passage the fire that finds her docked away still reads the passage:
+  `mush_sim::JourneyBook` keeps an arrived record (`JourneyState::Arrived`) until a workshop
+  retires it (`retire_finished_journey`, RS.9a). So `near_in_space` still compares the two
+  records' route and departure, as it did under way. Its interval counts as before; the owner
+  ruled on the field case only. The one edge: an escort that docked at `to` and departed again
+  before that fire has a new record on another route, and reads far for it.
+
+**Tests.**
+- `services::escort::tests::ex6_a_field_journeys_closing_interval_is_not_counted` pins the rule:
+  the field's close, a passage's arrival, and the first-interval default.
+- `domain_field::ex6_escort` moves to the paused clock (world and arena at the production rate)
+  and is the rule's acceptance there.
+- **Mutation** (applied over the fix in the conclav.dev clone, then edited back): counting the
+  closing interval again fails the unit test, and fails the story's kept escort at 85% (30 of
+  35 IC seconds near), the figure TS.10a found. With the fix the story passed 4 of 4.
+
 ## EX.7
 
 **Crew wages and crew for hire** (Q-48-14, -33, -54). Stacked on EX.5 (#657).
@@ -2136,8 +2177,114 @@ the guard; it is still refused by the family below it.
 **Not built.**
 - **A wage between two players:** a listed player's agreement is drafted by hand.
 - **What a technician does:** no bay job or sortie reads the duty.
-- **Ending a hire by choice:** there is still no dismissal verb, so a wage runs until doc 42's capture exit ends the contract. Q-48-33's alternative (stopping the wage while a hire is off duty) is not built.
-- **The wage ending with its contract** is not reached by a story: it needs CR.1's capture exit (the `crew_custody` story), and that story does not read the wage.
+- **Ending a hire by choice:** built as EX.7b (`+sortie/discharge`), below. Q-48-33's alternative (stopping the wage while a hire is off duty) is not built.
+- **The wage ending with its contract** is not reached by a story: it needs CR.1's capture exit (the `crew_custody` story), and that story does not read the wage. EX.7b's stories now reach it through a discharge.
+
+## EX.7b
+
+**A player discharges hired crew at a port** (the owner's ask of 2026-11-18; EX.7's "Not built", "Ending a hire by choice"). A unit of its own against main, after EX.7 (#659).
+
+**Survey.**
+- **What ended a hire:** only doc 42's capture exit (Q-42-26), in two halves.
+  - *The world half*, at the load (`field::crew::npc_exit_loaded`): the NPC's seat is vacated, the NPC goes back to their hire port's pool room (their `home`, else the port's arrival room), the organizer is told, and an exit is owed (`NpcExit`, the document `tacsim:crew_exit:<npc>`).
+  - *The roster's half*: the typed action `tacsim_crew_captured` removes the contract and the roster reservation in one bundle. The tow tick submits it as the organizer until the ledger shows both gone, then forgets the owed exit.
+- **The wage** (EX.7): `wages::tick` ended a wage whose contract was gone, at the next port fire, and let its arrears stand. Nothing collected those arrears afterwards: the economy pays a wage's arrears only after one of that wage's own periods settles, and `+debts` does not read the wage's names. The debt was swept once, 28 IC days after it opened.
+- **Offers** (`crew::offers`): an NPC is on offer to a player standing in the same port room when the NPC carries a staff-authored `crew:offer`, the room is in that offer's port, and no contract names the NPC. So an NPC whose contract ends is on offer again as soon as they stand in their pool room. There is no offer record to restore.
+- **The engine:** a command that submits a typed action may also write (`+works/order` is the precedent), but makes exactly one submission, and a typed action reachable from the generic action door must not be landable without its world half.
+
+**Built.**
+
+*The verb* (`detachment/crew/discharge.rs`): **`+sortie/discharge #<npc>`**, for the hire's employer, standing in any port's station. It is the capture exit taken by choice, in the same two halves, so **no new kernel family, no new action and no new document kind** were needed, and doc 42's custody invariants are untouched.
+- **The world half, at once, in the command:**
+  - the final wage is settled (below);
+  - the crew member leaves every station they hold in the ship or the unit they are in (`mush_sim::vacate_station`), so a seated crew member is unseated;
+  - they are back in their hire port's pool room (`field::crew::pool_room`, the capture exit's rule), and are told so;
+  - the exit is owed (`field::crew::owe_npc_exit`, `recovered_ic` the instant of the discharge).
+- **The roster's half:** one submission of `tacsim_crew_captured` as the employer, from the command (`runtime::submit_discharged`, key `tacsim.crew/<npc>/discharged/<ic>`). The contract and the roster reservation end together when it lands, in the step after the command. The tow tick's pass (`field::crew::npc_exits`) retries it until it lands and then forgets the owed exit, as for a capture. An active roster that named the NPC stands down as CR.1 built it (`+sortie/deactivate` tolerates the cleared reservation).
+- **While the exit is owed** the hire reads as ended: `+sortie/contract` no longer shows it, a second discharge is refused, and `wages::tick` opens no wage for it (one guard in `wanted`, which a capture's exit gets too).
+
+*The settlement* (`wages::settle_final`).
+- **The IC day in progress is charged whole**: one one-term debt under the wage's own name (`tacsim.crew.wage.<npc>`), from the employer's account to the wage's payee, the hiring port's authority. A hire discharged before a port fire has opened its wage owes the day all the same.
+- **The wage's obligation is ended in the same step**, so no further period accrues, whether or not a port fire follows.
+- **Every debt under the name is then paid whole if the account covers it**, oldest first: the arrears debt EX.7 left, then the day. An employer who covers both pays both at once (two posts: the arrears, the day).
+- **Never refused for want of money.** A debt the account cannot cover stands, first swept 28 IC days on (`ARREARS_DUE_IC_SECS`, EX.4's figure).
+- **An ended wage's debts are collected once funded** (`wages::collect_ended`, on the port tick): each one-term debt under a wage's name that no standing wage keeps as its arrears is paid whole at the first port fire that finds the employer's account covering it. At most 16 a fire.
+
+*The surfaces.*
+- `+sortie/contract #<npc>` for an ended hire whose wage still stands as the asker's debt says so, with the amount (`STANDING_DEBT`); with no debt it is "unavailable", as before. A standing contract gains the line `End the hire at a port: +sortie/discharge #<npc>`.
+- `+sortie/crew` shows the discharged NPC on offer again in their pool room once the roster's half has landed.
+- `help detachments` gains the paragraph and a command row; `+sortie`'s one-line help gains a sentence.
+- The bot's table gains the `discharge` family (14 sentences) with its census over `discharge.rs`.
+- **The sentences**, each within 120 columns at a 24-column name, a 26-column payee and a 31-column room:
+  - `DISCHARGED_PAID`: "Ilya Mendes is discharged: 10.00cr paid to Freeport Registry as the final wage."
+  - `DISCHARGED_OWING`: "Ilya Mendes is discharged: the final wage, 60.00cr, stands as your debt to Freeport Registry."
+  - `DISCHARGED_PART`: "Ilya Mendes is discharged: 10.00cr of the final wage is paid and 50.00cr stands as your debt."
+  - `DISCHARGED_FREE` (a port with no authority): "... no wage was charged, so nothing is owed."
+  - `RETURNED`: "The contract is ended. Ilya Mendes is back at The Slack Line, on offer there again."
+
+**Refused**, each with its own sentence, before anything is written:
+- **not the employer**, no such contract, or a hire whose exit is already owed: `NOT_YOURS` (one sentence for all three, so a stranger learns nothing about another's contract);
+- **not at a port**: `AT_PORT`;
+- **out on a sortie**: the crew member is inside a unit that is not standing in a carrier's bay, or whose DT flight is open (`ON_SORTIE`);
+- **in an open field**: the unit they are in, or the ship they are aboard, is under a field's mark (`IN_FIELD`);
+- **a captive**: their crew record holds them (captured, in processing, or awaiting a forced pickup) (`CAPTIVE`);
+- and three more: a malformed name (`DISCHARGE_USAGE`), a request of the employer's own still in flight (`BUSY`), and an economy that refuses the settlement, which is a frozen one (`NOT_NOW`).
+
+**The defaults, flagged for the owner.** Each is built as stated.
+1. **Any port's station, not only the hiring port.** The crew model does not make this wrong, because the capture exit already answers where the crew member goes: back to the hire port's pool room, at once, from wherever they are. A hire discharged at Stickney is therefore back at Ceres' Slack Line in the same step, with no passage flown. **Also flagged:** only the employer has to be at a port. The crew member may be anywhere the refusals allow, including aboard a ship under way under someone else's helm, and still goes straight back to the pool. Taking the hiring port only, or requiring the crew member at the same port, is a few lines in `discharge`.
+2. **The day in progress is charged whole**, never pro-rated. A hire and an immediate discharge cost one day's wage.
+3. **Never refused for want of money.** What cannot be paid stands as debt. **Also flagged:** payment is a whole debt at a time (the arrears, the day), so a part-funded employer pays the day and owes the arrears (`DISCHARGED_PART`).
+4. **The refusals** are as listed above. "On an active sortie" is read from where the crew member physically is (in a unit out of the bay, or one whose flight is open). A hire who is only reserved in an activated roster, standing in the bay or the ship, **is** discharged, and the reservation is released with the contract.
+5. **The discharged NPC is hireable again by the model as it stood**: no offer system was added. They are on offer in their pool room, on the same staff-authored terms, to anyone, as soon as the roster's half lands (the step after the command).
+
+**Divergences.**
+- **A discharge is journaled as `tacsim_crew_captured`.** It is doc 42's one action over both families a hire holds; its outcome carries the NPC, the employer and the instant, and no cause. An action of its own (`tacsim_crew_discharged`) would be a new kernel definition and a second door onto the same two families. Say if the journal should tell the two apart.
+- **The world half is not undone if the roster's half never lands.** It cannot be refused by the provider once the exit is owed, and the tick retries it, so this is the capture exit's own guarantee and no weaker.
+- **An ended wage's arrears are now collected** at a port fire once the employer is funded. This applies to a capture's exit too, where EX.7 left them standing until their one sweep 28 IC days on. A standing wage's arrears are untouched: the economy still pays them after that wage's next period.
+- **Files beyond `detachment/crew/`:**
+  - `field/crew.rs`: `pool_room` and `owe_npc_exit` are `pub(crate)`, and two doc comments;
+  - `detachment/commands.rs`: the help sentence (the routing needed no line: the switch is the crew module's);
+  - `mush-contract-tests/legacy-handlers.toml`: `+sortie`'s note says what `/discharge` writes;
+  - the bot's `mine/minds.rs`, `docs/help/detachments.md`, the story file and `ex7_wages.rs` (its helpers made `pub(crate)`).
+- **Nothing in `port_tick.rs` or `mush-economy/`.**
+
+**Expensive to reverse (flagged).**
+- Nothing new is persisted in a new shape. A discharge writes records EX.4, EX.7 and CR.1 already defined: one-term debts under `tacsim.crew.wage.<npc>`, a cancelled obligation, and `tacsim:crew_exit:<npc>`.
+- **The idempotency key's word** (`.../discharged/<ic>`) is in the journal of every discharge.
+
+**Tests.**
+
+- **The done-when, test by test** (`tests/domain_economy/ex7b_discharge.rs`, production command paths at 24:1, one fire an IC day):
+  - **A hire runs some IC days, is discharged at port, the final amount moves once, the obligation is ended, the seat is taken by another hire, and further fires charge nothing:** `ex7b_a_hire_is_discharged_at_port_and_its_final_wage_moves_once`. A captain's rating is paid three days and discharged: 10 cr more moves to the Registry, the wage is gone, and the two sentences are said. With the exit still owed, `+sortie/contract` reads ended, a second discharge is refused, and a day's fires open no wage and charge nothing. The roster's half lands, the exit is forgotten, the rating is on offer in the Slack Line, a second captain hires them and pays, and the first pays nothing more over two days.
+  - **A broke employer's discharge leaves the right arrears and pays them once funded:** `ex7b_a_broke_employers_discharge_leaves_its_arrears_paid_once_funded`. Five missed days and the day stand as 60 cr; three days of fires add nothing; `+sortie/contract` names the debt. Funded with exactly 60 cr, the next port fire pays it to the last credit, and two more days charge no wage.
+  - `ex7b_a_funded_employers_arrears_are_paid_with_the_final_day`: a port fire leaves a standing wage's arrears alone (EX.7's behavior, pinned); the discharge pays 60 cr at once.
+  - `ex7b_a_part_funded_employer_pays_the_day_and_owes_the_arrears`: with 15 cr she pays the day and owes 50 cr.
+  - **Each refusal:** `ex7b_a_discharge_is_refused_with_its_own_sentence` (a malformed name, a stranger, an unhired NPC, away from port aboard her own ship, a hire of hers in flight, a hire in custody; then nothing changed and no debt written), and `ex7b_a_hire_out_with_a_unit_is_not_discharged` (seated in a rig launched out of the bay onto Ahuna Flank).
+  - **A seated crew member is unseated:** `ex7b_a_boarded_hire_leaves_the_ship_and_a_seated_hire_its_seat`. A rating boarded by `+sortie/board` leaves the ship, and one seated in a leased rig in the carrier's bay leaves the seat; each is back in the Slack Line. Neither is discharged while the ship or the rig is under a field's mark. The first discharge comes before any port fire, and still charges the day.
+  - **Unit tests** (`discharge.rs`): the name parse, and every sentence at its widest fill within 120 columns.
+- **EX.7's untested "wage ends with its contract" path** is now reached: every story above ends a wage with its contract, and the broke one collects what it left.
+- **Fixtures, named in the file:** the captains' money; the seat (a staff hand, CR.1's precedent); the custody record (`hold_for_tests`); a field's mark (`mush_sim::deployed::mark` by a staff hand); the captain set down at Ceres while her rig is out.
+- **Tests that failed before EX.7b:** every test above (there was no verb).
+- **Changed expectations:** none. EX.7's three stories pass unchanged; its helpers are shared.
+- **On conclav.dev** (main 1e9b4117 plus this cut):
+  - fmt, clippy (tacsim, mush-bot, mush-contract-tests, all targets, `-D warnings`), the 64 KiB memory-size pass, and rustdoc for tacsim and mush-bot in both modes pass;
+  - the contract guards pass: `ci_policy` (`feature_matrix_inventory`, `panic_budget`, `restriction_lints`, `legacy_handler_allowlist`, `ci_tacsim_shards`, `fiat_budget`, `clippy_test_allowances`), 41 of 41, and `engine_contracts` (`help_commands`, `us_spelling`), 9 of 9;
+  - `domain_economy`: the seven EX.7b stories with EX.7's three, 10 of 10; with EX.4's and EX.5's, 16 of 16;
+  - `domain_field`: the crew-custody, DT and roster stories, 18 of 18;
+  - tacsim lib (crew, detachment, jobs), 84 of 84; `mush-bot` lib, 578 of 578.
+- **The mutation loop** (27 mutants over `discharge.rs`, the new parts of `wages.rs` and the `+sortie/contract` guard, each run against the EX.7 and EX.7b stories): **24 killed, 3 survivors.**
+  - `m07`, the cover check before each payment at the discharge removed: **equivalent**. `pay_debt` refuses an account that cannot cover the debt and writes nothing; the check only spares a logged refusal.
+  - `m16`, the open-flight clause of "out on a sortie" removed: **not reached**. No story has a unit standing in the bay with its DT flight still open.
+  - `m26`, "any interior is a carrier's bay": **not reached**. No story has a unit inside an interior that is not a ship's room.
+  - `m04` (a strict cover) survived the first pass and is killed now that the part-funded story funds exactly one day.
+
+**Not built.**
+- **The roster reservation's release is not reached by a story.** The action that releases it is CR.1's, unchanged, and it is the same call the capture exit makes; but no story here activates a DT roster with a hired NPC, so the reservation half is exercised by neither cut's stories (CR.1 seats its NPC by a staff hand too). It needs the DT roster rig.
+- **A real field and an open DT flight:** the field refusals are reached through a staff-set mark, not a running field; the open-flight clause and a unit in a non-ship interior are reached by no story (survivors `m16`, `m26`).
+- **`+debts` does not list a wage's debts.** A discharged employer sees the standing amount at the discharge and on `+sortie/contract #<npc>`, and nowhere else; it is collected without a verb.
+- **No notice or fee for a discharge**, no severance, and no refusal by the NPC: the day in progress is the whole cost.
+- **Passage home** for a hire discharged away from the hiring port is not flown or charged.
+- **A wage between two players** and **what a technician does** stay as EX.7 left them.
 
 ## EX.8
 
@@ -4022,8 +4169,468 @@ on `claude/pl9-facilities-assets`, cut from main at `73d05678b`. Main was merged
 
 ## EX.9
 
-Not built.
+Row: §7.1 EX.9 (Q-48-19, -21, -22, -34, -36, -38..41, -55, -59, -60). Stacked on PL.8 (#672,
+`464a7dccc`), which shares the lane chain and `port/stock.rs`.
+
+**Survey** (at `464a7dccc`):
+- **Nothing consumed.** The three consumers' storefronts only filled. Syrtis Bonded and the Selk
+  Townships Board hold no stock and ask nothing; their bids for alloys and boards put what they
+  buy in their storefronts. The Habitat Board's process mill (PL.2) already uses up the volatiles
+  and carbon feedstock its bids buy, making provisions, which it asks.
+- **A vendor never both asks and bids one good** (`check_vendor_lines`). So Q-48-40's "provisions
+  are added to [the Board's] bids" cannot be done as written: the Board asks provisions.
+- **No running cost was charged.** The cost model (IN.4) only priced fees. No facility had a
+  mothball state, and the industry kept no record of worked slot-hours. `IndustryStore::open_orders_at`
+  (PL.9's RAM index) counts a facility's live work orders; the bay keeps its open orders in RAM
+  too.
+- **EX.8's throttle** read one sign of a house that cannot pay: a delinquent obligation.
+- **No recurring faucet.** The only System sources were the port treasury (capital, once) and
+  the bring-up's `launch.faucet` (a House's 2,000 cr, once).
+- **The matter census's `consumed` term** read 0 (EX.0 left it for this unit).
+
+**Built:**
+1. **Consumption** (`tacsim/src/port/consume.rs`, Q-48-19, -40, -41):
+   - **Lane rows** (`VendorDef.consume`, `ConsumeDef`): a good, units an IC day, and the export
+     faucet's daily share for the row. The good must be one of the vendor's bids or asks; at most
+     4 rows; `per_ic_day` 1..=100,000; the share at most 500,000 cr.
+   - **The act**, `tacsim_port_consume` (provider, outcome and the ledger family
+     `tacsim.port_consume`, registered beside the customs ruling): once an IC day a row, the
+     stock clerk debits the day's units (or what the storefront holds, when less) from the
+     storefront and advances the row's `ConsumeLedger` in the same bundle. The ledger's `day` is
+     the once-a-day guard and its ordinal the replay guard.
+   - **An asked good** (the Board's provisions) is drawn off the house's own ask first
+     (`shrink_ask`, the own-stock mill's draw), then used up on a later fire. `consume::drawn`
+     nets the drawn units out of the drift check and the readiness Listings line ("drawn to be
+     used up"), so nothing pages between the two acts.
+   - It runs on the clerk's turn after the mill and before the bids, one act a fire. A submitted
+     or refused act passes the row over for the rest of the IC day.
+   - **A port starts using up goods the day after the tick first sees it**
+     (`PortUpkeep.consume_from`), so a port stocked today stands at its authored stock until the
+     day turns.
+   - **The census** sums every ledger's units as `consumed`.
+2. **Running costs** (`tacsim/src/port/upkeep.rs`, Q-48-21, -38, -59, -60), once an IC day for
+   every costed facility of a laid-up port (refinery, works, yard, workshop), whoever owns it:
+   - **Worked**: each slot-second a facility's open work orders and open bay orders fill (at most
+     its slots) costs its share of the daily cost (`daily / slots / 86,400 s`), rounded up.
+   - **Idle**: each other slot-second costs `IDLE_PERMILLE` (100, 10%) of that, rounded down.
+   - **A mill-run refinery** pays one slot-hour of its daily cost (`daily / 24`) a refine batch
+     its operator milled that day, and no standing share.
+   - The payroll is in the daily cost, at 150 cr a head (Q-48-60 kept), so it bites only while
+     the facility works.
+   - **All of it** goes to a new System account, `tacsim.upkeep`, a sink; nothing to a payee.
+   - The busy slots are summed fire to fire in RAM (`PortTickState::upkeep_worked`); the day's
+     charge is posted under `tacsim.upkeep/{facility}/{day}`, and the charged day, the debt and
+     the mothball flag are kept in a document of the port's own (`tacsim:upkeep:{entry}`,
+     `PortUpkeep` and its `UpkeepRow`s), not the port map, which is the applier's record of what
+     it made. Each row also keeps the last day's charge and the total paid (`upkeep::paid_by`
+     sums an organisation's). A gap of several days is caught up, at most 7, the missed days
+     idle.
+3. **Insolvency** (Q-48-38, -39, -59):
+   - The owner pays the day's charge and any debt from what its account holds. The rest is a
+     **debt** (`UpkeepRow.debt_minor`), owed to the sink and never minted.
+   - **A facility in debt is mothballed.** While mothballed it owes no standing share.
+   - **Its house places no order of its own there** (`works::book` refuses a house order,
+     `works::MOTHBALLED`). A customer's order, whose escrowed fee covers its worked cost, still
+     books and runs.
+   - **Its owner is throttled**: `price::throttled` now also reads `upkeep::in_arrears` (debt or a
+     mothballed facility), so EX.8's 10% an IC week on asks and no new bids apply.
+   - **Money in pays the debt first** (each fee's margin, the berth fees, any income), at the
+     next day's charge.
+   - **It reopens** once its debt is paid and its owner's account holds `REOPEN_DAYS` (7) IC days
+     of that facility's standing share.
+4. **The export faucet** (Q-48-22, -40, -55), a new System account, `tacsim.export`:
+   - **It pays the consumers back**: for each act, the good's authored bid price (or ask price,
+     for an asked good) times the units used, at most the row's daily share, into the consuming
+     house's account (`tacsim.export/{row}/{ordinal}`). Money enters only as goods are used up,
+     so a consumer's treasury holds steady at its rate of consumption, and players earn it by
+     selling into the consumers' bids.
+   - **It pays each named House a stipend**: `HouseDeployment.stipend_minor_per_ic_day` (new,
+     optional, skipped when absent), once an IC day, on the day's first fire, into the House's
+     root-scope treasury (else the deployment's treasury) (`tacsim.stipend/{org}/{day}`). A day
+     the server never fired is not paid.
+   - **The bring-up** (`deploy/instance/launch-bringup.py`) writes `--house-stipend` (default
+     50,000 minor, 500 cr an IC day; 0 writes none) into each House's row of the launch document.
+5. **The lane, v42 / relay v33** (re-signed over v41 / v32): the consumption rows, each sized so
+   the house's intake (or the Board's seed) lasts about 60 IC days with no trade (Q-48-19), with
+   its share the row's day at its price:
+
+   | House | Good | Per IC day | Share (cr an IC day) |
+   |---|---|---|---|
+   | Lunar Habitat Board | provisions | 16 | 160 |
+   | Syrtis Bonded | structural alloys | 40 | 18,400 |
+   | Syrtis Bonded | instrument boards | 26 | 28,600 |
+   | Selk Townships Board | structural alloys | 12 | 9,120 |
+   | Selk Townships Board | instrument boards | 8 | 12,000 |
+
+   The strip chain's new head, `strip_consumption`, rebuilds v41
+   (`ex9_strip_consumption_rebuilds_the_published_v41`); `strip_parts_market` calls it first.
+6. **Help:** `exchange.md`'s "What the houses use up" and "Running costs".
+
+**What the figures come to** (at 24:1, an IC day a real hour):
+- **Running costs, idle:** about 1,100 cr an IC day across the lane's six booked facilities
+  (Stickney's yard 326, Ceres's 193, each works 169, each workshop 123), plus each refinery's
+  batches (Kasei 99 cr a batch, Occator 56). About 26,500 cr a real day.
+- **Consumption at full rate:** 68,280 cr an IC day of faucet money, if players keep the three
+  consumers' bids filled. That money goes to the players who sell; the consumers hold steady.
+- **The Board** uses up 16 crew-days of its own provisions a day and is paid 160 cr for them.
+- **The House stipends:** 1,500 cr an IC day for the three.
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on `464a7dccc` plus this unit.)
+- **Unit tests** (`port/upkeep.rs`, `port/consume.rs`, `port/def.rs`): a day's charge (idle 10%,
+  worked whole, mothballed idle nothing, capped at the slots); a refinery's batch charge;
+  insolvency, repayment and reopening; the day's tally closing at the turn; the ledger's
+  invariants and wire; the drawn allowance; each consume rule's sentence.
+- **`domain_economy::ex9_balance`:**
+  - `ex9_the_consumers_use_up_what_they_buy_and_the_faucet_pays_them_back`: Syrtis uses up
+    40, 40 and the last 20 t of 100 t of alloys over three IC days, one act a day, and nothing
+    after. The faucet pays it 18,400, 18,400 and 9,200 cr. The Board uses up 16 crew-days a day
+    off its ask, which stays within a day's draw of its pool, with no Listings line flagged, and
+    is paid 160 cr a day. The faucet's account falls by exactly those payments. The census's
+    `consumed` rises by the alloys' and provisions' kilograms, and its balance holds.
+  - `ex9_the_running_cost_follows_the_work_and_an_insolvent_house_mothballs`: a captain's
+    twenty-day order runs in one of the Stickney works' two slots. The works' day charge is that
+    slot worked and the other idle (within an IC hour, see Divergences); the idle workshop and
+    yard pay their standing share; every port's charges for the day reach the sink. The Yards'
+    account drained, the next day's charges are debts, every facility mothballs, and the Yards are
+    throttled. Mothballed, the works charges only its worked slots, the idle ones nothing; a
+    customer's order books; the house's own order is refused. Money in pays the debt first, and
+    the works stays mothballed until the Yards can pay seven days ahead; then all three reopen
+    and the throttle lifts.
+  - `ex9_a_mill_run_refinery_pays_by_the_batch`: Kasei's refinery costs nothing on a day with no
+    batch, and two slot-hours on a day with two.
+  - `ex9_the_lane_holds_its_money_within_one_percent_a_real_day`: see the measured run below.
+- **`domain_field::ex9_stipend`**, `ex9_each_house_draws_its_stipend_once_an_ic_day`: the M8
+  world with a 500 cr stipend. Each House is paid once on a new day however many fires, the faucet
+  falls by at least the three, and after a two-day jump each House is paid once.
+- **The pins:** every lane and relay version and digest pin moved to v42 / v33; the lane's
+  version sentence.
+
+**The measured run** (`ex9_the_lane_holds_its_money_within_one_percent_a_real_day`): the shipped
+lane, nobody playing, 72 IC days (three real days at 24:1), fired every six IC hours, read every
+24 IC days. The lane's capital is 16,700,000 cr, so the bound is 167,000 cr a real day.
+
+| Real day at 24:1 | Lane money change | To the sink | From the faucet |
+|---|---|---|---|
+| 1 | −22,644.96 cr | 26,484.96 cr | 3,840 cr |
+| 2 | −22,644.96 cr | 26,484.96 cr | 3,840 cr |
+| 3 | −24,334.96 cr | 26,484.96 cr | 2,150 cr |
+
+- The idle lane loses about 0.14% of its capital a real day, all of it running costs.
+- The faucet pays only the Habitat Board's 160 cr a day, until its 1,000 crew-days of
+  provisions run out on IC day 63 or so: with nobody selling it volatiles, its farm cannot make
+  more. That is Q-48-19's "a port's seed lasts about 60 IC days with no trade".
+- On the launch world the three House stipends add 36,000 cr a real day to the Houses, so the
+  whole economy then gains about 13,400 cr a real day while nobody plays (0.08%).
+- With players, every credit the consumers pay out comes back from the faucet as the goods are
+  used up, so the lane's own money holds; what grows is the players', by what they export.
+
+The defaults are kept: 10% idle, seven days to reopen, the 60-day sizing, the shares at the
+rows' authored prices, and 500 cr a day a House. Each is provisional (the owner's economy
+rule) and cheap to retune: a constant, a lane row, or a bring-up flag.
+
+**Changed expectations** (each because a port house now uses up goods, a facility now pays its
+running costs, or the lane moved to v42):
+- `stations::ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order`: the relay requires
+  lane v42.
+- `mill::sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter`: the census of inventory
+  debits gains `port/consume.rs`'s one.
+- `mill::sm12a_the_drip_acts_first_and_one_act_a_fire`: the one-act check passes over the port
+  tick's `tacsim:upkeep:` record and the other ports' clerks' listings (the Luna clerk's draw for
+  the Board), as it already passed over Stickney's.
+- `mill::sm12a_a_month_of_milling_conserves_and_restocks_only_by_the_mill`: a restock fire that
+  also posts the day's running costs or a refund (the two new System accounts moved) is not read
+  as the restock moving money.
+- `pl2_producers::pl2_carbon_pressed_at_ceres_feeds_the_luna_farm_and_the_fab_one_full_cycle`:
+  the Board's provisions are its farm's batch less the crew-days it has used up, and its ask
+  within a day's draw of its pool.
+- `orders::ic11_a_reboot_mid_step_reruns_nothing`: the Luna clerk's day of consumption is not
+  the order's re-stage. Its assertion now names what was staged.
+- `ex0_matter_sinks::ex0_the_census_holds_across_a_burn_and_a_rearm`: `consumed` moves only by
+  the Board's whole days of provisions.
+- `commerce::a8_the_moon_ports_stock_list_and_bid` and PL.2's first pin pass unchanged: a port
+  stocked today uses up nothing until the day turns.
+- mush-server's `commerce_composition` (six stories in `ic_buyout_dormancy`, `ic_slice_loop` and
+  `sm_story`): their `drain_players` now lands every lane port clerk's acts with the house's (the
+  Luna clerk's day of consumption is no player's submission), and the two money-conservation sums
+  (`closed_sum`) count the `tacsim.upkeep` sink, where the Ceres and Stickney operators' running
+  costs go. 93 of 93.
+
+Also adapted, the same way (each adds back exactly what a house paid in running costs, read
+from the new `upkeep::paid_by`): `knowing::survey_commission_expiry_refunds_escrow_and_reopens_with_a_new_contract`
+and `knowing::survey_commission_uncommitted_filing_stays_unfunded_and_expires_after_restart`
+(Occator, the survey's sponsor and payee, pays its Ceres refinery's and workshop's costs over the
+commission's IC days), and `vehicles::sm3a_the_return_arm_repossesses_after_a_staff_cancel` (the
+fires after a 170-day skip catch up Occator's last seven days). IN.3's story helpers
+(`in3_order_contract`) are `pub(crate)` so EX.9's running-cost story books through them.
+
+**Suites** (conclav.dev, `CARGO_INCREMENTAL=0`, on main `fe31e013c` plus this unit):
+- tacsim whole: 4,885 of 4,888, the three failures the survey and vehicles stories above, then
+  fixed and rerun (53 of 53 of the touched tests);
+- mush-server `split_boundary` 227 of 227; mush-bot lib 575 of 575;
+- the contract guards (`mush-contract-tests`, every binary), with a new `state-slot-owners.toml`
+  row for `port/upkeep.rs` opening the two System accounts;
+- fmt, clippy `-D warnings` (tacsim, mush-server), the M7 memory-size pass, and rustdoc in both
+  modes.
+
+**Mutations** (conclav.dev, each one alone against the EX.9 tests; 23 run, 20 caught):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| C4 | an asked good consumed without drawing it off the ask | the consumption story |
+| C23 | a day's use not capped at `per_ic_day`, in the step and the act | the consumption story |
+| C5 | the drift check not netting the drawn units | the consumption story (a drift page) |
+| C6 | the readiness Listings line not netting them | the consumption story (a flagged line) |
+| C7 | the census's `consumed` term dropped | the consumption story |
+| F1 | the refund not capped at the share | `ex9_a_refund_is_the_units_at_the_price_within_the_share` |
+| F2 | the refund not priced | the same, and the consumption story |
+| F3 | the stipend keyed once, not once a day | the stipend story |
+| F4 | no refund for an act | the consumption story, the measured run |
+| U1 | no idle share | `ex9_a_days_running_cost_follows_the_work` |
+| U2 | no worked share | the same |
+| U3 | a mothballed facility still owing its standing share | the same |
+| U4 | no debt kept | `ex9_a_house_that_cannot_pay_mothballs_and_repays` |
+| U5 | never reopening | the same |
+| U6 | the whole charge posted whatever the account holds | the same |
+| U7 | the refinery charged a standing share, not by the batch | the refinery story |
+| U8 | the busy slots never counted | the running-cost story |
+| U9 | the throttle not reading the running costs | the running-cost story |
+| U11 | a customer's order refused at a mothballed facility | the running-cost story |
+| U12 | the house's own order not refused | the running-cost story |
+
+**Three survive, all equivalent:**
+- **C1** (the act's own once-a-day guard removed): the clerk's step never submits a row twice in
+  an IC day (its ledger's day, then its pass-over). The guard is the act's defence in depth.
+- **C2** and **C3** (one of the two caps on a day's units removed, the act's or the step's): each
+  is the other's twin, and C23, both removed, is caught.
+
+A fourth mutation found dead code, now removed: the catch-up loop always ends at yesterday unless
+a post must wait, so the line that advanced the day after it never ran.
+
+**Divergences:**
+- **The Board's provisions are added to what it uses up, not to its bids.** A vendor may not ask
+  and bid one good, and the Board asks the provisions its farm makes. It feeds its people from
+  its own stock, drawn off its ask; its farm's volatiles and feedstock, which it does buy, its
+  process mill already uses up.
+- **The cost follows the work by a tally, not the orders' schedules.** Busy slots are summed
+  fire to fire in RAM. A restart counts the rest of that day as idle, and the span before a
+  day's first fire can read idle (the story allows an IC hour). Reading each order's schedule
+  would be exact, but the work orders are typed action state the port tick cannot scan cheaply.
+- **"Busy" counts every live order at the facility**, a booked Draft included, since it holds
+  the booking.
+- **Reopening is per facility**: each needs seven IC days of its own standing share in the
+  owner's account.
+- **The refund is priced at the authored price**, not the stepped one (EX.8), so a consumer's
+  treasury can drift by the step. Each row's share caps it.
+- **The stipend pays the day the server fires in**; a day missed in downtime is not paid. The
+  running costs, by contrast, catch up to seven missed days as idle.
+- **A sold facility owned by a person** pays from that person's lowest credit account.
+
+**Expensive to reverse (flagged):**
+- The two System accounts' names, `tacsim.upkeep` and `tacsim.export`, which the census shows.
+- The `tacsim:upkeep:{entry}` document (`PortUpkeep`, `UpkeepRow`) and the
+  `tacsim.port_consume` ledger family's stored shapes.
+- `HouseDeployment.stipend_minor_per_ic_day` in the launch document.
+
+**Not built:**
+- **Consumption where no producer is in reach** waits for EX.10's haulers (Q-48-41). No row is
+  authored for a good whose producer is out of reach: the three consumers' goods are made in the
+  lane (alloys at Kasei and Cabeus, boards at Crisium and Stickney).
+- **A staff or owner view of a facility's running costs** (`+works` or `@facility/show`). The row
+  is in the port's `tacsim:upkeep:` document, and the story reads it there.
+- **A live 24:1 run on a server.** The measured run is a story that drives the shipped lane
+  through 72 IC days (three real days at 24:1); no server ran for three real days.
 
 ## EX.10
 
-Not built.
+Row: §7.1 EX.10 (Q-48-20, Q-48-41). Stacked on EX.9 (#675), which it needs for consumption.
+
+**Survey:**
+- **NPC-flown hulls.** The pools' ferry helm buys stores straight into a hold and files
+  `+ship/undock` as itself. The recovery house's dispatcher files its plans through `+ship/order`'s
+  body and routes Ceres to Stickney by way of Luna and Deimos, because the Kirkwood picket's bubble
+  is one "an NPC house never answers".
+- **The IC11 executor** flies any sailing plan as its author, while `coop::helm_of` names the hull
+  for that author: the market legs within the clamps, `fill` for the passage's stores, the
+  departure, the re-stage and the restart rules.
+- **Interception.** Only an interdicted corridor leg intercepts a hull in passage, and the lane has
+  one: Ceres to Stickney, at Kirkwood. Its boundary opens the picket's bubble on a hull whose bridge
+  holds a connected crew, or whose link-loss record has the backup mind at her helm. A crewless
+  hull sails through untouched (`a_ship_whose_crew_is_away_meets_the_picket`'s last case).
+- **What a Dray can fly.** Every lane hull carries an 80 t tank. Luna to Titan needs 93 to 102 t,
+  and Titan to Deimos about 90 t with the fuel's own mass counted, so at this sky neither leg can be
+  flown by any lane hull.
+- **Prices.** Ceres sells water at 100 cr; Kasei bids 200 and the Habitat Board 195. Luna's boards
+  (900) and alloys (400) are bid at Deimos (1,100 and 460) and at Titan (1,500 and 760).
+
+**Built:**
+1. **The house** (lane v43 / relay v34, re-signed over v42 / v33):
+   - **The org:** the Vesta Carrying Company, a Ceres institution with 400,000 cr of capital.
+   - **The `hauler` block** (`PortDef.hauler`, `HaulerDef`):
+     - its hulls: `VCC-01` based at Ceres and `VCC-02` at Luna, Drays;
+     - the goods it carries: water, carbon feedstock, structural alloys and instrument boards;
+     - a lot of at most 40 units;
+     - a trip must clear 10% of what it lays out;
+     - each helm keeps 2,000 cr in hand between trips.
+   - **Its bounds:** 1 to 8 hulls with distinct marks, 1 to 8 distinct goods, its org one of the
+     entry's.
+2. **The arm** (`tacsim/src/port/hauler.rs`, on the port tick after the running costs). For each
+   hull, one step a fire:
+   - **Seeding:** she is seeded at her home (`commission::seed`, the staff seed's path), laid up,
+     docked and titled to the house, then found by her mark.
+   - **The helm:** a `DARK` Thing with the house's `economy.account.post` and `vault.withdraw`
+     grants on its root scope (the recovery dispatcher's), and its own purse.
+     - `coop::helm_of`, `coop::trade_hulls` and `owned::may_trade_hold` read the hull it sails
+       (`hauler_hull`).
+     - The voyage counts the helm aboard as one soul (`voyage::aboard`, `prepare_departure`).
+   - **Opening:** the house trades from the IC day after the tick first sees it
+     (`HaulerHouse.opens_day`).
+3. **The trip** (`choose`). Docked with no plan running:
+   - **Candidates:** every carried good this port's houses ask, against every port one route away
+     whose houses bid for it.
+   - **The lot:** at most 40, the ask's stock, the bid's intake, what the bidder can pay, and what
+     her hold takes. It is halved until her tank carries the passage with the lot aboard
+     (`voyage::passage_needs_laden`, a fixed point over the fuel's own mass).
+   - **Profit:** the lot at the bid, less the lot at the ask, less the fuel (25% over the burn,
+     within her tank) and the stores at this port's asks. It must clear the margin of the outlay.
+   - **Ranking:** profit an IC day of passage, with one look ahead: the best trip from where she
+     lands.
+   - **No duplicates:** a sister hull's trip in hand (good, from, to) is not taken twice.
+   - **Carried cargo first:** a lot already aboard that no house here takes is carried to the best
+     bid one route on, its cost the stores alone.
+   - **An empty hop** when nothing pays: to the neighbor whose best onward trip pays for the hop.
+   - **Otherwise** she waits for the next IC day. A look that cannot price any passage (a port
+     still stocking) is tried again.
+4. **The plan.** The helm's purse is topped up from the house to the trip's outlay plus a fifth,
+   and a sailing plan is written for the hull (`Orders`, the author the helm). It buys the lot
+   within the ask, fills the tank and the locker, departs, and sells everything at no less than
+   the ask (a carried lot at any price). The executor flies it.
+   - **Done:** once it is done and she is docked, what the purse holds past the float goes home.
+   - **Held:** a held plan is dropped and the house looks again the next IC day. Its hold is kept
+     as the row's note.
+   - **Unsold cargo:** what is aboard is offered to this port's bids once an IC day first.
+5. **Intercepted like a crewed hull.** Under way, the house's mind holds her helm
+   (`space::tick::cover_house_hull`): her link-loss record opens with the grace spent and the backup
+   mind at the helm. The Kirkwood boundary opens the picket's bubble on her. She heaves to under the
+   hail and is inspected, as `B-1`'s seat does for a crew that lost its link. The record ends when
+   she docks.
+6. **Records:** `tacsim:hauler:{entry}` (`HaulerHouse`, `HaulerRow`). Each row keeps its hull, helm,
+   grant, purse, trip, trips, idle day and a note for staff saying why it waits.
+7. **Switched on at Deimos** (Q-48-41): the Deimos reserve, at a port that produces nothing, uses
+   up 15 t of water and 5 t of carbon feedstock an IC day of what reaches it, and the faucet pays
+   it back 2,850 and 1,900 cr a day at most.
+8. **Laying a house up** (`@tacsim/port haulers <port> [on|off]`, staff). With no word it lists
+   the house's hulls, their trips and their notes. `off` lays the house up: what is under way
+   finishes and docks, no trip is planned, and a hull not yet seeded stays unseeded. `on` opens it
+   again (`HaulerHouse.laid_up`).
+   - **The stock rigs lay it up:** `driving_rig` before its first fire, and the mill, drones and
+     orders rigs before they stock. Their stories pin exact stocks, legs, burns and object ids.
+   - **The EX.10 stories open it again.**
+9. **Help:** exchange's "Haulers".
+
+**Tests:** (conclav.dev, `CARGO_INCREMENTAL=0`, on EX.9's head `bca28628f` plus this unit.)
+- **Unit tests** (`port/hauler.rs`): `ex10_a_trip_pays_only_past_its_margin` (profit must be positive
+  and clear the margin of the outlay, the lot at the ask and the stores);
+  `ex10_the_hauler_record_round_trips` (the `tacsim:hauler:` document's wire).
+- **`domain_economy::ex10_haulers`** (each opens the house with `@tacsim/port haulers ceres_port
+  on` first):
+  - `ex10_a_laid_up_house_plans_no_trip`: on its boot day the house fits both hulls out (hull,
+    helm, grants, purse) and sets nothing out. Laid up, past its opening day, neither hull sets
+    out. A port with no house answers so. Opened again, each sets out on its first trip.
+  - `ex10_the_house_seeds_its_hulls_and_trades_where_a_gap_pays`:
+    - Boot day: nothing sets out.
+    - Seeding: both Drays are titled to the house; each helm holds the house's grants and a purse.
+    - First trips: each leaves from its home, at a bid over its ask, the plan's author the helm.
+      `VCC-01`'s is 40 t of Ceres water at 100 cr into the Habitat Board's 195 cr bid, planned
+      to clear 1,130 cr.
+    - Laid up mid-trip, the house still flies the plan in hand. The trip ends within 30 IC days:
+      docked at Luna, the Board's pool up, her hold empty, her purse down to its 2,000 cr float,
+      and no next trip.
+  - `ex10_a_hauler_meets_the_kirkwood_picket`: the Habitat Board drained, Ceres water's best bid
+    is Kasei's at Stickney. `VCC-01`'s trip goes there, and at Kirkwood the picket's bubble
+    promotes with her in it, the backup mind at her helm, three ships.
+  - `ex10_consumption_switches_on_at_a_port_with_no_producer`: the Deimos reserve, given water
+    and carbon, uses up 15 t and 5 t in its first day. The faucet pays it (15 × 190 + 5 × 380) cr.
+  - `ex10_a_hauler_supplies_deimos_from_luna`: `VCC-02` carries boards or alloys from Luna to
+    Deimos, and Syrtis Bonded's consumption ledger grows by what it used of them.
+- **The pins:** the lane and relay at v43 / v34 and their digests. A new strip-chain head,
+  `strip_hauling`, rebuilds the published v42 (`ex10_strip_hauling_rebuilds_the_published_v42`).
+
+**Changed expectations:** the stock rigs lay the house up, and the stories that read
+everyone's submissions pass over the helms'.
+- **Laid up before the first fire:** `driving_rig` (every field story, `pl2_producers`,
+  `field_director`), mill, drones, orders, and mush-server's `ic_slice_loop`,
+  `ic_buyout_dormancy` and `sm_story` (the composition's money sums).
+  - With the house trading, these stories saw a hauler's 40 t of Ceres water leave Occator's
+    stock, its burns among one plan's burns, and its legs in their counts.
+  - `gc11`'s raid went the other way with two more hulls and their helms shifting object ids.
+- **Landers that panic on any refusal** (`excursions`, `knowing`, `voyage`): a helm's refused
+  leg is passed over. These rigs jump the clock past a paid draw's deadline, and the market
+  refuses that draw for anyone.
+- **`commerce::ic8_*`:** the lapsed-listing release count passes over the helms' legs, as it
+  passes over the clerks'.
+- **Ten orgs, not nine:**
+  - `ports::ic3_*` (the treasury −17,101,000 cr; 13 lane orgs);
+  - `plumbing::sm5_*` (nine new obligations at v10 → v43, Vesta's 400,000 cr base among them);
+  - `sites::sm2_the_lane_carries_six_sites` (Vesta last);
+  - mush-server `split_boundary::boot_parity` (26 institutions).
+
+**Suites** (conclav.dev, `CARGO_INCREMENTAL=0`):
+- tacsim whole: 4,897 of 4,897;
+- mush-server `commerce_composition` and `split_boundary`: 319 of 320, then the one boot pin
+  fixed and `boot_parity` rerun, 24 of 24;
+- the contract guards (`ci_policy` 81, `engine_contracts` 90);
+- fmt, clippy `-D warnings` (tacsim, mush-server tests), the M7 memory-size pass, and rustdoc in
+  both modes.
+
+**Mutations** (conclav.dev, each one alone against the EX.10 tests; 14 run, 8 caught):
+
+| # | Mutation | Caught by |
+|---|---|---|
+| H1 | a trip pays on any profit, not past its margin | `ex10_a_trip_pays_only_past_its_margin` |
+| H2 | every trip pays | the same |
+| H3 | no check that the tank carries the passage | the Deimos story |
+| H5 | a house that is not open still plans trips | the laid-up and trading stories (added after the first run) |
+| H7 | the purse's surplus over its float not sent home | the trading story (added after the first run) |
+| H8 | the house's mind never covers a hauler under way | the Kirkwood picket story |
+| H13 | the open gate not reading `laid_up` | the laid-up and trading stories (added after the first run) |
+| H14 | the staff command never laying the house up | every EX.10 story (each opens the house) |
+
+**Six survive:**
+- **H4** (a sister hull's lot not skipped): lane v43's two hulls trade from different homes, so no
+  story has both pricing the same leg.
+- **H6** (the once-a-day idle not honoured): a hull that found nothing paying looks again on the
+  next fire and finds the same. It costs time, not trades.
+- **H9**, **H10** and **H11** (the helm's hooks in `helm_of`, `trade_hulls` and `may_trade_hold`):
+  each removed alone, another path in the same function still answers for the helm, and the
+  stories pass. They are kept as the named path.
+- **H12** (the sale of what is aboard not limited to once an IC day): a lot left aboard that no bid
+  takes would plan a sale on every fire. No story leaves one aboard.
+
+**Divergences:**
+- **"In reach" reads a Dray's tank.** Titan's water and carbon cannot reach Deimos by any lane hull
+  at this sky, so the reserve's rows are switched on and wait on whoever brings them. The hauler that
+  supplies Deimos carries Luna's boards and alloys into Syrtis Bonded's bids.
+- **One hauling house, at Ceres, with a hull at Luna.** `VCC-02`'s home is Luna so that Deimos is
+  one route away; a Ceres-based Dray reaches Luna in 17.6 IC days and never leaves it for Titan.
+- **The house's lookahead prices the onward leg with this leg's stores**: the hull is not there to
+  plan from.
+- **A hauler's legs are a player's.** A restart that outlasts a paid draw's deadline raises the
+  same boot-reconciliation page for a hauler's quote as for a player's. The composition stories saw
+  it at their reboots; they lay the house up.
+- **A trip's sale floor is the ask.** A bid that has fallen below what the lot cost leaves the lot
+  aboard, to be carried on.
+
+**Expensive to reverse** (flagged under the owner's economy rule; the numbers are not):
+- **The Vesta Carrying Company is a lane org** with a capital tranche, an account and a root
+  scope; taking it out later means a lane version that retires an org.
+- **The `tacsim:hauler:{entry}` document** (`HaulerHouse`, `HaulerRow`, `Trip`) and the lane's
+  `hauler` block are new persisted shapes.
+- **The hauler hulls are real titled ships** with real helm Things, and they are seeded on first
+  boot unless staff lay the house up first.
+
+**Not built:**
+- **A larger hauler.** The lane's designs share one tank, so Titan stays out of a hauler's reach.
+- **Haulers that answer a raider.** In the picket's bubble she is the backup mind's: heave to, be
+  inspected, and answer only a ship whose fire has reached her (doc 47 unit CO.2's rule). Whether
+  the Belt Raider takes her is the bubble's dice.
+- **A staff verb that tunes a house** (its lot, margin or float): those are the lane's.

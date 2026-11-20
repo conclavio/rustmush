@@ -13,7 +13,9 @@
 #
 # What it holds:
 #   1. on a fresh store the bring-up walks the whole runbook and `@mind/launch`
-#      names every operator `ready`;
+#      names every operator `ready`; the fitting shop stands at its berth and
+#      its buy-back is composed and funded, read by #1 in the bring-up and by a
+#      player at the public front door;
 #   2. the same run, interrupted once and started again, ends the same way;
 #   3. no player can log in or register before the Active boot: a probe types
 #      `create` at the PUBLIC front door every few seconds for the whole
@@ -172,6 +174,7 @@ START_ROOM_UNAPPROVED=0
 MINDS_LAUNCH=on
 REGISTRY_PULSE_MS=${PULSE:-50}
 RAID_DIRECTOR=true
+WAKE_MAJORS=true
 LLM_ENABLED=$llm_enabled
 PIXEL_DIAGNOSTICS=false
 EOF
@@ -251,6 +254,45 @@ expect_ready() {
   grep -q 'Registry operators: #[0-9]* ready\.' "$1" || { echo "acceptance: $1 names no operator ready" >&2; return 1; }
   # Doc 47 cut CO.9: the Active boot seeds every House its own hulls.
   grep -q 'each House holds 3 hulls of its own' "$1" || { echo "acceptance: $1 seeded the Houses no hulls" >&2; return 1; }
+  # Doc 47 cuts CO.6 and CO.13: the Active boot stands the fitting shop at its
+  # berth and reads the counter there, the buy-back composed and its till funded.
+  grep -q 'the fitting shop (#[0-9]*) stands at the Visiting Berth Gallery (#[0-9]*) of Ceres Freeport' "$1" ||
+    { echo "acceptance: $1 stood the fitting shop nowhere" >&2; return 1; }
+  grep -q '+core/sell buys cores back at 500 per mille from a till of 5000000 minor credits' "$1" ||
+    { echo "acceptance: $1 composed no buy-back, or left its till empty" >&2; return 1; }
+}
+# What a registered player reads at the public front door: logs `$1` in (the
+# probe's own login) and types the rest, a line at a time; prints the session.
+player() {
+  local name="$1" line
+  shift
+  {
+    sleep 2
+    printf 'connect %s probe-pass-%s\r\n' "$name" "$name"
+    sleep 4
+    for line in "$@"; do
+      printf '%s\r\n' "$line"
+      sleep 3
+    done
+    sleep 2
+  } | timeout 90 ssh -tt -p "$ssh_port" -o BatchMode=yes -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR play@127.0.0.1 2>&1 | tr -d '\r' || true
+}
+# The counter as a player has it (doc 47 cuts CO.6 and CO.13): `+core` names the
+# berth the shop stands at, and `+core/sell` is composed. From the start room the
+# sale is refused for the place, which only a composed sale says; a world with no
+# buy-back says there is none.
+counter_as_a_player() {
+  local said
+  said="$(player "$1" '+core' '+core/sell #1')"
+  grep -q 'fitting shop stands at Visiting Berth Gallery' <<< "$said" ||
+    { echo "acceptance: a player's +core does not place the fitting shop:" >&2; echo "$said" >&2; return 1; }
+  if grep -q 'takes orders by wire\|No fitting shop buys cores on this world' <<< "$said"; then
+    echo "acceptance: a player reads a shop that stands nowhere, or no buy-back:" >&2; echo "$said" >&2; return 1
+  fi
+  grep -q 'buys cores only across its own counter' <<< "$said" ||
+    { echo "acceptance: a player's +core/sell is not answered by the composed sale:" >&2; echo "$said" >&2; return 1; }
+  log "a player reads the fitting shop at its berth, and +core/sell is composed"
 }
 llm_args=(--no-llm-check)
 if [ "${LLM:-}" = stub ]; then
@@ -282,7 +324,9 @@ expect_ready "$work/bringup-second.log"
 kept_off
 [ "$(probe afterstart)" = in ] || { echo "acceptance: nobody can register after the unit started" >&2; exit 1; }
 log "a player registers once the unit is up"
+counter_as_a_player afterstart
 grep -q '^launch_path = ' "$inst/mushd.toml"
+grep -q '^wake_majors = true$' "$inst/mushd.toml"
 if [ "${LLM:-}" != stub ]; then
   # The negative control: with no provider answering, the check must fail.
   if bringup --llm-check > "$work/llm-check.log" 2>&1; then

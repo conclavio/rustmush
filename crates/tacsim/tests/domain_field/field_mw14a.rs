@@ -590,7 +590,7 @@ async fn npc_led(at: &Ground) {
     );
 }
 
-/// Pump and tick for `secs` of wall time (five world seconds to each).
+/// Pump and tick for `secs` of tokio time (`field_host_rig::Pace`: one world second to each).
 async fn wait(field: &mut Field, secs: u64) {
     let _ = until_composed(
         &mut field.rig,
@@ -603,7 +603,7 @@ async fn wait(field: &mut Field, secs: u64) {
 }
 
 /// **Pump, tick and have the intruder's player fire on the contact at `cell`** until `done`
-/// holds or `secs` of wall time pass (`field_host_rig::until_composed`, with the player's two
+/// holds or `secs` of tokio time pass (`field_host_rig::until_composed`, with the player's two
 /// lines typed each world second).
 async fn until_shooting(
     field: &mut Field,
@@ -611,8 +611,8 @@ async fn until_shooting(
     secs: u64,
     mut done: impl FnMut(&Rig) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-    while std::time::Instant::now() < deadline {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
         fire_on(field, cell, within);
         if until_composed(
             &mut field.rig,
@@ -630,13 +630,13 @@ async fn until_shooting(
 }
 
 /// **MW.14a's acceptance at 256** on Ahuna Flank ([`npc_led`]).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14a_an_npc_led_detachment_advances_holds_and_withdraws() {
     npc_led(&AHUNA_FLANK).await;
 }
 
 /// **MW.14a's acceptance at 512** on Urvara Reach ([`npc_led`]).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14a_an_npc_led_detachment_advances_holds_and_withdraws_at_512() {
     npc_led(&URVARA_REACH).await;
 }
@@ -704,7 +704,7 @@ async fn to_the_hold(at: &Ground) -> (Vec<String>, Vec<String>) {
 /// worlds run the script to the HOLD; each delivers the same orders, with the same sequences,
 /// from the same slot, in the same order. The commander keeps no state but the roster's order
 /// book, and its rule reads no clock and no dice.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw14a_the_same_run_gives_the_same_orders_twice() {
     let first = to_the_hold(&AHUNA_FLANK).await;
     let second = to_the_hold(&AHUNA_FLANK).await;
@@ -714,7 +714,7 @@ async fn mw14a_the_same_run_gives_the_same_orders_twice() {
 }
 
 /// **MW.14a: a returning player takes the lead** (this module's head; doc 27 FO-15, Q-D4).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one story, in order
 async fn mw14a_a_returning_player_takes_the_lead() {
     let at = &AHUNA_FLANK;

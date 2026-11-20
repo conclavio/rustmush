@@ -307,25 +307,25 @@ async fn void_gate(at: &At, then: Then) {
 }
 
 /// **FR.2 at 256**: the void with no command between is accepted, after a restart mid-field.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr2_ahuna_the_tally_survives_a_restart_and_the_void_is_accepted() {
     void_gate(&AHUNA_FLANK, Then::Void).await;
 }
 
 /// **FR.2 at 256**: a void after another command is refused at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr2_ahuna_a_void_after_another_command_is_refused() {
     void_gate(&AHUNA_FLANK, Then::OtherFirst).await;
 }
 
 /// **FR.2 at 512**: the void with no command between is accepted, after a restart mid-field.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr2_urvara_the_tally_survives_a_restart_and_the_void_is_accepted() {
     void_gate(&URVARA_REACH, Then::Void).await;
 }
 
 /// **FR.2 at 512**: a void after another command is refused at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn fr2_urvara_a_void_after_another_command_is_refused() {
     void_gate(&URVARA_REACH, Then::OtherFirst).await;
 }
@@ -360,7 +360,7 @@ fn rationed(rig: &mut Rig, unit: ObjId, rounds: i64) {
 /// **FR.2's director gate** (Q-40-18): GC.11's tempting site, its prospector and its hired guard
 /// both Syndicate members; the director lands the Skulks, their leader declares, and the raid's
 /// fire on its own organization's members is voided at demotion by its leader, with no hand.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one raid, in order
 async fn fr2_a_director_raids_friendly_fire_is_voided_with_no_hand() {
     use crate::field_raiders_rig as raiders_rig;

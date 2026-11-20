@@ -387,6 +387,16 @@ pub trait ObjectStore: Send + Sync {
         None
     }
 
+    /// Whether this backend lives wholly in this process's memory, with no I/O
+    /// a tokio runtime does not own. Only `InMemoryStore` says yes.
+    ///
+    /// Doc 43c §3.3 (TS.10c): the world task refuses a paused test clock
+    /// (`mush_config::TimeSource::Tokio`) over any other store, because a
+    /// paused runtime fires a timeout at once while it waits on real I/O.
+    fn holds_process_memory(&self) -> bool {
+        false
+    }
+
     /// Perform backend-owned writable bootstrap after authoritative-intent
     /// recovery has completed.
     ///

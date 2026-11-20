@@ -72,7 +72,7 @@ use crate::port::ship::{
     self, Berth, HullView, SHIP_CLEARED, SHIP_UNDER_WAY, STATUS_CLEARED, STATUS_UNDER_WAY,
     berth_of, hold_vault, hull_view,
 };
-use crate::port_tick::{PortTickState, Step, gone, notify, queue_notice, read_pool};
+use crate::port_tick::{PortTickState, Step, gone, notify, queue_notice};
 use crate::sky::Sky;
 use crate::store::{TacsimStore, put_voyage};
 
@@ -364,6 +364,10 @@ pub const GOODS_COMING: &str =
 pub const GOODS_LEAVING: &str = "Quote #{quote}'s goods have not left the hold yet; the {name} waits for the hand-over (+market/accept {quote} asks for it again).";
 /// A listing holds goods in the hold: `{listing}`, `{name}`.
 pub const LISTING_HOLDS: &str = "Your listing #{listing} holds goods in the {name}'s hold; withdraw it, or let it lapse and be released, before you undock.";
+/// **Doc 48e (48d H-09)**: a hull listed for sale, or under a live sale of her title, stays at the
+/// berth she is sold from: `{name}`.
+pub const HULL_ON_SALE: &str =
+    "The {name} is for sale here; withdraw her listing before she undocks.";
 /// Over the rail: `{name}`, `{payload}`, `{ceiling}`.
 pub const OVERLOADED: &str = "The {name} carries {payload} t against a rated {ceiling} t; lighten the hold before you undock. Nothing was burned.";
 /// The tank below the burn: `{port}`, `{burn}`, `{tank}`.
@@ -1312,6 +1316,32 @@ pub(crate) fn passage_needs(
     Ok((plan.burn_t, plan.crew_days))
 }
 
+/// **[`passage_needs`] with `extra_kg` more payload aboard** (doc 48 unit EX.10): a hauling
+/// house's dry run of a lot it has not bought yet.
+///
+/// # Errors
+///
+/// As [`passage_needs`].
+pub(crate) fn passage_needs_laden(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    word: &str,
+    souls: u32,
+    extra_kg: u64,
+) -> Result<(u64, u32), String> {
+    let w: &World = ctx.w;
+    let view = hull_view(w, hull).ok_or("the hull has no view")?;
+    let Berth::Docked { def, .. } = berth_of(w, hull) else {
+        return Err("the hull is not docked".to_owned());
+    };
+    let dests = destinations(w, def);
+    let dest = match_destination(&dests, word).ok_or("the port does not clear for there")?;
+    let mut basis = basis(ctx, &view, souls)?;
+    basis.payload = basis.payload.saturating_add(extra_kg);
+    let plan = plan_on(w, &basis, &dest.routes).map_err(|e| e.to_string())?;
+    Ok((plan.burn_t, plan.crew_days))
+}
+
 /// **The destination a queued depart names, exactly** (doc 18 cut IC14 row 25): the
 /// routes key equal to the stored canonical venue word, case-sensitively — never the
 /// live verb's prefix fallback, so a stored word that is only a prefix of a port's name
@@ -1391,6 +1421,10 @@ pub(crate) fn aboard(w: &World, hull: ObjId, person: ObjId) -> bool {
     if crate::port::pools::ferry_hull(w, person) == Some(hull) {
         return true;
     }
+    // Doc 48 unit EX.10: and a hauling house's helm, aboard the hull it sails.
+    if crate::port::hauler::hauler_hull(w, person) == Some(hull) {
+        return true;
+    }
     if hull_view(w, hull).and_then(|view| view.airlock()).is_none() {
         return false;
     }
@@ -1430,7 +1464,7 @@ pub(crate) struct Basis {
 /// **What the rigs in `view`'s bay weigh** (doc 20 cut SM.3a; §4.3, D-20-7): the
 /// rows [`crate::port::vehicle::carried_rigs`] lists and their weight through
 /// [`crate::port::passage::carried_kg`], each hopper read through
-/// [`read_pool`]. A hull with no bay carries nothing.
+/// [`crate::port_tick::read_held`]. A hull with no bay carries nothing.
 ///
 /// # Errors
 ///
@@ -1440,7 +1474,8 @@ pub(crate) fn carried_of(
     view: &HullView<'_>,
 ) -> Result<(Vec<crate::port::passage::CarriedRig>, u64), String> {
     carried_of_with(ctx.w, view, &|endpoint, good| {
-        read_pool(ctx, endpoint, good)
+        // Doc 48e (48c #6): the planner weighs what the hold holds, lots and all.
+        crate::port_tick::read_held(ctx, endpoint, good)
     })
 }
 
@@ -1479,7 +1514,8 @@ pub(crate) fn carried_of_with(
 /// (`PlanError::Unreadable`; reviewer F6).
 pub(crate) fn basis(ctx: &Ctx<'_>, view: &HullView<'_>, occupants: u32) -> Result<Basis, String> {
     basis_with(ctx.w, view, occupants, &|endpoint, good| {
-        read_pool(ctx, endpoint, good)
+        // Doc 48e (48c #6): the planner weighs what the hold holds, lots and all.
+        crate::port_tick::read_held(ctx, endpoint, good)
     })
 }
 
@@ -1887,7 +1923,9 @@ fn laden_home_line(
     port: &str,
 ) -> Option<String> {
     let w: &World = ctx.w;
-    let read = |endpoint: EndpointRef, good: &CanonicalId| read_pool(ctx, endpoint, good);
+    let read = |endpoint: EndpointRef, good: &CanonicalId| {
+        crate::port_tick::read_held(ctx, endpoint, good)
+    };
     let read_rig = |tv: ObjId| crate::port::site_map::SurfaceReads::rig(ctx, tv);
     let rigs: Vec<ObjId> = crate::port::tv::live_on_hull(w, view.hull())
         .iter()
@@ -3535,12 +3573,21 @@ pub(crate) fn prepare_departure(
             None => {}
         }
     }
+    // Doc 48e (48d H-09): a hull on sale is sold where she lies (Q-48-6), so she does not leave.
+    if mush_market::asset_on_sale(w, hull) {
+        return Err(refusal(
+            K::ListingHolds,
+            HULL_ON_SALE.replace("{name}", &name),
+        ));
+    }
     // Doc 39 cut IN.10 (Q-39-34): a house ferry sails with the house's hands, one soul, under its
     // DARK helm (a Thing, never counted aboard); doc 41 cut RS.6b: as does a recovery house's
     // hull under its dispatcher.
     let souls = occupants(w, airlock).max(u32::from(
         crate::port::pools::ferry_hull(w, pilot) == Some(hull)
-            || crate::port::house::is_dispatcher_of(w, hull, pilot),
+            || crate::port::house::is_dispatcher_of(w, hull, pilot)
+            // Doc 48 unit EX.10: a hauling house's hull under its helm.
+            || crate::port::hauler::hauler_hull(w, pilot) == Some(hull),
     ));
     let basis = basis(ctx, &view, souls).map_err(|error| {
         tracing::warn!(hull = hull.0, %error, "tacsim: a departure could not read the passage's basis");

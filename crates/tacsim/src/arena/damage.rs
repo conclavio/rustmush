@@ -1764,7 +1764,15 @@ impl Arena {
             if unit.armed_at_checkout() && !armed.contains(&unit.team) {
                 armed.push(unit.team);
             }
-            if unit.weapons.iter().any(|weapon| {
+            // Doc 48e kernel G10: a mind counts the mounts its slots arm
+            // (`Arena::arming_capacity`); a mount it can never fire keeps no
+            // unit in the match.
+            let armable = if unit.controller == Controller::Mind {
+                self.arming_capacity(unit.id)
+            } else {
+                usize::MAX
+            };
+            if unit.weapons.iter().take(armable).any(|weapon| {
                 unit.weapon_ammo(&weapon.id) > self.reserve_kept(unit, weapon.count_per_load)
             }) {
                 return false;
@@ -3540,6 +3548,62 @@ mod tests {
     // -----------------------------------------------------------------------
     // 16b cut AE.3 — a drone cannot stall or steal a match
     // -----------------------------------------------------------------------
+
+    /// **Doc 48e kernel G10: a mind counts the mounts its slots arm.** Two
+    /// line tanks, a coaxial gun beside the cannon, under an operator's table
+    /// of one slot a class arm the cannon and never the coaxial gun: with the
+    /// cannon at its reserve they are spent,
+    /// whatever the coaxial gun holds, where before its full belt kept the match
+    /// running to the cap. The mind's view shows the one mount it arms.
+    #[test]
+    fn g10_a_mind_counts_only_the_mounts_its_slots_arm() {
+        use crate::arena::state::Controller;
+        let minded = |id, team, at| {
+            let mut unit = line_tank(id, team, at);
+            unit.weapons.push(crate::arena::state::WeaponSummary {
+                id: SmolStr::new("coax"),
+                ..crate::arena::test_support::cannon()
+            });
+            unit.controller = Controller::Mind;
+            unit.reseal(&crate::match_::SealTerms::fixture())
+                .expect("the fixture terms seal");
+            unit
+        };
+        let mut pair = arena_of(vec![
+            minded(RED, PartyId::RED, pose(1_500, 1_500)),
+            minded(BLUE, PartyId::BLUE, pose(6_500, 6_500)),
+        ]);
+        pair.classes = serde_json::from_str(
+            r#"{"0": {"slots": 1}, "I": {"slots": 1}, "II": {"slots": 1}, "III": {"slots": 1}}"#,
+        )
+        .expect("an operator's table");
+        assert_eq!(pair.arming_capacity(RED), 1, "one slot");
+        for unit in [RED, BLUE] {
+            let Some(state) = pair.unit(unit) else {
+                panic!("a fielded unit");
+            };
+            assert!(state.weapons.len() >= 2, "the line tank carries two mounts");
+            let first = state.weapons[0].clone();
+            let keeps = pair.reserve_kept(state, first.count_per_load);
+            assert!(
+                state.weapon_ammo("coax") > pair.reserve_kept(state, first.count_per_load),
+                "the coaxial gun's rounds are over its reserve"
+            );
+            if let Some(state) = pair.unit_mut(unit) {
+                state.ammo.insert(first.id.clone(), keeps);
+            }
+        }
+        assert!(
+            pair.spent(),
+            "the cannon at its reserve, and the coaxial gun no mind of theirs can fire"
+        );
+        let view = pair.mind_view(RED).expect("red's view");
+        assert_eq!(
+            view.weapons.len(),
+            1,
+            "the view shows the mount its slot arms"
+        );
+    }
 
     /// **16b cut AE.3** (doc 16 §2 W2; §3.8 read for the side): a side whose
     /// every unit in action is a drone, having fielded a gun, is out.

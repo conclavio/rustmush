@@ -150,6 +150,7 @@ pub mod chart_panel;
 pub mod claims;
 /// Doc 39 cut IN.9: the yard commission — a kit lot to a hull somebody can sail (§4.13).
 pub mod commission;
+pub mod consume;
 pub mod coop;
 pub mod credit;
 pub mod def;
@@ -164,6 +165,7 @@ pub mod gauges;
 /// Doc 20 cut SM.9: the `body.ground` panel and `+chart/ground` — the Registry's survey of a
 /// body as a list and a flat map (doc 20 §3.1, §10).
 pub mod ground_chart;
+pub mod hauler;
 pub mod house;
 pub mod house_arm;
 pub mod house_sale;
@@ -211,6 +213,7 @@ pub mod supply;
 pub mod survey;
 mod traffic;
 pub mod tv;
+pub mod upkeep;
 pub mod vehicle;
 pub mod vendor;
 pub mod voyage;

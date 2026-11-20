@@ -314,13 +314,13 @@ async fn screen_and_support(at: &Ground) {
 }
 
 /// **MW.15 at 256** on Ahuna Flank ([`screen_and_support`]).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw15_a_rosters_screen_and_support_are_delivered_and_obeyed() {
     screen_and_support(&AHUNA_FLANK).await;
 }
 
 /// **MW.15 at 512** on Urvara Reach ([`screen_and_support`]).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn mw15_a_rosters_screen_and_support_are_delivered_and_obeyed_at_512() {
     screen_and_support(&URVARA_REACH).await;
 }

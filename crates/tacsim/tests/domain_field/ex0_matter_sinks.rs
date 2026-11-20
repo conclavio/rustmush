@@ -69,7 +69,7 @@ fn kg(rig: &Rig, good: &str) -> i128 {
         .unwrap_or_else(|| panic!("{good} has a mass"))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
     let mut rig = stocked();
     let (pilot, row, escort, _rig) = leased(&mut rig);
@@ -162,9 +162,20 @@ async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
         loaded,
         "the rearm's munitions: before {before:?}, after {after:?}"
     );
-    assert_eq!(
-        after["consumed"], before["consumed"],
-        "nothing consumes yet"
+    // Doc 48 unit EX.9: the only consumer in this run is the Lunar Habitat Board, which uses up
+    // 16 crew-days of its provisions an IC day.
+    let provisions_kg = store(&rig.tw)
+        .goods()
+        .and_then(|goods| {
+            goods
+                .good(&mush_core::CanonicalId::new("provisions").expect("an id"))
+                .and_then(|g| g.mass_kg_per_unit())
+        })
+        .expect("provisions weigh");
+    let used = after["consumed"] - before["consumed"];
+    assert!(
+        used >= 0 && used % (16 * i128::from(provisions_kg)) == 0,
+        "only the Board's whole days of provisions are used up: {used}"
     );
     assert_eq!(
         after["balance"], before["balance"],

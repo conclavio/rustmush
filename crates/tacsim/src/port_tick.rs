@@ -335,6 +335,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::space::tick::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R26c: the customs picket's ruling.
     actions.push(crate::space::customs::action_descriptor(&outcome_refs)?);
+    // Doc 48 unit EX.9: a house's day of consumption.
+    actions.push(crate::port::consume::action_descriptor(&outcome_refs)?);
     if let Some(ic) = ic {
         actions.extend(ic.actions()?);
     }
@@ -690,6 +692,9 @@ fn register_providers(
     // Doc 35 cut SF.R26c: the customs ruling's family and provider; a seizure debits through
     // the delegated inventory families.
     crate::space::customs::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
+    // Doc 48 unit EX.9: the consumption ledgers and their act; the debit rides the delegated
+    // inventory families.
+    crate::port::consume::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
@@ -757,6 +762,8 @@ fn register_outcomes(
     outcomes.push(crate::space::tick::outcome_descriptor()?);
     // Doc 35 cut SF.R26c: the customs picket's ruling.
     outcomes.push(crate::space::customs::outcome_descriptor()?);
+    // Doc 48 unit EX.9: a house's day of consumption.
+    outcomes.push(crate::port::consume::outcome_descriptor()?);
     if let Some(ic) = ic {
         outcomes.push(ic.outcome()?);
     }
@@ -1753,6 +1760,14 @@ pub struct PortTickState {
     pub(crate) supply_day: BTreeMap<(u64, CanonicalId), i64>,
     /// **Doc 39 cut IN.5**: the house purchases warned about this boot, by `(stores, good)`.
     pub(crate) supply_warned: BTreeSet<(u64, CanonicalId)>,
+    /// **Doc 48 unit EX.9**: the consumption rows done or refused today, by
+    /// `(storefront vault, good)`, with the IC day. Bounded by
+    /// `crate::port::stock::MAX_CLERK_ROWS`; stale days are pruned at each insert.
+    pub(crate) consume_refused: BTreeMap<(u64, CanonicalId), i64>,
+    /// **Doc 48 unit EX.9**: the running costs' worked slot-seconds this IC day, by facility
+    /// object, and the IC instant they were last added to (`crate::port::upkeep`). Seeded after
+    /// a restart from the row's hourly checkpoint (`UpkeepRow::tally`).
+    pub(crate) upkeep_worked: BTreeMap<u32, crate::port::upkeep::Worked>,
 }
 
 impl PortTickState {
@@ -1806,6 +1821,10 @@ pub struct PortFireStats {
     /// **Doc 23 cut S.2**: the epoch arm's agents this fire (`Arm::Epoch`). RAM only, never
     /// persisted, never shown to a player.
     pub epoch: ArmFireStats,
+    /// The refresh rows the stock clerks' intake drip priced this fire (`stock::drip_step`). A
+    /// row with nothing to do is passed over unpriced, since a premium's price reads the reach,
+    /// a route plot per supplier. RAM only, never persisted, never shown to a player.
+    pub drip_priced: u32,
 }
 
 /// **One arm's share of a port fire** (doc 20 cut SM.12c, the cost lane; doc 20a §5.6's "by
@@ -2156,6 +2175,10 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::berth::tick(ctx);
     // Doc 48 cut EX.7: each hire's wage, in step with the crew contracts.
     crate::detachment::crew::wages::tick(ctx);
+    // Doc 48 unit EX.9: running costs, the export faucet's refunds and the House stipends.
+    crate::port::upkeep::tick(ctx);
+    // Doc 48 unit EX.10: the hauling houses, one step a hull.
+    crate::port::hauler::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
@@ -2270,8 +2293,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     }
     // One per fire: a holder already offered this fire is refused by the
     // duplicate rule above and waits for the next.
-    if let Some((holder, listing)) = release {
-        offer(holder, holder, Arm::Release { listing });
+    // Doc 48e (exchange G14): a vendor's release runs with its storefront as the agent and the
+    // clerk as principal, since the clerk is the stock arm's agent.
+    if let Some((agent, holder, listing)) = release {
+        offer(agent, holder, Arm::Release { listing });
     }
     // Doc 18 cut IC9: one launch agent per hull with a filed passage (agent = the
     // hull, principal = the filing pilot), hulls in their backoff skipped.
@@ -2401,7 +2426,7 @@ fn step(
     match arm {
         Arm::Stock => crate::port::stock::stock_step(ctx, state, fire, agent),
         Arm::Release { listing } => {
-            crate::port::stock::release_step(ctx, state, fire, principal, listing)
+            crate::port::stock::release_step(ctx, state, fire, agent, principal, listing)
         }
         Arm::Launch { hull } => crate::port::voyage::launch_step(ctx, state, hull),
         Arm::Recall { hull } => crate::port::recall::recall_step(ctx, state, ObjId(hull)),
@@ -2482,6 +2507,11 @@ pub(crate) enum SwapRefused {
 }
 
 impl Fire {
+    /// Count one refresh row the intake drip priced this fire ([`PortFireStats::drip_priced`]).
+    pub(crate) fn drip_priced(&mut self) {
+        self.stats.drip_priced = self.stats.drip_priced.saturating_add(1);
+    }
+
     /// A fire's ledger, starting from `owed` (doc 20 cut SM.3b: the surface tick starts
     /// every fire from an empty map, finding F8).
     pub(crate) fn new(owed: BTreeMap<ObjId, ObjId>) -> Fire {
@@ -2612,6 +2642,59 @@ pub fn read_pool(
         return Ok(pooled);
     }
     tally_value(ctx.action_state(&inventory.lot_tally, &key))
+        .map(|held| pooled.saturating_add(held))
+}
+
+/// **What an endpoint holds of a good** (doc 48e; 48c #6, 48d C-03): its pool's balance and the
+/// units held in lots there, for **every** good. [`read_pool`] counts a divisible good's pool
+/// alone, as trading must (a storefront lists, and a sale draws, only what is pooled); this is
+/// the reading for what the endpoint *holds*: its room, its rent, its mass and whether it is empty.
+/// A divisible good's lots (an exact lot bought off a personal ask, one crystallized from a pool)
+/// weigh, take room and pay rent like the same units pooled.
+///
+/// # Errors
+///
+/// [`PoolReadError`], as [`read_pool`]'s.
+pub fn read_held(
+    ctx: &Ctx<'_>,
+    endpoint: mush_inventory::record::EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, PoolReadError> {
+    let Some(inventory) = ctx
+        .w
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, commodity)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    let pooled = pool_value(ctx.action_state(&inventory.pools, &key))?;
+    tally_value(ctx.action_state(&inventory.lot_tally, &key))
+        .map(|held| pooled.saturating_add(held))
+}
+
+/// [`read_held`] from a hook ([`read_pool_in`]'s rule).
+///
+/// # Errors
+///
+/// [`PoolReadError`], as [`read_pool_in`]'s.
+pub fn read_held_in(
+    hook: &mush_core::HookReadContext<'_>,
+    endpoint: mush_inventory::record::EndpointRef,
+    commodity: &CanonicalId,
+) -> Result<u64, PoolReadError> {
+    let Some(inventory) = hook
+        .world()
+        .module_state::<PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+    else {
+        return Err(PoolReadError::Unwired);
+    };
+    let key = mush_inventory::pool_key(endpoint, commodity)
+        .map_err(|error| PoolReadError::Key(error.to_string()))?;
+    let pooled = pool_value(hook.action_state(&inventory.pools, &key))?;
+    tally_value(hook.action_state(&inventory.lot_tally, &key))
         .map(|held| pooled.saturating_add(held))
 }
 

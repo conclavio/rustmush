@@ -248,6 +248,7 @@ fn stocked() -> Rig {
 
 fn stocked_with(roster: Roster) -> Rig {
     let mut rig = boot(roster);
+    support::lay_up_haulers(&mut rig.tw);
     stock(&mut rig);
     set_rate(&mut rig.tw, 1);
     rig
@@ -753,6 +754,29 @@ fn exchange(tw: &TestWorld) -> ObjId {
 }
 
 /// Every economy account's `(posted, held)`, minor units.
+/// **Whether the EX.9 System accounts moved between two readings** (doc 48 unit EX.9): the
+/// running costs' sink (`tacsim.upkeep`) or the export faucet (`tacsim.export`).
+fn ex9_moved(
+    tw: &TestWorld,
+    before: &BTreeMap<u64, (i64, i64)>,
+    after: &BTreeMap<u64, (i64, i64)>,
+) -> bool {
+    [
+        tacsim::port::upkeep::UPKEEP_SINK,
+        tacsim::port::upkeep::EXPORT_FAUCET,
+    ]
+    .into_iter()
+    .filter_map(mush_org::SystemPrincipalId::new)
+    .flat_map(|name| {
+        economy(tw)
+            .snapshot()
+            .accounts_of(&mush_org::PrincipalId::System(name))
+            .map(|a| a.id.0)
+            .collect::<Vec<_>>()
+    })
+    .any(|id| before.get(&id) != after.get(&id))
+}
+
 fn money(tw: &TestWorld) -> BTreeMap<u64, (i64, i64)> {
     economy(tw)
         .snapshot()
@@ -1128,7 +1152,7 @@ fn enrol(rig: &mut Rig, who: &str, seed: i64) -> Result<String, (String, String)
 /// propellant, beside them.
 #[test]
 fn sm12a_strip_mill_rebuilds_the_published_v13() {
-    assert_eq!(LANE_VERSION, 41, "lane v41 since doc 48 unit PL.8");
+    assert_eq!(LANE_VERSION, 44, "lane v44 since doc 48e lane L4");
     let shipped = load_pack(LANE_JSON).expect("the lane verifies");
     assert_eq!(shipped.manifest().version(), LANE_VERSION);
     let mut mills = Vec::new();
@@ -1258,10 +1282,20 @@ fn sm12a_strip_mill_rebuilds_the_published_v13() {
                 5,
                 5
             ),
+            // Doc 48e lane L4 (lane v44, production G21): Titan's ice mill, Occator's terms.
+            at(
+                "titan_port",
+                "titan_concession",
+                "ice_ore",
+                "volatiles",
+                (5, 2),
+                20,
+                40
+            ),
         ],
         "the shipped lane's two mills, 5 : 2, 20 t a batch, at most 40 t an IC day; Occator's \
          refine, 5 : 4, 20 t a batch and an IC day; Kasei's, 5 : 4, at most 40 t an IC day; the \
-         farms, the fab and Titan's carbon mill"
+         farms, the fab, Titan's carbon mill and its ice mill"
     );
     let pack = load_pack(&lane_variant(13, strip_mill)).expect("the v13 shape verifies");
     assert_eq!(
@@ -1494,6 +1528,7 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String], quote
         let posted = after.iter().any(|key| !stickney.contains(key));
         // Doc 48 cut EX.3: the works' purchase is a quote on the board, the market's allocator too.
         let posted = posted || stickney_quotes(rig) != quoted;
+        let elsewhere = other_ports_listings(rig);
         let ceres: Vec<&String> = rig
             .last_keys
             .iter()
@@ -1502,6 +1537,10 @@ fn one_act(rig: &Rig, queued: &[AuthoritativeSubmit], stickney: &[String], quote
                     && !stickney.contains(key)
                     && !after.contains(key)
                     && !(posted && key.as_str() == "market:meta")
+                    // Doc 48 unit EX.9: the port tick's running-cost record, not the clerk's;
+                    // and the Luna clerk's draw of the Habitat Board's provisions ask.
+                    && !key.starts_with(tacsim::port::upkeep::UPKEEP_PREFIX)
+                    && !elsewhere.contains(*key)
             })
             .collect();
         assert!(
@@ -1528,6 +1567,32 @@ fn stickney_quotes(rig: &Rig) -> usize {
 
 /// The keys of every listing Stickney's vendors hold before a fire (doc 39 cut IN.5), so a
 /// listing that fire withdraws is still known to be theirs.
+/// **Doc 48 unit EX.9**: the live listings of every port's vendors but Ceres's and Stickney's
+/// (the other clerks' acts, such as the Luna clerk's draw for the Board's consumption).
+fn other_ports_listings(rig: &Rig) -> Vec<String> {
+    let vendors: Vec<u64> = ["luna_port", "deimos_port", "titan_port"]
+        .into_iter()
+        .flat_map(|entry| {
+            port_map(&rig.tw, entry)
+                .vendors
+                .values()
+                .filter_map(|row| row.vendor)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    rig.tw
+        .world()
+        .module_state::<MarketStore>()
+        .map(|market| {
+            market
+                .live_listings()
+                .filter(|listing| vendors.contains(&listing.vendor.0))
+                .map(|listing| format!("market:listing:{}", listing.id.0))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn stickney_listings(rig: &Rig) -> Vec<String> {
     let vendors: Vec<u64> = port_map(&rig.tw, "stickney_port")
         .vendors
@@ -2706,7 +2771,17 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let (foundry, others): (Vec<_>, Vec<_>) = credits
         .into_iter()
         .partition(|(path, _)| path == "tacsim/src/relay_foundry.rs");
-    assert_eq!(others, vec![("tacsim/src/port/mill.rs".to_owned(), 1)]);
+    // 48e review rounds:G1 and G12: three `.credit(` in the bay's acts, each matter put back
+    // and none made: a canceled order's landed draw returned to the hold and the workshop's
+    // stores (two), and a stripped mount's rounds, which a draw once took out of the world
+    // (the census's `loaded`), credited to the hold as whole units of their good.
+    assert_eq!(
+        others,
+        vec![
+            ("tacsim/src/port/bay_work/act.rs".to_owned(), 3),
+            ("tacsim/src/port/mill.rs".to_owned(), 1),
+        ]
+    );
     assert!(
         foundry.iter().any(|(_, n)| *n >= 1),
         "the relay foundry's credit (co-owned with the relay track) is present"
@@ -2716,6 +2791,8 @@ fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
         vec![
             ("tacsim/src/port/bay_work/act.rs".to_owned(), 2),
             ("tacsim/src/port/burn.rs".to_owned(), 2),
+            // Doc 48 unit EX.9: a house's day of consumption.
+            ("tacsim/src/port/consume.rs".to_owned(), 1),
             ("tacsim/src/port/mill.rs".to_owned(), 2),
             ("tacsim/src/space/customs.rs".to_owned(), 1),
             ("tacsim/src/surface/tow.rs".to_owned(), 3),
@@ -2761,9 +2838,11 @@ fn in1_the_receipt_kinds_a_mint_may_carry_are_closed() {
     }
     assert_eq!(tacsim::port::STOCK_SOURCE_KIND, "port.stock");
     // The bay's `why`: the strip's and the scrap's, and nothing else.
-    let strip = text("tacsim/src/port/bay_work/strip.rs");
+    let strip: String = text("tacsim/src/port/bay_work/strip.rs")
+        .split_whitespace()
+        .collect();
     let strip = strip.as_str();
-    let whys: Vec<&str> = ["owe_mint(ctx, record, act_no, vault.0, \"", "(act_no, \""]
+    let whys: Vec<&str> = ["owe_mint(ctx,record,act_no,vault.0,\"", "(act_no,\""]
         .into_iter()
         .flat_map(|needle| {
             strip.match_indices(needle).map(|(at, needle)| {
@@ -2990,7 +3069,11 @@ impl Month {
                 ask(&rig.tw, EXCHANGE, "metals").map(|l| l.quantity),
                 ask(&rig.tw, OCCATOR, "volatiles").map(|l| l.quantity),
             );
-            if after.0 > listed.0 || after.1 > listed.1 {
+            // Doc 48 unit EX.9: a fire may also post the day's running costs or the export
+            // faucet's refunds; the restock itself moves no money.
+            if (after.0 > listed.0 || after.1 > listed.1)
+                && !ex9_moved(&rig.tw, &before, &money(&rig.tw))
+            {
                 assert_eq!(money(&rig.tw), before, "day {}: a restock fire", self.day);
             }
             let idle = queued.is_empty() && rig.last_keys.is_empty();

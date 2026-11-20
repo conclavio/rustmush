@@ -641,6 +641,13 @@ pub fn helm_of(w: &World, pilot: ObjId) -> Option<Helm> {
             standing: Standing::Fleet,
         });
     }
+    // Doc 48 unit EX.10: a hauling house's DARK helm sails its one hull, on the ferry's footing.
+    if let Some(hull) = crate::port::hauler::hauler_hull(w, pilot) {
+        return Some(Helm {
+            hull,
+            standing: Standing::Fleet,
+        });
+    }
     if let Some(charter) = live_charter(w, pilot) {
         return Some(Helm {
             hull: charter.hull,
@@ -673,6 +680,8 @@ pub fn trade_hulls(w: &World, actor: ObjId) -> Vec<ObjId> {
     let mut hulls: Vec<ObjId> = Vec::new();
     hulls.extend(crate::relay_mobile::assigned_hull(w, actor));
     hulls.extend(crate::port::pools::ferry_hull(w, actor));
+    // Doc 48 unit EX.10: a hauling house's helm trades the hold of the hull it sails.
+    hulls.extend(crate::port::hauler::hauler_hull(w, actor));
     hulls.extend(live_charter(w, actor).map(|charter| charter.hull));
     let owner = PrincipalId::Object(actor);
     if let Some(port) = programme_port(w) {

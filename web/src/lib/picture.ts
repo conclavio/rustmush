@@ -585,39 +585,39 @@ export function spacePictureKey(key: string, mode: SpaceCameraMode): SpacePictur
     switch (key) {
       case "w":
       case "W":
-        return { kind: "dockOrder", cmd: "DOCK TRANS UP" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK TRANS UP" };
       case "s":
       case "S":
-        return { kind: "dockOrder", cmd: "DOCK TRANS DOWN" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK TRANS DOWN" };
       case "a":
       case "A":
-        return { kind: "dockOrder", cmd: "DOCK TRANS LEFT" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK TRANS LEFT" };
       case "d":
       case "D":
-        return { kind: "dockOrder", cmd: "DOCK TRANS RIGHT" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK TRANS RIGHT" };
       case "ArrowUp":
-        return { kind: "dockOrder", cmd: "DOCK PITCH UP" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK PITCH UP" };
       case "ArrowDown":
-        return { kind: "dockOrder", cmd: "DOCK PITCH DOWN" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK PITCH DOWN" };
       case "ArrowLeft":
-        return { kind: "dockOrder", cmd: "DOCK YAW LEFT" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK YAW LEFT" };
       case "ArrowRight":
-        return { kind: "dockOrder", cmd: "DOCK YAW RIGHT" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK YAW RIGHT" };
       case "q":
       case "Q":
-        return { kind: "dockOrder", cmd: "DOCK ROLL CCW" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK ROLL CCW" };
       case "e":
       case "E":
-        return { kind: "dockOrder", cmd: "DOCK ROLL CW" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK ROLL CW" };
       case "r":
       case "R":
-        return { kind: "dockOrder", cmd: "DOCK CLOSURE FORWARD" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK CLOSURE FORWARD" };
       case "f":
       case "F":
-        return { kind: "dockOrder", cmd: "DOCK CLOSURE REVERSE" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK CLOSURE REVERSE" };
       case "x":
       case "X":
-        return { kind: "dockOrder", cmd: "DOCK DAMPENERS TOGGLE" };
+        return { kind: "dockOrder", cmd: "+helm/dock DOCK DAMPENERS TOGGLE" };
       default:
         return null;
     }
@@ -724,32 +724,36 @@ export function dockOrderToFrameInput(cmd: string): DockingFrameInput | null {
     yawTrim: 0,
     rollTrim: 0,
   };
-  switch (cmd) {
-    case "DOCK TRANS UP":
+  const normalized = cmd
+    .trim()
+    .replace(/^\+helm\/dock\s+(?:order\s+)?/i, "")
+    .toLowerCase();
+  switch (normalized) {
+    case "dock trans up":
       return { ...base, transY: 1 };
-    case "DOCK TRANS DOWN":
+    case "dock trans down":
       return { ...base, transY: -1 };
-    case "DOCK TRANS LEFT":
+    case "dock trans left":
       return { ...base, transX: -1 };
-    case "DOCK TRANS RIGHT":
+    case "dock trans right":
       return { ...base, transX: 1 };
-    case "DOCK PITCH UP":
+    case "dock pitch up":
       return { ...base, pitchTrim: 1 };
-    case "DOCK PITCH DOWN":
+    case "dock pitch down":
       return { ...base, pitchTrim: -1 };
-    case "DOCK YAW LEFT":
+    case "dock yaw left":
       return { ...base, yawTrim: -1 };
-    case "DOCK YAW RIGHT":
+    case "dock yaw right":
       return { ...base, yawTrim: 1 };
-    case "DOCK ROLL CCW":
+    case "dock roll ccw":
       return { ...base, rollTrim: -1 };
-    case "DOCK ROLL CW":
+    case "dock roll cw":
       return { ...base, rollTrim: 1 };
-    case "DOCK CLOSURE FORWARD":
+    case "dock closure forward":
       return { ...base, closurePulse: 1 };
-    case "DOCK CLOSURE REVERSE":
+    case "dock closure reverse":
       return { ...base, closurePulse: -1 };
-    case "DOCK DAMPENERS TOGGLE":
+    case "dock dampeners toggle":
       return { ...base, toggleDampeners: true };
     default:
       return null;

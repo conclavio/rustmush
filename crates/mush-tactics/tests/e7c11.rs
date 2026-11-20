@@ -89,7 +89,9 @@ fn vf_g4_the_unit_store_writer_census_is_pinned() {
             // test and without the behaviour binding, on the same guards, and it
             // opens no second lane: the write is `persist_unit_document`, the
             // governed path `apply_plan` already uses.
-            "refit_unit".to_owned(),
+            // 48e review rounds:G2: the site moved into `refit_unit_carrying`, which
+            // `refit_unit` now calls with no carried ops; still one writer, the same write.
+            "refit_unit_carrying".to_owned(),
             // §4.1's "three legacy commands" (`unit_damage`'s site is
             // `apply_plan` above since 16b cut F.1).
             "unit_remove".to_owned(),

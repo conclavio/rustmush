@@ -1307,6 +1307,10 @@ pub fn npc_exit_key(npc: ObjId) -> SmolStr {
 /// seat vacated, the NPC in their hire port's pool room, the organizer told — and the tow tick
 /// submits `tacsim_crew_captured` as the organizer until the ledger shows the contract and the
 /// reservation gone. Until then the contract stands, so the NPC is not on offer.
+///
+/// **Doc 48 cut EX.7b**: an employer's discharge at a port owes the same exit, its world half
+/// done by choice (the wage settled, the seat vacated, the NPC back in the pool room);
+/// `recovered_ic` is then the instant of the discharge.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NpcExit {
@@ -1348,8 +1352,9 @@ pub fn npc_exits_for(w: &World, organizer: ObjId) -> Vec<NpcExit> {
         .unwrap_or_default()
 }
 
-/// Write `exit` to RAM and the module's lane.
-fn owe_npc_exit(ctx: &mut Ctx<'_>, exit: NpcExit) {
+/// Write `exit` to RAM and the module's lane. Doc 48 cut EX.7b's discharge owes one too
+/// (`crate::detachment::crew`'s `discharge`), its world half done by the employer's choice.
+pub(crate) fn owe_npc_exit(ctx: &mut Ctx<'_>, exit: NpcExit) {
     match serde_json::to_value(&exit) {
         Ok(value) => push_op(
             ctx.out,
@@ -1371,7 +1376,7 @@ fn owe_npc_exit(ctx: &mut Ctx<'_>, exit: NpcExit) {
 
 /// **The NPC pool room for `npc`** (doc 42 Q-42-5): the room the NPC was authored in, their home,
 /// else the arrival room of the hire port the contract names.
-fn pool_room(w: &World, npc: ObjId, port: &str) -> Option<ObjId> {
+pub(crate) fn pool_room(w: &World, npc: ObjId, port: &str) -> Option<ObjId> {
     w.get(npc)
         .and_then(|object| object.home)
         .filter(|home| {

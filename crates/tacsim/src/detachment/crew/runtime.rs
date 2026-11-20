@@ -328,7 +328,8 @@ pub fn captured_outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
 }
 /// **`tacsim_crew_captured`** (doc 42 Q-42-26, Draft 0.4): the tacsim module's one action over
 /// both families an NPC's hire holds — the contract and the roster reservation — so a captured
-/// hull's NPC leaves the roster in one bundle.
+/// hull's NPC leaves the roster in one bundle. Doc 48 cut EX.7b: an employer's discharge at a
+/// port owes the same exit and lands through this action too (`submit_discharged`).
 pub fn captured_action_descriptor(
     outcomes: &BTreeMap<String, DefinitionRef>,
 ) -> Result<DefinitionDescriptor, ModError> {
@@ -401,6 +402,32 @@ pub(crate) fn submit_captured(
         ctx.submit_authoritative(action, PerceivedRef::SelfActor, Vec::new(), parameters, key);
     })
     .is_ok()
+}
+/// **Submit a discharge's owed exit as its employer** (doc 48 cut EX.7b): the same closed call,
+/// from the employer's own command, so the roster's half lands with the discharge instead of at
+/// the tow tick's next pass. The tick still submits it until it lands ([`submit_captured`]).
+/// The key is `tacsim.crew/<npc>/discharged/<at>`, `at` the discharge's IC instant.
+pub(super) fn submit_discharged(ctx: &mut mush_core::Ctx<'_>, npc: ObjId, at: i64) {
+    let Some(action) = ctx
+        .w
+        .module_state::<CapturedHandles>()
+        .map(|handles| handles.action.clone())
+    else {
+        return;
+    };
+    let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
+        "tacsim.crew/{}/discharged/{at}",
+        npc.0
+    )) else {
+        return;
+    };
+    ctx.submit_authoritative(
+        action,
+        PerceivedRef::SelfActor,
+        Vec::new(),
+        json!({ "npc": npc.0.to_string() }),
+        key,
+    );
 }
 struct CapturedProvider {
     action: DefinitionRef,

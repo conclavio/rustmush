@@ -388,8 +388,19 @@ pub fn viewport_25d(
     cell: Option<CellSize>,
     step_down: bool,
 ) -> Viewport25D {
-    let phys_cw = usize::from(cell.map_or(DEFAULT_CELL_W, |c| c.width.max(4)));
-    let phys_ch = usize::from(cell.map_or(DEFAULT_CELL_H, |c| c.height.max(6)));
+    let phys_cw = usize::from(cell.map_or(DEFAULT_CELL_W, |c| {
+        c.width.clamp(CellSize::MIN_WIDTH, CellSize::MAX_WIDTH)
+    }));
+    let phys_ch = usize::from(cell.map_or(DEFAULT_CELL_H, |c| {
+        c.height.clamp(CellSize::MIN_HEIGHT, CellSize::MAX_HEIGHT)
+    }));
+    let max_w = if step_down { 640 } else { MAX_WIDTH_PX };
+    let max_h = if step_down { 360 } else { MAX_HEIGHT_PX };
+    // Never allow `box_cols > max_w / 2` or `box_rows > max_h / 2` so the
+    // minimum 2 px/cell render resolution can never multiply past `max_w`/`max_h`.
+    let max_box_cols = (max_w / 2) & !1;
+    let max_box_rows = (max_h / 2) & !1;
+
     let avail_cols = usize::from(area_cols.max(2));
     let avail_rows = usize::from(area_rows.max(2));
     let avail_w = avail_cols * phys_cw;
@@ -404,26 +415,35 @@ pub fn viewport_25d(
     } else {
         (avail_cols, avail_rows)
     };
-    let box_cols = (raw_cols & !1).max(2);
-    let box_rows = (raw_rows & !1).max(2);
+    let (fit_cols, fit_rows) = {
+        let mut c = raw_cols;
+        let mut r = raw_rows;
+        if c > max_box_cols {
+            r = (r * max_box_cols / c.max(1)).clamp(2, max_box_rows);
+            c = max_box_cols;
+        }
+        if r > max_box_rows {
+            c = (c * max_box_rows / r.max(1)).clamp(2, max_box_cols);
+            r = max_box_rows;
+        }
+        (c.min(max_box_cols), r.min(max_box_rows))
+    };
+    let box_cols = (fit_cols & !1).clamp(2, max_box_cols);
+    let box_rows = (fit_rows & !1).clamp(2, max_box_rows);
 
-    let max_w = if step_down { 640 } else { MAX_WIDTH_PX };
-    let max_h = if step_down { 360 } else { MAX_HEIGHT_PX };
+    let max_cw = (max_w / box_cols).clamp(2, SHEET_PAD_X);
+    let max_ch = (max_h / box_rows).clamp(2, SHEET_PAD_Y);
 
-    let mut cw_px = phys_cw.clamp(2, SHEET_PAD_X);
+    let mut cw_px = phys_cw.clamp(2, max_cw);
     let mut ch_px = ((cw_px * phys_ch + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
 
-    if box_cols * cw_px > max_w {
-        cw_px = (max_w / box_cols).clamp(2, SHEET_PAD_X);
-        ch_px = ((cw_px * phys_ch + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
-    }
-    if box_rows * ch_px > max_h {
-        ch_px = (max_h / box_rows).clamp(2, SHEET_PAD_Y);
-        cw_px = ((ch_px * phys_cw + phys_ch / 2) / phys_ch.max(1)).clamp(2, SHEET_PAD_X);
+    if ch_px > max_ch {
+        ch_px = max_ch;
+        cw_px = ((ch_px * phys_cw + phys_ch / 2) / phys_ch.max(1)).clamp(2, max_cw);
     }
 
-    let width_px = (box_cols * cw_px).max(2);
-    let height_px = (box_rows * ch_px).max(2);
+    let width_px = (box_cols * cw_px).clamp(2, max_w);
+    let height_px = (box_rows * ch_px).clamp(2, max_h);
     let cols = u16::try_from(box_cols).unwrap_or(area_cols);
     let rows = u16::try_from(box_rows).unwrap_or(area_rows);
     let col_offset = area_cols.saturating_sub(cols) / 2;
@@ -537,8 +557,14 @@ impl TerrainCanvas {
         vp_h: usize,
         zoom_permille: u16,
     ) -> Self {
-        let canvas_w = ((vp_w * 5 / 2) & !1).min(2560).max(vp_w + 64);
-        let canvas_h = ((vp_h * 5 / 2) & !1).min(1440).max(vp_h + 64);
+        const MAX_CANVAS_W: usize = 2560;
+        const MAX_CANVAS_H: usize = 1440;
+        let canvas_w = ((vp_w.saturating_mul(5) / 2) & !1)
+            .max(vp_w.saturating_add(64))
+            .min(MAX_CANVAS_W);
+        let canvas_h = ((vp_h.saturating_mul(5) / 2) & !1)
+            .max(vp_h.saturating_add(64))
+            .min(MAX_CANVAS_H);
         let proj = IsoProj::for_viewport_zoomed(vp_w, zoom_permille);
         let origin_x_m = origin_x_cm as f32 * 0.01;
         let origin_y_m = origin_y_cm as f32 * 0.01;
@@ -2556,6 +2582,11 @@ impl Iso25DPicture {
         height: usize,
     ) -> Frame {
         let mut out = Frame::new(width, height);
+        let width = out.width();
+        let height = out.height();
+        if width == 0 || height == 0 {
+            return out;
+        }
         if frame.get("seated").and_then(Value::as_bool) == Some(false) {
             overlay::draw_card(&mut out, "NOT IN A COCKPIT");
             return out;
@@ -3158,6 +3189,87 @@ mod tests {
         assert_eq!(lo.rows, 50);
         assert!(lo.width_px <= 640);
         assert!(lo.height_px <= 360);
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
+    fn viewport_25d_enforces_pixel_ceilings_under_hostile_dimensions_and_cells() {
+        let cells = [
+            None,
+            Some(CellSize {
+                width: 1,
+                height: 1,
+            }),
+            Some(CellSize {
+                width: 1,
+                height: u16::MAX,
+            }),
+            Some(CellSize {
+                width: u16::MAX,
+                height: 1,
+            }),
+            Some(CellSize {
+                width: 64,
+                height: 6,
+            }),
+            Some(CellSize {
+                width: 4,
+                height: 128,
+            }),
+            Some(CellSize {
+                width: 10,
+                height: 20,
+            }),
+        ];
+        let dims = [
+            (0, 0),
+            (1, 1),
+            (400, 200),
+            (641, 361),
+            (4000, 2000),
+            (u16::MAX, u16::MAX),
+            (u16::MAX, 4),
+            (4, u16::MAX),
+        ];
+        for (cols, rows) in dims {
+            for cell in cells {
+                for step_down in [false, true] {
+                    let max_w = if step_down { 640 } else { MAX_WIDTH_PX };
+                    let max_h = if step_down { 360 } else { MAX_HEIGHT_PX };
+                    let vp = viewport_25d(cols, rows, cell, step_down);
+                    assert!(
+                        vp.width_px <= max_w && vp.width_px >= 2 && vp.width_px.is_multiple_of(2),
+                        "cols={cols} rows={rows} cell={cell:?} step_down={step_down} -> {vp:?}"
+                    );
+                    assert!(
+                        vp.height_px <= max_h
+                            && vp.height_px >= 2
+                            && vp.height_px.is_multiple_of(2),
+                        "cols={cols} rows={rows} cell={cell:?} step_down={step_down} -> {vp:?}"
+                    );
+                    assert_eq!(vp.width_px, usize::from(vp.cols) * usize::from(vp.cell_w));
+                    assert_eq!(vp.height_px, usize::from(vp.rows) * usize::from(vp.cell_h));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_canvas_bake_respects_hard_ceiling_for_oversized_viewport() {
+        let map = Map::new(16, 16, 1000);
+        let canvas = TerrainCanvas::bake(&map, None, 8_000, 8_000, 131_068, 87_376, 1000);
+        assert!(canvas.canvas_w <= 2560, "canvas_w={}", canvas.canvas_w);
+        assert!(canvas.canvas_h <= 1440, "canvas_h={}", canvas.canvas_h);
+        assert_eq!(
+            canvas.ground_frame.width(),
+            canvas.canvas_w,
+            "ground frame matches bounded canvas"
+        );
+        assert_eq!(canvas.ground_frame.height(), canvas.canvas_h);
+        assert_eq!(
+            canvas.occluder_base_y.len(),
+            canvas.canvas_w * canvas.canvas_h
+        );
     }
 
     #[cfg(feature = "encode")]

@@ -37,13 +37,22 @@
 //!     is no longer a good, and what it does there is the combat code's.
 //!   - `seized`: the unlicensed strategic ore an in-flight burn's customs picket took, on the
 //!     same receipt.
-//!   - `consumed`: what a consumer used up (Q-48-19's consumption arm, EX.9's). No act
-//!     consumes yet, so it reads 0.
+//!   - `consumed`: what the port houses used up (doc 48 unit EX.9's consumption,
+//!     `crate::port::consume`): each `tacsim.port_consume` ledger's total.
+//! - **The certified dies** (doc 48e, services G28 and production G16; PL.7 handed both to
+//!   EX.0, which did not add them):
+//!   - `opening`, a source: the die depot's opening stock, which the certified origin's
+//!     `Initialize` credits into the depot once, from nowhere the census counts.
+//!   - `cored`, a sink: the chain goods each die took from the depot when it was issued, summed
+//!     over the retained die certificates (`DieCertificate::consumed`).
 //!
-//! `balance` = `stock` + `opened` + `scrapped` + `rerolled` − `in_ground` − `pools` − `lots` −
-//! `bales` − `worked` − `milled` − `built` − `fitted` − `repaired` − `burned` − `loaded` −
-//! `seized` − `consumed`. The owner's IN.11 rulings of 2026-11-05 added `repaired` and
-//! `scrapped`; EX.0 added `rerolled` and the last four; the durable matter ledger stays parked.
+//! `balance` = `stock` + `opened` + `scrapped` + `rerolled` + `opening` − `in_ground` − `pools`
+//! − `lots` − `bales` − `worked` − `milled` − `built` − `fitted` − `repaired` − `burned` −
+//! `loaded` − `seized` − `consumed` − `cored`. The owner's IN.11 rulings of 2026-11-05 added
+//! `repaired` and `scrapped`; EX.0 added `rerolled` and the four after `repaired`; doc 48e added
+//! `opening` and `cored`; the durable matter ledger stays parked. **`partial=1`** (doc 48e,
+//! services G30) says a family scan stopped short (an unreadable page, or the page bound) or a
+//! hull's bay record did not read, so the terms undercount.
 //! A new term is one field, one line in [`balance`](crate::port::census::MatterCensus::balance)
 //! and one in [`line`](crate::port::census::MatterCensus::line). Each commission also prints one
 //! `tacsim.matter_build` line: the inputs (the bill's bulk and its parts, a stock core's module
@@ -138,8 +147,16 @@ pub struct MatterCensus {
     pub loaded: u64,
     /// The strategic ore in-flight customs pickets seized (doc 48 cut EX.0).
     pub seized: u64,
-    /// What a consumer used up (Q-48-19; EX.9 writes it, 0 until then).
+    /// What the port houses used up (Q-48-19; doc 48 unit EX.9's consumption ledgers).
     pub consumed: u64,
+    /// The die depot's opening stock, once the certified origin is initialized (doc 48e,
+    /// services G28).
+    pub opening: u64,
+    /// The chain goods the issued dies took from the depot (doc 48e, services G28).
+    pub cored: u64,
+    /// A scan stopped short or a hull's record did not read: the terms undercount (doc 48e,
+    /// services G30).
+    pub partial: bool,
     /// One line a commission: `(order, inputs, hull, waste)`.
     pub builds: Vec<(u64, u64, u64, u64)>,
 }
@@ -158,6 +175,7 @@ impl MatterCensus {
             + i128::from(self.opened)
             + i128::from(self.scrapped)
             + i128::from(self.rerolled)
+            + i128::from(self.opening)
             - i128::from(self.in_ground)
             - i128::from(self.pools)
             - i128::from(self.lots)
@@ -171,17 +189,19 @@ impl MatterCensus {
             - i128::from(self.loaded)
             - i128::from(self.seized)
             - i128::from(self.consumed)
+            - i128::from(self.cored)
     }
 
     /// **The census line**: `tacsim.matter_census mined= opened= in_ground= stock= pools= lots=
     /// bales= worked= milled= built= fitted= repaired= scrapped= rerolled= burned= loaded=
-    /// seized= consumed= balance=`, kilograms.
+    /// seized= consumed= opening= cored= partial= balance=`, kilograms (`partial` 0 or 1).
     #[must_use]
     pub fn line(&self) -> String {
         format!(
             "{CENSUS_LINE} mined={} opened={} in_ground={} stock={} pools={} lots={} bales={} \
              worked={} milled={} built={} fitted={} repaired={} scrapped={} rerolled={} \
-             burned={} loaded={} seized={} consumed={} balance={}",
+             burned={} loaded={} seized={} consumed={} opening={} cored={} partial={} \
+             balance={}",
             self.mined(),
             self.opened,
             self.in_ground,
@@ -200,6 +220,9 @@ impl MatterCensus {
             self.loaded,
             self.seized,
             self.consumed,
+            self.opening,
+            self.cored,
+            u8::from(self.partial),
             self.balance()
         )
     }
@@ -216,28 +239,31 @@ impl MatterCensus {
     }
 }
 
-/// Every value of one family, page by page.
+/// Every value of one family, page by page. `true` when it read the whole family; `false` when a
+/// page did not read or the page bound stopped it (doc 48e, services G30: the census says so).
 pub(crate) fn scan<K, V>(
     ctx: &Ctx<'_>,
     handle: &mush_core::StateFamilyHandle<K, V>,
     mut each: impl FnMut(&V),
-) where
+) -> bool
+where
     K: Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
     let mut cursor: Option<String> = None;
     for _ in 0..MAX_PAGES {
         let Ok(page) = ctx.scan_action_state(handle, cursor.as_deref(), PAGE) else {
-            return;
+            return false;
         };
         for entry in page.entries() {
             each(entry.value());
         }
         match page.next_after() {
             Some(next) => cursor = Some(next.to_string()),
-            None => return,
+            None => return true,
         }
     }
+    false
 }
 
 /// **Take the census.**
@@ -272,12 +298,14 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
         .map(|h| h.0.clone())
         .ok_or("industry is not composed")?;
     let mut out = MatterCensus::default();
+    // Doc 48e, services G30: whether every family scan read its whole family.
+    let mut whole = true;
 
     // Sources: the deposits (their endpoints are the ground), the stock clerk's mints.
     let mut ground: BTreeSet<EndpointRef> = BTreeSet::new();
     let mut deposits = Vec::new();
     let mut deposit_goods: BTreeMap<mush_industry::OreDepositId, CanonicalId> = BTreeMap::new();
-    scan(ctx, &industry.deposits, |deposit| {
+    whole &= scan(ctx, &industry.deposits, |deposit| {
         if counted(deposit.commodity()) {
             ground.insert(deposit.endpoint());
             deposits.push((deposit.endpoint(), deposit.commodity().clone()));
@@ -292,12 +320,12 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
         out.in_ground = out.in_ground.saturating_add(kg(good, units));
     }
     // Doc 48 unit PL.10: a re-roll credits a worked-out deposit's pool again, from no source.
-    scan(ctx, &handles.families.pockets, |cursor| {
+    whole &= scan(ctx, &handles.families.pockets, |cursor| {
         if let (Some(ledger), Some(good)) = (&cursor.reroll, deposit_goods.get(&cursor.deposit)) {
             out.rerolled = out.rerolled.saturating_add(kg(good, ledger.rerolled_t));
         }
     });
-    scan(ctx, &handles.families.port_stock, |receipt| {
+    whole &= scan(ctx, &handles.families.port_stock, |receipt| {
         if counted(&receipt.good) {
             out.stock = out.stock.saturating_add(kg(&receipt.good, receipt.qty));
         }
@@ -305,7 +333,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
     // Doc 48 unit PL.2b: the relay foundry's one staff stock of blanks is a mint as well (its
     // received blanks are a produced lot's, moved into the pool, no source).
     if let Ok(blank) = CanonicalId::new(crate::relay_foundry::BLANK) {
-        scan(ctx, &handles.families.relay_fabrications, |book| {
+        whole &= scan(ctx, &handles.families.relay_fabrications, |book| {
             if book.stocked {
                 out.stock = out
                     .stock
@@ -316,7 +344,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
 
     // Holdings: the pools by their books' commodity, the lots, the bales.
     let mut books: BTreeMap<mush_core::ReservationBookId, CanonicalId> = BTreeMap::new();
-    scan(ctx, &inventory.books, |book| {
+    whole &= scan(ctx, &inventory.books, |book| {
         let good = book.resource().id.clone();
         if counted(&good) {
             books.insert(book.id(), good);
@@ -339,12 +367,16 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .map_or(0, |scalar| u64::try_from(scalar.current()).unwrap_or(0));
         out.pools = out.pools.saturating_add(kg(good, units));
     }
-    scan(ctx, &inventory.lots, |lot| {
+    whole &= scan(ctx, &inventory.lots, |lot| {
         if counted(lot.commodity()) && !ground.contains(&lot.endpoint()) {
             out.lots = out.lots.saturating_add(kg(lot.commodity(), lot.quantity()));
         }
     });
     for state in store.bay_hulls.values() {
+        // Doc 48e, services G30: a hull whose bay record does not read is left out, and said.
+        if !matches!(state, crate::port::bay_work::BayHullState::Present(_)) {
+            whole = false;
+        }
         if let crate::port::bay_work::BayHullState::Present(row) = state {
             out.repaired = out.repaired.saturating_add(row.repaired_kg);
             // Doc 41 cut RS.9a: a workshop's scrap mints from a hull the census never held.
@@ -360,7 +392,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
         }
     }
     // The sites' matter: the tenders' repairs (a sink) and remains scrap's mints (a source).
-    scan(ctx, &handles.families.sites, |site| {
+    whole &= scan(ctx, &handles.families.sites, |site| {
         out.repaired = out.repaired.saturating_add(site.matter.repaired_kg);
         out.scrapped = out.scrapped.saturating_add(site.matter.scrapped_kg);
         // Doc 48 cut EX.0: the munitions a tender's rearms drew, weighed here.
@@ -378,7 +410,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
     }
 
     // Sinks: the completed work orders, the mills, the commissions.
-    scan(ctx, &industry.work_orders, |order| {
+    whole &= scan(ctx, &industry.work_orders, |order| {
         if !matches!(
             order.state(),
             mush_industry::WorkOrderState::Completed { .. }
@@ -398,7 +430,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .worked
             .saturating_add(mass(pinned.inputs()).saturating_sub(mass(pinned.outputs())));
     });
-    scan(ctx, &handles.families.mills, |ledger| {
+    whole &= scan(ctx, &handles.families.mills, |ledger| {
         // Every counted input in, the counted product out (EX.0 counts Occator's ice mill too):
         // the ore and, for a process, its further inputs (doc 48 units PL.2 and PL.3).
         let weigh = |good: &CanonicalId, units: u64| {
@@ -417,7 +449,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
     });
     // The parts the bay fitted into hulls: each lot consumed, its provenance kept.
     if let Some(bay) = w.module_state::<crate::port::bay_work::act::BayActHandles>() {
-        scan(ctx, &bay.parts, |part| {
+        whole &= scan(ctx, &bay.parts, |part| {
             if part.fitted_into.is_none() {
                 return;
             }
@@ -447,7 +479,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .filter(|good| counted(good))
             .map_or(0, |good| kg(good, units))
     };
-    scan(ctx, &handles.families.tickets, |ticket| {
+    whole &= scan(ctx, &handles.families.tickets, |ticket| {
         out.burned = out
             .burned
             .saturating_add(spent(&propellant, ticket.plan.burn_t))
@@ -455,7 +487,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
     });
     // The in-flight burns: each hull's receipt totals, and the ore its pickets seized.
     let strategic_ore = CanonicalId::new("strategic_ore").ok();
-    scan(ctx, &handles.families.space_burn_receipts, |receipts| {
+    whole &= scan(ctx, &handles.families.space_burn_receipts, |receipts| {
         out.burned = out
             .burned
             .saturating_add(spent(&propellant, receipts.burned_t))
@@ -464,6 +496,36 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             .seized
             .saturating_add(spent(&strategic_ore, receipts.seized_t));
     });
+    // Doc 48 unit EX.9: what the port houses used up.
+    if let Some(consume) = w.module_state::<crate::port::consume::ConsumeHandles>() {
+        whole &= scan(ctx, &consume.ledgers, |ledger| {
+            if counted(&ledger.good) {
+                out.consumed = out.consumed.saturating_add(kg(&ledger.good, ledger.units));
+            }
+        });
+    }
+    // Doc 48e, services G28 and production G16: the certified dies. The depot's opening stock is
+    // a source once the origin is initialized (its `Initialize` credits it, once); each issued
+    // die's chain goods left the depot into a die, which the census does not count.
+    if mush_industry::core_production::counter::origin_initialized(w)
+        && let Some(launch) = w.module_state::<crate::launch::registration::LaunchService>()
+    {
+        for line in &launch.0.deployment().hardware.depot_stock {
+            if counted(&line.commodity) {
+                out.opening = out.opening.saturating_add(kg(&line.commodity, line.units));
+            }
+        }
+    }
+    if let Some(certificates) = w.module_state::<mush_industry::core_production::DieCertificates>()
+    {
+        whole &= scan(ctx, certificates.handle(), |certificate| {
+            for line in certificate.consumed() {
+                if counted(&line.commodity) {
+                    out.cored = out.cored.saturating_add(kg(&line.commodity, line.units));
+                }
+            }
+        });
+    }
     for record in crate::port::commission::commissions(w) {
         if record.step == crate::port::commission::Step::Consuming {
             continue;
@@ -488,6 +550,7 @@ pub fn take(ctx: &Ctx<'_>) -> Result<MatterCensus, String> {
             bill.waste_kg(),
         ));
     }
+    out.partial = !whole;
     Ok(out)
 }
 
@@ -703,6 +766,39 @@ mod tests {
         Ok(())
     }
 
+    /// **Doc 48e (services G28, G30)**: the die depot's opening stock is a source and the dies'
+    /// chain goods a sink, and the line says when a scan stopped short.
+    #[test]
+    fn e48_the_die_terms_balance_and_a_short_scan_is_said() {
+        let census = MatterCensus {
+            opening: 200_000,
+            pools: 197_000,
+            cored: 3_000,
+            ..MatterCensus::default()
+        };
+        assert_eq!(census.balance(), 0);
+        let line = census.line();
+        assert!(
+            line.ends_with("opening=200000 cored=3000 partial=0 balance=0"),
+            "{line}"
+        );
+        let mut more = census.clone();
+        more.opening += 1;
+        assert_eq!(more.balance(), 1, "the depot's opening stock is a source");
+        let mut more = census.clone();
+        more.cored += 1;
+        assert_eq!(more.balance(), -1, "a die's chain goods are a sink");
+        let short = MatterCensus {
+            partial: true,
+            ..census
+        };
+        assert!(
+            short.line().contains(" partial=1 balance=0"),
+            "{}",
+            short.line()
+        );
+    }
+
     /// The three sinks are subtracted, and the line names each before the balance.
     #[test]
     fn ex0_the_sink_terms_balance_and_print() {
@@ -719,7 +815,10 @@ mod tests {
         assert_eq!(census.balance(), 0);
         let line = census.line();
         assert!(
-            line.ends_with("burned=3000 loaded=1500 seized=500 consumed=1000 balance=0"),
+            line.ends_with(
+                "burned=3000 loaded=1500 seized=500 consumed=1000 opening=0 cored=0 partial=0 \
+                 balance=0"
+            ),
             "{line}"
         );
         assert!(line.contains(" scrapped=0 rerolled=1000 burned="), "{line}");

@@ -111,6 +111,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    @tacsim/port clear #<hull>          (staff) stand down a program hull's filed clearance whose launch is held: the pending passage is cleared, its burn sequence kept, the ticket (if burned) kept as the record; nothing is refunded and the pilot is told.\n\
                    @tacsim/port seed <port> <design> <mark>=org:<organization>\n\
                    \x20                                 (staff) commission one ship of <design> for an organization (a House) at <port> under the fresh <mark>: the port's next fires lay her up, dock her and title her to it on its root scope. A member granted unit.deploy there may take her out.\n\
+                   @tacsim/port haulers <port> [on|off]\n\
+                   \x20                                 (staff) a hauling house's hulls, their trips and why each waits; `off` lays it up (what is under way docks and no new trip is planned), `on` opens it again.\n\
                    @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
                    @tacsim/tv home #<rig>              (staff) stop work and bring a stranded rig into its assigned hull's bay, preserving its hopper.\n\
                    @tacsim/tv home #<rig> #<hull>      (staff) bring a rig whose excursion staff closed with it out into another hull settled on its site, preserving its hopper and its lease.\n\
@@ -458,7 +460,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 .copied()
                 .map(SmolStr::new)
                 .collect(),
-            help: crate::port::works::WORKS_HELP.into(),
+            help: crate::port::works::YARD_HELP.into(),
             ..CommandSpec::default()
         },
         Arc::new(crate::port::works::yard_cmd),
@@ -1022,7 +1024,8 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
 
 /// The one usage line of `@tacsim/port`.
 pub const PORT_USAGE: &str = "Usage: @tacsim/port status | @tacsim/port clear #<hull> | \
-     @tacsim/port seed <port> <design> <mark>=org:<organization>";
+     @tacsim/port seed <port> <design> <mark>=org:<organization> | \
+     @tacsim/port haulers <port> [on|off]";
 
 /// `@tacsim/port [status]` (doc 18 §4.7; staff): the port readiness report
 /// ([`crate::port::readiness()`]), a pure read of the port maps, the economy, org
@@ -1062,10 +1065,36 @@ fn port_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return port_seed(ctx, &lhs);
     }
+    if lhs
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("haulers"))
+    {
+        return port_haulers(ctx, &lhs);
+    }
     if !(lhs.is_empty() || lhs.eq_ignore_ascii_case("status")) {
         return Err(CmdError::msg(PORT_USAGE));
     }
     let rows = crate::port::readiness_in(ctx).render();
+    lines(ctx, rows);
+    Ok(())
+}
+
+/// `@tacsim/port haulers <port> [on|off]` (doc 48 unit EX.10; staff): a hauling house's rows, or
+/// lay it up and open it again (`crate::port::hauler::haulers_cmd`).
+fn port_haulers(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
+    let mut words = lhs.split_whitespace().skip(1);
+    let (Some(port), set, None) = (words.next(), words.next(), words.next()) else {
+        return Err(CmdError::msg(PORT_USAGE));
+    };
+    let set = match set.map(str::to_ascii_lowercase).as_deref() {
+        None => None,
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(_) => return Err(CmdError::msg(PORT_USAGE)),
+    };
+    let entry = CanonicalId::new(port).map_err(|_| CmdError::msg(PORT_USAGE))?;
+    let rows = crate::port::hauler::haulers_cmd(ctx, &entry, set).map_err(CmdError::msg)?;
     lines(ctx, rows);
     Ok(())
 }

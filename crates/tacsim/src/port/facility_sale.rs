@@ -10,12 +10,14 @@
 //!   ([`FACILITY_NOT_SOLD`]). Not a facility whose stores are a vendor's storefront: the
 //!   storefront trades from that vault, and the stores vault goes with the facility.
 //! - **Only when idle** (Q-48-45): no open order (a works or yard contract, a work order not
-//!   finished, a yard commission still laying up) and nothing in its stores. Running costs are
-//!   not charged yet (doc 48 EX.9's debits), so no facility owes one and there is no seller's
-//!   debt to settle first.
+//!   finished, a yard commission still laying up) and nothing in its stores.
+//! - **No unpaid running cost** (Q-48-45, doc 48 unit EX.9): a facility whose room owes running
+//!   costs is refused ([`FACILITY_IN_DEBT`]); its seller pays the debt first, so no buyer
+//!   inherits it.
 //! - **What a sale is priced against** ([`state_digest`]): the facility record, its owner,
-//!   capabilities, slots, revisions, cost model and customers. A re-term after the quote changes
-//!   it, and the quote lapses or the contract refunds at its window.
+//!   capabilities, slots, revisions, cost model and customers, and its running-cost standing
+//!   (debt, mothballed). A re-term or a debt after the quote changes it, and the quote lapses or
+//!   the contract refunds at its window.
 //! - **What a sale moves** ([`on_sold`], from the asset sale's observer): the facility record's
 //!   owner, made owner-held ([`mush_industry::store::sell_facility`]), so the lane keeps the
 //!   buyer and the buyer's terms; the stores vault, re-homed to the buyer; and the payee, which
@@ -52,6 +54,9 @@ pub const FACILITY_STOREFRONT: &str =
 /// Work under way: `{name}`.
 pub const FACILITY_BUSY: &str =
     "The {name} has work under way; it is sold only when idle, every order closed.";
+/// Running costs owed (Q-48-45): `{name}`.
+pub const FACILITY_IN_DEBT: &str =
+    "The {name} owes running costs; it is sold only once they are paid.";
 /// Goods in its stores: `{name}`.
 pub const FACILITY_STORES_LADEN: &str =
     "The {name}'s stores hold goods; empty them before it is sold.";
@@ -254,6 +259,11 @@ pub fn admit(
     if busy(w, object) {
         return Some(Err(line(FACILITY_BUSY)));
     }
+    // Q-48-45: no unpaid running cost. The debt is the facility's room's, and the buyer would
+    // otherwise inherit it (production G1).
+    if crate::port::upkeep::row_of(w, object).is_some_and(|row| row.debt_minor > 0) {
+        return Some(Err(line(FACILITY_IN_DEBT)));
+    }
     if let Some(vault) = stores_of(w, object) {
         if is_storefront(w, vault) {
             return Some(Err(line(FACILITY_STOREFRONT)));
@@ -267,11 +277,17 @@ pub fn admit(
     Some(Ok(catalog_of(kind)))
 }
 
-/// **What a facility's sale is priced against** (doc 48 unit PL.9): its record, whole.
+/// **What a facility's sale is priced against** (doc 48 unit PL.9): its record, whole; its
+/// running-cost standing (its debt and whether it is mothballed), so a debt run up after the
+/// quote voids the sale (production G1); and whether work is under way there, so an order
+/// booked between the purchase and the settlement voids it too (production G2).
 #[must_use]
 pub fn state_digest(w: &World, object: ObjId) -> Option<u64> {
     let facility = w.module_state::<IndustryStore>()?.facility(object)?;
-    let text = serde_json::to_string(facility).ok()?;
+    let standing = crate::port::upkeep::row_of(w, object)
+        .map(|row| (row.debt_minor, row.mothballed))
+        .unwrap_or_default();
+    let text = serde_json::to_string(&(facility, standing, busy(w, object))).ok()?;
     Some(mush_market::declared_hash(&text))
 }
 

@@ -72,8 +72,8 @@ pub use api::{
 pub use commands::NOTES_STAFF;
 pub use data::{
     Approval, Job, JobComment, JobPayload, JobStatus, MAX_JOB_COMMENT_BYTES, MAX_JOB_COMMENTS,
-    MAX_JOB_TITLE_BYTES, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS, Note, REQ_QUEUE, fmt_ago,
-    job_key, meta_value, note_key,
+    MAX_JOB_TITLE_BYTES, MAX_NOTE_CATEGORY_BYTES, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS, Note,
+    REQ_QUEUE, fmt_ago, job_key, meta_value, note_key,
 };
 pub use facts::JobsFactProvider;
 
@@ -197,7 +197,16 @@ impl GameModule for JobsModule {
             } else if key.starts_with("note:") {
                 match serde_json::from_value::<Note>(value) {
                     Ok(note) => {
-                        notes.insert((note.owner, note.category.clone()), note);
+                        if note_key(note.owner, &note.category).len()
+                            > mush_core::MAX_MODULE_KEY_BYTES
+                        {
+                            tracing::error!(
+                                %key,
+                                "jobs: oversized note key quarantined (skipped, left in store)"
+                            );
+                        } else {
+                            notes.insert((note.owner, note.category.clone()), note);
+                        }
                     }
                     Err(e) => {
                         tracing::error!(%key, error = %e, "jobs: unparseable note doc quarantined (skipped, left in store)");

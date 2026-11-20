@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v41 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v44 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,11 +45,112 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 48e lane L4 (lane v44): the consumers' refresh and Titan's ice taken out** — the
+/// `refresh` rows of the Habitat Board's, the Strategic Reserve's, Syrtis Bonded's and the Selk
+/// Townships Board's bids (exchange G19), and the Titan Concession's ice bid and ice mill
+/// (production G21), so a strip chain rebuilds a lane before v44 (idempotent). The chain's head.
+pub fn strip_refresh_and_ice(doc: &mut Value) {
+    let Some(entries) = doc.get_mut("entries") else {
+        return;
+    };
+    for (entry, org) in [
+        ("luna_port", "habitat_board"),
+        ("deimos_port", "strategic_reserve"),
+        ("deimos_port", "syrtis_bonded"),
+        ("titan_port", "selk_townships"),
+        ("titan_port", "titan_concession"),
+    ] {
+        let Some(vendors) = entries
+            .get_mut(entry)
+            .and_then(|entry| entry.get_mut("def"))
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for vendor in vendors.iter_mut().filter(|v| v["org"] == org) {
+            if org == "titan_concession" {
+                if let Some(bids) = vendor.get_mut("bids").and_then(Value::as_array_mut) {
+                    bids.retain(|bid| bid["good"] != "ice_ore");
+                }
+                if let Some(mills) = vendor.get_mut("mill").and_then(Value::as_array_mut) {
+                    mills.retain(|mill| mill["ore"] != "ice_ore");
+                }
+                continue;
+            }
+            if let Some(bids) = vendor.get_mut("bids").and_then(Value::as_array_mut) {
+                for bid in bids.iter_mut().filter_map(Value::as_object_mut) {
+                    bid.remove("refresh");
+                }
+            }
+        }
+    }
+}
+
+/// **Doc 48 unit EX.10 (lane v43): the hauling house taken out** — Ceres's Vesta Carrying
+/// Company (its org row and the entry's `hauler` block) and the Deimos reserve's `consume` rows,
+/// so a strip chain rebuilds a lane before v43 (idempotent); lane v44's
+/// [`strip_refresh_and_ice`] first.
+pub fn strip_hauling(doc: &mut Value) {
+    strip_refresh_and_ice(doc);
+    let Some(entries) = doc.get_mut("entries") else {
+        return;
+    };
+    if let Some(def) = entries
+        .get_mut("ceres_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(Value::as_object_mut)
+    {
+        def.remove("hauler");
+        if let Some(orgs) = def.get_mut("orgs").and_then(Value::as_array_mut) {
+            orgs.retain(|org| org["id"] != "vesta_carriers");
+        }
+    }
+    if let Some(vendors) = entries
+        .get_mut("deimos_port")
+        .and_then(|entry| entry.get_mut("def"))
+        .and_then(|def| def.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+    {
+        for vendor in vendors
+            .iter_mut()
+            .filter(|v| v["org"] == "strategic_reserve")
+        {
+            if let Some(vendor) = vendor.as_object_mut() {
+                vendor.remove("consume");
+            }
+        }
+    }
+}
+
+/// **Doc 48 unit EX.9 (lane v42): the consumers' rows taken out** — every vendor's `consume`
+/// rows (the Habitat Board, Syrtis Bonded and the Selk Townships Board), so a strip chain
+/// rebuilds a lane before v42 (idempotent); lane v43's [`strip_hauling`] first.
+pub fn strip_consumption(doc: &mut Value) {
+    strip_hauling(doc);
+    let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for entry in entries.values_mut() {
+        let Some(vendors) = entry
+            .get_mut("def")
+            .and_then(|def| def.get_mut("vendors"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for vendor in vendors.iter_mut().filter_map(Value::as_object_mut) {
+            vendor.remove("consume");
+        }
+    }
+}
+
 /// **Doc 48 unit PL.8 (lane v41): the workshops' part bids taken out** — every part bid of
 /// Occator's at Ceres, and Stickney Yards' but its light plant's, which goes back to IN.11's 4,000
 /// with no refresh in its old place (Q-48-29), so a strip chain rebuilds a lane before v41
-/// (idempotent). The chain's head.
+/// (idempotent); lane v42's [`strip_consumption`] first.
 pub fn strip_parts_market(doc: &mut Value) {
+    strip_consumption(doc);
     let light = "tacsim.part.plant.light_mk1";
     for (entry, org) in [
         ("ceres_port", "occator"),

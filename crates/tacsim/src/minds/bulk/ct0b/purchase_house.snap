@@ -170,7 +170,7 @@ stored roll/reference:roll:commercial:v1/paid_operation/000000000000000000000000
 [0009 market/list_house_mind@1, refused]
 actor = #<o1>
 parameters = {"owner_licence":"1"}
-refused = action provider rejected market:action:list_house_mind@1#<d1>: ProviderRejected: No house mind licence is available under these terms.
+refused = action provider rejected market:action:list_house_mind@1#<d1>: ProviderRejected: No house mind license is available under these terms.
 
 [0010 market/list_house_mind@1]
 actor = #<o1>
@@ -192,7 +192,7 @@ installed = yes
 [0012 market/list_house_mind@1, refused]
 actor = #<o1>
 parameters = {"owner_licence":"1"}
-refused = action provider rejected market:action:list_house_mind@1#<d1>: ProviderRejected: No house mind licence is available under these terms.
+refused = action provider rejected market:action:list_house_mind@1#<d1>: ProviderRejected: No house mind license is available under these terms.
 
 [0013 market/purchase_house_mind@1]
 actor = #<o1>
@@ -218,7 +218,7 @@ installed = yes
 [0014 market/purchase_house_mind@1, refused]
 actor = #<o1>
 parameters = {"quote":"0000000000000000000000000121eac1"}
-refused = action provider rejected market:action:purchase_house_mind@1#<d1>: ProviderRejected: No house mind licence is available under these terms.
+refused = action provider rejected market:action:purchase_house_mind@1#<d1>: ProviderRejected: No house mind license is available under these terms.
 
 [0015 market/purchase_house_mind@1]
 actor = #<o1>
@@ -263,7 +263,7 @@ write = {"kind":"module_json_set","namespace":"roll","key":"reference:roll:comme
 [0017 market/settle_house_mind@1, refused]
 actor = #<o1>
 parameters = {"operation":"0000000000000000000000000121eac2"}
-refused = action provider rejected market:action:settle_house_mind@1#<d1>: ProviderRejected: No house mind licence is available under these terms.
+refused = action provider rejected market:action:settle_house_mind@1#<d1>: ProviderRejected: No house mind license is available under these terms.
 
 [0018 market/settle_house_mind@1]
 actor = #<o1>
@@ -521,4 +521,4 @@ stored roll/reference:roll:commercial:v1/paid_operation/000000000000000000000000
 [0029 market/quote_house_mind@1, refused]
 actor = #<o1>
 parameters = {"listing":"0000000000000000000000000121eac0"}
-refused = action provider rejected market:action:quote_house_mind@1#<d1>: ProviderRejected: No house mind licence is available under these terms.
+refused = action provider rejected market:action:quote_house_mind@1#<d1>: ProviderRejected: No house mind license is available under these terms.

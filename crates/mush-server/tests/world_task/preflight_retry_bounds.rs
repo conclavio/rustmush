@@ -182,7 +182,7 @@ impl AuthoritativeStore for TransientPreflightStore {
         let delay = Duration::from_millis(self.answer_delay_ms.load(Ordering::SeqCst));
         Box::pin(async move {
             // A store that is slow to answer transiently is the case the
-            // wall-clock window exists for; a zero delay is the case the
+            // retry window (tokio time) exists for; a zero delay is the case the
             // attempt ceiling exists for.
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
@@ -345,6 +345,12 @@ impl AuthoritativeStore for TransientPreflightStore {
 impl ObjectStore for TransientPreflightStore {
     fn authoritative_store(&self) -> Option<&dyn AuthoritativeStore> {
         Some(self)
+    }
+
+    /// It forwards to its in-process memory store; its slow answers are tokio
+    /// sleeps, which the paused clock moves (TS.10c).
+    fn holds_process_memory(&self) -> bool {
+        self.inner.holds_process_memory()
     }
 
     fn bootstrap_writable(&self) -> BoxFuture<'_, Result<(), StoreError>> {
@@ -620,6 +626,7 @@ fn boot(store: Arc<dyn ObjectStore>, metrics: &Arc<Metrics>) -> PersistHandles {
             metrics: Arc::clone(metrics),
             quarantine_spool: QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::tokio_at(mush_config::unix_now_ms()),
         },
         |_| -> Gateway { Arc::new(BlackholeGateway) },
     )
@@ -696,7 +703,7 @@ async fn shutdown(handles: PersistHandles) {
 /// Against the pre-step code this test never finishes - the future retries
 /// every 5 s for the life of the process - so the whole submission is wrapped
 /// in a timeout well under the runtime's patience.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn all_in_one_attempt_ceiling() {
     let store = TransientPreflightStore::new();
     let metrics = Arc::new(Metrics::new());
@@ -704,7 +711,7 @@ async fn all_in_one_attempt_ceiling() {
     let action = brace_offer(&handles.handle).await;
 
     store.arm_forever(Duration::ZERO);
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let sent = tokio::time::timeout(
         Duration::from_secs(20),
         handles.handle.submit_legal_action(action),
@@ -739,8 +746,8 @@ async fn all_in_one_attempt_ceiling() {
 }
 
 /// A store that is merely SLOW to answer transiently: the attempt ceiling
-/// would let this run for minutes, so the wall-clock window is what stops it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// would let this run for minutes, so the retry window (tokio time; paused here, TS.10c) is what stops it.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn all_in_one_window_governs() {
     let store = TransientPreflightStore::new();
     let metrics = Arc::new(Metrics::new());
@@ -750,7 +757,7 @@ async fn all_in_one_window_governs() {
     // Two seconds per answer: attempts 1..3 spend 6.3 s of the 5 s window
     // between them, so the loop stops at the third with two attempts unspent.
     store.arm_forever(Duration::from_secs(2));
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let sent = tokio::time::timeout(
         Duration::from_secs(30),
         handles.handle.submit_legal_action(action),
@@ -781,7 +788,7 @@ async fn all_in_one_window_governs() {
 /// The loop is still a RETRY loop: a hiccup that clears inside the bound is
 /// ridden out, and the submission reaches durable ownership with nothing
 /// deferred.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn transient_then_success_still_owns() {
     let store = TransientPreflightStore::new();
     let metrics = Arc::new(Metrics::new());
@@ -819,7 +826,7 @@ async fn transient_then_success_still_owns() {
 /// Why `Busy` is honest on this arm: the refusal happens before any intent is
 /// reserved, and every submission mints its own request sequence, so the same
 /// offer re-submitted after the store heals commits exactly once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn busy_leaves_nothing_behind_to_double_apply() {
     let store = TransientPreflightStore::new();
     let metrics = Arc::new(Metrics::new());

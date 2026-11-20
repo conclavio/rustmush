@@ -149,6 +149,9 @@ struct ShippedInstance {
     /// Doc 44 cut MW.1 (Q-44-7): the `[tacsim.field].raid_director` this box
     /// renders. On for the dev boxes, which nobody staffs.
     raid_director: bool,
+    /// Doc 44 cut MW.18 (Q-44-47): the `[npc].wake_majors` this box renders. On
+    /// for the dev boxes, whose wiped worlds create the major NPCs enabled.
+    wake_majors: bool,
 }
 
 /// The shipped parameterisations. 16b cut R-b: one game — the Shadowrun env left
@@ -167,6 +170,7 @@ const SHIPPED: &[ShippedInstance] = &[
         minds_launch: false,
         registry_pulse_ms: 1_000,
         raid_director: false,
+        wake_majors: false,
     },
     ShippedInstance {
         env: "deploy/dev1/instance.env",
@@ -179,11 +183,12 @@ const SHIPPED: &[ShippedInstance] = &[
         ic_epoch: "0987-04-20 06:00",
         // Caddy on conclav.io since 2026-10-31 (deploy/README.md → "Behind Caddy").
         web: WebShape::BehindLoopbackProxy,
-        // Doc 44 (Q-44-3, Q-44-41, Q-44-7): the mind market, the fast Registry
-        // and the raid director, on both dev boxes.
+        // Doc 44 (Q-44-3, Q-44-41, Q-44-7, Q-44-47): the mind market, the fast
+        // Registry, the raid director and the major NPCs, on both dev boxes.
         minds_launch: true,
         registry_pulse_ms: 50,
         raid_director: true,
+        wake_majors: true,
     },
     ShippedInstance {
         env: "deploy/dev2/instance.env",
@@ -197,6 +202,7 @@ const SHIPPED: &[ShippedInstance] = &[
         minds_launch: true,
         registry_pulse_ms: 50,
         raid_director: true,
+        wake_majors: true,
     },
 ];
 
@@ -866,7 +872,9 @@ fn every_script_that_renders_the_template_names_every_key_it_carries() {
         }
     }
     assert!(
-        keys.contains("RAID_DIRECTOR") && keys.contains("START_ROOM"),
+        keys.contains("RAID_DIRECTOR")
+            && keys.contains("START_ROOM")
+            && keys.contains("WAKE_MAJORS"),
         "the template's live tokens were not read: {keys:?}"
     );
     for script in SCRIPT_ENVS {
@@ -1382,6 +1390,18 @@ fn mw1_the_launch_switch_renders_the_path_only_beside_its_document() {
         assert_eq!(
             cfg.tacsim.field.raid_director, instance.raid_director,
             "{env_file}: the raid director"
+        );
+        // Doc 44 cut MW.18: the template carries the key, so no box runs the
+        // majors on a compiled-in default; the dev boxes wake them.
+        assert_eq!(
+            cfg.npc.wake_majors, instance.wake_majors,
+            "{env_file}: [npc].wake_majors"
+        );
+        assert!(
+            absent
+                .lines()
+                .any(|l| l == format!("wake_majors = {}", instance.wake_majors)),
+            "{env_file}: the render has no live wake_majors line (WAKE_MAJORS)"
         );
 
         // The document written.

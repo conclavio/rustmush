@@ -86,6 +86,62 @@ pub const fn relation_feed_word(relation: Relation) -> &'static str {
     }
 }
 
+/// The Q16 scale of [`sin_q16`] and [`cos_q16`] (doc 48e kernel G17).
+const Q16: i128 = 65_536;
+
+/// `sin(d°)·65536` for `d` in `0..=90`, rounded (doc 48e kernel G17): the one source of the
+/// facet test's trigonometry, so every host reads the same attitude.
+const SIN_Q16_TABLE: [i32; 91] = [
+    0, 1144, 2287, 3430, 4572, 5712, 6850, 7987, 9121, 10252, 11380, 12505, 13626, 14742, 15855,
+    16962, 18064, 19161, 20252, 21336, 22415, 23486, 24550, 25607, 26656, 27697, 28729, 29753,
+    30767, 31772, 32768, 33754, 34729, 35693, 36647, 37590, 38521, 39441, 40348, 41243, 42126,
+    42995, 43852, 44695, 45525, 46341, 47143, 47930, 48703, 49461, 50203, 50931, 51643, 52339,
+    53020, 53684, 54332, 54963, 55578, 56175, 56756, 57319, 57865, 58393, 58903, 59396, 59870,
+    60326, 60764, 61183, 61584, 61966, 62328, 62672, 62997, 63303, 63589, 63856, 64104, 64332,
+    64540, 64729, 64898, 65048, 65177, 65287, 65376, 65446, 65496, 65526, 65536,
+];
+
+/// `sin(deg°)` in Q16, for any whole degree.
+#[must_use]
+fn sin_q16(deg: i32) -> i128 {
+    let d = deg.rem_euclid(360);
+    let (quadrant, within) = (d / 90, d % 90);
+    let at = |i: i32| i128::from(SIN_Q16_TABLE[usize::try_from(i).unwrap_or(0).min(90)]);
+    match quadrant {
+        0 => at(within),
+        1 => at(90 - within),
+        2 => -at(within),
+        _ => -at(90 - within),
+    }
+}
+
+/// `cos(deg°)` in Q16, for any whole degree.
+#[must_use]
+fn cos_q16(deg: i32) -> i128 {
+    sin_q16(deg.rem_euclid(360) + 90)
+}
+
+/// **Where a round came from, for its facet** (doc 48e kernel G6, G7): its position less ten
+/// seconds of its velocity relative to the target. At the end of a flight the round sits metres
+/// from the target centre, with a residual set by the substep and rounding. Ten seconds back
+/// along its relative path is far out on the side it approached from, so the facet follows the
+/// shooter's aspect, not the residual. A round at rest relative to the target reads its own
+/// position, as before.
+#[must_use]
+fn approach_point(
+    pos_m: [i64; 3],
+    round_vel_mmps: [i64; 3],
+    target_vel_mmps: [i64; 3],
+) -> [i64; 3] {
+    let mut out = pos_m;
+    for axis in 0..3 {
+        // mm/s × 10 s ÷ 1,000 mm/m = metres: the relative velocity ÷ 100.
+        let rel = round_vel_mmps[axis].saturating_sub(target_vel_mmps[axis]);
+        out[axis] = pos_m[axis].saturating_sub(rel / 100);
+    }
+    out
+}
+
 /// Canonical armour facet bands matching `content/units/dray.json` (`D-35-1`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FacetBand {
@@ -525,6 +581,11 @@ pub const DRONE_ACCEL_MMPS2: i64 = 5_000;
 /// long a drone can steer. Provisional.
 pub const DRONE_PROPELLANT_KG: u32 = 400;
 
+/// A collector drone's hull, internals (doc 48e kernel G14; Q-49-7: offence lasers are the
+/// answer to drones and collectors): one section, unarmoured on every facet, so an offence
+/// laser's shot at its reach disables one. Provisional.
+pub const DRONE_HULL_INTERNALS: u32 = 40;
+
 /// **A collector drone's kit** (doc 44 unit MW.12; Q-44-27): the one mount a drone's mind
 /// can name, the hold it fills, and where it lands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -877,6 +938,15 @@ impl SpaceShipState {
         // A burn is refused once the change of speed is spent. The reaction mass is what
         // bounds a drone, so this is held well above what that mass can buy.
         ship.delta_v_mps = 1_000_000;
+        // Doc 48e kernel G14: a drone is soft, not a Dray's hull section.
+        if let Some(hull) = ship.sections.get_mut(&ShipSectionId::Hull) {
+            for armour in hull.facets.values_mut() {
+                *armour = 0;
+            }
+            hull.internals = DRONE_HULL_INTERNALS;
+            hull.max_internals = DRONE_HULL_INTERNALS;
+            hull.struck_through = None;
+        }
         ship.collector = Some(CollectorKit {
             id: collector_id.into(),
             home: home.into(),
@@ -941,49 +1011,55 @@ impl SpaceShipState {
     /// Select which [`FacetBand`] faces an incoming attack arriving along vector
     /// `incoming_from_m = attacker_pos_m - self.pos_m`, accounting for the hull's
     /// attitude `(yaw_deg, pitch_deg, roll_deg)` (`D-35-1`, §6.3).
+    ///
+    /// Integer arithmetic throughout (doc 48e kernel G17): the attitude's sines and cosines come
+    /// from a whole-degree Q16 table and every band test compares squares in `i128`, so no host's
+    /// floating-point library can move a facet across a band edge. A point at the hull's own
+    /// centre reads as `Right`, as it always has.
     #[must_use]
     pub fn select_facet_for_attack(&self, attacker_pos_m: [i64; 3]) -> FacetBand {
-        let dx = (attacker_pos_m[0] - self.pos_m[0]) as f64;
-        let dy = (attacker_pos_m[1] - self.pos_m[1]) as f64;
-        let dz = (attacker_pos_m[2] - self.pos_m[2]) as f64;
-        let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(1.0);
+        const Q: i128 = Q16;
+        let dx = i128::from(attacker_pos_m[0]) - i128::from(self.pos_m[0]);
+        let dy = i128::from(attacker_pos_m[1]) - i128::from(self.pos_m[1]);
+        let dz = i128::from(attacker_pos_m[2]) - i128::from(self.pos_m[2]);
+        let dist2 = dx * dx + dy * dy + dz * dz;
+        if dist2 == 0 {
+            return FacetBand::Right;
+        }
+        // `dist²·Q²`: the scale every band compares against (each dot below is Q-scaled metres).
+        let scale2 = dist2 * Q * Q;
 
         let (yaw_d, pitch_d, roll_d) = self.attitude_deg;
-        let yaw = (yaw_d as f64).to_radians();
-        let pitch = (pitch_d as f64).to_radians();
-        let roll = (roll_d as f64).to_radians();
+        let (sy, cy) = (sin_q16(yaw_d), cos_q16(yaw_d));
+        let (sp, cp) = (sin_q16(pitch_d), cos_q16(pitch_d));
+        let (sr, cr) = (sin_q16(roll_d), cos_q16(roll_d));
 
-        // Ship body axes in world space before roll:
-        let fwd_x = yaw.cos() * pitch.cos();
-        let fwd_y = yaw.sin() * pitch.cos();
-        let fwd_z = pitch.sin();
+        // Ship body axes in world space before roll, each Q-scaled.
+        let fwd = [cy * cp / Q, sy * cp / Q, sp];
+        let right0 = [-sy, cy, 0];
+        let up0 = [-cy * sp / Q, -sy * sp / Q, cp];
+        let dot = |axis: [i128; 3]| dx * axis[0] + dy * axis[1] + dz * axis[2];
 
-        let right0_x = -yaw.sin();
-        let right0_y = yaw.cos();
-        let right0_z = 0.0;
-
-        let up0_x = -yaw.cos() * pitch.sin();
-        let up0_y = -yaw.sin() * pitch.sin();
-        let up0_z = pitch.cos();
-
-        let local_fwd = (dx * fwd_x + dy * fwd_y + dz * fwd_z) / dist;
-        if local_fwd >= 0.65 {
-            return FacetBand::Front;
-        }
-        if local_fwd <= -0.65 {
-            return FacetBand::Rear;
+        // `local_fwd = dot / (dist·Q)` against ±0.65: `dot² ≥ 0.4225·dist²·Q²`.
+        let local_fwd = dot(fwd);
+        if local_fwd * local_fwd * 10_000 >= 4_225 * scale2 {
+            return if local_fwd >= 0 {
+                FacetBand::Front
+            } else {
+                FacetBand::Rear
+            };
         }
 
-        let r0 = (dx * right0_x + dy * right0_y + dz * right0_z) / dist;
-        let u0 = (dx * up0_x + dy * up0_y + dz * up0_z) / dist;
+        let r0 = dot(right0);
+        let u0 = dot(up0);
+        // Rotate the transverse vector by the hull's roll.
+        let local_right = (r0 * cr + u0 * sr) / Q;
+        let local_up = (-r0 * sr + u0 * cr) / Q;
 
-        // Rotate transverse vector by hull roll:
-        let local_right = r0 * roll.cos() + u0 * roll.sin();
-        let local_up = -r0 * roll.sin() + u0 * roll.cos();
-
-        if local_up > local_right.abs() && local_up > 0.25 {
+        // `local_up > 0.25`: `local_up² > dist²·Q² / 16`, with `local_up` positive.
+        if local_up > local_right.abs() && local_up > 0 && local_up * local_up * 16 > scale2 {
             FacetBand::Top
-        } else if local_right >= 0.0 {
+        } else if local_right >= 0 {
             FacetBand::Right
         } else {
             FacetBand::Left
@@ -2310,6 +2386,18 @@ impl LocalSpaceBubble {
         shooter_id: &str,
         target_id: &str,
     ) -> Vec<SpaceCombatEvent> {
+        self.fire_offensive_lasers_from(shooter_id, target_id, None)
+    }
+
+    /// [`Self::fire_offensive_lasers`], limited to the laser `only` names when it names one (doc
+    /// 48e kernel G3: a mind fires each laser by its id), under the same offence, cooldown, heat
+    /// and reach checks.
+    pub fn fire_offensive_lasers_from(
+        &mut self,
+        shooter_id: &str,
+        target_id: &str,
+        only: Option<&str>,
+    ) -> Vec<SpaceCombatEvent> {
         let mut events = Vec::new();
         let (Some(shooter), Some(target)) = (self.ships.get(shooter_id), self.ships.get(target_id))
         else {
@@ -2338,7 +2426,8 @@ impl LocalSpaceBubble {
         let mut shots: Vec<(u32, u16)> = Vec::new();
         if let Some(shooter_mut) = self.ships.get_mut(shooter_id) {
             for mount in &mut shooter_mut.lasers {
-                if mount.mode != LaserMode::Offense
+                if only.is_some_and(|id| mount.id != id)
+                    || mount.mode != LaserMode::Offense
                     || !mount.offence_allowed()
                     || mount.cooldown_remaining_ms > 0
                 {
@@ -2511,9 +2600,10 @@ impl LocalSpaceBubble {
         events
     }
 
-    /// **Fire the tube family or spinal gun `mount_id`** ([`BubbleInputCommand::FireMount`];
-    /// doc 49 unit CC.6): a salvo of up to `count` from a tube family, a round from a spinal
-    /// gun, and nothing from an id she carries as neither.
+    /// **Fire the tube family, spinal gun or laser `mount_id`** ([`BubbleInputCommand::FireMount`];
+    /// doc 49 unit CC.6, doc 48e kernel G3): a salvo of up to `count` from a tube family, a round
+    /// from a spinal gun, one shot from a laser in offence, and nothing from an id she carries as
+    /// none of these.
     pub fn fire_mount(
         &mut self,
         shooter_id: &str,
@@ -2528,6 +2618,8 @@ impl LocalSpaceBubble {
             self.fire_torpedo_salvo_from(shooter_id, target_id, Some(mount_id), count)
         } else if ship.railguns.iter().any(|gun| gun.id == mount_id) {
             self.fire_railgun_from(shooter_id, target_id, Some(mount_id))
+        } else if ship.lasers.iter().any(|laser| laser.id == mount_id) {
+            self.fire_offensive_lasers_from(shooter_id, target_id, Some(mount_id))
         } else {
             Vec::new()
         }
@@ -2901,7 +2993,11 @@ impl LocalSpaceBubble {
                 fire_arrived(&mut self.fired_on, &torp.shooter_id, &torp.target_id);
                 if let Some(target_mut) = self.ships.get_mut(&torp.target_id) {
                     let prev_status = target_mut.status;
-                    let facet = target_mut.select_facet_for_attack(torp.pos_m);
+                    let facet = target_mut.select_facet_for_attack(approach_point(
+                        torp.pos_m,
+                        torp.vel_mmps,
+                        target_mut.vel_mmps,
+                    ));
                     let (section, armor_damage, internal_damage) =
                         target_mut.apply_damage(facet, torp.warhead_damage);
                     events.push(SpaceCombatEvent::TorpedoHit {
@@ -2975,7 +3071,11 @@ impl LocalSpaceBubble {
                         });
                     } else {
                         let prev_status = target_mut.status;
-                        let facet = target_mut.select_facet_for_attack(slug.pos_m);
+                        let facet = target_mut.select_facet_for_attack(approach_point(
+                            slug.pos_m,
+                            slug.vel_mmps,
+                            target_mut.vel_mmps,
+                        ));
                         let (section, armor_damage, internal_damage) =
                             target_mut.apply_damage(facet, slug.slug_damage);
                         events.push(SpaceCombatEvent::RailgunHit {
@@ -3036,7 +3136,32 @@ impl LocalSpaceBubble {
             mix(&ship.heat_permille.to_le_bytes());
             for sec in ship.sections.values() {
                 mix(&sec.internals.to_le_bytes());
+                // Doc 48e kernel G18: each facet's armour.
+                for armour in sec.facets.values() {
+                    mix(&armour.to_le_bytes());
+                }
             }
+            // Doc 48e kernel G18: the mounts' magazines, cooldowns and laser modes, and the
+            // decoys, so a hash-only replay sees a magazine diverge.
+            for tube in &ship.torpedo_tubes {
+                mix(&tube.magazine_remaining.to_le_bytes());
+                mix(&tube.cooldown_remaining_ms.to_le_bytes());
+            }
+            for laser in &ship.lasers {
+                mix(&[u8::from(laser.mode == LaserMode::Defense)]);
+                mix(&laser.cooldown_remaining_ms.to_le_bytes());
+                mix(&laser.offence_left_ms.to_le_bytes());
+            }
+            for gun in &ship.railguns {
+                mix(&gun.rounds_remaining.to_le_bytes());
+                mix(&gun.cooldown_remaining_ms.to_le_bytes());
+            }
+            for pdc in &ship.pdcs {
+                mix(&pdc.ammo_remaining.to_le_bytes());
+                mix(&pdc.cooldown_remaining_ms.to_le_bytes());
+            }
+            mix(&[ship.decoys_remaining]);
+            mix(&ship.active_decoy_ms.to_le_bytes());
             // Doc 44 unit MW.12: what a drone holds and what a rock bears. A ship that is
             // neither mixes nothing here, so every other bubble's hash is as it was.
             if let Some(kit) = &ship.collector {
@@ -3088,10 +3213,8 @@ impl LocalSpaceBubble {
         let obs = self.ships.get(observer_ship_id);
         let obs_party = obs.map(|s| s.party);
         let locked_id = obs.and_then(|s| s.locked_target_id.as_deref());
-        let pdc_range_km = obs
-            .and_then(|s| s.pdcs.first())
-            .map(|p| (p.envelope_m as f64) / 1_000.0)
-            .unwrap_or(15.0);
+        // Doc 48e kernel G16: her rotaries' envelope, and no ring for a hull with none.
+        let pdc_range_km = obs.map_or(0.0, super::commands::pdc_ring_km);
 
         let mut contacts = Vec::with_capacity(self.ships.len());
         for ship in self.ships.values() {
@@ -3688,3 +3811,7 @@ mod cc6_tests {
 #[cfg(test)]
 #[path = "bubble_cc8_tests.rs"]
 mod cc8_tests;
+
+#[cfg(test)]
+#[path = "bubble_48e_tests.rs"]
+mod review_48e_tests;

@@ -164,6 +164,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
             quarantine_spool: mushd::quarantine::QuarantineSpool::in_memory(),
             metrics: Arc::new(mush_net_web::Metrics::new()),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
     );
 

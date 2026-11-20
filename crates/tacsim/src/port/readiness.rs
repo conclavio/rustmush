@@ -978,6 +978,18 @@ fn commerce_lines(
                 clause = format!("{clause}, {drawn} {unit} drawn to be milled");
             }
             let net = net.saturating_sub(drawn);
+            // Doc 48 unit EX.9: the day's use a consumption drew off this ask and has not used.
+            let used = crate::port::consume::drawn(
+                vendor,
+                good,
+                net,
+                reading.listing.map(|(_, q)| q),
+                undrawn,
+            );
+            if used > 0 {
+                clause = format!("{clause}, {used} {unit} drawn to be used up");
+            }
+            let net = net.saturating_sub(used);
             match reading.listing {
                 Some((listing, q)) => {
                     let price = market

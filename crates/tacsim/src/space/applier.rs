@@ -649,9 +649,10 @@ type Shot = (Mount, String);
 /// a think, a tube family's salvo as many as the think named it, at most [`SALVO_MAX`]. The
 /// first of each family takes the family's command ([`BubbleInputCommand::FireTorpedoSalvo`],
 /// [`BubbleInputCommand::FireRailgun`]), so a hull that carries one of a family records the
-/// tape she always did; any other takes [`BubbleInputCommand::FireMount`]. Her lasers are one
-/// battery, as `+tac/beam` fires them: naming any fires every one in offence that is ready, one
-/// command a think.
+/// tape she always did; any other takes [`BubbleInputCommand::FireMount`]. **Each laser fires by
+/// its id too** (doc 48e kernel G3), one [`BubbleInputCommand::FireMount`] a laser a think, so a
+/// mind may stagger her lasers and spare their heat; `+tac/beam` still fires the battery. Her
+/// collector is one command a think.
 #[allow(clippy::too_many_arguments)]
 fn shoot(
     bubble: &mut LocalSpaceBubble,
@@ -710,8 +711,8 @@ fn shoot(
     let mut fired: Vec<(Mount, Option<&str>)> = Vec::new();
     for (mount, id) in &shots {
         let key = match mount {
-            Mount::Tube | Mount::Railgun => (*mount, Some(id.as_str())),
-            Mount::Laser | Mount::Collector => (*mount, None),
+            Mount::Tube | Mount::Railgun | Mount::Laser => (*mount, Some(id.as_str())),
+            Mount::Collector => (*mount, None),
         };
         if fired.contains(&key) {
             continue;
@@ -724,9 +725,11 @@ fn shoot(
                 applied.fired = true;
                 command(
                     bubble,
-                    BubbleInputCommand::FireOffensiveLasers {
+                    BubbleInputCommand::FireMount {
                         shooter_id,
                         target_id,
+                        mount_id: id.clone(),
+                        count: 1,
                     },
                 );
             }
@@ -820,6 +823,51 @@ mod tests {
             .ships
             .get(ship)
             .map_or([0; 3], |ship| ship.thrust_mmps2)
+    }
+
+    /// **Doc 48e kernel G3: a mind that names one laser fires that laser alone**, by its id;
+    /// the other stays cool and ready.
+    #[test]
+    fn g3_a_mind_that_names_one_laser_fires_that_laser_alone() {
+        let (mut bubble, mut tape, contacts) = field();
+        let patrol = bubble.ships.get_mut("patrol").expect("the patrol");
+        assert!(patrol.lasers.len() >= 2, "the patrol carries two lasers");
+        for laser in &mut patrol.lasers {
+            laser.mode = crate::space::weapons::LaserMode::Offense;
+            laser.cooldown_remaining_ms = 0;
+        }
+        let named = patrol.lasers[0].id.clone();
+        bubble.ships.get_mut("dray").expect("the dray").pos_m = [0, 3_000, 4_000];
+        let mut events = Vec::new();
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "patrol",
+            Seat::PATROL,
+            &contacts,
+            &[
+                IntentKind::Lock {
+                    contact: ContactId(1),
+                },
+                IntentKind::Fire {
+                    weapon: SmolStr::new(&named),
+                    slot: Some(1),
+                },
+            ],
+            &mut events,
+        );
+        assert!(applied.fired, "{applied:?}");
+        let lasers = &bubble.ships.get("patrol").expect("the patrol").lasers;
+        assert!(lasers[0].cooldown_remaining_ms > 0, "the named laser fired");
+        assert!(
+            lasers[1..].iter().all(|l| l.cooldown_remaining_ms == 0),
+            "no other laser fired: {lasers:?}"
+        );
+        let hits = events
+            .iter()
+            .filter(|e| matches!(e, SpaceCombatEvent::LaserHit { .. }))
+            .count();
+        assert_eq!(hits, 1, "{events:?}");
     }
 
     #[test]
@@ -951,6 +999,7 @@ mod tests {
             !tape.entries.iter().any(|entry| matches!(
                 entry.command,
                 BubbleInputCommand::FireOffensiveLasers { .. }
+                    | BubbleInputCommand::FireMount { .. }
                     | BubbleInputCommand::FireRailgun { .. }
                     | BubbleInputCommand::FireTorpedoSalvo { .. }
             )),
@@ -1366,9 +1415,8 @@ mod tests {
         tape.entries
             .iter()
             .filter_map(|entry| match &entry.command {
-                BubbleInputCommand::FireOffensiveLasers { target_id, .. } => {
-                    Some(target_id.clone())
-                }
+                BubbleInputCommand::FireOffensiveLasers { target_id, .. }
+                | BubbleInputCommand::FireMount { target_id, .. } => Some(target_id.clone()),
                 _ => None,
             })
             .collect()

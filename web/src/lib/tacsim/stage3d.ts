@@ -5,6 +5,13 @@
 
 import * as THREE from "three";
 import { isTextField } from "../keys";
+import { tacsimAudio } from "./audio";
+import {
+  AMBER_RIG_RAMP,
+  BLUE_TEAM_RAMP,
+  createAsyncMupkUnitGroup,
+  RED_TEAM_RAMP,
+} from "./mupk-mesh";
 import {
   areRoomsConnectedWithinHops,
   BRIDGE_STAIRWELL_XZ,
@@ -1379,10 +1386,10 @@ export class TacsimStage3D {
         placeServiceDesk(r.entryId, "ui:open_sim", "Simulator Roster Selector", "Pick Red/Blue team, unit & AI fill");
       } else if (low.includes("sim_red") || low.includes("sim_blue")) {
         const isRed = low.includes("sim_red");
-        const podCol = isRed ? 0x8a2c2c : 0x28548a;
-        const glowCol = isRed ? 0xff5544 : 0x44aaff;
-        const podMat = new THREE.MeshStandardMaterial({ color: podCol, roughness: 0.4, metalness: 0.62 });
-        const podGlow = new THREE.MeshStandardMaterial({ color: glowCol, emissive: glowCol, emissiveIntensity: 1.0 });
+        const teamRamp = isRed ? RED_TEAM_RAMP : BLUE_TEAM_RAMP;
+        const simModels = ["vf.mech.brawler_med", "vf.mech.assault_hvy", "vf.mech.recon_lt"];
+        const podCol = isRed ? 0x5c2222 : 0x203e66;
+        const podMat = new THREE.MeshStandardMaterial({ color: podCol, roughness: 0.45, metalness: 0.62 });
         const elev = getFloorElevationY(pack, r.floorIndex);
         for (let p = 0; p < 6; p++) {
           const row = Math.floor(p / 3);
@@ -1390,8 +1397,22 @@ export class TacsimStage3D {
           const px = r.minX + 6 + col * 7.5;
           const py = r.minY + 5.5 + row * 8.5;
           const wPos = this.atlasToWorld(px, elev, py);
-          const hull = this.addBox(this.stationRoot, wPos.clone().add(new THREE.Vector3(0, 0.95, 0)), new THREE.Vector3(2.1, 1.9, 2.8), podMat, true);
-          const canopy = this.addBox(this.stationRoot, wPos.clone().add(new THREE.Vector3(0, 1.35, 0.65)), new THREE.Vector3(1.5, 0.65, 1.2), podGlow, false);
+          const plinth = this.addBox(
+            this.stationRoot,
+            wPos.clone().add(new THREE.Vector3(0, 0.14, 0)),
+            new THREE.Vector3(2.3, 0.28, 2.3),
+            podMat,
+            true,
+          );
+          const mupkUnit = createAsyncMupkUnitGroup(
+            simModels[p % simModels.length]!,
+            "sim_mech",
+            teamRamp,
+            2.25,
+          );
+          mupkUnit.group.position.copy(wPos).add(new THREE.Vector3(0, 0.28, 0));
+          mupkUnit.group.rotation.y = row === 0 ? 0 : Math.PI;
+          this.stationRoot.add(mupkUnit.group);
           this.interactables.push({
             id: `pod:${r.entryId}:${p + 1}`,
             kind: "sim_pod",
@@ -1400,7 +1421,7 @@ export class TacsimStage3D {
             actionOrKey: "board",
             worldPos: wPos,
             maxDistance: 3.8,
-            meshTargets: [hull, canopy],
+            meshTargets: [plinth, mupkUnit.hitTarget, mupkUnit.group],
           });
         }
       }
@@ -1608,14 +1629,19 @@ export class TacsimStage3D {
       this.addShipBox(new THREE.Vector3(comp.localCenter.x + 2.4, floorY + 0.45, comp.localCenter.z - 1.2), new THREE.Vector3(1.4, 0.42, 2.3), bunkMat, true);
       this.addShipBox(new THREE.Vector3(comp.localCenter.x + 2.4, floorY + 1.50, comp.localCenter.z - 1.2), new THREE.Vector3(1.4, 0.28, 2.3), bunkMat, false);
     } else if (comp.id === "bay") {
-      const roverMat = new THREE.MeshStandardMaterial({ color: 0xc28a2e, roughness: 0.48, metalness: 0.52 });
-      const trackMat = new THREE.MeshStandardMaterial({ color: 0x222830, roughness: 0.72, metalness: 0.4 });
+      const cradleMat = new THREE.MeshStandardMaterial({ color: 0x222830, roughness: 0.72, metalness: 0.4 });
       for (const slot of [1, 2]) {
         const rx = slot === 1 ? -2.25 : 2.25;
         const rz = comp.localCenter.z - 0.6;
-        const body = this.addShipBox(new THREE.Vector3(rx, floorY + 0.85, rz), new THREE.Vector3(2.0, 1.1, 3.8), roverMat, true);
-        this.addShipBox(new THREE.Vector3(rx - 1.05, floorY + 0.38, rz), new THREE.Vector3(0.38, 0.72, 4.0), trackMat, false);
-        this.addShipBox(new THREE.Vector3(rx + 1.05, floorY + 0.38, rz), new THREE.Vector3(0.38, 0.72, 4.0), trackMat, false);
+        const cradle = this.addShipBox(new THREE.Vector3(rx, floorY + 0.12, rz), new THREE.Vector3(2.4, 0.24, 4.2), cradleMat, true);
+        const rigUnit = createAsyncMupkUnitGroup(
+          slot === 1 ? "mc.vh.bug_rover" : "mc.vh.bug_truck",
+          "prospector_rover",
+          AMBER_RIG_RAMP,
+          1.72,
+        );
+        rigUnit.group.position.set(rx, floorY + 0.24, rz);
+        this.shipRoot.add(rigUnit.group);
         this.shipInteractables.push({
           id: `ship:rig:${slot}`,
           kind: "vehicle_rig",
@@ -1624,7 +1650,7 @@ export class TacsimStage3D {
           actionOrKey: "ui:open_rig",
           worldPos: new THREE.Vector3(rx, floorY + 0.85, rz).add(this.shipOrigin),
           maxDistance: 4.4,
-          meshTargets: [body],
+          meshTargets: [cradle, rigUnit.hitTarget, rigUnit.group],
         });
       }
     }
@@ -2191,10 +2217,19 @@ export class TacsimStage3D {
     if (ev.code === "KeyE" && this.focusedInteractable) {
       ev.preventDefault();
       ev.stopPropagation();
-      this.flushPendingMovesBeforeAction();
-      this.cb.onInteractableTriggered(this.focusedInteractable);
+      this.triggerInteractableWithAudio(this.focusedInteractable);
     }
   };
+
+  private triggerInteractableWithAudio(wi: WorldInteractable3D): void {
+    if (wi.kind === "airlock_board" || wi.kind === "airlock_leave") {
+      tacsimAudio.playAirlockCycle();
+    } else {
+      tacsimAudio.playUiChime();
+    }
+    this.flushPendingMovesBeforeAction();
+    this.cb.onInteractableTriggered(wi);
+  }
 
   private readonly onKeyUp = (ev: KeyboardEvent): void => {
     this.keysDown.delete(ev.code);
@@ -2228,8 +2263,7 @@ export class TacsimStage3D {
         if (this.playerGroup.position.distanceTo(wi.worldPos) > wi.maxDistance + 2.5) continue;
         const hits = raycaster.intersectObjects(wi.meshTargets, true);
         if (hits.length > 0) {
-          this.flushPendingMovesBeforeAction();
-          this.cb.onInteractableTriggered(wi);
+          this.triggerInteractableWithAudio(wi);
           return;
         }
       }

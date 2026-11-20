@@ -551,7 +551,7 @@ async fn stand_up() -> Story {
 }
 
 impl Story {
-    /// Pump and tick until `done` holds or `secs` of wall time pass.
+    /// Pump and tick until `done` holds or `secs` of tokio time pass.
     async fn wait(
         &mut self,
         secs: u64,
@@ -569,7 +569,7 @@ impl Story {
     }
 
     /// **The raider's player keeps a lock on the contact `pick` takes off their own cockpit
-    /// and fires** until `done` holds or `secs` of wall time pass, then ceases: the lines a
+    /// and fires** until `done` holds or `secs` of tokio time pass, then ceases: the lines a
     /// player types, once a second.
     async fn raid(
         &mut self,
@@ -704,7 +704,7 @@ fn after(fate: Fate) -> String {
 }
 
 /// **The story** (this module's head).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)] // one field, in order
 async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
     let mut s = stand_up().await;
@@ -1190,6 +1190,11 @@ fn round(command: &BubbleInputCommand) -> Option<(&str, &str)> {
         BubbleInputCommand::FireOffensiveLasers {
             shooter_id,
             target_id,
+        }
+        | BubbleInputCommand::FireMount {
+            shooter_id,
+            target_id,
+            ..
         }
         | BubbleInputCommand::FireRailgun {
             shooter_id,

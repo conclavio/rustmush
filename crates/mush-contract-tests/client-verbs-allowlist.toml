@@ -1,10 +1,6 @@
-# Doc 43 cut TS.7: the command-shaped literals of the two clients that are
+# Doc 43 cut TS.7: the command-shaped literals of the clients that are
 # not a registered verb, each with its reason. tests/engine_contracts/client_verbs.rs
 # fails on a row no client line uses.
-
-[[allow]]
-head = "DOCK"
-reason = "KNOWN DEAD END (doc 35b, doc 43 §5.2): both clients' docking keys fall back to `DOCK TRANS UP` and its kin when no local docking session is open (tui/pixel.rs, web picture.ts and PictureView.svelte), and no verb parses `DOCK`; docking is `+helm/dock` (its tape, `+helm/dock tape`, is what the docking session sends). Owed: route the fallback keys to `+helm/dock` or drop them, then remove this row."
 
 [[allow]]
 head = "+roll"
@@ -54,3 +50,11 @@ reason = "a studio label (\"LLM ...\"), not a command"
 [[allow]]
 head = "JSON"
 reason = "a content studio label, not a command"
+
+[[allow]]
+head = "ECCM"
+reason = "a works recipe label (`ECCM pods`, recipes-v2.json) in the web works picker (48e L8, clients:G11), not a line the client sends"
+
+[[allow]]
+head = "ECM"
+reason = "a works recipe label (`ECM pods`, recipes-v2.json) in the web works picker (48e L8, clients:G11), not a line the client sends"

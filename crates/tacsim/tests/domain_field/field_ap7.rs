@@ -282,7 +282,7 @@ async fn site(posture: Posture, tune_field: fn(&mut tacsim::TacsimConfig)) -> Si
 }
 
 impl Site {
-    /// Pump and tick until `done` holds or `secs` of wall time pass.
+    /// Pump and tick until `done` holds or `secs` of tokio time pass.
     async fn wait(
         &mut self,
         secs: u64,
@@ -292,7 +292,7 @@ impl Site {
     }
 
     /// **The intruder's player keeps a lock on the unit plotted at `at` and fires** until
-    /// `done` holds or `secs` of wall time pass: the two lines a player types, once a second.
+    /// `done` holds or `secs` of tokio time pass: the two lines a player types, once a second.
     async fn raid(
         &mut self,
         at: (u16, u16),
@@ -467,7 +467,7 @@ fn saved(rig: &Rig, unit: ObjId) -> Option<(bool, Posture)> {
 
 /// **Story 1** (this module's head): an unattended rig on a raided site does not fire first,
 /// goes home, and its operator reads the plan's end at login.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap7_an_unattended_rig_on_a_raided_site_goes_home_and_its_operator_reads_the_plans_end() {
     let mut s = site(Posture::Return, quiet).await;
@@ -565,7 +565,7 @@ fn brief(cfg: &mut tacsim::TacsimConfig) {
 
 /// **Story 2** (this module's head): the same rig on `HOLD` is still there at demotion, and
 /// its plan runs on.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn ap7_the_same_rig_on_hold_is_still_there_at_demotion_and_its_plan_runs_on() {
     let mut s = site(Posture::Hold, brief).await;
@@ -643,7 +643,7 @@ async fn ap7_the_same_rig_on_hold_is_still_there_at_demotion_and_its_plan_runs_o
 
 /// **Story 3** (this module's head): a carrier with nobody aboard is still on its pad with
 /// its returned rigs in its bay.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap7_a_carrier_with_nobody_aboard_stays_on_its_pad_and_takes_its_rigs_aboard() {
     // A prospector on GUARD has nothing to fire: it stays, as on HOLD (Q-45-10).
     let mut s = site(Posture::Guard, quiet).await;
@@ -719,7 +719,7 @@ async fn ap7_a_carrier_with_nobody_aboard_stays_on_its_pad_and_takes_its_rigs_ab
 /// aboard when its operator sits in the cab of his other rig. The recover is a hand act its
 /// operator gives from aboard the carrier or from that rig's own cab; the host's recover of
 /// a unit it took out for an absent player is run as that operator, wherever he is.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn ap7_a_rig_whose_operator_sits_in_his_other_rig_is_still_put_aboard() {
     let mut rig = stocked_tuned(quiet);
     // The lessee in his armed rig's cab; his prospector three cells off, nobody in it, five

@@ -112,7 +112,7 @@ fn load(rig: &mut crate::driving_rig::Rig, who: ObjId, tug: ObjId, casualty: Obj
 }
 
 /// **GC.6's gate: story (b)**, the contested salvage, with an uncontested claim beside it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn gc6_story_b_the_contested_salvage_on_urvara_reach() {
     let mut rig = stocked_tuned(quick);

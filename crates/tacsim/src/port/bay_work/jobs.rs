@@ -454,9 +454,20 @@ pub fn quote(
                         .as_ref()
                         .map(|m| (good.id.clone(), u64::from(m.rounds_per_unit.max(1))))
                 });
-            let (good, units) = match link {
-                Some((good, per)) => (Some(good), u64::try_from(rounds).unwrap_or(0).div_ceil(per)),
-                None => (None, 0),
+            // 48e review rounds:G3 (A-14: a reload conserves rounds): whole units of the good
+            // only, and the rounds they hold, so a mount short by less than one unit waits
+            // rather than opening a box and losing the rest. A beam's charge is no good and
+            // fills whole.
+            let (good, units, rounds) = match link {
+                Some((good, per)) => {
+                    let units = u64::try_from(rounds).unwrap_or(0) / per;
+                    if units == 0 {
+                        continue;
+                    }
+                    let whole = i64::try_from(units.saturating_mul(per)).unwrap_or(rounds);
+                    (Some(good), units, whole)
+                }
+                None => (None, 0, rounds),
             };
             all.push(QuotedJob {
                 job: BayJob::Rearm {
@@ -483,6 +494,45 @@ pub fn quote(
         jobs,
         elsewhere,
     })
+}
+
+/// **Whether the bay would repair `unit`** (48e review rounds:G2): a section down points,
+/// destroyed or wrecked, a part not intact, its heat sink below its maximum (a space hull's
+/// radiator), or a space crit on record ([`crate::space::custody::SPACE_SUBSYSTEMS_CAPABILITY`]).
+/// Rounds short are not repair. A hull past saving needs repair too.
+#[must_use]
+pub fn needs_repair(unit: &TacticalUnit, anatomy: &UnitAnatomyProfile) -> bool {
+    let assessment = assess_tactical_unit(unit, anatomy);
+    if !assessment.state.retains_salvageable_hull() {
+        return true;
+    }
+    let sections =
+        assessment
+            .section_conditions
+            .iter()
+            .any(|(section, condition)| match condition {
+                SectionCondition::Intact | SectionCondition::Damaged => {
+                    section_points(unit, section) > 0
+                }
+                SectionCondition::Destroyed | SectionCondition::Wreck => true,
+                _ => false,
+            });
+    let parts = assessment
+        .component_conditions
+        .iter()
+        .any(|(_, condition)| *condition != ComponentCondition::Intact);
+    let sink = SectionId::new("hull")
+        .ok()
+        .zip(CellId::new(crate::definitions::unit::HEAT_SINK_CELL).ok())
+        .and_then(|(section, cell)| unit.cell(&CellAddr::Section { section, cell }))
+        .is_some_and(|cell| cell.current < cell.max);
+    let crits = mush_tactics::CapabilityId::new(crate::space::custody::SPACE_SUBSYSTEMS_CAPABILITY)
+        .ok()
+        .is_some_and(|id| {
+            unit.capability(&mush_tactics::CapabilityKey { id, source: None })
+                .is_some()
+        });
+    sections || parts || sink || crits
 }
 
 /// The order the work runs in: shells before the parts they hold, parts before their rounds.
@@ -552,11 +602,20 @@ pub fn work(
                 let installed = now
                     .component(component)
                     .ok_or_else(|| format!("{component} is not on this hull"))?;
+                // 48e review rounds:G12 (A-14: salvage conserves rounds): the new part comes in
+                // with the rounds (or the beam's charge) the old one held, never refilled and
+                // never thrown away.
                 let mut cell_values = BTreeMap::new();
                 if anatomy.weapon_components.contains(component)
                     && let Some(ammo) = &anatomy.weapon_ammo_cell
                 {
-                    cell_values.insert(ammo.clone(), 0);
+                    let held = now
+                        .cell(&CellAddr::Component {
+                            component: component.clone(),
+                            cell: ammo.clone(),
+                        })
+                        .map_or(0, |cell| cell.current.max(0));
+                    cell_values.insert(ammo.clone(), held);
                 }
                 let condition = match lot {
                     Some(_) => fitted
@@ -603,7 +662,10 @@ pub fn work(
         };
     }
 
-    if !jobs.is_empty() {
+    // 48e review rounds:G5: the hull's radiator and its space crits are repairs, healed only by
+    // an order that holds a repair job; a rearm-only order (`Rearm`/`Magazine`) loads rounds and
+    // leaves them as they were.
+    if jobs.iter().any(|job| job.job.is_repair()) {
         let mut cleanup_ops = Vec::new();
         if let Ok(hull_sec) = SectionId::new("hull")
             && let Ok(sink_cell) = CellId::new(crate::definitions::unit::HEAT_SINK_CELL)

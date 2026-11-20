@@ -4673,3 +4673,175 @@ fn on_all_loaded_runs_once_each_in_list_order_after_every_load_and_can_fail_the_
     );
     assert!(!seen.iter().any(|line| line.starts_with("all charlie")));
 }
+
+#[test]
+fn script_attr_namespace_admits_builders_and_blocks_mortals() {
+    struct FakeScriptModule;
+    impl GameModule for FakeScriptModule {
+        fn name(&self) -> &'static str {
+            "script"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.attr_namespace("script")
+        }
+    }
+
+    let mut world = World::new_minimal();
+    let mortal = world
+        .create(ObjKind::Player, "Mortal", GOD, Some(LIMBO))
+        .unwrap();
+    let builder = world
+        .create(ObjKind::Player, "Builder", GOD, Some(LIMBO))
+        .unwrap();
+    world
+        .set_flag(builder, mush_core::Flags::BUILDER, true)
+        .unwrap();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut engine = Engine::with_modules(world, reg, vec![Box::new(FakeScriptModule)]).unwrap();
+
+    // Plain mortal is blocked on script:* (case-insensitively).
+    assert!(
+        !engine
+            .registry
+            .may_write_attr(&engine.world, mortal, None, "script:on_use")
+    );
+    assert!(
+        !engine
+            .registry
+            .may_write_attr(&engine.world, mortal, None, "SCRIPT:on_use")
+    );
+    let out = run(&mut engine, mortal, "@set me/script:on_use=1+1");
+    assert!(sys_texts(&out).iter().any(|t| t.contains("module-owned")));
+    assert!(engine.world.attr(mortal, "script:on_use").is_none());
+
+    // Builder+ and the owning "script" module are admitted.
+    assert!(
+        engine
+            .registry
+            .may_write_attr(&engine.world, builder, None, "script:on_use")
+    );
+    assert!(
+        engine
+            .registry
+            .may_write_attr(&engine.world, mortal, Some("script"), "script:on_use")
+    );
+    let out = run(&mut engine, builder, "@set me/script:on_use=1+1");
+    assert!(sys_texts(&out).iter().any(|t| t == "script:on_use - Set."));
+    assert!(engine.world.attr(builder, "script:on_use").is_some());
+}
+
+#[test]
+fn persist_and_deferred_drop_oversized_or_invalid_module_keys() {
+    use mush_core::{Deferred, MAX_MODULE_KEY_BYTES, ParsedArgs, SwitchSet};
+
+    let (mut engine, nick) = setup();
+    let mut out = Outbox::new();
+
+    let oversized_key: SmolStr = "k".repeat(MAX_MODULE_KEY_BYTES + 1).into();
+    let at_limit_key: SmolStr = "k".repeat(MAX_MODULE_KEY_BYTES).into();
+
+    // Ctx::persist refuses oversized key, empty key, and colon namespace before queueing.
+    {
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: nick,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some("toy".into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        ctx.persist(ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::JsonSet {
+                key: oversized_key.clone(),
+                value: serde_json::json!({"ok": false}),
+            },
+        });
+        ctx.persist(ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::Del { key: "".into() },
+        });
+        ctx.persist(ModuleOp {
+            ns: "toy".into(),
+            op: ModuleWrite::JsonSet {
+                key: at_limit_key.clone(),
+                value: serde_json::json!({"ok": true}),
+            },
+        });
+    }
+
+    // Even a direct Deferred::Persist bypassing Ctx::persist is dropped during drain.
+    out.defer(Deferred::Persist(ModuleOp {
+        ns: "toy".into(),
+        op: ModuleWrite::JsonSet {
+            key: oversized_key,
+            value: serde_json::json!({"bypass": true}),
+        },
+    }));
+    out.defer(Deferred::Persist(ModuleOp {
+        ns: "bad:ns".into(),
+        op: ModuleWrite::Del { key: "x".into() },
+    }));
+
+    // Drain via a harmless step that triggers deferred drain? No — test via a
+    // module command that writes both valid and oversized ops through Engine::step.
+    assert_eq!(
+        out.deferred().len(),
+        3,
+        "Ctx::persist already filtered 2 invalid ops leaving 1 valid + 2 direct Deferred::Persist"
+    );
+
+    // Verify Engine::step's drain drops direct Deferred::Persist with oversized keys too.
+    struct BadPersistMod;
+    impl GameModule for BadPersistMod {
+        fn name(&self) -> &'static str {
+            "badpersist"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+            reg.command(
+                CommandSpec {
+                    name: "+badpersist".into(),
+                    shape: ArgShape::None,
+                    ..CommandSpec::default()
+                },
+                Arc::new(|ctx: &mut Ctx<'_>| {
+                    ctx.out.defer(Deferred::Persist(ModuleOp {
+                        ns: "badpersist".into(),
+                        op: ModuleWrite::JsonSet {
+                            key: "x".repeat(MAX_MODULE_KEY_BYTES + 1).into(),
+                            value: serde_json::json!(1),
+                        },
+                    }));
+                    ctx.persist(ModuleOp {
+                        ns: "badpersist".into(),
+                        op: ModuleWrite::JsonSet {
+                            key: "good".into(),
+                            value: serde_json::json!(2),
+                        },
+                    });
+                    Ok(())
+                }),
+            )
+        }
+    }
+
+    let mut world = World::new_minimal();
+    let actor = world
+        .create(ObjKind::Player, "Tester", GOD, Some(LIMBO))
+        .unwrap();
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    let mut eng = Engine::with_modules(world, reg, vec![Box::new(BadPersistMod)]).unwrap();
+    let _ = run(&mut eng, actor, "+badpersist");
+    let ops = eng.take_module_ops();
+    assert_eq!(
+        ops.len(),
+        1,
+        "oversized direct Deferred::Persist must be dropped: {ops:?}"
+    );
+    assert_eq!(ops[0].key(), "good");
+}

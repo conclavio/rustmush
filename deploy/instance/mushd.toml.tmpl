@@ -599,6 +599,12 @@ bus = 180
 
 [npc]
 scene_turn_deadline_secs = 120
+# The shipped cast's major NPCs are authored `"enabled": false` (doc 44 cut MW.18, Q-44-47).
+# With `true`, a cast pack CREATES its majors enabled, and a later upgrade of the pack keeps each
+# one enabled or parked as staff last left it. So it wakes the majors of a fresh world at boot;
+# on a world that already exists, wake each with `@agent/enable <npc>` (the bring-up does). The
+# dev boxes run it on. Each enabled major may spend on the LLM, under [llm.budgets].
+wake_majors = __WAKE_MAJORS__
 
 # --- LLM ---------------------------------------------------------------------
 # API keys are NEVER inlined: each provider names an env var, supplied by the

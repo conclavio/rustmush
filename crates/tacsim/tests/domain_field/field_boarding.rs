@@ -72,7 +72,7 @@ async fn open_field(
 /// **The boarding window's repro** (the owner's ruling, 2026-11-04): the raider's carrier is a
 /// wreck in the field when its leader's WITHDRAW goes out. Every hull stays in the field on its
 /// row, on the ground, its exit never named and its WITHDRAW spent; nobody boards a wreck.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn boarding_a_raider_whose_carrier_is_lost_stays_in_the_field() {
     let mut rig = stocked_tuned(tune);
@@ -168,7 +168,7 @@ async fn boarding_a_raider_whose_carrier_is_lost_stays_in_the_field() {
 /// launched; then B's fire takes the grounded carrier's hull in the field. At demotion the
 /// carrier is a wreck on the site's index and both hulls are wrecks on their own records, still
 /// aboard (off the ground, the raider's mark naming the carrier), and neither launches again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn boarding_a_raider_aboard_a_carrier_wrecked_later_is_a_wreck_in_the_bay() {
     let mut rig = stocked_tuned(tune);
@@ -320,7 +320,7 @@ async fn boarding_a_raider_aboard_a_carrier_wrecked_later_is_a_wreck_in_the_bay(
 /// back. Green with no fix: the field resumes from a snapshot older than the order, and a kept
 /// snapshot between the order and its lift (about one pulse) is a window this rig cannot stage
 /// (the cut note).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 #[allow(clippy::too_many_lines)]
 async fn boarding_a_stranded_raider_fights_on_after_a_restart() {
     let mut rig = stocked_tuned(tune);

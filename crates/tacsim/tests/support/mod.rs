@@ -2578,6 +2578,21 @@ pub fn script_figures(source: &str) -> (usize, usize, String, usize) {
     (fns.len(), depth, widest, width)
 }
 
+/// **Lay up the lane's hauling house** (doc 48 unit EX.10's `@tacsim/port haulers ceres_port
+/// off`), as staff would: a stock rig whose stories pin a port's stocks, legs or burns boots
+/// with the Vesta Carrying Company's house idle, and laid up before the first fire it seeds no
+/// hull. A lane variant with no hauling house (an older lane) is left as it is. `ex10_haulers`
+/// turns it back on.
+pub fn lay_up_haulers(tw: &mut TestWorld) {
+    let events = tw.run(mush_core::GOD, "@tacsim/port haulers ceres_port off");
+    let said = tw.seen_by(&events, mush_core::GOD).join("\n");
+    assert!(
+        said.contains("ceres_port hauling house: laid up")
+            || said.contains("ceres_port has no hauling house."),
+        "{said}"
+    );
+}
+
 /// Historical/operator-edited lanes do not satisfy the full star's exact lane
 /// version. Keep their old Luna-Ceres seed and its published Ceres dependency while
 /// testing the lane's own upgrade and refusal paths; full-star migration is covered

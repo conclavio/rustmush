@@ -2060,7 +2060,16 @@ impl Arena {
             heat: frame.heat,
             sections: frame.sections,
             lock,
-            weapons: frame.weapons,
+            // Doc 48e kernel G10: the mounts an arming on the hull may lay
+            // down ([`Arena::arming_capacity`]: its core's slots, Class 0's
+            // while the ROM thinks), in component order, and no other. A
+            // one-slot hull never fires its second mount, so its mind neither
+            // waits on that mount's rounds to withdraw nor closes to its reach.
+            weapons: {
+                let mut weapons = frame.weapons;
+                weapons.truncate(self.arming_capacity(unit));
+                weapons
+            },
             rules: frame.rules,
             order: frame.order,
             t_ms: frame.t_ms,

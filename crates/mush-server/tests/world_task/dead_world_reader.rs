@@ -136,6 +136,7 @@ fn boot() -> PersistHandles {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
+            time: mush_config::TimeSource::System,
         },
         |_| -> Gateway { Arc::new(BlackholeGateway) },
     )

@@ -6,8 +6,9 @@
 //! registry the server composes. This file is that tie, in two contracts:
 //!
 //! 1. **Every command a client emits is a registered verb.** The TUI
-//!    (`crates/mush-net-ssh/src/tui/`) and the web client (`web/src/`) are
-//!    scanned for string literals shaped like a command line — a `+verb` or
+//!    (`crates/mush-net-ssh/src/tui/`), the web client (`web/src/`) and, since
+//!    48e L8 (clients:G12), the Unity client's runtime scripts
+//!    (`unity/Assets/_TacSim/Scripts/Runtime/`) are scanned for string literals shaped like a command line — a `+verb` or
 //!    `@verb` (with its `/switches`), a cockpit-style upper-case head
 //!    (`FIRE HOLD`, `HEADING {} QUIET`), or the argument of a key table's
 //!    `Run`/`Prefill` or a `cmd:`/`line:` entry — and each head must resolve in
@@ -35,7 +36,11 @@ use mush_contract_tests::scan;
 use crate::production_registry::production_composition;
 
 /// Where the clients emit command lines.
-const CLIENT_DIRS: [&str; 2] = ["crates/mush-net-ssh/src/tui", "web/src"];
+const CLIENT_DIRS: [&str; 3] = [
+    "crates/mush-net-ssh/src/tui",
+    "web/src",
+    "unity/Assets/_TacSim/Scripts/Runtime",
+];
 
 /// The crates whose `pub struct *Session*` types are a client's sessions.
 const SESSION_CRATES: [&str; 6] = [
@@ -127,7 +132,7 @@ fn literals(source: &str) -> Vec<(usize, String)> {
 /// What a table entry's argument looks like in each client: the key tables'
 /// `Run("…")`/`Prefill("…")`/`PrefillRow("…")` (TUI) and `cmd: "…"` /
 /// `line: "…"` (web), and the send helpers.
-const TABLE_CALLS: [&str; 9] = [
+const TABLE_CALLS: [&str; 11] = [
     "Run(",
     "Prefill(",
     "PrefillRow(",
@@ -137,6 +142,9 @@ const TABLE_CALLS: [&str; 9] = [
     "submit(",
     "helm(",
     "orders.push(",
+    // Unity's send helpers.
+    "SendLine(",
+    "ExecutePlayerCommand(",
 ];
 
 /// The command a literal is, if it is shaped like one. `in_table` is true
@@ -193,10 +201,12 @@ fn client_files(root: &Path) -> Vec<std::path::PathBuf> {
             !name.ends_with(".test.ts") && !name.contains("fixtures")
         }),
     );
+    // Unity's runtime C# (its EditMode tests live under `Scripts/Tests`).
+    files.extend(scan::files(&root.join(CLIENT_DIRS[2]), &["cs"], &[]));
     files
 }
 
-/// Every command-shaped literal the two clients emit.
+/// Every command-shaped literal the three clients emit.
 fn emitted(root: &Path) -> Vec<Emitted> {
     let mut out = Vec::new();
     for file in client_files(root) {
@@ -227,6 +237,11 @@ fn emitted(root: &Path) -> Vec<Emitted> {
             let in_table = TABLE_CALLS
                 .iter()
                 .any(|call| quoted.iter().any(|q| text.contains(&format!("{call}{q}"))));
+            // Unity's labels are upper case (`CRADLE`, `ROCK`): there a line is a `+`/`@`
+            // command or one passed to a send helper, never a bare upper-case label.
+            if relative.ends_with(".cs") && !in_table && !literal.starts_with(['+', '@']) {
+                continue;
+            }
             if let Some((head, switches)) = command_of(&literal, in_table) {
                 out.push(Emitted {
                     head,
@@ -279,7 +294,7 @@ fn every_command_a_client_emits_is_a_registered_verb() {
     let allowed = allowlist(&root);
     let commands = emitted(&root);
     let heads: BTreeSet<&str> = commands.iter().map(|c| c.head.as_str()).collect();
-    for floor in ["+tac", "fire", "look", "DOCK"] {
+    for floor in ["+tac", "+helm", "fire", "look"] {
         assert!(
             heads.iter().any(|head| head.eq_ignore_ascii_case(floor)),
             "the scan found no `{floor}` in the clients ({} heads): it is broken, not the clients",

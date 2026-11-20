@@ -195,7 +195,8 @@ pub(crate) fn second(rig: &mut Rig) {
     }
 }
 
-/// Pump and tick until `done` holds or `secs` of wall time pass.
+/// Pump and tick until `done` holds or `secs` of tokio time pass (`field_host_rig::Pace`: on a
+/// paused clock the world keeps the arena's clock).
 pub(crate) async fn until(
     rig: &mut Rig,
     rx: &mut Receiver<ArenaOut>,
@@ -203,13 +204,10 @@ pub(crate) async fn until(
     secs: u64,
     mut done: impl FnMut(&mut Rig, &[LedgerEvent]) -> bool,
 ) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-    let mut beat = 0_u32;
-    while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    let mut pace = crate::field_host_rig::Pace::new(secs);
+    while let Some(owed) = pace.beat().await {
         pump(rig, rx, lines);
-        beat += 1;
-        if beat.is_multiple_of(8) {
+        for _ in 0..owed {
             second(rig);
         }
         if done(rig, lines) {

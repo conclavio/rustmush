@@ -471,6 +471,10 @@ pub fn capture(
 /// — capped at the hold. Nothing is consumed before delivery, so the bill returns whole and this
 /// is the only charge a Running cancel carries beside the booking fee. 0 for an order that never
 /// ran, and at a facility the cost model does not price.
+///
+/// **The fee is the one pinned at submit** (doc 48e, production G24; Q-48-53): the hold is the
+/// whole order's fee at the margin then, so the ran units' share of it ([`pinned_forfeit_minor`])
+/// caps the live fee. A margin raised since cannot raise the forfeit; one lowered lowers it.
 #[must_use]
 pub fn cancel_forfeit_minor(w: &mush_core::World, order: &WorkOrder, held: u64) -> u64 {
     let ran = order
@@ -479,10 +483,26 @@ pub fn cancel_forfeit_minor(w: &mush_core::World, order: &WorkOrder, held: u64) 
     if ran == 0 {
         return 0;
     }
+    let total = crate::workorder::quote_duration(order.pinned(), order.quantity());
     w.module_state::<crate::IndustryStore>()
         .and_then(|store| store.facility(order.facility()))
         .and_then(|facility| facility.fee_minor(ran))
-        .map_or(0, |fee| fee.min(held))
+        .map_or(0, |fee| {
+            fee.min(pinned_forfeit_minor(held, ran, total)).min(held)
+        })
+}
+
+/// **The ran units' share of a held fee** (doc 48e, production G24): `held × ran / total`,
+/// rounded up to the whole credit as every fee is, so at an unchanged margin it is never under
+/// the live fee for `ran`. All of it for an order with no units. Pure.
+#[must_use]
+pub fn pinned_forfeit_minor(held: u64, ran: u64, total: u64) -> u64 {
+    if total == 0 {
+        return held;
+    }
+    crate::cost::whole_credit(
+        (u128::from(held) * u128::from(ran.min(total))).div_ceil(u128::from(total)),
+    )
 }
 
 /// **Capture part of the budget and release the rest** — a cancelled order's elapsed fee
@@ -1151,6 +1171,47 @@ fn page_order(ctx: &mut Ctx<'_>, order: WorkOrderId, why: &str, recommended: &[S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 48e (production G24): the forfeit is the ran units' share of the held fee**,
+    /// rounded up to the whole credit, so at the booked margin it is never under the live fee.
+    #[test]
+    fn g24_the_forfeit_is_the_ran_share_of_the_held_fee() {
+        let works = crate::cost::FacilityCostDef {
+            capital_major: 3_000_000,
+            lifetime_years: 25,
+            upkeep_permille: 20,
+            staff: 8,
+            wage_major: 150,
+            margin_permille: 250,
+        };
+        let held = works.fee_minor(480, 2);
+        for ran in [1, 6, 71, 240, 479, 480] {
+            let share = pinned_forfeit_minor(held, ran, 480);
+            assert!(
+                share >= works.fee_minor(ran, 2),
+                "{ran}: never under the fee"
+            );
+            assert!(
+                share <= works.fee_minor(ran, 2) + crate::cost::MINOR_PER_CREDIT,
+                "{ran}: within a credit of it"
+            );
+            assert!(
+                share < works.fee_minor_at(ran, 2, 900),
+                "{ran}: under the raised margin's fee"
+            );
+        }
+        assert_eq!(pinned_forfeit_minor(held, 480, 480), held);
+        assert_eq!(
+            pinned_forfeit_minor(held, 999, 480),
+            held,
+            "never past the hold"
+        );
+        assert_eq!(
+            pinned_forfeit_minor(held, 0, 0),
+            held,
+            "no units: all of it"
+        );
+    }
 
     #[test]
     fn e7r1_r1_the_two_key_shapes_are_deterministic_and_inside_the_kernel_cap() {

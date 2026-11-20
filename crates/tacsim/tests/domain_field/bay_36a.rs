@@ -181,7 +181,7 @@ fn given_up(rig: &mut Rig, spare: ObjId) -> tacsim::port::bay_work::BayOrder {
 /// count then follows the ledger, so the title holder's `+bay/strip` of the spare's cannon
 /// still mints its lot at the ledger's next ordinal — and the cannon stays on the hull until
 /// that mint has landed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_1_a_given_up_draw_does_not_brick_the_hull() {
     let mut rig = stocked();
     let (pilot, row, escort, spare) = two_rearms_one_load(&mut rig);
@@ -232,7 +232,7 @@ async fn b36a_1_a_given_up_draw_does_not_brick_the_hull() {
 /// intent: `take` checks the hold but reserves nothing, so two rearms against one load are
 /// enough, and the draw that loses is given up. The hold restocked, the spare is ordered again
 /// from the carrier's bay: its draw lands at the ledger's next ordinal and the work is done.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_1_b_the_hull_takes_a_new_order_after_the_give_up() {
     let mut rig = stocked();
     let (pilot, row, escort, spare) = two_rearms_one_load(&mut rig);
@@ -285,7 +285,7 @@ fn jam_cannon(rig: &mut Rig, hull: ObjId) -> mush_tactics::ComponentId {
 /// host section does not stand) — after the parts were drawn from the hold — so the order is
 /// refused now, with the engine's reason, and no fee is held. Ordered with the rebuild, it is
 /// taken.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
     let mut rig = stocked();
     // Doc 39 cut IN.7: the lane seeds no parts; a cannon in Occator's stores is staff's.
@@ -349,7 +349,7 @@ async fn b36a_2_a_doomed_order_is_refused_at_the_counter() {
 /// **36a P0-6 (b) — no cancel while the draw settles.** The spare's rearm comes due on an empty
 /// hold: its draw is owed and refused, and until the bay gives the act up the order is not
 /// cancelled under it (SETTLING); once given up there is nothing left to cancel.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_2_b_no_cancel_while_the_draw_settles() {
     let mut rig = stocked();
     let (pilot, row, escort, spare) = two_rearms_one_load(&mut rig);
@@ -371,7 +371,7 @@ async fn b36a_2_b_no_cancel_while_the_draw_settles() {
 /// escort's draw has landed (the hold is empty) but the tick has not yet settled it into the
 /// work. A cancel now would refund the fee and leave the goods gone, so it is refused
 /// (SETTLING) until the next tick completes the order.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_2_c_no_cancel_once_the_draw_has_landed() {
     let mut rig = stocked();
     let (pilot, row, escort, _) = two_rearms_one_load(&mut rig);
@@ -460,7 +460,7 @@ fn salvor_holds_owners_hull(rig: &mut Rig) -> (ObjId, HullRow, ObjId, ObjId) {
 /// may neither strip nor scrap). Once the claim is vacated, O's title stands again and O
 /// cancels S's order, but the berth still names S's carrier: O cannot stow her into S's bay
 /// nor strip a part into S's hold, and S, with no right left, cannot stow her either.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_3_a_custody_caps_the_owner_and_binds_the_berth() {
     let mut rig = stocked();
     let (s, s_row, o, hull) = salvor_holds_owners_hull(&mut rig);
@@ -523,7 +523,7 @@ async fn b36a_3_a_custody_caps_the_owner_and_binds_the_berth() {
 /// lots land; the shell stands in the workshop and no one carries it off (`get` is refused as
 /// a held hull), nor does `+bay` answer to its name any more — only to its number, which says
 /// it has been scrapped.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_4_a_scrapped_shell_stays_held() {
     let mut rig = stocked();
     let (pilot, _, _, spare) = two_escorts(&mut rig);
@@ -573,7 +573,7 @@ fn berthed_spare(rig: &mut Rig) -> (ObjId, HullRow, ObjId) {
 /// `+bay/strip` of the spare's cannon at C14 is refused with the hold's own sentence before any
 /// plan is owed: the hull stands whole and berthed, nothing is owed, the count is untouched. (A
 /// workshop scrap lays nothing in the hold since doc 39 cut IN.8: the operator takes it all.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_5_a_a_full_hold_refuses_the_strip() {
     let mut rig = stocked();
     let (pilot, row, spare) = berthed_spare(&mut rig);
@@ -604,7 +604,7 @@ async fn b36a_5_a_a_full_hold_refuses_the_strip() {
 /// hold; before the tick lays the lot, the hold is filled. The mint's prepare refuses it (the
 /// plan the offer carries has no room) three times and the act is given up: the hull stands
 /// whole and berthed, no lot exists, and the record's count is back at the ledger's.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_5_b_a_lost_mint_destroys_nothing() {
     let mut rig = stocked();
     let (pilot, row, spare) = berthed_spare(&mut rig);
@@ -647,7 +647,7 @@ async fn b36a_5_b_a_lost_mint_destroys_nothing() {
 /// **36a P2-4 (c) — `@inv/dissolve` consults the hold's room.** A tonne of alloy stands as a
 /// lot in the full hold; the pilot's `@inv/dissolve` of it is refused at the prepare with the
 /// hold's own sentence, the pool is unchanged and the lot still stands.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_5_c_dissolve_consults_the_holds_room() {
     let mut rig = stocked();
     let (pilot, row, _, _) = two_escorts(&mut rig);
@@ -670,7 +670,7 @@ async fn b36a_5_c_dissolve_consults_the_holds_room() {
 /// **36a P2-5 (a) — a salvor's order completes under the pending claim.** S's unjam order on
 /// the hull in S's custody comes due and is written: the engine runs it as documented repair at
 /// the salvor's risk under `PendingSalvageClaim`, not under a title the salvor does not hold.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_6_a_a_salvors_order_completes_under_the_claim() {
     let mut rig = stocked();
     let (s, _, _, hull) = salvor_holds_owners_hull(&mut rig);
@@ -697,7 +697,7 @@ async fn b36a_6_a_a_salvors_order_completes_under_the_claim() {
 /// recovery off O's own block. S's `+bay` quote prints the at-risk line first; S's unjam order
 /// completes, and the claims' tick writes it on the custody; S's claim carries it at filing; O
 /// contests on the recovery, and the vacate notice O reads lists the repair, repaid by nobody.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_rs3_the_salvors_repair_is_at_risk_and_reported() {
     let mut rig = stocked();
     let (s, _, o, hull) = salvor_holds_owners_hull(&mut rig);
@@ -808,7 +808,7 @@ async fn b36a_rs3_the_salvors_repair_is_at_risk_and_reported() {
 /// **36a P2-5 (b) — no stow while an act settles.** The title holder strips the spare's cannon
 /// at C14; until the tick lays the lot, `+bay/stow` is refused (SETTLING) and the hull stands
 /// berthed; once it has landed, she stows.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_6_b_no_stow_while_the_mint_settles() {
     let mut rig = stocked();
     let (pilot, row, spare) = berthed_spare(&mut rig);
@@ -830,7 +830,7 @@ async fn b36a_6_b_no_stow_while_the_mint_settles() {
 /// **36a §5.4 — the tick submits, never the handler.** `+bay/strip` queues no authoritative
 /// submit of its own; the next port tick submits the owed mint — one `tacsim_bay_work`, as the
 /// stripper — and the lot lands when it does.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn b36a_7_a_the_tick_submits_the_owed_act() {
     let mut rig = stocked();
     let (pilot, _, spare) = berthed_spare(&mut rig);

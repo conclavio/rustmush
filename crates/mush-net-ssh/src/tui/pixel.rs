@@ -1599,19 +1599,25 @@ impl PixelView {
                 return KeyUse::Used;
             }
             match key {
-                Key::Char('w' | 'W') => self.orders.push("DOCK TRANS UP".to_string()),
-                Key::Char('s' | 'S') => self.orders.push("DOCK TRANS DOWN".to_string()),
-                Key::Char('a' | 'A') => self.orders.push("DOCK TRANS LEFT".to_string()),
-                Key::Char('d' | 'D') => self.orders.push("DOCK TRANS RIGHT".to_string()),
-                Key::Up => self.orders.push("DOCK PITCH UP".to_string()),
-                Key::Down => self.orders.push("DOCK PITCH DOWN".to_string()),
-                Key::Left => self.orders.push("DOCK YAW LEFT".to_string()),
-                Key::Right => self.orders.push("DOCK YAW RIGHT".to_string()),
-                Key::Char('q' | 'Q') => self.orders.push("DOCK ROLL CCW".to_string()),
-                Key::Char('e' | 'E') => self.orders.push("DOCK ROLL CW".to_string()),
-                Key::Char('r' | 'R') => self.orders.push("DOCK CLOSURE FORWARD".to_string()),
-                Key::Char('f' | 'F') => self.orders.push("DOCK CLOSURE REVERSE".to_string()),
-                Key::Char('x' | 'X') => self.orders.push("DOCK DAMPENERS TOGGLE".to_string()),
+                Key::Char('w' | 'W') => self.orders.push("+helm/dock DOCK TRANS UP".to_string()),
+                Key::Char('s' | 'S') => self.orders.push("+helm/dock DOCK TRANS DOWN".to_string()),
+                Key::Char('a' | 'A') => self.orders.push("+helm/dock DOCK TRANS LEFT".to_string()),
+                Key::Char('d' | 'D') => self.orders.push("+helm/dock DOCK TRANS RIGHT".to_string()),
+                Key::Up => self.orders.push("+helm/dock DOCK PITCH UP".to_string()),
+                Key::Down => self.orders.push("+helm/dock DOCK PITCH DOWN".to_string()),
+                Key::Left => self.orders.push("+helm/dock DOCK YAW LEFT".to_string()),
+                Key::Right => self.orders.push("+helm/dock DOCK YAW RIGHT".to_string()),
+                Key::Char('q' | 'Q') => self.orders.push("+helm/dock DOCK ROLL CCW".to_string()),
+                Key::Char('e' | 'E') => self.orders.push("+helm/dock DOCK ROLL CW".to_string()),
+                Key::Char('r' | 'R') => self
+                    .orders
+                    .push("+helm/dock DOCK CLOSURE FORWARD".to_string()),
+                Key::Char('f' | 'F') => self
+                    .orders
+                    .push("+helm/dock DOCK CLOSURE REVERSE".to_string()),
+                Key::Char('x' | 'X') => self
+                    .orders
+                    .push("+helm/dock DOCK DAMPENERS TOGGLE".to_string()),
                 _ => {}
             }
             return KeyUse::Used;
@@ -2388,9 +2394,11 @@ pub const SIXEL_MAX_SCALE: usize = 3;
 /// `(col, row, cols, rows)`, 1-based.
 #[must_use]
 pub fn picture_area(cols: u16, rows: u16) -> CellBox {
+    let cols = cols.clamp(1, crate::caps::MAX_WIDTH);
+    let rows = rows.clamp(1, crate::caps::MAX_HEIGHT);
     let below = u32::from(rows.saturating_sub(1));
     let tall = u16::try_from(below * 2 / 3).unwrap_or(u16::MAX).max(1);
-    (1, 2, cols.max(1), tall)
+    (1, 2, cols, tall)
 }
 
 /// The frame a picture `width` pixels wide is drawn at to fill `area`, of
@@ -3948,13 +3956,13 @@ mod tests {
         assert_eq!(
             v.take_orders(),
             [
-                "DOCK TRANS UP",
-                "DOCK TRANS LEFT",
-                "DOCK PITCH UP",
-                "DOCK YAW RIGHT",
-                "DOCK ROLL CCW",
-                "DOCK CLOSURE FORWARD",
-                "DOCK DAMPENERS TOGGLE"
+                "+helm/dock DOCK TRANS UP",
+                "+helm/dock DOCK TRANS LEFT",
+                "+helm/dock DOCK PITCH UP",
+                "+helm/dock DOCK YAW RIGHT",
+                "+helm/dock DOCK ROLL CCW",
+                "+helm/dock DOCK CLOSURE FORWARD",
+                "+helm/dock DOCK DAMPENERS TOGGLE"
             ]
         );
         // Digits remain global screen switches (`KeyUse::Passed`, `D-35-16`)
@@ -4077,5 +4085,36 @@ mod tests {
             "unexpected order: {}",
             orders[0]
         );
+    }
+
+    #[test]
+    fn hostile_pty_dims_and_extreme_cell_sizes_stay_bounded_in_kitty_views() {
+        assert_eq!(
+            picture_area(u16::MAX, u16::MAX),
+            (1, 2, crate::caps::MAX_WIDTH, 132)
+        );
+        assert_eq!(picture_area(0, 0), (1, 2, 1, 1));
+
+        let t0 = Instant::now();
+        let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+        let mut v = supported(t0);
+        v.set_cell_size(CellSize {
+            width: 1,
+            height: u16::MAX,
+        });
+        assert!(v.toggle_for(PictureKind::Cockpit, t0));
+
+        // Paint FirstPerson, Overhead, and Tactical25D at u16::MAX × u16::MAX.
+        for _ in 0..3 {
+            let bytes = v.paint(&both, u16::MAX, u16::MAX, t0);
+            assert!(!bytes.is_empty());
+            let (w, h) = v.size();
+            assert!(
+                w <= mush_pixel::iso25d::MAX_WIDTH_PX && h <= mush_pixel::iso25d::MAX_HEIGHT_PX,
+                "rendered size {w}x{h} exceeded Kitty ceiling"
+            );
+            v.key(Key::Char('v'), t0);
+        }
     }
 }
