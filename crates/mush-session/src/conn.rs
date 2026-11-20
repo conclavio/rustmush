@@ -255,6 +255,42 @@ impl ConnectionHandle {
         }
     }
 
+    /// Best-effort non-blocking send of an ephemeral plain event (e.g.
+    /// [`OutputEvent::Composing`]) to an **ANSI** connection: drops silently on
+    /// a full or closed queue without setting the slow-client `output_dropped`
+    /// flag.
+    pub(crate) fn try_send_ephemeral(&self, ev: Arc<OutputEvent>) -> bool {
+        match &self.sink {
+            Sink::Ansi(tx) => tx.try_send(ev).is_ok(),
+            Sink::Structured(_) | Sink::AnsiStamped(_) => {
+                tracing::error!(
+                    conn = self.id.0,
+                    "bare OutputEvent sent to a structured connection; \
+                     stamp an Envelope instead (caller bug)"
+                );
+                false
+            }
+        }
+    }
+
+    /// Best-effort non-blocking send of an ephemeral envelope (e.g.
+    /// [`OutputEvent::Composing`]) to a **structured** connection: drops
+    /// silently on a full or closed queue without setting the slow-client
+    /// `output_dropped` flag.
+    pub(crate) fn try_send_envelope_ephemeral(&self, env: Arc<Envelope>) -> bool {
+        match &self.sink {
+            Sink::Structured(tx) | Sink::AnsiStamped(tx) => tx.try_send(env).is_ok(),
+            Sink::Ansi(_) => {
+                tracing::error!(
+                    conn = self.id.0,
+                    "Envelope sent to an ANSI connection; \
+                     send the plain OutputEvent instead (caller bug)"
+                );
+                false
+            }
+        }
+    }
+
     /// Whether output has been dropped on this connection (slow client).
     pub fn output_dropped(&self) -> bool {
         self.output_dropped.load(Ordering::Relaxed)

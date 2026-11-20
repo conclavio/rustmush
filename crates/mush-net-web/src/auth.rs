@@ -10,14 +10,22 @@
 use std::net::SocketAddr;
 
 use axum::Json;
+use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Request, StatusCode, header};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::hooks::{CharSummary, LoginErr, LoginOk, RegisterErr};
 use crate::ip::client_ip;
+
+/// Hard upper bound on login account name bytes before touching auth hooks.
+const MAX_LOGIN_ACCOUNT_BYTES: usize = 64;
+
+/// Hard upper bound on login password bytes before touching auth hooks.
+const MAX_LOGIN_PASSWORD_BYTES: usize = 128;
 
 #[derive(Deserialize)]
 pub(crate) struct LoginReq {
@@ -55,6 +63,21 @@ fn login_ok(ok: &LoginOk) -> Response {
     .into_response()
 }
 
+/// Reject requests from tempbanned/sitebanned IPs **before** reading or
+/// parsing the JSON request body (HIGH-3).
+pub(crate) async fn reject_blocked_ip(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let ip = client_ip(peer.ip(), req.headers(), &state.config.trusted_proxies);
+    if state.hooks.is_ip_blocked(ip) {
+        return err_json(StatusCode::FORBIDDEN, "forbidden");
+    }
+    next.run(req).await
+}
+
 /// `POST /api/auth/login` `{account, password}` →
 /// `{token, account, characters: [{key, name}]}`.
 pub(crate) async fn login(
@@ -66,6 +89,11 @@ pub(crate) async fn login(
     let ip = client_ip(peer.ip(), &headers, &state.config.trusted_proxies);
     if state.hooks.is_ip_blocked(ip) {
         return err_json(StatusCode::FORBIDDEN, "forbidden");
+    }
+    if req.account.len() > MAX_LOGIN_ACCOUNT_BYTES || req.password.len() > MAX_LOGIN_PASSWORD_BYTES
+    {
+        state.hooks.auth_failed(ip);
+        return err_json(StatusCode::UNAUTHORIZED, BAD_CREDS);
     }
     match state.hooks.login(&req.account, &req.password, ip).await {
         Ok(ok) => login_ok(&ok),
@@ -101,6 +129,7 @@ pub(crate) async fn register(
         Err(RegisterErr::BadName(msg)) => err_json(StatusCode::UNPROCESSABLE_ENTITY, &msg),
         Err(RegisterErr::Weak) => err_json(StatusCode::UNPROCESSABLE_ENTITY, "password too weak"),
         Err(RegisterErr::Banned) => err_json(StatusCode::FORBIDDEN, "forbidden"),
+        Err(RegisterErr::RateLimited) => err_json(StatusCode::TOO_MANY_REQUESTS, "slow down"),
     }
 }
 

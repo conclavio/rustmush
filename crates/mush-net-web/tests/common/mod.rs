@@ -43,6 +43,7 @@ pub struct MockState {
     /// (doc 33 §4.3); zero for a gateway of no generation.
     pub conn_id_bit: u64,
     pub login_err: Option<LoginErr>,
+    pub login_delay: Option<Duration>,
     pub register_result: Option<Result<LoginOk, RegisterErr>>,
     pub connect_err: Option<AttachErr>,
     pub resume_result: Option<Result<ResumeOk, ResumeErr>>,
@@ -139,6 +140,10 @@ impl WebHooks for MockWebHooks {
         _ip: IpAddr,
     ) -> BoxFuture<'a, Result<LoginOk, LoginErr>> {
         Box::pin(async move {
+            let delay = self.state().login_delay;
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+            }
             let st = self.state();
             if let Some(err) = st.login_err {
                 return Err(err);
@@ -312,20 +317,21 @@ pub fn test_config() -> WebConfig {
     }
 }
 
-/// Binds an ephemeral port and serves the router exactly like `mushd` does.
+/// Binds an ephemeral port and serves the router through the real
+/// `mush_net_web::serve_with_shutdown_bound_on` entry point (exactly like
+/// `mushd` and `mush-gateway` do).
 pub async fn spawn_server(hooks: Arc<MockWebHooks>, config: WebConfig) -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let app = mush_net_web::router(hooks, config);
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        axum::serve(
+        let _ = mush_net_web::serve_with_shutdown_bound_on(
+            hooks,
+            config,
             listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
+            Some(bound_tx),
+            std::future::pending(),
         )
-        .await
-        .unwrap();
+        .await;
     });
-    addr
+    bound_rx.await.unwrap()
 }

@@ -1,16 +1,24 @@
 //! Router assembly and the serve entry points.
 
+use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::{HeaderValue, Request, StatusCode, header};
-use axum::response::IntoResponse;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router, extract::State};
+use axum::{Extension, Json, Router};
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_governor::GovernorError;
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
@@ -20,9 +28,14 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::WebConfig;
 use crate::hooks::{WEB_CONN_ID_BASE, WebHooks};
-use crate::ip::client_ip;
+use crate::ip::{client_ip, fold_network_key};
 use crate::metrics::Metrics;
 use crate::{assets, auth, ws};
+
+/// Hard body limit for `/api/auth/*` endpoints (HIGH-3): login, register, and
+/// logout payloads are small credential JSON objects and never need Axum's
+/// 2 MiB default.
+const AUTH_BODY_LIMIT_BYTES: usize = 4_096;
 
 /// Shared state behind every handler.
 #[derive(Clone)]
@@ -68,22 +81,45 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
     let auth_routes = Router::new()
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/register", post(auth::register))
-        .route("/api/auth/logout", post(auth::logout));
+        .route("/api/auth/logout", post(auth::logout))
+        .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::reject_blocked_ip,
+        ));
     let (auth_routes, limiter_gc) = rate_limit(auth_routes, &state.config);
 
-    let mut ops = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/ws", get(ws::ws_route));
+    let mut http_ops = Router::new().route("/healthz", get(healthz));
     if metrics_enabled {
         // Gated behind `web.metrics_enabled` (opt-in, default off). Public-safe:
         // non-sensitive aggregates only (see `metrics.rs`).
-        ops = ops.route("/metrics", get(metrics_endpoint));
+        http_ops = http_ops.route("/metrics", get(metrics_endpoint));
     }
+    let mut non_upgrade = auth_routes.merge(http_ops).fallback(assets::static_handler);
+    let req_timeout = Duration::from_millis(state.config.request_timeout_ms);
+    if !req_timeout.is_zero() {
+        non_upgrade =
+            non_upgrade.layer(middleware::from_fn_with_state(req_timeout, request_timeout));
+    }
+    // Keep `/ws` outside `request_timeout` so long-lived WebSocket upgrades
+    // are governed by WS ping/pong and send timeouts instead.
+    let ws_routes = Router::new().route("/ws", get(ws::ws_route));
 
-    let app = security_headers(auth_routes.merge(ops).fallback(assets::static_handler))
+    let app = security_headers(non_upgrade.merge(ws_routes))
         .layer(TraceLayer::new_for_http().make_span_with(scrubbed_span))
         .with_state(state);
     (app, limiter_gc)
+}
+
+async fn request_timeout(
+    State(timeout): State<Duration>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    match tokio::time::timeout(timeout, next.run(req)).await {
+        Ok(resp) => resp,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
 }
 
 /// Baseline security headers on every response (LOW finding: the SPA keeps
@@ -127,12 +163,11 @@ fn security_headers(router: Router<AppState>) -> Router<AppState> {
         ))
 }
 
-/// The tight per-IP bucket on `/api/auth/*` (design 02 §8.3): burst
-/// `auth_burst`, one element replenished every `auth_replenish_secs`.
-/// [`TrustedPeerKeyExtractor`] (forwarded headers, gated on a trusted direct
-/// peer) is installed **only** when `trusted_proxies` is configured;
-/// otherwise the peer IP is the key. Either knob at 0 disables the layer
-/// (tests only).
+/// The tight per-network bucket on `/api/auth/*` (design 02 §8.3, HIGH-3):
+/// burst `auth_burst`, one element replenished every `auth_replenish_secs`.
+/// Always uses [`NetworkKeyExtractor`] so both direct and `trusted_proxies`
+/// modes canonicalize IPv4-mapped IPv6 addresses and fold native IPv6 to `/64`
+/// (matching `IpGuard`). Either knob at 0 disables the layer (tests only).
 fn rate_limit(
     router: Router<AppState>,
     config: &WebConfig,
@@ -140,55 +175,39 @@ fn rate_limit(
     if config.auth_burst == 0 || config.auth_replenish_secs == 0 {
         return (router, None);
     }
-    if config.trusted_proxies.is_empty() {
-        let governor = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(config.auth_replenish_secs)
-                .burst_size(config.auth_burst)
-                .finish()
-                .expect("nonzero rate-limit parameters"),
-        );
-        let gc: LimiterGc = {
-            let governor = Arc::clone(&governor);
-            Box::new(move || governor.limiter().retain_recent())
-        };
-        (router.layer(GovernorLayer::new(governor)), Some(gc))
-    } else {
-        let key_extractor = TrustedPeerKeyExtractor {
-            trusted_proxies: Arc::from(config.trusted_proxies.as_slice()),
-        };
-        let governor = Arc::new(
-            GovernorConfigBuilder::default()
-                .key_extractor(key_extractor)
-                .per_second(config.auth_replenish_secs)
-                .burst_size(config.auth_burst)
-                .finish()
-                .expect("nonzero rate-limit parameters"),
-        );
-        let gc: LimiterGc = {
-            let governor = Arc::clone(&governor);
-            Box::new(move || governor.limiter().retain_recent())
-        };
-        (router.layer(GovernorLayer::new(governor)), Some(gc))
-    }
+    let key_extractor = NetworkKeyExtractor {
+        trusted_proxies: Arc::from(config.trusted_proxies.as_slice()),
+    };
+    let Some(governor_cfg) = GovernorConfigBuilder::default()
+        .key_extractor(key_extractor)
+        .per_second(config.auth_replenish_secs)
+        .burst_size(config.auth_burst)
+        .finish()
+    else {
+        return (router, None);
+    };
+    let governor = Arc::new(governor_cfg);
+    let gc: LimiterGc = {
+        let governor = Arc::clone(&governor);
+        Box::new(move || governor.limiter().retain_recent())
+    };
+    (router.layer(GovernorLayer::new(governor)), Some(gc))
 }
 
-/// [`KeyExtractor`] mirroring [`client_ip`]'s trust check (MEDIUM-LOW
-/// finding, design 02 §6.5): `tower_governor`'s built-in
-/// `SmartIpKeyExtractor` honors `X-Forwarded-For` from **any** direct peer
-/// once `trusted_proxies` is non-empty, so an attacker connecting straight
-/// to this server (not through the configured proxy) could set the header
-/// themselves and spread requests across as many rate-limit buckets as they
-/// like, defeating the `/api/auth/*` bucket entirely. This extractor keys
-/// on [`client_ip`] instead — the same trusted-direct-peer gate `IpGuard`
-/// uses — so a forged header from an untrusted peer is ignored here exactly
-/// as it is for ban/tempban purposes.
+/// [`KeyExtractor`] mirroring [`client_ip`] and `IpGuard`'s `/64` IPv6 / `/32`
+/// IPv4 network folding (MEDIUM-LOW finding, design 02 §6.5, HIGH-3).
+///
+/// Handles both direct connections (`trusted_proxies` empty) and reverse-proxy
+/// hops (`trusted_proxies` non-empty): untrusted direct peers can never spoof
+/// `X-Forwarded-For`, IPv4-mapped IPv6 addresses fold onto their IPv4 address,
+/// and native IPv6 addresses fold to their `/64` prefix so rotating host IDs
+/// within one allocation shares one auth rate-limit bucket.
 #[derive(Clone)]
-struct TrustedPeerKeyExtractor {
+struct NetworkKeyExtractor {
     trusted_proxies: Arc<[IpAddr]>,
 }
 
-impl KeyExtractor for TrustedPeerKeyExtractor {
+impl KeyExtractor for NetworkKeyExtractor {
     type Key = IpAddr;
 
     // `tower_governor`'s `tracing` feature is pinned on unconditionally by
@@ -199,7 +218,7 @@ impl KeyExtractor for TrustedPeerKeyExtractor {
     // impl only needs to compile against the one fixed dependency config
     // this workspace pins.
     fn name(&self) -> &'static str {
-        "trusted-peer IP"
+        "client network"
     }
 
     fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, GovernorError> {
@@ -209,7 +228,8 @@ impl KeyExtractor for TrustedPeerKeyExtractor {
             .ok_or(GovernorError::UnableToExtractKey)?
             .0
             .ip();
-        Ok(client_ip(peer, req.headers(), &self.trusted_proxies))
+        let resolved = client_ip(peer, req.headers(), &self.trusted_proxies);
+        Ok(fold_network_key(resolved))
     }
 
     fn key_name(&self, key: &Self::Key) -> Option<String> {
@@ -315,6 +335,9 @@ pub async fn serve_with_shutdown_bound_on(
     listener.set_nonblocking(true)?;
     let actual = listener.local_addr()?;
     let tls = config.tls.clone();
+    let max_connections = config.max_connections.max(1);
+    let header_timeout = Duration::from_millis(config.header_read_timeout_ms);
+    let conn_sem = Arc::new(Semaphore::new(max_connections));
     let (app, limiter_gc) = build(hooks, config);
 
     // Rate-limiter GC: drop per-IP buckets that have fully replenished.
@@ -338,22 +361,229 @@ pub async fn serve_with_shutdown_bound_on(
             if let Some(tx) = bound {
                 let _ = tx.send(actual);
             }
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(shutdown)
-            .await
+            serve_http(listener, app, conn_sem, header_timeout, shutdown).await
         }
         Some(tls_config) => {
             if let Some(tx) = bound {
                 let _ = tx.send(actual);
             }
-            serve_tls(listener, actual, tls_config, app, shutdown).await
+            serve_tls(
+                listener,
+                actual,
+                tls_config,
+                app,
+                conn_sem,
+                header_timeout,
+                shutdown,
+            )
+            .await
         }
     };
     let _ = stop_gc.send(true);
     result
+}
+
+/// Wraps a stream so the global TCP connection semaphore permit lives for the
+/// entire lifetime of the connection (including after WebSocket upgrades), and
+/// optionally enforces a deadline until the first byte arrives (closing
+/// `hyper-util`'s `auto::Builder` `ReadVersion` stall under TLS).
+struct PermitStream<S> {
+    inner: S,
+    _permit: OwnedSemaphorePermit,
+    first_byte_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<S> PermitStream<S> {
+    fn new(inner: S, permit: OwnedSemaphorePermit, first_byte_timeout: Option<Duration>) -> Self {
+        Self {
+            inner,
+            _permit: permit,
+            first_byte_deadline: first_byte_timeout
+                .filter(|d| !d.is_zero())
+                .map(|d| Box::pin(tokio::time::sleep(d))),
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for PermitStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().len() > before {
+                    this.first_byte_deadline = None;
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => {
+                if let Some(deadline) = this.first_byte_deadline.as_mut()
+                    && deadline.as_mut().poll(cx).is_ready()
+                {
+                    this.first_byte_deadline = None;
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "http header read timed out",
+                    )));
+                }
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for PermitStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+    }
+}
+
+async fn serve_http(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    conn_sem: Arc<Semaphore>,
+    header_timeout: Duration,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
+    let mut http1 = hyper::server::conn::http1::Builder::new();
+    http1.timer(TokioTimer::new());
+    if !header_timeout.is_zero() {
+        http1.header_read_timeout(header_timeout);
+    }
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut shutdown = std::pin::pin!(shutdown);
+    let mut tasks = tokio::task::JoinSet::new();
+
+    loop {
+        while tasks.try_join_next().is_some() {}
+
+        let accepted = tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            res = listener.accept() => res,
+        };
+        let (stream, remote_addr) = match accepted {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::warn!(error = %err, "http accept error");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
+        };
+        let Ok(permit) = Arc::clone(&conn_sem).try_acquire_owned() else {
+            tracing::warn!(peer = %remote_addr, "web connection cap reached; dropping socket");
+            drop(stream);
+            continue;
+        };
+        let _ = stream.set_nodelay(true);
+        let http1 = http1.clone();
+        let service =
+            TowerToHyperService::new(app.clone().layer(Extension(ConnectInfo(remote_addr))));
+        let mut conn_shutdown = shutdown_rx.clone();
+        tasks.spawn(async move {
+            let io = TokioIo::new(PermitStream::new(stream, permit, None));
+            let mut conn = std::pin::pin!(http1.serve_connection(io, service).with_upgrades());
+            tokio::select! {
+                res = conn.as_mut() => {
+                    if let Err(err) = res {
+                        tracing::debug!(peer = %remote_addr, error = %err, "http connection closed");
+                    }
+                }
+                _ = conn_shutdown.changed() => {
+                    conn.as_mut().graceful_shutdown();
+                    let _ = tokio::time::timeout(Duration::from_secs(10), conn).await;
+                }
+            }
+        });
+    }
+
+    drop(listener);
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
+    Ok(())
+}
+
+#[cfg(feature = "tls")]
+#[derive(Clone)]
+struct BoundedAcceptor<A> {
+    inner: A,
+    sem: Arc<Semaphore>,
+    header_timeout: Duration,
+}
+
+#[cfg(feature = "tls")]
+impl<A, S> axum_server::accept::Accept<tokio::net::TcpStream, S> for BoundedAcceptor<A>
+where
+    A: axum_server::accept::Accept<tokio::net::TcpStream, S> + Clone + Send + Sync + 'static,
+    A::Future: Send,
+    A::Stream: AsyncRead + AsyncWrite + Unpin + Send,
+    A::Service: Send,
+    S: Send + 'static,
+{
+    type Stream = PermitStream<A::Stream>;
+    type Service = A::Service;
+    type Future = Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Service)>> + Send>>;
+
+    fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
+        let inner = self.inner.clone();
+        let sem = Arc::clone(&self.sem);
+        let header_timeout = self.header_timeout;
+        Box::pin(async move {
+            let permit = sem.try_acquire_owned().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "global connection limit reached",
+                )
+            })?;
+            let accepted = if header_timeout.is_zero() {
+                inner.accept(stream, service).await
+            } else {
+                match tokio::time::timeout(header_timeout, inner.accept(stream, service)).await {
+                    Ok(res) => res,
+                    Err(_) => Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "tls handshake timed out",
+                    )),
+                }
+            };
+            let (tls_stream, svc) = accepted?;
+            let first_byte = (!header_timeout.is_zero()).then_some(header_timeout);
+            Ok((PermitStream::new(tls_stream, permit, first_byte), svc))
+        })
+    }
 }
 
 #[cfg(feature = "tls")]
@@ -362,6 +592,8 @@ async fn serve_tls(
     listen: SocketAddr,
     tls: crate::config::TlsConfig,
     app: Router,
+    conn_sem: Arc<Semaphore>,
+    header_timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     // rustls needs a process-level crypto provider. Ring keeps the
@@ -379,7 +611,20 @@ async fn serve_tls(
         });
     }
     tracing::info!(%listen, "web server listening (https)");
-    axum_server::from_tcp_rustls(listener, rustls_config)?
+    let mut server = axum_server::from_tcp_rustls(listener, rustls_config)?;
+    {
+        let mut http1 = server.http_builder().http1();
+        http1.timer(TokioTimer::new());
+        if !header_timeout.is_zero() {
+            http1.header_read_timeout(header_timeout);
+        }
+    }
+    server
+        .map(move |inner| BoundedAcceptor {
+            inner,
+            sem: conn_sem,
+            header_timeout,
+        })
         .handle(handle)
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
@@ -391,6 +636,8 @@ async fn serve_tls(
     _listen: SocketAddr,
     _tls: crate::config::TlsConfig,
     _app: Router,
+    _conn_sem: Arc<Semaphore>,
+    _header_timeout: Duration,
     _shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     Err(std::io::Error::other(

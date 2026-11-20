@@ -4257,6 +4257,9 @@ async fn run(
                             // The bridge's `(account, actor)` claim is checked
                             // against the boot-hydrated oracle (fail closed: no
                             // oracle, no match); comsys runs its own gates.
+                            // Defensively sanitize `req.text` on the server side
+                            // too so a raw IPC peer cannot smuggle control/BiDi
+                            // sequences onto comsys channels (SAN-M5, SSH-M6).
                             let result = if engine.account_of(req.actor) != Some(req.account) {
                                 Err(mush_ipc::RelayError::AccountMismatch)
                             } else if (req.dm_conn.is_none()
@@ -4264,39 +4267,45 @@ async fn run(
                                 || req.text.len() > mush_core::MAX_INGRESS_LINE_BYTES
                             {
                                 Err(mush_ipc::RelayError::TooLong)
-                            } else if let Some(conn) = req.dm_conn {
-                                if engine.actor_of(conn) != Some(req.actor) {
-                                    Err(mush_ipc::RelayError::AccountMismatch)
-                                } else if engine.world.input_depth(req.actor) > 0 {
-                                    Err(mush_ipc::RelayError::NotChannelAlias)
+                            } else {
+                                let clean_text = sanitize_relay_line(&req.text);
+                                let clean_text = clean_text.trim();
+                                if let Some(conn) = req.dm_conn {
+                                    if engine.actor_of(conn) != Some(req.actor) {
+                                        Err(mush_ipc::RelayError::AccountMismatch)
+                                    } else if engine.world.input_depth(req.actor) > 0 {
+                                        Err(mush_ipc::RelayError::NotChannelAlias)
+                                    } else {
+                                        engine
+                                            .relay_alias_identified(
+                                                req.actor,
+                                                &req.channel,
+                                                req.kind,
+                                                clean_text,
+                                                req.message_id,
+                                                &mut out,
+                                            )
+                                            .map_err(|e| match e {
+                                                mush_core::RelayRefusal::NotChannelAlias => {
+                                                    mush_ipc::RelayError::NotChannelAlias
+                                                }
+                                                e => mush_ipc::RelayError::Refused(e.to_string()),
+                                            })
+                                    }
                                 } else {
                                     engine
-                                        .relay_alias_identified(
+                                        .relay_speak_identified(
                                             req.actor,
                                             &req.channel,
                                             req.kind,
-                                            &req.text,
+                                            clean_text,
                                             req.message_id,
                                             &mut out,
                                         )
-                                        .map_err(|e| match e {
-                                            mush_core::RelayRefusal::NotChannelAlias => {
-                                                mush_ipc::RelayError::NotChannelAlias
-                                            }
-                                            e => mush_ipc::RelayError::Refused(e.to_string()),
+                                        .map_err(|why| {
+                                            mush_ipc::RelayError::Refused(why.to_string())
                                         })
                                 }
-                            } else {
-                                engine
-                                    .relay_speak_identified(
-                                        req.actor,
-                                        &req.channel,
-                                        req.kind,
-                                        &req.text,
-                                        req.message_id,
-                                        &mut out,
-                                    )
-                                    .map_err(|why| mush_ipc::RelayError::Refused(why.to_string()))
                             };
                             tracing::debug!(
                                 actor = %req.actor,
@@ -6266,5 +6275,39 @@ fn apply_reattach_snapshot(engine: &mut Engine, recs: &[ReAttachRec], out: &mut 
     }
 }
 
+/// Defensively strip control characters (except `\t`) and Unicode BiDi /
+/// line-separator controls from inbound relay text (SAN-M5, SSH-M6), mirroring
+/// `mush_session::sanitize_line` without adding a `mush-session` dependency to
+/// `mush-server`.
+fn sanitize_relay_line(line: &str) -> String {
+    line.chars()
+        .filter(|&c| {
+            (c == '\t' || !c.is_control())
+                && !matches!(
+                    c,
+                    '\u{061C}'
+                        | '\u{200E}'..='\u{200F}'
+                        | '\u{2028}'..='\u{2029}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod relay_sanitize_tests {
+    use super::sanitize_relay_line;
+
+    #[test]
+    fn defensive_relay_sanitize_strips_ansi_control_and_bidi_chars() {
+        assert_eq!(
+            sanitize_relay_line("hello\x1b[31m\r\n\u{009B}\u{202E}\u{2066}\u{2028}\u{061C}\tworld"),
+            "hello[31m\tworld"
+        );
+        assert_eq!(sanitize_relay_line("\x1b\u{202E}\u{200E}\r\n"), "");
+    }
+}

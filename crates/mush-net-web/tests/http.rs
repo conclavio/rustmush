@@ -423,3 +423,272 @@ async fn rate_limit_disabled_when_zeroed() {
         assert_eq!(resp.status(), 401);
     }
 }
+
+#[tokio::test]
+async fn auth_routes_fold_ipv6_slash_64_for_rate_limit() {
+    let hooks = Arc::new(MockWebHooks::new());
+    let config = WebConfig {
+        trusted_proxies: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        ..test_config()
+    };
+    let addr = spawn_server(hooks, config).await;
+    let url = format!("http://{addr}/api/auth/login");
+    let body = json!({"account": "ghost", "password": "x"});
+
+    // Five distinct host IDs in one IPv6 /64 share one governor bucket.
+    for i in 1..=5 {
+        let resp = client()
+            .post(&url)
+            .header("x-forwarded-for", format!("2001:db8:cafe:1::{i:x}"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401, "request {i} should consume burst");
+    }
+    let resp = client()
+        .post(&url)
+        .header("x-forwarded-for", "2001:db8:cafe:1::ffff")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        429,
+        "rotating host IDs inside the same /64 must share the auth rate limit"
+    );
+
+    // A separate /64 has its own bucket.
+    let other = client()
+        .post(&url)
+        .header("x-forwarded-for", "2001:db8:cafe:2::1")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other.status(), 401);
+}
+
+#[tokio::test]
+async fn auth_routes_enforce_4kib_body_limit() {
+    let hooks = Arc::new(MockWebHooks::new());
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let url = format!("http://{addr}/api/auth/login");
+
+    let huge_body = format!(
+        "{{\"account\":\"nick\",\"password\":\"{}\"}}",
+        "a".repeat(8_192)
+    );
+    let resp = client()
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(huge_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 413);
+    assert!(hooks.state().auth_failed.is_empty());
+}
+
+#[tokio::test]
+async fn blocked_ip_gets_403_before_json_parse_or_body_limit() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks
+        .state()
+        .blocked
+        .insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let url = format!("http://{addr}/api/auth/login");
+
+    // Malformed JSON still gets 403 because is_ip_blocked runs before Json<T>.
+    let resp = client()
+        .post(&url)
+        .header("content-type", "application/json")
+        .body("{not valid json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
+    // Oversized body also gets 403 before body limit/parsing.
+    let resp2 = client()
+        .post(&url)
+        .header("content-type", "application/json")
+        .body("x".repeat(8_192))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 403);
+    assert!(hooks.state().auth_failed.is_empty());
+}
+
+#[tokio::test]
+async fn login_rejects_oversized_credentials_without_calling_hook() {
+    let hooks = Arc::new(MockWebHooks::new());
+    // Set login_err = Banned (403) so hitting hooks.login would return 403,
+    // proving oversized credentials are stopped before the hook runs.
+    hooks.state().login_err = Some(LoginErr::Banned);
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let url = format!("http://{addr}/api/auth/login");
+
+    let long_acct = post_json(
+        &url,
+        json!({"account": "a".repeat(65), "password": "secret"}),
+    )
+    .await;
+    assert_eq!(long_acct.status(), 401);
+
+    let long_pw = post_json(
+        &url,
+        json!({"account": "nick", "password": "p".repeat(129)}),
+    )
+    .await;
+    assert_eq!(long_pw.status(), 401);
+    assert_eq!(hooks.state().auth_failed.len(), 2);
+}
+
+#[tokio::test]
+async fn register_rate_limited_maps_to_429() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().register_result = Some(Err(RegisterErr::RateLimited));
+    let addr = spawn_server(hooks, test_config()).await;
+    let resp = post_json(
+        &format!("http://{addr}/api/auth/register"),
+        json!({"account": "newbie", "password": "hunter22", "char_name": "Newbie"}),
+    )
+    .await;
+    assert_eq!(resp.status(), 429);
+}
+
+#[tokio::test]
+async fn slowloris_headers_time_out_and_close_connection() {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let hooks = Arc::new(MockWebHooks::new());
+    let config = WebConfig {
+        header_read_timeout_ms: 200,
+        ..test_config()
+    };
+    let addr = spawn_server(hooks, config).await;
+
+    // Case 1: partial headers without CRLFCRLF.
+    let mut partial = TcpStream::connect(addr).await.unwrap();
+    partial
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n")
+        .await
+        .unwrap();
+    let mut buf = [0u8; 64];
+    let res = tokio::time::timeout(Duration::from_secs(2), partial.read(&mut buf))
+        .await
+        .expect("server must close Slowloris socket promptly");
+    assert!(
+        matches!(res, Ok(0) | Err(_)),
+        "expected EOF or reset on timed-out partial headers, got {res:?}"
+    );
+
+    // Case 2: 0-byte idle TCP connect.
+    let mut idle = TcpStream::connect(addr).await.unwrap();
+    let res2 = tokio::time::timeout(Duration::from_secs(2), idle.read(&mut buf))
+        .await
+        .expect("server must close 0-byte idle socket promptly");
+    assert!(
+        matches!(res2, Ok(0) | Err(_)),
+        "expected EOF or reset on 0-byte idle socket, got {res2:?}"
+    );
+}
+
+#[tokio::test]
+async fn global_tcp_connection_cap_drops_excess_sockets() {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.metrics_registry().set_world_loop_iteration(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    );
+    let config = WebConfig {
+        max_connections: 2,
+        header_read_timeout_ms: 5_000,
+        ..test_config()
+    };
+    let addr = spawn_server(hooks, config).await;
+
+    // Hold both connection slots with two open HTTP sockets.
+    let mut held1 = TcpStream::connect(addr).await.unwrap();
+    let mut held2 = TcpStream::connect(addr).await.unwrap();
+    held1.write_all(b"GET ").await.unwrap();
+    held2.write_all(b"GET ").await.unwrap();
+    // Give the accept loop a moment to acquire both permits.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Third socket must be dropped immediately without an HTTP response.
+    let mut excess = TcpStream::connect(addr).await.unwrap();
+    let _ = excess
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await;
+    let mut buf = [0u8; 64];
+    let read_res = tokio::time::timeout(Duration::from_secs(2), excess.read(&mut buf))
+        .await
+        .expect("excess socket should close quickly");
+    assert!(
+        matches!(read_res, Ok(0) | Err(_)),
+        "excess socket must not receive an HTTP response while cap is saturated: {read_res:?}"
+    );
+
+    // Releasing one held socket restores capacity.
+    drop(held1);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let resp = client()
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    drop(held2);
+}
+
+#[tokio::test]
+async fn request_timeout_returns_408_without_cutting_ws() {
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().login_delay = Some(Duration::from_millis(400));
+    let config = WebConfig {
+        request_timeout_ms: 150,
+        ..test_config()
+    };
+    let addr = spawn_server(hooks, config).await;
+
+    // Slow non-upgrade HTTP request times out with 408.
+    let resp = post_json(
+        &format!("http://{addr}/api/auth/login"),
+        json!({"account": ACCOUNT, "password": PASSWORD}),
+    )
+    .await;
+    assert_eq!(resp.status(), 408);
+
+    // A WebSocket on `/ws` stays alive well past `request_timeout_ms`.
+    let mut ws_req = format!("ws://{addr}/ws?char={}", common::CHAR_KEY)
+        .into_client_request()
+        .unwrap();
+    ws_req.headers_mut().insert(
+        "sec-websocket-protocol",
+        HeaderValue::from_str(&format!("rustmush.v1.{TOKEN}")).unwrap(),
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let hello = futures::StreamExt::next(&mut ws).await;
+    assert!(
+        hello.is_some_and(|frame| frame.is_ok()),
+        "WS connection must survive past request_timeout_ms"
+    );
+}
