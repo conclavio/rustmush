@@ -1694,8 +1694,25 @@ v48 with the lead's word.
 - **Totals that count the new consumer:** `ex9_the_consumers_use_up_what_they_buy_…` adds the
   farm's refunds to the faucet's payout, and `ex0_the_census_holds_across_a_burn_and_a_rearm`
   reads the farm's whole days of propellant beside the Board's provisions.
-- MUTATIONS
-- GATES
+- **Mutations**, each caught, each restored from a saved copy and compared:
+  - Hold never moving at the threshold; the probe never met (the drain story);
+  - no limit on the arm's open hauls (the arm story); no monthly cap (the unit test);
+  - the house never taking a haul; no held fuel bought back; contract numbers from 1; the helm
+    unable to record the ruling (the untaken-haul story);
+  - no heave-to by rule; the duty from the purse (the duty story);
+  - no helm as captain (both).
+- **On conclav.dev, green:**
+  - all of tacsim (5,042 tests);
+  - mush-server `split_boundary` and `commerce_composition` (320), mush-contract-tests (208),
+    mush-composition (6) and the bot's library (579);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim, mush-server and mush-composition, all targets;
+  - rustdoc `-D warnings` in both modes.
+- **Stories that predate OP.4** (`ic11_` in `orders`, `lw5_` in `voyage`, `sm8_` in `unloading`,
+  `ex9_`, `ex0_`, `lane3_` in `field_director`) first failed on the arm and the new consumer: the
+  arm's posts moved contract numbers, its agent moved the dice, and the farm's day of use fell in
+  their fires and sums. The arm's lay-up, and the farm counted where a story sums or counts, cure
+  them.
 
 **Divergences.**
 - **The level is read every fire**, kept on the arm's record when it changes. Q-50-21 says "read on
