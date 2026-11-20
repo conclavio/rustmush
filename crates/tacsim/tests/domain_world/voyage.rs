@@ -565,6 +565,17 @@ fn room_of(row: &HullRow, id: &str) -> ObjId {
 
 /// Seed `qty` of `good` into `vault`'s pool through `lot` (`coop.rs`'s).
 fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    seed(rig, vault, good, qty, lot, true);
+}
+
+/// Seed `qty` of `good` into `vault` as the exact lot `lot`, never pooled: what a buyer of a
+/// personal lot ask receives (doc 50 unit CR).
+fn seed_lot(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
+    seed(rig, vault, good, qty, lot, false);
+}
+
+/// Mint `lot` of `qty` `good` in `vault`, and pour it into the pool when `pooled`.
+fn seed(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId, pooled: bool) {
     let endpoint = EndpointRef(vault);
     let good = cid(good);
     let tw = &mut rig.tw;
@@ -574,7 +585,7 @@ fn seed_pool(rig: &mut Rig, vault: VaultId, good: &str, qty: u64, lot: LotId) {
         .expect("inventory handles")
         .0
         .clone();
-    for step in 0..2 {
+    for step in 0..if pooled { 2 } else { 1 } {
         let engine = tw.engine_mut();
         let prepared = {
             let mut txn = engine
@@ -13037,6 +13048,16 @@ fn customs_ruling(rig: &mut Rig, who: ObjId, line: &str) -> String {
 /// onto the lane's interdicted Kirkwood leg and hove to under the picket (`sfr12_…`'s
 /// opening, for one hull). Nothing of her pilot's is left queued.
 fn hove_to_at_the_picket(who: &str, ore_t: u64) -> (Rig, ObjId, ObjId, VaultId) {
+    hove_to_at_the_picket_with(who, ore_t, |_, _, _| {})
+}
+
+/// [`hove_to_at_the_picket`], with `docked` run on the pilot and her hold while she is still
+/// docked at Ceres, her stores aboard (doc 50 unit CR: a lot, or a haul taken).
+fn hove_to_at_the_picket_with(
+    who: &str,
+    ore_t: u64,
+    docked: impl FnOnce(&mut Rig, ObjId, VaultId),
+) -> (Rig, ObjId, ObjId, VaultId) {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, who, 1);
     let hull = ObjId(row.hull);
@@ -13050,6 +13071,7 @@ fn hove_to_at_the_picket(who: &str, ore_t: u64) -> (Rig, ObjId, ObjId, VaultId) 
     if ore_t > 0 {
         seed_pool(&mut rig, vault, "strategic_ore", ore_t, LotId(2_603));
     }
+    docked(&mut rig, pilot, vault);
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot);
     let pending = undock_and_burn(&mut rig, pilot, hull);
@@ -13436,6 +13458,271 @@ fn sfr26c_a_customs_ruling_is_one_submitted_action_and_settles_nothing_until_it_
     assert_eq!(corvette_regards(&rig.tw, hull), Some(Relation::Hostile));
     assert_eq!(customs_front_filled(&rig.tw), front_before + 1);
     assert_eq!(landed_rulings(&rig, hull)[0].finding, CustomsFinding::Ran);
+}
+
+/// The landed ledger row of haul `contract`, as the landed submissions wrote it.
+fn haul_ledger(rig: &Rig, contract: u64) -> Option<tacsim::services::haul::HaulLedger> {
+    rig.typed
+        .get(&(
+            SmolStr::new(tacsim::NS),
+            SmolStr::new(format!(
+                "action-state/v1/{}/{contract}",
+                tacsim::services::haul::HAUL_FAMILY
+            )),
+        ))
+        .map(|value| serde_json::from_value(value["value"].clone()).expect("a haul ledger row"))
+}
+
+/// **Doc 50 unit CR, the cargo reading (doc 50a A-4)** — a bulk good held as an exact lot is
+/// in the hold, and the picket reads it. An indigent pilot carries 51 t of unlicensed
+/// `strategic_ore` as one lot, as a buyer of a personal lot ask receives it, and none pooled.
+/// Before the unit the picket's manifest read the pool alone and cleared her with 0 kg aboard;
+/// now it finds the 51 t, and the seizure takes the lot whole in the ruling's own transaction.
+#[test]
+fn cr_the_picket_reads_ore_held_as_a_lot_and_the_seizure_takes_the_lot() {
+    use tacsim::space::{CustomsFinding, PicketInspectionStatus};
+    const LOT: LotId = LotId(0x50c1);
+    let (mut rig, pilot, hull, vault) =
+        hove_to_at_the_picket_with("LotBuyer", 0, |rig, _, vault| {
+            seed_lot(rig, vault, "strategic_ore", 51, LOT);
+        });
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        0,
+        "none of it is pooled"
+    );
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains("51000 kg unlicensed `strategic_ore`")
+            && ruled.contains("51 t confiscated in lieu of fine"),
+        "the picket finds the lot and seizes it: {ruled}"
+    );
+    assert_eq!(
+        landed_rulings(&rig, hull)[0].finding,
+        CustomsFinding::Seized {
+            unlicensed_strategic_ore_kg: 51_000,
+            seize_t: 51,
+            vault: vault.0,
+        }
+    );
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    assert!(
+        typed(&mut rig.tw, &families.lots, &LOT).is_none(),
+        "the lot left the hold in the ruling's transaction"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure)
+    );
+}
+
+/// **Doc 50 unit CR, seizure under a haul's hold (Q-50-25 as corrected; doc 50a A-5).** A
+/// hauler with no license and next to no credit takes a haul of 51 t of `strategic_ore` from
+/// Ceres; the ore rides in her hold reserved to the job, none of it free. At the picket she
+/// cannot pay the fine. Before the unit the seizure took only free ore, so the ruling failed to
+/// land at all. Now the ruling releases the job's hold, takes the ore, and writes the job's
+/// failure on its ledger in the same transaction; the haul's arm then closes the job and lapses
+/// its contract, so the bond is the shipper's, and no leg of the job lands after it.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cr_a_seizure_takes_cargo_under_a_hauls_hold_and_fails_the_haul() {
+    use tacsim::services::haul::{self, HaulStage, LegKind};
+    use tacsim::space::{CustomsFinding, PicketInspectionStatus};
+    let mut contract = 0_u64;
+    let (mut rig, pilot, hull, vault) =
+        hove_to_at_the_picket_with("Hauler", 0, |rig, hauler, _| {
+            // The shipper: a credit account, a Ceres locker with 51 t of strategic ore, and money.
+            let shipper = pilot(rig, "Shipper", 61);
+            let _ = run(
+                &mut rig.tw,
+                GOD,
+                &format!("@account/open #{}={}", shipper.0, tacsim::CREDIT),
+            );
+            let exchange = c07(&rig.tw);
+            teleport(&mut rig.tw, shipper, exchange);
+            let opened = run(&mut rig.tw, shipper, "+locker/open");
+            assert!(opened.contains("is open"), "{opened}");
+            let venue = mush_market::MarketId::new("ceres").expect("a venue");
+            let locker = tacsim::port::locker::locker_of(rig.tw.world(), shipper, &venue)
+                .map(|l| VaultId(l.vault))
+                .expect("a locker");
+            seed_pool(rig, locker, "strategic_ore", 51, LotId(0x50c2));
+            let account = tacsim::port::credit::own_account(rig.tw.world(), shipper)
+                .expect("the shipper's account")
+                .id;
+            let treasury = port_map(&rig.tw, "ceres_port")
+                .treasury
+                .expect("a treasury");
+            let _ = run(
+                &mut rig.tw,
+                GOD,
+                &format!("@econ/mint {treasury}={account} 1000000"),
+            );
+            let posted = run(
+                &mut rig.tw,
+                shipper,
+                "+haul/post 51 strategic_ore to=stickney fee=500 value=4 go",
+            );
+            assert!(posted.contains("posted: 51 "), "{posted}");
+            contract = haul::hauls(rig.tw.world())
+                .into_iter()
+                .find(|job| job.shipper == shipper)
+                .expect("the haul")
+                .contract;
+            let taken = run(&mut rig.tw, hauler, &format!("+haul/accept {contract} go"));
+            assert!(taken.contains("You take haul"), "{taken}");
+            let queued = drain(&mut rig.tw);
+            land_all(rig, &queued);
+            let _ = fire_quietly(rig);
+            assert_eq!(
+                haul::haul_of(rig.tw.world(), contract).map(|job| job.stage),
+                Some(HaulStage::Aboard)
+            );
+        });
+    let held = |rig: &mut Rig| {
+        let families = rig
+            .tw
+            .world()
+            .module_state::<InventoryHandles>()
+            .expect("inventory handles")
+            .0
+            .clone();
+        let mut txn = rig
+            .tw
+            .engine_mut()
+            .action_transaction(&families.pools)
+            .expect("an inventory transaction");
+        families
+            .pool(&mut txn, EndpointRef(vault), &cid("strategic_ore"))
+            .expect("the pool reads")
+            .map_or((0, 0), |p| (p.quantity, p.available))
+    };
+    assert_eq!(
+        held(&mut rig),
+        (51, 0),
+        "aboard, and all of it held for the job"
+    );
+
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains("51 t confiscated in lieu of fine"),
+        "the held cargo is seized: {ruled}"
+    );
+    assert_eq!(
+        landed_rulings(&rig, hull)[0].finding,
+        CustomsFinding::Seized {
+            unlicensed_strategic_ore_kg: 51_000,
+            seize_t: 51,
+            vault: vault.0,
+        }
+    );
+    assert_eq!(
+        held(&mut rig),
+        (0, 0),
+        "the hold is released and the ore taken"
+    );
+    assert_eq!(
+        haul_ledger(&rig, contract).map(|row| (row.acts, row.last)),
+        Some((2, LegKind::Seized)),
+        "the job's failure is on its ledger, from the ruling's own transaction"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure)
+    );
+    for _ in 0..30 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submitted);
+        if haul::haul_of(rig.tw.world(), contract).is_some_and(|job| job.stage == HaulStage::Closed)
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        haul::haul_of(rig.tw.world(), contract).map(|job| job.stage),
+        Some(HaulStage::Closed),
+        "the arm fails the job"
+    );
+    assert!(
+        matches!(
+            economy(&rig.tw)
+                .snapshot()
+                .contract(mush_economy::ContractId(contract))
+                .map(|c| c.state),
+            Some(mush_economy::ContractState::Expired)
+        ),
+        "the contract lapses: the fee back and the bond to the shipper"
+    );
+}
+
+/// **Doc 50 unit CR, the 35 km breach (doc 50a A-10e).** A hull that burns past
+/// [`tacsim::space::PICKET_RUN_BOUNDARY_M`] uncleared ran the picket as one that types
+/// `+helm/run` does. Before the unit the tick recorded the incident itself, naming the hull as
+/// its own pilot, and wrote no ruling. Now it files a `Ran` ruling with her pilot as its
+/// officer, and the incident and the corvette's turn follow the landed row.
+#[test]
+fn cr_burning_past_the_picket_is_a_run_ruled_with_the_pilot_as_its_officer() {
+    use tacsim::arena::party::Relation;
+    use tacsim::space::{CustomsFinding, PicketInspectionStatus};
+    let (mut rig, pilot, hull, _) = hove_to_at_the_picket("Breacher", 0);
+    let front_before = customs_front_filled(&rig.tw);
+    {
+        let book = rig
+            .tw
+            .world_mut()
+            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
+            .expect("SpaceBubbleBook");
+        let active = book.active_for_hull_mut(hull).expect("her bubble");
+        let corvette = active
+            .picket
+            .as_ref()
+            .expect("the picket")
+            .corvette_ship_id
+            .clone();
+        let carrier = active.carrier_ship_id_for(hull).to_owned();
+        let at = active.bubble.ships[&corvette].pos_m;
+        let ship = active.bubble.ships.get_mut(&carrier).expect("her ship");
+        ship.pos_m = [
+            at[0] + tacsim::space::PICKET_RUN_BOUNDARY_M + 5_000,
+            at[1],
+            at[2],
+        ];
+    }
+    let mut landed = false;
+    for _ in 0..10 {
+        let (_, submitted) = one_second(&mut rig, pilot);
+        for submit in &submitted {
+            if is_customs(submit) {
+                assert_eq!(submit.actor, pilot, "the ruling is the pilot's");
+                land(&mut rig, submit).expect("the run's ruling lands");
+                landed = true;
+            }
+        }
+        if landed {
+            break;
+        }
+    }
+    assert!(landed, "the breach files a customs ruling");
+    let _ = one_second(&mut rig, pilot);
+    let row = landed_rulings(&rig, hull);
+    assert_eq!(row.len(), 1);
+    assert_eq!(
+        (row[0].actor, row[0].principal, row[0].finding.clone()),
+        (pilot, pilot, CustomsFinding::Ran),
+        "the pilot, not the hull, ran the picket"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::RanThePicket)
+    );
+    assert_eq!(corvette_regards(&rig.tw, hull), Some(Relation::Hostile));
+    assert_eq!(customs_front_filled(&rig.tw), front_before + 1);
 }
 
 /// The linkdead record of `hull`, cloned.

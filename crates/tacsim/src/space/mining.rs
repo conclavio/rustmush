@@ -1296,23 +1296,15 @@ pub fn next_space_mine_work_row(
     Some((draw.receipt.clone(), value))
 }
 
-/// Read the total tonnes currently stored across all `stow.ore` and bulk goods in `hull`'s hold vault.
+/// Read the total tonnes of ore of every family in `hull`'s hold, through the one cargo reading
+/// ([`crate::port::ship::hold_reading`], doc 50 unit CR): ore held as a lot fills the hold as
+/// pooled ore does.
 #[must_use]
 pub fn hull_hold_used_tonnes(ctx: &Ctx<'_>, hull: ObjId) -> u64 {
-    let Some(view) = crate::port::ship::hull_view(ctx.w, hull) else {
-        return 0;
-    };
-    let Some(hold_vault) = crate::port::ship::hold_vault(ctx.w, &view) else {
-        return 0;
-    };
     let mut total = 0_u64;
     for family in OreFamily::ALL {
         if let Ok(good) = CanonicalId::new(ore_good(family))
-            && let Ok(qty) = crate::port_tick::read_pool(
-                ctx,
-                mush_inventory::record::EndpointRef(hold_vault),
-                &good,
-            )
+            && let Ok(qty) = crate::port::ship::hold_reading(ctx, hull, &good)
         {
             total = total.saturating_add(qty);
         }

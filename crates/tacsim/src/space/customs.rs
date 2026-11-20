@@ -32,7 +32,7 @@ use mush_core::{
     ProjectedParameterKind, ProviderOfferDraft, Registrar, RulesValue, StateFamilyHandle,
 };
 use mush_inventory::InventoryFamilies;
-use mush_inventory::record::EndpointRef;
+use mush_inventory::record::{EndpointRef, LotId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -40,6 +40,7 @@ use super::picket::{PicketInspectionOutcome, PicketInspectionStatus};
 use super::tick::SpaceBubbleBook;
 use crate::arena::party::Mark;
 use crate::port_tick::port_error;
+use crate::services::haul::{HaulLedger, LegKind};
 
 /// Authoritative action id of the customs ruling.
 pub const CUSTOMS_ACTION: &str = "tacsim_space_customs";
@@ -234,7 +235,19 @@ pub struct PendingCustomsRuling {
     /// Consecutive ticks on which the ruling had neither landed nor been in flight.
     #[serde(default)]
     pub idle_ticks: u8,
+    /// **A seizure's hauls** (doc 50 unit CR; Q-50-25 as corrected): the live hauls whose cargo
+    /// of `strategic_ore` is held in the seized hold, read at the filing. The ruling may release
+    /// their holds to take the ore, and fails each job whose hold it releases.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hauls: Vec<u64>,
+    /// **A seizure's lots** (doc 50 unit CR; doc 50a A-4): the exact lots of `strategic_ore` in
+    /// the seized hold, read at the filing. The ruling takes them whole, before the pool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lots: Vec<LotId>,
 }
+
+/// The most hauls and lots one seizure's filing names.
+pub const MAX_SEIZED_ROWS: usize = 16;
 
 /// World-state handles of the customs ruling.
 #[derive(Clone)]
@@ -278,6 +291,7 @@ pub(crate) fn register(
     actions: &BTreeMap<String, DefinitionRef>,
     outcomes: &BTreeMap<String, DefinitionRef>,
     inventory: Option<&InventoryFamilies>,
+    haul_ledgers: &StateFamilyHandle<u64, HaulLedger>,
 ) -> Result<(), ModError> {
     let rulings = reg.state_family::<ObjId, SpaceCustomsRulings, _, _, _, _>(
         crate::port::families::family_descriptor(
@@ -302,6 +316,7 @@ pub(crate) fn register(
                 outcome,
                 rulings: rulings.clone(),
                 inventory: inventory.cloned(),
+                haul_ledgers: haul_ledgers.clone(),
             },
         )?;
         Some(action)
@@ -320,6 +335,8 @@ pub(crate) struct CustomsProvider {
     pub outcome: DefinitionRef,
     pub rulings: StateFamilyHandle<ObjId, SpaceCustomsRulings>,
     pub inventory: Option<InventoryFamilies>,
+    /// The haul ledgers (doc 50 unit CR): a seizure that takes a job's cargo fails the job here.
+    pub haul_ledgers: StateFamilyHandle<u64, HaulLedger>,
 }
 
 fn invalid() -> mush_core::ActionError {
@@ -358,6 +375,104 @@ fn filed_by(w: &mush_core::World, actor: ObjId) -> Vec<PendingCustomsRuling> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+impl CustomsProvider {
+    /// **Take up to `want` tonnes of `strategic_ore` from hold `vault`** (doc 50 unit CR): the
+    /// filing's unheld lots whole while they fit, then the pool through
+    /// [`InventoryFamilies::seize`], which releases the holds of the filing's hauls as the draw
+    /// needs them. Each job whose hold was released has [`LegKind::Seized`] written on its
+    /// ledger here, so no leg of it lands after the seizure. Answers the tonnes taken.
+    fn seize(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        pending: &PendingCustomsRuling,
+        vault: u64,
+        want: u64,
+    ) -> Result<u64, mush_core::ActionError> {
+        let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+        let refused =
+            |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        let Some(inventory) = self.inventory.as_ref() else {
+            return Err(integrity("the hold cannot be drawn on here"));
+        };
+        let ore = CanonicalId::new("strategic_ore").map_err(|_| invalid())?;
+        let endpoint = EndpointRef(mush_economy::VaultId(vault));
+        // 1. The lots, whole and unheld, while they fit what is to be taken.
+        let mut lots = Vec::new();
+        let mut from_lots = 0_u64;
+        for id in pending.lots.iter().take(MAX_SEIZED_ROWS) {
+            let Some(lot) = txn
+                .get(&inventory.lots, id)
+                .map_err(|_| integrity("the hold cannot be read"))?
+                .cloned()
+            else {
+                continue;
+            };
+            if lot.endpoint() != endpoint || lot.commodity() != &ore {
+                continue;
+            }
+            if inventory
+                .lot_hold(txn, *id)
+                .map_err(|_| integrity("the hold cannot be read"))?
+                .is_some()
+            {
+                continue;
+            }
+            let after = from_lots.saturating_add(lot.quantity());
+            if after > want {
+                continue;
+            }
+            from_lots = after;
+            lots.push(lot);
+        }
+        if !lots.is_empty() {
+            inventory
+                .consume_products(txn, &lots)
+                .map_err(|_| refused("the hold's lots could not be taken"))?;
+        }
+        // 2. The pool, releasing a haul's hold where the free ore falls short.
+        let holds: Vec<(mush_core::ReservationId, u64)> = pending
+            .hauls
+            .iter()
+            .take(MAX_SEIZED_ROWS)
+            .filter_map(|contract| {
+                crate::services::haul::haul_reservation(*contract, vault, &ore)
+                    .ok()
+                    .map(|id| (id, *contract))
+            })
+            .collect();
+        let ids: Vec<mush_core::ReservationId> = holds.iter().map(|(id, _)| *id).collect();
+        let seized = inventory
+            .seize(txn, endpoint, &ore, want.saturating_sub(from_lots), &ids)
+            .map_err(|_| refused("the hold could not be drawn down"))?;
+        let taken = from_lots.saturating_add(seized.taken);
+        if taken == 0 {
+            return Err(refused("the hold holds no strategic ore to seize"));
+        }
+        // 3. Each job whose hold was released fails on its own ledger.
+        for released in &seized.released {
+            let Some((_, contract)) = holds.iter().find(|(id, _)| id == released) else {
+                continue;
+            };
+            let prior = txn
+                .get(&self.haul_ledgers, contract)
+                .map_err(|_| integrity("the haul ledgers are unavailable"))?
+                .cloned();
+            let row = HaulLedger {
+                contract: *contract,
+                acts: 2,
+                last: LegKind::Seized,
+            };
+            let staged = if prior.is_some() {
+                txn.replace(&self.haul_ledgers, contract, row)
+            } else {
+                txn.insert(&self.haul_ledgers, contract, row)
+            };
+            staged.map_err(|_| integrity("the haul ledger did not stage"))?;
+        }
+        Ok(taken)
+    }
 }
 
 impl ActionProvider for CustomsProvider {
@@ -450,38 +565,16 @@ impl ActionProvider for CustomsProvider {
                 "that customs ruling has already landed",
             ));
         }
-        // 3. A seizure takes the ore in this transaction.
+        // 3. A seizure takes the ore in this transaction: the exact lots first, then the pool,
+        //    past the hold of any haul carrying it (doc 50 unit CR), failing each such job on its
+        //    ledger in this same transaction.
         let finding = match pending.finding {
             CustomsFinding::Seized {
                 unlicensed_strategic_ore_kg,
                 seize_t,
                 vault,
             } => {
-                let Some(inventory) = self.inventory.as_ref() else {
-                    return Err(port_error(
-                        ActionErrorCode::Integrity,
-                        "the hold cannot be drawn on here",
-                    ));
-                };
-                let ore = CanonicalId::new("strategic_ore").map_err(|_| invalid())?;
-                let endpoint = EndpointRef(mush_economy::VaultId(vault));
-                let free = inventory
-                    .pool(txn, endpoint, &ore)
-                    .map_err(|_| port_error(ActionErrorCode::Integrity, "the hold cannot be read"))?
-                    .map_or(0, |pool| pool.available);
-                let taken = u64::from(seize_t).min(free);
-                if taken == 0 {
-                    return Err(port_error(
-                        ActionErrorCode::ProviderRejected,
-                        "the hold holds no strategic ore to seize",
-                    ));
-                }
-                inventory.debit(txn, endpoint, &ore, taken).map_err(|_| {
-                    port_error(
-                        ActionErrorCode::ProviderRejected,
-                        "the hold could not be drawn down",
-                    )
-                })?;
+                let taken = self.seize(txn, &pending, vault, u64::from(seize_t))?;
                 CustomsFinding::Seized {
                     unlicensed_strategic_ore_kg,
                     seize_t: u32::try_from(taken).unwrap_or(seize_t),
@@ -569,6 +662,75 @@ pub(crate) fn file_ruling(
     hull: ObjId,
     principal: ObjId,
     finding: CustomsFinding,
+    names: (String, String),
+) -> Result<u32, CmdError> {
+    let actor = ctx.actor;
+    file_ruling_as(ctx, actor, hull, principal, finding, names)
+}
+
+/// **A run by burning past the picket's boundary** (doc 50 unit CR; doc 50a A-10e): the space
+/// tick found `hull` past [`super::picket::PICKET_RUN_BOUNDARY_M`] uncleared. It is ruled as a
+/// `+helm/run` is: one [`CustomsFinding::Ran`] filed with her pilot ([`super::commands::helm_pilot_aboard`])
+/// as its officer, and the incident and the corvette's turn follow the landed row. A ruling
+/// already pending on her waits. With none of her crew aboard there is no officer to submit
+/// it, so the incident is recorded at once, naming the hull's principal as its pilot.
+pub(crate) fn file_breach(ctx: &mut Ctx<'_>, hull: ObjId) {
+    if ruling_pending(ctx.w, hull) {
+        return;
+    }
+    let Some(names) = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull(hull))
+        .and_then(|active| {
+            active.picket.as_ref().map(|picket| {
+                (
+                    picket.corvette_ship_id.clone(),
+                    active.carrier_ship_id_for(hull).to_owned(),
+                )
+            })
+        })
+    else {
+        return;
+    };
+    if let Some(pilot) = super::commands::helm_pilot_aboard(ctx.w, hull) {
+        let principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, pilot);
+        if file_ruling_as(ctx, pilot, hull, principal, CustomsFinding::Ran, names).is_ok() {
+            let line = format!(
+                "[PICKET] You burn past the Republic Customs picket's boundary uncleared. Corvette `{}` is logging the run.",
+                names_corvette(ctx, hull)
+            );
+            crate::port::voyage::narrate_hull(ctx, hull, &line);
+        }
+        return;
+    }
+    let principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, hull);
+    let front_id = super::picket::record_ran_the_picket_incident(ctx, principal, hull).map(|f| f.0);
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+        && let Some(active) = book.active_for_hull_mut(hull)
+        && let Some(picket) = active.picket.as_mut()
+    {
+        picket.set_inspection_outcome_for(hull, PicketInspectionOutcome::RanThePicket { front_id });
+    }
+}
+
+/// The corvette's ship id in `hull`'s bubble, for a line.
+fn names_corvette(ctx: &Ctx<'_>, hull: ObjId) -> String {
+    ctx.w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull(hull))
+        .and_then(|active| active.picket.as_ref())
+        .map(|picket| picket.corvette_ship_id.clone())
+        .unwrap_or_default()
+}
+
+/// [`file_ruling`] with `actor` as the ruling's officer, who need not be the command's actor.
+fn file_ruling_as(
+    ctx: &mut Ctx<'_>,
+    actor: ObjId,
+    hull: ObjId,
+    principal: ObjId,
+    finding: CustomsFinding,
     (corvette, carrier): (String, String),
 ) -> Result<u32, CmdError> {
     if ctx
@@ -586,8 +748,11 @@ pub(crate) fn file_ruling(
     let landed_high = rulings_of(ctx, hull)
         .map_err(|()| CmdError::msg(CUSTOMS_UNWIRED))?
         .map_or(0, |row| row.high_water());
-    let actor = ctx.actor;
     let at_ic = ctx.w.world_ic_now().at;
+    let (hauls, lots) = match &finding {
+        CustomsFinding::Seized { vault, .. } => seizable(ctx, *vault),
+        _ => (Vec::new(), Vec::new()),
+    };
     let pending = {
         let book = ctx
             .w
@@ -611,12 +776,40 @@ pub(crate) fn file_ruling(
             carrier,
             attempts: 0,
             idle_ticks: 0,
+            hauls,
+            lots,
         };
         book.pending_customs_rulings.push(pending.clone());
         pending
     };
     submit_ruling(ctx, &pending, 0);
     Ok(pending.seq)
+}
+
+/// **What a seizure may take besides the free pool** (doc 50 unit CR): the live hauls whose
+/// `strategic_ore` is held in hold `vault`, and the exact lots of it there, each at most
+/// [`MAX_SEIZED_ROWS`].
+fn seizable(ctx: &Ctx<'_>, vault: u64) -> (Vec<u64>, Vec<LotId>) {
+    let Ok(ore) = CanonicalId::new("strategic_ore") else {
+        return (Vec::new(), Vec::new());
+    };
+    let hauls = crate::services::haul::hauls(ctx.w)
+        .into_iter()
+        .filter(|job| {
+            job.stage != crate::services::haul::HaulStage::Closed
+                && job.hold == Some(vault)
+                && job.good == ore
+        })
+        .map(|job| job.contract)
+        .take(MAX_SEIZED_ROWS)
+        .collect();
+    let lots = crate::port::works::lots_in(ctx, EndpointRef(mush_economy::VaultId(vault)))
+        .into_iter()
+        .filter(|(_, good, _)| *good == ore)
+        .map(|(id, _, _)| id)
+        .take(MAX_SEIZED_ROWS)
+        .collect();
+    (hauls, lots)
 }
 
 /// Submit the filed ruling as its officer. `attempt` is 0 for the handler's own submission

@@ -485,6 +485,24 @@ pub fn hold_vault(w: &World, view: &HullView<'_>) -> Option<VaultId> {
         .map(|vault| vault.id)
 }
 
+/// **The cargo reading** (doc 50 §7, "Before the chains": unit CR; doc 50a A-4): what `hull`'s
+/// hold holds of `good`, its pool **and** the units held in lots there, for a bulk good as for a
+/// part ([`crate::port_tick::read_held`]). A buyer of a personal lot ask receives an exact lot,
+/// which a pool's balance alone does not count, so strategic ore bought that way was invisible to
+/// the picket. The picket's manifest and the hold's fill check read a hold through this one
+/// function, and so does every later reader of a hold that must not miss what is aboard (the
+/// transit duty, the port audit, a haul's handling). A hull with no hold holds nothing: `Ok(0)`.
+///
+/// # Errors
+///
+/// [`PoolReadError`], as [`crate::port_tick::read_held`]'s: a hold that will not read is never 0.
+pub fn hold_reading(ctx: &Ctx<'_>, hull: ObjId, good: &CanonicalId) -> Result<u64, PoolReadError> {
+    let Some(vault) = hull_view(ctx.w, hull).and_then(|view| hold_vault(ctx.w, &view)) else {
+        return Ok(0);
+    };
+    crate::port_tick::read_held(ctx, EndpointRef(vault), good)
+}
+
 /// **The hold's unreserved room for ore, kilograms** (doc 20 cut SM.4b; the brief's reviewer
 /// resolution R6 and decision P11; §19 item 1): [`hold_unreserved`]'s mass entry, read by the
 /// `site.map` frame's `hold.room_t` and by a plan's end summary for the tonnes the hold holds.
