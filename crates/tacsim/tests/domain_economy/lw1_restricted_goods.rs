@@ -5,11 +5,12 @@
 //! for a holder of the picket's papers, a prospecting licence **and** a registered claim on a
 //! strategic rock (lane v47's terms row, paper `freeport_prospecting`).
 //!
-//! 1. **The seller into a house bid.** An unlicensed prospector's `+market/sell` into the
-//!    Exchange's strategic ore bid is refused. Licensed but holding no claim, still refused: both
-//!    papers are asked. With a live claim on a strategic rock as well, the sale goes through.
-//! 2. **The buyer.** The licensed prospector posts a public ask of a lot. An unlicensed trader's
-//!    quote on it is refused.
+//! 1. **The seller into a house bid.** A licensed prospector holding no claim is refused at
+//!    `+market/sell` into the Exchange's strategic ore bid: a licence alone does not lift it.
+//!    With a live claim on a strategic rock as well, the sale goes through.
+//! 2. **The buyer.** The prospector posts a public ask of a lot. A trader with no licence is
+//!    refused a quote on it, and still refused holding a claim: the claim alone does not lift it
+//!    either.
 //! 3. **A private offer goes through** (Q-50-34): the same prospector offers a lot to the trader
 //!    alone, and the trader's quote is taken.
 //! 4. **The law follows control** (Q-50-33): staff hand Ceres station to the Republic de facto,
@@ -33,32 +34,39 @@ const CERES: &str = "ceres_port";
 const REFUSED: &str = "only with a holder of a Freeport Registry prospecting licence and a \
      registered claim on a strategic rock";
 
-/// The first strategic rock of the lane's orbital clusters: its cluster and letter.
-fn strategic_rock(rig: &crate::driving_rig::Rig) -> (mush_core::CanonicalId, char) {
+/// The `n`th strategic rock of the lane's orbital clusters: its cluster and letter.
+fn strategic_rock(rig: &crate::driving_rig::Rig, n: usize) -> (mush_core::CanonicalId, char) {
     tacsim::space::mining::all_orbital_clusters(rig.tw.world())
         .into_iter()
-        .find_map(|cluster| {
+        .flat_map(|cluster| {
             cluster
                 .rocks
                 .iter()
-                .find(|rock| {
+                .filter(|rock| {
                     rock.spectral
                         .families()
                         .contains(&tacsim::surface::OreFamily::StrategicElements)
                 })
                 .map(|rock| (cluster.id.clone(), rock.letter))
+                .collect::<Vec<_>>()
         })
-        .expect("a strategic rock")
+        .nth(n)
+        .expect("enough strategic rocks")
 }
 
-/// A live registered claim on a strategic rock, held by `who` (a typed record, by hand).
-fn seed_strategic_claim(rig: &mut crate::driving_rig::Rig, who: ObjId) {
-    let (cluster, letter) = strategic_rock(rig);
+/// A live registered claim on the `rock`th strategic rock, held by `who` (a typed record, by
+/// hand).
+fn seed_strategic_claim(rig: &mut crate::driving_rig::Rig, who: ObjId, rock: usize) {
+    let (cluster, letter) = strategic_rock(rig, rock);
     let now = rig.tw.world().world_ic_now().at;
     let mut tenure = tacsim::surface::claims::BlockTenure::new(cluster.clone(), letter, who);
     tenure.claim = Some(tacsim::surface::claims::BlockClaim {
         holder: PrincipalId::Object(who),
-        account: None,
+        account: rig
+            .tw
+            .world()
+            .module_state::<mush_sim::AccountOracle>()
+            .and_then(|oracle| oracle.account_of(who)),
         epoch: 1,
         opened_ic: None,
         registered_ic: now,
@@ -131,17 +139,18 @@ async fn lw1_the_ceres_board_trades_strategic_ore_only_with_the_picket_papers() 
     let bid = strategic_bid(&rig);
 
     // ---- 1. The seller into a house bid: both papers, or nothing ----
-    let (refused, queued) = command(&mut rig, seller, &format!("+market/sell {bid}=1"));
-    assert!(refused.contains(REFUSED), "unlicensed: {refused}");
-    assert!(queued.is_empty(), "nothing moves: {refused}");
-    let _ = crate::support::licence::buy_licence(&mut rig.tw, seller);
+    let now = rig.tw.world().world_ic_now().at;
+    assert!(
+        tacsim::port::licence::licence_gate(rig.tw.world(), seller, now).is_ok(),
+        "a prospector holds the Registry's licence"
+    );
     let (refused, queued) = command(&mut rig, seller, &format!("+market/sell {bid}=1"));
     assert!(
         refused.contains(REFUSED),
         "licensed, with no claim: {refused}"
     );
     assert!(queued.is_empty(), "nothing moves: {refused}");
-    seed_strategic_claim(&mut rig, seller);
+    seed_strategic_claim(&mut rig, seller, 0);
     let _ = fire(&mut rig);
     let (sold, queued) = command(&mut rig, seller, &format!("+market/sell {bid}=1"));
     assert!(
@@ -170,6 +179,13 @@ async fn lw1_the_ceres_board_trades_strategic_ore_only_with_the_picket_papers() 
     let quoted = run(&mut rig.tw, trader, &format!("+market/quote {public}=1"));
     assert!(quoted.contains(REFUSED), "an unlicensed buyer: {quoted}");
     assert_eq!(newest_quote(&rig, trader), None, "no quote is written");
+    seed_strategic_claim(&mut rig, trader, 1);
+    let _ = fire(&mut rig);
+    let quoted = run(&mut rig.tw, trader, &format!("+market/quote {public}=1"));
+    assert!(
+        quoted.contains(REFUSED),
+        "a claim with no licence: {quoted}"
+    );
 
     // ---- 3. A private offer goes through ----
     let offered = run(
