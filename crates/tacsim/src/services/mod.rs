@@ -187,6 +187,77 @@ pub(crate) fn taker(
     }
 }
 
+/// **The capability to post jobs for an organization** (doc 50 cut OP.3, Q-50-23): a member who
+/// holds it on the organization's root compartment may post a haul or an escort `as=<org>`, the
+/// fee paid from the organization's account.
+pub const JOBS_POST_CAPABILITY: &str = "tacsim.jobs.post";
+
+/// The line a poster who may not post for that organization reads.
+pub const NOT_POSTER: &str = "You may not post jobs for that organization.";
+
+/// **Who posts a job** (doc 50 cut OP.3, Q-50-23): the actor, from their own account; or, with
+/// `as=<org>`, the organization, when the actor holds [`JOBS_POST_CAPABILITY`] on its root
+/// compartment, from the organization's credit account.
+pub(crate) fn poster(
+    ctx: &mut Ctx<'_>,
+    as_org: Option<&str>,
+) -> Result<(mush_org::PrincipalId, mush_economy::AccountId), String> {
+    let Some(name) = as_org else {
+        return crate::port::credit::own_account(ctx.w, ctx.actor)
+            .map(|a| (mush_org::PrincipalId::Object(ctx.actor), a.id))
+            .ok_or_else(|| "You have no account to pay the fee from.".to_owned());
+    };
+    let name = name.strip_prefix("org:").unwrap_or(name);
+    let org = mush_economy::resolve_org_visible(ctx, name).ok_or_else(|| NOT_POSTER.to_owned())?;
+    let root = ctx
+        .w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|store| store.state().org(org).map(|o| o.root_scope))
+        .ok_or_else(|| NOT_POSTER.to_owned())?;
+    let capability =
+        mush_org::CapabilityId::new(JOBS_POST_CAPABILITY).ok_or_else(|| NOT_POSTER.to_owned())?;
+    let request = mush_org::AuthRequest {
+        actor: ctx.actor,
+        capability,
+        scope: root,
+        now: ctx.w.now(),
+        amount: None,
+    };
+    if !mush_org::authorize_in_world(ctx.w, &request).is_allow() {
+        return Err(NOT_POSTER.to_owned());
+    }
+    let principal = mush_org::PrincipalId::Organization(org);
+    let account = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|store| {
+            store
+                .snapshot()
+                .accounts_of(&principal)
+                .find(|a| {
+                    a.instrument.as_str() == crate::economy::CREDIT
+                        && a.status == mush_economy::AccountStatus::Active
+                })
+                .map(|a| a.id)
+        })
+        .ok_or_else(|| crate::surface::retrieval::ORG_NO_ACCOUNT.to_owned())?;
+    Ok((principal, account))
+}
+
+/// **An organization's vault at `venue`** (doc 50 cut OP.3): its storefront there, from the lane's
+/// port map, as `VaultId.0`.
+#[must_use]
+pub fn org_vault(w: &World, org: mush_org::OrgId, venue: &str) -> Option<u64> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .filter(|(_, def, _)| def.venue.as_str() == venue)
+        .find_map(|(_, _, map)| {
+            let map = map?;
+            let (id, _) = map.orgs.iter().find(|(_, row)| row.org == org.0)?;
+            map.vendors.get(id).map(|row| row.vault)
+        })
+}
+
 /// The state of contract `id`, if the economy has it.
 pub(crate) fn contract_state(w: &World, id: u64) -> Option<mush_economy::ContractState> {
     w.module_state::<mush_economy::EconomyStore>()?

@@ -15,6 +15,19 @@
 //!   near time is at least [`NEAR_PERMILLE`] of the journey's time. It fails at once if the
 //!   protected hull is wrecked or captured, or the escort leaves the journey.
 //!
+//! **For a haul, and for an organization** (doc 50 cut OP.3; Q-50-23, Q-50-63):
+//! - `+escort/post haul=<job> fee=<cr>` posts an escort for a haul job, by its shipper (or, with
+//!   `as=<org>`, for the organization that posted the haul). It binds to the hauler's hull when
+//!   the haul is taken ([`UNBOUND`] until then), and covers the haul's passage from its origin to
+//!   its destination across every hop. A haul that closes untaken calls the escort off.
+//! - `as=<org>` posts for an organization whose root compartment grants the poster
+//!   [`super::JOBS_POST_CAPABILITY`], the fee from its account; a hull escort `as=<org>` is of a
+//!   hull the organization holds the title to.
+//! - **A passage ends at its destination** (doc 50a A-8b): docking at a port on the way is a hop,
+//!   not the end, and the time docked between hops counts to neither total. The escort may still
+//!   be docked for [`TOGETHER_IC`] IC seconds or [`LAUNCH_GRACE_WALL_S`] real seconds after the
+//!   protected hull launches from a port, whichever is longer, before it has left the journey.
+//!
 //! The fact (`tacsim.escort.kept`) is keyed by the job's contract, so it is named when the job
 //! is posted (doc 48b W-48-3a). A kept escort's contract settles on the sweep: the fee and any
 //! bond to the escort. A failed one never sees its fact; at the term's end the contract expires,
@@ -55,6 +68,13 @@ pub const TOGETHER_IC: i64 = 3_600;
 /// day. The host decides a taken escort at [`ESCORT_TERM_IC_DAYS`] (calls off one that never
 /// started, fails one that did) before the economy's expiry can forfeit the bond on its own.
 pub const DECIDE_LEAD_IC: i64 = DAY;
+/// **The real seconds an escort may still lie docked after the protected hull launches**
+/// (doc 50 cut OP.3, Q-50-63's provisional grace): a dozen port fires, so a high clock rate
+/// cannot turn the one fire between two undocks into a departure.
+pub const LAUNCH_GRACE_WALL_S: i64 = 60;
+/// **The protected hull of an escort posted for a haul not yet taken** (doc 50 cut OP.3): no
+/// hull is Limbo.
+pub const UNBOUND: ObjId = ObjId(0);
 /// IC seconds in an IC day.
 const DAY: i64 = 86_400;
 /// The channel lines go out on.
@@ -63,7 +83,7 @@ const CHANNEL: &str = "tacsim.escort";
 // ---- the player's sentences -----------------------------------------------------------------
 
 /// The usage line.
-pub const ESCORT_USAGE: &str = "Usage: +escort  |  +escort/post <hull> to=<port>|field=<site> fee=<cr> [go]\n       \
+pub const ESCORT_USAGE: &str = "Usage: +escort  |  +escort/post <hull> to=<port>|field=<site> fee=<cr> [as=<org>] [go]  |  +escort/post haul=<job> fee=<cr> [as=<org>] [go]\n       \
 +escort/accept <job> with=<hull> [as=<org>] [go]  |  +escort/withdraw <job> [go]";
 /// The help.
 pub const ESCORT_HELP: &str = "+escort                                your escorts, posted and taken\n\
@@ -72,6 +92,11 @@ pub const ESCORT_HELP: &str = "+escort                                your escor
                                        here to that port. The fee is escrowed now.\n\
 +escort/post <hull> field=<site> fee=<cr> [go]\n\
                                        the same for her next sortie in that field.\n\
++escort/post haul=<job> fee=<cr> [go] an escort for a haul you posted: it binds to the\n\
+                                       hauler's hull when the haul is taken, and runs to the\n\
+                                       haul's destination across every stop.\n\
++escort/post ... as=<org> [go]        post for an organization you may post jobs for, the\n\
+                                       fee from its account.\n\
 +escort/accept <job> with=<hull> [as=<org>] [go]\n\
                                        take an escort with a hull or rig of yours. Stay near\n\
                                        her for nine tenths of the journey: the same passage or\n\
@@ -132,6 +157,10 @@ pub const TOLD_FAILED: &str = "Escort {job} has failed, and its fee is not paid:
 pub const TOLD_UNSTARTED: &str = "Escort {job} is called off: her journey never began within {days} IC      days. The fee and any bond are back in the accounts they came from.";
 /// The refusal for `field=` at a port with no field (48e services:G2; `{port}`).
 pub const NO_FIELD: &str = "There is no field at {port}; a sortie escort names a field site.";
+/// No haul to escort (doc 50 cut OP.3).
+pub const NO_HAUL: &str = "There is no haul {job} of yours still on its way to escort.";
+/// The line both read when the haul an escort was posted for closes untaken (doc 50 cut OP.3).
+pub const TOLD_HAUL_GONE: &str = "Escort {job} is called off: the haul it was posted for closed before a hull took it. The fee and any bond are back in the accounts they came from.";
 /// Why: wrecked.
 pub const WHY_WRECKED: &str = "she was wrecked";
 /// Why: captured.
@@ -217,6 +246,16 @@ pub struct Watch {
     pub journey_ic: i64,
     /// The escort's near IC seconds so far (the linkdead grace included).
     pub near_ic: i64,
+    /// **When the protected hull last launched** (doc 50 cut OP.3), IC seconds: the watch's
+    /// start, then each departure from a port on the way.
+    #[serde(default)]
+    pub launch_ic: i64,
+    /// The same instant, real seconds.
+    #[serde(default)]
+    pub launch_wall: i64,
+    /// Whether the protected hull lay docked at a port on the way at the last fire.
+    #[serde(default)]
+    pub between: bool,
 }
 
 impl Watch {
@@ -240,6 +279,14 @@ pub struct EscortJob {
     pub contract: u64,
     /// The poster.
     pub poster: ObjId,
+    /// **The organization that posted it** (doc 50 cut OP.3), `OrgId.0`, when it was posted
+    /// `as=<org>`; `poster` is then the member who posted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poster_org: Option<u64>,
+    /// **The haul it was posted for** (doc 50 cut OP.3, Q-50-63), `ContractId.0`: `protected`
+    /// is [`UNBOUND`] until the haul is taken, then the hauler's hull.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub haul: Option<u64>,
     /// The hull to be escorted.
     pub protected: ObjId,
     /// The journey.
@@ -455,16 +502,19 @@ pub fn captured(w: &World, hull: ObjId) -> bool {
 /// Whether the journey is running for `job`, and whether it has ended (arrived or withdrew).
 fn journey_now(w: &World, job: &EscortJob) -> (bool, bool) {
     match &job.journey {
-        Journey::Passage { from, .. } => {
-            let under_way = w
-                .module_state::<mush_sim::JourneyBook>()
-                .is_some_and(|book| {
-                    book.get(job.protected)
-                        .is_some_and(|j| job.accepted_ic.is_some_and(|at| j.departed().at >= at))
-                });
-            let docked_away =
-                super::docked_venue(w, job.protected).is_some_and(|v| v.as_str() != from.as_str());
-            (under_way, docked_away)
+        Journey::Passage { to, .. } => {
+            // Doc 50 cut OP.3 (doc 50a A-8b): under way is off any berth on a journey begun
+            // since the escort was taken; the end is the destination, not the first port.
+            let docked = super::docked_venue(w, job.protected);
+            let under_way = docked.is_none()
+                && w.module_state::<mush_sim::JourneyBook>()
+                    .is_some_and(|book| {
+                        book.get(job.protected).is_some_and(|j| {
+                            job.accepted_ic.is_some_and(|at| j.departed().at >= at)
+                        })
+                    });
+            let arrived = docked.is_some_and(|v| v.as_str() == to.as_str());
+            (under_way, arrived)
         }
         Journey::Field { site } => {
             let inside = crate::field::field_of_unit(w, job.protected)
@@ -489,18 +539,18 @@ fn left(w: &World, job: &EscortJob, escort: ObjId) -> bool {
         return false;
     }
     match &job.journey {
-        Journey::Passage { from, to } => {
-            // Still docked at the origin inside the departure gap is not leaving (48e
-            // services:G3): `near_in_space` counts a passage flown together within
-            // [`TOGETHER_IC`] of hers.
+        Journey::Passage { to, .. } => {
+            // Still docked inside the departure gap is not leaving (48e services:G3; doc 50 cut
+            // OP.3): `near_in_space` counts a passage flown together within [`TOGETHER_IC`] of
+            // hers, and a high clock rate is allowed [`LAUNCH_GRACE_WALL_S`] real seconds.
             let now = w.world_ic_now().at;
-            let setting_out = job
-                .watch
-                .as_ref()
-                .is_some_and(|watch| now.saturating_sub(watch.started_ic) <= TOGETHER_IC);
-            super::docked_venue(w, escort).is_some_and(|v| {
-                v.as_str() != to.as_str() && !(setting_out && v.as_str() == from.as_str())
-            })
+            let wall = w.now();
+            let setting_out = job.watch.as_ref().is_some_and(|watch| {
+                now.saturating_sub(watch.launch_ic) <= TOGETHER_IC
+                    || wall.saturating_sub(watch.launch_wall) <= LAUNCH_GRACE_WALL_S
+            });
+            !setting_out
+                && super::docked_venue(w, escort).is_some_and(|v| v.as_str() != to.as_str())
         }
         Journey::Field { site } => !near_in_field(w, site, escort),
     }
@@ -598,6 +648,33 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
         job.stage = EscortStage::Closed;
         return true;
     };
+    // Doc 50 cut OP.3 (Q-50-63): an escort posted for a haul binds to the hauler's hull when the
+    // haul is taken, and is called off if the haul closes untaken.
+    if job.protected == UNBOUND
+        && let Some(contract) = job.haul
+    {
+        let haul = super::haul::haul_of(ctx.w, contract);
+        if let Some(hull) = haul.as_ref().and_then(|h| h.hull) {
+            job.protected = hull;
+            return true;
+        }
+        if haul
+            .as_ref()
+            .is_none_or(|h| h.stage == super::haul::HaulStage::Closed)
+        {
+            if !matches!(
+                mush_economy::cancel_job(ctx, ContractId(job.contract)),
+                Ok(true)
+            ) {
+                return false;
+            }
+            job.stage = EscortStage::Closed;
+            let line = TOLD_HAUL_GONE.replace("{job}", &job.job());
+            tell_both(ctx, job, &line);
+            return true;
+        }
+        return false;
+    }
     if live && job.stage == EscortStage::Taken && job.due_ic.is_some_and(|due| now >= due) {
         // The term ran out and her journey never began (48e services:G2): no escort was owed,
         // so the job is called off and the unwind returns the fee and the escort's bond. The
@@ -649,10 +726,30 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
             last_ic: now,
             journey_ic: 0,
             near_ic: 0,
+            launch_ic: now,
+            launch_wall: ctx.w.now(),
+            between: false,
         });
         let line = TOLD_STARTED.replace("{job}", &job.job());
         tell_both(ctx, job, &line);
         return true;
+    }
+    // Doc 50 cut OP.3 (doc 50a A-8b): docked at a port on the way is a hop. Nothing counts while
+    // she lies there, and her next departure restarts the grace to set out.
+    if matches!(job.journey, Journey::Passage { .. }) && !running && !ended {
+        let Some(watch) = job.watch.as_mut() else {
+            return false;
+        };
+        watch.last_ic = now;
+        watch.between = true;
+        return true;
+    }
+    if let Some(watch) = job.watch.as_mut()
+        && watch.between
+    {
+        watch.between = false;
+        watch.launch_ic = now;
+        watch.launch_wall = ctx.w.now();
     }
     let is_near = near(ctx.w, job, escort) || within_grace(ctx.w, escort);
     let left_it = !ended && left(ctx.w, job, escort);
@@ -791,14 +888,68 @@ fn holds(w: &World, who: ObjId, hull: ObjId) -> bool {
         || crate::field::crew::seated_in(w, hull) == Some(who)
 }
 
+/// Whether the poster may post for `principal`'s haul or hull: themself, or the organization.
+fn posts_for(poster: &PrincipalId, org: Option<u64>, shipper: ObjId) -> bool {
+    match poster {
+        PrincipalId::Object(who) => org.is_none() && *who == shipper,
+        PrincipalId::Organization(o) => org == Some(o.0),
+        PrincipalId::System(_) => false,
+    }
+}
+
+#[allow(clippy::too_many_lines)] // one ordered refusal list, then the post
 fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let (words, opts) = super::options(rest);
-    let [word] = words.as_slice() else {
-        return Err(ESCORT_USAGE.to_owned());
+    // Doc 50 cut OP.3 (Q-50-63): an escort for a haul.
+    let haul = match opts.get("haul") {
+        Some(word) => Some(
+            word.trim_start_matches('#')
+                .parse::<u64>()
+                .ok()
+                .and_then(|c| super::haul::haul_of(ctx.w, c))
+                .filter(|h| {
+                    matches!(
+                        h.stage,
+                        super::haul::HaulStage::Posted
+                            | super::haul::HaulStage::Taken
+                            | super::haul::HaulStage::Aboard
+                    )
+                })
+                .ok_or_else(|| NO_HAUL.replace("{job}", word))?,
+        ),
+        None => None,
     };
-    let hull = hull_word(word).ok_or_else(|| ESCORT_USAGE.to_owned())?;
-    if !holds(ctx.w, ctx.actor, hull) {
-        return Err(NOT_YOURS.to_owned());
+    let hull = match (&haul, words.as_slice()) {
+        (Some(h), []) => h.hull.unwrap_or(UNBOUND),
+        (None, [word]) => hull_word(word).ok_or_else(|| ESCORT_USAGE.to_owned())?,
+        _ => return Err(ESCORT_USAGE.to_owned()),
+    };
+    let as_org = opts.get("as").map(String::as_str);
+    match &haul {
+        Some(h) => {
+            let (who, _) = super::poster(ctx, as_org)?;
+            if !posts_for(&who, h.shipper_org, h.shipper) {
+                return Err(NO_HAUL.replace("{job}", &h.job()));
+            }
+        }
+        None => match as_org {
+            Some(_) => {
+                let (who, _) = super::poster(ctx, as_org)?;
+                let titled = ctx
+                    .w
+                    .module_state::<mush_economy::EconomyStore>()
+                    .and_then(|store| store.snapshot().asset(hull))
+                    .is_some_and(|asset| asset.title_owner == who);
+                if !titled {
+                    return Err(NOT_YOURS.to_owned());
+                }
+            }
+            None => {
+                if !holds(ctx.w, ctx.actor, hull) {
+                    return Err(NOT_YOURS.to_owned());
+                }
+            }
+        },
     }
     let fee = opts
         .get("fee")
@@ -806,13 +957,25 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         .ok_or_else(|| ESCORT_USAGE.to_owned())?;
     // The board: where the poster stands, else the port their own hull lies at (a field's
     // pad is a port entry with a venue of its own).
-    let venue = super::standing_venue(ctx.w, ctx.actor)
-        .or_else(|| {
-            crate::port::coop::helm_of(ctx.w, ctx.actor)
-                .and_then(|h| super::docked_venue(ctx.w, h.hull))
-        })
-        .ok_or_else(|| NO_VENUE.to_owned())?;
+    let venue = match &haul {
+        Some(h) => {
+            mush_market::MarketId::new(h.origin.as_str()).ok_or_else(|| NO_VENUE.to_owned())?
+        }
+        None => super::standing_venue(ctx.w, ctx.actor)
+            .or_else(|| {
+                crate::port::coop::helm_of(ctx.w, ctx.actor)
+                    .and_then(|h| super::docked_venue(ctx.w, h.hull))
+            })
+            .ok_or_else(|| NO_VENUE.to_owned())?,
+    };
     let journey = match (opts.get("to"), opts.get("field")) {
+        _ if haul.is_some() => {
+            let h = haul.as_ref().ok_or_else(|| ESCORT_USAGE.to_owned())?;
+            Journey::Passage {
+                from: h.origin.clone(),
+                to: h.destination.clone(),
+            }
+        }
         (Some(to), None) => {
             let from = super::docked_venue(ctx.w, hull).ok_or_else(|| NOT_DOCKED.to_owned())?;
             let to = super::venue_word(ctx.w, to).ok_or_else(|| NO_PORT.replace("{port}", to))?;
@@ -841,11 +1004,14 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         _ => return Err(ESCORT_USAGE.to_owned()),
     };
     if let Some(open) = escorts(ctx.w).into_iter().find(|j| {
-        j.protected == hull
-            && matches!(
-                j.stage,
-                EscortStage::Posted | EscortStage::Taken | EscortStage::Watching
-            )
+        (if let Some(h) = &haul {
+            j.haul == Some(h.contract)
+        } else {
+            j.protected == hull
+        }) && matches!(
+            j.stage,
+            EscortStage::Posted | EscortStage::Taken | EscortStage::Watching
+        )
     }) {
         return Err(ALREADY.replace("{job}", &open.job()));
     }
@@ -857,9 +1023,7 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
             .replace("{fee}", &money_minor(ctx, fee))
             .replace("{days}", &ESCORT_TERM_IC_DAYS.to_string()));
     }
-    let account = crate::port::credit::own_account(ctx.w, ctx.actor)
-        .map(|a| a.id)
-        .ok_or_else(|| "You have no account to pay the fee from.".to_owned())?;
+    let (poster, account) = super::poster(ctx, as_org)?;
     let peeked = ctx
         .w
         .module_state::<mush_economy::EconomyStore>()
@@ -872,7 +1036,7 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         ctx,
         mush_economy::JobSpec {
             name: SmolStr::new(format!("Escort: {}", name(ctx.w, hull))),
-            poster: PrincipalId::Object(ctx.actor),
+            poster: poster.clone(),
             poster_account: account,
             fee: Amount::from_minor(fee),
             fact: fact_of(peeked),
@@ -891,6 +1055,11 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         schema: ESCORT_SCHEMA,
         contract: contract.0,
         poster: ctx.actor,
+        poster_org: match &poster {
+            PrincipalId::Organization(org) => Some(org.0),
+            _ => None,
+        },
+        haul: haul.as_ref().map(|h| h.contract),
         protected: hull,
         journey,
         venue: SmolStr::new(venue.as_str()),
@@ -954,7 +1123,11 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
         return Ok(line);
     }
     let (taker, account) = super::taker(ctx, opts.get("as").map(String::as_str))?;
-    if taker == PrincipalId::Object(job.poster) {
+    if taker == PrincipalId::Object(job.poster)
+        || job
+            .poster_org
+            .is_some_and(|org| taker == PrincipalId::Organization(mush_org::OrgId(org)))
+    {
         return Err(OWN_JOB.to_owned());
     }
     let term = ESCORT_TERM_IC_DAYS.saturating_mul(DAY);
@@ -1061,6 +1234,7 @@ mod tests {
             last_ic: 100,
             journey_ic: 1_000,
             near_ic: 900,
+            ..Watch::default()
         };
         assert_eq!(watch.permille(), 900);
         assert!(watch.permille() >= NEAR_PERMILLE);
@@ -1079,6 +1253,7 @@ mod tests {
             last_ic: 140,
             journey_ic: 140,
             near_ic: 140,
+            ..Watch::default()
         };
         // The field closed: the escort reads far, and that interval is not counted.
         let mut field = running.clone();
@@ -1102,6 +1277,7 @@ mod tests {
             last_ic: 100,
             journey_ic: 0,
             near_ic: 0,
+            ..Watch::default()
         };
         assert_eq!(count(&mut first, 130, false, true), 30);
         assert_eq!((first.journey_ic, first.near_ic), (30, 0));

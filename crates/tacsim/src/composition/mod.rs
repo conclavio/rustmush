@@ -529,6 +529,8 @@ pub fn domain_org_capability_vocabulary() -> std::collections::BTreeSet<mush_org
             "relay.speak",
             "relay.inspect",
             "relay.publish",
+            // Doc 50 cut OP.3 (Q-50-23): a member who may post jobs for an organization.
+            crate::services::JOBS_POST_CAPABILITY,
         ])
         .chain([mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY])
         .chain([mush_roll::commerce::registry_recall::REGISTRY_RECALL_CAPABILITY])
