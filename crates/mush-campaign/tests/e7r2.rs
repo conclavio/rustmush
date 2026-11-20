@@ -408,15 +408,90 @@ fn e7r2_p0b_a_grant_without_the_marker_waits_out_the_cooldown_and_one_with_it_do
     ok(&mut tw, fx.pat, "@recovery/apply scout");
     let before = bal(&tw, fx.pool);
     fire(&mut tw);
+    let second = camp(&tw)
+        .recovery_grant(fx.pat)
+        .cloned()
+        .expect("and the second grant is actually made");
+    assert!(second.is_live(), "and the second grant is live");
+    assert_eq!(
+        bal(&tw, fx.pool),
+        before,
+        "no stipend leaves the pool before `@contract/accept`"
+    );
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", second.contract()),
+    );
+    fire(&mut tw);
+    assert!(
+        bal(&tw, fx.pool) < before,
+        "the stipend was paid out of the provider's own pool after accept, not minted"
+    );
+}
+
+/// CRIT-13: a single covered wreck may waive cooldown ONCE — subsequent grants do NOT
+/// keep getting `loss_covered = true` from the same wreck (neither for the original owner
+/// nor after transferring title of the wreck to an alt).
+#[test]
+fn crit13_single_covered_wreck_cannot_waive_cooldown_repeatedly_or_for_alt() {
+    let (mut tw, fx) = scene(1_000, 3);
+    let wreck = lose_a_hull(&mut tw, &fx, fx.pat, JourneyState::Failed);
+
+    // Grant 1: consumes the wreck's one-time cover waiver.
+    ok(&mut tw, fx.pat, "@recovery/apply scout");
+    fire(&mut tw);
+    let g1 = camp(&tw).recovery_grant(fx.pat).cloned().expect("grant 1");
+    assert!(g1.loss_covered(), "first grant covers the fresh wreck");
+    assert_eq!(g1.compensated_wreck(), Some(wreck));
+    assert!(
+        camp(&tw).is_wreck_compensated(wreck),
+        "wreck is recorded as compensated"
+    );
+
+    // Returning Grant 1 waives cooldown ONCE, allowing Grant 2 immediately.
+    ok(&mut tw, fx.pat, "@recovery/return");
+    ok(&mut tw, fx.pat, "@recovery/apply scout");
+    fire(&mut tw);
+    let g2 = camp(&tw).recovery_grant(fx.pat).cloned().expect("grant 2");
+    assert!(
+        g2.is_live(),
+        "Grant 2 was granted under the one-time waiver"
+    );
+    assert!(
+        !g2.loss_covered(),
+        "Grant 2 must NOT reuse the same already-compensated wreck"
+    );
+
+    // Returning Grant 2 now enforces the normal cooldown: Grant 3 is refused.
+    ok(&mut tw, fx.pat, "@recovery/return");
+    ok(&mut tw, fx.pat, "@recovery/apply scout");
+    fire(&mut tw);
     assert!(
         camp(&tw)
             .recovery_grant(fx.pat)
-            .is_some_and(RecoveryGrant::is_live),
-        "and the second grant is actually made"
+            .is_none_or(|g| !g.is_live()),
+        "no infinite 15s recovery loop off a single wreck"
+    );
+
+    // Transferring the compensated wreck's title to an alt must NOT grant cover.
+    let alt = tw.spawn_player("Alt");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", alt.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", wreck.0, alt.0),
     );
     assert!(
-        bal(&tw, fx.pool) < before,
-        "the stipend was paid out of the provider's own pool, not minted"
+        !mush_campaign::loss_is_covered(tw.world(), alt),
+        "compensated wreck cannot cover an alt after title transfer"
+    );
+    ok(&mut tw, alt, "@recovery/apply scout");
+    fire(&mut tw);
+    let alt_grant = camp(&tw).recovery_grant(alt).cloned().expect("alt grant");
+    assert!(
+        !alt_grant.loss_covered(),
+        "alt's grant does NOT get loss_covered from an already-compensated wreck"
     );
 }
 

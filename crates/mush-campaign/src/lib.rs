@@ -287,6 +287,24 @@ impl GameModule for CampaignModule {
         let mut store = store::load(data.kv);
         store.set_authority(self.formation_kinds.clone());
         store.hydrate_kinds(ctx.w);
+        let now = ctx.w.world_ic_now().at;
+        let cooldown_secs = self
+            .recovery
+            .as_ref()
+            .map_or(recovery::RECOVERY_COOLDOWN_SECS, |cfg| cfg.cooldown_secs);
+        let dropped_grants = store
+            .prune_recovery_grants(now, cooldown_secs, |id| {
+                mush_sim::relay::cover_voided(ctx.w, id)
+            })
+            .len();
+        if dropped_grants > 0 {
+            tracing::warn!(
+                dropped_grants,
+                retained = recovery::MAX_RETAINED_RECOVERY_RECORDS,
+                "campaign: the recovery grant book was over its retention ring; the oldest \
+                 expired ENDED grants were left on disk and not hydrated"
+            );
+        }
         let held: Vec<store::HeldDoc> = store.held().to_vec();
         let held_overflow = store.held_overflow();
         let unknown: Vec<(OperationId, Vec<String>)> = store

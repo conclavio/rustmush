@@ -330,7 +330,6 @@ fn compose_server_modules<E>(
             },
         ))),
         Box::new(simulation),
-        Box::new(tacsim::composition::atlas_module_builder(atlas)),
         Box::new(tactics),
         Box::new(
             mush_propagation::PropagationModule::new()
@@ -450,6 +449,11 @@ fn compose_server_modules<E>(
                 None => m,
             }
         }),
+        // CRIT-17: register Atlas AFTER deny-only `MoveAttempt` hooks (`Scenes`,
+        // `Simulation`, `Tactics`, `Industry`, `Housing`) so `TravelHook`'s
+        // intercepting timed-portal departure cannot short-circuit and bypass
+        // deny-only movement vetoes.
+        Box::new(tacsim::composition::atlas_module_builder(atlas)),
         Box::new(mush_weather::WeatherModule::with_config(weather)),
         Box::new(mush_party::PartyModule::new()),
         Box::new({

@@ -1415,23 +1415,81 @@ pub fn place_in_room(
     mush_sim::place(ctx, obj, domain, pose)
 }
 
+/// Whether any exit targeting `room` carries a non-trivial `Basic` lock.
+fn room_has_entry_lock(w: &World, room: ObjId) -> bool {
+    w.iter().any(|o| {
+        o.kind == mush_core::ObjKind::Exit
+            && o.destination == Some(room)
+            && o.locks
+                .get(&mush_core::LockType::Basic)
+                .is_some_and(|expr| !matches!(expr, mush_core::LockExpr::Const(true)))
+    })
+}
+
+/// Whether `room` may be chosen by the nearest-room fallback when a pose stands
+/// on an un-roomed (`room == 0`) cell: excludes `Access::Restricted` rooms and
+/// rooms guarded by a `Basic` exit lock.
+fn fallback_room_allowed(st: &AtlasState, w: &World, room: ObjId) -> bool {
+    let restricted = st
+        .records
+        .roomgeo
+        .get(&room)
+        .is_some_and(|g| g.access == crate::record::Access::Restricted);
+    !restricted && !room_has_entry_lock(w, room)
+}
+
 /// The room a pose is in (doc 14 §3.4 *Leaving*; §5.2 `resolve_room`): the room
-/// whose footprint holds it on its surface, else the nearest footprint within
-/// `nearest_room_cells` (ties by id), else none — the simulation then uses the
-/// domain's presentation room.
+/// whose footprint holds it on its surface, else the nearest open, unlocked
+/// footprint within `nearest_room_cells` (ties by id), else none — the
+/// simulation then uses the domain's presentation room.
 #[must_use]
 pub fn resolve_room(w: &World, domain: DomainId, pose: &Pose) -> Option<ObjId> {
     let st = w.module_state::<AtlasState>()?;
     let entry = st.windows.open.get(&domain.0)?;
     let composite = entry.composite.as_ref()?;
-    resolve_composite_room(composite, st.limits.nearest_room_cells, pose)
+    resolve_composite_room(composite, st.limits.nearest_room_cells, pose, |room| {
+        fallback_room_allowed(st, w, room)
+    })
 }
 
-/// The actual room projection policy over an already selected composite.
+/// Nearest room on `surface` within `reach` cells of `(x, y)` admitted by
+/// `allow_fallback`.
+fn nearest_room_on_surface(
+    surface: &SurfaceComposite,
+    x: u16,
+    y: u16,
+    reach: u32,
+    mut allow_fallback: impl FnMut(ObjId) -> bool,
+) -> Option<ObjId> {
+    let mut best: Option<(u32, ObjId)> = None;
+    for (cx, cy, cell) in surface.cells.iter() {
+        if cell.room == 0 {
+            continue;
+        }
+        let d = u32::from(cx.abs_diff(x)).max(u32::from(cy.abs_diff(y)));
+        if d > reach {
+            continue;
+        }
+        let Some(room) = surface.room_at(cx, cy) else {
+            continue;
+        };
+        if !allow_fallback(room) {
+            continue;
+        }
+        if best.is_none_or(|(bd, br)| d < bd || (d == bd && room < br)) {
+            best = Some((d, room));
+        }
+    }
+    best.map(|(_, room)| room)
+}
+
+/// The actual room projection policy over an already selected composite,
+/// filtering nearest-room fallback candidates through `allow_fallback`.
 pub(crate) fn resolve_composite_room(
     composite: &Composite,
     reach: u32,
     pose: &Pose,
+    allow_fallback: impl FnMut(ObjId) -> bool,
 ) -> Option<ObjId> {
     let p = pose_cm(pose);
     let z_cm = i64::from(pose.z_cm);
@@ -1454,23 +1512,7 @@ pub(crate) fn resolve_composite_room(
     if let Some(room) = surface.room_at(x, y) {
         return Some(room);
     }
-    let mut best: Option<(u32, ObjId)> = None;
-    for (cx, cy, cell) in surface.cells.iter() {
-        if cell.room == 0 {
-            continue;
-        }
-        let d = u32::from(cx.abs_diff(x)).max(u32::from(cy.abs_diff(y)));
-        if d > reach {
-            continue;
-        }
-        let Some(room) = surface.room_at(cx, cy) else {
-            continue;
-        };
-        if best.is_none_or(|(bd, br)| d < bd || (d == bd && room < br)) {
-            best = Some((d, room));
-        }
-    }
-    best.map(|(_, room)| room)
+    nearest_room_on_surface(surface, x, y, reach, allow_fallback)
 }
 
 /// Register the resolver and the geometry with the simulation. Once, at the
@@ -1935,7 +1977,59 @@ pub fn register_scene_hooks(w: &mut World) -> Result<(), String> {
     )
 }
 
-/// The portal between two rooms, when the atlas knows one.
+/// Find the exit leaving `origin` into `room`, consulting the atlas's portal
+/// records first and falling back to any direct exit in `w`.
+fn crossing_exit(
+    records: &Records,
+    w: &World,
+    origin: Option<ObjId>,
+    room: ObjId,
+) -> Option<ObjId> {
+    portal_between(records, origin, room)
+        .and_then(|key| records.portals.get(&key))
+        .and_then(|p| {
+            p.exits.iter().copied().find(|e| {
+                w.get(*e)
+                    .is_some_and(|o| o.location == origin && o.destination == Some(room))
+            })
+        })
+        .or_else(|| {
+            let from = origin?;
+            w.iter()
+                .find(|o| {
+                    o.kind == mush_core::ObjKind::Exit
+                        && o.location == Some(from)
+                        && o.destination == Some(room)
+                })
+                .map(|o| o.id)
+        })
+}
+
+/// Authorize `actor` entering `room` from `origin`: exit `Basic` lock, the full
+/// `MoveAttempt` hook chain, and the atlas's `Access::Restricted` rule.
+fn authorize_room_entry(
+    ctx: &Ctx<'_>,
+    st: &AtlasState,
+    actor: ObjId,
+    staff: bool,
+    origin: Option<ObjId>,
+    room: ObjId,
+) -> Result<(), String> {
+    let exit = crossing_exit(&st.records, ctx.w, origin, room);
+    if let Err(refusal) = ctx.authorize_traversal(actor, exit, room) {
+        return Err(refusal.reason());
+    }
+    if !staff
+        && st
+            .records
+            .roomgeo
+            .get(&room)
+            .is_some_and(|g| g.access == crate::record::Access::Restricted)
+    {
+        return Err(format!("{} is not open to you", name(ctx.w, room)));
+    }
+    Ok(())
+}
 #[must_use]
 pub fn portal_between(records: &Records, from: Option<ObjId>, to: ObjId) -> Option<RecordKey> {
     let from = from?;
@@ -2159,7 +2253,7 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
     let (domain, pose) =
         mush_sim::pose_of(ctx.w, actor).ok_or_else(|| "you are not on a map".to_string())?;
     let staff = crate::module::is_staff(ctx.w, actor);
-    let (walk, heading, end_surface, grow_at) = {
+    let (mut walk, heading, end_surface, grow_at, start_location, _end_last_room) = {
         let st = state(ctx)?;
         let entry = st
             .windows
@@ -2179,7 +2273,12 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             .filter_map(|(_, p)| locate(composite, &p))
             .collect();
         let surface_at = |i: usize| composite.surfaces.get(i);
+        let start_location = ctx.w.get(actor).and_then(|o| o.location);
         let mut current_room = surface_at(si).and_then(|s| s.room_at(x, y));
+        // Retain the last entered room across `room == 0` cells so stepping off
+        // a footprint onto un-roomed ground cannot clear `origin` and skip an
+        // exit's `Basic` lock when entering the next room (CRIT-16).
+        let mut last_room = current_room.or(start_location);
         let (heading, budget) = match target {
             StepTarget::Along(h, n) => (h, n.clamp(1, MAX_STEP_CELLS)),
             StepTarget::Toward(tx, ty) => (
@@ -2287,36 +2386,19 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
                 break;
             }
             let there = next_surface.room_at(cx, cy);
-            if there != current_room
-                && let Some(room) = there
-            {
-                // S8.1 (14a #1): a boundary is a portal or an open edge, and
-                // either way the crossing is a move. The portal's exit — the
-                // one leaving the room the walker stands in — carries its
-                // lock, and the `MoveAttempt` chain runs as it does for
-                // `traverse_exit`; two footprints that merely touch consult
-                // the chain with no exit. Then the atlas's own access rule.
-                let exit = portal_between(&st.records, current_room, room)
-                    .and_then(|key| st.records.portals.get(&key))
-                    .and_then(|p| {
-                        p.exits.iter().copied().find(|e| {
-                            ctx.w.get(*e).is_some_and(|o| {
-                                o.location == current_room && o.destination == Some(room)
-                            })
-                        })
-                    });
-                if let Err(refusal) = ctx.authorize_traversal(actor, exit, room) {
-                    stopped = Some(refusal.reason());
-                    break;
-                }
-                if !staff
-                    && st
-                        .records
-                        .roomgeo
-                        .get(&room)
-                        .is_some_and(|g| g.access == crate::record::Access::Restricted)
+            let projected = there.or_else(|| {
+                nearest_room_on_surface(next_surface, cx, cy, st.limits.nearest_room_cells, |r| {
+                    fallback_room_allowed(st, ctx.w, r)
+                })
+            });
+            if let Some(room) = projected {
+                let origin = current_room.or(last_room);
+                let crossing_footprint = there.is_some() && there != current_room;
+                let crossing_projection = origin != Some(room);
+                if (crossing_footprint || crossing_projection)
+                    && let Err(reason) = authorize_room_entry(ctx, st, actor, staff, origin, room)
                 {
-                    stopped = Some(format!("{} is not open to you", name(ctx.w, room)));
+                    stopped = Some(reason);
                     break;
                 }
             }
@@ -2324,6 +2406,9 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             x = cx;
             y = cy;
             current_room = there;
+            if there.is_some() {
+                last_room = there;
+            }
             walked += 1;
             cost = cost.saturating_add(step_cost);
         }
@@ -2338,6 +2423,8 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             heading,
             si,
             grow_at,
+            start_location,
+            last_room,
         )
     };
     if walk.walked > 0 {
@@ -2358,6 +2445,26 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             new_pose.heading_mdeg = heading.heading_mdeg();
             new_pose
         };
+        // Defense-in-depth (CRIT-16): authorize the exact room `mush_sim::place`
+        // will project `actor` into (resolved room or domain presentation room)
+        // before calling `mush_sim::place`.
+        let target_room = resolve_room(ctx.w, domain, &pose).or_else(|| {
+            ctx.w
+                .module_state::<mush_sim::SpatialState>()
+                .and_then(|sim| sim.domains.get(&domain))
+                .map(|d| d.presentation_location)
+        });
+        if let Some(target) = target_room
+            && Some(target) != start_location
+        {
+            let st = state(ctx)?;
+            if let Err(reason) = authorize_room_entry(ctx, st, actor, staff, start_location, target)
+            {
+                walk.stopped = Some(reason);
+                walk.walked = 0;
+                return Ok(walk);
+            }
+        }
         mush_sim::place(ctx, actor, domain, pose)?;
     }
     if let Some(beyond) = grow_at {
