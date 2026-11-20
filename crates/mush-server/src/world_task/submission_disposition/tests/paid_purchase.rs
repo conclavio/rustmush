@@ -39,13 +39,18 @@ const QUOTE_SECONDS: i64 = 30;
 // A finite hang guard, not a pace requirement (timing is report-only under
 // the owner's waiver): the live server paces a Registry lease through its
 // maintenance ticks (about six a lease; `mind_pulse`), and this certificate
-// takes ~1,070 of them: about three hours at production's 1,000 ms pulse,
-// minutes at the stories' `MIND_PULSE_MS` default.
+// takes ~2,115 leases (~1,070 until doc 49 units CC.1 and CC.2 slowed the
+// rated trial cases: each ends at 241,500 ms where it ended at 58,500). At
+// production's 1,000 ms pulse that is about 4 h 10 min (about 7 s a lease on
+// the hosted runner), past this guard: the nightly of 2026-11-18 met it at
+// lease ~2,050. So the nightly runs at 500 ms (the owner's call, 2026-11-19):
+// about 15 leases a minute on conclav.dev (whose 1,000 ms pace matched the
+// hosted runner's), a rating of about 2 h 20 min inside this guard.
 const REGISTRY_GUARD: Duration = Duration::from_secs(14_400);
 /// The stories' maintenance pulse when `MIND_PULSE_MS` is unset: a lease
-/// about a third of a second, a certificate about six minutes.
+/// about a third of a second, a certificate about twelve minutes.
 const STORY_PULSE_MS: u64 = 50;
-/// Production's pulse, `MIND_PULSE_MS=1000`: the three-hour run.
+/// Production's pulse, `MIND_PULSE_MS=1000`: the four-hour run (the nightly's is 500).
 const PRODUCTION_PULSE_MS: u64 = 1_000;
 
 /// Sets the proving service's maintenance pulse
@@ -304,27 +309,36 @@ async fn genuine_rating(
                 };
                 eprintln!("M7_SERVER_REGISTRY_JOB phase={phase}");
             }
-            let executions = rows(store, "roll", "rating_executions").await?;
-            eprintln!("M7_SERVER_REGISTRY_EXECUTIONS count={}", executions.len());
-            for row in executions.into_iter().take(2) {
-                let execution: RatingExecution = serde_json::from_value(row)?;
-                let observed = execution.observation();
-                eprintln!(
-                    "M7_SERVER_REGISTRY_PROGRESS phase={:?} next={} case={} simulated_ms={} charged_unit_ms={} flight={} result={}",
-                    observed.phase,
-                    observed.next_sequence,
-                    observed.cursor.index,
-                    observed.cursor.simulated_ms,
-                    observed.charged_unit_ms,
-                    observed.flight.is_some(),
-                    observed.result.is_some()
-                );
-            }
+            rating_progress(store).await?;
             report = Instant::now();
         }
         server.drain_output()?;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// A running rating's executions, one bounded line each (at most two): the
+/// next lease's sequence, the case, its simulated time and the charged
+/// units. The two market stories print it too, so a nightly that runs long
+/// reads as a rating still moving (or not), not as four silent hours.
+pub(super) async fn rating_progress(store: &PurchaseFaultStore) -> TestResult {
+    let executions = rows(store, "roll", "rating_executions").await?;
+    eprintln!("M7_SERVER_REGISTRY_EXECUTIONS count={}", executions.len());
+    for row in executions.into_iter().take(2) {
+        let execution: RatingExecution = serde_json::from_value(row)?;
+        let observed = execution.observation();
+        eprintln!(
+            "M7_SERVER_REGISTRY_PROGRESS phase={:?} next={} case={} simulated_ms={} charged_unit_ms={} flight={} result={}",
+            observed.phase,
+            observed.next_sequence,
+            observed.cursor.index,
+            observed.cursor.simulated_ms,
+            observed.charged_unit_ms,
+            observed.flight.is_some(),
+            observed.result.is_some()
+        );
+    }
+    Ok(())
 }
 
 async fn file_and_list(
