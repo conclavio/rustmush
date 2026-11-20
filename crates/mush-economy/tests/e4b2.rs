@@ -7867,3 +7867,152 @@ fn j2_every_contract_state_survives_a_reboot_with_an_evicted_tail() {
         }
     }
 }
+
+// ======================================================================
+// Security hardening regressions (HIGH-22)
+// ======================================================================
+
+/// HIGH-22: cancelling an unoffered draft (or an unaccepted/unescrowed offer)
+/// prunes it immediately from RAM and KV instead of leaving permanent
+/// `Cancelled` tombstones; legacy `Cancelled` drafts with no economic history
+/// are also pruned by `sweep::collect_garbage`.
+#[test]
+fn high22_cancel_unoffered_draft_prunes_immediately_and_sweep_prunes_cancelled_drafts() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    // Repeated draft + cancel past MAX_OPEN_CONTRACTS_PER_ISSUER leaves zero contracts.
+    for i in 0..(mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER + 5) {
+        ok(&mut tw, r.johnson, &format!("@contract/draft Spam {i}"));
+        let id = only_contract(&tw);
+        ok(&mut tw, r.johnson, &format!("@contract/cancel {id}"));
+        assert!(
+            snap(&tw).contract(id).is_none(),
+            "unoffered draft #{id} was not pruned on cancel"
+        );
+    }
+    assert_eq!(snap(&tw).contracts().count(), 0);
+    let kv_after_cancels = fold_kv(&mut tw);
+    assert!(
+        !kv_after_cancels
+            .iter()
+            .any(|(k, _)| k.starts_with("contract:")),
+        "cancelling unoffered drafts left persisted contract docs behind"
+    );
+
+    // An unaccepted, unescrowed Offered contract is also pruned on cancel.
+    ok(&mut tw, r.johnson, "@contract/draft EmptyOffer");
+    let offered_id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {offered_id}={}", r.j_acct),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {offered_id}"));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/cancel {offered_id}"),
+    );
+    assert!(
+        snap(&tw).contract(offered_id).is_none(),
+        "unaccepted/unescrowed offer was not pruned on cancel"
+    );
+
+    // Legacy `Cancelled` draft with no economic history is collected by sweep GC.
+    ok(&mut tw, r.johnson, "@contract/draft LegacyCancelled");
+    let legacy_id = only_contract(&tw);
+    let mut kv = kv_after_cancels;
+    merge(&mut kv, drain(&mut tw));
+    patch(&mut kv, &format!("contract:{legacy_id}"), |v| {
+        v["state"] = serde_json::json!("Cancelled");
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, legacy_id), ContractState::Cancelled);
+    sweep_at(&mut tw, 10_000);
+    assert!(
+        snap(&tw).contract(legacy_id).is_none(),
+        "sweep did not collect a legacy cancelled draft"
+    );
+}
+
+/// HIGH-22: `build_outcome` enforces `MAX_SHARES` at draft time, and
+/// `build_condition` bounds `ExternalRef.{provider, kind, id}` byte lengths.
+#[test]
+fn high22_build_outcome_enforces_max_shares_and_condition_bounds_external_ref() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft BoundedFields");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest staff"),
+    );
+
+    // Over MAX_SHARES in @contract/outcome is rejected immediately on Draft.
+    let too_many_shares: String = (0..=mush_economy::MAX_SHARES)
+        .map(|_| format!("{}:1", r.a_acct.0))
+        .collect::<Vec<_>>()
+        .join(",");
+    let refusal = err(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/outcome {id}=big when=0 pay={too_many_shares}"),
+    );
+    assert!(
+        refusal.contains(&mush_economy::MAX_SHARES.to_string()),
+        "unexpected refusal: {refusal}"
+    );
+    assert!(contract(&tw, id).consent.terms.outcomes.is_empty());
+
+    // Exactly MAX_SHARES succeeds.
+    let at_cap_shares: String = (0..mush_economy::MAX_SHARES)
+        .map(|_| format!("{}:1", r.a_acct.0))
+        .collect::<Vec<_>>()
+        .join(",");
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/outcome {id}=ok when=0 pay={at_cap_shares}"),
+    );
+    assert_eq!(contract(&tw, id).consent.terms.outcomes.len(), 1);
+
+    // ExternalRef.{provider, kind, id} byte-length caps enforced in build_condition.
+    let bad_provider = "p".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES + 1);
+    let bad_kind = "k".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES + 1);
+    let bad_id = "i".repeat(mush_economy::MAX_EXTERNAL_REF_ID_BYTES + 1);
+    assert!(
+        err(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=fact {bad_provider} kind 1"),
+        )
+        .contains("provider")
+    );
+    assert!(
+        err(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=fact prov {bad_kind} 1"),
+        )
+        .contains("kind")
+    );
+    assert!(
+        err(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=fact prov kind {bad_id}"),
+        )
+        .contains("id")
+    );
+
+    // Exact bounds succeed.
+    let ok_provider = "p".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES);
+    let ok_kind = "k".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES);
+    let ok_id = "i".repeat(mush_economy::MAX_EXTERNAL_REF_ID_BYTES);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=fact {ok_provider} {ok_kind} {ok_id}"),
+    );
+}

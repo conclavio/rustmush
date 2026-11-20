@@ -1896,6 +1896,17 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
                 "a condition names an attestor set nobody can satisfy",
             ));
         }
+        if let TypedCondition::Fact { fact } = con {
+            if fact.provider.len() > crate::record::MAX_EXTERNAL_REF_FIELD_BYTES {
+                return Err(ContractError::TooLarge("a fact provider is too long"));
+            }
+            if fact.kind.len() > crate::record::MAX_EXTERNAL_REF_FIELD_BYTES {
+                return Err(ContractError::TooLarge("a fact kind is too long"));
+            }
+            if fact.id.len() > crate::record::MAX_EXTERNAL_REF_ID_BYTES {
+                return Err(ContractError::TooLarge("a fact id is too long"));
+            }
+        }
     }
     // E6b independent verify fold (D6): a `Canon` set's **kind and source are stored
     // strings that reach every party**. The set is frozen into the consent surface,

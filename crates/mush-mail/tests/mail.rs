@@ -1118,3 +1118,184 @@ fn gc6_a_registry_notice_is_delivered_at_once_without_a_sent_copy() {
             .any(|k| k.as_str() == mush_mail::data::box_key(bob, id).as_str())
     );
 }
+
+// ----------------------------------------------------------------------
+// Security hardening regressions (HIGH-23)
+// ----------------------------------------------------------------------
+
+/// HIGH-23: `TRASH` has a hard cap with oldest-first auto-pruning (so deleting
+/// from a full inbox still works without allowing infinite trash storage), and
+/// `@mail/file` enforces active-folder quota when moving messages out of trash.
+#[test]
+fn high23_trash_auto_prunes_and_file_out_of_trash_enforces_quota() {
+    let (mut engine, alice, bob) = setup();
+    let boot = HashMap::from([(
+        SmolStr::new("mail"),
+        ModuleBootData {
+            kv: vec![(SmolStr::new("config"), serde_json::json!({"quota": 2}))],
+            streams: HashMap::new(),
+            ..Default::default()
+        },
+    )]);
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.modules_loaded(boot, &mut out, &mut fx).unwrap();
+    engine.world.set_flag(alice, Flags::WIZARD, true).unwrap();
+
+    // Fill Bob's inbox to quota (2), then trash both and receive a third & fourth.
+    run(&mut engine, alice, "@mail/quick Bob=One/m1");
+    run(&mut engine, alice, "@mail/quick Bob=Two/m2");
+    assert_eq!(mail(&engine).entry_count(bob), 2);
+    // Deleting from a full inbox must succeed.
+    run(&mut engine, bob, "@mail/delete 1");
+    run(&mut engine, bob, "@mail/delete 1");
+    assert_eq!(mail(&engine).entry_count(bob), 0);
+    assert_eq!(mail(&engine).trash_count(bob), 2);
+
+    // Receiving 3 and trashing it exceeds trash_cap() == 2 -> oldest (msg 1) is auto-pruned.
+    run(&mut engine, alice, "@mail/quick Bob=Three/m3");
+    let _ = engine.take_module_ops();
+    run(&mut engine, bob, "@mail/delete 1");
+    let ops = engine.take_module_ops();
+    assert_eq!(mail(&engine).trash_count(bob), 2, "trash stays capped at 2");
+    assert!(
+        mail(&engine).entry(bob, 1).is_none(),
+        "oldest trash entry (msg 1) was auto-pruned"
+    );
+    assert!(
+        mail(&engine).entry(bob, 2).is_some() && mail(&engine).entry(bob, 3).is_some(),
+        "newer trash entries survive"
+    );
+    assert!(
+        ops.iter().any(|op| matches!(
+            &op.op,
+            ModuleWrite::Del { key } if key.as_str() == format!("box:{}:1", bob.0)
+        )),
+        "auto-prune emitted KV delete for oldest trash entry"
+    );
+
+    // Fill Bob's active inbox back to quota (2).
+    run(&mut engine, alice, "@mail/quick Bob=Four/m4");
+    run(&mut engine, alice, "@mail/quick Bob=Five/m5");
+    assert_eq!(mail(&engine).entry_count(bob), 2);
+
+    // Moving between two active folders at quota still succeeds.
+    let out = run(&mut engine, bob, "@mail/file 1=archive");
+    assert_actor_saw(out.events(), bob, "filed in archive");
+    assert_eq!(mail(&engine).entry_count(bob), 2);
+
+    // Attempting to file a message OUT of trash while at quota is refused.
+    run(&mut engine, bob, "@mail/folder trash");
+    let out = run(&mut engine, bob, "@mail/file 1=inbox");
+    assert_actor_saw(out.events(), bob, "mailbox is full");
+    assert_eq!(
+        mail(&engine).entry_count(bob),
+        2,
+        "quota was not bypassed by filing out of trash"
+    );
+    assert_eq!(
+        mail(&engine).entry(bob, 2).unwrap().folder.as_str(),
+        TRASH,
+        "message remained in trash"
+    );
+}
+
+/// HIGH-23: `@mail` / `@mail/list` and the `mail.list` query both paginate and
+/// bound output size.
+#[test]
+fn high23_mail_list_and_query_paginate_output() {
+    let (mut engine, alice, bob) = setup();
+    let total = mush_mail::MAIL_LIST_PAGE_SIZE + 7;
+    engine.world.set_flag(alice, Flags::WIZARD, true).unwrap();
+    engine.world.set_flag(bob, Flags::WIZARD, true).unwrap();
+    for i in 1..=total {
+        run(
+            &mut engine,
+            alice,
+            &format!("@mail/quick Bob=Msg{i}/body{i}"),
+        );
+    }
+
+    // Default `@mail` renders page 1 (bounded to MAIL_LIST_PAGE_SIZE).
+    let out = run(&mut engine, bob, "@mail");
+    let lines = sys_texts(&out);
+    assert!(lines.iter().any(|l| l.contains("Msg1 ")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("Msg{} ", mush_mail::MAIL_LIST_PAGE_SIZE))),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains(&format!("Msg{} ", mush_mail::MAIL_LIST_PAGE_SIZE + 1))),
+        "page 1 leaked page 2 entries"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("page 1/2")),
+        "missing pagination footer: {lines:?}"
+    );
+
+    // `@mail/list 2` renders the remaining 7 entries.
+    let out = run(&mut engine, bob, "@mail/list 2");
+    let lines = sys_texts(&out);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(&format!("Msg{} ", mush_mail::MAIL_LIST_PAGE_SIZE + 1))),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains(&format!("Msg{total} "))),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("page 2/2")), "{lines:?}");
+
+    // Out-of-range page reports cleanly.
+    let out = run(&mut engine, bob, "@mail/list 9");
+    assert_actor_saw(out.events(), bob, "No messages on page 9");
+
+    // `mail.list` query paginates and clamps oversized `limit`.
+    let ev = web_query(
+        &mut engine,
+        bob,
+        "mail.list",
+        serde_json::json!({"folder": "inbox"}),
+    );
+    let OutputEvent::Panel { data, .. } = ev else {
+        panic!("expected Panel");
+    };
+    assert_eq!(data["total"], total);
+    assert_eq!(data["offset"], 0);
+    assert_eq!(data["limit"], mush_mail::MAIL_LIST_PAGE_SIZE);
+    assert_eq!(data["has_more"], true);
+    assert_eq!(
+        data["entries"].as_array().unwrap().len(),
+        mush_mail::MAIL_LIST_PAGE_SIZE
+    );
+
+    let ev2 = web_query(
+        &mut engine,
+        bob,
+        "mail.list",
+        serde_json::json!({"folder": "inbox", "limit": 10, "offset": mush_mail::MAIL_LIST_PAGE_SIZE}),
+    );
+    let OutputEvent::Panel { data: data2, .. } = ev2 else {
+        panic!("expected Panel");
+    };
+    let entries2 = data2["entries"].as_array().unwrap();
+    assert_eq!(entries2.len(), 7);
+    assert_eq!(entries2[0]["index"], mush_mail::MAIL_LIST_PAGE_SIZE + 1);
+    assert_eq!(data2["has_more"], false);
+
+    let ev_clamped = web_query(
+        &mut engine,
+        bob,
+        "mail.list",
+        serde_json::json!({"folder": "inbox", "limit": 99_999}),
+    );
+    let OutputEvent::Panel { data: clamped, .. } = ev_clamped else {
+        panic!("expected Panel");
+    };
+    assert_eq!(clamped["limit"], mush_mail::MAIL_QUERY_MAX_LIMIT);
+}

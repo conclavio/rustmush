@@ -187,8 +187,9 @@ pub use record::{
     EconomicVisibility, Encumbrance, ExternalRef, Hold, HoldEffect, HoldEffectKind, HoldPurpose,
     HoldStatus, IdempotencyKey, IdempotencyRecord, InstrumentDef, InstrumentDisplay,
     InstrumentKind, InstrumentStatus, JournalLine, MAX_APPROVAL_WINDOW_SECS, MAX_AUDIENCE,
-    MAX_SYMBOL_BYTES, NegativePolicy, ObligationStatusKind, StolenReport, StolenVisibility,
-    SymbolPosition, Vault, VaultStatus, Verdict, object_principal,
+    MAX_EXTERNAL_REF_FIELD_BYTES, MAX_EXTERNAL_REF_ID_BYTES, MAX_SYMBOL_BYTES, NegativePolicy,
+    ObligationStatusKind, StolenReport, StolenVisibility, SymbolPosition, Vault, VaultStatus,
+    Verdict, object_principal,
 };
 pub use render::{render_amount, render_amount_on};
 // E6b: the new economy seams and types the ruleset half calls.

@@ -16,12 +16,12 @@
 //! mirrors write-through to `mod:scenes:*` documents (`scene:{uid}` per record,
 //! a `meta` doc for the id allocator).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::ops::{Deref, Index};
 
 use mush_core::{ClockRef, ClockStamp, Deferred, Ledger, ModuleOp, ModuleWrite, ObjId, Outbox};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use std::collections::BTreeMap;
 
 /// The scenes persistence namespace (`mod:scenes:*`).
 pub const NS: &str = "scenes";
@@ -35,6 +35,24 @@ pub const KIND_TIMESTOP: &str = "timestop";
 /// Default IC seconds per turn-based round (a WoD combat turn is ~3 IC
 /// seconds; rulesets can override per scene later).
 pub const DEFAULT_ROUND_SECONDS: u32 = 3;
+
+/// Maximum consent votes retained on one [`SceneRecord`].
+pub const MAX_CONSENT_VOTES: usize = 128;
+
+/// Maximum closed historical scenes retained in [`ScenesState`]. Oldest closed
+/// scenes past this cap are evicted from RAM and deleted from module KV.
+pub const MAX_RETAINED_CLOSED_SCENES: usize = 256;
+
+/// Maximum timestop scenes one non-staff player may start within
+/// [`SCENE_CREATE_WINDOW_SECS`].
+pub const MAX_SCENES_PER_PLAYER_WINDOW: usize = 5;
+
+/// Rolling rate-limit window (seconds) for per-player scene creation.
+pub const SCENE_CREATE_WINDOW_SECS: i64 = 600;
+
+/// Maximum idle wall time (seconds) an exclusive scene may sit with no
+/// activity before the periodic tick automatically releases everyone and closes it.
+pub const SCENE_IDLE_TIMEOUT_SECS: i64 = 4 * 3600;
 
 // ---- E6b: B6 — the conferred sealer, the outcome, and the IC floor --------
 
@@ -588,6 +606,28 @@ impl SceneRecord {
         Some((self.round, self.current_actor()))
     }
 
+    /// Record a consent vote with deduplication and bounded retention.
+    ///
+    /// Replaces any existing vote for the same `(about, participant, round)`
+    /// (or `(about, participant)` for one-shot subjects `end`/`outcome`), and
+    /// drops the oldest votes if [`MAX_CONSENT_VOTES`] would be exceeded.
+    pub fn record_consent(&mut self, vote: ConsentVote) {
+        let single_shot = matches!(vote.about.as_str(), CONSENT_END | CONSENT_OUTCOME);
+        if let Some(existing) = self.consent.iter_mut().find(|v| {
+            v.about == vote.about
+                && v.participant == vote.participant
+                && (single_shot || v.round == vote.round)
+        }) {
+            *existing = vote;
+            return;
+        }
+        if self.consent.len() >= MAX_CONSENT_VOTES {
+            let excess = self.consent.len() + 1 - MAX_CONSENT_VOTES;
+            self.consent.drain(0..excess);
+        }
+        self.consent.push(vote);
+    }
+
     /// The consent tally for `about`: choice → count, in a stable order (D6).
     #[must_use]
     pub fn consent_tally(&self, about: &str) -> BTreeMap<SmolStr, usize> {
@@ -830,43 +870,323 @@ pub struct PendingArchiveRead {
 /// request while one is pending is refused with a line, never queued.
 pub const MAX_PENDING_STORE_READS_PER_ACTOR: usize = 1;
 
+/// Active-only lookup indexes kept in sync with [`SceneMap`]'s records so
+/// global command dispatch, room observers, and periodic ticks never scan
+/// closed scenes.
+#[derive(Clone, Debug, Default)]
+struct ActiveIndexes {
+    ids: BTreeSet<SceneUid>,
+    by_anchor: HashMap<ObjId, BTreeSet<SceneUid>>,
+    by_member: HashMap<ObjId, BTreeSet<SceneUid>>,
+}
+
+impl ActiveIndexes {
+    fn index(&mut self, rec: &SceneRecord) {
+        if !rec.status.holds_members() {
+            return;
+        }
+        self.ids.insert(rec.id);
+        self.by_anchor.entry(rec.anchor).or_default().insert(rec.id);
+        for m in rec.members() {
+            self.by_member.entry(m).or_default().insert(rec.id);
+        }
+    }
+
+    fn unindex(&mut self, rec: &SceneRecord) {
+        if !self.ids.remove(&rec.id) {
+            return;
+        }
+        if let Some(set) = self.by_anchor.get_mut(&rec.anchor) {
+            set.remove(&rec.id);
+            if set.is_empty() {
+                self.by_anchor.remove(&rec.anchor);
+            }
+        }
+        for m in rec.members() {
+            if let Some(set) = self.by_member.get_mut(&m) {
+                set.remove(&rec.id);
+                if set.is_empty() {
+                    self.by_member.remove(&m);
+                }
+            }
+        }
+    }
+}
+
+/// Durable scene map with synchronized active-only lookup indexes.
+///
+/// Derefs to `BTreeMap<SceneUid, SceneRecord>` for all read operations while
+/// maintaining O(1) active-scene lookups by member and anchor room across
+/// `insert`, `remove`, and [`SceneMap::update_scene`]. Direct [`Self::get_mut`]
+/// remains available for external callers (marking the entry dirty so active
+/// lookups still reflect any field change); callers inside `mush-scenes` that
+/// change `status`, `anchor`, or membership go through [`Self::update_scene`].
+#[derive(Clone, Debug, Default)]
+pub struct SceneMap {
+    records: BTreeMap<SceneUid, SceneRecord>,
+    active: ActiveIndexes,
+    /// Records borrowed via direct [`Self::get_mut`], whose index fields
+    /// (`status`/`anchor`/`members`) may have been modified outside
+    /// [`Self::update_scene`]. Empty on all normal command/observer paths.
+    dirty: BTreeSet<SceneUid>,
+}
+
+impl PartialEq for SceneMap {
+    fn eq(&self, other: &Self) -> bool {
+        self.records == other.records
+    }
+}
+
+impl Deref for SceneMap {
+    type Target = BTreeMap<SceneUid, SceneRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl Index<&SceneUid> for SceneMap {
+    type Output = SceneRecord;
+
+    fn index(&self, index: &SceneUid) -> &Self::Output {
+        &self.records[index]
+    }
+}
+
+impl SceneMap {
+    /// Build a [`SceneMap`] from an existing map of records, indexing every
+    /// non-closed scene once.
+    #[must_use]
+    pub fn from_records(records: BTreeMap<SceneUid, SceneRecord>) -> Self {
+        let mut active = ActiveIndexes::default();
+        for rec in records.values() {
+            active.index(rec);
+        }
+        Self {
+            records,
+            active,
+            dirty: BTreeSet::new(),
+        }
+    }
+
+    /// Re-sync any records previously mutated via direct [`Self::get_mut`].
+    pub fn sync_dirty(&mut self) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        let ids: Vec<SceneUid> = std::mem::take(&mut self.dirty).into_iter().collect();
+        for id in ids {
+            if self.active.ids.remove(&id) {
+                self.active.by_anchor.retain(|_, set| {
+                    set.remove(&id);
+                    !set.is_empty()
+                });
+                self.active.by_member.retain(|_, set| {
+                    set.remove(&id);
+                    !set.is_empty()
+                });
+            }
+            if let Some(rec) = self.records.get(&id) {
+                self.active.index(rec);
+            }
+        }
+    }
+
+    /// Insert or replace a scene record, updating the active-only indexes.
+    pub fn insert(&mut self, id: SceneUid, rec: SceneRecord) -> Option<SceneRecord> {
+        self.sync_dirty();
+        if let Some(prev) = self.records.get(&id) {
+            self.active.unindex(prev);
+        }
+        self.active.index(&rec);
+        self.records.insert(id, rec)
+    }
+
+    /// Remove a scene record, clearing it from the active-only indexes.
+    pub fn remove(&mut self, id: &SceneUid) -> Option<SceneRecord> {
+        self.sync_dirty();
+        let prev = self.records.remove(id)?;
+        self.active.unindex(&prev);
+        Some(prev)
+    }
+
+    /// Direct mutable borrow (preserves `BTreeMap::get_mut` signature for
+    /// cross-crate callers and tests). Marks `id` dirty so lookups stay exact
+    /// without scanning closed scenes; callers inside `mush-scenes` should
+    /// prefer [`Self::update_scene`].
+    pub fn get_mut(&mut self, id: &SceneUid) -> Option<&mut SceneRecord> {
+        if !self.records.contains_key(id) {
+            return None;
+        }
+        self.dirty.insert(*id);
+        self.records.get_mut(id)
+    }
+
+    /// Mutate one scene record while keeping the active-only indexes in sync.
+    pub fn update_scene<R>(
+        &mut self,
+        id: SceneUid,
+        f: impl FnOnce(&mut SceneRecord) -> R,
+    ) -> Option<R> {
+        self.sync_dirty();
+        let record = self.records.get_mut(&id)?;
+        self.active.unindex(record);
+        let out = f(record);
+        self.active.index(record);
+        Some(out)
+    }
+
+    /// Lowest-id active (non-closed) scene holding `obj`, in O(1) when clean.
+    #[must_use]
+    pub fn active_for_member(&self, obj: ObjId) -> Option<SceneUid> {
+        let indexed = self.active.by_member.get(&obj).and_then(|ids| {
+            ids.iter().copied().find(|id| {
+                self.records
+                    .get(id)
+                    .is_some_and(|r| r.status.holds_members() && r.members().any(|m| m == obj))
+            })
+        });
+        if self.dirty.is_empty() {
+            return indexed;
+        }
+        let dirty_match = self.dirty.iter().copied().find(|id| {
+            self.records
+                .get(id)
+                .is_some_and(|r| r.status.holds_members() && r.members().any(|m| m == obj))
+        });
+        match (indexed, dirty_match) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// All active (non-closed) scenes holding `obj`.
+    #[must_use]
+    pub fn active_ids_for_member(&self, obj: ObjId) -> Vec<SceneUid> {
+        let mut out: BTreeSet<SceneUid> = self
+            .active
+            .by_member
+            .get(&obj)
+            .map(|ids| {
+                ids.iter()
+                    .copied()
+                    .filter(|id| {
+                        self.records.get(id).is_some_and(|r| {
+                            r.status.holds_members() && r.members().any(|m| m == obj)
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for &id in &self.dirty {
+            if self
+                .records
+                .get(&id)
+                .is_some_and(|r| r.status.holds_members() && r.members().any(|m| m == obj))
+            {
+                out.insert(id);
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Lowest-id active (non-closed) scene anchored to `room`, in O(1) when clean.
+    #[must_use]
+    pub fn active_for_anchor(&self, room: ObjId) -> Option<SceneUid> {
+        let indexed = self.active.by_anchor.get(&room).and_then(|ids| {
+            ids.iter().copied().find(|id| {
+                self.records
+                    .get(id)
+                    .is_some_and(|r| r.status.holds_members() && r.anchor == room)
+            })
+        });
+        if self.dirty.is_empty() {
+            return indexed;
+        }
+        let dirty_match = self.dirty.iter().copied().find(|id| {
+            self.records
+                .get(id)
+                .is_some_and(|r| r.status.holds_members() && r.anchor == room)
+        });
+        match (indexed, dirty_match) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Iterator over active (non-closed) scene records only.
+    pub fn active_records(&self) -> impl Iterator<Item = &SceneRecord> {
+        self.active
+            .ids
+            .union(&self.dirty)
+            .filter_map(|id| self.records.get(id))
+            .filter(|r| r.status.holds_members())
+    }
+
+    /// Number of active (non-closed) scenes.
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.active_records().count()
+    }
+
+    /// Number of closed scenes currently retained.
+    #[must_use]
+    pub fn closed_count(&self) -> usize {
+        self.records.len().saturating_sub(self.active_count())
+    }
+}
+
 /// The live scenes state, held in a module state slot on the `World`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ScenesState {
     /// In-flight archive reads, one per requesting actor (H1). Transient.
-    pub pending_reads: std::collections::HashMap<ObjId, PendingArchiveRead>,
+    pub pending_reads: HashMap<ObjId, PendingArchiveRead>,
     /// The wiring-frozen sealer gate (E6b independent verify fold, M4). `None` on
     /// any composition that wires no economy, which is the pre-fold behaviour.
     pub sealer_gate: SealerGateSlot,
-    /// Every scene by durable id (Closed ones retained as history).
-    pub scenes: BTreeMap<SceneUid, SceneRecord>,
+    /// Every scene by durable id (Closed ones retained up to
+    /// [`MAX_RETAINED_CLOSED_SCENES`]), with active-only lookup indexes.
+    pub scenes: SceneMap,
     /// The durable-id allocator resume point (persisted in the meta doc).
     pub next_scene_uid: u64,
     /// The per-scene immutable event logs, keyed by the scene's durable id
     /// (stringified). Chunked, append-only, idempotent — the ledger substrate.
     /// Only each log's open tail lives here; sealed history is on disk.
     pub events: Ledger,
+    /// Per-player rolling timestamps of recently started scenes (transient).
+    pub(crate) creation_history: HashMap<ObjId, VecDeque<i64>>,
+    /// Transient last-activity wall timestamp per active scene (speech/rolls/turns).
+    pub(crate) last_activity: HashMap<SceneUid, i64>,
+}
+
+impl PartialEq for ScenesState {
+    fn eq(&self, other: &Self) -> bool {
+        self.pending_reads == other.pending_reads
+            && self.sealer_gate == other.sealer_gate
+            && self.scenes == other.scenes
+            && self.next_scene_uid == other.next_scene_uid
+            && self.events == other.events
+    }
 }
 
 impl ScenesState {
     /// The scene an object is an active (non-closed) **member** of
     /// (participant or observer), if any — cut 1 enforces at most one such per
-    /// object. Matches `members()`, not just participants, so a frozen observer
-    /// is never invisible to the lookups that gate `+scene` and the veto
-    /// message.
+    /// object. O(1) via active-only member index; never scans closed scenes.
     #[must_use]
     pub fn active_scene_of(&self, obj: ObjId) -> Option<&SceneRecord> {
         self.scenes
-            .values()
-            .find(|s| s.status.holds_members() && s.members().any(|m| m == obj))
+            .active_for_member(obj)
+            .and_then(|id| self.scenes.get(&id))
     }
 
-    /// The active (non-closed) scene anchored to `room`, if any.
+    /// The active (non-closed) scene anchored to `room`, if any. O(1) via
+    /// active-only anchor index; never scans closed scenes.
     #[must_use]
     pub fn active_scene_at(&self, room: ObjId) -> Option<&SceneRecord> {
         self.scenes
-            .values()
-            .find(|s| s.status.holds_members() && s.anchor == room)
+            .active_for_anchor(room)
+            .and_then(|id| self.scenes.get(&id))
     }
 
     /// The most recent scene (any status, **including Closed**) `obj` is a
@@ -895,14 +1215,91 @@ impl ScenesState {
         id
     }
 
+    /// Check whether `actor` has room in their rolling scene-creation window.
+    /// Returns `Ok(())` or `Err(seconds_until_next_slot)`.
+    pub fn check_creation_limit(&mut self, actor: ObjId, now: i64) -> Result<(), i64> {
+        let cutoff = now.saturating_sub(SCENE_CREATE_WINDOW_SECS);
+        let Some(times) = self.creation_history.get_mut(&actor) else {
+            return Ok(());
+        };
+        while times.front().is_some_and(|&ts| ts <= cutoff) {
+            times.pop_front();
+        }
+        if times.len() >= MAX_SCENES_PER_PLAYER_WINDOW {
+            let oldest = times.front().copied().unwrap_or(now);
+            let wait = oldest
+                .saturating_add(SCENE_CREATE_WINDOW_SECS)
+                .saturating_sub(now)
+                .max(1);
+            return Err(wait);
+        }
+        if times.is_empty() {
+            self.creation_history.remove(&actor);
+        }
+        Ok(())
+    }
+
+    /// Record one scene creation for `actor` at wall time `now`.
+    pub fn record_creation(&mut self, actor: ObjId, now: i64) {
+        let cutoff = now.saturating_sub(SCENE_CREATE_WINDOW_SECS);
+        let times = self.creation_history.entry(actor).or_default();
+        while times.front().is_some_and(|&ts| ts <= cutoff) {
+            times.pop_front();
+        }
+        times.push_back(now);
+    }
+
+    /// Record wall-clock activity on `scene` (turn advance, speech, roll, etc.).
+    pub fn note_activity(&mut self, scene: SceneUid, now: i64) {
+        let entry = self.last_activity.entry(scene).or_insert(now);
+        if now > *entry {
+            *entry = now;
+        }
+    }
+
+    /// Most recent wall-clock activity timestamp observed for `rec`.
+    #[must_use]
+    pub fn last_activity_at(&self, rec: &SceneRecord) -> i64 {
+        self.last_activity
+            .get(&rec.id)
+            .copied()
+            .unwrap_or(rec.created_at)
+            .max(rec.turn_started_at)
+            .max(rec.created_at)
+    }
+
+    /// Evict the oldest closed scenes past `max_closed`, returning their ids
+    /// so callers can delete their persisted documents. Active/paused scenes
+    /// and scenes with in-flight archive reads are never evicted.
+    pub fn prune_closed_scenes(&mut self, max_closed: usize) -> Vec<SceneUid> {
+        let closed = self.scenes.closed_count();
+        let excess = closed.saturating_sub(max_closed);
+        if excess == 0 {
+            return Vec::new();
+        }
+        let in_flight: BTreeSet<SceneUid> = self.pending_reads.values().map(|r| r.scene).collect();
+        let victims: Vec<SceneUid> = self
+            .scenes
+            .values()
+            .filter(|s| s.status == SceneStatus::Closed && !in_flight.contains(&s.id))
+            .map(|s| s.id)
+            .take(excess)
+            .collect();
+        for id in &victims {
+            self.scenes.remove(id);
+            self.last_activity.remove(id);
+        }
+        victims
+    }
+
     /// Every object that any non-closed scene currently holds — the set the
     /// driver mirrors into the core exclusive-scene index (on freeze and on
     /// boot). Only exclusive scenes contribute.
     #[must_use]
     pub fn held_objects(&self) -> BTreeSet<ObjId> {
         let mut set = BTreeSet::new();
-        for s in self.scenes.values() {
-            if s.exclusive && s.status.holds_members() {
+        for s in self.scenes.active_records() {
+            if s.exclusive {
                 set.extend(s.members());
             }
         }
@@ -1183,5 +1580,103 @@ mod tests {
         value.as_object_mut().unwrap().remove("turn_visit");
         let restored: SceneRecord = serde_json::from_value(value).unwrap();
         assert_eq!(restored.turn_visit, 0);
+    }
+
+    #[test]
+    fn high24_active_indexes_ignore_closed_scenes_and_track_updates() {
+        let mut st = ScenesState::default();
+        for i in 0..500u64 {
+            let mut closed = scene(vec![100]);
+            closed.id = SceneUid(i);
+            closed.anchor = ObjId(50);
+            closed.status = SceneStatus::Closed;
+            st.scenes.insert(closed.id, closed);
+        }
+        let mut active = scene(vec![2, 3]);
+        active.id = SceneUid(999);
+        active.anchor = ObjId(50);
+        active.status = SceneStatus::Active;
+        st.scenes.insert(active.id, active);
+
+        assert_eq!(st.scenes.active_count(), 1);
+        assert_eq!(st.scenes.closed_count(), 500);
+        assert_eq!(st.active_scene_of(ObjId(100)), None);
+        assert_eq!(
+            st.active_scene_of(ObjId(2)).map(|s| s.id),
+            Some(SceneUid(999))
+        );
+        assert_eq!(
+            st.active_scene_at(ObjId(50)).map(|s| s.id),
+            Some(SceneUid(999))
+        );
+
+        st.scenes.update_scene(SceneUid(999), |s| {
+            s.status = SceneStatus::Closed;
+        });
+        assert_eq!(st.scenes.active_count(), 0);
+        assert_eq!(st.active_scene_of(ObjId(2)), None);
+        assert_eq!(st.active_scene_at(ObjId(50)), None);
+    }
+
+    #[test]
+    fn high24_prune_closed_scenes_evicts_oldest_and_preserves_active() {
+        let mut st = ScenesState::default();
+        for _ in 0..(MAX_RETAINED_CLOSED_SCENES + 10) {
+            let id = st.alloc_uid();
+            let mut c = scene(vec![2]);
+            c.id = id;
+            c.status = SceneStatus::Closed;
+            st.scenes.insert(id, c);
+        }
+        let live_id = st.alloc_uid();
+        let mut live = scene(vec![3]);
+        live.id = live_id;
+        live.status = SceneStatus::Active;
+        st.scenes.insert(live_id, live);
+
+        let evicted = st.prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES);
+        assert_eq!(evicted.len(), 10);
+        assert_eq!(evicted[0], SceneUid(0));
+        assert_eq!(evicted[9], SceneUid(9));
+        assert_eq!(st.scenes.closed_count(), MAX_RETAINED_CLOSED_SCENES);
+        assert!(st.scenes.get(&live_id).is_some());
+        assert!(st.scenes.get(&SceneUid(0)).is_none());
+        assert!(st.scenes.get(&SceneUid(10)).is_some());
+    }
+
+    #[test]
+    fn high24_record_consent_dedups_and_caps_at_max_consent_votes() {
+        let mut s = scene(vec![2, 3]);
+        s.record_consent(ConsentVote {
+            about: SmolStr::new(CONSENT_REWIND),
+            participant: ObjId(2),
+            choice: SmolStr::new("agree"),
+            round: 1,
+            at: 100,
+        });
+        s.record_consent(ConsentVote {
+            about: SmolStr::new(CONSENT_REWIND),
+            participant: ObjId(2),
+            choice: SmolStr::new("disagree"),
+            round: 1,
+            at: 101,
+        });
+        assert_eq!(s.consent.len(), 1, "duplicate vote replaced in place");
+        assert_eq!(s.consent[0].choice, "disagree");
+
+        for round in 2..=(MAX_CONSENT_VOTES as u32 + 25) {
+            s.record_consent(ConsentVote {
+                about: SmolStr::new(CONSENT_REWIND),
+                participant: ObjId(2),
+                choice: SmolStr::new("agree"),
+                round,
+                at: i64::from(round),
+            });
+        }
+        assert_eq!(s.consent.len(), MAX_CONSENT_VOTES);
+        assert_eq!(
+            s.consent.last().unwrap().round,
+            MAX_CONSENT_VOTES as u32 + 25
+        );
     }
 }

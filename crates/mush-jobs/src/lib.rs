@@ -71,13 +71,14 @@ pub use api::{
 };
 pub use commands::NOTES_STAFF;
 pub use data::{
-    Approval, Job, JobComment, JobPayload, JobStatus, MAX_JOB_COMMENT_BYTES, MAX_JOB_COMMENTS,
-    MAX_JOB_TITLE_BYTES, MAX_NOTE_CATEGORY_BYTES, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS, Note,
-    REQ_QUEUE, fmt_ago, job_key, meta_value, note_key,
+    Approval, JOBS_LIST_PAGE_SIZE, Job, JobComment, JobPayload, JobStatus, MAX_JOB_COMMENT_BYTES,
+    MAX_JOB_COMMENTS, MAX_JOB_TITLE_BYTES, MAX_NOTE_CATEGORY_BYTES, MAX_NOTE_TEXT_BYTES,
+    MAX_NOTES_PER_OBJECT, MAX_OPEN_REQUESTS_PER_PLAYER, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS,
+    Note, REQ_QUEUE, fmt_ago, job_key, meta_value, note_key,
 };
 pub use facts::JobsFactProvider;
 
-use data::{JobsState, validate_job};
+use data::{JobsState, validate_job, validate_note_text};
 
 /// `ObjDestroyed` observer: a destroyed character's notes are removed and
 /// their persisted documents deleted. Jobs they opened stay — the ticket
@@ -203,6 +204,12 @@ impl GameModule for JobsModule {
                             tracing::error!(
                                 %key,
                                 "jobs: oversized note key quarantined (skipped, left in store)"
+                            );
+                        } else if let Err(detail) = validate_note_text(&note.text) {
+                            tracing::error!(
+                                %key,
+                                %detail,
+                                "jobs: oversized note doc quarantined (skipped, left in store)"
                             );
                         } else {
                             notes.insert((note.owner, note.category.clone()), note);
