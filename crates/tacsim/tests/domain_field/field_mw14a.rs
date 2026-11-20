@@ -84,6 +84,10 @@ async fn opened(at: &Ground, plan: &Plan) -> Field {
         crate::field_host_rig::tune(cfg);
         // The field holds through the story's quiet stretches.
         cfg.field.disengage_s = 3_600;
+        // Doc 50 cut OP.1: the field's draws key on the units' object ids, which every boot object
+        // a lane bump adds moves; this seed draws dice under which the story plays as written at
+        // lane v46 (the rig's `FIELD_SEED` no longer does).
+        cfg.field.seed = Some(1_577_058_309);
     });
     let flown = fly(&mut rig, at, plan, |_, _| {});
     let (captain, _, _) = on_pad_as_at(&mut rig, ("Other", 2, "Tally Moth"), at.site(), 0);

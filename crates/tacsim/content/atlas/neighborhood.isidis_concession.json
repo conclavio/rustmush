@@ -1,0 +1,400 @@
+{
+  "manifest": {
+    "id": "neighborhood.isidis_concession",
+    "version": 1,
+    "kind": "neighborhood",
+    "digest": "e92e100a73027d9f418ef179d03f3f909b0bfa0718d7c4af336fab60a61b0045",
+    "requires": [
+      {
+        "id": "region.isidis_concession",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "The Isidis Concession's ground station (doc 50 cut OP.1, Q-50-17): the landing field's gallery, the Factor's office, the tariff-free market, Occator's tank farm counter and its spine. A port of the lane like the moon ports; how a consignment reaches the ground is left to the owner."
+  },
+  "entries": {
+    "neighborhood": {
+      "kind": "neighborhood",
+      "def": {
+        "ambience": [
+          "A lifter's whine comes down through the roof, holds, and fades toward the pads.",
+          "The tank farm's pumps start one bank at a time and settle into a long hum.",
+          "Dust ticks against the field-side glass, fine as smoke and the color of rust.",
+          "The market's board turns over a line, and two traders at the rail stop talking.",
+          "A Meridiani patrol crosses the gallery in step, nods to the desk, and goes out.",
+          "Somewhere a pressure door cycles, and the air in the room moves once.",
+          "The Factor's clock and the Coprates clock disagree by a minute, as they always do.",
+          "A crew in field suits comes in off the pads and stands a while by the heaters.",
+          "The berth board stamps a consignment CONCESSION ENTRY, and nobody at the rail looks up.",
+          "A Republic survey drone crosses the far edge of the plain, low and slow, and is logged.",
+          "A tanker crawler grinds past the glass toward the farm, its lights orange in the dust.",
+          "The heaters tick over, and somebody's field suit drips red water by the door."
+        ],
+        "footprint": [
+          [
+            100,
+            80
+          ],
+          [
+            210,
+            80
+          ],
+          [
+            210,
+            190
+          ],
+          [
+            100,
+            190
+          ]
+        ],
+        "hydration": {
+          "enabled": false,
+          "max_player_sites": 0
+        },
+        "locality": "locality.isidis_concession",
+        "name": "Isidis Concession",
+        "region": "region.isidis_concession",
+        "representation": "authored",
+        "resolution_cm": 100,
+        "room_budget": {
+          "maximum": 8,
+          "target": 5
+        },
+        "setting": "station",
+        "theme": {
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see",
+            "shields",
+            "stardate",
+            "hangar bay"
+          ],
+          "name": "TacSim 2350: the Concession",
+          "style_guide": "Present tense, no second person, no named NPCs in a room desc. Each room is distinct in sound, light and smell before it is distinct in furniture. The Concession is the Belt on Martian ground: a Freeport administration under a Concord-era treaty, paperwork in the Registry's forms, prices in Freeport credits, and a Republic that claims all of it from across the plain. Mars holds weight here as Phobos never does; dust gets into everything. How consignments come down from orbit is left unsaid. Desc length medium (60 to 120 words); details are one or two sentences, dry, with a fact in them. Exit aliases avoid the kernel words.",
+          "vocabulary": [
+            "Concession",
+            "treaty",
+            "Factor",
+            "landing field",
+            "pad",
+            "lifter",
+            "tank farm",
+            "propellant",
+            "tariff-free",
+            "market",
+            "Meridiani",
+            "Occator",
+            "Freeport",
+            "Registry",
+            "Coprates",
+            "Assembly",
+            "Republic",
+            "Isidis",
+            "dust",
+            "field suit"
+          ]
+        }
+      }
+    },
+    "site.isidis_field": {
+      "kind": "site",
+      "def": {
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            200,
+            90
+          ],
+          [
+            200,
+            180
+          ],
+          [
+            110,
+            180
+          ]
+        ],
+        "name": "Isidis Landing Field",
+        "site_kind": "site.transit"
+      }
+    },
+    "structure.concession_block": {
+      "kind": "structure",
+      "def": {
+        "floors": [
+          {
+            "height_m": 5,
+            "index": 0,
+            "name": "Field Level",
+            "z_offset_m": 0
+          }
+        ],
+        "footprint": [
+          [
+            110,
+            90
+          ],
+          [
+            200,
+            90
+          ],
+          [
+            200,
+            180
+          ],
+          [
+            110,
+            180
+          ]
+        ],
+        "site": "site.isidis_field"
+      }
+    },
+    "room.i01_landing_field": {
+      "kind": "room",
+      "def": {
+        "desc": "The gallery runs the length of the landing field behind a wall of thick glass. Beyond it the pads lie in two rows on the rust plain, each ringed in painted chevrons and blast-scoured to bare rock, with a lifter cradle at its edge. A berth board on the inner wall lists each consignment by hull and registry, the way the Freeport lists them at Ceres. Mars holds weight here, and the benches are bolted down for comfort rather than for safety. The air smells of filters and fine dust. The market is inward.",
+        "details": {
+          "berth board": "Hull, registry, agent of record, and a column headed CONCESSION ENTRY that is stamped, never written.",
+          "pads": "Two rows of six, each numbered in Freeport typeface. The nearest row is kept for consignments; the far row belongs to Meridiani.",
+          "glass": "Laminated against the dust storms, with a wiper rail along the top that runs at every shift bell."
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              90
+            ],
+            [
+              200,
+              110
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Landing Field Gallery",
+        "short_desc": "A long pressurized gallery along the landing field, pads and lifters beyond the glass.",
+        "site": "site.isidis_field",
+        "surface": {
+          "floor": [
+            "structure.concession_block",
+            0
+          ]
+        },
+        "markers": [
+          "port.dock"
+        ]
+      }
+    },
+    "room.i02_factor": {
+      "kind": "room",
+      "def": {
+        "desc": "A counter closes off a deep office lined with filing drawers in Registry gray. On the back wall hangs the treaty itself, a framed copy with the Concord's seal and the carriers' signatures, and beside it a map of the Concession's bounds drawn on the plain in red. Two clocks hang over the counter: Freeport time and Coprates standard. A rack holds entry forms in the Registry's numbering, and a stamp sits on a chain at the end of the counter. The office smells of toner and warm dust. The market is out.",
+        "details": {
+          "treaty": "The Concession instrument of the Dry Decade: a tariff-free enclave for Belt carriers, in return for water and propellant delivered.",
+          "map": "The Concession's bounds in red on a survey of Isidis Planitia. A second line in pencil, fainter, is the boundary the Assembly says it has.",
+          "clocks": "Freeport time on the left and Coprates standard on the right. The office keeps the left one."
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              110
+            ],
+            [
+              140,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Factor's Office",
+        "short_desc": "The Concession's administration behind a counter, two clocks over it.",
+        "site": "site.isidis_field",
+        "surface": {
+          "floor": [
+            "structure.concession_block",
+            0
+          ]
+        }
+      }
+    },
+    "room.i03_market": {
+      "kind": "room",
+      "def": {
+        "desc": "The market is a broad hall under a low roof, with a single board on its far wall and a rail in front of it where traders lean. The board posts the Concession's lines in Freeport credits, and a strip along its top reads TARIFF-FREE BY TREATY in letters a hand high. Doors open off it on every side: the field gallery, the Factor's office and the tank farm's counter. The floor is swept twice a shift and is still red at the edges. The room is warm, loud and smells of coffee and filters.",
+        "details": {
+          "board": "The Concession's lines, intake and price, in Freeport credits. Nothing on it carries a duty column.",
+          "strip": "TARIFF-FREE BY TREATY, repainted every year on the treaty's date. The Republic's inspectors photograph it on each visit.",
+          "rail": "A brass rail worn bright at elbow height, scratched with hull names."
+        },
+        "footprint": {
+          "rect": [
+            [
+              140,
+              110
+            ],
+            [
+              200,
+              140
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Concession Market",
+        "short_desc": "A tariff-free trading floor under one board, the Belt's prices on Martian ground.",
+        "site": "site.isidis_field",
+        "surface": {
+          "floor": [
+            "structure.concession_block",
+            0
+          ]
+        }
+      }
+    },
+    "room.i04_tank_farm": {
+      "kind": "room",
+      "def": {
+        "desc": "A long counter with a meter bank and a manifest reader fronts a window onto the tank farm, banks of insulated tanks running away across the plain under work lights. A board over the counter posts what the farm takes in and at what price. Occator's mark is on the counter, the window frame and every valve wheel beyond the glass. The deck hums with pumps, and the air is cold and dry and smells of tank steel. The market is out; a hatch in the side wall is stenciled OCCATOR PERSONNEL.",
+        "details": {
+          "meter bank": "Flow meters for each transfer line, sealed by the Factor's office and read at every shift bell.",
+          "tanks": "Insulated propellant tanks in banks of four, each with its level painted on a placard that is updated by hand.",
+          "board": "OCCATOR ISIDIS BUYS PROPELLANT, by the tonne, at the posted price."
+        },
+        "footprint": {
+          "rect": [
+            [
+              110,
+              140
+            ],
+            [
+              160,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Tank Farm Counter",
+        "short_desc": "Occator's receiving counter, the tank farm's banks beyond a window.",
+        "site": "site.isidis_field",
+        "surface": {
+          "floor": [
+            "structure.concession_block",
+            0
+          ]
+        }
+      }
+    },
+    "room.i05_spine": {
+      "kind": "room",
+      "def": {
+        "desc": "A service corridor runs behind the counter along the first bank of tanks, cable trays overhead and transfer lines down one wall, each valve tagged with a date and an initial. A wire cage holds the tank farm's intake manifold, the real stock behind the board out front. At the far end a dust lock opens onto the plain. The air is cold and loud with pumps and smells of hydraulic fluid. OCCATOR PERSONNEL ONLY is stenciled every ten meters. The counter hatch is the way out.",
+        "details": {
+          "cage": "OCCATOR ISIDIS, INTAKE AND STORE. The manifest clipped to the door is the farm's real stock.",
+          "dust lock": "A two-door lock with a brush curtain between, red to the knee."
+        },
+        "footprint": {
+          "rect": [
+            [
+              160,
+              140
+            ],
+            [
+              200,
+              180
+            ]
+          ]
+        },
+        "kind": "indoor",
+        "name": "Tank Farm Spine",
+        "short_desc": "A service corridor behind the tank farm counter, a manifold cage along one wall.",
+        "site": "site.isidis_field",
+        "surface": {
+          "floor": [
+            "structure.concession_block",
+            0
+          ]
+        },
+        "access": "restricted"
+      }
+    },
+    "exit.i01_i03": {
+      "kind": "exit",
+      "def": {
+        "from": "room.i01_landing_field",
+        "names": [
+          "Market <MK>;mk;market;in",
+          "Field Gallery <FG>;fg;gallery;field;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.i03_market"
+      }
+    },
+    "exit.i03_i02": {
+      "kind": "exit",
+      "def": {
+        "from": "room.i03_market",
+        "names": [
+          "Factor's Office <FO>;fo;factor;office",
+          "Market <MK>;mk;market;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.i02_factor"
+      }
+    },
+    "exit.i03_i04": {
+      "kind": "exit",
+      "def": {
+        "from": "room.i03_market",
+        "names": [
+          "Tank Farm <TF>;tf;tanks;farm",
+          "Market <MK>;mk;market;out"
+        ],
+        "portal": {
+          "mode": "door"
+        },
+        "to": "room.i04_tank_farm"
+      }
+    },
+    "exit.i04_i05": {
+      "kind": "exit",
+      "def": {
+        "from": "room.i04_tank_farm",
+        "names": [
+          "Personnel Hatch <PH>;ph;hatch",
+          "Counter <CO>;co;counter;out"
+        ],
+        "portal": {
+          "mode": "hatch",
+          "visibility": "hidden"
+        },
+        "to": "room.i05_spine",
+        "lock": "staff"
+      }
+    },
+    "item.tank_manifold": {
+      "kind": "item",
+      "def": {
+        "desc": "The tank farm's intake manifold in its wire cage: propellant in from the field lines, each valve tagged with a date and an initial. The manifest on the cage door is Occator's real stock, not the board out front.",
+        "name": "Tank farm intake manifold",
+        "room": "room.i05_spine"
+      }
+    }
+  }
+}

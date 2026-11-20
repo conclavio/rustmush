@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "id": "region.isidis_concession",
+    "version": 1,
+    "kind": "region",
+    "digest": "5bb2f7aa0a67a6e29218ef13361bf8332de1fadb03a18f8c3b3828278c675d6b",
+    "requires": []
+  },
+  "brief": {
+    "prose": "The Isidis Concession is a patch of Isidis Planitia on Mars that the Belt has administered since the Dry Decade, when the Concord, unable to guarantee Mars its water, granted Belt carriers a tariff-free treaty enclave in return for guaranteed water and propellant deliveries. The Republic inherited the treaty with the Concord's debts and has never accepted it: the Assembly at Coprates claims the Concession, the Freeport's Port Council claims it by treaty, and Meridiani Security holds it on the Freeport's contract. It is a landing field, Occator's tank farm, a tariff-free market and the Factor's office, and whoever administers it decides whether Belt cargo lands on Mars untaxed."
+  },
+  "entries": {
+    "region.isidis_concession": {
+      "kind": "region",
+      "def": {
+        "name": "Isidis Planitia",
+        "kind": "surface",
+        "body": "mars",
+        "extent": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            400
+          ]
+        ],
+        "datum_m": 0,
+        "background": {
+          "surface": "regolith",
+          "mix": [],
+          "relief_cm": 0,
+          "relief_period_cm": 1000,
+          "seed": 2350
+        },
+        "ground_resolution_cm": 1000,
+        "theme": {
+          "name": "TacSim 2350",
+          "banned": [
+            "warp",
+            "hyperspace",
+            "FTL",
+            "teleport",
+            "alien",
+            "android",
+            "gravity plating",
+            "you see"
+          ],
+          "desc_length": "medium",
+          "pov_rules": "Present tense, no second person, no \"you see\"; no named NPCs in a room desc."
+        }
+      }
+    },
+    "locality.isidis_concession": {
+      "kind": "locality",
+      "def": {
+        "region": "region.isidis_concession",
+        "name": "Isidis Concession",
+        "kind": "port",
+        "footprint": [
+          [
+            0,
+            0
+          ],
+          [
+            400,
+            0
+          ],
+          [
+            400,
+            400
+          ],
+          [
+            0,
+            400
+          ]
+        ]
+      }
+    }
+  }
+}

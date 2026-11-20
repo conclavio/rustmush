@@ -304,6 +304,7 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
     let graph: Vec<(String, Listing)> = [
         "ceres_port",
         "deimos_port",
+        "isidis_port",
         "luna_port",
         "stickney_port",
         "titan_port",
@@ -349,6 +350,11 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
                 v("deimos"),
                 vec![(v("stickney"), vec![v("voltaire_stickney")])]
             ),
+            // Doc 50 cut OP.1: Stickney lists the Isidis Concession, which lists Stickney.
+            (
+                v("isidis"),
+                vec![(v("stickney"), vec![v("isidis_stickney")])]
+            ),
             (
                 v("luna"),
                 vec![
@@ -356,7 +362,13 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
                     (v("titan"), vec![v("aitken_ligeia")])
                 ]
             ),
-            (v("stickney"), vec![(v("ceres"), vec![v(LANE_ROUTE_BACK)])]),
+            (
+                v("stickney"),
+                vec![
+                    (v("ceres"), vec![v(LANE_ROUTE_BACK)]),
+                    (v("isidis"), vec![v("stickney_isidis")])
+                ]
+            ),
             (
                 v("titan"),
                 vec![
@@ -392,8 +404,8 @@ fn a8_the_lane_carries_five_ports_and_six_direct_routes() {
             .expect("the lane parses")
             .entries()
             .len(),
-        65,
-        "the sixty-five entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four; doc 32 cut S.1's four; doc 50 cut KC.0's regions)"
+        69,
+        "the sixty-nine entries (thirty-six at cut A.8; doc 20 cut SM.2's twenty-four; doc 32 cut S.1's four; doc 50 cut KC.0's regions; doc 50 cut OP.1's four)"
     );
     // The Titan bunkers (L8): reaction mass for sixty-odd fills, provisions at the
     // Company's price.

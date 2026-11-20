@@ -86,7 +86,8 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 48 unit EX.10: v43, the hauling house and Deimos's consumers (was `7c9b9614…` at v42).
 /// Doc 48e lane L4: v44, the consumers' refresh and Titan's ice (was `8a4361c4…` at v43).
 /// Doc 50 cut KC.0: v45, the regions block (was `c8e6fd26…` at v44).
-const LANE_DIGEST: &str = "ecb08a2c9c609d82649291ad597b4cde33793545f542b6e659ee6d984efb04e2";
+/// Doc 50 cut OP.1: v46, the Isidis Concession (was `ecb08a2c…` at v45).
+const LANE_DIGEST: &str = "865dd33de775289963bbb476faf4ffb18a45cdf6a5e25ddb92e987774ac2f233";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -125,7 +126,7 @@ const SITE_ROUTES: [&str; 14] = [
     "urvara_ceres",
 ];
 /// Every route of lane v8: the shipped pair and the six.
-const ALL_ROUTES: [&str; 8] = [
+const ALL_ROUTES: [&str; 10] = [
     LANE_ROUTE_OUT,
     LANE_ROUTE_BACK,
     "ceres_aitken",
@@ -134,6 +135,9 @@ const ALL_ROUTES: [&str; 8] = [
     "ligeia_aitken",
     "ligeia_voltaire",
     "voltaire_stickney",
+    // Doc 50 cut OP.1: the Isidis Concession's hop, both ways.
+    "stickney_isidis",
+    "isidis_stickney",
 ];
 
 fn content_dir() -> PathBuf {
@@ -413,6 +417,26 @@ fn e48_consumers_refresh_and_titan_makes_its_volatiles() {
             .flatten()
             .any(|mill| mill["ore"] == "ice_ore" && mill["into"] == "volatiles"),
         "{titan}"
+    );
+}
+
+/// **Doc 50 cut OP.1: `strip_isidis` rebuilds the published v45** — the shipped v46 less the
+/// Isidis Concession's place, routes, port, Stickney's `isidis` key and its regions row,
+/// re-signed at 45, is doc 50 cut KC.0's digest.
+#[test]
+fn op1_strip_isidis_rebuilds_the_published_v45() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 45.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_isidis(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_isidis(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v45 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "ecb08a2c9c609d82649291ad597b4cde33793545f542b6e659ee6d984efb04e2"
     );
 }
 
@@ -721,8 +745,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        45,
-        "lane v45 since doc 50 cut KC.0 (v44 at doc 48e lane L4, v43 at doc 48 unit EX.10, v42 at doc 48 unit EX.9, v41 at doc 48 unit PL.8, v40 at doc 48 unit PL.6, v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        46,
+        "lane v46 since doc 50 cut OP.1 (v45 at doc 50 cut KC.0, v44 at doc 48e lane L4, v43 at doc 48 unit EX.10, v42 at doc 48 unit EX.9, v41 at doc 48 unit PL.8, v40 at doc 48 unit PL.6, v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);
@@ -770,6 +794,9 @@ fn ic2_the_lane_pack_is_pinned() {
             ("earth", "body"),
             ("freeport_commons", "location"),
             ("hygiea", "body"),
+            ("isidis_concession", "location"),
+            ("isidis_port", "port"),
+            ("isidis_stickney", "route"),
             ("juling_ceres", "route"),
             ("juling_port", "port"),
             ("juling_shadow", "location"),
@@ -799,6 +826,7 @@ fn ic2_the_lane_pack_is_pinned() {
             ("saturn", "body"),
             ("sol", "region"),
             ("stickney_ceres", "route"),
+            ("stickney_isidis", "route"),
             ("stickney_port", "port"),
             ("stickney_yards", "location"),
             ("titan", "body"),
@@ -814,7 +842,7 @@ fn ic2_the_lane_pack_is_pinned() {
         .iter()
         .map(|(id, kind)| ((*id).to_owned(), (*kind).to_owned()))
         .collect::<Vec<_>>(),
-        "the sixty-four entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons, cut A.8's three places, six routes and three ports, doc 20 cut SM.2's six sites, twelve routes and six site ports, and doc 32 cut S.1's 512 site, its two routes and its port"
+        "the sixty-nine entries: v3's twelve, doc 19 cut A.1's eight more bodies, cut A.7's four moons, cut A.8's three places, six routes and three ports, doc 20 cut SM.2's six sites, twelve routes and six site ports, doc 32 cut S.1's 512 site, its two routes and its port, doc 50 cut KC.0's regions block, and doc 50 cut OP.1's Isidis place, its two routes and its port"
     );
     let epochs: Vec<Option<i64>> = bodies(&pack).iter().map(|(_, def)| def.epoch_ic).collect();
     assert_eq!(epochs.len(), 16);
@@ -863,6 +891,13 @@ fn ic2_the_lane_pack_is_pinned() {
                 Some("ceres".into())
             ),
             site("freeport_commons", "Freeport Commons", "ceres"),
+            // Doc 50 cut OP.1: the Isidis Concession, a port on Mars (Q-50-17).
+            (
+                "isidis_concession".into(),
+                "Isidis Concession".into(),
+                "port".into(),
+                Some("mars".into())
+            ),
             site("juling_shadow", "Juling Shadow", "ceres"),
             site("kerwan_floor", "Kerwan Floor", "ceres"),
             (
@@ -1508,7 +1543,8 @@ fn ic2_the_lane_boots_and_corridor_show_reads_the_constant_sky() {
     assert_eq!(applied.version(), LANE_VERSION);
     let placed = applied.placed();
     // Six ports and depots, and (doc 20 cut SM.2) the six sites; doc 32 cut S.1: and the 512 site.
-    assert_eq!(placed.len(), 13, "{placed:?}");
+    // Doc 50 cut OP.1: and the Isidis Concession.
+    assert_eq!(placed.len(), 14, "{placed:?}");
     for (symbol, room) in &placed {
         let kind = tw.world().get(*room).map(|o| o.kind);
         assert_eq!(kind, Some(ObjKind::Room), "{symbol}");

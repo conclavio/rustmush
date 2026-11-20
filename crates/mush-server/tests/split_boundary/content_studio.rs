@@ -184,8 +184,16 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
     let npcs = catalog["npcs"].as_array().expect("npcs array");
     let goods = catalog["goods"].as_array().expect("goods array");
     // Doc 32 cut S.1: twelve with Urvara Reach.
-    assert_eq!(ports.len(), 12, "expected 12 real corridor ports");
-    assert_eq!(npcs.len(), 57, "expected 57 total seeded NPCs");
+    assert_eq!(
+        ports.len(),
+        13,
+        "expected 13 real corridor ports (doc 50 cut OP.1: Isidis)"
+    );
+    assert_eq!(
+        npcs.len(),
+        59,
+        "expected 59 total seeded NPCs (doc 50 cut OP.1: Isidis's two)"
+    );
     // Doc 36 cut GC.7: sixteen with the four munitions goods; doc 39 cut IN.1: twenty-nine
     // with the thirteen parts; doc 39 cut IN.9: thirty-four with the five hull kits; doc 41 cut
     // RS.6a: thirty-six with Tycho's two.

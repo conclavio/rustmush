@@ -401,7 +401,7 @@ fn latches(tw: &TestWorld) -> BTreeMap<String, (u32, String)> {
 /// **The loaded lane is the roster's** (S3): `LANE_PACK`'s latch at `(LANE_VERSION, the roster's
 /// digest)`, and `LANE_VERSION` 15.
 fn assert_lane(rig: &Rig) {
-    assert_eq!(LANE_VERSION, 45, "the cost lane moves no lane version");
+    assert_eq!(LANE_VERSION, 46, "the cost lane moves no lane version");
     let latched = latches(&rig.tw).get(LANE_PACK).cloned();
     assert_eq!(
         latched,
@@ -4044,7 +4044,7 @@ fn cohort_lane(hulls: u32, rigs: u32, levers: &Levers) -> String {
 
 /// The shipped lane's digest (`tests/lane.rs`' `LANE_DIGEST`, lane v15 since doc 20 cut SM.12b).
 const SHIPPED_LANE_DIGEST: &str =
-    "ecb08a2c9c609d82649291ad597b4cde33793545f542b6e659ee6d984efb04e2";
+    "865dd33de775289963bbb476faf4ffb18a45cdf6a5e25ddb92e987774ac2f233";
 
 /// **C7 — the cohort lane is the shipped lane but its levers** (O-21; the brief's L9.2): the
 /// 32-hull, 64-rig variant parses and verifies, carries `manifest.version == LANE_VERSION`, and
@@ -4055,7 +4055,7 @@ const SHIPPED_LANE_DIGEST: &str =
 #[test]
 fn sm12c_the_cohort_lane_is_the_shipped_lane_but_its_levers() {
     let _lock = shared();
-    assert_eq!(LANE_VERSION, 45);
+    assert_eq!(LANE_VERSION, 46);
     assert_eq!(
         load_pack(LANE_JSON)
             .expect("the lane")

@@ -1120,7 +1120,7 @@ fn ic9_undock_refusals_move_nothing() {
         out.contains(
             &VIA_UNKNOWN
                 .replace("{via}", "nowhere")
-                .replace("{list}", "Ahuna Flank, Aitken Highport, Ceres Freeport, Freeport Commons, Juling Shadow, Kerwan Floor, Kirkwood Depot, Ligeia Terminal, Occator Rim, Rheasilvia Commons, Stickney Yards, Urvara Reach, Voltaire Anchorage")
+                .replace("{list}", "Ahuna Flank, Aitken Highport, Ceres Freeport, Freeport Commons, Isidis Concession, Juling Shadow, Kerwan Floor, Kirkwood Depot, Ligeia Terminal, Occator Rim, Rheasilvia Commons, Stickney Yards, Urvara Reach, Voltaire Anchorage")
         ),
         "{out}"
     );
@@ -16336,4 +16336,222 @@ fn helm_dock_refused_clamp_unpauses_hull_and_emits_closed_panel() {
     assert_eq!(closed_data["closed"], serde_json::json!(true));
     assert_eq!(closed_data["outcome"], serde_json::json!("refused"));
     assert_eq!(closed_data["session_id"], serde_json::json!(session_a));
+}
+
+// ---------------------------------------------------------------------------
+// Doc 50 cut OP.1: the Isidis Concession
+// ---------------------------------------------------------------------------
+
+/// The faction the regions seed made for Ceres' lane organization `id` (`polities.rs`'s).
+fn op1_org_faction(tw: &TestWorld, id: &str) -> mush_faction::FactionId {
+    let org = port_map(tw, "ceres_port").orgs[&cid(id)].org;
+    tw.world()
+        .module_state::<mush_faction::FactionState>()
+        .expect("factions")
+        .factions
+        .values()
+        .find(|f| f.org == Some(mush_org::OrgId(org)))
+        .unwrap_or_else(|| panic!("no faction for lane org {id}"))
+        .id
+}
+
+/// Undock for `dest`, launch, and dock at the far end: what the pilot heard on the way.
+fn op1_fly(rig: &mut Rig, pilot: ObjId, hull: ObjId, seq: u32, dest: &str) -> String {
+    let (filed, queued) = undock(rig, pilot, &format!("+ship/undock {dest}"));
+    assert!(filed.contains("Clearance filed for "), "{filed}");
+    assert_eq!(queued.len(), 1, "one burn: {filed}");
+    land_all(rig, &queued);
+    let t = ticket(&mut rig.tw, hull, seq).unwrap_or_else(|| panic!("ticket {seq}"));
+    let launched = fire_quietly(rig);
+    let mut heard = said(&rig.tw, &launched, pilot);
+    assert!(journey(&rig.tw, hull).is_some(), "launched for {dest}");
+    // A short hop arrives within a real second of its launch, so the sweep steps a real second
+    // (an IC hour at 3,600:1) at a time until the docking is heard.
+    let arrival = t.plan.depart_ic + t.plan.total_s;
+    for step in 0..120 {
+        let events = to_ic(rig, arrival + step * 3_600);
+        heard.push_str(&said(&rig.tw, &events, pilot));
+        if heard.contains(" docks at ") {
+            break;
+        }
+    }
+    assert!(
+        heard.contains(" docks at "),
+        "no docking for {dest}: {heard}; journey {:?}",
+        journey(&rig.tw, hull)
+    );
+    heard
+}
+
+/// A propellant line's price at `entry`: its ask, or its bid.
+fn op1_propellant(entry: &str, ask: bool) -> u64 {
+    port_def(entry)
+        .vendors
+        .iter()
+        .find_map(|v| {
+            if ask {
+                v.asks
+                    .iter()
+                    .find(|a| a.good.as_str() == "propellant")
+                    .map(|a| a.price_major)
+            } else {
+                v.bids
+                    .iter()
+                    .find(|b| b.good.as_str() == "propellant")
+                    .map(|b| b.price_major)
+            }
+        })
+        .unwrap_or_else(|| panic!("{entry}'s propellant line"))
+}
+
+/// **Doc 50 cut OP.1 acceptance: a hull flies Stickney to Isidis and back** (Q-50-17, Q-50-58,
+/// Q-50-52; doc 11 §5). The Concession is a port of the lane: a hull reaches it from Stickney
+/// alone, by one direct leg with no picket, docks through the lane's ordinary port path, finds
+/// Occator's tank farm bidding for propellant between Ceres' ask and the Mars-orbit asks, and
+/// reads the region's holders: de jure the Republic and the Freeport, de facto the Freeport,
+/// economic Occator and Ceres Clearing; each polity reads its own papers there.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn op1_a_hull_flies_stickney_to_isidis_and_back() {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let _ = run(&mut rig.tw, pilot, "in");
+    let _ = run(&mut rig.tw, pilot, "crew");
+
+    // Ceres to Stickney, the lane's own run.
+    let heard = op1_fly(&mut rig, pilot, hull, 1, "stickney");
+    assert!(
+        heard.contains("Salt Moth docks at Stickney Yards."),
+        "{heard}"
+    );
+
+    // Isidis is planned from Stickney: one direct leg, no Kirkwood call (Q-50-58).
+    seed_pool(&mut rig, vault, "propellant", 20, LotId(905));
+    seed_pool(&mut rig, vault, "provisions", 4, LotId(906));
+    let plan = run(&mut rig.tw, pilot, "+ship/plan isidis");
+    assert_eq!(
+        plan.lines().next(),
+        Some("Plan for Isidis Concession:"),
+        "{plan}"
+    );
+    assert!(!plan.contains("Kirkwood"), "no picket leg: {plan}");
+    let heard = op1_fly(&mut rig, pilot, hull, 2, "isidis");
+    assert!(
+        heard.contains("Salt Moth docks at Isidis Concession."),
+        "{heard}"
+    );
+    assert!(!heard.contains("Kirkwood"), "{heard}");
+    let out = ticket(&mut rig.tw, hull, 2).expect("ticket 2");
+    assert_eq!(out.plan.legs.len(), 1, "one leg out");
+    // Docked through the ordinary port path (Q-50-17), on the Concession's domain.
+    match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
+        tacsim::port::ship::Berth::Docked { def, .. } => {
+            assert_eq!(def.venue.as_str(), "isidis");
+        }
+        other => panic!("the hull is not docked at Isidis: {other:?}"),
+    }
+    let isidis = domain_of(&rig.tw, "isidis_port");
+    assert!(
+        matches!(parent(&rig.tw, hull), SpatialParent::Direct { domain, .. } if domain.0 == isidis),
+        "the hull is Direct on the Isidis domain"
+    );
+    let gallery = station_room(&rig.tw, "isidis_port", "room.i01_landing_field");
+    assert_eq!(
+        location(&rig.tw, hull),
+        Some(gallery),
+        "in the field gallery"
+    );
+
+    // Ashore: the market's board carries the tank farm's standing bid (Q-50-58).
+    let _ = run(&mut rig.tw, pilot, "passage");
+    let _ = run(&mut rig.tw, pilot, "airlock");
+    let left = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(left.contains("You cycle the lock out into"), "{left}");
+    assert_eq!(location(&rig.tw, pilot), Some(gallery));
+    let _ = run(&mut rig.tw, pilot, "market");
+    let market_room = station_room(&rig.tw, "isidis_port", "room.i03_market");
+    assert_eq!(location(&rig.tw, pilot), Some(market_room));
+    let look = run(&mut rig.tw, pilot, "look");
+    let wanted = look
+        .lines()
+        .find(|line| line.contains("wanted,") && line.contains("Occator Isidis Tank Farm"))
+        .unwrap_or_else(|| panic!("the tank farm's bid is on the board:\n{look}"))
+        .to_owned();
+    assert!(wanted.contains("2,000"), "{wanted}");
+    let bid = op1_propellant("isidis_port", false);
+    assert!((40..=60).contains(&bid), "provisional, 40 to 60 cr: {bid}");
+    assert!(bid > op1_propellant("ceres_port", true), "over Ceres' ask");
+    assert!(
+        bid < op1_propellant("stickney_port", true),
+        "under Stickney's ask"
+    );
+    assert!(
+        bid < op1_propellant("deimos_port", true),
+        "under Deimos's ask"
+    );
+    // The board's live figure (the market's own price movement may move it off the authored
+    // one) stays in the ruled band too.
+    let live: u64 = wanted
+        .split("reaction mass: ")
+        .nth(1)
+        .and_then(|rest| rest.split('.').next())
+        .and_then(|whole| whole.parse().ok())
+        .unwrap_or_else(|| panic!("a price on the line: {wanted}"));
+    assert!(
+        (40..=60).contains(&live),
+        "the board reads {live} cr: {wanted}"
+    );
+
+    // The region's holders (doc 11 §5; Q-50-52's two de jure claimants).
+    let occator = op1_org_faction(&rig.tw, "occator");
+    let clearing = op1_org_faction(&rig.tw, "ceres_clearing");
+    let w = rig.tw.world();
+    let republic = tacsim::polity::polity(w, "republic").expect("the Republic");
+    let freeport = tacsim::polity::polity(w, "freeport").expect("the Freeport");
+    for place in ["isidis_concession", "isidis_port"] {
+        let control = tacsim::polity::control_at(w, &cid(place)).expect("Isidis is a region");
+        let mut de_jure = control.de_jure.clone();
+        de_jure.sort();
+        let mut claimants = vec![republic, freeport];
+        claimants.sort();
+        assert_eq!(de_jure, claimants, "{place}: two de jure claimants");
+        assert_eq!(
+            control.de_facto,
+            Some(freeport),
+            "{place}: de facto the Freeport"
+        );
+        let mut economic = control.economic.clone();
+        economic.sort();
+        let mut houses = vec![occator, clearing];
+        houses.sort();
+        assert_eq!(economic, houses, "{place}: Occator and Ceres Clearing");
+    }
+    // Each administration reads its own papers there (Q-50-52).
+    let place = cid("isidis_concession");
+    assert_eq!(
+        tacsim::polity::papers_authority(w, &place, republic),
+        Some(republic)
+    );
+    assert_eq!(
+        tacsim::polity::papers_authority(w, &place, freeport),
+        Some(freeport)
+    );
+    let territory = run(&mut rig.tw, pilot, "+territory");
+    assert!(territory.contains("Isidis Concession"), "{territory}");
+
+    // And back: Isidis to Stickney, the one route out.
+    teleport(&mut rig.tw, pilot, gallery);
+    let boarded = run(&mut rig.tw, pilot, "+ship/board");
+    assert!(
+        boarded.contains("You cycle the lock into the Salt Moth."),
+        "{boarded}"
+    );
+    let heard = op1_fly(&mut rig, pilot, hull, 3, "stickney");
+    assert!(
+        heard.contains("Salt Moth docks at Stickney Yards."),
+        "{heard}"
+    );
+    let back = ticket(&mut rig.tw, hull, 3).expect("ticket 3");
+    assert_eq!(back.plan.legs.len(), 1, "one leg home");
 }

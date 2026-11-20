@@ -148,7 +148,8 @@ fn plan_passage_reproduces_the_slice_figures() {
     // is authored, not a chord (§3.3): its seconds are the laden step, which at an empty
     // hold is `base_s` itself.
     // Doc 32 cut S.1: twenty-two with Urvara Reach's two.
-    assert_eq!(routes.len(), 22, "the lane's routes: {routes:?}");
+    // Doc 50 cut OP.1: twenty-four with the Isidis hop's two.
+    assert_eq!(routes.len(), 24, "the lane's routes: {routes:?}");
     for route in routes.iter().map(String::as_str) {
         for (a, b, base) in body_pairs(&pack, route) {
             if a == b {

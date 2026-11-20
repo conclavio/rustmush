@@ -47,11 +47,12 @@ use serde_json::Value;
 use tacsim::TacsimConfig;
 use tacsim::definitions::content::{
     AITKEN_PACK, AITKEN_REGION_PACK, AITKEN_ROOMS, CAST_AITKEN_PACK, CAST_CERES_PACK,
-    CAST_LIGEIA_PACK, CAST_SOURCES, CAST_STICKNEY_PACK, CAST_VOLTAIRE_PACK, CERES_PACK,
-    CERES_REGION_PACK, CERES_ROOMS, LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK,
-    LIGEIA_ROOMS, SITE_SOURCES, STATION_SOURCES, STICKNEY_PACK, STICKNEY_REGION_PACK,
-    STICKNEY_ROOMS, VOLTAIRE_PACK, VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, WIDE_SITE_SOURCES,
-    boot_packs, station_packs, station_with_cast_value,
+    CAST_ISIDIS_PACK, CAST_LIGEIA_PACK, CAST_SOURCES, CAST_STICKNEY_PACK, CAST_VOLTAIRE_PACK,
+    CERES_PACK, CERES_REGION_PACK, CERES_ROOMS, ISIDIS_PACK, ISIDIS_REGION_PACK, ISIDIS_ROOMS,
+    LANE_PACK, LANE_VERSION, LIGEIA_PACK, LIGEIA_REGION_PACK, LIGEIA_ROOMS, SITE_SOURCES,
+    STATION_SOURCES, STICKNEY_PACK, STICKNEY_REGION_PACK, STICKNEY_ROOMS, VOLTAIRE_PACK,
+    VOLTAIRE_REGION_PACK, VOLTAIRE_ROOMS, WIDE_SITE_SOURCES, boot_packs, station_packs,
+    station_with_cast_value,
 };
 use tacsim::ic_return::{self, PORTS};
 
@@ -81,7 +82,7 @@ fn station_version(pack: &str) -> u32 {
 /// The pinned digests, in `STATION_SOURCES` order. An edit to a pack changes its
 /// digest; the failure message prints the new values so a *reviewed* edit is a
 /// line here plus the `digest` field in the pack itself.
-const PINNED: [(&str, &str); 10] = [
+const PINNED: [(&str, &str); 12] = [
     (
         CERES_REGION_PACK,
         "80b18bc047d703b5c6f2899155d4f914b68a190ab73a0e5695ffbaab6a4f83f0",
@@ -123,15 +124,26 @@ const PINNED: [(&str, &str); 10] = [
         LIGEIA_PACK,
         "bd921f85e472ae0c8d99433d1bffac2df6e1957236f87b68c594f004e72b26d1",
     ),
+    // Doc 50 cut OP.1: the Isidis Concession.
+    (
+        ISIDIS_REGION_PACK,
+        "5bb2f7aa0a67a6e29218ef13361bf8332de1fadb03a18f8c3b3828278c675d6b",
+    ),
+    (
+        ISIDIS_PACK,
+        "e92e100a73027d9f418ef179d03f3f909b0bfa0718d7c4af336fab60a61b0045",
+    ),
 ];
 
-/// The five neighborhood packs (doc 19 cut A.8: the three moon stations joined).
-const NEIGHBORHOODS: [&str; 5] = [
+/// The six neighborhood packs (doc 19 cut A.8: the three moon stations joined; doc 50 cut
+/// OP.1: the Isidis Concession).
+const NEIGHBORHOODS: [&str; 6] = [
     CERES_PACK,
     STICKNEY_PACK,
     AITKEN_PACK,
     VOLTAIRE_PACK,
     LIGEIA_PACK,
+    ISIDIS_PACK,
 ];
 
 /// Stickney v3's pinned digest (doc 18 cut IC12), the content [`stickney_v3_json`]
@@ -192,7 +204,7 @@ fn ceres_v2_json() -> String {
 }
 
 /// The files under `crates/tacsim/content/`, in `STATION_SOURCES` order.
-const FILES: [&str; 10] = [
+const FILES: [&str; 12] = [
     "atlas/region.ceres_freeport.json",
     "atlas/neighborhood.ceres_freeport.json",
     "atlas/region.stickney_yards.json",
@@ -203,6 +215,8 @@ const FILES: [&str; 10] = [
     "atlas/neighborhood.voltaire_anchorage.json",
     "atlas/region.ligeia_terminal.json",
     "atlas/neighborhood.ligeia_terminal.json",
+    "atlas/region.isidis_concession.json",
+    "atlas/neighborhood.isidis_concession.json",
 ];
 
 fn content_dir() -> PathBuf {
@@ -455,8 +469,8 @@ fn ic1_the_station_packs_load_and_their_digests_are_pinned() {
     );
     assert_eq!(
         station_packs().expect("the station packs verify").len(),
-        29,
-        "the corridor's four, doc 19 cut A.8's six, doc 34 cut CS.0b's five cast packs, doc 20 cut SM.2's twelve site packs, and doc 32 cut S.1's two wide site packs"
+        32,
+        "the corridor's four, doc 19 cut A.8's six, doc 50 cut OP.1's Isidis station and cast, doc 34 cut CS.0b's five cast packs, doc 20 cut SM.2's twelve site packs, and doc 32 cut S.1's two wide site packs"
     );
 }
 
@@ -536,9 +550,9 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        50,
-        "three starter, two proving ground, ten stations, five station cast packs (doc 34 cut \
-         CS.0b), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), \
+        53,
+        "three starter, two proving ground, twelve stations, six station cast packs (doc 34 cut \
+         CS.0b; doc 50 cut OP.1's Isidis), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), \
          the lane, seven R10 relay/geography \
          packs, two passenger packs, the crew pack and the optional quests"
     );
@@ -558,19 +572,24 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             .collect();
         match pack.manifest().id().as_str() {
             CERES_REGION_PACK | STICKNEY_REGION_PACK | AITKEN_REGION_PACK
-            | VOLTAIRE_REGION_PACK | LIGEIA_REGION_PACK => assert!(requires.is_empty()),
+            | VOLTAIRE_REGION_PACK | LIGEIA_REGION_PACK | ISIDIS_REGION_PACK => {
+                assert!(requires.is_empty())
+            }
             CERES_PACK => assert_eq!(requires, vec![(CERES_REGION_PACK.to_string(), 1)]),
             STICKNEY_PACK => assert_eq!(requires, vec![(STICKNEY_REGION_PACK.to_string(), 1)]),
             // Doc 19 cut A.8: the moon stations.
             AITKEN_PACK => assert_eq!(requires, vec![(AITKEN_REGION_PACK.to_string(), 1)]),
             VOLTAIRE_PACK => assert_eq!(requires, vec![(VOLTAIRE_REGION_PACK.to_string(), 1)]),
             LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_REGION_PACK.to_string(), 1)]),
+            // Doc 50 cut OP.1: the Isidis Concession.
+            ISIDIS_PACK => assert_eq!(requires, vec![(ISIDIS_REGION_PACK.to_string(), 1)]),
             // Doc 34 cut CS.0b: the five station cast packs.
             CAST_CERES_PACK => assert_eq!(requires, vec![(CERES_PACK.to_string(), 4)]),
             CAST_STICKNEY_PACK => assert_eq!(requires, vec![(STICKNEY_PACK.to_string(), 4)]),
             CAST_AITKEN_PACK => assert_eq!(requires, vec![(AITKEN_PACK.to_string(), 1)]),
             CAST_VOLTAIRE_PACK => assert_eq!(requires, vec![(VOLTAIRE_PACK.to_string(), 1)]),
             CAST_LIGEIA_PACK => assert_eq!(requires, vec![(LIGEIA_PACK.to_string(), 1)]),
+            CAST_ISIDIS_PACK => assert_eq!(requires, vec![(ISIDIS_PACK.to_string(), 1)]),
             // Doc 18 cut IC2: the lane requires nothing.
             LANE_PACK => assert!(requires.is_empty()),
             "tacsim.relay.luna_ceres" => assert_eq!(
@@ -600,7 +619,8 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     // Doc 48 unit PL.6: relay v31, v40; doc 48 unit PL.8: relay v32, v41.
                     // Doc 48 unit EX.9: relay v33, v42; doc 48 unit EX.10: relay v34, v43.
                     // Doc 48e lane L4: relay v35, v44; doc 50 cut KC.0: relay v36, v45.
-                    (LANE_PACK.into(), 45)
+                    // Doc 50 cut OP.1: relay v37, v46.
+                    (LANE_PACK.into(), 46)
                 ]
             ),
             "region.kirkwood_depot" | "region.mercury_relay" => assert!(requires.is_empty()),
@@ -1275,20 +1295,26 @@ fn ic1_a_fresh_world_boots_the_stations() {
         rooms.values().filter(|p| **p == LIGEIA_PACK).count(),
         LIGEIA_ROOMS
     );
-    // `port.dock` on the five galleries and the six site pads (doc 20 cut SM.2), and no
+    // Doc 50 cut OP.1: the Isidis Concession.
+    assert_eq!(
+        rooms.values().filter(|p| **p == ISIDIS_PACK).count(),
+        ISIDIS_ROOMS
+    );
+    // `port.dock` on the six galleries and the six site pads (doc 20 cut SM.2), and no
     // other room (doc 19 cut A.8: L01, D01 and T01 joined C01 and P01).
     let c01 = obj(&tw, CERES_PACK, "room.c01_berth_gallery");
     let p01 = obj(&tw, STICKNEY_PACK, "room.p01_berth_gallery");
     let l01 = obj(&tw, AITKEN_PACK, "room.l01_berth_gallery");
     let d01 = obj(&tw, VOLTAIRE_PACK, "room.d01_berth_gallery");
     let t01 = obj(&tw, LIGEIA_PACK, "room.t01_berth_gallery");
+    let i01 = obj(&tw, ISIDIS_PACK, "room.i01_landing_field");
     let docks: BTreeSet<ObjId> = tw
         .world()
         .iter()
         .filter(|o| o.kind == ObjKind::Room && tw.world().has_marker(o.id, "port.dock"))
         .map(|o| o.id)
         .collect();
-    let mut want_docks = BTreeSet::from([c01, p01, l01, d01, t01]);
+    let mut want_docks = BTreeSet::from([c01, p01, l01, d01, t01, i01]);
     for (name, _) in SITE_SOURCES
         .iter()
         .chain(WIDE_SITE_SOURCES.iter())
@@ -1330,8 +1356,8 @@ fn ic1_a_fresh_world_boots_the_stations() {
     // CF.6 added the Slack Line's third crew member, the combat-duty escort.
     assert_eq!(
         npcs.len(),
-        57,
-        "the station cast, two independent travelers and three permanent crew"
+        59,
+        "the station cast (doc 50 cut OP.1: Isidis's two), two independent travelers and three permanent crew"
     );
     let leila = obj(&tw, "tacsim.passengers.stickney", "npc.leila_mensah_kovacs");
     assert_eq!(
@@ -1460,13 +1486,13 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        50,
-        "five, ten stations, five station cast packs, the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
+        53,
+        "five, twelve stations, six station cast packs (doc 50 cut OP.1 added Isidis's three), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(36));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(37));
     assert_eq!(
         after.get("tacsim.passengers.stickney").map(|l| l.0),
         Some(2)
@@ -1584,6 +1610,7 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
             "exit.c05_c16",
             "exit.c14_c15",
             "exit.d07_d15",
+            "exit.i04_i05",
             "exit.l08_l15",
             "exit.p07_p15",
             "exit.t11_t15"
@@ -2272,7 +2299,7 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
     // Doc 20 cut SM.12a: the shipped relay seed is v3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
     // Qureshi's trust service: relay v6 requires Ceres v4.
-    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(36));
+    assert_eq!(version(&tw, "tacsim.relay.luna_ceres"), Some(37));
     let registry = tw
         .world()
         .module_state::<mush_sim::relay::RelayStore>()
