@@ -2850,7 +2850,10 @@ fn port_trade_feed_enforces_venue_gate_post_spread_prices_open_quotes_and_stores
     let first_ask = listings
         .iter()
         .find(|row| {
-            row["side"].as_str() == Some("ask") && row["available_qty"].as_u64().unwrap_or(0) >= 10
+            // Doc 50 unit LW.1: strategic ore is restricted on the Ceres board.
+            row["side"].as_str() == Some("ask")
+                && row["good"].as_str() != Some("strategic_ore")
+                && row["available_qty"].as_u64().unwrap_or(0) >= 10
         })
         .expect("at least one live ask at Ceres with >= 10 units");
     let ask_id = first_ask["id"].as_u64().expect("ask id");
@@ -2998,7 +3001,9 @@ fn port_trade_frame_matches_the_clients_shared_fixture() {
         .as_array()
         .and_then(|rows| {
             rows.iter().find(|row| {
+                // Doc 50 unit LW.1: strategic ore is restricted on the Ceres board.
                 row["side"].as_str() == Some("ask")
+                    && row["good"].as_str() != Some("strategic_ore")
                     && row["available_qty"].as_u64().unwrap_or(0) >= 10
             })
         })
