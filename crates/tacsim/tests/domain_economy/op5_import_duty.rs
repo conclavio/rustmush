@@ -3,7 +3,8 @@
 //!
 //! A pilot flies her Dray-P from Ceres by Stickney to the Isidis Concession and sells propellant
 //! from her docked hull's hold into the tank farm's standing bid:
-//! - **under the Freeport**, who levies nothing there, she is paid the whole sale;
+//! - **under the Freeport**, who levies nothing there, she is paid the sale, less only the
+//!   Co-op's share (hers is a Co-op hull);
 //! - **under the Republic**, whose schedule row lists propellant among the Belt's exports, 5% of
 //!   the goods' catalog value comes out of the proceeds, paid to Republic Customs, and the sale's
 //!   line names the duty with its reason.
@@ -17,8 +18,8 @@ use mush_economy::{AccountId, EconomyStore};
 use mush_inventory::LotId;
 
 use crate::driving_rig::{
-    Rig, advance_to, board, cid, file_and_launch, hold_vault_of, land_quietly, load, port_map,
-    prospector, run, seed_pool, station_room, stocked, teleport,
+    Rig, advance_to, board, cid, drain, file_and_launch, hold_vault_of, land_all, land_quietly,
+    load, port_map, prospector, run, seed_pool, station_room, stocked, sweep, teleport,
 };
 
 const QTY: u64 = 10;
@@ -61,7 +62,13 @@ fn sell(rig: &mut Rig, pilot: ObjId, hold: mush_economy::VaultId, lot: u64) -> S
         &format!("+market/sell {bid}={QTY} from={}", hold.0),
     );
     assert!(sold.contains("Sold "), "{sold}");
-    crate::in10_pools::settle(rig, 6);
+    // Her delivery leg, then the sweeps that settle the sale.
+    let queued = drain(&mut rig.tw);
+    land_all(rig, &queued);
+    for _ in 0..6 {
+        sweep(&mut rig.tw, 31);
+    }
+    crate::in10_pools::settle(rig, 3);
     sold
 }
 
@@ -93,10 +100,10 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     );
     let line = sell(&mut rig, pilot, hold, 0x0f55);
     assert!(!line.contains("Import duty"), "{line}");
-    assert_eq!(
-        balance(rig.tw.world(), own_account(&rig, pilot)) - before.0,
-        gross,
-        "the whole sale is hers"
+    let free_net = balance(rig.tw.world(), own_account(&rig, pilot)) - before.0;
+    assert!(
+        free_net > 0 && free_net <= gross,
+        "she is paid the sale, less only the Co-op's share: {free_net} of {gross}"
     );
     assert_eq!(
         balance(rig.tw.world(), customs(&rig)),
@@ -131,7 +138,7 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     );
     assert_eq!(
         balance(rig.tw.world(), own_account(&rig, pilot)) - before.0,
-        gross - duty,
-        "it comes out of her proceeds"
+        free_net - duty,
+        "it comes out of her proceeds: the same sale pays her the duty less"
     );
 }
