@@ -25,11 +25,12 @@
 
 use std::sync::Arc;
 
-use mush_core::{Ctx, Flags, ObjId};
+use mush_core::{Ctx, Flags, ObjId, ObjKind};
 use mush_org::PrincipalId;
 
 use crate::record::OperationDoc;
-use crate::render::{Lens, Verbosity, lens_for, render};
+use crate::render::{Lens, Verbosity, is_staff, lens_for, render};
+use crate::store::{CampaignStore, persist_meta};
 
 /// **The line a defender is told** (`{id}` the operation, `{days}` and `{hours}` how far ahead
 /// its window opens in IC time, `{length}` how many IC hours it runs).
@@ -133,10 +134,15 @@ pub fn defenders(w: &mush_core::World, doc: &OperationDoc) -> Vec<ObjId> {
             PrincipalId::System(_) => Vec::new(),
         };
         for who in named {
-            let live = w
-                .get(who)
-                .is_some_and(|object| !object.flags.contains(Flags::GOING));
-            if !live || out.contains(&who) || lens_for(w, doc, who) == Lens::Hidden {
+            let live_player = w.get(who).is_some_and(|object| {
+                object.kind == ObjKind::Player && !object.flags.contains(Flags::GOING)
+            });
+            let is_attacker = PrincipalId::Object(who) == doc.terms.attacker;
+            if !live_player
+                || is_attacker
+                || out.contains(&who)
+                || lens_for(w, doc, who) == Lens::Hidden
+            {
                 continue;
             }
             if out.len() >= MAX_NOTICE_RECIPIENTS {
@@ -158,24 +164,79 @@ pub fn defenders(w: &mush_core::World, doc: &OperationDoc) -> Vec<ObjId> {
 }
 
 /// **Push `doc`'s notice** to its defenders, answering how many were told.
+///
+/// Enforces per-issuer volume and per-(issuer, recipient) cooldown bounds for
+/// non-staff object issuers (HIGH-30) and logs structured issuer attribution
+/// even when the notice hides the issuer from defenders (`announce_issuer: false`).
 pub(crate) fn push(ctx: &mut Ctx<'_>, doc: &OperationDoc) -> usize {
     let to = defenders(ctx.w, doc);
     if to.is_empty() {
         return 0;
     }
-    let now_ic = ctx.w.world_timeline().stamp_at(ctx.w.now()).at;
+    let now_real = ctx.w.now();
+    let now_ic = ctx.w.world_timeline().stamp_at(now_real).at;
     let letter = letter(doc, now_ic);
     let post = ctx
         .w
         .module_state::<DefenderNotice>()
         .and_then(|slot| slot.0.clone());
+    let issuer_key = crate::store::principal_tag(&doc.terms.attacker);
+    let rate_limited = matches!(
+        doc.terms.attacker,
+        PrincipalId::Object(issuer) if !is_staff(ctx.w, issuer)
+    );
+    let announced = matches!(
+        doc.terms.visibility,
+        mush_economy::EconomicVisibility::Public
+            | mush_economy::EconomicVisibility::Parties
+            | mush_economy::EconomicVisibility::Audience {
+                announce_issuer: true,
+                ..
+            }
+    );
+    let mut sent = 0usize;
+    let mut suppressed = 0usize;
     for who in &to {
+        if rate_limited {
+            let admitted = ctx
+                .w
+                .module_state_mut::<CampaignStore>()
+                .is_some_and(|store| store.admit_notice_recipient(&issuer_key, *who, now_real));
+            if !admitted {
+                suppressed = suppressed.saturating_add(1);
+                continue;
+            }
+        }
         match &post {
             Some(post) => post(ctx, *who, &letter),
             None => ctx.out.sys_to_actor(*who, "campaign", letter.line.clone()),
         }
+        sent = sent.saturating_add(1);
     }
-    to.len()
+    if rate_limited && sent > 0 {
+        persist_meta(ctx);
+    }
+    if suppressed > 0 {
+        tracing::warn!(
+            target: "campaign",
+            operation = doc.id().0,
+            issuer = %issuer_key,
+            announced,
+            sent,
+            suppressed,
+            "campaign: defender notice deliveries were rate-limited for this issuer"
+        );
+    } else if sent > 0 {
+        tracing::info!(
+            target: "campaign",
+            operation = doc.id().0,
+            issuer = %issuer_key,
+            announced,
+            sent,
+            "campaign: attributed defender notices delivered"
+        );
+    }
+    sent
 }
 
 #[cfg(test)]

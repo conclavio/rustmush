@@ -113,8 +113,10 @@ pub use generate::{
 pub use mush_atlas::theme::{DescLength, Theme, resolve_theme};
 pub use plan::{PlanLimits, run_plan};
 pub use proposal::{
-    MAX_PROPOSALS, PlanOutcome, PlanSnapshot, PlanStatus, ProposalRec, ProposalScope,
-    ProposalSource, ProposalStatus, Question, proposal_key,
+    MAX_PROPOSALS, MAX_PROPOSALS_PER_PLAYER_WINDOW, MAX_RETAINED_TERMINAL_PROPOSALS,
+    MAX_WITHDRAWS_PER_PLAYER_WINDOW, PROPOSAL_WINDOW_SECS, PROPOSAL_WITHDRAW_COOLDOWN_SECS,
+    PlanOutcome, PlanSnapshot, PlanStatus, ProposalRec, ProposalScope, ProposalSource,
+    ProposalStatus, Question, proposal_key,
 };
 
 /// The building agent's default per-proposal cost cap, USD (`[worldgen].plan_cost_cap_usd`).
@@ -250,9 +252,9 @@ impl GameModule for WorldgenModule {
         // Batches reconciled at boot (a `Generating` room downgraded to
         // `Pending`) that must be re-persisted so the store matches RAM.
         let mut reconciled: Vec<BuildingBrief> = Vec::new();
-        // S3: the proposals and their id counter.
-        let (proposals, next_proposal, dropped) = proposal::hydrate_boot(&boot.kv);
-        for key in dropped {
+        // S3: the proposals, their id counter, and per-player rate-limit history.
+        let boot_proposals = proposal::hydrate_boot_full(&boot.kv);
+        for key in boot_proposals.dropped {
             ctx.persist(ModuleOp {
                 ns: SmolStr::new(NS),
                 op: ModuleWrite::Del { key },
@@ -315,8 +317,11 @@ impl GameModule for WorldgenModule {
             .ok_or_else(|| ModError::msg("worldgen: state slot missing"))?;
         st.drafts = drafts;
         st.briefs = briefs;
-        st.proposals = proposals;
-        st.next_proposal = next_proposal;
+        st.proposals = boot_proposals.proposals;
+        st.next_proposal = boot_proposals.next_proposal;
+        st.proposal_history = boot_proposals.proposal_history;
+        st.withdraw_history = boot_proposals.withdraw_history;
+        st.active_plan_runs.clear();
         // Write the reconciled batches back through the store (write-through at
         // boot, like weather's orphan-cell cleanup) so the persisted doc no
         // longer carries the stale `Generating` room.

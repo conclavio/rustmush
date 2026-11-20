@@ -1330,6 +1330,53 @@ impl Run<'_> {
                 }
             }
         }
+        // Room and item flags come from the closed flag tables `apply.rs` accepts.
+        for (id, room) in &rooms {
+            for word in &room.flags {
+                let norm = word.trim().to_ascii_lowercase();
+                if !crate::apply::ROOM_FLAGS.iter().any(|(n, _)| *n == norm) {
+                    self.error(
+                        "schema.flag",
+                        Some(id),
+                        format!("room flag {word:?} is not one a pack may set"),
+                        format!(
+                            "use one of: {}",
+                            crate::apply::ROOM_FLAGS
+                                .iter()
+                                .map(|(n, _)| *n)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                }
+            }
+        }
+        let item_flags: Vec<(CanonicalId, Vec<String>)> = self
+            .decoded
+            .items
+            .iter()
+            .map(|(k, v)| (k.clone(), v.flags.clone()))
+            .collect();
+        for (id, flags) in &item_flags {
+            for word in flags {
+                let norm = word.trim().to_ascii_lowercase();
+                if !crate::apply::ITEM_FLAGS.iter().any(|(n, _)| *n == norm) {
+                    self.error(
+                        "schema.flag",
+                        Some(id),
+                        format!("item flag {word:?} is not one a pack may set"),
+                        format!(
+                            "use one of: {}",
+                            crate::apply::ITEM_FLAGS
+                                .iter()
+                                .map(|(n, _)| *n)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                }
+            }
+        }
         // Doc 18 D-18-19: a room's markers come from the closed registry, once each —
         // the applier refuses the same lists with the same words.
         let marker_problems: Vec<(CanonicalId, String)> = rooms
@@ -2031,24 +2078,31 @@ impl Run<'_> {
             }
         }
 
-        // Seeds: Limbo, the world's rooms (applied and already validated), and the
-        // rooms at the neighborhood's access points, and the rooms marked `port.dock` —
-        // reached by carrier, doc 18 D-18-19 (a station with no foot route, Stickney,
-        // is reached by ship and never by an exit).
-        let mut seeds: Vec<Node> = vec![Node::Limbo];
+        // Seeds: Limbo (staff packs only), the world's rooms (applied and already
+        // validated), the rooms at the neighborhood's access points, and (for staff
+        // packs) the rooms marked `port.dock` — reached by carrier, doc 18 D-18-19.
+        // Under `player_build` (HIGH-39), neither Limbo nor `port.dock` may seed
+        // reachability.
+        let mut seeds: Vec<Node> = if self.cx.player_build {
+            Vec::new()
+        } else {
+            vec![Node::Limbo]
+        };
         seeds.extend(
             touched
                 .iter()
                 .filter(|n| matches!(n, Node::World(_)))
                 .cloned(),
         );
-        seeds.extend(
-            self.decoded
-                .rooms
-                .iter()
-                .filter(|(_, d)| d.markers.iter().any(|m| m == crate::def::PORT_DOCK_MARKER))
-                .map(|(id, _)| Node::Own(id.clone())),
-        );
+        if !self.cx.player_build {
+            seeds.extend(
+                self.decoded
+                    .rooms
+                    .iter()
+                    .filter(|(_, d)| d.markers.iter().any(|m| m == crate::def::PORT_DOCK_MARKER))
+                    .map(|(id, _)| Node::Own(id.clone())),
+            );
+        }
         if let Some(nb) = &nb {
             let points: Vec<PointCm> = self
                 .cx
@@ -2391,6 +2445,271 @@ impl Run<'_> {
                 );
             }
         }
+        // Cross-region Site-pack link checks (HIGH-39): a Site pack lives inside
+        // its required neighborhood's region and must not require packs or link
+        // rooms across regions.
+        let exits: Vec<(CanonicalId, String, String)> = self
+            .decoded
+            .exits
+            .iter()
+            .map(|(k, v)| (k.clone(), v.from.clone(), v.to.clone()))
+            .collect();
+        let placed_refs: Vec<(CanonicalId, String)> = self
+            .decoded
+            .items
+            .iter()
+            .map(|(k, v)| (k.clone(), v.room.clone()))
+            .chain(
+                self.decoded
+                    .features
+                    .iter()
+                    .filter_map(|(k, v)| v.room.clone().map(|r| (k.clone(), r))),
+            )
+            .chain(
+                self.decoded
+                    .hooks
+                    .iter()
+                    .filter_map(|(k, v)| v.room.clone().map(|r| (k.clone(), r))),
+            )
+            .chain(self.decoded.npcs.iter().filter_map(|(k, v)| {
+                v.get("room")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|r| (k.clone(), r.to_string()))
+            }))
+            .collect();
+        if self.pack.manifest().kind() == PackKind::Site
+            && let Some(nb) = &nb
+        {
+            let nb_region_pack = nb.region.as_ref().map(|r| &r.pack);
+            let requires: Vec<CanonicalId> = self
+                .pack
+                .manifest()
+                .requires()
+                .iter()
+                .map(|r| r.id.clone())
+                .collect();
+            for req in &requires {
+                if self.cx.player_build && *req != nb.key.pack && nb_region_pack != Some(req) {
+                    let region_label = nb_region_pack
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "its region".to_string());
+                    self.error(
+                        "policy.cross_region",
+                        None,
+                        format!(
+                            "a player's site pack may only require its neighborhood ({}) and region ({region_label}); `{req}` is not allowed",
+                            nb.key.pack
+                        ),
+                        "remove external packs from `requires`",
+                    );
+                    continue;
+                }
+                if let Some(nb_region) = &nb.region {
+                    let wrong_region = self
+                        .cx
+                        .regions
+                        .iter()
+                        .any(|r| r.key.pack == *req && r.key != *nb_region)
+                        || self
+                            .cx
+                            .neighborhoods
+                            .iter()
+                            .any(|n| n.key.pack == *req && n.region != *nb_region)
+                        || self
+                            .cx
+                            .rooms
+                            .iter()
+                            .any(|r| r.key.pack == *req && r.region != *nb_region);
+                    if wrong_region {
+                        self.error(
+                            "policy.cross_region",
+                            None,
+                            format!(
+                                "site pack requires `{req}` from another region (expected region {nb_region})"
+                            ),
+                            "require only packs in the site's own region",
+                        );
+                    }
+                }
+            }
+            for (id, from, to) in &exits {
+                for reference in [from, to] {
+                    if let Some(Target::World(key)) = self.resolve(reference)
+                        && let Some(room) = self.cx.rooms.iter().find(|r| r.key == key)
+                    {
+                        if nb.region.as_ref().is_some_and(|reg| room.region != *reg) {
+                            self.error(
+                                "policy.cross_region",
+                                Some(id),
+                                format!(
+                                    "{reference} belongs to another region ({}); a site pack may not link across regions",
+                                    room.region
+                                ),
+                                "link only to rooms inside this site's neighborhood",
+                            );
+                        } else if self.cx.player_build && room.neighborhood != nb.key {
+                            self.error(
+                                "policy.cross_region",
+                                Some(id),
+                                format!(
+                                    "{reference} belongs to another neighborhood ({}); a player's site may only link within its own neighborhood",
+                                    room.neighborhood
+                                ),
+                                "join the site to a public room in its own neighborhood",
+                            );
+                        }
+                    }
+                }
+            }
+            for (id, reference) in &placed_refs {
+                if let Some(Target::World(key)) = self.resolve(reference)
+                    && let Some(room) = self.cx.rooms.iter().find(|r| r.key == key)
+                {
+                    if nb.region.as_ref().is_some_and(|reg| room.region != *reg) {
+                        self.error(
+                            "policy.cross_region",
+                            Some(id),
+                            format!(
+                                "{reference} belongs to another region ({}); a site pack may not place entries across regions",
+                                room.region
+                            ),
+                            "place entries in rooms inside this site",
+                        );
+                    } else if self.cx.player_build && room.neighborhood != nb.key {
+                        self.error(
+                            "policy.cross_region",
+                            Some(id),
+                            format!(
+                                "{reference} belongs to another neighborhood ({}); a player's site may not place entries outside its own neighborhood",
+                                room.neighborhood
+                            ),
+                            "place entries in rooms inside this site",
+                        );
+                    }
+                }
+            }
+        }
+        if self.cx.player_build {
+            // HIGH-39: harden player-built packs against Limbo links, `port.dock`
+            // markers, `Access::Restricted`, `item.interior: true`, external
+            // `npc.room_pack`, and staff-only room/item flags.
+            for (id, from, to) in &exits {
+                for reference in [from, to] {
+                    if matches!(self.resolve(reference), Some(Target::Limbo)) {
+                        self.error(
+                            "policy.limbo",
+                            Some(id),
+                            "a player's site may not link to Limbo",
+                            "join the site to a public room in the neighborhood",
+                        );
+                    }
+                }
+            }
+            for (id, reference) in &placed_refs {
+                if matches!(self.resolve(reference), Some(Target::Limbo)) {
+                    self.error(
+                        "policy.limbo",
+                        Some(id),
+                        "a player's site may not place entries in Limbo",
+                        "place the entry in a room of this site",
+                    );
+                }
+            }
+            let room_checks: Vec<(CanonicalId, Access, Vec<String>, Vec<String>)> = self
+                .decoded
+                .rooms
+                .iter()
+                .map(|(k, v)| (k.clone(), v.access, v.markers.clone(), v.flags.clone()))
+                .collect();
+            for (id, access, markers, flags) in &room_checks {
+                if *access == Access::Restricted {
+                    self.error(
+                        "policy.access",
+                        Some(id),
+                        "a player's site may not declare restricted rooms",
+                        "use `access: \"public\"`",
+                    );
+                }
+                if !markers.is_empty() {
+                    self.error(
+                        "policy.marker",
+                        Some(id),
+                        format!(
+                            "a player's site may not set room markers ({})",
+                            markers.join(", ")
+                        ),
+                        "remove `markers` from the room",
+                    );
+                }
+                for word in flags {
+                    let norm = word.trim().to_ascii_lowercase();
+                    if crate::apply::ROOM_FLAGS.iter().any(|(n, _)| *n == norm)
+                        && !crate::apply::PLAYER_ROOM_FLAGS.contains(&norm.as_str())
+                    {
+                        self.error(
+                            "policy.flag",
+                            Some(id),
+                            format!(
+                                "room flag {word:?} is staff-only and may not be set by a player build"
+                            ),
+                            format!(
+                                "use only player-safe room flags: {}",
+                                crate::apply::PLAYER_ROOM_FLAGS.join(", ")
+                            ),
+                        );
+                    }
+                }
+            }
+            let item_checks: Vec<(CanonicalId, bool, Vec<String>)> = self
+                .decoded
+                .items
+                .iter()
+                .map(|(k, v)| (k.clone(), v.interior, v.flags.clone()))
+                .collect();
+            for (id, interior, flags) in &item_checks {
+                if *interior {
+                    self.error(
+                        "policy.interior",
+                        Some(id),
+                        "a player's site may not declare interior-space items (`interior: true`)",
+                        "remove `interior: true` from the item",
+                    );
+                }
+                for word in flags {
+                    let norm = word.trim().to_ascii_lowercase();
+                    if crate::apply::ITEM_FLAGS.iter().any(|(n, _)| *n == norm)
+                        && !crate::apply::PLAYER_ITEM_FLAGS.contains(&norm.as_str())
+                    {
+                        self.error(
+                            "policy.flag",
+                            Some(id),
+                            format!(
+                                "item flag {word:?} is staff-only and may not be set by a player build"
+                            ),
+                            format!(
+                                "use only player-safe item flags: {}",
+                                crate::apply::PLAYER_ITEM_FLAGS.join(", ")
+                            ),
+                        );
+                    }
+                }
+            }
+            let npc_room_packs: Vec<CanonicalId> = self
+                .decoded
+                .npcs
+                .iter()
+                .filter(|(_, v)| v.get("room_pack").is_some_and(|rp| !rp.is_null()))
+                .map(|(k, _)| k.clone())
+                .collect();
+            for id in &npc_room_packs {
+                self.error(
+                    "policy.cross_region",
+                    Some(id),
+                    "a player's site may not place NPCs into external packs via `room_pack`",
+                    "place the NPC in a room of this site without `room_pack`",
+                );
+            }
+        }
         if self.cx.player_build
             && let Some(nb) = &nb
         {
@@ -2416,12 +2735,6 @@ impl Run<'_> {
             }
             // No shortcut through private space: an exit from the new site into a
             // restricted room or a titled property of the world.
-            let exits: Vec<(CanonicalId, String, String)> = self
-                .decoded
-                .exits
-                .iter()
-                .map(|(k, v)| (k.clone(), v.from.clone(), v.to.clone()))
-                .collect();
             for (id, from, to) in &exits {
                 for reference in [from, to] {
                     if let Some(Target::World(key)) = self.resolve(reference)
@@ -2731,7 +3044,7 @@ struct NeighborhoodShape {
 // ---------------------------------------------------------------------------
 
 /// Whether every point of `inner`'s ring lies inside or on `outer`.
-fn inside(outer: &PolygonCm, inner: &Shape) -> bool {
+pub(crate) fn inside(outer: &PolygonCm, inner: &Shape) -> bool {
     inner
         .ring()
         .points()
@@ -2739,7 +3052,7 @@ fn inside(outer: &PolygonCm, inner: &Shape) -> bool {
         .all(|p| point_in_or_on(outer, *p))
 }
 
-fn point_in_or_on(poly: &PolygonCm, p: PointCm) -> bool {
+pub(crate) fn point_in_or_on(poly: &PolygonCm, p: PointCm) -> bool {
     poly.contains(p) || on_boundary(poly, p)
 }
 

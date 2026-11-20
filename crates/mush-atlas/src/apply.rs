@@ -1010,7 +1010,7 @@ fn parse_flags(words: &[String], allowed: &[(&str, Flags)]) -> Result<Flags, Str
     Ok(flags)
 }
 
-const ROOM_FLAGS: [(&str, Flags); 5] = [
+pub(crate) const ROOM_FLAGS: [(&str, Flags); 5] = [
     ("outdoors", Flags::OUTDOORS),
     ("sheltered", Flags::SHELTERED),
     ("dark", Flags::DARK),
@@ -1018,12 +1018,20 @@ const ROOM_FLAGS: [(&str, Flags); 5] = [
     ("jump_ok", Flags::JUMP_OK),
 ];
 
-const ITEM_FLAGS: [(&str, Flags); 4] = [
+/// Room flags a `player_build` pack may set (HIGH-39: excludes staff-only flags
+/// such as `dark`, `safe`, and `jump_ok`).
+pub(crate) const PLAYER_ROOM_FLAGS: [&str; 2] = ["outdoors", "sheltered"];
+
+pub(crate) const ITEM_FLAGS: [(&str, Flags); 4] = [
     ("enter_ok", Flags::ENTER_OK),
     ("opaque", Flags::OPAQUE),
     ("sticky", Flags::STICKY),
     ("safe", Flags::SAFE),
 ];
+
+/// Item flags a `player_build` pack may set (HIGH-39: excludes staff-only flags
+/// such as `enter_ok`, `sticky`, and `safe`).
+pub(crate) const PLAYER_ITEM_FLAGS: [&str; 1] = ["opaque"];
 
 fn check_details(id: &CanonicalId, details: &BTreeMap<String, String>) -> Result<(), String> {
     if details.len() > MAX_DETAILS {

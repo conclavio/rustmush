@@ -58,8 +58,10 @@ pub use frame::{MAP_FEED, MapFeed, delta_for, empty_frame, frame_for, surface_la
 pub use geom::{GeomError, Point2, Point3, PointCm, Polygon2, Rect2, RectCm, Shape};
 pub use hydrate::{
     Activation, AtlasHooks, BUILD_HANDLER, BUILD_QUEUE, DEFAULT_HYDRATION_CAP,
-    DEFAULT_STRIKES_TO_ZERO, HydrationState, Placement, ProposeFn, ProposeRequest, ProposeScope,
-    ProposeSource, RequestRec, RequestStatus, Requested, StandingRec, StrikeReport,
+    DEFAULT_STRIKES_TO_ZERO, HydrationState, MAX_REQUESTS, MAX_REQUESTS_PER_PLAYER_WINDOW,
+    MAX_RETAINED_TERMINAL_REQUESTS, MAX_WITHDRAWS_PER_PLAYER_WINDOW, Placement, ProposeFn,
+    ProposeRequest, ProposeScope, ProposeSource, REQUEST_WINDOW_SECS, RequestRec, RequestStatus,
+    Requested, StandingRec, StrikeReport, WITHDRAW_COOLDOWN_SECS,
 };
 pub use module::{
     ATTR_NS, AtlasConfig, AtlasLimits, AtlasModule, AtlasState, MAX_CONFIGURED_PACKS, NS,
@@ -84,16 +86,16 @@ pub use trace::{
 };
 pub use travel::{
     DEFAULT_DWELL_FLOOR_S, DEFAULT_REAL_CAP_S, End, Heading, HoldReason, JourneyId, JourneyRec,
-    JourneyState, MAX_JOURNEYS, Node, RESUME_GRACE_S, TICK_TAG, TravelState, Traveler, Way,
-    plan_legs,
+    JourneyState, MAX_INTERCEPT_HOLD_REAL_S, MAX_JOURNEYS, Node, RESUME_GRACE_S, TICK_TAG,
+    TravelState, Traveler, Way, plan_legs,
 };
 pub use validate::{
     Finding, Severity, ValidateContext, ValidateScope, blocking, check_pack, validate,
 };
 pub use window::{
-    Compass, Composite, CompositeInput, CompositeJob, CompositeOutcome, DEFAULT_ARC_APEX_CM,
-    DEFAULT_CELL_SIZES, DEFAULT_WINDOW_MARGIN_M, DEFAULT_WINDOW_MAX_CELLS, FeatureOverlay,
-    OpenRequest, STREET_CELL_CM, StepReport, StepTarget, SurfaceComposite, WindowEntry,
-    WindowFrame, Windows, arc_geometry, capture, choose_cell, composite, register_cell_size,
-    resolve_room, run_async,
+    ACTOR_GROW_COOLDOWN_SECS, Compass, Composite, CompositeInput, CompositeJob, CompositeOutcome,
+    DEFAULT_ARC_APEX_CM, DEFAULT_CELL_SIZES, DEFAULT_WINDOW_MARGIN_M, DEFAULT_WINDOW_MAX_CELLS,
+    FeatureOverlay, MAX_INFLIGHT_COMPOSITES, OpenRequest, STREET_CELL_CM, StepReport, StepTarget,
+    SurfaceComposite, WINDOW_PERSIST_DEBOUNCE_SECS, WindowEntry, WindowFrame, Windows,
+    arc_geometry, capture, choose_cell, composite, register_cell_size, resolve_room, run_async,
 };

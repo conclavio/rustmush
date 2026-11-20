@@ -51,6 +51,17 @@ pub const DEFAULT_WINDOW_MAX_CELLS: u32 = 65_536;
 /// The most participants one placement pass places.
 pub const MAX_PLACED_PER_PASS: usize = 256;
 
+/// Maximum concurrent off-loop map compositing jobs across all open windows
+/// (HIGH-40: strictly below `mush_sim::MAX_WINDOWS` so simultaneous window opens
+/// or growths cannot saturate the blocking thread pool).
+pub const MAX_INFLIGHT_COMPOSITES: usize = 4;
+
+/// Minimum real seconds between non-staff map-edge growth requests per `(domain, actor)` (HIGH-40).
+pub const ACTOR_GROW_COOLDOWN_SECS: i64 = 2;
+
+/// Minimum real seconds between persisted window-document writes during rapid growth (HIGH-40).
+pub const WINDOW_PERSIST_DEBOUNCE_SECS: i64 = 5;
+
 /// The canonical-digest domain of a composite.
 const COMPOSITE_DOMAIN: &str = "mush.atlas.window.composite.v1";
 
@@ -707,6 +718,11 @@ pub struct Pending {
     pub revision: u64,
     /// Who to place when it lands, and through which portal each arrived.
     pub place: Vec<(ObjId, Option<RecordKey>)>,
+    /// Whether an `Effect::ModuleAsync` job for `revision` is currently in flight (HIGH-40).
+    pub in_flight: bool,
+    /// Whether another recomposite request arrived while a job was in flight or
+    /// queued behind [`MAX_INFLIGHT_COMPOSITES`] (HIGH-40).
+    pub dirty: bool,
 }
 
 /// One open window: the document plus the RAM-only pending work.
@@ -731,6 +747,15 @@ pub struct WindowEntry {
     /// Work waiting on a composite.
     #[serde(skip)]
     pub pending: Option<Pending>,
+    /// Real-time Unix seconds when this entry was last persisted (RAM only, HIGH-40).
+    #[serde(skip)]
+    pub last_persisted_at: Option<i64>,
+    /// Whether unpersisted frame/composite changes await the persistence debounce flush (RAM only).
+    #[serde(skip)]
+    pub persist_dirty: bool,
+    /// Whether the next landed composite must persist immediately instead of debouncing (RAM only).
+    #[serde(skip)]
+    pub persist_immediate: bool,
 }
 
 impl WindowEntry {
@@ -761,6 +786,8 @@ pub struct Windows {
     /// The surface (an index into the frame's) each viewer looks at, when they
     /// chose one (`+map/floor`); RAM-only.
     pub viewer_floor: BTreeMap<ObjId, usize>,
+    /// Per-(domain, actor) timestamp of last non-staff map-edge growth; RAM-only (HIGH-40).
+    pub actor_grow_at: BTreeMap<(u64, ObjId), i64>,
     /// The registered cell sizes (doc 14 §3.4), finest first.
     pub cell_sizes: BTreeSet<u16>,
     /// The margin around the anchors, centimetres.
@@ -774,6 +801,7 @@ impl Default for Windows {
         Windows {
             open: BTreeMap::new(),
             viewer_floor: BTreeMap::new(),
+            actor_grow_at: BTreeMap::new(),
             cell_sizes: DEFAULT_CELL_SIZES.iter().copied().collect(),
             margin_cm: i64::from(DEFAULT_WINDOW_MARGIN_M) * 100,
             max_cells: DEFAULT_WINDOW_MAX_CELLS,
@@ -782,6 +810,15 @@ impl Default for Windows {
 }
 
 impl Windows {
+    /// How many off-loop map compositing jobs are currently in flight across all windows.
+    #[must_use]
+    pub fn inflight_composites(&self) -> usize {
+        self.open
+            .values()
+            .filter(|e| e.pending.as_ref().is_some_and(|p| p.in_flight))
+            .count()
+    }
+
     /// The window covering `room`, when one does.
     #[must_use]
     pub fn covering(&self, room: ObjId) -> Option<&WindowEntry> {
@@ -925,9 +962,12 @@ pub fn open(ctx: &mut Ctx<'_>, req: OpenRequest) -> Result<DomainId, String> {
             driver: req.driver.clone(),
         },
     )?;
-    let input = {
+    let can_dispatch = state(ctx)?.windows.inflight_composites() < MAX_INFLIGHT_COMPOSITES;
+    let input = if can_dispatch {
         let st = state(ctx)?;
-        capture(&st.records, &frame)?
+        Some(capture(&st.records, &frame)?)
+    } else {
+        None
     };
     let entry = WindowEntry {
         domain: domain.0,
@@ -940,11 +980,18 @@ pub fn open(ctx: &mut Ctx<'_>, req: OpenRequest) -> Result<DomainId, String> {
         pending: Some(Pending {
             revision: 1,
             place: req.participants.iter().map(|o| (*o, None)).collect(),
+            in_flight: can_dispatch,
+            dirty: !can_dispatch,
         }),
+        last_persisted_at: None,
+        persist_dirty: false,
+        persist_immediate: true,
     };
     persist_entry(ctx, &entry);
     state_mut(ctx)?.windows.open.insert(domain.0, entry);
-    defer_composite(ctx, domain, 1, input);
+    if let Some(input) = input {
+        defer_composite(ctx, domain, 1, input);
+    }
     Ok(domain)
 }
 
@@ -1072,38 +1119,161 @@ fn defer_composite(ctx: &mut Ctx<'_>, domain: DomainId, revision: u64, input: Co
 /// Re-composite an open window against the records as they stand (growth, a
 /// feature's state, a pack that moved on); the participants keep their poses.
 ///
+/// Coalesces per-window (at most one off-loop composite job in flight per
+/// window; repeated requests while in flight set `dirty` and run one follow-up
+/// composite on completion) and bounds total concurrent compositing jobs across
+/// all windows to [`MAX_INFLIGHT_COMPOSITES`] (HIGH-40).
+///
 /// # Errors
 ///
 /// A message when the window is not open.
 pub fn recomposite(ctx: &mut Ctx<'_>, domain: DomainId) -> Result<u64, String> {
-    let (frame, revision) = {
+    let dispatch: Option<(WindowFrame, u64)> = {
         let st = state_mut(ctx)?;
+        let inflight = st.windows.inflight_composites();
         let entry = st
             .windows
             .open
             .get_mut(&domain.0)
             .ok_or_else(|| format!("window #{domain} is not open"))?;
-        let revision = entry
-            .pending
-            .as_ref()
-            .map_or(entry.revision, |p| p.revision)
-            .saturating_add(1);
-        let pending = entry.pending.get_or_insert_with(Pending::default);
-        pending.revision = revision;
-        (entry.frame.clone(), revision)
+        if let Some(pending) = entry.pending.as_mut() {
+            if pending.in_flight {
+                // Already in flight: coalesce into a single follow-up on completion.
+                pending.dirty = true;
+                return Ok(pending.revision);
+            }
+            // Queued behind the global concurrency cap; dispatch now if a slot opened.
+            if inflight < MAX_INFLIGHT_COMPOSITES {
+                pending.in_flight = true;
+                pending.dirty = false;
+                Some((entry.frame.clone(), pending.revision))
+            } else {
+                pending.dirty = true;
+                None
+            }
+        } else {
+            let revision = entry.revision.saturating_add(1);
+            if inflight < MAX_INFLIGHT_COMPOSITES {
+                entry.pending = Some(Pending {
+                    revision,
+                    place: Vec::new(),
+                    in_flight: true,
+                    dirty: false,
+                });
+                Some((entry.frame.clone(), revision))
+            } else {
+                entry.pending = Some(Pending {
+                    revision,
+                    place: Vec::new(),
+                    in_flight: false,
+                    dirty: true,
+                });
+                None
+            }
+        }
     };
-    let input = {
-        let st = state(ctx)?;
-        capture(&st.records, &frame)?
+    if let Some((frame, revision)) = dispatch {
+        let input = {
+            let st = state(ctx)?;
+            capture(&st.records, &frame)?
+        };
+        defer_composite(ctx, domain, revision, input);
+        Ok(revision)
+    } else {
+        let rev = state(ctx)?
+            .windows
+            .open
+            .get(&domain.0)
+            .and_then(|e| e.pending.as_ref().map(|p| p.revision))
+            .unwrap_or(0);
+        Ok(rev)
+    }
+}
+
+/// Dispatch queued window composites whenever global in-flight capacity permits (HIGH-40).
+fn drain_queued_composites(ctx: &mut Ctx<'_>) {
+    let to_dispatch: Vec<(DomainId, WindowFrame, u64)> = {
+        let Ok(st) = state_mut(ctx) else {
+            return;
+        };
+        let inflight = st.windows.inflight_composites();
+        let slots = MAX_INFLIGHT_COMPOSITES.saturating_sub(inflight);
+        if slots == 0 {
+            return;
+        }
+        let mut out = Vec::new();
+        for entry in st.windows.open.values_mut() {
+            if out.len() >= slots {
+                break;
+            }
+            if let Some(pending) = entry.pending.as_mut()
+                && !pending.in_flight
+                && pending.dirty
+            {
+                pending.in_flight = true;
+                pending.dirty = false;
+                out.push((
+                    DomainId(entry.domain),
+                    entry.frame.clone(),
+                    pending.revision,
+                ));
+            }
+        }
+        out
     };
-    defer_composite(ctx, domain, revision, input);
-    Ok(revision)
+    for (domain, frame, revision) in to_dispatch {
+        let input = match state(ctx).and_then(|st| capture(&st.records, &frame)) {
+            Ok(input) => input,
+            Err(error) => {
+                tracing::warn!(%domain, %error, "atlas: queued composite capture failed");
+                if let Ok(st) = state_mut(ctx)
+                    && let Some(entry) = st.windows.open.get_mut(&domain.0)
+                {
+                    entry.pending = None;
+                }
+                continue;
+            }
+        };
+        defer_composite(ctx, domain, revision, input);
+    }
+}
+
+/// Flush debounced window persistence writes whose debounce window has elapsed,
+/// and dispatch any queued composites (HIGH-40). Called from the 1-second atlas tick.
+pub(crate) fn tick_flush(ctx: &mut Ctx<'_>) {
+    let now = ctx.w.now();
+    let to_persist: Vec<WindowEntry> = {
+        let Ok(st) = state_mut(ctx) else {
+            return;
+        };
+        let mut out = Vec::new();
+        for entry in st.windows.open.values_mut() {
+            if entry.persist_dirty
+                && entry.pending.is_none()
+                && entry.composite.is_some()
+                && entry
+                    .last_persisted_at
+                    .is_none_or(|t| now.saturating_sub(t) >= WINDOW_PERSIST_DEBOUNCE_SECS)
+            {
+                entry.persist_dirty = false;
+                entry.persist_immediate = false;
+                entry.last_persisted_at = Some(now);
+                out.push(entry.clone());
+            }
+        }
+        out
+    };
+    for entry in &to_persist {
+        persist_entry(ctx, entry);
+    }
+    drain_queued_composites(ctx);
 }
 
 /// The async completion: install a composite, place who waited on it.
 pub fn on_composited(ctx: &mut Ctx<'_>, outcome: CompositeOutcome) {
     let domain = DomainId(outcome.domain);
-    let (opened_by, waiting) = {
+    let now = ctx.w.now();
+    let (opened_by, waiting, follow_up, persist_now) = {
         let Ok(st) = state_mut(ctx) else {
             return;
         };
@@ -1122,14 +1292,32 @@ pub fn on_composited(ctx: &mut Ctx<'_>, outcome: CompositeOutcome) {
             return;
         }
         let pending = entry.pending.take().unwrap_or_default();
+        let follow_up = pending.dirty;
         match outcome.result {
             Ok(composite) => {
                 entry.rooms = composite.rooms();
                 entry.revision = outcome.revision;
                 entry.composite = Some(composite);
-                (entry.opened_by.clone(), Ok(pending.place))
+                let persist_now = !follow_up
+                    && (entry.persist_immediate
+                        || entry
+                            .last_persisted_at
+                            .is_none_or(|t| now.saturating_sub(t) >= WINDOW_PERSIST_DEBOUNCE_SECS));
+                if persist_now {
+                    entry.last_persisted_at = Some(now);
+                    entry.persist_dirty = false;
+                    entry.persist_immediate = false;
+                } else {
+                    entry.persist_dirty = true;
+                }
+                (
+                    entry.opened_by.clone(),
+                    Ok(pending.place),
+                    follow_up,
+                    persist_now,
+                )
             }
-            Err(error) => (entry.opened_by.clone(), Err(error)),
+            Err(error) => (entry.opened_by.clone(), Err(error), false, false),
         }
     };
     match waiting {
@@ -1157,7 +1345,9 @@ pub fn on_composited(ctx: &mut Ctx<'_>, outcome: CompositeOutcome) {
             if let Err(error) = mush_sim::update_window(ctx, domain, rec) {
                 tracing::warn!(%domain, %error, "atlas: the simulation refused the window's frame");
             }
-            persist_entry(ctx, &entry);
+            if persist_now {
+                persist_entry(ctx, &entry);
+            }
             let mut placed = 0usize;
             for (obj, portal) in place.into_iter().take(MAX_PLACED_PER_PASS) {
                 let Some(room) = ctx.w.get(obj).and_then(|o| o.location) else {
@@ -1178,6 +1368,10 @@ pub fn on_composited(ctx: &mut Ctx<'_>, outcome: CompositeOutcome) {
             }
             announce_ready(ctx, &entry, &opened_by, placed);
             crate::frame::publish_keyframes(ctx, domain);
+            if follow_up && let Err(error) = recomposite(ctx, domain) {
+                tracing::warn!(%domain, %error, "atlas: coalesced follow-up composite failed");
+            }
+            drain_queued_composites(ctx);
         }
         Err(error) => {
             tracing::warn!(%domain, %error, "atlas: a composite failed; the window closes");
@@ -1192,6 +1386,7 @@ pub fn on_composited(ctx: &mut Ctx<'_>, outcome: CompositeOutcome) {
             if let Err(error) = close(ctx, domain, "its map could not be drawn") {
                 tracing::warn!(%domain, %error, "atlas: closing a failed window");
             }
+            drain_queued_composites(ctx);
         }
     }
 }
@@ -1248,6 +1443,9 @@ pub fn close(ctx: &mut Ctx<'_>, domain: DomainId, reason: &str) -> Result<Vec<Ob
         }
     };
     del_doc(ctx, entry.key());
+    if let Ok(st) = state_mut(ctx) {
+        st.windows.actor_grow_at.retain(|(d, _), _| *d != domain.0);
+    }
     let mut told = released.clone();
     if let WindowOpener::Staff { by } = entry.opened_by
         && !told.contains(&by)
@@ -1266,6 +1464,7 @@ pub fn close(ctx: &mut Ctx<'_>, domain: DomainId, reason: &str) -> Result<Vec<Ob
             );
         }
     }
+    drain_queued_composites(ctx);
     Ok(released)
 }
 
@@ -2477,8 +2676,26 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
         };
         if let Some(surface_ref) = surface_ref {
             let mut report = walk;
+            let now = ctx.w.now();
+            let cooled = !staff
+                && state(ctx).is_ok_and(|st| {
+                    st.windows
+                        .actor_grow_at
+                        .get(&(domain.0, actor))
+                        .is_some_and(|&t| now.saturating_sub(t) < ACTOR_GROW_COOLDOWN_SECS)
+                });
+            if cooled {
+                report.stopped = Some(
+                    "the map is still catching up; pause a moment before stepping further"
+                        .to_string(),
+                );
+                return Ok(report);
+            }
             match grow(ctx, domain, beyond, &surface_ref) {
                 Ok(Some(room)) => {
+                    if !staff && let Ok(st) = state_mut(ctx) {
+                        st.windows.actor_grow_at.insert((domain.0, actor), now);
+                    }
                     report.stopped = Some(format!(
                         "the map grows to take in {}; step again when it is drawn",
                         name(ctx.w, room)
@@ -2596,21 +2813,28 @@ pub fn grow(
         }
         (geo.room, frame, rooms)
     };
-    {
+    let changed = {
         let st = state_mut(ctx)?;
-        if let Some(entry) = st.windows.open.get_mut(&domain.0) {
+        let entry = st
+            .windows
+            .open
+            .get_mut(&domain.0)
+            .ok_or_else(|| format!("window #{domain} is not open"))?;
+        if entry.frame == new_frame && entry.rooms == rooms {
+            false
+        } else {
             entry.frame = new_frame;
             entry.rooms = rooms;
+            entry.persist_dirty = true;
+            true
         }
+    };
+    // HIGH-40: if this frame/room set is already covered or pending composite,
+    // skip redundant recomposite and never persist synchronously inside `grow`
+    // (persistence is debounced when the composite lands or on the tick).
+    if changed {
+        recomposite(ctx, domain)?;
     }
-    let entry = state(ctx)?
-        .windows
-        .open
-        .get(&domain.0)
-        .cloned()
-        .ok_or_else(|| format!("window #{domain} is not open"))?;
-    persist_entry(ctx, &entry);
-    recomposite(ctx, domain)?;
     Ok(Some(room))
 }
 
@@ -2659,6 +2883,11 @@ pub fn set_feature_state(
         &rec,
     );
     for &domain in &windows {
+        if let Ok(st) = state_mut(ctx)
+            && let Some(entry) = st.windows.open.get_mut(&domain.0)
+        {
+            entry.persist_immediate = true;
+        }
         recomposite(ctx, domain)?;
     }
     Ok(windows)

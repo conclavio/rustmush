@@ -788,9 +788,17 @@ fn e7c10_m1_a_vacancy_does_not_cancel_the_operation() {
     assert!(shown.contains("VACANT"), "{shown}");
     assert!(shown.contains("the operation stands"), "{shown}");
     // The operation is untouched: it is still live and still commits both units.
+    // Plain `+muster` is strictly read-only (HIGH-32); `+muster/lock` persists
+    // the report with its vacancy count.
     let doc = camp(&tw).operation(op).expect("the operation");
     assert!(!doc.runtime.state.is_terminal());
     assert_eq!(doc.runtime.participants.len(), 2);
+    assert!(
+        camp(&tw).latest_muster(op).is_none(),
+        "read-only +muster must not persist a muster report"
+    );
+    let locked = ok(&mut tw, fx.commander, &format!("+muster/lock {}", op.0));
+    assert!(locked.contains("VACANT"), "{locked}");
     let report = camp(&tw).latest_muster(op).expect("a report");
     assert_eq!(report.vacancies(), 1);
 }
@@ -2464,6 +2472,11 @@ fn vf_k8b_offers_the_viewer_may_not_see_do_not_hide_a_visible_one() {
     ok(
         &mut tw,
         fx.commander,
+        &format!("@op/join {}=#{}", hidden.0, fx.locust.0),
+    );
+    ok(
+        &mut tw,
+        fx.commander,
         &format!("@op/terms {}/visibility=covert", hidden.0),
     );
     for _ in 0..mush_campaign::MAX_SEAT_OFFERS_PER_OPERATION {
@@ -2472,12 +2485,17 @@ fn vf_k8b_offers_the_viewer_may_not_see_do_not_hide_a_visible_one() {
             fx.commander,
             &format!(
                 "+seat/offer {}/#{}/pilot=#{},movement",
-                hidden.0, fx.atlas.0, fx.ace.0
+                hidden.0, fx.locust.0, fx.duce.0
             ),
         );
     }
     // …then the viewer's own operation, whose offers sort after all of them.
-    let op = operation(&mut tw, &fx);
+    let op = operation_bare(&mut tw, &fx);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/join {}=#{}", op.0, fx.atlas.0),
+    );
     ok(
         &mut tw,
         fx.commander,
@@ -2516,7 +2534,7 @@ fn vf_b1_the_muster_book_is_a_ring() {
     let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
     let op = operation(&mut tw, &fx);
     for _ in 0..(mush_campaign::MAX_RETAINED_MUSTERS + 5) {
-        ok(&mut tw, fx.commander, &format!("+muster {}", op.0));
+        ok(&mut tw, fx.commander, &format!("+muster/lock {}", op.0));
     }
     let newest = camp(&tw).latest_muster(op).expect("a report").cycle;
     let mut kv = BTreeMap::new();
@@ -2553,7 +2571,12 @@ fn vf_b2_a_stale_grant_past_the_seat_budget_still_expires() {
     let audit = Arc::new(TestAudit::default());
     let (mut tw, fx) = scene(audit.clone());
     // A live operation carrying a full budget of healthy dormant grants…
-    let live = operation(&mut tw, &fx);
+    let live = operation_bare(&mut tw, &fx);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/join {}=#{}", live.0, fx.atlas.0),
+    );
     for _ in 0..mush_campaign::MAX_SEATS_PER_FIRE {
         let seat = offer(&mut tw, &fx, live, fx.atlas, fx.ace, "movement");
         ok(
@@ -2564,6 +2587,11 @@ fn vf_b2_a_stale_grant_past_the_seat_budget_still_expires() {
     }
     // …and one grant on an ABORTED operation, sorted last.
     let doomed = operation_bare(&mut tw, &fx);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/join {}=#{}", doomed.0, fx.locust.0),
+    );
     assert!(doomed.0 > live.0, "the stale grant must sort last");
     ok(
         &mut tw,
@@ -2930,4 +2958,200 @@ fn vf_a11_the_driver_is_refused_the_units_own_channel_and_the_refusal_is_inertne
         tw.world().get(fx.driver).and_then(|o| o.location),
         Some(fx.field)
     );
+}
+
+// ===========================================================================
+// Tier 1C security hardening — HIGH-29, HIGH-31, HIGH-32
+// ===========================================================================
+
+/// **HIGH-29.** `+seat/offer` rejects non-NPCs (`Player`, `Thing`), `GOING`
+/// NPCs, and NPCs the issuer does not control/seat, returning the
+/// existence-hiding refusal without creating an offer.
+#[test]
+fn high29_seat_offer_rejects_players_things_going_npcs_and_uncontrolled_npcs() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+
+    let prop = tw
+        .world_mut()
+        .create(
+            ObjKind::Thing,
+            "Crate",
+            fx.commander,
+            Some(mush_core::LIMBO),
+        )
+        .expect("prop");
+    let foreign_npc = tw
+        .world_mut()
+        .create(
+            ObjKind::Npc,
+            "EnemyPilot",
+            fx.bystander,
+            Some(mush_core::LIMBO),
+        )
+        .expect("foreign npc");
+    let going_npc = tw
+        .world_mut()
+        .create(
+            ObjKind::Npc,
+            "DyingPilot",
+            fx.commander,
+            Some(mush_core::LIMBO),
+        )
+        .expect("going npc");
+    tw.world_mut()
+        .set_flag(going_npc, mush_core::Flags::GOING, true)
+        .expect("flag");
+
+    for bad_actor in [fx.driver, fx.bystander, prop, foreign_npc, going_npc] {
+        let refusal = err(
+            &mut tw,
+            fx.commander,
+            &format!(
+                "+seat/offer {}/#{}/pilot=#{},movement,to:#{}",
+                op.0, fx.atlas.0, bad_actor.0, fx.driver.0
+            ),
+        );
+        assert_eq!(
+            refusal,
+            mush_campaign::NO_SUCH_SEAT,
+            "bad actor {bad_actor:?} must be refused with NO_SUCH_SEAT"
+        );
+    }
+    assert_eq!(
+        camp(&tw)
+            .seat_offers()
+            .filter(|o| o.operation == op)
+            .count(),
+        0,
+        "no seat offer may be created for invalid or uncontrolled actors"
+    );
+}
+
+/// **HIGH-31.** `+seat/offer` enforces `Lens::Plan`, `may_roster`, live
+/// (non-terminal) operation state, and `doc.runtime.holds(unit)` so an
+/// attacker cannot inject offers into another operation, offer uncommitted
+/// units, or exhaust a target operation's 32-offer cap.
+#[test]
+fn high31_seat_offer_enforces_plan_lens_may_roster_live_state_and_unit_membership() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    // Make op public so driver/bystander have Lens::Notice on it.
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/terms {}/visibility=public", op.0),
+    );
+
+    // 1. Non-issuer with Lens::Notice (driver / bystander) cannot inject offers.
+    for intruder in [fx.driver, fx.bystander] {
+        let refusal = err(
+            &mut tw,
+            intruder,
+            &format!(
+                "+seat/offer {}/#{}/pilot=#{},movement",
+                op.0, fx.atlas.0, fx.ace.0
+            ),
+        );
+        assert_eq!(refusal, mush_campaign::NO_SUCH_SEAT);
+    }
+    assert_eq!(
+        camp(&tw)
+            .seat_offers()
+            .filter(|o| o.operation == op)
+            .count(),
+        0
+    );
+
+    // 2. Commander cannot offer a seat on an uncommitted unit (`!holds(unit)`).
+    let bare = operation_bare(&mut tw, &fx);
+    let uncommitted = err(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement",
+            bare.0, fx.atlas.0, fx.ace.0
+        ),
+    );
+    assert_eq!(uncommitted, mush_campaign::NO_SUCH_SEAT);
+
+    // 3. Commander cannot offer a seat on a terminal operation.
+    ok(&mut tw, fx.commander, &format!("@op/activate {}", op.0));
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/resolve {}=success", op.0),
+    );
+    for _ in 0..8 {
+        fire(&mut tw);
+    }
+    assert!(
+        camp(&tw)
+            .operation(op)
+            .expect("op")
+            .runtime
+            .state
+            .is_terminal()
+    );
+    let terminal = err(
+        &mut tw,
+        fx.commander,
+        &format!(
+            "+seat/offer {}/#{}/pilot=#{},movement",
+            op.0, fx.atlas.0, fx.ace.0
+        ),
+    );
+    assert_eq!(terminal, mush_campaign::NO_SUCH_SEAT);
+}
+
+/// **HIGH-32.** Unswitched `+muster <op>` is strictly read-only (never clears
+/// `+muster/lock` or advances the muster cycle) and filters reported vacancies
+/// strictly to units the caller can command.
+#[test]
+fn high32_plain_muster_preserves_roster_lock_and_filters_vacancies_to_commandable() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+    // Create a vacancy on commander's Locust.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", fx.locust.0),
+    );
+
+    // Lock the roster via `+muster/lock`.
+    ok(&mut tw, fx.commander, &format!("+muster/lock {}", op.0));
+    let locked_before = camp(&tw).latest_muster(op).expect("locked report");
+    assert!(locked_before.locked);
+    let cycle_before = locked_before.cycle;
+
+    // Plain `+muster <op>` by commander shows their 1 vacancy, yet MUST NOT unlock
+    // the roster or advance the persisted muster cycle.
+    let shown = ok(&mut tw, fx.commander, &format!("+muster {}", op.0));
+    assert!(shown.contains("1 vacancy(ies)"), "{shown}");
+    assert!(shown.contains("locked"), "{shown}");
+    let after_plain = camp(&tw).latest_muster(op).expect("still locked");
+    assert!(
+        after_plain.locked,
+        "plain +muster must never unlock a +muster/lock'd roster"
+    );
+    assert_eq!(after_plain.cycle, cycle_before);
+
+    // Seat acceptance stays refused because the roster is still locked.
+    let accept_refusal = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", op.0, seat.0),
+    );
+    assert!(accept_refusal.contains("locked"), "{accept_refusal}");
+
+    // A defender with no commandable units running plain `+muster` sees 0 vacancies
+    // (never leaking commander's vacancy count) and leaves the lock intact.
+    name_defender(&mut tw, &fx, op, fx.bystander);
+    let def_view = ok(&mut tw, fx.bystander, &format!("+muster {}", op.0));
+    assert!(
+        def_view.contains("0 vacancy(ies)"),
+        "defender must not learn attacker's vacancy count: {def_view}"
+    );
+    assert!(camp(&tw).latest_muster(op).expect("still locked").locked);
 }

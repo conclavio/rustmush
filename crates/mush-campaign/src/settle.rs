@@ -169,8 +169,9 @@ pub fn enter_resolving(ctx: &mut Ctx<'_>, id: OperationId, outcome: &str) -> boo
         return false;
     };
     match doc.runtime.state {
-        OperationState::Activated | OperationState::Running | OperationState::Declared => {}
-        // Already resolving, resolved or aborted: never re-enter, never re-open.
+        OperationState::Activated | OperationState::Running => {}
+        // Declared must activate before settling (HIGH-30); already resolving,
+        // resolved or aborted never re-enter and never re-open.
         _ => return false,
     }
     if !doc.consent_intact() {

@@ -76,6 +76,9 @@ pub const LIVE_GRACE_S: i64 = 2;
 /// After a release the journey cannot be re-held by a player for this many real
 /// seconds (`route.rs`'s anti-grief grace, kept).
 pub const RESUME_GRACE_S: i64 = 5;
+/// Maximum real seconds a player `+intercept` may hold a standing service
+/// vehicle or an intercepted journey before automatic release (HIGH-38).
+pub const MAX_INTERCEPT_HOLD_REAL_S: i64 = 600;
 /// The most bytes an anomaly note keeps.
 pub const MAX_ANOMALY_BYTES: usize = 240;
 /// The most timed-portal departures the hook queues between two ticks.
@@ -492,6 +495,10 @@ pub struct ServiceState {
     pub doc: ServiceDoc,
     /// Held at its stop by an interceptor.
     pub held_by: Option<ObjId>,
+    /// Real-time Unix seconds when `held_by` was acquired (RAM only).
+    pub held_since_real: Option<i64>,
+    /// Real-time Unix seconds before which non-staff players cannot re-hold this vehicle.
+    pub grace_until: i64,
 }
 
 /// A timed-portal departure the hook queued for the tick.
@@ -544,6 +551,9 @@ pub struct TravelState {
     /// relocation through `Ctx::authorize_traversal`, so `TravelHook` skips its own
     /// "already under way" self-veto while all other `MoveAttempt` hooks still run.
     pub(crate) internal_move: Option<(ObjId, ObjId)>,
+    /// Real-time Unix seconds when a [`HoldReason::Intercept`] journey hold began
+    /// (RAM only; refreshed on boot for persisted intercept holds so TTL always fires).
+    pub(crate) intercept_hold_started: BTreeMap<JourneyId, i64>,
 }
 
 impl TravelState {
@@ -1720,6 +1730,7 @@ fn hold_reason_at(ctx: &Ctx<'_>, j: &JourneyRec) -> Option<HoldReason> {
     if let Some(intercept) = st.travel.intercepts.get(&obj)
         && &intercept.at == here
         && !in_grace
+        && interceptor_present_at(st, ctx.w, intercept.by, here)
     {
         return Some(HoldReason::Intercept { by: intercept.by });
     }
@@ -1730,6 +1741,31 @@ fn hold_reason_at(ctx: &Ctx<'_>, j: &JourneyRec) -> Option<HoldReason> {
         return Some(HoldReason::Watch { by: watcher });
     }
     None
+}
+
+fn node_room(st: &AtlasState, node: &Node) -> Option<ObjId> {
+    match node {
+        Node::Checkpoint { key } => st.travel.patches.get(key).map(|d| d.room),
+        Node::Room { room } => Some(*room),
+    }
+}
+
+fn interceptor_present_at(st: &AtlasState, w: &World, who: ObjId, node: &Node) -> bool {
+    let Some(room) = node_room(st, node) else {
+        return false;
+    };
+    w.get(who)
+        .is_some_and(|o| !o.flags.contains(Flags::GOING) && o.location == Some(room))
+}
+
+fn service_stop_room(st: &AtlasState, conn_key: &RecordKey) -> Option<ObjId> {
+    let conn = st.records.connections.get(conn_key)?;
+    let service = st.travel.services.get(conn_key)?;
+    let end = match service.doc.at {
+        End::From => &conn.endpoints.0,
+        End::To => &conn.endpoints.1,
+    };
+    access_room(&st.records, end)
 }
 
 fn narrate_pass(ctx: &mut Ctx<'_>, j: &JourneyRec) {
@@ -1852,8 +1888,13 @@ fn apply_hold(
         .text(format!(" at {where_}."));
     tell_room(ctx, place, holder, text);
     // A hold from a watch or intercept is spent once it lands.
+    let now_real = ctx.w.now();
+    let is_intercept = matches!(reason, HoldReason::Intercept { .. });
     if let Some(st) = state_mut(ctx) {
         st.travel.intercepts.remove(&obj);
+        if is_intercept {
+            st.travel.intercept_hold_started.insert(id, now_real);
+        }
     }
     persist(ctx, &held);
     if let Some(st) = state_mut(ctx) {
@@ -2043,6 +2084,7 @@ fn retire(ctx: &mut Ctx<'_>, id: JourneyId) {
     del_doc(ctx, journey_key(id));
     if let Some(st) = state_mut(ctx) {
         st.travel.journeys.remove(&id);
+        st.travel.intercept_hold_started.remove(&id);
         if let Some(obj) = obj {
             if st.travel.by_traveler.get(&obj) == Some(&id) {
                 st.travel.by_traveler.remove(&obj);
@@ -2056,10 +2098,177 @@ fn set_service(ctx: &mut Ctx<'_>, conn: &RecordKey, at: End, since_real: i64) {
     let doc = ServiceDoc { at, since_real };
     put_doc(ctx, key_of(KIND_SERVICE, conn), &doc);
     if let Some(st) = state_mut(ctx) {
-        let held_by = st.travel.services.get(conn).and_then(|s| s.held_by);
-        st.travel
-            .services
-            .insert(conn.clone(), ServiceState { doc, held_by });
+        let (held_by, held_since_real, grace_until) = match st.travel.services.get(conn) {
+            Some(prev) if prev.doc.at == at => {
+                (prev.held_by, prev.held_since_real, prev.grace_until)
+            }
+            Some(prev) => (None, None, prev.grace_until),
+            None => (None, None, 0),
+        };
+        st.travel.services.insert(
+            conn.clone(),
+            ServiceState {
+                doc,
+                held_by,
+                held_since_real,
+                grace_until,
+            },
+        );
+    }
+}
+
+/// Release a standing service vehicle's hold (`service.held_by`), arming
+/// [`RESUME_GRACE_S`] against immediate re-holding by non-staff players.
+///
+/// # Errors
+///
+/// A message for the actor when the service is not held.
+pub fn release_service_hold(
+    ctx: &mut Ctx<'_>,
+    conn: &RecordKey,
+    by: Option<ObjId>,
+    reason: &str,
+) -> Result<Option<ObjId>, String> {
+    let (holder, vehicle, stop) = {
+        let st = state_of(ctx).ok_or_else(|| "Atlas travel is not loaded.".to_string())?;
+        let Some(service) = st.travel.services.get(conn) else {
+            return Err("No such service.".to_string());
+        };
+        let Some(holder) = service.held_by else {
+            return Err("That vehicle is not held.".to_string());
+        };
+        let vehicle = st
+            .records
+            .connections
+            .get(conn)
+            .and_then(|c| service_vehicle(ctx.w, c));
+        let stop = service_stop_room(st, conn);
+        (holder, vehicle, stop)
+    };
+    let grace_until = ctx.w.now().saturating_add(RESUME_GRACE_S);
+    if let Some(st) = state_mut(ctx)
+        && let Some(service) = st.travel.services.get_mut(conn)
+    {
+        service.held_by = None;
+        service.held_since_real = None;
+        service.grace_until = grace_until;
+    }
+    if let Some(vehicle) = vehicle {
+        let name = display_name(ctx.w, vehicle);
+        match by {
+            Some(actor) if actor == holder => {
+                if let Some(stop) = stop {
+                    let text = RichText::new()
+                        .span(name_span(ctx.w, actor))
+                        .text(format!(" steps back from the doors of the {name}."));
+                    tell_room(ctx, stop, actor, text);
+                }
+                tell_room(
+                    ctx,
+                    vehicle,
+                    vehicle,
+                    RichText::new().text(format!("The doors are clear; the {name} can leave.")),
+                );
+            }
+            Some(staff) => {
+                if let Some(stop) = stop {
+                    let text = RichText::new()
+                        .span(name_span(ctx.w, staff))
+                        .text(format!(" clears the hold on the {name}."));
+                    tell_room(ctx, stop, staff, text);
+                }
+                tell_room(
+                    ctx,
+                    vehicle,
+                    vehicle,
+                    RichText::new().text(format!(
+                        "The hold is cleared ({reason}); the {name} can leave."
+                    )),
+                );
+            }
+            None => {
+                if let Some(stop) = stop {
+                    tell_room(
+                        ctx,
+                        stop,
+                        vehicle,
+                        RichText::new().text(format!(
+                            "The hold on the {name} ends ({reason}); it can leave."
+                        )),
+                    );
+                }
+                tell_room(
+                    ctx,
+                    vehicle,
+                    vehicle,
+                    RichText::new().text(format!(
+                        "The doors are clear ({reason}); the {name} can leave."
+                    )),
+                );
+            }
+        }
+    }
+    Ok(vehicle)
+}
+
+/// Clear standing-vehicle holds, intercepted journey holds, and pending intercepts
+/// owned by `who` (HIGH-38). When `only_if_away` is true, only holds whose room
+/// `who` is no longer standing in are cleared.
+fn clear_holds_by(ctx: &mut Ctx<'_>, who: ObjId, reason: &str, only_if_away: bool) {
+    let loc = ctx.w.get(who).and_then(|o| o.location);
+    let services: Vec<RecordKey> = state_of(ctx)
+        .map(|st| {
+            st.travel
+                .services
+                .iter()
+                .filter(|(conn, s)| {
+                    s.held_by == Some(who) && (!only_if_away || service_stop_room(st, conn) != loc)
+                })
+                .map(|(conn, _)| conn.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    for conn in services {
+        let _ = release_service_hold(ctx, &conn, None, reason);
+    }
+    let held_journeys: Vec<JourneyId> = state_of(ctx)
+        .map(|st| {
+            st.travel
+                .journeys
+                .values()
+                .filter(|j| {
+                    matches!(
+                        &j.state,
+                        JourneyState::Held {
+                            by: HoldReason::Intercept { by },
+                            ..
+                        } if *by == who
+                    ) && (!only_if_away || j.here().and_then(|n| node_room(st, n)) != loc)
+                })
+                .map(|j| j.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in held_journeys {
+        if let Err(error) = release(ctx, id, None) {
+            tracing::debug!(journey = %id, %error, "atlas: intercept hold stayed after holder left");
+        }
+    }
+    if let Some(st) = state_mut(ctx) {
+        let patches = st.travel.patches.clone();
+        st.travel.intercepts.retain(|_, i| {
+            if i.by != who {
+                return true;
+            }
+            if !only_if_away {
+                return false;
+            }
+            let room = match &i.at {
+                Node::Checkpoint { key } => patches.get(key).map(|d| d.room),
+                Node::Room { room } => Some(*room),
+            };
+            room == loc
+        });
     }
 }
 
@@ -2195,6 +2404,7 @@ pub fn release(ctx: &mut Ctx<'_>, id: JourneyId, by: Option<ObjId>) -> Result<()
     }
     persist(ctx, &resumed);
     if let Some(st) = state_mut(ctx) {
+        st.travel.intercept_hold_started.remove(&id);
         st.travel.journeys.insert(id, resumed);
     }
     if let Some(Node::Checkpoint { key }) = here {
@@ -2234,6 +2444,36 @@ pub fn cancel(
 
 fn run_services(ctx: &mut Ctx<'_>) {
     let now_real = ctx.w.now();
+    // HIGH-38: drop orphaned, away, or TTL-expired standing-vehicle holds before
+    // checking departures so a vehicle cannot be permanently frozen at a stop.
+    let stale_holds: Vec<(RecordKey, &'static str)> = state_of(ctx)
+        .map(|st| {
+            st.travel
+                .services
+                .iter()
+                .filter_map(|(conn_key, s)| {
+                    let holder = s.held_by?;
+                    let holder_obj = ctx.w.get(holder);
+                    if holder_obj.is_none_or(|o| o.flags.contains(Flags::GOING)) {
+                        return Some((conn_key.clone(), "the holder is gone"));
+                    }
+                    let stop = service_stop_room(st, conn_key);
+                    if holder_obj.and_then(|o| o.location) != stop {
+                        return Some((conn_key.clone(), "the holder left the stop"));
+                    }
+                    if s.held_since_real
+                        .is_none_or(|t| now_real.saturating_sub(t) >= MAX_INTERCEPT_HOLD_REAL_S)
+                    {
+                        return Some((conn_key.clone(), "the hold timed out"));
+                    }
+                    None
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (conn_key, reason) in stale_holds {
+        let _ = release_service_hold(ctx, &conn_key, None, reason);
+    }
     let mut first_sight: Vec<RecordKey> = Vec::new();
     let due: Vec<(RecordKey, ObjId, Heading, String, Route)> = {
         let Some(st) = state_of(ctx) else { return };
@@ -2393,6 +2633,83 @@ fn sweep_patches(ctx: &mut Ctx<'_>) {
     for id in unwatched {
         if let Err(error) = release(ctx, id, None) {
             tracing::debug!(journey = %id, %error, "atlas: an unwatched hold stayed");
+        }
+    }
+    // HIGH-38: drop pending intercepts whose actor is gone or left their room,
+    // and lift HoldReason::Intercept journeys when the interceptor left, is gone,
+    // or exceeded MAX_INTERCEPT_HOLD_REAL_S.
+    let stale_intercepts: Vec<ObjId> = state_of(ctx)
+        .map(|st| {
+            st.travel
+                .intercepts
+                .iter()
+                .filter(|(_, i)| !interceptor_present_at(st, ctx.w, i.by, &i.at))
+                .map(|(traveler, _)| *traveler)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !stale_intercepts.is_empty()
+        && let Some(st) = state_mut(ctx)
+    {
+        for traveler in stale_intercepts {
+            st.travel.intercepts.remove(&traveler);
+        }
+    }
+    let now_real = ctx.w.now();
+    let now_ic = ctx.w.world_ic_now();
+    let rate = i64::from(rate_of(ctx.w));
+    let mut missing_start: Vec<JourneyId> = Vec::new();
+    let expired_intercepts: Vec<JourneyId> = state_of(ctx)
+        .map(|st| {
+            st.travel
+                .journeys
+                .values()
+                .filter_map(|j| {
+                    let JourneyState::Held {
+                        by: HoldReason::Intercept { by },
+                        since,
+                    } = &j.state
+                    else {
+                        return None;
+                    };
+                    let hold_room = j.here().and_then(|n| node_room(st, n));
+                    let present = ctx.w.get(*by).is_some_and(|o| {
+                        !o.flags.contains(Flags::GOING) && o.location == hold_room
+                    });
+                    if !present {
+                        return Some(j.id);
+                    }
+                    let real_expired = match st.travel.intercept_hold_started.get(&j.id) {
+                        Some(&started) => {
+                            now_real.saturating_sub(started) >= MAX_INTERCEPT_HOLD_REAL_S
+                        }
+                        None => {
+                            missing_start.push(j.id);
+                            false
+                        }
+                    };
+                    let ic_expired = rate > 0
+                        && since.clock == now_ic.clock
+                        && now_ic.at.saturating_sub(since.at)
+                            >= MAX_INTERCEPT_HOLD_REAL_S.saturating_mul(rate);
+                    (real_expired || ic_expired).then_some(j.id)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !missing_start.is_empty()
+        && let Some(st) = state_mut(ctx)
+    {
+        for id in missing_start {
+            st.travel
+                .intercept_hold_started
+                .entry(id)
+                .or_insert(now_real);
+        }
+    }
+    for id in expired_intercepts {
+        if let Err(error) = release(ctx, id, None) {
+            tracing::debug!(journey = %id, %error, "atlas: an expired intercept hold stayed");
         }
     }
     let idle: Vec<RecordKey> = state_of(ctx)
@@ -2585,11 +2902,13 @@ pub(crate) fn plan_learn(known: &[RecordKey], place: &RecordKey) -> Option<Known
 // Observers: moves, disconnects, destroys
 // ---------------------------------------------------------------------------
 
-/// `Moved`: a character entering an authored room learns its neighborhood.
+/// `Moved`: a character leaving a stop drops their vehicle/intercept holds, and a
+/// player entering an authored room learns its neighborhood.
 pub(crate) fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::Moved { who, to, .. } = ev else {
         return;
     };
+    clear_holds_by(ctx, *who, "the holder left the stop", true);
     let is_player = ctx.w.get(*who).is_some_and(|o| o.kind == ObjKind::Player);
     if !is_player {
         return;
@@ -2602,11 +2921,13 @@ pub(crate) fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     }
 }
 
-/// `Disconnected`: a character's own journey ends where it is (doc 14 §3.3).
+/// `Disconnected`: a character's own journey ends where it is (doc 14 §3.3), and
+/// any transit hold they held is cleared.
 pub(crate) fn on_disconnected(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::Disconnected { who } = ev else {
         return;
     };
+    clear_holds_by(ctx, *who, "the holder disconnected", false);
     let id = state_of(ctx).and_then(|st| {
         st.travel
             .journey_of(*who)
@@ -2622,11 +2943,12 @@ pub(crate) fn on_disconnected(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 }
 
 /// `ObjDestroyed`: a destroyed traveler ends its journey; a destroyed travel room is
-/// forgotten.
+/// forgotten; any holds owned by the destroyed object are cleared.
 pub(crate) fn on_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::ObjDestroyed { obj } = ev else {
         return;
     };
+    clear_holds_by(ctx, *obj, "the holder is gone", false);
     let id = state_of(ctx).and_then(|st| st.travel.journey_of(*obj).map(|j| j.id));
     if let Some(id) = id {
         retire(ctx, id);
@@ -2922,6 +3244,15 @@ pub(crate) fn hydrate(
                         return Err("its way is gone".to_string());
                     }
                     travel.next_id = travel.next_id.max(j.id.0.saturating_add(1));
+                    if matches!(
+                        j.state,
+                        JourneyState::Held {
+                            by: HoldReason::Intercept { .. },
+                            ..
+                        }
+                    ) {
+                        travel.intercept_hold_started.insert(j.id, w.now());
+                    }
                     travel.by_traveler.insert(obj, j.id);
                     travel.journeys.insert(j.id, j);
                     Ok(())
@@ -2961,9 +3292,15 @@ pub(crate) fn hydrate(
                     if !records.connections.contains_key(&record_key) {
                         return Err("its connection is gone".to_string());
                     }
-                    travel
-                        .services
-                        .insert(record_key, ServiceState { doc, held_by: None });
+                    travel.services.insert(
+                        record_key,
+                        ServiceState {
+                            doc,
+                            held_by: None,
+                            held_since_real: None,
+                            grace_until: 0,
+                        },
+                    );
                     Ok(())
                 }),
             _ => continue,
