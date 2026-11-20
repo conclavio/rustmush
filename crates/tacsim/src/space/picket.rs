@@ -686,22 +686,19 @@ pub fn inspect_hull_manifest(
     now_ic: i64,
 ) -> LiveCustomsManifest {
     let mut manifest = LiveCustomsManifest::default();
-    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull)
-        && let Some(hold_vault) = crate::port::ship::hold_vault(ctx.w, &view)
-    {
-        let ep = mush_inventory::record::EndpointRef(hold_vault);
-        let read_kg = |good_str: &str| -> u64 {
-            CanonicalId::new(good_str)
-                .ok()
-                .and_then(|good| crate::port_tick::read_pool(ctx, ep, &good).ok())
-                .unwrap_or(0)
-                .saturating_mul(1_000)
-        };
-        manifest.strategic_ore_kg = read_kg("strategic_ore");
-        manifest.metal_ore_kg = read_kg("metal_ore");
-        manifest.ice_ore_kg = read_kg("ice_ore");
-        manifest.carbon_ore_kg = read_kg("carbon_ore");
-    }
+    // Doc 50 unit CR (doc 50a A-4): the hold is read through the one cargo reading, which counts
+    // a bulk good held as a lot (ore bought off a personal ask) beside the pool.
+    let read_kg = |good_str: &str| -> u64 {
+        CanonicalId::new(good_str)
+            .ok()
+            .and_then(|good| crate::port::ship::hold_reading(ctx, hull, &good).ok())
+            .unwrap_or(0)
+            .saturating_mul(1_000)
+    };
+    manifest.strategic_ore_kg = read_kg("strategic_ore");
+    manifest.metal_ore_kg = read_kg("metal_ore");
+    manifest.ice_ore_kg = read_kg("ice_ore");
+    manifest.carbon_ore_kg = read_kg("carbon_ore");
     if let Some(raw_actor) = pilot {
         let principal_actor = resolve_hull_customs_principal(ctx.w, hull, raw_actor);
         manifest.licensed = licence_gate(ctx.w, principal_actor, now_ic).is_ok()

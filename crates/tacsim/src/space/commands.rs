@@ -310,6 +310,20 @@ pub fn helm_crew_aboard(w: &World, hull: ObjId) -> Vec<ObjId> {
     crew.into_iter().collect()
 }
 
+/// **Who has `hull`'s helm** (doc 50 unit CR; doc 50a A-10e): the member of her crew aboard
+/// ([`helm_crew_aboard`]) whose station controls the movement channel, else the first of them;
+/// `None` with nobody of her crew aboard.
+#[must_use]
+pub fn helm_pilot_aboard(w: &World, hull: ObjId) -> Option<ObjId> {
+    let crew = helm_crew_aboard(w, hull);
+    crew.iter()
+        .copied()
+        .find(|actor| {
+            seat_role_for_actor(w, hull, *actor).is_some_and(|role| role.grants_channel("movement"))
+        })
+        .or_else(|| crew.first().copied())
+}
+
 /// Return all crew members (`ObjKind::Player` or seated bridge crew) currently aboard `hull` (`SF.R13`).
 #[must_use]
 pub fn all_aboard_crew_for_hull(w: &World, hull: ObjId) -> Vec<ObjId> {

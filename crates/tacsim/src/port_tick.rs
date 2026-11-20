@@ -503,7 +503,12 @@ fn register_providers(
     // Doc 39 cut IN.3: the order contract's ledger family and its goods-move provider.
     crate::port::works::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     // Doc 48 cut EX.6: the haul's ledger family and its legs' provider.
-    crate::services::haul::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
+    let haul_ledgers = crate::services::haul::register(
+        reg,
+        action_refs,
+        outcome_refs,
+        inventory_families.as_ref(),
+    )?;
     register_stock(
         reg,
         stock_action.as_ref(),
@@ -690,8 +695,15 @@ fn register_providers(
     // Doc 35 cut SF.R21: the space bubble's prepared input tape family and provider.
     crate::space::tick::register_bubble_input(reg, action_refs, outcome_refs, &port_families)?;
     // Doc 35 cut SF.R26c: the customs ruling's family and provider; a seizure debits through
-    // the delegated inventory families.
-    crate::space::customs::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
+    // the delegated inventory families. Doc 50 unit CR: and fails a haul whose cargo it takes,
+    // on the haul's own ledger.
+    crate::space::customs::register(
+        reg,
+        action_refs,
+        outcome_refs,
+        inventory_families.as_ref(),
+        &haul_ledgers,
+    )?;
     // Doc 48 unit EX.9: the consumption ledgers and their act; the debit rides the delegated
     // inventory families.
     crate::port::consume::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
