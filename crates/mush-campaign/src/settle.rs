@@ -488,14 +488,20 @@ enum Refusal {
     Failed(String),
 }
 
-/// Whether an outcome forfeits the bond. **One word, one rule: only `forfeit`
-/// takes a player's money; every other outcome releases it**, `abort` included —
-/// abandoning an operation is not settling it, and an unwind must never be a way to
-/// capture. Stated here rather than inferred anywhere else, so two paths cannot
-/// disagree about whose money moves.
+/// Whether an outcome forfeits the bond. **Two words, one rule: the declarer's
+/// `failure` and staff's `forfeit` take the bond; every other outcome releases it**,
+/// `abort` included — abandoning an operation is not settling it, and an unwind must
+/// never be a way to capture. Stated here rather than inferred anywhere else, so two
+/// paths cannot disagree about whose money moves.
+///
+/// **`failure` forfeits** since doc 50 cut OP.0 (Q-50-57 item 5, provisional): a bond
+/// released whatever happens made declaring free. The bond goes to the beneficiary the
+/// terms name (`bond.forfeit_to`, for a compiled declarer the defenders' treasury); a
+/// bond that names nobody is a reservation for nobody in particular and is released,
+/// as the economy's own `authorize_hold` requires.
 #[must_use]
 pub fn outcome_forfeits(outcome: &str) -> bool {
-    outcome.trim() == "forfeit"
+    matches!(outcome.trim(), "forfeit" | "failure")
 }
 
 /// Whether a recorded outcome is an explicit **abandonment** rather than a
@@ -745,11 +751,13 @@ mod tests {
     }
 
     #[test]
-    fn e7c9_b7_only_forfeit_takes_a_players_money_and_only_abort_abandons() {
+    fn e7c9_b7_only_forfeit_and_failure_take_the_bond_and_only_abort_abandons() {
         assert!(outcome_forfeits("forfeit"));
         assert!(outcome_forfeits(" forfeit "));
+        // Doc 50 OP.0 (Q-50-57 item 5): the declarer's failure forfeits too.
+        assert!(outcome_forfeits("failure"));
         // Every other arm — an abandonment included — RELEASES.
-        for outcome in ["success", "failure", "partial", "retry", "abort", ""] {
+        for outcome in ["success", "partial", "retry", "abort", ""] {
             assert!(
                 !outcome_forfeits(outcome),
                 "{outcome} took a player's money"

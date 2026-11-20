@@ -10,8 +10,9 @@
 //!   is told is never less than [`crate::OPERATION_NOTICE_MIN`] ahead). The tick makes the push
 //!   ([`crate::tick`]) and marks the runtime ([`crate::OperationRuntime::noticed`]) in the same
 //!   batch, so a restart never tells anyone twice.
-//! - **Whom.** Each eligible defender the terms name as an object, when [`crate::render::lens_for`]
-//!   shows them the operation at all. A covert operation (`visibility=covert`) pushes nothing,
+//! - **Whom.** Each eligible defender the terms name as an object, and each active member of a
+//!   defender the terms name as an organization (doc 50 cut OP.0), when
+//!   [`crate::render::lens_for`] shows them the operation at all. A covert operation (`visibility=covert`) pushes nothing,
 //!   as it shows nothing: the push never tells a defender more than `@op/show` would.
 //! - **What.** The notice lens and nothing else: the window, and the issuer only when the terms
 //!   announce it. Never the objective, the stakes, the roster or the bond.
@@ -101,20 +102,57 @@ pub fn letter(doc: &OperationDoc, now_ic: i64) -> DefenderLetter {
     }
 }
 
+/// **The most people one operation's notice is pushed to** (doc 50 cut OP.0). A defender
+/// organization brings its members, so the list is bounded here rather than by the terms'
+/// audience cap; past it the rest are not told and a warning says how many.
+pub const MAX_NOTICE_RECIPIENTS: usize = 256;
+
 /// **The defenders `doc` tells** (this module's head, "Whom"), in the terms' order, each once.
+///
+/// A defender named as an object is told; a defender named as an **organization** is told
+/// through its active members, in id order (doc 50 cut OP.0, Q-50-57 item 2). A system
+/// principal is nobody. At most [`MAX_NOTICE_RECIPIENTS`].
 #[must_use]
 pub fn defenders(w: &mush_core::World, doc: &OperationDoc) -> Vec<ObjId> {
     let mut out: Vec<ObjId> = Vec::new();
+    let mut dropped = 0usize;
     for member in &doc.terms.eligible_defenders.members {
-        let PrincipalId::Object(who) = member else {
-            continue;
+        let named: Vec<ObjId> = match member {
+            PrincipalId::Object(who) => vec![*who],
+            PrincipalId::Organization(org) => w
+                .module_state::<mush_org::OrgStore>()
+                .map(|store| {
+                    store
+                        .state()
+                        .members_in(*org)
+                        .filter(|m| m.status == mush_org::MembershipStatus::Active)
+                        .map(|m| m.member)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            PrincipalId::System(_) => Vec::new(),
         };
-        let live = w
-            .get(*who)
-            .is_some_and(|object| !object.flags.contains(Flags::GOING));
-        if live && !out.contains(who) && lens_for(w, doc, *who) != Lens::Hidden {
-            out.push(*who);
+        for who in named {
+            let live = w
+                .get(who)
+                .is_some_and(|object| !object.flags.contains(Flags::GOING));
+            if !live || out.contains(&who) || lens_for(w, doc, who) == Lens::Hidden {
+                continue;
+            }
+            if out.len() >= MAX_NOTICE_RECIPIENTS {
+                dropped = dropped.saturating_add(1);
+                continue;
+            }
+            out.push(who);
         }
+    }
+    if dropped > 0 {
+        tracing::warn!(
+            target: "campaign",
+            operation = doc.id().0,
+            dropped,
+            "campaign: an operation's notice reached its recipient cap; the rest were not told"
+        );
     }
     out
 }
