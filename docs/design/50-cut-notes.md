@@ -1857,7 +1857,84 @@ The declaring arm, the operation frame and the resolution into control and the i
 
 ## OP.6
 
-Not built.
+Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-50-62). On OP.5
+(#735). **No lane bump.**
+
+**Survey.** At OP.5's head:
+- **In a space bubble every carrier is friendly to every other** (doc 47's open call). A carrier
+  joining a bubble takes a party of its own (`next_available_carrier_party`) and is marked
+  friendly to every carrier already there (`space/tick.rs`, the join).
+- **A carrier leaves a bubble** when it is clear to resume (`is_carrier_clear_to_resume`): no
+  operational ship of a party hostile to hers remains, the picket has cleared her, and nothing is
+  in flight. With others still held, she detaches alone; otherwise the bubble closes.
+- **The operation** is read through `isidis_op::status` (OP.5): its phase, window, sides (the
+  Republic's customs office, Occator) and legal targets (`carrier`).
+- **A hull's flag** is `concession::hull_flag` (OP.2), and the Freeport arm's jobs are
+  `stockpile::arm(w).posts` (OP.4).
+
+**Built.**
+- **Whose side a hull flies for** (`tacsim::space::op_sides`; Q-50-61). Only while the operation
+  runs (phase `Running`) and names `carrier` among its legal targets:
+  - by its flag: its title holder's polity is a side's commanding organization's polity; or
+  - by a live job of a side's arm: a Freeport arm haul taken or aboard, or an escort of one taken
+    or watching.
+  - A hull that would fly for two sides, or none, flies for none. Two hulls on different sides
+    are operation foes (`op_sides::foes`).
+- **Legal targets in a bubble** (Q-50-26). A carrier joining a bubble is hostile, both ways, to
+  each carrier already there that is her operation foe, and friendly to every other, as before
+  (`ActiveInterdictionBubble::relate_joining_carrier`). Each names the other among its foes
+  (`BubbleCarrierEntry::op_foes`). Outside the window nothing changes.
+- **Breaking off** (Q-50-62). A carrier with operation foes that holds outside `BREAK_OFF_M`
+  (25,000 m, provisional) of every operational foe for `BREAK_OFF_WALL_S` (60 s of wall time,
+  provisional) breaks off (`track_break_off`, on the space tick beside the salvage hold's
+  expiry). Coming back inside starts the time again.
+  - A carrier that broke off is no longer held by her foes (`is_carrier_clear_to_resume`): she
+    detaches and resumes her passage. She loses the engagement and nothing else.
+  - Every other hostile holds her as before: a picket, an interdictor or a raider is not escaped
+    by distance.
+
+**Tests.**
+- `space::tick` unit tests, on a built bubble:
+  - `op6_a_carrier_joining_her_operation_foes_is_hostile_to_them_both_ways`: hostile both ways,
+    each names the other, foes hold each other; a carrier who is no foe joins friendly.
+  - `op6_holding_apart_from_every_foe_for_the_time_breaks_off`: inside the reach no time runs;
+    outside it the time starts, short of the time she has not broken off, coming back inside
+    starts it again, and held for the whole time she breaks off and resumes, as does her foe.
+  - `op6_breaking_off_leaves_every_other_hostile_holding_her`: the interdictor still holds a
+    carrier that broke off.
+- `domain_world::op6_sides::op6_in_the_window_a_freeport_hull_and_a_republic_hull_are_operation_foes`
+  (the production roster, OP.5's fake frame): a Co-op pool hull (Freeport-flagged) and a hull
+  titled to Stickney Yards (Republic) are foes, both ways, only while the operation runs; two
+  Co-op hulls are not, nor is a hull flying for no side.
+- **Mutations**, eight, each caught, each restored from a saved copy and compared:
+  - a joining foe made friendly; nobody ever breaking off; breaking off at once; coming back
+    inside keeping the time; breaking off freeing her from every hostile (the unit tests);
+  - foes before the window opens; the flag ignored; one side foes to itself (the story).
+- **On conclav.dev, green:**
+  - all of tacsim (5,081 tests);
+  - mush-server `split_boundary` and `commerce_composition` (320) and mush-contract-tests (208);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim and mush-server, all targets;
+  - rustdoc `-D warnings` in both modes.
+
+**Divergences.**
+- **Foes are fixed when a carrier joins.** A carrier already in a bubble when the window opens
+  stays friendly to the others there; the window is 28 IC days, and every passage after it opens
+  meets its foes as foes.
+- **Breaking off frees her only from her operation foes.** Q-50-62 reads "every hostile hull";
+  read that way a raider or an interdictor could be escaped by distance, which would change every
+  bubble outside the operation. Q-50-26 rules that outside the operation today's rule stands.
+- **The reach and the time are provisional**: 25,000 m (past the interdiction standoff of
+  18,000 m) and 60 s of wall time, so a player at 24:1 is not held by a foe who logged off.
+- **A side's polity is its commanding organization's**: the Republic's customs office is the
+  Republic's, Occator is the Freeport's.
+- **A job-borne side** (a Freeport arm haul or escort) is read as built, and no story here carries
+  one into a bubble.
+
+**Not built.**
+- `+operation`, the notices and the Republic's bid (OP.7).
+- The other side's clock moving when a hull flying for a side is lost (Q-50-25's last half).
+- A line telling a carrier she has broken off; she resumes with the resume's own lines.
 
 ## OP.7
 
