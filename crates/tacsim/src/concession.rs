@@ -250,6 +250,8 @@ fn assembly_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         return;
     }
     let _ = assembly_votes(ctx);
+    // Doc 50 cut OP.5: the declaring arm, on the Review's fill, and the outcome once decided.
+    crate::isidis_op::tick(ctx);
 }
 
 /// **A seizure ruling on a Freeport-flagged hull** (Q-50-20 as corrected): the Review moves one

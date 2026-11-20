@@ -139,6 +139,7 @@ pub mod field_ops;
 pub mod fixture;
 pub mod ground;
 pub mod hardware;
+pub mod isidis_op;
 // Doc 17h cut M8h: House owner attestation in live play.
 pub(crate) mod house_attestation;
 pub mod ic_return;

@@ -49,6 +49,8 @@ mod knowing;
 mod minds_at_size;
 #[path = "domain_world/moon_ports.rs"]
 mod moon_ports;
+#[path = "domain_world/op5_operation.rs"]
+mod op5_operation;
 #[path = "domain_world/passage.rs"]
 mod passage;
 #[path = "domain_world/polities.rs"]

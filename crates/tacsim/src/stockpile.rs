@@ -82,8 +82,8 @@ pub const MAX_POSTS: usize = 128;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FreeportArm {
-    /// **Laid up by staff** (`@tacsim/port arm off`): it reads nothing and posts nothing; what it
-    /// posted runs on. A rig whose stories predate OP.4 lays it up before its first fire, so it
+    /// **Laid up by staff** (`@tacsim/port arm off`): it posts nothing, and what it posted runs
+    /// on; the farm is still read (doc 50 cut OP.5: the close probe answers in any world). A rig whose stories predate OP.4 lays it up before its first fire, so it
     /// makes no agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub laid_up: bool,
@@ -267,10 +267,18 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     }
     let kept = arm(ctx.w).cloned();
     let mut doc = kept.clone().unwrap_or_default();
-    if doc.laid_up {
-        return;
+    // Every fire, laid up or not: the reading (kept when it changes) and the news. The close
+    // probe reads it, so an operation's objective is answered in any world (doc 50 cut OP.5).
+    if let Some(level) = read_level(ctx) {
+        if doc.level != Some(level) {
+            doc.level = Some(level);
+            doc.read_day = Some(ctx.w.world_ic_now().at.div_euclid(IC_DAY));
+        }
+        let _ = threshold_news(ctx, level);
     }
-    step(ctx, occator, &mut doc);
+    if !doc.laid_up {
+        step(ctx, occator, &mut doc);
+    }
     if kept.as_ref() != Some(&doc) {
         put(ctx, &doc);
     }
@@ -303,17 +311,9 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
         }
         return;
     }
-    // 3. Every fire: the reading (kept when it changes) and the news.
     let now = ctx.w.world_ic_now().at;
     let today = now.div_euclid(IC_DAY);
-    if let Some(level) = read_level(ctx) {
-        if doc.level != Some(level) {
-            doc.level = Some(level);
-            doc.read_day = Some(today);
-        }
-        let _ = threshold_news(ctx, level);
-    }
-    // 4. Once an IC day: a post, while the farm is short. A refusal is looked at again on the
+    // 3. Once an IC day: a post, while the farm is short. A refusal is looked at again on the
     //    next fire; only a post marks the day.
     if doc.posted_day == Some(today) {
         return;
