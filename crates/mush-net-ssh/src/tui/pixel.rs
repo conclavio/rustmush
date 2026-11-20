@@ -103,6 +103,16 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// The frame clock: 20 frames a second, bucket A's interval. The output
 /// pump's idle wait while no view is open.
 pub const FRAME_INTERVAL: Duration = BUCKET_A_INTERVAL;
+/// Minimum interval between full pixel re-bakes triggered by `GraphicsImageErr`,
+/// terminal resize (`window_change_request`), or `CellSize` changes (HIGH-14).
+pub const REBAKE_MIN_INTERVAL: Duration = Duration::from_millis(500);
+/// Window over which repeated `GraphicsImageErr` replies are counted before
+/// disabling the retained Kitty cache for this connection (HIGH-14).
+const IMAGE_ERR_WINDOW: Duration = Duration::from_secs(10);
+/// Disable the retained Kitty compositor after this many `GraphicsImageErr`
+/// replies inside [`IMAGE_ERR_WINDOW`], falling back to the bounded
+/// single-frame Kitty path.
+const IMAGE_ERR_DISABLE_AFTER: u32 = 8;
 /// How fast a toggled look swings the camera, millidegrees a second (45°/s).
 const TURN_MDEG_PER_S: i64 = 45_000;
 /// Push the kitty keyboard protocol with "disambiguate" (1), "report event
@@ -536,6 +546,18 @@ pub struct PixelView {
     docking_session: Option<mush_pixel::docking::DockingClientSession>,
     /// Session ID of the most recently submitted `+helm/dock tape` command.
     docking_submitted_session: Option<String>,
+    /// Retained Kitty cache disabled after repeated `GraphicsImageErr` replies
+    /// (HIGH-14): falls back to the bounded single-frame Kitty path.
+    retained_disabled: bool,
+    /// `(window_start, count)` for repeated `GraphicsImageErr` replies.
+    image_err_window: Option<(Instant, u32)>,
+    /// Last time a `GraphicsImageErr` was allowed to invalidate retained images.
+    last_image_err_rebake: Option<Instant>,
+    /// Last `(cols, rows, cell)` actually applied to pixel rendering; changes
+    /// are debounced by [`REBAKE_MIN_INTERVAL`].
+    applied_geometry: Option<(u16, u16, Option<CellSize>)>,
+    /// Last time a resize / `CellSize` change triggered a pixel geometry re-bake.
+    last_geometry_rebake: Option<Instant>,
     /// Counters.
     pub stats: Stats,
 }
@@ -631,6 +653,11 @@ impl PixelView {
             frame_arrived_at: None,
             docking_session: None,
             docking_submitted_session: None,
+            retained_disabled: false,
+            image_err_window: None,
+            last_image_err_rebake: None,
+            applied_geometry: None,
+            last_geometry_rebake: None,
             stats: Stats::default(),
         }
     }
@@ -802,7 +829,7 @@ impl PixelView {
 
     /// The cell-size report arrived (it precedes the DA1 reply).
     pub fn cell_size(&mut self, cell: CellSize) {
-        if self.probe != Probe::NotSent {
+        if self.probe != Probe::NotSent && self.cell != Some(cell) {
             self.cell = Some(cell);
         }
     }
@@ -810,14 +837,63 @@ impl PixelView {
     /// Set the cell size directly from SSH `pty-req` or `window-change` pixel
     /// dimensions (available even before the `CSI 16 t` probe runs).
     pub fn set_cell_size(&mut self, cell: CellSize) {
-        self.cell = Some(cell);
-        self.last_sent = None;
+        if self.cell != Some(cell) {
+            self.cell = Some(cell);
+            if self.applied_geometry.is_none() {
+                self.last_sent = None;
+            }
+        }
+    }
+
+    /// Whether repeated `GraphicsImageErr` replies have disabled the retained
+    /// Kitty cache for this session (HIGH-14).
+    #[must_use]
+    pub fn retained_disabled(&self) -> bool {
+        self.retained_disabled
     }
 
     /// A `q=1` Kitty graphics error reply named `image_id` as missing or
     /// evicted from terminal storage quota: mark it for re-upload on the next
-    /// tick.
+    /// tick, rate-limited by [`REBAKE_MIN_INTERVAL`]. Repeated errors disable
+    /// the retained Kitty cache for this session (HIGH-14).
     pub fn graphics_image_err(&mut self, image_id: u32) {
+        self.graphics_image_err_at(image_id, Instant::now());
+    }
+
+    /// [`graphics_image_err`](Self::graphics_image_err) at an explicit clock
+    /// instant (used by unit tests).
+    pub fn graphics_image_err_at(&mut self, image_id: u32, now: Instant) {
+        if self.retained_disabled {
+            return;
+        }
+        let count = match self.image_err_window {
+            Some((start, n)) if now.saturating_duration_since(start) < IMAGE_ERR_WINDOW => {
+                let next = n.saturating_add(1);
+                self.image_err_window = Some((start, next));
+                next
+            }
+            _ => {
+                self.image_err_window = Some((now, 1));
+                1
+            }
+        };
+        if count >= IMAGE_ERR_DISABLE_AFTER {
+            self.retained_disabled = true;
+            let cleanup = self.cleanup_25d_bytes();
+            if !cleanup.is_empty() {
+                self.term_bytes.extend_from_slice(&cleanup);
+            }
+            self.last_25d_size = None;
+            self.last_sent = None;
+            return;
+        }
+        if self
+            .last_image_err_rebake
+            .is_some_and(|at| now.saturating_duration_since(at) < REBAKE_MIN_INTERVAL)
+        {
+            return;
+        }
+        self.last_image_err_rebake = Some(now);
         self.cockpit_fp.invalidate_image(image_id);
         self.overhead.invalidate_image(image_id);
         self.iso25d.invalidate_image(image_id);
@@ -1953,8 +2029,44 @@ impl PixelView {
             self.stats.slow_skips += 1;
             return Vec::new();
         }
-        let cell = self.cell.unwrap_or(CellSize::DEFAULT);
-        let area = picture_area(cols, rows);
+        // HIGH-14: debounce terminal resize (`window_change_request`) and
+        // `CellSize` changes so rapid geometry churn cannot trigger 20-60 Hz
+        // full re-bakes.
+        let req_geom = (cols, rows, self.cell);
+        let (eff_cols, eff_rows, eff_cell) = match self.applied_geometry {
+            None => {
+                self.applied_geometry = Some(req_geom);
+                req_geom
+            }
+            Some(prev) if prev == req_geom => prev,
+            Some(prev)
+                if prev.2.is_none() && req_geom.2.is_some() && prev.0 == cols && prev.1 == rows =>
+            {
+                // One-time initial cell-size discovery (`None -> Some`) can
+                // occur at most once per connection; apply without burning the
+                // resize debounce window.
+                self.applied_geometry = Some(req_geom);
+                self.last_sent = None;
+                req_geom
+            }
+            Some(prev) => {
+                if self
+                    .last_geometry_rebake
+                    .is_none_or(|at| now.saturating_duration_since(at) >= REBAKE_MIN_INTERVAL)
+                {
+                    self.applied_geometry = Some(req_geom);
+                    self.last_geometry_rebake = Some(now);
+                    self.last_sent = None;
+                    req_geom
+                } else if prev.0 <= cols && prev.1 <= rows {
+                    prev
+                } else {
+                    return Vec::new();
+                }
+            }
+        };
+        let cell = eff_cell.unwrap_or(CellSize::DEFAULT);
+        let area = picture_area(eff_cols, eff_rows);
         let width = if self.stepped_down {
             self.want.min(FRAME_W_LO)
         } else {
@@ -1993,41 +2105,41 @@ impl PixelView {
             dy_cm,
             zoom_permille: self.zoom_permille(),
         };
-        if encoder == Encoder::Kitty {
+        if encoder == Encoder::Kitty && !self.retained_disabled {
             let step_down = self.stepped_down || self.want == FRAME_W_LO;
             let t0 = Instant::now();
             let drawn = match self.kind {
                 PictureKind::Replay => self
                     .replay_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::Chart => self
                     .chart_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::Doll => self
                     .doll_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::Holotank => self
                     .holotank_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::SpaceCockpit => self
                     .space_cockpit_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::Docking => self
                     .docking_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::StationWalk => self
                     .station_walk_pic
-                    .draw_kitty(feeds, &look, area, self.cell, step_down),
+                    .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 PictureKind::Cockpit => match self.camera {
                     CockpitCamera::FirstPerson => self
                         .cockpit_fp
-                        .draw_kitty(feeds, &look, area, self.cell, step_down, self.glass),
+                        .draw_kitty(feeds, &look, area, eff_cell, step_down, self.glass),
                     CockpitCamera::Overhead => self
                         .overhead
-                        .draw_kitty(feeds, &look, area, self.cell, step_down),
+                        .draw_kitty(feeds, &look, area, eff_cell, step_down),
                     CockpitCamera::Tactical25D => self
                         .iso25d
-                        .draw_kitty(feeds, &look, area, self.cell, step_down),
+                        .draw_kitty(feeds, &look, area, eff_cell, step_down),
                 },
             };
             let Some((vp, wire)) = drawn else {
@@ -4116,5 +4228,93 @@ mod tests {
             );
             v.key(Key::Char('v'), t0);
         }
+    }
+
+    /// Regression test (HIGH-14): `GraphicsImageErr`, resize, and `CellSize`
+    /// churn are rate-limited to [`REBAKE_MIN_INTERVAL`], and repeated
+    /// `GraphicsImageErr` replies disable the retained Kitty cache.
+    #[test]
+    fn high14_rebakes_are_rate_limited_and_repeated_image_errs_disable_retained() {
+        let t0 = Instant::now();
+        let (cockpit, map) = fixtures();
+        let both = feeds(Some(&cockpit), Some(&map));
+        let mut v = supported(t0);
+        v.set_cell_size(CellSize {
+            width: 10,
+            height: 20,
+        });
+        assert!(v.toggle_for(PictureKind::Cockpit, t0));
+        // Switch to Tactical25D (retained Kitty compositor).
+        v.key(Key::Char('v'), t0);
+        v.key(Key::Char('v'), t0);
+        assert_eq!(v.camera(), CockpitCamera::Tactical25D);
+        assert!(!v.paint(&both, 120, 40, t0).is_empty());
+        assert!(v.paint(&both, 120, 40, t0).is_empty());
+
+        // First resize takes effect immediately.
+        let r1 = v.paint(&both, 124, 42, t0 + Duration::from_millis(10));
+        assert!(
+            String::from_utf8_lossy(&r1).contains("a=t,f=100,t=d,i=100"),
+            "first resize re-bakes terrain"
+        );
+        let size_r1 = v.size();
+        // Second resize / CellSize churn within REBAKE_MIN_INTERVAL is debounced:
+        // geometry stays at `size_r1` and no full terrain re-bake is emitted.
+        v.cell_size(CellSize {
+            width: 12,
+            height: 24,
+        });
+        let r2 = v.paint(&both, 126, 44, t0 + Duration::from_millis(50));
+        assert_eq!(
+            v.size(),
+            size_r1,
+            "rapid resize/CellSize within 500ms must hold prior geometry"
+        );
+        assert!(
+            !String::from_utf8_lossy(&r2).contains("a=t,f=100,t=d,i=100"),
+            "rapid resize/CellSize within 500ms must not trigger a terrain re-bake"
+        );
+        // Once REBAKE_MIN_INTERVAL elapses, the new geometry settles cleanly.
+        let r3 = v.paint(
+            &both,
+            126,
+            44,
+            t0 + REBAKE_MIN_INTERVAL + Duration::from_millis(20),
+        );
+        assert!(
+            String::from_utf8_lossy(&r3).contains("a=t,f=100,t=d,i=100"),
+            "geometry re-bakes terrain after 500ms interval"
+        );
+        assert_ne!(v.size(), size_r1, "geometry updated after 500ms interval");
+
+        // GraphicsImageErr: first re-uploads, rapid second is ignored, repeated
+        // errors disable retained Kitty mode cleanly.
+        let t_err = t0 + Duration::from_secs(2);
+        v.graphics_image_err_at(100, t_err);
+        let rec1 = v.paint(&both, 126, 44, t_err);
+        assert!(
+            String::from_utf8_lossy(&rec1).contains("a=t,f=100,t=d,i=100"),
+            "first GraphicsImageErr re-uploads"
+        );
+        v.graphics_image_err_at(100, t_err + Duration::from_millis(50));
+        let rec2 = v.paint(&both, 126, 44, t_err + Duration::from_millis(50));
+        assert!(
+            !String::from_utf8_lossy(&rec2).contains("a=t,f=100,t=d,i=100"),
+            "second GraphicsImageErr within 500ms must not re-upload i=100"
+        );
+        assert!(!v.retained_disabled());
+        for i in 2..IMAGE_ERR_DISABLE_AFTER {
+            v.graphics_image_err_at(100, t_err + Duration::from_millis(50 * u64::from(i)));
+        }
+        assert!(
+            v.retained_disabled(),
+            "repeated GraphicsImageErr replies must disable retained Kitty cache"
+        );
+        // Subsequent paints fall back to the bounded single-frame Kitty path (`i=1`).
+        let fallback = v.paint(&both, 126, 44, t_err + Duration::from_secs(1));
+        assert!(
+            String::from_utf8_lossy(&fallback).contains("i=1"),
+            "fallback uses single-frame Kitty image id=1"
+        );
     }
 }

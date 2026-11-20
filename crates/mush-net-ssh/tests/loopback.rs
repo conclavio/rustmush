@@ -36,6 +36,8 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 struct MockHooks {
     brackets: Mutex<mush_proto::OutputBrackets>,
     delayed_line_release: tokio::sync::Notify,
+    hold_queries: AtomicBool,
+    delayed_query_release: tokio::sync::Notify,
     /// account (lowercase) -> (password, characters)
     accounts: Mutex<HashMap<String, (String, Vec<CharSummary>)>>,
     /// account (lowercase) -> registered OpenSSH public-key lines (M19).
@@ -366,6 +368,9 @@ impl SshHooks for MockHooks {
                 .lock()
                 .unwrap()
                 .push((conn, name.clone(), args.clone()));
+            if self.hold_queries.load(Ordering::SeqCst) {
+                self.delayed_query_release.notified().await;
+            }
             let Some(tx) = self.tx_of(conn) else {
                 return;
             };
@@ -3178,6 +3183,499 @@ async fn pty_and_window_change_clamp_oversized_dims_and_preserve_zero_default() 
             .get(2)
             .map(|c| (c.width, c.height)),
         Some((mush_net_ssh::DEFAULT_WIDTH, mush_net_ssh::DEFAULT_HEIGHT))
+    );
+
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// HIGH-6a: sending data on the secondary channel BEFORE `subsystem_request("sftp")`
+/// must close the secondary channel without blocking `russh::Session::run`, keep the
+/// primary game channel responsive, and release the connection slot on disconnect.
+#[tokio::test]
+async fn sftp_channel_data_before_subsystem_closes_without_deadlocking_session() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("sftp-pre-subsys", &hooks).await;
+    let mut secondary = handle
+        .channel_open_session()
+        .await
+        .expect("secondary channel");
+
+    // Flood well past russh's 100-message internal Channel<Msg> capacity without
+    // ever sending `request_subsystem("sftp")`.
+    let chunk = vec![b'X'; 2048];
+    for _ in 0..250 {
+        if secondary.data(chunk.as_slice()).await.is_err() {
+            break;
+        }
+    }
+
+    // Secondary channel must be closed by the server.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match secondary.wait().await {
+                None | Some(ChannelMsg::Close) => break,
+                Some(_) => {}
+            }
+        }
+    })
+    .await
+    .expect("secondary channel must close promptly");
+
+    // Primary game channel remains responsive and releases slot cleanly.
+    term.send_line("say still alive").await;
+    term.expect("Nick says, \"still alive\"").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+    wait_until("slot released", Duration::from_secs(5), || {
+        hooks.releases() == [Admission::Admit]
+    })
+    .await;
+}
+
+/// Stream wrapper that pauses ONLY `poll_read` while keeping `poll_write`
+/// open, reproducing a hostile SSH peer that keeps sending `CHANNEL_DATA`
+/// without draining server output or sending `SSH_MSG_CHANNEL_WINDOW_ADJUST`.
+struct PauseReadStream {
+    inner: tokio::net::TcpStream,
+    pause: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+}
+
+#[derive(Clone)]
+struct PauseControl {
+    pause: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+}
+
+impl PauseControl {
+    fn new(inner: tokio::net::TcpStream) -> (PauseReadStream, Self) {
+        let pause = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new(Mutex::new(None));
+        (
+            PauseReadStream {
+                inner,
+                pause: Arc::clone(&pause),
+                waker: Arc::clone(&waker),
+            },
+            Self { pause, waker },
+        )
+    }
+
+    fn pause_reads(&self) {
+        self.pause.store(true, Ordering::SeqCst);
+    }
+
+    fn resume_reads(&self) {
+        self.pause.store(false, Ordering::SeqCst);
+        if let Some(w) = self.waker.lock().unwrap().take() {
+            w.wake();
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for PauseReadStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.pause.load(Ordering::SeqCst) {
+            *self.waker.lock().unwrap() = Some(cx.waker().clone());
+            if self.pause.load(Ordering::SeqCst) {
+                return std::task::Poll::Pending;
+            }
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for PauseReadStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+fn sftp_frame(pkt_type: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + payload.len());
+    out.extend_from_slice(&u32::try_from(1 + payload.len()).unwrap().to_be_bytes());
+    out.push(pkt_type);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn sftp_string(buf: &mut Vec<u8>, s: &[u8]) {
+    buf.extend_from_slice(&u32::try_from(s.len()).unwrap().to_be_bytes());
+    buf.extend_from_slice(s);
+}
+
+/// HIGH-6b: client opens a real SFTP file handle, freezes reading (so its SSH
+/// window fills on the first 64 KiB read reply and stalls `russh_sftp` writes),
+/// and floods > `SFTP_MAX_CHUNKS` read requests. The server must close the SFTP
+/// channel cleanly without deadlocking `russh::Session::run`, keep the primary
+/// game channel responsive, and release its admission slot on disconnect.
+#[tokio::test]
+async fn sftp_channel_inbound_flood_closes_cleanly_without_deadlocking_session() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "solo",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Solo".into(),
+        }],
+    );
+    let addr = start_server("sftp-flood", Arc::clone(&hooks)).await;
+    let tcp = tokio::net::TcpStream::connect(addr).await.expect("tcp");
+    let (stream, ctl) = PauseControl::new(tcp);
+    let cfg = russh::client::Config {
+        window_size: 2048,
+        maximum_packet_size: 1024,
+        ..Default::default()
+    };
+    let mut handle = russh::client::connect_stream(Arc::new(cfg), stream, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_password("solo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("Welcome, solo!").await;
+
+    // Open secondary channel and start SFTP.
+    let mut sftp_ch = handle
+        .channel_open_session()
+        .await
+        .expect("secondary channel");
+    sftp_ch
+        .request_subsystem(true, "sftp")
+        .await
+        .expect("sftp subsystem");
+
+    // SSH_FXP_INIT (type 1, version 3)
+    sftp_ch
+        .data(sftp_frame(1, &3u32.to_be_bytes()).as_slice())
+        .await
+        .expect("init");
+    let _ = tokio::time::timeout(Duration::from_secs(5), sftp_ch.wait())
+        .await
+        .expect("version reply");
+
+    // SSH_FXP_OPEN (type 3, id=1, "/assets/sounds/kill.wav", flags=READ(1), attrs=0)
+    let mut open_payload = Vec::new();
+    open_payload.extend_from_slice(&1u32.to_be_bytes());
+    sftp_string(&mut open_payload, b"/assets/sounds/kill.wav");
+    open_payload.extend_from_slice(&1u32.to_be_bytes()); // FXF_READ
+    open_payload.extend_from_slice(&0u32.to_be_bytes()); // empty attrs
+    sftp_ch
+        .data(sftp_frame(3, &open_payload).as_slice())
+        .await
+        .expect("open");
+    // Read SSH_FXP_HANDLE reply to extract handle bytes ("h1").
+    let handle_bytes = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(ChannelMsg::Data { data }) = sftp_ch.wait().await
+                && data.len() >= 13
+                && data[4] == 102
+            {
+                let hlen = u32::from_be_bytes([data[9], data[10], data[11], data[12]]) as usize;
+                return data[13..13 + hlen].to_vec();
+            }
+        }
+    })
+    .await
+    .expect("handle reply");
+
+    // Now freeze client reads so the 2 KiB SSH window fills on the first 64 KiB
+    // SFTP read reply, and flood 90 SFTP_READ requests to overflow SftpInbound.
+    ctl.pause_reads();
+    for id in 2u32..92 {
+        let mut read_payload = Vec::new();
+        read_payload.extend_from_slice(&id.to_be_bytes());
+        sftp_string(&mut read_payload, &handle_bytes);
+        read_payload.extend_from_slice(&0u64.to_be_bytes()); // offset 0
+        read_payload.extend_from_slice(&(64u32 * 1024).to_be_bytes()); // 64 KiB
+        if sftp_ch
+            .data(sftp_frame(5, &read_payload).as_slice())
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+
+    // Give the server a moment to overflow `SftpInbound` and close `sftp_ch`,
+    // then resume client reads to observe the close and verify the main game
+    // channel is completely unblocked.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    ctl.resume_reads();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match sftp_ch.wait().await {
+                None | Some(ChannelMsg::Close) => break,
+                Some(_) => {}
+            }
+        }
+    })
+    .await
+    .expect("flooded sftp channel must close promptly without deadlocking session");
+
+    // Primary channel still responds and disconnects cleanly.
+    term.send_line("say after flood").await;
+    term.expect("Nick says, \"after flood\"").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+    wait_until("slot released", Duration::from_secs(5), || {
+        hooks.releases() == [Admission::Admit]
+    })
+    .await;
+}
+
+/// HIGH-7: authenticated in-game line mode must enforce `has_pending_data` +
+/// `PENDING_STRIKES` disconnect so a peer that stops adjusting its SSH window
+/// cannot grow `pending_data` without bound via echoed keystrokes.
+#[tokio::test]
+async fn in_game_line_mode_enforces_pending_data_disconnect() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "solo",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Solo".into(),
+        }],
+    );
+    let addr = start_server("high7-pending", Arc::clone(&hooks)).await;
+    let tcp = tokio::net::TcpStream::connect(addr).await.expect("tcp");
+    let (stream, ctl) = PauseControl::new(tcp);
+    let cfg = russh::client::Config {
+        window_size: 512,
+        maximum_packet_size: 512,
+        ..Default::default()
+    };
+    let mut handle = russh::client::connect_stream(Arc::new(cfg), stream, AcceptAll)
+        .await
+        .expect("connect");
+    assert!(
+        handle
+            .authenticate_password("solo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("Welcome, solo!").await;
+
+    // Freeze client reads so no `SSH_MSG_CHANNEL_WINDOW_ADJUST` is ever sent,
+    // then flood echoed keystrokes in authenticated in-game line mode.
+    ctl.pause_reads();
+    let payload = vec![b'a'; 128];
+    for _ in 0..32 {
+        if term.channel.data(payload.as_slice()).await.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // Server must have triggered PENDING_STRIKES disconnect and released slot.
+    wait_until(
+        "in-game pending_data disconnect releases slot",
+        Duration::from_secs(5),
+        || hooks.releases() == [Admission::Admit],
+    )
+    .await;
+    ctl.resume_reads();
+    drop(handle);
+}
+
+/// HIGH-9: data sent before `shell_request` is ignored, a duplicate
+/// `shell_request` or `exec_request` on an active shell is refused, and a
+/// connection can attach at most once on its `ConnId`.
+#[tokio::test]
+async fn pre_shell_data_is_ignored_and_duplicate_shell_or_exec_cannot_double_connect() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "solo",
+        "pw123",
+        vec![CharSummary {
+            key: 7,
+            name: "Solo".into(),
+        }],
+    );
+    let addr = start_server("high9-shell-state", Arc::clone(&hooks)).await;
+    let mut handle =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("connect");
+    assert!(
+        handle
+            .authenticate_password("solo", "pw123")
+            .await
+            .expect("auth")
+            .success()
+    );
+    let ch = handle.channel_open_session().await.expect("open");
+    ch.request_pty(false, "xterm-256color", 80, 24, 0, 0, &[])
+        .await
+        .expect("pty");
+
+    // Send welcome-style connect data BEFORE `request_shell`: must be ignored.
+    ch.data(b"connect solo pw123\r\n".as_slice())
+        .await
+        .expect("pre-shell data");
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(
+        hooks.connected_chars.lock().unwrap().is_empty(),
+        "pre-shell data must not trigger connect_character"
+    );
+
+    // First shell_request succeeds and connects once.
+    ch.request_shell(true).await.expect("first shell");
+    let mut term = Term {
+        channel: ch,
+        seen: String::new(),
+    };
+    term.expect("Welcome, solo!").await;
+    assert_eq!(hooks.connected_chars.lock().unwrap().len(), 1);
+
+    // Second shell_request and exec_request on the already-connected channel
+    // must be rejected without attaching a second time or breaking the shell.
+    let _ = term.channel.request_shell(true).await;
+    let _ = term.channel.exec(true, b"mind pull".to_vec()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        hooks.connected_chars.lock().unwrap().len(),
+        1,
+        "duplicate shell/exec must not double-connect"
+    );
+
+    // Active shell still works and clean QUIT triggers disconnected once.
+    term.send_line("say still connected").await;
+    term.expect("Nick says, \"still connected\"").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    wait_until("disconnect hook fires once", Duration::from_secs(5), || {
+        hooks.disconnects.lock().unwrap().len() == 1
+    })
+    .await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// SSH-M3: TUI queries/invokes/responds are offloaded onto the bounded worker
+/// without blocking `russh::Session::run`, and burst ops per packet are capped.
+#[tokio::test]
+async fn tui_data_offloads_queries_without_blocking_and_caps_burst_per_packet() {
+    let hooks = Arc::new(MockHooks::default());
+    let (handle, mut term) = play_session("sshm3-tui-burst", &hooks).await;
+    term.send_line("@tui").await;
+    // Wait until TUI has entered and issued its initial WHO query.
+    wait_until("tui entered", Duration::from_secs(5), || {
+        !hooks.queries.lock().unwrap().is_empty()
+    })
+    .await;
+
+    // Switch to screen 3 (mail) so `r` triggers a `mail.list` query.
+    term.channel.data(b"3".as_slice()).await.expect("screen 3");
+    wait_until("mail screen queried", Duration::from_secs(5), || {
+        hooks
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, name, _)| name == "mail.list")
+    })
+    .await;
+
+    // Stall query hooks and fire a single burst packet of 40 `r` refreshes:
+    // (1) `Session::run` must NOT block (window_change still succeeds), and
+    // (2) at most `MAX_TUI_BURST_OPS` (16) queries are enqueued from one packet.
+    let before_mail = hooks
+        .queries
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, name, _)| name == "mail.list")
+        .count();
+    hooks.hold_queries.store(true, Ordering::SeqCst);
+    let burst = vec![b'r'; 40];
+    term.channel
+        .data(burst.as_slice())
+        .await
+        .expect("send burst");
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        term.channel.window_change(100, 30, 0, 0),
+    )
+    .await
+    .expect("window_change must not stall while query hook is held")
+    .expect("window_change ok");
+    wait_until(
+        "window_change processed while query held",
+        Duration::from_secs(2),
+        || {
+            hooks
+                .caps_history
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.width == 100 && c.height == 30)
+        },
+    )
+    .await;
+
+    // Release held queries and verify per-packet burst cap <= 16.
+    hooks.hold_queries.store(false, Ordering::SeqCst);
+    hooks.delayed_query_release.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let after_mail = hooks
+        .queries
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, name, _)| name == "mail.list")
+        .count();
+    let delta = after_mail.saturating_sub(before_mail);
+    assert!(
+        (1..=16).contains(&delta),
+        "single-packet TUI burst must be capped to <= 16 queries, got {delta}"
     );
 
     let _ = handle

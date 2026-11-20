@@ -13,6 +13,12 @@ use std::collections::VecDeque;
 /// Maximum line length in characters; further input is refused.
 pub const MAX_LINE_CHARS: usize = 8192;
 
+/// Maximum UTF-8 byte length of a single buffered line (16 KiB). Prevents
+/// 4-byte UTF-8 input from multiplying per-line and history memory 4× past
+/// [`MAX_LINE_CHARS`] while still admitting full [`MAX_LINE_CHARS`] ASCII and
+/// 2-byte UTF-8 lines.
+pub const MAX_LINE_BYTES: usize = 16 * 1024;
+
 /// Per-connection history depth.
 pub const HISTORY_CAP: usize = 200;
 
@@ -20,6 +26,8 @@ pub const HISTORY_CAP: usize = 200;
 #[derive(Clone, Debug)]
 pub struct LineBuffer {
     buf: Vec<char>,
+    /// Current UTF-8 byte length of `buf`.
+    utf8_bytes: usize,
     cursor: usize,
     history: VecDeque<String>,
     history_cap: usize,
@@ -41,12 +49,17 @@ impl LineBuffer {
     pub fn new(history_cap: usize) -> Self {
         Self {
             buf: Vec::new(),
+            utf8_bytes: 0,
             cursor: 0,
             history: VecDeque::new(),
             history_cap,
             hist_pos: None,
             saved: Vec::new(),
         }
+    }
+
+    fn recompute_utf8_bytes(&mut self) {
+        self.utf8_bytes = self.buf.iter().map(|c| c.len_utf8()).sum();
     }
 
     /// The buffer as text.
@@ -93,9 +106,12 @@ impl LineBuffer {
 
     /// Insert `c` at the cursor. Refused (`false`) for a control character
     /// — the ANSI-injection vector — or when the line is at
-    /// [`MAX_LINE_CHARS`].
+    /// [`MAX_LINE_CHARS`] or `MAX_LINE_BYTES`.
     pub fn insert(&mut self, c: char) -> bool {
-        if c.is_control() || self.buf.len() >= MAX_LINE_CHARS {
+        if c.is_control()
+            || self.buf.len() >= MAX_LINE_CHARS
+            || self.utf8_bytes.saturating_add(c.len_utf8()) > MAX_LINE_BYTES
+        {
             return false;
         }
         if self.cursor == self.buf.len() {
@@ -103,6 +119,7 @@ impl LineBuffer {
         } else {
             self.buf.insert(self.cursor, c);
         }
+        self.utf8_bytes = self.utf8_bytes.saturating_add(c.len_utf8());
         self.cursor += 1;
         true
     }
@@ -113,6 +130,7 @@ impl LineBuffer {
             return None;
         }
         let removed = self.buf.remove(self.cursor - 1);
+        self.utf8_bytes = self.utf8_bytes.saturating_sub(removed.len_utf8());
         self.cursor -= 1;
         Some(removed)
     }
@@ -120,7 +138,9 @@ impl LineBuffer {
     /// Remove the character under the cursor, returning it.
     pub fn delete(&mut self) -> Option<char> {
         if self.cursor < self.buf.len() {
-            Some(self.buf.remove(self.cursor))
+            let removed = self.buf.remove(self.cursor);
+            self.utf8_bytes = self.utf8_bytes.saturating_sub(removed.len_utf8());
+            Some(removed)
         } else {
             None
         }
@@ -165,7 +185,8 @@ impl LineBuffer {
         if self.cursor == 0 {
             return false;
         }
-        self.buf.drain(..self.cursor);
+        let removed_bytes: usize = self.buf.drain(..self.cursor).map(char::len_utf8).sum();
+        self.utf8_bytes = self.utf8_bytes.saturating_sub(removed_bytes);
         self.cursor = 0;
         true
     }
@@ -183,7 +204,8 @@ impl LineBuffer {
         while i > 0 && !self.buf[i - 1].is_whitespace() {
             i -= 1;
         }
-        self.buf.drain(i..self.cursor);
+        let removed_bytes: usize = self.buf.drain(i..self.cursor).map(char::len_utf8).sum();
+        self.utf8_bytes = self.utf8_bytes.saturating_sub(removed_bytes);
         self.cursor = i;
         true
     }
@@ -205,6 +227,7 @@ impl LineBuffer {
         if let Some(p) = self.hist_pos {
             self.buf = self.history[p].chars().collect();
         }
+        self.recompute_utf8_bytes();
         self.cursor = self.buf.len();
         true
     }
@@ -223,6 +246,7 @@ impl LineBuffer {
                 self.buf = std::mem::take(&mut self.saved);
             }
         }
+        self.recompute_utf8_bytes();
         self.cursor = self.buf.len();
         true
     }
@@ -237,6 +261,7 @@ impl LineBuffer {
     /// drops its oldest past the cap).
     pub fn submit(&mut self, record: bool) -> String {
         let line: String = self.buf.drain(..).collect();
+        self.utf8_bytes = 0;
         self.cursor = 0;
         self.hist_pos = None;
         self.saved.clear();
@@ -250,10 +275,23 @@ impl LineBuffer {
     }
 
     /// Replace the buffer with `text`, cursor at the end (control characters
-    /// dropped); leaves history navigation.
+    /// dropped, capped at [`MAX_LINE_CHARS`] and `MAX_LINE_BYTES`); leaves
+    /// history navigation.
     pub fn set(&mut self, text: &str) {
-        self.buf = text.chars().filter(|c| !c.is_control()).collect();
-        self.buf.truncate(MAX_LINE_CHARS);
+        self.buf.clear();
+        self.utf8_bytes = 0;
+        for c in text.chars() {
+            if c.is_control() {
+                continue;
+            }
+            if self.buf.len() >= MAX_LINE_CHARS
+                || self.utf8_bytes.saturating_add(c.len_utf8()) > MAX_LINE_BYTES
+            {
+                break;
+            }
+            self.buf.push(c);
+            self.utf8_bytes = self.utf8_bytes.saturating_add(c.len_utf8());
+        }
         self.cursor = self.buf.len();
         self.hist_pos = None;
     }
@@ -261,6 +299,7 @@ impl LineBuffer {
     /// Empty the buffer and leave history navigation.
     pub fn clear(&mut self) {
         self.buf.clear();
+        self.utf8_bytes = 0;
         self.cursor = 0;
         self.hist_pos = None;
     }
@@ -352,5 +391,28 @@ mod tests {
         assert_eq!(b.len(), MAX_LINE_CHARS);
         b.set(&"x".repeat(MAX_LINE_CHARS + 5));
         assert_eq!(b.len(), MAX_LINE_CHARS);
+    }
+
+    #[test]
+    fn utf8_byte_cap_bounds_multibyte_lines_and_recovers_on_edits() {
+        let mut b = LineBuffer::default();
+        // '🎲' is 4 UTF-8 bytes: at most MAX_LINE_BYTES / 4 fit.
+        let max_dice = MAX_LINE_BYTES / 4;
+        for _ in 0..max_dice {
+            assert!(b.insert('🎲'));
+        }
+        assert!(
+            !b.insert('🎲'),
+            "must refuse once UTF-8 bytes hit MAX_LINE_BYTES"
+        );
+        assert_eq!(b.text().len(), MAX_LINE_BYTES);
+        // Deleting one frees 4 bytes.
+        assert_eq!(b.backspace(), Some('🎲'));
+        assert!(b.insert('a'));
+        assert!(b.text().len() <= MAX_LINE_BYTES);
+        // `set` also enforces MAX_LINE_BYTES.
+        b.set(&"🎲".repeat(MAX_LINE_CHARS));
+        assert!(b.text().len() <= MAX_LINE_BYTES);
+        assert_eq!(b.len(), max_dice);
     }
 }

@@ -152,6 +152,14 @@ const PENDING_STRIKES: u8 = 3;
 /// space; this bounds it so the pump can close the connection.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum time an opened secondary `sftp` channel may sit without requesting
+/// the `sftp` subsystem before the server closes it (HIGH-6).
+const SFTP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum TUI invokes + queries + responds accepted from a single input
+/// packet before dropping excess burst work (SSH-M3).
+const MAX_TUI_BURST_OPS: usize = 16;
+
 /// How often the TUI's WHO rail re-queries the world while `Mode::Tui` is
 /// active (design M15 D5: a read-only 3-5 s refresh that does *not* stamp
 /// idle — the pump submits the query, it never types the WHO command).
@@ -504,34 +512,15 @@ impl Ingress {
                     return;
                 }
             };
-            let handle = session.handle();
-            // Two deadlines, so nothing holds a slot for ever: authenticate
-            // within `deadline`, open a channel within another. The
-            // disconnect is polite; the cut after `grace` is not, and it is
-            // unconditional: a client stalled in the key exchange never even
-            // has the disconnect processed (russh takes no message while a
-            // kex is active), and one that ignores it holds the read until
-            // EOF (doc 29a §8 F-1, F-3).
-            let watchdog = tokio::spawn(async move {
-                tokio::time::sleep(deadline).await;
-                let why = if !authed.load(Ordering::SeqCst) {
-                    "authentication timed out"
-                } else {
-                    tokio::time::sleep(deadline).await;
-                    if opened.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    "no session was opened"
-                };
-                tracing::info!(conn = conn_id, "{why}; disconnecting");
-                let _ = tokio::time::timeout(
-                    grace,
-                    handle.disconnect(Disconnect::ByApplication, why.into(), String::new()),
-                )
-                .await;
-                tokio::time::sleep(grace).await;
-                switch.kill();
-            });
+            let watchdog = spawn_auth_watchdog(
+                conn_id,
+                session.handle(),
+                authed,
+                opened,
+                switch,
+                deadline,
+                grace,
+            );
             if let Err(error) = session.await {
                 tracing::debug!(conn = conn_id, %error, "SSH session ended with error");
             }
@@ -546,8 +535,20 @@ impl Ingress {
     /// trusted ingress asks at its preamble's `Hello`, for the address the
     /// doorway names, and builds its handler here; the public TCP port asks
     /// at accept and uses [`Ingress::handler_for_admission`].
+    #[cfg(test)]
     pub(crate) fn handler_for(&self, addr: IpAddr, counted: bool) -> ConnHandler {
-        self.handler_with(addr, Slot::Counted(counted), DEFAULT_AUTH_DEADLINE)
+        self.handler_for_with_deadline(addr, counted, DEFAULT_AUTH_DEADLINE)
+    }
+
+    /// Build a counted handler with an explicit `auth_deadline` (used by
+    /// [`crate::trusted::TrustedIngress`], HIGH-11).
+    pub(crate) fn handler_for_with_deadline(
+        &self,
+        addr: IpAddr,
+        counted: bool,
+        auth_deadline: Duration,
+    ) -> ConnHandler {
+        self.handler_with(addr, Slot::Counted(counted), auth_deadline)
     }
 
     /// One connection's handler for an [`SshHooks::admit_connection`]
@@ -603,7 +604,9 @@ impl Ingress {
             exec_input: None,
             exec_submitted: false,
             channel: None,
-            sftp: None,
+            sftp_channel: None,
+            sftp_in: None,
+            sftp_handshake_watchdog: None,
             sftp_started: false,
             pty_seen: false,
             shell_started: false,
@@ -622,6 +625,44 @@ impl Ingress {
             attested: None,
         }
     }
+}
+
+/// Two deadlines, so nothing holds a slot for ever: authenticate within
+/// `deadline`, open a channel within another. The disconnect is polite; the
+/// cut after `grace` is not, and it is unconditional: a client stalled in the
+/// key exchange never even has the disconnect processed (russh takes no
+/// message while a kex is active), and one that ignores it holds the read
+/// until EOF (doc 29a §8 F-1, F-3; shared by [`Ingress::handle`] and
+/// [`crate::trusted::TrustedIngress::serve`], HIGH-11).
+pub(crate) fn spawn_auth_watchdog(
+    conn_id: u64,
+    handle: russh::server::Handle,
+    authed: Arc<AtomicBool>,
+    opened: Arc<AtomicBool>,
+    switch: Arc<KillSwitch>,
+    deadline: Duration,
+    grace: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::time::sleep(deadline).await;
+        let why = if !authed.load(Ordering::SeqCst) {
+            "authentication timed out"
+        } else {
+            tokio::time::sleep(deadline).await;
+            if opened.load(Ordering::SeqCst) {
+                return;
+            }
+            "no session was opened"
+        };
+        tracing::info!(conn = conn_id, "{why}; disconnecting");
+        let _ = tokio::time::timeout(
+            grace,
+            handle.disconnect(Disconnect::ByApplication, why.into(), String::new()),
+        )
+        .await;
+        tokio::time::sleep(grace).await;
+        switch.kill();
+    })
 }
 
 /// How a connection's per-address accounting was claimed, so `Drop`
@@ -647,8 +688,7 @@ impl Slot {
 }
 
 impl ConnHandler {
-    /// This connection's id (tests).
-    #[cfg(test)]
+    /// This connection's id.
     pub(crate) fn conn_id(&self) -> u64 {
         self.conn_id
     }
@@ -801,12 +841,19 @@ pub(crate) struct ConnHandler {
     channel: Option<ChannelId>,
     pty_seen: bool,
     shell_started: bool,
-    /// **The asset pack's channel** (doc 21 cut G.11): a second session
-    /// channel, opened by a client in game, held until it asks for the
-    /// `sftp` subsystem — the one thing it may ask for.
-    sftp: Option<Channel<Msg>>,
-    /// The pack's `sftp` session has started on this connection (one a
-    /// connection).
+    /// **The asset pack's channel** (doc 21 cut G.11): the id of the second
+    /// session channel opened by a client in game for `sftp`. The underlying
+    /// `Channel<Msg>` is dropped immediately on open (HIGH-6) so russh never
+    /// blocks `Session::run` on an unread channel queue.
+    sftp_channel: Option<ChannelId>,
+    /// Bounded non-blocking inbound feeder into the active `sftp` stream
+    /// (`Some` only after `subsystem_request("sftp")` succeeds, HIGH-6).
+    sftp_in: Option<crate::assets::SftpInbound>,
+    /// Closes `sftp_channel` if the client opens it without starting `sftp`
+    /// within [`SFTP_HANDSHAKE_TIMEOUT`] (HIGH-6).
+    sftp_handshake_watchdog: Option<tokio::task::JoinHandle<()>>,
+    /// The pack's `sftp` session has started (or been closed/consumed) on this
+    /// connection (one a connection).
     sftp_started: bool,
     /// Set just before `connect_character` is attempted (cleared again on
     /// refusal); gates the `disconnected` hook (fired exactly once, from
@@ -816,8 +863,9 @@ pub(crate) struct ConnHandler {
     connected: Arc<AtomicBool>,
     /// Owned by the transport so a closed connection cannot later log a timeout.
     preauth_watchdog: Option<tokio::task::JoinHandle<()>>,
-    /// Bounded typed-command queue; the SSH event loop must remain free to write.
-    commands: Option<mpsc::Sender<String>>,
+    /// Bounded typed-command and TUI action queue; the SSH event loop must
+    /// remain free to write (SSH-M3).
+    commands: Option<mpsc::Sender<GameAction>>,
     command_task: Option<tokio::task::JoinHandle<()>>,
     /// What this connection claimed at accept, released exactly once in
     /// `Drop`. A refused slot means over-cap: told in the banner, refused at
@@ -825,21 +873,20 @@ pub(crate) struct ConnHandler {
     slot: Slot,
     /// Set by russh once any auth method succeeded; read by the accept-time
     /// watchdog's first deadline.
-    authed: Arc<AtomicBool>,
+    pub(crate) authed: Arc<AtomicBool>,
     /// Set when the first session channel opens; read by the watchdog's
     /// second deadline.
-    opened: Arc<AtomicBool>,
-    /// The switch on this connection's TCP stream (doc 29a §9). Armed after
-    /// every server-initiated disconnect, so a client that ignores it cannot
-    /// keep the connection half-open; unattached (and harmless) for a
-    /// handler that was not made by [`Ingress::handle`].
-    kill: Arc<KillSwitch>,
+    pub(crate) opened: Arc<AtomicBool>,
+    /// The switch on this connection's stream (doc 29a §9, HIGH-11). Armed
+    /// after every server-initiated disconnect, so a client that ignores it
+    /// cannot keep the connection half-open.
+    pub(crate) kill: Arc<KillSwitch>,
     /// [`SshConfig::auth_deadline`]: also the grace a client gets to answer
     /// the server's channel close with its own before it is disconnected.
     auth_deadline: Duration,
     flood: FloodBucket,
-    /// Consecutive pre-connect inputs that arrived while the channel's window
-    /// was exhausted (see [`PENDING_STRIKES`]).
+    /// Consecutive line-mode inputs that arrived while the channel's window
+    /// was exhausted (see [`PENDING_STRIKES`], HIGH-7).
     pending_strikes: u8,
     /// Set once [`close_polite`](Self::close_polite) initiates disconnect so
     /// remaining actions in the same packet and any subsequent channel data are
@@ -868,6 +915,10 @@ impl Drop for ConnHandler {
         if let Some(watchdog) = self.preauth_watchdog.take() {
             watchdog.abort();
         }
+        if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
+            watchdog.abort();
+        }
+        self.sftp_in = None;
         if let Some(task) = self.command_task.take() {
             task.abort();
         }
@@ -1189,14 +1240,29 @@ impl ConnHandler {
         }
     }
 
-    fn queue_line(&self, line: String) -> Result<(), russh::Error> {
+    fn queue_action(&self, action: GameAction) -> Result<(), russh::Error> {
         let Some(commands) = &self.commands else {
             return Err(russh::Error::Disconnect);
         };
         // Never await capacity in a russh callback: that would also stop writes.
         commands
-            .try_send(line)
+            .try_send(action)
             .map_err(|_| russh::Error::Disconnect)
+    }
+
+    fn queue_line(&self, line: String) -> Result<(), russh::Error> {
+        self.queue_action(GameAction::Line(line))
+    }
+
+    fn close_sftp_channel(&mut self, session: &mut Session) {
+        if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
+            watchdog.abort();
+        }
+        self.sftp_in = None;
+        self.sftp_started = true;
+        if let Some(ch) = self.sftp_channel.take() {
+            let _ = session.close(ch);
+        }
     }
 
     // ---- line dispatch --------------------------------------------------
@@ -1233,8 +1299,10 @@ impl ConnHandler {
 
     /// Raw input while in [`Mode::Tui`]: decode it into the TUI app, then
     /// repaint / submit / detach. Painting is left to the pump (fired via the
-    /// repaint signal) so there is one steady-state frame writer.
-    async fn tui_data(&mut self, data: &[u8], _session: &mut Session) -> Result<(), russh::Error> {
+    /// repaint signal) so there is one steady-state frame writer, and invokes /
+    /// queries / responds are offloaded onto the bounded non-blocking command
+    /// worker so slow hooks never stall `russh::Session::run` (SSH-M3).
+    fn tui_data(&mut self, data: &[u8]) -> Result<(), russh::Error> {
         let result = {
             let mut sh = self.lock();
             match sh.tui.as_mut() {
@@ -1248,28 +1316,30 @@ impl ConnHandler {
         // One burst can carry typed requests AND submitted lines (17g cut
         // C3b's review): a form's Enter, then the screen's `Enter type` and
         // the line's own Enter in the same read — key repeat, a slow link.
-        // Everything the burst produced is forwarded; returning after the
-        // lines once dropped the typed request, whose owner then waited on a
-        // reply that could never come. The typed requests and queries go
-        // first: their keys came before the line's own Enter in that case.
-        // Author edits use the typed owner path; hydration stays read-only.
-        // Replies land on the pump and repaint the current view.
+        // Everything the burst produced is forwarded in order onto the bounded
+        // FIFO command worker, capped at `MAX_TUI_BURST_OPS` per packet so a
+        // hostile burst cannot stall the event loop or flood the queue (SSH-M3).
+        let mut budget = MAX_TUI_BURST_OPS;
         for (id, request) in result.invokes {
-            self.hooks.invoke(self.conn_id, id, request).await;
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            self.queue_action(GameAction::Invoke { id, request })?;
         }
         for (name, args) in result.queries {
-            submit_query(
-                self.hooks.as_ref(),
-                &self.shared,
-                self.conn_id,
-                name,
-                args,
-                None,
-            )
-            .await;
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            self.queue_action(GameAction::Query { name, args })?;
         }
         for (id, epoch, choice) in result.responds {
-            self.hooks.respond(self.conn_id, id, epoch, choice).await;
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            self.queue_action(GameAction::Respond { id, epoch, choice })?;
         }
         if !result.submit.is_empty() {
             // Show the cleared input line immediately; the world's echo
@@ -1531,12 +1601,16 @@ impl ConnHandler {
             tx,
             stamped_tx: Some(stamped_tx),
         };
-        // Armed *before* the await: if russh drops this future mid-connect
-        // (connection torn down), Drop still fires `disconnected` and the
-        // binary cleans up whatever the attach managed to do. A refusal
-        // clears it again ( `disconnected` for a never-attached conn is a
-        // no-op binary-side either way).
-        self.connected.store(true, Ordering::SeqCst);
+        // Armed *before* the await via compare_exchange so a duplicate entry
+        // cannot attach twice on the same ConnId or clear an active `connected`
+        // flag on refusal (HIGH-9).
+        if self
+            .connected
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(());
+        }
         match self
             .hooks
             .connect_character(conn, account, character.key)
@@ -1557,7 +1631,7 @@ impl ConnHandler {
                     sh.mode = Mode::InGame;
                     Arc::clone(&sh.repaint)
                 };
-                let (tx, mut commands) = mpsc::channel::<String>(64);
+                let (tx, mut commands) = mpsc::channel::<GameAction>(64);
                 self.commands = Some(tx);
                 let mut worker = GameCommands {
                     hooks: Arc::clone(&self.hooks),
@@ -1567,17 +1641,43 @@ impl ConnHandler {
                     handle: session.handle(),
                 };
                 self.command_task = Some(tokio::spawn(async move {
-                    while let Some(line) = commands.recv().await {
-                        match worker.local_line(&line).await {
-                            Ok(true) => {}
-                            Ok(false) => worker.hooks.line(worker.conn_id, line.clone()).await,
-                            Err(_) => {
-                                let _ = worker.handle.close(channel).await;
-                                break;
+                    while let Some(action) = commands.recv().await {
+                        match action {
+                            GameAction::Line(line) => {
+                                match worker.local_line(&line).await {
+                                    Ok(true) => {}
+                                    Ok(false) => {
+                                        worker.hooks.line(worker.conn_id, line.clone()).await;
+                                    }
+                                    Err(_) => {
+                                        let _ = worker.handle.close(channel).await;
+                                        break;
+                                    }
+                                }
+                                if line.trim().eq_ignore_ascii_case("QUIT") {
+                                    break;
+                                }
                             }
-                        }
-                        if line.trim().eq_ignore_ascii_case("QUIT") {
-                            break;
+                            GameAction::Invoke { id, request } => {
+                                worker.hooks.invoke(worker.conn_id, id, request).await;
+                            }
+                            GameAction::Query { name, args } => {
+                                submit_query(
+                                    worker.hooks.as_ref(),
+                                    &worker.shared,
+                                    worker.conn_id,
+                                    name,
+                                    args,
+                                    None,
+                                )
+                                .await;
+                            }
+                            GameAction::Respond { id, epoch, choice } => {
+                                worker
+                                    .hooks
+                                    .respond(worker.conn_id, id, epoch, choice)
+                                    .await;
+                            }
                         }
                     }
                 }));
@@ -1664,7 +1764,13 @@ impl ConnHandler {
         // exec of a player who is offline leaves nobody link-dead in a room,
         // and one typed during a real link loss neither restarts its grace nor
         // takes a unit back from the mind that holds it.
-        self.connected.store(true, Ordering::SeqCst);
+        if self
+            .connected
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return self.exec_error(session, channel, "Session is already connected.");
+        }
         if self
             .hooks
             .connect_exec(conn, &account, character.key)
@@ -1946,15 +2052,28 @@ impl Handler for ConnHandler {
         if self.channel.is_some() {
             // One session channel per connection — and (doc 21 cut G.11)
             // one more, for the asset pack's `sftp`, once the connection is
-            // in game and the pack is served. Dropping the handle rejects
-            // the request.
+            // in game and the pack is served. Drop `channel` immediately so
+            // russh never blocks `Session::run` on an unread `Channel<Msg>`
+            // queue before `subsystem_request("sftp")` (HIGH-6).
             if self.connected.load(Ordering::SeqCst)
-                && self.sftp.is_none()
+                && self.sftp_channel.is_none()
                 && !self.sftp_started
                 && crate::assets::AssetPack::shipped().is_some()
             {
-                self.sftp = Some(channel);
+                let sftp_id = channel.id();
+                drop(channel);
+                self.sftp_channel = Some(sftp_id);
                 reply.accept().await;
+                let handle = session.handle();
+                let conn_id = self.conn_id;
+                self.sftp_handshake_watchdog = Some(tokio::spawn(async move {
+                    tokio::time::sleep(SFTP_HANDSHAKE_TIMEOUT).await;
+                    tracing::info!(
+                        conn = conn_id,
+                        "secondary sftp channel did not start subsystem in time; closing"
+                    );
+                    let _ = tokio::time::timeout(WRITE_TIMEOUT, handle.close(sftp_id)).await;
+                }));
             } else {
                 drop(reply);
             }
@@ -2053,8 +2172,9 @@ impl Handler for ConnHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel == Some(channel) {
-            let (caps, is_tui) = {
+            let (caps, is_tui, geometry_changed) = {
                 let mut sh = self.lock();
+                let prev = (sh.width, sh.height, sh.cell_size);
                 sh.width = caps::clamp_pty_dim(col_width, caps::MAX_WIDTH);
                 sh.height = caps::clamp_pty_dim(row_height, caps::MAX_HEIGHT);
                 if let Some(cell) =
@@ -2062,6 +2182,7 @@ impl Handler for ConnHandler {
                 {
                     sh.cell_size = Some(cell);
                 }
+                let geometry_changed = (sh.width, sh.height, sh.cell_size) != prev;
                 let cell_size = sh.cell_size;
                 sh.recompute_caps();
                 let caps = sh.caps;
@@ -2073,14 +2194,15 @@ impl Handler for ConnHandler {
                         tui.set_cell_size(cell);
                     }
                 }
-                (caps, matches!(sh.mode, Mode::Tui))
+                (caps, matches!(sh.mode, Mode::Tui), geometry_changed)
             };
             if self.connected.load(Ordering::SeqCst) {
                 self.hooks.caps_changed(self.conn_id, caps);
             }
             // Line mode pushes no bytes on resize (unchanged); TUI mode
-            // repaints so the frame reflows without a world event.
-            if is_tui {
+            // repaints only when geometry actually changed (HIGH-14; pixel
+            // re-bakes are further rate-limited inside `PixelView::paint`).
+            if is_tui && geometry_changed {
                 self.fire_repaint();
             }
         }
@@ -2093,14 +2215,18 @@ impl Handler for ConnHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.channel != Some(channel) {
+        if self.channel != Some(channel)
+            || self.shell_started
+            || self.exec_submitted
+            || self.connected.load(Ordering::SeqCst)
+        {
             session.channel_failure(channel)?;
+            if self.sftp_channel == Some(channel) {
+                self.close_sftp_channel(session);
+            }
             return Ok(());
         }
         session.channel_success(channel)?;
-        if self.shell_started {
-            return Ok(());
-        }
         self.shell_started = true;
         if !self.pty_seen {
             self.write_text(
@@ -2132,16 +2258,22 @@ impl Handler for ConnHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.channel != Some(channel) {
+            session.channel_failure(channel)?;
+            if self.sftp_channel == Some(channel) {
+                self.close_sftp_channel(session);
+            }
+            return Ok(());
+        }
+        if self.shell_started || self.connected.load(Ordering::SeqCst) {
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
         let command = crate::mind_exec::MindExec::parse(data);
         // Any exec attempt consumes this channel's one operation, even refusal.
         // This blocks trailing data from falling back to the line editor.
         self.exec_submitted = true;
-        if self.channel != Some(channel)
-            || self.shell_started
-            || self.pty_seen
-            || self.auth_method != AuthMethod::PublicKey
-            || command.is_none()
-        {
+        if self.pty_seen || self.auth_method != AuthMethod::PublicKey || command.is_none() {
             session.channel_failure(channel)?;
             return self.exec_error(
                 session,
@@ -2187,24 +2319,36 @@ impl Handler for ConnHandler {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let ours = self.sftp.as_ref().is_some_and(|c| c.id() == channel);
+        let ours = self.sftp_channel == Some(channel);
         let pack = crate::assets::AssetPack::shipped();
-        match (name, ours, pack) {
-            ("sftp", true, Some(pack)) if self.connected.load(Ordering::SeqCst) => {
-                if let Some(chan) = self.sftp.take() {
-                    self.sftp_started = true;
-                    session.channel_success(channel)?;
-                    tracing::info!(conn = self.conn_id, "asset pack sftp session started");
-                    russh_sftp::server::run(
-                        crate::assets::EndOnError(chan.into_stream()),
-                        crate::assets::AssetsSftp::new(pack),
-                    )
-                    .await;
-                    return Ok(());
+        match (name, ours, !self.sftp_started, pack) {
+            ("sftp", true, true, Some(pack)) if self.connected.load(Ordering::SeqCst) => {
+                if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
+                    watchdog.abort();
                 }
-                session.channel_failure(channel)?;
+                self.sftp_started = true;
+                session.channel_success(channel)?;
+                let (inbound, stream) = crate::assets::SftpChannelStream::new(
+                    session.handle(),
+                    channel,
+                    Arc::clone(&self.kill),
+                    WRITE_TIMEOUT,
+                );
+                self.sftp_in = Some(inbound);
+                tracing::info!(conn = self.conn_id, "asset pack sftp session started");
+                russh_sftp::server::run(
+                    crate::assets::EndOnError(stream),
+                    crate::assets::AssetsSftp::new(pack),
+                )
+                .await;
+                return Ok(());
             }
-            _ => session.channel_failure(channel)?,
+            _ => {
+                session.channel_failure(channel)?;
+                if ours {
+                    self.close_sftp_channel(session);
+                }
+            }
         }
         Ok(())
     }
@@ -2215,6 +2359,22 @@ impl Handler for ConnHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel) {
+            if self.closing {
+                return Ok(());
+            }
+            // Reject data arriving before `subsystem_request("sftp")` and close
+            // on inbound buffer overflow without ever blocking `Session::run`
+            // (HIGH-6).
+            let ok = self
+                .sftp_in
+                .as_ref()
+                .is_some_and(|inbound| inbound.try_push(data));
+            if !ok {
+                self.close_sftp_channel(session);
+            }
+            return Ok(());
+        }
         if self.channel != Some(channel) || self.closing {
             return Ok(());
         }
@@ -2233,22 +2393,28 @@ impl Handler for ConnHandler {
                 "Only one request is permitted per exec channel.",
             );
         }
+        // Ignore channel data until `shell_request` has started the session
+        // (HIGH-9: blocks pre-shell welcome `connect` racing `shell_request`).
+        if !self.shell_started {
+            return Ok(());
+        }
         // In TUI mode raw bytes drive the ratatui app (input line + nav
         // hotkeys), not the line editor (design M15 D4).
         if matches!(self.lock().mode, Mode::Tui) {
-            return self.tui_data(data, session).await;
+            return self.tui_data(data);
         }
-        if !self.connected.load(Ordering::SeqCst) {
-            if session.has_pending_data(channel) {
-                self.pending_strikes = self.pending_strikes.saturating_add(1);
-                if self.pending_strikes >= PENDING_STRIKES {
-                    return Err(russh::Error::Disconnect);
-                }
-                // Not echoed into a window the client is not draining.
-                return Ok(());
+        // Enforce pending-data backpressure for BOTH pre-auth and authenticated
+        // in-game line mode so an unwedged client cannot grow russh's
+        // `pending_data` buffer without bound via echoed keystrokes (HIGH-7).
+        if session.has_pending_data(channel) {
+            self.pending_strikes = self.pending_strikes.saturating_add(1);
+            if self.pending_strikes >= PENDING_STRIKES {
+                return Err(russh::Error::Disconnect);
             }
-            self.pending_strikes = 0;
+            // Not echoed into a window the client is not draining.
+            return Ok(());
         }
+        self.pending_strikes = 0;
         let (echo, actions) = {
             let mut sh = self.lock();
             let mut out = Vec::new();
@@ -2270,11 +2436,31 @@ impl Handler for ConnHandler {
         Ok(())
     }
 
+    async fn extended_data(
+        &mut self,
+        channel: ChannelId,
+        _code: u32,
+        _data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel) {
+            self.close_sftp_channel(session);
+        }
+        Ok(())
+    }
+
     async fn channel_eof(
         &mut self,
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel) {
+            if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
+                watchdog.abort();
+            }
+            self.sftp_in = None;
+            return Ok(());
+        }
         if self.channel != Some(channel) {
             return Ok(());
         }
@@ -2297,11 +2483,40 @@ impl Handler for ConnHandler {
         channel: ChannelId,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.sftp_channel == Some(channel) {
+            if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
+                watchdog.abort();
+            }
+            self.sftp_in = None;
+            self.sftp_channel = None;
+            self.sftp_started = true;
+            return Ok(());
+        }
         if self.channel == Some(channel) {
             return Err(russh::Error::Disconnect);
         }
         Ok(())
     }
+}
+
+/// Bounded per-connection action dispatched to the background `GameCommands`
+/// worker so neither line mode nor TUI mode ever awaits hooks inside a russh
+/// callback (SSH-M3).
+enum GameAction {
+    Line(String),
+    Invoke {
+        id: u64,
+        request: mush_proto::InvokeRequest,
+    },
+    Query {
+        name: String,
+        args: serde_json::Value,
+    },
+    Respond {
+        id: u64,
+        epoch: String,
+        choice: mush_proto::RespondChoice,
+    },
 }
 
 // Connected typed commands may wait on persistence, restart, or output fences.
@@ -2969,6 +3184,26 @@ impl Cut {
             self.kill.kill();
         });
     }
+
+    /// Cut promptly after a write timeout proved the peer stopped draining,
+    /// avoiding a 30s+ close grace stall holding FD and `IpGuard` slots (HIGH-6).
+    fn now(self, handle: russh::server::Handle) {
+        tokio::spawn(async move {
+            if self.kill.is_killed() {
+                return;
+            }
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                handle.disconnect(
+                    Disconnect::ByApplication,
+                    "write timed out".into(),
+                    String::new(),
+                ),
+            )
+            .await;
+            self.kill.kill();
+        });
+    }
 }
 
 #[allow(clippy::too_many_arguments)] // Both legacy and stamped adapters share one output pump.
@@ -3017,6 +3252,7 @@ fn spawn_output_pump(
         let mut legacy_open = true;
         let mut stamped_open = true;
         let mut exit_status = 0;
+        let mut write_timed_out = false;
         loop {
             // A poisoned lock here only picks the idle wait; the next wake's
             // own lock reports it.
@@ -3110,9 +3346,10 @@ fn spawn_output_pump(
 
             let fence_wake = matches!(wake, Wake::Repaint);
             let mut done = false;
-            // Doc 21 cut G.1b: this wake's bytes carry a picture, whose write
-            // is timed for the step-down.
+            // Doc 21 cut G.1b: this wake's bytes carry a picture, whose render,
+            // encode, and write wall time is fed into step-down (HIGH-14).
             let mut picture = false;
+            let mut render_encode_elapsed = Duration::ZERO;
             let mut queries: Vec<(String, serde_json::Value)> = Vec::new();
             // Doc 21 cut G.4: the pixel view's helm orders, sent as typed lines.
             let mut lines: Vec<String> = Vec::new();
@@ -3212,9 +3449,11 @@ fn spawn_output_pump(
                         if matches!(sh.mode, Mode::Tui) {
                             match sh.tui.as_mut() {
                                 Some(t) if t.pixel_active() => {
+                                    let render_started = std::time::Instant::now();
                                     t.pixel_tick();
                                     let skipped = t.pixel_stats().slow_skips;
                                     let bytes = t.pixel_frame();
+                                    render_encode_elapsed = render_started.elapsed();
                                     if t.pixel_stats().slow_skips > skipped {
                                         hooks.pixel_event(PixelEvent::SlowSkip);
                                     }
@@ -3285,10 +3524,11 @@ fn spawn_output_pump(
                 // steps down if it keeps happening.
                 if picture && matches!(wrote, Ok(Ok(()))) {
                     hooks.pixel_event(PixelEvent::Sent(sent));
+                    let total_frame_time = render_encode_elapsed.saturating_add(started.elapsed());
                     let change = shared.lock().ok().and_then(|mut sh| {
                         sh.tui
                             .as_mut()
-                            .map(|t| t.pixel_write_took(started.elapsed()))
+                            .map(|t| t.pixel_write_took(total_frame_time))
                     });
                     if change == Some(crate::tui::pixel::StepChange::Down) {
                         tracing::info!(
@@ -3303,10 +3543,11 @@ fn spawn_output_pump(
                     // Transport gone: nothing left to close.
                     Ok(Err(_)) => return,
                     // Write wedged (client stopped reading — `^S`, dead
-                    // peer): give up and close the transport below.
+                    // peer): give up and cut the transport promptly below.
                     Err(_) => {
                         tracing::info!("output write timed out; closing slow connection");
                         exit_status = 1;
+                        write_timed_out = true;
                         break;
                     }
                 }
@@ -3327,6 +3568,13 @@ fn spawn_output_pump(
 
         if viewing {
             hooks.pixel_event(PixelEvent::Closed);
+        }
+        if write_timed_out {
+            if connected.swap(false, Ordering::SeqCst) {
+                hooks.disconnected(conn_id).await;
+            }
+            cut.now(handle);
+            return;
         }
         // If the connection tore down while still on the alternate screen,
         // restore it so the client is never stuck there (invariant T5).
@@ -3376,6 +3624,7 @@ fn spawn_exec_pump(
     tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(125);
         let mut status = 2;
+        let mut write_timed_out = false;
         loop {
             let event = match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Some(event)) => event,
@@ -3384,11 +3633,12 @@ fn spawn_exec_pump(
                         "expired",
                         "Authoring request expired or disconnected.",
                     );
-                    let _ = tokio::time::timeout(
-                        WRITE_TIMEOUT,
-                        handle.data(channel, exec_json(&error)),
-                    )
-                    .await;
+                    if tokio::time::timeout(WRITE_TIMEOUT, handle.data(channel, exec_json(&error)))
+                        .await
+                        .is_err()
+                    {
+                        write_timed_out = true;
+                    }
                     break;
                 }
             };
@@ -3399,15 +3649,18 @@ fn spawn_exec_pump(
                         // This channel was admitted only by the closed Mind exec grammar.
                         break;
                     };
-                    if !matches!(
-                        tokio::time::timeout(
-                            WRITE_TIMEOUT,
-                            handle.data(channel, exec_json(&result))
-                        )
-                        .await,
-                        Ok(Ok(()))
-                    ) {
-                        break;
+                    match tokio::time::timeout(
+                        WRITE_TIMEOUT,
+                        handle.data(channel, exec_json(&result)),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => break,
+                        Err(_) => {
+                            write_timed_out = true;
+                            break;
+                        }
                     }
                     if response.is_final() {
                         status = u32::from(!response.succeeded());
@@ -3417,6 +3670,13 @@ fn spawn_exec_pump(
                 OutputEvent::Disconnect { .. } => break,
                 _ => {}
             }
+        }
+        if write_timed_out {
+            if connected.swap(false, Ordering::SeqCst) {
+                hooks.disconnected(conn).await;
+            }
+            cut.now(handle);
+            return;
         }
         let _ =
             tokio::time::timeout(WRITE_TIMEOUT, handle.exit_status_request(channel, status)).await;
