@@ -267,7 +267,7 @@ fn compose_domain_modules<E>(
             .with_canon_evidence(Arc::new(self::econ_canon::CanonEvidenceReader))
             .with_party_caps(Vec::new())
             .with_party_cap_source_if(tacsim_delegate)
-            .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard))
+            .with_dispute_guard(Arc::new(TacsimDisputeGuard))
             // Doc 48 cut EX.1b (EX.1a's seam, Q-48-50): tacsim's own root wires the market's
             // standing acceptance too, so a personal listing stands here as in mush-composition.
             .with_standing_acceptance(Arc::new(mush_market::ListingAcceptance));
@@ -330,6 +330,24 @@ fn compose_domain_modules<E>(
         }),
     ];
     Ok((modules, Arc::clone(&inventory_handles)))
+}
+
+/// Composite dispute guard combining `mush_market::SaleDisputeGuard` and TacSim's
+/// `RegistryFeeDisputeGuard` (security hardening HIGH-50).
+#[derive(Clone, Copy, Debug, Default)]
+struct TacsimDisputeGuard;
+
+impl mush_economy::DisputeGuard for TacsimDisputeGuard {
+    fn refusal(
+        &self,
+        w: &mush_core::World,
+        contract: &mush_economy::EconomicContract,
+        party: &mush_org::PrincipalId,
+    ) -> Option<&'static str> {
+        mush_market::SaleDisputeGuard
+            .refusal(w, contract, party)
+            .or_else(|| crate::port::claims::RegistryFeeDisputeGuard.refusal(w, contract, party))
+    }
 }
 
 trait PortPartyCapsExt: Sized {

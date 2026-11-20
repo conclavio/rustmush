@@ -32,7 +32,8 @@
 //! (`tacsim.works_ledger`), the bay act's shape: the command or the arm records it, the offer
 //! projects it from the record, the prepare moves the goods once, and the tick settles it.
 
-use std::collections::BTreeMap;
+use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mush_core::{
@@ -42,7 +43,7 @@ use mush_core::{
     ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RevisionSet,
     RulesValue, StateFamilyHandle, SubjectKey, World,
 };
-use mush_economy::{AccountId, CustodyRef, EconomyStore, VaultId};
+use mush_economy::{AccountId, AccountStatus, Amount, CustodyRef, EconomyStore, VaultId};
 use mush_industry::{
     FacilityRecord, IndustryHandles, IndustryVerb, RecipeAuthority, WorkOrder, WorkOrderId,
     WorkOrderState,
@@ -89,6 +90,9 @@ pub const MAX_UNBOUND_FIRES: u8 = 8;
 pub const MAX_BILL_LINES: usize = 10;
 /// Lots one move may carry.
 pub const MAX_MOVE_LOTS: usize = 32;
+/// **Open works/yard contracts one actor may hold at once** (security hardening HIGH-51): prevents
+/// unbounded escrow `Thing`/`Vault` creation and `WorksContract` spam.
+pub const MAX_OPEN_CONTRACTS_PER_ACTOR: usize = 16;
 /// Owed moves one offer projects.
 const MAX_OFFER_ROWS: usize = 16;
 /// Lot pages a collection reads looking for the escrow's lots.
@@ -279,6 +283,9 @@ pub enum Then {
     /// the escrow's pool where it lies, the arm's act on the fire after the delivery, so the
     /// collection moves pools. Nothing more.
     Pooled,
+    /// **Security hardening CRIT-20**: lock delivered/bought design-part lots inside a yard
+    /// escrow under `tacsim.works/{contract}` so they cannot be withdrawn before commissioning.
+    Held,
 }
 
 /// **One goods move a contract owes** — the bay's `OwedAct` shape: the act ordinal (the ledger's
@@ -323,13 +330,14 @@ impl WorksAct {
             }
             return Ok(());
         }
-        // Doc 39 cut IN.5: a pooling act names one endpoint, its lots and no pool goods.
-        let pooling = self.then == Then::Pooled;
-        if pooling && (self.from != self.to || !self.goods.is_empty() || self.lots.is_empty()) {
-            return Err("a pooling act names one endpoint and the lots it dissolves".into());
+        // Doc 39 cut IN.5 / CRIT-20: a pooling or lot-holding act names one endpoint, its lots and
+        // no pool goods.
+        let in_place = matches!(self.then, Then::Pooled | Then::Held);
+        if in_place && (self.from != self.to || !self.goods.is_empty() || self.lots.is_empty()) {
+            return Err("an in-place escrow act names one endpoint and the lots it touches".into());
         }
         if self.act == 0
-            || (self.from == self.to && !pooling)
+            || (self.from == self.to && !in_place)
             || self.goods.len() > MAX_BILL_LINES
             || self.lots.len() > MAX_MOVE_LOTS
             || (self.goods.is_empty() && self.lots.is_empty())
@@ -473,6 +481,87 @@ pub enum WorksState {
 }
 
 // ---- the store ------------------------------------------------------------------------------
+
+/// **Whether `vault` is a works or yard order escrow** (CRIT-20): true for any contract
+/// recorded in [`TacsimStore`], whether open, closed, or unreadable, so players cannot trade
+/// from or `@inv/move` into/out of order escrows directly.
+#[must_use]
+pub(crate) fn is_works_escrow(w: &World, vault: VaultId) -> bool {
+    w.module_state::<TacsimStore>()
+        .is_some_and(|store| store.works_contract(vault.0).is_some())
+}
+
+thread_local! {
+    /// Active `(actor, escrow_contract_id)` authorized inside `port::pools::buy_into` (CRIT-20).
+    static ESCROW_BUY: Cell<Option<(ObjId, u64)>> = const { Cell::new(None) };
+}
+
+/// Scoped RAII guard authorizing `port::pools`'s legitimate `+works/buy` / `+yard/buy` / house
+/// purchase into a single open works escrow at its facility's port venue (CRIT-20).
+#[derive(Debug)]
+pub(crate) struct EscrowBuyScope(Option<(ObjId, u64)>);
+
+impl Drop for EscrowBuyScope {
+    fn drop(&mut self) {
+        ESCROW_BUY.with(|cell| cell.set(self.0));
+    }
+}
+
+/// Authorize `actor` to accept one market ask directly into `escrow` for the lifetime of the
+/// returned scope guard (CRIT-20).
+#[must_use]
+pub(crate) fn allow_escrow_buy(actor: ObjId, escrow: u64) -> EscrowBuyScope {
+    let previous = ESCROW_BUY.with(|cell| cell.replace(Some((actor, escrow))));
+    EscrowBuyScope(previous)
+}
+
+/// Whether `vault` is an open works/yard contract escrow whose facility stands at `venue`.
+fn escrow_at_venue(w: &World, venue: &mush_market::MarketId, vault: VaultId) -> bool {
+    let Some(c) = open_contract(w, vault.0) else {
+        return false;
+    };
+    let Some(facility) = facility_record(w, c.facility) else {
+        return false;
+    };
+    let Some(entry) = port_of(w, &facility) else {
+        return false;
+    };
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(port, ..)| *port == entry)
+        .is_some_and(|(_, def, _)| def.venue.as_str() == venue.as_str())
+}
+
+/// Whether `PortVenueGate::admit` permits `actor` to target works escrow `vault` at `venue`
+/// (true ONLY inside [`allow_escrow_buy`] for an open contract at that exact port venue).
+#[must_use]
+pub(crate) fn escrow_buy_allowed(
+    w: &World,
+    actor: ObjId,
+    venue: &mush_market::MarketId,
+    vault: VaultId,
+) -> bool {
+    ESCROW_BUY.with(|cell| cell.get() == Some((actor, vault.0))) && escrow_at_venue(w, venue, vault)
+}
+
+/// Whether `PortVenueGate::receives_at` permits delivery into works escrow `vault` at `venue`
+/// (true ONLY inside [`allow_escrow_buy`] for an open contract at that exact port venue).
+#[must_use]
+pub(crate) fn escrow_buy_allowed_at_venue(
+    w: &World,
+    venue: &mush_market::MarketId,
+    vault: VaultId,
+) -> bool {
+    ESCROW_BUY.with(|cell| cell.get().is_some_and(|(_, id)| id == vault.0))
+        && escrow_at_venue(w, venue, vault)
+}
+
+/// The `LotHold` holder tag for design-part lots locked inside contract `contract`'s escrow
+/// (CRIT-20).
+#[must_use]
+pub(crate) fn works_lot_holder(contract: u64) -> String {
+    format!("tacsim.works/{contract}")
+}
 
 /// Install a contract and queue its document.
 pub(crate) fn put(ctx: &mut Ctx<'_>, contract: &WorksContract) {
@@ -712,6 +801,41 @@ fn clean_part(ctx: &Ctx<'_>, lot: LotId) -> bool {
         && handles(ctx.w).is_some_and(|(_, inventory)| {
             matches!(ctx.action_state(&inventory.lot_holds, &lot), Ok(None))
         })
+}
+
+/// **Whether a part lot already inside contract `contract`'s escrow may be commissioned**
+/// (CRIT-20): if a provenance row exists it must be clean (unfitted, not hot, intact), and the
+/// lot must be either unheld or held by this contract's own escrow holder ([`works_lot_holder`]).
+/// Player deliveries are already required to carry clean provenance by `+yard/deliver`
+/// ([`clean_part`]), while direct player moves/market writes into escrows are refused by
+/// `PortMovePolicy` and `PortVenueGate`.
+fn clean_escrow_part(ctx: &Ctx<'_>, contract: u64, lot: LotId) -> bool {
+    let whole = match crate::port::bay_work::act::provenance(ctx, lot) {
+        Ok(Some(part)) => {
+            part.fitted_into.is_none()
+                && !part.is_hot()
+                && part.condition == mush_tactics::field_ops::ComponentCondition::Intact
+        }
+        Ok(None) => true,
+        Err(_) => false,
+    };
+    let mine = works_lot_holder(contract);
+    whole
+        && handles(ctx.w).is_some_and(|(_, inventory)| {
+            match ctx.action_state(&inventory.lot_holds, &lot) {
+                Ok(None) => true,
+                Ok(Some(hold)) => hold.holder() == mine,
+                Err(_) => false,
+            }
+        })
+}
+
+/// **Required design parts for `design`** (CRIT-20), from `crate::port::bill::design_bill`.
+fn design_parts_map(w: &World, design: &CanonicalId) -> Option<BTreeMap<CanonicalId, u64>> {
+    let store = w.module_state::<TacsimStore>()?;
+    let goods = store.goods()?;
+    let bill = crate::port::bill::design_bill(store.definitions(), goods, design).ok()?;
+    Some(bill.part_lines())
 }
 
 fn recipes() -> Arc<dyn RecipeAuthority> {
@@ -1184,14 +1308,51 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
     if mush_market::asset_on_sale(ctx.w, facility.object()) {
         return Err(ON_SALE.to_owned());
     }
+    // Security hardening HIGH-51: cap open contracts per actor and pre-check industry availability,
+    // authoritative queue/pending state, and booking fee affordability BEFORE creating a Thing or
+    // Vault so refused orders never leak durable objects or desync RAM/store.
+    let open_by_actor = contracts(ctx.w)
+        .into_iter()
+        .filter(|c| c.requester == ctx.actor && c.closed.is_none())
+        .count();
+    if open_by_actor >= MAX_OPEN_CONTRACTS_PER_ACTOR {
+        return Err(format!(
+            "You already have {open_by_actor} open orders (the cap is \
+             {MAX_OPEN_CONTRACTS_PER_ACTOR}); collect or cancel one first."
+        ));
+    }
+    let industry = handles(ctx.w).ok_or("Industry is not available here.")?.0;
+    if ctx.authoritative_queue_full() || ctx.authoritative_pending(ctx.actor) {
+        return Err("You already have an action in flight; try again in a moment.".to_owned());
+    }
     let units = pinned.work_units().saturating_mul(u64::from(quantity));
     let booking = if house {
         0
     } else {
         facility.booking_fee_minor().unwrap_or(0)
     };
+    if booking > 0 {
+        let Some(economy) = ctx.w.module_state::<EconomyStore>() else {
+            return Err("Your account cannot cover the booking fee.".to_owned());
+        };
+        if economy.is_frozen() {
+            return Err(mush_industry::money::LEDGER_BUSY.to_owned());
+        }
+        let need = i64::try_from(booking)
+            .map_err(|_| "Your account cannot cover the booking fee.".to_owned())?;
+        let covered = economy
+            .snapshot()
+            .account(account)
+            .filter(|a| a.status == AccountStatus::Active)
+            .and_then(mush_economy::Account::available)
+            .is_some_and(|avail| avail >= Amount::from_minor(need));
+        if !covered {
+            return Err("Your account cannot cover the booking fee.".to_owned());
+        }
+    }
     // The escrow: a crate of its own in the facility (one vault a backing), the vault the
-    // requester's (§4.12: custody is the requester's throughout).
+    // requester's (§4.12: custody is the requester's throughout; direct market/move access is
+    // barred by PortVenueGate and PortMovePolicy).
     let escrow_crate = ctx
         .w
         .create(
@@ -1201,7 +1362,13 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
             Some(facility.object()),
         )
         .map_err(|e| e.to_string())?;
-    let vault = crate::port::apply::alloc_vault_id(ctx)?;
+    let vault = match crate::port::apply::alloc_vault_id(ctx) {
+        Ok(vault) => vault,
+        Err(error) => {
+            ctx.out.pin_deferred();
+            return Err(error);
+        }
+    };
     mush_economy::create_vault(
         ctx,
         mush_economy::Vault {
@@ -1225,13 +1392,13 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
         )
     {
         let _ = mush_economy::set_vault_status(ctx, vault, mush_economy::VaultStatus::Closed);
+        ctx.out.pin_deferred();
         return Err(if error.is_transient() {
             mush_industry::money::LEDGER_BUSY.to_owned()
         } else {
             "Your account cannot cover the booking fee.".to_owned()
         });
     }
-    let industry = handles(ctx.w).ok_or("Industry is not available here.")?.0;
     mush_industry::commands::draft(
         ctx,
         &industry,
@@ -1250,6 +1417,8 @@ pub(crate) fn book(ctx: &mut Ctx<'_>, terms: Booking<'_>) -> Result<WorksContrac
     )
     .map_err(|e| {
         let _ = mush_industry::money::settle_booking(ctx, vault.0, None);
+        let _ = mush_economy::set_vault_status(ctx, vault, mush_economy::VaultStatus::Closed);
+        ctx.out.pin_deferred();
         e.to_string()
     })?;
     let mut bill = bill_of(pinned, quantity);
@@ -1600,7 +1769,33 @@ fn commission(
     if crate::port::commission::commission(ctx.w, c.id).is_some() {
         return Err("That order is already being commissioned.".to_owned());
     }
-    let parts: Vec<LotId> = lots.iter().skip(1).map(|(lot, ..)| *lot).collect();
+    // Security hardening CRIT-20: require every design part slot to be present as a clean lot in
+    // the escrow (unheld or held by this contract) and consume those exact lots with the kit.
+    let mut need =
+        design_parts_map(ctx.w, &design).ok_or("The yard has no parts list for that design.")?;
+    let mut chosen_parts: Vec<(LotId, CanonicalId, u64)> = Vec::new();
+    for (lot, good, qty) in lots.iter().skip(1) {
+        if !clean_escrow_part(ctx, c.id, *lot) {
+            continue;
+        }
+        if let Some(left) = need.get_mut(good)
+            && *qty > 0
+            && *left >= *qty
+        {
+            *left = left.saturating_sub(*qty);
+            chosen_parts.push((*lot, good.clone(), *qty));
+        }
+    }
+    if need.values().any(|left| *left > 0) {
+        return Err(
+            "That order's escrow does not carry all required clean parts to commission the hull."
+                .to_owned(),
+        );
+    }
+    let parts: Vec<LotId> = chosen_parts.iter().map(|(lot, ..)| *lot).collect();
+    let mut consume_lots = Vec::with_capacity(chosen_parts.len().saturating_add(1));
+    consume_lots.push((kit, kit_good, 1));
+    consume_lots.extend(chosen_parts);
     let (n, mark) = next_mark(ctx.w);
     let record = YardCommission {
         order: c.id,
@@ -1621,16 +1816,36 @@ fn commission(
         at_ic: ctx.w.world_ic_now().at,
     };
     record.check()?;
-    crate::port::commission::put(ctx, &record);
+    record.check_parts(ctx.w)?;
+    // Security hardening HIGH-51: validate the WorksAct before persisting `YardCommission` so an
+    // invalid/full ledger never leaves an orphaned commission record; pin_deferred if `owe` fails.
     let (by, escrow) = (ctx.actor, c.escrow());
-    owe(
+    let preview_act = WorksAct {
+        act: c
+            .acts
+            .checked_add(1)
+            .ok_or("That order's ledger is full.")?,
+        by,
+        from: escrow.vault().0,
+        to: escrow.vault().0,
+        goods: Vec::new(),
+        lots: consume_lots.iter().map(|(lot, ..)| *lot).collect(),
+        then: Then::Commissioned,
+        tries: 1,
+    };
+    preview_act.check()?;
+    crate::port::commission::put(ctx, &record);
+    if let Err(error) = owe(
         ctx,
         c,
         by,
         (escrow, escrow),
-        (Vec::new(), lots),
+        (Vec::new(), consume_lots),
         Then::Commissioned,
-    )?;
+    ) {
+        ctx.out.pin_deferred();
+        return Err(error);
+    }
     say(
         ctx,
         format!(
@@ -1984,8 +2199,8 @@ pub(crate) fn submit_move(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> 
 }
 
 fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
-    // Doc 48 unit PL.6: one submission an actor a drain (`submit_as`).
-    if ctx.authoritative_pending(owed.by) {
+    // Doc 48 unit PL.6 & HIGH-51: one submission an actor a drain, and never when queue is full.
+    if ctx.authoritative_queue_full() || ctx.authoritative_pending(owed.by) {
         return false;
     }
     let Some(action) = ctx
@@ -2022,7 +2237,7 @@ fn submit(ctx: &mut Ctx<'_>, contract: u64, owed: &WorksAct) -> bool {
 /// delivered: each fire voided both delivers. A submission for an actor who already has one in
 /// flight is skipped, as the field and detachment ticks skip theirs; the arm's next fire makes it.
 fn submit_as(ctx: &mut Ctx<'_>, who: ObjId, verb: IndustryVerb, params: Value, tag: &str) {
-    if ctx.authoritative_pending(who) {
+    if ctx.authoritative_queue_full() || ctx.authoritative_pending(who) {
         return;
     }
     let saved = ctx.actor;
@@ -2066,7 +2281,7 @@ fn settle(ctx: &mut Ctx<'_>, c: &mut WorksContract) -> bool {
         c.acts = owed.act;
         c.owed = None;
         match owed.then {
-            Then::Supplied | Then::Pooled => put(ctx, c),
+            Then::Supplied | Then::Pooled | Then::Held => put(ctx, c),
             Then::Collected => close(ctx, c, Close::Collected),
             Then::Seized => close(ctx, c, Close::Seized),
             Then::Commissioned => {
@@ -2156,6 +2371,10 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
                 .iter()
                 .all(|g| pooled(ctx, c.escrow(), &g.good) >= g.units);
             if !covered {
+                // Security hardening CRIT-20: lock any unheld design-part lots that arrived in a
+                // yard escrow (e.g., via `+yard/buy` or `carry_into`) while waiting for the rest
+                // of the bill, without delaying `WoSubmit` once the bill is covered.
+                owe_hold_yard_parts(ctx, c);
                 return;
             }
             // Doc 48 unit PL.9 (Q-48-53): the fee is pinned at booking. `money::place` charges
@@ -2308,7 +2527,46 @@ fn step(ctx: &mut Ctx<'_>, c: &mut WorksContract, free: &mut BTreeMap<ObjId, u64
         WorkOrderState::Running
         | WorkOrderState::Interrupted { .. }
         | WorkOrderState::Ready
-        | WorkOrderState::AwaitingApproval { .. } => {}
+        | WorkOrderState::AwaitingApproval { .. } => {
+            // Security hardening CRIT-20: ensure any unheld yard design parts (such as the final
+            // `+yard/buy` lot that completed the bill) are locked under `tacsim.works/{id}`.
+            owe_hold_yard_parts(ctx, c);
+        }
+    }
+}
+
+/// Lock any unheld design-part lots standing in a `Front::Yard` escrow under
+/// `tacsim.works/{id}` (CRIT-20).
+fn owe_hold_yard_parts(ctx: &mut Ctx<'_>, c: &mut WorksContract) {
+    if c.front != Front::Yard || c.owed.is_some() {
+        return;
+    }
+    let unheld_parts: Vec<(LotId, CanonicalId, u64)> = escrow_lots(ctx, c.escrow())
+        .into_iter()
+        .filter(|(lot, good, _)| {
+            crate::port_tick::is_part(good)
+                && handles(ctx.w).is_some_and(|(_, inventory)| {
+                    matches!(ctx.action_state(&inventory.lot_holds, lot), Ok(None))
+                })
+        })
+        .collect();
+    if unheld_parts.is_empty() {
+        return;
+    }
+    let (requester, escrow) = (c.requester, c.escrow());
+    if let Err(error) = owe(
+        ctx,
+        c,
+        requester,
+        (escrow, escrow),
+        (Vec::new(), unheld_parts),
+        Then::Held,
+    ) {
+        tracing::warn!(
+            contract = c.id,
+            %error,
+            "tacsim: yard design parts could not be held in escrow"
+        );
     }
 }
 
@@ -2710,11 +2968,49 @@ fn parameters(
     Ok((parameters, contract, act))
 }
 
-/// The moves `actor` owes, keyed by contract, and the hold plans of their destinations —
-/// derived from the store at projection, never from the submitter.
-fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>) {
+/// Server-derived data carried on a `tacsim_works` offer for one actor.
+struct OwedOffer {
+    rows: Map<String, Value>,
+    plans: Map<String, Value>,
+    /// For `Then::Commissioned`, the required design parts map keyed by contract id (CRIT-20).
+    required: Map<String, Value>,
+    /// For moves targeting an open `Front::Yard` escrow, the target yard contract id whose
+    /// `works_lot_holder` locks incoming part lots (CRIT-20).
+    hold_parts: Map<String, Value>,
+}
+
+/// Required design parts for a `Then::Commissioned` contract, read from its commission record
+/// (or its recipe's kit output).
+fn required_parts_for_contract(w: &World, c: &WorksContract) -> Option<BTreeMap<CanonicalId, u64>> {
+    let design = crate::port::commission::commission(w, c.id)
+        .map(|record| record.design.clone())
+        .or_else(|| {
+            recipes()
+                .catalog(w)
+                .into_iter()
+                .find_map(|(recipe, pinned)| {
+                    (recipe.pack() == &c.pack
+                        && recipe.id() == &c.recipe
+                        && recipe.version() == c.version)
+                        .then(|| {
+                            pinned.outputs().iter().find_map(|line| {
+                                crate::port::commission::design_of_kit(line.commodity())
+                            })
+                        })
+                        .flatten()
+                })
+        })?;
+    design_parts_map(w, &design)
+}
+
+/// The moves `actor` owes, keyed by contract, and the hold plans, required commission parts, and
+/// yard part-hold targets of their destinations — derived from the store at projection, never from
+/// the submitter.
+fn owed_rows(w: &World, actor: ObjId) -> OwedOffer {
     let mut rows = Map::new();
     let mut plans = Map::new();
+    let mut required = Map::new();
+    let mut hold_parts = Map::new();
     for c in contracts(w) {
         if rows.len() >= MAX_OFFER_ROWS {
             break;
@@ -2723,10 +3019,22 @@ fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>
             continue;
         };
         if let Ok(value) = serde_json::to_value(owed) {
+            let key = c.id.to_string();
             if let Some(plan) = PortCapacity.plan(w, EndpointRef(VaultId(owed.to))) {
-                plans.insert(c.id.to_string(), plan.0);
+                plans.insert(key.clone(), plan.0);
             }
-            rows.insert(c.id.to_string(), value);
+            if owed.then == Then::Commissioned
+                && let Some(parts) = required_parts_for_contract(w, &c)
+                && let Ok(parts_val) = serde_json::to_value(parts)
+            {
+                required.insert(key.clone(), parts_val);
+            }
+            if !matches!(owed.then, Then::Commissioned | Then::Pooled | Then::Held)
+                && open_contract(w, owed.to).is_some_and(|target| target.front == Front::Yard)
+            {
+                hold_parts.insert(key.clone(), json!(owed.to));
+            }
+            rows.insert(key, value);
         }
     }
     // Doc 39 cut IN.5: a works' house purchase in flight, keyed by its stores vault (a vault id,
@@ -2752,12 +3060,18 @@ fn owed_rows(w: &World, actor: ObjId) -> (Map<String, Value>, Map<String, Value>
             rows.insert(hold.to_string(), value);
         }
     }
-    (rows, plans)
+    OwedOffer {
+        rows,
+        plans,
+        required,
+        hold_parts,
+    }
 }
 
 impl WorksProvider {
     /// The destination's room, by the plan the offer carried (a hold the offer carried none for
-    /// is ungoverned).
+    /// is ungoverned). Accumulates a multi-good batch overlay across `incoming` so concurrent
+    /// commodities in one move cannot bypass compartment capacity (security hardening HIGH-53).
     fn room_for(
         &self,
         txn: &mut ActionTxn<'_>,
@@ -2769,6 +3083,7 @@ impl WorksProvider {
             return Ok(());
         };
         let plan = CapacityPlan(plan.clone());
+        let mut staged: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         for (good, quantity) in incoming {
             let mut read = |g: &CanonicalId| {
                 let pooled = self
@@ -2777,10 +3092,12 @@ impl WorksProvider {
                     .map(|pool| pool.map_or(0, |pool| pool.quantity))
                     .map_err(|_| mush_market::CapacityReadError)?;
                 // Doc 48e (48c #6, 48d C-03): every good's lots take room, a divisible one's too.
-                self.inventory
+                let held = self
+                    .inventory
                     .lot_quantity(txn, to, g)
-                    .map(|held| pooled.saturating_add(held))
-                    .map_err(|_| mush_market::CapacityReadError)
+                    .map(|lots| pooled.saturating_add(lots))
+                    .map_err(|_| mush_market::CapacityReadError)?;
+                Ok(held.saturating_add(staged.get(g).copied().unwrap_or(0)))
             };
             PortCapacity
                 .check(&plan, good, *quantity, &mut read)
@@ -2794,6 +3111,8 @@ impl WorksProvider {
                         "the hold's room cannot be read",
                     ),
                 })?;
+            let slot = staged.entry(good.clone()).or_insert(0);
+            *slot = slot.saturating_add(*quantity);
         }
         Ok(())
     }
@@ -2822,8 +3141,8 @@ impl ActionProvider for WorksProvider {
         {
             return Ok(None);
         }
-        let (rows, plans) = owed_rows(&engine.world, query.actor());
-        if rows.is_empty() {
+        let offer = owed_rows(&engine.world, query.actor());
+        if offer.rows.is_empty() {
             return Ok(None);
         }
         let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
@@ -2852,8 +3171,10 @@ impl ActionProvider for WorksProvider {
             };
         Ok(Some(ProviderOfferDraft {
             fixed_parameters: json!({
-                "rows": Value::Object(rows),
-                "plans": Value::Object(plans),
+                "rows": Value::Object(offer.rows),
+                "plans": Value::Object(offer.plans),
+                "required": Value::Object(offer.required),
+                "hold_parts": Value::Object(offer.hold_parts),
                 "now": engine.world.world_ic_now().at,
             }),
             parameters: ProjectedParameterSchema::new(vec![
@@ -2876,6 +3197,7 @@ impl ActionProvider for WorksProvider {
         }))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prepare_authoritative(
         &self,
         invocation: &ActionInvocation,
@@ -2924,14 +3246,39 @@ impl ActionProvider for WorksProvider {
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
         if owed.then == Then::Commissioned {
-            self.consume(txn, &owed)?;
+            self.consume(txn, parameters, contract, &owed)?;
             return self.landed(invocation, txn, (contract, act), prior.is_some());
         }
         let from = EndpointRef(VaultId(owed.from));
         let to = EndpointRef(VaultId(owed.to));
+        // Security hardening CRIT-20: lock unheld design-part lots already in a yard escrow.
+        if owed.then == Then::Held {
+            let holder = works_lot_holder(contract);
+            for lot in &owed.lots {
+                let record = txn
+                    .get(&self.inventory.lots, lot)
+                    .map_err(|_| refused("a lot cannot be read"))?
+                    .cloned()
+                    .filter(|l| l.endpoint() == from)
+                    .ok_or_else(|| refused("a lot is no longer in the escrow"))?;
+                if !crate::port_tick::is_part(record.commodity()) {
+                    return Err(refused("only design parts are held in a yard escrow"));
+                }
+                let held = self
+                    .inventory
+                    .lot_hold(txn, *lot)
+                    .map_err(|_| refused("a lot's hold cannot be read"))?;
+                if held.is_none() {
+                    self.inventory
+                        .hold_lot(txn, from, *lot, &holder)
+                        .map_err(|_| refused("a part lot could not be held in escrow"))?;
+                }
+            }
+            return self.landed(invocation, txn, (contract, act), prior.is_some());
+        }
         // Doc 39 cut IN.5: a pooling act dissolves each bulk lot where it lies; nothing moves.
         if owed.then == Then::Pooled {
-            let mut goods = std::collections::BTreeSet::new();
+            let mut goods = BTreeSet::new();
             for lot in &owed.lots {
                 let record = txn
                     .get(&self.inventory.lots, lot)
@@ -2951,10 +3298,10 @@ impl ActionProvider for WorksProvider {
         }
         let mut incoming: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         let mut lots = Vec::with_capacity(owed.lots.len());
-        let moving = if owed.then == Then::Pooled {
-            &[][..]
+        let moving: &[LotId] = if owed.then == Then::Pooled {
+            &[]
         } else {
-            &owed.lots[..]
+            owed.lots.as_slice()
         };
         for lot in moving {
             let record = txn
@@ -3001,43 +3348,119 @@ impl ActionProvider for WorksProvider {
         }) {
             return Err(refused("a bulk lot is pooled before it moves"));
         }
-        // Doc 39 cut IN.7: the lots move together (one census and tally write an endpoint).
+        // Doc 39 cut IN.7 + CRIT-20: release this contract's own escrow lot-holds when moving
+        // lots out (e.g. return/seize/carry), relocate together, then hold incoming part lots
+        // inside a target yard escrow (avoiding double-writing `lot_holds` for lots just released
+        // in this same bundle; `step` holds carried lots on the next tick).
         let ids: Vec<LotId> = lots.iter().map(mush_inventory::Lot::id).collect();
+        let mut released = BTreeSet::new();
         if !ids.is_empty() {
+            let mine = works_lot_holder(contract);
+            for lot_id in &ids {
+                let held_here = self
+                    .inventory
+                    .lot_hold(txn, *lot_id)
+                    .map_err(|_| refused("a lot's hold cannot be read"))?
+                    .is_some_and(|hold| hold.holder() == mine && hold.endpoint() == from);
+                if held_here {
+                    self.inventory
+                        .release_lot(txn, *lot_id, &mine)
+                        .map_err(|_| refused("a lot's escrow hold could not be released"))?;
+                    released.insert(*lot_id);
+                }
+            }
             self.inventory
                 .relocate_lots(txn, &ids, from, to)
                 .map_err(|_| refused("a lot could not be moved"))?;
+            if let Some(target_contract) = parameters
+                .get("hold_parts")
+                .and_then(Value::as_object)
+                .and_then(|map| map.get(&contract.to_string()))
+                .and_then(Value::as_u64)
+            {
+                let target_holder = works_lot_holder(target_contract);
+                for lot in &lots {
+                    if crate::port_tick::is_part(lot.commodity()) && !released.contains(&lot.id()) {
+                        self.inventory
+                            .hold_lot(txn, to, lot.id(), &target_holder)
+                            .map_err(|_| refused("a part lot could not be held in escrow"))?;
+                    }
+                }
+            }
         }
         self.landed(invocation, txn, (contract, act), prior.is_some())
     }
 }
 
 impl WorksProvider {
-    /// **Doc 39 cut IN.9**: the commission's consumption — every lot still in the escrow, the
-    /// kit by its `workorder.output` lineage (the relay foundry's check), consumed in one bundle.
+    /// **Doc 39 cut IN.9 & CRIT-20**: the commission's consumption — exactly one hull kit with
+    /// `workorder.output` lineage AND every required design part named by the offer's server-fixed
+    /// `required` table, all present in the escrow, releasing this contract's own escrow lot-holds
+    /// and consuming every lot atomically in one bundle.
     fn consume(
         &self,
         txn: &mut ActionTxn<'_>,
+        parameters: &Map<String, Value>,
+        contract: u64,
         owed: &WorksAct,
     ) -> Result<(), mush_core::ActionError> {
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
+        let required: BTreeMap<CanonicalId, u64> = parameters
+            .get("required")
+            .and_then(Value::as_object)
+            .and_then(|map| map.get(&contract.to_string()))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| refused("the commission's required design parts are unavailable"))?;
         let escrow = EndpointRef(VaultId(owed.from));
         let mut lots = Vec::with_capacity(owed.lots.len());
+        let mut seen = BTreeSet::new();
+        let mut kits = 0_usize;
+        let mut found_parts: BTreeMap<CanonicalId, u64> = BTreeMap::new();
         for lot in &owed.lots {
+            if !seen.insert(*lot) {
+                return Err(refused("a commission lists each lot once"));
+            }
             let record = txn
                 .get(&self.inventory.lots, lot)
                 .map_err(|_| refused("a lot cannot be read"))?
                 .cloned()
                 .filter(|l| l.endpoint() == escrow)
                 .ok_or_else(|| refused("a lot is no longer in the escrow"))?;
-            if crate::port::commission::is_kit(record.commodity())
-                && !matches!(record.lineage(), mush_inventory::Lineage::Origin { source }
+            if crate::port::commission::is_kit(record.commodity()) {
+                if !matches!(record.lineage(), mush_inventory::Lineage::Origin { source }
                     if source.provider == "industry" && source.kind == "workorder.output")
-            {
-                return Err(refused("the kit did not come from a work order"));
+                {
+                    return Err(refused("the kit did not come from a work order"));
+                }
+                kits = kits.saturating_add(1);
+            } else {
+                let slot = found_parts.entry(record.commodity().clone()).or_insert(0);
+                *slot = slot.saturating_add(record.quantity());
             }
             lots.push(record);
+        }
+        if kits != 1 {
+            return Err(refused("a commission consumes exactly one hull kit"));
+        }
+        if found_parts != required {
+            return Err(refused(
+                "the escrow does not carry every required part for the hull commission",
+            ));
+        }
+        let mine = works_lot_holder(contract);
+        for lot in &lots {
+            let held_here = self
+                .inventory
+                .lot_hold(txn, lot.id())
+                .map_err(|_| refused("a lot's hold cannot be read"))?
+                .is_some_and(|hold| hold.holder() == mine && hold.endpoint() == escrow);
+            if held_here {
+                self.inventory
+                    .release_lot(txn, lot.id(), &mine)
+                    .map_err(|_| refused("a part's escrow hold could not be released"))?;
+            }
         }
         self.inventory
             .consume_products(txn, &lots)
@@ -3153,5 +3576,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **CRIT-20**: `Then::Held` checks as an in-place escrow act, and `EscrowBuyScope` is
+    /// strictly scoped and restores cleanly on drop.
+    #[test]
+    fn crit20_held_act_checks_and_escrow_buy_scope_restores() {
+        let held = WorksAct {
+            act: 1,
+            by: ObjId(2),
+            from: 10,
+            to: 10,
+            goods: Vec::new(),
+            lots: vec![LotId(42)],
+            then: Then::Held,
+            tries: 1,
+        };
+        assert!(held.check().is_ok());
+        assert!(
+            WorksAct {
+                to: 11,
+                ..held.clone()
+            }
+            .check()
+            .is_err(),
+            "Then::Held must stay on one endpoint"
+        );
+        assert!(
+            WorksAct {
+                lots: Vec::new(),
+                ..held
+            }
+            .check()
+            .is_err(),
+            "Then::Held must name at least one lot"
+        );
+
+        assert_eq!(ESCROW_BUY.with(Cell::get), None);
+        {
+            let _guard = allow_escrow_buy(ObjId(7), 99);
+            assert_eq!(ESCROW_BUY.with(Cell::get), Some((ObjId(7), 99)));
+        }
+        assert_eq!(ESCROW_BUY.with(Cell::get), None);
     }
 }
