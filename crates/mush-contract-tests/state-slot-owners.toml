@@ -95,6 +95,13 @@ owner = "campaign"
 reason = "Doc 50 cut OP.5: TacSim has no campaign edge, so the declaring arm's story seats a fake operation frame (TacSim's own OperationFrame trait) in the slot the composition root fills with the campaign's. The real frame is OP.0's, proven over the campaign in mush-composition's op0_frame; nothing else writes the slot."
 
 [[site]]
+module = "tacsim/tests::op7_operation"
+accessor = "World::module_state_insert"
+slot = "OperationFrameSlot"
+owner = "campaign"
+reason = "Doc 50 cut OP.7: the +operation story seats a fake operation frame (TacSim's own OperationFrame trait) in the slot the composition root fills with the campaign's, as OP.5's arm story does, so it can set the operation's phase and outcome. The real frame is OP.0's; nothing else writes the slot."
+
+[[site]]
 path = "crates/tacsim/src/detachment/chat.rs"
 accessor = "World::module_state_insert"
 slot = "CrewBook"
