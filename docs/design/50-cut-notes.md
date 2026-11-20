@@ -1748,7 +1748,112 @@ v48 with the lead's word.
 
 ## OP.5
 
-Not built.
+The declaring arm, the operation frame and the resolution into control and the import duty
+(Q-50-18, Q-50-19, Q-50-28, Q-50-29, Q-50-59, Q-50-64). On OP.4 (#732). **Lane v50 (relay v41)**, taken on OP.4's v49 with the lead's word.
+
+**Survey.** At OP.4's head:
+- **The frame** (OP.0): `operations::frame` finds the composed frame; `OperationFrame::declare`
+  declares and activates in one step; `status` answers the phase and, once decided, who won. The
+  campaign reads the tank farm's close probe at the window's close (OP.4). No TacSim arm declares.
+- **The Review** (OP.2) fills on the Assembly's votes and the flagged seizures, and its fill does
+  nothing: the clock names no control flip.
+- **The import duty.** `polity::TermsRow` has `import_duty_permille` and `import_goods` since
+  KC.2, and nothing reads them. The Isidis region row has no terms block.
+- **The proceeds policy** (`port::proceeds::CoopProceeds`) is asked for every sale into a bid and
+  every sale off a person's ask (`mush_market::fees::ask_policy_proceeds`): its cuts come out of
+  the seller's proceeds, and the line is the seller's.
+
+**Built.**
+- **The declaring arm** (`tacsim::isidis_op`; Q-50-19), on the Assembly's tick.
+  - When the Concession Review fills, on a clock it has not answered, it declares one operation
+    through the frame and activates it in the same step:
+    - declared by the Republic's customs office (`republic_customs`, the Republic's treasury in
+      the lane), with a bond of `BOND_CR` (5,000 cr, provisional) held on its account and forfeit
+      to Occator's on its failure (Q-50-57 item 5);
+    - two sides, `republic` (the customs office) and `freeport` (Occator), and Occator defending;
+    - 28 IC days of notice and a 28-day window, set by the arm;
+    - the objective the tank farm's close probe, met in the defenders' favor (Q-50-28);
+    - its legal-target list `carrier` (Q-50-26 reads it; OP.6).
+  - Unwired, with no frame composed, it declares nothing and waits.
+  - The record (`tacsim:isidis_op`) holds the clock answered, the operation, when it was declared
+    and who won; a refused declaration is kept for staff and tried again on the next tick.
+- **The resolution** (Q-50-28, Q-50-29): once the frame says who won, the arm writes it once.
+  - The Republic's success makes it the Concession's de facto holder, through the one control
+    write (`mush_faction::write_control`, Q-50-51); already there, nothing is written.
+  - The defenders holding leaves the Freeport there; a partial or abandoned operation changes
+    nothing.
+- **The import duty at sale** (`tacsim::port::import_duty`; Q-50-29, Q-50-59, Q-50-64).
+  - A good on the venue's holder's `import_goods`, sold at the venue into a bid or off a listing,
+    pays `import_duty_permille` of its catalog value (`reference_major`) out of the seller's
+    proceeds: one cut of the proceeds policy, paid to the holder's terms row's payee, never more
+    than the sale less the Co-op's share.
+  - The sale's line names it, with its reason (who holds and since when, as the transit duty's
+    does), and what she receives is the sale less every cut.
+  - Only the duty follows the holder (Q-50-64): the venue's fees, berth, locker, wages and release
+    fee stay with the port's authority.
+- **Lane v50**: the Isidis region row gains `terms.republic` = { payee `republic_customs`,
+  `import_duty_permille` 50, `import_goods`: `metal_ore`, `ice_ore`, `carbon_ore`,
+  `strategic_ore`, `volatiles`, `propellant` }, and nothing under the Freeport. The 50 permille
+  is a **provisional economy default**, and the row's note says so: `TermsRow` gains `note`, read
+  by nothing. The strip chain's new head is `lane_chain::strip_import_duty`.
+- **A sale carries two cuts** (`mush_market::MAX_PROCEEDS_CUTS`, from one): the Co-op's share and
+  a place's import duty, so a Co-op hull selling at Isidis under the Republic pays both. The
+  market's own tests bound it there (`ic10_the_proceeds_split_is_exact_and_its_payees_bounded`
+  refuses one past it; the quote record loads two and refuses three).
+- **The farm's reading answers in any world**: the port tick reads the tank farm whether or not
+  the Freeport arm is laid up, so the operation's close probe is answered there too.
+
+**Tests.**
+- `domain_world::op5_operation` (the production roster; a fake frame, below):
+  - `op5_the_republic_declares_on_the_reviews_fill_and_its_success_takes_isidis`: nothing is
+    declared while the Review is short. Filled (staff's `@clock/advance`), the next tick declares
+    once: the customs office, the probe and its polarity, Occator defending, the sides, 28 and 28
+    IC days, the bond forfeit to Occator. While it runs nothing changes hands. The Republic's
+    success makes it Isidis's de facto holder, and it is never declared again.
+  - `op5_when_the_defenders_hold_the_freeport_keeps_isidis`.
+  - `op5_with_no_frame_composed_nothing_is_declared`.
+- `domain_economy::op5_import_duty::op5_the_import_duty_follows_the_concessions_holder`: a pilot
+  flies her Dray-P Ceres to Stickney to Isidis and sells propellant from her hold into the tank
+  farm's bid. Under the Freeport nothing is levied. With the Republic holding the Concession
+  (`@faction/control`), the same sale pays Republic Customs 5% of the catalog value out of her
+  proceeds, and the line names the duty, its reason, and her net less it.
+- **Mutations**, eight, each caught, each restored from a saved copy and compared:
+  - the arm never declaring; the arm declaring every tick; success writing no de facto holder;
+    the defenders holding flipping it too; the polarity flipped (the arm stories);
+  - the duty not cut; the line keeping the net before the duty; the farm unread while the arm is
+    laid up (the duty story).
+- **On conclav.dev, green:**
+  - all of tacsim (5,077 tests);
+  - mush-server `split_boundary` and `commerce_composition` (320), mush-market (275),
+    mush-contract-tests (208) and mush-composition (6);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim, mush-server, mush-composition and mush-market, all targets;
+  - rustdoc `-D warnings` in both modes.
+- **The first full run** found the duty refused on a Co-op hull: the market allowed one cut, and
+  the share already took it. The limit is two now, and the market's tests are bound to it.
+
+**Divergences.**
+- **The fake frame.** TacSim has no campaign edge, so the arm's story seats a stand-in for the
+  frame in its slot (`OperationFrameSlot`, a row in `state-slot-owners.toml`). The real frame is
+  OP.0's, proven over the campaign in `mush-composition`'s `op0_frame`; the probe is OP.4's.
+- **The declarer is the Republic's customs office**, the one Republic organization whose money is
+  the state's in the lane.
+- **Occator alone defends.** Meridiani is no lane organization (OP.2); Occator is the Freeport's
+  backer at Isidis (Q-50-22).
+- **One operation a Review clock.** A Review that fills again on a new clock (a front reopened)
+  declares again; the same clock never does.
+- **The arm is on the Assembly's tick**, a coarse minute, not the port tick: the Review moves on
+  that tick, and a declaration a minute after the fill is soon enough.
+- **The duty is on catalog value**, as the transit duty is (Q-50-53), capped at what the Co-op's
+  share leaves of the sale.
+- **The market's cut limit rises to two** rather than the duty being folded into the share's
+  cut: each payee keeps its own row and label on the sale.
+
+**Not built.**
+- What a repeat starts from beyond the drain (Q-50-60 is OP.4's) and any reset of the Review after
+  an operation.
+- `+operation`, the notices and the Republic's bid (OP.7); legal targets in a bubble and breaking
+  off (OP.6).
 
 ## OP.6
 
