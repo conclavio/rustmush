@@ -10,8 +10,9 @@
 //!    a [`PendingCustomsRuling`] on the space book: what customs found, and what it will do
 //!    about it. It grants nothing.
 //! 2. The action's prepare writes the ruling into the hull's row of
-//!    [`CUSTOMS_RULING_FAMILY`], and for a seizure debits the ore from the hold **in the same
-//!    transaction**, so a recorded seizure and an emptied hold are one fact. A sequence the
+//!    [`CUSTOMS_RULING_FAMILY`], and for a seizure moves the ore from the hold to the enforcing
+//!    authority's vault **in the same transaction** (doc 50 unit LW.5), so a recorded seizure
+//!    and an emptied hold are one fact. A sequence the
 //!    row already holds is refused, so a ruling lands once.
 //! 3. The space tick (`reconcile_customs_rulings`) reads the committed row and acts on it:
 //!    it levies the fine, advances the front, and only then sets the picket's verdict and the
@@ -461,15 +462,9 @@ impl CustomsProvider {
             })
             .collect();
         let ids: Vec<mush_core::ReservationId> = holds.iter().map(|(id, _)| *id).collect();
+        let rest = want.saturating_sub(from_lots);
         let seized = inventory
-            .seize(
-                txn,
-                endpoint,
-                &ore,
-                want.saturating_sub(from_lots),
-                &ids,
-                into,
-            )
+            .seize(txn, endpoint, &ore, rest, &ids, into)
             .map_err(|_| refused("the hold could not be drawn down"))?;
         let taken = from_lots.saturating_add(seized.taken);
         if taken == 0 {

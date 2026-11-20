@@ -1726,3 +1726,14 @@ Doc 48 cut EX.3, for the `port/locker.rs` row's reason: a holder's scrap vault a
 takes its vault id from `economy`'s allocator before `mush_economy::create_vault` writes it
 through the economy module's own path. The site refuses when the slot is absent.
 """
+
+[[site]]
+path = "crates/tacsim/src/port/seized.rs"
+accessor = "World::module_state_mut"
+slot = "EconomyStore"
+owner = "economy"
+reason = """
+Doc 50 unit LW.5, for the `port/locker.rs` row's reason: the enforcing authority's seized-goods
+vault takes its vault id from `economy`'s allocator before `mush_economy::create_vault` writes it
+through the economy module's own path. The site refuses when the slot is absent.
+"""

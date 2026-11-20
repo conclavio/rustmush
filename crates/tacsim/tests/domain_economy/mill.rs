@@ -2756,6 +2756,9 @@ fn sm12a_only_the_mill_restocks() {
 /// and a debit in one write, so cargo under a haul's hold can be taken. It takes the hold's exact
 /// lots of the ore with `.consume_products(`. Both are the same matter leaving the world, moved,
 /// not added. The yard's escrow consumes kits and parts that way too (`port/works.rs`).
+/// **Doc 50 unit LW.5** (Q-50-44): given the enforcing authority's vault, `seize` credits it and
+/// the lots are relocated there, so a seizure is a transfer. The `.consume_products(` stays only
+/// as the fallback for a seizure with no authority to take its goods.
 #[test]
 fn sm12a_only_the_clerk_the_foundry_and_the_mill_create_matter() {
     let files = production_files("tacsim/src");

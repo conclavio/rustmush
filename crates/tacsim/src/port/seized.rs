@@ -116,12 +116,65 @@ pub fn ensure_vault(ctx: &mut Ctx<'_>, authority: &SeizingAuthority) -> Result<V
         0,
     )
     .map_err(|e| format!("the authority's vendor will not register: {e:?}"))?;
+    // The port's stock clerk lists and draws from the vault: its direct `vault.withdraw` grant
+    // on the authority's root scope, as the content applier gives every vendor (lead ruling L25).
+    let clerk = port_clerk(ctx.w, &authority.entry).ok_or("the authority's port has no clerk")?;
+    let grant = crate::port::apply::alloc_grant_id(ctx)?;
+    let capability = mush_org::CapabilityId::new(crate::port::vendor::CLERK_CAPABILITY)
+        .ok_or("the clerk's capability is not an id")?;
+    let plan = mush_org::OrgMutationPlan::of(vec![mush_org::OrgMutationOp::PutGrant {
+        grant: mush_org::CapabilityGrant {
+            id: grant,
+            org: authority.org,
+            grantee: clerk,
+            capability,
+            scope: mush_org::ScopeSelector::Exact(root),
+            limit: None,
+            delegable: false,
+            valid_from: None,
+            valid_until: None,
+            revision: 1,
+        },
+    }]);
+    mush_org::submit(
+        ctx,
+        &plan,
+        mush_org::OrgAction {
+            action: SmolStr::new_static("grant.create"),
+            org: Some(authority.org),
+            detail: serde_json::json!({
+                "seized": authority.entry.as_str(),
+                "clerk": clerk.0,
+            }),
+        },
+    )
+    .map_err(|e| format!("the clerk's grant on the seized goods: {e}"))?;
     Ok(vault)
 }
 
-/// The price a seized `good` is offered at, minor units: [`SEIZED_PRICE_PERMILLE`] of its
-/// reference. `None` for a good with no reference.
-fn price_minor(w: &World, good: &CanonicalId) -> Option<i64> {
+/// **Whether `org` sells seized goods at `venue`** (the venue gate's port seller): it is the
+/// seizing authority there and the market's vendor in that venue.
+#[must_use]
+pub fn sells_at(w: &World, venue: &MarketId, org: OrgId) -> bool {
+    seizing_authority(w).is_some_and(|a| a.org == org && &a.venue == venue)
+        && w.module_state::<MarketStore>()
+            .and_then(|s| s.vendor_of_org(org))
+            .is_some_and(|v| &v.market == venue)
+}
+
+/// The stock clerk of the port at `entry`.
+fn port_clerk(w: &World, entry: &CanonicalId) -> Option<ObjId> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(id, _, _)| id == entry)
+        .and_then(|(_, _, map)| map?.clerk.as_ref().map(|c| ObjId(c.thing)))
+}
+
+/// **The price a seized `good` is offered at**, minor units: [`SEIZED_PRICE_PERMILLE`] of its
+/// live reference (the port's reference reading, as a haul's declared value reads it). `None`
+/// for a good with no reference.
+#[must_use]
+pub fn price_minor(w: &World, good: &CanonicalId) -> Option<i64> {
     let reference = crate::definitions::mass::good_reference_minor(w, good.as_str());
     let price = reference.saturating_mul(SEIZED_PRICE_PERMILLE) / 1_000;
     (price > 0).then(|| i64::try_from(price).ok()).flatten()
@@ -152,15 +205,11 @@ pub fn offer(
         return;
     };
     let standing = store.lot_listing_of(endpoint, good).filter(|id| {
-        store
-            .listing(*id)
-            .is_some_and(|l| !mush_market::listing_lapsed(l, ctx.w.now()))
+        store.listing(*id).is_some_and(|l| {
+            matches!(l.source, Supply::Stock { .. }) && !mush_market::listing_lapsed(l, ctx.w.now())
+        })
     });
-    let clerk = crate::port::market::ports(ctx.w)
-        .into_iter()
-        .find(|(entry, _, _)| *entry == authority.entry)
-        .and_then(|(_, _, map)| map?.clerk.as_ref().map(|c| ObjId(c.thing)));
-    let Some(clerk) = clerk else {
+    let Some(clerk) = port_clerk(ctx.w, &authority.entry) else {
         tracing::warn!(entry = %authority.entry, "tacsim: the authority's port has no clerk to offer seized goods");
         return;
     };

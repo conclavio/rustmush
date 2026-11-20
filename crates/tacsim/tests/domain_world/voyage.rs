@@ -13512,9 +13512,12 @@ fn cr_the_picket_reads_ore_held_as_a_lot_and_the_seizure_takes_the_lot() {
         .expect("inventory handles")
         .0
         .clone();
-    assert!(
-        typed(&mut rig.tw, &families.lots, &LOT).is_none(),
-        "the lot left the hold in the ruling's transaction"
+    // Doc 50 unit LW.5: the lot is the same lot, in the enforcing authority's vault.
+    let authority = seized_vault(&rig.tw);
+    assert_eq!(
+        typed(&mut rig.tw, &families.lots, &LOT).map(|lot| lot.endpoint()),
+        Some(EndpointRef(authority)),
+        "the lot left the hold for the authority's vault in the ruling's transaction"
     );
     assert_eq!(
         picket_status(&rig.tw, hull),
@@ -13684,6 +13687,140 @@ fn from_the_corvette(tw: &TestWorld, hull: ObjId) -> Option<([i64; 3], i64)> {
         ]
     };
     Some((away, tacsim::space::distance_3d_m(her, at)))
+}
+
+/// The enforcing authority's vault for a seizure at the picket (doc 50 unit LW.5): its market
+/// vendor's, the Freeport Registry's at Ceres today.
+fn seized_vault(tw: &TestWorld) -> VaultId {
+    let authority = tacsim::port::seized::seizing_authority(tw.world()).expect("an authority");
+    market(tw)
+        .vendor_of_org(authority.org)
+        .map(|vendor| vendor.vault)
+        .expect("the authority is the port's vendor once it has seized")
+}
+
+/// **Doc 50 unit LW.5, seized goods to a vault (Q-50-44 as corrected).** An indigent pilot's
+/// 51 t of unlicensed strategic ore is seized at the picket. The ore leaves her hold for the
+/// enforcing authority's vault, the Freeport Registry's, in the ruling's own transaction, so the
+/// matter census's `balance` holds and its `seized` term stays at zero: a seizure is a transfer.
+/// The Registry, which keeps no storefront at Ceres, is made the port's vendor on first use, and
+/// the ore is offered there at three quarters of its reference. Before the unit the ore was
+/// debited to nobody, and the census lost 51,000 kg.
+#[test]
+fn lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port() {
+    use tacsim::space::PicketInspectionStatus;
+    let (mut rig, pilot, hull, vault) = hove_to_at_the_picket("Seized", 51);
+    let before = matter_terms(&mut rig.tw);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains("51 t confiscated in lieu of fine"),
+        "the ore is seized: {ruled}"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure)
+    );
+    let after = matter_terms(&mut rig.tw);
+    assert_eq!(
+        after["balance"], before["balance"],
+        "matter is conserved across the seizure: before {before:?}, after {after:?}"
+    );
+    assert_eq!(after["seized"], 0, "a seizure is a transfer, never a sink");
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        0,
+        "out of her hold"
+    );
+    let authority = seized_vault(&rig.tw);
+    assert_eq!(
+        pool(&mut rig.tw, authority, "strategic_ore"),
+        51,
+        "into the authority's vault"
+    );
+    let listing = market(&rig.tw)
+        .lot_listing_of(EndpointRef(authority), &cid("strategic_ore"))
+        .and_then(|id| market(&rig.tw).listing(id).cloned())
+        .expect("the authority offers the seized ore");
+    let offered = tacsim::port::seized::price_minor(rig.tw.world(), &cid("strategic_ore"))
+        .expect("a reference");
+    assert_eq!(
+        (
+            listing.market.as_str(),
+            listing.quantity,
+            listing.price.minor()
+        ),
+        ("ceres", 51, offered),
+        "at Ceres, all 51 t, at three quarters of the reference"
+    );
+
+    // A trader at Ceres buys a tonne of it: the draw comes out of the authority's vault.
+    let buyer = crate::voyage::pilot(&mut rig, "Trader", 2);
+    let enrolled = run(&mut rig.tw, buyer, "+coop/enroll Escort Hawk");
+    assert!(enrolled.contains("now the Escort Hawk"), "{enrolled}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), buyer).expect("a charter");
+    let row = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter.hull.0)
+        .expect("her row");
+    let buyer_hold = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, buyer, desk);
+    let refit = run(&mut rig.tw, buyer, "+coop/refit prospector");
+    assert!(
+        refit.contains("Dray-P"),
+        "ore stows in a prospector's hold: {refit}"
+    );
+    let account = tacsim::port::credit::own_account(rig.tw.world(), buyer)
+        .expect("an account")
+        .id;
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={account} 10000000"),
+    );
+    let exchange = c07(&rig.tw);
+    teleport(&mut rig.tw, buyer, exchange);
+    let quoted = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/quote {}=1", listing.id),
+    );
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(&rig.tw)
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(buyer))
+        .map(|q| q.id)
+        .max()
+        .expect("a quote");
+    let accepted = run(&mut rig.tw, buyer, &format!("+market/accept {quote}"));
+    let draw = drain(&mut rig.tw);
+    assert_eq!(draw.len(), 1, "one draw: {accepted}");
+    land_all(&mut rig, &draw);
+    for _ in 0..30 {
+        if market(&rig.tw)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some())
+        {
+            break;
+        }
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(
+        (
+            pool(&mut rig.tw, buyer_hold, "strategic_ore"),
+            pool(&mut rig.tw, authority, "strategic_ore")
+        ),
+        (1, 50),
+        "the tonne moved from the authority's vault to the buyer's hold"
+    );
+    let bought = matter_terms(&mut rig.tw);
+    assert_eq!(
+        bought["balance"], before["balance"],
+        "and matter is still conserved"
+    );
 }
 
 /// **Doc 50 unit CR, the 35 km breach (doc 50a A-10e).** A hull that burns past
