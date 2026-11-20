@@ -251,3 +251,152 @@ fn kc0_a_fresh_world_has_six_polities_seeded_regions_and_a_control_read() {
     );
     assert_eq!(factions(&tw).regions.len(), 3, "no region made twice");
 }
+
+/// A player's view of a command, as one text.
+fn seen(tw: &mut TestWorld, who: mush_core::ObjId, line: &str) -> String {
+    tw.run(who, line)
+        .iter()
+        .map(|(_, event)| mush_testkit::text_of(event))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One picket incident's canon draft, as the picket writes it, with `cause` as its cause id.
+fn incident(cause: &str) -> mush_canon::CanonDraft {
+    mush_canon::CanonDraft {
+        kind: "space.customs_fine".into(),
+        summary: format!(
+            "Republic Customs Corvette fined a hull at the Kirkwood picket ({cause})."
+        ),
+        entities: Vec::new(),
+        scope: mush_canon::CanonScope::Public,
+        ic_time: 0,
+        source: cause.into(),
+        detail: serde_json::Value::Null,
+    }
+}
+
+/// **Doc 50 cut KC.1** (Q-50-12, Q-50-13, Q-50-51): Customs Assertion stands on the Republic's
+/// board from world start at 1 of 6; each picket incident moves it one through its cause id, a
+/// retried incident moves it no further; the sixth fills it through the engine's one path, so the
+/// Republic takes the Kirkwood approach de facto, the Co-op is moved out, the hold is dated in IC
+/// time, the front resolves, and `+territory` and `+chronicle` show it.
+#[test]
+fn kc1_picket_incidents_fill_customs_assertion_and_the_republic_takes_kirkwood() {
+    let mut tw = TestWorld::with_modules(support::production_roster());
+    let republic = named(&tw, "Republic");
+    let coop = org_faction(&tw, "coop");
+    let depot = cid("kirkwood_depot");
+    assert_eq!(tacsim::polity::customs_board(tw.world()), Some(republic));
+
+    // Seeded at world start on the Republic's board, 1 of 6, visible on `+clocks`.
+    let (front, clock) = {
+        let sim = tw
+            .world()
+            .module_state::<mush_faction::SimState>()
+            .expect("fronts");
+        let front = sim
+            .fronts
+            .values()
+            .find(|f| f.title == mush_faction::CUSTOMS_ASSERTION_TITLE)
+            .cloned()
+            .expect("Customs Assertion is seeded");
+        let clock = sim
+            .clocks
+            .values()
+            .find(|c| c.front == front.id)
+            .cloned()
+            .expect("its clock");
+        (front, clock)
+    };
+    assert_eq!(front.faction, republic, "the Republic's board (Q-50-13)");
+    assert_eq!((clock.filled, clock.segments), (1, 6), "Q-50-12");
+    assert_eq!(
+        clock.on_complete_control,
+        Some((
+            control_at(tw.world(), &depot).expect("Kirkwood").region,
+            ControlKind::DeFacto
+        ))
+    );
+    let player = tw.spawn_player("Hauler");
+    assert!(
+        seen(&mut tw, player, "+clocks").contains("1/6"),
+        "the front shows from the first day"
+    );
+
+    let record = |tw: &mut TestWorld, cause: &str| {
+        support::with_ctx(tw, |ctx| {
+            mush_faction::record_customs_assertion(ctx, republic, incident(cause))
+        })
+        .expect("the incident records")
+    };
+    let filled = |tw: &TestWorld| {
+        tw.world()
+            .module_state::<mush_faction::SimState>()
+            .expect("fronts")
+            .clocks[&clock.id]
+            .filled
+    };
+    for n in 1..=4u8 {
+        record(&mut tw, &format!("space.picket.fine/9/{n}"));
+        assert_eq!(filled(&tw), 1 + n);
+    }
+    // A retried incident moves nothing; the Co-op still holds.
+    record(&mut tw, "space.picket.fine/9/4");
+    assert_eq!(filled(&tw), 5, "a cause counts once");
+    assert_eq!(
+        control_at(tw.world(), &depot).expect("Kirkwood").de_facto,
+        Some(coop)
+    );
+
+    // The sixth segment: the flip, on the engine's path.
+    record(&mut tw, "space.picket.run/9/77");
+    let ic = tw.world().game_now_unix();
+    let after = control_at(tw.world(), &depot).expect("Kirkwood");
+    assert_eq!(
+        after.de_facto,
+        Some(republic),
+        "the Republic holds the approach"
+    );
+    assert_eq!(after.de_facto_since_ic, Some(ic), "dated at the flip, IC");
+    assert!(
+        !factions(&tw).control[&after.region]
+            .iter()
+            .any(|r| r.faction == coop && r.kind == ControlKind::DeFacto),
+        "the Co-op is moved out"
+    );
+    let sim = tw
+        .world()
+        .module_state::<mush_faction::SimState>()
+        .expect("fronts");
+    assert!(sim.fronts[&front.id].resolved, "the front resolves");
+    assert!(sim.clocks[&clock.id].completed);
+
+    // A later incident still records its line and moves nothing.
+    record(&mut tw, "space.picket.fine/9/99");
+    let canon = tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .expect("canon");
+    assert_eq!(
+        canon
+            .recent()
+            .iter()
+            .filter(|e| e.kind == "space.customs_fine")
+            .count(),
+        6,
+        "four incidents, the sixth segment's and the late one; the retry wrote no line"
+    );
+
+    let territory = seen(&mut tw, player, "+territory");
+    assert!(
+        territory.contains("Kirkwood approach — Freeport (de jure since ")
+            && territory.contains("Republic (de facto since "),
+        "{territory}"
+    );
+    let chronicle = seen(&mut tw, player, "+chronicle");
+    assert!(
+        chronicle.contains(mush_faction::CUSTOMS_ASSERTION_CONSEQUENCE),
+        "{chronicle}"
+    );
+}
