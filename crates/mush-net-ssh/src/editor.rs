@@ -34,6 +34,61 @@ const CRLF: &[u8] = b"\r\n";
 /// CR + erase-to-end-of-line: start of every full-line redraw.
 const ERASE_LINE: &[u8] = b"\r\x1b[K";
 
+/// Maximum echo/redraw bytes appended to `out` by a single [`LineEditor::feed`]
+/// call (CRIT-1). One full redraw of a max-length 4-byte UTF-8 line is ~32 KiB
+/// plus prompt; 64 KiB accommodates normal pastes and full-line redraws while
+/// preventing single-packet amplification OOMs.
+pub const MAX_FEED_OUT_BYTES: usize = 64 * 1024;
+
+fn decimal_digits(mut n: usize) -> usize {
+    let mut digits = 1;
+    while n >= 10 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+/// Output writer for one [`LineEditor::feed`] call: coalesces full-line redraws
+/// via `dirty_redraw` and enforces a strict per-call output-growth ceiling
+/// without ever splitting a UTF-8 codepoint or ANSI escape sequence.
+struct FeedBuf<'a> {
+    out: &'a mut Vec<u8>,
+    limit: usize,
+    dirty_redraw: bool,
+    action_bytes: usize,
+    action_limit: usize,
+}
+
+impl FeedBuf<'_> {
+    fn push_byte(&mut self, b: u8) {
+        if self.out.len() < self.limit {
+            self.out.push(b);
+        }
+    }
+
+    fn push_slice(&mut self, bytes: &[u8]) {
+        if self.out.len().saturating_add(bytes.len()) <= self.limit {
+            self.out.extend_from_slice(bytes);
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty_redraw = true;
+    }
+
+    fn flush_redraw(&mut self, editor: &LineEditor) {
+        if !self.dirty_redraw {
+            return;
+        }
+        self.dirty_redraw = false;
+        let needed = editor.redraw_len();
+        if self.out.len().saturating_add(needed) <= self.limit {
+            editor.redraw(self.out);
+        }
+    }
+}
+
 /// How typed characters are echoed back to the client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum EchoMode {
@@ -167,9 +222,10 @@ impl LineEditor {
         out.extend_from_slice(self.prompt.as_bytes());
         match self.mode {
             EchoMode::Normal => {
-                let mut s = String::with_capacity(self.line.len());
-                s.extend(self.line.chars().iter());
-                out.extend_from_slice(s.as_bytes());
+                let mut buf = [0u8; 4];
+                for &c in self.line.chars() {
+                    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
             }
             EchoMode::Masked => out.extend(std::iter::repeat_n(b'*', self.line.len())),
             EchoMode::NoEcho => {}
@@ -182,21 +238,53 @@ impl LineEditor {
         }
     }
 
+    fn redraw_len(&self) -> usize {
+        let mut len = ERASE_LINE.len() + self.prompt.len();
+        match self.mode {
+            EchoMode::Normal => {
+                len += self
+                    .line
+                    .chars()
+                    .iter()
+                    .map(|c| c.len_utf8())
+                    .sum::<usize>();
+            }
+            EchoMode::Masked => len += self.line.len(),
+            EchoMode::NoEcho => {}
+        }
+        if self.mode != EchoMode::NoEcho {
+            let back = self.line.len() - self.line.cursor();
+            if back > 0 {
+                len += 3 + decimal_digits(back);
+            }
+        }
+        len
+    }
+
     /// Feed raw channel bytes. Echo/redraw bytes for the client are
-    /// appended to `out`; completed lines and EOF-quit requests are
-    /// returned in order.
+    /// appended to `out` (with redraws coalesced across the call and growth
+    /// capped at [`MAX_FEED_OUT_BYTES`]); completed lines and EOF-quit
+    /// requests are returned in order.
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> Vec<EditorAction> {
         let mut actions = Vec::new();
+        let mut buf = FeedBuf {
+            limit: out.len().saturating_add(MAX_FEED_OUT_BYTES),
+            out,
+            dirty_redraw: false,
+            action_bytes: 0,
+            action_limit: bytes.len().saturating_mul(4).max(MAX_FEED_OUT_BYTES),
+        };
         for &b in bytes {
-            self.feed_byte(b, out, &mut actions);
+            self.feed_byte(b, &mut buf, &mut actions);
         }
+        buf.flush_redraw(self);
         actions
     }
 
-    fn feed_byte(&mut self, b: u8, out: &mut Vec<u8>, actions: &mut Vec<EditorAction>) {
+    fn feed_byte(&mut self, b: u8, buf: &mut FeedBuf<'_>, actions: &mut Vec<EditorAction>) {
         // Escape sequences are pure ASCII; they pre-empt UTF-8 assembly.
         if self.esc != EscState::None {
-            self.feed_esc(b, out);
+            self.feed_esc(b, buf);
             return;
         }
         if !self.pending.is_empty() {
@@ -207,17 +295,17 @@ impl LineEditor {
                     match std::str::from_utf8(&seq) {
                         Ok(s) => {
                             if let Some(c) = s.chars().next() {
-                                self.insert_char(c, out);
+                                self.insert_char(c, buf);
                             }
                         }
-                        Err(_) => out.push(BELL),
+                        Err(_) => buf.push_byte(BELL),
                     }
                 }
                 return;
             }
             // Broken sequence: drop it, then process this byte normally.
             self.pending.clear();
-            out.push(BELL);
+            buf.push_byte(BELL);
         }
         let was_cr = self.last_was_cr;
         self.last_was_cr = false;
@@ -225,33 +313,33 @@ impl LineEditor {
             0x1b => self.esc = EscState::Esc,
             b'\r' => {
                 self.last_was_cr = true;
-                self.submit(out, actions);
+                self.submit(buf, actions);
             }
             b'\n' => {
                 if !was_cr {
-                    self.submit(out, actions);
+                    self.submit(buf, actions);
                 }
             }
-            0x08 | 0x7f => self.backspace(out),
-            0x01 => self.home(out),
-            0x05 => self.end(out),
-            0x15 => self.kill_to_start(out),
-            0x17 => self.kill_word(out),
-            0x03 => self.ctrl_c(out),
+            0x08 | 0x7f => self.backspace(buf),
+            0x01 => self.home(buf),
+            0x05 => self.end(buf),
+            0x15 => self.kill_to_start(buf),
+            0x17 => self.kill_word(buf),
+            0x03 => self.ctrl_c(buf),
             0x04 => {
                 if self.line.is_empty() {
                     actions.push(EditorAction::EofQuit);
                 } else {
-                    self.delete_at_cursor(out);
+                    self.delete_at_cursor(buf);
                 }
             }
             0x09 => {} // Tab reserved for future completion.
             0x00..=0x1f => {}
-            0x20..=0x7e => self.insert_char(b as char, out),
+            0x20..=0x7e => self.insert_char(b as char, buf),
             0xc0..=0xdf => self.start_utf8(b, 2),
             0xe0..=0xef => self.start_utf8(b, 3),
             0xf0..=0xf7 => self.start_utf8(b, 4),
-            _ => out.push(BELL), // stray continuation / invalid lead byte
+            _ => buf.push_byte(BELL), // stray continuation / invalid lead byte
         }
     }
 
@@ -261,7 +349,7 @@ impl LineEditor {
         self.pending_len = len;
     }
 
-    fn feed_esc(&mut self, b: u8, out: &mut Vec<u8>) {
+    fn feed_esc(&mut self, b: u8, buf: &mut FeedBuf<'_>) {
         match std::mem::replace(&mut self.esc, EscState::None) {
             EscState::None => unreachable!("feed_esc called without escape state"),
             EscState::Esc => match b {
@@ -280,25 +368,25 @@ impl LineEditor {
                     }
                     self.esc = EscState::Csi(params);
                 }
-                0x40..=0x7e => self.dispatch_key(&params, b, out),
+                0x40..=0x7e => self.dispatch_key(&params, b, buf),
                 _ => {} // C0 inside CSI: abort the sequence.
             },
-            EscState::Ss3 => self.dispatch_key("", b, out),
+            EscState::Ss3 => self.dispatch_key("", b, buf),
         }
     }
 
-    fn dispatch_key(&mut self, params: &str, final_byte: u8, out: &mut Vec<u8>) {
+    fn dispatch_key(&mut self, params: &str, final_byte: u8, buf: &mut FeedBuf<'_>) {
         match final_byte {
-            b'A' => self.history_up(out),
-            b'B' => self.history_down(out),
-            b'C' => self.right(out),
-            b'D' => self.left(out),
-            b'H' => self.home(out),
-            b'F' => self.end(out),
+            b'A' => self.history_up(buf),
+            b'B' => self.history_down(buf),
+            b'C' => self.right(buf),
+            b'D' => self.left(buf),
+            b'H' => self.home(buf),
+            b'F' => self.end(buf),
             b'~' => match params.split(';').next().unwrap_or("") {
-                "1" | "7" => self.home(out),
-                "4" | "8" => self.end(out),
-                "3" => self.delete_at_cursor(out),
+                "1" | "7" => self.home(buf),
+                "4" | "8" => self.end(buf),
+                "3" => self.delete_at_cursor(buf),
                 _ => {}
             },
             _ => {}
@@ -307,140 +395,149 @@ impl LineEditor {
 
     // ---- buffer edits ---------------------------------------------------
 
-    fn insert_char(&mut self, c: char, out: &mut Vec<u8>) {
+    fn insert_char(&mut self, c: char, buf: &mut FeedBuf<'_>) {
         let at_end = self.line.at_end();
         // A control character (incl. C1) or a full line is refused with a
         // bell: the former is the ANSI-injection vector.
         if !self.line.insert(c) {
-            out.push(BELL);
+            buf.push_byte(BELL);
             return;
         }
-        if at_end {
+        if at_end && !buf.dirty_redraw {
             match self.mode {
                 EchoMode::Normal => {
                     let mut b = [0u8; 4];
-                    out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+                    buf.push_slice(c.encode_utf8(&mut b).as_bytes());
                 }
-                EchoMode::Masked => out.push(b'*'),
+                EchoMode::Masked => buf.push_byte(b'*'),
                 EchoMode::NoEcho => {}
             }
-        } else {
-            self.redraw(out);
+        } else if self.mode != EchoMode::NoEcho {
+            buf.mark_dirty();
         }
     }
 
-    fn backspace(&mut self, out: &mut Vec<u8>) {
+    fn backspace(&mut self, buf: &mut FeedBuf<'_>) {
         let at_end = self.line.at_end();
         let Some(removed) = self.line.backspace() else {
-            out.push(BELL);
+            buf.push_byte(BELL);
             return;
         };
         match self.mode {
             EchoMode::NoEcho => {}
             EchoMode::Masked => {
-                if at_end {
-                    out.extend_from_slice(b"\x08 \x08");
+                if at_end && !buf.dirty_redraw {
+                    buf.push_slice(b"\x08 \x08");
                 } else {
-                    self.redraw(out);
+                    buf.mark_dirty();
                 }
             }
             EchoMode::Normal => {
-                if at_end && removed.is_ascii() {
-                    out.extend_from_slice(b"\x08 \x08");
+                if at_end && removed.is_ascii() && !buf.dirty_redraw {
+                    buf.push_slice(b"\x08 \x08");
                 } else {
-                    self.redraw(out);
+                    buf.mark_dirty();
                 }
             }
         }
     }
 
-    fn delete_at_cursor(&mut self, out: &mut Vec<u8>) {
+    fn delete_at_cursor(&mut self, buf: &mut FeedBuf<'_>) {
         if self.line.delete().is_some() {
-            self.redraw(out);
+            if self.mode != EchoMode::NoEcho {
+                buf.mark_dirty();
+            }
         } else {
-            out.push(BELL);
+            buf.push_byte(BELL);
         }
     }
 
-    fn kill_to_start(&mut self, out: &mut Vec<u8>) {
-        if self.line.kill_to_start() {
-            self.redraw(out);
+    fn kill_to_start(&mut self, buf: &mut FeedBuf<'_>) {
+        if self.line.kill_to_start() && self.mode != EchoMode::NoEcho {
+            buf.mark_dirty();
         }
     }
 
-    fn kill_word(&mut self, out: &mut Vec<u8>) {
-        if self.line.kill_word() {
-            self.redraw(out);
+    fn kill_word(&mut self, buf: &mut FeedBuf<'_>) {
+        if self.line.kill_word() && self.mode != EchoMode::NoEcho {
+            buf.mark_dirty();
         }
     }
 
-    fn ctrl_c(&mut self, out: &mut Vec<u8>) {
+    fn ctrl_c(&mut self, buf: &mut FeedBuf<'_>) {
+        buf.flush_redraw(self);
         self.line.clear();
-        out.extend_from_slice(b"^C");
-        out.extend_from_slice(CRLF);
-        self.redraw(out);
+        buf.push_slice(b"^C");
+        buf.push_slice(CRLF);
+        buf.mark_dirty();
     }
 
     // ---- cursor movement ------------------------------------------------
 
-    fn move_echo(&self, n: usize, dir: u8, out: &mut Vec<u8>) {
-        if n > 0 && self.mode != EchoMode::NoEcho {
-            out.extend_from_slice(format!("\x1b[{n}{}", dir as char).as_bytes());
+    fn move_echo(&self, n: usize, dir: u8, buf: &mut FeedBuf<'_>) {
+        if n > 0 && self.mode != EchoMode::NoEcho && !buf.dirty_redraw {
+            buf.push_slice(format!("\x1b[{n}{}", dir as char).as_bytes());
         }
     }
 
-    fn home(&mut self, out: &mut Vec<u8>) {
+    fn home(&mut self, buf: &mut FeedBuf<'_>) {
         let moved = self.line.home();
-        self.move_echo(moved, b'D', out);
+        self.move_echo(moved, b'D', buf);
     }
 
-    fn end(&mut self, out: &mut Vec<u8>) {
+    fn end(&mut self, buf: &mut FeedBuf<'_>) {
         let moved = self.line.end();
-        self.move_echo(moved, b'C', out);
+        self.move_echo(moved, b'C', buf);
     }
 
-    fn left(&mut self, out: &mut Vec<u8>) {
+    fn left(&mut self, buf: &mut FeedBuf<'_>) {
         if self.line.left() {
-            self.move_echo(1, b'D', out);
+            self.move_echo(1, b'D', buf);
         }
     }
 
-    fn right(&mut self, out: &mut Vec<u8>) {
+    fn right(&mut self, buf: &mut FeedBuf<'_>) {
         if self.line.right() {
-            self.move_echo(1, b'C', out);
+            self.move_echo(1, b'C', buf);
         }
     }
 
     // ---- history --------------------------------------------------------
 
-    fn history_up(&mut self, out: &mut Vec<u8>) {
+    fn history_up(&mut self, buf: &mut FeedBuf<'_>) {
         if self.mode != EchoMode::Normal {
             return;
         }
         if self.line.history_up() {
-            self.redraw(out);
+            buf.mark_dirty();
         } else {
-            out.push(BELL);
+            buf.push_byte(BELL);
         }
     }
 
-    fn history_down(&mut self, out: &mut Vec<u8>) {
+    fn history_down(&mut self, buf: &mut FeedBuf<'_>) {
         if self.mode != EchoMode::Normal {
             return;
         }
         if self.line.history_down() {
-            self.redraw(out);
+            buf.mark_dirty();
         } else {
-            out.push(BELL);
+            buf.push_byte(BELL);
         }
     }
 
     // ---- submit ---------------------------------------------------------
 
-    fn submit(&mut self, out: &mut Vec<u8>, actions: &mut Vec<EditorAction>) {
+    fn submit(&mut self, buf: &mut FeedBuf<'_>, actions: &mut Vec<EditorAction>) {
+        buf.flush_redraw(self);
         let line = self.line.submit(self.mode == EchoMode::Normal);
-        out.extend_from_slice(CRLF);
-        actions.push(EditorAction::Submit(line));
+        buf.push_slice(CRLF);
+        if buf.action_bytes.saturating_add(line.len()) <= buf.action_limit {
+            buf.action_bytes = buf.action_bytes.saturating_add(line.len());
+            actions.push(EditorAction::Submit(line));
+        } else {
+            buf.push_byte(BELL);
+        }
     }
 }
 
@@ -835,5 +932,130 @@ mod tests {
         let mut ed = LineEditor::new();
         feed(&mut ed, b"a\tb");
         assert_eq!(submit_one(&mut ed, b"\r"), "ab");
+    }
+
+    fn count_subslice(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|w| *w == needle)
+            .count()
+    }
+
+    #[test]
+    fn midline_edit_burst_coalesces_to_single_redraw() {
+        let mut ed = LineEditor::new();
+        ed.set_prompt("> ");
+        let seed = vec![b'a'; MAX_LINE_CHARS - 1];
+        feed(&mut ed, &seed);
+        // Move cursor one left so every insert/backspace is a mid-line edit.
+        feed(&mut ed, b"\x1b[D");
+
+        // 16 KiB burst of alternating mid-line insert + backspace (8,192 pairs).
+        let mut burst = Vec::with_capacity(16 * 1024);
+        for _ in 0..8_192 {
+            burst.extend_from_slice(b"x\x7f");
+        }
+        let (actions, out) = feed(&mut ed, &burst);
+        assert!(actions.is_empty());
+        assert!(std::str::from_utf8(&out).is_ok());
+        assert_eq!(
+            count_subslice(&out, ERASE_LINE),
+            1,
+            "mid-line edit burst must emit exactly one coalesced redraw"
+        );
+        assert!(
+            out.len() <= MAX_FEED_OUT_BYTES,
+            "output len {} exceeded cap {MAX_FEED_OUT_BYTES}",
+            out.len()
+        );
+        assert_eq!(ed.line().len(), MAX_LINE_CHARS - 1);
+    }
+
+    #[test]
+    fn history_toggle_burst_coalesces_to_single_redraw() {
+        let mut ed = LineEditor::new();
+        ed.set_prompt("> ");
+        let mut first = vec![b'a'; MAX_LINE_CHARS];
+        first.push(b'\r');
+        let mut second = vec![b'b'; MAX_LINE_CHARS];
+        second.push(b'\r');
+        submit_one(&mut ed, &first);
+        submit_one(&mut ed, &second);
+
+        // 18 KiB burst of Up/Down arrows (3,072 pairs).
+        let mut burst = Vec::with_capacity(18 * 1024);
+        for _ in 0..3_072 {
+            burst.extend_from_slice(b"\x1b[A\x1b[B");
+        }
+        // End on Up so a full MAX_LINE_CHARS line is shown.
+        burst.extend_from_slice(b"\x1b[A");
+        let (actions, out) = feed(&mut ed, &burst);
+        assert!(actions.is_empty());
+        assert!(std::str::from_utf8(&out).is_ok());
+        assert_eq!(
+            count_subslice(&out, ERASE_LINE),
+            1,
+            "history Up/Down burst must emit exactly one coalesced redraw"
+        );
+        assert!(out.len() <= MAX_FEED_OUT_BYTES);
+        assert_eq!(ed.line().len(), MAX_LINE_CHARS);
+    }
+
+    #[test]
+    fn history_submit_burst_caps_output_and_action_growth() {
+        let mut ed = LineEditor::new();
+        // Record a max-length 4-byte UTF-8 line (32 KiB).
+        let mut big = "🎲".repeat(MAX_LINE_CHARS).into_bytes();
+        big.push(b'\r');
+        submit_one(&mut ed, &big);
+
+        // 32 KiB burst of Up + Submit (8,192 repetitions).
+        let mut burst = Vec::with_capacity(32 * 1024);
+        for _ in 0..8_192 {
+            burst.extend_from_slice(b"\x1b[A\r");
+        }
+        let (actions, out) = feed(&mut ed, &burst);
+        assert!(
+            std::str::from_utf8(&out).is_ok(),
+            "capped output must stay valid UTF-8"
+        );
+        assert!(
+            out.len() <= MAX_FEED_OUT_BYTES,
+            "output len {} exceeded cap {MAX_FEED_OUT_BYTES}",
+            out.len()
+        );
+        let action_bytes: usize = actions
+            .iter()
+            .map(|a| match a {
+                EditorAction::Submit(s) => s.len(),
+                EditorAction::EofQuit => 0,
+            })
+            .sum();
+        assert!(
+            action_bytes <= burst.len() * 4,
+            "submitted action bytes {action_bytes} should be bounded"
+        );
+    }
+
+    #[test]
+    fn coalesced_redraw_flushes_once_before_submit_and_ctrl_c() {
+        let mut ed = LineEditor::new();
+        ed.set_prompt("> ");
+        feed(&mut ed, b"ac");
+        feed(&mut ed, b"\x1b[D");
+        // Multiple mid-line edits then submit in one feed: one redraw before CRLF.
+        let (actions, out) = feed(&mut ed, b"b1\x7f\r");
+        assert_eq!(actions, vec![EditorAction::Submit("abc".into())]);
+        assert_eq!(count_subslice(&out, ERASE_LINE), 1);
+        assert!(out.ends_with(b"\r\n"));
+
+        // Multiple mid-line edits then Ctrl-C: one redraw before ^C, one for cleared prompt.
+        feed(&mut ed, b"ac\x1b[D");
+        let (actions, out) = feed(&mut ed, b"b1\x7f\x03");
+        assert!(actions.is_empty());
+        assert!(ed.is_empty());
+        assert_eq!(count_subslice(&out, ERASE_LINE), 2);
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("> abc\x1b[1D^C\r\n\r\x1b[K> "), "{s:?}");
     }
 }
