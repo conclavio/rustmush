@@ -1412,18 +1412,17 @@ impl ActionProvider for HaulProvider {
         guards
             .add_definition(action.clone(), definitions)
             .map_err(|_| integrity("the haul's definition guard is unavailable"))?;
-        let integer =
-            |id: &str, maximum: i64| -> Result<ProjectedParameter, mush_core::ActionError> {
-                Ok(ProjectedParameter {
-                    id: CanonicalId::new(id)
-                        .map_err(|_| integrity("the haul's parameter id is invalid"))?,
-                    required: true,
-                    kind: ProjectedParameterKind::Integer {
-                        minimum: 1,
-                        maximum,
-                    },
-                })
-            };
+        let integer = |id: &str,
+                       minimum: i64,
+                       maximum: i64|
+         -> Result<ProjectedParameter, mush_core::ActionError> {
+            Ok(ProjectedParameter {
+                id: CanonicalId::new(id)
+                    .map_err(|_| integrity("the haul's parameter id is invalid"))?,
+                required: true,
+                kind: ProjectedParameterKind::Integer { minimum, maximum },
+            })
+        };
         Ok(Some(ProviderOfferDraft {
             fixed_parameters: json!({
                 "rows": Value::Object(rows),
@@ -1431,8 +1430,10 @@ impl ActionProvider for HaulProvider {
                 "wall": engine.world.now(),
             }),
             parameters: ProjectedParameterSchema::new(vec![
-                integer("contract", i64::MAX)?,
-                integer("act", 2)?,
+                // Doc 50 cut OP.4: a world's first contract is `ContractId(0)`, so a haul's
+                // number may be 0 (the Freeport arm's first post on a fresh world is one).
+                integer("contract", 0, i64::MAX)?,
+                integer("act", 1, 2)?,
             ])
             .map_err(|_| integrity("the haul's parameter schema is invalid"))?,
             targets: ProjectedTargetSchema::None,
