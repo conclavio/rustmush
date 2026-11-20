@@ -52,7 +52,10 @@ impl Cockpit {
     }
     pub(super) fn cancel_fallback(&mut self) {
         if let Some(fallback) = &self.fallback {
-            let mut waiting = fallback.waiting.lock().expect("login timer poisoned");
+            let mut waiting = fallback
+                .waiting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *waiting {
                 *waiting = false;
                 fallback.task.abort();
@@ -190,7 +193,9 @@ impl ConnHandler {
             {
                 // Cancellation and claiming connected are one operation with
                 // respect to handler teardown or a complete sideband request.
-                let mut waiting = gate.lock().expect("login timer poisoned");
+                let mut waiting = gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if !std::mem::take(&mut *waiting)
                     || player
                         .connected

@@ -158,12 +158,25 @@ async fn cockpit_issue_via_doorway_redeem_direct() {
 }
 
 #[tokio::test]
-async fn refused_resume_keeps_manual_character_selection_available() {
+async fn refused_resume_reissues_on_the_same_direct_connection() {
+    verify_reissue_after_refusal(false).await;
+}
+#[tokio::test]
+async fn refused_resume_reissues_on_the_same_doorway_connection() {
+    verify_reissue_after_refusal(true).await;
+}
+
+async fn verify_reissue_after_refusal(routed: bool) {
     let rig = Rig::start(Hooks::default()).await;
-    let (mut handle, _cut) = rig.droppable_client(rig.direct_listener().await).await;
+    let (addr, user) = if routed {
+        (rig.addr, "dev1+faenix+Kira")
+    } else {
+        (rig.direct_listener().await, "faenix+Kira")
+    };
+    let (mut handle, _cut) = rig.droppable_client(addr).await;
     assert!(
         handle
-            .authenticate_password("faenix+Kira", "pw")
+            .authenticate_password(user, "pw")
             .await
             .unwrap()
             .success()
@@ -176,6 +189,9 @@ async fn refused_resume_keeps_manual_character_selection_available() {
         Some("denied" | "expired")
     ));
     assert!(rig.hooks.connected().is_empty());
+    // The doorway permits a shell and one auxiliary channel. Queue CLOSE
+    // on this connection before opening the fresh Issue subsystem.
+    exchange.close().await.unwrap();
     let mut fresh = side(&handle, "issue", None).await;
     assert_eq!(reply(&mut fresh).await["status"], "auth_required");
     shell.data(&b"1\r"[..]).await.unwrap();
