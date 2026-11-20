@@ -92,18 +92,150 @@ fn registry_decode_is_strict_and_retains_monotone_identity() {
         corrupt.as_object_mut().expect("object").remove(field);
         assert!(serde_json::from_value::<UnitGrantRegistry>(corrupt).is_err());
     }
-    let mut corrupt = canonical;
+    let mut corrupt = canonical.clone();
     corrupt
         .as_object_mut()
         .expect("object")
-        .insert("next_id".into(), json!(99));
+        .insert("next_id".into(), json!(1));
     assert!(serde_json::from_value::<UnitGrantRegistry>(corrupt).is_err());
+    let mut corrupt_zero = canonical.clone();
+    corrupt_zero
+        .as_object_mut()
+        .expect("object")
+        .insert("next_id".into(), json!(0));
+    assert!(serde_json::from_value::<UnitGrantRegistry>(corrupt_zero).is_err());
+    let mut gapped = canonical;
+    gapped
+        .as_object_mut()
+        .expect("object")
+        .insert("next_id".into(), json!(99));
+    let decoded_gapped =
+        serde_json::from_value::<UnitGrantRegistry>(gapped).expect("pruned gap decodes cleanly");
+    assert_eq!(decoded_gapped.next_id, 99);
     let mut revoked = row();
     revoked.status = UnitGrantStatus::Revoked;
     revoked.revision = 2;
     let next = registry.with_grant(revoked).expect("revocation");
     assert_eq!(next.next_id, 2);
     assert_eq!(next.grants.len(), 1);
+}
+
+#[test]
+fn crit12_pruning_reclaims_terminal_slots_without_reusing_ids_and_revoke_is_exempt_near_limit() {
+    let mut registry = UnitGrantRegistry::default();
+    let total = super::families::MAX_REGISTRY_BYTES;
+    let _ = total;
+    // Issue, revoke, and prune more than MAX_UNIT_GRANTS lifetime rows; IDs
+    // remain strictly monotone and capacity is never exhausted by dead rows.
+    for step in 0..(crate::unit_authority::MAX_UNIT_GRANTS + 50) {
+        let mut grant = row();
+        grant.id = UnitGrantId(registry.next_id);
+        grant.valid_from = Some(100);
+        grant.valid_until = Some(200);
+        registry = registry
+            .pruned(150)
+            .with_grant(grant.clone())
+            .expect("issue");
+        let mut revoked = grant;
+        revoked.status = UnitGrantStatus::Revoked;
+        revoked.revision = 2;
+        registry = registry.with_grant(revoked).expect("revoke");
+        assert!(registry.grants.len() <= crate::unit_authority::MAX_UNIT_GRANTS);
+        assert_eq!(
+            registry.next_id,
+            u64::try_from(step).expect("step") + 2,
+            "monotone next_id must never reuse pruned identities"
+        );
+    }
+    let after_prune = registry.pruned(150);
+    assert!(after_prune.grants.is_empty());
+    assert_eq!(
+        after_prune.next_id,
+        u64::try_from(crate::unit_authority::MAX_UNIT_GRANTS + 51).expect("next_id")
+    );
+    // Expired grants and their live children are pruned transitively on issue.
+    let mut expiring = row();
+    expiring.id = UnitGrantId(after_prune.next_id);
+    expiring.delegable = true;
+    expiring.valid_from = Some(100);
+    expiring.valid_until = Some(200);
+    let r1 = after_prune.with_grant(expiring.clone()).expect("parent");
+    let mut child = row();
+    child.id = UnitGrantId(r1.next_id);
+    child.grantor = ObjId(2);
+    child.grantee = UnitGrantee::Character(ObjId(4));
+    child.valid_from = Some(100);
+    child.valid_until = Some(200);
+    child.parent = UnitGrantParent::UnitGrant { id: expiring.id };
+    let r2 = r1.with_grant(child).expect("child");
+    assert_eq!(r2.pruned(199).grants.len(), 2);
+    assert!(r2.pruned(200).grants.is_empty());
+
+    // Fill a registry up to the hard 256 KiB family ceiling (`MAX_REGISTRY_BYTES`)
+    // so new issuance is refused, yet revoking an existing active grant STILL
+    // succeeds (exempt from MAX_REGISTRY_BYTES lockout).
+    let mut near_full = UnitGrantRegistry::default();
+    let mut next_unit = 1_000u32;
+    let wide_units = |base: u32| -> BTreeSet<ObjId> { (base..base + 200).map(ObjId).collect() };
+    while near_full.grants.len() < crate::unit_authority::MAX_UNIT_GRANTS {
+        let mut g = row();
+        g.id = UnitGrantId(near_full.next_id);
+        g.scope = UnitScope::Units {
+            units: wide_units(next_unit),
+        };
+        next_unit += 200;
+        let mut candidate = near_full.clone();
+        candidate.next_id += 1;
+        candidate.grants.insert(g.id, g);
+        let bytes = serde_json::to_vec(&candidate).expect("encode").len();
+        if bytes > super::families::MAX_REGISTRY_BYTES {
+            break;
+        }
+        near_full = candidate;
+    }
+    // Top off with small single-unit grants until adding one more byte-sensitive
+    // active grant would exceed MAX_REGISTRY_BYTES.
+    while near_full.grants.len() < crate::unit_authority::MAX_UNIT_GRANTS {
+        let mut g = row();
+        g.id = UnitGrantId(near_full.next_id);
+        let mut candidate = near_full.clone();
+        candidate.next_id += 1;
+        candidate.grants.insert(g.id, g);
+        let bytes = serde_json::to_vec(&candidate).expect("encode").len();
+        if bytes > super::families::MAX_REGISTRY_BYTES {
+            break;
+        }
+        near_full = candidate;
+    }
+    near_full.validate().expect("near-full registry is valid");
+    let encoded_len = serde_json::to_vec(&near_full).expect("encode").len();
+    assert!(
+        encoded_len > super::families::MAX_ISSUE_REGISTRY_BYTES,
+        "expected registry above MAX_ISSUE_REGISTRY_BYTES, got {encoded_len}"
+    );
+    // New issuance fails cleanly at the issuance byte ceiling.
+    let mut extra = row();
+    extra.id = UnitGrantId(near_full.next_id);
+    assert!(near_full.with_grant(extra).is_err());
+    // Revoking an active grant in this near-256 KiB registry MUST succeed.
+    let mut to_revoke = near_full
+        .grants
+        .values()
+        .next()
+        .cloned()
+        .expect("at least one grant");
+    to_revoke.status = UnitGrantStatus::Revoked;
+    to_revoke.revision = 2;
+    let revoked_reg = near_full
+        .with_grant(to_revoke.clone())
+        .expect("revoke must succeed even near 256 KiB");
+    assert!(revoked_reg.validate().is_ok());
+    assert!(
+        revoked_reg
+            .grants
+            .get(&to_revoke.id)
+            .is_none_or(|g| g.status == UnitGrantStatus::Revoked)
+    );
 }
 
 #[test]

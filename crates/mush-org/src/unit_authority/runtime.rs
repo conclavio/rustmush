@@ -431,20 +431,21 @@ impl ActionProvider for Provider {
         if registry.revision != registry_revision {
             return Err(error("unit-grant request changed"));
         }
-        let grants = reader::evaluate_all(
-            context
-                .world()
-                .map_err(|_| error("unit authority unavailable"))?,
-            self.facts.as_ref(),
-            &registry,
-            i.actor(),
-            &intent,
-        )
-        .map_err(|_| error("unit-grant agreement refused"))?;
+        let world = context
+            .world()
+            .map_err(|_| error("unit authority unavailable"))?;
+        let grants =
+            reader::evaluate_all(world, self.facts.as_ref(), &registry, i.actor(), &intent)
+                .map_err(|_| error("unit-grant agreement refused"))?;
         if grants.first() != Some(&grant) {
             return Err(error("unit-grant agreement changed"));
         }
-        let mut next = registry;
+        let mut next = match &intent.mutation {
+            UnitGrantMutation::Issue(_) | UnitGrantMutation::IssueMany(_) => {
+                registry.pruned(world.now())
+            }
+            UnitGrantMutation::Revoke { .. } => registry,
+        };
         for row in grants {
             next = next
                 .with_grant(row)

@@ -654,24 +654,45 @@ impl<'a> Resolver<'a> {
         }
         // Explicit organization loans are real parent proofs, not supplied
         // booleans. They share the same path and work budget as the outer grant.
-        let candidates: Vec<_> = self.grants.values().filter(|grant| grant.capability == capability
-            && matches!(grant.grantee, UnitGrantee::Organization { organization: org, scope }
-                if org == organization && self.scope_active(org, scope) && scope_contains(self.orgs, selector, scope)))
-            .cloned().collect();
+        // Pre-filter active, in-window, delegable, narrowing, and scope-matching
+        // rows before charging proof visits so dead/unrelated loans cannot
+        // exhaust the visit budget.
+        let candidates: Vec<_> = self
+            .grants
+            .iter()
+            .filter(|(id, grant)| {
+                grant.id == **id
+                    && grant.status == UnitGrantStatus::Active
+                    && grant.capability == capability
+                    && (!delegate || grant.delegable)
+                    && time_valid(grant.valid_from, grant.valid_until, self.now)
+                    && window.is_none_or(|(from, until)| {
+                        window_narrows(grant.valid_from, grant.valid_until, from, until)
+                    })
+                    && (recovery != RecoveryPolicy::ReturnOnly
+                        || grant.recovery == RecoveryPolicy::ReturnOnly)
+                    && match &grant.scope {
+                        UnitScope::Units { units } => units.contains(&unit),
+                        UnitScope::OrganizationControlled { excluded, .. } => {
+                            !excluded.contains(&unit)
+                        }
+                    }
+                    && matches!(
+                        grant.grantee,
+                        UnitGrantee::Organization {
+                            organization: org,
+                            scope,
+                        } if org == organization
+                            && self.scope_active(org, scope)
+                            && scope_contains(self.orgs, selector, scope)
+                    )
+            })
+            .map(|(_, grant)| grant.clone())
+            .collect();
         for grant in candidates {
             let UnitGrantee::Organization { scope, .. } = grant.grantee else {
                 continue;
             };
-            if window.is_some_and(|(from, until)| {
-                !window_narrows(grant.valid_from, grant.valid_until, from, until)
-            }) {
-                continue;
-            }
-            if recovery == RecoveryPolicy::ReturnOnly
-                && grant.recovery != RecoveryPolicy::ReturnOnly
-            {
-                continue;
-            }
             let checkpoint = self.sources.len();
             match self.walk(
                 &grant,
@@ -838,6 +859,151 @@ fn root_scope_narrows(orgs: &OrgState, root: &RootProof, inner: &UnitScope) -> b
     }
 }
 
+fn active_loan_orgs(
+    grants: &BTreeMap<UnitGrantId, UnitGrant>,
+    capability: UnitCapability,
+    now: i64,
+) -> BTreeSet<OrgId> {
+    grants
+        .iter()
+        .filter_map(|(id, grant)| {
+            if grant.id == *id
+                && grant.status == UnitGrantStatus::Active
+                && grant.capability == capability
+                && time_valid(grant.valid_from, grant.valid_until, now)
+                && let UnitGrantee::Organization { organization, .. } = grant.grantee
+            {
+                Some(organization)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn scope_may_match_unit(
+    orgs: &OrgState,
+    asset: &UnitAssetFacts,
+    facts: &dyn UnitAuthorityFacts,
+    loan_orgs: &BTreeSet<OrgId>,
+    scope: &UnitScope,
+    request: &UnitAuthRequest,
+) -> bool {
+    let unit = request.unit;
+    let capability = request.action.capability();
+    let now = request.now;
+    match scope {
+        UnitScope::Units { units } => units.contains(&unit),
+        UnitScope::OrganizationControlled {
+            organization,
+            scope,
+            excluded,
+        } => {
+            if excluded.contains(&unit)
+                || !orgs
+                    .org(*organization)
+                    .is_some_and(|org| org.status == OrgStatus::Active)
+                || !orgs.scope(scope.root()).is_some_and(|row| {
+                    row.org == *organization && row.status == ScopeStatus::Active
+                })
+            {
+                return false;
+            }
+            let owns_in_scope = asset.owner == PrincipalId::Organization(*organization)
+                && asset.scope.is_some_and(|s| {
+                    orgs.scope(s).is_some_and(|row| {
+                        row.org == *organization && row.status == ScopeStatus::Active
+                    }) && scope_contains(orgs, scope, s)
+                });
+            owns_in_scope
+                || facts
+                    .organization_control(*organization, unit, capability, now)
+                    .is_some()
+                || loan_orgs.contains(organization)
+        }
+    }
+}
+
+fn grant_is_live(grants: &BTreeMap<UnitGrantId, UnitGrant>, grant: &UnitGrant, now: i64) -> bool {
+    let mut current = grant;
+    for _ in 0..=MAX_UNIT_GRANT_DEPTH {
+        if current.status != UnitGrantStatus::Active
+            || current.valid_until.is_some_and(|end| now >= end)
+        {
+            return false;
+        }
+        match current.parent {
+            UnitGrantParent::UnitGrant { id } => {
+                let Some(parent) = grants.get(&id) else {
+                    return false;
+                };
+                if parent.id >= current.id {
+                    return false;
+                }
+                current = parent;
+            }
+            _ => return true,
+        }
+    }
+    false
+}
+
+fn check_grant_quotas(
+    grants: &BTreeMap<UnitGrantId, UnitGrant>,
+    candidate: &UnitGrant,
+    now: i64,
+) -> Result<(), UnitGrantError> {
+    let mut grantor_count = 0usize;
+    for existing in grants.values() {
+        if !grant_is_live(grants, existing, now) {
+            continue;
+        }
+        if existing.grantor == candidate.grantor {
+            grantor_count += 1;
+            if grantor_count >= MAX_ACTIVE_GRANTS_PER_GRANTOR {
+                return Err(UnitGrantError::Capacity);
+            }
+            if existing.grantee == candidate.grantee
+                && existing.capability == candidate.capability
+                && existing.scope == candidate.scope
+                && existing.delegable == candidate.delegable
+                && existing.recovery == candidate.recovery
+                && existing.parent == candidate.parent
+                && existing.valid_until.is_none_or(|existing_end| {
+                    candidate
+                        .valid_until
+                        .is_some_and(|cand_end| cand_end <= existing_end)
+                })
+                && existing.valid_from.is_none_or(|existing_start| {
+                    candidate
+                        .valid_from
+                        .is_some_and(|cand_start| cand_start >= existing_start)
+                })
+            {
+                return Err(UnitGrantError::Malformed("duplicate active unit grant"));
+            }
+        }
+    }
+    if let UnitScope::Units { units } = &candidate.scope {
+        for unit in units {
+            let unit_count = grants
+                .values()
+                .filter(|existing| {
+                    grant_is_live(grants, existing, now)
+                        && matches!(
+                            &existing.scope,
+                            UnitScope::Units { units: u } if u.contains(unit)
+                        )
+                })
+                .count();
+            if unit_count >= MAX_ACTIVE_GRANTS_PER_UNIT {
+                return Err(UnitGrantError::Capacity);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Authorize a new admission over current records. Witnesses are audit hints;
 /// they must never replace re-resolution at a later final boundary.
 #[must_use]
@@ -864,9 +1030,13 @@ pub fn authorize_unit(
         });
         return UnitDecision::Allow(resolver.witness());
     }
+    let capability = request.action.capability();
+    let requires_delegation = request.action.requires_delegation();
+    let loan_orgs = active_loan_orgs(grants, capability, request.now);
     let mut near = UnitGrantError::NoAuthority;
+    let mut grant_capacity = false;
     for (id, grant) in grants {
-        if grant.id != *id || grant.capability != request.action.capability() {
+        if grant.id != *id || grant.capability != capability {
             continue;
         }
         let matches = match &grant.grantee {
@@ -892,14 +1062,30 @@ pub fn authorize_unit(
         if !matches {
             continue;
         }
+        if requires_delegation && !grant.delegable {
+            continue;
+        }
+        if !scope_may_match_unit(orgs, &asset, facts, &loan_orgs, &grant.scope, request) {
+            if matches!(
+                &grant.scope,
+                UnitScope::OrganizationControlled { excluded, .. }
+                    if excluded.contains(&request.unit)
+            ) && near == UnitGrantError::NoAuthority
+            {
+                near = UnitGrantError::Excluded;
+            }
+            continue;
+        }
+        if grant.status != UnitGrantStatus::Active
+            || !time_valid(grant.valid_from, grant.valid_until, request.now)
+        {
+            if near == UnitGrantError::NoAuthority {
+                near = UnitGrantError::Inactive;
+            }
+            continue;
+        }
         let checkpoint = resolver.sources.len();
-        match resolver.walk(
-            grant,
-            request.unit,
-            request.action.requires_delegation(),
-            &grant.grantee,
-            0,
-        ) {
+        match resolver.walk(grant, request.unit, requires_delegation, &grant.grantee, 0) {
             Ok(()) => {
                 if let UnitGrantee::CurrentLeader(binding) = &grant.grantee
                     && let Some(command) = &request.mission
@@ -911,16 +1097,27 @@ pub fn authorize_unit(
                 }
                 return UnitDecision::Allow(resolver.witness());
             }
-            Err(UnitGrantError::Capacity) => return UnitDecision::Deny(UnitGrantError::Capacity),
+            Err(UnitGrantError::Capacity) => {
+                grant_capacity = true;
+                break;
+            }
             Err(error) => {
                 near = error;
                 resolver.sources.truncate(checkpoint);
             }
         }
     }
-    match resolver.direct_org(request) {
-        Ok(()) => UnitDecision::Allow(resolver.witness()),
+    // Evaluate direct organization authority on its own fresh proof budget so
+    // third-party grant floods can never starve direct org access into Capacity.
+    let mut direct_resolver =
+        match Resolver::new(orgs, grants, facts, predicates, request.now, request.actor) {
+            Ok(resolver) => resolver,
+            Err(error) => return UnitDecision::Deny(error),
+        };
+    match direct_resolver.direct_org(request) {
+        Ok(()) => UnitDecision::Allow(direct_resolver.witness()),
         Err(UnitGrantError::Capacity) => UnitDecision::Deny(UnitGrantError::Capacity),
+        Err(_) if grant_capacity => UnitDecision::Deny(UnitGrantError::Capacity),
         Err(_) => UnitDecision::Deny(near),
     }
 }
@@ -942,6 +1139,7 @@ pub fn validate_unit_grant(
     if grants.contains_key(&candidate.id) {
         return Err(UnitGrantError::Malformed("grant identity already exists"));
     }
+    check_grant_quotas(grants, candidate, now)?;
     let mut resolver = Resolver::new(orgs, grants, facts, predicates, now, candidate.grantor)?;
     if let UnitGrantee::Character(actor) = candidate.grantee {
         resolver.actors.push(actor);
@@ -977,6 +1175,7 @@ pub fn validate_mission_declaration(
     if grants.contains_key(&candidate.id) {
         return Err(UnitGrantError::Malformed("grant identity already exists"));
     }
+    check_grant_quotas(grants, candidate, now)?;
     let mut resolver = Resolver::new(orgs, grants, facts, predicates, now, candidate.grantor)?;
     resolver.mission_lineage_only = true;
     resolver.shape(candidate, 0)?;
