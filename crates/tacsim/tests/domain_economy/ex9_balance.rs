@@ -296,8 +296,8 @@ async fn ex9_the_consumers_use_up_what_they_buy_and_the_faucet_pays_them_back() 
     let census_after = census(&mut rig);
     assert_eq!(
         census_after["consumed"] - census_before["consumed"],
-        kg(&rig, ALLOYS, 100) + kg(&rig, PROVISIONS, 4 * 16),
-        "consumed: Syrtis's alloys and the Board's provisions"
+        kg(&rig, ALLOYS, 100) + kg(&rig, PROVISIONS, 4 * 16) + kg(&rig, "propellant", farm_used),
+        "consumed: Syrtis's alloys, the Board's provisions and the tank farm's propellant"
     );
     assert_eq!(
         census_after["balance"], census_before["balance"],
