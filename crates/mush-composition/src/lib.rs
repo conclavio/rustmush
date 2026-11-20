@@ -17,6 +17,7 @@
 
 pub mod campaign_formations;
 pub mod campaign_notice;
+pub mod campaign_operations;
 pub mod mail_transport;
 
 use std::sync::Arc;
@@ -427,7 +428,9 @@ fn compose_server_modules<E>(
                 None => module,
             }
         }),
-        Box::new(
+        // Doc 50 cut OP.0: the campaign with TacSim's operation frame seated beside it, and its
+        // close-only objectives answered by TacSim's close probes.
+        Box::new(self::campaign_operations::CampaignLink::new(
             mush_campaign::CampaignModule::new()
                 .with_formation_kinds(Arc::new(
                     self::campaign_formations::TacsimFormationAuthority,
@@ -435,8 +438,9 @@ fn compose_server_modules<E>(
                 .with_seat_audit(Arc::new(self::seat_audit::SeatAuditLog::new()))
                 .with_recovery(recovery)
                 // Doc 45 cut AP.1: an operation's notice, queued and mailed.
-                .with_defender_notice(self::campaign_notice::defender_notice()),
-        ),
+                .with_defender_notice(self::campaign_notice::defender_notice())
+                .with_close_probe(Arc::new(self::campaign_operations::TacsimCloseProbe)),
+        )),
         Box::new(mush_mail::MailModule.with_transport(Arc::new(mail_transport::MailTransport))),
         Box::new(mush_jobs::JobsModule::new()),
         Box::new({

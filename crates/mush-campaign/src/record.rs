@@ -99,6 +99,30 @@ pub enum ObjectiveKind {
         /// E2's rule, applied here).
         source: SmolStr,
     },
+    /// **Read once, at the window's close, from a probe the owner supplies** (doc 50
+    /// Q-50-57 item 3; Q-50-21, Q-50-28). Nothing before the close reads it, so a
+    /// condition met mid-window decides nothing. At the close the tick asks the
+    /// composed [`crate::CloseProbe`] for `probe`'s answer; `met_favors` says whose
+    /// success a met probe is. Unanswered (no probe composed, or the owner cannot tell
+    /// yet), the operation waits and pages rather than resolving.
+    ProbeAtClose {
+        /// The probe's name, as the composed [`crate::CloseProbe`] knows it.
+        probe: SmolStr,
+        /// Whose success a met probe is.
+        met_favors: Favors,
+    },
+}
+
+/// **Whose success** a met [`ObjectiveKind::ProbeAtClose`] is (doc 50 Q-50-57 item 3:
+/// "its own polarity"). The recorded outcome stays the declarer's word: `success` when
+/// the declarer won, `failure` when they did not.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Favors {
+    /// A met probe is the declarer's success.
+    Declarer,
+    /// A met probe is the defenders' success, so the declarer's failure.
+    Defenders,
 }
 
 /// The objective, with the one-line summary a viewer entitled to the plan sees.
@@ -307,6 +331,9 @@ impl OperationTerms {
         if let ObjectiveKind::CanonRecorded { kind, source } = &self.objective.kind {
             check_label("an objective canon kind", kind)?;
             check_label("an objective canon source", source)?;
+        }
+        if let ObjectiveKind::ProbeAtClose { probe, .. } = &self.objective.kind {
+            check_label("an objective probe", probe)?;
         }
         if self.legal_targets.len() > MAX_LEGAL_TARGETS {
             return Err(TermsError::TooMany {
