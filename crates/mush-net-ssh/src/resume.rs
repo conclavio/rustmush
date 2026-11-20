@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroizing;
 
 pub const MAX_FRAME: usize = 1024;
@@ -124,7 +123,7 @@ impl Reply {
         Self {
             status,
             ticket: Some(ticket),
-            grace: Some(grace.clamp(1, 300)),
+            grace: Some(grace),
         }
     }
     pub fn auth_required() -> Self {
@@ -175,17 +174,7 @@ pub fn decode_request(payload: &[u8]) -> io::Result<Request> {
     })
 }
 
-pub async fn read_request(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Request> {
-    let len = reader.read_u32().await? as usize;
-    if len == 0 || len > MAX_FRAME {
-        return Err(bad_frame());
-    }
-    let mut bytes = Zeroizing::new(vec![0; len]);
-    reader.read_exact(&mut bytes).await?;
-    decode_request(&bytes)
-}
-
-pub fn encode_reply(reply: &Reply) -> io::Result<Vec<u8>> {
+pub fn encode_reply(reply: &Reply) -> io::Result<Zeroizing<Vec<u8>>> {
     #[derive(Serialize)]
     struct Wire<'a> {
         v: u8,
@@ -205,21 +194,13 @@ pub fn encode_reply(reply: &Reply) -> io::Result<Vec<u8>> {
         ticket: secret.as_ref().map(|s| s.as_str()),
         grace_seconds: reply.grace,
     };
-    let mut packet = vec![0; 4];
-    serde_json::to_writer(&mut packet, &wire).map_err(|_| bad_frame())?;
-    let len = packet.len() - 4;
-    if len > MAX_FRAME {
-        return Err(bad_frame());
-    }
+    let mut packet = Zeroizing::new(vec![0; 4 + MAX_FRAME]);
+    let mut body = &mut packet[4..];
+    serde_json::to_writer(&mut body, &wire).map_err(|_| bad_frame())?;
+    let len = MAX_FRAME - body.len();
+    packet.truncate(4 + len);
     packet[..4].copy_from_slice(&(len as u32).to_be_bytes());
     Ok(packet)
-}
-
-pub async fn write_reply(writer: &mut (impl AsyncWrite + Unpin), reply: &Reply) -> io::Result<()> {
-    writer
-        .write_all(&Zeroizing::new(encode_reply(reply)?))
-        .await?;
-    writer.flush().await
 }
 
 #[derive(Clone, Copy)]
@@ -242,18 +223,40 @@ impl State {
 }
 struct Lease {
     digest: [u8; 32],
-    account: String,
+    previous: Option<PreviousTicket>,
     character: u64,
     session: SessId,
     conn: u64,
-    grace: Duration,
+    grace_seconds: u32,
     state: State,
 }
 
+#[derive(Clone, Copy)]
+struct PreviousTicket {
+    digest: [u8; 32],
+    until: Instant,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct PaneKey {
+    account: String,
+    pane: String,
+}
+impl PaneKey {
+    fn new(account: &str, pane: &str) -> Self {
+        Self {
+            account: account.to_owned(),
+            pane: pane.to_owned(),
+        }
+    }
+}
+
+type Leases = HashMap<PaneKey, Lease>;
+
 #[derive(Clone, Default)]
-pub struct Registry(Arc<Mutex<HashMap<String, Lease>>>);
+pub struct Registry(Arc<Mutex<Leases>>);
 impl Registry {
-    fn lock(&self) -> MutexGuard<'_, HashMap<String, Lease>> {
+    fn lock(&self) -> MutexGuard<'_, Leases> {
         self.0.lock().unwrap_or_else(|poison| poison.into_inner())
     }
     /// Call only after the gateway has established the authenticated actor and session.
@@ -265,33 +268,46 @@ impl Registry {
         character: u64,
         session: SessId,
         grace: Duration,
-    ) -> Result<Ticket, Failure> {
-        if !valid_pane(pane) || account.is_empty() || grace.as_secs() == 0 {
+    ) -> Result<(Ticket, u32), Failure> {
+        let grace_seconds = grace.min(MAX_GRACE).as_secs() as u32;
+        if !valid_pane(pane) || account.is_empty() || grace_seconds == 0 {
             return Err(Failure::Unavailable);
         }
         let ticket = Ticket::generate()?;
         let mut leases = self.lock();
         let now = Instant::now();
         leases.retain(|_, lease| !lease.state.is_expired(now));
-        if leases.len() >= MAX_LEASES
-            || leases.contains_key(pane)
-            || leases.values().any(|l| l.conn == conn)
-        {
+        let key = PaneKey::new(account, pane);
+        match leases.get(&key) {
+            Some(lease) if !matches!(lease.state, State::Detached(_)) => return Err(Failure::Busy),
+            None if leases.len() >= MAX_LEASES => return Err(Failure::Busy),
+            _ => {}
+        }
+        if leases.iter().any(|(other, lease)| {
+            (other != &key && lease.conn == conn)
+                || matches!(lease.state, State::Reserved { conn: candidate, .. } if candidate == conn)
+        }) {
             return Err(Failure::Busy);
         }
         leases.insert(
-            pane.to_owned(),
+            key,
             Lease {
                 digest: ticket.digest(),
-                account: account.to_owned(),
+                previous: None,
                 character,
                 session,
                 conn,
-                grace: grace.min(MAX_GRACE),
+                grace_seconds,
                 state: State::Attached,
             },
         );
-        Ok(ticket)
+        Ok((ticket, grace_seconds))
+    }
+    /// Revoke an active owner when its transport closed after the session was
+    /// already removed. A late callback cannot disturb a detached or reserved pane.
+    pub fn close_attached(&self, conn: u64) {
+        self.lock()
+            .retain(|_, lease| lease.conn != conn || !matches!(lease.state, State::Attached));
     }
     /// An orderly quit or revocation ends a ticket. An unexpected detach starts its grace clock.
     pub fn detach(&self, conn: u64, lost: bool) {
@@ -316,10 +332,36 @@ impl Registry {
                 return false;
             }
             if matches!(lease.state, State::Attached) {
-                lease.state = State::Detached(now + lease.grace);
+                lease.state =
+                    State::Detached(now + Duration::from_secs(lease.grace_seconds.into()));
             }
             true
         });
+    }
+    /// A current credential may identify its attached connection for a gateway
+    /// ownership check. The gateway must fence that exact session before redeeming.
+    pub fn attached_owner(
+        &self,
+        pane: &str,
+        account: &str,
+        selected: Option<u64>,
+        ticket: &Ticket,
+    ) -> Result<Option<(u64, u64, SessId)>, Failure> {
+        let mut leases = self.lock();
+        let (lease, previous) = checked_lease(
+            &mut leases,
+            &PaneKey::new(account, pane),
+            selected,
+            ticket.digest(),
+            Instant::now(),
+        )?;
+        Ok(
+            (previous.is_none() && matches!(lease.state, State::Attached)).then_some((
+                lease.conn,
+                lease.character,
+                lease.session,
+            )),
+        )
     }
     /// Account and selected character come from the authenticated gateway, never the sideband request.
     pub fn reserve(
@@ -331,18 +373,10 @@ impl Registry {
         ticket: &Ticket,
     ) -> Result<Claim, Failure> {
         let mut leases = self.lock();
-        let lease = leases.get_mut(pane).ok_or(Failure::Expired)?;
-        if !bool::from(lease.digest.ct_eq(&ticket.digest()))
-            || lease.account != account
-            || selected.is_some_and(|c| c != lease.character)
-        {
-            return Err(Failure::Denied);
-        }
+        let key = PaneKey::new(account, pane);
+        let digest = ticket.digest();
         let now = Instant::now();
-        if lease.state.is_expired(now) {
-            leases.remove(pane);
-            return Err(Failure::Expired);
-        }
+        let (lease, previous) = checked_lease(&mut leases, &key, selected, digest, now)?;
         let State::Detached(deadline) = lease.state else {
             return Err(Failure::Busy);
         };
@@ -354,25 +388,68 @@ impl Registry {
         };
         Ok(Claim {
             registry: self.clone(),
-            pane: pane.to_owned(),
+            key,
             conn,
             session: lease.session,
             character: lease.character,
             previous_conn: lease.conn,
             replacement,
+            previous: PreviousTicket {
+                digest,
+                until: previous.unwrap_or(now + Duration::from_secs(lease.grace_seconds.into())),
+            },
         })
     }
+}
+
+/// The optional deadline belongs to an earlier credential whose replacement
+/// reply may have been lost. Retrying with it never extends that deadline.
+fn checked_lease<'a>(
+    leases: &'a mut Leases,
+    key: &PaneKey,
+    selected: Option<u64>,
+    digest: [u8; 32],
+    now: Instant,
+) -> Result<(&'a mut Lease, Option<Instant>), Failure> {
+    if !leases.contains_key(key) {
+        return Err(if leases.keys().any(|other| other.pane == key.pane) {
+            Failure::Denied
+        } else {
+            Failure::Expired
+        });
+    }
+    let lease = leases.get_mut(key).ok_or(Failure::Expired)?;
+    if selected.is_some_and(|ch| ch != lease.character) {
+        return Err(Failure::Denied);
+    }
+    lease.previous = lease.previous.filter(|prior| prior.until > now);
+    let previous = if bool::from(lease.digest.ct_eq(&digest)) {
+        None
+    } else {
+        Some(
+            lease
+                .previous
+                .filter(|prior| bool::from(prior.digest.ct_eq(&digest)))
+                .ok_or(Failure::Denied)?
+                .until,
+        )
+    };
+    if lease.state.is_expired(now) {
+        return Err(Failure::Expired);
+    }
+    Ok((lease, previous))
 }
 
 /// No registry lock is held while the gateway checks its session and world admission.
 pub struct Claim {
     registry: Registry,
-    pane: String,
+    key: PaneKey,
     conn: u64,
     session: SessId,
     character: u64,
     previous_conn: u64,
     replacement: Ticket,
+    previous: PreviousTicket,
 }
 impl Claim {
     pub fn session(&self) -> SessId {
@@ -384,9 +461,9 @@ impl Claim {
     pub fn previous_conn(&self) -> u64 {
         self.previous_conn
     }
-    pub fn commit(self) -> Result<Ticket, Failure> {
+    pub fn commit(self) -> Result<(Ticket, u32), Failure> {
         let mut leases = self.registry.lock();
-        let lease = leases.get_mut(&self.pane).ok_or(Failure::Expired)?;
+        let lease = leases.get_mut(&self.key).ok_or(Failure::Expired)?;
         let State::Reserved {
             conn,
             deadline,
@@ -401,19 +478,24 @@ impl Claim {
         {
             return Err(Failure::Denied);
         }
-        if deadline <= Instant::now() {
-            leases.remove(&self.pane);
+        let now = Instant::now();
+        if deadline <= now {
+            leases.remove(&self.key);
             return Err(Failure::Expired);
+        }
+        if self.previous.until <= now {
+            return Err(Failure::Denied);
         }
         lease.state = State::Attached;
         lease.conn = self.conn;
         lease.digest = replacement;
-        Ok(self.replacement.clone())
+        lease.previous = Some(self.previous);
+        Ok((self.replacement.clone(), lease.grace_seconds))
     }
 }
 impl Drop for Claim {
     fn drop(&mut self) {
-        if let Some(lease) = self.registry.lock().get_mut(&self.pane)
+        if let Some(lease) = self.registry.lock().get_mut(&self.key)
             && let State::Reserved {
                 conn,
                 deadline,
@@ -436,7 +518,7 @@ mod tests {
     #[test]
     fn reserve_requires_an_authenticated_owner_a_matching_character_and_a_detached_pane() {
         let registry = Registry::default();
-        let ticket = registry
+        let (ticket, _) = registry
             .issue(70, PANE, "pilot", 3, SessId(80), MAX_GRACE)
             .expect("issue initial ticket");
         assert!(matches!(
@@ -464,21 +546,25 @@ mod tests {
             Err(Failure::Busy)
         ));
         drop(claim);
-        let rotated = registry
+        let (rotated, _) = registry
             .reserve(72, PANE, "pilot", None, &ticket)
             .expect("reserve released claim")
             .commit()
             .expect("rotate ticket");
-        registry.detach(72, true);
         assert!(matches!(
             registry.reserve(73, PANE, "pilot", None, &ticket),
-            Err(Failure::Denied)
+            Err(Failure::Busy)
         ));
-        let latest = registry
+        registry.detach(72, true);
+        let (latest, _) = registry
             .reserve(73, PANE, "pilot", None, &rotated)
             .expect("reserve using rotated ticket")
             .commit()
             .expect("commit reconnect");
+        assert!(matches!(
+            registry.reserve(74, PANE, "pilot", None, &ticket),
+            Err(Failure::Denied)
+        ));
         registry.detach(73, false);
         assert!(matches!(
             registry.reserve(74, PANE, "pilot", None, &latest),
@@ -489,7 +575,7 @@ mod tests {
     #[test]
     fn cancelled_claim_cannot_take_or_release_a_later_reservation_on_the_same_connection() {
         let registry = Registry::default();
-        let ticket = registry
+        let (ticket, _) = registry
             .issue(1, PANE, "pilot", 3, SessId(8), MAX_GRACE)
             .expect("issue initial ticket");
         registry.detach(1, true);
@@ -505,13 +591,140 @@ mod tests {
     }
 
     #[test]
+    fn fresh_login_replaces_only_the_accounts_own_detached_pane() {
+        let registry = Registry::default();
+        let (old, grace) = registry
+            .issue(1, PANE, "pilot", 8, SessId(10), Duration::from_secs(3600))
+            .expect("issue");
+        assert_eq!(grace, 300);
+        let (other, _) = registry
+            .issue(2, PANE, "copilot", 9, SessId(20), MAX_GRACE)
+            .expect("independent nonce");
+        let issue_again =
+            || registry.issue(3, PANE, "pilot", 7, SessId(30), Duration::from_millis(1900));
+        assert!(matches!(issue_again(), Err(Failure::Busy)));
+        registry.detach(1, true);
+        let pending = registry
+            .reserve(4, PANE, "pilot", None, &old)
+            .expect("claim");
+        assert!(matches!(issue_again(), Err(Failure::Busy)));
+        drop(pending);
+        let (fresh, grace) = issue_again().expect("issue after ordinary character admission");
+        assert_eq!(grace, 1);
+        registry.detach(1, false);
+        assert!(matches!(
+            registry.reserve(5, PANE, "pilot", None, &old),
+            Err(Failure::Denied)
+        ));
+        assert!(matches!(
+            registry.reserve(5, PANE, "pilot", None, &other),
+            Err(Failure::Denied)
+        ));
+        assert_eq!(
+            registry.attached_owner(PANE, "copilot", Some(9), &other),
+            Ok(Some((2, 9, SessId(20))))
+        );
+        registry.detach(3, true);
+        let claim = registry
+            .reserve(5, PANE, "pilot", Some(7), &fresh)
+            .expect("recover fresh session");
+        assert_eq!(claim.session(), SessId(30));
+        assert_eq!(claim.commit().expect("rotate").1, 1);
+    }
+
+    #[test]
+    fn a_lost_rotation_reply_can_only_recover_a_detached_pane_within_one_grace() {
+        let registry = Registry::default();
+        let (first, _) = registry
+            .issue(1, PANE, "pilot", 8, SessId(10), MAX_GRACE)
+            .expect("issue");
+        let owner = |ticket| registry.attached_owner(PANE, "pilot", Some(8), ticket);
+        let reserve = |conn, ticket| registry.reserve(conn, PANE, "pilot", Some(8), ticket);
+        assert_eq!(owner(&first), Ok(Some((1, 8, SessId(10)))));
+        assert_eq!(
+            registry.attached_owner(PANE, "other", Some(8), &first),
+            Err(Failure::Denied)
+        );
+        assert_eq!(
+            registry.attached_owner(PANE, "pilot", Some(9), &first),
+            Err(Failure::Denied)
+        );
+        registry.detach(1, true);
+        let (lost, _) = reserve(2, &first)
+            .expect("first reclaim")
+            .commit()
+            .expect("first rotation");
+        assert_eq!(owner(&first), Ok(None));
+        assert_eq!(owner(&lost), Ok(Some((2, 8, SessId(10)))));
+        assert!(matches!(reserve(3, &first), Err(Failure::Busy)));
+        registry.detach(2, true);
+        let key = PaneKey::new("pilot", PANE);
+        let previous_deadline = || {
+            registry
+                .lock()
+                .get(&key)
+                .and_then(|l| l.previous)
+                .expect("retry credential")
+                .until
+        };
+        let deadline = previous_deadline();
+        let (fresh, _) = reserve(3, &first)
+            .expect("retry after reply loss")
+            .commit()
+            .expect("second rotation");
+        assert_eq!(
+            previous_deadline(),
+            deadline,
+            "retry must not renew the previous credential"
+        );
+        assert_eq!(owner(&lost), Err(Failure::Denied));
+        registry.detach(3, true);
+        let mut in_flight = reserve(4, &first).expect("reserve before retry deadline");
+        in_flight.previous.until = Instant::now();
+        assert!(matches!(in_flight.commit(), Err(Failure::Denied)));
+        registry
+            .lock()
+            .get_mut(&key)
+            .and_then(|l| l.previous.as_mut())
+            .expect("retry credential")
+            .until = Instant::now();
+        assert!(matches!(reserve(4, &first), Err(Failure::Denied)));
+        assert!(reserve(4, &fresh).is_ok());
+    }
+
+    #[test]
+    fn a_late_close_only_revokes_the_exact_still_attached_owner() {
+        let registry = Registry::default();
+        let (ticket, _) = registry
+            .issue(1, PANE, "pilot", 8, SessId(10), MAX_GRACE)
+            .expect("issue");
+        registry.detach(1, true);
+        registry.close_attached(1);
+        let claim = registry
+            .reserve(2, PANE, "pilot", None, &ticket)
+            .expect("detached owner survived old close");
+        registry.close_attached(1);
+        let (replacement, _) = claim.commit().expect("reserved owner survived old close");
+        registry.close_attached(1);
+        assert_eq!(
+            registry.attached_owner(PANE, "pilot", None, &replacement),
+            Ok(Some((2, 8, SessId(10))))
+        );
+        registry.close_attached(2);
+        assert_eq!(
+            registry.attached_owner(PANE, "pilot", None, &replacement),
+            Err(Failure::Expired)
+        );
+    }
+
+    #[test]
     fn an_expired_lease_cannot_be_redeemed_before_the_next_sweep() {
         let registry = Registry::default();
-        let ticket = registry
+        let (ticket, _) = registry
             .issue(1, PANE, "pilot", 3, SessId(8), MAX_GRACE)
             .expect("issue initial ticket");
         registry.detach(1, true);
-        if let Some(lease) = registry.lock().get_mut(PANE) {
+        if let Some(lease) = registry.lock().get_mut(&PaneKey::new("pilot", PANE)) {
             lease.state = State::Detached(Instant::now());
         }
         assert!(matches!(
@@ -520,28 +733,23 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn reads_one_bounded_versioned_frame_and_redacts_tickets() {
+    #[test]
+    fn validates_the_bounded_request_and_prefixes_the_redacted_reply() {
         assert!(Hint::parse(&format!("redeem:{PANE}")).is_some());
         let ticket = Ticket::generate().expect("generate ticket");
         let secret = URL_SAFE_NO_PAD.encode(*ticket.0);
         let payload =
             serde_json::json!({"v":1,"op":"redeem","pane":PANE,"ticket":secret}).to_string();
-        let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
-        frame.extend_from_slice(payload.as_bytes());
-        let request = read_request(&mut frame.as_slice())
-            .await
-            .expect("decode request");
+        let request = decode_request(payload.as_bytes()).expect("decode request");
         assert_eq!(request.mode, Mode::Redeem);
         assert!(!format!("{request:?}").contains(&secret));
         let reply = Reply::issued(ticket, 300);
         assert!(!format!("{reply:?}").contains(&secret));
         let encoded = encode_reply(&reply).expect("encode reply");
-        let mut bytes = encoded.as_slice();
-        assert_eq!(
-            bytes.read_u32().await.expect("read frame size") as usize,
-            bytes.len()
-        );
+        let (header, bytes) = encoded
+            .split_first_chunk::<4>()
+            .expect("reply length prefix");
+        assert_eq!(u32::from_be_bytes(*header) as usize, bytes.len());
         let json: serde_json::Value = serde_json::from_slice(bytes).expect("decode reply");
         assert_eq!(json["ticket"], secret);
         for invalid in [
@@ -554,10 +762,11 @@ mod tests {
         ] {
             assert!(decode_request(invalid.to_string().as_bytes()).is_err());
         }
-        assert!(
-            read_request(&mut (MAX_FRAME as u32 + 1).to_be_bytes().as_slice())
-                .await
-                .is_err()
-        );
+        assert!(decode_request(&[]).is_err());
+        let mut padded = payload.into_bytes();
+        padded.resize(MAX_FRAME, b' ');
+        assert!(decode_request(&padded).is_ok());
+        padded.push(b' ');
+        assert!(decode_request(&padded).is_err());
     }
 }

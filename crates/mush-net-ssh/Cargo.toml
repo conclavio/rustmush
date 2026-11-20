@@ -20,9 +20,9 @@ russh.workspace = true
 # manifest's SHA-256 at boot.
 russh-sftp.workspace = true
 sha2.workspace = true
-base64 = "0.22"
-subtle = "2.6"
-zeroize = "1"
+base64.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 tracing.workspace = true
