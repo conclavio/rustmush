@@ -878,6 +878,10 @@ pub mod haul {
     pub const TOLD_DELIVERED: &str = "is delivered to your locker at";
     /// `tacsim::services::haul::TOLD_RETURNED`.
     pub const TOLD_RETURNED: &str = "was not delivered in time; its goods are back in your locker";
+    /// `tacsim::services::haul::TOLD_SEIZED`.
+    pub const TOLD_SEIZED: &str = "was seized by customs on the way; its goods are lost.";
+    /// `tacsim::services::haul::TOLD_HAULER_SEIZED`.
+    pub const TOLD_HAULER_SEIZED: &str = "the job has failed and your bond is lost.";
     /// `tacsim::services::haul::NOT_WITHDRAWABLE`.
     pub const NOT_WITHDRAWABLE: &str =
         "Only the shipper withdraws a haul, and only before it is tak";
@@ -1425,6 +1429,8 @@ mod tests {
             DELIVERING,
             TOLD_DELIVERED,
             TOLD_RETURNED,
+            TOLD_SEIZED,
+            TOLD_HAULER_SEIZED,
             NOT_WITHDRAWABLE,
             WITHDRAWN,
             NONE,
