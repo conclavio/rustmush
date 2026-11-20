@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v49 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v50 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,33 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut OP.5 (lane v50): the Isidis import duty taken out**: the Isidis region row's
+/// `terms`, so a strip chain rebuilds a lane before v50 (idempotent). The chain's head.
+pub fn strip_import_duty(doc: &mut Value) {
+    let Some(rows) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("regions"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("rows"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for row in rows
+        .iter_mut()
+        .filter(|r| r.get("id").and_then(Value::as_str) == Some("isidis"))
+    {
+        if let Some(row) = row.as_object_mut() {
+            row.remove("terms");
+        }
+    }
+}
+
 /// **Doc 50 cut OP.4 (lane v49): the tank farm's drain and refresh taken out**: the Isidis tank
 /// farm's `consume` rows and its bids' `refresh`, so a strip chain rebuilds a lane before v49
-/// (idempotent). The chain's head.
+/// (idempotent); lane v50's [`strip_import_duty`] first.
 pub fn strip_tank_farm(doc: &mut Value) {
+    strip_import_duty(doc);
     let Some(vendors) = doc
         .get_mut("entries")
         .and_then(|e| e.get_mut("isidis_port"))
