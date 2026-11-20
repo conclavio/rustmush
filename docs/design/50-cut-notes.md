@@ -593,6 +593,9 @@ Not built.
     trader may quote the public ask.
   - Mutation-checked, each failing the story: the law never restricting; the papers asking the
     license alone; the papers asking the claim alone; the market asking a private offer too.
+- **Stories that trade strategic ore on the Ceres board now hold the papers**
+  (`support::licence::hold_the_papers`): `in11_matter`'s purchase and `plumbing::sm5`'s sale.
+  `coop`'s two port-trade frame stories pick a live ask other than strategic ore.
 - Re-run beside it:
   - `mush-market` lib;
   - `domain_economy` `ex1b_venue::`, `held_lots_48e::`, `ex4_charges::` and `lw2_offense_record::`;
