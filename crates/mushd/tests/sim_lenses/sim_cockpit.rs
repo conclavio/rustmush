@@ -941,14 +941,14 @@ async fn cockpit_ticket_recovers_the_held_seat_and_paints_a_new_authoritative_fr
     let server = boot("cockpit-ticket-held", Duration::from_secs(60)).await;
     let (_gm, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
-    let (_bo, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
-    let (original, mut ada) = CockpitLink::open(server.addr, "issue").await;
-    ada.expect("Connected as Ada").await;
-    take_off(&mut ada, &mut bo).await;
     let red = dbref_of(
         &ask(&mut god, "@find Red Tank 1", "END OF LIST").await,
         RED_TANK,
     );
+    let (_bo, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (original, mut ada) = CockpitLink::open(server.addr, "issue").await;
+    ada.expect("Connected as Ada").await;
+    take_off(&mut ada, &mut bo).await;
     let callsign = support::drawn_callsigns(&server.store, 1).await[&red].clone();
     let session = server
         .sessions
