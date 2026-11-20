@@ -782,7 +782,81 @@ Not built.
 
 ## LW.5
 
-Not built.
+**Survey** (at `563a24b6a`, #716's head with main merged; CR #711 in main):
+- **The seizure** (CR) took the hold's unheld strategic-ore lots whole (`consume_products`) and
+  the pool past a haul's hold (`InventoryFamilies::seize`), and credited nobody.
+- **The census** (`port/census.rs`) scans every pool and lot of a chain good. A seizure that
+  destroys ore therefore lowers `pools` or `lots`, and `balance` moves. Its `seized` term is fed
+  only by an in-flight burn's receipt (`seized_t`), which nothing sets today.
+- **The payee.** The picket's fine is paid to the Freeport Registry, the licence issuer
+  (`resolve_registry_principal_and_account`). The Registry is an organization at Ceres with an
+  account but no vendor row, so it has no storefront or vault. Stickney's authority,
+  `stickney_yards`, is a vendor.
+- **The market** lists only for a registered vendor (`list_goods`). `register_vendor` works at
+  runtime, one vendor per organization. A `Supply::Stock` ask draws from the vendor's vault, and
+  `restock_ask` raises a standing one. The stock clerk lists only content's `asks`, so an
+  authority missing from content needs its own listing call.
+
+**Built:**
+1. **`InventoryFamilies::seize(…, into)`.** With a destination, the taken units are credited to
+   that endpoint's pool (made when absent), and their lineage is carried as `transfer` carries it.
+   It is still one write of each pair.
+2. **`crate::port::seized`:**
+   - `seizing_authority(w)` is the one payee lookup: the Freeport Registry at the licence port,
+     today. KC.2 re-points it at the Republic customs office after the flip (Q-50-14).
+   - `ensure_vault(ctx, &authority)` uses the authority's vendor vault when it has one. Otherwise
+     it makes an organization-owned vault (a container in LIMBO) and registers the authority as
+     the port's market vendor. It runs at runtime, so there is no lane change.
+   - `offer(ctx, &authority, vault, good, units)` raises a standing ask from the vault, or lists
+     one ask of the whole pool. It posts as the port's stock clerk, at `SEIZED_PRICE_PERMILLE`
+     (750, provisional) of the good's reference (`price_minor`).
+   - The new vendor's vault gives the port's clerk its `vault.withdraw` grant, as the content
+     applier gives every vendor.
+   - `sells_at(w, venue, org)`: the venue gate's `port_seller` admits the authority at its port,
+     so a hull's hold may take delivery of seized goods as it does from the port's counters.
+3. **Customs:**
+   - The filing makes the authority's vault and carries it on the ruling as
+     `PendingCustomsRuling.into`.
+   - The prepare relocates the hold's lots there and seizes the pool into it, in the ruling's
+     transaction. The haul's hold release and its ledger failure from CR are unchanged.
+   - When the ruling lands, the space tick offers the ore.
+   - With no authority, the old destroy path is kept as a logged fallback.
+
+**Tests:**
+- `mush-inventory` `pool::seizure::tests::…` adds a seizure into a vault: the taken units land
+  there, free.
+- `domain_world` `voyage::lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port`:
+  - An indigent pilot's 51 t is seized at the picket.
+  - The census `balance` is the same before and after, and `seized` is 0.
+  - Her hold reads 0 and the Registry's vault 51.
+  - A Ceres ask of 51 t stands at three quarters of the live reference (600 cr a tonne today).
+  - A trader at Ceres buys a tonne. It moves from the vault to their hold, and the census still
+    balances.
+  - Mutation-checked: the seizure without its destination (the census loses 51,000 kg), and the
+    offer of no units (no ask). Each fails the story.
+- `voyage::cr_the_picket_reads_ore_held_as_a_lot…` now finds the lot in the authority's vault.
+- Re-run: `voyage::cr_*`, `sfr26c`, `sfr12`, `sfr6`; `domain_economy` `mill::sm12a_only_the_clerk…`
+  (its doc notes the transfer), `ex6_haul::` and `lw2_offense_record::`.
+
+**Divergences:**
+- **The authority's vault is made at runtime**, with the authority registered as its port's
+  market vendor on first use. This avoids a lane bump. Its container is a Thing in LIMBO, not a
+  storefront in a port room.
+- **The offer is posted when the ruling lands**, not by the stock clerk's daily walk, which reads
+  only content's asks. A refused offer is logged, and the ore waits for the next seizure's offer.
+- **The price is provisional:** three quarters of the good's live reference
+  (`good_reference_minor`, as a haul's declared value reads it), 600 cr a tonne of strategic ore
+  today.
+- **A sale pays the authority's own account**, the Registry's, through the market's vendor seam.
+  No share goes to a polity treasury; no polity has one yet (KC.2).
+
+**Not built:**
+- **The Republic customs office as payee after the flip.** KC.2 adds the office and re-points
+  `seizing_authority`.
+- **An authority that is already a vendor** (Stickney Yards, if a seizure is ever enforced there)
+  takes seized goods into its storefront. No story covers that path: today's only seizure is the
+  picket's, enforced by the Registry at Ceres.
+- **No lane bump.**
 
 ## OP.0
 
@@ -1019,7 +1093,106 @@ port.
 
 ## OP.2
 
-Not built.
+The scheduled tick as a typed cause, the Concession Review and Hold the Concession, and the hull's
+flag (Q-50-20, Q-50-61; Q-50-51; doc 11 §6). Stacked on OP.1. **No lane bump.**
+
+**Survey.** At OP.1's head:
+- Neither Isidis front existed: no code or content named the Concession Review or Hold the
+  Concession.
+- The scheduled tick was a cause deferred since M25. No front moved on IC time.
+- No hull carried a flag.
+- KC.1's `open_faction_front` / `FrontSpec` and KC.0a's `advance_clock_by_cause` are the public
+  seams, so mush-faction needs no change.
+- A clock keeps the cause ids that moved it (`Clock::causes`, at most 64), persisted with the
+  clock.
+- A front records no opening time, and canon can be read back only from its open tail
+  (`records_for_source`).
+- The picket's seizure ruling lands in `space::picket::record_customs_seizure`, whose canon line
+  already carries the cause id `space.picket.seize/<hull>/<IC second>`.
+- A Co-op pool hull is titled at boot to the Co-op Trust, an org tagged `freeport`
+  (`port::hull`); the title is on the economy's asset record (`house_sweep::title_of`).
+
+**Built** (`crates/tacsim/src/concession.rs`).
+- **Both fronts at world start.** `seed_isidis_fronts` runs from the regions applier after
+  Customs Assertion, when the lane has the `isidis` row. It is idempotent.
+  - **The Concession Review**, on the Republic's board:
+    - clock "Assembly votes & seized Freeport haulers", six segments;
+    - it opens at one, and the seeding month's Assembly vote takes it to **two of six** in the same
+      apply;
+    - no control flip: the fill is the Republic's decision, which the declaring arm acts on
+      (OP.5), and the flip is the operation's;
+    - consequence `CONCESSION_REVIEW_CONSEQUENCE`.
+  - **Hold the Concession**, on the Freeport's board:
+    - clock "Reinforcements, stockpiles & haulers through the pickets", six segments, opening at
+      **two**;
+    - no flip, and nothing moves it yet.
+- **The scheduled tick, a typed cause:** `tacsim.assembly`, coarse, every 60 s.
+  - Each fire, `assembly_votes` moves the Review once for each whole IC month (`IC_MONTH_S`,
+    30 IC days) since its anchor that the clock has not counted.
+  - Each vote goes through `advance_clock_by_cause`, cause id `assembly.vote/<IC month index>`.
+  - The anchor is the seeding month's vote, the least `assembly.vote/` cause on the clock. The
+    clock's persisted cause list is the memory, so the tick keeps no state of its own.
+  - A restart, a missed fire or a paused world moves it neither more nor less; a missed month
+    catches up on the next fire.
+  - It stops at the fill.
+- **A seized Freeport-flagged hauler:** `record_flagged_seizure(ctx, hull, source)`, called by
+  `record_customs_seizure` after Customs Assertion's line, with the same `source` as cause id.
+  - A hull whose flag is the Freeport's moves the Review one segment, a retry none.
+  - Any other hull moves nothing.
+  - The picket's change is one `let` and one call.
+- **The flag (Q-50-61):** `hull_flag(w, hull)` is the polity of the organization that holds the
+  hull's title, from the lane's org table (`polity_of_org`). A personally titled or untitled
+  hull flies none.
+
+**Tests.**
+- **The story** is `domain_world::polities::op2_the_concession_review_moves_by_the_assembly_and_by_a_flagged_seizure`,
+  on a fresh production world first booted at IC month 5, so a count from month zero cannot pass
+  for one from the seeding month.
+  - Both fronts are on their boards at 2 of 6 with no flip, both on `+clocks`, and the anchor is
+    the seeding month's vote.
+  - The same month votes nothing. A month later the tick votes once, and a second read that
+    month votes nothing.
+  - A Co-op pool hull flies the Freeport's flag; an untitled object flies none.
+  - A seizure on the pool hull moves the Review. A retried cause, an unflagged hull and a hull
+    titled to Stickney Yards (Republic-flagged) do not.
+  - Two more months fill it: the consequence is recorded and the front resolves. Hold stays at
+    2, and nothing moves the Review after.
+- **Mutations**, each caught by the story, each restored from a saved copy and compared byte for
+  byte:
+  - no seeding vote (caught at "two of six");
+  - the tick counting from month zero, not the anchor (caught at the first month's count);
+  - any flag moving the Review (caught at the Republic-flagged hull);
+  - the tick unregistered (caught at "the monthly vote, on the tick").
+- **Run on conclav.dev, green:**
+  - all of tacsim (4,990 tests; the one failure in that run was this story's own `+clocks`
+    line, since fixed, and the story and polities binary pass);
+  - mush-server `split_boundary` (227) and mush-contract-tests (208);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim and mush-server, all targets;
+  - rustdoc `-D warnings` in both modes.
+
+**Divergences.**
+- **The Review opens at one and votes to two at seeding.** The seed's own vote is the anchor the
+  monthly tick counts from. Doc 11's world-start vote ("late 2349 the Assembly votes to review")
+  is that vote.
+- **A month is 30 IC days** on the world's IC clock, counted from the seeding month. A kept world
+  that takes the lane late is anchored where it takes it.
+- **Neither front flips control.** Doc 11 has the Review's fill declare an operation (OP.5),
+  whose resolution flips administration (Q-50-28); Hold's consequence is a statement.
+- **Hold the Concession has no cause in this unit.** Its doc 11 causes are the stockpile at
+  threshold (OP.4), Meridiani reinforcements (Meridiani is no lane organization) and a hauler
+  that runs the pickets, which with Q-50-25's losses is OP.3's to wire.
+- **The flag reads the title only.** A Co-op charter leaves the title with the Co-op Trust, so
+  "or its charter" adds nothing for any hull the game makes today.
+- **Only a seizure ruling moves the Review**, not a fine or a run (Q-50-20 as corrected).
+- **The code is its own module** (`tacsim::concession`), one line in the regions applier and one
+  in the picket, to keep clear of KC.2's polity and picket edits.
+
+**Not built.**
+- What moves Hold the Concession (OP.3, OP.4).
+- The declaring arm that acts on the Review's fill (OP.5).
+- A hull flying for a side by a live job (Q-50-61's second half, for OP.3 and OP.6).
+- Any player-facing line naming a hull's flag.
 
 ## OP.3
 

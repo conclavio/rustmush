@@ -34,12 +34,12 @@ use smol_str::SmolStr;
 
 use crate::recovery::{
     ApplicationState, MAX_RECOVERY_PER_FIRE, RecoveryApplication, RecoveryConfig, RecoveryGrant,
-    RecoveryRefusal, accessible_operational_assets, cooldown_until, eligible, loss_is_covered,
-    next_loaner, policy, pool_balance, pool_can_fund, provider, upkeep_template,
+    RecoveryRefusal, accessible_operational_assets, cooldown_until, eligible, next_loaner, policy,
+    pool_balance, pool_can_fund, provider, uncompensated_covered_wreck, upkeep_template,
 };
 use crate::render::is_staff;
 use crate::store::{
-    CampaignStore, put_recovery_application, put_recovery_grant, put_recovery_queue,
+    CampaignStore, persist_meta, put_recovery_application, put_recovery_grant, put_recovery_queue,
 };
 
 /// What a disabled provider answers. The verb still registers (E5c deviation 1): a
@@ -374,11 +374,33 @@ fn recovery_return(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(lessor) = provider(ctx.w, &cfg) else {
         return Err(CmdError::msg(NOT_ENABLED));
     };
+    let cid = ContractId(grant.contract());
+    let stipend_was_posted = grant.stipend_posted() || stipend_already_posted(ctx.w, holder, cid);
+    if stipend_was_posted
+        && cfg.upkeep_per_period > 0
+        && !upkeep_has_settled(ctx.w, cid)
+        && let Err(why) = clawback_stipend(ctx, &cfg, holder, cid, PrincipalId::Object(ctx.actor))
+    {
+        if is_staff(ctx.w, ctx.actor) {
+            info(
+                ctx,
+                format!(
+                    "[staff] stipend clawback could not settle ({why}); unwinding lease anyway."
+                ),
+            );
+        } else {
+            return Err(CmdError::msg(
+                "Your outfitting stipend has not yet been covered by upkeep and could not be \
+                 returned to the recovery pool; keep the stipend funds in your account to return \
+                 early.",
+            ));
+        }
+    }
     let key = LeaseKey {
         lessor,
         premises: grant.loaner(),
     };
-    match mush_economy::end_lease(ctx, ContractId(grant.contract()), &key) {
+    match mush_economy::end_lease(ctx, cid, &key) {
         Ok(LeaseEnd::Ended | LeaseEnd::AlreadyEnded) => {}
         Ok(LeaseEnd::Retrying) => {
             return Err(CmdError::msg(
@@ -507,8 +529,9 @@ pub(crate) fn try_grant(
             return GrantOutcome::Ineligible(RecoveryRefusal::LiveLease);
         }
         // A lease already stands for this applicant. Reconcile the mirror onto it
-        // rather than leasing a second hull: the stipend re-posts under the SAME
-        // contract-scoped key and answers `AlreadyPosted` with no second effect.
+        // rather than leasing a second hull. Only disburse the stipend if the lease
+        // is already `Active` (accepted by the applicant); an `Offered` lease waits
+        // for `@contract/accept` before any stipend moves.
         let tier = ctx
             .w
             .module_state::<CampaignStore>()
@@ -518,15 +541,31 @@ pub(crate) fn try_grant(
                 |app| SmolStr::new(app.tier()),
             );
         let granted_at = grant.as_ref().map_or(now, RecoveryGrant::granted_at);
-        // E7r2 P0b: on the RESUME path the marker is re-read from the record exactly
-        // as `granted_at` is, and re-derived only when there is no record to read. The
-        // predicate is over live world state, so a resume after the wreck was salvaged
-        // would otherwise answer differently from the grant it is resuming — and the
-        // waiver would silently disappear from a lease already in force.
-        let loss_covered = grant.as_ref().map_or_else(
-            || loss_is_covered(ctx.w, applicant),
-            RecoveryGrant::loss_covered,
-        );
+        let prior_wreck = grant.as_ref().and_then(RecoveryGrant::compensated_wreck);
+        let covered_wreck = if grant.is_some() {
+            prior_wreck
+        } else {
+            uncompensated_covered_wreck(ctx.w, applicant)
+        };
+        let loss_covered = grant
+            .as_ref()
+            .map_or(covered_wreck.is_some(), RecoveryGrant::loss_covered);
+        let (prior_ended_at, prior_loss_covered) = grant.as_ref().map_or((None, false), |g| {
+            (g.prior_ended_at(), g.prior_loss_covered())
+        });
+        let contract_active = contract_is_active(ctx.w, contract);
+        let already_posted = stipend_already_posted(ctx.w, applicant, contract);
+        let mut stipend_posted =
+            already_posted || grant.as_ref().is_some_and(RecoveryGrant::stipend_posted);
+        if contract_active
+            && !stipend_posted
+            && let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(applicant))
+        {
+            if let Err(why) = post_stipend(ctx, cfg, applicant, contract, account) {
+                return GrantOutcome::ProviderExhausted(why);
+            }
+            stipend_posted = true;
+        }
         let Ok(record) = RecoveryGrant::with_cover(
             applicant,
             contract.0,
@@ -538,10 +577,15 @@ pub(crate) fn try_grant(
         ) else {
             return GrantOutcome::ApplicantBlocked("the grant record would not construct");
         };
-        if let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(applicant))
-            && let Err(why) = post_stipend(ctx, cfg, applicant, contract, account)
+        let record = record
+            .with_stipend_posted(stipend_posted)
+            .with_prior_cooldown(prior_ended_at, prior_loss_covered)
+            .with_compensated_wreck(covered_wreck);
+        if let Some(wreck) = covered_wreck
+            && let Some(store) = ctx.w.module_state_mut::<CampaignStore>()
         {
-            return GrantOutcome::ProviderExhausted(why);
+            store.record_compensated_wreck(wreck);
+            persist_meta(ctx);
         }
         record_grant(ctx, record);
         return GrantOutcome::Granted {
@@ -579,8 +623,6 @@ pub(crate) fn try_grant(
             || cfg.default_tier().cloned().unwrap_or_default(),
             |app| SmolStr::new(app.tier()),
         );
-    // The record is built from inputs that are already resolved, **before** the post,
-    // so the last fallible call really is the post and nothing after it can fail.
     let rent = upkeep_template(cfg, &lessor, &tenant, account, ctx.w.now());
     let contract = match mush_economy::offer_lease(
         ctx,
@@ -596,24 +638,31 @@ pub(crate) fn try_grant(
         Ok(contract) => contract,
         Err(_) => return GrantOutcome::ApplicantBlocked("the lease could not be offered"),
     };
-    // ---- E7r2: P0b — the insured-loss marker, written HERE and nowhere else ----
-    //
-    // `loss_is_covered` is a deterministic predicate over recorded facts — the
-    // applicant holds title to a hull whose journey reached a terminal loss state
-    // (`Failed`/`Captured`) and which is a member of a formation this world records.
-    // It is evaluated **once**, at the moment the grant is made, and frozen onto the
-    // record: the cooldown is decided by what was true when the lease was granted, not
-    // by what happens to the wreck afterwards. Nothing else in this crate ever sets it.
-    let loss_covered = loss_is_covered(ctx.w, applicant);
+    // Record which specific wreck (if any) covered this loss, so the same wreck
+    // cannot waive cooldown on a second grant (even after title transfer).
+    let covered_wreck = uncompensated_covered_wreck(ctx.w, applicant);
+    let loss_covered = covered_wreck.is_some();
+    let (prior_ended_at, prior_loss_covered) = grant
+        .as_ref()
+        .map_or((None, false), |g| (g.ended_at(), g.loss_covered()));
     let Ok(record) =
         RecoveryGrant::with_cover(applicant, contract.0, loaner, tier, now, None, loss_covered)
     else {
         return GrantOutcome::ApplicantBlocked("the grant record would not construct");
     };
-    if let Err(why) = post_stipend(ctx, cfg, applicant, contract, account) {
-        return GrantOutcome::ProviderExhausted(why);
+    // Stipend is NOT posted at offer time — it is disbursed by `disburse_accepted`
+    // only after the applicant runs `@contract/accept`. This eliminates unaccepted
+    // offer / return / expiry stipend draining.
+    let record = record
+        .with_stipend_posted(false)
+        .with_prior_cooldown(prior_ended_at, prior_loss_covered)
+        .with_compensated_wreck(covered_wreck);
+    if let Some(wreck) = covered_wreck
+        && let Some(store) = ctx.w.module_state_mut::<CampaignStore>()
+    {
+        store.record_compensated_wreck(wreck);
+        persist_meta(ctx);
     }
-    // Past the post nothing is fallible: the three writes are deferred persists.
     record_grant(ctx, record);
     GrantOutcome::Granted {
         contract: contract.0,
@@ -716,6 +765,159 @@ pub fn grant_key(applicant: ObjId, contract: ContractId) -> IdempotencyKey {
     )
 }
 
+#[must_use]
+fn clawback_key(applicant: ObjId, contract: ContractId) -> IdempotencyKey {
+    IdempotencyKey::new(
+        SmolStr::new_static("recovery.clawback"),
+        SmolStr::new(format!("{}/{}", applicant.0, contract.0)),
+    )
+}
+
+fn contract_is_active(world: &mush_core::World, contract: ContractId) -> bool {
+    world
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().contract(contract))
+        .is_some_and(|c| c.state == mush_economy::ContractState::Active)
+}
+
+fn stipend_already_posted(
+    world: &mush_core::World,
+    applicant: ObjId,
+    contract: ContractId,
+) -> bool {
+    let key = grant_key(applicant, contract);
+    world
+        .module_state::<EconomyStore>()
+        .is_some_and(|store| store.snapshot().idempotency(&key).is_some())
+}
+
+fn upkeep_has_settled(world: &mush_core::World, contract: ContractId) -> bool {
+    world.module_state::<EconomyStore>().is_some_and(|store| {
+        store.snapshot().obligations().any(|o| {
+            o.cause == mush_economy::ObligationCause::Contract(contract) && o.settled_total > 0
+        })
+    })
+}
+
+/// Claw back the outfitting stipend into `cfg.pool_account` when an accepted
+/// recovery lease is returned before any upkeep period has settled.
+fn clawback_stipend(
+    ctx: &mut Ctx<'_>,
+    cfg: &RecoveryConfig,
+    holder: ObjId,
+    contract: ContractId,
+    initiator: PrincipalId,
+) -> Result<(), &'static str> {
+    if cfg.upkeep_per_period <= 0 {
+        return Ok(());
+    }
+    let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(holder)) else {
+        return Err("the applicant holds no account in the pool's instrument");
+    };
+    let amount = Amount::from_minor(cfg.upkeep_per_period);
+    let Some(debit) = amount.checked_neg() else {
+        return Err("the stipend does not fit an Amount");
+    };
+    let plan = EconomyPlan {
+        description: format!("recovery stipend clawback for #{}", holder.0),
+        ..EconomyPlan::new(
+            clawback_key(holder, contract),
+            initiator,
+            EconomicCause::Internal {
+                kind: SmolStr::new_static("campaign.recovery.clawback"),
+                id: u64::from(holder.0),
+            },
+            vec![
+                RequestedLine {
+                    account,
+                    delta: debit,
+                    memo: SmolStr::new_static("campaign.recovery.clawback"),
+                },
+                RequestedLine {
+                    account: cfg.pool_account,
+                    delta: amount,
+                    memo: SmolStr::new_static("campaign.recovery.clawback"),
+                },
+            ],
+        )
+    };
+    match mush_economy::post(ctx, &plan) {
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(()),
+        _ => Err("the applicant account could not return the stipend"),
+    }
+}
+
+/// Disburse the outfitting stipend for live grants whose lease contract has now
+/// reached `ContractState::Active` (i.e. after `@contract/accept`).
+fn disburse_accepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> usize {
+    if budget == 0 {
+        return 0;
+    }
+    let pending: Vec<RecoveryGrant> = {
+        let Some(store) = ctx.w.module_state::<CampaignStore>() else {
+            return 0;
+        };
+        store
+            .recovery_grants()
+            .filter(|grant| grant.is_live() && !grant.stipend_posted())
+            .filter(|grant| contract_is_active(ctx.w, ContractId(grant.contract())))
+            .take(budget)
+            .cloned()
+            .collect()
+    };
+    let mut worked = 0usize;
+    for grant in pending {
+        let cid = ContractId(grant.contract());
+        if cfg.upkeep_per_period <= 0 || stipend_already_posted(ctx.w, grant.applicant(), cid) {
+            put_recovery_grant(ctx, grant.with_stipend_posted(true));
+            worked = worked.saturating_add(1);
+            continue;
+        }
+        if !pool_can_fund(ctx.w, cfg) {
+            crate::settle::page(
+                ctx,
+                SmolStr::new_static("recovery:provider"),
+                "the recovery provider cannot disburse an accepted stipend: its budget is at its floor",
+                "fund the recovery pool account; the stipend will disburse on the next tick",
+            );
+            break;
+        }
+        let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(grant.applicant()))
+        else {
+            let instrument = pool_instrument(ctx, cfg);
+            crate::settle::page(
+                ctx,
+                SmolStr::new(format!("recovery:applicant:{}", grant.applicant().0)),
+                &format!(
+                    "recovery applicant #{}: cannot disburse accepted stipend (no active account)",
+                    grant.applicant().0
+                ),
+                &format!(
+                    "`@account/open #{}={instrument}` opens the account a stipend can be paid into",
+                    grant.applicant().0
+                ),
+            );
+            continue;
+        };
+        match post_stipend(ctx, cfg, grant.applicant(), cid, account) {
+            Ok(()) => {
+                put_recovery_grant(ctx, grant.with_stipend_posted(true));
+                worked = worked.saturating_add(1);
+            }
+            Err(why) => {
+                crate::settle::page(
+                    ctx,
+                    SmolStr::new_static("recovery:provider"),
+                    &format!("the recovery provider cannot disburse an accepted stipend: {why}"),
+                    "fund the recovery pool account; the stipend will disburse on the next tick",
+                );
+                break;
+            }
+        }
+    }
+    worked
+}
+
 /// The applicant's own account in the pool's instrument.
 fn applicant_account(
     ctx: &Ctx<'_>,
@@ -758,14 +960,16 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     // is empty, because the applicant it frees is precisely one who has already LEFT
     // the queue.
     let expired = expire_unaccepted(ctx, &cfg, budget);
+    let disbursed = disburse_accepted(ctx, &cfg, budget.saturating_sub(expired));
+    let done = expired.saturating_add(disbursed);
     let (waiting, cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
-            return expired;
+            return done;
         };
         (store.recovery_queue().waiting(), store.recovery_cursor)
     };
     if waiting.is_empty() {
-        return expired;
+        return done;
     }
     // ---- C10/B3 (independent verify fold; owner decision F5(a)): the rotation ----
     //
@@ -793,7 +997,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
         .collect();
 
     let now = ctx.w.world_ic_now().at;
-    let mut visited = expired;
+    let mut visited = done;
     let mut last = None;
     for applicant in order {
         if visited >= budget {
@@ -949,28 +1153,56 @@ fn expire_unaccepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> 
             // sees the same grant and tries again. Nothing is written here on either.
             _ => continue,
         }
-        // **Forgotten, not ended.** An offer nobody took is not a loan that finished,
-        // so it must not leave an `ended_at` behind — `cooldown_until` would then
-        // charge the applicant a fourteen-day cooldown for a hull they never had, and
-        // the next fire would refuse them `Cooldown` and drop them out of the queue
-        // as ineligible. The record is deleted with the lease it described.
-        crate::store::del_recovery_grant(ctx, grant.applicant());
-        // Their application reopens and they rejoin the queue at the back, so an
-        // expiry costs them their turn and not their access.
-        let queue = ctx
-            .w
-            .module_state::<CampaignStore>()
-            .and_then(|store| store.recovery_queue().joined(grant.applicant()).ok());
-        if let Some(queue) = queue {
-            put_recovery_queue(ctx, queue);
-        }
-        if let Some(app) = ctx
-            .w
-            .module_state::<CampaignStore>()
-            .and_then(|store| store.recovery_application(grant.applicant()))
-            .cloned()
-        {
-            put_recovery_application(ctx, app.with_state(ApplicationState::Queued));
+        // Do NOT wipe an active cooldown or re-queue automatically on expiry.
+        // If a stipend had somehow been posted on a legacy pre-fix offer, attempt
+        // best-effort clawback and record an ended grant so cooldown applies.
+        // If a prior ended grant still has an active cooldown at `now`, restore it
+        // rather than deleting the record. Otherwise forget the unaccepted offer so
+        // first-time unaccepted offers do not impose a bogus cooldown.
+        let cid = ContractId(grant.contract());
+        let stipend_was_posted =
+            grant.stipend_posted() || stipend_already_posted(ctx.w, grant.applicant(), cid);
+        if stipend_was_posted {
+            let _ = clawback_stipend(
+                ctx,
+                cfg,
+                grant.applicant(),
+                cid,
+                PrincipalId::Object(grant.applicant()),
+            );
+            close_grant(ctx, &grant, now);
+        } else {
+            let voided = mush_sim::relay::cover_voided(ctx.w, grant.applicant());
+            let prior_active = grant.prior_ended_at().filter(|prior_ended| {
+                (!grant.prior_loss_covered() || voided)
+                    && now < prior_ended.saturating_add(cfg.cooldown_secs)
+            });
+            if let Some(prior_ended) = prior_active
+                && let Ok(restored) = RecoveryGrant::with_cover(
+                    grant.applicant(),
+                    grant.contract(),
+                    grant.loaner(),
+                    SmolStr::new(grant.tier()),
+                    grant.granted_at(),
+                    Some(prior_ended),
+                    grant.prior_loss_covered(),
+                )
+            {
+                put_recovery_grant(
+                    ctx,
+                    restored.with_compensated_wreck(grant.compensated_wreck()),
+                );
+            } else {
+                crate::store::del_recovery_grant(ctx, grant.applicant());
+            }
+            if let Some(app) = ctx
+                .w
+                .module_state::<CampaignStore>()
+                .and_then(|store| store.recovery_application(grant.applicant()))
+                .cloned()
+            {
+                put_recovery_application(ctx, app.with_state(ApplicationState::Closed));
+            }
         }
         worked = worked.saturating_add(1);
     }

@@ -152,12 +152,51 @@ impl YardCommission {
                 "a commission names its mark and at most {MAX_COMMISSION_PARTS} parts"
             ));
         }
+        if self.work_order != 0 && self.kit.0 == 0 {
+            return Err("a yard commission names its hull kit lot".into());
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for lot in &self.parts {
+            if (self.work_order != 0 && *lot == self.kit) || !seen.insert(*lot) {
+                return Err("a commission names distinct part lots".into());
+            }
+        }
         if self
             .row
             .as_ref()
             .is_some_and(|row| matches!(row, OwnedBody::Ship(_)) != self.ship)
         {
             return Err("a commission's row is the kind it builds".into());
+        }
+        Ok(())
+    }
+
+    /// **Verify that a yard commission carries the design's required part count** (CRIT-20):
+    /// seeded hulls (`work_order == 0`) have no kit or parts; every yard-built hull must consume
+    /// every part slot named by `crate::port::bill::design_bill`.
+    ///
+    /// # Errors
+    ///
+    /// Missing design bill or part count mismatch.
+    pub fn check_parts(&self, w: &World) -> Result<(), String> {
+        if self.work_order == 0 {
+            return Ok(());
+        }
+        if self.kit.0 == 0 {
+            return Err("a yard commission names its hull kit lot".into());
+        }
+        let store = w
+            .module_state::<TacsimStore>()
+            .ok_or("the yard's definitions are unavailable")?;
+        let goods = store.goods().ok_or("the goods table is unavailable")?;
+        let bill = crate::port::bill::design_bill(store.definitions(), goods, &self.design)?;
+        let required: u64 = bill.part_lines().values().copied().sum();
+        let actual = u64::try_from(self.parts.len()).unwrap_or(u64::MAX);
+        if actual != required {
+            return Err(format!(
+                "a commission for {} consumes {required} required part(s), not {actual}",
+                self.design
+            ));
         }
         Ok(())
     }
@@ -506,7 +545,11 @@ fn step(ctx: &mut Ctx<'_>, record: &mut YardCommission) -> Result<(), String> {
     let yard = yard_of(ctx.w, &record.home)?;
     match record.step {
         Step::Consuming | Step::Done => Ok(()),
-        Step::Laying => lay(ctx, &id, record, &yard),
+        Step::Laying => {
+            record.check()?;
+            record.check_parts(ctx.w)?;
+            lay(ctx, &id, record, &yard)
+        }
         Step::Placed => {
             let obj = record.object().ok_or("the commission has no hull yet")?;
             if !record.ship {
@@ -891,5 +934,34 @@ mod tests {
             records.push(record(7, n));
         }
         assert_eq!(yard_index(&records), 82);
+    }
+
+    /// **CRIT-20**: `YardCommission::check` rejects missing kit lots, duplicate part lots, and
+    /// aliasing the kit lot in `parts` for yard work-order commissions while still allowing seeded
+    /// hulls (`work_order == 0`).
+    #[test]
+    fn crit20_commission_check_rejects_missing_kit_and_duplicate_parts() {
+        let seeded = match record(0, HOUSE_POOL_BASE) {
+            Held::Present(r) => *r,
+            Held::Unreadable => panic!("present"),
+        };
+        assert!(seeded.check().is_ok());
+
+        let mut built = match record(7, 1) {
+            Held::Present(r) => *r,
+            Held::Unreadable => panic!("present"),
+        };
+        assert!(built.check().is_err(), "kit=0 rejected for work_order!=0");
+        built.kit = LotId(10);
+        built.parts = vec![LotId(11), LotId(12)];
+        assert!(built.check().is_ok());
+
+        let mut dup = built.clone();
+        dup.parts = vec![LotId(11), LotId(11)];
+        assert!(dup.check().is_err(), "duplicate part lots rejected");
+
+        let mut alias = built;
+        alias.parts = vec![LotId(10), LotId(11)];
+        assert!(alias.check().is_err(), "kit aliased as part rejected");
     }
 }

@@ -2316,3 +2316,206 @@ fn a_switch_alias_reaches_the_handler_as_its_canonical_switch() {
         "{header}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Tier 1C security regressions: CORE-M1, CORE-M3, CORE-M4
+// ---------------------------------------------------------------------
+
+#[test]
+fn core_m1_non_wizard_attr_count_and_byte_caps_enforced() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    let bag = g.w.create(ObjKind::Thing, "bag", ann, Some(LIMBO)).unwrap();
+
+    // Fill up to the per-object attribute count cap.
+    for i in 0..mush_core::attr::MAX_ATTRS_PER_OBJECT {
+        let out = g.run(ann, &format!("@set bag/k{i}=v"));
+        assert_error_contains(&out, ann, &format!("k{i} - Set."));
+    }
+    // One more distinct attribute fails for a mortal.
+    let out = g.run(ann, "@set bag/overflow=v");
+    assert_error_contains(&out, ann, "Too many attributes");
+    assert!(g.w.get(bag).unwrap().attrs.get("overflow").is_none());
+
+    // Updating an existing attribute at the count cap still works.
+    let out = g.run(ann, "@set bag/k0=updated");
+    assert_error_contains(&out, ann, "k0 - Set.");
+
+    // Clearing an attribute frees a slot.
+    let out = g.run(ann, "@set bag/k0=");
+    assert_error_contains(&out, ann, "k0 - Cleared.");
+    let out = g.run(ann, "@set bag/overflow=v");
+    assert_error_contains(&out, ann, "overflow - Set.");
+
+    // Wizards bypass the non-Wizard quota.
+    let out = g.run(GOD, "@set bag/wiz_extra=ok");
+    assert_error_contains(&out, GOD, "wiz_extra - Set.");
+
+    // Byte cap enforced on both `@set` and `@desc` for non-Wizards.
+    let chest =
+        g.w.create(ObjKind::Thing, "chest", ann, Some(LIMBO))
+            .unwrap();
+    let chunk = "x".repeat(64 * 1024);
+    for i in 0..3 {
+        let out = g.run(ann, &format!("@set chest/b{i}={chunk}"));
+        assert_error_contains(&out, ann, &format!("b{i} - Set."));
+    }
+    let big = "y".repeat(70 * 1024);
+    let out = g.run(ann, &format!("@set chest/b3={big}"));
+    assert_error_contains(&out, ann, "Attribute storage limit exceeded");
+    assert!(g.w.get(chest).unwrap().attrs.get("b3").is_none());
+
+    let out = g.run(ann, &format!("@desc chest={big}"));
+    assert_error_contains(&out, ann, "Attribute storage limit exceeded");
+    assert!(g.w.get(chest).unwrap().attrs.get("desc").is_none());
+
+    // Over-long attribute name rejected for non-Wizards.
+    let long_name = "a".repeat(mush_core::attr::MAX_ATTR_NAME_BYTES + 1);
+    let out = g.run(ann, &format!("@set chest/{long_name}=v"));
+    assert_error_contains(&out, ann, "Attribute name is too long");
+}
+
+#[test]
+fn core_m3_name_validates_player_renames_aliases_and_caps_alias_count() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.w.add_alias(ann, "Annie").unwrap();
+
+    // Reserved names rejected as primary name and as trailing aliases (atomically).
+    for bad in [
+        "@name me=admin",
+        "@name me=STAFF",
+        "@name me=wizard",
+        "@name me=system",
+        "@name me=Anna;admin",
+        "@name me=Anna;staff",
+        "@name me=Anna;me",
+    ] {
+        let out = g.run(ann, bad);
+        assert_error_contains(&out, ann, "reserved");
+        assert_eq!(g.w.get(ann).unwrap().name, "Ann", "atomic refusal: {bad}");
+    }
+
+    // Forbidden characters (`=`, control chars, BiDi, leading ref/command prefixes).
+    for bad in [
+        "@name me=Ann=Evil",
+        "@name me=Ann\x07",
+        "@name me=Ann\nFake",
+        "@name me=Ann\u{202E}rev",
+        "@name me=#1",
+        "@name me=*Bob",
+        "@name me=@wall",
+        "@name me=Anna;Bad=Alias",
+    ] {
+        let out = g.run(ann, bad);
+        assert!(
+            !actor_texts(&out, ann).iter().any(|t| t == "Name set."),
+            "must reject `{bad:?}`: {:?}",
+            actor_texts(&out, ann)
+        );
+        assert_eq!(g.w.get(ann).unwrap().name, "Ann");
+    }
+
+    // Excessive length rejected.
+    let long = "A".repeat(mush_core::world::MAX_PLAYER_NAME_CHARS + 1);
+    let out = g.run(ann, &format!("@name me={long}"));
+    assert_error_contains(&out, ann, "too long");
+    assert_eq!(g.w.get(ann).unwrap().name, "Ann");
+
+    // Alias count cap (<= 10) enforced atomically; 10 aliases succeed.
+    let eleven = (0..11)
+        .map(|i| format!("al{i:02}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let out = g.run(ann, &format!("@name me=Anna;{eleven}"));
+    assert_error_contains(&out, ann, "Too many aliases");
+    assert_eq!(g.w.get(ann).unwrap().name, "Ann", "no partial rename");
+
+    let ten = (0..10)
+        .map(|i| format!("al{i:02}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let out = g.run(ann, &format!("@name me=Anna;{ten}"));
+    assert_error_contains(&out, ann, "Name set.");
+    assert_eq!(g.w.get(ann).unwrap().aliases.len(), 10);
+}
+
+#[test]
+fn core_m4_examine_gates_distant_and_dark_objects_for_non_controllers() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+    let vault_room = g.w.create(ObjKind::Room, "Vault", GOD, None).unwrap();
+    let distant_relic =
+        g.w.create(ObjKind::Thing, "relic", GOD, Some(vault_room))
+            .unwrap();
+    let dark_thing =
+        g.w.create(ObjKind::Thing, "shade", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(dark_thing, Flags::DARK, true).unwrap();
+    g.w.set_flag(bob, Flags::DARK, true).unwrap();
+
+    // Distant room / object / player via #dbref or *name must answer NoMatch
+    // (no existence/owner oracle).
+    for cmd in [
+        format!("examine #{}", vault_room.0),
+        format!("examine #{}", distant_relic.0),
+    ] {
+        let out = g.run(ann, &cmd);
+        assert_error_contains(&out, ann, "I don't see that here.");
+        let all = actor_texts(&out, ann).join("\n");
+        assert!(!all.contains("is owned by"), "must not leak owner: {all}");
+    }
+
+    // Same-room DARK object and DARK player via name, #dbref, or *name answer NoMatch.
+    for cmd in [
+        "examine shade".to_string(),
+        format!("examine #{}", dark_thing.0),
+        "examine Bob".to_string(),
+        "examine *Bob".to_string(),
+        format!("examine #{}", bob.0),
+    ] {
+        let out = g.run(ann, &cmd);
+        assert_error_contains(&out, ann, "I don't see that here.");
+        let all = actor_texts(&out, ann).join("\n");
+        assert!(!all.contains("is owned by"), "must not leak DARK: {all}");
+    }
+
+    // Distant non-DARK player via *name also answers NoMatch.
+    g.w.set_flag(bob, Flags::DARK, false).unwrap();
+    g.w.move_to(bob, vault_room).unwrap();
+    let out = g.run(ann, "examine *Bob");
+    assert_error_contains(&out, ann, "I don't see that here.");
+
+    // Same-room non-DARK object keeps public examine working.
+    let orb = g.w.create(ObjKind::Thing, "orb", GOD, Some(LIMBO)).unwrap();
+    let out = g.run(ann, &format!("examine #{}", orb.0));
+    assert_error_contains(&out, ann, "orb(#");
+    assert_error_contains(&out, ann, "is owned by God(#1).");
+
+    // Item carried in another same-room player's pocket is private (matching
+    // `look`), so non-controllers cannot probe it by `#dbref` until dropped.
+    g.w.move_to(bob, LIMBO).unwrap();
+    let pocket_locket =
+        g.w.create(ObjKind::Thing, "locket", bob, Some(bob))
+            .unwrap();
+    let out = g.run(ann, &format!("examine #{}", pocket_locket.0));
+    assert_error_contains(&out, ann, "I don't see that here.");
+    let all = actor_texts(&out, ann).join("\n");
+    assert!(!all.contains("is owned by"), "must not leak carry: {all}");
+    g.w.move_to(pocket_locket, LIMBO).unwrap();
+    let out = g.run(ann, &format!("examine #{}", pocket_locket.0));
+    assert_error_contains(&out, ann, "is owned by Bob(#");
+
+    // In a DARK room Ann does not control, another occupant is hidden.
+    g.w.set_flag(LIMBO, Flags::DARK, true).unwrap();
+    let out = g.run(ann, &format!("examine #{}", orb.0));
+    assert_error_contains(&out, ann, "I don't see that here.");
+    // Standing in the DARK room, Ann can still publicly examine `here` itself.
+    let out = g.run(ann, "examine here");
+    assert_error_contains(&out, ann, "is owned by God(#1).");
+
+    // Staff / SEE_HIDDEN and controllers retain access.
+    g.w.get_mut(ann).unwrap().powers = Powers::SEE_HIDDEN;
+    let out = g.run(ann, &format!("examine #{}", dark_thing.0));
+    assert_error_contains(&out, ann, "is owned by God(#1).");
+}

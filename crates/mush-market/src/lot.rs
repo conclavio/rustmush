@@ -369,6 +369,246 @@ fn prepare_wall(parameters: &serde_json::Map<String, Value>) -> Result<i64, Acti
 /// it, and the consume entries take the same ceiling.
 pub const MAX_PAID_ENTRIES_PER_KIND: usize = MAX_OPEN_QUOTES_PER_BUYER;
 
+/// The most eligible reserve or release entries one offer carries (CRIT-9), keeping
+/// `fixed_parameters` well under `MAX_ACTION_PARAMETER_BYTES` even for staff holding many vaults.
+const MAX_LISTING_LEGS_PER_KIND: usize = 64;
+
+/// Server-authenticated eligible `reserve` and `release` legs for one actor, keyed by listing id.
+struct ListingLegs {
+    reserves: serde_json::Map<String, Value>,
+    releases: serde_json::Map<String, Value>,
+}
+
+/// Whether a listing's hold is currently absent in `engine.action_state()` (eligible for reserve).
+fn hold_absent_in_engine(
+    engine: &Engine,
+    families: &InventoryFamilies,
+    listing: ListingId,
+    endpoint: EndpointRef,
+    commodity: &CanonicalId,
+    exact: Option<mush_inventory::LotId>,
+) -> bool {
+    if let Some(lot) = exact {
+        return matches!(
+            engine.action_state().get(&families.lot_holds, &lot),
+            Ok(None)
+        );
+    }
+    let (Ok(reservation), Ok(key)) = (
+        listing_reservation(listing, endpoint, commodity),
+        mush_inventory::pool_key(endpoint, commodity),
+    ) else {
+        return false;
+    };
+    match engine.action_state().get(&families.books, &key) {
+        Ok(None) => true,
+        Ok(Some(book)) => !book.records().iter().any(|r| r.id() == reservation),
+        Err(_) => false,
+    }
+}
+
+/// Whether a listing's hold is currently standing in `engine.action_state()` (eligible for release).
+fn hold_present_in_engine(
+    engine: &Engine,
+    families: &InventoryFamilies,
+    listing: ListingId,
+    endpoint: EndpointRef,
+    commodity: &CanonicalId,
+    exact: Option<mush_inventory::LotId>,
+) -> bool {
+    if let Some(lot) = exact {
+        let holder = listing_holder_text(listing);
+        return matches!(
+            engine.action_state().get(&families.lot_holds, &lot),
+            Ok(Some(hold)) if hold.holder() == holder && hold.endpoint() == endpoint
+        );
+    }
+    let (Ok(reservation), Ok(key)) = (
+        listing_reservation(listing, endpoint, commodity),
+        mush_inventory::pool_key(endpoint, commodity),
+    ) else {
+        return false;
+    };
+    matches!(
+        engine.action_state().get(&families.books, &key),
+        Ok(Some(book)) if book.records().iter().any(|r| {
+            r.id() == reservation && matches!(r.state(), mush_core::ReservationState::Held)
+        })
+    )
+}
+
+/// **Build the actor's server-verified eligible `reserve` and `release` legs** (CRIT-9):
+///
+/// - `reserve`: an active (unlapsed) `Supply::Lot` listing on one of `endpoints` with no
+///   `sale_in_force` and whose hold is not yet placed;
+/// - `release`: either a withdrawn listing recorded in `MarketStore::withdrawn_holds` (no longer
+///   in `listings`), or a **lapsed** `Supply::Lot` listing on one of `endpoints`, in BOTH cases
+///   only when `!sale_in_force` and its hold currently stands. Active, unwithdrawn listings and
+///   listings with an active paid sale are never eligible for `release`.
+fn listing_legs(
+    engine: &Engine,
+    families: &InventoryFamilies,
+    endpoints: &[VaultId],
+) -> ListingLegs {
+    let mut out = ListingLegs {
+        reserves: serde_json::Map::new(),
+        releases: serde_json::Map::new(),
+    };
+    let Some(market) = engine.world.module_state::<crate::store::MarketStore>() else {
+        return out;
+    };
+    let now = engine.world.now();
+
+    // 1. Eligible reserves: active unheld lot listings on `endpoints` (recently staged first).
+    let mut reserve_candidates: Vec<(bool, &crate::record::Listing)> = market
+        .lot_listings()
+        .filter(|l| {
+            l.source
+                .lot()
+                .is_some_and(|(ep, _, _)| endpoints.contains(&ep.vault()))
+                && !crate::projection::lapsed(l.expires.at, l.expires.clock, now)
+                && !sale_in_force(&engine.world, l.id)
+        })
+        .map(|l| (market.reserve_staged.contains_key(&l.id), l))
+        .collect();
+    reserve_candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    for (_, l) in reserve_candidates {
+        if out.reserves.len() >= MAX_LISTING_LEGS_PER_KIND {
+            break;
+        }
+        let Some((endpoint, commodity, _)) = l.source.lot() else {
+            continue;
+        };
+        let exact = l.source.exact_lot();
+        if !hold_absent_in_engine(engine, families, l.id, endpoint, commodity, exact) {
+            continue;
+        }
+        out.reserves.insert(
+            l.id.0.to_string(),
+            json!({
+                "endpoint": endpoint.vault().0,
+                "commodity": commodity.as_str(),
+                "quantity": l.quantity,
+                "lot": exact.map(|id| id.to_string()),
+            }),
+        );
+    }
+
+    // 2a. Eligible releases from withdrawn listings (already deleted from `market.listings`).
+    for (id, held) in &market.withdrawn_holds {
+        if out.releases.len() >= MAX_LISTING_LEGS_PER_KIND {
+            break;
+        }
+        if !endpoints.contains(&held.endpoint.vault())
+            || market.listing(*id).is_some()
+            || sale_in_force(&engine.world, *id)
+        {
+            continue;
+        }
+        if !hold_present_in_engine(
+            engine,
+            families,
+            *id,
+            held.endpoint,
+            &held.commodity,
+            held.lot,
+        ) {
+            continue;
+        }
+        out.releases.insert(
+            id.0.to_string(),
+            json!({
+                "endpoint": held.endpoint.vault().0,
+                "commodity": held.commodity.as_str(),
+                "lot": held.lot.map(|l| l.to_string()),
+            }),
+        );
+    }
+
+    // 2b. Eligible releases from lapsed listings (never active/unwithdrawn, never under active sale).
+    let mut lapsed_candidates: Vec<(bool, &crate::record::Listing)> = market
+        .lot_listings()
+        .filter(|l| {
+            l.source
+                .lot()
+                .is_some_and(|(ep, _, _)| endpoints.contains(&ep.vault()))
+                && crate::projection::lapsed(l.expires.at, l.expires.clock, now)
+                && !sale_in_force(&engine.world, l.id)
+        })
+        .map(|l| (market.release_staged.contains_key(&l.id), l))
+        .collect();
+    lapsed_candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    for (_, l) in lapsed_candidates {
+        if out.releases.len() >= MAX_LISTING_LEGS_PER_KIND {
+            break;
+        }
+        let key = l.id.0.to_string();
+        if out.releases.contains_key(&key) {
+            continue;
+        }
+        let Some((endpoint, commodity, _)) = l.source.lot() else {
+            continue;
+        };
+        let exact = l.source.exact_lot();
+        if !hold_present_in_engine(engine, families, l.id, endpoint, commodity, exact) {
+            continue;
+        }
+        out.releases.insert(
+            key,
+            json!({
+                "endpoint": endpoint.vault().0,
+                "commodity": commodity.as_str(),
+                "lot": exact.map(|id| id.to_string()),
+            }),
+        );
+    }
+    out
+}
+
+/// Whether the submitted `reserve` matches a server-verified entry in `fixed_parameters["reserves"]`.
+fn matches_reserve(
+    parameters: &serde_json::Map<String, Value>,
+    listing: ListingId,
+    endpoint: EndpointRef,
+    commodity: &CanonicalId,
+    quantity: u64,
+    lot: Option<mush_inventory::LotId>,
+) -> bool {
+    let Some(entry) = parameters
+        .get("reserves")
+        .and_then(Value::as_object)
+        .and_then(|reserves| reserves.get(&listing.0.to_string()))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    entry.get("endpoint").and_then(Value::as_u64) == Some(endpoint.vault().0)
+        && entry.get("commodity").and_then(Value::as_str) == Some(commodity.as_str())
+        && entry.get("quantity").and_then(Value::as_u64) == Some(quantity)
+        && paid_lot_is(entry, lot)
+}
+
+/// Whether the submitted `release` matches a server-verified entry in `fixed_parameters["releases"]`.
+fn matches_release(
+    parameters: &serde_json::Map<String, Value>,
+    listing: ListingId,
+    endpoint: EndpointRef,
+    commodity: &CanonicalId,
+    lot: Option<mush_inventory::LotId>,
+) -> bool {
+    let Some(entry) = parameters
+        .get("releases")
+        .and_then(Value::as_object)
+        .and_then(|releases| releases.get(&listing.0.to_string()))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    entry.get("endpoint").and_then(Value::as_u64) == Some(endpoint.vault().0)
+        && entry.get("commodity").and_then(Value::as_str) == Some(commodity.as_str())
+        && paid_lot_is(entry, lot)
+}
+
 /// The paid legs one actor may fire right now, keyed by contract id in decimal.
 struct PaidLegs {
     entries: serde_json::Map<String, Value>,
@@ -683,29 +923,37 @@ impl ActionProvider for MarketLotProvider {
             return Ok(None);
         }
         let choices: Vec<String> = endpoints.iter().map(|id| id.0.to_string()).collect();
-        // ---- doc 18 cut IC7: the paid legs' authority sentence (L4, L12) ----
+        // ---- doc 18 cut IC7 + CRIT-9: every op is server-projected over eligible work ----
         //
-        // `consume` and `draw` are offered only over the actor's OWN paid contracts:
-        // the entries carry the terms frozen on the quote at activation, in the
-        // server-authenticated fixed parameters, and the prepare requires a match. An
-        // actor with no paid entry is offered `reserve` and `release` only, and no
-        // `contract` parameter at all.
+        // `consume`, `draw` and `deliver` are offered only over the actor's OWN paid contracts;
+        // `reserve` and `release` are offered only over server-verified eligible lot listings
+        // (active unheld listings for `reserve`; withdrawn or lapsed listings with no active sale
+        // for `release`), carried in fixed parameters and matched field-for-field in prepare.
         let paid = paid_legs(
             &engine.world,
             query.actor(),
             &endpoints,
             self.capacity.as_ref(),
         );
-        let mut ops = vec![LotOp::Reserve.word().to_owned()];
+        let listing = listing_legs(engine, &self.families, &endpoints);
+        let mut ops = Vec::new();
+        if !listing.reserves.is_empty() {
+            ops.push(LotOp::Reserve.word().to_owned());
+        }
         if paid.consume {
             ops.push(LotOp::Consume.word().to_owned());
         }
-        ops.push(LotOp::Release.word().to_owned());
+        if !listing.releases.is_empty() {
+            ops.push(LotOp::Release.word().to_owned());
+        }
         if paid.draw {
             ops.push(LotOp::Draw.word().to_owned());
         }
         if paid.deliver {
             ops.push(LotOp::Deliver.word().to_owned());
+        }
+        if ops.is_empty() {
+            return Ok(None);
         }
         let contracts: Vec<String> = paid.entries.keys().cloned().collect();
         let mut parameters = vec![
@@ -827,6 +1075,8 @@ impl ActionProvider for MarketLotProvider {
                 "now": engine.world.world_ic_now(),
                 "wall": engine.world.now(),
                 "paid": Value::Object(paid.entries),
+                "reserves": Value::Object(listing.reserves),
+                "releases": Value::Object(listing.releases),
             }),
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
                 error(
@@ -888,6 +1138,16 @@ impl ActionProvider for MarketLotProvider {
             // ---- doc 39 cut IN.2: the lot-transfer listing, one exact lot ----
             (LotOp::Reserve, Some(lot)) => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
+                if !matches_reserve(
+                    &parameters,
+                    listing,
+                    endpoint,
+                    &commodity,
+                    quantity,
+                    Some(lot),
+                ) {
+                    return Err(rejected());
+                }
                 let held = self
                     .families
                     .hold_lot(txn, endpoint, lot, &listing_holder_text(listing))
@@ -947,8 +1207,11 @@ impl ActionProvider for MarketLotProvider {
             }
             (LotOp::Release, Some(lot)) => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
+                if !matches_release(&parameters, listing, endpoint, &commodity, Some(lot)) {
+                    return Err(rejected());
+                }
                 self.families
-                    .release_lot(txn, lot, &listing_holder_text(listing))
+                    .release_lot_at(txn, endpoint, lot, &listing_holder_text(listing))
                     .map_err(|source| refuse(&source))?;
                 data.insert("endpoint".to_owned(), json!(endpoint.vault().0));
                 data.insert("lot".to_owned(), json!(lot.0));
@@ -970,6 +1233,9 @@ impl ActionProvider for MarketLotProvider {
             }
             (LotOp::Reserve, None) => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
+                if !matches_reserve(&parameters, listing, endpoint, &commodity, quantity, None) {
+                    return Err(rejected());
+                }
                 let holder = listing_holder(listing)
                     .map_err(|_| error(ActionErrorCode::Integrity, LOT_REFUSED))?;
                 // **A lot listing is backed by a lineage root, or it is not published
@@ -1080,6 +1346,9 @@ impl ActionProvider for MarketLotProvider {
             }
             (LotOp::Release, None) => {
                 let endpoint = endpoint_field(&parameters, "endpoint")?;
+                if !matches_release(&parameters, listing, endpoint, &commodity, None) {
+                    return Err(rejected());
+                }
                 let reservation = listing_reservation(listing, endpoint, &commodity)
                     .map_err(|_| error(ActionErrorCode::Integrity, LOT_REFUSED))?;
                 let record = self

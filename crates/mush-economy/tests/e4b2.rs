@@ -7867,3 +7867,238 @@ fn j2_every_contract_state_survives_a_reboot_with_an_evicted_tail() {
         }
     }
 }
+
+// ======================================================================
+// Security hardening regressions (HIGH-22)
+// ======================================================================
+
+/// HIGH-22: cancelling an unoffered draft (or an unaccepted/unescrowed offer)
+/// preserves the just-canceled contract in `ContractState::Cancelled` for
+/// immediate callers/audits while evicting excess tombstones past the per-issuer
+/// and global retention caps; `sweep::collect_garbage` clears all remaining
+/// zero-history `Cancelled` drafts (including legacy docs from prior runs).
+#[test]
+fn high22_cancel_unfunded_drafts_are_retention_capped_and_swept() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    let per_issuer_cap = mush_economy::MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER;
+    let global_cap = mush_economy::MAX_RETAINED_CANCELLED_DRAFTS;
+    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    let apply_ops = |kv: &mut Vec<(SmolStr, serde_json::Value)>, tw: &mut TestWorld| {
+        for op in tw.take_module_ops() {
+            if op.ns != NS {
+                continue;
+            }
+            match op.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    kv.retain(|(k, _)| *k != key);
+                    kv.push((key, value));
+                }
+                ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
+                ModuleWrite::StreamAppend { .. } => {}
+            }
+        }
+    };
+    let mut seen_ids = Vec::new();
+
+    // Repeated draft + cancel past MAX_OPEN_CONTRACTS_PER_ISSUER keeps the
+    // just-canceled contract visible in Cancelled while capping RAM and KV to
+    // MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER.
+    for i in 0..(mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER + 5) {
+        ok(&mut tw, r.johnson, &format!("@contract/draft Spam {i}"));
+        let id = snap(&tw)
+            .contracts()
+            .map(|c| c.id)
+            .max()
+            .expect("draft minted");
+        seen_ids.push(id);
+        ok(&mut tw, r.johnson, &format!("@contract/cancel {id}"));
+        assert_eq!(
+            state(&tw, id),
+            ContractState::Cancelled,
+            "just-canceled draft #{id} must stay immediately visible in Cancelled"
+        );
+        assert!(
+            snap(&tw).contracts().count() <= per_issuer_cap,
+            "per-issuer cancelled draft retention exceeded cap after {i} cancels"
+        );
+    }
+    assert_eq!(snap(&tw).contracts().count(), per_issuer_cap);
+    assert!(
+        snap(&tw).contract(seen_ids[0]).is_none(),
+        "oldest cancelled draft must be evicted past per-issuer cap"
+    );
+    apply_ops(&mut kv, &mut tw);
+    assert_eq!(
+        kv.iter()
+            .filter(|(k, _)| k.starts_with("contract:"))
+            .count(),
+        per_issuer_cap,
+        "KV contract docs must match per-issuer retention cap"
+    );
+
+    // An unaccepted, unescrowed Offered contract stays immediately visible in
+    // Cancelled on cancel while keeping the issuer within cap.
+    ok(&mut tw, r.johnson, "@contract/draft EmptyOffer");
+    let offered_id = snap(&tw)
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("offer minted");
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {offered_id}={}", r.j_acct),
+    );
+    ok(&mut tw, r.johnson, &format!("@contract/offer {offered_id}"));
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/cancel {offered_id}"),
+    );
+    assert_eq!(
+        state(&tw, offered_id),
+        ContractState::Cancelled,
+        "just-canceled offer must stay immediately visible in Cancelled"
+    );
+    assert_eq!(snap(&tw).contracts().count(), per_issuer_cap);
+
+    // Multiple issuers pushing past the global retention cap remain strictly
+    // bounded to MAX_RETAINED_CANCELLED_DRAFTS.
+    let issuers_needed = (global_cap / per_issuer_cap) + 2;
+    let mut last_global_id = offered_id;
+    for p in 0..issuers_needed {
+        let spammer = tw.spawn_player(&format!("Spammer{p}"));
+        for j in 0..per_issuer_cap {
+            ok(&mut tw, spammer, &format!("@contract/draft G{p}_{j}"));
+            let id = snap(&tw)
+                .contracts()
+                .map(|c| c.id)
+                .max()
+                .expect("global draft minted");
+            ok(&mut tw, spammer, &format!("@contract/cancel {id}"));
+            assert_eq!(state(&tw, id), ContractState::Cancelled);
+            last_global_id = id;
+            assert!(
+                snap(&tw).contracts().count() <= global_cap,
+                "global cancelled draft retention exceeded {global_cap}"
+            );
+        }
+    }
+    assert_eq!(snap(&tw).contracts().count(), global_cap);
+    assert_eq!(state(&tw, last_global_id), ContractState::Cancelled);
+    apply_ops(&mut kv, &mut tw);
+    assert_eq!(
+        kv.iter()
+            .filter(|(k, _)| k.starts_with("contract:"))
+            .count(),
+        global_cap,
+        "KV contract docs must match global retention cap"
+    );
+
+    // A single sweep clears all retained zero-history Cancelled drafts from RAM & KV.
+    sweep_at(&mut tw, 10_000);
+    assert_eq!(snap(&tw).contracts().count(), 0);
+    apply_ops(&mut kv, &mut tw);
+    assert!(
+        !kv.iter().any(|(k, _)| k.starts_with("contract:")),
+        "sweep did not delete all retained cancelled draft docs from KV"
+    );
+
+    // Legacy `Cancelled` draft loaded from disk is also collected by sweep GC.
+    ok(&mut tw, r.johnson, "@contract/draft LegacyCancelled");
+    let legacy_id = only_contract(&tw);
+    apply_ops(&mut kv, &mut tw);
+    patch(&mut kv, &format!("contract:{legacy_id}"), |v| {
+        v["state"] = serde_json::json!("Cancelled");
+    });
+    reboot(&mut tw, kv);
+    assert_eq!(state(&tw, legacy_id), ContractState::Cancelled);
+    sweep_at(&mut tw, 20_000);
+    assert!(
+        snap(&tw).contract(legacy_id).is_none(),
+        "sweep did not collect a legacy cancelled draft"
+    );
+}
+
+/// HIGH-22: `build_outcome` enforces `MAX_SHARES` at draft time, and
+/// `build_condition` bounds `ExternalRef.{provider, kind, id}` byte lengths.
+#[test]
+fn high22_build_outcome_enforces_max_shares_and_condition_bounds_external_ref() {
+    let mut tw = boot();
+    let r = run_rig(&mut tw, 3_000);
+    ok(&mut tw, r.johnson, "@contract/draft BoundedFields");
+    let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=attest staff"),
+    );
+
+    // Over MAX_SHARES in @contract/outcome is rejected immediately on Draft.
+    let too_many_shares: String = (0..=mush_economy::MAX_SHARES)
+        .map(|_| format!("{}:1", r.a_acct.0))
+        .collect::<Vec<_>>()
+        .join(",");
+    let refusal = err(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/outcome {id}=big when=0 pay={too_many_shares}"),
+    );
+    assert!(
+        refusal.contains(&mush_economy::MAX_SHARES.to_string()),
+        "unexpected refusal: {refusal}"
+    );
+    assert!(contract(&tw, id).consent.terms.outcomes.is_empty());
+
+    // Exactly MAX_SHARES succeeds.
+    let at_cap_shares: String = (0..mush_economy::MAX_SHARES)
+        .map(|_| format!("{}:1", r.a_acct.0))
+        .collect::<Vec<_>>()
+        .join(",");
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/outcome {id}=ok when=0 pay={at_cap_shares}"),
+    );
+    assert_eq!(contract(&tw, id).consent.terms.outcomes.len(), 1);
+
+    // ExternalRef.{provider, kind, id} byte-length caps enforced in build_condition.
+    let bad_provider = "p".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES + 1);
+    let bad_kind = "k".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES + 1);
+    let bad_id = "i".repeat(mush_economy::MAX_EXTERNAL_REF_ID_BYTES + 1);
+    assert!(
+        err(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=fact {bad_provider} kind 1"),
+        )
+        .contains("provider")
+    );
+    assert!(
+        err(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=fact prov {bad_kind} 1"),
+        )
+        .contains("kind")
+    );
+    assert!(
+        err(
+            &mut tw,
+            r.johnson,
+            &format!("@contract/condition {id}=fact prov kind {bad_id}"),
+        )
+        .contains("id")
+    );
+
+    // Exact bounds succeed.
+    let ok_provider = "p".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES);
+    let ok_kind = "k".repeat(mush_economy::MAX_EXTERNAL_REF_FIELD_BYTES);
+    let ok_id = "i".repeat(mush_economy::MAX_EXTERNAL_REF_ID_BYTES);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/condition {id}=fact {ok_provider} {ok_kind} {ok_id}"),
+    );
+}

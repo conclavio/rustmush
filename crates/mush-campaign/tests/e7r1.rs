@@ -417,7 +417,16 @@ fn e7r1_r3_the_tick_grants_an_eligible_applicant_with_no_staff_step() {
             .is_some(),
         "the lease is a real E4b2 contract"
     );
-    // The stipend moved from the pool to the applicant, and nothing was created.
+    // No stipend leaves the pool before `@contract/accept` (CRIT-13).
+    assert_eq!(bal(&tw, fx.pool), 1_000);
+    assert_eq!(bal(&tw, account_of(&tw, fx.pat)), 0);
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", grant.contract()),
+    );
+    fire(&mut tw);
+    // Once accepted, the stipend moves from the pool to the applicant, and nothing was created.
     assert_eq!(bal(&tw, fx.pool), 1_000 - 10);
     assert_eq!(bal(&tw, account_of(&tw, fx.pat)), 10);
     assert_eq!(
@@ -426,10 +435,14 @@ fn e7r1_r3_the_tick_grants_an_eligible_applicant_with_no_staff_step() {
         "a grant re-prices nothing and mints nothing: the ledger total is unmoved"
     );
 
-    // The tick fires twice and grants once — the applicant is no longer queued, so
-    // the arm is a no-op past the applied point.
+    // The tick fires again and disburses nothing a second time (and the first
+    // scheduled upkeep settles the stipend back into the pool).
     fire(&mut tw);
-    assert_eq!(bal(&tw, fx.pool), 1_000 - 10, "no second stipend");
+    assert_eq!(
+        bal(&tw, fx.pool),
+        1_000,
+        "no second stipend, and upkeep settled the first back to the pool"
+    );
     assert_eq!(ledger_total(&tw), before);
 }
 
@@ -947,8 +960,8 @@ fn vf_c6b_a_return_and_re_apply_inside_the_cooldown_draws_no_second_stipend() {
     );
     assert_eq!(
         bal(&tw, fx.pool),
-        start - 10,
-        "exactly one stipend left the pool, not twelve"
+        start,
+        "an unaccepted offer returned before accept draws zero stipend"
     );
     assert_eq!(ledger_total(&tw), total, "and nothing minted either way");
 }
@@ -1209,7 +1222,13 @@ fn vf_d3a_a_lost_grant_document_grants_nothing_twice() {
         .recovery_grant(fx.pat)
         .cloned()
         .expect("the tick granted");
-    assert_eq!(bal(&tw, fx.pool), 990, "one stipend");
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", first.contract()),
+    );
+    fire(&mut tw);
+    assert_eq!(bal(&tw, fx.pool), 990, "one stipend after accept");
 
     // The tear: everything the fire wrote, except the campaign namespace, which is
     // rolled back to its pre-grant contents.
@@ -1242,7 +1261,11 @@ fn vf_d3a_a_lost_grant_document_grants_nothing_twice() {
         "ONE contract, reconciled — not a second lease"
     );
     assert_eq!(second.loaner(), first.loaner(), "and the same hull");
-    assert_eq!(bal(&tw, fx.pool), 990, "and NO second stipend");
+    assert_eq!(
+        bal(&tw, fx.pool),
+        1_000,
+        "no second stipend (and first upkeep settled cleanly back to pool)"
+    );
     let live: Vec<u64> = snap(&tw)
         .contracts()
         .filter(|c| !c.state.is_terminal())
@@ -1523,6 +1546,9 @@ fn vf_b7b_a_store_over_the_cap_hydrates_bounded() {
             }),
         ));
     }
+    // Advance past the cooldown window so these dummy `ended_at: 2` records are
+    // genuinely expired (active cooldowns are never evicted on boot).
+    tw.set_now(mush_campaign::RECOVERY_COOLDOWN_SECS + 1_000);
     reboot(&mut tw, &kv);
     let apps = (1..=over)
         .filter(|n| {
@@ -1558,14 +1584,20 @@ fn vf_c14a_a_lease_held_past_its_first_period_returns_its_own_stipend_to_the_poo
     ok(&mut tw, fx.pat, "@recovery/apply");
     fire(&mut tw);
     let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
-    assert_eq!(bal(&tw, fx.pool), start - 10, "the stipend went out");
+    assert_eq!(bal(&tw, fx.pool), start, "no stipend before accept");
 
     ok(
         &mut tw,
         fx.pat,
         &format!("@contract/accept {}", grant.contract()),
     );
-    // The rent obligation is on the campaign cadence; one period is one fire.
+    fire(&mut tw);
+    assert_eq!(
+        bal(&tw, fx.pool),
+        start - 10,
+        "the stipend went out after accept"
+    );
+    // The rent obligation is on the campaign cadence; subsequent ticks collect upkeep.
     for _ in 0..3 {
         fire(&mut tw);
     }
@@ -1573,5 +1605,201 @@ fn vf_c14a_a_lease_held_past_its_first_period_returns_its_own_stipend_to_the_poo
         bal(&tw, fx.pool),
         start,
         "one period's upkeep came back: the pool is NOT one-way"
+    );
+}
+
+/// CRIT-13: an unaccepted offer pays no stipend, returning it draws zero, and
+/// expiring past the TTL neither drains the pool nor auto-requeues the applicant.
+#[test]
+fn crit13_unaccepted_offer_return_and_expiry_drain_zero_and_do_not_requeue() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    let start = bal(&tw, fx.pool);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    assert_eq!(bal(&tw, fx.pool), start, "no stipend paid before accept");
+    assert_eq!(bal(&tw, account_of(&tw, fx.pat)), 0);
+
+    // Expire past TTL: zero drain, NO auto-requeue, application closed, hull freed.
+    let then = tw.world().now() + mush_campaign::RECOVERY_ACCEPT_TTL_SECS + 1;
+    tw.set_now(then);
+    fire(&mut tw);
+    assert_eq!(bal(&tw, fx.pool), start, "expiry drained zero stipend");
+    assert!(
+        camp(&tw).recovery_queue().is_empty(),
+        "expired offer must NOT auto-requeue"
+    );
+    assert_eq!(
+        camp(&tw)
+            .recovery_application(fx.pat)
+            .map(mush_campaign::RecoveryApplication::state),
+        Some(mush_campaign::ApplicationState::Closed)
+    );
+    assert_eq!(
+        mush_campaign::next_loaner(tw.world(), &enabled(fx.pool)),
+        Some(grant.loaner()),
+        "hull returned to motor pool"
+    );
+
+    // Re-apply and return without accepting: still zero stipend drain.
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    ok(&mut tw, fx.pat, "@recovery/return");
+    assert_eq!(bal(&tw, fx.pool), start);
+    assert_eq!(bal(&tw, account_of(&tw, fx.pat)), 0);
+}
+
+/// CRIT-13: an accepted lease returned before its first upkeep settles must claw back
+/// the outfitting stipend into the recovery pool, refusing early return if the applicant
+/// moved the funds out.
+#[test]
+fn crit13_accepted_early_return_claws_back_stipend_and_refuses_if_spent() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    let start = bal(&tw, fx.pool);
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@contract/accept {}", grant.contract()),
+    );
+    fire(&mut tw);
+    assert_eq!(bal(&tw, fx.pool), start - 10, "stipend disbursed on accept");
+    assert_eq!(bal(&tw, account_of(&tw, fx.pat)), 10);
+
+    // Pat drains their stipend to Robin so they cannot repay it.
+    let pat_acct = account_of(&tw, fx.pat);
+    let robin_acct = account_of(&tw, fx.robin);
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@econ/pay {}={} 10", pat_acct.0, robin_acct.0),
+    );
+    assert_eq!(bal(&tw, pat_acct), 0);
+
+    // Non-staff early return without stipend funds MUST be refused before ending lease.
+    let refused = tw.run(fx.pat, "@recovery/return");
+    let text = tw.seen_by(&refused, fx.pat).join("\n");
+    assert!(
+        text.contains("stipend") || text.contains("return early"),
+        "expected stipend clawback refusal: {text}"
+    );
+    assert!(
+        camp(&tw)
+            .recovery_grant(fx.pat)
+            .is_some_and(mush_campaign::RecoveryGrant::is_live),
+        "lease stays live when clawback fails"
+    );
+
+    // Move funds back; now `@recovery/return` succeeds and restores the pool to 100%.
+    ok(
+        &mut tw,
+        fx.robin,
+        &format!("@econ/pay {}={} 10", robin_acct.0, pat_acct.0),
+    );
+    ok(&mut tw, fx.pat, "@recovery/return");
+    assert_eq!(bal(&tw, fx.pool), start, "pool restored to zero net drain");
+    assert_eq!(bal(&tw, pat_acct), 0, "stipend clawed back from applicant");
+}
+
+/// CRIT-13: expiring an unaccepted offer must NOT wipe a preserved active cooldown.
+#[test]
+fn crit13_unaccepted_expiry_preserves_prior_active_cooldown() {
+    let (mut tw, fx) = scene(
+        |pool| RecoveryConfig {
+            cooldown_secs: mush_campaign::RECOVERY_ACCEPT_TTL_SECS * 2,
+            ..enabled(pool)
+        },
+        1_000,
+        1,
+    );
+    let start_now = tw.world().now();
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    fire(&mut tw);
+    let grant = camp(&tw).recovery_grant(fx.pat).cloned().expect("granted");
+    let mut kv: Kv = BTreeMap::new();
+    fold_into(&mut tw, &mut kv);
+    // Inject a prior_ended_at still inside the 2*TTL cooldown window on this unaccepted offer.
+    let key = mush_campaign::recovery_grant_key(fx.pat);
+    if let Some(entries) = kv.get_mut(&SmolStr::new_static("campaign")) {
+        for (k, v) in entries.iter_mut() {
+            if *k == key {
+                v["prior_ended_at"] = serde_json::json!(start_now);
+                v["prior_loss_covered"] = serde_json::json!(false);
+            }
+        }
+    }
+    reboot(&mut tw, &kv);
+
+    let then = start_now + mush_campaign::RECOVERY_ACCEPT_TTL_SECS + 1;
+    tw.set_now(then);
+    fire(&mut tw);
+
+    let after = camp(&tw)
+        .recovery_grant(fx.pat)
+        .cloned()
+        .expect("prior active cooldown preserved, NOT deleted");
+    assert!(!after.is_live(), "offer is no longer live");
+    assert_eq!(after.ended_at(), Some(start_now));
+    assert!(!after.loss_covered());
+    assert_eq!(
+        mush_campaign::next_loaner(tw.world(), &enabled(fx.pool)),
+        Some(grant.loaner()),
+        "hull was still freed"
+    );
+}
+
+/// CRIT-13: `prune_recovery_grants` must NEVER evict active cooldowns on low `ObjId`s
+/// when newer ended grants fill the retention ring past `MAX_RETAINED_RECOVERY_RECORDS`.
+#[test]
+fn crit13_prune_recovery_grants_preserves_active_cooldowns_on_low_objids() {
+    let (mut tw, fx) = scene(enabled, 1_000, 1);
+    let mut kv: Kv = BTreeMap::new();
+    fold_into(&mut tw, &mut kv);
+    let now = mush_campaign::RECOVERY_COOLDOWN_SECS + 50_000;
+    let active_low_id = fx.pat.0; // low ObjId with active cooldown
+    let entry = kv.entry(SmolStr::new_static("campaign")).or_default();
+    entry.push((
+        SmolStr::new(format!("recovery_grant:{active_low_id}")),
+        serde_json::json!({
+            "applicant": active_low_id,
+            "contract": 99_001_u64,
+            "loaner": fx.hulls[0].0,
+            "tier": "scout",
+            "granted_at": now - 100,
+            "ended_at": now - 10
+        }),
+    ));
+    // Seed 120 higher-ObjId EXPIRED ended grants well past MAX_RETAINED_RECOVERY_RECORDS.
+    for n in 1..=(mush_campaign::MAX_RETAINED_RECOVERY_RECORDS + 60) {
+        let id = u32::try_from(n + 20_000).expect("fits");
+        entry.push((
+            SmolStr::new(format!("recovery_grant:{id}")),
+            serde_json::json!({
+                "applicant": id,
+                "contract": u64::from(id),
+                "loaner": id,
+                "tier": "scout",
+                "granted_at": 1,
+                "ended_at": 2
+            }),
+        ));
+    }
+    tw.set_now(now);
+    reboot(&mut tw, &kv);
+
+    assert!(
+        camp(&tw).recovery_grant(fx.pat).is_some(),
+        "active cooldown on low ObjId must survive pruning"
+    );
+    let kept_expired = camp(&tw)
+        .recovery_grants()
+        .filter(|g| g.applicant() != fx.pat)
+        .count();
+    assert_eq!(
+        kept_expired,
+        mush_campaign::MAX_RETAINED_RECOVERY_RECORDS,
+        "expired ended grants are still bounded by MAX_RETAINED_RECOVERY_RECORDS"
     );
 }

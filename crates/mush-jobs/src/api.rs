@@ -234,8 +234,8 @@ pub fn get_job(w: &World, id: u64) -> Option<&Job> {
 ///
 /// # Errors
 ///
-/// Errors if the jobs module is not loaded, no job has that id, or the
-/// comment exceeds its byte/count limits.
+/// Errors if the jobs module is not loaded, no job has that id, the job is
+/// already closed (terminal), or the comment exceeds its byte/count limits.
 pub fn add_comment(ctx: &mut Ctx<'_>, id: u64, who: ObjId, text: &str) -> Result<String, String> {
     let now = ctx.w.now();
     let st = ctx
@@ -246,6 +246,9 @@ pub fn add_comment(ctx: &mut Ctx<'_>, id: u64, who: ObjId, text: &str) -> Result
         .jobs
         .get_mut(&id)
         .ok_or_else(|| format!("no such job: {id}"))?;
+    if job.status.is_terminal() {
+        return Err(format!("job {id} is already closed"));
+    }
     validate_ordinary_comment(job, text)?;
     job.comments.push(JobComment {
         who,

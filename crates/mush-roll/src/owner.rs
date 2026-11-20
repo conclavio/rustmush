@@ -502,6 +502,105 @@ impl RollStore {
         self.minds.values().filter(|mind| mind.provenance.is_some())
     }
 
+    fn character_record_count(&self, actor: ObjId) -> usize {
+        let library = usize::from(self.libraries.contains_key(&actor));
+        let minds = self
+            .minds
+            .keys()
+            .filter(|(character, _)| *character == actor)
+            .count();
+        let revisions = self
+            .revisions
+            .keys()
+            .filter(|key| key.character == actor)
+            .count();
+        let references = self
+            .references
+            .keys()
+            .filter(|key| {
+                key.owner == NS
+                    && matches!(
+                        key.kind,
+                        ReferenceKind::NamedVersion | ReferenceKind::UnnamedHistory
+                    )
+                    && key
+                        .record
+                        .split('/')
+                        .next()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        == Some(actor.0)
+            })
+            .count();
+        library
+            .saturating_add(minds)
+            .saturating_add(revisions)
+            .saturating_add(references)
+    }
+
+    fn check_character_quota(&self, actor: ObjId, additional: usize) -> Result<(), RollError> {
+        if self
+            .character_record_count(actor)
+            .saturating_add(additional)
+            > MAX_RECORDS_PER_CHARACTER
+        {
+            return Err(invalid("roll", "character record quota reached"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn charter_transfer_offer_anchors(
+        &self,
+    ) -> Vec<(mush_core::CommitToken, ReferenceKey)> {
+        self.references
+            .keys()
+            .filter_map(|key| {
+                if key.owner == NS
+                    && key.kind == ReferenceKind::Commercial
+                    && let Ok(crate::commerce::roots::RootAnchor::CharterTransferOffer(commit, _)) =
+                        crate::commerce::roots::RootAnchor::parse(&key.record)
+                {
+                    Some((commit, key.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn charter_pending_offer_commits(&self) -> Vec<mush_core::CommitToken> {
+        self.references
+            .keys()
+            .filter_map(|key| {
+                if key.owner == NS
+                    && key.kind == ReferenceKind::Commercial
+                    && let Ok(crate::commerce::roots::RootAnchor::CharterPendingOffer(commit, _)) =
+                        crate::commerce::roots::RootAnchor::parse(&key.record)
+                {
+                    Some(commit)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn draft_retirement_commits(&self) -> Vec<mush_core::CommitToken> {
+        self.references
+            .keys()
+            .filter_map(|key| {
+                if key.owner == NS
+                    && key.kind == ReferenceKind::Commercial
+                    && let Ok(crate::commerce::roots::RootAnchor::DraftRetirement(commit, _)) =
+                        crate::commerce::roots::RootAnchor::parse(&key.record)
+                {
+                    Some(commit)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     fn prepare_create_with_provenance(
         &self,
         actor: ObjId,
@@ -511,6 +610,8 @@ impl RollStore {
     ) -> Result<PreparedChange, RollError> {
         let name = canonical_name(name)?;
         draft.validate_bounds()?;
+        let new_library = usize::from(!self.libraries.contains_key(&actor));
+        self.check_character_quota(actor, 1 + new_library)?;
         let mut library = self
             .libraries
             .get(&actor)
@@ -607,6 +708,7 @@ impl RollStore {
         let mut mind = self.editable(actor, name, base)?;
         bounded_text("revision notes", notes, MAX_NOTES_BYTES, true)?;
         let version_name = version_name.map(canonical_name).transpose()?;
+        self.check_character_quota(actor, 1 + usize::from(version_name.is_some()))?;
         if let Some(label) = &version_name {
             if mind.named.contains_key(label) {
                 return Err(RollError::Exists(label.clone()));
@@ -704,6 +806,7 @@ impl RollStore {
                 "named version limit or revision already named",
             ));
         }
+        self.check_character_quota(actor, 1)?;
         let revision = self
             .revision(
                 actor,
@@ -862,9 +965,10 @@ impl RollStore {
         Ok(revision.clone())
     }
 
-    /// Removal frees the library slot and its working text. Its last fifty
-    /// unnamed revisions become one bounded owner reference; named versions and
-    /// external references remain roots, even without the library name.
+    /// Removal frees the library slot and its working text without creating
+    /// permanent `UnnamedHistory` roots. Named versions and external/commercial
+    /// references remain roots; unreferenced revisions of the removed mind are
+    /// reclaimed directly when collection is healthy.
     pub fn prepare_remove(
         &self,
         actor: ObjId,
@@ -889,32 +993,20 @@ impl RollStore {
         if selected {
             library.selection = None;
         }
-        let mut changes = vec![Change::Library(library), Change::RemoveMind(actor, mind.id)];
-        if !mind.unnamed.is_empty() {
-            let revisions = mind
-                .unnamed
-                .iter()
-                .map(|number| {
-                    self.revision(
-                        actor,
-                        RevisionKey {
-                            character: actor,
-                            mind: mind.id,
-                            number: *number,
-                        },
-                    )
-                    .map(Revision::reference)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            changes.push(Change::Reference(ReferenceRecord {
-                format: FORMAT,
-                key: ReferenceKey {
-                    owner: NS.into(),
-                    kind: ReferenceKind::UnnamedHistory,
-                    record: format!("{}/{}", actor.0, mind.id),
-                },
-                revisions,
-            }));
+        let mut changes = vec![
+            Change::Library(library.clone()),
+            Change::RemoveMind(actor, mind.id),
+        ];
+        if self.check_collection().is_ok() {
+            let kept = self.roots_without_mind(actor, mind.id, &library)?;
+            for key in self
+                .revisions
+                .keys()
+                .filter(|key| key.character == actor && key.mind == mind.id && !kept.contains(key))
+                .take(MAX_GC_BATCH)
+            {
+                changes.push(Change::RemoveRevision(*key));
+            }
         }
         self.prepare(changes)
     }
@@ -1428,7 +1520,26 @@ impl RollStore {
         if self.occupied.contains(&row.key.key()) {
             return Err(invalid("charter transfer", "cause already retained"));
         }
-        self.prepare(vec![Change::Reference(row)])
+        let mut changes = Vec::with_capacity(1 + request.pruned().len());
+        let mut pruned_keys = BTreeSet::new();
+        for key in request.pruned() {
+            if key.owner != NS
+                || key.kind != ReferenceKind::Commercial
+                || !crate::commerce::roots::RootAnchor::parse(&key.record).is_ok_and(|anchor| {
+                    matches!(
+                        anchor,
+                        crate::commerce::roots::RootAnchor::CharterTransferOffer(_, _)
+                    )
+                })
+                || !self.references.contains_key(key)
+                || !pruned_keys.insert(key.clone())
+            {
+                return Err(invalid("charter transfer", "invalid pruned offer root"));
+            }
+            changes.push(Change::RemoveReference(key.clone()));
+        }
+        changes.push(Change::Reference(row));
+        self.prepare(changes)
     }
     pub(crate) fn ic_claim_next_transition(&self) -> Result<u64, RollError> {
         self.commerce_ready()?;
@@ -2295,6 +2406,79 @@ impl RollStore {
             return Err(RollError::Missing);
         }
         Ok(revision)
+    }
+
+    fn roots_without_mind(
+        &self,
+        removed_actor: ObjId,
+        removed_mind: u64,
+        updated_library: &Library,
+    ) -> Result<BTreeSet<RevisionKey>, RollError> {
+        let mut roots = BTreeSet::new();
+        for mind in self.minds.values() {
+            if mind.character == removed_actor && mind.id == removed_mind {
+                continue;
+            }
+            for number in mind
+                .unnamed
+                .iter()
+                .chain(mind.named.values())
+                .copied()
+                .chain(mind.head)
+            {
+                let key = RevisionKey {
+                    character: mind.character,
+                    mind: mind.id,
+                    number,
+                };
+                self.revision(mind.character, key)?;
+                roots.insert(key);
+            }
+        }
+        for (character, library) in &self.libraries {
+            let library = if *character == removed_actor {
+                updated_library
+            } else {
+                library
+            };
+            if let Some(Selection::Pin { revision }) = &library.selection {
+                self.exact(*revision)?;
+                roots.insert(revision.key);
+            }
+        }
+        for reference in self.references.values() {
+            for revision in &reference.revisions {
+                self.exact(*revision)?;
+                roots.insert(revision.key);
+            }
+        }
+        for provenance in self
+            .minds
+            .values()
+            .filter(|m| !(m.character == removed_actor && m.id == removed_mind))
+            .filter_map(|m| m.provenance.as_ref())
+            .chain(
+                self.revisions
+                    .values()
+                    .filter(|r| {
+                        !(r.reference.key.character == removed_actor
+                            && r.reference.key.mind == removed_mind)
+                    })
+                    .filter_map(|r| r.provenance.as_ref()),
+            )
+        {
+            let parent = self.exact(provenance.parent.revision.revision())?;
+            if !provenance
+                .parent
+                .revision
+                .matches(parent)
+                .map_err(|_| RollError::Missing)?
+            {
+                return Err(RollError::Missing);
+            }
+            roots.insert(parent.reference.key);
+        }
+        Ok(roots)
     }
 
     fn roots(&self) -> Result<BTreeSet<RevisionKey>, RollError> {

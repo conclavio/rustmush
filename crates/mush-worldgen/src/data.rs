@@ -280,6 +280,12 @@ pub struct WorldgenState {
     pub next_proposal: u64,
     /// The planning limits (config knobs; not persisted).
     pub plan: crate::plan::PlanLimits,
+    /// Active off-loop LLM planning run cancellation tokens, keyed by proposal id (RAM only, STRAG-M9).
+    pub active_plan_runs: std::collections::BTreeMap<u64, u64>,
+    /// Per-author recent non-staff proposal timestamps (Unix seconds), persisted in `proposal_meta` (STRAG-M9).
+    pub proposal_history: std::collections::BTreeMap<ObjId, Vec<i64>>,
+    /// Per-author recent non-staff proposal withdrawal timestamps (Unix seconds), persisted in `proposal_meta` (STRAG-M9).
+    pub withdraw_history: std::collections::BTreeMap<ObjId, Vec<i64>>,
 }
 
 impl WorldgenState {
@@ -302,6 +308,9 @@ impl WorldgenState {
             proposals: std::collections::BTreeMap::new(),
             next_proposal: 1,
             plan: crate::plan::PlanLimits::default(),
+            active_plan_runs: std::collections::BTreeMap::new(),
+            proposal_history: std::collections::BTreeMap::new(),
+            withdraw_history: std::collections::BTreeMap::new(),
         }
     }
 

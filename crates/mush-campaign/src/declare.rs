@@ -30,7 +30,7 @@ use crate::record::{
     AudienceSpec, Bond, Consequence, ObjectiveSpec, OperationDoc, OperationRuntime, OperationState,
     OperationTerms, SideSpec, TermsError,
 };
-use crate::store::{CampaignStore, persist_meta, put_operation};
+use crate::store::{CampaignStore, del_keys, persist_meta, put_operation};
 use crate::terms::operation_consent_hash;
 
 /// **The bond a compiled declaration reserves**: `amount` on the declarer's own `account`, and
@@ -125,11 +125,12 @@ pub fn declare_and_activate(
     if declaration.window_secs < 1 {
         return Err(DeclareError::Window);
     }
-    let id = ctx
-        .w
-        .module_state_mut::<CampaignStore>()
-        .and_then(CampaignStore::mint_operation)
-        .ok_or(DeclareError::Full)?;
+    let (id, evicted) = ctx.w.module_state_mut::<CampaignStore>().map_or(
+        (None, Vec::new()),
+        CampaignStore::mint_operation_with_pruning,
+    );
+    del_keys(ctx, evicted);
+    let id = id.ok_or(DeclareError::Full)?;
     // The allocator moved; keep it on disk whatever follows, so the id is never reissued.
     persist_meta(ctx);
     let now = ctx.w.world_timeline().stamp_at(ctx.w.now());

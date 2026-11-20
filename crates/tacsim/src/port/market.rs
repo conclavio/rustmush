@@ -373,6 +373,12 @@ impl VenueGate for PortVenueGate {
             }
         }
         if let Some(endpoint) = endpoint
+            && crate::port::works::is_works_escrow(w, endpoint.vault())
+            && !crate::port::works::escrow_buy_allowed(w, actor, venue, endpoint.vault())
+        {
+            return Err(refusal(MOVE_WORKS_ESCROW.to_owned()));
+        }
+        if let Some(endpoint) = endpoint
             && crate::port::locker::is_locker(w, endpoint)
             && crate::port::locker::locker_of(w, actor, venue)
                 .is_none_or(|locker| locker.vault != endpoint.vault().0)
@@ -401,6 +407,11 @@ impl VenueGate for PortVenueGate {
         venue: &MarketId,
         endpoint: EndpointRef,
     ) -> Result<(), VenueRefusal> {
+        if crate::port::works::is_works_escrow(w, endpoint.vault())
+            && !crate::port::works::escrow_buy_allowed_at_venue(w, venue, endpoint.vault())
+        {
+            return Err(refusal(MOVE_WORKS_ESCROW.to_owned()));
+        }
         if crate::port::bay_work::scrap::is_scrap_vault(w, endpoint.vault()) {
             return Err(refusal(MOVE_INTO_SCRAP.to_owned()));
         }
@@ -424,6 +435,8 @@ impl VenueGate for PortVenueGate {
         port_of_venue(w, venue)
             .and_then(|(_, map)| map)
             .is_some_and(|map| vendor_orgs(map).contains(org))
+            // Doc 50 unit LW.5: the enforcing authority sells its seized goods at its port.
+            || crate::port::seized::sells_at(w, venue, *org)
     }
 
     /// Doc 39 cut IN.11: a part sells as its lots (the inventory's `PartGoods`, read here too).
@@ -632,6 +645,8 @@ pub const MOVE_CHARTER_CARGO: &str = "Cargo in {name}'s chartered hold is sold f
 pub const MOVE_HULL_ON_SALE: &str = "{name} is for sale, so nothing goes into her hold.";
 /// `@inv/move` into a scrap vault.
 pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
+/// `@inv/move` or direct market access touching a works/yard escrow vault (CRIT-20).
+pub const MOVE_WORKS_ESCROW: &str = "A works or yard order escrow is moved only by the facility.";
 
 /// **The ports' rule for a player's `@inv/move`** (doc 48e, exchange G7; 48d C-03). D-18-37 left a
 /// move's locality to P-H while a pilot held one vault; EX.1b's lockers and EX.3's scrap vaults
@@ -659,6 +674,11 @@ impl mush_inventory::MovePolicy for PortMovePolicy {
     ) -> Result<(), String> {
         if from == to {
             return Ok(());
+        }
+        if crate::port::works::is_works_escrow(w, from.vault())
+            || crate::port::works::is_works_escrow(w, to.vault())
+        {
+            return Err(MOVE_WORKS_ESCROW.to_owned());
         }
         let gate = PortVenueGate;
         let venue = w

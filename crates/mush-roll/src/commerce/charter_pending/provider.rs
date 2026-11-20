@@ -54,6 +54,36 @@ struct FundWire {
 struct TerminalWire {
     funding: CommitToken,
 }
+const MAX_RETAINED_OFFERS_PER_CHARTER: usize = 16;
+const MAX_RETAINED_OFFERS_PER_SELLER: usize = 32;
+
+fn check_retained_offer_quota(
+    commits: &[CommitToken],
+    charter: CharterId,
+    seller: ObjId,
+    mut lookup: impl FnMut(&str) -> Result<Option<PendingOffer>, PublicationError>,
+) -> Result<(), PublicationError> {
+    let mut charter_offers = 0usize;
+    let mut seller_offers = 0usize;
+    for commit in commits {
+        let Some(existing) = lookup(&commit.to_hex())? else {
+            continue;
+        };
+        if existing.charter == charter {
+            charter_offers += 1;
+        }
+        if existing.seller == seller {
+            seller_offers += 1;
+        }
+    }
+    if charter_offers >= MAX_RETAINED_OFFERS_PER_CHARTER
+        || seller_offers >= MAX_RETAINED_OFFERS_PER_SELLER
+    {
+        return Err(PublicationError::Capacity);
+    }
+    Ok(())
+}
+
 fn decimal<T: std::str::FromStr + ToString>(value: &str) -> Result<T, PublicationError> {
     let n = value.parse::<T>().map_err(bad)?;
     if n.to_string() != value {
@@ -199,6 +229,18 @@ impl Provider {
         let world = ctx.world().map_err(bad)?;
         current::require_clear_in_txn(txn, world, &self.f, charter)?;
         let basis = current::basis(txn, world, &self.f, charter, inv.actor())?;
+        // Bounded retained offer quota per charter and per seller so zero-fee
+        // offer spam cannot permanently exhaust MAX_RECORDS while preserving
+        // exact action-0 typed write sets.
+        let roll = world
+            .module_state::<crate::RollStore>()
+            .ok_or(PublicationError::Unavailable)?;
+        let commits = roll.charter_pending_offer_commits();
+        check_retained_offer_quota(&commits, charter, inv.actor(), |key| {
+            txn.get(&self.f.charter_pending_offers, &key.to_owned())
+                .map_err(bad)
+                .map(|offer| offer.cloned())
+        })?;
         let now = world.now();
         let deadline = now
             .checked_add(duration)
@@ -736,7 +778,7 @@ impl ActionProvider for Provider {
             };
             if intent.actor != q.actor()
                 || intent.action != self.action
-                || intent.fresh(&e.world).is_err()
+                || intent.fresh_engine(e, &self.f).is_err()
             {
                 return Ok(None);
             }
@@ -827,4 +869,91 @@ pub(crate) fn register(
     }
     service::register(reg, runtime, ready.clone(), f, config)?;
     Ok(ready)
+}
+
+#[cfg(test)]
+mod high19_tests {
+    use super::*;
+    use mush_core::DefinitionDigest;
+    use std::collections::BTreeMap;
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn make_pending_offer(seed: u8, charter: u32, seller: u32) -> TestResult<PendingOffer> {
+        let d = DefinitionDigest::from_bytes([seed; 32]);
+        let ownership =
+            json!({"generation":1,"operation":CommitToken::from_bytes([200;16]),"digest":d});
+        let window = json!({"format":1,"eligibility_start":100,"issued_at":100,"term_end":500,"grace_end":600});
+        let term = json!({"licence":"1","generation":"1","operation":CommitToken::from_bytes([201;16]),"digest":d,"window":window});
+        let revision = json!({"format":1,"revision":{"key":{"character":seller,"mind":1,"number":1},"digest":d},"source":d});
+        Ok(serde_json::from_value(json!({
+            "format":1,
+            "operation":CommitToken::from_bytes([seed;16]),
+            "action":super::super::protocol::offer_action()?,
+            "charter":charter.to_string(),
+            "birth":CommitToken::from_bytes([200;16]),
+            "ownership":ownership,
+            "seller":seller,
+            "buyer":seller + 100,
+            "seller_account":10,
+            "instrument":"cr",
+            "price":100,
+            "title_revision":1,
+            "line":"1",
+            "filed":"1",
+            "revision":revision,
+            "owner_term":term,
+            "offered_at_ic":{"clock":{"kind":"world_ic","generation":1},"at":100},
+            "offered_at_utc":100,
+            "expires_at_utc":200,
+            "settle_seconds":60
+        }))?)
+    }
+
+    #[test]
+    fn high19_charter_pending_caps_retained_offers_per_charter_and_seller() -> TestResult {
+        let mut offers = BTreeMap::new();
+        let mut commits = Vec::new();
+        for i in 0..MAX_RETAINED_OFFERS_PER_CHARTER {
+            let seed = u8::try_from(i + 1)?;
+            let offer = make_pending_offer(seed, 5, 10)?;
+            commits.push(offer.operation);
+            offers.insert(offer.key(), offer);
+        }
+        // Charter 5 is at MAX_RETAINED_OFFERS_PER_CHARTER -> refused.
+        check_eq!(
+            check_retained_offer_quota(&commits, CharterId::new(5)?, ObjId(10), |k| {
+                Ok(offers.get(k).cloned())
+            }),
+            Err(PublicationError::Capacity)
+        );
+        // A different charter for the same seller still has room until MAX_RETAINED_OFFERS_PER_SELLER.
+        check!(
+            check_retained_offer_quota(&commits, CharterId::new(6)?, ObjId(10), |k| {
+                Ok(offers.get(k).cloned())
+            })
+            .is_ok()
+        );
+        // Fill charter 6 with 16 more offers so seller 10 hits MAX_RETAINED_OFFERS_PER_SELLER = 32.
+        for i in 0..(MAX_RETAINED_OFFERS_PER_SELLER - MAX_RETAINED_OFFERS_PER_CHARTER) {
+            let seed = u8::try_from(i + 40)?;
+            let offer = make_pending_offer(seed, 6, 10)?;
+            commits.push(offer.operation);
+            offers.insert(offer.key(), offer);
+        }
+        // Seller 10 is now blocked even on brand-new charter 7, while seller 11 is unaffected.
+        check_eq!(
+            check_retained_offer_quota(&commits, CharterId::new(7)?, ObjId(10), |k| {
+                Ok(offers.get(k).cloned())
+            }),
+            Err(PublicationError::Capacity)
+        );
+        check!(
+            check_retained_offer_quota(&commits, CharterId::new(7)?, ObjId(11), |k| {
+                Ok(offers.get(k).cloned())
+            })
+            .is_ok()
+        );
+        Ok(())
+    }
 }

@@ -581,9 +581,17 @@ impl Provider {
             let witness = after.input.ok_or(Error::Integrity)?;
             let input = r.inputs.publish(txn, ctx, witness.as_ref()).map_err(bad)?;
             row.verify_input(&input)?;
-            r.industry
-                .release_slot(txn, row.intent.site_factory()?, row.capacity, 1)
-                .map_err(bad)?;
+            let factory = row.intent.site_factory()?;
+            if let Some(slot_rec) = r
+                .industry
+                .slot_reservation(txn, factory, row.capacity)
+                .map_err(bad)?
+                && slot_rec.state() == mush_core::ReservationState::Held
+            {
+                r.industry
+                    .release_slot(txn, factory, row.capacity, slot_rec.revision())
+                    .map_err(bad)?;
+            }
             r.families.remove_schedule(txn, selected_order)?;
             txn.replace(&r.families.orders, &selected_order, row)
                 .map_err(bad)?;

@@ -522,6 +522,10 @@ struct WorkFamilies {
     wo_applied: mush_core::StateFamilyHandle<SmolStr, crate::workorder::WorkOrderMarker>,
     marker_ring: mush_core::StateFamilyHandle<OreDepositId, crate::record::MarkerRing>,
     wo_marker_ring: mush_core::StateFamilyHandle<ObjId, crate::record::MarkerRing>,
+    requester_orders: mush_core::StateFamilyHandle<SmolStr, crate::workorder::RequesterOrders>,
+    wo_terminal_ring: mush_core::StateFamilyHandle<u8, crate::workorder::TerminalWorkOrderRing>,
+    slot_expiry_schedules: mush_core::StateFamilyHandle<ScheduleId, DurableSchedule>,
+    slot_expiry_jobs: mush_core::StateFamilyHandle<ScheduleId, crate::workorder::SlotExpiryJob>,
 }
 #[inline(never)]
 fn register_work_families(reg: &mut Registrar<'_>) -> Result<WorkFamilies, ModError> {
@@ -726,6 +730,93 @@ fn register_work_families(reg: &mut Registrar<'_>) -> Result<WorkFamilies, ModEr
         |value: &crate::record::MarkerRing| serde_json::to_value(value).map_err(|e| e.to_string()),
     )?;
 
+    // ---- CRIT-14: durable per-requester open-order index ----
+    let requester_orders = reg
+        .state_family::<SmolStr, crate::workorder::RequesterOrders, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_requester_orders")?,
+                canonical("industry.requester_token.v1")?,
+                canonical("industry.requester_orders.v1")?,
+                1,
+                canonical("industry.requester_orders.decode_json.v1")?,
+                canonical("industry.requester_orders.bounds.v1")?,
+                canonical("industry.requester_orders.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &SmolStr| {
+                if key.is_empty() || key.len() > 64 {
+                    Err("a requester token is 1..=64 bytes".to_owned())
+                } else {
+                    Ok(key.to_string())
+                }
+            },
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::workorder::RequesterOrders| {
+                if value.len() > crate::workorder::MAX_REQUESTER_OPEN_ORDERS_RECORD {
+                    Err("requester open orders past cap".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &crate::workorder::RequesterOrders| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
+    // ---- CRIT-14: bounded FIFO ring of terminal work orders ----
+    let wo_terminal_ring = reg
+        .state_family::<u8, crate::workorder::TerminalWorkOrderRing, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_wo_terminal_ring")?,
+                canonical("industry.wo_terminal_bucket.v1")?,
+                canonical("industry.wo_terminal_ring.v1")?,
+                1,
+                canonical("industry.wo_terminal_ring.decode_json.v1")?,
+                canonical("industry.wo_terminal_ring.bounds.v1")?,
+                canonical("industry.wo_terminal_ring.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &u8| Ok(format!("{key:02}")),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |value: &crate::workorder::TerminalWorkOrderRing| {
+                if value.len() > crate::workorder::MAX_TERMINAL_WO_RING {
+                    Err("terminal work order ring past cap".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            |value: &crate::workorder::TerminalWorkOrderRing| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
+    // ---- HIGH-33: scheduled slot expiry schedules and job sidecars ----
+    let slot_expiry_schedules = reg.state_family::<ScheduleId, DurableSchedule, _, _, _, _>(
+        durable_schedule_state_family_descriptor(family_id("industry_slot_expiry_schedule")?)
+            .map_err(|error| ModError::msg(error.to_string()))?,
+        DurableScheduleStateCodec,
+        DurableScheduleStateCodec,
+        DurableScheduleStateCodec,
+        DurableScheduleStateCodec,
+    )?;
+    let slot_expiry_jobs = reg
+        .state_family::<ScheduleId, crate::workorder::SlotExpiryJob, _, _, _, _>(
+            StateFamilyDescriptor::new(
+                family_id("industry_slot_expiry_job")?,
+                canonical("durable_schedule_id.v1")?,
+                canonical("industry.slot_expiry_job.v1")?,
+                1,
+                canonical("industry.slot_expiry_job.decode_json.v1")?,
+                canonical("industry.slot_expiry_job.invariants.v1")?,
+                canonical("industry.slot_expiry_job.json.v1")?,
+            )
+            .map_err(|error| ModError::msg(error.to_string()))?,
+            |key: &ScheduleId| Ok(key.canonical_hash().to_hex()),
+            |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+            |_value: &crate::workorder::SlotExpiryJob| Ok(()),
+            |value: &crate::workorder::SlotExpiryJob| {
+                serde_json::to_value(value).map_err(|e| e.to_string())
+            },
+        )?;
+
     Ok(WorkFamilies {
         facility_slots,
         facility_books,
@@ -736,6 +827,10 @@ fn register_work_families(reg: &mut Registrar<'_>) -> Result<WorkFamilies, ModEr
         wo_applied,
         marker_ring,
         wo_marker_ring,
+        requester_orders,
+        wo_terminal_ring,
+        slot_expiry_schedules,
+        slot_expiry_jobs,
     })
 }
 
@@ -826,6 +921,10 @@ impl GameModule for IndustryModule {
             wo_applied,
             marker_ring,
             wo_marker_ring,
+            requester_orders,
+            wo_terminal_ring,
+            slot_expiry_schedules,
+            slot_expiry_jobs,
         } = register_work_families(reg)?;
         // Cut 2's handles, taken from the composition root's cell. Cut 3 never
         // re-registers an inventory family and never mints a handle: the
@@ -860,6 +959,10 @@ impl GameModule for IndustryModule {
             wo_applied,
             marker_ring,
             wo_marker_ring,
+            requester_orders,
+            wo_terminal_ring,
+            slot_expiry_schedules,
+            slot_expiry_jobs,
             tenure,
         };
         // Doc 20 cut SM.6: publish the handles to the composition root's cell

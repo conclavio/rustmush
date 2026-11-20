@@ -1081,6 +1081,11 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
     else {
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     };
+    if listing.source.lot().is_some() && crate::lot::sale_in_force(ctx.w, id) {
+        return Err(MarketError::bad(
+            "That listing's stock is sold and on its way; it cannot be withdrawn.",
+        ));
+    }
     // ---- E7r2: P1 — a withdrawn lot listing gives its hold back ----
     //
     // The document delete and the release are one command's work and the release is
@@ -1107,6 +1112,21 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
     // deleting the document is the whole withdrawal and nothing is staged.
     del_listing(ctx, id);
     if let Some(leg) = leg {
+        if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+            let at_sweep = store.sweeps;
+            if store.withdrawn_holds.len() >= MAX_LISTINGS {
+                store.withdrawn_holds.pop_first();
+            }
+            store.withdrawn_holds.insert(
+                id,
+                crate::store::WithdrawnHold {
+                    endpoint: leg.endpoint,
+                    commodity: leg.commodity.clone(),
+                    lot: leg.lot,
+                    at_sweep,
+                },
+            );
+        }
         crate::lot::stage(ctx, &leg);
     }
     // Doc 48 cut EX.1a: a personal bid gives back what its escrow still holds.

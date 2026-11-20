@@ -237,8 +237,6 @@ fn expected_roster() -> Vec<&'static str> {
         "faction",
         "scenes",
         "sim",
-        // S1: the atlas, right after the placement graph it will read (S2).
-        "atlas",
         "tactics",
         "propagation",
         "economy",
@@ -248,6 +246,9 @@ fn expected_roster() -> Vec<&'static str> {
         "mail",
         "jobs",
         "housing",
+        // CRIT-17: the atlas composes after every deny-only `MoveAttempt` hook
+        // (`scenes`, `sim`, `tactics`, `industry`, `housing`) and before `weather`.
+        "atlas",
         "weather",
         "party",
         // Roll's final audit opens the readiness required by Market's recovery.
@@ -277,14 +278,15 @@ fn expected_panels() -> Vec<&'static str> {
         "commands.list",
         "comsys",
         "scenes",
-        // S1/S4: the atlas composes after `mush-sim` (which advertises no feed)
-        // and before `mush-tactics`, and the map frame is the feed it publishes.
-        "atlas.map",
         "tactics.unit",
         "tactics.vitals",
         "tactics.contacts",
         "relay.board",
         "mail",
+        // S1/S4 + CRIT-17: the atlas composes after `mush-housing` (after every
+        // deny-only `MoveAttempt` hook) and before `mush-weather`, and the map
+        // frame is the feed it publishes.
+        "atlas.map",
         "weather",
         "worldgen.draft",
         "llm.dashboard",

@@ -1356,11 +1356,15 @@ fn ic10_a_landed_leg_past_the_cutoff_is_never_offered_and_a_lapsed_paid_sale_pag
     assert!(choices(&offer, "op").is_some_and(|ops| ops.contains(&"deliver".to_owned())));
     let accepted_at = q.lot.as_ref().map(|l| l.accepted_at).expect("terms");
     r.tw.set_now(accepted_at + DRAW_WINDOW_SECS - DRAW_SETTLE_MARGIN_SECS + 1);
-    let offer = lot_offer(&r.tw, r.pat).expect("still offered reserve/release");
-    assert!(choices(&offer, "contract").is_none());
-    assert!(choices(&offer, "op").is_some_and(|ops| !ops.contains(&"deliver".to_owned())));
+    assert!(
+        lot_offer(&r.tw, r.pat).is_none(),
+        "no deliver entry past the cutoff and no eligible reserve/release"
+    );
     let refusal = land_submit(&mut r.tw, &stale, 0x61).expect_err("past the cutoff");
-    assert!(refusal.starts_with("resolve:"), "{refusal}");
+    assert!(
+        refusal == "that action is not currently offered" || refusal.starts_with("resolve:"),
+        "{refusal}"
+    );
     assert_eq!(pool(&mut r.tw, &r.families, r.pat_hold), HELD);
     no_settlement_pages(&r.tw);
 
@@ -1441,14 +1445,7 @@ fn ic10_only_the_seller_is_offered_the_deliver_leg() {
     let leg = take(&mut r.tw);
     let contract = last_sale(&r.tw, r.pat).contract.expect("contract");
     let pat_offer = lot_offer(&r.tw, r.pat).expect("offered");
-    assert_eq!(
-        choices(&pat_offer, "op"),
-        Some(vec![
-            "reserve".to_owned(),
-            "release".to_owned(),
-            "deliver".to_owned()
-        ])
-    );
+    assert_eq!(choices(&pat_offer, "op"), Some(vec!["deliver".to_owned()]));
 
     // The house's officer: endpoints of the org, and no deliver.
     let officer = r.tw.spawn_player("Officer");
@@ -1493,14 +1490,15 @@ fn ic10_only_the_seller_is_offered_the_deliver_leg() {
     let quinn_contract = quinn_draw.parameters["contract"].clone();
 
     for (who, label) in [(officer, "officer"), (sam, "stranger"), (r.quinn, "buyer")] {
-        let offer = lot_offer(&r.tw, who).expect("an endpoint holder is offered the action");
-        let ops = choices(&offer, "op").expect("ops");
-        assert!(!ops.contains(&"deliver".to_owned()), "{label}: {ops:?}");
-        let contracts = choices(&offer, "contract").unwrap_or_default();
-        assert!(
-            !contracts.contains(&contract.0.to_string()),
-            "{label}: {contracts:?}"
-        );
+        if let Some(offer) = lot_offer(&r.tw, who) {
+            let ops = choices(&offer, "op").expect("ops");
+            assert!(!ops.contains(&"deliver".to_owned()), "{label}: {ops:?}");
+            let contracts = choices(&offer, "contract").unwrap_or_default();
+            assert!(
+                !contracts.contains(&contract.0.to_string()),
+                "{label}: {contracts:?}"
+            );
+        }
     }
     assert_eq!(
         choices(&lot_offer(&r.tw, r.quinn).expect("offered"), "contract"),
@@ -1817,8 +1815,10 @@ fn ic10_a_disputed_sale_keeps_its_tonnes_committed_past_the_cutoff() {
 
     // Past the cutoff: the leg is not offered and the tonnes stay committed.
     r.tw.set_now(accepted_at + DRAW_WINDOW_SECS - DRAW_SETTLE_MARGIN_SECS + 1);
-    let offer = lot_offer(&r.tw, r.pat).expect("still offered reserve/release");
-    assert!(choices(&offer, "op").is_some_and(|ops| !ops.contains(&"deliver".to_owned())));
+    assert!(
+        lot_offer(&r.tw, r.pat).is_none(),
+        "no deliver entry past the cutoff"
+    );
     refused!(
         r,
         r.pat,

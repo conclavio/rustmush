@@ -177,6 +177,28 @@ impl InventoryFamilies {
         Ok(())
     }
 
+    /// **Release** `holder`'s hold on `lot` at `endpoint`, leaving the lot where it lies.
+    ///
+    /// Enforces `hold.endpoint() == endpoint` so an endpoint-authorized caller cannot release a
+    /// hold standing on another endpoint.
+    ///
+    /// # Errors
+    /// [`InventoryError::NoLot`] when `holder` holds no such lot at `endpoint`.
+    pub fn release_lot_at(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        endpoint: EndpointRef,
+        lot: LotId,
+        holder: &str,
+    ) -> Result<(), InventoryError> {
+        let hold = self.held_by(txn, lot, holder)?;
+        if hold.endpoint != endpoint {
+            return Err(InventoryError::NoLot);
+        }
+        txn.remove(&self.lot_holds, &lot)?;
+        Ok(())
+    }
+
     /// **Hand the held lot over** (the lot-transfer sale): `holder`'s hold ends and the lot
     /// itself — the same id, grade and lineage — moves from where it was held to `to`.
     ///
@@ -418,5 +440,56 @@ mod tests {
         let wire = serde_json::to_value(hold("tacsim.bay/5/2")).expect("encodes");
         let back: LotHold = serde_json::from_value(wire).expect("decodes");
         assert_eq!(back.holder(), "tacsim.bay/5/2");
+    }
+
+    /// CRIT-9 regression: `release_lot_at` refuses a caller naming a different endpoint than the
+    /// one holding the lot, leaving the hold intact, and releases only when endpoint matches.
+    #[test]
+    fn crit9_release_lot_at_enforces_holding_endpoint() -> Result {
+        let cell: InventoryHandleCell = Arc::default();
+        let inventory = InventoryModule::new()
+            .with_handle_cell(Arc::clone(&cell))
+            .with_indivisible_goods(Arc::new(Parts));
+        let modules: Vec<Box<dyn GameModule>> =
+            vec![Box::new(EconomyModule::new()), Box::new(inventory)];
+        let mut w = TestWorld::with_modules(modules);
+        w.world_mut().set_now(1000);
+        let victim = vault(&mut w, "Victim hold")?;
+        let attacker = vault(&mut w, "Attacker hold")?;
+        let f = cell.get().ok_or("families")?.clone();
+        let part = CanonicalId::new("test.part.sight")?;
+        let origin = ExternalRef {
+            provider: "fixture".into(),
+            kind: "ordinary_origin".into(),
+            id: "crit9-1".into(),
+            revision: Some(1),
+        };
+        let lot = LotId(42);
+        bundle(&mut w, &f, |txn| {
+            f.mint_origins(txn, victim, &[(part, 1, Grade::new(9)?, lot)], &origin)
+                .map(|_| ())
+        })?;
+        bundle(&mut w, &f, |txn| {
+            f.hold_lot(txn, victim, lot, "listing/7").map(|_| ())
+        })?;
+        // Wrong endpoint is refused and leaves the hold intact.
+        check!(
+            bundle(&mut w, &f, |txn| f.release_lot_at(
+                txn,
+                attacker,
+                lot,
+                "listing/7"
+            ))
+            .is_err(),
+            "release_lot_at must refuse a mismatched endpoint"
+        );
+        let still_held = read(&mut w, &f.lot_holds, &lot).ok_or("hold must still exist")?;
+        check_eq!(still_held.endpoint(), victim);
+        // Matching endpoint releases cleanly.
+        bundle(&mut w, &f, |txn| {
+            f.release_lot_at(txn, victim, lot, "listing/7")
+        })?;
+        check!(read(&mut w, &f.lot_holds, &lot).is_none());
+        Ok(())
     }
 }

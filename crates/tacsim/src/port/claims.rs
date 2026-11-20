@@ -474,15 +474,18 @@ pub(crate) fn fee_due(claim: &BlockClaim, registry: &RegistryInfo) -> Option<i64
 }
 
 /// **Whether a fee contract still carries the claim fee's own terms** ([`claim_fee_spec`]'s
-/// shape; the fixer's round on SM.10's review, correctness F1/F2): `Offered`, issued by `payer`
-/// and accepted by it on the surface as it stands (its consent intact); **Public** (the
-/// chronicle's line, lead ruling 3); the payer and the Registry its only parties; no scope, no
-/// adjudicator, no deliverable, `Before` conditions only;
-/// one consideration of exactly `fee_minor` from the payer; one outcome paying exactly
-/// `fee_minor` to the Registry's account; `Forfeit` to it on expiry. **An issuer may amend an
-/// `Offered` contract back to `Draft`, keeping its own escrow, and re-offer other terms**
+/// shape; the fixer's round on SM.10's review, correctness F1/F2; security hardening HIGH-49):
+/// `Offered`, `pending.is_none()`, `amendments == 0`, `consent_intact()`, `name == CLAIM_FEE_NAME`,
+/// issued by `payer` and accepted by it on the surface as it stands; **Public** (the chronicle's
+/// line, lead ruling 3); the payer and the Registry its only parties; no scope, no adjudicator,
+/// no deliverable, no managed/fact consent; exact `TypedCondition::Before { deadline }` and
+/// `consent.deadline == Some(deadline)` pinned to `created_at + CLAIM_FEE_WINDOW_SECS` (`RealUtc`)
+/// with `evidence == [EvidenceKind::Before]`; one consideration of exactly `fee_minor` from the
+/// payer with `remainder_to == row.account`; one outcome `"recorded"` (`when == [0]`) paying
+/// exactly `fee_minor` to the Registry's account; `Forfeit` to it on expiry. **An issuer may amend
+/// an `Offered` contract back to `Draft`, keeping its own escrow, and re-offer other terms**
 /// (`@contract/amend`, mush-economy's consent by authorship), so the offer and the clerk's
-/// acceptance read the terms, never only the state and the sum.
+/// acceptance pin every field of the consent surface and `amendments == 0`.
 #[must_use]
 pub(crate) fn fee_terms_hold(
     contract: &mush_economy::EconomicContract,
@@ -493,29 +496,44 @@ pub(crate) fn fee_terms_hold(
     let consent = &contract.consent;
     let terms = &consent.terms;
     let fee = Amount::from_minor(fee_minor);
+    let expected_deadline = EconomicDeadline {
+        clock: EconomicClock::RealUtc,
+        at: contract.created_at.saturating_add(CLAIM_FEE_WINDOW_SECS),
+    };
     let one_payout = |outcome: &OutcomeTerms| {
-        outcome.asset_consequences.is_empty()
+        outcome.name.as_str() == "recorded"
+            && outcome.when == [0]
+            && outcome.expense_treatment == mush_economy::ExpenseTreatment::None
+            && outcome.asset_consequences.is_empty()
             && matches!(
                 outcome.payouts.as_slice(),
                 [payout] if payout.to == registry.account && payout.share == Share::Exact(fee)
             )
     };
     contract.state == ContractState::Offered
+        && contract.pending.is_none()
         && contract.issuer == *payer
+        && contract.name.as_str() == CLAIM_FEE_NAME
+        && contract.amendments == 0
+        && contract.consent_intact()
         && contract.accepted_by(payer)
+        && consent.fact_consent.is_none()
+        && consent.managed.is_none()
         && consent.visibility == EconomicVisibility::Public
         && consent.scope.is_none()
         && consent.adjudicator.is_none()
         && consent.parties.len() == 2
         && consent.parties.contains(payer)
         && consent.parties.contains(&registry.principal)
-        && consent
-            .conditions
-            .iter()
-            .all(|condition| matches!(condition, TypedCondition::Before { .. }))
+        && consent.conditions
+            == [TypedCondition::Before {
+                deadline: expected_deadline,
+            }]
+        && consent.deadline == Some(expected_deadline)
+        && consent.evidence == [EvidenceKind::Before]
         && matches!(
             terms.consideration.as_slice(),
-            [row] if row.from == *payer && row.amount == fee
+            [row] if row.from == *payer && row.amount == fee && terms.remainder_to == row.account
         )
         && terms.deliverables.is_empty()
         && terms.split.is_empty()
@@ -524,6 +542,39 @@ pub(crate) fn fee_terms_hold(
                 to: registry.account,
             })
         && matches!(terms.outcomes.as_slice(), [outcome] if one_payout(outcome))
+}
+
+/// Refusal returned by [`RegistryFeeDisputeGuard`] when a non-admin party attempts to
+/// `@contract/dispute` a Registry claim or prospecting-licence fee contract (HIGH-50).
+pub const REGISTRY_FEE_DISPUTE_REFUSED: &str =
+    "A Registry fee settles automatically; ask staff if something is wrong with it.";
+
+/// **Dispute guard for Registry claim and licence fee contracts** (security hardening HIGH-50):
+/// refuses non-admin parties disputing a Registry claim fee ([`CLAIM_FEE_NAME`]) or prospecting
+/// licence fee (`LICENCE_NAME`) contract, preventing free licence fee freezes and permanent
+/// `+claim/contest` lockouts. Staff `@contract/resolve` and admin disputes are unaffected.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegistryFeeDisputeGuard;
+
+impl mush_economy::DisputeGuard for RegistryFeeDisputeGuard {
+    fn refusal(
+        &self,
+        w: &World,
+        contract: &mush_economy::EconomicContract,
+        party: &PrincipalId,
+    ) -> Option<&'static str> {
+        let registry = registry_info(w)?;
+        let is_registry_fee = (contract.name.as_str() == CLAIM_FEE_NAME
+            || contract.name.as_str() == crate::port::licence::LICENCE_NAME)
+            && contract.consent.parties.contains(&registry.principal)
+            && contract.consent.adjudicator.is_none()
+            && contract.consent.terms.deliverables.is_empty()
+            && contract.consent.terms.on_expiry
+                == (Expiry::Forfeit {
+                    to: registry.account,
+                });
+        (is_registry_fee && *party != registry.principal).then_some(REGISTRY_FEE_DISPUTE_REFUSED)
+    }
 }
 
 /// **Why a landed claim's fee will never be paid** (D19, OC16): the cause the site clerk's
@@ -599,6 +650,22 @@ fn fee_recorded(w: &World, fee: Option<u64>) -> bool {
                     | ContractState::ReadyToSettle
                     | ContractState::Settled { .. }
             ) || fee_forfeit(contract)
+        })
+}
+
+/// Whether a fee contract is `Disputed` after full acceptance (HIGH-50): prevents a `Disputed`
+/// fee contract (e.g., admin-disputed or pre-hardening) from indefinitely blocking `+claim/contest`.
+fn fee_disputed(w: &World, fee: Option<u64>) -> bool {
+    let Some(economy) = w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    fee_disputed_in_snapshot(economy.snapshot(), fee)
+}
+
+fn fee_disputed_in_snapshot(snapshot: &mush_economy::EconomySnapshot, fee: Option<u64>) -> bool {
+    fee.and_then(|id| snapshot.contract(ContractId(id)))
+        .is_some_and(|contract| {
+            contract.state == ContractState::Disputed && contract.fully_accepted()
         })
 }
 
@@ -1583,11 +1650,14 @@ fn plan_contest(
                 .replace("{org}", &holder_name(w, other)));
         }
     }
-    // The holder's fee recorded (reviewer F2), and the refund an earlier contest owes the
-    // holder's predecessor paid or found owed nothing (the fixer's round, correctness F3): the
+    // The holder's fee recorded (reviewer F2) — or disputed after full acceptance so a `Disputed`
+    // fee cannot indefinitely block contesting (HIGH-50) — and the refund an earlier contest owes
+    // the holder's predecessor paid or found owed nothing (the fixer's round, correctness F3): the
     // record holds one refund slot, and a second transfer before the clerk pays the first would
     // overwrite it.
-    if !fee_recorded(w, claim.fee) || refund_outstanding(w, &entry, letter, &claim) {
+    if (!fee_recorded(w, claim.fee) && !fee_disputed(w, claim.fee))
+        || refund_outstanding(w, &entry, letter, &claim)
+    {
         return Err(CLAIM_PENDING
             .replace("{block}", &block)
             .replace("{site}", &site_name));
@@ -2895,5 +2965,233 @@ mod tests {
         assert_eq!(letter_word("P"), Some('P'));
         assert_eq!(letter_word("Q"), None);
         assert_eq!(letter_word("CD"), None);
+    }
+
+    /// **HIGH-49**: `fee_terms_hold` strictly pins `amendments == 0`, `consent_intact()`, exact
+    /// `TypedCondition::Before { deadline }`, and `consent.deadline` to
+    /// `created_at + CLAIM_FEE_WINDOW_SECS` (`RealUtc`), defeating amended unsettled-`Active`
+    /// Registry-slot / contest-lockout attacks.
+    #[test]
+    fn high49_fee_terms_hold_pins_amendments_before_and_deadline() {
+        use mush_economy::{
+            Acceptance, ConsentSurface, Consideration, ContractTerms, EconomicContract,
+            consent_hash,
+        };
+
+        let payer_obj = ObjId(9);
+        let payer = PrincipalId::Object(payer_obj);
+        let pilot_account = AccountId(1);
+        let registry_principal = PrincipalId::Organization(OrgId(7));
+        let registry_account = AccountId(2);
+        let fee_minor = 400_000_i64;
+        let now = 5_000_i64;
+        let registry = RegistryInfo {
+            principal: registry_principal.clone(),
+            account: registry_account,
+            name: "Freeport Registry".to_owned(),
+            stake_minor: 200_000,
+            term_minor: 200_000,
+        };
+
+        let make_contract = || {
+            let spec = claim_fee_spec(
+                pilot_account,
+                &registry_principal,
+                registry_account,
+                payer_obj,
+                Amount::from_minor(fee_minor),
+                now,
+            );
+            let consent = ConsentSurface {
+                fact_consent: None,
+                managed: None,
+                parties: vec![payer.clone(), registry_principal.clone()],
+                terms: ContractTerms {
+                    consideration: vec![Consideration {
+                        from: payer.clone(),
+                        account: pilot_account,
+                        amount: Amount::from_minor(fee_minor),
+                    }],
+                    deliverables: spec.deliverables,
+                    split: Vec::new(),
+                    remainder_to: spec.remainder_to,
+                    on_expiry: spec.on_expiry,
+                    outcomes: spec.outcomes,
+                },
+                conditions: spec.conditions,
+                deadline: spec.deadline,
+                visibility: spec.visibility,
+                scope: spec.scope,
+                adjudicator: spec.adjudicator,
+                evidence: spec.evidence,
+            };
+            let hash = consent_hash(&payer, &consent);
+            EconomicContract {
+                id: ContractId(55),
+                issuer: payer.clone(),
+                name: spec.name,
+                consent_hash: hash,
+                consent,
+                acceptances: vec![Acceptance {
+                    party: payer.clone(),
+                    consent_hash: hash,
+                    at: now,
+                }],
+                satisfied: vec![None],
+                escrow: Vec::new(),
+                state: ContractState::Offered,
+                settle_attempts: 0,
+                created_at: now,
+                amendments: 0,
+                generation_started_at: now,
+                disputed_at: None,
+                canon_published: None,
+                roster_locked: true,
+                deposits: Vec::new(),
+                agreements: Vec::new(),
+                pending: None,
+                roles: spec.roles,
+                real_deadline_extension_secs: 0,
+                paused_real_remaining_secs: None,
+                revision: 1,
+            }
+        };
+
+        let resign = |c: &mut EconomicContract| {
+            c.consent_hash = consent_hash(&c.issuer, &c.consent);
+            c.acceptances[0].consent_hash = c.consent_hash;
+        };
+
+        assert!(fee_terms_hold(
+            &make_contract(),
+            &payer,
+            &registry,
+            fee_minor
+        ));
+
+        // 1. Amended contract (`amendments > 0`) rejected.
+        let mut amended = make_contract();
+        amended.amendments = 1;
+        assert!(!fee_terms_hold(&amended, &payer, &registry, fee_minor));
+
+        // 2. Empty conditions rejected.
+        let mut no_conds = make_contract();
+        no_conds.consent.conditions.clear();
+        resign(&mut no_conds);
+        assert!(!fee_terms_hold(&no_conds, &payer, &registry, fee_minor));
+
+        // 3. Past / shifted `Before` deadline rejected.
+        let mut past_before = make_contract();
+        past_before.consent.conditions = vec![TypedCondition::Before {
+            deadline: EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: now - 1,
+            },
+        }];
+        resign(&mut past_before);
+        assert!(!fee_terms_hold(&past_before, &payer, &registry, fee_minor));
+
+        // 4. `WorldIc` clock on `Before` rejected.
+        let mut ic_before = make_contract();
+        ic_before.consent.conditions = vec![TypedCondition::Before {
+            deadline: EconomicDeadline {
+                clock: EconomicClock::WorldIc,
+                at: now + CLAIM_FEE_WINDOW_SECS,
+            },
+        }];
+        resign(&mut ic_before);
+        assert!(!fee_terms_hold(&ic_before, &payer, &registry, fee_minor));
+
+        // 5. Missing `consent.deadline` (never-expiring `Active` contract!) rejected.
+        let mut no_deadline = make_contract();
+        no_deadline.consent.deadline = None;
+        resign(&mut no_deadline);
+        assert!(!fee_terms_hold(&no_deadline, &payer, &registry, fee_minor));
+
+        // 6. Far-future `consent.deadline` rejected.
+        let mut far_deadline = make_contract();
+        far_deadline.consent.deadline = Some(EconomicDeadline {
+            clock: EconomicClock::RealUtc,
+            at: now + CLAIM_FEE_WINDOW_SECS + 86_400,
+        });
+        resign(&mut far_deadline);
+        assert!(!fee_terms_hold(&far_deadline, &payer, &registry, fee_minor));
+
+        // 7. Broken `consent_hash` rejected.
+        let mut broken = make_contract();
+        broken.consent_hash = [0x11; 32];
+        assert!(!fee_terms_hold(&broken, &payer, &registry, fee_minor));
+    }
+
+    /// **HIGH-50**: `fee_disputed` recognizes fully-accepted `Disputed` fee contracts so they
+    /// cannot indefinitely block `+claim/contest`.
+    #[test]
+    fn high50_fee_disputed_requires_full_acceptance() {
+        use mush_economy::{
+            Acceptance, ConsentSurface, ContractTerms, EconomicContract, consent_hash,
+        };
+
+        let payer = PrincipalId::Object(ObjId(9));
+        let registry = PrincipalId::Organization(OrgId(7));
+        let consent = ConsentSurface {
+            fact_consent: None,
+            managed: None,
+            parties: vec![payer.clone(), registry.clone()],
+            terms: ContractTerms {
+                consideration: Vec::new(),
+                deliverables: Vec::new(),
+                split: Vec::new(),
+                remainder_to: AccountId(1),
+                on_expiry: Expiry::Forfeit { to: AccountId(2) },
+                outcomes: Vec::new(),
+            },
+            conditions: Vec::new(),
+            deadline: None,
+            visibility: EconomicVisibility::Public,
+            scope: None,
+            adjudicator: None,
+            evidence: Vec::new(),
+        };
+        let hash = consent_hash(&payer, &consent);
+        let contract = EconomicContract {
+            id: ContractId(88),
+            issuer: payer.clone(),
+            name: SmolStr::new_static(CLAIM_FEE_NAME),
+            consent_hash: hash,
+            consent,
+            acceptances: vec![
+                Acceptance {
+                    party: payer,
+                    consent_hash: hash,
+                    at: 100,
+                },
+                Acceptance {
+                    party: registry,
+                    consent_hash: hash,
+                    at: 101,
+                },
+            ],
+            satisfied: Vec::new(),
+            escrow: Vec::new(),
+            state: ContractState::Disputed,
+            settle_attempts: 0,
+            created_at: 100,
+            amendments: 0,
+            generation_started_at: 100,
+            disputed_at: Some(102),
+            canon_published: None,
+            roster_locked: true,
+            deposits: Vec::new(),
+            agreements: Vec::new(),
+            pending: None,
+            roles: ContractRoles::default(),
+            real_deadline_extension_secs: 0,
+            paused_real_remaining_secs: None,
+            revision: 1,
+        };
+        let mut snap = mush_economy::EconomySnapshot::default();
+        snap.put_contract(contract);
+        assert!(fee_disputed_in_snapshot(&snap, Some(88)));
+        assert!(!fee_disputed_in_snapshot(&snap, Some(89)));
     }
 }

@@ -301,6 +301,12 @@ fn desc_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.w.remove_attr(target, "desc")?;
         ctx.out.info(ctx.actor, "Description cleared.");
     } else {
+        if !perm::has_role(ctx.w, ctx.actor, Role::Wizard)
+            && let Some(o) = ctx.w.get(target)
+            && let Err(e) = o.attrs.check_default_limits("desc", rhs.len())
+        {
+            return Err(CmdError::msg(e.to_string()));
+        }
         ctx.w.set_attr(target, "desc", Attr::text(rhs, ctx.actor))?;
         ctx.out.info(ctx.actor, "Set.");
     }
@@ -323,9 +329,27 @@ fn name_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !perm::can_modify(ctx.w, ctx.actor, target) {
         return Err(perm_denied());
     }
+    if parts.len().saturating_sub(1) > crate::world::MAX_ALIASES_PER_OBJECT {
+        return Err(CmdError::msg(format!(
+            "Too many aliases (maximum {}).",
+            crate::world::MAX_ALIASES_PER_OBJECT
+        )));
+    }
+    let kind = ctx.w.get(target).map(|o| o.kind);
+    // Validate primary name and every alias BEFORE mutating anything (CORE-M3).
+    if kind == Some(ObjKind::Player) {
+        for part in &parts {
+            crate::world::validate_player_name_part(part, target == crate::obj::GOD, 2)
+                .map_err(CmdError::msg)?;
+        }
+    } else {
+        for part in &parts {
+            crate::world::validate_object_name_part(part).map_err(CmdError::msg)?;
+        }
+    }
     // 16c B-75 (cut AQ): an exit's new name and every new alias may not be a
     // kernel or host word; refused before anything is renamed.
-    if ctx.w.get(target).is_some_and(|o| o.kind == ObjKind::Exit) {
+    if kind == Some(ObjKind::Exit) {
         for part in &parts {
             check_exit_words(ctx.reg, part)?;
         }
@@ -333,7 +357,7 @@ fn name_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Validate every new alias BEFORE mutating anything, so a collision
     // cannot leave the object half-renamed (the new name itself is checked
     // by set_name before it mutates).
-    if ctx.w.get(target).is_some_and(|o| o.kind.is_actor()) {
+    if kind.is_some_and(ObjKind::is_actor) {
         for a in &parts[1..] {
             if ctx.w.resolve_player(a).is_some_and(|other| other != target) {
                 return Err(CmdError::msg("That name is already in use."));
@@ -342,6 +366,7 @@ fn name_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     ctx.w.set_name(target, &new_name).map_err(|e| match e {
         crate::world::WorldError::NameInUse(_) => CmdError::msg("That name is already in use."),
+        crate::world::WorldError::InvalidName(msg) => CmdError::msg(msg),
         other => other.into(),
     })?;
     // Aliases given with the new name replace the old alias set.
@@ -354,7 +379,15 @@ fn name_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.w.remove_alias(target, &a)?;
     }
     for a in &parts[1..] {
-        ctx.w.add_alias(target, a)?;
+        ctx.w.add_alias(target, a).map_err(|e| match e {
+            crate::world::WorldError::NameInUse(_) => CmdError::msg("That name is already in use."),
+            crate::world::WorldError::InvalidName(msg) => CmdError::msg(msg),
+            crate::world::WorldError::TooManyAliases => CmdError::msg(format!(
+                "Too many aliases (maximum {}).",
+                crate::world::MAX_ALIASES_PER_OBJECT
+            )),
+            other => other.into(),
+        })?;
     }
     ctx.out.info(ctx.actor, "Name set.");
     Ok(())
@@ -456,6 +489,12 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ctx.w.remove_attr(target, aname)?;
             ctx.out.info(ctx.actor, format!("{aname} - Cleared."));
         } else {
+            if !perm::has_role(ctx.w, ctx.actor, Role::Wizard)
+                && let Some(o) = ctx.w.get(target)
+                && let Err(e) = o.attrs.check_default_limits(aname, rhs.len())
+            {
+                return Err(CmdError::msg(e.to_string()));
+            }
             let attr = Attr {
                 value: AttrValue::Text(rhs),
                 owner: ctx.actor,

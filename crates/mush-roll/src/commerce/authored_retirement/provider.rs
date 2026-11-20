@@ -41,6 +41,28 @@ impl Provider {
         if subject.actor != inv.actor() || subject.base != base {
             return Err(PublicationError::Mismatch);
         }
+        {
+            let world = ctx.world().map_err(bad)?;
+            let roll = world
+                .module_state::<crate::RollStore>()
+                .ok_or(PublicationError::Unavailable)?;
+            let mut retired = 0usize;
+            for commit in roll.draft_retirement_commits() {
+                if txn
+                    .get(&self.families.authored_retirements, &commit.to_hex())
+                    .map_err(bad)?
+                    .is_some_and(|row| row.actor == inv.actor())
+                {
+                    retired += 1;
+                }
+            }
+            if retired
+                >= super::super::authored_fork::MAX_DERIVATIVE_DRAFTS_PER_CHARACTER
+                    + crate::MAX_MINDS
+            {
+                return Err(PublicationError::Capacity);
+            }
+        }
         let key = subject.selector.key();
         if txn.get(&self.families.draft_parents, &key).map_err(bad)? != Some(&subject.selector)
             || txn

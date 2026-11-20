@@ -47,6 +47,14 @@ pub const TRASH: &str = "trash";
 /// overridable via the persisted `config` document. Staff (Wizard+) are
 /// exempt.
 pub const DEFAULT_QUOTA: usize = 300;
+/// Hard ceiling on entries retained in a player's hidden `trash` folder.
+/// Trashing a message past this cap auto-prunes the oldest trash entries so
+/// deleting mail from a full inbox still works without allowing unbounded storage.
+pub const MAX_TRASH_ENTRIES: usize = 100;
+/// Default number of messages shown per page in `@mail` / `@mail/list` and `mail.list`.
+pub const MAIL_LIST_PAGE_SIZE: usize = 50;
+/// Maximum number of entries returned by a single `mail.list` query.
+pub const MAIL_QUERY_MAX_LIMIT: usize = 100;
 /// Maximum user-created folders per player.
 pub const MAX_USER_FOLDERS: usize = 16;
 /// Maximum folder-name length (after lowercasing).
@@ -274,12 +282,29 @@ impl MailState {
     /// the trash**. Trash is excluded so that a player at quota can always
     /// free space themselves (`@mail/delete` then `@mail/purge`) — if
     /// trashed mail still counted, a full mailbox would refuse all inbound
-    /// mail forever with no self-service way out.
+    /// mail forever with no self-service way out. Trash itself is bounded
+    /// separately by [`Self::trash_cap`] with oldest-first auto-pruning.
     #[must_use]
     pub fn entry_count(&self, owner: ObjId) -> usize {
         self.boxes.get(&owner).map_or(0, |b| {
             b.entries.values().filter(|e| e.folder != TRASH).count()
         })
+    }
+
+    /// Entries `owner` currently holds in the hidden `trash` folder.
+    #[must_use]
+    pub fn trash_count(&self, owner: ObjId) -> usize {
+        self.boxes.get(&owner).map_or(0, |b| {
+            b.entries.values().filter(|e| e.folder == TRASH).count()
+        })
+    }
+
+    /// Hard cap on `trash` entries for a non-staff mailbox: matches the
+    /// configured quota, clamped to `1..=MAX_TRASH_ENTRIES` so at least one
+    /// deleted message always fits even at quota=1 while bounding storage.
+    #[must_use]
+    pub fn trash_cap(&self) -> usize {
+        self.quota.clamp(1, MAX_TRASH_ENTRIES)
     }
 
     /// `owner`'s current folder (the one `@mail` lists).

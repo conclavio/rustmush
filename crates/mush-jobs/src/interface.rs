@@ -3,13 +3,14 @@
 
 use mush_core::{
     AbilityCall, Ctx, InterfaceAbility, InterfaceAbilityProvider, InterfaceError, InterfaceReply,
+    Role, perm,
 };
 use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 use crate::api::{OpenJob, open_job};
 use crate::data::JobsState;
-use crate::{MAX_JOB_TITLE_BYTES, REQ_QUEUE};
+use crate::{MAX_JOB_TITLE_BYTES, MAX_OPEN_REQUESTS_PER_PLAYER, REQ_QUEUE};
 
 /// The provider id.
 pub const REQUEST_INTERFACE: &str = "request";
@@ -74,6 +75,18 @@ impl InterfaceAbilityProvider for RequestInterface {
                     .map(str::trim)
                     .filter(|t| !t.is_empty())
                     .map(str::to_string);
+                if !perm::has_role(ctx.w, call.asker, Role::Royalty) {
+                    let open = ctx
+                        .w
+                        .module_state::<JobsState>()
+                        .map_or(0, |st| st.open_request_count(call.asker));
+                    if open >= MAX_OPEN_REQUESTS_PER_PLAYER {
+                        return Err(InterfaceError::Refused(format!(
+                            "You already have {open} open requests (the cap is \
+                             {MAX_OPEN_REQUESTS_PER_PLAYER})."
+                        )));
+                    }
+                }
                 let id = open_job(
                     ctx,
                     OpenJob {

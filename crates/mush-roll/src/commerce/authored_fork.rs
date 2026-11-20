@@ -26,6 +26,35 @@ use crate::RollStore;
 
 const ACTION: &str = "fork_paid_mind";
 const OUTCOME: &str = "paid_mind_forked";
+/// Bounded lifetime derivative drafts (active + retired) per character so a
+/// zero-fee fork/retire loop cannot exhaust `RollStore::MAX_RECORDS`.
+pub(crate) const MAX_DERIVATIVE_DRAFTS_PER_CHARACTER: usize = 64;
+
+fn check_derivative_draft_quota(
+    roll: &RollStore,
+    txn: &mut ActionTxn<'_>,
+    families: &CommerceFamilies,
+    actor: mush_core::ObjId,
+) -> Result<(), PublicationError> {
+    let active = roll
+        .derivative_minds()
+        .filter(|mind| mind.character == actor)
+        .count();
+    let mut retired = 0usize;
+    for commit in roll.draft_retirement_commits() {
+        if txn
+            .get(&families.authored_retirements, &commit.to_hex())
+            .map_err(invalid)?
+            .is_some_and(|row| row.actor == actor)
+        {
+            retired += 1;
+        }
+    }
+    if active.saturating_add(retired) >= MAX_DERIVATIVE_DRAFTS_PER_CHARACTER {
+        return Err(PublicationError::Capacity);
+    }
+    Ok(())
+}
 fn error(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
 }
@@ -149,6 +178,13 @@ impl<S: OwnerReadService<Request = ForkMaterialRequest, Output = ForkMaterial>> 
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, PublicationError> {
         let request = self.request(inv)?;
+        {
+            let world = ctx.world().map_err(invalid)?;
+            let roll = world
+                .module_state::<RollStore>()
+                .ok_or(PublicationError::Unavailable)?;
+            check_derivative_draft_quota(roll, txn, &self.families, inv.actor())?;
+        }
         let grant = ctx
             .read_owner_preimage(
                 txn,
@@ -408,6 +444,152 @@ mod tests {
         check!(
             !exact_action(&actual, &altered),
             "same locator does not replace the captured exact configured action"
+        );
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn seed_parent_revision_kv()
+    -> Result<Vec<(smol_str::SmolStr, serde_json::Value)>, Box<dyn std::error::Error>> {
+        use crate::{Envelope, WorkingCopy};
+        use mush_core::ObjId;
+
+        let mut kv = Vec::new();
+        let mut store = RollStore::default();
+        let draft_copy = WorkingCopy {
+            source: "seed".into(),
+            envelope: Envelope {
+                schema: json!({"widgets": []}),
+                presets: json!({}),
+                profiles: json!({"line": {"min_odds": 30}}),
+                rules: json!({"line": []}),
+                declared_class: "I".into(),
+                mind_abi: "test=1".into(),
+            },
+        };
+        let create = store.prepare_create(ObjId(1), "parent", draft_copy)?;
+        for op in create.operations() {
+            if let mush_core::ModuleWrite::JsonSet { key, value } = &op.op {
+                kv.push((key.clone(), value.clone()));
+            }
+        }
+        store.publish_with(create, |_| {})?;
+        Ok(kv)
+    }
+
+    #[inline(never)]
+    fn seed_retired_derivative_drafts(
+        engine: &mut mush_core::Engine,
+        f: &CommerceFamilies,
+        actor: mush_core::ObjId,
+        kv: &mut Vec<(smol_str::SmolStr, serde_json::Value)>,
+    ) -> TestResult {
+        use crate::commerce::authored_retirement::records::RetirementOperation;
+        use crate::commerce::roots::RootAnchor;
+        use crate::{ReferenceKey, ReferenceKind, ReferenceRecord};
+        use mush_core::{DefinitionDigest, ObjId};
+
+        let digest = DefinitionDigest::from_bytes([9; 32]);
+        let rev_ref = crate::RevisionRef {
+            key: crate::RevisionKey {
+                character: ObjId(1),
+                mind: 1,
+                number: 1,
+            },
+            digest,
+        };
+        let parent_id: crate::commerce::RevisionIdentity = serde_json::from_value(json!({
+            "format": 1,
+            "revision": rev_ref,
+            "source": digest
+        }))?;
+        let ret_action = crate::commerce::authored_retirement::action_reference()?;
+        let mut txn = engine.action_transaction(&f.authored_retirements)?;
+        for i in 0..MAX_DERIVATIVE_DRAFTS_PER_CHARACTER {
+            let commit = CommitToken::from_bytes([u8::try_from(i + 1)?; 16]);
+            let op = RetirementOperation {
+                format: 1,
+                actor,
+                mind: u64::try_from(i + 1)?,
+                selection: DefinitionDigest::from_bytes([u8::try_from(i + 1)?; 32]),
+                operation: commit,
+                base: crate::EditBase {
+                    edit: 0,
+                    revision: None,
+                },
+                action: ret_action.clone(),
+                name: format!("d_{i}"),
+                parent: parent_id,
+                unnamed: Vec::new(),
+                named: Vec::new(),
+            };
+            let anchor = RootAnchor::DraftRetirement(commit, op.digest()?);
+            let ref_rec = ReferenceRecord {
+                format: crate::FORMAT,
+                key: ReferenceKey {
+                    owner: crate::NS.into(),
+                    kind: ReferenceKind::Commercial,
+                    record: anchor.record(),
+                },
+                revisions: vec![rev_ref],
+            };
+            kv.push((ref_rec.key.key().into(), serde_json::to_value(&ref_rec)?));
+            txn.insert(&f.authored_retirements, &op.key(), op)?;
+        }
+        let (_, install) = txn.prepare()?.into_parts();
+        engine.install_prepared_action(install)?;
+        Ok(())
+    }
+
+    #[test]
+    fn high19_authored_fork_caps_total_active_and_retired_derivative_drafts() -> TestResult {
+        use mush_core::{GameModule, ModuleBootData, ObjId, Registry, World};
+        use mush_testkit::fixtures::boxed_engine;
+        use std::sync::{Arc, Mutex};
+
+        struct FamiliesMod(Arc<Mutex<Option<CommerceFamilies>>>);
+        impl GameModule for FamiliesMod {
+            fn name(&self) -> &'static str {
+                crate::NS
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                let f = CommerceFamilies::register(reg)?;
+                *self.0.lock().map_err(|_| ModError::msg("lock"))? = Some(f);
+                Ok(())
+            }
+        }
+
+        let slot = Arc::new(Mutex::new(None));
+        let mut engine = boxed_engine(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(FamiliesMod(slot.clone()))],
+        )?;
+        let f = slot.lock().map_err(|_| "lock")?.clone().ok_or("families")?;
+
+        let actor = ObjId(42);
+        let other = ObjId(43);
+        // Seed parent revision so RollStore::load validates the commercial anchors cleanly.
+        let mut kv = seed_parent_revision_kv()?;
+        // Seed MAX_DERIVATIVE_DRAFTS_PER_CHARACTER retired derivative drafts for `actor`.
+        seed_retired_derivative_drafts(&mut engine, &f, actor, &mut kv)?;
+        let roll = Box::new(RollStore::load_commerce(&ModuleBootData {
+            kv,
+            ..Default::default()
+        })?);
+        check_eq!(
+            roll.draft_retirement_commits().len(),
+            MAX_DERIVATIVE_DRAFTS_PER_CHARACTER
+        );
+        let mut txn = engine.action_transaction(&f.authored_retirements)?;
+        check_eq!(
+            check_derivative_draft_quota(&roll, &mut txn, &f, actor),
+            Err(PublicationError::Capacity),
+            "actor at MAX_DERIVATIVE_DRAFTS_PER_CHARACTER retired drafts cannot fork more"
+        );
+        check!(
+            check_derivative_draft_quota(&roll, &mut txn, &f, other).is_ok(),
+            "unrelated character retains full derivative quota"
         );
         Ok(())
     }

@@ -90,6 +90,14 @@ pub const MAX_AMENDMENTS: u32 = 32;
 pub const MAX_DEPOSITS: usize = 1;
 /// Maximum non-terminal contracts one issuer may hold open (§9; E4b2 enforces).
 pub const MAX_OPEN_CONTRACTS_PER_ISSUER: usize = 16;
+/// Maximum zero-history `Cancelled` draft/offer tombstones retained per issuer
+/// between sweeps (HIGH-22). Keeping a small bounded tail preserves immediate
+/// visibility of a just-canceled contract in [`ContractState::Cancelled`] for
+/// callers, observers, and audits while bounding draft+cancel storage growth.
+pub const MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER: usize = 8;
+/// Global ceiling on zero-history `Cancelled` draft/offer tombstones retained
+/// across all issuers between sweeps (HIGH-22).
+pub const MAX_RETAINED_CANCELLED_DRAFTS: usize = 64;
 /// Maximum live contracts one party may be named on (§9; E4b2 enforces). 100 since the owner's
 /// ruling of 2026-10-26 (doc 20b OD-1, doc 20's O-19c), 32 before: a 64-TV surface cohort's
 /// kit-up puts Occator on 64 rig leases, and the Co-op Trust and the Registry on one contract a
@@ -1895,6 +1903,17 @@ fn check_structure_basic(c: &EconomicContract) -> Result<(), ContractError> {
             return Err(ContractError::Infeasible(
                 "a condition names an attestor set nobody can satisfy",
             ));
+        }
+        if let TypedCondition::Fact { fact } = con {
+            if fact.provider.len() > crate::record::MAX_EXTERNAL_REF_FIELD_BYTES {
+                return Err(ContractError::TooLarge("a fact provider is too long"));
+            }
+            if fact.kind.len() > crate::record::MAX_EXTERNAL_REF_FIELD_BYTES {
+                return Err(ContractError::TooLarge("a fact kind is too long"));
+            }
+            if fact.id.len() > crate::record::MAX_EXTERNAL_REF_ID_BYTES {
+                return Err(ContractError::TooLarge("a fact id is too long"));
+            }
         }
     }
     // E6b independent verify fold (D6): a `Canon` set's **kind and source are stored

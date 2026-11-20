@@ -595,7 +595,7 @@ pub(crate) fn on_withdrawn(
 
 /// **Whether `row`'s rig record no longer owes it** (doc 23 cut D-23-18): the record's open epoch
 /// holds this very mind, or it is no longer the epoch the row was carried for.
-fn carried_laid(ctx: &Ctx<'_>, row: &super::record::CarriedRow) -> bool {
+pub(crate) fn carried_laid(ctx: &Ctx<'_>, row: &super::record::CarriedRow) -> bool {
     super::parties::rig_record(ctx, row.unit)
         .and_then(|rig| rig.sortie)
         .is_none_or(|open| open.id != row.epoch || open.mind.as_deref() == Some(&row.mind))

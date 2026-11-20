@@ -62,12 +62,80 @@ pub fn match_object(w: &World, looker: ObjId, raw: &str) -> Result<ObjId, MatchE
         return w.resolve_player(name.trim()).ok_or(MatchErr::NoMatch);
     }
 
+    match_local_filtered(w, looker, q, |_| true)
+}
+
+/// Resolve `raw` to an object from `looker`'s point of view, filtering EVERY
+/// candidate (including `#id`, `*name`, inventory, room contents, exits,
+/// prefixes, and ordinals) through `can_see` before matching.
+///
+/// Filtering before ambiguity/ordinal resolution prevents `DARK` or otherwise
+/// concealed objects from leaking existence via `Ambiguous` replies or ordinal
+/// index shifts (HIGH-17).
+pub fn match_object_visible<F>(
+    w: &World,
+    looker: ObjId,
+    raw: &str,
+    mut can_see: F,
+) -> Result<ObjId, MatchErr>
+where
+    F: FnMut(ObjId) -> bool,
+{
+    let q = raw.trim();
+    if q.is_empty() {
+        return Err(MatchErr::NoMatch);
+    }
+    if q.eq_ignore_ascii_case("me") {
+        return if w.get(looker).is_some() && can_see(looker) {
+            Ok(looker)
+        } else {
+            Err(MatchErr::NoMatch)
+        };
+    }
+    if q.eq_ignore_ascii_case("here") {
+        return w
+            .get(looker)
+            .and_then(|o| o.location)
+            .filter(|&id| can_see(id))
+            .ok_or(MatchErr::NoMatch);
+    }
+    if let Some(num) = q.strip_prefix('#') {
+        return num
+            .parse::<u32>()
+            .ok()
+            .map(ObjId)
+            .filter(|&id| w.get(id).is_some() && can_see(id))
+            .ok_or(MatchErr::NoMatch);
+    }
+    if let Some(name) = q.strip_prefix('*') {
+        return w
+            .resolve_player(name.trim())
+            .filter(|&id| can_see(id))
+            .ok_or(MatchErr::NoMatch);
+    }
+
+    match_local_filtered(w, looker, q, can_see)
+}
+
+/// Steps 5–9 of the precedence order over local candidate pools, dropping
+/// `GOING` husks and anything rejected by `can_see`.
+fn match_local_filtered<F>(
+    w: &World,
+    looker: ObjId,
+    q: &str,
+    mut can_see: F,
+) -> Result<ObjId, MatchErr>
+where
+    F: FnMut(ObjId) -> bool,
+{
     let loc = w.get(looker).and_then(|o| o.location);
-    let inv = pool(w, w.contents_of(looker));
+    let inv = pool_filtered(w, w.contents_of(looker), &mut can_see);
     // The looker is part of the location contents on purpose: matching
     // your own name is classic behavior ("@set Bob=..." typed by Bob).
-    let here = loc.map_or_else(Vec::new, |l| pool(w, w.contents_of(l)));
-    let exits = loc.map_or_else(Vec::new, |l| pool(w, w.exits_of(l)));
+    let here = loc.map_or_else(Vec::new, |l| {
+        pool_filtered(w, w.contents_of(l), &mut can_see)
+    });
+    let exits = loc.map_or_else(Vec::new, |l| pool_filtered(w, w.exits_of(l), &mut can_see));
 
     // 5/6: exact in inventory, then location.
     if let Some(r) = pick_exact(w, &inv, q) {
@@ -149,13 +217,17 @@ pub fn is_nearby(w: &World, looker: ObjId, target: ObjId) -> bool {
     loc == target || w.contents_of(loc).contains(&target) || w.exits_of(loc).contains(&target)
 }
 
-/// Filter a candidate list: drop `GOING` husks.
-fn pool(w: &World, ids: &[ObjId]) -> Vec<ObjId> {
+/// Filter a candidate list: drop `GOING` husks and anything rejected by `can_see`.
+fn pool_filtered<F>(w: &World, ids: &[ObjId], can_see: &mut F) -> Vec<ObjId>
+where
+    F: FnMut(ObjId) -> bool,
+{
     ids.iter()
         .copied()
         .filter(|&id| {
             w.get(id)
                 .is_some_and(|o| !o.flags.contains(crate::flags::Flags::GOING))
+                && can_see(id)
         })
         .collect()
 }
@@ -363,5 +435,38 @@ mod tests {
         assert_eq!(parse_ordinal("2nd"), None);
         assert_eq!(parse_ordinal("0th sword"), None);
         assert_eq!(parse_ordinal("sword"), None);
+    }
+
+    #[test]
+    fn match_object_visible_eliminates_dark_ambiguity_and_ordinal_oracles() {
+        let (mut w, nick, hall, _bob, _ms, sword1, sword2, _l, _n) = build();
+        let ghost = w.create(ObjKind::Thing, "ghost", GOD, Some(hall)).unwrap();
+        let ghoul = w.create(ObjKind::Thing, "ghoul", GOD, Some(hall)).unwrap();
+        w.set_flag(ghost, Flags::DARK, true).unwrap();
+        w.set_flag(sword1, Flags::DARK, true).unwrap();
+
+        let visible = |id: ObjId| w.get(id).is_some_and(|o| !o.flags.contains(Flags::DARK));
+
+        // Prefix "gh" must resolve unambiguously to visible "ghoul" rather than
+        // leaking the DARK "ghost" via Ambiguous.
+        assert_eq!(match_object(&w, nick, "gh"), Err(MatchErr::Ambiguous));
+        assert_eq!(match_object_visible(&w, nick, "gh", visible), Ok(ghoul));
+        assert_eq!(
+            match_object_visible(&w, nick, "ghost", visible),
+            Err(MatchErr::NoMatch)
+        );
+        assert_eq!(
+            match_object_visible(&w, nick, &ghost.to_string(), visible),
+            Err(MatchErr::NoMatch)
+        );
+        // Ordinal skips DARK sword1: 2nd sword is sword2 (1st is carried my_sword).
+        assert_eq!(
+            match_object_visible(&w, nick, "2nd sword", visible),
+            Ok(sword2)
+        );
+        assert_eq!(
+            match_object_visible(&w, nick, "3rd sword", visible),
+            Err(MatchErr::NoMatch)
+        );
     }
 }

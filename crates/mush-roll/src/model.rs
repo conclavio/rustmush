@@ -52,6 +52,9 @@ pub const MAX_REFERENCE_TARGETS: usize = 128;
 pub const MAX_REFERENCE_CHANGES: usize = 128;
 pub const MAX_REFERENCE_ID_BYTES: usize = 192;
 pub const MAX_RECORDS: usize = 65_536;
+/// Maximum retained authoring records (library, minds, revisions, and owned
+/// name/history roots) held concurrently by any single character.
+pub const MAX_RECORDS_PER_CHARACTER: usize = 1_024;
 pub const MAX_GC_BATCH: usize = 128;
 
 /// Schema-neutral executable metadata. The outer shape and allocation bounds

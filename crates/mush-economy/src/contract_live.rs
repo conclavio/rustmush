@@ -49,11 +49,12 @@ use crate::contract::{
     ContractError, ContractRoles, ContractState, ContractTerms, DRAFT_TTL_SECS, Deliverable,
     DepositRecord, EconomicContract, EvidenceKind, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS,
     MAX_CONDITIONS, MAX_CONTRACT_NAME_BYTES, MAX_DELIVERABLES, MAX_DEPOSITS,
-    MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOMES, MAX_PARTIES,
-    MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms, PERMILLE, PartyAgreement,
-    PayoutShare, PendingKind, PendingTerminal, Readiness, Resolution, Share, TypedCondition,
-    activate_key, check_offerable, consent_hash, forfeit_plan, prepare_settlement, principal_key,
-    qualifying_escrow, readiness, refund_plan,
+    MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOME_NAME_BYTES,
+    MAX_OUTCOMES, MAX_PARTIES, MAX_RETAINED_CANCELLED_DRAFTS,
+    MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate,
+    OutcomeTerms, PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, Readiness,
+    Resolution, Share, TypedCondition, activate_key, check_offerable, consent_hash, forfeit_plan,
+    prepare_settlement, principal_key, qualifying_escrow, readiness, refund_plan,
 };
 use crate::custody::WorldCustody;
 use crate::engine::ValidateEnv;
@@ -65,7 +66,7 @@ use crate::obligation::{GracePolicy, Obligation, ObligationCause, ObligationStat
 use crate::plan::{EconomyError, EconomyPlan, HoldOp, NamedResource};
 use crate::record::{
     AccountStatus, EconomicCause, EconomicVisibility, ExternalRef, HoldEffectKind, HoldPurpose,
-    MAX_AUDIENCE,
+    MAX_AUDIENCE, MAX_EXTERNAL_REF_FIELD_BYTES, MAX_EXTERNAL_REF_ID_BYTES,
 };
 
 /// The refusal text every unviewable contract renders as (§4.5's existence hiding):
@@ -577,15 +578,32 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // §9's cap, counted over NON-TERMINAL contracts: a terminal one costs nothing to
     // keep, and an issuer who cannot open a seventeenth draft can still read the
     // sixteen they have.
-    let open = ctx.w.module_state::<EconomyStore>().map_or(0, |st| {
-        st.snapshot()
-            .contracts()
-            .filter(|c| c.issuer == issuer && counts_as_trade(c))
-            .count()
+    let (open, authored_open) = ctx.w.module_state::<EconomyStore>().map_or((0, 0), |st| {
+        let author = PrincipalId::Object(ctx.actor);
+        let mut by_issuer = 0usize;
+        let mut by_author = 0usize;
+        for c in st.snapshot().contracts() {
+            if !counts_as_trade(c) {
+                continue;
+            }
+            if c.issuer == issuer {
+                by_issuer += 1;
+            }
+            if c.roles.author.as_ref() == Some(&author) {
+                by_author += 1;
+            }
+        }
+        (by_issuer, by_author)
     });
     if open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
         return Err(CmdError::msg(format!(
             "That issuer already has {open} contracts open (the cap is \
+             {MAX_OPEN_CONTRACTS_PER_ISSUER}). Settle, cancel or let some expire first."
+        )));
+    }
+    if !is_admin(ctx.w, ctx.actor) && authored_open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
+        return Err(CmdError::msg(format!(
+            "You already have {authored_open} drafted/open contracts (the cap is \
              {MAX_OPEN_CONTRACTS_PER_ISSUER}). Settle, cancel or let some expire first."
         )));
     }
@@ -1111,7 +1129,11 @@ fn parse_attestor(ctx: &Ctx<'_>, s: &str) -> Option<AttestorSet> {
     }
     if let Some(rest) = t.strip_prefix("canon:") {
         let (kind, source) = rest.split_once(':')?;
-        if kind.is_empty() || source.is_empty() {
+        if kind.is_empty()
+            || source.is_empty()
+            || kind.len() > MAX_OUTCOME_NAME_BYTES
+            || source.len() > MAX_OUTCOME_NAME_BYTES
+        {
             return None;
         }
         return Some(AttestorSet::Canon {
@@ -1192,6 +1214,21 @@ fn build_condition(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .transpose()?;
             if words.next().is_some() {
                 return Err(CmdError::msg(USAGE));
+            }
+            if provider.len() > MAX_EXTERNAL_REF_FIELD_BYTES {
+                return Err(CmdError::msg(format!(
+                    "A fact provider may be at most {MAX_EXTERNAL_REF_FIELD_BYTES} bytes."
+                )));
+            }
+            if fkind.len() > MAX_EXTERNAL_REF_FIELD_BYTES {
+                return Err(CmdError::msg(format!(
+                    "A fact kind may be at most {MAX_EXTERNAL_REF_FIELD_BYTES} bytes."
+                )));
+            }
+            if fid.len() > MAX_EXTERNAL_REF_ID_BYTES {
+                return Err(CmdError::msg(format!(
+                    "A fact id may be at most {MAX_EXTERNAL_REF_ID_BYTES} bytes."
+                )));
             }
             TypedCondition::Fact {
                 fact: ExternalRef {
@@ -1493,12 +1530,27 @@ fn build_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let when = parse_indexes(opts.get("when").map(String::as_str).unwrap_or(""))
         .ok_or_else(|| CmdError::msg(USAGE))?;
+    if when.len() > MAX_CONDITIONS {
+        return Err(CmdError::msg(format!(
+            "An outcome may name at most {MAX_CONDITIONS} conditions."
+        )));
+    }
     let payouts = parse_shares(opts.get("pay").map(String::as_str).unwrap_or(""))
         .ok_or_else(|| CmdError::msg(USAGE))?;
+    if payouts.is_empty() || payouts.len() > MAX_SHARES {
+        return Err(CmdError::msg(format!(
+            "An outcome must name between 1 and {MAX_SHARES} payout shares."
+        )));
+    }
     let asset_consequences = match opts.get("titles") {
         None => Vec::new(),
         Some(s) => parse_indexes(s).ok_or_else(|| CmdError::msg(USAGE))?,
     };
+    if asset_consequences.len() > MAX_DELIVERABLES {
+        return Err(CmdError::msg(format!(
+            "An outcome may name at most {MAX_DELIVERABLES} deliverables."
+        )));
+    }
     let expense_treatment = match opts.get("expense").map(String::as_str) {
         None | Some("none") => crate::contract::ExpenseTreatment::None,
         Some("retained") => crate::contract::ExpenseTreatment::Retained,
@@ -1506,7 +1558,8 @@ fn build_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some("reimbursed") => crate::contract::ExpenseTreatment::Reimbursed,
         Some(_) => return Err(CmdError::msg(USAGE)),
     };
-    if c.consent.terms.outcomes.len() >= MAX_OUTCOMES {
+    let replaces_existing = c.consent.terms.outcomes.iter().any(|o| o.name == name);
+    if !replaces_existing && c.consent.terms.outcomes.len() >= MAX_OUTCOMES {
         return Err(CmdError::msg(format!("At most {MAX_OUTCOMES} outcomes.")));
     }
     c.consent.terms.outcomes.retain(|o| o.name != name);
@@ -3201,6 +3254,94 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
 
 // ---- cancellation, amendment, refunds --------------------------------------
 
+/// Whether an unmanaged contract has never carried acceptances, escrow, deposits,
+/// amendments, pending unwinds, or canon output and can therefore be pruned outright
+/// instead of remaining as a permanent tombstone.
+fn has_no_economic_history(c: &EconomicContract, snap: &crate::snapshot::EconomySnapshot) -> bool {
+    c.consent.managed.is_none()
+        && c.acceptances.is_empty()
+        && c.escrow.is_empty()
+        && c.deposits.is_empty()
+        && c.amendments == 0
+        && c.pending.is_none()
+        && c.canon_published.is_none()
+        && qualifying_escrow(c, snap).holds.is_empty()
+        && !snap
+            .holds()
+            .any(|h| h.status.is_held() && h.purpose == HoldPurpose::Escrow { contract: c.id })
+}
+
+/// A `Cancelled` tombstone with no economic history that may be evicted past
+/// the retention cap or collected by `sweep::collect_garbage`.
+pub(crate) fn is_prunable_cancelled_draft(
+    c: &EconomicContract,
+    snap: &crate::snapshot::EconomySnapshot,
+) -> bool {
+    c.state == ContractState::Cancelled && has_no_economic_history(c, snap)
+}
+
+/// Evict oldest zero-history `Cancelled` draft/offer tombstones past the
+/// per-issuer and global retention caps (HIGH-22), always keeping `keep`
+/// (the contract just canceled in this call) immediately visible.
+fn prune_excess_cancelled_drafts(ctx: &mut Ctx<'_>, keep: ContractId) {
+    let victims: Vec<ContractId> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        let snap = store.snapshot();
+        let Some(just_cancelled) = snap.contract(keep) else {
+            return;
+        };
+        if !is_prunable_cancelled_draft(just_cancelled, snap) {
+            return;
+        }
+        let issuer = &just_cancelled.issuer;
+        // `snap.contracts()` yields in ascending `ContractId` order (oldest first).
+        let mut global: Vec<ContractId> = Vec::new();
+        let mut by_issuer: Vec<ContractId> = Vec::new();
+        for c in snap.contracts() {
+            if !is_prunable_cancelled_draft(c, snap) {
+                continue;
+            }
+            global.push(c.id);
+            if c.issuer == *issuer {
+                by_issuer.push(c.id);
+            }
+        }
+        let mut evict: std::collections::BTreeSet<ContractId> = std::collections::BTreeSet::new();
+        if by_issuer.len() > MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER {
+            let excess = by_issuer
+                .len()
+                .saturating_sub(MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER);
+            for id in by_issuer.into_iter().filter(|&id| id != keep).take(excess) {
+                evict.insert(id);
+            }
+        }
+        let remaining_global = global.len().saturating_sub(evict.len());
+        let mut needed = remaining_global.saturating_sub(MAX_RETAINED_CANCELLED_DRAFTS);
+        for id in global {
+            if needed == 0 {
+                break;
+            }
+            if id != keep && evict.insert(id) {
+                needed = needed.saturating_sub(1);
+            }
+        }
+        evict.into_iter().collect()
+    };
+    if victims.is_empty() {
+        return;
+    }
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        for &id in &victims {
+            store.snapshot.remove_contract(id);
+        }
+    }
+    for id in victims {
+        api::delete_key(ctx.out, api::contract_key(id));
+    }
+}
+
 fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let c = contract_of(ctx, ctx.args.lhs())?;
     let staff = is_admin(ctx.w, ctx.actor);
@@ -3238,6 +3379,7 @@ fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // M2+M3: the state moves only once the refund posts, so the confirmation says
     // what actually happened rather than what was asked for.
     if live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()) {
+        prune_excess_cancelled_drafts(ctx, id);
         info(ctx, format!("Contract #{id} is canceled."));
     } else {
         info(
@@ -5897,6 +6039,9 @@ pub fn cancel_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, Contra
     }
     unwind(ctx, id, ContractState::Cancelled);
     let done = live_contract(ctx, id).is_some_and(|c| c.state.is_terminal());
+    if done {
+        prune_excess_cancelled_drafts(ctx, id);
+    }
     ctx.gate_on_durable_ack();
     Ok(done)
 }

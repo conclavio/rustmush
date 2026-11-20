@@ -327,6 +327,10 @@ pub struct IndustryStore {
     /// `Draft` on the record, `@wo/submit` refuses it, and `@wo/cancel` — which the
     /// requester can always type — is the exit that actually writes `Cancelled`.
     drifted_drafts: BTreeMap<crate::workorder::WorkOrderId, DraftDrift>,
+    /// CRIT-14: whether the last work-order reconciliation scan hit its page
+    /// budget or failed. Callers that enforce work-order caps or delivery gates
+    /// fail CLOSED when this is true.
+    orders_truncated: bool,
 }
 
 impl IndustryStore {
@@ -397,6 +401,21 @@ impl IndustryStore {
         self.open_orders
             .get(&mush_economy::principal_token(requester))
             .map_or(0, BTreeSet::len)
+    }
+
+    /// Open (non-terminal) work order IDs recorded for `requester` in the RAM index.
+    #[must_use]
+    pub fn open_order_ids(&self, requester: &PrincipalId) -> Vec<crate::workorder::WorkOrderId> {
+        self.open_orders
+            .get(&mush_economy::principal_token(requester))
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// CRIT-14: whether the last work-order scan truncated or errored.
+    #[must_use]
+    pub const fn orders_truncated(&self) -> bool {
+        self.orders_truncated
     }
 
     /// Note one work order as live or terminal. Idempotent by construction — the
@@ -1054,6 +1073,7 @@ pub fn reconcile(
     }
     store.quarantined = quarantined;
     store.facility_quarantined = facility_quarantined;
+    store.orders_truncated = !orders_complete;
     if orders_complete {
         store.open_orders = open_orders;
         store.open_at = open_at;

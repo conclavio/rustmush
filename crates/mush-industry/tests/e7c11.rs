@@ -127,24 +127,26 @@ fn vf_g13_l4_the_work_order_writer_census_is_pinned() {
     );
     assert_eq!(
         families.matches("txn.remove(&self.work_orders").count(),
-        0,
-        "a work order is never removed: it goes terminal in place"
+        1,
+        "`IndustryFamilies::prune_work_order` is the single terminal-pruning removal site (CRIT-14)"
     );
 
     let provider = production("mush-industry/src/provider.rs");
     assert_eq!(
         provider.matches(".open_work_order(").count(),
         1,
-        "one opener (`wo_open`'s prepare)"
+        "one opener (`wo_draft`'s prepare)"
     );
-    // **Six since E7 residue pass 1, R5(b)**: the sixth is `wo_deliver`'s
-    // `Interrupted { TimelineChanged }` pause, which is the one writer that variant
-    // never had. Still all from an industry-owned action's prepare, still under a
-    // checked revision, and still no site outside `provider.rs`.
+    // **Seven since CRIT-14 / HIGH-33**: the six prior transitions plus
+    // `wo_reclaim`, split across `put_work_order` (4 non-terminal writes) and
+    // `put_work_order_pruning` (3 terminal writes). Still all from an
+    // industry-owned action's prepare, still under a checked revision, and
+    // still no site outside `provider.rs`.
+    let put_sites = provider.matches(".put_work_order(").count()
+        + provider.matches(".put_work_order_pruning(").count();
     assert_eq!(
-        provider.matches(".put_work_order(").count(),
-        6,
-        "six checked-revision replacements, all from an industry-owned action's \
+        put_sites, 7,
+        "seven checked-revision replacements, all from an industry-owned action's \
          prepare"
     );
     // No other crate writes the family at all: the lane is `mush-industry`'s.
@@ -154,7 +156,10 @@ fn vf_g13_l4_the_work_order_writer_census_is_pinned() {
     ] {
         let text = production(rel);
         assert!(
-            !text.contains(".open_work_order(") && !text.contains(".put_work_order("),
+            !text.contains(".open_work_order(")
+                && !text.contains(".put_work_order(")
+                && !text.contains(".put_work_order_pruning(")
+                && !text.contains(".prune_terminal_work_orders("),
             "{rel} reads the work-order family and never writes it"
         );
     }

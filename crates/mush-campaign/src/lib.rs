@@ -127,8 +127,10 @@ pub use settle::{
     enter_resolving, outcome_abandons, outcome_forfeits, scope_for,
 };
 pub use store::{
-    CampaignStore, HeldDoc, MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_OPERATIONS,
-    MAX_OPERATIONS_PER_ISSUER, META_KEY, NS, TickStats,
+    CampaignStore, DECLARATION_WINDOW_SECS, HeldDoc, MAX_DECLARATIONS_PER_ISSUER_WINDOW,
+    MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_NOTICES_PER_ISSUER_WINDOW, MAX_OPERATIONS,
+    MAX_OPERATIONS_PER_ISSUER, MAX_RETAINED_TERMINAL_OPERATIONS, META_KEY,
+    NOTICE_RECIPIENT_COOLDOWN_SECS, NOTICE_WINDOW_SECS, NS, TickStats,
 };
 pub use terms::operation_consent_hash;
 pub use tick::{
@@ -287,6 +289,24 @@ impl GameModule for CampaignModule {
         let mut store = store::load(data.kv);
         store.set_authority(self.formation_kinds.clone());
         store.hydrate_kinds(ctx.w);
+        let now = ctx.w.world_ic_now().at;
+        let cooldown_secs = self
+            .recovery
+            .as_ref()
+            .map_or(recovery::RECOVERY_COOLDOWN_SECS, |cfg| cfg.cooldown_secs);
+        let dropped_grants = store
+            .prune_recovery_grants(now, cooldown_secs, |id| {
+                mush_sim::relay::cover_voided(ctx.w, id)
+            })
+            .len();
+        if dropped_grants > 0 {
+            tracing::warn!(
+                dropped_grants,
+                retained = recovery::MAX_RETAINED_RECOVERY_RECORDS,
+                "campaign: the recovery grant book was over its retention ring; the oldest \
+                 expired ENDED grants were left on disk and not hydrated"
+            );
+        }
         let held: Vec<store::HeldDoc> = store.held().to_vec();
         let held_overflow = store.held_overflow();
         let unknown: Vec<(OperationId, Vec<String>)> = store
