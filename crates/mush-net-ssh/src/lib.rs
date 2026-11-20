@@ -55,6 +55,7 @@ mod hostkey;
 pub mod kill;
 mod line;
 mod mind_exec;
+pub mod resume;
 mod server;
 pub mod trusted;
 pub mod tui;
