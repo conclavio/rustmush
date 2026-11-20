@@ -483,6 +483,8 @@ async fn in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter() {
     teleport(&mut rig.tw, captain, exchange);
     buy(&mut rig, captain, CERES, "freeport_exchange", "metals", 20);
     buy(&mut rig, captain, CERES, "freeport_works", "carbon_ore", 2);
+    // Doc 50 unit LW.1 (Q-50-65): the Ceres board trades strategic ore only with the papers.
+    crate::support::licence::hold_the_papers(&mut rig.tw, captain);
     buy(
         &mut rig,
         captain,

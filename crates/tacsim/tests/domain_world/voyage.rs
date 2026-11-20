@@ -6184,6 +6184,20 @@ fn sfr9_authority_closeout_gates_docking_removes_cluster_teleport_stops_1s_burn_
         run_1.contains("You refuse inspection and run the Republic Customs picket!"),
         "{run_1}"
     );
+    // Doc 50 unit LW.4 (Q-50-69): running costs the pilot 10 standing with the picket's polity,
+    // which puts them under its restriction.
+    let polity = tacsim::space::duty::fine_payee(rig2.tw.world(), hull2)
+        .and_then(|(org, _, _)| tacsim::polity::polity_of_org(rig2.tw.world(), org))
+        .expect("the picket's polity");
+    assert_eq!(
+        mush_faction::public_standing(rig2.tw.world(), polity, pilot2).map(|v| v.score),
+        Some(tacsim::port::record::RUN_STANDING)
+    );
+    assert!(tacsim::port::record::restricted(
+        rig2.tw.world(),
+        pilot2,
+        polity
+    ));
     let run_2 = run(&mut rig2.tw, pilot2, "+helm/run");
     assert_eq!(
         run_2.trim(),
@@ -13801,6 +13815,9 @@ fn lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port() {
         GOD,
         &format!("@econ/mint {treasury}={account} 10000000"),
     );
+    // Doc 50 unit LW.1 (Q-50-65): the Ceres board sells strategic ore only to a holder of the
+    // papers, seized ore included.
+    support::licence::hold_the_papers(&mut rig.tw, buyer);
     let exchange = c07(&rig.tw);
     teleport(&mut rig.tw, buyer, exchange);
     let quoted = run(

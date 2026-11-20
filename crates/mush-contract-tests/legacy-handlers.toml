@@ -216,6 +216,12 @@ category = "read-only"
 note = "Ticket queue listing (+jobs): lists jobs visible to the acting character across queues; no durable mutation."
 
 [[handler]]
+name = "+law"
+category = "authoritative"
+family = "tacsim.law_report"
+note = "Doc 50 unit LW.3 (Q-50-35, Q-50-36, Q-50-43, Q-50-66, Q-50-67): the law's verbs. +law is a pure read of the actor's own tacsim:sale_receipts:<party> book. /report <quote> previews without go; with go it may make the port authority's seized-goods vault on first use (crate::port::seized::ensure_vault, LW.5's) and stages exactly one Ctx::submit_authoritative of the tacsim-owned tacsim_law_report (keyed tacsim.law/report/<quote>), whose prepare hands a reporting buyer's goods to that vault (InventoryFamilies::relocate_lots or seize) and writes the tacsim.law_report row in the same bundle; the tacsim.port tick records the offense from the landed row and fines it. /audit #<hull> (staff only) audits a docked hull's hold now through crate::port::audit::audit_now, recording and fining any restricted good held without its papers."
+
+[[handler]]
 name = "+license"
 category = "legacy-post-image"
 family = "tacsim.licence"
@@ -310,6 +316,11 @@ note = "Authored local favors: journal and offers are private reads. /accept req
 name = "+recap"
 category = "read-only"
 note = "Scene narrative recap (+recap and +recap/archive): renders the witnessed scene timeline from the RAM tail or requests a sealed archive page through the H1 store-read seam; no durable mutation."
+
+[[handler]]
+name = "+record"
+category = "read-only"
+note = "Doc 50 unit LW.4 (Q-50-39, Q-50-40, Q-50-70): the actor's own record -- proven offenses under each polity (tacsim:offense:*), their fines' obligations, the restrictions in force (standing and unpaid fines), the actor's tacsim:sale_receipts book and live Registry impounds on hulls they hold. A pure read; no durable mutation of any kind."
 
 [[handler]]
 name = "+registry"

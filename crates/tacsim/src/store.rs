@@ -439,6 +439,18 @@ pub struct TacsimStore {
     /// offender ([`crate::offense::OffenseRecord`]) and their fines. Persisted through
     /// [`put_offense`]; an unreadable one proves and fines nothing on its key.
     pub(crate) offenses: BTreeMap<crate::offense::OffenseKey, crate::offense::OffenseSlot>,
+    /// **Doc 50 unit LW.1** — the live claims on strategic rocks, copied on the port tick for the
+    /// board's papers test ([`crate::port::law::PapersMirror`]). RAM only: rebuilt every fire.
+    pub(crate) papers: crate::port::law::PapersMirror,
+    /// **Doc 50 unit LW.3** — the dockings the port audit has seen
+    /// ([`crate::port::audit::AuditBook`]). RAM only.
+    pub(crate) audits: crate::port::audit::AuditBook,
+    /// **Doc 50 unit LW.3** — `tacsim:sale_receipts:{party}`: each party's receipts of private
+    /// sales of restricted goods ([`crate::port::law_report::ReceiptBook`]).
+    pub(crate) sale_receipts: BTreeMap<ObjId, crate::port::law_report::ReceiptBook>,
+    /// **Doc 50 unit LW.3** — the sales whose report the tick has recorded. RAM only: a
+    /// receipt's own `reported` mark is the durable one.
+    pub(crate) law_reports_landed: std::collections::BTreeSet<u64>,
     /// **Doc 39 cut IN.10** — `tacsim:house_pool:{org}`: each house's pool record
     /// ([`crate::port::pools::HousePool`]), loaded by [`crate::port::pools::load`].
     pub(crate) pools: crate::port::pools::PoolBook,
@@ -3073,6 +3085,20 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)], cfg: TacsimConfig) -> TacsimSto
                 continue;
             };
             load_retrieval(&mut store, key, hull, value);
+        } else if let Some(rest) = key.strip_prefix(crate::port::law_report::RECEIPTS_PREFIX) {
+            // Doc 50 unit LW.3: a party's receipts; one that will not read is dropped loudly and
+            // proves nothing (the receipt alone fines nobody).
+            match (
+                rest.parse::<u32>(),
+                serde_json::from_value::<crate::port::law_report::ReceiptBook>(value.clone()),
+            ) {
+                (Ok(party), Ok(book)) if book.party.0 == party && book.check().is_ok() => {
+                    store.sale_receipts.insert(book.party, book);
+                }
+                _ => {
+                    tracing::error!(%key, "tacsim: a receipt book is unreadable; it is dropped");
+                }
+            }
         } else if key.starts_with(crate::offense::OFFENSE_PREFIX) {
             // Doc 50 unit LW.2. The claim is the KEY's (the R8 rule): an offense record that
             // will not read proves and fines nothing on its key until staff repair it.

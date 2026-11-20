@@ -329,6 +329,8 @@ pub(crate) fn register_with_coverage(
     actions.push(crate::port::works::action_descriptor(&outcome_refs)?);
     // Doc 48 cut EX.6: the haul's legs.
     actions.push(crate::services::haul::action_descriptor(&outcome_refs)?);
+    // Doc 50 unit LW.3: a party's report of a private sale.
+    actions.push(crate::port::law_report::action_descriptor(&outcome_refs)?);
     // Doc 36 cut GC.4: the tow.
     actions.push(crate::surface::tow::action_descriptor(&outcome_refs)?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -503,6 +505,8 @@ fn register_providers(
     // Doc 39 cut IN.3: the order contract's ledger family and its goods-move provider.
     crate::port::works::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     // Doc 48 cut EX.6: the haul's ledger family and its legs' provider.
+    // Doc 50 unit LW.3: the report's family and provider.
+    crate::port::law_report::register(reg, action_refs, outcome_refs, inventory_families.as_ref())?;
     let haul_ledgers = crate::services::haul::register(
         reg,
         action_refs,
@@ -770,6 +774,8 @@ fn register_outcomes(
     outcomes.push(crate::port::works::outcome_descriptor()?);
     // Doc 48 cut EX.6: the haul's legs.
     outcomes.push(crate::services::haul::outcome_descriptor()?);
+    // Doc 50 unit LW.3: a party's report of a private sale.
+    outcomes.push(crate::port::law_report::outcome_descriptor()?);
     // Doc 36 cut GC.4: the tow.
     outcomes.push(crate::surface::tow::outcome_descriptor()?);
     // Doc 35 cut SF.R21: the space bubble's prepared input tape.
@@ -2181,6 +2187,12 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::works::tick(ctx);
     // Doc 48 cut EX.6: the hauls' legs and the escorts' watch.
     crate::services::tick(ctx);
+    // Doc 50 unit LW.1: the strategic rocks' claims, copied for the board's papers test.
+    crate::port::law::refresh(ctx);
+    // Doc 50 unit LW.3: the port audit, the landed reports, and the reporters' payouts.
+    crate::port::audit::tick(ctx);
+    crate::port::law_report::tick(ctx);
+    crate::surface::security::pay_reporters(ctx);
     // Doc 41 cut RS.5 (Q-41-11): the retrieval clerk (Tycho at a window's end, a lapse).
     crate::surface::retrieval::tick(ctx);
     // Doc 39 cut IN.10: the pools — a house's next order step, or a new order under its floor.

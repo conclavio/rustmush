@@ -2899,6 +2899,8 @@ fn sm5_a_sale_on_the_applys_ic_day_drips_nothing_before_the_boundary() {
 fn sm5_an_exhausted_intake_takes_nothing_with_all() {
     let mut rig = stocked();
     let (pilot, row) = dray_p(&mut rig, "Pilot", 1, "Salt Moth");
+    // Doc 50 unit LW.1 (Q-50-65): the Ceres board trades strategic ore only with the papers.
+    support::licence::hold_the_papers(&mut rig.tw, pilot);
     let hold = hold_vault(&rig.tw, &row);
     seed_pool(&mut rig, hold, "strategic_ore", 12, LotId(901));
     sell(&mut rig, pilot, "freeport_exchange", "strategic_ore", "12");

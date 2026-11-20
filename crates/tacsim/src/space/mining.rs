@@ -1462,24 +1462,37 @@ pub fn actor_holds_cluster_block_claim(
     let Ok(Some(record)) = ctx.action_state(&handles.families.claims, &key) else {
         return false;
     };
-    let Some(claim) = record.claim.as_ref() else {
-        return false;
-    };
+    record
+        .claim
+        .as_ref()
+        .is_some_and(|claim| claim_covers(ctx.w, claim, actor, now_ic))
+}
+
+/// **Whether a block claim covers `actor`** (doc 50 unit LW.1; Q-50-65's one test): a live claim
+/// held by `actor`, by `actor`'s gateway account, or by an organization `actor` is an active
+/// member of. The picket's live read and the board's mirror both ask it.
+#[must_use]
+pub fn claim_covers(
+    w: &mush_core::World,
+    claim: &crate::surface::claims::BlockClaim,
+    actor: ObjId,
+    now_ic: i64,
+) -> bool {
     if !claim.live(now_ic) {
         return false;
     }
     if claim.holder == PrincipalId::Object(actor) {
         return true;
     }
-    let account_hash = crate::port::licence::gateway_account(ctx.w, actor)
-        .map(mush_core::AccountId::canonical_hash);
+    let account_hash =
+        crate::port::licence::gateway_account(w, actor).map(mush_core::AccountId::canonical_hash);
     if let (Some(acc), Some(acc_hash)) = (claim.account, account_hash)
         && acc.canonical_hash() == acc_hash
     {
         return true;
     }
     if let PrincipalId::Organization(org_id) = claim.holder
-        && let Some(orgs) = ctx.w.module_state::<mush_org::OrgStore>()
+        && let Some(orgs) = w.module_state::<mush_org::OrgStore>()
         && orgs
             .state()
             .membership(org_id, actor)

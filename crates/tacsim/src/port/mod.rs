@@ -129,6 +129,8 @@
 //!   the one public word of a block's tenure (`claims::block_tenure_now`).
 
 pub mod apply;
+// Doc 50 unit LW.3: the port audit.
+pub mod audit;
 /// Doc 36 cut GC.8a: the bay's repair order, its facility classes and rights, berth and stow,
 /// and `+bay`.
 pub mod bay_work;
@@ -174,6 +176,10 @@ pub mod hull;
 pub mod hull_sale;
 pub mod interface;
 pub mod jobs;
+// Doc 50 unit LW.1: the law asked for a venue and a good, and the papers that lift it.
+pub mod law;
+// Doc 50 unit LW.3: the receipt of a private sale, and the party who reports it.
+pub mod law_report;
 pub mod licence;
 pub mod locker;
 pub mod map;
@@ -197,6 +203,8 @@ pub mod price;
 pub mod proceeds;
 pub mod readiness;
 pub mod recall;
+// Doc 50 unit LW.4: the standing loss, the trading restriction and `+record`.
+pub mod record;
 pub mod refit;
 pub(crate) mod relationships;
 // Doc 50 unit LW.5 (Q-50-44): seized goods go to the enforcing authority, which offers them.
