@@ -502,12 +502,33 @@ async fn land_quietly(rig: &mut Rig, queued: &[AuthoritativeSubmit]) {
 /// Everything due `secs` on; legacy work flushed.
 async fn sweep(rig: &mut Rig, secs: i64) -> Vec<(Audience, OutputEvent)> {
     let t = rig.tw.world().now().saturating_add(secs);
-    // Doc 48 cut EX.3: a jump of a Draw's whole window first lets the works' house purchase on the
-    // board settle (`settle_house_purchase`), and still lands where it was aimed.
-    if secs >= mush_market::DRAW_WINDOW_SECS {
+    // Doc 48 cut EX.3: a jump that would reach or pass an on-board works' house purchase's
+    // settlement deadline first lets that purchase settle (`settle_house_purchase`), and still
+    // lands where it was aimed.
+    if secs >= mush_market::DRAW_WINDOW_SECS || house_purchase_lapses_by(&rig.tw, t) {
         settle_house_purchase(rig).await;
     }
     sweep_to(rig, t.max(rig.tw.world().now())).await
+}
+
+/// Whether jumping straight to real second `t` would reach or pass the real-clock deadline of an
+/// unsettled works' house purchase currently on the board (so a sub-window jump after earlier
+/// medium jumps cannot lapse an already-drawn house Draw).
+fn house_purchase_lapses_by(tw: &TestWorld, t: i64) -> bool {
+    let market = market(tw);
+    let snap = economy(tw).snapshot();
+    tacsim::port::supply::buyers(tw.world())
+        .into_iter()
+        .any(|buyer| {
+            market
+                .quotes_of_buyer(&PrincipalId::Object(buyer))
+                .filter(|q| q.settled.is_none())
+                .filter_map(|q| q.contract)
+                .filter_map(|id| snap.contract(id))
+                .filter(|c| !c.state.is_terminal())
+                .filter_map(mush_economy::EconomicContract::effective_deadline)
+                .any(|d| d.clock == mush_economy::EconomicClock::RealUtc && t >= d.at)
+        })
 }
 
 /// Everything due at `t`; legacy work flushed.
@@ -1978,7 +1999,9 @@ async fn outfit_for(rig: &mut Rig, pilot: ObjId, port: &str) -> Outfit {
         }
     }
     let _ = sweep(rig, 61).await;
+    let _ = drain_players(rig).await;
     let _ = sweep(rig, 61).await;
+    let _ = drain_players(rig).await;
     Outfit {
         costs,
         metals,
@@ -4608,7 +4631,10 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
 
     // AWAITING_REFUND after DELIVER_TOO_LATE: the sale's leg lost, and the first
     // re-stage comes after the sale's cutoff (a downtime): the hand-over is left to
-    // refund, and the order is tried again after it.
+    // refund, and the order is tried again after it. Let any standing works' house
+    // purchase settle before the simulated 3,100 s downtime so its Draw cannot lapse
+    // mid-jump without forcing an intermediate tick while the dropped sale is inflight.
+    settle_house_purchase(&mut rig).await;
     let _ = rig.tw.connect(ben);
     let _ = file(&mut rig, ben, "sell metals all").await;
     disconnect(&mut rig.tw, ben);
@@ -4697,6 +4723,9 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     // 3,000 s after the accept). The escrow is a hold: the accept leaves the posted
     // balance alone and takes the price out of the available funds; the expiry gives
     // it back. Both are read before the order is filed (order 2's sale has settled).
+    // Let any standing works' house purchase settle before snapshotting wallet/berth
+    // and entering the simulated 3,100 s downtime.
+    settle_house_purchase(&mut rig).await;
     let me = credit_account(&rig.tw, &PrincipalId::Object(ben));
     let (balance, free) = (posted(&rig.tw, me), available(&rig.tw, me));
     // Doc 48 cut EX.4: the berth his hull owes while the story waits is paid from this wallet.
