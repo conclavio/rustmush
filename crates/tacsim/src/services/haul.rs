@@ -676,6 +676,41 @@ fn cap_of(w: &World, good: &CanonicalId, quantity: u64) -> Option<i64> {
 }
 
 #[allow(clippy::too_many_lines)] // one ordered refusal list, then the post
+/// **Post a haul as `ctx.actor`** (doc 50 cut OP.4: the Freeport arm's agent), `rest` as
+/// `+haul/post` reads it: the new haul's contract.
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn post_as(ctx: &mut Ctx<'_>, rest: &str) -> Result<u64, String> {
+    post_cmd(ctx, rest, true)?;
+    hauls(ctx.w)
+        .into_iter()
+        .filter(|j| j.shipper == ctx.actor)
+        .map(|j| j.contract)
+        .max()
+        .ok_or_else(|| "the haul was not recorded".to_owned())
+}
+
+/// **Take a haul as `ctx.actor`** (doc 50 cut OP.4: a hauling house's helm, Q-50-24), `rest` as
+/// `+haul/accept` reads it.
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn accept_as(ctx: &mut Ctx<'_>, rest: &str) -> Result<String, String> {
+    accept_cmd(ctx, rest, true)
+}
+
+/// **Deliver a haul as `ctx.actor`** (doc 50 cut OP.4: a hauling house's helm, Q-50-24).
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn deliver_as(ctx: &mut Ctx<'_>, job: u64) -> Result<String, String> {
+    deliver_cmd(ctx, &format!("#{job}"), true)
+}
+
 fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let (words, opts) = super::options(rest);
     let [qty, good] = words.as_slice() else {
@@ -1488,18 +1523,17 @@ impl ActionProvider for HaulProvider {
         guards
             .add_definition(action.clone(), definitions)
             .map_err(|_| integrity("the haul's definition guard is unavailable"))?;
-        let integer =
-            |id: &str, maximum: i64| -> Result<ProjectedParameter, mush_core::ActionError> {
-                Ok(ProjectedParameter {
-                    id: CanonicalId::new(id)
-                        .map_err(|_| integrity("the haul's parameter id is invalid"))?,
-                    required: true,
-                    kind: ProjectedParameterKind::Integer {
-                        minimum: 1,
-                        maximum,
-                    },
-                })
-            };
+        let integer = |id: &str,
+                       minimum: i64,
+                       maximum: i64|
+         -> Result<ProjectedParameter, mush_core::ActionError> {
+            Ok(ProjectedParameter {
+                id: CanonicalId::new(id)
+                    .map_err(|_| integrity("the haul's parameter id is invalid"))?,
+                required: true,
+                kind: ProjectedParameterKind::Integer { minimum, maximum },
+            })
+        };
         Ok(Some(ProviderOfferDraft {
             fixed_parameters: json!({
                 "rows": Value::Object(rows),
@@ -1507,8 +1541,10 @@ impl ActionProvider for HaulProvider {
                 "wall": engine.world.now(),
             }),
             parameters: ProjectedParameterSchema::new(vec![
-                integer("contract", i64::MAX)?,
-                integer("act", 2)?,
+                // Doc 50 cut OP.4: a world's first contract is `ContractId(0)`, so a haul's
+                // number may be 0 (the Freeport arm's first post on a fresh world is one).
+                integer("contract", 0, i64::MAX)?,
+                integer("act", 1, 2)?,
             ])
             .map_err(|_| integrity("the haul's parameter schema is invalid"))?,
             targets: ProjectedTargetSchema::None,

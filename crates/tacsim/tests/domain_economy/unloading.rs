@@ -181,6 +181,10 @@ fn stocked() -> Rig {
         typed: BTreeMap::new(),
         ledger: std::collections::BTreeSet::new(),
     };
+    // Doc 50 cut OP.4: staff lay the Freeport arm up before the first fire, so Occator posts
+    // nothing in these stories.
+    let said = run(&mut rig.tw, mush_core::GOD, "@tacsim/port arm off");
+    assert!(said.contains("Freeport arm: laid up"), "{said}");
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
     set_rate(&mut rig.tw, 1);

@@ -1007,6 +1007,22 @@ fn posts_for(poster: &PrincipalId, org: Option<u64>, shipper: ObjId) -> bool {
 }
 
 #[allow(clippy::too_many_lines)] // one ordered refusal list, then the post
+/// **Post an escort as `ctx.actor`** (doc 50 cut OP.4: the Freeport arm's agent), `rest` as
+/// `+escort/post` reads it: the new escort's contract.
+///
+/// # Errors
+///
+/// The line the verb would answer.
+pub(crate) fn post_as(ctx: &mut Ctx<'_>, rest: &str) -> Result<u64, String> {
+    post_cmd(ctx, rest, true)?;
+    escorts(ctx.w)
+        .into_iter()
+        .filter(|j| j.poster == ctx.actor)
+        .map(|j| j.contract)
+        .max()
+        .ok_or_else(|| "the escort was not recorded".to_owned())
+}
+
 fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let (words, opts) = super::options(rest);
     // Doc 50 cut OP.3 (Q-50-63): an escort for a haul.

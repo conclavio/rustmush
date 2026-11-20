@@ -224,7 +224,10 @@ pub fn levy_transit_duty(
         tracing::warn!(payee = %quote.payee, "tacsim: the transit duty has no payee account; nothing is levied");
         return None;
     };
-    let Some(account) = crate::port::credit::own_account(ctx.w, debtor).map(|a| a.id) else {
+    // Doc 50 cut OP.4 (Q-50-56): a hauling house's hull pays from the house's own account.
+    let account = crate::port::hauler::house_account_of_helm(ctx.w, debtor)
+        .or_else(|| crate::port::credit::own_account(ctx.w, debtor).map(|a| a.id));
+    let Some(account) = account else {
         tracing::warn!(
             debtor = debtor.0,
             "tacsim: the transit duty meets a debtor with no account"

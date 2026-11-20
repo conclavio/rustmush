@@ -13833,7 +13833,14 @@ fn lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port() {
         .expect("a quote");
     let accepted = run(&mut rig.tw, buyer, &format!("+market/accept {quote}"));
     let draw = drain(&mut rig.tw);
-    assert_eq!(draw.len(), 1, "one draw: {accepted}");
+    // Doc 50 cut OP.4: the Isidis tank farm's day of use may be queued beside it.
+    assert_eq!(
+        draw.iter()
+            .filter(|q| q.action.key().id.as_str() != tacsim::port::consume::CONSUME_ACTION)
+            .count(),
+        1,
+        "one draw: {accepted}"
+    );
     land_all(&mut rig, &draw);
     for _ in 0..30 {
         if market(&rig.tw)

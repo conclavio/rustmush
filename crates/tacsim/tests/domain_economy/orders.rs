@@ -2146,7 +2146,15 @@ fn ic11_a_reboot_mid_step_reruns_nothing() {
     let out = order(&mut rig, pilot, "buy structural_alloys 5");
     assert!(out.contains("Order 1 filed"), "{out}");
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 1, "the draw leg");
+    // Doc 50 cut OP.4: the Isidis tank farm's day of use may fall in the same fire.
+    assert_eq!(
+        queued
+            .iter()
+            .filter(|q| q.action.key().id.as_str() != tacsim::port::consume::CONSUME_ACTION)
+            .count(),
+        1,
+        "the draw leg"
+    );
     land_all(&mut rig, &queued);
     let drawn = |rig: &Rig| {
         market(&rig.tw)
@@ -2222,7 +2230,15 @@ fn ic11_a_reboot_mid_step_reruns_nothing() {
     let out = order(&mut rig, pilot, "buy structural_alloys 5");
     assert!(out.contains("Order 1 filed"), "{out}");
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 1, "the draw leg");
+    // Doc 50 cut OP.4: the Isidis tank farm's day of use may fall in the same fire.
+    assert_eq!(
+        queued
+            .iter()
+            .filter(|q| q.action.key().id.as_str() != tacsim::port::consume::CONSUME_ACTION)
+            .count(),
+        1,
+        "the draw leg"
+    );
     let key = queued[0].key.as_str().to_owned();
     land_all(&mut rig, &queued);
     let mut rig = reboot(rig);
@@ -2286,7 +2302,15 @@ fn ic11_a_draw_lost_to_a_reboot_is_restaged_from_the_tick() {
     let a0_berth =
         crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot));
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 1, "the draw leg");
+    // Doc 50 cut OP.4: the Isidis tank farm's day of use may fall in the same fire.
+    assert_eq!(
+        queued
+            .iter()
+            .filter(|q| q.action.key().id.as_str() != tacsim::port::consume::CONSUME_ACTION)
+            .count(),
+        1,
+        "the draw leg"
+    );
     let staged = orders(&rig.tw, hull)
         .inflight
         .clone()

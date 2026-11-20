@@ -247,6 +247,9 @@ async fn boot(tag: &str, key_dir: &Path) -> Rig {
     // seeds no hull and these stories' money sums, legs and burns are the players' alone.
     let out = run(&mut rig, GOD, "@tacsim/port haulers ceres_port off").await;
     assert!(out.contains("ceres_port hauling house: laid up"), "{out}");
+    // Doc 50 cut OP.4: and the Freeport arm, so Occator posts no haul in these stories.
+    let out = run(&mut rig, GOD, "@tacsim/port arm off").await;
+    assert!(out.contains("Freeport arm: laid up"), "{out}");
     rig
 }
 

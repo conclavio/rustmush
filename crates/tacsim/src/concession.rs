@@ -6,8 +6,9 @@
 //!   - **The Concession Review** on the Republic's board: six segments, at two of six. Its fill
 //!     is the Republic's decision to assume the Concession's administration, which the declaring
 //!     arm acts on (OP.5); the flip of control is the operation's, so the clock names none.
-//!   - **Hold the Concession** on the Freeport's board: six segments at two, no flip. What moves
-//!     it (the stockpile, a loss on the run) lands with OP.3 to OP.5.
+//!   - **Hold the Concession** on the Freeport's board: six segments at two, no flip. The
+//!     stockpile at its threshold moves it once an IC month (doc 50 cut OP.4,
+//!     `crate::stockpile`); a loss on the run lands with OP.5.
 //! - **The scheduled tick, a typed cause** ([`ASSEMBLY_TICK`]): the Assembly votes once an IC month
 //!   ([`IC_MONTH_S`]). Each vote moves the Review one segment through
 //!   `mush_faction::advance_clock_by_cause` with the cause id `assembly.vote/<month>`, the
@@ -94,7 +95,12 @@ pub fn hold_clock(w: &World) -> Option<mush_faction::Clock> {
     front_clock(w, polity(w, "freeport")?, HOLD_THE_CONCESSION_TITLE)
 }
 
-fn draft(ctx: &Ctx<'_>, kind: &str, summary: String, source: String) -> mush_canon::CanonDraft {
+pub(crate) fn draft(
+    ctx: &Ctx<'_>,
+    kind: &str,
+    summary: String,
+    source: String,
+) -> mush_canon::CanonDraft {
     mush_canon::CanonDraft {
         kind: kind.into(),
         summary,

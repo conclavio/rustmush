@@ -427,14 +427,25 @@ fn op0_a2h_without_the_link_there_is_no_frame_and_a_refusal_is_words() {
     );
 }
 
-/// **TacSim's own close probe is the production wiring**: it names no probe in OP.0, so it
-/// answers "cannot tell", which the frame treats as a wait.
+/// **TacSim's own close probe is the production wiring**: a name it does not know answers
+/// "cannot tell", which the frame treats as a wait; so does the tank farm's (doc 50 cut OP.4)
+/// before the port tick has read its level.
 #[test]
 fn op0_a2h_tacsims_close_probe_answers_nothing_for_an_unknown_name() {
     let rig = boot(CampaignModule::new(), true);
     assert_eq!(
+        TacsimCloseProbe.read(rig.tw.world(), "isidis.no_such_probe", OperationId(1)),
+        None
+    );
+    assert_eq!(
         TacsimCloseProbe.read(rig.tw.world(), "isidis.tank_farm", OperationId(1)),
         None
     );
-    assert!(tacsim::operations::CLOSE_PROBES.is_empty());
+    assert_eq!(
+        tacsim::operations::CLOSE_PROBES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>(),
+        vec![tacsim::stockpile::TANK_FARM_PROBE]
+    );
 }

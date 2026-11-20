@@ -208,6 +208,9 @@ async fn ex9_the_consumers_use_up_what_they_buy_and_the_faucet_pays_them_back() 
     let faucet_before = system(rig.tw.world(), EXPORT_FAUCET);
     let provisions_before =
         ledger(&mut rig, LUNA, "habitat_board", PROVISIONS).map_or(0, |l| l.units);
+    // Doc 50 cut OP.4 (lane v49): the Isidis tank farm uses up its propellant too.
+    let farm_before =
+        ledger(&mut rig, "isidis_port", "isidis_tank_farm", "propellant").map_or(0, |l| l.units);
 
     // Three IC days: 40, 40, then the last 20; the faucet pays 40 × 460 cr each full day (its
     // share is exactly that), then 20 × 460.
@@ -278,10 +281,14 @@ async fn ex9_the_consumers_use_up_what_they_buy_and_the_faucet_pays_them_back() 
         "no storefront and listing disagreed"
     );
 
-    // The faucet's money is what it paid out.
+    // The faucet's money is what it paid out: Syrtis, the Board and (doc 50 cut OP.4) the tank
+    // farm, 50 cr a tonne of its propellant.
+    let farm_used = ledger(&mut rig, "isidis_port", "isidis_tank_farm", "propellant")
+        .map_or(0, |l| l.units)
+        - farm_before;
     assert_eq!(
         faucet_before - system(rig.tw.world(), EXPORT_FAUCET),
-        paid + 4 * 16 * 10 * 100,
+        paid + 4 * 16 * 10 * 100 + i64::try_from(farm_used).expect("fits") * 50 * 100,
         "the export faucet paid exactly the consumers' refunds"
     );
 
@@ -289,8 +296,8 @@ async fn ex9_the_consumers_use_up_what_they_buy_and_the_faucet_pays_them_back() 
     let census_after = census(&mut rig);
     assert_eq!(
         census_after["consumed"] - census_before["consumed"],
-        kg(&rig, ALLOYS, 100) + kg(&rig, PROVISIONS, 4 * 16),
-        "consumed: Syrtis's alloys and the Board's provisions"
+        kg(&rig, ALLOYS, 100) + kg(&rig, PROVISIONS, 4 * 16) + kg(&rig, "propellant", farm_used),
+        "consumed: Syrtis's alloys, the Board's provisions and the tank farm's propellant"
     );
     assert_eq!(
         census_after["balance"], census_before["balance"],

@@ -18,7 +18,7 @@
 //! **The other direction** is the close probe: the campaign asks the owner of a close-only
 //! objective for its answer at the window's close. TacSim's probes are named in
 //! [`CLOSE_PROBES`] and read through [`close_probe`], which the composition root wires into the
-//! campaign. Cut OP.0 names none; doc 50's OP.4 adds the tank farm's.
+//! campaign. Doc 50 cut OP.4 names the tank farm's ([`crate::stockpile::TANK_FARM_PROBE`]).
 
 use std::sync::Arc;
 
@@ -172,9 +172,12 @@ pub fn frame(w: &World) -> Option<Arc<dyn OperationFrame>> {
 /// One close probe: `(world, operation)` to met, not met, or cannot tell.
 pub type CloseProbeFn = fn(&World, u64) -> Option<bool>;
 
-/// **TacSim's close probes, by name.** Cut OP.0 names none: doc 50's OP.4 adds the tank farm's
-/// level against its threshold.
-pub const CLOSE_PROBES: &[(&str, CloseProbeFn)] = &[];
+/// **TacSim's close probes, by name.** Doc 50 cut OP.4: the tank farm's last reading against its
+/// threshold ([`crate::stockpile::close_probe`]).
+pub const CLOSE_PROBES: &[(&str, CloseProbeFn)] = &[(
+    crate::stockpile::TANK_FARM_PROBE,
+    crate::stockpile::close_probe,
+)];
 
 /// **Read the close probe `probe` for `operation`**: what the composition root's campaign probe
 /// asks at a window's close. A name TacSim does not know is `None`, which the frame treats as a

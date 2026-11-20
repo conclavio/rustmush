@@ -151,6 +151,10 @@ pub struct Trip {
     pub bid_major: u64,
     /// The profit it was planned to clear, minor units.
     pub profit_minor: i64,
+    /// **The haul it carries** (doc 50 cut OP.4, Q-50-24), `ContractId.0`: an arm's haul no
+    /// player took, carried hop by hop to its destination and delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub haul: Option<u64>,
 }
 
 // ---- readings ----------------------------------------------------------------------
@@ -177,6 +181,21 @@ pub fn helms(w: &World) -> Vec<ObjId> {
                 .filter_map(|row| row.helm.map(ObjId))
                 .collect()
         })
+}
+
+/// **The house account a hauling house's helm acts for** (doc 50 cut OP.4, Q-50-56): what the
+/// house pays a picket's duty from when its hull crosses.
+#[must_use]
+pub fn house_account_of_helm(w: &World, helm: ObjId) -> Option<AccountId> {
+    let store = w.module_state::<TacsimStore>()?;
+    let house = store
+        .haulers()
+        .find(|house| house.rows.iter().any(|row| row.helm == Some(helm.0)))?;
+    let (def, map) = ports_by_venue(w)
+        .into_iter()
+        .find(|(_, map)| map.entry == house.entry)?;
+    let org = &def.hauler.as_deref()?.org;
+    map.orgs.get(org)?.account.map(AccountId)
 }
 
 /// **Whether `hull` is a hauling house's.**
@@ -661,7 +680,17 @@ fn explain(ctx: &Ctx<'_>, hauler: &HaulerDef, hull: ObjId, here: (&PortDef, &Por
 
 /// **The sailing plan for a choice**: the lot within the ask, the fill, the departure, the sale
 /// at no less than the ask (an empty hop: the fill and the departure).
-fn plan(ctx: &Ctx<'_>, hull: ObjId, helm: ObjId, choice: &Choice) -> Option<Orders> {
+///
+/// `held_fuel` (doc 50 cut OP.4) is reaction mass in her tank held for a carried haul: the
+/// executor's fill counts it as aboard while the burn spends only what is free, so that much more
+/// is bought after the fill.
+fn plan(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    helm: ObjId,
+    choice: &Choice,
+    held_fuel: u64,
+) -> Option<Orders> {
     let goods = ctx.w.module_state::<TacsimStore>()?.goods()?;
     let propellant = crate::port::burn::consumable_good(goods, Consumable::Propellant)?;
     let provisions = crate::port::burn::consumable_good(goods, Consumable::Provisions)?;
@@ -674,10 +703,18 @@ fn plan(ctx: &Ctx<'_>, hull: ObjId, helm: ObjId, choice: &Choice) -> Option<Orde
             on_short: OnShort::Partial,
         });
     }
-    for good in [propellant, provisions] {
+    for good in [propellant.clone(), provisions] {
         whats.push(What::Buy {
             good,
             qty: Qty::Fill,
+            max_major: None,
+            on_short: OnShort::Partial,
+        });
+    }
+    if held_fuel > 0 {
+        whats.push(What::Buy {
+            good: propellant,
+            qty: Qty::Units(held_fuel),
             max_major: None,
             on_short: OnShort::Partial,
         });
@@ -865,6 +902,207 @@ fn grant_helm(
     )
     .map_err(|e| e.to_string())?;
     Ok(post.0)
+}
+
+// ---- an untaken haul (doc 50 cut OP.4) -------------------------------------------------
+
+/// What a carried haul's purse is funded to past the bond, minor units: the first hop's stores.
+const CARRY_FLOAT_MINOR: i64 = 100_000;
+
+/// **Take an arm's untaken haul at this port** (Q-50-24): the purse funded for the bond and the
+/// first hop, then `+haul/accept` as the helm, so the goods load aboard under the haul's hold.
+/// Answers whether a haul was taken.
+fn take_haul(
+    ctx: &mut Ctx<'_>,
+    hauler: &HaulerDef,
+    (hull, helm): (ObjId, ObjId),
+    (purse, house_account): (AccountId, AccountId),
+    here: &PortDef,
+    row: &mut HaulerRow,
+) -> bool {
+    let now = ctx.w.world_ic_now().at;
+    let Some(contract) = crate::stockpile::untaken(ctx.w, here.venue.as_str(), now, &[]) else {
+        return false;
+    };
+    let Some(job) = crate::services::haul::haul_of(ctx.w, contract) else {
+        return false;
+    };
+    let n = row.trips.saturating_add(1);
+    let want = job.bond_minor.saturating_add(CARRY_FLOAT_MINOR);
+    let short = want.saturating_sub(available(ctx.w, purse));
+    if short > available(ctx.w, house_account) {
+        return false;
+    }
+    if !pay(
+        ctx,
+        format!("{}/{n}/haul-fund", row.mark),
+        (house_account, purse),
+        short,
+        format!("{} funds hauler {} to carry a haul", hauler.org, row.mark),
+    ) {
+        return false;
+    }
+    let saved = ctx.actor;
+    ctx.actor = helm;
+    let taken = crate::services::haul::accept_as(ctx, &format!("#{contract}"));
+    ctx.actor = saved;
+    match taken {
+        Ok(_) => {
+            tracing::info!(
+                mark = %row.mark, contract, hull = hull.0,
+                "tacsim: a hauling house takes an untaken haul"
+            );
+            row.note = None;
+            row.trip = Some(Trip {
+                n,
+                good: Some(job.good.clone()),
+                from: here.venue.clone(),
+                to: CanonicalId::new(job.destination.as_str())
+                    .unwrap_or_else(|_| here.venue.clone()),
+                units: job.quantity,
+                ask_major: 0,
+                bid_major: 0,
+                profit_minor: job.fee_minor,
+                haul: Some(contract),
+            });
+            true
+        }
+        Err(why) => {
+            let mut note = format!("could not take haul {contract}: {why}");
+            note.truncate(MAX_NOTE);
+            row.note = Some(note);
+            false
+        }
+    }
+}
+
+/// **The next port toward `to`** from `here`: `to` itself when a route joins them, else a
+/// neighbor with a route to it.
+fn next_hop(w: &World, here: &PortDef, to: &CanonicalId) -> Option<CanonicalId> {
+    if here.routes.contains_key(to) {
+        return Some(to.clone());
+    }
+    let ports = ports_by_venue(w);
+    here.routes
+        .keys()
+        .find(|via| {
+            ports
+                .iter()
+                .any(|(def, _)| &def.venue == *via && def.routes.contains_key(to))
+        })
+        .cloned()
+}
+
+/// **One step of a carried haul** (Q-50-24): loading; a hop's plan (the fill and the departure)
+/// at each port short of the destination; the delivery there, as the helm; and the trip closed
+/// once the haul has ended, the purse's surplus (the fee among it) sent home.
+fn carry(
+    ctx: &mut Ctx<'_>,
+    hauler: &HaulerDef,
+    (hull, helm): (ObjId, ObjId),
+    (purse, house_account): (AccountId, AccountId),
+    (here_def, here_map): (&PortDef, &PortMap),
+    state: Option<&Orders>,
+    row: &mut HaulerRow,
+) {
+    use crate::services::haul::HaulStage;
+    let Some(trip) = row.trip.clone() else {
+        return;
+    };
+    let Some(contract) = trip.haul else {
+        return;
+    };
+    let job = crate::services::haul::haul_of(ctx.w, contract);
+    let running = state.is_some_and(|doc| doc.author == helm && plan_end(doc).is_none());
+    match job {
+        Some(job) if job.stage == HaulStage::Taken => {}
+        Some(job) if job.stage == HaulStage::Aboard => {
+            // A plan under way, or a leg owed (the delivery on its way), is someone else's step.
+            if running || job.owed.is_some() {
+                return;
+            }
+            if here_def.venue.as_str() == job.destination.as_str() {
+                let saved = ctx.actor;
+                ctx.actor = helm;
+                let delivered = crate::services::haul::deliver_as(ctx, contract);
+                ctx.actor = saved;
+                if let Err(why) = delivered {
+                    tracing::warn!(
+                        mark = %row.mark, contract, %why,
+                        "tacsim: a carried haul could not be delivered"
+                    );
+                }
+                return;
+            }
+            let Ok(to) = CanonicalId::new(job.destination.as_str()) else {
+                return;
+            };
+            let Some(next) = next_hop(ctx.w, here_def, &to) else {
+                let mut note = format!("haul {contract}: no route toward {to}");
+                note.truncate(MAX_NOTE);
+                row.note = Some(note);
+                return;
+            };
+            let stores = stores_minor(ctx, hull, (here_def, here_map), &next).unwrap_or(0);
+            let want = i64::try_from(
+                u64::try_from(stores)
+                    .unwrap_or(0)
+                    .saturating_mul(FUND_PERMILLE)
+                    / 1_000,
+            )
+            .unwrap_or(i64::MAX);
+            let short = want.saturating_sub(available(ctx.w, purse));
+            if short > 0
+                && (short > available(ctx.w, house_account)
+                    || !pay(
+                        ctx,
+                        format!("{}/{}/haul-hop/{next}", row.mark, trip.n),
+                        (house_account, purse),
+                        short,
+                        format!("{} funds hauler {} for a hop", hauler.org, row.mark),
+                    ))
+            {
+                return;
+            }
+            let choice = Choice {
+                good: None,
+                to: next,
+                units: 0,
+                ask_major: 0,
+                bid_major: 0,
+                stores_minor: stores,
+                profit_minor: 0,
+                carried: true,
+            };
+            let goods = ctx.w.module_state::<TacsimStore>().and_then(|s| s.goods());
+            let held_fuel = goods
+                .and_then(|g| crate::port::burn::consumable_good(g, Consumable::Propellant))
+                .filter(|propellant| propellant == &job.good)
+                .map_or(0, |_| job.quantity);
+            if let Some(doc) = plan(ctx, hull, helm, &choice, held_fuel)
+                && let Err(error) = crate::store::put_orders(ctx, &doc)
+            {
+                tracing::warn!(
+                    mark = %row.mark, %error,
+                    "tacsim: a carried haul's hop could not be planned"
+                );
+            }
+        }
+        // Delivered, lapsed, lost, withdrawn or gone: the trip ends, and what it earned goes home.
+        _ => {
+            row.trip = None;
+            row.trips = row.trips.saturating_add(1);
+            let float = minor_of(ctx.w, hauler.float_major);
+            let surplus = available(ctx.w, purse).saturating_sub(float);
+            let _ = pay(
+                ctx,
+                format!("{}/{}/home", row.mark, trip.n),
+                (purse, house_account),
+                surplus,
+                format!("{} hauler {} pays its haul home", hauler.org, row.mark),
+            );
+        }
+    }
 }
 
 // ---- the tick --------------------------------------------------------------------------
@@ -1165,6 +1403,19 @@ fn step(
         OrdersState::Absent => None,
         OrdersState::Unreadable => return,
     };
+    // Doc 50 cut OP.4 (Q-50-24): a haul in hand is carried hop by hop, then delivered.
+    if row.trip.as_ref().and_then(|trip| trip.haul).is_some() {
+        carry(
+            ctx,
+            hauler,
+            (hull, helm),
+            (purse, house_account),
+            (&here_def, &here_map),
+            state.as_ref(),
+            row,
+        );
+        return;
+    }
     if let Some(doc) = &state
         && doc.author == helm
     {
@@ -1201,7 +1452,21 @@ fn step(
         }
     }
     let today = ctx.w.world_ic_now().at.div_euclid(IC_DAY);
-    if !open || row.idle_day == Some(today) {
+    if !open {
+        return;
+    }
+    // Doc 50 cut OP.4 (Q-50-24): an arm's haul no player took in its days is the house's to carry.
+    if take_haul(
+        ctx,
+        hauler,
+        (hull, helm),
+        (purse, house_account),
+        &here_def,
+        row,
+    ) {
+        return;
+    }
+    if row.idle_day == Some(today) {
         return;
     }
     // 5. Anything still aboard is sold here first, once an IC day.
@@ -1219,6 +1484,7 @@ fn step(
                 ask_major: 0,
                 bid_major: 0,
                 profit_minor: 0,
+                haul: None,
             });
         }
         return;
@@ -1268,7 +1534,7 @@ fn step(
     ) {
         return;
     }
-    let Some(doc) = plan(ctx, hull, helm, &choice) else {
+    let Some(doc) = plan(ctx, hull, helm, &choice, 0) else {
         return;
     };
     if let Err(error) = crate::store::put_orders(ctx, &doc) {
@@ -1292,6 +1558,7 @@ fn step(
         ask_major: choice.ask_major,
         bid_major: choice.bid_major,
         profit_minor: choice.profit_minor,
+        haul: None,
     });
     row.idle_day = None;
 }
@@ -1333,6 +1600,7 @@ mod tests {
                     ask_major: 100,
                     bid_major: 195,
                     profit_minor: 260_000,
+                    haul: None,
                 }),
                 ..HaulerRow::default()
             }],

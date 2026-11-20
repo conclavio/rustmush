@@ -2205,6 +2205,8 @@ fn port_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::port::upkeep::tick(ctx);
     // Doc 48 unit EX.10: the hauling houses, one step a hull.
     crate::port::hauler::tick(ctx);
+    // Doc 50 cut OP.4: the tank farm's reading and the Freeport arm's posts.
+    crate::stockpile::tick(ctx);
     crate::quest::tick(ctx);
     let Some(slot) = ctx.w.module_state_mut::<PortTickState>() else {
         return;
