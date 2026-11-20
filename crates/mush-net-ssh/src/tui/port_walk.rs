@@ -284,7 +284,7 @@ struct PendingInteraction {
 /// location's label. `+ship/undock`, `+ship/plan` and `+ship/order depart` take
 /// exactly these; `vesta`, `pallas`, `hygiea` and `juno` name no venue and were
 /// refused.
-const CORRIDORS: [(&str, &str, &str); 12] = [
+const CORRIDORS: [(&str, &str, &str); 13] = [
     ("ceres", "Ceres Freeport", "Ceres port"),
     ("stickney", "Stickney Yards", "Phobos port"),
     ("luna", "Aitken Highport", "Luna port"),
@@ -297,6 +297,8 @@ const CORRIDORS: [(&str, &str, &str); 12] = [
     ("occator", "Occator Rim", "Ceres extraction site"),
     ("rheasilvia", "Rheasilvia Commons", "Vesta extraction site"),
     ("urvara", "Urvara Reach", "Ceres extraction site"),
+    // Doc 50 cut OP.1: the Isidis Concession, a ground port of the lane.
+    ("isidis", "Isidis Concession", "Mars port"),
 ];
 
 const HULL_SUGGESTIONS: [&str; 6] = [
