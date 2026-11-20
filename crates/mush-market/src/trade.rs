@@ -361,6 +361,16 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
         gate.admit(ctx.w, ctx.actor, &listing.market, None, req.presence)
             .map_err(|r| MarketError::bad(r.line))?;
     }
+    // Doc 50 unit LW.1 (Q-50-65): the public board asks the law of the buyer too.
+    if let Ok(commodity) = mush_core::CanonicalId::new(listing.catalog.code.as_str()) {
+        crate::module::law_of_trade(
+            ctx.w,
+            &buyer,
+            &listing.market,
+            &commodity,
+            listing.private_to.is_some(),
+        )?;
+    }
     let Some(entry) = ctx
         .w
         .module_state::<MarketStore>()
@@ -2681,6 +2691,15 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             return Err(MarketError::bad(HOLD_ONLY_SOURCE));
         }
     }
+    // 8b. Doc 50 unit LW.1 (Q-50-34): the law of the venue for the good, asked of the seller
+    // into a public bid.
+    crate::module::law_of_trade(
+        ctx.w,
+        &PrincipalId::Object(actor),
+        &listing.market,
+        &commodity,
+        listing.private_to.is_some(),
+    )?;
     // 9. Somebody answers the fact the contract is gated on.
     if !mush_economy::has_fact_provider(ctx.w, mush_inventory::NS) {
         return Err(MarketError::bad(UNSETTLEABLE));

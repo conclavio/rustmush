@@ -435,6 +435,9 @@ pub struct TacsimStore {
     /// offender ([`crate::offense::OffenseRecord`]) and their fines. Persisted through
     /// [`put_offense`]; an unreadable one proves and fines nothing on its key.
     pub(crate) offenses: BTreeMap<crate::offense::OffenseKey, crate::offense::OffenseSlot>,
+    /// **Doc 50 unit LW.1** — the live claims on strategic rocks, copied on the port tick for the
+    /// board's papers test ([`crate::port::law::PapersMirror`]). RAM only: rebuilt every fire.
+    pub(crate) papers: crate::port::law::PapersMirror,
     /// **Doc 39 cut IN.10** — `tacsim:house_pool:{org}`: each house's pool record
     /// ([`crate::port::pools::HousePool`]), loaded by [`crate::port::pools::load`].
     pub(crate) pools: crate::port::pools::PoolBook,

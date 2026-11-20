@@ -394,6 +394,18 @@ impl ProceedsPolicy for CoopProceeds {
         Err(refuse(CHARTER_ASK_AS_ORG.replace("{name}", &name)))
     }
 
+    /// **The law of the venue for the good** (doc 50 unit LW.1; Q-50-33, Q-50-34, Q-50-65):
+    /// [`crate::port::law::may_trade`].
+    fn may_trade(
+        &self,
+        w: &World,
+        trader: &PrincipalId,
+        market: &mush_market::MarketId,
+        commodity: &CanonicalId,
+    ) -> Result<(), ProceedsRefusal> {
+        crate::port::law::may_trade(w, trader, market, commodity)
+    }
+
     fn settled(&self, ctx: &mut Ctx<'_>, sale: &SettledSale<'_>) {
         let PrincipalId::Object(pilot) = sale.seller else {
             return;
