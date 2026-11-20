@@ -151,6 +151,16 @@ pub const MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION: usize = 512 * 1024;
 /// structured query before its allocation can consume the whole custody pool.
 pub const MAX_GATEWAY_INPUT_BYTES: usize = 128 * 1024;
 
+/// Maximum UTF-8 byte length of the `epoch` field on [`WireInbound::Respond`].
+pub const MAX_RESPOND_EPOCH_BYTES: usize = 128;
+
+/// Maximum UTF-8 byte length of a [`RespondChoice::Choose`] option identifier.
+pub const MAX_RESPOND_CHOICE_ID_BYTES: usize = 256;
+
+/// Maximum Unicode scalar count of a [`RespondChoice::Text`] body, matching
+/// the gateway's `MAX_LINE_CHARS` line limit.
+pub const MAX_RESPOND_TEXT_CHARS: usize = 8_192;
+
 /// Maximum number of correlated service requests one split-process boundary
 /// may hold in flight at once.
 ///
@@ -278,8 +288,8 @@ pub enum WireInbound {
         active: bool,
     },
     /// A client's answer to a server-initiated request ([`Inbound::Respond`],
-    /// interface plan I10): advisory and best-effort, so it rides the plain
-    /// one-way path like `Composing`. A lost answer means the server applies
+    /// interface plan I10): advisory and best-effort, so it rides the bounded
+    /// sheddable lane like `Composing`. A lost answer means the server applies
     /// its deadline default.
     Respond {
         /// Opaque lifetime of the engine that opened this request.
@@ -294,6 +304,130 @@ pub enum WireInbound {
         /// The viewer's choice.
         choice: RespondChoice,
     },
+}
+
+/// Exhaustive split-IPC queuing lane for a [`WireInbound`] frame.
+///
+/// Separates replayable player input ([`Self::Custodied`]), advisory
+/// best-effort player signals ([`Self::Sheddable`]), and must-deliver
+/// connection/session lifecycle ([`Self::Lifecycle`]) so player-originated
+/// advisory frames (`Composing`, `Respond`) can never enter the unbounded
+/// lifecycle lane.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WireInboundLane {
+    /// Replayable player input admitted to bounded gateway custody.
+    Custodied(GatewayInput),
+    /// Advisory, best-effort player input (`Composing`, `Respond`): bounded by
+    /// the gateway's `to_server_cap` high-water mark, never flood-exempt, and
+    /// silently shed under backpressure without taking custody or entering the
+    /// unbounded lifecycle lane.
+    Sheddable(WireInbound),
+    /// Must-deliver connection/session lifecycle (`ConnUp`, `ConnDown`,
+    /// `SessionGone`, `BareUp`, `BareDown`).
+    Lifecycle(WireInbound),
+}
+
+impl WireInbound {
+    /// Classify a [`WireInbound`] frame into its split-IPC queuing lane.
+    #[must_use]
+    pub fn classify(self) -> WireInboundLane {
+        match self {
+            Self::Cmd { conn, actor, line } => {
+                WireInboundLane::Custodied(GatewayInput::Cmd { conn, actor, line })
+            }
+            Self::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            } => WireInboundLane::Custodied(GatewayInput::Query {
+                conn,
+                actor,
+                id,
+                name,
+                args,
+            }),
+            Self::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            } => WireInboundLane::Custodied(GatewayInput::Invoke {
+                conn,
+                actor,
+                id,
+                request,
+            }),
+            advisory @ (Self::Composing { .. } | Self::Respond { .. }) => {
+                WireInboundLane::Sheddable(advisory)
+            }
+            lifecycle @ (Self::ConnUp { .. }
+            | Self::ConnDown { .. }
+            | Self::SessionGone { .. }
+            | Self::BareUp { .. }
+            | Self::BareDown { .. }) => WireInboundLane::Lifecycle(lifecycle),
+        }
+    }
+
+    /// Validate size and control-character bounds on a sheddable advisory frame
+    /// ([`WireInbound::Composing`] or [`WireInbound::Respond`]) before queuing
+    /// it toward the server.
+    ///
+    /// Returns the measured logical byte size on success.
+    pub fn validate_sheddable(&self) -> Result<usize, GatewayInputSizeError> {
+        match self {
+            Self::Composing { .. } => Ok(17),
+            Self::Respond { epoch, choice, .. } => {
+                if epoch.len() > MAX_RESPOND_EPOCH_BYTES {
+                    return Err(GatewayInputSizeError::TooLarge {
+                        actual: epoch.len(),
+                        maximum: MAX_RESPOND_EPOCH_BYTES,
+                    });
+                }
+                let choice_bytes = match choice {
+                    RespondChoice::Confirm(_) | RespondChoice::Cancel => 1,
+                    RespondChoice::Choose(id) => {
+                        if id.len() > MAX_RESPOND_CHOICE_ID_BYTES {
+                            return Err(GatewayInputSizeError::TooLarge {
+                                actual: id.len(),
+                                maximum: MAX_RESPOND_CHOICE_ID_BYTES,
+                            });
+                        }
+                        id.len()
+                    }
+                    RespondChoice::Text(text) => {
+                        let max_bytes = MAX_RESPOND_TEXT_CHARS.saturating_mul(4);
+                        if text.len() > max_bytes {
+                            return Err(GatewayInputSizeError::TooLarge {
+                                actual: text.len(),
+                                maximum: max_bytes,
+                            });
+                        }
+                        let chars = text.chars().count();
+                        if chars > MAX_RESPOND_TEXT_CHARS {
+                            return Err(GatewayInputSizeError::TooLarge {
+                                actual: chars,
+                                maximum: MAX_RESPOND_TEXT_CHARS,
+                            });
+                        }
+                        text.len()
+                    }
+                };
+                let total = 24_usize
+                    .saturating_add(epoch.len())
+                    .saturating_add(choice_bytes);
+                if total > MAX_GATEWAY_INPUT_BYTES {
+                    return Err(GatewayInputSizeError::TooLarge {
+                        actual: total,
+                        maximum: MAX_GATEWAY_INPUT_BYTES,
+                    });
+                }
+                Ok(total)
+            }
+            _ => Ok(0),
+        }
+    }
 }
 
 /// Player-originated input that participates in the restart custody protocol.

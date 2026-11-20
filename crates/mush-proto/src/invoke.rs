@@ -114,7 +114,10 @@ impl InvokeRequest {
             }
         }
         if let MindRequest::Remove { name } = request
-            && (name.is_empty() || name.len() > 64 || name.contains(['\0', '@', ':']))
+            && (name.is_empty()
+                || name.len() > 64
+                || name.contains(['@', ':'])
+                || name.chars().any(char::is_control))
         {
             return Err("invalid owned removal name");
         }
@@ -1517,7 +1520,16 @@ mod tests {
             )
             .is_err()
         );
-        for name in ["", "mine@1", "mine:other", "a\0b"] {
+        for name in [
+            "",
+            "mine@1",
+            "mine:other",
+            "a\0b",
+            "a\x1b[31mb",
+            "a\nb",
+            "a\rb",
+            "a\u{9b}b",
+        ] {
             check!(
                 InvokeRequest::Mind(MindRequest::Remove { name: name.into() })
                     .validate()

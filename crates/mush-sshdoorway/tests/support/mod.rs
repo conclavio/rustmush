@@ -29,6 +29,7 @@ use russh::{Channel, ChannelMsg, client};
 #[derive(Default)]
 pub struct State {
     pub opened: Vec<IpAddr>,
+    pub closed: Vec<IpAddr>,
     pub failures: Vec<IpAddr>,
     pub connected: Vec<(String, u64)>,
     pub lines: Vec<String>,
@@ -66,6 +67,10 @@ impl Hooks {
     }
     pub fn opened(&self) -> Vec<IpAddr> {
         self.st().opened.clone()
+    }
+    pub fn open_now(&self) -> usize {
+        let st = self.st();
+        st.opened.len().saturating_sub(st.closed.len())
     }
     pub fn failures(&self) -> Vec<IpAddr> {
         self.st().failures.clone()
@@ -176,6 +181,9 @@ impl SshHooks for Hooks {
     fn connection_opened(&self, addr: IpAddr) -> bool {
         self.st().opened.push(addr);
         true
+    }
+    fn connection_closed(&self, addr: IpAddr) {
+        self.st().closed.push(addr);
     }
     fn caps_changed(&self, _: u64, caps: ClientCaps) {
         self.st().widths.push(caps.width);

@@ -34,12 +34,16 @@ use smol_str::SmolStr;
 
 use crate::ephemeris::AU_KM;
 use crate::port::chart::{
-    Vantage, WINDOW_DAYS, body_of, direct_at, plan_at, sky_lines, vantage_for_world,
-    window_lines_for,
+    Vantage, WINDOW_DAYS, body_of, direct_at, hours_text, plan_at, sky_lines, vantage_for_world,
 };
 use crate::port::coop::port_name;
-use crate::port::voyage::destinations;
+use crate::port::price::{
+    emergency_readings, premium_permille, priced, reach_for, reach_ratio_permille,
+};
+use crate::port::readiness::report_ports;
+use crate::port::voyage::{Destination, destinations};
 use crate::sky::epoch_date;
+use crate::store::TacsimStore;
 
 /// The feed. Registered by the tacsim layer whether or not it is enabled, as
 /// every tacsim feed is: a disabled layer answers with the reason.
@@ -410,6 +414,217 @@ pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
     chart_frame_reading(w, None, actor)
 }
 
+/// Seconds in an IC day (matches `chart.rs`).
+const IC_DAY_S: i64 = 86_400;
+
+/// Single-day entry produced by a [`scan_window_summary`] sweep over `0..=WINDOW_DAYS`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowDay {
+    offset: i64,
+    total_s: i64,
+    burn_t: u64,
+}
+
+/// Summary of the `0..=WINDOW_DAYS` scan for one destination, computed once per request and
+/// reused for both the structured `chart.window` block and the pre-rendered `chart.lines.window`
+/// text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowSummary {
+    fastest: WindowDay,
+    cheapest: WindowDay,
+    worst: WindowDay,
+}
+
+fn summarize_window_days(days: &[WindowDay]) -> Option<WindowSummary> {
+    let fastest = *days.iter().min_by_key(|d| (d.total_s, d.offset))?;
+    let cheapest = days
+        .iter()
+        .copied()
+        .min_by_key(|d| (d.burn_t, d.total_s, d.offset))
+        .unwrap_or(fastest);
+    let worst = days
+        .iter()
+        .copied()
+        .max_by_key(|d| (d.total_s, d.burn_t))
+        .unwrap_or(fastest);
+    Some(WindowSummary {
+        fastest,
+        cheapest,
+        worst,
+    })
+}
+
+fn scan_window_summary(
+    v: &Vantage<'_>,
+    dest: &Destination,
+    now: i64,
+    today: &crate::port::families::PassagePlan,
+) -> Option<WindowSummary> {
+    let mut days = Vec::with_capacity(usize::try_from(WINDOW_DAYS).unwrap_or(0) + 1);
+    days.push(WindowDay {
+        offset: 0,
+        total_s: today.total_s,
+        burn_t: today.burn_t,
+    });
+    for offset in 1..=WINDOW_DAYS {
+        let depart = now.saturating_add(offset.saturating_mul(IC_DAY_S));
+        if let Ok(plan) = plan_at(v, dest, v.payload_kg, depart) {
+            days.push(WindowDay {
+                offset,
+                total_s: plan.total_s,
+                burn_t: plan.burn_t,
+            });
+        }
+    }
+    summarize_window_days(&days)
+}
+
+fn demand_lines_for_venue(w: &World, venue: &CanonicalId) -> Vec<String> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let (_, ports) = report_ports(store, w);
+    let Some((_, def)) = ports.iter().find(|(_, def)| &def.venue == venue) else {
+        return Vec::new();
+    };
+    if def.site.is_some() {
+        return Vec::new();
+    }
+    let name = port_name(def);
+    let mut lines = Vec::new();
+    let Some(premium) = def.premium else {
+        lines.push(format!(
+            "  {name} posts its list prices whatever the season."
+        ));
+        return lines;
+    };
+    let org_name = |org: &CanonicalId| -> String {
+        def.orgs
+            .iter()
+            .find(|o| &o.id == org)
+            .map_or_else(|| org.to_string(), |o| o.name.clone())
+    };
+    for vendor in &def.vendors {
+        for bid in &vendor.bids {
+            let line = match reach_for(w, def, &bid.good) {
+                Some(reach) => {
+                    let p = premium_permille(premium.k_permille, premium.cap_permille, reach);
+                    format!(
+                        "  {} bids {}: list {}, posts {} (+{p} permille; reach {} now against a \
+                         median of {}).",
+                        org_name(&vendor.org),
+                        bid.good,
+                        bid.price_major,
+                        priced(bid.price_major, p),
+                        hours_text(w, reach.now_s),
+                        hours_text(w, reach.median_s)
+                    )
+                }
+                None => format!(
+                    "  {} bids {}: list {}, posts {} (no port supplies it).",
+                    org_name(&vendor.org),
+                    bid.good,
+                    bid.price_major,
+                    bid.price_major
+                ),
+            };
+            lines.push(line);
+        }
+    }
+    if let Some(emergency) = &def.emergency {
+        let readings = emergency_readings(w, def);
+        let ratio = readings
+            .iter()
+            .filter_map(|r| r.reach)
+            .filter_map(reach_ratio_permille)
+            .max();
+        let where_it_stands = ratio.map_or_else(
+            || "no port supplies them".to_owned(),
+            |ratio| format!("reach is {ratio} permille of the median"),
+        );
+        let due: Vec<String> = readings
+            .iter()
+            .filter(|r| r.crossed)
+            .map(|r| match r.price_major {
+                Some(price) => format!("{} at {price}", r.good),
+                None => r.good.to_string(),
+            })
+            .collect();
+        if due.is_empty() {
+            lines.push(format!(
+                "  emergency bids (at {} permille of the median): none due; {where_it_stands}.",
+                emergency.ratio_permille
+            ));
+        } else {
+            lines.push(format!(
+                "  emergency bids (at {} permille of the median; {where_it_stands}): {} — {} each, \
+                 at the cap (+{} permille), posted by {}.",
+                emergency.ratio_permille,
+                due.join(", "),
+                emergency.intake,
+                premium.cap_permille,
+                org_name(&emergency.org)
+            ));
+        }
+    }
+    lines
+}
+
+fn format_window_lines(
+    w: &World,
+    v: &Vantage<'_>,
+    dest: &Destination,
+    now: i64,
+    today: &crate::port::families::PassagePlan,
+    summary: Option<WindowSummary>,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "The window for {} from {}, the {} at {} t, scanned a day at a time over the next {} IC days:",
+        dest.port,
+        port_name(v.def),
+        v.hull,
+        v.payload_kg / 1_000,
+        WINDOW_DAYS
+    )];
+    lines.push(format!(
+        "  now ({}): {}, burn {} t, {} crew-days.",
+        epoch_date(now),
+        hours_text(w, today.total_s),
+        today.burn_t,
+        today.crew_days
+    ));
+    lines.extend(demand_lines_for_venue(w, &dest.venue));
+    if v.sky.ephemeris().rate_permille() == 0 {
+        lines.push("  The sky is constant on this server: every day is today.".to_owned());
+        return lines;
+    }
+    let Some(summary) = summary else {
+        return lines;
+    };
+    let describe = |label: &str, day: WindowDay| -> String {
+        let date = epoch_date(now.saturating_add(day.offset.saturating_mul(IC_DAY_S)));
+        let dh = day.total_s - today.total_s;
+        let sign = if dh < 0 { "-" } else { "+" };
+        #[allow(clippy::cast_possible_wrap)]
+        let dt = day.burn_t as i64 - today.burn_t as i64;
+        let tsign = if dt < 0 { "-" } else { "+" };
+        format!(
+            "  {label}: {date} (in {} IC days): {}, burn {} t ({sign}{} and {tsign}{} t against now).",
+            day.offset,
+            hours_text(w, day.total_s),
+            day.burn_t,
+            hours_text(w, dh.abs()),
+            dt.abs()
+        )
+    };
+    lines.push(describe("fastest", summary.fastest));
+    if summary.cheapest.offset != summary.fastest.offset {
+        lines.push(describe("cheapest", summary.cheapest));
+    }
+    lines.push(describe("worst", summary.worst));
+    lines
+}
+
 /// **[`chart_frame`] with the sites' block records read** through `reads` (doc 20 cut SM.10,
 /// lead note 0a: a site's tenure line counts its live claims): the `sky.chart` feed's own
 /// answer and `+chart/map`'s; `None` prints the authored tenure, as [`chart_frame`] does.
@@ -417,11 +632,20 @@ pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
 /// # Errors
 ///
 /// The vantage's refusal: no lane, or nowhere the lane knows.
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub(crate) fn chart_frame_reading(
     w: &World,
     reads: Option<&dyn crate::port::site_map::SurfaceReads>,
     actor: ObjId,
+) -> Result<Value, String> {
+    chart_frame_inner(w, reads, actor, true)
+}
+
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+fn chart_frame_inner(
+    w: &World,
+    reads: Option<&dyn crate::port::site_map::SurfaceReads>,
+    actor: ObjId,
+    include_windows: bool,
 ) -> Result<Value, String> {
     let v: Vantage<'_> = vantage_for_world(w, actor)?;
     let now = w.world_ic_now().at;
@@ -476,16 +700,32 @@ pub(crate) fn chart_frame_reading(
     let mut routes: Vec<Value> = Vec::new();
     let mut legs: Vec<(CanonicalId, CanonicalId)> = Vec::new();
     let mut windows: Vec<Value> = Vec::new();
+    let mut window_text: Vec<String> = Vec::new();
+    let passage = |plan: &crate::port::families::PassagePlan| json!({ "total_s": plan.total_s, "burn_t": plan.burn_t, "crew_days": plan.crew_days });
+    let day_json =
+        |d: WindowDay| json!({ "offset_days": d.offset, "total_s": d.total_s, "burn_t": d.burn_t });
     for dest in &dests {
-        let Some(to) = v.pack.entries().iter().find_map(|(_, entry)| match entry {
+        let to = v.pack.entries().iter().find_map(|(_, entry)| match entry {
             crate::pack::PackEntry::Port(port) if port.venue == dest.venue => {
                 body_of(v.pack, &port.location)
             }
             _ => None,
-        }) else {
+        });
+        let loaded = plan_at(&v, dest, v.payload_kg, now).ok();
+        let summary = if include_windows
+            && rate != 0
+            && let Some(today) = loaded.as_ref()
+        {
+            scan_window_summary(&v, dest, now, today)
+        } else {
+            None
+        };
+        if include_windows && let Some(today) = loaded.as_ref() {
+            window_text.extend(format_window_lines(w, &v, dest, now, today, summary));
+        }
+        let Some(to) = to else {
             continue;
         };
-        let loaded = plan_at(&v, dest, v.payload_kg, now).ok();
         let bare = plan_at(&v, dest, empty_kg, now).ok();
         // Doc 20 cut SM.2: no direct chord on the vantage's own body (`sky_lines`' rule).
         let direct = (to != v.body)
@@ -500,7 +740,6 @@ pub(crate) fn chart_frame_reading(
                 from = leg.body.clone();
             }
         }
-        let passage = |plan: &crate::port::families::PassagePlan| json!({ "total_s": plan.total_s, "burn_t": plan.burn_t, "crew_days": plan.crew_days });
         routes.push(json!({
             "to": dest.port,
             "venue": dest.venue.to_string(),
@@ -510,28 +749,13 @@ pub(crate) fn chart_frame_reading(
             "empty": bare.as_ref().map(passage),
             "direct": direct.map(|(km, secs, burn)| json!({ "km": km, "total_s": secs, "burn_t": burn })),
         }));
-        // The window: every IC day of the next year, when the sky moves.
-        if let Some(today) = loaded.as_ref() {
+        // The window: every IC day of the next year, when the sky moves (computed once above).
+        if include_windows && let Some(today) = loaded.as_ref() {
             let mut window = json!({ "to": dest.port, "now": passage(today) });
-            if rate != 0 {
-                let mut days: Vec<(i64, i64, u64)> = Vec::new();
-                for offset in 0..=WINDOW_DAYS {
-                    let depart = now.saturating_add(offset.saturating_mul(86_400));
-                    if let Ok(plan) = plan_at(&v, dest, v.payload_kg, depart) {
-                        days.push((offset, plan.total_s, plan.burn_t));
-                    }
-                }
-                let day = |d: &(i64, i64, u64)| json!({ "offset_days": d.0, "total_s": d.1, "burn_t": d.2 });
-                if let Some(fastest) = days.iter().min_by_key(|d| (d.1, d.0)) {
-                    let cheapest = days
-                        .iter()
-                        .min_by_key(|d| (d.2, d.1, d.0))
-                        .unwrap_or(fastest);
-                    let worst = days.iter().max_by_key(|d| (d.1, d.2)).unwrap_or(fastest);
-                    window["fastest"] = day(fastest);
-                    window["cheapest"] = day(cheapest);
-                    window["worst"] = day(worst);
-                }
+            if let Some(summary) = summary {
+                window["fastest"] = day_json(summary.fastest);
+                window["cheapest"] = day_json(summary.cheapest);
+                window["worst"] = day_json(summary.worst);
             }
             windows.push(window);
         }
@@ -609,11 +833,11 @@ pub(crate) fn chart_frame_reading(
         })
         .collect();
     // The lines `+chart` prints, for a renderer that composes nothing itself.
-    let sky = sky_lines(w, reads, &v, now);
-    let window_text: Vec<String> = dests
-        .iter()
-        .flat_map(|dest| window_lines_for(w, &v, dest, now).unwrap_or_default())
-        .collect();
+    let sky = if include_windows {
+        sky_lines(w, reads, &v, now)
+    } else {
+        Vec::new()
+    };
     Ok(json!({
         "schema": { "id": SKY_CHART_FEED, "shape": "grid", "version": SCHEMA_VERSION },
         "window": 0,
@@ -676,7 +900,7 @@ pub(crate) fn flat_lines_reading(
     reads: Option<&dyn crate::port::site_map::SurfaceReads>,
     actor: ObjId,
 ) -> Result<Vec<String>, String> {
-    let frame = chart_frame_reading(w, reads, actor)?;
+    let frame = chart_frame_inner(w, reads, actor, false)?;
     let mut lines = vec![
         frame
             .get("title")
@@ -860,5 +1084,36 @@ mod tests {
             'a',
             "taken: the next free letter"
         );
+    }
+
+    #[test]
+    fn high2_window_summary_picks_fastest_cheapest_and_worst_consistently() {
+        let days = [
+            WindowDay {
+                offset: 0,
+                total_s: 100_000,
+                burn_t: 40,
+            },
+            WindowDay {
+                offset: 12,
+                total_s: 80_000,
+                burn_t: 45,
+            },
+            WindowDay {
+                offset: 30,
+                total_s: 95_000,
+                burn_t: 32,
+            },
+            WindowDay {
+                offset: 180,
+                total_s: 160_000,
+                burn_t: 60,
+            },
+        ];
+        let summary = summarize_window_days(&days).expect("summary");
+        assert_eq!(summary.fastest, days[1]);
+        assert_eq!(summary.cheapest, days[2]);
+        assert_eq!(summary.worst, days[3]);
+        assert!(summarize_window_days(&[]).is_none());
     }
 }

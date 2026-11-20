@@ -127,6 +127,13 @@ pub const SWEEP_EVERY: Duration = Duration::from_secs(1);
 /// banner state (doc 29a §8 F-1).
 pub const MAX_UNCOUNTED_PER_KEY: u32 = 2;
 
+/// Sliding window for per-network account registrations.
+pub const REGISTER_WINDOW: Duration = Duration::from_secs(600);
+
+/// Maximum account-registration attempts permitted per folded network (`/32`
+/// IPv4 or `/64` IPv6) within [`REGISTER_WINDOW`].
+pub const MAX_REGISTERS_PER_WINDOW: usize = 5;
+
 /// A network in CIDR notation (`10.0.0.0/8`, `2001:db8::/32`) or one
 /// address (`192.0.2.7`, a /32; `::1`, a /128): the shape of
 /// [`IpGuardConfig::exempt_nets`]. Host bits are zeroed on construction.
@@ -283,6 +290,9 @@ struct Gates {
     concurrent48: HashMap<u64, u32>,
     /// Refusals since the counters were last taken.
     counters: BTreeMap<&'static str, u64>,
+    /// Sliding window for unattributed SSH account creations (when the transport
+    /// hook does not carry a peer address).
+    unattributed_registrations: Vec<Instant>,
     last_rate_sweep: Option<Instant>,
     last_map_sweep: Option<Instant>,
 }
@@ -400,6 +410,9 @@ struct IpEntry {
     /// Active token cool-off, if any. Never consulted by
     /// [`IpGuard::is_blocked_at`].
     token_cooloff_until: Option<Instant>,
+    /// Instants of recent account-registration attempts (pruned to
+    /// [`REGISTER_WINDOW`]).
+    registrations: Vec<Instant>,
     /// Live connections from this IP.
     conns: u32,
     /// Live over-cap connections from this IP, admitted only to be told
@@ -413,6 +426,7 @@ impl IpEntry {
             && self.banned_until.is_none()
             && self.token_failures.is_empty()
             && self.token_cooloff_until.is_none()
+            && self.registrations.is_empty()
             && self.conns == 0
             && self.uncounted == 0
     }
@@ -424,6 +438,8 @@ impl IpEntry {
             .retain(|&t| now.saturating_duration_since(t) < cfg.window);
         self.token_failures
             .retain(|&t| now.saturating_duration_since(t) < cfg.token_window);
+        self.registrations
+            .retain(|&t| now.saturating_duration_since(t) < REGISTER_WINDOW);
         if self.banned_until.is_some_and(|until| until <= now) {
             self.banned_until = None;
             self.banned_at = None;
@@ -460,6 +476,9 @@ pub struct IpGuard {
     gates: Mutex<Gates>,
     /// SSH connections live at once, admitted and over-cap together.
     global: AtomicUsize,
+    /// Non-exempt connections live across both `admit_at` and `conn_opened`
+    /// (direct SSH, trusted doorway ingress, and web sockets).
+    non_exempt_live: AtomicUsize,
 }
 
 impl IpGuard {
@@ -479,6 +498,7 @@ impl IpGuard {
             tempban_lifts: std::sync::Mutex::default(),
             gates: Mutex::default(),
             global: AtomicUsize::new(0),
+            non_exempt_live: AtomicUsize::new(0),
         }
     }
 
@@ -613,6 +633,7 @@ impl IpGuard {
             *gates.concurrent48.entry(p).or_default() += 1;
         }
         self.global.fetch_add(1, Ordering::SeqCst);
+        self.non_exempt_live.fetch_add(1, Ordering::SeqCst);
         admission
     }
 
@@ -675,17 +696,30 @@ impl IpGuard {
                 gates.concurrent48.remove(&p);
             }
         }
-        let remove = match self.map.get_mut(&net) {
+        let (decremented, remove) = match self.map.get_mut(&net) {
             Some(mut e) => {
-                match admission {
-                    Admission::Admit => e.conns = e.conns.saturating_sub(1),
-                    Admission::OverCap => e.uncounted = e.uncounted.saturating_sub(1),
-                    Admission::Drop(_) => {}
-                }
-                e.is_idle()
+                let decremented = match admission {
+                    Admission::Admit if e.conns > 0 => {
+                        e.conns -= 1;
+                        true
+                    }
+                    Admission::OverCap if e.uncounted > 0 => {
+                        e.uncounted -= 1;
+                        true
+                    }
+                    _ => false,
+                };
+                (decremented, e.is_idle())
             }
-            None => false,
+            None => (false, false),
         };
+        if decremented {
+            let _ = self
+                .non_exempt_live
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    Some(n.saturating_sub(1))
+                });
+        }
         if remove {
             self.map.remove_if(&net, |_, e| e.is_idle());
         }
@@ -866,6 +900,83 @@ impl IpGuard {
         self.record_failure_at(ip, Instant::now())
     }
 
+    /// Whether every currently live SSH accept-gate connection is in
+    /// [`IpGuardConfig::exempt_nets`] (and at least one is live).
+    #[must_use]
+    pub fn only_exempt_live(&self) -> bool {
+        self.global.load(Ordering::SeqCst) > 0 && self.non_exempt_live.load(Ordering::SeqCst) == 0
+    }
+
+    /// Check and consume one account-registration slot for `ip`'s folded
+    /// network (`/32` IPv4 or `/64` IPv6, IPv4-mapped canonicalized) within
+    /// [`REGISTER_WINDOW`]. Returns `true` when admitted, `false` when the
+    /// network has reached [`MAX_REGISTERS_PER_WINDOW`].
+    pub fn check_register_at(&self, ip: IpAddr, now: Instant) -> bool {
+        let net = self.key(ip);
+        self.bound_map(now);
+        let mut e = self.map.entry(net).or_default();
+        e.registrations
+            .retain(|&t| now.saturating_duration_since(t) < REGISTER_WINDOW);
+        if e.registrations.len() >= MAX_REGISTERS_PER_WINDOW {
+            return false;
+        }
+        e.registrations.push(now);
+        true
+    }
+
+    /// [`IpGuard::check_register_at`] with `Instant::now()`.
+    pub fn check_register(&self, ip: IpAddr) -> bool {
+        self.check_register_at(ip, Instant::now())
+    }
+
+    /// Refund the most recent registration slot for `ip`'s folded network
+    /// (e.g., when the world half is booting and returned a transient error).
+    pub fn refund_register(&self, ip: IpAddr) {
+        let net = self.key(ip);
+        let remove = match self.map.get_mut(&net) {
+            Some(mut e) => {
+                let _ = e.registrations.pop();
+                e.is_idle()
+            }
+            None => false,
+        };
+        if remove {
+            self.map.remove_if(&net, |_, e| e.is_idle());
+        }
+    }
+
+    /// Check and consume one unattributed SSH account-registration slot
+    /// (used where `mush_net_ssh::SshHooks::create_account` does not carry the
+    /// peer address). Skips throttling only when [`Self::only_exempt_live`] is
+    /// true (all live SSH peers are explicitly exempt, e.g. local bot fleets
+    /// and loopback load harnesses).
+    pub fn check_unattributed_register_at(&self, now: Instant) -> bool {
+        if self.only_exempt_live() {
+            return true;
+        }
+        let mut gates = self.gates();
+        gates
+            .unattributed_registrations
+            .retain(|&t| now.saturating_duration_since(t) < REGISTER_WINDOW);
+        if gates.unattributed_registrations.len() >= MAX_REGISTERS_PER_WINDOW {
+            return false;
+        }
+        gates.unattributed_registrations.push(now);
+        true
+    }
+
+    /// [`IpGuard::check_unattributed_register_at`] with `Instant::now()`.
+    pub fn check_unattributed_register(&self) -> bool {
+        self.check_unattributed_register_at(Instant::now())
+    }
+
+    /// Refund one unattributed SSH registration slot (transient world-not-up
+    /// boot retries).
+    pub fn refund_unattributed_register(&self) {
+        let mut gates = self.gates();
+        let _ = gates.unattributed_registrations.pop();
+    }
+
     /// Apply a short-lived staff pardon once in this guard. It clears only
     /// password failures and a tempban predating the request, across the same
     /// configured network as failure accounting. Sitebans, token cool-offs and
@@ -946,6 +1057,7 @@ impl IpGuard {
             return false;
         }
         e.conns += 1;
+        self.non_exempt_live.fetch_add(1, Ordering::SeqCst);
         true
     }
 
@@ -957,13 +1069,25 @@ impl IpGuard {
             return;
         }
         let net = self.key(ip);
-        let remove = match self.map.get_mut(&net) {
+        let (decremented, remove) = match self.map.get_mut(&net) {
             Some(mut e) => {
-                e.conns = e.conns.saturating_sub(1);
-                e.is_idle()
+                let decremented = if e.conns > 0 {
+                    e.conns -= 1;
+                    true
+                } else {
+                    false
+                };
+                (decremented, e.is_idle())
             }
-            None => false,
+            None => (false, false),
         };
+        if decremented {
+            let _ = self
+                .non_exempt_live
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                    Some(n.saturating_sub(1))
+                });
+        }
         if remove {
             self.map.remove_if(&net, |_, e| e.is_idle());
         }
@@ -1735,5 +1859,95 @@ mod tests {
         assert!(!g.conn_opened(ip(1)));
         g.release(ip(1), Admission::Admit);
         assert!(g.conn_opened(ip(1)));
+    }
+
+    #[test]
+    fn register_throttle_folds_ipv6_slash_64_and_ipv4_mapped_and_expires() {
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        // Distinct host IDs within the same IPv6 /64 share one registration budget.
+        for i in 1..=MAX_REGISTERS_PER_WINDOW {
+            let addr: IpAddr = format!("2001:db8:1:2::{i:x}").parse().unwrap();
+            assert!(g.check_register_at(addr, t0), "slot {i} should be admitted");
+        }
+        let extra_same_64: IpAddr = "2001:db8:1:2::ffff".parse().unwrap();
+        assert!(
+            !g.check_register_at(extra_same_64, t0),
+            "same /64 must be throttled after {MAX_REGISTERS_PER_WINDOW}"
+        );
+        // A different /64 is unaffected.
+        let other_64: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert!(g.check_register_at(other_64, t0));
+        // Refund restores one slot.
+        g.refund_register(extra_same_64);
+        assert!(g.check_register_at(extra_same_64, t0));
+        assert!(!g.check_register_at(extra_same_64, t0));
+        // Window expiry admits fresh registrations.
+        assert!(g.check_register_at(extra_same_64, t0 + REGISTER_WINDOW));
+
+        // IPv4-mapped IPv6 folds onto the canonical IPv4 /32 bucket.
+        let v4: IpAddr = "203.0.113.9".parse().unwrap();
+        let v4_mapped: IpAddr = "::ffff:203.0.113.9".parse().unwrap();
+        for _ in 0..MAX_REGISTERS_PER_WINDOW {
+            assert!(g.check_register_at(v4, t0));
+        }
+        assert!(!g.check_register_at(v4_mapped, t0));
+    }
+
+    #[test]
+    fn unattributed_register_throttles_unless_only_exempt_live() {
+        let g = IpGuard::new();
+        let t0 = Instant::now();
+        // Direct calls (no live connections) are throttled.
+        for _ in 0..MAX_REGISTERS_PER_WINDOW {
+            assert!(g.check_unattributed_register_at(t0));
+        }
+        assert!(!g.check_unattributed_register_at(t0));
+        g.refund_unattributed_register();
+        assert!(g.check_unattributed_register_at(t0));
+        assert!(!g.check_unattributed_register_at(t0));
+
+        // If only exempt (loopback) connections are live, local load/bot harnesses pass.
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(g.admit_at(lo, t0), Admission::Admit);
+        assert!(g.only_exempt_live());
+        assert!(g.check_unattributed_register_at(t0));
+
+        // As soon as any non-exempt peer connects via admit_at, the throttle bites again.
+        let remote: IpAddr = "203.0.113.5".parse().unwrap();
+        assert_eq!(g.admit_at(remote, t0), Admission::Admit);
+        assert!(!g.only_exempt_live());
+        assert!(!g.check_unattributed_register_at(t0));
+
+        g.release(remote, Admission::Admit);
+        assert!(g.only_exempt_live());
+
+        // A non-exempt peer entering via conn_opened (TrustedIngress / doorway / web)
+        // must ALSO flip only_exempt_live() to false and enforce the throttle.
+        let doorway_remote: IpAddr = "198.51.100.7".parse().unwrap();
+        let other_remote: IpAddr = "198.51.100.8".parse().unwrap();
+        assert!(g.conn_opened(doorway_remote));
+        assert!(!g.only_exempt_live());
+        assert!(!g.check_unattributed_register_at(t0));
+
+        // Extra conn_closed calls for an already-closed / uncounted peer must
+        // never underflow non_exempt_live while another non-exempt peer is live.
+        assert!(g.conn_opened(other_remote));
+        g.conn_closed(doorway_remote);
+        g.conn_closed(doorway_remote);
+        g.conn_closed(doorway_remote);
+        assert!(
+            !g.only_exempt_live(),
+            "extra conn_closed must not underflow non_exempt_live"
+        );
+        assert!(!g.check_unattributed_register_at(t0));
+
+        // Closing the remaining non-exempt peer restores only_exempt_live.
+        g.conn_closed(other_remote);
+        assert!(g.only_exempt_live());
+        assert!(g.check_unattributed_register_at(t0));
+
+        g.release(lo, Admission::Admit);
+        assert!(!g.only_exempt_live());
     }
 }

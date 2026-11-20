@@ -99,6 +99,12 @@ const WEDGE: Rgb = [196, 196, 120];
 const UNKNOWN_CONTACT: Rgb = [170, 170, 162];
 const OFF_MAP: Rgb = [10, 12, 16];
 
+/// Maximum pixel dimensions of any cached scrolling ground tile (matches the
+/// retained Kitty `2 × 1280` by `2 × 720` panning canvas ceiling so no map
+/// size or zoom can trigger an unbounded full-map allocation).
+const MAX_GROUND_TILE_W: usize = 2_560;
+const MAX_GROUND_TILE_H: usize = 1_440;
+
 /// A contact's mark colour by the viewer's relation to it (doc 32 cut CF.0,
 /// Q-CF-12): friend, hostile, grey for neutral and unclassified, a wreck's.
 fn relation_rgb(kind: SpriteKind) -> Rgb {
@@ -230,8 +236,9 @@ pub struct OverheadPicture {
     map: Option<Map>,
     /// Its heights, when the feed carries them (G.7b).
     terrain: Option<Terrain>,
-    /// The ground drawn at a scale, and what it was drawn from.
-    ground: Option<(GroundKey, Frame)>,
+    /// Bounded scrolling ground tile centred on `origin_you`, blitted directly
+    /// into the viewport frame without cloning or allocating the full map.
+    ground: Option<(GroundTileKey, Frame)>,
     /// 20 Hz sub-pulse contact dead-reckoning tracker.
     contact_tracker: ContactTracker,
     /// Last `t_ms` ingested into `active_fx`.
@@ -260,11 +267,14 @@ pub struct OverheadPicture {
     kitty_hud_area: Option<(u16, u16, u16, u16)>,
 }
 
-/// What a drawn ground image was drawn from.
+/// What a cached bounded scrolling ground tile was drawn from.
 #[derive(Clone, Debug, PartialEq)]
-struct GroundKey {
+struct GroundTileKey {
     built_for: Option<MapStamp>,
-    px_per_m: f64,
+    vw: usize,
+    vh: usize,
+    px_per_m_milli: i64,
+    origin_you: (f64, f64),
 }
 
 impl OverheadPicture {
@@ -323,6 +333,81 @@ impl OverheadPicture {
             self.kitty_ground_key = None;
             self.kitty_ground_canvas = None;
             self.kitty_ground_placement = None;
+        }
+    }
+
+    /// Blit the north-up ground (and scorch marks) for `(you, px_per_m)` into
+    /// `frame`, backed by a bounded `2×` scrolling tile cached in `self.ground`.
+    /// Never allocates a full-map `Frame` and never clones the cached tile.
+    fn blit_camera_ground(&mut self, frame: &mut Frame, you: (f64, f64), px_per_m: f64) {
+        let (vw, vh) = (frame.width(), frame.height());
+        if vw == 0 || vh == 0 {
+            return;
+        }
+        let Some(map) = self.map.as_ref() else {
+            frame.clear(OFF_MAP);
+            return;
+        };
+        if vw > MAX_GROUND_TILE_W || vh > MAX_GROUND_TILE_H {
+            render_ground_into(frame, map, self.terrain.as_ref(), you, px_per_m);
+            for sc in &self.scorches {
+                let _ = stamp_scorch_on_overhead_canvas(frame, you, px_per_m, sc);
+            }
+            return;
+        }
+        // Keep `(tw - vw)` and `(th - vh)` even so the centred blit offset is
+        // an exact integer pixel shift matching `Viewport::to_px`.
+        let margin_x = (vw / 2).min((MAX_GROUND_TILE_W - vw) / 2);
+        let margin_y = (vh / 2).min((MAX_GROUND_TILE_H - vh) / 2);
+        let tw = vw + margin_x * 2;
+        let th = vh + margin_y * 2;
+        let px_per_m_milli = (px_per_m * 1_000.0).round() as i64;
+        let cache_hit = match self.ground.as_ref() {
+            Some((k, tile))
+                if k.built_for == self.built_for
+                    && k.vw == vw
+                    && k.vh == vh
+                    && k.px_per_m_milli == px_per_m_milli
+                    && tile.width() == tw
+                    && tile.height() == th =>
+            {
+                let dx_px = ((you.0 - k.origin_you.0) * px_per_m).round() as i64;
+                let dy_px = ((k.origin_you.1 - you.1) * px_per_m).round() as i64;
+                let sx = (tw as i64 - vw as i64) / 2 + dx_px;
+                let sy = (th as i64 - vh as i64) / 2 + dy_px;
+                sx >= 0 && sy >= 0 && sx + vw as i64 <= tw as i64 && sy + vh as i64 <= th as i64
+            }
+            _ => false,
+        };
+        if !cache_hit {
+            let mut tile = Frame::new(tw, th);
+            render_ground_into(&mut tile, map, self.terrain.as_ref(), you, px_per_m);
+            for sc in &self.scorches {
+                let _ = stamp_scorch_on_overhead_canvas(&mut tile, you, px_per_m, sc);
+            }
+            self.ground = Some((
+                GroundTileKey {
+                    built_for: self.built_for,
+                    vw,
+                    vh,
+                    px_per_m_milli,
+                    origin_you: you,
+                },
+                tile,
+            ));
+        }
+        if let Some((k, tile)) = self.ground.as_ref() {
+            let dx_px = ((you.0 - k.origin_you.0) * px_per_m).round() as i64;
+            let dy_px = ((k.origin_you.1 - you.1) * px_per_m).round() as i64;
+            let max_sx = tile.width().saturating_sub(vw) as i64;
+            let max_sy = tile.height().saturating_sub(vh) as i64;
+            let sx = ((tile.width() as i64 - vw as i64) / 2 + dx_px).clamp(0, max_sx) as usize;
+            let sy = ((tile.height() as i64 - vh as i64) / 2 + dy_px).clamp(0, max_sy) as usize;
+            for y in 0..vh {
+                for x in 0..vw {
+                    frame.put(x, y, tile.get(sx + x, sy + y));
+                }
+            }
         }
     }
 
@@ -675,15 +760,26 @@ impl Picture for OverheadPicture {
             base_you.0 as f32,
             base_you.1 as f32,
         );
+        let you = (
+            base_you.0 + look.dx_cm as f64 / 100.0,
+            base_you.1 + look.dy_cm as f64 / 100.0,
+        );
+        let sight = cockpit
+            .get("sight_m")
+            .and_then(Value::as_f64)
+            .filter(|m| *m > 0.0)
+            .unwrap_or(DEFAULT_SIGHT_M);
+        let reach = effective_reach(sight, look.zoom_permille);
+        let px_per_m = (frame.width().min(frame.height()) as f64 / 2.0) / reach;
         if !new_scorches.is_empty()
-            && let (Some(map), Some((gkey, gimg))) = (self.map.as_ref(), self.ground.as_mut())
+            && let Some((gkey, gtile)) = self.ground.as_mut()
         {
-            let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
-            let mh = map.height() as f64 * cell_m;
+            let tile_px_per_m = gkey.px_per_m_milli as f64 / 1_000.0;
             for sc in &new_scorches {
-                stamp_scorch_on_map_ground(gimg, mh, gkey.px_per_m, sc);
+                let _ = stamp_scorch_on_overhead_canvas(gtile, gkey.origin_you, tile_px_per_m, sc);
             }
         }
+        self.blit_camera_ground(frame, you, px_per_m);
         let scene = overhead_scene(frame, cockpit, held, look, self, Dress::Camera);
         scene.draw(frame);
         if !self.active_fx.is_empty() {
@@ -858,21 +954,33 @@ fn overhead_scene(
         transform: Transform::Linear,
     };
     let mut scene = Scene::new(viewport);
-    let bg_fill = match dress {
+    // `Dress::Camera` already blitted the bounded ground tile (or `OFF_MAP`)
+    // directly into `frame`, so only `CameraHud` and `Inset` push a background
+    // fill panel here.
+    match dress {
+        Dress::Camera => {}
         #[cfg(feature = "encode")]
-        Dress::CameraHud => CHROMA_KEY_OH,
-        _ => OFF_MAP,
-    };
-    scene.push(Item::Panel {
-        rect: (0, 0, w, h),
-        fill: bg_fill,
-        border: None,
-    });
+        Dress::CameraHud => {
+            scene.push(Item::Panel {
+                rect: (0, 0, w, h),
+                fill: CHROMA_KEY_OH,
+                border: None,
+            });
+        }
+        Dress::Inset { .. } => {
+            scene.push(Item::Panel {
+                rect: (0, 0, w, h),
+                fill: OFF_MAP,
+                border: None,
+            });
+        }
+    }
 
-    // The ground: the camera's is the whole map drawn once at this scale,
-    // placed by its north-west corner; the inset's is sampled a pixel,
-    // turned about the tank. (Retained Kitty's `CameraHud` skips ground and
-    // spots because they live on the panning `IMAGE_ID_OH_GROUND` layer.)
+    // The ground: `Dress::Camera` already blitted its bounded scrolling tile
+    // directly into `frame` (zero full-map allocation and zero 20 Hz clone);
+    // the inset samples its small rotated `(w, h)` frame directly; retained
+    // Kitty's `CameraHud` skips ground and spots because they live on
+    // `IMAGE_ID_OH_GROUND`.
     let draw_ground_and_spots = match dress {
         #[cfg(feature = "encode")]
         Dress::CameraHud => false,
@@ -880,32 +988,11 @@ fn overhead_scene(
     };
     if draw_ground_and_spots && let Some(map) = pic.map.as_ref() {
         let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
-        let mh = map.height() as f64 * cell_m;
-        match pl.turn {
-            None => {
-                let key = GroundKey {
-                    built_for: pic.built_for,
-                    px_per_m,
-                };
-                if pic.ground.as_ref().is_none_or(|(k, _)| *k != key) {
-                    let mut image = ground_image(map, pic.terrain.as_ref(), px_per_m);
-                    for sc in &pic.scorches {
-                        stamp_scorch_on_map_ground(&mut image, mh, px_per_m, sc);
-                    }
-                    pic.ground = Some((key, image));
-                }
-                if let Some((_, image)) = pic.ground.as_ref() {
-                    let at = viewport.to_px((0.0, mh));
-                    scene.push(Item::Image {
-                        at,
-                        frame: image.clone(),
-                    });
-                }
-            }
-            Some((_, sin_cos, _)) => scene.push(Item::Image {
+        if let Some((_, sin_cos, _)) = pl.turn {
+            scene.push(Item::Image {
                 at: (0, 0),
                 frame: sampled_ground(map, you, sin_cos, px_per_m, (w, h)),
-            }),
+            });
         }
         for spot in held
             .and_then(|m| m.get("spots"))
@@ -1135,17 +1222,23 @@ fn overhead_scene(
     scene
 }
 
-/// Build the oversized `2 * vw × 2 * vh` ground + named spots canvas centred
+/// Build the bounded `2 * vw × 2 * vh` ground + named spots canvas centred
 /// on `origin_you` for retained Kitty sub-rectangle `a=p` panning.
+///
+/// Rasterizes only the pixels covered by `(gw, gh)` directly into `canvas` —
+/// never allocating or cloning a full-map `Frame`.
 #[cfg(feature = "encode")]
 fn build_kitty_ground_canvas(
-    pic: &mut OverheadPicture,
+    pic: &OverheadPicture,
     held: Option<&Value>,
     origin_you: (f64, f64),
     px_per_m: f64,
     (vw, vh): (usize, usize),
 ) -> Frame {
-    let (gw, gh) = (vw * 2, vh * 2);
+    let (gw, gh) = (
+        vw.saturating_mul(2).min(MAX_GROUND_TILE_W),
+        vh.saturating_mul(2).min(MAX_GROUND_TILE_H),
+    );
     let (w, h) = (gw as i64, gh as i64);
     let s: i64 = if vw.min(vh) >= 360 { 2 } else { 1 };
     let half_w = w as f64 / 2.0 / px_per_m;
@@ -1160,30 +1253,11 @@ fn build_kitty_ground_canvas(
         frame: (0, 0, w, h),
         transform: Transform::Linear,
     };
-    let mut scene = Scene::new(viewport);
-    scene.push(Item::Panel {
-        rect: (0, 0, w, h),
-        fill: OFF_MAP,
-        border: None,
-    });
+    let mut canvas = Frame::new(gw, gh);
     if let Some(map) = pic.map.as_ref() {
+        render_ground_into(&mut canvas, map, pic.terrain.as_ref(), origin_you, px_per_m);
         let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
-        let mh = map.height() as f64 * cell_m;
-        let key = GroundKey {
-            built_for: pic.built_for,
-            px_per_m,
-        };
-        if pic.ground.as_ref().is_none_or(|(k, _)| *k != key) {
-            let image = ground_image(map, pic.terrain.as_ref(), px_per_m);
-            pic.ground = Some((key, image));
-        }
-        if let Some((_, image)) = pic.ground.as_ref() {
-            let at = viewport.to_px((0.0, mh));
-            scene.push(Item::Image {
-                at,
-                frame: image.clone(),
-            });
-        }
+        let mut scene = Scene::new(viewport);
         for spot in held
             .and_then(|m| m.get("spots"))
             .and_then(Value::as_array)
@@ -1215,34 +1289,16 @@ fn build_kitty_ground_canvas(
                 scale: s as usize,
             });
         }
+        scene.draw(&mut canvas);
+    } else {
+        canvas.clear(OFF_MAP);
     }
-    let mut canvas = Frame::new(gw, gh);
-    scene.draw(&mut canvas);
     for sc in &pic.scorches {
         let _ = stamp_scorch_on_overhead_canvas(&mut canvas, origin_you, px_per_m, sc);
     }
     canvas
 }
 
-fn stamp_scorch_on_map_ground(
-    image: &mut Frame,
-    map_height_m: f64,
-    px_per_m: f64,
-    sc: &fx::ScorchMark,
-) {
-    let cx = (f64::from(sc.x_m) * px_per_m).round() as i32;
-    let cy = ((map_height_m - f64::from(sc.y_m)) * px_per_m).round() as i32;
-    let r = if sc.large { 5 } else { 3 };
-    let w = image.width() as i32;
-    let h = image.height() as i32;
-    fx::stamp_scorch_mark(cx, cy, r, sc.large, &mut |x, y, rgb| {
-        if x >= 0 && x < w && y >= 0 && y < h {
-            image.put(x as usize, y as usize, rgb);
-        }
-    });
-}
-
-#[cfg(feature = "encode")]
 fn stamp_scorch_on_overhead_canvas(
     canvas: &mut Frame,
     origin_you: (f64, f64),
@@ -1406,31 +1462,66 @@ fn sampled_ground(
     image
 }
 
-/// The whole of `map` drawn at `px_per_m`, north up, its first row the
-/// map's northern edge: a cell's ground colour, shaded by `terrain`'s relief
-/// where it is held (lit from the north-west, in [`SHADES`] steps) and flat
-/// where it is not.
-fn ground_image(map: &Map, terrain: Option<&Terrain>, px_per_m: f64) -> Frame {
+/// Rasterize the visible north-up window of `map` centred on `origin_you` at
+/// `px_per_m` directly into `canvas` (with relief shading when `terrain` is
+/// present, and [`OFF_MAP`] outside the map). Bounded strictly by `canvas`'s
+/// dimensions so huge maps or high zoom never allocate a full-map buffer, while
+/// preserving bit-exact pixel alignment with `Viewport::to_px((0.0, mh))`.
+fn render_ground_into(
+    canvas: &mut Frame,
+    map: &Map,
+    terrain: Option<&Terrain>,
+    origin_you: (f64, f64),
+    px_per_m: f64,
+) {
     let biome = map.biome();
     let cell_m = f64::from(map.cell_cm().max(1)) / 100.0;
-    let px_per_cell = (cell_m * px_per_m).max(0.01);
-    let fw = (map.width() as f64 * px_per_cell).ceil().max(1.0) as usize;
-    let fh = (map.height() as f64 * px_per_cell).ceil().max(1.0) as usize;
-    let mut image = Frame::new(fw, fh);
     let rows = map.height() as i64;
-    for py in 0..fh {
-        let cy = rows - 1 - (py as f64 / px_per_cell) as i64;
-        for px in 0..fw {
-            let cx = (px as f64 / px_per_cell) as i64;
-            let base = biome_ground_rgb(biome, map.get(cx, cy));
-            let rgb = match terrain {
-                Some(t) => shade(base, relief(t, cx, cy)),
-                None => base,
+    let mh = map.height() as f64 * cell_m;
+    let (cw, ch) = (canvas.width(), canvas.height());
+    if !px_per_m.is_finite() || px_per_m <= 0.0 {
+        canvas.clear(OFF_MAP);
+        return;
+    }
+    let px_per_cell = (cell_m * px_per_m).max(0.01);
+    let fw = (map.width() as f64 * px_per_cell).ceil().max(1.0) as i64;
+    let fh = (map.height() as f64 * px_per_cell).ceil().max(1.0) as i64;
+    let half_w = cw as f64 / 2.0 / px_per_m;
+    let half_h = ch as f64 / 2.0 / px_per_m;
+    let viewport = Viewport {
+        world: (
+            origin_you.0 - half_w,
+            origin_you.1 - half_h,
+            origin_you.0 + half_w,
+            origin_you.1 + half_h,
+        ),
+        frame: (0, 0, cw as i64, ch as i64),
+        transform: Transform::Linear,
+    };
+    let (at_x, at_y) = viewport.to_px((0.0, mh));
+    for py in 0..ch {
+        let iy = py as i64 - at_y;
+        let y_in = (0..fh).contains(&iy);
+        let cy = if y_in {
+            rows - 1 - (iy as f64 / px_per_cell) as i64
+        } else {
+            -1
+        };
+        for px in 0..cw {
+            let ix = px as i64 - at_x;
+            let rgb = if y_in && (0..fw).contains(&ix) {
+                let cx = (ix as f64 / px_per_cell) as i64;
+                let base = biome_ground_rgb(biome, map.get(cx, cy));
+                match terrain {
+                    Some(t) => shade(base, relief(t, cx, cy)),
+                    None => base,
+                }
+            } else {
+                OFF_MAP
             };
-            image.put(px, py, rgb);
+            canvas.put(px, py, rgb);
         }
     }
-    image
 }
 
 /// How lit a cell is, `-SHADES/2..=SHADES/2`: its height over its
@@ -1767,5 +1858,57 @@ mod tests {
         };
         let zoomed_frame = draw(&f, &zoom_in_look, 640, 276);
         assert_ne!(norm_frame.hash(), zoomed_frame.hash());
+    }
+
+    /// Regression test (HIGH-13): huge maps at high zoom must NEVER allocate a
+    /// full-map `Frame`; both software `draw` and retained Kitty `draw_kitty`
+    /// stay bounded by the scrolling viewport tile ceiling.
+    #[test]
+    fn huge_map_at_high_zoom_bounds_ground_tile_allocation() {
+        // 512x512 cells × 50 m/cell = 25.6 km × 25.6 km map; at zoom 2000%
+        // (reach ≈ 75 m) on a 640×480 viewport, `px_per_m = 3.2`, so a full-map
+        // image would have been 81,920 × 81,920 × 3 B ≈ 20 GB!
+        let mut f = feeds(false);
+        if let Some(c) = f.get_mut(COCKPIT_FEED) {
+            c["x_cm"] = 1_280_000.into();
+            c["y_cm"] = 1_280_000.into();
+            c["sight_m"] = 150.0.into();
+        }
+        let mut pic = OverheadPicture::new();
+        // Inject a synthetic huge map directly (matches a large arena feed).
+        let mut map = Map::new(512, 512, 5_000);
+        map.set(256, 256, Ground::Water);
+        pic.map = Some(map);
+        pic.built_for = Some(map_stamp(None));
+
+        let look = Look {
+            zoom_permille: 2000,
+            ..Look::default()
+        };
+        let mut frame = Frame::new(640, 480);
+        assert!(pic.draw(&mut frame, &f, &look));
+        let (_, tile) = pic.ground.as_ref().expect("bounded scrolling tile cached");
+        assert!(tile.width() <= MAX_GROUND_TILE_W);
+        assert!(tile.height() <= MAX_GROUND_TILE_H);
+        assert_eq!((tile.width(), tile.height()), (1280, 960));
+        assert!(
+            has(&frame, ground_rgb(Ground::Water)),
+            "visible water cell under tank rendered"
+        );
+
+        // Panning within the cached tile reuses the exact tile without rebuild.
+        let cached_origin = pic.ground.as_ref().map(|(k, _)| k.origin_you);
+        let panned = Look {
+            dx_cm: 2_000,
+            dy_cm: 1_500,
+            zoom_permille: 2000,
+            ..Look::default()
+        };
+        assert!(pic.draw(&mut frame, &f, &panned));
+        assert_eq!(
+            pic.ground.as_ref().map(|(k, _)| k.origin_you),
+            cached_origin,
+            "panning inside 2x margin reuses cached scrolling tile"
+        );
     }
 }

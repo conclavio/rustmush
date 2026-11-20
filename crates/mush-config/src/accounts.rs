@@ -7,14 +7,17 @@
 //! gateway's `GatewayLink`); everything here is transport-agnostic and pulls no
 //! net / world code, so both halves can share it.
 
+use std::cell::Cell;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use mush_core::ObjId;
 use mush_store::{AccountRec, CharacterRef, ObjectStore, StoreError};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::unix_now_s;
 
@@ -71,9 +74,76 @@ pub enum CreateErr {
     /// The world task refused or is gone.
     #[error("character creation failed: {0}")]
     World(String),
+    /// Too many account-creation or password-hashing operations are in flight,
+    /// or this network exceeded its registration budget.
+    #[error("too many requests; please try again shortly")]
+    RateLimited,
     /// The persistence layer failed.
     #[error("account storage failed: {0}")]
     Io(String),
+}
+
+/// The process-wide Argon2id concurrency semaphore is saturated. Callers
+/// should treat this as temporary overload (HTTP 429) without recording a
+/// credential failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("authentication service busy; please try again shortly")]
+pub struct Argon2Busy;
+
+/// Maximum concurrent Argon2id operations allowed process-wide.
+///
+/// Each Argon2id hash or verify allocates ~19 MiB of working memory; capping
+/// concurrency prevents concurrent auth/registration floods from exhausting
+/// blocking threads or OOMing the process.
+#[must_use]
+pub fn argon2_concurrency_limit() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8))
+}
+
+/// The process-wide semaphore bounding concurrent Argon2id operations.
+#[must_use]
+pub fn argon2_semaphore() -> Arc<Semaphore> {
+    static SEM: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    Arc::clone(SEM.get_or_init(|| Arc::new(Semaphore::new(argon2_concurrency_limit()))))
+}
+
+std::thread_local! {
+    static ARGON2_PERMIT_HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+struct PermitHeldGuard(bool);
+
+impl PermitHeldGuard {
+    fn enter() -> Self {
+        let prev = ARGON2_PERMIT_HELD.with(|flag| flag.replace(true));
+        Self(prev)
+    }
+}
+
+impl Drop for PermitHeldGuard {
+    fn drop(&mut self) {
+        ARGON2_PERMIT_HELD.with(|flag| flag.set(self.0));
+    }
+}
+
+fn acquire_sync_permit() -> Result<Option<OwnedSemaphorePermit>, Argon2Busy> {
+    if ARGON2_PERMIT_HELD.with(Cell::get) {
+        return Ok(None);
+    }
+    let sem = argon2_semaphore();
+    if let Ok(permit) = Arc::clone(&sem).try_acquire_owned() {
+        return Ok(Some(permit));
+    }
+    // Bounded wait for direct synchronous callers (e.g. parallel test seeding
+    // or staff `@newpassword`) while strictly enforcing the concurrency cap.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        if let Ok(permit) = Arc::clone(&sem).try_acquire_owned() {
+            return Ok(Some(permit));
+        }
+    }
+    Err(Argon2Busy)
 }
 
 // ---------------------------------------------------------------------------
@@ -213,17 +283,42 @@ pub async fn bootstrap_staff_account(
         })
 }
 
-/// `spawn_blocking` with the join failure folded into [`CreateErr`].
+/// `spawn_blocking` guarded by a bounded Argon2id semaphore, with saturation
+/// mapped to [`CreateErr::RateLimited`] and join failure folded into
+/// [`CreateErr::Io`].
 ///
 /// # Errors
 ///
-/// [`CreateErr::Io`] if the blocking task panics or is cancelled.
+/// [`CreateErr::RateLimited`] if the process-wide Argon2id concurrency budget
+/// is saturated, or [`CreateErr::Io`] if the blocking task panics or is
+/// cancelled.
 pub async fn run_blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, CreateErr> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| CreateErr::Io(format!("blocking task failed: {e}")))
+    run_blocking_on(&argon2_semaphore(), f).await
+}
+
+/// Like [`run_blocking`], acquiring a permit from `sem` via
+/// [`Semaphore::try_acquire_owned`] before spawning onto the blocking pool.
+///
+/// # Errors
+///
+/// [`CreateErr::RateLimited`] when `sem` has no available permits, or
+/// [`CreateErr::Io`] if the blocking task fails to join.
+pub async fn run_blocking_on<T: Send + 'static>(
+    sem: &Arc<Semaphore>,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, CreateErr> {
+    let permit = Arc::clone(sem)
+        .try_acquire_owned()
+        .map_err(|_| CreateErr::RateLimited)?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _guard = PermitHeldGuard::enter();
+        f()
+    })
+    .await
+    .map_err(|e| CreateErr::Io(format!("blocking task failed: {e}")))
 }
 
 /// Account name rule: 3–20 chars of `[A-Za-z0-9_-]`, not reserved.
@@ -281,17 +376,7 @@ pub fn validate_password(password: &str) -> Result<(), CreateErr> {
     }
 }
 
-/// argon2id-hash a password into a PHC string (default params: Argon2id
-/// v19, m=19456 KiB, t=2, p=1 — the crate's OWASP-aligned defaults).
-/// Public so tests and seeding tools can mint valid account records.
-///
-/// Salt: 16 bytes from `rand`'s thread-local CSPRNG (the `argon2` crate's
-/// own `OsRng` path is feature-gated off in this workspace's dep graph).
-///
-/// # Errors
-///
-/// [`CreateErr::Io`] on a hashing/encoding failure.
-pub fn hash_password(password: &str) -> Result<String, CreateErr> {
+fn hash_password_raw(password: &str) -> Result<String, CreateErr> {
     let salt_bytes: [u8; 16] = rand::random();
     let salt = SaltString::encode_b64(&salt_bytes).map_err(|e| CreateErr::Io(e.to_string()))?;
     Argon2::default()
@@ -300,9 +385,7 @@ pub fn hash_password(password: &str) -> Result<String, CreateErr> {
         .map_err(|e| CreateErr::Io(e.to_string()))
 }
 
-/// Verify `password` against a stored PHC string.
-#[must_use]
-pub fn verify_hash(phc: &str, password: &str) -> bool {
+fn verify_hash_raw(phc: &str, password: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(phc) else {
         tracing::error!("stored password hash is not a valid PHC string");
         return false;
@@ -312,14 +395,144 @@ pub fn verify_hash(phc: &str, password: &str) -> bool {
         .is_ok()
 }
 
-/// Burn one verify against a fixed hash so "no such account" costs the same
-/// as "wrong password".
-pub fn burn_dummy_verify(password: &str) {
+fn burn_dummy_verify_raw(password: &str) {
     static DUMMY: OnceLock<String> = OnceLock::new();
     let dummy = DUMMY.get_or_init(|| {
-        hash_password("timing-pad-not-a-real-password").expect("dummy hash must succeed")
+        hash_password_raw("timing-pad-not-a-real-password").expect("dummy hash must succeed")
     });
-    let _ = verify_hash(dummy, password);
+    let _ = verify_hash_raw(dummy, password);
+}
+
+/// argon2id-hash a password into a PHC string (default params: Argon2id
+/// v19, m=19456 KiB, t=2, p=1 — the crate's OWASP-aligned defaults),
+/// guarded by the process-wide Argon2id concurrency semaphore.
+/// Public so tests and seeding tools can mint valid account records.
+///
+/// Salt: 16 bytes from `rand`'s thread-local CSPRNG (the `argon2` crate's
+/// own `OsRng` path is feature-gated off in this workspace's dep graph).
+///
+/// # Errors
+///
+/// [`CreateErr::RateLimited`] if no Argon2id permit became available, or
+/// [`CreateErr::Io`] on a hashing/encoding failure.
+pub fn hash_password(password: &str) -> Result<String, CreateErr> {
+    let _permit = acquire_sync_permit().map_err(|_| CreateErr::RateLimited)?;
+    hash_password_raw(password)
+}
+
+/// Verify `password` against a stored PHC string, guarded by the process-wide
+/// Argon2id concurrency semaphore.
+#[must_use]
+pub fn verify_hash(phc: &str, password: &str) -> bool {
+    let Ok(_permit) = acquire_sync_permit() else {
+        tracing::warn!("argon2 concurrency semaphore saturated during sync verify");
+        return false;
+    };
+    verify_hash_raw(phc, password)
+}
+
+/// Burn one verify against a fixed hash so "no such account" costs the same
+/// as "wrong password", guarded by the process-wide Argon2id concurrency
+/// semaphore.
+pub fn burn_dummy_verify(password: &str) {
+    let Ok(_permit) = acquire_sync_permit() else {
+        tracing::warn!("argon2 concurrency semaphore saturated during sync dummy verify");
+        return;
+    };
+    burn_dummy_verify_raw(password);
+}
+
+/// Hash `password` on the blocking pool under the process-wide Argon2id
+/// semaphore, failing fast with [`CreateErr::RateLimited`] before spawning
+/// when all permits are busy.
+///
+/// # Errors
+///
+/// [`CreateErr::RateLimited`] when saturated, or [`CreateErr::Io`] on hashing
+/// or task join failure.
+pub async fn hash_password_bounded(password: String) -> Result<String, CreateErr> {
+    hash_password_on(&argon2_semaphore(), password).await
+}
+
+/// Like [`hash_password_bounded`], acquiring a permit from `sem`.
+///
+/// # Errors
+///
+/// [`CreateErr::RateLimited`] when `sem` is saturated, or [`CreateErr::Io`] on
+/// hashing or task join failure.
+pub async fn hash_password_on(sem: &Arc<Semaphore>, password: String) -> Result<String, CreateErr> {
+    run_blocking_on(sem, move || hash_password_raw(&password)).await?
+}
+
+/// Verify `password` against `phc` on the blocking pool under the process-wide
+/// Argon2id semaphore, failing fast with [`Argon2Busy`] before spawning when
+/// saturated.
+///
+/// # Errors
+///
+/// [`Argon2Busy`] if the semaphore is saturated or the blocking task fails.
+pub async fn verify_hash_bounded(phc: String, password: String) -> Result<bool, Argon2Busy> {
+    verify_hash_on(&argon2_semaphore(), phc, password).await
+}
+
+/// Like [`verify_hash_bounded`], acquiring a permit from `sem`.
+///
+/// # Errors
+///
+/// [`Argon2Busy`] if `sem` is saturated or the blocking task fails.
+pub async fn verify_hash_on(
+    sem: &Arc<Semaphore>,
+    phc: String,
+    password: String,
+) -> Result<bool, Argon2Busy> {
+    let permit = Arc::clone(sem)
+        .try_acquire_owned()
+        .map_err(|_| Argon2Busy)?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _guard = PermitHeldGuard::enter();
+        verify_hash_raw(&phc, &password)
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "argon2 verify task failed");
+        Argon2Busy
+    })
+}
+
+/// Run a timing-pad dummy Argon2id verify on the blocking pool under the
+/// process-wide Argon2id semaphore, failing fast with [`Argon2Busy`] before
+/// spawning when saturated.
+///
+/// # Errors
+///
+/// [`Argon2Busy`] if the semaphore is saturated or the blocking task fails.
+pub async fn burn_dummy_verify_bounded(password: String) -> Result<(), Argon2Busy> {
+    burn_dummy_verify_on(&argon2_semaphore(), password).await
+}
+
+/// Like [`burn_dummy_verify_bounded`], acquiring a permit from `sem`.
+///
+/// # Errors
+///
+/// [`Argon2Busy`] if `sem` is saturated or the blocking task fails.
+pub async fn burn_dummy_verify_on(
+    sem: &Arc<Semaphore>,
+    password: String,
+) -> Result<(), Argon2Busy> {
+    let permit = Arc::clone(sem)
+        .try_acquire_owned()
+        .map_err(|_| Argon2Busy)?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _guard = PermitHeldGuard::enter();
+        burn_dummy_verify_raw(&password);
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "argon2 dummy verify task failed");
+        Argon2Busy
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -488,5 +701,56 @@ mod tests {
         // The corrupt file is left in place for the operator.
         assert!(dir.join("accounts.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn argon2_semaphore_bounds_concurrency_and_fails_fast_when_saturated() {
+        let limit = argon2_concurrency_limit();
+        assert!((2..=8).contains(&limit), "unexpected limit {limit}");
+
+        let sem = Arc::new(Semaphore::new(1));
+        let held = Arc::clone(&sem).try_acquire_owned().expect("one permit");
+
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_clone = Arc::clone(&ran);
+        assert_eq!(
+            run_blocking_on(&sem, move || {
+                ran_clone.store(true, Ordering::SeqCst);
+                42
+            })
+            .await,
+            Err(CreateErr::RateLimited)
+        );
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "saturated semaphore must fail fast without running closure"
+        );
+        assert_eq!(
+            hash_password_on(&sem, "hunter42".to_owned()).await,
+            Err(CreateErr::RateLimited)
+        );
+        assert_eq!(
+            verify_hash_on(&sem, "$argon2id$invalid".to_owned(), "hunter42".to_owned()).await,
+            Err(Argon2Busy)
+        );
+        assert_eq!(
+            burn_dummy_verify_on(&sem, "hunter42".to_owned()).await,
+            Err(Argon2Busy)
+        );
+
+        drop(held);
+
+        let phc = hash_password_on(&sem, "hunter42".to_owned())
+            .await
+            .expect("permit released");
+        assert_eq!(
+            verify_hash_on(&sem, phc.clone(), "hunter42".to_owned()).await,
+            Ok(true)
+        );
+        assert_eq!(
+            verify_hash_on(&sem, phc, "wrong".to_owned()).await,
+            Ok(false)
+        );
+        assert_eq!(burn_dummy_verify_on(&sem, "wrong".to_owned()).await, Ok(()));
     }
 }

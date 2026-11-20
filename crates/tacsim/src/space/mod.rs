@@ -250,7 +250,7 @@ mod tests {
             "ship.target",
             "Target",
             admitted_party(1),
-            [75_500, 1_600, -750],
+            [125_500, 1_600, -750],
             [-1_000_000, 3_000_000, -500_000], // -1 km/s X, +3 km/s Y, -0.5 km/s Z
         );
         bubble.insert_ship(target);

@@ -15,6 +15,8 @@ tls = ["dep:axum-server", "dep:rustls"]
 mush-config.workspace = true
 mush-proto.workspace = true
 axum.workspace = true
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "service"] }
 tokio.workspace = true
 tracing.workspace = true
 futures.workspace = true

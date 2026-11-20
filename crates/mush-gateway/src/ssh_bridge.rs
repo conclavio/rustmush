@@ -374,6 +374,11 @@ mod net {
             password: &'a str,
         ) -> BoxFuture<'a, Result<(), net_ssh::CreateErr>> {
             Box::pin(async move {
+                if !self.core.guard.check_unattributed_register() {
+                    return Err(net_ssh::CreateErr::BadName(
+                        CreateErr::RateLimited.to_string(),
+                    ));
+                }
                 // The account's first character shares the account's name
                 // (as typed); more arrive via the select screen's newchar.
                 match self.core.accounts.create(account, password, account).await {
@@ -382,6 +387,10 @@ mod net {
                         Err(net_ssh::CreateErr::Taken)
                     }
                     Err(CreateErr::BadPassword) => Err(net_ssh::CreateErr::Weak),
+                    Err(err @ CreateErr::World(_)) => {
+                        self.core.guard.refund_unattributed_register();
+                        Err(net_ssh::CreateErr::BadName(err.to_string()))
+                    }
                     Err(other) => Err(net_ssh::CreateErr::BadName(other.to_string())),
                 }
             })
@@ -1006,5 +1015,30 @@ mod exec_tests {
         );
         assert!(frames(&seen).is_empty());
         assert!(sessions.bare_conns().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ssh_hooks_create_account_is_rate_limited() {
+        use mush_net_ssh::SshHooks;
+
+        let (bridge, _sessions, _seen) = rig(true);
+        // First MAX_REGISTERS_PER_WINDOW calls reach the backend (StubAuth rejects
+        // with NoSuchAccount); the next call is throttled before the backend.
+        for i in 0..mush_config::ipguard::MAX_REGISTERS_PER_WINDOW {
+            let err = SshHooks::create_account(&bridge, &format!("acct{i}"), "secret123")
+                .await
+                .unwrap_err();
+            assert!(
+                !format!("{err:?}").contains("too many requests"),
+                "call {i} should not be rate-limited yet: {err:?}"
+            );
+        }
+        let limited = SshHooks::create_account(&bridge, "acct_over", "secret123")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(limited, mush_net_ssh::CreateErr::BadName(ref msg) if msg.contains("too many requests")),
+            "expected rate-limit error, got {limited:?}"
+        );
     }
 }

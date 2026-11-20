@@ -53,7 +53,7 @@ use super::render::{
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
     render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
     render_rolls_rows, render_sheet_rows, render_vitals_rows, render_who_rail, status_line,
-    tab_strip, vitals_line, wrap_spans,
+    tab_strip, vitals_line, wrap_spans, wrap_spans_count,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
@@ -65,6 +65,10 @@ use crate::line::LineBuffer;
 
 /// Scrollback ring depth (entries, pre-wrap; matches the web client).
 pub const SCROLLBACK_CAP: usize = 5000;
+/// Total retained byte budget for [`TuiApp`]'s scrollback ring (4 MiB, HIGH-12).
+pub const SCROLLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum characters echoed back from an unknown `/...` local command (HIGH-12).
+const UNKNOWN_LOCAL_CMD_MAX_CHARS: usize = 64;
 /// The `resolution.outcome` commits remembered to print a receipt once
 /// (matches the web client).
 pub const SEEN_COMMITS: usize = 1024;
@@ -290,6 +294,60 @@ const LOCAL_COMMANDS: [(&str, &str); 5] = [
     ("/notui", "return to line mode"),
 ];
 
+/// Cached per-entry wrapped row counts for the visible scrollback slice
+/// (`scrollback[cleared..]`) at one pane width, so [`TuiApp::draw_scrollback`]
+/// wraps only the rows inside the viewport rather than all 5,000 entries.
+#[derive(Debug)]
+struct ScrollbackWrapIndex {
+    width: usize,
+    cleared: usize,
+    counts: VecDeque<usize>,
+    total_rows: usize,
+}
+
+fn entry_bytes(entry: &Entry) -> usize {
+    let gutter = entry.gutter.as_ref().map_or(0, |s| s.content.len());
+    let body: usize = entry.body.iter().map(|s| s.content.len()).sum();
+    gutter
+        .saturating_add(body)
+        .saturating_add(
+            entry
+                .body
+                .len()
+                .saturating_mul(std::mem::size_of::<Span<'static>>()),
+        )
+        .saturating_add(std::mem::size_of::<Entry>())
+}
+
+fn scrollback_body_width(width: usize) -> (bool, usize) {
+    let gutter = width > GUTTER_W + 12;
+    let body_w = if gutter { width - GUTTER_W - 1 } else { width };
+    (gutter, body_w)
+}
+
+fn wrap_entry(entry: &Entry, width: usize) -> Vec<Line<'static>> {
+    let (gutter, body_w) = scrollback_body_width(width);
+    let wrapped = wrap_spans(&entry.body, body_w);
+    let mut out = Vec::with_capacity(wrapped.len());
+    for (i, body) in wrapped.into_iter().enumerate() {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if gutter {
+            let cell = match (&entry.gutter, i) {
+                (Some(g), 0) => {
+                    let text: String = g.content.chars().take(GUTTER_W).collect();
+                    Span::styled(format!("{text:>GUTTER_W$}"), g.style)
+                }
+                _ => Span::raw(" ".repeat(GUTTER_W)),
+            };
+            spans.push(cell);
+            spans.push(Span::raw(" "));
+        }
+        spans.extend(body);
+        out.push(Line::from(spans));
+    }
+    out
+}
+
 /// Per-connection ratatui application state.
 pub struct TuiApp {
     /// The unit types this connection asked `unit.looks` for (doc 31 cut
@@ -312,6 +370,10 @@ pub struct TuiApp {
     prompt: String,
     parser: KeyParser,
     scrollback: VecDeque<Entry>,
+    /// Total estimated bytes retained in `scrollback` (capped at [`SCROLLBACK_MAX_BYTES`]).
+    scrollback_bytes: usize,
+    /// Incremental wrapped row counts for the current scrollback viewport width.
+    scrollback_wrap: Option<ScrollbackWrapIndex>,
     /// Rows scrolled up from the bottom (0 = following the tail).
     scroll_off: usize,
     /// Front entries `/clear` hid. It is a VIEW floor, not a data clear: the
@@ -770,6 +832,8 @@ impl TuiApp {
             prompt: String::new(),
             parser: KeyParser::new(),
             scrollback: VecDeque::new(),
+            scrollback_bytes: 0,
+            scrollback_wrap: None,
             scroll_off: 0,
             cleared: 0,
             backlog_cursor: None,
@@ -2671,13 +2735,36 @@ impl TuiApp {
     }
 
     fn push_entry(&mut self, entry: Entry) {
-        if self.scrollback.len() == SCROLLBACK_CAP {
-            self.scrollback.pop_front();
+        let added = entry_bytes(&entry);
+        while self.scrollback.len() >= SCROLLBACK_CAP
+            || (!self.scrollback.is_empty()
+                && self.scrollback_bytes.saturating_add(added) > SCROLLBACK_MAX_BYTES)
+        {
+            if let Some(evicted) = self.scrollback.pop_front() {
+                self.scrollback_bytes = self.scrollback_bytes.saturating_sub(entry_bytes(&evicted));
+            }
             // A `/clear` floor is a count of hidden FRONT entries, and the
             // cap evicts from the front: the floor tracks the eviction down,
             // so it never starts hiding live text.
+            let was_cleared = self.cleared;
             self.cleared = self.cleared.saturating_sub(1);
+            if let Some(idx) = &mut self.scrollback_wrap {
+                if was_cleared > 0 {
+                    idx.cleared = self.cleared;
+                } else if let Some(old_rows) = idx.counts.pop_front() {
+                    idx.total_rows = idx.total_rows.saturating_sub(old_rows);
+                } else {
+                    self.scrollback_wrap = None;
+                }
+            }
         }
+        if let Some(idx) = &mut self.scrollback_wrap {
+            let (_, body_w) = scrollback_body_width(idx.width);
+            let rows = wrap_spans_count(&entry.body, body_w);
+            idx.counts.push_back(rows);
+            idx.total_rows = idx.total_rows.saturating_add(rows);
+        }
+        self.scrollback_bytes = self.scrollback_bytes.saturating_add(added);
         self.scrollback.push_back(entry);
     }
 
@@ -2775,14 +2862,19 @@ impl TuiApp {
             };
             // `Envelope.ts` is Unix MILLISECONDS; `Entry.at` is seconds.
             let entries = render_event(&ev, &self.caps, &self.theme, line.ts / 1000);
-            if self.scrollback.len() + entries.len() > SCROLLBACK_CAP {
+            let entries_bytes: usize = entries.iter().map(entry_bytes).sum();
+            if self.scrollback.len() + entries.len() > SCROLLBACK_CAP
+                || self.scrollback_bytes.saturating_add(entries_bytes) > SCROLLBACK_MAX_BYTES
+            {
                 truncated = true;
                 break;
             }
             // Reversed, so a multi-row event keeps its own row order.
             for entry in entries.into_iter().rev() {
+                self.scrollback_bytes = self.scrollback_bytes.saturating_add(entry_bytes(&entry));
                 self.scrollback.push_front(entry);
             }
+            self.scrollback_wrap = None;
             self.narrative_seen.insert(line.seq);
             while self.narrative_seen.len() > SCROLLBACK_CAP {
                 self.narrative_seen.pop_first();
@@ -2822,18 +2914,25 @@ impl TuiApp {
         if self.backlog_floored || self.scrollback.len() >= SCROLLBACK_CAP {
             return;
         }
-        self.backlog_floored = true;
         let dash = if self.caps.utf8 { "\u{2014}" } else { "--" };
         let what = if evicted {
             "older history has rolled off the server's buffer"
         } else {
             "no older history"
         };
-        self.scrollback.push_front(Entry {
+        let entry = Entry {
             gutter: None,
             body: vec![dim_span_owned(&format!("{dash} {what} {dash}"))],
             at: self.now(),
-        });
+        };
+        let added = entry_bytes(&entry);
+        if self.scrollback_bytes.saturating_add(added) > SCROLLBACK_MAX_BYTES {
+            return;
+        }
+        self.backlog_floored = true;
+        self.scrollback_bytes = self.scrollback_bytes.saturating_add(added);
+        self.scrollback.push_front(entry);
+        self.scrollback_wrap = None;
     }
 
     // ---- server-initiated asks (interface plan I10) -----------------------
@@ -3806,6 +3905,7 @@ impl TuiApp {
                 self.cleared = self.scrollback.len();
                 self.scroll_off = 0;
                 self.backlog_more = false;
+                self.scrollback_wrap = None;
             }
         }
     }
@@ -4017,7 +4117,20 @@ impl TuiApp {
                     self.scroll_off = usize::MAX / 2;
                 }
                 "notui" => r.detach = true,
-                other => self.push_local_line(&format!("Unknown client command: /{other}")),
+                other => {
+                    let mut chars = other.chars();
+                    let head: String = chars.by_ref().take(UNKNOWN_LOCAL_CMD_MAX_CHARS).collect();
+                    let shown = if chars.next().is_some() {
+                        let cut: String = head
+                            .chars()
+                            .take(UNKNOWN_LOCAL_CMD_MAX_CHARS.saturating_sub(3))
+                            .collect();
+                        format!("{cut}...")
+                    } else {
+                        head
+                    };
+                    self.push_local_line(&format!("Unknown client command: /{shown}"));
+                }
             }
             return;
         }
@@ -4833,10 +4946,13 @@ impl TuiApp {
         );
         let ctx = self.render_ctx();
         let held = cockpit.clone().unwrap_or(Value::Null);
+        let tail_limit = usize::from(areas.panel.height).max(1);
         if self.pixel.kind() == PictureKind::StationWalk {
             let utf8 = self.caps.utf8;
             self.port_walk
-                .draw_bottom_panel(frame, areas.panel, utf8, &|w| self.scrollback_rows(w));
+                .draw_bottom_panel(frame, areas.panel, utf8, &|w| {
+                    self.scrollback_tail_rows(w, tail_limit)
+                });
         } else if self.pixel.kind() == PictureKind::Replay {
             // Doc 21 cut G.8: the replay's own panes under its picture.
             let pane = |f: fn(&RenderCtx<'_>) -> Option<PaneRows>| {
@@ -4857,7 +4973,7 @@ impl TuiApp {
                 frame,
                 areas.panel,
                 &[("MATCH", &status), ("SHOTS", &shots), ("WRECKS", &wrecks)],
-                &|w| self.scrollback_rows(w),
+                &|w| self.scrollback_tail_rows(w, tail_limit),
             );
         } else if matches!(
             self.pixel.kind(),
@@ -4869,7 +4985,7 @@ impl TuiApp {
                 .get(mush_pixel::space_cockpit::SPACE_COCKPIT_FEED)
                 .cloned();
             cockpit_text::draw_space_panel(frame, areas.panel, space.as_ref(), &|w| {
-                self.scrollback_rows(w)
+                self.scrollback_tail_rows(w, tail_limit)
             });
         } else if self.pixel.kind() == PictureKind::Chart {
             let sky = self.panels.get(CHART_FEED).cloned().unwrap_or(Value::Null);
@@ -4885,7 +5001,7 @@ impl TuiApp {
                         },
                     )
                 },
-                &|w| self.scrollback_rows(w),
+                &|w| self.scrollback_tail_rows(w, tail_limit),
             );
         } else {
             cockpit_text::draw_panel(
@@ -4906,7 +5022,7 @@ impl TuiApp {
                         },
                     )
                 },
-                &|w| self.scrollback_rows(w),
+                &|w| self.scrollback_tail_rows(w, tail_limit),
             );
         }
         let cursor = match self.input_mode {
@@ -5499,44 +5615,167 @@ impl TuiApp {
     /// The scrollback rows for a pane `width` wide: each entry's body
     /// wrapped with a hanging indent under the gutter; the gutter is dropped
     /// on a pane too narrow to hold it.
+    #[cfg(test)]
     fn scrollback_rows(&self, width: usize) -> Vec<Line<'static>> {
-        let gutter = width > GUTTER_W + 12;
-        let body_w = if gutter { width - GUTTER_W - 1 } else { width };
         let mut rows = Vec::new();
         // `/clear` hides a prefix rather than dropping it (see `cleared`).
         for entry in self.scrollback.iter().skip(self.cleared) {
-            let wrapped = wrap_spans(&entry.body, body_w);
-            for (i, body) in wrapped.into_iter().enumerate() {
-                let mut spans: Vec<Span<'static>> = Vec::new();
-                if gutter {
-                    let cell = match (&entry.gutter, i) {
-                        (Some(g), 0) => {
-                            let text: String = g.content.chars().take(GUTTER_W).collect();
-                            Span::styled(format!("{text:>GUTTER_W$}"), g.style)
-                        }
-                        _ => Span::raw(" ".repeat(GUTTER_W)),
-                    };
-                    spans.push(cell);
-                    spans.push(Span::raw(" "));
-                }
-                spans.extend(body);
-                rows.push(Line::from(spans));
-            }
+            rows.extend(wrap_entry(entry, width));
         }
         rows
     }
 
+    /// Wrap only enough entries from the tail of the visible scrollback to
+    /// supply at most `max_rows` rows at `width`, avoiding full-ring re-wrap
+    /// on every cockpit/pixel paint.
+    fn scrollback_tail_rows(&self, width: usize, max_rows: usize) -> Vec<Line<'static>> {
+        if max_rows == 0 || self.cleared >= self.scrollback.len() {
+            return Vec::new();
+        }
+        let mut chunks: Vec<Vec<Line<'static>>> = Vec::new();
+        let mut collected = 0usize;
+        for entry in self.scrollback.iter().skip(self.cleared).rev() {
+            let wrapped = wrap_entry(entry, width);
+            collected = collected.saturating_add(wrapped.len());
+            chunks.push(wrapped);
+            if collected >= max_rows {
+                break;
+            }
+        }
+        let mut rows = Vec::with_capacity(collected.min(max_rows));
+        let mut skip = collected.saturating_sub(max_rows);
+        for chunk in chunks.into_iter().rev() {
+            if skip >= chunk.len() {
+                skip -= chunk.len();
+                continue;
+            }
+            rows.extend(chunk.into_iter().skip(skip));
+            skip = 0;
+        }
+        rows
+    }
+
+    /// Ensure [`Self::scrollback_wrap`] holds per-entry wrapped row counts for
+    /// `width` and `self.cleared`. Rebuilt only on pane width change, `/clear`,
+    /// or narrative backlog prepend; live [`Self::push_entry`] updates it in
+    /// O(1) per entry.
+    fn ensure_scrollback_wrap(&mut self, width: usize) {
+        let visible_len = self.scrollback.len().saturating_sub(self.cleared);
+        let valid = self.scrollback_wrap.as_ref().is_some_and(|idx| {
+            idx.width == width && idx.cleared == self.cleared && idx.counts.len() == visible_len
+        });
+        if valid {
+            return;
+        }
+        let (_, body_w) = scrollback_body_width(width);
+        let mut counts = VecDeque::with_capacity(visible_len);
+        let mut total_rows = 0usize;
+        for entry in self.scrollback.iter().skip(self.cleared) {
+            let n = wrap_spans_count(&entry.body, body_w);
+            counts.push_back(n);
+            total_rows = total_rows.saturating_add(n);
+        }
+        self.scrollback_wrap = Some(ScrollbackWrapIndex {
+            width,
+            cleared: self.cleared,
+            counts,
+            total_rows,
+        });
+    }
+
+    /// Wrap only the visible scrollback rows in the current viewport window
+    /// using cached per-entry row counts.
+    fn scrollback_window_rows(&mut self, width: usize, h: usize) -> Vec<Line<'static>> {
+        self.ensure_scrollback_wrap(width);
+        let (total_rows, start, end) = {
+            let Some(idx) = self.scrollback_wrap.as_ref() else {
+                return Vec::new();
+            };
+            let total_rows = idx.total_rows;
+            let max_scroll = total_rows.saturating_sub(h);
+            // Remembered for the scroll-to-top trigger: a key handler cannot
+            // measure the buffer (it does not know the pane's height), and the
+            // draw path can never issue a query (it returns nothing).
+            self.last_max_scroll = max_scroll;
+            self.scroll_off = self.scroll_off.min(max_scroll);
+            let start = max_scroll - self.scroll_off;
+            let end = start.saturating_add(h).min(total_rows);
+            (total_rows, start, end)
+        };
+        if start >= end {
+            return Vec::new();
+        }
+        let Some(idx) = self.scrollback_wrap.as_ref() else {
+            return Vec::new();
+        };
+        let mut shown = Vec::with_capacity(end - start);
+        if total_rows - end <= start {
+            let mut row_end = total_rows;
+            let mut chunks: Vec<Vec<Line<'static>>> = Vec::new();
+            for (entry, &cnt) in self
+                .scrollback
+                .iter()
+                .skip(self.cleared)
+                .zip(idx.counts.iter())
+                .rev()
+            {
+                let row_start = row_end.saturating_sub(cnt);
+                if row_start < end && row_end > start {
+                    let wrapped = wrap_entry(entry, width);
+                    let take_from = start.saturating_sub(row_start);
+                    let take_to = end.saturating_sub(row_start).min(wrapped.len());
+                    if take_from < take_to {
+                        chunks.push(
+                            wrapped
+                                .into_iter()
+                                .skip(take_from)
+                                .take(take_to - take_from)
+                                .collect(),
+                        );
+                    }
+                }
+                row_end = row_start;
+                if row_end <= start {
+                    break;
+                }
+            }
+            for chunk in chunks.into_iter().rev() {
+                shown.extend(chunk);
+            }
+        } else {
+            let mut row_start = 0usize;
+            for (entry, &cnt) in self
+                .scrollback
+                .iter()
+                .skip(self.cleared)
+                .zip(idx.counts.iter())
+            {
+                let row_end = row_start.saturating_add(cnt);
+                if row_end > start && row_start < end {
+                    let wrapped = wrap_entry(entry, width);
+                    let take_from = start.saturating_sub(row_start);
+                    let take_to = end.saturating_sub(row_start).min(wrapped.len());
+                    if take_from < take_to {
+                        shown.extend(
+                            wrapped
+                                .into_iter()
+                                .skip(take_from)
+                                .take(take_to - take_from),
+                        );
+                    }
+                }
+                row_start = row_end;
+                if row_start >= end {
+                    break;
+                }
+            }
+        }
+        shown
+    }
+
     fn draw_scrollback(&mut self, frame: &mut Frame<'_>, inner: Rect) {
-        let rows = self.scrollback_rows(usize::from(inner.width));
-        let h = usize::from(inner.height);
-        let max_scroll = rows.len().saturating_sub(h);
-        // Remembered for the scroll-to-top trigger: a key handler cannot
-        // measure the buffer (it does not know the pane's height), and the
-        // draw path can never issue a query (it returns nothing).
-        self.last_max_scroll = max_scroll;
-        self.scroll_off = self.scroll_off.min(max_scroll);
-        let start = max_scroll - self.scroll_off;
-        let shown: Vec<Line<'static>> = rows.into_iter().skip(start).take(h).collect();
+        let shown =
+            self.scrollback_window_rows(usize::from(inner.width), usize::from(inner.height));
         frame.render_widget(Paragraph::new(Text::from(shown)), inner);
     }
 
@@ -11180,6 +11419,160 @@ mod tests {
         assert_eq!(r_stand.submit, ["+helm/station off"]);
         assert_eq!(app.pixel.kind(), PictureKind::StationWalk);
         assert!(app.pixel.is_active());
+    }
+
+    #[test]
+    fn unknown_local_command_echo_is_truncated_to_64_chars() {
+        let mut app = TuiApp::new(caps());
+        let mut r = InputResult::default();
+
+        app.submit_line("/shortcmd".to_string(), &mut r);
+        let short_text = app
+            .scrollback
+            .back()
+            .map(|e| {
+                e.body
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        assert_eq!(short_text, "Unknown client command: /shortcmd");
+
+        let huge = format!("/{}", "x".repeat(500));
+        app.submit_line(huge, &mut r);
+        let long_text = app
+            .scrollback
+            .back()
+            .map(|e| {
+                e.body
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let echoed = long_text
+            .strip_prefix("Unknown client command: /")
+            .unwrap_or("");
+        assert!(
+            echoed.ends_with("..."),
+            "long unknown command should be ellipsized: {long_text}"
+        );
+        assert!(
+            echoed.chars().count() <= UNKNOWN_LOCAL_CMD_MAX_CHARS,
+            "echoed unknown command must be <= {UNKNOWN_LOCAL_CMD_MAX_CHARS} chars, got {}",
+            echoed.chars().count()
+        );
+    }
+
+    #[test]
+    fn scrollback_enforces_byte_budget_on_push_and_backlog() {
+        let mut app = TuiApp::new(caps());
+        let big = "a".repeat(32 * 1024);
+        for i in 0..200 {
+            app.push_local_line(&format!("{i:03} {big}"));
+        }
+        assert!(
+            app.scrollback_bytes <= SCROLLBACK_MAX_BYTES,
+            "scrollback_bytes {} exceeded cap {}",
+            app.scrollback_bytes,
+            SCROLLBACK_MAX_BYTES
+        );
+        assert!(
+            app.scrollback.len() < 200,
+            "byte budget should evict old large entries before SCROLLBACK_CAP"
+        );
+        let tail = app
+            .scrollback
+            .back()
+            .map(|e| {
+                e.body
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        assert!(tail.starts_with("199 "), "live tail must be preserved");
+
+        // Prepending backlog must also respect SCROLLBACK_MAX_BYTES without evicting live tail.
+        let before_len = app.scrollback.len();
+        let page_lines: Vec<Value> = (1..=5)
+            .rev()
+            .map(|seq| {
+                serde_json::json!({
+                    "seq": seq,
+                    "ts": seq * 1000,
+                    "kind": "say",
+                    "text": "b".repeat(64 * 1024),
+                })
+            })
+            .collect();
+        app.apply_event(&backlog_reply(Value::Array(page_lines), true, false));
+        assert!(
+            app.scrollback_bytes <= SCROLLBACK_MAX_BYTES,
+            "backlog prepend exceeded byte cap: {}",
+            app.scrollback_bytes
+        );
+        assert!(app.scrollback.len() >= before_len);
+    }
+
+    #[test]
+    fn scrollback_window_and_tail_match_full_wrap_across_scroll_and_clear() {
+        let mut app = TuiApp::new(caps());
+        for i in 0..60 {
+            let body = if i % 5 == 0 {
+                format!("entry-{i:02} {}", "word ".repeat(14))
+            } else if i % 3 == 0 {
+                format!("entry-{i:02} 漢字テスト {}", "x".repeat(25))
+            } else {
+                format!("entry-{i:02} short line")
+            };
+            app.push_local_line(&body);
+        }
+
+        for &width in &[18usize, 40, 72] {
+            let full = app.scrollback_rows(width);
+            let h = 11usize;
+            let max_scroll = full.len().saturating_sub(h);
+            for &off in &[
+                0usize,
+                5,
+                max_scroll / 2,
+                max_scroll.saturating_sub(3),
+                max_scroll,
+            ] {
+                app.scroll_off = off;
+                let window = app.scrollback_window_rows(width, h);
+                let start = max_scroll - off;
+                let expected: Vec<Line<'static>> =
+                    full.iter().skip(start).take(h).cloned().collect();
+                assert_eq!(window, expected, "width={width} off={off}");
+            }
+            let tail = app.scrollback_tail_rows(width, h);
+            let expected_tail: Vec<Line<'static>> = full
+                .iter()
+                .skip(full.len().saturating_sub(h))
+                .cloned()
+                .collect();
+            assert_eq!(tail, expected_tail, "tail width={width}");
+        }
+
+        // `/clear` hides prefix, then pushing new entries keeps wrap index aligned.
+        let mut r = InputResult::default();
+        app.local_action(LocalAction::ClearScrollback, &mut r);
+        for i in 60..68 {
+            app.push_local_line(&format!("after-clear-{i} {}", "abc ".repeat(12)));
+        }
+        let full = app.scrollback_rows(36);
+        app.scroll_off = 0;
+        let window = app.scrollback_window_rows(36, 7);
+        let expected: Vec<Line<'static>> = full
+            .iter()
+            .skip(full.len().saturating_sub(7))
+            .cloned()
+            .collect();
+        assert_eq!(window, expected, "post-clear window mismatch");
+        assert_eq!(app.scrollback_tail_rows(36, 7), expected);
     }
 
     #[test]

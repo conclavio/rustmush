@@ -246,6 +246,30 @@ pub async fn run<S: Session>(
     run_with_trigger(sigs, &mut never, drain, marker, host).await;
 }
 
+/// Explicit state for the drain/finish background task in [`run_with_trigger`].
+///
+/// Checking `!task.is_finished()` before awaiting a `JoinHandle` races with a
+/// fast-finishing task (e.g., zero grace or a task that completes while another
+/// `select!` branch is running): once `is_finished()` flips true, the branch
+/// would pend forever and `hard_exit` would never arm. Tracking the explicit
+/// lifecycle transitions ensures every spawned task is awaited once and always
+/// transitions to `Done` + arms `hard_exit`.
+enum WorkState {
+    Idle,
+    Running(tokio::task::JoinHandle<()>),
+    Done,
+}
+
+impl WorkState {
+    const fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    const fn is_stopping(&self) -> bool {
+        !self.is_idle()
+    }
+}
+
 /// [`run`], also answering [`Trigger`]s sent on `trigger` exactly as it
 /// answers the corresponding signals. A closed channel is ignored.
 pub async fn run_with_trigger<S: Session>(
@@ -255,13 +279,24 @@ pub async fn run_with_trigger<S: Session>(
     marker: &std::path::Path,
     host: &mut impl Host,
 ) {
-    let mut work: Option<tokio::task::JoinHandle<()>> = None;
+    run_with_trigger_and_hard_exit(sigs, trigger, drain, marker, host, HARD_EXIT_AFTER).await;
+}
+
+async fn run_with_trigger_and_hard_exit<S: Session>(
+    sigs: &mut Signals,
+    trigger: &mut tokio::sync::mpsc::UnboundedReceiver<Trigger>,
+    drain: &Arc<Drain<S>>,
+    marker: &std::path::Path,
+    host: &mut impl Host,
+    hard_exit_after: Duration,
+) {
+    let mut work = WorkState::Idle;
     let mut finishing = false;
     let mut told_host = false;
     let mut trigger_open = true;
     let mut hard_exit: Option<tokio::time::Instant> = None;
     loop {
-        let stopping = work.is_some();
+        let stopping = work.is_stopping();
         let empty = async {
             if stopping {
                 drain.wait_empty().await;
@@ -270,11 +305,11 @@ pub async fn run_with_trigger<S: Session>(
             }
         };
         let work_done = async {
-            match work.as_mut() {
-                Some(task) if !task.is_finished() => {
+            match &mut work {
+                WorkState::Running(task) => {
                     let _ = task.await;
                 }
-                _ => std::future::pending::<()>().await,
+                WorkState::Idle | WorkState::Done => std::future::pending::<()>().await,
             }
         };
         let hard = async {
@@ -303,9 +338,9 @@ pub async fn run_with_trigger<S: Session>(
                 Some(Event::Reload) => host.reload(),
                 Some(Event::ReopenLogs) => host.reopen_logs(),
                 Some(Event::Drain) => {
-                    if work.is_none() {
+                    if work.is_idle() {
                         crate::marker::leave(marker);
-                        work = Some(start_drain(drain, host.drain_config()));
+                        work = WorkState::Running(start_drain(drain, host.drain_config()));
                         if !told_host {
                             told_host = true;
                             host.stopped_accepting();
@@ -313,7 +348,17 @@ pub async fn run_with_trigger<S: Session>(
                     }
                 }
                 Some(Event::Finish) => {
-                    finish(drain, host.drain_config(), &mut work, &mut finishing);
+                    if !finishing {
+                        let mut slot = match std::mem::replace(&mut work, WorkState::Idle) {
+                            WorkState::Running(task) => Some(task),
+                            WorkState::Idle | WorkState::Done => None,
+                        };
+                        finish(drain, host.drain_config(), &mut slot, &mut finishing);
+                        work = match slot {
+                            Some(task) => WorkState::Running(task),
+                            None => WorkState::Done,
+                        };
+                    }
                     if !told_host {
                         told_host = true;
                         host.stopped_accepting();
@@ -323,9 +368,12 @@ pub async fn run_with_trigger<S: Session>(
                 None => trigger_open = false,
             },
             () = work_done => {
-                // The deadline (or the grace) has closed everything it could;
-                // whatever has not finished closing gets a minute.
-                hard_exit = Some(tokio::time::Instant::now() + HARD_EXIT_AFTER);
+                // Transition to `Done` so a completed `JoinHandle` is never
+                // polled twice, and arm `hard_exit` (keeping an earlier hard
+                // exit if a prior drain had already armed one).
+                work = WorkState::Done;
+                let next = tokio::time::Instant::now() + hard_exit_after;
+                hard_exit = Some(hard_exit.map_or(next, |prev| prev.min(next)));
             }
             () = empty => return,
             () = hard => {
@@ -528,5 +576,64 @@ mod tests {
         h.reopen_logs();
         h.stopped_accepting();
         assert_eq!(h.drain_config(), DrainConfig::default());
+    }
+
+    /// Regression test (SSH-M5): even when the finish/drain task finishes
+    /// immediately (before `run_with_trigger` re-enters `select!` — e.g. zero
+    /// grace plus another concurrent event on the trigger channel), `hard_exit`
+    /// still arms and exits after the hard-exit grace instead of wedging while
+    /// a stubborn session holds its guard.
+    #[tokio::test]
+    async fn fast_finishing_work_still_arms_hard_exit() {
+        struct ZeroGrace;
+        impl Host for ZeroGrace {
+            fn drain_config(&self) -> DrainConfig {
+                DrainConfig {
+                    deadline: Duration::ZERO,
+                    warnings: vec![],
+                    message: "W {remaining}".into(),
+                    grace: Duration::ZERO,
+                }
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mush-drain-hard-exit-{}-{}",
+            std::process::id(),
+            rand_tag()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let drain = Drain::<Rec>::new();
+        let s = Arc::new(Recorded::default());
+        // Hold the session guard across the entire run so `wait_empty` never
+        // resolves; only `hard_exit` can terminate the lifecycle loop.
+        let _stuck_guard = drain.enter(1);
+        drain.register(1, Rec(Arc::clone(&s)));
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut sigs = Signals::install().unwrap();
+        tx.send(Trigger::Finish).unwrap();
+        // Queue a duplicate trigger and close the channel so extra select
+        // iterations run while the zero-grace task finishes immediately.
+        tx.send(Trigger::Finish).unwrap();
+        drop(tx);
+
+        let hard_cap = Duration::from_millis(120);
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_trigger_and_hard_exit(
+                &mut sigs,
+                &mut rx,
+                &drain,
+                &dir.join("draining-a"),
+                &mut ZeroGrace,
+                hard_cap,
+            ),
+        )
+        .await
+        .expect("hard_exit must arm even when work task finishes before select");
+        assert!(started.elapsed() >= Duration::from_millis(80));
+        assert!(s.is_closed());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
