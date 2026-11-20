@@ -2492,6 +2492,20 @@ fn core_m4_examine_gates_distant_and_dark_objects_for_non_controllers() {
     assert_error_contains(&out, ann, "orb(#");
     assert_error_contains(&out, ann, "is owned by God(#1).");
 
+    // Item carried in another same-room player's pocket is private (matching
+    // `look`), so non-controllers cannot probe it by `#dbref` until dropped.
+    g.w.move_to(bob, LIMBO).unwrap();
+    let pocket_locket =
+        g.w.create(ObjKind::Thing, "locket", bob, Some(bob))
+            .unwrap();
+    let out = g.run(ann, &format!("examine #{}", pocket_locket.0));
+    assert_error_contains(&out, ann, "I don't see that here.");
+    let all = actor_texts(&out, ann).join("\n");
+    assert!(!all.contains("is owned by"), "must not leak carry: {all}");
+    g.w.move_to(pocket_locket, LIMBO).unwrap();
+    let out = g.run(ann, &format!("examine #{}", pocket_locket.0));
+    assert_error_contains(&out, ann, "is owned by Bob(#");
+
     // In a DARK room Ann does not control, another occupant is hidden.
     g.w.set_flag(LIMBO, Flags::DARK, true).unwrap();
     let out = g.run(ann, &format!("examine #{}", orb.0));
