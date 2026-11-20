@@ -1,22 +1,24 @@
 //! **Doc 50 cut OP.5 — the import duty at sale** (Q-50-29, Q-50-59, Q-50-64), over the composed
 //! world (`driving`'s rig).
 //!
-//! A seller standing at the Isidis Concession sells propellant from their locker into the tank
-//! farm's standing bid:
-//! - **under the Freeport**, who levies nothing there, the seller is paid the whole sale;
+//! A pilot flies her Dray-P from Ceres by Stickney to the Isidis Concession and sells propellant
+//! from her docked hull's hold into the tank farm's standing bid:
+//! - **under the Freeport**, who levies nothing there, she is paid the whole sale;
 //! - **under the Republic**, whose schedule row lists propellant among the Belt's exports, 5% of
 //!   the goods' catalog value comes out of the proceeds, paid to Republic Customs, and the sale's
 //!   line names the duty with its reason.
 //!
-//! **What is a fixture.** The propellant in the seller's locker, and the Republic's de facto hold
-//! on the Concession through staff's `@faction/control`, as the operation's resolution writes it.
+//! **What is a fixture.** The propellant seeded in her hold at Isidis for each sale, the stores
+//! for her two hops, and the Republic's de facto hold on the Concession through staff's
+//! `@faction/control`, as the operation's resolution writes it.
 
 use mush_core::{GOD, ObjId, World};
-use mush_economy::{AccountId, EconomyStore, VaultId};
+use mush_economy::{AccountId, EconomyStore};
 use mush_inventory::LotId;
 
 use crate::driving_rig::{
-    Rig, cid, pilot, port_map, run, seed_pool, station_room, stocked, teleport,
+    Rig, advance_to, board, cid, file_and_launch, hold_vault_of, land_quietly, load, port_map,
+    prospector, run, seed_pool, stocked,
 };
 
 const QTY: u64 = 10;
@@ -39,34 +41,24 @@ fn customs(rig: &Rig) -> AccountId {
         .1
 }
 
-/// A seller at Isidis's market with [`QTY`] t of propellant in their locker there.
-fn seller(rig: &mut Rig, who: &str, seed: i64, lot: u64) -> (ObjId, VaultId) {
-    let seller = pilot(rig, who, seed);
-    let _ = run(
-        &mut rig.tw,
-        GOD,
-        &format!("@account/open #{}=tacsim.credit", seller.0),
-    );
-    let market = station_room(&rig.tw, "isidis_port", "room.i03_market");
-    teleport(&mut rig.tw, seller, market);
-    let _ = run(&mut rig.tw, seller, "+locker/open");
-    let venue = mush_market::MarketId::new("isidis").expect("a venue");
-    let locker = tacsim::port::locker::locker_of(rig.tw.world(), seller, &venue)
-        .map(|l| VaultId(l.vault))
-        .expect("a locker at Isidis");
-    seed_pool(rig, locker, "propellant", QTY, LotId(lot));
-    (seller, locker)
+/// One hop, filed and flown to its arrival, its landings landed.
+fn hop(rig: &mut Rig, pilot: ObjId, hull: ObjId, to: &str) {
+    let ticket = file_and_launch(rig, pilot, hull, &format!("+ship/undock {to}"));
+    let (_, queued) = advance_to(rig, ticket.plan.depart_ic + ticket.plan.total_s + 3_600);
+    land_quietly(rig, &queued);
+    crate::in10_pools::settle(rig, 3);
 }
 
-/// Sell into the tank farm's propellant bid from `locker`; the line, once the sale has settled.
-fn sell(rig: &mut Rig, seller: ObjId, locker: VaultId) -> String {
+/// Sell [`QTY`] t of propellant from her hold into the tank farm's bid; the sale's line.
+fn sell(rig: &mut Rig, pilot: ObjId, hold: mush_economy::VaultId, lot: u64) -> String {
+    seed_pool(rig, hold, "propellant", QTY, LotId(lot));
     let bid = port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids
         [&cid("propellant")]
         .listing;
     let sold = run(
         &mut rig.tw,
-        seller,
-        &format!("+market/sell {bid}={QTY} from={}", locker.0),
+        pilot,
+        &format!("+market/sell {bid}={QTY} from={}", hold.0),
     );
     assert!(sold.contains("Sold "), "{sold}");
     crate::in10_pools::settle(rig, 6);
@@ -80,19 +72,26 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     // The bid pays 50 cr a tonne; the catalog value is 40 cr a tonne.
     let gross = i64::try_from(QTY).expect("fits") * 50 * 100;
     let duty = i64::try_from(QTY).expect("fits") * 40 * 100 * 50 / 1_000;
+    let (pilot, row) = prospector(&mut rig, "Seller", 91, "Brine Moth");
+    let hull = ObjId(row.hull);
+    let hold = hold_vault_of(&rig.tw, &row);
+    load(&mut rig, &row, 60, 40, 0x0f51);
+    board(&mut rig, pilot);
+    hop(&mut rig, pilot, hull, "stickney");
+    load(&mut rig, &row, 20, 4, 0x0f53);
+    hop(&mut rig, pilot, hull, "isidis");
 
     // Under the Freeport: nothing levied.
-    let (free, locker) = seller(&mut rig, "Free", 91, 0x0f51);
     let before = (
-        balance(rig.tw.world(), own_account(&rig, free)),
+        balance(rig.tw.world(), own_account(&rig, pilot)),
         balance(rig.tw.world(), customs(&rig)),
     );
-    let line = sell(&mut rig, free, locker);
+    let line = sell(&mut rig, pilot, hold, 0x0f55);
     assert!(!line.contains("Import duty"), "{line}");
     assert_eq!(
-        balance(rig.tw.world(), own_account(&rig, free)) - before.0,
+        balance(rig.tw.world(), own_account(&rig, pilot)) - before.0,
         gross,
-        "the whole sale is the seller's"
+        "the whole sale is hers"
     );
     assert_eq!(
         balance(rig.tw.world(), customs(&rig)),
@@ -108,13 +107,12 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     );
     assert!(!held.contains("Usage"), "{held}");
 
-    // Under the Republic: 5% of the catalog value, to Republic Customs, out of the proceeds.
-    let (taxed, locker) = seller(&mut rig, "Taxed", 92, 0x0f52);
+    // Under the Republic: 5% of the catalog value, to Republic Customs, out of her proceeds.
     let before = (
-        balance(rig.tw.world(), own_account(&rig, taxed)),
+        balance(rig.tw.world(), own_account(&rig, pilot)),
         balance(rig.tw.world(), customs(&rig)),
     );
-    let line = sell(&mut rig, taxed, locker);
+    let line = sell(&mut rig, pilot, hold, 0x0f57);
     assert!(
         line.contains("Import duty")
             && line.contains("5% of the catalog value")
@@ -127,8 +125,8 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
         "the duty is Republic Customs'"
     );
     assert_eq!(
-        balance(rig.tw.world(), own_account(&rig, taxed)) - before.0,
+        balance(rig.tw.world(), own_account(&rig, pilot)) - before.0,
         gross - duty,
-        "it comes out of the seller's proceeds"
+        "it comes out of her proceeds"
     );
 }
