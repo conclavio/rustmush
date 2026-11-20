@@ -845,3 +845,60 @@ async fn sighup_reload_updates_an_open_menu_session() {
         "{out}"
     );
 }
+
+/// Regression test (HIGH-11): switching to `Route::Menu` or entering a local
+/// notice (`Conn::tell`) drops any prior unauthenticated upstream session
+/// instead of leaving it open holding an upstream `IpGuard` slot.
+#[tokio::test]
+async fn menu_and_notice_drop_prior_unauthenticated_upstream() {
+    // 1. Failed password dial -> switch to Route::Menu (`auth_none("nick")`).
+    let t = Rig::start(Hooks::default()).await;
+    let mut h = t.client().await;
+    assert!(
+        !h.authenticate_password("dev1+faenix", "wrong")
+            .await
+            .unwrap()
+            .success()
+    );
+    assert_eq!(t.hooks.open_now(), 1, "password dial opened upstream");
+
+    assert!(h.authenticate_none("nick").await.unwrap().success());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while t.hooks.open_now() > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        t.hooks.open_now(),
+        0,
+        "Route::Menu must drop the orphaned unauthenticated upstream session"
+    );
+    let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
+
+    // 2. Failed password dial -> trigger `Conn::tell` (front door on an unreachable service).
+    let t2 = Rig::start(Hooks::default()).await;
+    let mut h2 = t2.client().await;
+    assert!(
+        !h2.authenticate_password("dev1+faenix", "wrong")
+            .await
+            .unwrap()
+            .success()
+    );
+    assert_eq!(t2.hooks.open_now(), 1, "password dial opened upstream");
+
+    // Switch to an unreachable front-door service to enter `Stage::Notice` via
+    // `Conn::tell` while still holding `Up::Ssh` to `dev1`.
+    t2.connector.fail_next();
+    assert!(h2.authenticate_none("hidden").await.unwrap().success());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while t2.hooks.open_now() > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        t2.hooks.open_now(),
+        0,
+        "Conn::tell must drop any prior unauthenticated upstream session"
+    );
+    let _ = h2
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}

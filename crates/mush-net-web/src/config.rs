@@ -59,6 +59,16 @@ pub struct WebConfig {
     /// Maximum inbound WS message size, bytes; oversize is a protocol
     /// error close.
     pub max_frame_bytes: usize,
+    /// Global cap on simultaneous open TCP connections to the HTTP/HTTPS
+    /// listener; excess sockets are dropped immediately before reading
+    /// HTTP/TLS bytes.
+    pub max_connections: usize,
+    /// Maximum time allowed to receive HTTP/1 request headers (and complete
+    /// the TLS handshake when `tls` is configured), milliseconds.
+    pub header_read_timeout_ms: u64,
+    /// Maximum time allowed for non-upgrade HTTP handlers (excludes `/ws`),
+    /// milliseconds. `0` disables the handler timeout.
+    pub request_timeout_ms: u64,
     /// Whether `GET /metrics` (Prometheus text exposition) is served.
     /// Default **`false`**: the endpoint binds to this same (possibly public)
     /// listener with no auth, so it is opt-in — an operator running Prometheus
@@ -88,6 +98,9 @@ impl Default for WebConfig {
             max_missed_pongs: 2,
             send_timeout_ms: 10_000,
             max_frame_bytes: mush_proto::MAX_INVOKE_BYTES,
+            max_connections: 2_048,
+            header_read_timeout_ms: 10_000,
+            request_timeout_ms: 30_000,
             metrics_enabled: false,
             asset_pack: None,
         }

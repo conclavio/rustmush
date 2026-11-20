@@ -84,6 +84,9 @@ pub enum RegisterErr {
     Weak,
     /// The address is banned from creating accounts.
     Banned,
+    /// The registration rate limit or password-hashing concurrency cap was
+    /// exceeded; maps to 429.
+    RateLimited,
 }
 
 /// What a valid token resolves to.

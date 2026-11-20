@@ -2656,6 +2656,8 @@ dependencies = [
  "axum",
  "axum-server",
  "futures",
+ "hyper",
+ "hyper-util",
  "mush-config",
  "mush-proto",
  "rcgen",

@@ -92,6 +92,10 @@ pub enum AttachOutcome {
         /// (drivers announce "has reconnected" vs "has connected again").
         from_linkdead: bool,
     },
+    /// Refused: the connection id is already live (attached or bare). Neither
+    /// `conns` nor any session was modified, preserving the existing
+    /// connection's session untouched.
+    Duplicate,
 }
 
 /// Why a connection is being detached.
@@ -326,6 +330,14 @@ const NARRATIVE_RING_INVARIANT: &str = "Narrative must reach the resume ring onl
 /// that has never heard of the marker simply records everything as before.
 pub const RETAIN_LATEST: &str = "latest";
 
+/// Whether an output event is ephemeral presence noise (`Composing`) that
+/// must never enter the resume ring, never advance session sequence numbers,
+/// and drop silently on a full bystander queue instead of flagging slow-client
+/// detachment (HIGH-1).
+const fn is_ephemeral_event(event: &OutputEvent) -> bool {
+    matches!(event, OutputEvent::Composing { .. })
+}
+
 /// The feed of a `Panel` **keyframe** whose payload asks to be retained
 /// latest-only, or `None` for anything else — a `Delta` included, marker or
 /// not (16b cut Q.3; the kind test is 16b cut B.5's, `T-61`; see
@@ -447,17 +459,18 @@ impl SessionManager {
         let conn_id = conn.id;
         let addr = conn.addr;
         let attached_at = conn.connected_at;
-        if self.conns.contains_key(&conn_id) {
-            // The transports allocate ids from disjoint ranges, so this is a
-            // wiring bug; in a release build the insert below would silently
-            // take over the other connection's session, so it is at least
-            // loud (doc 29a §7, round 2).
-            tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+        // Reject duplicate live connection IDs (attached or bare) without
+        // overwriting `self.conns[conn_id]` or mutating any session (HIGH-9).
+        // `bare` is always accessed alone, before entering `by_char`.
+        if self.bare.contains_key(&conn_id) {
+            tracing::error!(conn = conn_id.0, "attach: duplicate connection id (bare)");
+            return (SessId(0), AttachOutcome::Duplicate);
         }
-        debug_assert!(
-            !self.conns.contains_key(&conn_id),
-            "attach: duplicate {conn_id}"
-        );
+        if let Some(existing) = self.conns.get(&conn_id) {
+            let sess = existing.sess;
+            tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+            return (sess, AttachOutcome::Duplicate);
+        }
         let handle = Arc::new(conn);
         let bucket = Mutex::new(FloodBucket::new(
             self.config.flood_rate,
@@ -466,76 +479,116 @@ impl SessionManager {
         ));
 
         // Lock order: by_char entry held across sessions/conns access — the
-        // one sanctioned two-map hold (see the struct docs).
+        // one sanctioned two-map hold (see the struct docs). Re-check `conns`
+        // via `entry(conn_id)` so concurrent duplicate attaches cannot race
+        // past the fast check above and overwrite an active connection.
         match self.by_char.entry(character) {
             Entry::Occupied(mut occ) => {
                 let sess = *occ.get();
                 let joined = self.sessions.get_mut(&sess).map(|mut s| {
-                    // Interface plan I12: a rejoin can read the whole resume
-                    // ring (the narrative backlog), so a second principal must
-                    // never attach to another account's session. `mushd`
-                    // guarantees this by construction (append-only accounts,
-                    // no character transfer); assert it so a future transfer
-                    // path re-checks the entitlement at this seam.
-                    debug_assert_eq!(
-                        s.account, account,
-                        "attach: rejoin by a different account (I12 ring entitlement)"
-                    );
-                    let from_linkdead = matches!(s.state, SessState::Linkdead { .. });
-                    s.state = SessState::Online;
-                    let others = s.conns.len();
-                    s.conns.push(conn_id);
-                    s.last_addr = addr;
-                    (others, from_linkdead)
+                    match self.conns.entry(conn_id) {
+                        Entry::Occupied(existing) => {
+                            let existing_sess = existing.get().sess;
+                            tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+                            Err(existing_sess)
+                        }
+                        Entry::Vacant(vac_conn) => {
+                            // Interface plan I12: a rejoin can read the whole resume
+                            // ring (the narrative backlog), so a second principal must
+                            // never attach to another account's session. `mushd`
+                            // guarantees this by construction (append-only accounts,
+                            // no character transfer); assert it so a future transfer
+                            // path re-checks the entitlement at this seam.
+                            debug_assert_eq!(
+                                s.account, account,
+                                "attach: rejoin by a different account (I12 ring entitlement)"
+                            );
+                            let from_linkdead = matches!(s.state, SessState::Linkdead { .. });
+                            s.state = SessState::Online;
+                            let others = s.conns.len();
+                            s.conns.push(conn_id);
+                            s.last_addr = addr;
+                            vac_conn.insert(ConnEntry {
+                                handle: Arc::clone(&handle),
+                                sess,
+                                bucket: Mutex::new(FloodBucket::new(
+                                    self.config.flood_rate,
+                                    self.config.flood_burst,
+                                    attached_at,
+                                )),
+                            });
+                            Ok((others, from_linkdead))
+                        }
+                    }
                 });
                 match joined {
-                    Some((others, from_linkdead)) => {
-                        self.conns.insert(
-                            conn_id,
-                            ConnEntry {
-                                handle,
-                                sess,
-                                bucket,
-                            },
-                        );
-                        (
-                            sess,
-                            AttachOutcome::Rejoined {
-                                others,
-                                from_linkdead,
-                            },
-                        )
-                    }
+                    Some(Ok((others, from_linkdead))) => (
+                        sess,
+                        AttachOutcome::Rejoined {
+                            others,
+                            from_linkdead,
+                        },
+                    ),
+                    Some(Err(existing_sess)) => (existing_sess, AttachOutcome::Duplicate),
                     None => {
                         // Stale index: the session was reaped between the
                         // by_char lookup and here. Start fresh in place.
+                        if let Some(existing) = self.conns.get(&conn_id) {
+                            let existing_sess = existing.sess;
+                            tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+                            return (existing_sess, AttachOutcome::Duplicate);
+                        }
                         let sess =
                             self.insert_session(character, account, addr, attached_at, conn_id);
-                        occ.insert(sess);
-                        self.conns.insert(
-                            conn_id,
-                            ConnEntry {
-                                handle,
-                                sess,
-                                bucket,
-                            },
-                        );
-                        (sess, AttachOutcome::New)
+                        match self.conns.entry(conn_id) {
+                            Entry::Vacant(vac_conn) => {
+                                occ.insert(sess);
+                                vac_conn.insert(ConnEntry {
+                                    handle,
+                                    sess,
+                                    bucket,
+                                });
+                                (sess, AttachOutcome::New)
+                            }
+                            Entry::Occupied(existing) => {
+                                let existing_sess = existing.get().sess;
+                                drop(existing);
+                                self.sessions.remove(&sess);
+                                tracing::error!(
+                                    conn = conn_id.0,
+                                    "attach: duplicate connection id"
+                                );
+                                (existing_sess, AttachOutcome::Duplicate)
+                            }
+                        }
                     }
                 }
             }
             Entry::Vacant(vac) => {
+                if let Some(existing) = self.conns.get(&conn_id) {
+                    let existing_sess = existing.sess;
+                    tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+                    return (existing_sess, AttachOutcome::Duplicate);
+                }
                 let sess = self.insert_session(character, account, addr, attached_at, conn_id);
-                vac.insert(sess);
-                self.conns.insert(
-                    conn_id,
-                    ConnEntry {
-                        handle,
-                        sess,
-                        bucket,
-                    },
-                );
-                (sess, AttachOutcome::New)
+                match self.conns.entry(conn_id) {
+                    Entry::Vacant(vac_conn) => {
+                        vac.insert(sess);
+                        vac_conn.insert(ConnEntry {
+                            handle,
+                            sess,
+                            bucket,
+                        });
+                        (sess, AttachOutcome::New)
+                    }
+                    Entry::Occupied(existing) => {
+                        let existing_sess = existing.get().sess;
+                        drop(existing);
+                        self.sessions.remove(&sess);
+                        tracing::error!(conn = conn_id.0, "attach: duplicate connection id");
+                        (existing_sess, AttachOutcome::Duplicate)
+                    }
+                }
             }
         }
     }
@@ -643,12 +696,16 @@ impl SessionManager {
         let Some(entry) = self.bare.get(&conn) else {
             return SendToConn::Unknown;
         };
+        let ephemeral = is_ephemeral_event(&ev);
         let sent = if entry.handle.uses_envelopes() {
-            entry.handle.try_send_envelope(Arc::new(Envelope::new(
-                0,
-                (self.clock)(),
-                (*ev).clone(),
-            )))
+            let env = Arc::new(Envelope::new(0, (self.clock)(), (*ev).clone()));
+            if ephemeral {
+                entry.handle.try_send_envelope_ephemeral(env)
+            } else {
+                entry.handle.try_send_envelope(env)
+            }
+        } else if ephemeral {
+            entry.handle.try_send_ephemeral(ev)
         } else {
             entry.handle.try_send(ev)
         };
@@ -838,7 +895,34 @@ impl SessionManager {
 
     /// Stamp + ring + fan out one session-scoped event (see the section
     /// note above). Unknown sessions report zero deliveries.
+    ///
+    /// Ephemeral events (currently [`OutputEvent::Composing`]) skip the resume
+    /// ring, leave `last_seq` untouched (emitting `seq: 0` to envelope sinks),
+    /// and drop silently on full queues instead of flagging a slow client.
     fn deliver_to_session(&self, sess: SessId, ev: &Arc<OutputEvent>) -> SendReport {
+        if is_ephemeral_event(ev) {
+            let conn_ids = {
+                let Some(s) = self.sessions.get(&sess) else {
+                    return SendReport::default();
+                };
+                s.conns.clone()
+            };
+            let env = Arc::new(Envelope::new(0, (self.clock)(), (**ev).clone()));
+            let mut report = SendReport::default();
+            for id in conn_ids {
+                if let Some(e) = self.conns.get(&id) {
+                    let sent = if e.handle.uses_envelopes() {
+                        e.handle.try_send_envelope_ephemeral(Arc::clone(&env))
+                    } else {
+                        e.handle.try_send_ephemeral(Arc::clone(ev))
+                    };
+                    if sent {
+                        report.delivered += 1;
+                    }
+                }
+            }
+            return report;
+        }
         // Stamp under the session shard lock, then release it before
         // touching `conns` (one map at a time — see the struct docs).
         let stamped = {
@@ -897,6 +981,22 @@ impl SessionManager {
         let Some(e) = self.conns.get(&conn) else {
             return self.send_to_bare(conn, ev);
         };
+        if is_ephemeral_event(&ev) {
+            let sent = if e.handle.uses_envelopes() {
+                e.handle.try_send_envelope_ephemeral(Arc::new(Envelope::new(
+                    0,
+                    (self.clock)(),
+                    (*ev).clone(),
+                )))
+            } else {
+                e.handle.try_send_ephemeral(ev)
+            };
+            return if sent {
+                SendToConn::Delivered
+            } else {
+                SendToConn::Dropped
+            };
+        }
         if !e.handle.uses_envelopes() {
             return if e.handle.try_send(ev) {
                 SendToConn::Delivered
@@ -1267,7 +1367,8 @@ impl SessionManager {
     /// Charge one input line at an explicit instant. Unknown connections are
     /// not throttled (there is nothing to protect; treat as a caller bug).
     /// Connections of a [flood-exempt](SessionManager::set_flood_exempt)
-    /// character pass without charging their bucket.
+    /// character pass without charging their bucket; bare connections are
+    /// never flood-exempt and are charged against their own bucket.
     pub fn check_input_at(&self, conn: ConnId, now: Instant) -> FloodVerdict {
         // Lock discipline: never hold `conns` while touching `sessions` —
         // each map is acquired and released one at a time here.
@@ -1278,7 +1379,10 @@ impl SessionManager {
                 return FloodVerdict::Ok;
             }
         }
-        match self.conns.get(&conn) {
+        if let Some(e) = self.conns.get(&conn) {
+            return locked(&e.bucket, "flood bucket").check(now);
+        }
+        match self.bare.get(&conn) {
             Some(e) => locked(&e.bucket, "flood bucket").check(now),
             None => FloodVerdict::Ok,
         }
@@ -1553,5 +1657,201 @@ mod tests {
             Some("arena.cockpit")
         );
         assert_eq!(retained_latest_feed(&delta), None);
+    }
+
+    fn structured_caps() -> ClientCaps {
+        ClientCaps {
+            kind: ClientKind::Web,
+            color: ColorDepth::TrueColor,
+            width: 80,
+            height: 24,
+            utf8: true,
+            structured: true,
+        }
+    }
+
+    #[test]
+    fn composing_is_ephemeral_and_never_evicts_ring_or_flags_slow_client() {
+        let cfg = SessionConfig {
+            resume_ring: 4,
+            ..SessionConfig::default()
+        };
+        let sessions = SessionManager::with_config(cfg);
+        let (tx_web, mut rx_web) = tokio::sync::mpsc::channel(1);
+        let (tx_ansi, mut rx_ansi) = tokio::sync::mpsc::channel(1);
+        let addr = std::net::IpAddr::from([127, 0, 0, 1]);
+        let alice = mush_proto::ObjRef {
+            id: "#1".to_string(),
+            name: "Alice".to_string(),
+        };
+
+        let (sess, outcome) = sessions.attach(
+            ConnectionHandle::new_structured(ConnId(1), addr, structured_caps(), tx_web),
+            CharKey(10),
+            "acct".to_string(),
+        );
+        assert_eq!(outcome, AttachOutcome::New);
+        let (sess2, _) = sessions.attach(
+            ConnectionHandle::new(ConnId(2), addr, ansi_caps(), tx_ansi),
+            CharKey(10),
+            "acct".to_string(),
+        );
+        assert_eq!(sess, sess2);
+
+        // Fill both 1-slot queues with a real ring-recorded event.
+        let report = sessions.send_event_to_char(
+            CharKey(10),
+            OutputEvent::Sys(mush_proto::RichText::plain("hello")),
+        );
+        assert_eq!(report.delivered, 2);
+        assert!(report.dropped.is_empty());
+        assert_eq!(sessions.last_seq(sess), Some(1));
+
+        // Flood with 20 Composing events while both bystander queues are full.
+        for i in 0..20 {
+            let r = sessions.send_event_to_char(
+                CharKey(10),
+                OutputEvent::Composing {
+                    actor: alice.clone(),
+                    active: i % 2 == 0,
+                },
+            );
+            assert_eq!(r.delivered, 0);
+            assert!(
+                r.dropped.is_empty(),
+                "ephemeral Composing must never report a slow-client drop"
+            );
+        }
+
+        // Neither connection is flagged as having dropped output.
+        for conn in [ConnId(1), ConnId(2)] {
+            let handle = sessions.conn_handle(conn);
+            assert!(
+                handle.is_some_and(|h| !h.output_dropped()),
+                "Composing overflow must not set output_dropped on {conn:?}"
+            );
+        }
+
+        // Sequence counter and resume ring were untouched.
+        assert_eq!(sessions.last_seq(sess), Some(1));
+        let replayed = sessions.replay_since(sess, 0);
+        assert!(
+            replayed.as_ref().is_ok_and(|envs| {
+                envs.len() == 1 && envs.first().is_some_and(|e| {
+                    e.seq == 1
+                        && matches!(&e.event, OutputEvent::Sys(rt) if rt.to_plain_text() == "hello")
+                })
+            }),
+            "Composing must never enter or evict the resume ring: {replayed:?}"
+        );
+
+        // Drain the queued Sys event; subsequent Composing delivers out-of-band with seq == 0.
+        assert!(rx_web.try_recv().is_ok());
+        assert!(rx_ansi.try_recv().is_ok());
+        let r = sessions.send_event_to_char(
+            CharKey(10),
+            OutputEvent::Composing {
+                actor: alice,
+                active: true,
+            },
+        );
+        assert_eq!(r.delivered, 2);
+        assert!(r.dropped.is_empty());
+        assert_eq!(sessions.last_seq(sess), Some(1));
+        let env = rx_web.try_recv();
+        assert!(
+            env.as_ref().is_ok_and(|e| e.seq == 0
+                && matches!(&e.event, OutputEvent::Composing { actor, active } if actor.name == "Alice" && *active)),
+            "expected out-of-band seq=0 Composing envelope, got {env:?}"
+        );
+    }
+
+    #[test]
+    fn attach_rejects_duplicate_conn_id_without_overwriting() {
+        let sessions = SessionManager::new();
+        let addr = std::net::IpAddr::from([127, 0, 0, 1]);
+        let (tx1, mut rx1) = tokio::sync::mpsc::channel(4);
+        let (tx_dup1, _rx_dup1) = tokio::sync::mpsc::channel(4);
+        let (tx_dup2, _rx_dup2) = tokio::sync::mpsc::channel(4);
+
+        let (sess1, out1) = sessions.attach(
+            ConnectionHandle::new(ConnId(1), addr, ansi_caps(), tx1),
+            CharKey(1),
+            "alice".to_string(),
+        );
+        assert_eq!(out1, AttachOutcome::New);
+
+        // Duplicate ConnId against a different character must be rejected cleanly.
+        let (dup_sess, dup_out) = sessions.attach(
+            ConnectionHandle::new(ConnId(1), addr, ansi_caps(), tx_dup1),
+            CharKey(2),
+            "bob".to_string(),
+        );
+        assert_eq!(dup_out, AttachOutcome::Duplicate);
+        assert_eq!(dup_sess, sess1);
+        assert_eq!(sessions.session_of_char(CharKey(2)), None);
+        assert_eq!(sessions.character_of_conn(ConnId(1)), Some(CharKey(1)));
+        assert_eq!(sessions.session_count(), 1);
+        assert_eq!(sessions.connection_count(), 1);
+
+        // Duplicate ConnId against the same character must also be rejected cleanly.
+        let (dup_same_sess, dup_same_out) = sessions.attach(
+            ConnectionHandle::new(ConnId(1), addr, ansi_caps(), tx_dup2),
+            CharKey(1),
+            "alice".to_string(),
+        );
+        assert_eq!(dup_same_out, AttachOutcome::Duplicate);
+        assert_eq!(dup_same_sess, sess1);
+        assert_eq!(sessions.conns_of_session(sess1).len(), 1);
+
+        // Original connection handle is intact and still receives events.
+        let rep = sessions.send_event_to_char(
+            CharKey(1),
+            OutputEvent::Sys(mush_proto::RichText::plain("still-alice")),
+        );
+        assert_eq!(rep.delivered, 1);
+        assert!(rx1.try_recv().is_ok());
+
+        // Duplicate against an existing bare connection must also be rejected.
+        let (tx_bare, _rx_bare) = tokio::sync::mpsc::channel(4);
+        let (tx_bare_dup, _rx_bare_dup) = tokio::sync::mpsc::channel(4);
+        assert!(sessions.attach_bare(
+            ConnectionHandle::new(ConnId(2), addr, ansi_caps(), tx_bare),
+            CharKey(3),
+        ));
+        let (_, bare_dup_out) = sessions.attach(
+            ConnectionHandle::new(ConnId(2), addr, ansi_caps(), tx_bare_dup),
+            CharKey(4),
+            "dave".to_string(),
+        );
+        assert_eq!(bare_dup_out, AttachOutcome::Duplicate);
+        assert_eq!(sessions.session_of_char(CharKey(4)), None);
+        assert_eq!(sessions.character_of_conn(ConnId(2)), Some(CharKey(3)));
+    }
+
+    #[test]
+    fn check_input_at_throttles_bare_connections() {
+        let sessions = SessionManager::new();
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let conn = ConnId(42);
+        assert!(sessions.attach_bare(
+            ConnectionHandle::new(
+                conn,
+                std::net::IpAddr::from([127, 0, 0, 1]),
+                ansi_caps(),
+                tx,
+            ),
+            CharKey(7),
+        ));
+        // Even if the bound character is flood-exempt, a bare connection is throttled.
+        sessions.set_flood_exempt(CharKey(7), true);
+        let now = Instant::now();
+        let mut ok_count = 0;
+        while sessions.check_input_at(conn, now) == FloodVerdict::Ok {
+            ok_count += 1;
+            assert!(ok_count < 10_000, "bare flood bucket must be exhaustible");
+        }
+        assert!(ok_count > 0);
+        assert_eq!(sessions.check_input_at(conn, now), FloodVerdict::Throttled);
     }
 }

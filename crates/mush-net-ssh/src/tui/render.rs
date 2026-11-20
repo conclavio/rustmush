@@ -648,6 +648,47 @@ fn render_channel(
     w.end_line();
 }
 
+/// Count the wrapped rows [`wrap_spans`] would produce for `spans` at `width`
+/// without cloning spans or allocating per-row `String`s.
+#[must_use]
+pub fn wrap_spans_count(spans: &[Span<'static>], width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let is_space: Vec<bool> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(|c| c == ' '))
+        .collect();
+    if is_space.is_empty() {
+        return 1;
+    }
+    let mut rows = 0usize;
+    let mut start = 0usize;
+    let total = is_space.len();
+    while start < total {
+        let remaining = total - start;
+        if remaining <= width {
+            rows += 1;
+            break;
+        }
+        if is_space.get(start + width).copied().unwrap_or(false) {
+            rows += 1;
+            start += width + 1;
+            continue;
+        }
+        let brk = is_space
+            .get(start..start + width)
+            .and_then(|window| window.iter().rposition(|&sp| sp))
+            .filter(|&i| i > 0);
+        rows += 1;
+        match brk {
+            Some(i) => start += i + 1,
+            None => start += width,
+        }
+    }
+    rows.max(1)
+}
+
 /// Word-wrap spans to `width` columns: breaks at spaces, hard-splits a word
 /// longer than the width (a pane has hard edges), keeps each character's
 /// style, drops the space a break consumed. `width == 0` yields one row.
@@ -3512,18 +3553,32 @@ fn mind_tail_fit(text: String, width: Option<usize>, utf8: bool) -> String {
         return text;
     }
     let suffix = if utf8 { "… F10" } else { "... F10" };
-    if Line::from(suffix).width() > width {
-        return suffix.chars().take(width).collect();
+    let suffix_w = Line::from(suffix).width();
+    if suffix_w > width {
+        let mut out = String::new();
+        let mut w = 0usize;
+        let mut buf = [0u8; 4];
+        for c in suffix.chars() {
+            let cw = Span::raw(&*c.encode_utf8(&mut buf)).width();
+            if w.saturating_add(cw) > width {
+                break;
+            }
+            out.push(c);
+            w = w.saturating_add(cw);
+        }
+        return out;
     }
-    let budget = width.saturating_sub(Line::from(suffix).width());
+    let budget = width.saturating_sub(suffix_w);
     let mut prefix = String::new();
+    let mut used = 0usize;
+    let mut buf = [0u8; 4];
     for c in text.chars() {
-        let mut candidate = prefix.clone();
-        candidate.push(c);
-        if Line::from(candidate.as_str()).width() > budget {
+        let cw = Span::raw(&*c.encode_utf8(&mut buf)).width();
+        if used.saturating_add(cw) > budget {
             break;
         }
-        prefix = candidate;
+        prefix.push(c);
+        used = used.saturating_add(cw);
     }
     prefix.push_str(suffix);
     prefix
@@ -5579,6 +5634,53 @@ mod tests {
         );
         assert_eq!(wrap_spans(&[], 5).len(), 1);
         assert_eq!(wrap_spans(&long, 0).len(), 1);
+    }
+
+    #[test]
+    fn wrap_spans_count_matches_wrap_spans_len_across_edge_cases() {
+        let cases: &[(&[&str], &[usize])] = &[
+            (&[], &[0, 1, 5, 10]),
+            (&[""], &[0, 1, 5]),
+            (&["hello world"], &[0, 1, 5, 6, 10, 11, 20]),
+            (&["   leading  spaces   "], &[1, 3, 5, 8, 25]),
+            (&["red words", " then plain text here"], &[1, 5, 10, 15, 40]),
+            (&["supercalifragilistic"], &[1, 7, 8, 20]),
+            (&["a b c d e f g"], &[1, 2, 3, 4, 5]),
+        ];
+        for (parts, widths) in cases {
+            let spans: Vec<Span<'static>> =
+                parts.iter().map(|p| Span::raw((*p).to_string())).collect();
+            for &w in *widths {
+                assert_eq!(
+                    wrap_spans_count(&spans, w),
+                    wrap_spans(&spans, w).len(),
+                    "mismatch for {parts:?} at width {w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mind_tail_fit_truncates_linearly_for_ascii_wide_and_long_inputs() {
+        assert_eq!(mind_tail_fit("short".into(), Some(10), true), "short");
+        assert_eq!(
+            mind_tail_fit("0123456789abcdef".into(), Some(10), true),
+            "01234… F10"
+        );
+        assert_eq!(
+            mind_tail_fit("0123456789abcdef".into(), Some(10), false),
+            "012... F10"
+        );
+        assert_eq!(mind_tail_fit("0123456789".into(), Some(3), true), "… F");
+        // Double-width chars must not exceed the width budget.
+        let fitted = mind_tail_fit("漢漢漢漢漢漢".into(), Some(10), true);
+        assert!(Line::from(fitted.as_str()).width() <= 10, "{fitted}");
+        assert!(fitted.ends_with("… F10"), "{fitted}");
+        // Long input completes linearly without quadratic cloning.
+        let long = "x".repeat(20_000);
+        let truncated = mind_tail_fit(long, Some(44), true);
+        assert_eq!(Line::from(truncated.as_str()).width(), 44);
+        assert!(truncated.ends_with("… F10"));
     }
 
     #[test]

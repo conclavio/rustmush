@@ -1824,9 +1824,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         let Some(map) = self.relay.inbound(channel_id) else {
             return RelayLineOutcome::Ignored;
         };
-        let (kind, text) = relay_kind(content.trim());
-        let text = text.trim();
-        if text.is_empty() {
+        if content.trim().is_empty() {
             return RelayLineOutcome::Ignored;
         }
         if !self.relay_admit(user_id) {
@@ -1849,6 +1847,19 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 tracing::warn!(error = %e, "relay: ban lookup failed");
                 return RelayLineOutcome::Refused("the account store is unavailable".to_string());
             }
+        }
+        if content.len() > MAX_RELAY_LINE_CHARS.saturating_mul(4).saturating_add(64) {
+            return RelayLineOutcome::Refused(format!(
+                "that line is over the relay's {MAX_RELAY_LINE_CHARS}-character limit"
+            ));
+        }
+        // Strip ASCII/C1 control characters, ANSI escapes, and Unicode BiDi
+        // controls before crossing the boundary (SAN-M5, SSH-M6).
+        let clean = mush_session::sanitize_line(content);
+        let (kind, text) = relay_kind(clean.trim());
+        let text = text.trim();
+        if text.is_empty() {
+            return RelayLineOutcome::Ignored;
         }
         if text.chars().count() > MAX_RELAY_LINE_CHARS {
             return RelayLineOutcome::Refused(format!(
@@ -3817,5 +3828,37 @@ mod tests {
 
         let unlinked = rig(|_| {}).await;
         assert_eq!(unlinked.bridge.restore_follows(records).await, 0);
+    }
+
+    #[tokio::test]
+    async fn relay_in_sanitizes_control_and_bidi_characters() {
+        let r = rig_with(relay_config()).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        let b = &r.bridge;
+        assert_eq!(
+            b.relay_in(USER, 4242, "hi\x1b[31m\u{202E}\u{2066}\r\nworld\u{2028}!")
+                .await,
+            RelayLineOutcome::Accepted
+        );
+        let reqs = r.link.requests();
+        assert_eq!(reqs.len(), 1);
+        let Some(ServiceReq::RelaySpeak(spoken)) = reqs.first() else {
+            panic!("expected RelaySpeak request");
+        };
+        assert_eq!(spoken.text, "hi[31mworld!");
+        assert!(
+            !spoken
+                .text
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '\u{202E}' | '\u{2066}' | '\u{2028}')),
+            "relay text must be free of control and BiDi chars: {:?}",
+            spoken.text
+        );
+        // Pure control/BiDi payload becomes empty after sanitization and is ignored.
+        assert_eq!(
+            b.relay_in(USER, 4242, "\x1b\u{202E}\u{2066}\r\n").await,
+            RelayLineOutcome::Ignored
+        );
+        assert_eq!(r.link.requests().len(), 1);
     }
 }

@@ -38,9 +38,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::SshError;
 use crate::hooks::{AuthResult, SshHooks};
+use crate::kill::Killable;
 use crate::server::{
-    Attested, BLOCKED_FALLBACK, ConnHandler, Ingress, block_notice, is_front_door, server_config,
-    split_account_user,
+    Attested, BLOCKED_FALLBACK, ConnHandler, DEFAULT_AUTH_DEADLINE, DISCONNECT_GRACE, Ingress,
+    block_notice, is_front_door, server_config, spawn_auth_watchdog, split_account_user,
 };
 
 /// The whole preamble — from the first byte to `Ready` — must finish within
@@ -68,6 +69,8 @@ pub const KEY_QUERY_FLOOR: Duration = Duration::from_millis(50);
 pub struct TrustedIngress {
     config: Arc<Config>,
     ingress: Ingress,
+    auth_deadline: Duration,
+    disconnect_grace: Duration,
 }
 
 impl std::fmt::Debug for TrustedIngress {
@@ -87,19 +90,41 @@ impl TrustedIngress {
         Ok(TrustedIngress {
             config: server_config(host_key_path)?,
             ingress: Ingress::with_base(hooks, banner, TRUSTED_CONN_ID_BASE),
+            auth_deadline: DEFAULT_AUTH_DEADLINE,
+            disconnect_grace: DISCONNECT_GRACE,
         })
     }
 
-    /// Serve one doorway connection: the preamble, then SSH on the same
-    /// stream until the session ends. Never panics on hostile input; every
-    /// failure closes the stream and releases any slot the `Hello` claimed.
+    /// Override the post-preamble authentication and channel-open deadlines
+    /// (matching [`SshConfig::auth_deadline`](crate::SshConfig::auth_deadline)).
+    #[must_use]
+    pub fn with_auth_deadline(mut self, auth_deadline: Duration) -> TrustedIngress {
+        self.auth_deadline = auth_deadline;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_test_deadlines(
+        mut self,
+        auth_deadline: Duration,
+        disconnect_grace: Duration,
+    ) -> TrustedIngress {
+        self.auth_deadline = auth_deadline;
+        self.disconnect_grace = disconnect_grace;
+        self
+    }
+
+    /// Serve one doorway connection: the preamble, then SSH on a [`Killable`]
+    /// stream guarded by the two-stage auth/channel-open watchdog until the
+    /// session ends (HIGH-11). Never panics on hostile input; every failure
+    /// closes the stream and releases any slot the `Hello` claimed.
     pub async fn serve<S>(&self, mut stream: S)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let handler = match tokio::time::timeout(
             PREAMBLE_TIMEOUT,
-            preamble(&self.ingress, &mut stream),
+            preamble(&self.ingress, self.auth_deadline, &mut stream),
         )
         .await
         {
@@ -114,32 +139,51 @@ impl TrustedIngress {
                 return;
             }
         };
+        let conn_id = handler.conn_id();
+        let switch = Arc::clone(&handler.kill);
+        let authed = Arc::clone(&handler.authed);
+        let opened = Arc::clone(&handler.opened);
+        let stream = Killable::new(stream, Arc::clone(&switch));
         let session = match tokio::time::timeout(
-            PREAMBLE_TIMEOUT,
+            self.auth_deadline,
             russh::server::run_stream(Arc::clone(&self.config), stream, handler),
         )
         .await
         {
             Ok(Ok(session)) => session,
             Ok(Err(error)) => {
-                tracing::debug!(%error, "trusted ingress: SSH start failed");
+                tracing::debug!(conn = conn_id, %error, "trusted ingress: SSH start failed");
                 return;
             }
             Err(_) => {
-                tracing::info!("trusted ingress: SSH start timed out");
+                tracing::info!(conn = conn_id, "trusted ingress: SSH start timed out");
                 return;
             }
         };
+        let watchdog = spawn_auth_watchdog(
+            conn_id,
+            session.handle(),
+            authed,
+            opened,
+            switch,
+            self.auth_deadline,
+            self.disconnect_grace,
+        );
         if let Err(error) = session.await {
-            tracing::debug!(%error, "trusted ingress: SSH session ended with error");
+            tracing::debug!(conn = conn_id, %error, "trusted ingress: SSH session ended with error");
         }
+        watchdog.abort();
     }
 }
 
 /// Run the instance side of the preamble. `Ok(Some(handler))` means `Ready`
 /// was sent and SSH follows; `Ok(None)` is an answered refusal (`Pong`,
 /// `Refused`, `Blocked`, a version mismatch).
-async fn preamble<S>(ingress: &Ingress, stream: &mut S) -> Result<Option<ConnHandler>, ProtoError>
+async fn preamble<S>(
+    ingress: &Ingress,
+    auth_deadline: Duration,
+    stream: &mut S,
+) -> Result<Option<ConnHandler>, ProtoError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -177,7 +221,7 @@ where
     let addr = peer.ip();
     let counted = hooks.connection_opened(addr);
     // Built now so its `Drop` releases the slot on every path below.
-    let mut handler = ingress.handler_for(addr, counted);
+    let mut handler = ingress.handler_for_with_deadline(addr, counted, auth_deadline);
     if !counted {
         proto::write_msg(stream, &IngressMsg::Refused).await?;
         return Ok(None);
@@ -603,7 +647,12 @@ mod tests {
     ) -> Option<ConnHandler> {
         let (mut doorway, mut instance) = tokio::io::duplex(64 * 1024);
         let ing = ingress(hooks);
-        let server = async move { preamble(&ing, &mut instance).await.ok().flatten() };
+        let server = async move {
+            preamble(&ing, DEFAULT_AUTH_DEADLINE, &mut instance)
+                .await
+                .ok()
+                .flatten()
+        };
         let client = async move {
             script(&mut doorway).await;
             drop(doorway);
@@ -989,6 +1038,127 @@ mod tests {
         })
         .await;
         assert!(hooks.opened.lock().unwrap().is_empty());
+    }
+
+    struct AcceptAllClient;
+    impl russh::client::Handler for AcceptAllClient {
+        type Error = russh::Error;
+        async fn check_server_key(
+            &mut self,
+            _: &russh::keys::PublicKeyOrCertificate,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    /// HIGH-11: a doorway peer that completes the preamble and exchanges SSH
+    /// version banners, then stalls before authenticating, must be cut by the
+    /// `Killable` watchdog and release its `open_now` slot.
+    #[tokio::test]
+    async fn trusted_serve_cuts_stalled_preauth_peer_and_releases_slot() {
+        let dir = std::env::temp_dir().join(format!(
+            "mush-trusted-h11-preauth-{}-{}",
+            std::process::id(),
+            getrandom::u64().unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hooks = Arc::new(Hooks::default());
+        let trusted = TrustedIngress::new(
+            &dir.join("host"),
+            "b",
+            Arc::clone(&hooks) as Arc<dyn SshHooks>,
+        )
+        .unwrap()
+        .with_test_deadlines(Duration::from_millis(120), Duration::from_millis(50));
+
+        let (mut doorway, instance) = tokio::io::duplex(64 * 1024);
+        let serve_task = tokio::spawn(async move { trusted.serve(instance).await });
+
+        send(&mut doorway, hello()).await;
+        assert_eq!(recv(&mut doorway).await, IngressMsg::Open);
+        send(
+            &mut doorway,
+            DoorwayMsg::Begin {
+                user: "play".into(),
+                attested_key: None,
+            },
+        )
+        .await;
+        assert_eq!(recv(&mut doorway).await, IngressMsg::Ready);
+        assert_eq!(*hooks.open_now.lock().unwrap(), 1);
+
+        // Exchange SSH version banner so `run_stream` succeeds, then stall in kex/auth
+        // without dropping the stream.
+        doorway.write_all(b"SSH-2.0-stalled\r\n").await.unwrap();
+        doorway.flush().await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(3), serve_task)
+            .await
+            .expect("watchdog must cut stalled pre-auth session")
+            .expect("serve task join");
+        assert_eq!(*hooks.open_now.lock().unwrap(), 0, "slot must be released");
+        drop(doorway);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// HIGH-11: an authenticated doorway peer that never opens a session
+    /// channel must be cut by the second watchdog stage and release its slot.
+    #[tokio::test]
+    async fn trusted_serve_cuts_authed_peer_without_channel_and_releases_slot() {
+        let dir = std::env::temp_dir().join(format!(
+            "mush-trusted-h11-nochan-{}-{}",
+            std::process::id(),
+            getrandom::u64().unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hooks = Arc::new(Hooks::default());
+        let trusted = TrustedIngress::new(
+            &dir.join("host"),
+            "b",
+            Arc::clone(&hooks) as Arc<dyn SshHooks>,
+        )
+        .unwrap()
+        .with_test_deadlines(Duration::from_millis(150), Duration::from_millis(50));
+
+        let (mut doorway, instance) = tokio::io::duplex(64 * 1024);
+        let serve_task = tokio::spawn(async move { trusted.serve(instance).await });
+
+        send(&mut doorway, hello()).await;
+        assert_eq!(recv(&mut doorway).await, IngressMsg::Open);
+        send(
+            &mut doorway,
+            DoorwayMsg::Begin {
+                user: "play".into(),
+                attested_key: None,
+            },
+        )
+        .await;
+        assert_eq!(recv(&mut doorway).await, IngressMsg::Ready);
+
+        let mut client = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            doorway,
+            AcceptAllClient,
+        )
+        .await
+        .expect("ssh connect over duplex");
+        assert!(
+            client
+                .authenticate_none("play")
+                .await
+                .expect("auth-none")
+                .success()
+        );
+        assert_eq!(*hooks.open_now.lock().unwrap(), 1);
+
+        // Hold `client` alive without opening a session channel.
+        tokio::time::timeout(Duration::from_secs(3), serve_task)
+            .await
+            .expect("second-stage watchdog must cut channel-less session")
+            .expect("serve task join");
+        assert_eq!(*hooks.open_now.lock().unwrap(), 0, "slot must be released");
+        drop(client);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     use tokio::io::AsyncWriteExt;

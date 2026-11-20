@@ -6550,15 +6550,32 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
 
     let vault_prop_before_jink = pool(&mut rig.tw, vault_id, "propellant");
 
-    // 2. Execute a `CommandBurn` inside the active bubble (`+helm/thrust 600 0 1000 0`) and land the
+    // 2. Execute a `CommandBurn` inside the active bubble (`+helm/thrust 600 0 1000 0`), step
+    //    wall ticks so `step_substep` integrates the burn over elapsed time, and land the
     //    resulting `PendingSpaceBurn` submission on the hull's `stow.propellant` vault:
     let jink_out = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
     assert!(
         jink_out.contains("Helm thrust set: 600‰ burn=(0, 1000, 0)"),
         "bubble jink output: {jink_out}"
     );
+    let init_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &init_submits);
+    let mut jink_submits = Vec::new();
+    for _ in 0..5 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        for s in drain(&mut rig.tw) {
+            if is_burn(&s) {
+                jink_submits.push(s);
+            } else {
+                let _ = land(&mut rig, &s);
+            }
+        }
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
-    let jink_submits = drain(&mut rig.tw);
+    let stop_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &stop_submits);
     assert_eq!(
         jink_submits.len(),
         1,
@@ -12163,10 +12180,11 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         );
     }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let init_brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &init_brake);
     for _ in 0..6 {
-        let next_r = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_r);
-        let _ = rig.tw.fire_due(next_r * 1_000);
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
     }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
     let brake = drain_space_and_industry(&mut rig.tw);
@@ -13084,10 +13102,11 @@ fn hove_to_at_the_picket_with(
         "the picket's bubble opens on her"
     );
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let init_brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &init_brake);
     for _ in 0..6 {
-        let next_r = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_r);
-        let _ = rig.tw.fire_due(next_r * 1_000);
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
     }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
     let brake = drain_space_and_industry(&mut rig.tw);

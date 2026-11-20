@@ -51,7 +51,7 @@ use mushd::boot;
 use mushd::config::Config;
 use mushd::ipguard::IpGuard;
 use mushd::quarantine::QuarantineSpool;
-use mushd::ssh_bridge::{SshBridge, start_listener};
+use mushd::ssh_bridge::{SshBridge, start_listener_with};
 use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, ServerDeps, WorldOutcome};
 use mushd::{repl, unix_now_s};
@@ -363,6 +363,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// Validate and extract the `[ipguard]` config and `[ssh].auth_deadline_s`
+/// wired into [`IpGuard::with_config`] and [`start_listener_with`].
+fn ssh_security_config(
+    config: &Config,
+) -> Result<(mushd::ipguard::IpGuardConfig, Duration), String> {
+    let guard_config = config
+        .ipguard
+        .guard_config()
+        .map_err(|e| format!("[ipguard] config: {e}"))?;
+    let auth_deadline = config
+        .ssh_auth_deadline()
+        .map_err(|e| format!("[ssh] config: {e}"))?;
+    Ok((guard_config, auth_deadline))
+}
+
 async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<(), ExitFailure> {
     let listen = config.ssh_listen().map_err(|e| e.to_string())?;
     let data_dir = config.server.data_dir.clone();
@@ -407,7 +422,8 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
     }));
 
     // Abuse protection, seeded with the persisted sitebans.
-    let guard = Arc::new(IpGuard::new());
+    let (guard_config, auth_deadline) = ssh_security_config(&config)?;
+    let guard = Arc::new(IpGuard::with_config(guard_config));
     let bans = store
         .get_bans()
         .await
@@ -494,10 +510,11 @@ async fn serve(config: Config, mut quarantine_spool: QuarantineSpool) -> Result<
         .with_metrics(Arc::clone(&metrics))
         .with_pixel(&config.pixel),
     );
-    let mut listener = start_listener(
+    let mut listener = start_listener_with(
         listen,
         &data_dir,
         banner(&config.server.name),
+        auth_deadline,
         Arc::clone(&bridge),
     )
     .await
@@ -940,5 +957,25 @@ mod tests {
             .expect("a timeout is a failure");
         assert_eq!(slow.class, ExitClass::WorldJoinTimeout);
         assert!(slow.detail.contains("did not join"), "{slow}");
+    }
+
+    /// Regression test (SSH-M7): `mushd` validates and wires `[ipguard]` and
+    /// `[ssh].auth_deadline_s` rather than silently using hardcoded defaults.
+    #[test]
+    fn ssh_security_config_wires_ipguard_and_auth_deadline() {
+        let mut cfg = super::Config::default();
+        cfg.ipguard.max_conns = 4;
+        cfg.ssh.auth_deadline_s = 12;
+        let (guard_cfg, deadline) = super::ssh_security_config(&cfg).expect("valid config");
+        assert_eq!(guard_cfg.max_conns, 4);
+        assert_eq!(deadline, std::time::Duration::from_secs(12));
+
+        let mut bad_deadline = super::Config::default();
+        bad_deadline.ssh.auth_deadline_s = 0;
+        assert!(super::ssh_security_config(&bad_deadline).is_err());
+
+        let mut bad_guard = super::Config::default();
+        bad_guard.ipguard.max_conns = 0;
+        assert!(super::ssh_security_config(&bad_guard).is_err());
     }
 }

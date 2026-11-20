@@ -23,33 +23,37 @@
 
 mod legal_action;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mush_core::{DisconnectKind, ObjId, PerceivedRef, ProjectedLegalAction, ProjectedTargetSchema};
 use mush_ipc::{
-    ActionSend, ConnectionAdmission, GatewayAction, GatewayLink, InputSend, ServiceReq,
-    ServiceResp, ToServer, WireInbound,
+    ActionSend, ConnectionAdmission, GatewayAction, GatewayLink, InputSend,
+    MAX_RESPOND_CHOICE_ID_BYTES, MAX_RESPOND_EPOCH_BYTES, ServiceReq, ServiceResp, ToServer,
+    WireInbound,
 };
 // Shared with the SSH transport's own line cap (`mush-net-ssh::editor`) so
 // both agree on one bound (MEDIUM finding).
 use mush_net_ssh::MAX_LINE_CHARS;
 use mush_proto::{
-    ActionStatusId, MAX_VIEW_WIRE_INTEGER, ObjRef, OutputEvent, PanelFrameKind,
-    ProjectedActionReceipt, ProjectedActionStatus, ProjectedCommitToken, RespondChoice, RichText,
-    ViewEnvelope,
+    ActionStatusId, LegalActionInteger, LegalActionParameters, LegalActionScalar,
+    MAX_LEGAL_ACTION_PARAMETER_BYTES, MAX_LEGAL_ACTION_PARAMETERS, MAX_VIEW_WIRE_INTEGER, ObjRef,
+    OutputEvent, PanelFrameKind, ProjectedActionReceipt, ProjectedActionStatus,
+    ProjectedCommitToken, RespondChoice, RichText, ViewEnvelope,
 };
 use mush_session::{
     ConnId, ConnectionHandle, DetachOutcome, DetachReason, FloodVerdict, SendToConn, SessId,
     SessionManager, sanitize_line,
 };
+use serde::{Deserialize, Deserializer, de};
 use smol_str::SmolStr;
 
 use mush_config::ipguard::IpGuard;
 
-use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
+use crate::accounts::{AuthBackend, AuthCheckOutcome, AuthOutcome, CreateErr};
 use crate::delivery::{char_key, char_key_obj, send_event_to_conn};
 use crate::drain::{CloseWay, GatewayDrain, GatewaySession, LiveGuard};
 use crate::poison::locked;
@@ -151,6 +155,92 @@ fn parse_line_subject(argument: &str) -> Result<PerceivedRef, &'static str> {
     })
 }
 
+struct FlatLineScalar(LegalActionScalar);
+
+impl<'de> Deserialize<'de> for FlatLineScalar {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ScalarVisitor;
+
+        impl de::Visitor<'_> for ScalarVisitor {
+            type Value = FlatLineScalar;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a boolean, exact integer, or bounded text scalar")
+            }
+
+            fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(FlatLineScalar(LegalActionScalar::Boolean { value }))
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                LegalActionInteger::new(value.to_string())
+                    .map(|value| FlatLineScalar(LegalActionScalar::Integer { value }))
+                    .map_err(E::custom)
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                let signed =
+                    i64::try_from(value).map_err(|_| E::custom("integer is out of range"))?;
+                self.visit_i64(signed)
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(FlatLineScalar(LegalActionScalar::Text {
+                    value: value.to_owned(),
+                }))
+            }
+
+            fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(FlatLineScalar(LegalActionScalar::Text { value }))
+            }
+        }
+
+        d.deserialize_any(ScalarVisitor)
+    }
+}
+
+struct FlatLineParameters(LegalActionParameters);
+
+impl<'de> Deserialize<'de> for FlatLineParameters {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct MapVisitor;
+
+        impl<'de> de::Visitor<'de> for MapVisitor {
+            type Value = FlatLineParameters;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a flat JSON object of bounded distinct scalar parameters")
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut values = BTreeMap::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.len() == MAX_LEGAL_ACTION_PARAMETERS || values.contains_key(&key) {
+                        return Err(de::Error::custom("too many or duplicate parameters"));
+                    }
+                    let scalar = map.next_value::<FlatLineScalar>()?;
+                    values.insert(key, scalar.0);
+                }
+                LegalActionParameters::new(values)
+                    .map(FlatLineParameters)
+                    .map_err(de::Error::custom)
+            }
+        }
+
+        d.deserialize_map(MapVisitor)
+    }
+}
+
+fn is_legal_action_line(trimmed: &str) -> bool {
+    let command = trimmed
+        .split_once(char::is_whitespace)
+        .map_or(trimmed, |(cmd, _)| cmd);
+    command.eq_ignore_ascii_case("action/status")
+        || command.eq_ignore_ascii_case("+action/status")
+        || command.eq_ignore_ascii_case("+actions")
+        || command.eq_ignore_ascii_case("+act")
+}
+
 fn parse_line_action(argument: &str) -> Result<LineActionSelection, &'static str> {
     let argument = argument.trim();
     let (verb, mut rest) = argument
@@ -176,11 +266,16 @@ fn parse_line_action(argument: &str) -> Result<LineActionSelection, &'static str
     let parameters = if rest.is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::from_str(rest).map_err(|_| "Action parameters must be one JSON object.")?
+        if rest.len() > MAX_LEGAL_ACTION_PARAMETER_BYTES {
+            return Err("Action parameters must be one flat JSON object of bounded scalar values.");
+        }
+        let parsed: FlatLineParameters = serde_json::from_str(rest).map_err(
+            |_| "Action parameters must be one flat JSON object of bounded scalar values.",
+        )?;
+        parsed.0.to_json().map_err(
+            |_| "Action parameters must be one flat JSON object of bounded scalar values.",
+        )?
     };
-    if !parameters.is_object() {
-        return Err("Action parameters must be one JSON object.");
-    }
     Ok(LineActionSelection {
         verb: verb.to_owned(),
         subject,
@@ -211,6 +306,23 @@ pub enum AuthResult {
     },
     /// Unknown account or wrong password (deliberately indistinguishable).
     Denied,
+}
+
+/// Result of an account credential check that keeps Argon2id concurrency
+/// saturation distinct from bad credentials (HIGH-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthCheckResult {
+    /// Credentials good.
+    Ok {
+        /// Account name in registered display case.
+        account: String,
+        /// The account's characters.
+        characters: Vec<CharSummary>,
+    },
+    /// Unknown account, wrong password, or blocked address.
+    Denied,
+    /// Argon2id concurrency budget saturated; transient overload.
+    Busy,
 }
 
 /// Why [`GameBridge::enter_game`] refused.
@@ -483,20 +595,46 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     }
 
     /// Route a client's answer to a server-initiated request (interface plan
-    /// I10, D-I-21). Shares the per-connection input flood bucket so a Respond
-    /// flood cannot reach the world loop past the throttle, never idle-stamps,
-    /// and drops a throttled or unattached answer silently (the server applies
-    /// the deadline default). Advisory, one-way. Used by both bridges.
+    /// I10, D-I-21). Charges the strict query flood bucket (never
+    /// `flood_exempt`, HIGH-2), bounds `epoch` and sanitizes/bounds choice
+    /// text (HIGH-1, SAN-M6), sends via the bounded sheddable `to_server_input`
+    /// lane, never idle-stamps, and drops invalid/throttled/unattached answers
+    /// silently (the server applies the deadline default).
     pub async fn respond(&self, conn: u64, id: u64, epoch: String, choice: RespondChoice) {
         let conn_id = ConnId(conn);
-        if self.sessions.check_input(conn_id) == FloodVerdict::Throttled {
+        if self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
             return;
         }
+        if epoch.len() > MAX_RESPOND_EPOCH_BYTES || epoch.chars().any(char::is_control) {
+            return;
+        }
+        let choice = match choice {
+            RespondChoice::Confirm(v) => RespondChoice::Confirm(v),
+            RespondChoice::Cancel => RespondChoice::Cancel,
+            RespondChoice::Choose(opt) => {
+                if opt.len() > MAX_RESPOND_CHOICE_ID_BYTES {
+                    return;
+                }
+                let clean = sanitize_line(opt.as_str());
+                RespondChoice::Choose(SmolStr::from(clean))
+            }
+            RespondChoice::Text(text) => {
+                if text.len() > MAX_LINE_CHARS.saturating_mul(4) {
+                    return;
+                }
+                let clean = sanitize_line(&text);
+                if clean.chars().count() > MAX_LINE_CHARS {
+                    return;
+                }
+                RespondChoice::Text(clean)
+            }
+        };
         let Some(actor) = self.actor_of(conn_id) else {
             return;
         };
-        self.link
-            .to_server(ToServer::Inbound(WireInbound::Respond {
+        let _ = self
+            .link
+            .to_server_input(ToServer::Inbound(WireInbound::Respond {
                 epoch,
                 conn,
                 actor,
@@ -943,6 +1081,37 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         }
     }
 
+    /// Like [`Self::auth_account`], preserving Argon2id concurrency saturation
+    /// as [`AuthCheckResult::Busy`] so HTTP login returns 429 without counting
+    /// a password failure (HIGH-3).
+    pub async fn auth_account_checked(
+        &self,
+        account: &str,
+        password: &str,
+        addr: IpAddr,
+    ) -> AuthCheckResult {
+        if self.guard.is_blocked(addr) {
+            return AuthCheckResult::Denied;
+        }
+        match self.accounts.verify_checked(account, password).await {
+            AuthCheckOutcome::Ok {
+                account,
+                characters,
+            } => AuthCheckResult::Ok {
+                account,
+                characters: characters
+                    .into_iter()
+                    .map(|c| CharSummary {
+                        id: u64::from(c.id.0),
+                        name: c.name,
+                    })
+                    .collect(),
+            },
+            AuthCheckOutcome::BadCredentials => AuthCheckResult::Denied,
+            AuthCheckOutcome::Busy => AuthCheckResult::Busy,
+        }
+    }
+
     /// Create an account plus its first character.
     pub async fn create_account(
         &self,
@@ -954,13 +1123,24 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         if self.guard.is_blocked(addr) {
             return Err(CreateErr::Io("your address is blocked".to_string()));
         }
-        // Validation + argon2 hash + store reservation + ack-gated world
-        // round trip; the backend hops CPU-heavy work to the blocking pool.
-        let created = self.accounts.create(account, password, char_name).await?;
-        Ok(CharSummary {
-            id: u64::from(created.id.0),
-            name: created.name,
-        })
+        if !self.guard.check_register(addr) {
+            return Err(CreateErr::RateLimited);
+        }
+        // Validation + pre-existence check + bounded argon2 hash + store
+        // reservation + ack-gated world round trip.
+        match self.accounts.create(account, password, char_name).await {
+            Ok(created) => Ok(CharSummary {
+                id: u64::from(created.id.0),
+                name: created.name,
+            }),
+            Err(err @ CreateErr::World(_)) => {
+                // Transient world-not-up / busy retries during boot do not burn
+                // the network's registration budget.
+                self.guard.refund_register(addr);
+                Err(err)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Create an additional character on an authenticated account. Cap and
@@ -1040,6 +1220,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 others,
                 from_linkdead,
             } => (others + 1, from_linkdead),
+            mush_session::AttachOutcome::Duplicate => {
+                self.link.cancel_connection_reservation(conn_id.0);
+                return Err(ConnectErr::NotAdmitted);
+            }
         };
 
         // World side: connection up (announces connect/reconnect), then the
@@ -1356,7 +1540,26 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             self.quit(conn).await;
             return LineOutcome::Close;
         }
-        if check_flood && self.sessions.check_input(conn) == FloodVerdict::Throttled {
+        let is_legal_action = is_legal_action_line(trimmed);
+        if check_flood {
+            // Gateway-intercepted legal-action commands (`+act`, `+actions`,
+            // `action/status`) never inherit `flood_exempt` (HIGH-2).
+            let verdict = if is_legal_action {
+                self.sessions.check_query_flood(conn)
+            } else {
+                self.sessions.check_input(conn)
+            };
+            if verdict == FloodVerdict::Throttled {
+                send_event_to_conn(
+                    &self.sessions,
+                    conn,
+                    OutputEvent::Sys(RichText::tag("error", "You're doing that too fast.")),
+                );
+                return LineOutcome::Continue;
+            }
+        } else if is_legal_action
+            && self.sessions.check_query_flood(conn) == FloodVerdict::Throttled
+        {
             send_event_to_conn(
                 &self.sessions,
                 conn,
@@ -1515,15 +1718,13 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
 
     pub async fn query(&self, conn: u64, id: u64, name: SmolStr, args: serde_json::Value) {
         let conn_id = ConnId(conn);
-        // Interface plan I12: the narrative backlog is answered LOCALLY from the
-        // resume ring (the world cannot read the gateway ring), gated by a
-        // STRICT flood check that ignores flood-exempt — a locally-answered
-        // query has no world-side backpressure. Dispatched before the generic,
-        // exempt-honouring `check_input`.
+        // Every query — local (`narrative.backlog`) or world-routed — charges
+        // the strict query flood bucket so `flood_exempt` (mail compose,
+        // chargen) can never be abused to flood queries (HIGH-2).
+        if self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
+            return;
+        }
         if name == "narrative.backlog" {
-            if self.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
-                return;
-            }
             let before_seq = args.get("before_seq").and_then(serde_json::Value::as_u64);
             let limit = args
                 .get("limit")
@@ -1531,9 +1732,6 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 .and_then(|l| u32::try_from(l).ok())
                 .unwrap_or(0);
             self.narrative_backlog_reply(conn_id, id, before_seq, limit);
-            return;
-        }
-        if self.sessions.check_input(conn_id) == FloodVerdict::Throttled {
             return;
         }
         let Some(actor) = self.actor_of(conn_id) else {
@@ -1806,6 +2004,233 @@ mod projection_tests {
 
         assert!(parse_line_action("brace with []").is_err());
         assert!(parse_line_action("condition-damage on Nick with {}").is_err());
+    }
+
+    #[test]
+    fn line_action_parser_enforces_legal_action_parameter_bounds_and_shapes() {
+        // Nested objects, arrays, floats, nulls, duplicate keys, control chars,
+        // invalid names, and >32 parameters are all refused (SAN-M7).
+        for bad in [
+            r#"brace with {"nested":{"a":1}}"#,
+            r#"brace with {"arr":[1,2]}"#,
+            r#"brace with {"flt":1.5}"#,
+            r#"brace with {"nil":null}"#,
+            r#"brace with {"a":1,"a":2}"#,
+            r#"brace with {"UPPER":1}"#,
+            r#"brace with {".lead":1}"#,
+            r#"brace with {"a..b":1}"#,
+            r#"brace with {"msg":"bad\u001b[31m"}"#,
+        ] {
+            let err = parse_line_action(bad).unwrap_err();
+            assert!(
+                err.contains("parameters"),
+                "error for {bad} should mention parameters: {err}"
+            );
+        }
+
+        // > 32 keys rejected.
+        let mut too_many = String::from("brace with {");
+        for i in 0..33 {
+            if i > 0 {
+                too_many.push(',');
+            }
+            too_many.push_str(&format!(r#""k{i}":{i}"#));
+        }
+        too_many.push('}');
+        assert!(parse_line_action(&too_many).is_err());
+
+        // > 4 KiB text scalar rejected.
+        let big_text = format!(r#"brace with {{"msg":"{}"}}"#, "x".repeat(4097));
+        assert!(parse_line_action(&big_text).is_err());
+
+        // Booleans, integers, and clean text scalars remain accepted.
+        let ok = parse_line_action(r#"brace with {"flag":true,"count":-7,"label":"steady"}"#)
+            .expect("valid scalar parameters");
+        assert_eq!(ok.parameters["flag"], true);
+        assert_eq!(ok.parameters["count"], -7);
+        assert_eq!(ok.parameters["label"], "steady");
+    }
+
+    #[tokio::test]
+    async fn flood_exempt_does_not_bypass_query_respond_or_plus_act_and_respond_sanitizes() {
+        use super::*;
+        use futures::future::BoxFuture;
+        use mush_proto::{ClientCaps, ClientKind, ColorDepth};
+        use mush_session::{ConnectionHandle, SessionConfig};
+
+        struct RecordingLink {
+            input_msgs: Mutex<Vec<ToServer>>,
+            raw_msgs: Mutex<Vec<ToServer>>,
+            service_reqs: Mutex<Vec<ServiceReq>>,
+        }
+
+        impl RecordingLink {
+            fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    input_msgs: Mutex::new(Vec::new()),
+                    raw_msgs: Mutex::new(Vec::new()),
+                    service_reqs: Mutex::new(Vec::new()),
+                })
+            }
+        }
+
+        impl GatewayLink for RecordingLink {
+            fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
+                self.raw_msgs.lock().unwrap().push(msg);
+                Box::pin(async { true })
+            }
+            fn to_server_input(&self, msg: ToServer) -> BoxFuture<'_, InputSend> {
+                self.input_msgs.lock().unwrap().push(msg);
+                Box::pin(async { InputSend::Sent })
+            }
+            fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+                self.service_reqs.lock().unwrap().push(req);
+                Box::pin(async { Some(ServiceResp::LegalActions(Ok(Vec::new()))) })
+            }
+        }
+
+        struct DummyAuth;
+        impl AuthBackend for DummyAuth {
+            async fn verify(&self, _: &str, _: &str) -> AuthOutcome {
+                AuthOutcome::BadCredentials
+            }
+            async fn characters(&self, _: &str) -> Vec<crate::accounts::CharSummary> {
+                Vec::new()
+            }
+            async fn create(
+                &self,
+                _: &str,
+                _: &str,
+                char_name: &str,
+            ) -> Result<crate::accounts::CharSummary, CreateErr> {
+                Ok(crate::accounts::CharSummary {
+                    id: ObjId(9),
+                    name: char_name.to_owned(),
+                })
+            }
+            async fn create_character(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<crate::accounts::CharSummary, CreateErr> {
+                Err(CreateErr::NoSuchAccount)
+            }
+        }
+
+        let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+            flood_rate: 0.0001,
+            flood_burst: 3.0,
+            ..SessionConfig::default()
+        }));
+        let link = RecordingLink::new();
+        let guard = Arc::new(IpGuard::new());
+        let bridge = GameBridge::with_link(
+            Arc::new(DummyAuth),
+            Arc::clone(&sessions),
+            link.clone(),
+            Arc::clone(&guard),
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        let caps = ClientCaps {
+            kind: ClientKind::Web,
+            color: ColorDepth::TrueColor,
+            width: 80,
+            height: 24,
+            utf8: true,
+            structured: true,
+        };
+        let conn = ConnId(1);
+        let actor = ObjId(7);
+        let _ = sessions.attach(
+            ConnectionHandle::new_structured(conn, IpAddr::from([127, 0, 0, 1]), caps, tx),
+            char_key(actor),
+            "acct".to_string(),
+        );
+        // Mark actor flood-exempt (as in mail compose).
+        sessions.set_flood_exempt(char_key(actor), true);
+
+        // 1. Respond sanitizes control/BiDi chars, uses `to_server_input` (NOT `to_server`),
+        //    and drops oversized epochs.
+        bridge
+            .respond(
+                1,
+                10,
+                "e-1".to_string(),
+                RespondChoice::Text("hi\x1b[31m\u{202E}there".to_string()),
+            )
+            .await;
+        assert!(link.raw_msgs.lock().unwrap().is_empty());
+        assert_eq!(link.input_msgs.lock().unwrap().len(), 1);
+        assert!(matches!(
+            link.input_msgs.lock().unwrap().first(),
+            Some(ToServer::Inbound(WireInbound::Respond {
+                choice: RespondChoice::Text(t),
+                ..
+            })) if t == "hi[31mthere" || t == "hithere"
+        ));
+
+        // 2. Oversized epoch is dropped silently (still consumes 1 flood token).
+        bridge
+            .respond(
+                1,
+                11,
+                "x".repeat(MAX_RESPOND_EPOCH_BYTES + 1),
+                RespondChoice::Cancel,
+            )
+            .await;
+        assert_eq!(link.input_msgs.lock().unwrap().len(), 1);
+
+        // 3. One query consumes the 3rd (last) token of the burst.
+        bridge
+            .query(1, 12, SmolStr::new_static("who"), serde_json::json!({}))
+            .await;
+        assert_eq!(link.raw_msgs.lock().unwrap().len(), 1);
+
+        // 4. Bucket is now exhausted — even though actor is flood-exempt,
+        //    further queries, responds, and +act/+actions MUST be throttled!
+        bridge
+            .query(1, 13, SmolStr::new_static("who"), serde_json::json!({}))
+            .await;
+        assert_eq!(
+            link.raw_msgs.lock().unwrap().len(),
+            1,
+            "flood-exempt must not bypass query flood control"
+        );
+        bridge
+            .respond(1, 14, "e-1".to_string(), RespondChoice::Cancel)
+            .await;
+        assert_eq!(
+            link.input_msgs.lock().unwrap().len(),
+            1,
+            "flood-exempt must not bypass respond flood control"
+        );
+        let reqs_before = link.service_reqs.lock().unwrap().len();
+        let _ = bridge.line(conn, "+actions").await;
+        let _ = bridge.line(conn, "+act brace").await;
+        assert_eq!(
+            link.service_reqs.lock().unwrap().len(),
+            reqs_before,
+            "flood-exempt must not bypass +actions/+act flood control"
+        );
+
+        // 5. Per-/64 registration throttle in GameBridge::create_account.
+        for i in 1..=mush_config::ipguard::MAX_REGISTERS_PER_WINDOW {
+            let ip: IpAddr = format!("2001:db8:99:1::{i:x}").parse().unwrap();
+            assert!(
+                bridge
+                    .create_account(&format!("u{i}acct"), "secret123", &format!("Char{i}"), ip)
+                    .await
+                    .is_ok()
+            );
+        }
+        let blocked_ip: IpAddr = "2001:db8:99:1::ffff".parse().unwrap();
+        assert_eq!(
+            bridge
+                .create_account("extraacct", "secret123", "ExtraChar", blocked_ip)
+                .await,
+            Err(CreateErr::RateLimited)
+        );
     }
 
     #[test]

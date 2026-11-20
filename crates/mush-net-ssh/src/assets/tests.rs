@@ -488,3 +488,136 @@ fn paths_normalise_and_never_climb() {
     assert!(valid_token("COM0") && valid_token("COM10"));
     assert!(valid_path("sounds/a b.wav") && !valid_path("sounds\\a.wav") && !valid_path("a.wav"));
 }
+
+struct MockSink {
+    stall_writes: bool,
+    closed: std::sync::atomic::AtomicBool,
+}
+
+impl MockSink {
+    fn new(stall_writes: bool) -> Arc<Self> {
+        Arc::new(Self {
+            stall_writes,
+            closed: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+impl SftpSink for MockSink {
+    fn send_data(&self, _bytes: Vec<u8>) -> SftpFuture {
+        if self.stall_writes {
+            Box::pin(std::future::pending())
+        } else {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn close_channel(&self) -> SftpFuture {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn sftp_inbound_enforces_byte_cap_without_blocking() {
+    let sink = MockSink::new(false);
+    let kill = KillSwitch::new();
+    let (inbound, mut stream) =
+        SftpChannelStream::with_sink(sink, kill, Duration::from_secs(1), 8, 64);
+
+    assert!(inbound.try_push(&[b'a'; 40]));
+    assert!(!inbound.try_push(&[b'b'; 30]), "exceeds 64-byte cap");
+    assert!(inbound.try_push(&[b'c'; 24]), "exact fit up to 64 bytes");
+    assert!(!inbound.try_push(&[b'd'; 1]), "buffer full");
+
+    // Partial read keeps chunk accounted until drained; once drained, budget recovers.
+    let mut small = [0u8; 20];
+    assert_eq!(stream.read(&mut small).await.expect("read 1"), 20);
+    assert_eq!(&small, &[b'a'; 20]);
+    assert_eq!(stream.read(&mut small).await.expect("read 2"), 20);
+    assert_eq!(&small, &[b'a'; 20]);
+    assert!(inbound.try_push(&[b'e'; 40]), "freed 40 bytes");
+}
+
+#[tokio::test]
+async fn sftp_stream_write_timeout_closes_channel_and_returns_eof() {
+    use tokio::io::AsyncWriteExt;
+
+    let sink = MockSink::new(true);
+    let kill = KillSwitch::new();
+    let (inbound, mut stream) = SftpChannelStream::with_sink(
+        Arc::clone(&sink) as Arc<dyn SftpSink>,
+        kill,
+        Duration::from_millis(60),
+        8,
+        1024,
+    );
+    assert!(inbound.try_push(b"queued-inbound"));
+
+    let err = tokio::time::timeout(Duration::from_secs(2), stream.write_all(b"stalled-reply"))
+        .await
+        .expect("write must time out promptly")
+        .expect_err("stalled write must fail");
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert!(
+        sink.closed.load(std::sync::atomic::Ordering::SeqCst),
+        "write timeout must close the SFTP channel"
+    );
+
+    // Subsequent read returns EOF (0 bytes) even while `inbound` is still alive,
+    // guaranteeing `russh_sftp::server::run` terminates instead of looping.
+    let mut buf = [0u8; 32];
+    let n = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+        .await
+        .expect("read must return immediately")
+        .expect("EOF is Ok(0)");
+    assert_eq!(n, 0);
+    drop(inbound);
+}
+
+#[tokio::test]
+async fn sftp_stream_kill_switch_interrupts_stalled_read_and_write() {
+    use tokio::io::AsyncWriteExt;
+
+    // 1. Stalled read wakes on KillSwitch::kill() with EOF.
+    let kill_r = KillSwitch::new();
+    let (_inbound_r, mut stream_r) = SftpChannelStream::with_sink(
+        MockSink::new(false),
+        Arc::clone(&kill_r),
+        Duration::from_secs(5),
+        4,
+        1024,
+    );
+    let kill_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        kill_r.kill();
+    });
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(2), stream_r.read(&mut buf))
+        .await
+        .expect("read must wake on kill")
+        .expect("kill returns EOF");
+    assert_eq!(n, 0);
+    let _ = kill_task.await;
+
+    // 2. Stalled write wakes on KillSwitch::kill() promptly (before 5s timeout).
+    let kill_w = KillSwitch::new();
+    let sink_w = MockSink::new(true);
+    let (_inbound_w, mut stream_w) = SftpChannelStream::with_sink(
+        Arc::clone(&sink_w) as Arc<dyn SftpSink>,
+        Arc::clone(&kill_w),
+        Duration::from_secs(5),
+        4,
+        1024,
+    );
+    let kill_task_w = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        kill_w.kill();
+    });
+    let res = tokio::time::timeout(Duration::from_secs(2), stream_w.write_all(b"reply"))
+        .await
+        .expect("write must wake on kill");
+    assert!(res.is_err());
+    assert!(sink_w.closed.load(std::sync::atomic::Ordering::SeqCst));
+    let _ = kill_task_w.await;
+}

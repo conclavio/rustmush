@@ -321,7 +321,82 @@ branch**; the next lane bump (KC.2, KC.4 or OP.1) starts from v45.
 
 ## KC.1
 
-Not built.
+Customs Assertion on the Republic's board, seeded at world start, completing through the
+engine's one path with a control flip (Q-50-12, Q-50-13; with Q-50-11, Q-50-14, Q-50-16, Q-50-51;
+doc 50a A-1; doc 11 §6). Stacked on KC.0. No lane bump.
+
+**Survey.** As §3.2 says:
+- `record_customs_assertion` made the front lazily, on the first incident, on the Freeport
+  Registry's faction (the license issuer's org).
+- It advanced the clock by hand, appended the consequence sentence to the incident's own line,
+  resolved the front and flipped nothing.
+- Its three callers in `space/picket.rs` (the fine, the seizure and the run) pass a canon draft
+  whose `source` already names the incident: `space.picket.fine/<hull>/<contract>`, and
+  `.../seize/` or `.../run/` with `<hull>/<ic>`.
+- A Cleared ruling never calls it.
+- `voyage.rs`'s picket stories read the front by title, not by board.
+
+**Built.**
+- `mush-faction`, the opener KC.0a and KC.0 left undone:
+  `open_faction_front(ctx, board: FactionId, spec: &FrontSpec, draft: CanonDraft) -> Result<FrontId, String>`.
+  - `FrontSpec { title, clock_title, segments, initial, consequence, control: Option<(RegionId, ControlKind)>, visibility }`.
+  - The clock watches no canon kind (Q-50-51), so only `advance_clock_by_cause` moves it.
+  - It is idempotent by title on the board and makes one canon append.
+  - The private `open_front_clock` now carries the clock's control and visibility.
+- `seed_customs_assertion_front(ctx, republic, approach, draft)`:
+  - six segments opening at one (`CUSTOMS_ASSERTION_SEGMENTS`, `CUSTOMS_ASSERTION_OPENS_AT`);
+  - the flip is the approach, de facto;
+  - the consequence is `CUSTOMS_ASSERTION_CONSEQUENCE`.
+- `record_customs_assertion(ctx, board: FactionId, draft)` now takes the board, not an org:
+  - It finds the seeded front and moves it one through `advance_clock_by_cause`, with the
+    incident's `source` as cause id. The fill fires `fire_consequence`: the Republic takes the
+    approach de facto, displacing the Co-op, the hold is dated in IC time, and the front resolves.
+  - After the fill, an incident still commits its line and moves nothing.
+  - A front not seeded on that board is an error. The picket swallows it, as it did before.
+- TacSim:
+  - The regions applier seeds the front after its rows, on `polity(republic)`. Its flip is the
+    row holding the `location` with `kirkwood_picket`.
+  - `polity::customs_board(w)` is the Republic. The picket's three calls pass it; the fine is
+    still paid to the Registry (Q-50-14).
+- Nothing reads the new holder yet (the transit duty is KC.2). `+territory` and `+chronicle`
+  show the flip.
+
+**Tests.**
+- `tests/domain_world/polities.rs`,
+  `kc1_picket_incidents_fill_customs_assertion_and_the_republic_takes_kirkwood`, on a fresh
+  production world. It checks:
+  - the front on the Republic's board at 1 of 6, with its flip, and on `+clocks` from the first
+    day;
+  - four incidents fill it to 5, and a retried cause moves nothing;
+  - the sixth flips Kirkwood de facto to the Republic, dated at the flip's IC time, and moves the
+    Co-op out;
+  - the front resolves, and a later incident records its line and moves nothing;
+  - `+territory` and `+chronicle` show the flip.
+- Mutation-checked on conclav.dev; each failed the story, and each was undone by a reverse edit:
+  - the seed with no flip;
+  - incidents bypassing the cause call;
+  - the front not seeded;
+  - the clock opening at zero.
+- The picket's own stories in `voyage.rs` and the rest of tacsim, mush-faction and mush-server
+  `commerce_composition` ran on conclav.dev; clippy `-D warnings` too.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- The consequence line is new: "Republic Customs holds the Kirkwood approach: the picket now
+  answers to the Republic." The old sentence said the picket "seizes unlicensed strategic ore
+  shipments", which Q-50-15 rules does not change.
+- The consequence is now its own `front.progress` canon line. It is no longer appended to the
+  sixth incident's line.
+- The front is seeded by the lane's regions applier, the apply that makes the Republic and the
+  approach, not by a boot pass.
+- A world whose lane has no picket row, or no Republic, has no front, and its incidents advance
+  nothing (they did, lazily, before).
+- A seizure's and a run's cause id is `<hull>/<IC second>`, as the picket already wrote it. Two
+  such incidents on one hull in one IC second would count once.
+
+**Not built.**
+- The transit duty, the payee and any reader of the new holder (KC.2).
+- No push-back clock (Q-50-16).
+- `record_relay_discovery` and `advance_relay_terms_front` still advance by hand.
 
 ## KC.2
 

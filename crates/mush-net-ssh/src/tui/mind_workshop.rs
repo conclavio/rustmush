@@ -1303,15 +1303,19 @@ fn shift(at: usize, down: bool, amount: usize) -> usize {
 }
 
 fn wrap_cells(text: &str, width: usize) -> Vec<String> {
+    let limit = width.max(1);
     let mut rows = Vec::new();
     let mut row = String::new();
+    let mut row_w = 0usize;
+    let mut buf = [0u8; 4];
     for c in text.chars() {
-        let mut next = row.clone();
-        next.push(c);
-        if Line::from(next.as_str()).width() > width.max(1) && !row.is_empty() {
+        let cw = ratatui::text::Span::raw(&*c.encode_utf8(&mut buf)).width();
+        if row_w.saturating_add(cw) > limit && !row.is_empty() {
             rows.push(std::mem::take(&mut row));
+            row_w = 0;
         }
         row.push(c);
+        row_w = row_w.saturating_add(cw);
     }
     rows.push(row);
     rows
@@ -2375,5 +2379,19 @@ mod tests {
         state.accept(id, &InvokeResult::Mind(MindResponse::Library { names }));
         assert_eq!(state.names.len(), 20);
         assert!(state.message.contains("exceeds this client's bound"));
+    }
+
+    /// Regression test (SSH-M3): single-pass O(L) `wrap_cells` wraps ASCII and
+    /// double-width CJK/emoji cells accurately and handles long inputs linearly.
+    #[test]
+    fn wrap_cells_wraps_ascii_wide_chars_and_long_lines() {
+        assert_eq!(wrap_cells("abcdef", 3), vec!["abc", "def"]);
+        assert_eq!(wrap_cells("", 4), vec![""]);
+        // Each '漢' has display width 2: width 3 fits 1 per row, width 4 fits 2.
+        assert_eq!(wrap_cells("漢漢漢", 3), vec!["漢", "漢", "漢"]);
+        assert_eq!(wrap_cells("漢漢漢", 4), vec!["漢漢", "漢"]);
+        let long = "a".repeat(20_000);
+        let rows = wrap_cells(&long, 40);
+        assert_eq!(rows.len(), 500);
     }
 }
