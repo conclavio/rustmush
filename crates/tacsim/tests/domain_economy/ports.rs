@@ -631,15 +631,15 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_711_100_000,
-        "17,111,000.00cr: 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_746_100_000,
+        "17,461,000.00cr: the Isidis Concession's 350,000 (doc 50 cut OP.1), 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
          SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000, \
          Freeport Works' 1,000,000 (doc 39 cut IN.5), Stickney Yards' 50,000 raise (IN.7's, in \
          doc 39 cut IN.9's lane v27), Tycho Mutual's 450,000 raise (doc 41 cut RS.6a's lane v28), \
          the Trust's 250,000 raise (doc 39 cut IN.10's lane v29), the Vesta Carrying Company's \
-         400,000 (doc 48 unit EX.10's lane v43), the Republic Customs Office's 10,000 (doc 50 cut \
-         KC.2's lane v46) and the two passengers' one-time 500cr purses"
+         400,000 (doc 48 unit EX.10's lane v43), the Republic Customs Office's 10,000 (doc 50 cut KC.2's lane \
+         v47) and the two passengers' one-time 500cr purses"
     );
     set_rate(&mut tw, 24);
     let after = report(&mut tw);
@@ -692,8 +692,8 @@ fn ic3_the_applier_ensures_the_credit_without_the_sheet() {
     let stickney = port_map(&tw, "stickney_port");
     // Doc 20 cut SM.2: the Freeport Registry is Ceres's seventh. Doc 20 cut SM.10: the Pallas
     // Syndicate, a Ceres lane org, its eighth. Doc 39 cut IN.5: Freeport Works its ninth.
-    // Doc 48 unit EX.10: the Vesta Carrying Company its tenth. Doc 50 cut KC.2: the Republic
-    // Customs Office is Stickney's fourth.
+    // Doc 48 unit EX.10: the Vesta Carrying Company its tenth.
+    // Doc 50 cut KC.2: the Republic Customs Office is Stickney's fourth.
     assert_eq!(ceres.orgs.len() + stickney.orgs.len(), 14);
     sweep(&mut tw, 3_600);
     let snapshot = economy(&tw).snapshot();
@@ -751,7 +751,8 @@ fn ic3_a_second_boot_posts_nothing() {
     // the second boot writes none.
     // Five ports and (doc 20 cut SM.2) six sites.
     // Doc 32 cut S.1: twelve with Urvara Reach's.
-    assert_eq!(docs.len(), 12, "{:?}", docs.keys().collect::<Vec<_>>());
+    // Doc 50 cut OP.1: thirteen with the Isidis Concession's.
+    assert_eq!(docs.len(), 13, "{:?}", docs.keys().collect::<Vec<_>>());
     for map in maps(&tw) {
         let written = docs.get(map.key().as_str()).expect("a document");
         assert_eq!(&serde_json::to_value(&map).expect("encodes"), written);
@@ -781,7 +782,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         plan.contains(&format!(
-            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 63 unchanged",
+            "Plan for {LANE_PACK}@{}: 0 create, 2 update, 0 retire, 67 unchanged",
             LANE_VERSION + 1
         )),
         "{plan}"
@@ -795,7 +796,7 @@ fn ic3_an_update_reuses_every_map_row_and_refuses_drift() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 63 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 67 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -953,7 +954,7 @@ fn pl6_a_lane_update_grows_a_yard_and_refuses_a_shrink() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired, 64 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 1 updated, 0 retired, 68 unchanged.",
             LANE_VERSION + 1
         )),
         "{plan}
@@ -1029,7 +1030,7 @@ fn ic3_an_update_creates_a_new_org_and_keeps_every_recorded_row() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 63 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 67 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1157,7 +1158,7 @@ fn ic3_a_map_that_stopped_part_way_is_completed() {
     let (plan, apply) = plan_and_apply(&mut tw);
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 63 unchanged.",
+            "Applied {LANE_PACK}@{}: 0 created, 2 updated, 0 retired, 67 unchanged.",
             LANE_VERSION + 1
         )),
         "{apply}\n{plan}"
@@ -1696,7 +1697,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
                 // Doc 20 cut SM.2 (lane v9): the six sites' twenty-four entries are created,
                 // and the eight bodies and the Freeport's place updated, beside v8's thirteen
                 // (doc 35b cut SF.R14: and Kirkwood Depot's clusters/picket).
-                "Plan for {LANE_PACK}@{LANE_VERSION}: 40 create, 12 update, 0 retire, 13 unchanged"
+                "Plan for {LANE_PACK}@{LANE_VERSION}: 44 create, 12 update, 0 retire, 13 unchanged"
             )),
             "{plan}"
         );
@@ -1724,7 +1725,7 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
         let (_, apply) = plan_and_apply(&mut next);
         assert!(
             apply.contains(&format!(
-                "Applied {LANE_PACK}@{LANE_VERSION}: 40 created, 12 updated, 0 retired, 13 unchanged."
+                "Applied {LANE_PACK}@{LANE_VERSION}: 44 created, 12 updated, 0 retired, 13 unchanged."
             )),
             "{apply}"
         );
@@ -1737,7 +1738,8 @@ fn ic3_a_world_on_lane_v1_takes_v2_by_the_shelf() {
             .expect("v2 placed");
         // Doc 20 cut SM.2: the six site places are added (doc 32 cut S.1: and Urvara Reach's);
         // the old place rooms keep their ids.
-        assert_eq!(placed_v2.len(), placed_v1.len() + 7);
+        // Doc 50 cut OP.1: and the Isidis Concession.
+        assert_eq!(placed_v2.len(), placed_v1.len() + 8);
         for (place, room) in &placed_v1 {
             assert_eq!(
                 placed_v2.get(place),
@@ -1833,8 +1835,15 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
         ));
         let place = location_label(&def.location);
         // Doc 20 cut SM.2: a site presents on its pad, and its site line follows.
+        // Doc 50 cut OP.1: the Isidis Concession's gallery is its landing field's.
         let gallery = def.site.as_ref().map_or_else(
-            || "Visiting Berth Gallery".to_owned(),
+            || {
+                if entry.as_str() == "isidis_port" {
+                    "Landing Field Gallery".to_owned()
+                } else {
+                    "Visiting Berth Gallery".to_owned()
+                }
+            },
             |site| format!("{} Pad", site.name),
         );
         want.push(format!(
@@ -2033,7 +2042,7 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // part bids and Stickney Yards' twelve more (its light plant's was there). Doc 48e lane L4
     // (lane v44): Titan's ice bid and ice mill.
     assert_eq!(
-        commerce_lines, 117,
+        commerce_lines, 119,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();
@@ -2600,7 +2609,7 @@ fn ic3_the_ic_return_table_agrees_with_the_port_entries() {
     // Doc 20 cut SM.2: the IC door serves the five stations; a site is no IC port.
     let mut ports = ports_of(LANE_JSON);
     ports.retain(|(_, def)| def.site.is_none());
-    assert_eq!(ports.len(), tacsim::ic_return::PORTS.len(), "five and five");
+    assert_eq!(ports.len(), tacsim::ic_return::PORTS.len(), "six and six");
     for row in &tacsim::ic_return::PORTS {
         let matching: Vec<&(CanonicalId, PortDef)> = ports
             .iter()

@@ -22,9 +22,9 @@
 use mush_core::{GOD, ObjId};
 use mush_economy::EconomyStore;
 use mush_org::PrincipalId;
+use tacsim::offense::{Offender, OffenseKey, OffenseKind, Proof};
 use tacsim::surface::claim::UnlawfulKind;
 use tacsim::surface::salvage::{ClaimSeam, SalvageCustody};
-use tacsim::surface::security::Proof;
 use tacsim::surface::site_record::SiteRecord;
 
 use crate::driving_rig::{
@@ -33,6 +33,29 @@ use crate::driving_rig::{
 };
 use crate::field_host_rig::{second, site_record_at, tune};
 use crate::site_record_rig::{staff, staff_member};
+
+/// **O's record under the Freeport** (doc 50 unit LW.2): the Freeport Registry keeps the lane's
+/// claims, so the Freeport proves a salvage offense.
+fn freeport_record(rig: &Rig, o: ObjId) -> Option<tacsim::offense::OffenseRecord> {
+    let polity = tacsim::surface::security::proving_polity(rig.tw.world()).expect("the Freeport");
+    assert_eq!(
+        Some(polity),
+        tacsim::polity::polity(rig.tw.world(), "freeport"),
+        "the Registry's polity is the Freeport"
+    );
+    tacsim::offense::record_of(
+        rig.tw.world(),
+        &OffenseKey {
+            offender: Offender::Character(o),
+            polity,
+        },
+    )
+}
+
+/// The site act an offense copies.
+fn act_of(row: &tacsim::offense::ProvenOffense) -> &tacsim::surface::claim::UnlawfulAct {
+    row.site_act().expect("a site offense").1
+}
 
 /// The compressed contest window, real seconds.
 const WINDOW: i64 = 600;
@@ -446,7 +469,7 @@ fn story(venue: &str, entry: &str, side: u16) {
         .collect();
     assert_eq!(unlawful, vec![a.0, d.0]);
     assert!(
-        tacsim::surface::security::record_of(rig.tw.world(), o).is_none(),
+        freeport_record(&rig, o).is_none(),
         "a bare row is evidence, never a proof"
     );
 
@@ -466,16 +489,16 @@ fn story(venue: &str, entry: &str, side: u16) {
         seconds_until(&mut rig, 10, |rig| custody(rig, entry, a).is_none()),
         "the vacating contest settles"
     );
-    let proven = tacsim::surface::security::record_of(rig.tw.world(), o).expect("O's record");
+    let proven = freeport_record(&rig, o).expect("O's record");
     assert_eq!(proven.rows.len(), 1, "{proven:?}");
     assert_eq!(
         (
-            proven.rows[0].act.kind,
-            proven.rows[0].act.subject,
+            proven.rows[0].kind,
+            act_of(&proven.rows[0]).subject,
             &proven.rows[0].proof,
             proven.rows[0].debt
         ),
-        (UnlawfulKind::Recovery, a.0, &Proof::Vacated, None)
+        (OffenseKind::SalvageRecovery, a.0, &Proof::Vacated, None)
     );
 
     // 3. O spends down to 100 cr and sails home to Ceres, the tug left on the site.
@@ -520,14 +543,14 @@ fn story(venue: &str, entry: &str, side: u16) {
         "5,000 cr"
     );
     assert_eq!(available(&rig, o), before, "nothing was taken short");
-    let fined = tacsim::surface::security::record_of(rig.tw.world(), o).expect("O's record");
+    let fined = freeport_record(&rig, o).expect("O's record");
     assert_eq!(fined.rows[0].debt, Some(fine.id.0), "the receipt");
 
     // 5. The grace (the owner's 2026-11-04 rule: any wait on a player's response is at least 28
     //    IC days): the fine is owed and listed, but O's carrier is not held until it is past its
     //    28 IC days unpaid.
     assert!(
-        !tacsim::surface::security::holds(rig.tw.world(), o_hull),
+        !tacsim::surface::security::holds_at(rig.tw.world(), o_hull, &cid("ceres_port")),
         "within the grace the carrier may undock"
     );
     assert!(
@@ -617,11 +640,11 @@ fn story(venue: &str, entry: &str, side: u16) {
         &format!("+salvage/report {site_word}=#{} registry", d.0),
     );
     assert!(again.contains("already has that"), "{again}");
-    let record = tacsim::surface::security::record_of(rig.tw.world(), o).expect("O's record");
+    let record = freeport_record(&rig, o).expect("O's record");
     let row = record
         .rows
         .iter()
-        .find(|row| row.act.subject == d.0)
+        .find(|row| act_of(row).subject == d.0)
         .expect("`d` is proven");
     assert_eq!((&row.proof, row.debt), (&Proof::Reported { by: t }, None));
 }

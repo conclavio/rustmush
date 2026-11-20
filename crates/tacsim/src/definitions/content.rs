@@ -295,11 +295,22 @@ pub const LIGEIA_REGION_JSON: &str =
     include_str!("../../content/atlas/region.ligeia_terminal.json");
 /// `crates/tacsim/content/atlas/neighborhood.ligeia_terminal.json`.
 pub const LIGEIA_JSON: &str = include_str!("../../content/atlas/neighborhood.ligeia_terminal.json");
-/// The ten station packs in `requires` order (doc 18 §4.5, §4.7; doc 19 cut A.8
-/// added the three moon stations): each region before its neighborhood, Ceres
-/// first — Stickney's and the moon stations' NPCs draw the `corridor_trade` and
+/// Isidis Concession's region pack (Mars; doc 50 cut OP.1, Q-50-17).
+pub const ISIDIS_REGION_PACK: &str = "region.isidis_concession";
+/// Isidis Concession: the landing field's gallery, the Factor's office, the tariff-free
+/// market and Occator's tank farm (doc 50 cut OP.1, Q-50-17; doc 11 §5).
+pub const ISIDIS_PACK: &str = "neighborhood.isidis_concession";
+/// `crates/tacsim/content/atlas/region.isidis_concession.json`.
+pub const ISIDIS_REGION_JSON: &str =
+    include_str!("../../content/atlas/region.isidis_concession.json");
+/// `crates/tacsim/content/atlas/neighborhood.isidis_concession.json`.
+pub const ISIDIS_JSON: &str =
+    include_str!("../../content/atlas/neighborhood.isidis_concession.json");
+/// The twelve station packs in `requires` order (doc 18 §4.5, §4.7; doc 19 cut A.8
+/// added the three moon stations, doc 50 cut OP.1 the Isidis Concession): each region
+/// before its neighborhood, Ceres first — Stickney's and the moon stations' NPCs draw the `corridor_trade` and
 /// `tycho` pools Ceres' pack authors (each lore tag is owned by exactly one pack).
-pub const STATION_SOURCES: [(&str, &str); 10] = [
+pub const STATION_SOURCES: [(&str, &str); 12] = [
     (CERES_REGION_PACK, CERES_REGION_JSON),
     (CERES_PACK, CERES_JSON),
     (STICKNEY_REGION_PACK, STICKNEY_REGION_JSON),
@@ -310,6 +321,8 @@ pub const STATION_SOURCES: [(&str, &str); 10] = [
     (VOLTAIRE_PACK, VOLTAIRE_JSON),
     (LIGEIA_REGION_PACK, LIGEIA_REGION_JSON),
     (LIGEIA_PACK, LIGEIA_JSON),
+    (ISIDIS_REGION_PACK, ISIDIS_REGION_JSON),
+    (ISIDIS_PACK, ISIDIS_JSON),
 ];
 /// Ceres Freeport's cast pack (`tacsim.cast.ceres_freeport`, doc 34 cut CS.0b, D-34-3).
 pub const CAST_CERES_PACK: &str = "tacsim.cast.ceres_freeport";
@@ -321,6 +334,8 @@ pub const CAST_AITKEN_PACK: &str = "tacsim.cast.aitken_highport";
 pub const CAST_VOLTAIRE_PACK: &str = "tacsim.cast.voltaire_anchorage";
 /// Ligeia Terminal's cast pack (`tacsim.cast.ligeia_terminal`, doc 34 cut CS.0b, D-34-3).
 pub const CAST_LIGEIA_PACK: &str = "tacsim.cast.ligeia_terminal";
+/// The Isidis Concession's cast pack (`tacsim.cast.isidis_concession`, doc 50 cut OP.1).
+pub const CAST_ISIDIS_PACK: &str = "tacsim.cast.isidis_concession";
 /// `crates/tacsim/content/cast/ceres_freeport.json`.
 pub const CAST_CERES_JSON: &str = include_str!("../../content/cast/ceres_freeport.json");
 /// `crates/tacsim/content/cast/stickney_yards.json`.
@@ -331,15 +346,18 @@ pub const CAST_AITKEN_JSON: &str = include_str!("../../content/cast/aitken_highp
 pub const CAST_VOLTAIRE_JSON: &str = include_str!("../../content/cast/voltaire_anchorage.json");
 /// `crates/tacsim/content/cast/ligeia_terminal.json`.
 pub const CAST_LIGEIA_JSON: &str = include_str!("../../content/cast/ligeia_terminal.json");
-/// The five station cast packs in `requires` order (doc 34 cut CS.0b, D-34-3):
-/// Ceres first because Stickney and the moon stations draw `corridor_trade` and `tycho`
+/// `crates/tacsim/content/cast/isidis_concession.json`.
+pub const CAST_ISIDIS_JSON: &str = include_str!("../../content/cast/isidis_concession.json");
+/// The six station cast packs in `requires` order (doc 34 cut CS.0b, D-34-3; doc 50 cut
+/// OP.1 added the Isidis Concession's): Ceres first because Stickney and the moon stations draw `corridor_trade` and `tycho`
 /// lore pools authored in `tacsim.cast.ceres_freeport`.
-pub const CAST_SOURCES: [(&str, &str); 5] = [
+pub const CAST_SOURCES: [(&str, &str); 6] = [
     (CAST_CERES_PACK, CAST_CERES_JSON),
     (CAST_STICKNEY_PACK, CAST_STICKNEY_JSON),
     (CAST_AITKEN_PACK, CAST_AITKEN_JSON),
     (CAST_VOLTAIRE_PACK, CAST_VOLTAIRE_JSON),
     (CAST_LIGEIA_PACK, CAST_LIGEIA_JSON),
+    (CAST_ISIDIS_PACK, CAST_ISIDIS_JSON),
 ];
 /// Freeport Commons's region pack (Ceres; doc 20 cut SM.2).
 pub const COMMONS_REGION_PACK: &str = "region.freeport_commons";
@@ -441,6 +459,8 @@ pub const AITKEN_ROOMS: usize = 12;
 pub const VOLTAIRE_ROOMS: usize = 11;
 /// The rooms Ligeia Terminal's pack makes (18a §7; doc 19 cut A.8).
 pub const LIGEIA_ROOMS: usize = 12;
+/// The rooms the Isidis Concession's pack makes (doc 50 cut OP.1).
+pub const ISIDIS_ROOMS: usize = 5;
 
 /// The unit schema the shipped content declares.
 pub const LINE_TANK: &str = "tacsim.unit.line_tank";
@@ -1087,7 +1107,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// follows Ceres v3's Oduya guidance update; relay v6 follows Ceres v4's Qureshi trust
 /// service. Both still require lane v15, and their entries
 /// remain unchanged. Lane v16 ↔ relay v7 (doc 32 cut CF.6c), lane v17 ↔ relay v8 (doc 32 cut
-/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), lane v37 ↔ relay v28 (doc 48 unit PL.3), lane v38 ↔ relay v29 (doc 48 unit EX.3), lane v39 ↔ relay v30 (doc 48 unit PL.5), lane v40 ↔ relay v31 (doc 48 unit PL.6), lane v41 ↔ relay v32 (doc 48 unit PL.8), lane v42 ↔ relay v33 (doc 48 unit EX.9), lane v43 ↔ relay v34 (doc 48 unit EX.10), lane v44 ↔ relay v35 (doc 48e lane L4), lane v45 ↔ relay v36 (doc 50 cut KC.0), lane v46 ↔ relay v37 (doc 50 cut KC.2), entries unchanged. The relay code reads any version from 2 as the full star
+/// S.1), lane v18 ↔ relay v9 (doc 36 cut GC.7), lane v19 ↔ relay v10 (doc 36 cut GC.13), lane v20 ↔ relay v11 (doc 39 cuts IN.1 and IN.4), lane v21 ↔ relay v12 (doc 41 cut RS.1), lane v22 ↔ relay v13 (doc 39 cut IN.6), lane v23 ↔ relay v14 (doc 42 cut CR.2), lane v24 ↔ relay v15 (doc 39 cut IN.5), lane v31 ↔ relay v22 (the player-response floor; IN.11 holds lane v30 ↔ relay v21), lane v34 ↔ relay v25 (doc 47 unit CO.10), lane v35 ↔ relay v26 (doc 48 unit PL.1), lane v36 ↔ relay v27 (doc 48 unit PL.2), lane v37 ↔ relay v28 (doc 48 unit PL.3), lane v38 ↔ relay v29 (doc 48 unit EX.3), lane v39 ↔ relay v30 (doc 48 unit PL.5), lane v40 ↔ relay v31 (doc 48 unit PL.6), lane v41 ↔ relay v32 (doc 48 unit PL.8), lane v42 ↔ relay v33 (doc 48 unit EX.9), lane v43 ↔ relay v34 (doc 48 unit EX.10), lane v44 ↔ relay v35 (doc 48e lane L4), lane v45 ↔ relay v36 (doc 50 cut KC.0), lane v46 ↔ relay v37 (doc 50 cut OP.1), lane v47 ↔ relay v38 (doc 50 cut KC.2), entries unchanged. The relay code reads any version from 2 as the full star
 /// (`relay_world`'s `full_star`, `relay_content`'s upgrade preflight), so a kept world
 /// whose relay latch stays at an older version — `@atlas/pack plan` reads "Nothing to
 /// do." when no entry differs — keeps its star. The pins that move with it are the
@@ -1098,7 +1118,7 @@ pub const LANE_PACK: &str = "tacsim.lane.ceres_phobos";
 /// `lane_v13` rebuilds the
 /// published v13 by stripping every row added since: the next lane cut strips its own
 /// rows there too and extends the test to its versions.
-pub const LANE_VERSION: u32 = 46;
+pub const LANE_VERSION: u32 = 47;
 /// `crates/tacsim/content/lane/ceres_phobos.json`.
 pub const LANE_JSON: &str = include_str!("../../content/lane/ceres_phobos.json");
 /// The lane as one source, in apply order.
@@ -1384,7 +1404,7 @@ pub fn mars_canyon_packs() -> Result<Vec<mush_content::Pack>, String> {
     .collect()
 }
 
-/// The five station cast packs, loaded and digest-verified (doc 34 cut CS.0b, D-34-3).
+/// The six station cast packs, loaded and digest-verified (doc 34 cut CS.0b, D-34-3).
 ///
 /// # Errors
 ///
@@ -1437,7 +1457,7 @@ pub fn station_with_cast_value(
 }
 
 /// The station packs, loaded and digest-verified, in apply order
-/// ([`STATION_SOURCES`], the five [`CAST_SOURCES`] of doc 34 cut CS.0b, then since doc 20
+/// ([`STATION_SOURCES`], the six [`CAST_SOURCES`] of doc 34 cut CS.0b and doc 50 cut OP.1, then since doc 20
 /// cut SM.2 the twelve [`SITE_SOURCES`]: a site port's apply needs its pad room, so the
 /// site packs ride wherever the lane is applied; since doc 32 cut S.1 the
 /// [`WIDE_SITE_SOURCES`] after them). They are the 2350 game's content: the
@@ -1448,7 +1468,7 @@ pub fn station_with_cast_value(
 /// # Errors
 ///
 /// A message naming the pack when a shipped pack does not verify — a build error,
-/// since `crates/tacsim/tests/stations.rs` pins the ten station digests and
+/// since `crates/tacsim/tests/stations.rs` pins the twelve station digests and
 /// `crates/tacsim/tests/sites.rs` the twelve site digests.
 pub fn station_packs() -> Result<Vec<mush_content::Pack>, String> {
     STATION_SOURCES

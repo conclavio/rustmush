@@ -512,7 +512,8 @@ fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
         .collect();
     // The two shipped pairs, the five moon pairs that carry two hold goods, and
     // the hop.
-    assert_eq!(pairs.len(), 8, "the listed pairs: {pairs:?}");
+    // Doc 50 cut OP.1: and Stickney and the Isidis Concession, both ways.
+    assert_eq!(pairs.len(), 10, "the listed pairs: {pairs:?}");
     let mut trading = 0;
     let mut empty = Vec::new();
     for (from, to) in pairs {
@@ -534,7 +535,12 @@ fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
                 margins.push((ask.good.clone(), margin));
             }
         }
-        if (from, to) == ("deimos_port", "stickney_port") {
+        // Doc 50 cut OP.1: the Isidis hop carries no hold good either way (its one line is the
+        // tank farm's propellant bid, a tank good).
+        if (from, to) == ("deimos_port", "stickney_port")
+            || from == "isidis_port"
+            || to == "isidis_port"
+        {
             assert!(
                 margins.is_empty(),
                 "{from} → {to}, the hop, trades no hold good: {margins:?}"
@@ -638,7 +644,11 @@ fn ic8_the_posted_prices_make_the_both_limits_load_optimal() {
     assert_eq!(trading, 7, "seven listed pairs trade two hold goods");
     assert_eq!(
         empty,
-        vec![("deimos_port", "stickney_port")],
+        vec![
+            ("deimos_port", "stickney_port"),
+            ("isidis_port", "stickney_port"),
+            ("stickney_port", "isidis_port")
+        ],
         "the hop is listed"
     );
 }

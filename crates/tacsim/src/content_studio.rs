@@ -401,6 +401,7 @@ fn shipped_docs() -> Vec<DocSpec> {
             "tacsim.cast.aitken_highport" => "cast/aitken_highport.json",
             "tacsim.cast.voltaire_anchorage" => "cast/voltaire_anchorage.json",
             "tacsim.cast.ligeia_terminal" => "cast/ligeia_terminal.json",
+            "tacsim.cast.isidis_concession" => "cast/isidis_concession.json",
             _ => "cast/station.json",
         };
         docs.push(DocSpec {
@@ -421,6 +422,7 @@ fn shipped_docs() -> Vec<DocSpec> {
             "neighborhood.aitken_highport" => "atlas/neighborhood.aitken_highport.json",
             "neighborhood.voltaire_anchorage" => "atlas/neighborhood.voltaire_anchorage.json",
             "neighborhood.ligeia_terminal" => "atlas/neighborhood.ligeia_terminal.json",
+            "neighborhood.isidis_concession" => "atlas/neighborhood.isidis_concession.json",
             _ => "atlas/neighborhood.json",
         };
         docs.push(DocSpec {
@@ -2475,14 +2477,15 @@ mod tests {
             catalog
                 .get("ports")
                 .and_then(Value::as_array)
-                // Doc 32 cut S.1: twelve with Urvara Reach.
-                .is_some_and(|a| a.len() == 12)
+                // Doc 32 cut S.1: twelve with Urvara Reach; doc 50 cut OP.1: thirteen with Isidis.
+                .is_some_and(|a| a.len() == 13)
         );
         check!(
             catalog
                 .get("npcs")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.len() == 57)
+                // Doc 50 cut OP.1: fifty-nine with the Isidis Concession's two.
+                .is_some_and(|a| a.len() == 59)
         );
         check!(
             catalog

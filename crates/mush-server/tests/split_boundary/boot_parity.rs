@@ -834,8 +834,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 27,
-            "the twenty-seven institutions (doc 50 cut KC.2: the Republic Customs Office): the corridor's nine, the moons' eleven (doc 19 cut \
+            orgs, 29,
+            "(doc 50 cut KC.2: and the Republic Customs Office, one more) the twenty-eight institutions: the Isidis Concession's two (doc 50 cut OP.1), the corridor's nine, the moons' eleven (doc 19 cut \
              A.8), the Freeport Registry (doc 20 cut SM.2), the Pallas Syndicate (doc 20 cut \
              SM.10), Freeport Works (doc 39 cut IN.5) and the Vesta Carrying Company (doc 48 unit \
              EX.10), plus the Malapert Exchange (doc 15 cut R1) and Concord relief command (R9b)"
@@ -934,12 +934,12 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // Doc 47 unit CO.10: relay v25, lane v34; doc 48 unit PL.1: relay v26, lane v35.
     // Doc 48 unit PL.2: relay v27, lane v36; doc 48 unit PL.3: relay v28, lane v37.
     // Doc 48 unit EX.3: relay v29, lane v38.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(37));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(38));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
-        50,
-        "five, ten station packs, five station cast packs, twelve site packs, two wide site packs, the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and starter quests"
+        53,
+        "five, twelve station packs, six station cast packs (doc 50 cut OP.1: Isidis's three), twelve site packs, two wide site packs, the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and starter quests"
     );
     lane_resolves(&on.engine);
     let atlas = on

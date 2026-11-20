@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 46,
+    "version": 47,
     "kind": "campaign_seed",
-    "digest": "2dc9c2eba3cf71e3fa7e3295c7bfef79747ce1996fc6aaa9d7444869986ed3d7",
+    "digest": "7eeb0fe0be09ea5371b508c8b29ab3f7b6e76604dbbba39333ce40536f7ab384",
     "requires": []
   },
   "entries": {
@@ -2496,6 +2496,44 @@
         "propellant": 0
       }
     },
+    "isidis_concession": {
+      "kind": "location",
+      "def": {
+        "label": "Isidis Concession",
+        "role": "port",
+        "body": "mars"
+      }
+    },
+    "stickney_isidis": {
+      "kind": "route",
+      "def": {
+        "from": "stickney_yards",
+        "to": "isidis_concession",
+        "legs": [
+          {
+            "to": "isidis_concession",
+            "base_s": 42
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
+    "isidis_stickney": {
+      "kind": "route",
+      "def": {
+        "from": "isidis_concession",
+        "to": "stickney_yards",
+        "legs": [
+          {
+            "to": "stickney_yards",
+            "base_s": 42
+          }
+        ],
+        "drive_class": "coast_hauler",
+        "propellant": 0
+      }
+    },
     "voltaire_stickney": {
       "kind": "route",
       "def": {
@@ -2968,7 +3006,7 @@
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
             "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ] }
         ],
-        "routes": { "ceres": [ "stickney_ceres" ] },
+        "routes": { "ceres": [ "stickney_ceres" ], "isidis": [ "stickney_isidis" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "stickney_yards", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 },
         "workshop": { "room": "neighborhood.stickney_yards.room.p11_service", "operator": "stickney_yards",
@@ -3098,6 +3136,35 @@
         "routes": { "stickney": [ "voltaire_stickney" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
         "emergency": { "org": "syrtis_bonded", "ratio_permille": 1500, "goods": ["provisions", "volatiles", "propellant"], "intake": 100 }
+      }
+    },
+    "isidis_port": {
+      "kind": "port",
+      "def": {
+        "location": "isidis_concession",
+        "venue": "isidis",
+        "authority": "isidis_factor",
+        "release_fee_cr": 1500,
+        "area": "neighborhood.isidis_concession",
+        "gallery": "neighborhood.isidis_concession.room.i01_landing_field",
+        "rooms": {
+          "harbourmaster": "neighborhood.isidis_concession.room.i02_factor",
+          "exchange": "neighborhood.isidis_concession.room.i03_market",
+          "receiving": "neighborhood.isidis_concession.room.i04_tank_farm",
+          "spine": "neighborhood.isidis_concession.room.i05_spine"
+        },
+        "treasury": "tacsim.treasury",
+        "orgs": [
+          { "id": "isidis_factor", "name": "Isidis Concession Factor", "capital_major": 50000, "faction": "freeport" },
+          { "id": "isidis_tank_farm", "name": "Occator Isidis Tank Farm", "capital_major": 300000, "faction": "freeport", "roles": [ "acceptor" ] }
+        ],
+        "vendors": [
+          { "org": "isidis_tank_farm", "storefront": "neighborhood.isidis_concession.item.tank_manifold",
+            "agent": "isidis_port.clerk", "signatory": "neighborhood.isidis_concession.npc.achterberg",
+            "stock": [ { "good": "propellant", "qty": 3000, "grade": 50, "issue": 1 } ],
+            "bids":  [ { "good": "propellant", "price_major": 50, "intake": 2000, "boards": ["receiving", "exchange"] } ] }
+        ],
+        "routes": { "stickney": [ "isidis_stickney" ] }
       }
     },
     "titan_port": {
@@ -3309,6 +3376,15 @@
               { "kind": "de_facto", "holder": { "polity": "republic" } },
               { "kind": "covert", "holder": { "polity": "republic" } },
               { "kind": "economic", "holder": { "polity": "republic" } },
+              { "kind": "economic", "holder": { "org": "ceres_clearing" } }
+            ] },
+          { "id": "isidis", "name": "Isidis Concession",
+            "places": [ "isidis_concession", "isidis_port" ],
+            "holds": [
+              { "kind": "de_jure", "holder": { "polity": "republic" } },
+              { "kind": "de_jure", "holder": { "polity": "freeport" } },
+              { "kind": "de_facto", "holder": { "polity": "freeport" } },
+              { "kind": "economic", "holder": { "org": "occator" } },
               { "kind": "economic", "holder": { "org": "ceres_clearing" } }
             ] }
         ]

@@ -2544,9 +2544,9 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
             // cut GC.7 (lane v18): and Stickney's port (its workshop and munitions). Doc 38
             // cut SF.R14 (lane v19): and Kirkwood Depot and Ceres Stickney places. Doc 42 cut
             // CR.2 (lane v23): and Deimos's and Titan's authority. Doc 50 cut KC.0 (lane v45):
-            // and the regions block.
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 5 create, 8 update, 0 retire, {} unchanged",
-            entries - 13
+            // and the regions block. Doc 50 cut OP.1 (lane v46): and the Isidis Concession's four.
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 9 create, 8 update, 0 retire, {} unchanged",
+            entries - 17
         )),
         "{plan}"
     );
@@ -2566,8 +2566,8 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     }
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 5 created, 8 updated, 0 retired, {} unchanged.",
-            entries - 13
+            "Applied {LANE_PACK}@{LANE_VERSION}: 9 created, 8 updated, 0 retired, {} unchanged.",
+            entries - 17
         )),
         "{plan}\n{apply}"
     );
@@ -2610,9 +2610,9 @@ fn sm3a_a_world_on_lane_v9_takes_v10_by_the_shelf() {
     assert!(
         apply.contains(&format!(
             // Doc 36 cut GC.7: Stickney's port updates too; Doc 38 cut SF.R14: Kirkwood Depot and Ceres Stickney places update too; doc 42 cut CR.2: Deimos and Titan too.
-            "Applied {LANE_PACK}@{}: 5 created, 8 updated, 0 retired, {} unchanged.",
+            "Applied {LANE_PACK}@{}: 9 created, 8 updated, 0 retired, {} unchanged.",
             LANE_VERSION + 1,
-            entries - 13
+            entries - 17
         )),
         "{plan}\n{apply}"
     );

@@ -161,6 +161,8 @@ pub mod match_;
 /// test refuses the interpreter's name there; the arena reaches a mind only
 /// through its [`arena::mind::MindRunner`] seam.
 pub mod minds;
+// Doc 50 unit LW.2: the record of proven offenses, one per offender and polity.
+pub mod offense;
 // Doc 50 cut OP.0: the operation frame TacSim reaches through the composition root (the
 // module's own docs say how).
 pub mod operations;

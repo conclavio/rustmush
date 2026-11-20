@@ -540,7 +540,99 @@ Not built.
 
 ## LW.2
 
-Not built.
+**Survey** (at `f668f082a`, #713's head):
+- **Port security's record** was `tacsim:security:{actor}` (`surface/security.rs`), one per
+  character, rows copied from a site's evidence log at the proof (a vacated `recovery` contest,
+  `claim.rs:3258`, or `+salvage/report … registry`). Nothing else wrote or read it, beside the
+  rs7 story.
+- **`SECURITY_VENUES = ["ceres", "stickney"]`** gated only the fine at docking (`on_docked`,
+  called from `composition/sim_routes.rs` for a port, never a site). The fine went to the Freeport
+  Registry's account at both ports.
+- **The quarantine** (`quarantine_line`, `port/voyage.rs` `prepare_departure`) had no venue test.
+  A past-due fine held every hull its debtor helms or holds title to, at every berth, a site's pad
+  included (A-10c).
+- **Who answered** was the helm holder plus a character title holder. For an organization's hull
+  docked with nothing filed, `helm_holder` is `None` and the title holder is an organization, so
+  nobody answered (A-10b).
+- **KC.0's read:** `polity::control_at(w, place)` takes a lane port entry id (`ceres_port`,
+  `stickney_port`). Sites are in no region. `polity_of_org` maps the Freeport Registry to the
+  Freeport.
+- **Each port's `authority`:** Ceres is `freeport_registry`, Stickney is `stickney_yards`.
+
+**Built:**
+1. **The record (`crate::offense`).**
+   - The key is actor by polity: `OffenseKey { offender: Offender, polity: FactionId }`, stored as
+     `tacsim:offense:{c<obj>|o<org>|a<account hash>}:{polity}`.
+   - The actor is `Offender::Character(ObjId)`, `Organization(OrgId)` or
+     `Account(mush_core::AccountId)` (Q-50-68).
+   - The kinds are a closed list, `OffenseKind`: `SalvagePickup`, `SalvageScrap` and
+     `SalvageRecovery` today.
+   - Evidence stays where it is, and each row names it: `Evidence::Site { site, act }` copies the
+     ring row. `Proof` moved here.
+   - A row is `ProvenOffense { kind, evidence, proof, proven_ic, debt }`. The record is
+     `OffenseRecord { schema, key, rows ≤ 64 }`, loaded at boot. An unreadable record claims its
+     key and proves or fines nothing.
+2. **The API LW.3, LW.4 and LW.5 build on:**
+   - Writing: `record_offense(ctx, key, offense, settled)` is the one function every prover
+     calls. It dedupes, and a full record drops its oldest settled row.
+   - Reading: `record_of(w, &key)` and `records_against(w, offender)`.
+   - Where an offense binds: `jurisdiction_at(w, place)`, the place's de facto holder, and
+     `binds_at(w, polity, place)`.
+   - Who answers: `answerer_for_hull(w, hull)` is the organization for an organization's hull,
+     else the helm holder.
+   - Receipts: `put_receipts` (crate-only) rewrites a record whose fine receipts changed.
+   - The polity that proves a salvage offense: `surface::security::proving_polity(w)`.
+3. **Port security on the record.**
+   - `prove` writes `Offender::Character(act.actor)` under `proving_polity`. That is the
+     Freeport Registry's polity, the Freeport.
+   - `on_docked(ctx, hull, entry, port)` fines the record of (the hull's answerer, the port's de
+     facto holder). The fine goes to the port's governing authority's account.
+   - `quarantine_line(ctx, hull, entry, (name, port))` and `holds_at(w, hull, entry)` hold the
+     hull that docked, only at a port its polity holds.
+   - `SECURITY_VENUES`, `answers_at` and the old `SecurityRecord` are gone. Pre-launch, so there
+     is no migration of `tacsim:security:` documents.
+4. **An organization's hull answers through its organization.** Its fine is drawn on the
+   organization's account (`port::berth::org_account`, now `pub(crate)`).
+5. **The fine's lines** name the authority (`The {authority} fines you …`). The owed line says
+   the fine holds her "at this polity's ports".
+
+**Tests:**
+- `tacsim` lib `offense::tests`: the key is actor by polity, and a document key parses back. The
+  record's kinds and its one-actor rule are checked.
+- `domain_economy` `lw2_offense_record::lw2_an_offense_binds_only_where_its_polity_holds_and_the_house_answers_for_its_hull`:
+  - A House's Dray carries a Freeport offense against the House, seeded as a stored record the
+    boot reads.
+  - Docked at Stickney, the Republic's port, nothing is fined.
+  - Docked at Ceres, the House is fined 5,000 cr to the Freeport Registry, and the receipt is on
+    the House's record.
+  - The grace runs out while she is at Stickney, and she lifts from there.
+  - Home at Ceres, she is held. Staff hand Ceres station to the Republic de facto, and she may
+    lift.
+  - Mutation-checked: an offense binding wherever its polity proved it; an organization's hull
+    answered by its pilot; the quarantine ignoring the port. Each fails the story.
+- `port_security_rs7::` (both sites) is moved onto the record: O's Freeport record, its kinds and
+  its receipts, `holds_at` at Ceres.
+
+**Divergences:**
+- **The proving polity is the Freeport Registry's polity**, not the de facto holder of the place
+  of the act. Sites are in no region, and the Registry is the one adjudicating. If Ceres changes
+  hands, a Freeport proof binds nowhere until the Freeport holds a port again.
+- **An organization's fine is levied with staff authority.** At a docking, no character acts for
+  the organization, and the economy lets only an authorized actor open a debt on an organization's
+  account. A character's fine is still opened and paid as that character.
+- **A member's own offense is not fined when they dock an organization's hull.** The hull answers
+  through the organization only, as Q-50-68 words it. The member answers when they dock a hull
+  they command.
+- **A fine with no authority account at the port waits** (logged). Every lane port with a
+  jurisdiction authors one today.
+
+**Not built:**
+- **No path writes an organization's or an account's offense yet.** No salvage verb takes
+  `as=<org>`, so the story seeds one. The license bar on the account is LW.4.
+- **An offender with no hull is not fined when proven** (Q-50-68's last line). Port security
+  still fines at a docking only; immediate fines belong with LW.4's penalties.
+- **No lane bump.**
+- Fine sizes, the standing loss, the trading restriction, `+record` and `+debts`: LW.4.
 
 ## LW.3
 
@@ -663,7 +755,129 @@ capability for an organization's officers to read or move an operation's plan.
 
 ## OP.1
 
-Not built.
+Isidis as a place, with its routes (Q-50-17, Q-50-58; Q-50-52's two claimants; doc 11 §5).
+**Lane v46 and relay v37 land with this unit.** The next lane bump starts from v46.
+
+**Survey.** At KC.0's `f668f082`, Isidis was prose only: four mentions in cast and atlas text, no
+place, port, route, region row or organization. The moon ports of doc 19 cut A.8 are the shape the
+ruling names. Each is a lane `location` (role `port`, on its body), its routes, and a `port` entry
+whose `area` is a station neighborhood pack. A region and neighborhood pack pair rides
+`STATION_SOURCES`, and a cast pack (the vendors' signatories, the lore pool) rides `CAST_SOURCES`.
+A port end pays no landing floor: `passage::site_end` is `None` for role `port`, so a Dray docks
+on Mars through the ordinary port path. Only a site (role `extraction`) would have refused it, at
+131‰ against 1,200‰. Port orgs belong to one port entry, and a vendor names an org of its own
+port.
+
+**Built.**
+- **Three packs, all at version 1:**
+  - `region.isidis_concession`: Isidis Planitia on Mars, a 400 m surface region with its port
+    locality.
+  - `neighborhood.isidis_concession`: five rooms on one floor.
+    - I01, the Landing Field Gallery. It is the port's `gallery` and carries `port.dock`.
+    - I02, the Factor's Office (role `harbourmaster`).
+    - I03, the Concession Market (`exchange`), where the venue's board stands.
+    - I04, the Tank Farm Counter (`receiving`).
+    - I05, the Tank Farm Spine (`spine`, restricted), holding the tank farm's storefront, its
+      intake manifold.
+  - `tacsim.cast.isidis_concession`: Factor Beatrix Oyelaran in I02 (doc 11's named Factor), the
+    tank-farm superintendent Ilse Achterberg-Mensah in I04 (the bid's Warrant signatory), and the
+    `port_isidis` lore pool.
+  - The region and neighborhood packs are the last two of `STATION_SOURCES` (now 12), and the
+    cast pack is the last of `CAST_SOURCES` (now 6). `ISIDIS_ROOMS` is 5.
+- **The lane, v46:**
+  - The place `isidis_concession`: label "Isidis Concession", role `port`, body `mars`.
+  - The routes `stickney_isidis` and `isidis_stickney`: one direct leg each way, `coast_hauler`,
+    `base_s` 42, which is ⌈9,444 km / 226⌉, the sky's Phobos–Mars chord. No Kirkwood leg and no
+    picket.
+  - `stickney_port`'s routes gain `isidis`. Isidis is reached from Stickney alone.
+  - The port `isidis_port`:
+    - venue `isidis`, the tariff-free market; authority `isidis_factor`, the Factor's office,
+      with the standard 1,500 cr release fee;
+    - two orgs, both tagged `freeport`: "Isidis Concession Factor" and "Occator Isidis Tank Farm"
+      (an acceptor);
+    - one vendor, the tank farm: a vault stocked with 3,000 t of propellant and a standing bid
+      for propellant at **50 cr** for 2,000 t, on the receiving and exchange boards.
+    - 50 cr is provisional and sits between Ceres' 40 cr ask and the 60 cr asks at Stickney and
+      Deimos. There is no refresh and no consumption: the drain and the budget are OP.4's.
+  - The regions block's fourth row, `isidis` ("Isidis Concession", places `isidis_concession`
+    and `isidis_port`):
+    - de jure the Republic **and** the Freeport (Q-50-52);
+    - de facto the Freeport;
+    - economic Occator and Ceres Clearing.
+- **Relay v37** is v36 re-signed to require lane v46, its entries unchanged.
+- **The strip chain** has a new head, `lane_chain::strip_isidis`, which removes the four rows,
+  Stickney's `isidis` key and the region row. `strip_regions` calls it first.
+
+**Tests.**
+- **The story** is `domain_world::voyage::op1_a_hull_flies_stickney_to_isidis_and_back`, on
+  voyage's composed rig.
+  - A chartered Dray flies Ceres to Stickney. It plans Isidis: one leg, no Kirkwood. It flies,
+    hears "docks at Isidis Concession", and is docked at venue `isidis`, Direct on the
+    Concession's domain, in I01.
+  - The pilot goes ashore to the market. The board's wanted line names the tank farm, 2,000 t
+    and the price, and the price sits in 40..=60, over Ceres' ask and under Stickney's and
+    Deimos's.
+  - `control_at` reads both places with two de jure claimants, de facto the Freeport, and
+    economic Occator and Ceres Clearing. Each polity reads its own papers there, and
+    `+territory` shows the row.
+  - The hull boards and flies the one leg home to Stickney.
+- **Pins:**
+  - `lane::op1_strip_isidis_rebuilds_the_published_v45` (the v45 digest byte for byte);
+  - the v46 and relay v37 digests and versions;
+  - the lane's entry list (69) and places;
+  - `ALL_ROUTES` (the two hops, authored within 100 s of the sky's figure);
+  - the twelve station digests;
+  - the boot list (53) and `station_packs` (32);
+  - the region count (4);
+  - the `via=` place lists;
+  - the plan counts the new entries move.
+- **Mutations.** Each is a lane edit, re-signed, with the story run alone:
+  - the Freeport's de jure hold dropped is caught at "two de jure claimants";
+  - Stickney's `isidis` key dropped is caught at the plan ("No passage leaves Stickney Yards for
+    that port");
+  - the bid raised to 65 cr is caught at the 40-to-60 band;
+  - a Kirkwood leg added to the hop is caught at the plan's first line ("by way of Kirkwood
+    Depot").
+  - The lane was restored from a saved copy and compared byte for byte.
+- **Two field stories re-seeded.** `field_mw14a` and `field_mw14c` pin
+  `cfg.field.seed = Some(1_577_058_309)` in their own tune closures.
+  - The field's draws key on the units' object ids, and the Isidis packs add boot objects, which
+    moves every later id (the roster's units went from #548 to #565). Under the rig's
+    `FIELD_SEED`, three of their stories then failed deterministically.
+  - On the base commit they pass, and the clock at field open is the same in both runs.
+  - Of eight seeds tried, only this one plays all fourteen of the two files' stories as
+    written. That they pass by luck is a follow-up, not this unit's to fix.
+- **Run on conclav.dev:** all of tacsim (4,982) and mush-server `split_boundary` (227). The gates
+  are listed in the PR.
+
+**Divergences.**
+- **The tank farm is its own lane organization**, "Occator Isidis Tank Farm", tagged `freeport`,
+  rather than the Ceres-side `occator` org. A port's vendor names an org of its own port entry.
+  The region's economic hold still names `occator`, per doc 11.
+- **De facto is the Freeport polity.** Doc 11 has Meridiani Security hold it on the Freeport's
+  contract, but Meridiani is no lane organization, so like the Tether and OTS it is not seeded.
+- **No covert hold** is seeded (doc 11's Tether and OTS; KC.0 likewise).
+- **The landing field is the berth gallery.** How a consignment comes down to the ground is left
+  unsaid in the room text (Q-50-17 leaves the fiction to the owner).
+- **The route's `base_s` is 42 s**, the Phobos–Mars chord the sky measures, as the moon hops are
+  timed.
+- **The market is the venue, not a vendor.** The only line on its board is the tank farm's bid.
+  No ask is authored: Q-50-58 makes the stockpile propellant only, and the import duty is OP.5's.
+- **No premium and no emergency block**: neither is required, and both are economy tuning.
+- **The board's live figure moves.** At the story's hour the board read 47 cr, not the authored
+  50, from the market's own price movement. The story checks both the authored and the live
+  figure against the 40-to-60 band.
+- **The IC-return table** (`ic_return::PORTS`) gains the Concession as its sixth port, reached by
+  ship, with its arrival in I01. Its `+ic` help names it.
+- **The field stories' seed** is pinned (see Tests). Pinning was the smallest fix that leaves
+  their scripts untouched.
+
+**Not built.**
+- The stockpile objective, its drain and the Freeport arm's budget (OP.4).
+- The import duty and its schedule (OP.5, Q-50-59).
+- A license at Isidis (Q-50-52 needs none in the first build).
+- A Hod lander, surface ground or a field at Isidis.
+- Any front or clock (OP.2).
 
 ## OP.2
 
