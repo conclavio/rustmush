@@ -1000,10 +1000,21 @@ fn closed_sum(tw: &TestWorld, pilots: &[ObjId]) -> i64 {
         .map(|p| posted(tw, credit_account(tw, &PrincipalId::Object(*p))))
         .sum();
     for entry in ["ceres_port", "stickney_port"] {
-        for row in port_map(tw, entry).orgs.values() {
+        let map = port_map(tw, entry);
+        for row in map.orgs.values() {
             if let Some(account) = row.account {
                 sum += posted(tw, mush_economy::AccountId(account));
             }
+        }
+        // Doc 48 cut EX.3: the port clerk's works buyer purse, which the operator funds and the
+        // board's escrow pays out of at settlement. A purchase accepted before a window opens
+        // and settled inside it moves the purse's credit into the counted orgs, so the purse is
+        // counted too (as `sm_story`'s set does). Which side of the window the settlement lands
+        // on follows the boot's wall-clock second.
+        if let Some(clerk) = map.clerk.as_ref()
+            && let Some(purse) = tacsim::port::credit::own_account(tw.world(), ObjId(clerk.thing))
+        {
+            sum += purse.posted_balance.minor();
         }
     }
     // Doc 48 unit EX.9: the running costs the Ceres and Stickney operators paid went to the
@@ -2303,10 +2314,22 @@ async fn ic12_part_two_the_queue_runs_the_return() {
             "{key} is order 3's sale, not a re-run"
         );
     }
+    // Doc 39 cut IN.5: Kasei's clerk re-posts the metals bid under a new listing id on an IC
+    // day's turn, which may fall between the sale and the read of `metals_bid` above (it follows
+    // the boot's wall-clock second). The sale's own listing, the one read before the restart and
+    // the one standing now are all the metals bid.
+    let sold_into = sales_of(&rig.tw, wren)
+        .iter()
+        .find(|q| q.contract.is_some_and(|c| c.0 == contract))
+        .map(|q| q.listing)
+        .expect("the first sale's quote");
+    let bid_now =
+        port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].listing;
+    let metals_bids: BTreeSet<ListingId> = [sold_into, metals_bid, ListingId(bid_now)].into();
     assert_eq!(
         sales_of(&rig.tw, wren)
             .iter()
-            .filter(|q| q.listing == metals_bid)
+            .filter(|q| metals_bids.contains(&q.listing))
             .count(),
         1,
         "no second sale into the metals bid"
