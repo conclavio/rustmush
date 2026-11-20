@@ -860,7 +860,131 @@ flag (Q-50-20, Q-50-61; Q-50-51; doc 11 §6). Stacked on OP.1. **No lane bump.**
 
 ## OP.3
 
-Not built.
+Posting as an organization, escorts for a haul, and the haul's loss handling (Q-50-23, Q-50-25,
+Q-50-63; doc 50a A-8, A-8b). Stacked on OP.2. **No lane bump.**
+
+**Survey.** At OP.2's head:
+- **Posting.** `+haul/post` and `+escort/post` posted only as the actor, from their own account.
+  A haul ran from the actor's locker at one port to their locker at another; lockers are
+  player-keyed and charge rent (`port/locker.rs`). Acceptance already took `as=<org>`
+  (`services::taker`, via the economy's `acts_for`).
+- **Vaults and capabilities.** An organization's only vaults at a port are its lane storefronts
+  (the port map's `vendors`). Every lane organization belongs to one port, so none has vaults at
+  two. Capabilities are a frozen vocabulary (`composition::domain_org_capability_vocabulary`),
+  checked through `mush_org::authorize_in_world`.
+- **The escort**, the two defects (doc 50a A-8b):
+  - It named a hull its poster held.
+  - A passage ended when the protected hull docked at any port other than its origin
+    (`journey_now`), so it settled at the first hop.
+  - The departure gap was `TOGETHER_IC` (3,600) IC seconds from the watch's start. At a high
+    clock rate, one port fire of 5 real seconds is past it, so an escort undocking one fire later
+    read as "left".
+- **Loss.** CR built the seizure: the ruling releases the haul's hold, writes `LegKind::Seized`,
+  and the arm lapses the job. A wreck or a capture did nothing: the goods stayed held to the job
+  until the hold's deadline. `escort::wrecked` and `escort::captured` are the existing
+  predicates.
+
+**Built.**
+- **Posting as an organization (Q-50-23).**
+  - The new capability `tacsim.jobs.post` (`services::JOBS_POST_CAPABILITY`) is in the domain
+    vocabulary.
+  - `services::poster(ctx, as)` is the actor and their account, or, with `as=<org>`, the
+    organization when the actor holds the capability on its root compartment, and its credit
+    account.
+  - `services::org_vault(w, org, venue)` is the organization's storefront vault at a venue.
+  - `+haul/post ... as=<org> [into=<org>]` ships from the organization's vault at the origin to
+    its vault at the destination, or `into=`'s there. It is vault to vault, the fee comes from
+    the organization's account, and the job is posted with the organization as poster.
+    - `HaulJob::shipper_org` records the organization; `shipper` is the member who posted.
+    - A late return goes to the organization's vault where the hull lies, and waits for a port
+      that has one.
+  - `+escort/post ... as=<org>` posts for an organization: of a hull it holds the title to, or
+    for a haul it posted.
+  - Acceptance refuses the posting organization's own job.
+- **Escorts for a haul (Q-50-63).**
+  - `+escort/post haul=<job> fee=<cr> [as=<org>]` is posted by the haul's shipper, or for its
+    organization. The poster may post it before the haul is taken.
+    - `EscortJob::haul` names the haul, and `protected` is `UNBOUND` until a hull takes the haul.
+      The watch then binds it to the hauler's hull.
+    - A haul that closes untaken calls the escort off, the fee and any bond back.
+    - The journey is the haul's passage, origin to destination, on the origin's board.
+  - **The two defects, fixed for every passage escort:**
+    - **The end is the destination.** Under way means off any berth on a journey begun since the
+      escort was taken. Docked at a port on the way is a hop: nothing counts while she lies
+      there, and the escort is not "left" for lying there too.
+    - **The departure grace** runs from her latest launch (`Watch::launch_ic`, `launch_wall`), so
+      it restarts at every hop. It is the longer of `TOGETHER_IC` and `LAUNCH_GRACE_WALL_S`
+      (60 real seconds, provisional).
+- **The haul's loss (Q-50-25).**
+  - A hull wrecked or captured with the goods aboard owes the new `LegKind::Lost` leg. Its
+    prepare releases the job's hold in one write and moves nothing, so the goods are free in the
+    wreck's hold, part of the wreck; a hold already gone leaves nothing to release.
+  - On the ledger's `Lost`, the arm lapses the job as a seizure does: the fee back to the
+    shipper, the hauler's bond to the shipper, and both told.
+- **Help:** `+haul` and `+escort` help and `docs/help/exchange.md` name `as=`, `into=` and
+  `haul=`.
+
+**Tests** (`tacsim::domain_economy::op3_hauls`, the composed world).
+- `op3_an_org_haul_and_its_escort_run_ceres_to_isidis_vault_to_vault`, at 24:1:
+  - Occator's factor is refused without the capability. Once granted it, the factor posts 20 t
+    of volatiles from Occator's vault at Ceres into the Isidis tank farm's, the fee escrowed from
+    Occator's account.
+  - An escort for the haul is posted `as=` Occator, unbound. A guard takes it, and a hauler
+    takes the haul: the goods load, and the escort binds to her hull.
+  - Both fly Ceres to Stickney: the escort is still watching (a hop). Both fly Stickney to
+    Isidis: the escort is kept.
+  - The hauler delivers into the tank farm's vault, and the contract settles.
+- `op3_a_hull_wrecked_with_a_hauls_goods_releases_them_and_fails_the_job`:
+  - The goods are aboard, all held. Staff's `@unit/damage` takes every cell of her unit to its
+    least, so she reads as a wreck. The contract guards forbid writing the space book from a
+    test.
+  - The job closes, the contract is expired, and the hold reads all 20 t available.
+- `op3_an_escort_one_fire_behind_at_a_high_rate_has_not_left`: at 3,600:1, the escort still
+  docked one fire after she launched, past `TOGETHER_IC`, is still watching.
+- **Mutations**, each caught, each restored from a saved copy and compared:
+  - the first port ending the passage (A-8b back);
+  - the escort never binding;
+  - anyone posting for an organization;
+  - a wreck owing no lost leg;
+  - the lost leg releasing nothing;
+  - no real-second grace.
+- **Re-run beside them:** `ex6_escort_passage` (the G2 and G3 stories), the `ex6_` haul and escort
+  stories, CR's seizure stories in `voyage`, and the services unit tests.
+- **On conclav.dev, green:**
+  - all of tacsim (4,993 tests);
+  - mush-server `split_boundary` (227) and mush-contract-tests (208);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim and mush-server, all targets;
+  - rustdoc `-D warnings` in both modes.
+  - The first full run's two guard failures were the wreck fixture's direct write to the space
+    book (the fiat budget, and the rule that tests never mutate it). It now goes through
+    `@unit/damage`, and the guards, the stories and the two wreck mutations were rerun green.
+
+**Divergences.**
+- **`into=<org>`.** Every lane organization keeps vaults at one port only, so an organization's
+  haul between two ports needs a destination vault that is another organization's. OP.4's arm
+  hauls from Occator at Ceres into the tank farm (OP.1 made the tank farm its own organization).
+  The receiving organization needs no grant: a delivery is a deposit.
+- **An organization's vault is its lane storefront**, and the post refuses a port where it keeps
+  none. Lockers stay players'.
+- **The capability is checked on the organization's root compartment**, as the economy's posting
+  authority is.
+- **An unbound escort's `protected` is `UNBOUND` (`ObjId(0)`, Limbo)**, not an optional field, so
+  the record and every reader keep their shape.
+- **The defect fixes apply to every passage escort**, not only a haul's. The G3 story's "past the
+  gap" case still fails as before, at 24:1.
+- **The grace is the longer of the two**, so 24:1 behaves as before and a high rate gets 60 real
+  seconds.
+- **A loss is a lapse**, the shipper's remedy for a lost bond, as the seizure's is. The goods
+  stay with the wreck for its salvage.
+
+**Not built.**
+- The record that moves the other side's clock when a hull flying for a side of an operation is
+  lost (Q-50-25). No operation has sides until OP.5, which can call it from the haul arm's loss
+  and the seizure.
+- A hull flying for a side by a live job (Q-50-61's second half).
+- The NPC arm's use of the organization path (OP.4).
+- The untaken haul carried by EX.10's house (Q-50-24, OP.4).
 
 ## OP.4
 

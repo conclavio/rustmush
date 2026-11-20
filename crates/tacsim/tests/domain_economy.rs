@@ -123,6 +123,8 @@ mod mill;
 mod mining;
 #[path = "domain_economy/move_policy_48e.rs"]
 mod move_policy_48e;
+#[path = "domain_economy/op3_hauls.rs"]
+mod op3_hauls;
 #[path = "domain_economy/orders.rs"]
 mod orders;
 #[path = "domain_economy/pl2_producers.rs"]

@@ -260,6 +260,15 @@ another. The fee is escrowed from your account and paid on delivery. You
 declare the goods' value, at most their reference price; the hauler escrows a
 bond of a quarter of it, which is yours if the goods are not delivered.
 
+  +haul/post <qty> <good> to=<port> fee=<cr> as=<org> [into=<org>] [go]
+
+Posts the same job for an organization that lets you post its jobs: the goods
+go from its vault at this port to its vault at the destination, or into
+another organization's vault there with into=<org>, and the fee is escrowed
+from its account. If the hauler's hull is wrecked or captured with the goods
+aboard, they stay with the wreck, the fee comes back and the hauler's bond is
+the shipper's.
+
   +haul/accept <job> [as=<org>] [go]
 
 Takes a haul with your hull docked at its origin. The goods load into your
@@ -273,6 +282,7 @@ one nobody has taken.
 
   +escort/post <hull> to=<port> fee=<cr> [go]
   +escort/post <hull> field=<site> fee=<cr> [go]
+  +escort/post haul=<job> fee=<cr> [go]
 
 Posts a job to escort your hull on her next passage from the port she lies at,
 or on her next sortie in a field. Whoever takes it with +escort/accept <job>
@@ -283,4 +293,8 @@ does an escort still at the port of departure in the hour after she leaves. The
 job fails if she is wrecked or captured, or the escort leaves her. If her
 journey has not begun within 28 IC days of the acceptance, the job is called
 off: the fee and the escort's bond come back. A field= sortie names a port
-with a field. +escort lists your escorts.
+with a field. An escort posted for a haul (haul=<job>) binds to the hauler's
+hull when the haul is taken and runs to the haul's destination: a stop at a
+port on the way is not the end, and the escort may lie there while she does.
+Add as=<org> to post for an organization that lets you post its jobs.
++escort lists your escorts.

@@ -24,6 +24,17 @@
 //!   the port arm submits the return leg as the hauler: the goods go back free to the shipper's
 //!   locker there (doc 48b W-48-3c).
 //!
+//! - **For an organization** (doc 50 cut OP.3, Q-50-23): `+haul/post ... as=<org>` posts for an
+//!   organization whose root compartment grants the poster
+//!   [`super::JOBS_POST_CAPABILITY`]: the fee from its account, the goods from its vault at the
+//!   origin to a vault at the destination: its own, or, with `into=<org>`, another
+//!   organization's (vault to vault; [`super::org_vault`]). A late return goes to the
+//!   organization's vault where the hull lies, and waits for a port that has one.
+//! - **A loss** (doc 50 cut OP.3, Q-50-25): a hull wrecked or captured with the goods aboard
+//!   owes the [`LegKind::Lost`] leg, which releases the job's hold so the goods are part of the
+//!   wreck, and the arm lapses the job: the fee back to the shipper and the bond to them, as a
+//!   seizure does.
+//!
 //! The legs are works' shape (doc 39 cut IN.3): the record names the leg owed, the command or the
 //! port arm submits it as its actor, the offer projects it from the record, and the prepare moves
 //! the goods once under the job's ledger ordinal (`tacsim.haul_ledger`).
@@ -88,7 +99,7 @@ const CHANNEL: &str = "tacsim.haul";
 // ---- the player's sentences -----------------------------------------------------------------
 
 /// The usage line.
-pub const HAUL_USAGE: &str = "Usage: +haul  |  +haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [go]\n       \
+pub const HAUL_USAGE: &str = "Usage: +haul  |  +haul/post <qty> <good> to=<port> fee=<cr> [value=<cr>] [as=<org> [into=<org>]] [go]\n       \
 +haul/accept <job> [as=<org>] [go]  |  +haul/deliver <job> [go]  |  +haul/withdraw <job> [go]";
 /// The help.
 pub const HAUL_HELP: &str = "+haul                                  your hauls, posted and taken\n\
@@ -97,6 +108,10 @@ pub const HAUL_HELP: &str = "+haul                                  your hauls, 
                                        locker there. The fee is escrowed now and paid on\n\
                                        delivery. The value you declare is capped at the\n\
                                        reference price; the hauler bonds a quarter of it.\n\
++haul/post ... as=<org> [into=<org>] [go]\n\
+                                       post for an organization you may post jobs for: its\n\
+                                       goods from its vault here to its vault there (or\n\
+                                       into=<org>'s), the fee from its account.\n\
 +haul/accept <job> [as=<org>] [go]     take a haul with your hull docked here: you escrow the\n\
                                        bond, the goods load into your hold held for the job,\n\
                                        and you have 28 IC days to deliver them.\n\
@@ -170,6 +185,12 @@ pub const TOLD_RETURNED: &str =
 pub const TOLD_SEIZED: &str = "Haul {job} was seized by customs on the way; its goods are lost. The fee comes back to you, and the hauler's bond is yours.";
 /// The hauler's notice of a seizure (`{job}`).
 pub const TOLD_HAULER_SEIZED: &str = "Customs took the goods of haul {job} from your hold; the job has failed and your bond is lost.";
+/// The shipper's line when a haul's hull is wrecked or captured with its goods (doc 50 cut OP.3).
+pub const TOLD_LOST: &str = "Haul {job} was lost on the way with its hull; its goods are part of the wreck. The fee comes back to you, and the hauler's bond is yours.";
+/// The hauler's line when her hull is lost with a haul's goods (doc 50 cut OP.3).
+pub const TOLD_HAULER_LOST: &str = "Haul {job} is lost with your hull; its goods are part of the wreck, the job has failed and your bond is lost.";
+/// An organization keeps no vault at a port (doc 50 cut OP.3).
+pub const NO_ORG_VAULT: &str = "That organization keeps no vault at {port}.";
 /// The refusal for withdrawing a taken or another's job.
 pub const NOT_WITHDRAWABLE: &str =
     "Only the shipper withdraws a haul, and only before it is taken.";
@@ -231,6 +252,10 @@ pub enum LegKind {
     /// ruling that took it released the job's hold and wrote this on the job's ledger in its
     /// own transaction, so no leg of the job lands after it; the arm then fails the job.
     Seized,
+    /// **The hull was lost** (doc 50 cut OP.3; Q-50-25): wrecked or captured with the goods
+    /// aboard. The leg releases the job's hold, so the goods are part of the wreck, and moves
+    /// nothing; the arm then fails the job.
+    Lost,
 }
 
 /// **The leg a haul owes**: what the arm submits and the offer projects.
@@ -273,6 +298,10 @@ pub struct HaulJob {
     pub shipper: ObjId,
     /// The shipper's account the fee came from.
     pub shipper_account: u64,
+    /// **The organization that posted it** (doc 50 cut OP.3), `OrgId.0`, when it was posted
+    /// `as=<org>`: `shipper` is then the member who posted it, and the goods ship vault to vault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shipper_org: Option<u64>,
     /// The origin's venue.
     pub origin: SmolStr,
     /// The destination's venue.
@@ -600,9 +629,34 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     if origin == destination {
         return Err(SAME_PORT.to_owned());
     }
-    let source = crate::port::locker::locker_of(ctx.w, ctx.actor, &origin)
-        .map(|l| l.vault)
-        .ok_or_else(|| NO_LOCKER.to_owned())?;
+    // Doc 50 cut OP.3 (Q-50-23): for an organization, its vault at the origin, and a vault at
+    // the destination (its own, or `into=`'s).
+    let org = match opts.get("as") {
+        Some(name) => Some(org_word(ctx, name)?),
+        None => None,
+    };
+    let source = match org {
+        Some(org) => super::org_vault(ctx.w, org, origin.as_str()).ok_or_else(|| {
+            NO_ORG_VAULT.replace("{port}", &super::venue_name(ctx.w, origin.as_str()))
+        })?,
+        None => crate::port::locker::locker_of(ctx.w, ctx.actor, &origin)
+            .map(|l| l.vault)
+            .ok_or_else(|| NO_LOCKER.to_owned())?,
+    };
+    let org_drop = match org {
+        Some(org) => {
+            let into = match opts.get("into") {
+                Some(name) => org_word(ctx, name)?,
+                None => org,
+            };
+            Some(
+                super::org_vault(ctx.w, into, destination.as_str()).ok_or_else(|| {
+                    NO_ORG_VAULT.replace("{port}", &super::venue_name(ctx.w, destination.as_str()))
+                })?,
+            )
+        }
+        None => None,
+    };
     let held = crate::port_tick::read_pool(ctx, EndpointRef(VaultId(source)), &good).unwrap_or(0);
     if held < quantity {
         return Err(SHORT.replace("{good}", &good_label));
@@ -626,13 +680,16 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
             .replace("{value}", &money_minor(ctx, declared))
             .replace("{bond}", &money_minor(ctx, bond)));
     }
-    let account = crate::port::credit::own_account(ctx.w, ctx.actor)
-        .map(|a| a.id)
-        .ok_or_else(|| "You have no account to pay the fee from.".to_owned())?;
-    crate::port::locker::open(ctx, ctx.actor, &destination)?;
-    let drop = crate::port::locker::locker_of(ctx.w, ctx.actor, &destination)
-        .map(|l| l.vault)
-        .ok_or_else(|| "Your locker at the destination could not be opened.".to_owned())?;
+    let (poster, account) = super::poster(ctx, opts.get("as").map(String::as_str))?;
+    let drop = match org_drop {
+        Some(drop) => drop,
+        None => {
+            crate::port::locker::open(ctx, ctx.actor, &destination)?;
+            crate::port::locker::locker_of(ctx.w, ctx.actor, &destination)
+                .map(|l| l.vault)
+                .ok_or_else(|| "Your locker at the destination could not be opened.".to_owned())?
+        }
+    };
     let peeked = ctx
         .w
         .module_state::<mush_economy::EconomyStore>()
@@ -651,7 +708,7 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         ctx,
         mush_economy::JobSpec {
             name: SmolStr::new(format!("Haul: {quantity} {good_label}")),
-            poster: PrincipalId::Object(ctx.actor),
+            poster,
             poster_account: account,
             fee: Amount::from_minor(fee),
             fact: fact(&delivery),
@@ -668,6 +725,7 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         contract: contract.0,
         shipper: ctx.actor,
         shipper_account: account.0,
+        shipper_org: org.map(|o| o.0),
         origin: SmolStr::new(origin.as_str()),
         destination: SmolStr::new(destination.as_str()),
         source,
@@ -696,6 +754,12 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         .replace("{good}", &good_label)
         .replace("{port}", &super::venue_name(ctx.w, destination.as_str()))
         .replace("{fee}", &money_minor(ctx, fee)))
+}
+
+/// The organization `name` names (`org:` optional), as the poster may see it.
+fn org_word(ctx: &mut Ctx<'_>, name: &str) -> Result<mush_org::OrgId, String> {
+    let name = name.strip_prefix("org:").unwrap_or(name);
+    mush_economy::resolve_org_visible(ctx, name).ok_or_else(|| super::NOT_POSTER.to_owned())
 }
 
 fn job_word(word: &str) -> Option<u64> {
@@ -752,7 +816,11 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
             .replace("{days}", &days.to_string()));
     }
     let (taker, account) = super::taker(ctx, opts.get("as").map(String::as_str))?;
-    if taker == PrincipalId::Object(job.shipper) {
+    if taker == PrincipalId::Object(job.shipper)
+        || job
+            .shipper_org
+            .is_some_and(|org| taker == PrincipalId::Organization(mush_org::OrgId(org)))
+    {
         return Err(OWN_JOB.to_owned());
     }
     let term = HAUL_TERM_IC_DAYS.saturating_mul(DAY);
@@ -935,6 +1003,10 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
     {
         return seized(ctx, job);
     }
+    // Doc 50 cut OP.3 (Q-50-25): the hull went down with the goods; the leg released the hold.
+    if job.stage != HaulStage::Closed && ledger.as_ref().is_some_and(|l| l.last == LegKind::Lost) {
+        return lost(ctx, job);
+    }
     match job.stage {
         HaulStage::Posted => {
             if now <= job.accept_by_ic && state.as_ref().is_some_and(|s| s.is_live()) {
@@ -962,6 +1034,18 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
             submit(ctx, job)
         }
         HaulStage::Aboard => {
+            // Doc 50 cut OP.3 (Q-50-25): her hull wrecked or captured with the goods aboard owes
+            // the lost leg, which releases the hold.
+            if job.owed.as_ref().is_none_or(|o| o.kind != LegKind::Lost)
+                && job.hull.is_some_and(|hull| {
+                    super::escort::wrecked(ctx.w, hull) || super::escort::captured(ctx.w, hull)
+                })
+            {
+                return owe_lost(ctx, job, now);
+            }
+            if job.owed.as_ref().is_some_and(|o| o.kind == LegKind::Lost) {
+                return job.tries < MAX_LEG_TRIES && submit(ctx, job);
+            }
             if let Some(owed) = job.owed.clone() {
                 if acts >= owed.act && ledger.as_ref().is_some_and(|l| l.last == LegKind::Deliver) {
                     job.owed = None;
@@ -1018,6 +1102,51 @@ fn seized(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
     true
 }
 
+/// **Owe the lost leg** (doc 50 cut OP.3): the hold released, nothing moved.
+fn owe_lost(ctx: &mut Ctx<'_>, job: &mut HaulJob, now: i64) -> bool {
+    let (Some(hold), Some(pilot)) = (job.hold, job.pilot) else {
+        return false;
+    };
+    let Some(marker) = marker(
+        now,
+        &json!({"kind": "tacsim.haul.lost", "contract": job.contract, "hold": hold}),
+    ) else {
+        return false;
+    };
+    job.owed = Some(HaulLeg {
+        act: 2,
+        kind: LegKind::Lost,
+        by: pilot,
+        from: hold,
+        to: hold,
+        good: job.good.clone(),
+        quantity: job.quantity,
+        marker,
+        by_ic: None,
+        lead_ic: 0,
+    });
+    job.tries = 0;
+    submit(ctx, job);
+    true
+}
+
+/// **A lost hull fails the job** (doc 50 cut OP.3; Q-50-25): the lost leg released the hold, so
+/// the goods are part of the wreck; the arm lapses the contract as a seizure does (the fee back to
+/// the shipper and the bond to them) and closes the record.
+fn lost(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
+    let _ = mush_economy::lapse_job(ctx, ContractId(job.contract));
+    job.owed = None;
+    job.tries = 0;
+    job.stage = HaulStage::Closed;
+    let line = TOLD_LOST.replace("{job}", &job.job());
+    super::tell(ctx, &PrincipalId::Object(job.shipper), CHANNEL, &line);
+    if let Some(pilot) = job.pilot {
+        let line = TOLD_HAULER_LOST.replace("{job}", &job.job());
+        super::tell(ctx, &PrincipalId::Object(pilot), CHANNEL, &line);
+    }
+    true
+}
+
 /// The return: at the hull's next port, the goods go back to the shipper's locker there.
 fn returning(ctx: &mut Ctx<'_>, job: &mut HaulJob, acts: u32, ledger: Option<&HaulLedger>) -> bool {
     if acts >= 2 && ledger.is_some_and(|l| l.last == LegKind::Return) {
@@ -1025,6 +1154,11 @@ fn returning(ctx: &mut Ctx<'_>, job: &mut HaulJob, acts: u32, ledger: Option<&Ha
             .owed
             .as_ref()
             .and_then(|o| locker_venue(ctx.w, job.shipper, o.to))
+            .or_else(|| {
+                job.hull
+                    .and_then(|h| super::docked_venue(ctx.w, h))
+                    .map(|v| SmolStr::new(v.as_str()))
+            })
             .map_or_else(String::new, |v| super::venue_name(ctx.w, &v));
         job.owed = None;
         job.stage = HaulStage::Closed;
@@ -1044,12 +1178,21 @@ fn returning(ctx: &mut Ctx<'_>, job: &mut HaulJob, acts: u32, ledger: Option<&Ha
     let Some(venue) = super::docked_venue(ctx.w, hull) else {
         return false;
     };
-    if crate::port::locker::open(ctx, job.shipper, &venue).is_err() {
-        return false;
-    }
-    let Some(to) = crate::port::locker::locker_of(ctx.w, job.shipper, &venue).map(|l| l.vault)
-    else {
-        return false;
+    // Doc 50 cut OP.3: an organization's goods go back to its vault there, when it keeps one.
+    let to = if let Some(org) = job.shipper_org {
+        let Some(to) = super::org_vault(ctx.w, mush_org::OrgId(org), venue.as_str()) else {
+            return false;
+        };
+        to
+    } else {
+        if crate::port::locker::open(ctx, job.shipper, &venue).is_err() {
+            return false;
+        }
+        let Some(to) = crate::port::locker::locker_of(ctx.w, job.shipper, &venue).map(|l| l.vault)
+        else {
+            return false;
+        };
+        to
     };
     let now = ctx.w.world_ic_now().at;
     let Some(back) = marker(
@@ -1309,7 +1452,7 @@ impl ActionProvider for HaulProvider {
         let next = prior.as_ref().map_or(1, |l| l.acts.saturating_add(1));
         let in_order = match owed.kind {
             LegKind::Load => act == 1,
-            LegKind::Deliver | LegKind::Return => act == 2,
+            LegKind::Deliver | LegKind::Return | LegKind::Lost => act == 2,
             // Doc 50 unit CR: a seizure is written by the customs ruling, never owed as a leg.
             LegKind::Seized => false,
         };
@@ -1331,8 +1474,24 @@ impl ActionProvider for HaulProvider {
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
         let holder =
             haul_holder(contract).map_err(|_| refused("the haul's holder will not form"))?;
+        // Doc 50 cut OP.3 (Q-50-25): the lost leg releases the job's hold and moves nothing; a
+        // hold already gone (lapsed) leaves nothing to release.
+        if owed.kind == LegKind::Lost {
+            let hold = EndpointRef(VaultId(owed.from));
+            let reservation = haul_reservation(contract, owed.from, &owed.good)
+                .map_err(|_| refused("the haul's hold will not form"))?;
+            let record = self
+                .inventory
+                .reservation(txn, hold, &owed.good, reservation)
+                .map_err(|_| refused("the haul's hold could not be read"))?;
+            if let Some(record) = record.filter(|r| r.held_amount().is_some()) {
+                self.inventory
+                    .release(txn, hold, &owed.good, reservation, record.revision())
+                    .map_err(|_| refused("the haul's hold could not be released"))?;
+            }
+        }
         let held = match owed.kind {
-            LegKind::Load | LegKind::Seized => None,
+            LegKind::Load | LegKind::Seized | LegKind::Lost => None,
             LegKind::Deliver | LegKind::Return => Some(
                 haul_reservation(contract, owed.from, &owed.good)
                     .map_err(|_| refused("the haul's hold will not form"))?,
@@ -1340,27 +1499,29 @@ impl ActionProvider for HaulProvider {
         };
         let keep = match owed.kind {
             LegKind::Load => Some((&holder, owed.lead_ic.max(0))),
-            LegKind::Deliver | LegKind::Return | LegKind::Seized => None,
+            LegKind::Deliver | LegKind::Return | LegKind::Seized | LegKind::Lost => None,
         };
         let commit = CommitToken::from_bytes(*invocation.request().as_bytes());
-        self.inventory
-            .carry(
-                txn,
-                &mush_inventory::Carriage {
-                    from: EndpointRef(VaultId(owed.from)),
-                    to: EndpointRef(VaultId(owed.to)),
-                    commodity: &owed.good,
-                    amount: owed.quantity,
-                    held,
-                    keep,
-                    marker: &owed.marker,
-                    actor,
-                    now: &now,
-                    wall,
-                    commit,
-                },
-            )
-            .map_err(|_| refused("the haul's goods could not be moved"))?;
+        if owed.kind != LegKind::Lost {
+            self.inventory
+                .carry(
+                    txn,
+                    &mush_inventory::Carriage {
+                        from: EndpointRef(VaultId(owed.from)),
+                        to: EndpointRef(VaultId(owed.to)),
+                        commodity: &owed.good,
+                        amount: owed.quantity,
+                        held,
+                        keep,
+                        marker: &owed.marker,
+                        actor,
+                        now: &now,
+                        wall,
+                        commit,
+                    },
+                )
+                .map_err(|_| refused("the haul's goods could not be moved"))?;
+        }
         // 5. The ledger, and the outcome.
         let ledger = HaulLedger {
             contract,
@@ -1495,6 +1656,7 @@ mod tests {
             contract: 7,
             shipper: ObjId(5),
             shipper_account: 1,
+            shipper_org: None,
             origin: "ceres".into(),
             destination: "vesta".into(),
             source: 10,
