@@ -50,9 +50,10 @@ use crate::contract::{
     DepositRecord, EconomicContract, EvidenceKind, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS,
     MAX_CONDITIONS, MAX_CONTRACT_NAME_BYTES, MAX_DELIVERABLES, MAX_DEPOSITS,
     MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOME_NAME_BYTES,
-    MAX_OUTCOMES, MAX_PARTIES, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate, OutcomeTerms,
-    PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, Readiness, Resolution,
-    Share, TypedCondition, activate_key, check_offerable, consent_hash, forfeit_plan,
+    MAX_OUTCOMES, MAX_PARTIES, MAX_RETAINED_CANCELLED_DRAFTS,
+    MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate,
+    OutcomeTerms, PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, Readiness,
+    Resolution, Share, TypedCondition, activate_key, check_offerable, consent_hash, forfeit_plan,
     prepare_settlement, principal_key, qualifying_escrow, readiness, refund_plan,
 };
 use crate::custody::WorldCustody;
@@ -3270,18 +3271,8 @@ fn has_no_economic_history(c: &EconomicContract, snap: &crate::snapshot::Economy
             .any(|h| h.status.is_held() && h.purpose == HoldPurpose::Escrow { contract: c.id })
 }
 
-/// An unaccepted, unescrowed `Draft` or `Offered` contract that can be deleted
-/// immediately on cancellation instead of leaking a permanent `Cancelled` doc.
-pub(crate) fn is_prunable_unfunded_draft(
-    c: &EconomicContract,
-    snap: &crate::snapshot::EconomySnapshot,
-) -> bool {
-    matches!(c.state, ContractState::Draft | ContractState::Offered)
-        && has_no_economic_history(c, snap)
-}
-
-/// A `Cancelled` tombstone with no economic history (e.g. from prior runs) that
-/// `sweep::collect_garbage` may safely prune.
+/// A `Cancelled` tombstone with no economic history that may be evicted past
+/// the retention cap or collected by `sweep::collect_garbage`.
 pub(crate) fn is_prunable_cancelled_draft(
     c: &EconomicContract,
     snap: &crate::snapshot::EconomySnapshot,
@@ -3289,11 +3280,66 @@ pub(crate) fn is_prunable_cancelled_draft(
     c.state == ContractState::Cancelled && has_no_economic_history(c, snap)
 }
 
-fn prune_contract_now(ctx: &mut Ctx<'_>, id: ContractId) {
-    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
-        store.snapshot.remove_contract(id);
+/// Evict oldest zero-history `Cancelled` draft/offer tombstones past the
+/// per-issuer and global retention caps (HIGH-22), always keeping `keep`
+/// (the contract just canceled in this call) immediately visible.
+fn prune_excess_cancelled_drafts(ctx: &mut Ctx<'_>, keep: ContractId) {
+    let victims: Vec<ContractId> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        let snap = store.snapshot();
+        let Some(just_cancelled) = snap.contract(keep) else {
+            return;
+        };
+        if !is_prunable_cancelled_draft(just_cancelled, snap) {
+            return;
+        }
+        let issuer = &just_cancelled.issuer;
+        // `snap.contracts()` yields in ascending `ContractId` order (oldest first).
+        let mut global: Vec<ContractId> = Vec::new();
+        let mut by_issuer: Vec<ContractId> = Vec::new();
+        for c in snap.contracts() {
+            if !is_prunable_cancelled_draft(c, snap) {
+                continue;
+            }
+            global.push(c.id);
+            if c.issuer == *issuer {
+                by_issuer.push(c.id);
+            }
+        }
+        let mut evict: std::collections::BTreeSet<ContractId> = std::collections::BTreeSet::new();
+        if by_issuer.len() > MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER {
+            let excess = by_issuer
+                .len()
+                .saturating_sub(MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER);
+            for id in by_issuer.into_iter().filter(|&id| id != keep).take(excess) {
+                evict.insert(id);
+            }
+        }
+        let remaining_global = global.len().saturating_sub(evict.len());
+        let mut needed = remaining_global.saturating_sub(MAX_RETAINED_CANCELLED_DRAFTS);
+        for id in global {
+            if needed == 0 {
+                break;
+            }
+            if id != keep && evict.insert(id) {
+                needed = needed.saturating_sub(1);
+            }
+        }
+        evict.into_iter().collect()
+    };
+    if victims.is_empty() {
+        return;
     }
-    api::delete_key(ctx.out, api::contract_key(id));
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        for &id in &victims {
+            store.snapshot.remove_contract(id);
+        }
+    }
+    for id in victims {
+        api::delete_key(ctx.out, api::contract_key(id));
+    }
 }
 
 fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -3329,20 +3375,11 @@ fn contract_cancel(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
     let id = c.id;
-    let prunable = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| is_prunable_unfunded_draft(&c, s.snapshot()));
-    if prunable {
-        prune_contract_now(ctx, id);
-        info(ctx, format!("Contract #{id} is canceled."));
-        ctx.gate_on_durable_ack();
-        return Ok(());
-    }
     unwind(ctx, id, ContractState::Cancelled);
     // M2+M3: the state moves only once the refund posts, so the confirmation says
     // what actually happened rather than what was asked for.
     if live_contract(ctx, id).is_some_and(|c| c.state.is_terminal()) {
+        prune_excess_cancelled_drafts(ctx, id);
         info(ctx, format!("Contract #{id} is canceled."));
     } else {
         info(
@@ -6000,17 +6037,11 @@ pub fn cancel_contract(ctx: &mut Ctx<'_>, id: ContractId) -> Result<bool, Contra
         | ContractState::Cancelled
         | ContractState::Expired => return Err(ContractError::State(id)),
     }
-    let prunable = ctx
-        .w
-        .module_state::<EconomyStore>()
-        .is_some_and(|s| is_prunable_unfunded_draft(&c, s.snapshot()));
-    if prunable {
-        prune_contract_now(ctx, id);
-        ctx.gate_on_durable_ack();
-        return Ok(true);
-    }
     unwind(ctx, id, ContractState::Cancelled);
     let done = live_contract(ctx, id).is_some_and(|c| c.state.is_terminal());
+    if done {
+        prune_excess_cancelled_drafts(ctx, id);
+    }
     ctx.gate_on_durable_ack();
     Ok(done)
 }

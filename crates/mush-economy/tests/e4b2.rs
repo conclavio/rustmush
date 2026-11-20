@@ -7873,35 +7873,78 @@ fn j2_every_contract_state_survives_a_reboot_with_an_evicted_tail() {
 // ======================================================================
 
 /// HIGH-22: cancelling an unoffered draft (or an unaccepted/unescrowed offer)
-/// prunes it immediately from RAM and KV instead of leaving permanent
-/// `Cancelled` tombstones; legacy `Cancelled` drafts with no economic history
-/// are also pruned by `sweep::collect_garbage`.
+/// preserves the just-canceled contract in `ContractState::Cancelled` for
+/// immediate callers/audits while evicting excess tombstones past the per-issuer
+/// and global retention caps; `sweep::collect_garbage` clears all remaining
+/// zero-history `Cancelled` drafts (including legacy docs from prior runs).
 #[test]
-fn high22_cancel_unoffered_draft_prunes_immediately_and_sweep_prunes_cancelled_drafts() {
+fn high22_cancel_unfunded_drafts_are_retention_capped_and_swept() {
     let mut tw = boot();
     let r = run_rig(&mut tw, 3_000);
-    // Repeated draft + cancel past MAX_OPEN_CONTRACTS_PER_ISSUER leaves zero contracts.
+    let per_issuer_cap = mush_economy::MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER;
+    let global_cap = mush_economy::MAX_RETAINED_CANCELLED_DRAFTS;
+    let mut kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    let apply_ops = |kv: &mut Vec<(SmolStr, serde_json::Value)>, tw: &mut TestWorld| {
+        for op in tw.take_module_ops() {
+            if op.ns != NS {
+                continue;
+            }
+            match op.op {
+                ModuleWrite::JsonSet { key, value } => {
+                    kv.retain(|(k, _)| *k != key);
+                    kv.push((key, value));
+                }
+                ModuleWrite::Del { key } => kv.retain(|(k, _)| *k != key),
+                ModuleWrite::StreamAppend { .. } => {}
+            }
+        }
+    };
+    let mut seen_ids = Vec::new();
+
+    // Repeated draft + cancel past MAX_OPEN_CONTRACTS_PER_ISSUER keeps the
+    // just-canceled contract visible in Cancelled while capping RAM and KV to
+    // MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER.
     for i in 0..(mush_economy::MAX_OPEN_CONTRACTS_PER_ISSUER + 5) {
         ok(&mut tw, r.johnson, &format!("@contract/draft Spam {i}"));
-        let id = only_contract(&tw);
+        let id = snap(&tw)
+            .contracts()
+            .map(|c| c.id)
+            .max()
+            .expect("draft minted");
+        seen_ids.push(id);
         ok(&mut tw, r.johnson, &format!("@contract/cancel {id}"));
+        assert_eq!(
+            state(&tw, id),
+            ContractState::Cancelled,
+            "just-canceled draft #{id} must stay immediately visible in Cancelled"
+        );
         assert!(
-            snap(&tw).contract(id).is_none(),
-            "unoffered draft #{id} was not pruned on cancel"
+            snap(&tw).contracts().count() <= per_issuer_cap,
+            "per-issuer cancelled draft retention exceeded cap after {i} cancels"
         );
     }
-    assert_eq!(snap(&tw).contracts().count(), 0);
-    let kv_after_cancels = fold_kv(&mut tw);
+    assert_eq!(snap(&tw).contracts().count(), per_issuer_cap);
     assert!(
-        !kv_after_cancels
-            .iter()
-            .any(|(k, _)| k.starts_with("contract:")),
-        "cancelling unoffered drafts left persisted contract docs behind"
+        snap(&tw).contract(seen_ids[0]).is_none(),
+        "oldest cancelled draft must be evicted past per-issuer cap"
+    );
+    apply_ops(&mut kv, &mut tw);
+    assert_eq!(
+        kv.iter()
+            .filter(|(k, _)| k.starts_with("contract:"))
+            .count(),
+        per_issuer_cap,
+        "KV contract docs must match per-issuer retention cap"
     );
 
-    // An unaccepted, unescrowed Offered contract is also pruned on cancel.
+    // An unaccepted, unescrowed Offered contract stays immediately visible in
+    // Cancelled on cancel while keeping the issuer within cap.
     ok(&mut tw, r.johnson, "@contract/draft EmptyOffer");
-    let offered_id = only_contract(&tw);
+    let offered_id = snap(&tw)
+        .contracts()
+        .map(|c| c.id)
+        .max()
+        .expect("offer minted");
     ok(
         &mut tw,
         r.johnson,
@@ -7913,22 +7956,65 @@ fn high22_cancel_unoffered_draft_prunes_immediately_and_sweep_prunes_cancelled_d
         r.johnson,
         &format!("@contract/cancel {offered_id}"),
     );
-    assert!(
-        snap(&tw).contract(offered_id).is_none(),
-        "unaccepted/unescrowed offer was not pruned on cancel"
+    assert_eq!(
+        state(&tw, offered_id),
+        ContractState::Cancelled,
+        "just-canceled offer must stay immediately visible in Cancelled"
+    );
+    assert_eq!(snap(&tw).contracts().count(), per_issuer_cap);
+
+    // Multiple issuers pushing past the global retention cap remain strictly
+    // bounded to MAX_RETAINED_CANCELLED_DRAFTS.
+    let issuers_needed = (global_cap / per_issuer_cap) + 2;
+    let mut last_global_id = offered_id;
+    for p in 0..issuers_needed {
+        let spammer = tw.spawn_player(&format!("Spammer{p}"));
+        for j in 0..per_issuer_cap {
+            ok(&mut tw, spammer, &format!("@contract/draft G{p}_{j}"));
+            let id = snap(&tw)
+                .contracts()
+                .map(|c| c.id)
+                .max()
+                .expect("global draft minted");
+            ok(&mut tw, spammer, &format!("@contract/cancel {id}"));
+            assert_eq!(state(&tw, id), ContractState::Cancelled);
+            last_global_id = id;
+            assert!(
+                snap(&tw).contracts().count() <= global_cap,
+                "global cancelled draft retention exceeded {global_cap}"
+            );
+        }
+    }
+    assert_eq!(snap(&tw).contracts().count(), global_cap);
+    assert_eq!(state(&tw, last_global_id), ContractState::Cancelled);
+    apply_ops(&mut kv, &mut tw);
+    assert_eq!(
+        kv.iter()
+            .filter(|(k, _)| k.starts_with("contract:"))
+            .count(),
+        global_cap,
+        "KV contract docs must match global retention cap"
     );
 
-    // Legacy `Cancelled` draft with no economic history is collected by sweep GC.
+    // A single sweep clears all retained zero-history Cancelled drafts from RAM & KV.
+    sweep_at(&mut tw, 10_000);
+    assert_eq!(snap(&tw).contracts().count(), 0);
+    apply_ops(&mut kv, &mut tw);
+    assert!(
+        !kv.iter().any(|(k, _)| k.starts_with("contract:")),
+        "sweep did not delete all retained cancelled draft docs from KV"
+    );
+
+    // Legacy `Cancelled` draft loaded from disk is also collected by sweep GC.
     ok(&mut tw, r.johnson, "@contract/draft LegacyCancelled");
     let legacy_id = only_contract(&tw);
-    let mut kv = kv_after_cancels;
-    merge(&mut kv, drain(&mut tw));
+    apply_ops(&mut kv, &mut tw);
     patch(&mut kv, &format!("contract:{legacy_id}"), |v| {
         v["state"] = serde_json::json!("Cancelled");
     });
     reboot(&mut tw, kv);
     assert_eq!(state(&tw, legacy_id), ContractState::Cancelled);
-    sweep_at(&mut tw, 10_000);
+    sweep_at(&mut tw, 20_000);
     assert!(
         snap(&tw).contract(legacy_id).is_none(),
         "sweep did not collect a legacy cancelled draft"
