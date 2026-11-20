@@ -185,6 +185,47 @@ pub trait SshHooks: Send + Sync {
         character: u64,
     ) -> BoxFuture<'a, Result<(), String>>;
 
+    /// Issue a pane-bound lease only for this already-attached character.
+    fn cockpit_issue<'a>(
+        &'a self,
+        _conn: u64,
+        _pane: &'a str,
+        _account: &'a str,
+        _character: u64,
+    ) -> BoxFuture<'a, Result<(crate::resume::Ticket, u32), crate::resume::Failure>> {
+        Box::pin(async { Err(crate::resume::Failure::Unavailable) })
+    }
+
+    /// Authorize and attach this new output sink to a detached session.
+    /// The username has already been authenticated. An explicit character
+    /// selection is constrained to that account's owned character list.
+    fn cockpit_redeem<'a>(
+        &'a self,
+        _conn: NewConn,
+        _pane: &'a str,
+        _account: &'a str,
+        _selected: Option<u64>,
+        _ticket: &'a crate::resume::Ticket,
+    ) -> BoxFuture<'a, Result<crate::resume::Redeemed, crate::resume::Failure>> {
+        Box::pin(async { Err(crate::resume::Failure::Unavailable) })
+    }
+
+    /// Associate the authenticated owner of a granted lease with its SSH transport.
+    fn cockpit_transport(&self, _conn: u64, _cut: Arc<crate::kill::KillSwitch>) {}
+
+    /// Save the current presentation for this specific lease owner.
+    fn cockpit_view(
+        &self,
+        _conn: u64,
+        _account: &str,
+        _pane: &str,
+        _view: crate::resume::ViewPrefs,
+    ) {
+    }
+
+    /// A deliberate shell close or QUIT revokes reconnection eligibility.
+    fn cockpit_close(&self, _conn: u64) {}
+
     /// Bind `conn` to `character` under `account` for one exec request, the
     /// `mind push|pull|check` of this crate's `mind_exec` (doc 44 unit MW.24),
     /// **without logging the character in**. The binary gives the connection

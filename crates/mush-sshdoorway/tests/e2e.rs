@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
+#[path = "support/cockpit.rs"]
+mod cockpit;
 mod support;
 
 use std::time::Duration;

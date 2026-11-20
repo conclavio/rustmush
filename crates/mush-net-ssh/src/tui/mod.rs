@@ -79,6 +79,11 @@ impl TuiSession {
         self.app.entry_queries()
     }
 
+    /// Hydrate a recovered cockpit without paging through old scene narrative.
+    pub(crate) fn resume_queries(&self) -> Vec<(String, serde_json::Value)> {
+        self.app.current_state_queries()
+    }
+
     /// Apply one event to the app state (no paint). Returns the read-only
     /// queries the app wants submitted as a result (a resync, a hydration).
     /// Apply a live event with its gateway sequence when available.

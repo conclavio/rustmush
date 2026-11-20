@@ -46,6 +46,52 @@ fn ev(text: &str) -> Arc<OutputEvent> {
 }
 
 #[test]
+fn conditional_resume_never_joins_live_changed_or_expired_sessions() {
+    use mush_session::ResumeRefusal::{Busy, Denied, Expired};
+    let mgr = SessionManager::new();
+    let now = Instant::now();
+    let pilot = CharKey(14);
+    let new = |id| conn_at(id, 1, 4, now).0;
+    let (sess, _) = mgr.attach(new(1), pilot, "pilot".into());
+    let reconnect = |id, previous, account| {
+        mgr.resume_linkdead(new(id), pilot, account, sess, ConnId(previous))
+    };
+    assert_eq!(mgr.exclusive_session(ConnId(1), pilot, "pilot"), Some(sess));
+    assert_eq!(reconnect(2, 1, "pilot").err(), Some(Busy));
+    mgr.detach(ConnId(1), DetachReason::Lost);
+    assert_eq!(reconnect(2, 1, "other").err(), Some(Denied));
+    assert_eq!(reconnect(2, 9, "pilot").err(), Some(Expired));
+    let original = reconnect(2, 1, "pilot").unwrap();
+    assert_eq!(reconnect(3, 1, "pilot").err(), Some(Busy));
+    // A failed world admission is retryable on the original interval.
+    mgr.detach(ConnId(2), DetachReason::Lost);
+    let initial_deadline = mgr.next_linkdead_expiry().unwrap();
+    assert!(mgr.restore_resume_window(ConnId(2), original).is_some());
+    assert!(mgr.next_linkdead_expiry().unwrap() <= initial_deadline);
+    assert!(reconnect(3, 1, "pilot").is_ok());
+    // A later loss ends the old drop's identity even on the same session.
+    mgr.detach_at(
+        ConnId(3),
+        DetachReason::Lost,
+        now - mgr.config().linkdead_grace,
+    );
+    assert_eq!(reconnect(4, 1, "pilot").err(), Some(Expired));
+    assert_eq!(
+        reconnect(4, 3, "pilot").err(),
+        Some(Expired),
+        "expiry applies even before the driver reaps"
+    );
+    assert!(mgr.session_of_conn(ConnId(4)).is_none());
+    assert_eq!(mgr.take_expired(Instant::now()).len(), 1);
+    mgr.attach(new(5), pilot, "pilot".into());
+    assert_eq!(
+        reconnect(6, 3, "pilot").err(),
+        Some(Expired),
+        "replacement incarnation"
+    );
+}
+
+#[test]
 fn attach_multiconnect_fanout_shares_the_arc() {
     let mgr = SessionManager::new();
     let t0 = Instant::now();
