@@ -370,7 +370,11 @@ fn seq_of(invocation: &ActionInvocation) -> Result<u32, mush_core::ActionError> 
 /// The rulings `actor` has filed on the hull they are aboard, read from the world at the
 /// offer.
 fn filed_by(w: &mush_core::World, actor: ObjId) -> Vec<PendingCustomsRuling> {
-    let Some(hull) = super::commands::hull_aboard_for_actor(w, actor) else {
+    // Doc 50 cut OP.4 (Q-50-56): a hauling house's helm is the house's one soul aboard the hull
+    // it sails, and records the ruling on her.
+    let Some(hull) = super::commands::hull_aboard_for_actor(w, actor)
+        .or_else(|| crate::port::hauler::hauler_hull(w, actor))
+    else {
         return Vec::new();
     };
     w.module_state::<SpaceBubbleBook>()

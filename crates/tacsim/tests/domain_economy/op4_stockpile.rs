@@ -13,7 +13,8 @@
 //! - **A house hull at the picket** pays the transit duty from the house's own account.
 //!
 //! **What is a fixture.** Propellant seeded into the tank farm's vault, a stand-in for the
-//! deliveries that would fill it; staff's `@tacsim/port haulers` and `@econ/pay`.
+//! deliveries that would fill it; staff's `@tacsim/port haulers`, `@econ/pay` and
+//! `@faction/control` (the Republic holding the approach, as KC.1's fill makes it).
 
 use mush_core::{GOD, ObjId, World};
 use mush_economy::{AccountId, ContractId, ContractState, EconomyStore, VaultId};
@@ -309,6 +310,14 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_a_house_hull_pays_the_kirkwood_duty_from_the_house() {
     let mut rig = stocked();
+    // The Republic holds the approach, as Customs Assertion's fill makes it (KC.1): its terms row
+    // levies the duty.
+    let held = run(
+        &mut rig.tw,
+        GOD,
+        "@faction/control Kirkwood approach=Republic/defacto",
+    );
+    assert!(!held.contains("Usage"), "{held}");
     let said = run(&mut rig.tw, GOD, "@tacsim/port haulers ceres_port on");
     assert!(said.contains("ceres_port hauling house: open"), "{said}");
     // The Habitat Board cannot pay for water: Ceres's water goes to Kasei at Stickney.
