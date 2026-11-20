@@ -61,7 +61,7 @@ use mush_ipc::{
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
     MAX_IN_FLIGHT_SERVICE_REQUESTS, ProtoWindow, RequestUid, ServiceReq, ServiceResp, ToGateway,
-    ToServer, WireInbound,
+    ToServer, WireInbound, WireInboundLane,
 };
 use mush_net_web::{WebConfig, WebHooks};
 use mush_proto::{OutputEvent, RichText};
@@ -991,18 +991,18 @@ impl SocketGatewayLink {
         }))
     }
 
-    /// Whether `msg` is a flood-exempt connection's input (an input-context
-    /// paste — mail/chargen). Such input receives a bounded extra burst window;
-    /// it never bypasses IPC custody limits entirely. Only `Cmd`/`Query` carry
-    /// an actor to check; everything else returns `false`.
+    /// Whether `input` is a flood-exempt connection's composed command line
+    /// (an input-context paste — mail/chargen). Such lines receive a bounded
+    /// extra burst window; they never bypass IPC custody limits entirely.
+    /// Strictly limited to [`GatewayInput::Cmd`] (HIGH-2): queries, invokes,
+    /// and structured actions never receive the flood-exempt burst window.
     fn is_input_exempt(&self, input: &GatewayInput) -> bool {
-        let actor = match input {
-            GatewayInput::Cmd { actor, .. }
-            | GatewayInput::Query { actor, .. }
-            | GatewayInput::Invoke { actor, .. } => *actor,
-            GatewayInput::Action(action) => action.actor,
-        };
-        self.sessions.is_char_flood_exempt(char_key(actor))
+        match input {
+            GatewayInput::Cmd { actor, .. } => self.sessions.is_char_flood_exempt(char_key(*actor)),
+            GatewayInput::Query { .. } | GatewayInput::Invoke { .. } | GatewayInput::Action(_) => {
+                false
+            }
+        }
     }
 
     fn allocate_input_request(&self, input: GatewayInput) -> Option<GatewayRequest> {
@@ -1053,9 +1053,12 @@ impl SocketGatewayLink {
             return InputSend::Gone;
         };
         let input = match msg {
-            ToServer::Inbound(wire) => match GatewayInput::try_from(wire) {
-                Ok(input) => input,
-                Err(lifecycle) => {
+            ToServer::Inbound(wire) => match wire.classify() {
+                WireInboundLane::Custodied(input) => input,
+                WireInboundLane::Sheddable(advisory) => {
+                    return self.classify_sheddable_on(&conn, advisory);
+                }
+                WireInboundLane::Lifecycle(lifecycle) => {
                     return if conn.tx.send(ToServer::Inbound(lifecycle)) {
                         InputSend::Sent
                     } else {
@@ -1073,6 +1076,47 @@ impl SocketGatewayLink {
         };
 
         self.classify_input_on(&conn, input)
+    }
+
+    /// Bounded, sheddable, non-custodied send for advisory player signals
+    /// (`WireInbound::Composing`, `WireInbound::Respond`). Never flood-exempt,
+    /// never routes onto the unbounded must-deliver lifecycle lane, and
+    /// validates payload bounds before queuing (HIGH-1, SAN-M6).
+    fn classify_sheddable_on(&self, conn: &BoundaryConn, advisory: WireInbound) -> InputSend {
+        let kind = match &advisory {
+            WireInbound::Composing { .. } => "composing",
+            WireInbound::Respond { .. } => "respond",
+            _ => "advisory",
+        };
+        if let Err(err) = advisory.validate_sheddable() {
+            self.metrics.ipc_frame_shed();
+            tracing::warn!(
+                dir = "to_server",
+                kind,
+                error = %err,
+                "advisory frame exceeded size bounds; shedding"
+            );
+            return InputSend::Shed;
+        }
+        let depth = conn.tx.depth();
+        if depth >= self.to_server_cap as u64 {
+            self.metrics.ipc_frame_shed();
+            self.metrics.observe_ipc_to_server_depth(depth);
+            tracing::warn!(
+                dir = "to_server",
+                queue_len = depth,
+                cap = self.to_server_cap,
+                dropped_total = self.metrics.ipc_frames_shed_total(),
+                kind,
+                "ipc queue full; shedding advisory frame"
+            );
+            return InputSend::Shed;
+        }
+        if conn.tx.send(ToServer::Inbound(advisory)) {
+            InputSend::Sent
+        } else {
+            InputSend::Gone
+        }
     }
 
     fn classify_input(&self, input: GatewayInput) -> InputSend {
@@ -4016,6 +4060,111 @@ mod tests {
         );
         assert_eq!(metrics.ipc_frames_shed_total(), 1);
         assert!(bounded_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn flood_exempt_burst_is_restricted_to_cmd_only() {
+        let sessions = Arc::new(SessionManager::new());
+        let actor = ObjId(7);
+        sessions.set_flood_exempt(char_key(actor), true);
+        let (link, mut rx, metrics) = shedding_link(Arc::clone(&sessions), 8);
+
+        // Query, Invoke, and Action are never flood-exempt and shed at cap.
+        let query = ToServer::Inbound(WireInbound::Query {
+            conn: 4,
+            actor,
+            id: 1,
+            name: "who".into(),
+            args: serde_json::json!({}),
+        });
+        assert_eq!(link.to_server_input(query).await, InputSend::Shed);
+
+        let invoke = ToServer::Inbound(WireInbound::Invoke {
+            conn: 4,
+            actor,
+            id: 2,
+            request: mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::List {}),
+        });
+        assert_eq!(link.to_server_input(invoke).await, InputSend::Shed);
+
+        let action = GatewayAction {
+            conn: 4,
+            actor,
+            offered_action: mush_core::ActionOfferId(mush_ipc::CanonicalHash::from_bytes([1; 32])),
+            subject: mush_core::PerceivedRef::SelfActor,
+            targets: vec![],
+            parameters: serde_json::json!({}),
+        };
+        assert_eq!(
+            link.classify_input(GatewayInput::Action(Box::new(action))),
+            InputSend::Shed
+        );
+        assert_eq!(metrics.ipc_frames_shed_total(), 3);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn composing_and_respond_shed_at_cap_and_validate_bounds() {
+        let sessions = Arc::new(SessionManager::new());
+        let actor = ObjId(7);
+        sessions.set_flood_exempt(char_key(actor), true);
+
+        // At cap: both Composing and Respond must shed even when actor is flood-exempt.
+        let (full, mut full_rx, full_metrics) = shedding_link(Arc::clone(&sessions), 8);
+        assert_eq!(
+            full.to_server_input(ToServer::Inbound(WireInbound::Composing {
+                conn: 4,
+                actor,
+                active: true,
+            }))
+            .await,
+            InputSend::Shed
+        );
+        assert_eq!(
+            full.to_server_input(ToServer::Inbound(WireInbound::Respond {
+                epoch: "e-1".to_string(),
+                conn: 4,
+                actor,
+                id: 1,
+                choice: mush_proto::RespondChoice::Cancel,
+            }))
+            .await,
+            InputSend::Shed
+        );
+        assert_eq!(full_metrics.ipc_frames_shed_total(), 2);
+        assert!(full_rx.try_recv().is_err());
+
+        // Under cap: valid Composing/Respond pass, oversized Respond sheds.
+        let (open, mut open_rx, open_metrics) = shedding_link_at_depth(sessions, 8, 0);
+        assert_eq!(
+            open.to_server_input(ToServer::Inbound(WireInbound::Composing {
+                conn: 4,
+                actor,
+                active: true,
+            }))
+            .await,
+            InputSend::Sent
+        );
+        assert!(matches!(
+            open_rx.try_recv(),
+            Ok(ToServer::Inbound(WireInbound::Composing {
+                active: true,
+                ..
+            }))
+        ));
+        assert_eq!(
+            open.to_server_input(ToServer::Inbound(WireInbound::Respond {
+                epoch: "x".repeat(mush_ipc::MAX_RESPOND_EPOCH_BYTES + 1),
+                conn: 4,
+                actor,
+                id: 2,
+                choice: mush_proto::RespondChoice::Cancel,
+            }))
+            .await,
+            InputSend::Shed
+        );
+        assert_eq!(open_metrics.ipc_frames_shed_total(), 1);
+        assert!(open_rx.try_recv().is_err());
     }
 
     #[test]

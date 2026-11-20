@@ -1098,6 +1098,9 @@ fn draw_reticle(
     w: i64,
     h: i64,
 ) -> Option<(i64, i64, i64, i64)> {
+    if s <= 0 || w < 8 * s || h < 8 * s {
+        return None;
+    }
     let (cx, cy) = (w / 2, h / 2);
     let (gap, arm) = (3 * s, 5 * s);
     fill_rect(frame, cx - gap - arm, cy, arm, s, TEXT);
@@ -1889,5 +1892,34 @@ mod tests {
             .flat_map(|x| (0..480usize).map(move |y| (x, y)))
             .any(|(x, y)| frame.get(x, y) == BAD);
         assert!(red);
+    }
+
+    /// Regression test (SSH-M2): tiny frames (`w < 8 * s || h < 8 * s`) with a
+    /// non-zero lead pip must early-return instead of panicking in `clamp`.
+    #[test]
+    fn draw_reticle_early_returns_on_tiny_frames_without_panicking() {
+        let lock = HudLock {
+            designator: "BA".into(),
+            range_m: 320,
+            percent: Some(50),
+            at: LockAt::Box(1, 1, 2, 2),
+            lead_px: 10,
+        };
+        for (w, h, s) in [
+            (0usize, 0usize, 1i64),
+            (4, 20, 1),
+            (20, 4, 1),
+            (7, 7, 1),
+            (15, 20, 2),
+            (20, 15, 2),
+            (20, 20, 0),
+        ] {
+            let mut frame = Frame::new(w, h);
+            assert_eq!(
+                draw_reticle(&mut frame, Some(&lock), s, w as i64, h as i64),
+                None,
+                "expected None for {w}x{h} at scale {s}"
+            );
+        }
     }
 }

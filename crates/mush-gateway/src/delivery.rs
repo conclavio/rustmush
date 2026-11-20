@@ -87,6 +87,7 @@ pub fn transmit_and_police(
 ) -> Vec<ConnDownPost> {
     let mut slow = Vec::new();
     for (target, ev) in sends {
+        let ephemeral = matches!(&*ev, OutputEvent::Composing { .. });
         match target {
             SendTarget::Char(ch) => {
                 let report = sessions.send_to_char(CharKey(ch), ev);
@@ -96,14 +97,18 @@ pub fn transmit_and_police(
                         "output to actor with no live connections dropped"
                     );
                 }
-                slow.extend(report.dropped);
+                if !ephemeral {
+                    slow.extend(report.dropped);
+                }
             }
             SendTarget::Conn(conn) => {
                 let _ = sessions.send_to_conn(ConnId(conn), ev);
             }
             SendTarget::All => {
                 let report = sessions.broadcast_all(ev);
-                slow.extend(report.dropped);
+                if !ephemeral {
+                    slow.extend(report.dropped);
+                }
             }
             SendTarget::Relay(channel) => {
                 // Relay lines are split off before this point
@@ -283,5 +288,79 @@ impl SessionDelivery {
     /// Set/clear a character's flood-exempt flag on the gateway throttle.
     pub fn set_flood_exempt(&self, char: u64, exempt: bool) {
         self.sessions.set_flood_exempt(CharKey(char), exempt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_proto::{ClientCaps, ClientKind, ColorDepth, ObjRef, RichText};
+    use mush_session::ConnectionHandle;
+
+    #[test]
+    fn composing_overflow_never_triggers_slow_client_detach() {
+        let sessions = Arc::new(SessionManager::new());
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let caps = ClientCaps {
+            kind: ClientKind::Web,
+            color: ColorDepth::TrueColor,
+            width: 80,
+            height: 24,
+            utf8: true,
+            structured: true,
+        };
+        let handle = ConnectionHandle::new_structured(
+            ConnId(9),
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            caps,
+            tx,
+        );
+        let _ = sessions.attach(handle, CharKey(7), "bystander".to_string());
+
+        // Fill the 1-slot queue with a normal event.
+        let posts = transmit_and_police(
+            &sessions,
+            vec![(
+                SendTarget::Char(7),
+                Arc::new(OutputEvent::Sys(RichText::plain("fill"))),
+            )],
+            |_| {},
+        );
+        assert!(posts.is_empty());
+        assert_eq!(sessions.connection_count(), 1);
+
+        // Overflow with Composing events: bystander stays attached.
+        let composing = Arc::new(OutputEvent::Composing {
+            actor: ObjRef {
+                id: "#1".to_string(),
+                name: "Spammer".to_string(),
+            },
+            active: true,
+        });
+        let posts = transmit_and_police(
+            &sessions,
+            vec![
+                (SendTarget::Char(7), Arc::clone(&composing)),
+                (SendTarget::All, composing),
+            ],
+            |_| {},
+        );
+        assert!(
+            posts.is_empty(),
+            "ephemeral Composing must never detach slow bystanders"
+        );
+        assert_eq!(sessions.connection_count(), 1);
+
+        // A real non-ephemeral overflow still triggers slow-client detach.
+        let posts = transmit_and_police(
+            &sessions,
+            vec![(
+                SendTarget::Char(7),
+                Arc::new(OutputEvent::Sys(RichText::plain("overflow"))),
+            )],
+            |_| {},
+        );
+        assert_eq!(posts.len(), 1);
+        assert_eq!(sessions.connection_count(), 0);
     }
 }

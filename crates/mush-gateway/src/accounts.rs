@@ -45,16 +45,25 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use mush_config::accounts::{
-    burn_dummy_verify, hash_password, run_blocking, validate_account_name, validate_character_name,
-    validate_password, verify_hash,
+    argon2_semaphore, burn_dummy_verify_on, hash_password_on, validate_account_name,
+    validate_character_name, validate_password, verify_hash_on,
 };
 use mush_config::unix_now_s;
 use mush_core::ObjId;
 use mush_ipc::{CreatePlayerError, GatewayLink, ServiceReq, ServiceResp};
 use mush_store::{AccountRec, ObjectStore, StoreError};
+
+/// Maximum account-name bytes accepted by [`Accounts::verify`] /
+/// [`Accounts::verify_checked`] before skipping store lookup.
+const MAX_VERIFY_ACCOUNT_BYTES: usize = 64;
+
+/// Maximum password bytes accepted by [`Accounts::verify`] /
+/// [`Accounts::verify_checked`] before skipping store lookup / Argon2 hashing.
+const MAX_VERIFY_PASSWORD_BYTES: usize = 128;
 
 // The transport-agnostic account vocabulary lives in `mush-config`; re-export it
 // here so existing `…accounts::{CharSummary, CreateErr, …}` imports keep working.
@@ -101,6 +110,24 @@ pub enum AuthOutcome {
     BadCredentials,
 }
 
+/// Result of a password check that keeps Argon2id semaphore saturation
+/// ([`Self::Busy`]) distinct from invalid credentials so web login can answer
+/// HTTP 429 without counting a password failure (HIGH-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthCheckOutcome {
+    /// Credentials good; here are the account's characters.
+    Ok {
+        /// Account name in its registered display case.
+        account: String,
+        /// The account's characters.
+        characters: Vec<CharSummary>,
+    },
+    /// Unknown account *or* wrong password.
+    BadCredentials,
+    /// Argon2id concurrency budget saturated; transient overload.
+    Busy,
+}
+
 /// The pluggable auth seam the SSH bridge is generic over.
 ///
 /// Methods are declared as `-> impl Future + Send` (not `async fn`) so
@@ -111,6 +138,27 @@ pub trait AuthBackend: Send + Sync {
     /// Check credentials. Internally CPU-heavy (argon2id, run on the
     /// blocking pool); callers just await.
     fn verify(&self, account: &str, password: &str) -> impl Future<Output = AuthOutcome> + Send;
+    /// Like [`AuthBackend::verify`], surfacing Argon2id concurrency saturation
+    /// as [`AuthCheckOutcome::Busy`] instead of folding it into
+    /// `BadCredentials`.
+    fn verify_checked(
+        &self,
+        account: &str,
+        password: &str,
+    ) -> impl Future<Output = AuthCheckOutcome> + Send {
+        async move {
+            match self.verify(account, password).await {
+                AuthOutcome::Ok {
+                    account,
+                    characters,
+                } => AuthCheckOutcome::Ok {
+                    account,
+                    characters,
+                },
+                AuthOutcome::BadCredentials => AuthCheckOutcome::BadCredentials,
+            }
+        }
+    }
     /// Authenticate an account by an offered SSH public key (M19). The
     /// offered key arrives as an OpenSSH `"type base64 comment"` line;
     /// implementors parse it and each of the account's registered keys and
@@ -157,6 +205,9 @@ pub struct Accounts {
     /// [`ServiceReq`]s through this trait object, never by touching `World`.
     link: Arc<dyn GatewayLink>,
     max_characters: usize,
+    /// Shared Argon2id concurrency semaphore (process-wide in production;
+    /// injectable in unit tests to verify fail-fast saturation cleanly).
+    argon2_sem: Arc<Semaphore>,
 }
 
 impl Accounts {
@@ -186,7 +237,14 @@ impl Accounts {
             store,
             link,
             max_characters,
+            argon2_sem: argon2_semaphore(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_argon2_semaphore(mut self, sem: Arc<Semaphore>) -> Self {
+        self.argon2_sem = sem;
+        self
     }
 
     /// One request to the server half, re-sent while the world answers the
@@ -364,26 +422,55 @@ impl Accounts {
 
 impl AuthBackend for Accounts {
     async fn verify(&self, account: &str, password: &str) -> AuthOutcome {
+        match self.verify_checked(account, password).await {
+            AuthCheckOutcome::Ok {
+                account,
+                characters,
+            } => AuthOutcome::Ok {
+                account,
+                characters,
+            },
+            AuthCheckOutcome::BadCredentials | AuthCheckOutcome::Busy => {
+                AuthOutcome::BadCredentials
+            }
+        }
+    }
+
+    async fn verify_checked(&self, account: &str, password: &str) -> AuthCheckOutcome {
+        // Cap account/password lengths before touching the store or Argon2
+        // (HIGH-3); burn a fixed-length bounded dummy verify to preserve
+        // uniform timing without passing oversized bytes to Argon2.
+        if account.len() > MAX_VERIFY_ACCOUNT_BYTES || password.len() > MAX_VERIFY_PASSWORD_BYTES {
+            return match burn_dummy_verify_on(&self.argon2_sem, "bad-length-pad".to_owned()).await {
+                Ok(()) => AuthCheckOutcome::BadCredentials,
+                Err(_) => AuthCheckOutcome::Busy,
+            };
+        }
         let Some(rec) = self.fetch(account).await else {
             // A miss still burns one argon2 verify so timing does not
             // reveal account existence.
-            let password = password.to_string();
-            let _ = run_blocking(move || burn_dummy_verify(&password)).await;
-            return AuthOutcome::BadCredentials;
+            return match burn_dummy_verify_on(&self.argon2_sem, password.to_string()).await {
+                Ok(()) => AuthCheckOutcome::BadCredentials,
+                Err(_) => AuthCheckOutcome::Busy,
+            };
         };
-        let ok = {
-            let (hash, password) = (rec.argon2_hash.clone(), password.to_string());
-            run_blocking(move || verify_hash(&hash, &password))
-                .await
-                .unwrap_or(false)
+        let ok = match verify_hash_on(
+            &self.argon2_sem,
+            rec.argon2_hash.clone(),
+            password.to_string(),
+        )
+        .await
+        {
+            Ok(ok) => ok,
+            Err(_) => return AuthCheckOutcome::Busy,
         };
         if ok {
-            AuthOutcome::Ok {
+            AuthCheckOutcome::Ok {
                 account: rec.name,
                 characters: rec.characters.into_iter().map(Into::into).collect(),
             }
         } else {
-            AuthOutcome::BadCredentials
+            AuthCheckOutcome::BadCredentials
         }
     }
 
@@ -431,13 +518,19 @@ impl AuthBackend for Accounts {
         validate_account_name(account)?;
         validate_password(password)?;
         validate_character_name(char_name)?;
+        // Pre-existence check BEFORE Argon2id hashing (HIGH-3): registering
+        // an already-taken account must not burn Argon2id CPU/RAM or hit the
+        // world task. The atomic `store.create_account` below still handles
+        // concurrent races safely.
+        match self.store.get_account(account).await {
+            Ok(Some(_)) => return Err(CreateErr::AccountExists),
+            Ok(None) => {}
+            Err(e) => return Err(CreateErr::Io(e.to_string())),
+        }
         // Advisory pre-check: catch a taken character name BEFORE the
         // account record exists (the world create re-validates atomically).
         self.require_name_free(char_name).await?;
-        let hash = {
-            let password = password.to_string();
-            run_blocking(move || hash_password(&password)).await??
-        };
+        let hash = hash_password_on(&self.argon2_sem, password.to_string()).await?;
         let created = unix_now_s();
         let account_id = mush_core::AccountId::mint(account, created).ok();
         let rec = AccountRec {
@@ -698,6 +791,68 @@ mod pubkey_tests {
         assert_eq!(
             accounts.verify_pubkey("nick", "not-a-key").await,
             AuthOutcome::BadCredentials
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_existing_account_before_argon2_or_world() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        store
+            .create_account(AccountRec {
+                id: None,
+                name: "Existing".into(),
+                argon2_hash: "x".into(),
+                created: unix_now_s(),
+                characters: Vec::new(),
+                ssh_keys: Vec::new(),
+                discord: None,
+            })
+            .await
+            .unwrap();
+        // Zero-permit Argon2 semaphore + NoLink proves neither Argon2 nor the
+        // world boundary is touched when the account already exists.
+        let accounts = Accounts::with_link(Arc::clone(&store), Arc::new(NoLink), 3)
+            .with_argon2_semaphore(Arc::new(Semaphore::new(0)));
+        assert_eq!(
+            accounts.create("existing", "hunter42", "NewChar").await,
+            Err(CreateErr::AccountExists)
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_checked_returns_busy_when_argon2_semaphore_is_saturated() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        store
+            .create_account(AccountRec {
+                id: None,
+                name: "Nick".into(),
+                argon2_hash: mush_config::accounts::hash_password("hunter42").unwrap(),
+                created: unix_now_s(),
+                characters: Vec::new(),
+                ssh_keys: Vec::new(),
+                discord: None,
+            })
+            .await
+            .unwrap();
+        let accounts = Accounts::with_link(Arc::clone(&store), Arc::new(NoLink), 3)
+            .with_argon2_semaphore(Arc::new(Semaphore::new(0)));
+
+        assert_eq!(
+            accounts.verify_checked("nick", "hunter42").await,
+            AuthCheckOutcome::Busy
+        );
+        assert_eq!(
+            accounts.verify_checked("ghost", "hunter42").await,
+            AuthCheckOutcome::Busy
+        );
+        // Oversized credentials also fail cleanly without hitting the store.
+        assert_eq!(
+            accounts.verify_checked(&"a".repeat(65), "hunter42").await,
+            AuthCheckOutcome::Busy
+        );
+        assert_eq!(
+            accounts.verify_checked("nick", &"p".repeat(129)).await,
+            AuthCheckOutcome::Busy
         );
     }
 }

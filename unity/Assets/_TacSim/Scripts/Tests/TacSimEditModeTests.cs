@@ -695,11 +695,11 @@ namespace TacSim.Tests
                 };
 
                 sync.InitializeDiskCacheForServer("https://server-a.example.com", tempDir);
-                Assert.IsTrue(sync.StoreVerifiedPack("goods", shaA, serverAGoods));
-                // Persist manifest on server A by simulating pack panel arrival
+                // Deliver manifest first so `goods` is requested in-flight, then deliver the verified pack reply.
                 using (var ws = new MushWsClient())
                 {
-                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""goods"",""sha256"":""{shaA}"",""json"":{JsonNode.FromString(serverAGoods).ToJson()}}}"), 1f);
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""manifest"",""packs"":[{{""id"":""goods"",""category"":""market"",""sha256"":""{shaA}"",""bytes"":{serverAGoods.Length}}}]}}"), 0.5f);
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""goods"",""requested_id"":""goods"",""sha256"":""{shaA}"",""json"":{JsonNode.FromString(serverAGoods).ToJson()}}}"), 1f);
                 }
                 Assert.IsTrue(TacSimContentLoader.TryGetSyncedOrResourceJson("goods", out _));
                 Assert.IsTrue(tradeState.GoodsCatalog.Exists(g => g.Label == "Server A Metal"));
@@ -2207,6 +2207,84 @@ namespace TacSim.Tests
         }
 
         [Test]
+        public void Security_U5_PathTraversalAndUncSlugs_AreRejectedBeforeFilesystemAccess()
+        {
+            Assert.IsTrue(TacSimContentLoader.IsSafeContentSlug("ceres_freeport"));
+            Assert.IsTrue(TacSimContentLoader.IsSafeContentSlug("neighborhood.ooc_area"));
+            Assert.IsTrue(TacSimContentLoader.IsSafeContentSlug("mars-canyon.v1"));
+
+            string[] unsafeSlugs =
+            {
+                "",
+                ".",
+                "..",
+                "../secret",
+                "..\\secret",
+                "a..b",
+                "foo/bar",
+                "foo\\bar",
+                @"\\attacker.invalid\share\leak",
+                "//attacker.invalid/share/leak",
+                @"C:\Windows\win.ini",
+                "C:relative",
+                "bad slug",
+                new string('a', 129)
+            };
+            for (int i = 0; i < unsafeSlugs.Length; i++)
+            {
+                Assert.IsFalse(TacSimContentLoader.IsSafeContentSlug(unsafeSlugs[i]), $"Expected slug rejected: '{unsafeSlugs[i]}'");
+            }
+
+            string[] unsafeRelPaths =
+            {
+                @"\\attacker.invalid\share\file.json",
+                "//attacker.invalid/share/file.json",
+                @"C:\Windows\System32\drivers\etc\hosts",
+                "/etc/passwd",
+                "C:atlas/foo.json",
+                "../../Cargo.toml",
+                @"atlas\..\..\Cargo.toml",
+                "atlas/../market/goods.json"
+            };
+            for (int i = 0; i < unsafeRelPaths.Length; i++)
+            {
+                Assert.AreEqual(string.Empty, TacSimContentLoader.ResolveRepoContentPath(unsafeRelPaths[i]), $"Repo resolver must reject '{unsafeRelPaths[i]}'");
+                Assert.AreEqual(string.Empty, TacSimContentLoader.ResolveMushAtlasContentPath(unsafeRelPaths[i]), $"Atlas resolver must reject '{unsafeRelPaths[i]}'");
+            }
+
+            // Even if an attacker supplies a valid path to an existing JSON file outside content roots, loaders must fall back without reading it.
+            string tempFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "tacsim_u5_" + System.Guid.NewGuid().ToString("N"));
+            string tempJsonPath = tempFile + ".json";
+            try
+            {
+                System.IO.File.WriteAllText(tempJsonPath, @"{""entries"":{""room.pwn"":{""kind"":""room"",""def"":{""name"":""PWNED""}}}}");
+
+                var nb = TacSimContentLoader.LoadNeighborhoodPackById(tempFile);
+                Assert.IsNotNull(nb);
+                Assert.IsFalse(nb.Rooms.ContainsKey("room.pwn"), "Absolute traversal path must not be read by LoadNeighborhoodPackById");
+
+                var nbUnc = TacSimContentLoader.LoadNeighborhoodPackById(@"\\attacker.invalid\share\evil");
+                Assert.IsNotNull(nbUnc);
+
+                var ship = TacSimContentLoader.LoadShipTemplate(@"..\..\evil");
+                Assert.IsNotNull(ship);
+                Assert.AreEqual("tacsim.unit.dray", ship.UnitId);
+
+                var arena = TacSimTerrainDecoder.LoadStaticArena(@"\\attacker.invalid\share\arena");
+                Assert.IsNotNull(arena);
+                Assert.AreEqual("mars_canyon", arena.Id);
+
+                var site = TacSimTerrainDecoder.BuildPlanetarySiteGrid(@"..\..\secret", side: 64);
+                Assert.IsNotNull(site);
+                Assert.AreEqual("occator_rim", site.Id);
+            }
+            finally
+            {
+                try { if (System.IO.File.Exists(tempJsonPath)) System.IO.File.Delete(tempJsonPath); } catch { }
+            }
+        }
+
+        [Test]
         public void Remediation_UC01_StandaloneBuilderResolvesDirectories_AndStagesRealPacksFromUnityCwd()
         {
             string prevCwd = System.IO.Directory.GetCurrentDirectory();
@@ -2251,6 +2329,254 @@ namespace TacSim.Tests
                 System.IO.Directory.SetCurrentDirectory(prevCwd);
                 if (System.IO.Directory.Exists(tempOut))
                     System.IO.Directory.Delete(tempOut, recursive: true);
+            }
+        }
+
+        [Test]
+        public void Security_U3_JsonDepthAndNumericGuards_PreventStackOverflowAndNonFiniteValues()
+        {
+            // Depth 64 must parse; depth 65 (and deep 4000-level nesting) must throw FormatException without StackOverflowException.
+            string depth64 = new string('[', JsonNode.MaxDepth) + new string(']', JsonNode.MaxDepth);
+            var ok = JsonNode.Parse(depth64);
+            Assert.IsTrue(ok.IsArray);
+
+            string depth65 = new string('[', JsonNode.MaxDepth + 1) + new string(']', JsonNode.MaxDepth + 1);
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse(depth65));
+
+            string deepObj = string.Concat(System.Linq.Enumerable.Repeat("{\"a\":", 500)) + "1" + new string('}', 500);
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse(deepObj));
+
+            // Clone and ToJson must also guard manually constructed graphs deeper than MaxDepth.
+            JsonNode manualRoot = JsonNode.NewArray();
+            JsonNode cur = manualRoot;
+            for (int i = 0; i < JsonNode.MaxDepth + 2; i++)
+            {
+                var next = JsonNode.NewArray();
+                cur.Add(next);
+                cur = next;
+            }
+            Assert.Throws<System.InvalidOperationException>(() => manualRoot.Clone());
+            Assert.Throws<System.InvalidOperationException>(() => manualRoot.ToJson());
+
+            // Non-finite numbers and out-of-range integer coercions must be rejected/clamped safely.
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("1e309"));
+            Assert.Throws<System.FormatException>(() => JsonNode.Parse("-1e309"));
+            Assert.IsTrue(JsonNode.FromDouble(double.NaN).IsNull);
+            Assert.IsTrue(JsonNode.FromDouble(double.PositiveInfinity).IsNull);
+            Assert.IsTrue(JsonNode.FromDouble(double.NegativeInfinity).IsNull);
+
+            Assert.AreEqual(7.5, JsonNode.FromString("NaN").AsDouble(7.5));
+            Assert.AreEqual(7.5, JsonNode.FromString("Infinity").AsDouble(7.5));
+
+            var hugeFloat = JsonNode.FromDouble(1e30);
+            Assert.AreEqual(42L, hugeFloat.AsLong(42L));
+            Assert.AreEqual(99, JsonNode.FromLong((long)int.MaxValue + 10L).AsInt(99));
+            Assert.AreEqual(99, JsonNode.FromLong((long)int.MinValue - 10L).AsInt(99));
+        }
+
+        [Test]
+        public void Security_U3_WsClientBounds_RejectBinaryOversize_CapQueues_AndBoundReplyDepth()
+        {
+            // Frame validation: binary rejected immediately; >4 MiB rejected immediately; <=4 MiB text allowed.
+            Assert.IsFalse(MushWsClient.TryValidateInboundFrame(
+                System.Net.WebSockets.WebSocketMessageType.Binary, 0, 16, out var binStatus, out _));
+            Assert.AreEqual(System.Net.WebSockets.WebSocketCloseStatus.InvalidMessageType, binStatus);
+
+            Assert.IsFalse(MushWsClient.TryValidateInboundFrame(
+                System.Net.WebSockets.WebSocketMessageType.Text, MushWsClient.MaxInboundMessageBytes, 1, out var bigStatus, out _));
+            Assert.AreEqual(System.Net.WebSockets.WebSocketCloseStatus.MessageTooBig, bigStatus);
+
+            Assert.IsTrue(MushWsClient.TryValidateInboundFrame(
+                System.Net.WebSockets.WebSocketMessageType.Text, MushWsClient.MaxInboundMessageBytes - 10, 10, out _, out _));
+
+            using (var ws = new MushWsClient())
+            {
+                // Inbound queue cap (2048)
+                var env = MushProtocol.ParseEnvelope(@"{""seq"":1,""ts"":1,""t"":""sys"",""d"":{""text"":""hi""}}");
+                for (int i = 0; i < MushWsClient.MaxInboundQueueCount + 100; i++)
+                    ws.InjectSyntheticEnvelope(env);
+                Assert.AreEqual(MushWsClient.MaxInboundQueueCount, ws.InboundQueueCount);
+                ws.Disconnect();
+
+                // Outbound queue cap (256) on a fresh pre-disconnect test client
+                using (var wsOut = new MushWsClient())
+                {
+                    for (int i = 0; i < MushWsClient.MaxOutboundQueueCount + 50; i++)
+                        wsOut.SendLine("look");
+                    Assert.AreEqual(MushWsClient.MaxOutboundQueueCount, wsOut.OutboundQueueCount);
+                }
+
+                // Panel feed map cap (64)
+                for (int i = 0; i < MushWsClient.MaxPanelFeeds + 20; i++)
+                {
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{""seq"":{i + 1},""ts"":1,""t"":""panel"",""d"":{{""feed"":""f_{i}"",""kind"":""keyframe"",""data"":{{""n"":{i}}}}}}}"));
+                    ws.PumpMainThread();
+                }
+                Assert.AreEqual(MushWsClient.MaxPanelFeeds, ws.PanelFeedCount);
+                ws.Disconnect();
+
+                // View cursor map cap (64)
+                for (int i = 0; i < MushWsClient.MaxViewCursors + 20; i++)
+                {
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{""seq"":{i + 1},""ts"":1,""t"":""view"",""d"":{{""view"":""v_{i}"",""generation"":""g1"",""sequence"":1,""data"":{{""n"":{i}}}}}}}"));
+                    ws.PumpMainThread();
+                }
+                Assert.AreEqual(MushWsClient.MaxViewCursors, ws.ViewCursorCount);
+                ws.Disconnect();
+
+                // Iterative reply unwrap: depth 1 dispatches; depth 2 and depth 30 are ignored without recursion overflow.
+                int rooms = 0;
+                ws.OnRoomReceived += _ => rooms++;
+
+                var replyDepth1 = MushProtocol.ParseEnvelope(@"{""seq"":1,""ts"":1,""t"":""reply"",""d"":{""event"":{""t"":""room"",""d"":{""id"":""#1"",""name"":""OK""}}}}");
+                ws.InjectSyntheticEnvelope(replyDepth1);
+                ws.PumpMainThread();
+                Assert.AreEqual(1, rooms, "Depth-1 reply envelope must unwrap and dispatch");
+
+                var replyDepth2 = MushProtocol.ParseEnvelope(@"{""seq"":2,""ts"":2,""t"":""reply"",""d"":{""event"":{""t"":""reply"",""d"":{""event"":{""t"":""room"",""d"":{""id"":""#2"",""name"":""Nested""}}}}}}");
+                ws.InjectSyntheticEnvelope(replyDepth2);
+                ws.PumpMainThread();
+                Assert.AreEqual(1, rooms, "Depth-2 reply envelope must be refused (max depth <= 1)");
+
+                JsonNode nested = JsonNode.Parse(@"{""t"":""room"",""d"":{""id"":""#3"",""name"":""Deep""}}");
+                for (int i = 0; i < 30; i++)
+                {
+                    var wrapper = JsonNode.NewObject();
+                    wrapper["t"] = JsonNode.FromString("reply");
+                    var wd = JsonNode.NewObject();
+                    wd["event"] = nested;
+                    wrapper["d"] = wd;
+                    nested = wrapper;
+                }
+                ws.InjectSyntheticEnvelope(new MushEnvelope { Seq = 3, TimestampMs = 3, EventType = "reply", Data = nested["d"] });
+                ws.PumpMainThread();
+                Assert.AreEqual(1, rooms, "Deeply nested reply chain must be ignored without stack overflow");
+            }
+        }
+
+        [Test]
+        public void Security_U4_TerrainDecoder_GuardsInt32OverflowBadBase64AndParameterClamps()
+        {
+            var grid = new DecodedTerrainGrid
+            {
+                Width = 256,
+                Height = 256,
+                Classes = new TerrainCellClass[256 * 256],
+                ElevMeters = new float[256 * 256]
+            };
+
+            // Invalid base64 must not throw FormatException.
+            string badB64Atlas = @"{""entries"":{""field.q0_0"":{""def"":{""classes"":""!!!not-base64!!!"",""data"":""!!!""}}}}";
+            Assert.IsFalse(TacSimTerrainDecoder.TryStitchAtlasQuadrantTiles(badB64Atlas, grid));
+
+            // tw = 65535, th = 65535 previously overflowed signed int32 (`tw * th == -131071`) or attempted multi-GB alloc!
+            byte[] overflowHeader = { 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x02 };
+            string overflowB64 = System.Convert.ToBase64String(overflowHeader);
+            string overflowAtlas = $@"{{""entries"":{{""field.q0_0"":{{""def"":{{""classes"":""{overflowB64}"",""data"":""AAAA""}}}}}}}}";
+            Assert.IsFalse(TacSimTerrainDecoder.TryStitchAtlasQuadrantTiles(overflowAtlas, grid));
+
+            // tw = 513 (exceeds 512 cap) and tw = 0 must be rejected.
+            byte[] over512Header = { 0x01, 0x02, 0x01, 0x00, 0x01, 0x00, 0x02 };
+            string over512Atlas = $@"{{""entries"":{{""field.q0_0"":{{""def"":{{""classes"":""{System.Convert.ToBase64String(over512Header)}"",""data"":""AAAA""}}}}}}}}";
+            Assert.IsFalse(TacSimTerrainDecoder.TryStitchAtlasQuadrantTiles(over512Atlas, grid));
+
+            byte[] zeroHeader = { 0x00, 0x00, 0x04, 0x00 };
+            string zeroAtlas = $@"{{""entries"":{{""field.q0_0"":{{""def"":{{""classes"":""{System.Convert.ToBase64String(zeroHeader)}"",""data"":""AAAA""}}}}}}}}";
+            Assert.IsFalse(TacSimTerrainDecoder.TryStitchAtlasQuadrantTiles(zeroAtlas, grid));
+
+            // Valid 2x2 quadrant tile still stitches cleanly.
+            byte[] validClasses = { 2, 0, 2, 0, 4, 0, (byte)TerrainCellClass.Rock };
+            byte[] validElev = { 0x64, 0x00, 0xC8, 0x00, 0x2C, 0x01, 0x90, 0x01 }; // 100, 200, 300, 400 cm
+            string validAtlas = $@"{{""entries"":{{""field.q0_0"":{{""def"":{{""classes"":""{System.Convert.ToBase64String(validClasses)}"",""data"":""{System.Convert.ToBase64String(validElev)}""}}}}}}}}";
+            Assert.IsTrue(TacSimTerrainDecoder.TryStitchAtlasQuadrantTiles(validAtlas, grid));
+            Assert.AreEqual(TerrainCellClass.Rock, grid.GetCellClass(0, 0));
+            Assert.AreEqual(1.0f, grid.ElevMeters[0], 0.01f);
+            Assert.AreEqual(4.0f, grid.ElevMeters[1 * 256 + 1], 0.01f);
+
+            // Clamps on span, baseCellCm, unit_cm, and side.
+            var siteFrame = JsonNode.Parse(@"{""width"":4,""height"":4,""cell_cm"":99999999,""rows"":[[["","",4]],[["","",4]],[["","",4]],[["","",4]]],""site"":{""grid"":{""x0"":0,""y0"":0,""span"":99999,""cell_cm"":99999999}}}");
+            var decodedSite = TacSimTerrainDecoder.DecodeSiteMapFrame(siteFrame);
+            Assert.IsNotNull(decodedSite);
+            Assert.LessOrEqual(decodedSite.SpanCells, 64);
+            Assert.LessOrEqual(decodedSite.CellSizeM, 64000f);
+
+            var clampedSmall = TacSimTerrainDecoder.BuildPlanetarySiteGrid("occator_rim", side: -5);
+            Assert.AreEqual(8, clampedSmall.Width);
+            var clampedBig = TacSimTerrainDecoder.BuildPlanetarySiteGrid("occator_rim", side: 999999);
+            Assert.AreEqual(TacSimTerrainDecoder.MaxGridDimension, clampedBig.Width);
+        }
+
+        [Test]
+        public void Security_U6_ContentSync_RejectsUnsolicitedOrMismatchedPacks_EnforcesQuotas_AndUsesSafeHexNames()
+        {
+            string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimU6_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                var sync = new TacSimContentSync();
+                sync.InitializeDiskCacheForServer("https://u6.example.com", tempDir);
+
+                // 1. Unsolicited op=="pack" (not in _inFlightPacks) must be rejected with zero memory/disk writes.
+                string rogueJson = @"{""rogue"":true}";
+                string rogueSha = TacSimContentSync.ComputeSha256Hex(rogueJson);
+                using (var ws = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""rogue"",""sha256"":""{rogueSha}"",""json"":{JsonNode.FromString(rogueJson).ToJson()}}}"), 1f);
+                }
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("rogue", out _), "Unsolicited pack must not register");
+                Assert.AreEqual(0, sync.CachedPackCount);
+
+                // 2. Empty SHA-256 and self-referential SHA-256 mismatching manifest entry must be rejected.
+                Assert.IsFalse(sync.StoreVerifiedPack("empty_sha", "", rogueJson), "Empty expected SHA-256 must be rejected");
+                Assert.IsFalse(sync.StoreVerifiedPack("null_sha", null, rogueJson), "Null expected SHA-256 must be rejected");
+
+                string manifestJson = @"{""ok"":1}";
+                string manifestSha = TacSimContentSync.ComputeSha256Hex(manifestJson);
+                string tamperedJson = @"{""ok"":2}";
+                string tamperedSha = TacSimContentSync.ComputeSha256Hex(tamperedJson);
+                using (var ws = new MushWsClient())
+                {
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""manifest"",""packs"":[{{""id"":""legit"",""category"":""unit"",""sha256"":""{manifestSha}"",""bytes"":8}}]}}"), 2f);
+                    // Server sends tampered payload with self-consistent tamperedSha (does NOT match manifestSha!)
+                    sync.HandleWebSocketContentPanel(ws, JsonNode.Parse($@"{{""op"":""pack"",""found"":true,""id"":""legit"",""requested_id"":""legit"",""sha256"":""{tamperedSha}"",""json"":{JsonNode.FromString(tamperedJson).ToJson()}}}"), 2.1f);
+                }
+                Assert.IsFalse(TacSimContentLoader.TryGetSyncedOrResourceJson("legit", out _), "Self-referential digest mismatching manifest must be rejected");
+
+                // 3. Per-pack 2 MiB quota must reject oversized packs.
+                string over2MiB = new string('x', TacSimContentSync.MaxPackBytes + 1);
+                string overSha = TacSimContentSync.ComputeSha256Hex(over2MiB);
+                Assert.IsFalse(sync.StoreVerifiedPack("huge", overSha, over2MiB), "Packs > 2 MiB must be rejected");
+
+                // 4. Safe SHA-256 hex cache filenames prevent slug collisions and Windows reserved device names (`CON`, `NUL`).
+                string f1 = TacSimContentSync.CacheFileNameForPackId("a/b");
+                string f2 = TacSimContentSync.CacheFileNameForPackId("a_b");
+                string fCon = TacSimContentSync.CacheFileNameForPackId("CON");
+                Assert.AreNotEqual(f1, f2, "Distinct IDs with punctuation must not collide in cache filenames");
+                Assert.AreEqual(69, fCon.Length, "Cache filename must be 64-char SHA-256 hex + '.json'");
+                Assert.IsFalse(fCon.StartsWith("CON", System.StringComparison.OrdinalIgnoreCase));
+                Assert.IsTrue(sync.StoreVerifiedPack("CON", manifestSha, manifestJson), "Pack named CON must persist safely via SHA-256 hex filename");
+
+                // 5. Total file count quota (256 files) must reject the 257th distinct pack.
+                var countSync = new TacSimContentSync();
+                for (int i = 0; i < TacSimContentSync.MaxCachedPacks; i++)
+                {
+                    string pj = $"{{\"i\":{i}}}";
+                    Assert.IsTrue(countSync.StoreVerifiedPack($"p_{i}", TacSimContentSync.ComputeSha256Hex(pj), pj));
+                }
+                string overflowPack = @"{""i"":999}";
+                Assert.IsFalse(countSync.StoreVerifiedPack("p_overflow", TacSimContentSync.ComputeSha256Hex(overflowPack), overflowPack), "257th pack must be rejected by MaxCachedPacks quota");
+
+                // 6. Total byte quota (64 MiB) must reject once cumulative cached bytes would exceed 64 MiB.
+                var byteSync = new TacSimContentSync();
+                string chunk1MiB = "\"" + new string('a', (1024 * 1024) - 2) + "\"";
+                string chunkSha = TacSimContentSync.ComputeSha256Hex(chunk1MiB);
+                for (int i = 0; i < 64; i++)
+                    Assert.IsTrue(byteSync.StoreVerifiedPack($"mb_{i}", chunkSha, chunk1MiB));
+                Assert.IsFalse(byteSync.StoreVerifiedPack("mb_65", chunkSha, chunk1MiB), "65th 1 MiB pack must be rejected by 64 MiB cache quota");
+            }
+            finally
+            {
+                TacSimContentLoader.ClearDynamicPacks();
+                try { if (System.IO.Directory.Exists(tempDir)) System.IO.Directory.Delete(tempDir, recursive: true); } catch { }
             }
         }
 
@@ -3054,6 +3380,36 @@ namespace TacSim.Tests
                 TacSimContentLoader.ClearDynamicPacks();
                 try { if (System.IO.Directory.Exists(tempDir)) System.IO.Directory.Delete(tempDir, recursive: true); } catch { }
             }
+        }
+
+        [Test]
+        public void Security_U7_LoopbackChecks_NonLoopbackWsGuard_AndNonJsonAuthErrorHandling()
+        {
+            // 0.0.0.0 must NOT be classified as loopback.
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("0.0.0.0"));
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("0.0.0.0:8080"));
+            Assert.AreEqual("https://0.0.0.0:8080", MushAuthClient.NormalizeBaseUrl("0.0.0.0:8080"));
+            Assert.IsTrue(MushAuthClient.IsLoopbackAuthority("localhost:8080"));
+            Assert.IsTrue(MushAuthClient.IsLoopbackAuthority("127.0.0.1:8080"));
+            Assert.IsTrue(MushAuthClient.IsLoopbackAuthority("[::1]:8080"));
+
+            // Non-loopback ws:// must be rejected in non-dev mode; wss:// and loopback ws:// remain allowed.
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushWsClient.BuildValidatedWebSocketUri("http://dev1.conclav.io", "42", 0, allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushWsClient.BuildValidatedWebSocketUri("http://0.0.0.0:8080", "42", 0, allowInsecureNonLoopback: false));
+
+            var wss = MushWsClient.BuildValidatedWebSocketUri("https://dev1.conclav.io", "42", 0, allowInsecureNonLoopback: false);
+            Assert.AreEqual("wss", wss.Scheme);
+            var loopback = MushWsClient.BuildValidatedWebSocketUri("http://127.0.0.1:8080", "42", 0, allowInsecureNonLoopback: false);
+            Assert.AreEqual("ws", loopback.Scheme);
+            var v6Loopback = MushWsClient.BuildValidatedWebSocketUri("http://[::1]:8080", "42", 0, allowInsecureNonLoopback: false);
+            Assert.AreEqual("ws", v6Loopback.Scheme);
+
+            // Non-JSON non-2xx auth error responses (e.g. HTML 502 from reverse proxy) must not throw FormatException.
+            Assert.AreEqual("<html>502 Bad Gateway</html>", MushAuthClient.ExtractErrorMessage("<html>502 Bad Gateway</html>", "HTTP 502"));
+            Assert.AreEqual("invalid credentials", MushAuthClient.ExtractErrorMessage(@"{""error"":""invalid credentials""}", "HTTP 401"));
+            Assert.AreEqual("HTTP 500", MushAuthClient.ExtractErrorMessage("", "HTTP 500"));
         }
 
         [Test]

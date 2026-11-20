@@ -1752,6 +1752,25 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let effective_accel_mmps2: Option<[i64; 3]>;
     let mut bubble_cmd: Option<BubbleInputCommand> = None;
     if let Some((ship_id, max_accel_mmps2)) = active_carrier_ship_and_max_accel_mmps2(ctx.w, hull) {
+        if thrust_permille > 0
+            && let Some(book) = ctx.w.module_state::<SpaceBubbleBook>()
+            && let Some(active) = book.active_for_hull(hull)
+            && let Some(ship) = active.bubble.ships.get(&ship_id)
+        {
+            if book.is_hull_paused_for_docking(hull) || ship.docking_hold {
+                return Err(CmdError::msg(
+                    "Main drive is locked during an active docking session (`docking_hold`).",
+                ));
+            }
+            if ship.collector.as_ref().is_some_and(|kit| kit.landed) {
+                return Err(CmdError::msg("Cannot engage main drive while landed."));
+            }
+            if ship.propellant_kg == 0 || ship.delta_v_mps <= 0 {
+                return Err(CmdError::msg(
+                    "Insufficient propellant: tank is dry (0 kg / 0 m/s Δv).",
+                ));
+            }
+        }
         let scale = i64::from(thrust_permille);
         let thrust_mmps2 = if scale == 0 {
             [0, 0, 0]
@@ -1799,45 +1818,43 @@ fn helm_thrust(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .module_state::<SpaceBubbleBook>()
         .is_some_and(|b| b.free_flight_for_hull(hull).is_some())
     {
-        let max_accel_mmps2 =
-            if let Ok((basis, live_kg)) = live_hull_basis_and_propellant_kg(ctx, hull) {
-                let non_prop_payload = basis
-                    .payload
-                    .saturating_sub(basis.tank.saturating_mul(1_000));
-                let payload_kg = non_prop_payload.saturating_add(live_kg);
-                let accel_mps2 = crate::port::passage::flip_accel_mps2(
-                    &basis.spec.drive,
-                    basis.spec.dry_kg,
-                    payload_kg,
-                )
-                .unwrap_or(0.0);
-                ((accel_mps2 * 1_000.0).round() as i64).max(1)
-            } else {
-                645
-            };
-        let scale = i64::from(thrust_permille);
-        let thrust_mmps2 = if scale == 0 {
-            [0, 0, 0]
+        if thrust_permille == 0 {
+            if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+                && let Some(ff) = book.free_flight_for_hull_mut(hull)
+            {
+                ff.thrust_mmps2 = [0, 0, 0];
+                ff.burn_remaining_ic_s = None;
+            }
+            effective_accel_mmps2 = Some([0, 0, 0]);
         } else {
+            let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+            let non_prop_payload = basis
+                .payload
+                .saturating_sub(basis.tank.saturating_mul(1_000))
+                .saturating_add(towed_mass_kg(ctx.w, hull));
+            let effective_payload = non_prop_payload.saturating_add(live_kg);
+            let max_accel_mmps2 = crate::port::passage::flip_accel_mps2(
+                &basis.spec.drive,
+                basis.spec.dry_kg,
+                effective_payload,
+            )
+            .map_or(1, |a| ((a * 1_000.0).round() as i64).max(1));
+            let scale = i64::from(thrust_permille);
             let dir_mag = super::weapons::isqrt_i128(
                 (burn_dir[0] as i128).pow(2)
                     + (burn_dir[1] as i128).pow(2)
                     + (burn_dir[2] as i128).pow(2),
             )
             .max(1) as i64;
-            [
+            let requested_mmps2 = [
                 (max_accel_mmps2 * scale * i64::from(burn_dir[0])) / (1_000 * dir_mag),
                 (max_accel_mmps2 * scale * i64::from(burn_dir[1])) / (1_000 * dir_mag),
                 (max_accel_mmps2 * scale * i64::from(burn_dir[2])) / (1_000 * dir_mag),
-            ]
-        };
-        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
-            && let Some(ff) = book.free_flight_for_hull_mut(hull)
-        {
-            ff.thrust_mmps2 = thrust_mmps2;
-            ff.burn_remaining_ic_s = (thrust_mmps2 != [0, 0, 0]).then_some(60);
+            ];
+            let engaged =
+                engage_free_flight_burn(ctx, hull, requested_mmps2, 60, force_into_reserve)?;
+            effective_accel_mmps2 = Some(engaged.flown_mmps2);
         }
-        effective_accel_mmps2 = Some(thrust_mmps2);
     } else {
         return Err(CmdError::msg(
             "Ship is not in an active space bubble or decoupled free flight.",
@@ -2789,7 +2806,7 @@ fn decouple_carrier_into_free_flight(
             .unwrap_or(journey.departed().at)
     };
     let elapsed_s = now.at.saturating_sub(leg_start_ic).max(0);
-    let remaining_s = leg_s.saturating_sub(elapsed_s);
+    let remaining_s = leg_s.saturating_sub(elapsed_s).max(0);
     let (pos_km, vel_mps) = if remaining_s <= 120 {
         (
             [p1.x, p1.y, p1.z],
@@ -2824,7 +2841,6 @@ fn decouple_carrier_into_free_flight(
         .map_or(leg_s, |arr| arr.saturating_sub(journey.departed().at))
         .max(1);
     let total_elapsed_s = now.at.saturating_sub(journey.departed().at).max(0);
-    let total_remaining_s = total_journey_s.saturating_sub(total_elapsed_s);
     let route_burn_t = live_hull_basis_and_propellant_kg(ctx, hull)
         .ok()
         .and_then(|(basis, _)| {
@@ -2843,8 +2859,7 @@ fn decouple_carrier_into_free_flight(
         })
         .unwrap_or_else(|| journey.route().propellant().max(1));
     let prepaid_unflown_t = if keep_prepaid {
-        ((u128::from(route_burn_t) * u128::from(total_remaining_s as u64))
-            / u128::from(total_journey_s as u64)) as u64
+        prorated_prepaid_unflown_t(route_burn_t, total_journey_s, total_elapsed_s)
     } else {
         0
     };
@@ -2878,6 +2893,185 @@ fn decouple_carrier_into_free_flight(
         book.free_flights.insert(hull, record);
     }
     Ok((origin_place, target_place, pos_km, vel_mps))
+}
+
+/// Prorate the unflown portion of `route_burn_t` (tonnes) for a journey of `total_journey_s` IC
+/// seconds after `total_elapsed_s` IC seconds have passed, clamped into `0..=route_burn_t`.
+fn prorated_prepaid_unflown_t(
+    route_burn_t: u64,
+    total_journey_s: i64,
+    total_elapsed_s: i64,
+) -> u64 {
+    let journey_s = total_journey_s.max(1);
+    let elapsed_s = total_elapsed_s.max(0);
+    let remaining_s = journey_s.saturating_sub(elapsed_s).clamp(0, journey_s);
+    let Ok(remaining_u64) = u64::try_from(remaining_s) else {
+        return 0;
+    };
+    let Ok(journey_u64) = u64::try_from(journey_s) else {
+        return 0;
+    };
+    let credit = u128::from(route_burn_t).saturating_mul(u128::from(remaining_u64))
+        / u128::from(journey_u64);
+    u64::try_from(credit)
+        .unwrap_or(route_burn_t)
+        .min(route_burn_t)
+}
+
+struct EngagedFreeFlightBurn {
+    flown_mmps2: [i64; 3],
+    flown_mag_mmps2: i64,
+    asked_mag_mmps2: i64,
+    rated_mmps2: i64,
+    dv_mps: u32,
+    burn_kg: u64,
+    after_kg: u64,
+}
+
+/// Validate and debit a timed free-flight burn (`+helm/burn` and free-flight `+helm/thrust`)
+/// against `hull`'s rated mass-adjusted drive acceleration, live propellant ledger, docking hold,
+/// and post-burn `RETURN_RESERVE` (`D-35-6`, `SF.R4`, `SF.R28`).
+fn engage_free_flight_burn(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    asked_mmps2: [i64; 3],
+    dur_ic_s: u32,
+    force_into_reserve: bool,
+) -> Result<EngagedFreeFlightBurn, CmdError> {
+    let ff = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.free_flight_for_hull(hull).cloned())
+        .ok_or_else(|| {
+            CmdError::msg(
+                "Ship is not in free flight; use +helm/decouple first (or +helm/thrust inside a bubble).",
+            )
+        })?;
+
+    let accel_sq = i128::from(asked_mmps2[0]).pow(2)
+        + i128::from(asked_mmps2[1]).pow(2)
+        + i128::from(asked_mmps2[2]).pow(2);
+    let asked_mag_mmps2 = libm::sqrt(accel_sq as f64).round() as i64;
+
+    if asked_mag_mmps2 > 0
+        && ctx
+            .w
+            .module_state::<SpaceBubbleBook>()
+            .is_some_and(|b| b.is_hull_paused_for_docking(hull))
+    {
+        return Err(CmdError::msg(
+            "Main drive is locked during an active docking session (`docking_hold`).",
+        ));
+    }
+
+    let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
+    let non_prop_payload = basis
+        .payload
+        .saturating_sub(basis.tank.saturating_mul(1_000))
+        .saturating_add(towed_mass_kg(ctx.w, hull));
+    let effective_payload = non_prop_payload.saturating_add(live_kg);
+    // `SF.R28` (doc 35d §6.4): the burn flies at the drive's rating for her mass, in mm/s², when
+    // more is asked. The rating used to be rounded up to a whole m/s², which let a hull rated
+    // under 1 m/s² burn at twice it.
+    let rated_mmps2 = crate::port::passage::flip_accel_mps2(
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+    )
+    .map_or(1, |a| ((a * 1_000.0).round() as i64).max(1));
+    let flown_mmps2 = if asked_mag_mmps2 > rated_mmps2 && asked_mag_mmps2 > 0 {
+        asked_mmps2.map(|a| {
+            i64::try_from(i128::from(a) * i128::from(rated_mmps2) / i128::from(asked_mag_mmps2))
+                .unwrap_or(0)
+        })
+    } else {
+        asked_mmps2
+    };
+    let flown_mag_mmps2 = asked_mag_mmps2.min(rated_mmps2);
+
+    if flown_mag_mmps2 == 0 {
+        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+            && let Some(rec) = book.free_flight_for_hull_mut(hull)
+        {
+            rec.thrust_mmps2 = [0, 0, 0];
+            rec.burn_remaining_ic_s = None;
+        }
+        return Ok(EngagedFreeFlightBurn {
+            flown_mmps2: [0, 0, 0],
+            flown_mag_mmps2: 0,
+            asked_mag_mmps2: 0,
+            rated_mmps2,
+            dv_mps: 0,
+            burn_kg: 0,
+            after_kg: live_kg,
+        });
+    }
+
+    let dv_mps = u32::try_from((i128::from(flown_mag_mmps2) * i128::from(dur_ic_s) + 500) / 1_000)
+        .unwrap_or(u32::MAX);
+    let burn_kg = crate::port::passage::burn_kg_for_dv(
+        &basis.spec.drive,
+        basis.spec.dry_kg,
+        effective_payload,
+        dv_mps.max(1),
+    )
+    .map_err(|e| CmdError::msg(e.to_string()))?
+    .max(1);
+
+    if live_kg == 0 || burn_kg > live_kg {
+        return Err(CmdError::msg(format!(
+            "Insufficient propellant: burn requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
+        )));
+    }
+
+    let now_ic = ctx.w.world_ic_now().at;
+    let remaining_after_burn_kg = live_kg.saturating_sub(burn_kg);
+    let mut post_ff = ff;
+    post_ff.thrust_mmps2 = flown_mmps2;
+    post_ff.burn_remaining_ic_s = Some(dur_ic_s);
+    post_ff.step_ic_s(i64::from(dur_ic_s), None);
+    let post_burn_ic = now_ic.saturating_add(i64::from(dur_ic_s));
+    if let Some((reserve, nearest_port)) = compute_hull_return_reserve(
+        ctx.w,
+        &basis,
+        remaining_after_burn_kg,
+        post_ff.pos_km,
+        post_ff.vel_mps,
+        post_burn_ic,
+    ) && remaining_after_burn_kg < reserve.reserve_kg
+        && !force_into_reserve
+    {
+        return Err(CmdError::msg(format!(
+            "RETURN_RESERVE warning: burn requires {burn_kg} kg ({dv_mps} m/s Δv), leaving {remaining_after_burn_kg} kg below the {} kg ({} t, {} m/s Δv) return reserve to {nearest_port}. Pass `force` to override.",
+            reserve.reserve_kg, reserve.plan.burn_t, reserve.reserve_dv_mps
+        )));
+    }
+
+    let whole_tonnes = {
+        let book = ctx
+            .w
+            .module_state_mut::<SpaceBubbleBook>()
+            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+        let ledger = book.propellant_ledger_mut(hull);
+        let tonnes = ledger.record_burn_kg(basis.tank, burn_kg);
+        if let Some(rec) = book.free_flight_for_hull_mut(hull) {
+            rec.thrust_mmps2 = flown_mmps2;
+            rec.burn_remaining_ic_s = Some(dur_ic_s);
+        }
+        tonnes
+    };
+
+    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0)?;
+
+    Ok(EngagedFreeFlightBurn {
+        flown_mmps2,
+        flown_mag_mmps2,
+        asked_mag_mmps2,
+        rated_mmps2,
+        dv_mps,
+        burn_kg,
+        after_kg: remaining_after_burn_kg,
+    })
 }
 
 fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2933,101 +3127,16 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     }
 
-    let ff = ctx
-        .w
-        .module_state::<SpaceBubbleBook>()
-        .and_then(|b| b.free_flight_for_hull(hull).cloned())
-        .ok_or_else(|| {
-            CmdError::msg("Ship is not in free flight; use +helm/decouple first (or +helm/thrust inside a bubble).")
-        })?;
-
-    let accel_sq =
-        i128::from(ax_mps2).pow(2) + i128::from(ay_mps2).pow(2) + i128::from(az_mps2).pow(2);
-    let asked_mag_mps2 = libm::sqrt(accel_sq as f64);
-
-    let (basis, live_kg) = live_hull_basis_and_propellant_kg(ctx, hull)?;
-    let non_prop_payload = basis
-        .payload
-        .saturating_sub(basis.tank.saturating_mul(1_000))
-        .saturating_add(towed_mass_kg(ctx.w, hull));
-    let effective_payload = non_prop_payload.saturating_add(live_kg);
-    // `SF.R28` (doc 35d §6.4): the burn flies at the drive's rating for her mass, in mm/s², when
-    // more is asked. The rating used to be rounded up to a whole m/s², which let a hull rated
-    // under 1 m/s² burn at twice it.
-    let rated_mmps2 = crate::port::passage::flip_accel_mps2(
-        &basis.spec.drive,
-        basis.spec.dry_kg,
-        effective_payload,
-    )
-    .map_or(1, |a| ((a * 1_000.0).round() as i64).max(1));
-    let asked_mmps2 = [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000];
-    let asked_mag_mmps2 = (asked_mag_mps2 * 1_000.0).round() as i64;
-    let flown_mmps2 = if asked_mag_mmps2 > rated_mmps2 && asked_mag_mmps2 > 0 {
-        asked_mmps2.map(|a| {
-            i64::try_from(i128::from(a) * i128::from(rated_mmps2) / i128::from(asked_mag_mmps2))
-                .unwrap_or(0)
-        })
-    } else {
-        asked_mmps2
-    };
-    let flown_mag_mmps2 = asked_mag_mmps2.min(rated_mmps2);
-    let dv_mps = u32::try_from((i128::from(flown_mag_mmps2) * i128::from(dur_ic_s) + 500) / 1_000)
-        .unwrap_or(u32::MAX);
-    let burn_kg = crate::port::passage::burn_kg_for_dv(
-        &basis.spec.drive,
-        basis.spec.dry_kg,
-        effective_payload,
-        dv_mps,
-    )
-    .map_err(|e| CmdError::msg(e.to_string()))?;
-
-    if burn_kg > live_kg {
-        return Err(CmdError::msg(format!(
-            "Insufficient propellant: burn requires {burn_kg} kg ({dv_mps} m/s Δv), tank holds {live_kg} kg."
-        )));
-    }
-
-    let now_ic = ctx.w.world_ic_now().at;
-    let remaining_after_burn_kg = live_kg.saturating_sub(burn_kg);
-    let mut post_ff = ff.clone();
-    post_ff.thrust_mmps2 = flown_mmps2;
-    post_ff.burn_remaining_ic_s = Some(dur_ic_s);
-    post_ff.step_ic_s(i64::from(dur_ic_s), None);
-    let post_burn_ic = now_ic.saturating_add(i64::from(dur_ic_s));
-    if let Some((reserve, nearest_port)) = compute_hull_return_reserve(
-        ctx.w,
-        &basis,
-        remaining_after_burn_kg,
-        post_ff.pos_km,
-        post_ff.vel_mps,
-        post_burn_ic,
-    ) && remaining_after_burn_kg < reserve.reserve_kg
-        && !force_into_reserve
-    {
-        return Err(CmdError::msg(format!(
-            "RETURN_RESERVE warning: burn requires {burn_kg} kg ({dv_mps} m/s Δv), leaving {remaining_after_burn_kg} kg below the {} kg ({} t, {} m/s Δv) return reserve to {nearest_port}. Pass `force` to override.",
-            reserve.reserve_kg, reserve.plan.burn_t, reserve.reserve_dv_mps
-        )));
-    }
-
-    let whole_tonnes = {
-        let book = ctx
-            .w
-            .module_state_mut::<SpaceBubbleBook>()
-            .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
-        let ledger = book.propellant_ledger_mut(hull);
-        let tonnes = ledger.record_burn_kg(basis.tank, burn_kg);
-        if let Some(rec) = book.free_flight_for_hull_mut(hull) {
-            rec.thrust_mmps2 = flown_mmps2;
-            rec.burn_remaining_ic_s = Some(dur_ic_s);
-        }
-        tonnes
-    };
-
-    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0)?;
+    let engaged = engage_free_flight_burn(
+        ctx,
+        hull,
+        [ax_mps2 * 1_000, ay_mps2 * 1_000, az_mps2 * 1_000],
+        dur_ic_s,
+        force_into_reserve,
+    )?;
 
     let (domain, generation, tick) = domain_stamp_for_hull(ctx.w, hull);
-    let throttle_scalar = i32::try_from(flown_mag_mmps2 / 5)
+    let throttle_scalar = i32::try_from(engaged.flown_mag_mmps2 / 5)
         .unwrap_or(MAX_ORDER_SCALAR)
         .clamp(0, MAX_ORDER_SCALAR);
     let order = record_hull_standing_order(
@@ -3043,21 +3152,23 @@ fn helm_burn(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         tick,
     )?;
 
-    let after_kg = live_kg.saturating_sub(burn_kg);
     ctx.out.sys_to_actor(
         ctx.actor,
         "tacsim.space",
         format!(
-            "Timed burn engaged: ({:.3}, {:.3}, {:.3}) m/s² for {dur_ic_s}s (Δv={dv_mps} m/s, burned {burn_kg} kg, {after_kg} kg remaining; standing order `{}` rev {}).{}",
-            flown_mmps2[0] as f64 / 1_000.0,
-            flown_mmps2[1] as f64 / 1_000.0,
-            flown_mmps2[2] as f64 / 1_000.0,
+            "Timed burn engaged: ({:.3}, {:.3}, {:.3}) m/s² for {dur_ic_s}s (Δv={} m/s, burned {} kg, {} kg remaining; standing order `{}` rev {}).{}",
+            engaged.flown_mmps2[0] as f64 / 1_000.0,
+            engaged.flown_mmps2[1] as f64 / 1_000.0,
+            engaged.flown_mmps2[2] as f64 / 1_000.0,
+            engaged.dv_mps,
+            engaged.burn_kg,
+            engaged.after_kg,
             order.channel().token(),
             order.revision(),
-            if flown_mag_mmps2 < asked_mag_mmps2 {
+            if engaged.flown_mag_mmps2 < engaged.asked_mag_mmps2 {
                 format!(
                     " The drive is rated {:.3} m/s² at this mass; the burn flies at that.",
-                    rated_mmps2 as f64 / 1_000.0
+                    engaged.rated_mmps2 as f64 / 1_000.0
                 )
             } else {
                 String::new()
@@ -7583,5 +7694,29 @@ mod review_48e_tests {
             short,
             "Tactical status aboard Salt Moth (ship.12): lock=none, PDC auto=on, heat=40‰/1000‰."
         );
+    }
+
+    /// **HIGH-45 regression**: overdue `+helm/decouple` (`now > arrival_at`) must never wrap a
+    /// negative `total_remaining_s` via `as u64` into `~u64::MAX` tonnes of `prepaid_unflown_t`.
+    #[test]
+    fn high45_overdue_decouple_clamps_prepaid_unflown_to_zero_and_caps_at_route_burn() {
+        // Strictly overdue by 1 second, 1 hour, and extreme i64::MAX -> 0 tonnes (no wrap!).
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, 86_401), 0);
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, 90_000), 0);
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, i64::MAX), 0);
+
+        // Exact arrival -> 0 tonnes.
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, 86_400), 0);
+
+        // Zero or negative elapsed (clock skew) -> capped at route_burn_t.
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, 0), 48);
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, -500), 48);
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, i64::MIN), 48);
+
+        // Normal midpoint -> half of route_burn_t.
+        assert_eq!(prorated_prepaid_unflown_t(48, 86_400, 43_200), 24);
+        // Zero or negative journey duration clamps to 1 s and still caps <= route_burn_t.
+        assert_eq!(prorated_prepaid_unflown_t(48, 0, 10), 0);
+        assert_eq!(prorated_prepaid_unflown_t(48, -100, 0), 48);
     }
 }

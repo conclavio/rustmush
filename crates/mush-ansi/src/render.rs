@@ -310,12 +310,28 @@ fn ambient_weather_line(view: &RoomView) -> Option<&str> {
     view.ambient.get("weather")?.get("line")?.as_str()
 }
 
+/// Characters stripped before emitting rendered text to a terminal:
+/// all Unicode control characters, BiDi overrides/isolates/marks
+/// (`U+061C`, `U+200E..=U+200F`, `U+202A..=U+202E`, `U+2066..=U+2069`),
+/// and Unicode line/paragraph separators (`U+2028`, `U+2029`).
+fn is_stripped(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200E}'..='\u{200F}'
+                | '\u{2028}'..='\u{2029}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
 /// The hanging indent for a narrative line whose speaker is `name`: the
 /// name's width plus one, plus `extra` for any fixed prefix before it,
-/// capped at [`HANG_MAX_W`]. Control characters never count — the writer
-/// strips them.
+/// capped at [`HANG_MAX_W`]. Control and BiDi/separator characters never
+/// count — the writer strips them.
 fn hanging_indent(name: &str, extra: usize) -> usize {
-    (name.chars().filter(|c| !c.is_control()).count() + 1 + extra).min(HANG_MAX_W)
+    (name.chars().filter(|c| !is_stripped(*c)).count() + 1 + extra).min(HANG_MAX_W)
 }
 
 fn render_narrative(
@@ -467,9 +483,9 @@ fn render_who(w: &mut LineWriter<'_>, entries: &[WhoEntry]) {
     w.end_line();
 }
 
-/// `s` with every control character removed.
+/// `s` with every control, BiDi, and Unicode line/paragraph separator removed.
 fn printable(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    s.chars().filter(|c| !is_stripped(*c)).collect()
 }
 
 /// Truncate a plain (escape-free) row to the terminal width and drop
@@ -546,7 +562,7 @@ impl<'a> LineWriter<'a> {
             if piece.is_empty() {
                 continue;
             }
-            let clean: String = piece.chars().filter(|c| !c.is_control()).collect();
+            let clean: String = piece.chars().filter(|c| !is_stripped(*c)).collect();
             if clean.is_empty() {
                 continue;
             }
@@ -621,5 +637,37 @@ mod tests {
         assert_eq!(fit_row("ab    cd", 6), "ab");
         assert_eq!(truncate_chars("abcdef", 4), "abcd");
         assert_eq!(truncate_chars("ab", 4), "ab");
+    }
+
+    #[test]
+    fn bidi_controls_and_unicode_separators_are_stripped() {
+        let hostile = concat!(
+            "A",
+            "\u{061C}",
+            "\u{200E}\u{200F}",
+            "\u{2028}\u{2029}",
+            "\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}",
+            "\u{2066}\u{2067}\u{2068}\u{2069}",
+            "B"
+        );
+        assert_eq!(printable(hostile), "AB");
+        assert_eq!(hanging_indent(hostile, 0), 3);
+
+        let caps = ClientCaps {
+            kind: mush_proto::ClientKind::Ssh,
+            color: mush_proto::ColorDepth::None,
+            width: 80,
+            height: 24,
+            utf8: true,
+            structured: false,
+        };
+        let mut out = Vec::new();
+        render(
+            &OutputEvent::Sys(RichText::plain(hostile)),
+            &caps,
+            &AnsiTheme::default(),
+            &mut out,
+        );
+        assert_eq!(String::from_utf8(out).unwrap(), "AB\r\n");
     }
 }

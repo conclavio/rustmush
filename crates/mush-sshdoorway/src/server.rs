@@ -868,6 +868,9 @@ impl Conn {
     }
 
     fn tell(&mut self, method: &'static str, text: String) -> Auth {
+        // Release any unauthenticated upstream preamble/SSH handle before
+        // entering a local notice session (HIGH-11).
+        self.drop_up();
         // A notice session exists only to print one refusal line and close;
         // bound its entire post-auth life by `NOTICE_IDLE` whether or not the
         // client ever opens a channel or requests a shell (F-1, F-8).
@@ -878,7 +881,11 @@ impl Conn {
     fn drop_up(&mut self) {
         if let Up::Ssh { handle, .. } = std::mem::replace(&mut self.up, Up::None) {
             tokio::spawn(async move {
-                let _ = handle.disconnect(Disconnect::ByApplication, "", "").await;
+                let _ = tokio::time::timeout(
+                    DISCONNECT_GRACE,
+                    handle.disconnect(Disconnect::ByApplication, "", ""),
+                )
+                .await;
             });
         }
     }
@@ -1222,11 +1229,14 @@ impl Conn {
         let ch = self.front_id();
         let drain = Arc::clone(&self.door.drain);
         let conn = self.id;
-        let began = Instant::now();
+        // Anchor MENU_HARD_CAP to connection start so re-opening/re-arming the
+        // menu watch can never extend the menu's lifetime indefinitely (SSH-M4).
+        let began = self.started;
         self.menu_watch = Some(tokio::spawn(async move {
             loop {
                 let elapsed = last.lock().map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
-                if elapsed >= idle || began.elapsed() >= MENU_HARD_CAP {
+                let Some(left) = menu_watch_wait(began.elapsed(), elapsed, idle, MENU_HARD_CAP)
+                else {
                     if let Some(ch) = ch {
                         let _ = tokio::time::timeout(
                             DISCONNECT_GRACE,
@@ -1245,11 +1255,8 @@ impl Conn {
                     .await;
                     abort_after(drain, conn, DISCONNECT_GRACE);
                     return;
-                }
-                let left = idle
-                    .saturating_sub(elapsed)
-                    .min(MENU_HARD_CAP.saturating_sub(began.elapsed()));
-                tokio::time::sleep(left.max(Duration::from_millis(50))).await;
+                };
+                tokio::time::sleep(left).await;
             }
         }));
     }
@@ -1548,7 +1555,12 @@ impl Handler for Conn {
                 self.door.limits.count("invalid-user");
                 Ok(reject_nothing())
             }
-            Route::Menu => Ok(self.accept("none", Stage::Menu)),
+            Route::Menu => {
+                // Drop any prior unauthenticated upstream session opened by an
+                // earlier auth attempt before switching to the local menu (HIGH-11).
+                self.drop_up();
+                Ok(self.accept("none", Stage::Menu))
+            }
             Route::Service {
                 service,
                 upstream_user,
@@ -2056,5 +2068,47 @@ impl Handler for Conn {
             });
         }
         Ok(())
+    }
+}
+
+/// Time left to wait in the menu watch loop, or `None` when either the idle
+/// limit or the connection-anchored hard cap has expired.
+fn menu_watch_wait(
+    since_start: Duration,
+    since_input: Duration,
+    idle: Duration,
+    hard_cap: Duration,
+) -> Option<Duration> {
+    if since_input >= idle || since_start >= hard_cap {
+        return None;
+    }
+    let left = idle
+        .saturating_sub(since_input)
+        .min(hard_cap.saturating_sub(since_start));
+    Some(left.max(Duration::from_millis(50)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test (SSH-M4): `MENU_HARD_CAP` is anchored to connection
+    /// start (`since_start`), so recent input or a re-armed menu watch cannot
+    /// push the cap forward.
+    #[test]
+    fn menu_watch_hard_cap_expires_from_connection_start() {
+        let idle = Duration::from_secs(60);
+        // Active typing (`since_input == 0`) still expires once `since_start`
+        // reaches `MENU_HARD_CAP`.
+        assert_eq!(
+            menu_watch_wait(MENU_HARD_CAP, Duration::ZERO, idle, MENU_HARD_CAP),
+            None
+        );
+        // Remaining wait shrinks with `since_start` rather than resetting to `MENU_HARD_CAP`.
+        let near_cap = MENU_HARD_CAP - Duration::from_secs(5);
+        assert_eq!(
+            menu_watch_wait(near_cap, Duration::ZERO, idle, MENU_HARD_CAP),
+            Some(Duration::from_secs(5))
+        );
     }
 }
