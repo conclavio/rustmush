@@ -111,7 +111,9 @@ pub mod arena_task;
 pub mod carrier_damage;
 pub mod client_sync;
 pub mod commands;
+// Doc 50 cut OP.2: the Isidis fronts, the Assembly's monthly vote and a hull's flag.
 pub mod composition;
+pub mod concession;
 pub mod config;
 pub mod content;
 pub mod content_studio;

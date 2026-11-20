@@ -301,6 +301,8 @@ impl RegionsApplier {
             }
         }
         seed_customs_front(ctx, &rules, &def)?;
+        // Doc 50 cut OP.2: the Concession Review and Hold the Concession, on the `isidis` row.
+        crate::concession::seed_isidis_fronts(ctx, &def)?;
         ctx.out.pin_deferred();
         Ok(())
     }
