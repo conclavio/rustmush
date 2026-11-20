@@ -3,7 +3,7 @@
     "id": "tacsim.lane.ceres_phobos",
     "version": 47,
     "kind": "campaign_seed",
-    "digest": "7eeb0fe0be09ea5371b508c8b29ab3f7b6e76604dbbba39333ce40536f7ab384",
+    "digest": "4b67bcaef90858c36bc95ac28f0bc30facf90509d3c57c5063a2dee9d65f4334",
     "requires": []
   },
   "entries": {
@@ -3368,7 +3368,11 @@
               { "kind": "de_facto", "holder": { "polity": "freeport" } },
               { "kind": "economic", "holder": { "org": "occator" } },
               { "kind": "economic", "holder": { "org": "ceres_clearing" } }
-            ] },
+            ],
+            "terms": {
+              "freeport": { "payee": "freeport_registry",
+                            "restricted": [ { "good": "strategic_ore", "paper": "freeport_prospecting" } ] }
+            } },
           { "id": "stickney", "name": "Phobos and Stickney Yards",
             "places": [ "stickney_yards", "stickney_port" ],
             "holds": [
