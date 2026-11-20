@@ -961,7 +961,10 @@ impl TuiApp {
     /// screen 0's replay layout (G.12b closes one whose screen went away).
     fn pixel_home(&self) -> bool {
         match self.pixel.kind() {
-            PictureKind::Chart => self.active == CHART_SCREEN,
+            PictureKind::Chart => {
+                self.active == CHART_SCREEN
+                    || (self.active == ScreenId(1) && self.port_walk.seated_at_helm())
+            }
             PictureKind::Holotank | PictureKind::SpaceCockpit | PictureKind::Docking => {
                 self.active == CHART_SCREEN
                     || self.active == COCKPIT_SCREEN
@@ -1057,7 +1060,14 @@ impl TuiApp {
     }
 
     /// Update capabilities (color depth / geometry) on resize.
-    pub fn set_caps(&mut self, caps: ClientCaps) {
+    pub fn set_caps(&mut self, mut caps: ClientCaps) {
+        caps.width = caps.width.min(crate::caps::MAX_WIDTH);
+        caps.height = caps.height.min(crate::caps::MAX_HEIGHT);
+        if (caps.width < FLOOR_COLS || caps.height < MIN_CHROME_ROWS)
+            && self.port_walk.drawer_open()
+        {
+            self.port_walk.close_drawer();
+        }
         self.caps = caps;
     }
 
@@ -1188,6 +1198,11 @@ impl TuiApp {
     fn set_active(&mut self, id: ScreenId) {
         if id != self.active && self.looking_at_channels() {
             self.panels.mark_channels_read();
+        }
+        // `SSH-C-04`: the Port Drawer is drawn exclusively on Screen 1, so leaving Screen 1
+        // must close it rather than leaving an invisible modal capturing every keystroke.
+        if id != ScreenId(1) && self.port_walk.drawer_open() {
+            self.port_walk.close_drawer();
         }
         self.active = id;
     }
@@ -2185,6 +2200,7 @@ impl TuiApp {
                 self.exit_keys = exit_keys(&view.exits);
                 self.port_walk
                     .observe_room(view, self.manifest.character.as_deref());
+                queries.extend(self.port_walk.drain_pack_queries(&self.manifest.panels));
                 if self.pixel.kind() == PictureKind::StationWalk {
                     self.pixel.invalidate_last_sent();
                 }
@@ -2198,8 +2214,9 @@ impl TuiApp {
                 }
                 if feed.as_str() == PORT_TRADE_FEED {
                     if *kind == PanelFrameKind::Keyframe {
-                        let (_, q) = self.port_walk.observe_port_trade(data, Instant::now());
+                        let q = self.port_walk.observe_port_trade(data, Instant::now());
                         queries.extend(q);
+                        queries.extend(self.port_walk.drain_pack_queries(&self.manifest.panels));
                         if self.pixel.kind() == PictureKind::StationWalk {
                             self.pixel.invalidate_last_sent();
                         }
@@ -2208,12 +2225,36 @@ impl TuiApp {
                 }
                 if feed.as_str() == mush_pixel::docking::SPACE_DOCKING_FEED
                     && *kind == PanelFrameKind::Keyframe
-                    && self.active == ScreenId(1)
-                    && self.port_walk.seated_at_helm()
-                    && self.pixel.is_active()
-                    && data.get("session_id").and_then(Value::as_str).is_some()
                 {
-                    self.pixel.switch_kind_live(PictureKind::Docking);
+                    // `SSH-C-05` / `SSH-M-07`: sync docking session state immediately on keyframe
+                    // arrival and check `closed`/`refused` so terminal frames clear docking and
+                    // return the Bridge Helm visor to `SpaceCockpit` instead of re-entering a dead
+                    // `Docking` mode.
+                    self.pixel.observe_docking(data);
+                    let is_closed = data.is_null()
+                        || data.get("closed").and_then(Value::as_bool) == Some(true)
+                        || data.get("refused").and_then(Value::as_bool) == Some(true)
+                        || data.as_object().is_some_and(serde_json::Map::is_empty);
+                    let has_session = data
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| !s.is_empty());
+                    if is_closed {
+                        self.pixel.clear_docking_session();
+                        if self.pixel.is_active()
+                            && self.pixel.kind() == PictureKind::Docking
+                            && self.active == ScreenId(1)
+                            && self.port_walk.seated_at_helm()
+                        {
+                            self.pixel.switch_kind_live(PictureKind::SpaceCockpit);
+                        }
+                    } else if has_session
+                        && self.active == ScreenId(1)
+                        && self.port_walk.seated_at_helm()
+                        && self.pixel.is_active()
+                    {
+                        self.pixel.switch_kind_live(PictureKind::Docking);
+                    }
                 }
                 // Doc 31 cut UD.3b (D-31-16): published designs' looks. The
                 // answer installs them for the pictures this gateway draws; a
@@ -2961,6 +3002,9 @@ impl TuiApp {
                 return;
             }
             Key::Ctrl('g') => {
+                // `SSH-M-06`: cancel any active inline hull rename before toggling the viewport so
+                // keystrokes are not left trapped in the edit buffer after opening/closing `^G`.
+                self.port_walk.cancel_hull_edit();
                 // Doc 21 cut G.5b: the picture is the screen's — the orbital
                 // view on the chart screen. The view opens flying: a line being
                 // typed is kept as the draft its chat line brings back.
@@ -2984,7 +3028,13 @@ impl TuiApp {
                     PictureKind::Replay
                 } else if self.active == ScreenId(1) && self.room.is_some() {
                     if self.port_walk.seated_at_helm() {
-                        PictureKind::SpaceCockpit
+                        match self.pixel.kind() {
+                            PictureKind::Chart
+                            | PictureKind::Holotank
+                            | PictureKind::SpaceCockpit
+                            | PictureKind::Docking => self.pixel.kind(),
+                            _ => PictureKind::SpaceCockpit,
+                        }
                     } else {
                         PictureKind::StationWalk
                     }
@@ -3053,14 +3103,17 @@ impl TuiApp {
             return;
         }
         if key != Key::Ctrl(']')
+            && self.active == ScreenId(1)
             && self.port_walk.drawer_open()
+            && self.caps.width >= FLOOR_COLS
+            && self.caps.height >= MIN_CHROME_ROWS
             && self.requests.is_empty()
             && self.answering.is_none()
             && self.input_mode == InputMode::Normal
         {
-            let out = self
-                .port_walk
-                .handle_key(key, false, &self.manifest.panels, Instant::now());
+            let out =
+                self.port_walk
+                    .handle_key(key, false, false, &self.manifest.panels, Instant::now());
             r.submit.extend(out.commands);
             r.submit.extend(self.port_walk.take_orders());
             r.queries.extend(out.queries);
@@ -3190,6 +3243,7 @@ impl TuiApp {
         if self.pixel.kind() == PictureKind::StationWalk && self.port_walk.drawer_open() {
             let out = self.port_walk.handle_key(
                 key,
+                self.pixel.keyboard_pushed(),
                 self.pixel.letters_held(),
                 &self.manifest.panels,
                 Instant::now(),
@@ -3223,6 +3277,7 @@ impl TuiApp {
             }
             let out = self.port_walk.handle_key(
                 key,
+                self.pixel.keyboard_pushed(),
                 self.pixel.letters_held(),
                 &self.manifest.panels,
                 Instant::now(),
@@ -3245,12 +3300,21 @@ impl TuiApp {
         }
         if matches!(
             self.pixel.kind(),
-            PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
+            PictureKind::SpaceCockpit
+                | PictureKind::Holotank
+                | PictureKind::Docking
+                | PictureKind::Chart
         ) && self.active == ScreenId(1)
             && self.port_walk.seated_at_helm()
-            && matches!(key, Key::Esc | Key::Char('q'))
+            && (key == Key::Esc
+                || (self.pixel.kind() != PictureKind::Docking
+                    && matches!(key, Key::Char('q' | 'Q'))))
         {
+            // `SSH-C-05`: in 6-DOF `Docking`, `q` must reach `pixel.key()` for Roll CCW;
+            // only `Esc` stands up from Docking. Standing up notifies the server via
+            // `+helm/station off`.
             self.port_walk.set_seated_at_helm(false);
+            r.submit.push("+helm/station off".to_string());
             self.pixel.switch_kind_live(PictureKind::StationWalk);
             return true;
         }
@@ -4771,10 +4835,8 @@ impl TuiApp {
         let held = cockpit.clone().unwrap_or(Value::Null);
         if self.pixel.kind() == PictureKind::StationWalk {
             let utf8 = self.caps.utf8;
-            let comms_rows: Vec<Line<'static>> =
-                self.scrollback_rows(usize::from(areas.panel.width.max(20) / 2));
             self.port_walk
-                .draw_bottom_panel(frame, areas.panel, utf8, &|_| comms_rows.clone());
+                .draw_bottom_panel(frame, areas.panel, utf8, &|w| self.scrollback_rows(w));
         } else if self.pixel.kind() == PictureKind::Replay {
             // Doc 21 cut G.8: the replay's own panes under its picture.
             let pane = |f: fn(&RenderCtx<'_>) -> Option<PaneRows>| {
@@ -4799,7 +4861,7 @@ impl TuiApp {
             );
         } else if matches!(
             self.pixel.kind(),
-            PictureKind::SpaceCockpit | PictureKind::Holotank
+            PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
         ) {
             // Doc 49 unit CC.9: the space cockpit's own panel, the fire rows over the comms.
             let space = self
@@ -5016,6 +5078,22 @@ impl TuiApp {
         (self.pixel.probe_words(now), self.pixel.encoder(now))
     }
 
+    /// Bytes that free all Kitty graphics images owned by this session (both legacy
+    /// `IMAGE_ID = 1` and retained compositors including `IMAGE_ID_STATION_WALK = 189`)
+    /// and pop the Kitty keyboard protocol when leaving the TUI (`@notui` / detach, `SSH-H-04`).
+    pub fn pixel_close_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.pixel.keyboard_pushed() {
+            out.extend_from_slice(b"\x1b[<u");
+        }
+        let retained = self.pixel.cleanup_25d_bytes();
+        if self.pixel.shown() == Some(mush_pixel::caps::Encoder::Kitty) {
+            out.extend_from_slice(&mush_pixel::kitty::delete_bytes(super::pixel::IMAGE_ID));
+        }
+        out.extend(retained);
+        out
+    }
+
     /// The kitty bytes that place this tick's picture, or nothing (closed,
     /// no encoder, no frame held, or unchanged since the last send). The
     /// picture reads its feeds from the panel store, as every pane does.
@@ -5030,12 +5108,26 @@ impl TuiApp {
             ..
         } = self;
         if pixel.kind() == PictureKind::StationWalk {
+            // `SSH-H-01`: short-circuit idle ticks BEFORE serializing `to_feed_value()`,
+            // rasterizing 2.5D/1P frames, and PNG-encoding Kitty payloads.
+            let now = Instant::now();
+            let Some(key) = pixel.station_walk_paint_key(port_walk.scene_generation(), w, h, now)
+            else {
+                return Vec::new();
+            };
+            if pixel.station_walk_is_unchanged(key) {
+                return Vec::new();
+            }
             let feeds = super::pixel::WithFeed {
                 base: &*panels,
                 name: mush_pixel::station_walk::STATION_WALK_FEED,
                 value: port_walk.to_feed_value(),
             };
-            return pixel.paint(&feeds, w, h, Instant::now());
+            let bytes = pixel.paint(&feeds, w, h, now);
+            if !bytes.is_empty() {
+                pixel.mark_station_walk_painted(key);
+            }
+            return bytes;
         }
         // Doc 21 cut G.8: the replay's cursor is the view's, and reaches the
         // picture as a client-local feed beside the held ones.
@@ -5723,9 +5815,10 @@ fn loading() -> PaneRows {
     }
 }
 
-/// Text collapsed to a single line (control chars / newlines out).
+/// Text collapsed to a single line with all C0/C1/ESC/CSI/OSC/Kitty control
+/// sequences stripped (`SSH-C-03`).
 fn sanitize(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    super::backend::sanitize_control_sequences(s)
 }
 
 /// The most characters a server-supplied pane title may spend on a border.
@@ -10984,21 +11077,41 @@ mod tests {
         let kitty_fp = app.pixel_paint();
         assert!(!kitty_fp.is_empty(), "1P corridor must emit Kitty bytes");
 
-        // Deliver `port.trade` asks, open Trade drawer (`m`), and run 1-click Quote -> Accept
+        // Deliver live `client_sync` `port.trade` listings, open Trade drawer (`m`), and run 1-click Quote -> Accept
         let _ = app.apply_event(&OutputEvent::Panel {
             feed: PORT_TRADE_FEED.into(),
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
+                "venue": "ceres",
+                "port_name": "Ceres Freeport",
                 "balance_minor": 150_000,
-                "ship": { "stowage": {
-                    "cargo_kg": 2_000, "cargo_limit_kg": 50_000,
-                    "cargo_l": 6_000, "cargo_limit_l": 180_000,
-                    "tank_kg": 10_000, "tank_limit_kg": 12_000,
-                    "stores_days": 20, "stores_limit_days": 120, "items": []
-                } },
+                "balance_text": "1,500.00 Cr",
+                "ship": {
+                    "hull_id": 10,
+                    "hull_name": "Salt Moth",
+                    "unit": "dray",
+                    "stowage": {
+                        "cargo_kg": 2_000,
+                        "cargo_limit_kg": 50_000,
+                        "cargo_l": 6_000,
+                        "cargo_limit_l": 180_000,
+                        "tank_kg": 10_000,
+                        "tank_limit_kg": 12_000,
+                        "stores_days": 20,
+                        "stores_limit_days": 120,
+                        "items": []
+                    }
+                },
                 "listings": [
-                    { "id": 91, "side": "ask", "good": "volatiles", "good_label": "water ice",
-                      "available_qty": 40, "unit_price_minor": 950 }
+                    {
+                        "id": 91,
+                        "side": "ask",
+                        "good": "volatiles",
+                        "good_label": "water ice",
+                        "vendor_name": "Ceres Ice Authority",
+                        "available_qty": 40,
+                        "unit_price_minor": 950
+                    }
                 ],
                 "open_quotes": []
             }),
@@ -11012,11 +11125,11 @@ mod tests {
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
                 "open_quotes": [
-                    { "quote_id": 191, "listing_id": 91, "quantity": 5, "unit_price_minor": 950 }
+                    { "quote_id": 701, "listing_id": 91, "quantity": 5, "unit_price_minor": 950, "total_minor": 4_750 }
                 ]
             }),
         });
-        assert_eq!(app.pixel_take_orders(), ["+market/accept 191"]);
+        assert_eq!(app.pixel_take_orders(), ["+market/accept 701"]);
         let _ = app.feed_input(b"\x1b"); // close Trade drawer
 
         // Board ship & step onto Bridge -> `[E]` takes Bridge Helm and hands off to `SpaceCockpit`!
@@ -11063,8 +11176,269 @@ mod tests {
         assert_eq!(app.pixel.kind(), PictureKind::Docking);
 
         // `Esc` stands up from the helm visor back into `PictureKind::StationWalk`
-        let _ = app.feed_input(b"\x1b");
+        let r_stand = app.feed_input(b"\x1b");
+        assert_eq!(r_stand.submit, ["+helm/station off"]);
         assert_eq!(app.pixel.kind(), PictureKind::StationWalk);
         assert!(app.pixel.is_active());
+    }
+
+    #[test]
+    fn port_drawer_closes_on_screen_switch_and_never_deadlocks_keys() {
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec![
+                COCKPIT_FEED.to_string(),
+                PORT_TRADE_FEED.to_string(),
+                TACSIM_CONTENT_FEED.to_string(),
+            ],
+            character: Some("Pilot".to_string()),
+            room: None,
+        });
+        let _ = app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#10".into(),
+            name: "Simulator Lobby".into(),
+            zone: None,
+            desc: "Pods.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "atlas".into(),
+                serde_json::json!({ "pack": "neighborhood.ooc_area", "entry": "room.simulator_lobby" }),
+            )]),
+        }));
+        // Open Port Drawer on Screen 1 with Ctrl+T
+        let _ = app.feed_input(b"\x14");
+        assert!(app.port_walk.drawer_open());
+
+        // Leaving Screen 1 via set_active (e.g. automatic switch to COCKPIT_SCREEN on arena.cockpit)
+        // must immediately close the drawer so it cannot invisibly hijack keys (`SSH-C-04`).
+        let cockpit: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../web/src/lib/fixtures/cockpit/cockpit_frame.json"
+        ))
+        .expect("cockpit fixture");
+        let _ = app.apply_event(&OutputEvent::Panel {
+            feed: COCKPIT_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: cockpit,
+        });
+        assert_eq!(app.active_screen(), COCKPIT_SCREEN);
+        assert!(
+            !app.port_walk.drawer_open(),
+            "leaving Screen 1 must close the Port Drawer"
+        );
+        // Pressing '1' switches back to Screen 1 rather than being swallowed by a hidden drawer.
+        let _ = app.feed_input(b"1");
+        assert_eq!(app.active_screen(), ScreenId(1));
+
+        // Shrinking terminal below FLOOR_COLS also closes the Port Drawer (`SSH-C-04`).
+        let _ = app.feed_input(b"\x14");
+        assert!(app.port_walk.drawer_open());
+        let mut tiny = app.caps();
+        tiny.width = 40;
+        tiny.height = 10;
+        app.set_caps(tiny);
+        assert!(!app.port_walk.drawer_open());
+    }
+
+    #[test]
+    fn bridge_helm_docking_routes_q_to_roll_ccw_and_closed_frame_returns_to_space_cockpit() {
+        let mut app = app();
+        app.set_manifest(TuiManifest {
+            panels: vec![
+                TACSIM_CONTENT_FEED.to_string(),
+                PORT_TRADE_FEED.to_string(),
+                mush_pixel::space_cockpit::SPACE_COCKPIT_FEED.to_string(),
+                mush_pixel::docking::SPACE_DOCKING_FEED.to_string(),
+            ],
+            character: Some("Captain".to_string()),
+            room: None,
+        });
+        app.pixel.probe_sent(Instant::now());
+        app.pixel.graphics_reply(true);
+
+        // Stand on Ship Bridge and take Bridge Helm (`^G` -> walk -> `e`)
+        let _ = app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#810".into(),
+            name: "Salt Moth - Bridge".to_string(),
+            zone: None,
+            desc: "Bridge.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "tacsim".into(),
+                serde_json::json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": false
+                }),
+            )]),
+        }));
+        let _ = app.feed_input(b"\x07");
+        let _ = app.feed_input(b"www");
+        let r_helm = app.feed_input(b"e");
+        assert_eq!(r_helm.submit, ["+helm/station command"]);
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // `SSH-H-06`: cycling `v` twice (`SpaceCockpit -> Docking -> Chart`) MUST stay active on Screen 1.
+        let _ = app.feed_input(b"v");
+        assert_eq!(app.pixel.kind(), PictureKind::Docking);
+        // `SSH-M-07`: with NO active docking session, pressing `w`/`q` in Docking must NOT spam `+helm/dock DOCK ...`.
+        let r_inactive = app.feed_input(b"wq");
+        assert!(
+            r_inactive.submit.is_empty(),
+            "inactive Docking view must not spam fallback orders: {:?}",
+            r_inactive.submit
+        );
+        let _ = app.feed_input(b"v");
+        assert_eq!(app.pixel.kind(), PictureKind::Chart);
+        let _ = app.pixel_sync();
+        assert!(
+            app.pixel.is_active(),
+            "Chart view must stay home on Screen 1 while seated at helm"
+        );
+        let _ = app.feed_input(b"vv");
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // Deliver active 60 Hz docking session -> enters Docking automatically
+        let _ = app.apply_event(&OutputEvent::Panel {
+            feed: mush_pixel::docking::SPACE_DOCKING_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "session_id": "dock-ceres-7",
+                "port_name": "Ceres Freeport",
+                "dx_mm": 0, "dy_mm": 0, "dz_mm": 15_000,
+                "vx_mmps": 0, "vy_mmps": 0, "vz_mmps": -200
+            }),
+        });
+        assert_eq!(app.pixel.kind(), PictureKind::Docking);
+        assert!(app.pixel.docking_active());
+
+        // `SSH-C-05`: pressing `q` while in 6-DOF Docking MUST roll CCW and MUST NOT eject to StationWalk!
+        let _ = app.feed_input(b"q");
+        assert_eq!(
+            app.pixel.kind(),
+            PictureKind::Docking,
+            "`q` must roll CCW in Docking, not eject to StationWalk"
+        );
+        assert!(app.port_walk.seated_at_helm());
+
+        // `SSH-M-07`: Backspace in active Docking emits `+helm/dock abort`
+        let r_abort = app.feed_input(b"\x7f");
+        assert_eq!(r_abort.submit, ["+helm/dock abort"]);
+
+        // `SSH-C-05`: receiving a `closed`/`refused` docking frame clears the session and returns to SpaceCockpit
+        let closed_frame = OutputEvent::Panel {
+            feed: mush_pixel::docking::SPACE_DOCKING_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "session_id": "dock-ceres-7",
+                "closed": true,
+                "refused": true,
+                "reason": "aborted"
+            }),
+        };
+        let _ = app.apply_event(&closed_frame);
+        assert!(!app.pixel.docking_active());
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // Delivering a second closing frame MUST NOT re-enter dead Docking mode
+        let _ = app.apply_event(&closed_frame);
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // `Esc` stands up cleanly and sends `+helm/station off`
+        let r_esc = app.feed_input(b"\x1b");
+        assert_eq!(r_esc.submit, ["+helm/station off"]);
+        assert_eq!(app.pixel.kind(), PictureKind::StationWalk);
+        assert!(!app.port_walk.seated_at_helm());
+    }
+
+    #[test]
+    fn station_walk_idle_paint_skips_unchanged_frames_and_clamps_u16_max_caps() {
+        let mut app = app();
+        app.pixel.probe_sent(Instant::now());
+        app.pixel.graphics_reply(true);
+        let _ = app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#810".into(),
+            name: "Salt Moth - Bridge".into(),
+            zone: None,
+            desc: "Bridge.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "tacsim".into(),
+                serde_json::json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": true
+                }),
+            )]),
+        }));
+        let _ = app.feed_input(b"\x07");
+        assert_eq!(app.pixel.kind(), PictureKind::StationWalk);
+
+        // First paint emits Kitty frame; immediate idle second paint & tick MUST emit nothing (`SSH-H-01`).
+        let first = app.pixel_paint();
+        assert!(!first.is_empty());
+        assert!(
+            app.pixel_paint().is_empty(),
+            "idle StationWalk paint must short-circuit without re-encoding"
+        );
+        app.pixel_tick();
+        assert!(
+            app.pixel_paint().is_empty(),
+            "Ship Bridge holotank must not flood at 20 FPS inside 500 ms interval"
+        );
+
+        // Adversarial 65535x65535 resize is clamped at set_caps and pixel_paint (`SSH-C-01`).
+        let mut huge = app.caps();
+        huge.width = u16::MAX;
+        huge.height = u16::MAX;
+        app.set_caps(huge);
+        assert_eq!(app.caps().width, crate::caps::MAX_WIDTH);
+        assert_eq!(app.caps().height, crate::caps::MAX_HEIGHT);
+        let resized = app.pixel_paint();
+        assert!(!resized.is_empty());
+    }
+
+    #[test]
+    fn ctrl_g_cancels_coop_hull_rename_and_station_title_does_not_spoof_ship_interior() {
+        let mut app = app();
+        app.pixel.probe_sent(Instant::now());
+        app.pixel.graphics_reply(true);
+        // A station room whose name happens to contain `" - Bridge"` with `ambient.atlas`
+        // MUST NOT be misclassified as a ship interior (`SSH-M-06`).
+        let _ = app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#205".into(),
+            name: "Ceres Freeport - Bridge Overlook".into(),
+            zone: None,
+            desc: "An observation deck.".into(),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "atlas".into(),
+                serde_json::json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c05_registry" }),
+            )]),
+        }));
+        assert_eq!(
+            app.port_walk.to_feed_value()["mode"].as_str(),
+            Some("station")
+        );
+
+        // Open Co-op drawer (`Ctrl+T` in Registry opens Co-op), press `r` to start hull rename,
+        // then press `Ctrl+G` — hull rename edit mode MUST cancel cleanly (`SSH-M-06`).
+        let _ = app.feed_input(b"\x14");
+        assert!(app.port_walk.drawer_open());
+        let _ = app.feed_input(b"r");
+        let _ = app.feed_input(b"\x07");
+        // Pressing Enter now should open chat input or run normal action, not submit `+ship/rename`
+        let r_after = app.feed_input(b"\x1b");
+        assert!(
+            !r_after.submit.iter().any(|s| s.starts_with("+ship/rename")),
+            "Ctrl+G must cancel hull rename edit buffer"
+        );
     }
 }

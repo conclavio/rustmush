@@ -22,9 +22,11 @@ use mush_proto::{ClientCaps, ClientKind, ColorDepth};
 pub const DEFAULT_WIDTH: u16 = 80;
 /// Fallback terminal height.
 pub const DEFAULT_HEIGHT: u16 = 24;
-/// Upper bound on accepted terminal columns (CRIT-2 / TUI invariant T4).
+/// Upper bound on accepted SSH terminal columns (`pty-req` / `window-change`).
+/// Bounded well above any real terminal while preventing `u16::MAX × u16::MAX`
+/// pixel or ratatui allocations from OOM-killing the server (`SSH-C-01` / CRIT-2 / TUI invariant T4).
 pub const MAX_WIDTH: u16 = 400;
-/// Upper bound on accepted terminal rows (CRIT-2 / TUI invariant T4).
+/// Upper bound on accepted SSH terminal rows; see [`MAX_WIDTH`].
 pub const MAX_HEIGHT: u16 = 200;
 
 /// Clamp an SSH PTY dimension (`col_width` or `row_height`) to `1..=max`,
@@ -173,6 +175,8 @@ mod tests {
         assert!(!caps.structured);
         let caps = detect_caps(Some("xterm"), None, None, None, 120, 40);
         assert_eq!((caps.width, caps.height), (120, 40));
+        let clamped = detect_caps(Some("xterm"), None, None, None, u16::MAX, u16::MAX);
+        assert_eq!((clamped.width, clamped.height), (MAX_WIDTH, MAX_HEIGHT));
     }
 
     #[test]

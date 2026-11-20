@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using TacSim.Core;
+using UnityEngine;
 using UnityEngine.Networking;
 
 namespace TacSim.Net
@@ -26,17 +28,49 @@ namespace TacSim.Net
     /// </summary>
     public static class MushAuthClient
     {
+        private static readonly Regex SubprotocolTokenRegex =
+            new Regex(@"rustmush\.v1\.[^\s'""<>\]\)},;]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex BearerTokenRegex =
+            new Regex(@"(Bearer\s+)[^\s'""<>\]\)},;]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex JsonTokenRegex =
+            new Regex(@"(""token""\s*:\s*"")[^""]+("")", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        public static string RedactSensitiveTokens(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return string.Empty;
+            string s = SubprotocolTokenRegex.Replace(input, "rustmush.v1.[REDACTED]");
+            s = BearerTokenRegex.Replace(s, "$1[REDACTED]");
+            s = JsonTokenRegex.Replace(s, "$1[REDACTED]$2");
+            return s;
+        }
+
         public static string NormalizeBaseUrl(string raw)
         {
             if (string.IsNullOrWhiteSpace(raw))
                 return "http://127.0.0.1:8080";
             string s = raw.Trim().TrimEnd('/');
-            if (!s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            if (s.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            {
+                s = "https://" + s.Substring("wss://".Length);
+            }
+            else if (s.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+            {
+                s = "http://" + s.Substring("ws://".Length);
+            }
+            else if (!s.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                     !s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
                 s = (IsLoopbackAuthority(s) ? "http://" : "https://") + s;
             }
             return s;
+        }
+
+        public static bool IsLoopbackUrl(string normalizedUrl)
+        {
+            if (string.IsNullOrWhiteSpace(normalizedUrl)) return true;
+            if (Uri.TryCreate(normalizedUrl, UriKind.Absolute, out Uri u))
+                return IsLoopbackAuthority(u.Authority);
+            return IsLoopbackAuthority(normalizedUrl);
         }
 
         private static bool IsLoopbackAuthority(string rawAuthority)
@@ -69,6 +103,37 @@ namespace TacSim.Net
             return "ws://" + norm;
         }
 
+        public static string ExtractErrorMessageFromResponse(long responseCode, string responseText, string transportError)
+        {
+            string serverMsg = null;
+            if (!string.IsNullOrWhiteSpace(responseText))
+            {
+                try
+                {
+                    var errNode = JsonNode.Parse(responseText);
+                    if (errNode != null && errNode.IsObject)
+                        serverMsg = errNode.Str("error", errNode.Str("message", null));
+                }
+                catch
+                {
+                    // Non-JSON proxy/gateway response (e.g., 502/503 HTML or 429 plain text).
+                }
+
+                if (string.IsNullOrWhiteSpace(serverMsg))
+                {
+                    string trimmed = responseText.Trim();
+                    bool looksLikeHtml = trimmed.StartsWith("<", StringComparison.Ordinal);
+                    if (!looksLikeHtml)
+                        serverMsg = trimmed.Length > 200 ? trimmed.Substring(0, 200) + "..." : trimmed;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(serverMsg))
+                serverMsg = !string.IsNullOrWhiteSpace(transportError) ? transportError : $"HTTP {responseCode}";
+
+            return RedactSensitiveTokens(serverMsg);
+        }
+
         public static Task<MushAuthSession> LoginAsync(string baseUrl, string account, string password)
         {
             var body = JsonNode.NewObject();
@@ -88,6 +153,12 @@ namespace TacSim.Net
 
         private static async Task<MushAuthSession> PostAuthAsync(string baseHttpUrl, string endpoint, JsonNode payload)
         {
+            if (baseHttpUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !IsLoopbackUrl(baseHttpUrl))
+            {
+                try { Debug.LogWarning($"[MushAuthClient] Authenticating over unencrypted remote HTTP ({baseHttpUrl}); use https:// in production."); }
+                catch { /* headless test runner */ }
+            }
+
             string url = baseHttpUrl + endpoint;
             byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJson());
 
@@ -98,23 +169,32 @@ namespace TacSim.Net
                 req.SetRequestHeader("Content-Type", "application/json");
                 req.timeout = 10;
 
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var op = req.SendWebRequest();
-                while (!op.isDone)
-                {
-                    await Task.Yield();
-                }
+                if (op.isDone)
+                    tcs.TrySetResult(true);
+                else
+                    op.completed += _ => tcs.TrySetResult(true);
+                await tcs.Task;
 
                 string text = req.downloadHandler != null ? req.downloadHandler.text : string.Empty;
                 if (req.result != UnityWebRequest.Result.Success)
                 {
-                    var errNode = JsonNode.Parse(text);
-                    string serverMsg = errNode.IsObject ? errNode.Str("error", text) : text;
-                    if (string.IsNullOrWhiteSpace(serverMsg)) serverMsg = req.error;
-                    throw new InvalidOperationException($"Auth failed ({req.responseCode}): {serverMsg}");
+                    string safeMsg = ExtractErrorMessageFromResponse(req.responseCode, text, req.error);
+                    throw new InvalidOperationException($"Auth failed ({req.responseCode}): {safeMsg}");
                 }
 
-                var json = JsonNode.Parse(text);
-                if (!json.IsObject || string.IsNullOrEmpty(json.Str("token")))
+                JsonNode json;
+                try
+                {
+                    json = JsonNode.Parse(text);
+                }
+                catch (Exception)
+                {
+                    throw new InvalidOperationException($"Auth server returned invalid JSON ({req.responseCode}).");
+                }
+
+                if (json == null || !json.IsObject || string.IsNullOrEmpty(json.Str("token")))
                     throw new InvalidOperationException("Auth response did not include a session token.");
 
                 var session = new MushAuthSession

@@ -166,6 +166,7 @@ namespace TacSim.Space
         public int[] TargetTumbleMdegS = new int[3];
         public DockingRcsAuthority RcsAuthority = DockingRcsAuthority.Default;
         public bool DampenersOn = true;
+        public int MaxFrames = MaxTapeFrames;
 
         private long _remX;
         private long _remY;
@@ -183,9 +184,11 @@ namespace TacSim.Space
         /// </summary>
         public const int MaxSafeCommandChars = 7600;
 
+        public int EffectiveMaxFrames => MaxFrames > 0 ? Math.Min(MaxFrames, MaxTapeFrames) : MaxTapeFrames;
+
         public int EstimatedCommandLength => 24 + (SessionId?.Length ?? 8) + _spans.Count * 10;
 
-        public bool IsTapeBudgetExhausted => FramesStepped >= MaxTapeFrames || EstimatedCommandLength >= MaxSafeCommandChars;
+        public bool IsTapeBudgetExhausted => FramesStepped >= EffectiveMaxFrames || EstimatedCommandLength >= MaxSafeCommandChars;
 
         public static DockingClientSession CreateStandardPortPractice(string sessionId = "dock.demo.1", string label = "Ceres Freeport Cradle 04")
         {
@@ -212,23 +215,34 @@ namespace TacSim.Space
             if (feed == null || !feed.IsObject)
                 return CreateStandardPortPractice();
 
+            // `replay_docking_tape` on `mushd` ALWAYS replays submitted tapes from `challenge.start_pose`
+            // with `dampeners_on = true` and enforces `challenge.max_frames`. Prefer `feed["start_pose"]`
+            // whenever present so reconnects or prior text steps never diverge from server verification.
+            var startPose = feed["start_pose"];
+            bool hasStartPose = startPose.IsObject;
+            JsonNode poseSrc = hasStartPose ? startPose : feed;
+
+            int feedMaxFrames = feed.Int("max_frames", MaxTapeFrames);
+            int clampedMaxFrames = feedMaxFrames > 0 ? Math.Min(feedMaxFrames, MaxTapeFrames) : MaxTapeFrames;
+
             var s = new DockingClientSession
             {
                 SessionId = feed.Str("session_id", "dock.0.1"),
                 TargetLabel = feed.Str("target_label", feed.Str("target_name", "Docking Collar")),
-                DxMm = feed.Long("dx_mm", feed.Long("lateral_x_mm", 600)),
-                DyMm = feed.Long("dy_mm", feed.Long("lateral_y_mm", -420)),
-                DzMm = feed.Long("dz_mm", feed.Long("range_z_mm", 2400)),
-                PitchMdeg = feed.Long("pitch_mdeg", feed.Long("pitch_err_mdeg", -2400)),
-                YawMdeg = feed.Long("yaw_mdeg", feed.Long("yaw_err_mdeg", 2400)),
-                RollMdeg = feed.Long("roll_mdeg", feed.Long("roll_err_mdeg", -3600)),
-                VxMmps = feed.Long("vx_mmps", feed.Long("vel_x_mmps", 0)),
-                VyMmps = feed.Long("vy_mmps", feed.Long("vel_y_mmps", 0)),
-                VzMmps = feed.Long("vz_mmps", feed.Long("closure_mmps", 0)),
-                PitchRateMdegS = feed.Int("pitch_rate_mdeg_s", 0),
-                YawRateMdegS = feed.Int("yaw_rate_mdeg_s", 0),
-                RollRateMdegS = feed.Int("roll_rate_mdeg_s", 0),
-                DampenersOn = feed.ContainsKey("dampeners") ? feed.Bool("dampeners", true) : true
+                DxMm = poseSrc.Long("dx_mm", poseSrc.Long("lateral_x_mm", 600)),
+                DyMm = poseSrc.Long("dy_mm", poseSrc.Long("lateral_y_mm", -420)),
+                DzMm = poseSrc.Long("dz_mm", poseSrc.Long("range_z_mm", 2400)),
+                PitchMdeg = poseSrc.Long("pitch_mdeg", poseSrc.Long("pitch_err_mdeg", -2400)),
+                YawMdeg = poseSrc.Long("yaw_mdeg", poseSrc.Long("yaw_err_mdeg", 2400)),
+                RollMdeg = poseSrc.Long("roll_mdeg", poseSrc.Long("roll_err_mdeg", -3600)),
+                VxMmps = poseSrc.Long("vx_mmps", poseSrc.Long("vel_x_mmps", 0)),
+                VyMmps = poseSrc.Long("vy_mmps", poseSrc.Long("vel_y_mmps", 0)),
+                VzMmps = poseSrc.Long("vz_mmps", poseSrc.Long("closure_mmps", 0)),
+                PitchRateMdegS = poseSrc.Int("pitch_rate_mdeg_s", 0),
+                YawRateMdegS = poseSrc.Int("yaw_rate_mdeg_s", 0),
+                RollRateMdegS = poseSrc.Int("roll_rate_mdeg_s", 0),
+                DampenersOn = hasStartPose ? true : (feed.ContainsKey("dampeners") ? feed.Bool("dampeners", true) : true),
+                MaxFrames = clampedMaxFrames
             };
 
             var tumble = feed["target_tumble_mdeg_s"].AsArray();
@@ -274,7 +288,7 @@ namespace TacSim.Space
 
         public void Step60Fps(DockingControlInput input)
         {
-            if (FramesStepped >= MaxTapeFrames)
+            if (FramesStepped >= EffectiveMaxFrames)
                 return;
 
             ushort mask = input.ToBitmask();

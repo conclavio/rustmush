@@ -156,6 +156,7 @@ namespace TacSim.Net
         public ulong Id;
         public string Kind;
         public string Prompt;
+        public long DeadlineMs;
         public List<MushRequestOption> Options = new List<MushRequestOption>();
     }
 
@@ -165,6 +166,7 @@ namespace TacSim.Net
         public long TimestampMs;
         public string EventType;
         public JsonNode Data;
+        internal bool PongAlreadySent;
     }
 
     public enum ViewCursorDisposition
@@ -180,6 +182,8 @@ namespace TacSim.Net
         public string Generation = string.Empty;
         public ulong LastSequence;
         public bool HasSnapshot;
+        public int SchemaVersion;
+        public bool HasSchemaVersion;
     }
 
     public static class MushProtocol
@@ -202,7 +206,7 @@ namespace TacSim.Net
 
             return new MushEnvelope
             {
-                Seq = (ulong)Math.Max(0L, root.Long("seq", 0)),
+                Seq = root.ULong("seq", 0),
                 TimestampMs = root.Long("ts", 0),
                 EventType = eventType,
                 Data = eventData
@@ -265,7 +269,7 @@ namespace TacSim.Net
                 var link = sp["link"];
 
                 bool bold = style.IsObject && style.Bool("bold", false);
-                bool italic = style.IsObject && style.Bool("italic", false);
+                bool italic = style.IsObject && (style.Bool("italic", false) || style.Bool("underline", false));
                 string hexColor = ResolveSpanHexColor(tag, style, link);
 
                 if (link.IsObject)
@@ -274,6 +278,7 @@ namespace TacSim.Net
                     escaped = $"[{escaped}]";
                 }
 
+                // Emit only tags supported by both legacy uGUI UnityEngine.UI.Text and TextMeshPro (<b>, <i>, <color>).
                 if (!string.IsNullOrEmpty(hexColor)) sb.Append("<color=").Append(hexColor).Append('>');
                 if (bold) sb.Append("<b>");
                 if (italic) sb.Append("<i>");
@@ -335,13 +340,64 @@ namespace TacSim.Net
             return null;
         }
 
+        private static readonly string[] Ansi16Palette =
+        {
+            "#556677", // 0: black (legible on dark terminal)
+            "#CC4444", // 1: red
+            "#44BB77", // 2: green
+            "#DDBB44", // 3: yellow
+            "#4488DD", // 4: blue
+            "#CC66CC", // 5: magenta
+            "#44BBBB", // 6: cyan
+            "#CCCCCC", // 7: white
+            "#8899AA", // 8: bright black
+            "#FF6655", // 9: bright red
+            "#66EE99", // 10: bright green
+            "#FFDD66", // 11: bright yellow
+            "#66AAFF", // 12: bright blue
+            "#EE88FF", // 13: bright magenta
+            "#66EEFF", // 14: bright cyan
+            "#F2F6FA"  // 15: bright white
+        };
+
+        private static bool IsValidHexColor(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s[0] != '#' || (s.Length != 7 && s.Length != 9))
+                return false;
+            for (int i = 1; i < s.Length; i++)
+            {
+                char c = s[i];
+                bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                if (!isHex) return false;
+            }
+            return true;
+        }
+
+        private static string Index256ToHex(int idx)
+        {
+            int c = Math.Clamp(idx, 0, 255);
+            if (c < 16)
+                return Ansi16Palette[c];
+            if (c < 232)
+            {
+                int n = c - 16;
+                int[] levels = { 0, 95, 135, 175, 215, 255 };
+                int r = levels[(n / 36) % 6];
+                int g = levels[(n / 6) % 6];
+                int b = levels[n % 6];
+                return string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", r, g, b);
+            }
+            int gray = 8 + (c - 232) * 10;
+            return string.Format(CultureInfo.InvariantCulture, "#{0:X2}{1:X2}{2:X2}", gray, gray, gray);
+        }
+
         private static string ParseProtoColorHex(JsonNode fg)
         {
             if (fg == null || fg.IsNull) return null;
             if (fg.Kind == JsonKind.String)
             {
                 string s = fg.AsString(string.Empty).Trim();
-                if (s.StartsWith("#", StringComparison.Ordinal) && (s.Length == 7 || s.Length == 9))
+                if (IsValidHexColor(s))
                     return s;
                 switch (s.ToLowerInvariant())
                 {
@@ -357,6 +413,15 @@ namespace TacSim.Net
             }
             else if (fg.IsObject)
             {
+                if (fg.ContainsKey("ansi") && !fg["ansi"].IsNull)
+                {
+                    int idx = Math.Clamp(fg.Int("ansi", 7), 0, 15);
+                    return Ansi16Palette[idx];
+                }
+                if (fg.ContainsKey("idx256") && !fg["idx256"].IsNull)
+                {
+                    return Index256ToHex(fg.Int("idx256", 7));
+                }
                 var rgb = fg["rgb"].AsArray();
                 if (rgb != null && rgb.Count >= 3)
                 {
@@ -382,10 +447,16 @@ namespace TacSim.Net
                 return ViewCursorDisposition.IgnoreDuplicateOrStale;
 
             string gen = viewFrame.Str("generation", string.Empty);
-            ulong seq = (ulong)Math.Max(0L, viewFrame.Long("sequence", (long)viewFrame.Long("seq", 0)));
+            ulong seq = viewFrame.ContainsKey("sequence") && !viewFrame["sequence"].IsNull
+                ? viewFrame.ULong("sequence", 0)
+                : viewFrame.ULong("seq", 0);
             bool hasBaseSeq = (viewFrame.ContainsKey("base_sequence") && !viewFrame["base_sequence"].IsNull) ||
                               (viewFrame.ContainsKey("base") && !viewFrame["base"].IsNull);
-            ulong baseSeq = (ulong)Math.Max(0L, viewFrame.Long("base_sequence", (long)viewFrame.Long("base", 0)));
+            ulong baseSeq = viewFrame.ContainsKey("base_sequence") && !viewFrame["base_sequence"].IsNull
+                ? viewFrame.ULong("base_sequence", 0)
+                : viewFrame.ULong("base", 0);
+            bool hasSchemaVer = viewFrame.ContainsKey("schema_version") && !viewFrame["schema_version"].IsNull;
+            int schemaVer = hasSchemaVer ? viewFrame.Int("schema_version", 0) : 0;
 
             // Canonical Rust ViewEnvelope distinguishes deltas by base_sequence presence (no "kind" field).
             string explicitKind = viewFrame.Str("kind", string.Empty);
@@ -394,23 +465,31 @@ namespace TacSim.Net
 
             if (isSnapshot)
             {
-                if (cursor.HasSnapshot && !string.IsNullOrEmpty(gen) && gen == cursor.Generation && seq > 0 && seq < cursor.LastSequence)
+                bool schemaChanged = hasSchemaVer && cursor.HasSchemaVersion && schemaVer != cursor.SchemaVersion;
+                if (!schemaChanged && cursor.HasSnapshot && !string.IsNullOrEmpty(gen) && gen == cursor.Generation && seq > 0 && seq <= cursor.LastSequence)
                     return ViewCursorDisposition.IgnoreDuplicateOrStale;
 
                 cursor.Generation = gen;
                 cursor.LastSequence = seq;
                 cursor.HasSnapshot = true;
+                if (hasSchemaVer)
+                {
+                    cursor.SchemaVersion = schemaVer;
+                    cursor.HasSchemaVersion = true;
+                }
                 return ViewCursorDisposition.ApplySnapshot;
             }
 
-            // Delta frame: requires matching generation and contiguous base_sequence == LastSequence
+            // Delta frame: requires matching generation, schema_version, and contiguous base_sequence == LastSequence
             if (!cursor.HasSnapshot)
                 return ViewCursorDisposition.NeedsResubscribe;
             if (!string.IsNullOrEmpty(gen) && !string.IsNullOrEmpty(cursor.Generation) && gen != cursor.Generation)
                 return ViewCursorDisposition.NeedsResubscribe;
+            if (hasSchemaVer && cursor.HasSchemaVersion && schemaVer != cursor.SchemaVersion)
+                return ViewCursorDisposition.NeedsResubscribe;
             if (seq > 0 && seq <= cursor.LastSequence)
                 return ViewCursorDisposition.IgnoreDuplicateOrStale;
-            if (baseSeq > 0 && baseSeq != cursor.LastSequence)
+            if (hasBaseSeq && baseSeq != cursor.LastSequence)
                 return ViewCursorDisposition.NeedsResubscribe;
 
             cursor.LastSequence = seq > 0 ? seq : cursor.LastSequence + 1;
@@ -675,9 +754,10 @@ namespace TacSim.Net
             var req = new MushServerRequest
             {
                 Epoch = d.Str("epoch", string.Empty),
-                Id = (ulong)Math.Max(0L, d.Long("id", 0)),
+                Id = d.ULong("id", 0),
                 Kind = d["kind"].IsObject ? d["kind"].Str("t", "choice") : d.Str("kind", "choice"),
-                Prompt = RenderRichTextToUnityMarkup(d["prompt"])
+                Prompt = RenderRichTextToUnityMarkup(d["prompt"]),
+                DeadlineMs = d.Long("deadline_ms", 0)
             };
             var opts = d["options"].AsArray();
             if (opts != null)
@@ -696,7 +776,7 @@ namespace TacSim.Net
             else if (req.Kind == "confirm")
             {
                 req.Options.Add(new MushRequestOption { Key = "true", Label = "Confirm" });
-                req.Options.Add(new MushRequestOption { Key = "false", Label = "Cancel" });
+                req.Options.Add(new MushRequestOption { Key = "false", Label = "Decline" });
             }
             return req;
         }
@@ -734,12 +814,28 @@ namespace TacSim.Net
             return obj.ToJson();
         }
 
+        public static string NormalizeListingCode(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+            string s = raw.Trim().ToLowerInvariant();
+            if (s.Length != 8)
+                return null;
+            for (int i = 0; i < 8; i++)
+            {
+                char c = s[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                    return null;
+            }
+            return s;
+        }
+
         public static string BuildPongCommand(ulong nonce)
         {
             var obj = JsonNode.NewObject();
             obj["t"] = JsonNode.FromString("pong");
             var d = JsonNode.NewObject();
-            d["nonce"] = JsonNode.FromLong((long)nonce);
+            d["nonce"] = JsonNode.FromULong(nonce);
             obj["d"] = d;
             return obj.ToJson();
         }
@@ -753,7 +849,7 @@ namespace TacSim.Net
             var obj = JsonNode.NewObject();
             obj["t"] = JsonNode.FromString("req");
             var d = JsonNode.NewObject();
-            d["id"] = JsonNode.FromLong((long)id);
+            d["id"] = JsonNode.FromULong(id);
 
             var q = JsonNode.NewObject();
             q["t"] = JsonNode.FromString("panel_subscribe");
@@ -782,7 +878,7 @@ namespace TacSim.Net
             var obj = JsonNode.NewObject();
             obj["t"] = JsonNode.FromString("req");
             var d = JsonNode.NewObject();
-            d["id"] = JsonNode.FromLong((long)id);
+            d["id"] = JsonNode.FromULong(id);
 
             var q = JsonNode.NewObject();
             q["t"] = JsonNode.FromString("mind_market");
@@ -818,7 +914,7 @@ namespace TacSim.Net
             var obj = JsonNode.NewObject();
             obj["t"] = JsonNode.FromString("invoke");
             var d = JsonNode.NewObject();
-            d["id"] = JsonNode.FromLong((long)id);
+            d["id"] = JsonNode.FromULong(id);
 
             var reqWrap = JsonNode.NewObject();
             reqWrap["service"] = JsonNode.FromString("mind");
@@ -838,21 +934,23 @@ namespace TacSim.Net
             obj["t"] = JsonNode.FromString("respond");
             var d = JsonNode.NewObject();
             d["epoch"] = JsonNode.FromString(epoch ?? string.Empty);
-            d["id"] = JsonNode.FromLong((long)requestId);
+            d["id"] = JsonNode.FromULong(requestId);
 
             var choice = JsonNode.NewObject();
-            if (requestKind == "confirm")
+            if (string.Equals(choiceKey, "__cancel__", StringComparison.Ordinal))
+            {
+                choice["t"] = JsonNode.FromString("cancel");
+            }
+            else if (string.Equals(requestKind, "confirm", StringComparison.OrdinalIgnoreCase))
             {
                 choice["t"] = JsonNode.FromString("confirm");
                 choice["d"] = JsonNode.FromBool(string.Equals(choiceKey, "true", StringComparison.OrdinalIgnoreCase));
             }
-            else if (choiceKey == "__cancel__")
-            {
-                choice["t"] = JsonNode.FromString("cancel");
-            }
             else
             {
-                choice["t"] = JsonNode.FromString(requestKind == "text" || requestKind == "target" ? "text" : "choose");
+                bool isText = string.Equals(requestKind, "text", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(requestKind, "target", StringComparison.OrdinalIgnoreCase);
+                choice["t"] = JsonNode.FromString(isText ? "text" : "choose");
                 choice["d"] = JsonNode.FromString(choiceKey ?? string.Empty);
             }
 

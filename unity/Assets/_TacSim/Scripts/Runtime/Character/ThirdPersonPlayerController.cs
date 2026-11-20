@@ -17,12 +17,15 @@ namespace TacSim.Character
         public float sprintSpeedMps = 7.8f;
         public float rotationSharpness = 14f;
         public float gravityMps2 = -16f;
-        public float interactionRadiusM = 3.4f;
+        public float interactionRadiusM = 4.6f;
+        public const float TerminalFallSpeedMps = -30f;
+        public const float VoidRecoveryFloorY = -50f;
 
         public Transform CameraTransform { get; set; }
         public CharacterVisualSpawner VisualSpawner { get; set; }
         public bool InputSuspended { get; set; }
         public bool PhysicsSuspended { get; private set; }
+        public bool AreVisualsHidden { get; private set; }
         public bool IsSeatedAtHelm { get; set; }
         public float VerticalVelocity => _verticalVelocity;
         public float CurrentPlanarSpeed => _currentPlanarSpeed;
@@ -33,10 +36,13 @@ namespace TacSim.Character
         private CharacterController _cc;
         private float _verticalVelocity;
         private float _currentPlanarSpeed;
+        private Vector3 _lastPlanarDir = Vector3.forward;
         private Vector3 _savedWalkPosition;
         private Quaternion _savedWalkRotation = Quaternion.identity;
         private bool _hasSavedWalkPose;
-        private readonly Collider[] _overlapBuffer = new Collider[24];
+        private Vector3 _lastGroundedPosition;
+        private bool _hasLastGroundedPosition;
+        private readonly Collider[] _overlapBuffer = new Collider[64];
 
         private void Awake()
         {
@@ -58,9 +64,24 @@ namespace TacSim.Character
             _savedWalkPosition = worldPos;
             _savedWalkRotation = rot;
             _hasSavedWalkPose = true;
+            _lastGroundedPosition = worldPos;
+            _hasLastGroundedPosition = true;
             _verticalVelocity = 0f;
             _currentPlanarSpeed = 0f;
             if (_cc != null) _cc.enabled = wasEnabled && !PhysicsSuspended;
+        }
+
+        private void SetAvatarVisualsVisible(bool visible)
+        {
+            AreVisualsHidden = !visible;
+            if (VisualSpawner != null)
+                VisualSpawner.SetVisible(visible);
+            var renderers = GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                if (renderers[i] != null)
+                    renderers[i].enabled = visible;
+            }
         }
 
         /// <summary>
@@ -83,6 +104,7 @@ namespace TacSim.Character
                 _currentPlanarSpeed = 0f;
                 PhysicsSuspended = true;
                 if (_cc != null) _cc.enabled = false;
+                SetAvatarVisualsVisible(false);
                 if (FocusedInteractable != null)
                 {
                     FocusedInteractable = null;
@@ -97,6 +119,7 @@ namespace TacSim.Character
                 _verticalVelocity = 0f;
                 _currentPlanarSpeed = 0f;
                 PhysicsSuspended = false;
+                SetAvatarVisualsVisible(true);
                 if (_cc != null) _cc.enabled = true;
             }
         }
@@ -143,26 +166,60 @@ namespace TacSim.Character
             }
 
             Vector3 desiredDir = (camRight * moveInput.x + camForward * moveInput.y);
+            bool hasMoveInput = desiredDir.sqrMagnitude > 0.001f;
             float targetSpeed = desiredDir.magnitude * (sprinting ? sprintSpeedMps : walkSpeedMps);
             _currentPlanarSpeed = Mathf.MoveTowards(_currentPlanarSpeed, targetSpeed, 28f * dt);
 
-            if (desiredDir.sqrMagnitude > 0.001f)
+            if (hasMoveInput)
             {
-                Quaternion targetRot = Quaternion.LookRotation(desiredDir.normalized, Vector3.up);
+                _lastPlanarDir = desiredDir.normalized;
+                Quaternion targetRot = Quaternion.LookRotation(_lastPlanarDir, Vector3.up);
                 transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, 1f - Mathf.Exp(-rotationSharpness * dt));
             }
+            else if (_currentPlanarSpeed < 0.05f)
+            {
+                _currentPlanarSpeed = 0f;
+            }
 
-            if (_cc.isGrounded && _verticalVelocity < 0f)
-                _verticalVelocity = -2f;
+            if (_cc.isGrounded)
+            {
+                _lastGroundedPosition = transform.position;
+                _hasLastGroundedPosition = true;
+                if (_verticalVelocity < 0f)
+                    _verticalVelocity = -2f;
+            }
             else
-                _verticalVelocity += gravityMps2 * dt;
+            {
+                _verticalVelocity = Mathf.Max(TerminalFallSpeedMps, _verticalVelocity + gravityMps2 * dt);
+            }
 
-            Vector3 velocity = desiredDir.normalized * _currentPlanarSpeed + Vector3.up * _verticalVelocity;
+            Vector3 posBeforeMove = transform.position;
+            Vector3 moveDir = hasMoveInput ? desiredDir.normalized : _lastPlanarDir;
+            Vector3 velocity = moveDir * _currentPlanarSpeed + Vector3.up * _verticalVelocity;
             if (_cc.enabled)
                 _cc.Move(velocity * dt);
 
+            // Recover cleanly if a player ever falls into void below station/ship geometry
+            if (transform.position.y < VoidRecoveryFloorY)
+            {
+                Vector3 safePos = _hasLastGroundedPosition ? _lastGroundedPosition : (_hasSavedWalkPose ? _savedWalkPosition : Vector3.zero);
+                bool ccWasEnabled = _cc.enabled;
+                _cc.enabled = false;
+                transform.position = safePos;
+                _verticalVelocity = 0f;
+                _currentPlanarSpeed = 0f;
+                _cc.enabled = ccWasEnabled;
+            }
+
+            float animPlanarSpeed = _currentPlanarSpeed;
+            if (dt > 1e-4f && _cc.enabled)
+            {
+                float actualPlanar = Vector3.ProjectOnPlane(transform.position - posBeforeMove, Vector3.up).magnitude / dt;
+                animPlanarSpeed = Mathf.Min(_currentPlanarSpeed, actualPlanar);
+            }
+
             if (VisualSpawner != null)
-                VisualSpawner.UpdateLocomotion(_currentPlanarSpeed, sprinting && _currentPlanarSpeed > walkSpeedMps + 0.5f, false, dt);
+                VisualSpawner.UpdateLocomotion(animPlanarSpeed, sprinting && animPlanarSpeed > walkSpeedMps + 0.5f, false, dt);
 
             UpdateFocusedInteractable();
 

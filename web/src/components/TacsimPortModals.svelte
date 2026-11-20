@@ -7,14 +7,16 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     formatEscortPostCommand,
-    formatJobCommand,
-    SIM_UNIT_CHASSIS,
     formatHaulPostCommand,
+    formatJobCommand,
     formatMarketDepthCommand,
     formatMarketHistoryCommand,
+    formatSurveyAcceptCommand,
     HISTORY_GOODS,
     JOB_BOARD_FILTERS,
     parseMarketHistoryLines,
+    SIM_UNIT_CHASSIS,
+    SURVEY_OFFERS,
     WORKS_RECIPES,
     YARD_RECIPES,
   } from "$lib/tacsim/economy";
@@ -29,18 +31,23 @@
 
   type TradeSubView = "book" | "history" | "jobs" | "industry";
 
+  let modalEl: HTMLDivElement | undefined = $state();
   let npcSayDraft = $state("");
   let hullNameDraft = $state("");
   let tradeSubView = $state<TradeSubView>("book");
   let historyGood = $state<string>("volatiles");
   let activeJobFilter = $state<string>("all");
   let jobIdDraft = $state<string>("");
+  let surveyIdDraft = $state<string>(SURVEY_OFFERS[0]!.id);
   let haulQtyDraft = $state<number>(10);
   let haulFeeDraft = $state<number>(250);
   let workOrderIdDraft = $state<string>("1");
   let debtIdDraft = $state<string>("1");
 
   $effect(() => {
+    if (app.tacsim.activeModal !== null) {
+      modalEl?.focus();
+    }
     if (app.tacsim.activeModal === "coop") {
       hullNameDraft = app.tacsim.coopSuggestedHull;
     } else if (app.tacsim.activeModal === "npc") {
@@ -50,10 +57,19 @@
     }
   });
 
+  function onWindowKeyDown(ev: KeyboardEvent): void {
+    if (app.tacsim.activeModal !== null && ev.key === "Escape") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      app.tacsim.closeModal();
+    }
+  }
+
   const parsedHistory = $derived(parseMarketHistoryLines(app.tacsim.marketHistoryLines));
+  const escortHullRef = $derived(app.tacsim.activeHullRef);
   const escortPostLine = $derived(
     formatEscortPostCommand(
-      app.tacsim.trade.hullId ?? app.tacsim.ambient.ownHull,
+      escortHullRef,
       app.tacsim.selectedDestination,
       haulFeeDraft,
       true,
@@ -63,6 +79,12 @@
   const modal = $derived(app.tacsim.activeModal);
   const trade = $derived(app.tacsim.trade);
   const st = $derived(trade.stowage);
+  const bayHullTarget = $derived(
+    app.tacsim.activeHullRef ||
+      app.tacsim.ambient.ownHullName ||
+      app.tacsim.ambient.hullName ||
+      "ship",
+  );
 
   const massPct = $derived(Math.min(100, Math.round((st.cargoKg / Math.max(1, st.cargoMaxKg)) * 100)));
   const volPct = $derived(Math.min(100, Math.round((st.cargoL / Math.max(1, st.cargoMaxL)) * 100)));
@@ -99,6 +121,8 @@
   );
 </script>
 
+<svelte:window onkeydown={onWindowKeyDown} />
+
 {#if modal !== null}
   <div
     class="tac-backdrop"
@@ -106,6 +130,7 @@
     onclick={() => app.tacsim.closeModal()}
   >
     <div
+      bind:this={modalEl}
       class="tac-modal"
       class:wide={modal === "trade" || modal === "sailing" || modal === "sim"}
       role="dialog"
@@ -114,6 +139,7 @@
       onclick={(ev) => ev.stopPropagation()}
       onkeydown={(ev) => {
         if (ev.key === "Escape") {
+          ev.preventDefault();
           ev.stopPropagation();
           app.tacsim.closeModal();
         }
@@ -434,8 +460,6 @@
                   {#each [
                     { label: "Accept Haul", cls: "buybtn", verb: "+haul/accept", go: true },
                     { label: "Deliver Haul", cls: "sellbtn", verb: "+haul/deliver", go: true },
-                    { label: "Preview Survey", cls: "ghost", verb: "+survey/accept", go: false },
-                    { label: "Confirm Survey", cls: "ghost", verb: "+survey/accept", go: true },
                   ] as job (job.label)}
                     {@const line = formatJobCommand(job.verb, jobIdDraft, job.go)}
                     <button
@@ -450,6 +474,33 @@
                       {job.label}
                     </button>
                   {/each}
+                </div>
+                <div class="act-row">
+                  <select
+                    class="mini-select"
+                    aria-label="survey commission id"
+                    bind:value={surveyIdDraft}
+                  >
+                    {#each SURVEY_OFFERS as s (s.id)}
+                      <option value={s.id}>{s.label}</option>
+                    {/each}
+                  </select>
+                  <button
+                    type="button"
+                    class="ghost sm"
+                    title={formatSurveyAcceptCommand(surveyIdDraft, false)}
+                    onclick={() => onCmd(formatSurveyAcceptCommand(surveyIdDraft, false))}
+                  >
+                    Preview Survey
+                  </button>
+                  <button
+                    type="button"
+                    class="buybtn"
+                    title={formatSurveyAcceptCommand(surveyIdDraft, true)}
+                    onclick={() => onCmd(formatSurveyAcceptCommand(surveyIdDraft, true))}
+                  >
+                    Accept Survey
+                  </button>
                 </div>
                 <div class="act-row">
                   <button type="button" class="ghost sm" onclick={() => onCmd("+haul")}>My Hauls (+haul)</button>
@@ -497,12 +548,14 @@
                     type="button"
                     class="sellbtn"
                     disabled={escortPostLine === null}
-                    title={escortPostLine === null ? "No hull at your helm to escort." : escortPostLine}
+                    title={escortPostLine === null
+                      ? "No hull at your helm to escort (requires #<dbref>)."
+                      : escortPostLine}
                     onclick={() => {
                       if (escortPostLine !== null) onCmd(escortPostLine);
                     }}
                   >
-                    Post Escort (→ {app.tacsim.selectedDestination})
+                    Post Escort ({escortHullRef ?? "no hull"} → {app.tacsim.selectedDestination})
                   </button>
                 </div>
               </section>
@@ -517,24 +570,21 @@
               <button
                 type="button"
                 class="ghost sm"
-                onclick={() =>
-                  onCmd(`+bay ${app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship"}`)}
+                onclick={() => onCmd(`+bay ${bayHullTarget}`)}
               >
                 Bay & Magazines (+bay)
               </button>
               <button
                 type="button"
                 class="ghost sm"
-                onclick={() =>
-                  onCmd(`+bay/order ${app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship"}=rearm`)}
+                onclick={() => onCmd(`+bay/order ${bayHullTarget}=rearm`)}
               >
                 Rearm Magazines (+bay/order =rearm)
               </button>
               <button
                 type="button"
                 class="ghost sm"
-                onclick={() =>
-                  onCmd(`+bay/order ${app.tacsim.ambient.ownHullName || app.tacsim.ambient.hullName || "ship"}=all`)}
+                onclick={() => onCmd(`+bay/order ${bayHullTarget}=all`)}
               >
                 Full Repair (+bay/order =all)
               </button>
@@ -1146,6 +1196,22 @@
     font-family: var(--font-mono);
     font-size: 0.78rem;
     padding: 0.25rem 0.45rem;
+  }
+
+  .mini-select {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    padding: 0.25rem 0.45rem;
+  }
+
+  .sellbtn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .spark-grid {

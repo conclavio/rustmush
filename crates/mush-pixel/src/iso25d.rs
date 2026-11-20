@@ -394,24 +394,41 @@ pub fn viewport_25d(
     let phys_ch = usize::from(cell.map_or(DEFAULT_CELL_H, |c| {
         c.height.clamp(CellSize::MIN_HEIGHT, CellSize::MAX_HEIGHT)
     }));
-    let max_w = if step_down { 640 } else { MAX_WIDTH_PX };
-    let max_h = if step_down { 360 } else { MAX_HEIGHT_PX };
-    // Never allow `box_cols > max_w / 2` or `box_rows > max_h / 2` so the
-    // minimum 2 px/cell render resolution can never multiply past `max_w`/`max_h`.
-    let max_box_cols = (max_w / 2) & !1;
-    let max_box_rows = (max_h / 2) & !1;
+    // Hard cap <= 1920x1080 (normal cap 1280x720, step-down 640x360) so
+    // unclamped terminal dimensions can never OOM Frame::new.
+    let max_w = if step_down {
+        640
+    } else {
+        MAX_WIDTH_PX.min(1920)
+    };
+    let max_h = if step_down {
+        360
+    } else {
+        MAX_HEIGHT_PX.min(1080)
+    };
+    // Never allow `box_cols > max_w / 2` or `box_rows > max_h / 2` (or above the
+    // 512x256 cell ceiling) so the minimum 2 px/cell render resolution can never
+    // multiply past `max_w`/`max_h`.
+    let max_box_cols = ((max_w / 2) & !1).min(512);
+    let max_box_rows = ((max_h / 2) & !1).min(256);
 
-    let avail_cols = usize::from(area_cols.max(2));
-    let avail_rows = usize::from(area_rows.max(2));
-    let avail_w = avail_cols * phys_cw;
-    let avail_h = avail_rows * phys_ch;
+    let avail_cols = usize::from(area_cols.clamp(2, 512));
+    let avail_rows = usize::from(area_rows.clamp(2, 256));
+    let avail_w = avail_cols.saturating_mul(phys_cw);
+    let avail_h = avail_rows.saturating_mul(phys_ch);
 
     // Match the 4:1 .. 4:3 aspect-preserving cell box inside `picture_area`
     // so the 2.5D view fills the full terminal viewport box on any DPI.
-    let (raw_cols, raw_rows) = if avail_h * 4 < avail_w {
-        ((avail_h * 4 / phys_cw).clamp(2, avail_cols), avail_rows)
-    } else if avail_h * 4 > avail_w * 3 {
-        (avail_cols, (avail_w * 3 / 4 / phys_ch).clamp(2, avail_rows))
+    let (raw_cols, raw_rows) = if avail_h.saturating_mul(4) < avail_w {
+        (
+            (avail_h.saturating_mul(4) / phys_cw.max(1)).clamp(2, avail_cols),
+            avail_rows,
+        )
+    } else if avail_h.saturating_mul(4) > avail_w.saturating_mul(3) {
+        (
+            avail_cols,
+            (avail_w.saturating_mul(3) / 4 / phys_ch.max(1)).clamp(2, avail_rows),
+        )
     } else {
         (avail_cols, avail_rows)
     };
@@ -435,18 +452,19 @@ pub fn viewport_25d(
     let max_ch = (max_h / box_rows).clamp(2, SHEET_PAD_Y);
 
     let mut cw_px = phys_cw.clamp(2, max_cw);
-    let mut ch_px = ((cw_px * phys_ch + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
+    let mut ch_px =
+        ((cw_px.saturating_mul(phys_ch) + phys_cw / 2) / phys_cw.max(1)).clamp(2, SHEET_PAD_Y);
 
     if ch_px > max_ch {
         ch_px = max_ch;
-        cw_px = ((ch_px * phys_cw + phys_ch / 2) / phys_ch.max(1)).clamp(2, max_cw);
+        cw_px = ((ch_px.saturating_mul(phys_cw) + phys_ch / 2) / phys_ch.max(1)).clamp(2, max_cw);
     }
 
-    let width_px = (box_cols * cw_px).clamp(2, max_w);
-    let height_px = (box_rows * ch_px).clamp(2, max_h);
-    let cols = u16::try_from(box_cols).unwrap_or(area_cols);
-    let rows = u16::try_from(box_rows).unwrap_or(area_rows);
-    let col_offset = area_cols.saturating_sub(cols) / 2;
+    let width_px = box_cols.saturating_mul(cw_px).clamp(2, max_w);
+    let height_px = box_rows.saturating_mul(ch_px).clamp(2, max_h);
+    let cols = u16::try_from(box_cols).unwrap_or(area_cols.min(512));
+    let rows = u16::try_from(box_rows).unwrap_or(area_rows.min(256));
+    let col_offset = area_cols.min(512).saturating_sub(cols) / 2;
     let row_offset = 0;
 
     Viewport25D {
@@ -3193,6 +3211,33 @@ mod tests {
 
     #[cfg(feature = "encode")]
     #[test]
+    fn viewport_25d_clamps_adversarial_u16_max_dimensions() {
+        for cell in [
+            None,
+            Some(CellSize {
+                width: 8,
+                height: 16,
+            }),
+            Some(CellSize {
+                width: 64,
+                height: 128,
+            }),
+        ] {
+            for step_down in [false, true] {
+                let vp = viewport_25d(u16::MAX, u16::MAX, cell, step_down);
+                assert!(
+                    vp.width_px <= 1920 && vp.height_px <= 1080,
+                    "vp={vp:?} exceeded 1920x1080 cap"
+                );
+                assert!(vp.width_px <= MAX_WIDTH_PX && vp.height_px <= MAX_HEIGHT_PX);
+                assert!(vp.width_px >= 2 && vp.height_px >= 2);
+                assert!(vp.cols <= 512 && vp.rows <= 256);
+            }
+        }
+    }
+
+    #[cfg(feature = "encode")]
+    #[test]
     fn viewport_25d_enforces_pixel_ceilings_under_hostile_dimensions_and_cells() {
         let cells = [
             None,
@@ -3271,7 +3316,6 @@ mod tests {
             canvas.canvas_w * canvas.canvas_h
         );
     }
-
     #[cfg(feature = "encode")]
     #[test]
     fn retained_kitty_compositor_scrolls_by_translation_reuses_sheets_and_skips_idle_ticks() {

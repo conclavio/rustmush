@@ -46,6 +46,8 @@ namespace TacSim.Surface
         public string ActiveOreFamily { get; private set; } = "volatiles";
         public int AddressedRigSlot { get; private set; } = 1;
         public bool RigOnGround { get; private set; }
+        public string RigStateWord { get; private set; } = "bay";
+        public bool IsRigHeld { get; private set; }
         public int AuthoritativeSiteCellX { get; private set; } = 128;
         public int AuthoritativeSiteCellY { get; private set; } = 128;
         public int HopperLoadedTonnes { get; private set; }
@@ -67,6 +69,36 @@ namespace TacSim.Surface
         private float _pulseScale = -1f;
         private Color _pulseColor = Color.cyan;
         private float _drillActiveUntil;
+
+        private bool _hasCachedHullSiteCell;
+        private int _cachedHullSiteX;
+        private int _cachedHullSiteY;
+        private string _cachedHullSiteTitle;
+        public bool IsPadVisible => _padRoot != null && _padRoot.gameObject.activeSelf;
+
+        private void OnDestroy()
+        {
+            if (_terrainRoot != null)
+                TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
+        }
+
+        public void ResetSessionState()
+        {
+            IsExcursionActive = false;
+            RigOnGround = false;
+            RigStateWord = "bay";
+            IsRigHeld = false;
+            _activeLegWaypoints.Clear();
+            _hasDriveWaypoint = false;
+            _hasCachedHullSiteCell = false;
+            _cachedHullSiteTitle = null;
+            _recentSiteLines.Clear();
+            HopperLoadedTonnes = 0;
+            BatteryPct = 100;
+            StatusSummaryLine = "Rig 1 cradled in Dray-P Vehicle Bay.";
+            if (_padRoot != null) _padRoot.gameObject.SetActive(false);
+            OnSurfaceTelemetryChanged?.Invoke();
+        }
 
         private Vector3 _roverTargetLocalPos;
         private float _roverHeadingDeg = 180f;
@@ -125,11 +157,23 @@ namespace TacSim.Surface
         private void SyncPadPlacementFromGrid()
         {
             if (_padRoot == null || TerrainGrid == null) return;
-            // Place carrier pad strictly from authoritative `site.marks.hull` (`[fx, fy]`) rather than glyph search!
+            // Cache authoritative hull cell per site so when a rover drives onto 'H' (causing server site.marks.hull == null),
+            // the landed Dray-P carrier & pad stay visible while that cell remains inside the current window!
             if (TerrainGrid.HasAuthoritativeHullCell)
             {
+                _hasCachedHullSiteCell = true;
+                _cachedHullSiteX = TerrainGrid.LocalToSiteCellX(TerrainGrid.HullFrameX);
+                _cachedHullSiteY = TerrainGrid.LocalToSiteCellY(TerrainGrid.HullFrameY);
+                _cachedHullSiteTitle = TerrainGrid.DisplayName;
                 _padRoot.gameObject.SetActive(true);
                 _padRoot.position = SurfaceStageOrigin + TerrainGrid.CellToLocalPos(TerrainGrid.HullFrameX, TerrainGrid.HullFrameY, 0f);
+            }
+            else if (_hasCachedHullSiteCell &&
+                     string.Equals(_cachedHullSiteTitle, TerrainGrid.DisplayName, StringComparison.OrdinalIgnoreCase) &&
+                     TerrainGrid.IsSiteCellInWindow(_cachedHullSiteX, _cachedHullSiteY))
+            {
+                _padRoot.gameObject.SetActive(true);
+                _padRoot.position = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(_cachedHullSiteX, _cachedHullSiteY, 0f);
             }
             else
             {
@@ -262,6 +306,8 @@ namespace TacSim.Surface
             IsExcursionActive = false;
             _activeLegWaypoints.Clear();
             _hasDriveWaypoint = false;
+            _hasCachedHullSiteCell = false;
+            _cachedHullSiteTitle = null;
             OnSurfaceTelemetryChanged?.Invoke();
         }
 
@@ -476,21 +522,104 @@ namespace TacSim.Surface
             bool appliesToAddressed = reportedSlot <= 0 || reportedSlot == AddressedRigSlot || !IsExcursionActive;
             if (appliesToAddressed)
             {
+                // Support both site.rigs[] rows and canonical server TvRec (`pose`, `state`, `leg`, `log`, `plan`, `site`)
                 ApplyRigRowNode(rigNode);
-                string state = rigNode.Str("state", string.Empty);
-                if (frame.Bool("cleared", false) || string.Equals(state, "bay", StringComparison.OrdinalIgnoreCase))
+
+                string siteEntry = rigNode.Str("site", string.Empty);
+                if (!string.IsNullOrEmpty(siteEntry))
+                    ActiveSiteSlug = siteEntry;
+
+                string state = rigNode.Str("state", string.Empty).Trim().ToLowerInvariant();
+                if (!string.IsNullOrEmpty(state))
+                    RigStateWord = state;
+
+                if (frame.Bool("cleared", false) || state == "bay")
                 {
                     _activeLegWaypoints.Clear();
                     _hasDriveWaypoint = false;
                     RigOnGround = false;
+                    IsRigHeld = false;
                 }
-                else if (string.Equals(state, "out", StringComparison.OrdinalIgnoreCase) ||
-                         string.Equals(state, "parked", StringComparison.OrdinalIgnoreCase))
+                else if (state == "held")
                 {
                     RigOnGround = true;
+                    IsRigHeld = true;
+                    StatusSummaryLine = $"Rig {AddressedRigSlot} HELD (stranded/fault — recover or inspect +tv/status).";
+                }
+                else if (state == "out" || state == "parked")
+                {
+                    RigOnGround = true;
+                    IsRigHeld = false;
+                }
+
+                // Decode canonical TvPose (`x_cm`, `y_cm`, `heading_mdeg`)
+                var poseObj = rigNode["pose"];
+                if (poseObj.IsObject && poseObj.ContainsKey("x_cm") && poseObj.ContainsKey("y_cm"))
+                {
+                    long xCm = poseObj.Long("x_cm", 0L);
+                    long yCm = poseObj.Long("y_cm", 0L);
+                    AuthoritativeSiteCellX = (int)Math.Floor(xCm / 1000.0);
+                    AuthoritativeSiteCellY = (int)Math.Floor(yCm / 1000.0);
+                    if (poseObj.ContainsKey("heading_mdeg") && !poseObj["heading_mdeg"].IsNull)
+                        _roverHeadingDeg = poseObj.Int("heading_mdeg", 180000) * 0.001f;
+                    if (TerrainGrid != null)
+                    {
+                        _roverTargetLocalPos = TerrainGrid.SiteCmToLocalPos(xCm, yCm, 0f);
+                        if (ActiveRoverRig?.Root != null && _activeLegWaypoints.Count == 0)
+                            ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + _roverTargetLocalPos;
+                    }
+                    if (state != "bay")
+                        RigOnGround = true;
+                }
+
+                // Decode canonical TvRec.leg (`started_ic`, `waypoints[]`)
+                var legObj = rigNode["leg"];
+                if (legObj.IsObject)
+                {
+                    if (ParseLegWaypoints(legObj, out _activeLegStartedIc, _activeLegWaypoints))
+                    {
+                        if (_clockBaseMonotonicSec <= 0.0)
+                        {
+                            _clockBaseIcSec = _activeLegStartedIc;
+                            _clockRateIcPerRealSec = 1.0;
+                            _clockBaseMonotonicSec = MonotonicSeconds();
+                        }
+                        _hasDriveWaypoint = true;
+                    }
+                }
+                else if (rigNode.ContainsKey("leg") && rigNode["leg"].IsNull)
+                {
+                    _activeLegWaypoints.Clear();
+                }
+
+                // Decode canonical TvRec.log (`[{ at_ic, text }, ...]`)
+                var logArr = rigNode["log"].AsArray();
+                if (logArr != null && logArr.Count > 0)
+                {
+                    var lastLog = logArr[logArr.Count - 1];
+                    string latestLine = lastLog.IsObject ? lastLog.Str("text", string.Empty) : lastLog.AsString(string.Empty);
+                    if (!string.IsNullOrWhiteSpace(latestLine) && latestLine != StatusSummaryLine)
+                    {
+                        StatusSummaryLine = latestLine;
+                        OnSurfaceLogEvent?.Invoke(latestLine);
+                    }
                 }
             }
             OnSurfaceTelemetryChanged?.Invoke();
+        }
+
+        private static bool HaveElevationsChanged(DecodedTerrainGrid prev, DecodedTerrainGrid next)
+        {
+            if (prev == null || next == null || prev.ElevMeters == null || next.ElevMeters == null)
+                return true;
+            if (prev.ElevMeters.Length != next.ElevMeters.Length)
+                return true;
+            for (int i = 0; i < prev.ElevMeters.Length; i++)
+            {
+                if (Mathf.Abs(prev.ElevMeters[i] - next.ElevMeters[i]) > 0.01f)
+                    return true;
+            }
+            return false;
         }
 
         public void ApplySiteMapFrame(JsonNode frame)
@@ -507,7 +636,8 @@ namespace TacSim.Surface
                                          TerrainGrid.Height != decoded.Height ||
                                          TerrainGrid.OriginCellX != decoded.OriginCellX ||
                                          TerrainGrid.OriginCellY != decoded.OriginCellY ||
-                                         TerrainGrid.SpanCells != decoded.SpanCells;
+                                         TerrainGrid.SpanCells != decoded.SpanCells ||
+                                         HaveElevationsChanged(TerrainGrid, decoded);
                 if (shouldRebuildMesh)
                 {
                     RebuildLiveTerrainMesh(decoded);
@@ -515,6 +645,8 @@ namespace TacSim.Surface
                 else
                 {
                     TerrainGrid = decoded;
+                    // Same-window update (scans, ore-family toggle, claims): refresh splatmap Texture2D in-place!
+                    TacSimTerrainDecoder.RefreshTerrainSplatMaterial(TerrainGrid, _terrainRoot);
                     SyncPadPlacementFromGrid();
                 }
             }
@@ -804,22 +936,39 @@ namespace TacSim.Surface
             if (!IsExcursionActive || ActiveRoverRig?.Root == null || TerrainGrid == null)
                 return;
 
-            // Route keyboard WASD / Arrow driving through authoritative `+tv/<slot> drive <x>,<y> go`
+            // Route camera-relative keyboard WASD / Arrow driving through authoritative `+tv/<slot> drive <x>,<y> go`
             bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             if (!KeyboardSuspended && Time.unscaledTime >= _nextKeyboardDriveCommandAt)
             {
-                int dx = 0;
-                int dy = 0;
-                if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow)) dy = 1;
-                else if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow)) dy = -1;
-                if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) dx = 1;
-                else if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow)) dx = -1;
+                float inFwd = 0f;
+                float inRight = 0f;
+                if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow)) inFwd = 1f;
+                else if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow)) inFwd = -1f;
+                if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) inRight = 1f;
+                else if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow)) inRight = -1f;
 
-                if (dx != 0 || dy != 0)
+                if (Mathf.Abs(inFwd) > 0.1f || Mathf.Abs(inRight) > 0.1f)
                 {
+                    Vector3 worldMove;
+                    Camera cam = Camera.main;
+                    if (cam != null)
+                    {
+                        Vector3 cf = cam.transform.forward; cf.y = 0f;
+                        Vector3 cr = cam.transform.right; cr.y = 0f;
+                        cf = cf.sqrMagnitude > 0.001f ? cf.normalized : Vector3.forward;
+                        cr = cr.sqrMagnitude > 0.001f ? cr.normalized : Vector3.right;
+                        worldMove = (cf * inFwd + cr * inRight).normalized;
+                    }
+                    else
+                    {
+                        worldMove = new Vector3(inRight, 0f, inFwd).normalized;
+                    }
+
                     int step = Mathf.Max(2, TerrainGrid.SpanCells * 3);
-                    int nextSiteX = Mathf.Max(0, AuthoritativeSiteCellX + dx * step);
-                    int nextSiteY = Mathf.Max(0, AuthoritativeSiteCellY + dy * step);
+                    int maxSiteX = Math.Max(255, TerrainGrid.OriginCellX + TerrainGrid.Width * Math.Max(1, TerrainGrid.SpanCells) - 1);
+                    int maxSiteY = Math.Max(255, TerrainGrid.OriginCellY + TerrainGrid.Height * Math.Max(1, TerrainGrid.SpanCells) - 1);
+                    int nextSiteX = Mathf.Clamp(AuthoritativeSiteCellX + Mathf.RoundToInt(worldMove.x * step), 0, maxSiteX);
+                    int nextSiteY = Mathf.Clamp(AuthoritativeSiteCellY + Mathf.RoundToInt(worldMove.z * step), 0, maxSiteY);
                     _nextKeyboardDriveCommandAt = Time.unscaledTime + 0.50f;
                     OnTerrainCellDriveClicked?.Invoke(nextSiteX, nextSiteY);
                 }
@@ -834,10 +983,8 @@ namespace TacSim.Surface
                     if (Physics.Raycast(ray, out RaycastHit hit, 600f))
                     {
                         Vector3 hitLocal = hit.point - SurfaceStageOrigin;
-                        int cx = Mathf.Clamp(Mathf.FloorToInt(hitLocal.x / TerrainGrid.CellSizeM), 0, TerrainGrid.Width - 1);
-                        int cy = Mathf.Clamp(Mathf.FloorToInt(hitLocal.z / TerrainGrid.CellSizeM), 0, TerrainGrid.Height - 1);
-                        int siteX = TerrainGrid.LocalToSiteCellX(cx);
-                        int siteY = TerrainGrid.LocalToSiteCellY(cy);
+                        int siteX = TerrainGrid.LocalPosToSiteCellX(hitLocal.x);
+                        int siteY = TerrainGrid.LocalPosToSiteCellY(hitLocal.z);
                         OnTerrainCellDriveClicked?.Invoke(siteX, siteY);
                     }
                 }
@@ -850,7 +997,7 @@ namespace TacSim.Surface
 
             ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + localPos;
             ActiveRoverRig.Root.transform.rotation = Quaternion.Euler(0f, _roverHeadingDeg, 0f);
-            ActiveRoverRig.UpdateArticulation(dt, _roverSpeedKph, null);
+            ActiveRoverRig.UpdateArticulation(dt, _roverSpeedKph, null, drilling);
         }
 
         public void StepRoverKinematics(ref Vector3 localPos, float dt, double nowMonotonicSec)

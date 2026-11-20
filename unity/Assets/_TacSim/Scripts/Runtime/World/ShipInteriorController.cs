@@ -27,9 +27,13 @@ namespace TacSim.World
 
         public event Action<WorldInteractable> OnInteractableTriggered;
         public event Action<ExitPortalTrigger, string, string> OnPortalCrossed;
+        public event Action OnInteriorRebuilt;
 
         private readonly Dictionary<string, TextMeshPro> _gaugeDisplays = new Dictionary<string, TextMeshPro>(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<string>> _gaugeLines = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         private readonly Dictionary<string, GameObject> _crewActors = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        private readonly Dictionary<string, CharacterVisualSpawner> _crewSpawners = new Dictionary<string, CharacterVisualSpawner>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _crewDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, Vector3> _crewTargetPositions = new Dictionary<string, Vector3>(StringComparer.Ordinal);
         private readonly Dictionary<string, WorldBillboard> _crewBillboards = new Dictionary<string, WorldBillboard>(StringComparer.Ordinal);
         private Transform _crewActorsContainer;
@@ -74,30 +78,78 @@ namespace TacSim.World
             if (Template == null) return ActiveCompartmentId;
             Vector3 lp = worldPos - ShipInteriorWorldOrigin;
 
+            // Keep vertical tolerance strictly below the 0.20 m inter-deck gap (passage ceiling +1.6 vs bridge floor +1.8;
+            // hold ceiling -1.9 vs passage floor -1.6) so lower decks NEVER trap players climbing to an upper deck!
+            const float StickyVertTolM = 0.10f;
+            const float MatchVertTolM = 0.14f;
+
+            // 1. Find the closest-deck compartment strictly containing lp horizontally (preferring nearest vertical center).
+            string bestExact = null;
+            float bestExactVertDist = float.MaxValue;
+            foreach (var kv in Template.Compartments)
+            {
+                var c = kv.Value;
+                Vector3 half = c.LocalSize * 0.5f;
+                float dy = Mathf.Abs(lp.y - c.LocalCenter.y);
+                if (Mathf.Abs(lp.x - c.LocalCenter.x) <= half.x &&
+                    dy <= half.y + MatchVertTolM &&
+                    Mathf.Abs(lp.z - c.LocalCenter.z) <= half.z)
+                {
+                    if (dy < bestExactVertDist)
+                    {
+                        bestExactVertDist = dy;
+                        bestExact = kv.Key;
+                    }
+                }
+            }
+
+            // 2. Apply horizontal-only hysteresis on the SAME deck (never retaining across vertical deck boundaries).
             if (!string.IsNullOrEmpty(currentCompId) && hysteresisM > 0f &&
                 TryGetCompartmentDef(currentCompId, out var cur))
             {
                 Vector3 half = cur.LocalSize * 0.5f;
-                if (Mathf.Abs(lp.x - cur.LocalCenter.x) <= half.x + hysteresisM &&
-                    Mathf.Abs(lp.y - cur.LocalCenter.y) <= half.y + 0.9f &&
+                float curDy = Mathf.Abs(lp.y - cur.LocalCenter.y);
+                bool sameDeck = bestExact == null ||
+                                !TryGetCompartmentDef(bestExact, out var exactComp) ||
+                                Mathf.Abs(exactComp.LocalCenter.y - cur.LocalCenter.y) < 0.5f;
+                if (sameDeck &&
+                    Mathf.Abs(lp.x - cur.LocalCenter.x) <= half.x + hysteresisM &&
+                    curDy <= half.y + StickyVertTolM &&
                     Mathf.Abs(lp.z - cur.LocalCenter.z) <= half.z + hysteresisM)
                 {
                     return currentCompId;
                 }
             }
 
+            if (!string.IsNullOrEmpty(bestExact))
+                return bestExact;
+
+            // 3. Companionway mid-gap fallback: pick horizontally containing compartment with nearest vertical center.
+            string nearest = null;
+            float nearestDy = float.MaxValue;
             foreach (var kv in Template.Compartments)
             {
                 var c = kv.Value;
                 Vector3 half = c.LocalSize * 0.5f;
-                if (Mathf.Abs(lp.x - c.LocalCenter.x) <= half.x &&
-                    Mathf.Abs(lp.y - c.LocalCenter.y) <= half.y + 0.9f &&
-                    Mathf.Abs(lp.z - c.LocalCenter.z) <= half.z)
+                float dy = Mathf.Abs(lp.y - c.LocalCenter.y);
+                if (Mathf.Abs(lp.x - c.LocalCenter.x) <= half.x + hysteresisM &&
+                    Mathf.Abs(lp.z - c.LocalCenter.z) <= half.z + hysteresisM &&
+                    dy <= half.y + 0.65f &&
+                    dy < nearestDy)
                 {
-                    return kv.Key;
+                    nearestDy = dy;
+                    nearest = kv.Key;
                 }
             }
-            return currentCompId ?? ActiveCompartmentId;
+            return nearest ?? currentCompId ?? ActiveCompartmentId;
+        }
+
+        public void ResetSessionState()
+        {
+            ClearCrewActors();
+            _crewActorsCompartmentId = null;
+            ActiveCompartmentId = "airlock";
+            PopulateHoloBlips(null);
         }
 
         public List<(string command, string targetCompartment)> FindExitPath(string fromComp, string toComp)
@@ -116,12 +168,19 @@ namespace TacSim.World
 
             for (int i = transform.childCount - 1; i >= 0; i--)
             {
-                var ch = transform.GetChild(i).gameObject;
+                var childTr = transform.GetChild(i);
+                // Preserve persistent BridgeCameraAnchor across hull rebuilds so TacSimCameraRig.BridgeViewAnchor never dangles!
+                if (BridgeCameraAnchor != null && childTr == BridgeCameraAnchor)
+                    continue;
+                var ch = childTr.gameObject;
                 if (Application.isPlaying) Destroy(ch);
                 else DestroyImmediate(ch);
             }
             _gaugeDisplays.Clear();
+            _gaugeLines.Clear();
             _crewActors.Clear();
+            _crewSpawners.Clear();
+            _crewDisplayNames.Clear();
             _crewTargetPositions.Clear();
             _crewBillboards.Clear();
             _crewActorsCompartmentId = null;
@@ -189,26 +248,71 @@ namespace TacSim.World
                     new Vector2(Mathf.Max(1f, Mathf.Round(comp.LocalSize.x / 3.2f)), Mathf.Max(1f, Mathf.Round(comp.LocalSize.z / 3.2f))));
                 CreateHorizontalSlabWithCutout(cRoot, "CompartmentCeiling", ceilY + 0.06f, 0.12f, minX, maxX, minZ, maxZ, ceilCutout, ceilMat, collider: false);
 
-                // Port & Starboard bulkheads
-                CreateLocalBox(cRoot, "PortBulkhead", new Vector3(minX, comp.LocalCenter.y, comp.LocalCenter.z), new Vector3(0.22f, comp.LocalSize.y, comp.LocalSize.z), sideBulkheadMat, true);
-                CreateLocalBox(cRoot, "StarboardBulkhead", new Vector3(maxX, comp.LocalCenter.y, comp.LocalCenter.z), new Vector3(0.22f, comp.LocalSize.y, comp.LocalSize.z), sideBulkheadMat, true);
+                // Port & Starboard bulkheads (cut starboard doorway in passage when Halcyon 'relay' compartment is present)
+                if (comp.Id != "relay")
+                {
+                    CreateLocalBox(cRoot, "PortBulkhead", new Vector3(minX, comp.LocalCenter.y, comp.LocalCenter.z), new Vector3(0.22f, comp.LocalSize.y, comp.LocalSize.z), sideBulkheadMat, true);
+                }
 
-                // Outer endcaps & panoramic Bridge forward canopy
-                if (comp.Id == "airlock")
+                ShipCompartmentDef relayComp = null;
+                bool hasStarboardRelayDoor = (comp.Id == "passage" || comp.Id == "corridor") &&
+                                             Template.Compartments.TryGetValue("relay", out relayComp);
+                if (hasStarboardRelayDoor)
+                {
+                    float doorMinZ = Mathf.Clamp(relayComp.LocalCenter.z - 1.35f, minZ + 0.4f, maxZ - 0.4f);
+                    float doorMaxZ = Mathf.Clamp(relayComp.LocalCenter.z + 1.35f, minZ + 0.4f, maxZ - 0.4f);
+                    float doorH = Mathf.Min(2.45f, comp.LocalSize.y - 0.35f);
+                    if (doorMinZ - minZ > 0.1f)
+                        CreateLocalBox(cRoot, "StarboardBulkhead_Aft", new Vector3(maxX, comp.LocalCenter.y, (minZ + doorMinZ) * 0.5f), new Vector3(0.22f, comp.LocalSize.y, doorMinZ - minZ), sideBulkheadMat, true);
+                    if (maxZ - doorMaxZ > 0.1f)
+                        CreateLocalBox(cRoot, "StarboardBulkhead_Fwd", new Vector3(maxX, comp.LocalCenter.y, (doorMaxZ + maxZ) * 0.5f), new Vector3(0.22f, comp.LocalSize.y, maxZ - doorMaxZ), sideBulkheadMat, true);
+                    float lintelH = Mathf.Max(0.25f, comp.LocalSize.y - doorH);
+                    CreateLocalBox(cRoot, "StarboardBulkhead_Lintel", new Vector3(maxX, floorY + doorH + lintelH * 0.5f, (doorMinZ + doorMaxZ) * 0.5f), new Vector3(0.22f, lintelH, doorMaxZ - doorMinZ), sideBulkheadMat, true);
+                }
+                else
+                {
+                    CreateLocalBox(cRoot, "StarboardBulkhead", new Vector3(maxX, comp.LocalCenter.y, comp.LocalCenter.z), new Vector3(0.22f, comp.LocalSize.y, comp.LocalSize.z), sideBulkheadMat, true);
+                }
+
+                // Outer endcaps, width-transition shoulder bulkheads, & panoramic Bridge forward canopy
+                if (comp.Id == "airlock" || comp.Id == "hold" || comp.Id == "relay" || comp.Id == "cab")
                 {
                     CreateLocalBox(cRoot, "ForwardBulkhead", new Vector3(comp.LocalCenter.x, comp.LocalCenter.y, maxZ), new Vector3(comp.LocalSize.x, comp.LocalSize.y, 0.25f), endBulkheadMat, true);
                 }
                 else if (comp.Id == "bridge")
                 {
                     BuildBridgeForwardCanopy(cRoot, comp, floorY, ceilY, maxZ, endBulkheadMat, railMat);
-                    CreateLocalBox(cRoot, "AftBulkhead", new Vector3(comp.LocalCenter.x, comp.LocalCenter.y, minZ), new Vector3(comp.LocalSize.x, comp.LocalSize.y, 0.22f), endBulkheadMat, false);
-                }
-                else if (comp.Id == "hold")
-                {
-                    CreateLocalBox(cRoot, "ForwardBulkhead", new Vector3(comp.LocalCenter.x, comp.LocalCenter.y, maxZ), new Vector3(comp.LocalSize.x, comp.LocalSize.y, 0.25f), endBulkheadMat, true);
+                    // Split colliding AftBulkhead cleanly around BridgeStairwellXZ so companionway ramp is clear AND players cannot fall into the void!
+                    float holeMinX = Mathf.Clamp(BridgeStairwellXZ.xMin, minX, maxX);
+                    float holeMaxX = Mathf.Clamp(BridgeStairwellXZ.xMax, minX, maxX);
+                    if (holeMinX - minX > 0.1f)
+                    {
+                        CreateLocalBox(cRoot, "AftBulkhead_Port", new Vector3((minX + holeMinX) * 0.5f, comp.LocalCenter.y, minZ),
+                            new Vector3(holeMinX - minX, comp.LocalSize.y, 0.24f), endBulkheadMat, true);
+                    }
+                    if (maxX - holeMaxX > 0.1f)
+                    {
+                        CreateLocalBox(cRoot, "AftBulkhead_Stbd", new Vector3((holeMaxX + maxX) * 0.5f, comp.LocalCenter.y, minZ),
+                            new Vector3(maxX - holeMaxX, comp.LocalSize.y, 0.24f), endBulkheadMat, true);
+                    }
                 }
 
-                if (comp.Id == "crew" || (comp.Id == "engineering" && !Template.Compartments.ContainsKey("bay")) || comp.Id == "bay")
+                // Width-transition shoulder bulkheads sealing steps between wider and narrower adjacent spine rooms
+                if (comp.Id == "crew" && TryGetCompartmentDef("passage", out var passComp))
+                {
+                    BuildWidthShoulderWall(cRoot, "CrewFwdShoulder", maxZ, minX, maxX, passComp.LocalCenter.x - passComp.LocalSize.x * 0.5f, passComp.LocalCenter.x + passComp.LocalSize.x * 0.5f, comp.LocalCenter.y, comp.LocalSize.y, endBulkheadMat);
+                }
+                if (comp.Id == "hold" && TryGetCompartmentDef("engineering", out var engComp))
+                {
+                    BuildWidthShoulderWall(cRoot, "HoldAftShoulder", minZ, minX, maxX, engComp.LocalCenter.x - engComp.LocalSize.x * 0.5f, engComp.LocalCenter.x + engComp.LocalSize.x * 0.5f, comp.LocalCenter.y, comp.LocalSize.y, endBulkheadMat);
+                }
+                if (comp.Id == "bay" && TryGetCompartmentDef("engineering", out var engComp2))
+                {
+                    BuildWidthShoulderWall(cRoot, "BayFwdShoulder", maxZ, minX, maxX, engComp2.LocalCenter.x - engComp2.LocalSize.x * 0.5f, engComp2.LocalCenter.x + engComp2.LocalSize.x * 0.5f, comp.LocalCenter.y, comp.LocalSize.y, endBulkheadMat);
+                }
+
+                if (comp.Id == "crew" || comp.Id == "relay" || comp.Id == "cab" ||
+                    (comp.Id == "engineering" && !Template.Compartments.ContainsKey("bay")) || comp.Id == "bay")
                 {
                     CreateLocalBox(cRoot, "AftBulkhead", new Vector3(comp.LocalCenter.x, comp.LocalCenter.y, minZ), new Vector3(comp.LocalSize.x, comp.LocalSize.y, 0.25f), endBulkheadMat, true);
                 }
@@ -239,8 +343,11 @@ namespace TacSim.World
 
                 CreateLocalBox(gaugeRoot, "GaugeSlate", Vector3.zero, new Vector3(0.06f, 1.15f, 2.45f),
                     UrpMaterialFactory.GetOpaque("Slate", new Color(0.05f, 0.09f, 0.14f), 0.55f, 0.3f), false);
-                var tmp = CreateLocalTmp(gaugeRoot, new Vector3(0.045f, 0f, 0f), Quaternion.Euler(0f, -90f, 0f), $"{comp.Name.ToUpperInvariant()}\n<size=70%>{comp.ShortDesc}</size>", 1.42f);
+                string safeName = MushProtocol.EscapeUnityRichText(comp.Name.ToUpperInvariant());
+                string safeShort = MushProtocol.EscapeUnityRichText(comp.ShortDesc);
+                var tmp = CreateLocalTmp(gaugeRoot, new Vector3(0.045f, 0f, 0f), Quaternion.Euler(0f, -90f, 0f), $"{safeName}\n<size=70%>{safeShort}</size>", 1.42f);
                 _gaugeDisplays[comp.Id] = tmp;
+                _gaugeLines[comp.Id] = new List<string> { safeName, $"<size=70%>{safeShort}</size>" };
 
                 DressShipCompartment(cRoot, comp, floorY);
             }
@@ -257,6 +364,32 @@ namespace TacSim.World
 
             // Bridge 3D Holo-Tank & Helm Couch
             BuildBridgeHoloAndHelm();
+
+            OnInteriorRebuilt?.Invoke();
+        }
+
+        private static void BuildWidthShoulderWall(
+            Transform parent,
+            string prefix,
+            float zCoord,
+            float wideMinX,
+            float wideMaxX,
+            float narrowMinX,
+            float narrowMaxX,
+            float centerY,
+            float height,
+            Material mat)
+        {
+            if (narrowMinX - wideMinX > 0.1f)
+            {
+                float w = narrowMinX - wideMinX;
+                CreateLocalBox(parent, $"{prefix}_Port", new Vector3((wideMinX + narrowMinX) * 0.5f, centerY, zCoord), new Vector3(w, height, 0.24f), mat, true);
+            }
+            if (wideMaxX - narrowMaxX > 0.1f)
+            {
+                float w = wideMaxX - narrowMaxX;
+                CreateLocalBox(parent, $"{prefix}_Stbd", new Vector3((narrowMaxX + wideMaxX) * 0.5f, centerY, zCoord), new Vector3(w, height, 0.24f), mat, true);
+            }
         }
 
         private static void CreateHorizontalSlabWithCutout(
@@ -557,16 +690,25 @@ namespace TacSim.World
             float floorY = airlock.LocalCenter.y - airlock.LocalSize.y * 0.5f;
             Vector3 localPos = new Vector3(0f, floorY + 1.5f, airlock.LocalCenter.z + airlock.LocalSize.z * 0.5f - 0.25f);
 
-            var hatch = CreateLocalBox(transform, "OuterAirlockDoor", localPos, new Vector3(2.2f, 2.6f, 0.35f),
-                UrpMaterialFactory.GetEmissive("AirlockSeal", new Color(0.18f, 0.32f, 0.22f), new Color(0.15f, 0.9f, 0.45f) * 1.2f), true);
+            // Uniform-scale (1,1,1) root so child VattalusOuterLock prefab never inherits (2.2, 2.6, 0.35) cube distortion!
+            var hatchRoot = new GameObject("OuterAirlockDoor");
+            hatchRoot.transform.SetParent(transform, false);
+            hatchRoot.transform.localPosition = localPos;
+            hatchRoot.transform.localScale = Vector3.one;
+
+            var bc = hatchRoot.AddComponent<BoxCollider>();
+            bc.size = new Vector3(2.2f, 2.6f, 0.35f);
+
+            CreateLocalBox(hatchRoot.transform, "OuterAirlockLeaf", Vector3.zero, new Vector3(2.2f, 2.6f, 0.35f),
+                UrpMaterialFactory.GetEmissive("AirlockSeal", new Color(0.18f, 0.32f, 0.22f), new Color(0.15f, 0.9f, 0.45f) * 1.2f), false);
 
             if (Catalog != null && Catalog.shipAirlockDoorPrefab != null)
             {
                 Vector3 doorWorldFloor = ShipInteriorWorldOrigin + new Vector3(0f, floorY, airlock.LocalCenter.z + airlock.LocalSize.z * 0.5f - 0.32f);
-                PrefabFittingHelper.SpawnGrounded(Catalog.shipAirlockDoorPrefab, hatch.transform, "VattalusOuterLock", doorWorldFloor, Quaternion.identity, 2.95f, 3.4f, keepColliders: false);
+                PrefabFittingHelper.SpawnGrounded(Catalog.shipAirlockDoorPrefab, hatchRoot.transform, "VattalusOuterLock", doorWorldFloor, Quaternion.identity, 2.95f, 3.4f, keepColliders: false);
             }
 
-            _airlockLeaveInteractable = hatch.AddComponent<WorldInteractable>();
+            _airlockLeaveInteractable = hatchRoot.AddComponent<WorldInteractable>();
             _airlockLeaveInteractable.kind = InteractableKind.AirlockDisembark;
             _airlockLeaveInteractable.promptTitle = "Cycle Outer Lock Ashore";
             _airlockLeaveInteractable.promptSubtitle = "Step out into the Berth Gallery (+ship/leave)";
@@ -580,13 +722,18 @@ namespace TacSim.World
             if (!Template.Compartments.TryGetValue("bridge", out var bridge)) return;
             float floorY = bridge.LocalCenter.y - bridge.LocalSize.y * 0.5f;
 
-            // Central 3D Holo-Tank Emitter
-            var holoPedestal = CreateLocalBox(transform, "HoloTankPedestal", new Vector3(0f, floorY + 0.55f, bridge.LocalCenter.z + 0.5f), new Vector3(1.8f, 1.1f, 1.8f),
+            // Uniform-scale (1,1,1) HoloTankPedestal root so HoloProjectorDisc & HoloTankContacts blips are never stretched by (1.8, 1.1, 1.8)!
+            var holoRoot = new GameObject("HoloTankPedestal");
+            holoRoot.transform.SetParent(transform, false);
+            holoRoot.transform.localPosition = new Vector3(0f, floorY + 0.55f, bridge.LocalCenter.z + 0.5f);
+            holoRoot.transform.localScale = Vector3.one;
+
+            CreateLocalBox(holoRoot.transform, "HoloTankPedestalBase", Vector3.zero, new Vector3(1.8f, 1.1f, 1.8f),
                 UrpMaterialFactory.GetOpaque("HoloBase", new Color(0.12f, 0.16f, 0.22f), 0.6f, 0.6f), true);
 
             var holoDisc = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             holoDisc.name = "HoloProjectorDisc";
-            holoDisc.transform.SetParent(holoPedestal.transform, false);
+            holoDisc.transform.SetParent(holoRoot.transform, false);
             holoDisc.transform.localPosition = new Vector3(0f, 0.62f, 0f);
             holoDisc.transform.localScale = new Vector3(1.5f, 0.05f, 1.5f);
             var discCol = holoDisc.GetComponent<Collider>();
@@ -594,8 +741,9 @@ namespace TacSim.World
             holoDisc.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("HoloRing", new Color(0.15f, 0.72f, 1.0f, 0.35f));
 
             _holotankBlipsRoot = new GameObject("HoloTankContacts").transform;
-            _holotankBlipsRoot.SetParent(holoPedestal.transform, false);
+            _holotankBlipsRoot.SetParent(holoRoot.transform, false);
             _holotankBlipsRoot.localPosition = new Vector3(0f, 1.05f, 0f);
+            _holotankBlipsRoot.localScale = Vector3.one;
 
             // Seed default holo sun/Ceres + ship blip until live space.holotank arrives
             PopulateHoloBlips(null);
@@ -625,8 +773,11 @@ namespace TacSim.World
             HelmSeatStandSpot.SetParent(transform, false);
             HelmSeatStandSpot.localPosition = new Vector3(0f, floorY + 0.15f, bridge.LocalCenter.z + 2.5f);
 
-            BridgeCameraAnchor = new GameObject("BridgeHoloCameraAnchor").transform;
-            BridgeCameraAnchor.SetParent(transform, false);
+            if (BridgeCameraAnchor == null)
+            {
+                BridgeCameraAnchor = new GameObject("BridgeHoloCameraAnchor").transform;
+                BridgeCameraAnchor.SetParent(transform, false);
+            }
             BridgeCameraAnchor.localPosition = new Vector3(2.4f, floorY + 2.4f, bridge.LocalCenter.z - 1.2f);
             BridgeCameraAnchor.localRotation = Quaternion.Euler(24f, -32f, 0f);
 
@@ -657,7 +808,7 @@ namespace TacSim.World
                 Vector3 curPos = actorGo.transform.position;
                 Vector3 delta = targetPos - curPos;
                 float dist = delta.magnitude;
-                var spawner = actorGo.GetComponent<CharacterVisualSpawner>();
+                _crewSpawners.TryGetValue(kv.Key, out var spawner);
 
                 if (dist > 0.02f)
                 {
@@ -764,6 +915,8 @@ namespace TacSim.World
                 }
             }
             _crewActors.Clear();
+            _crewSpawners.Clear();
+            _crewDisplayNames.Clear();
             _crewTargetPositions.Clear();
             _crewBillboards.Clear();
         }
@@ -861,6 +1014,8 @@ namespace TacSim.World
                 wi.OnInteracted = target => OnInteractableTriggered?.Invoke(target);
 
                 _crewActors[item.Id] = actorGo;
+                _crewSpawners[item.Id] = spawner;
+                _crewDisplayNames[item.Id] = item.Name ?? string.Empty;
                 _crewBillboards[item.Id] = bb;
             }
 
@@ -881,6 +1036,8 @@ namespace TacSim.World
                         else DestroyImmediate(depGo);
                     }
                     _crewActors.Remove(depId);
+                    _crewSpawners.Remove(depId);
+                    _crewDisplayNames.Remove(depId);
                     _crewTargetPositions.Remove(depId);
                     _crewBillboards.Remove(depId);
                 }
@@ -925,11 +1082,12 @@ namespace TacSim.World
                 bb.ShowSpeech(safeText);
                 return;
             }
-            if (!string.IsNullOrEmpty(actorName))
+            if (!string.IsNullOrWhiteSpace(actorName))
             {
-                foreach (var kv in _crewActors)
+                string trimmed = actorName.Trim();
+                foreach (var kv in _crewDisplayNames)
                 {
-                    if (kv.Value != null && kv.Value.name.IndexOf(actorName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (string.Equals(kv.Value, trimmed, StringComparison.OrdinalIgnoreCase))
                     {
                         if (_crewBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
                             b2.ShowSpeech(safeText);
@@ -949,11 +1107,12 @@ namespace TacSim.World
                     bb.SpeechBubbleText.gameObject.SetActive(false);
                 return;
             }
-            if (!string.IsNullOrEmpty(actorName))
+            if (!string.IsNullOrWhiteSpace(actorName))
             {
-                foreach (var kv in _crewActors)
+                string trimmed = actorName.Trim();
+                foreach (var kv in _crewDisplayNames)
                 {
-                    if (kv.Value != null && kv.Value.name.IndexOf(actorName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (string.Equals(kv.Value, trimmed, StringComparison.OrdinalIgnoreCase))
                     {
                         if (_crewBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
                         {
@@ -972,9 +1131,15 @@ namespace TacSim.World
             string key = TryGetCompartmentDef(ActiveCompartmentId, out var comp) ? comp.Id : ActiveCompartmentId;
             if (_gaugeDisplays.TryGetValue(key, out var tmp) && tmp != null)
             {
-                string cur = tmp.text ?? string.Empty;
-                if (cur.Length > 340) cur = cur.Substring(cur.Length - 240);
-                tmp.text = cur + "\n" + line.Trim();
+                if (!_gaugeLines.TryGetValue(key, out var lines))
+                {
+                    lines = new List<string>();
+                    _gaugeLines[key] = lines;
+                }
+                lines.Add(MushProtocol.EscapeUnityRichText(line.Trim()));
+                while (lines.Count > 6)
+                    lines.RemoveAt(0);
+                tmp.text = string.Join("\n", lines);
             }
         }
 
@@ -992,29 +1157,79 @@ namespace TacSim.World
             Material friendlyMat = UrpMaterialFactory.GetHologramUnlit("BlipFriend", new Color(0.35f, 0.8f, 1.0f, 0.8f));
             Material hostileMat = UrpMaterialFactory.GetHologramUnlit("BlipHostile", new Color(1.0f, 0.35f, 0.3f, 0.9f));
             Material rockMat = UrpMaterialFactory.GetHologramUnlit("BlipRock", new Color(1.0f, 0.78f, 0.3f, 0.85f));
+            Material torpMat = UrpMaterialFactory.GetHologramUnlit("BlipTorpedo", new Color(1.0f, 0.55f, 0.15f, 0.95f));
 
             // Center own-ship marker
             CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.11f, selfMat);
 
             var contacts = holoFeed != null && holoFeed.IsObject ? holoFeed["contacts"].AsArray() : null;
+            var torpedoes = holoFeed != null && holoFeed.IsObject ? holoFeed["torpedoes"].AsArray() : null;
             double rangeKm = holoFeed != null && holoFeed.IsObject ? Math.Max(1.0, holoFeed.Double("range_km", 1000.0)) : 1000.0;
 
+            const float MaxRadialM = 0.68f;
+            const float MaxVertM = 0.38f;
+
+            // First pass: find observer ("you": true) so all contact & torpedo positions are centered on own ship!
+            double obsXKm = 0.0, obsYKm = 0.0, obsZKm = 0.0;
+            if (contacts != null)
+            {
+                for (int i = 0; i < contacts.Count; i++)
+                {
+                    var c = contacts[i];
+                    if (c.IsObject && c.Bool("you", false))
+                    {
+                        obsXKm = c.Double("x_km", 0.0);
+                        obsYKm = c.Double("y_km", 0.0);
+                        obsZKm = c.Double("z_km", 0.0);
+                        break;
+                    }
+                }
+            }
+
+            Vector3 MapToHoloDisc(double xKm, double yKm, double zKm)
+            {
+                // Match SpaceFlightController axis convention: (dy, dz, dx) -> Unity (X East, Y Up, Z Forward)
+                double dx = xKm - obsXKm;
+                double dy = yKm - obsYKm;
+                double dz = zKm - obsZKm;
+                float ux = (float)(dy / rangeKm) * MaxRadialM;
+                float uz = (float)(dx / rangeKm) * MaxRadialM;
+                float uy = Mathf.Clamp((float)(dz / rangeKm) * MaxVertM, -MaxVertM, MaxVertM);
+                Vector2 flat = new Vector2(ux, uz);
+                if (flat.magnitude > MaxRadialM)
+                    flat = flat.normalized * MaxRadialM;
+                return new Vector3(flat.x, uy, flat.y);
+            }
+
+            bool renderedAny = false;
             if (contacts != null && contacts.Count > 0)
             {
                 for (int i = 0; i < contacts.Count; i++)
                 {
                     var c = contacts[i];
-                    if (c.Bool("you", false)) continue;
-                    float x = (float)(c.Double("x_km", 0.0) / rangeKm) * 0.7f;
-                    float z = (float)(c.Double("y_km", 0.0) / rangeKm) * 0.7f;
-                    float y = (float)(c.Double("z_km", 0.0) / rangeKm) * 0.5f;
+                    if (!c.IsObject || c.Bool("you", false)) continue;
+                    Vector3 blipPos = MapToHoloDisc(c.Double("x_km", 0.0), c.Double("y_km", 0.0), c.Double("z_km", 0.0));
                     string kind = c.Str("kind", "ship");
                     string rel = c.Str("relation", "neutral");
                     Material m = (kind == "asteroid" || kind == "rock") ? rockMat : (rel == "hostile" ? hostileMat : friendlyMat);
-                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(x, y, z), 0.08f, m);
+                    CreateHoloSphere(_holotankBlipsRoot, blipPos, 0.08f, m);
+                    renderedAny = true;
                 }
             }
-            else
+
+            if (torpedoes != null && torpedoes.Count > 0)
+            {
+                for (int i = 0; i < torpedoes.Count; i++)
+                {
+                    var t = torpedoes[i];
+                    if (!t.IsObject) continue;
+                    Vector3 blipPos = MapToHoloDisc(t.Double("x_km", 0.0), t.Double("y_km", 0.0), t.Double("z_km", 0.0));
+                    CreateHoloSphere(_holotankBlipsRoot, blipPos, 0.055f, torpMat);
+                    renderedAny = true;
+                }
+            }
+
+            if (!renderedAny)
             {
                 // Ambient Ceres / waypoint markers when docked
                 CreateHoloSphere(_holotankBlipsRoot, new Vector3(0.42f, 0.12f, 0.28f), 0.14f, friendlyMat);

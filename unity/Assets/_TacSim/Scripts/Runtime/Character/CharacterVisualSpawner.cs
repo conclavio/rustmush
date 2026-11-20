@@ -37,8 +37,10 @@ namespace TacSim.Character
         private Renderer[] _cachedRenderers;
         private bool _hasAuthoredLocomotionClips;
         private bool _hasAuthoredSitClip;
+        private bool _isVisible = true;
 
         public bool HasAuthoredLocomotionClips => _hasAuthoredLocomotionClips;
+        public bool HasActiveVisual => _activeModel != null;
 
         // Locomotion blend state
         private float _planarSpeed;
@@ -60,6 +62,27 @@ namespace TacSim.Character
         private static readonly int HashSeated = Animator.StringToHash("Seated");
 
         private static readonly Dictionary<Material, Material> RepairedMaterialCache = new Dictionary<Material, Material>();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        public static void ClearRepairedMaterialCache()
+        {
+            foreach (var kv in RepairedMaterialCache)
+            {
+                if (kv.Value != null && kv.Value != kv.Key)
+                {
+                    if (Application.isPlaying) Destroy(kv.Value);
+                    else DestroyImmediate(kv.Value);
+                }
+            }
+            RepairedMaterialCache.Clear();
+        }
+
+        public void SetVisible(bool visible)
+        {
+            _isVisible = visible;
+            if (_activeModel != null && _activeModel.activeSelf != visible)
+                _activeModel.SetActive(visible);
+        }
 
         public void BuildPlayerVisual(TacSimAssetCatalog catalog, PlayerAvatarPreset preset)
         {
@@ -373,12 +396,16 @@ namespace TacSim.Character
                 _animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
 
                 CacheHumanoidBones();
+                if (!_isVisible && _activeModel != null)
+                    _activeModel.SetActive(false);
                 return;
             }
 
             // Articulated URP flight-suit mannequin fallback before commercial packs are imported
             _activeModel = new GameObject("FallbackSuitRig");
             _activeModel.transform.SetParent(transform, false);
+            if (!_isVisible)
+                _activeModel.SetActive(false);
 
             Material suitMat = UrpMaterialFactory.GetOpaque($"Suit_{suitColor}", suitColor, 0.48f, 0.35f);
             Material darkMat = UrpMaterialFactory.GetOpaque("SuitJoints", new Color(0.12f, 0.14f, 0.17f), 0.3f, 0.5f);

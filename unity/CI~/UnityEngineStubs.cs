@@ -448,10 +448,20 @@ namespace UnityEngine
         }
         public static void DestroyImmediate(Object obj, bool allowDestroyingAssets = false)
         {
-            if (obj is GameObject go && go.transform != null)
-                go.transform.SetParent(null);
+            if (obj is GameObject go)
+            {
+                var cams = go.GetComponentsInChildren<Camera>(includeInactive: true);
+                for (int i = 0; i < cams.Length; i++)
+                    Camera.Unregister(cams[i]);
+                if (go.transform != null)
+                    go.transform.SetParent(null);
+            }
             else if (obj is Component comp && comp.gameObject != null)
+            {
+                if (comp is Camera cam)
+                    Camera.Unregister(cam);
                 comp.gameObject.RemoveComponentInternal(comp);
+            }
         }
         public static void DontDestroyOnLoad(Object target) { }
         public static T Instantiate<T>(T original) where T : Object => original;
@@ -607,7 +617,19 @@ namespace UnityEngine
         private readonly List<Component> _components = new List<Component>();
         public Transform transform { get; private set; }
         public bool activeSelf { get; private set; } = true;
-        public bool activeInHierarchy => activeSelf;
+        public bool activeInHierarchy
+        {
+            get
+            {
+                if (!activeSelf) return false;
+                for (var p = transform?.parent; p != null; p = p.parent)
+                {
+                    if (p.gameObject != null && !p.gameObject.activeSelf)
+                        return false;
+                }
+                return true;
+            }
+        }
         public int layer { get; set; }
         public string tag { get; set; } = "Untagged";
 
@@ -661,6 +683,8 @@ namespace UnityEngine
             inst.gameObject = this;
             inst.name = name;
             _components.Add(inst);
+            if (inst is Camera cam)
+                Camera.Register(cam);
             return inst;
         }
 
@@ -669,7 +693,11 @@ namespace UnityEngine
         internal void RemoveComponentInternal(Component comp)
         {
             if (comp != null && comp != transform)
+            {
+                if (comp is Camera cam)
+                    Camera.Unregister(cam);
                 _components.Remove(comp);
+            }
         }
 
         public T GetComponent<T>()
@@ -873,7 +901,36 @@ namespace UnityEngine
 
     public class Camera : Behaviour
     {
-        public static Camera main { get; set; }
+        private static readonly List<Camera> RegisteredCameras = new List<Camera>();
+
+        internal static void Register(Camera cam)
+        {
+            if (cam != null && !RegisteredCameras.Contains(cam))
+                RegisteredCameras.Add(cam);
+        }
+
+        internal static void Unregister(Camera cam)
+        {
+            if (cam != null)
+                RegisteredCameras.Remove(cam);
+        }
+
+        public static Camera main
+        {
+            get
+            {
+                for (int i = 0; i < RegisteredCameras.Count; i++)
+                {
+                    var c = RegisteredCameras[i];
+                    if (c != null && c.enabled && c.gameObject != null &&
+                        c.gameObject.activeInHierarchy && c.gameObject.tag == "MainCamera")
+                    {
+                        return c;
+                    }
+                }
+                return null;
+            }
+        }
         public float fieldOfView { get; set; } = 60f;
         public float nearClipPlane { get; set; } = 0.1f;
         public float farClipPlane { get; set; } = 2000f;
@@ -1115,6 +1172,7 @@ namespace UnityEngine
             public Graphic targetGraphic { get; set; }
             public Image image { get; set; }
             public ColorBlock colors { get; set; } = ColorBlock.defaultColorBlock;
+            public virtual void Select() { }
         }
 
         public class Button : Selectable
@@ -1126,7 +1184,13 @@ namespace UnityEngine
         {
             public enum ContentType { Standard, Autocorrected, IntegerNumber, DecimalNumber, Alphanumeric, Name, EmailAddress, Password, Pin, Custom }
             public enum LineType { SingleLine, MultiLineSubmit, MultiLineNewline }
-            public string text { get; set; } = string.Empty;
+            private string _text = string.Empty;
+            private bool _isFocused;
+            public string text
+            {
+                get => _text;
+                set => SetText(value, sendCallback: true);
+            }
             public Text textComponent { get; set; }
             public Graphic placeholder { get; set; }
             public ContentType contentType { get; set; }
@@ -1135,12 +1199,26 @@ namespace UnityEngine
             public Color caretColor { get; set; }
             public Color selectionColor { get; set; }
             public bool customCaretColor { get; set; }
-            public bool isFocused { get; set; }
+            public bool isFocused => _isFocused;
             public UnityEvent<string> onValueChanged { get; } = new UnityEvent<string>();
             public UnityEvent<string> onEndEdit { get; } = new UnityEvent<string>();
             public UnityEvent<string> onSubmit { get; } = new UnityEvent<string>();
-            public void ActivateInputField() => isFocused = true;
-            public void Select() => isFocused = true;
+            public void SetTextWithoutNotify(string input) => SetText(input, sendCallback: false);
+            public void ActivateInputField() => _isFocused = true;
+            public void DeactivateInputField() => _isFocused = false;
+            public override void Select() => _isFocused = true;
+
+            private void SetText(string value, bool sendCallback)
+            {
+                // Real Unity uGUI InputField normalizes null to empty, strips embedded NULs,
+                // and invokes onValueChanged whenever the normalized text changes.
+                string normalized = (value ?? string.Empty).Replace("\0", string.Empty);
+                if (_text == normalized)
+                    return;
+                _text = normalized;
+                if (sendCallback)
+                    onValueChanged.Invoke(_text);
+            }
         }
 
         public class ScrollRect : EventSystems.UIBehaviour
@@ -1374,6 +1452,12 @@ namespace UnityEditor
 
     namespace Build
     {
+        public class BuildFailedException : Exception
+        {
+            public BuildFailedException(string message) : base(message) { }
+            public BuildFailedException(Exception innerException) : base(innerException?.Message, innerException) { }
+        }
+
         public interface IOrderedCallback
         {
             int callbackOrder { get; }

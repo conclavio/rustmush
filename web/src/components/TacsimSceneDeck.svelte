@@ -3,9 +3,11 @@
   // Toggleable 3D split above `Scrollback`; when seated at the Bridge Helm, hands off
   // seamlessly into `PictureView.svelte` (`mush-pixel-wasm` SpaceCockpit & 60 Hz Docking).
 
+  import { untrack } from "svelte";
   import type { GameApp } from "$lib/game.svelte";
   import { PICTURE_PREF_KEY } from "$lib/picture";
   import { storageGet, storageSet } from "$lib/storage";
+  import { tacsimAudio } from "$lib/tacsim/audio";
   import {
     formatHeldLockSummary,
     formatMountAtLockEffect,
@@ -24,6 +26,11 @@
   let resizing = $state(false);
   let dragStartY = 0;
   let dragStartH = 380;
+
+  function sendTacCmd(cmd: string): void {
+    tacsimAudio.playForCommand(cmd);
+    onCmd(cmd);
+  }
 
   function handleAction(act: string): void {
     stage?.notifyExplicitCommandSent();
@@ -86,15 +93,19 @@
     });
     stage = inst;
 
+    const wrap = wrapEl;
     const ro =
-      typeof ResizeObserver !== "undefined" && wrapEl
+      typeof ResizeObserver !== "undefined" && wrap
         ? new ResizeObserver((entries) => {
             const rect = entries[0]?.contentRect;
             if (rect) inst.resize(rect.width, rect.height);
           })
         : null;
-    if (ro && wrapEl) ro.observe(wrapEl);
-    if (wrapEl) inst.resize(wrapEl.clientWidth || 720, app.tacsim.viewportHeightPx);
+    if (ro && wrap) ro.observe(wrap);
+    if (wrap) {
+      const initialHeight = untrack(() => app.tacsim.viewportHeightPx);
+      inst.resize(wrap.clientWidth || 720, wrap.clientHeight || initialHeight);
+    }
 
     return () => {
       ro?.disconnect();
@@ -102,6 +113,16 @@
       stage = null;
       app.tacsim.focusedPrompt = null;
     };
+  });
+
+  // Resize the live stage in-place without tearing down WebGL state when viewport height changes
+  $effect(() => {
+    const s = stage;
+    const h = app.tacsim.viewportHeightPx;
+    const wrap = wrapEl;
+    if (s && wrap) {
+      s.resize(wrap.clientWidth || 720, h);
+    }
   });
 
   // Push reactive room/pack/actor/stowage/holotank state into the live Three.js stage
@@ -116,7 +137,13 @@
       isAboardShip: app.tacsim.isAboardShip,
       serverStationRoomEntry: app.tacsim.serverStationRoomEntry,
       serverShipCompartment: app.tacsim.serverShipCompartment,
+      roomRevision: app.tacsim.roomRevision,
       ambient: app.tacsim.ambient,
+      berthDockedHulls: app.tacsim.berthDockedHulls,
+      berthOwnHullName:
+        app.tacsim.trade.berth?.ownHullName ?? app.tacsim.ambient.ownHullName,
+      berthOwnHullDockedHere:
+        app.tacsim.trade.berth?.ownHullDockedHere ?? app.tacsim.ambient.ownHullDockedHere,
       visibleActors: app.tacsim.visibleActors,
       actorSpeech: app.tacsim.actorSpeech,
       actorComposing: app.tacsim.actorComposing,
@@ -195,7 +222,9 @@
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 1000")}>100%</button>
             <button type="button" class="qbtn" onclick={() => handleAction("ui:open_sailing")}>Undock / Route</button>
-            <button type="button" class="qbtn" onclick={() => handleAction("ui:dock_destination")}>60 Hz Dock</button>
+            <button type="button" class="qbtn" onclick={() => handleAction("ui:dock_destination")}>
+              60 Hz Dock ({app.tacsim.dockTarget})
+            </button>
             <button type="button" class="qbtn accent" onclick={() => app.tacsim.standFromBridgeHelm()}>
               Stand From Helm
             </button>
@@ -208,13 +237,13 @@
               {formatHeldLockSummary(app.tacsim.spaceFire)}
             </span>
             <div class="visor-btns">
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/scan")}>Scan</button>
-              <button type="button" class="qbtn danger" onclick={() => onCmd("+tac/beam")}>Fire Beam</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/railgun")}>Fire Railgun</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/torp")}>Launch Torpedo</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc offense")}>Laser Offense</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc point")}>Laser Defense</button>
-              <button type="button" class="qbtn" onclick={() => onCmd("+tac/pdc auto")}>Auto Point Defense</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/scan")}>Scan</button>
+              <button type="button" class="qbtn danger" onclick={() => sendTacCmd("+tac/beam")}>Fire Beam</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/railgun")}>Fire Railgun</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/torp")}>Launch Torpedo</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/pdc offense")}>Laser Offense</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/pdc point")}>Laser Defense</button>
+              <button type="button" class="qbtn" onclick={() => sendTacCmd("+tac/pdc auto")}>Auto Point Defense</button>
               <button type="button" class="qbtn" onclick={() => onCmd("+helm/submit")}>Customs Submit</button>
             </div>
           </div>

@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using UnityEditor;
 using UnityEditor.Animations;
@@ -11,80 +12,16 @@ namespace TacSim.Editor
     /// Works identically across all Humanoid character rigs (Stellar Trooper, Cyberpunk Street Fighter,
     /// Techwear Girls, Stellar Girl Astra, Stellar Girl Celeste).
     /// </summary>
-    [InitializeOnLoad]
     public static class HumanoidAnimatorBuilder
     {
         public const string GeneratedFolder = "Assets/_TacSim/Generated";
         public const string ControllerPath = GeneratedFolder + "/TacSimHumanoid.controller";
 
-        static HumanoidAnimatorBuilder()
+        [MenuItem("TacSim/Utilities/Refresh Humanoid Animator Controller", priority = 42)]
+        public static void RefreshFromMenu()
         {
-            EditorApplication.delayCall += AutoBindImportedMocapClipsIfPresent;
-        }
-
-        private static void AutoBindImportedMocapClipsIfPresent()
-        {
-            if (EditorApplication.isPlayingOrWillChangePlaymode)
-                return;
-
-            var importedIdle = FindImportedIdaFaberIdleClip();
-            var importedWalk = FindImportedWalkClip();
-            var importedRun = FindImportedRunClip();
-            var importedSit = FindImportedSitClip();
-            if (importedIdle == null && importedWalk == null && importedRun == null && importedSit == null)
-                return;
-
-            var controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(ControllerPath);
-            if (controller == null || controller.layers == null || controller.layers.Length == 0)
-                return;
-
-            var sm = controller.layers[0].stateMachine;
-            if (sm == null || sm.states == null)
-                return;
-
-            bool needsReimportPass = false;
-            for (int i = 0; i < sm.states.Length; i++)
-            {
-                var st = sm.states[i].state;
-                if (st == null) continue;
-                if (st.name == "Idle" && importedIdle != null && st.motion != importedIdle) needsReimportPass = true;
-                else if (st.name == "Walk" && importedWalk != null && st.motion != importedWalk) needsReimportPass = true;
-                else if (st.name == "Run" && importedRun != null && st.motion != importedRun) needsReimportPass = true;
-                else if (st.name == "SeatedHelm" && importedSit != null && st.motion != importedSit) needsReimportPass = true;
-            }
-            if (!needsReimportPass)
-                return;
-
-            AssetPackImporter.EnsureIdaFaberHumanoidRigs();
-            importedIdle = FindImportedIdaFaberIdleClip() ?? importedIdle;
-            importedWalk = FindImportedWalkClip() ?? importedWalk;
-            importedRun = FindImportedRunClip() ?? importedRun;
-            importedSit = FindImportedSitClip() ?? importedSit;
-
-            bool updatedAny = false;
-            for (int i = 0; i < sm.states.Length; i++)
-            {
-                var st = sm.states[i].state;
-                if (st == null) continue;
-                AnimationClip target = st.name == "Idle" ? importedIdle
-                                     : st.name == "Walk" ? importedWalk
-                                     : st.name == "Run" ? importedRun
-                                     : st.name == "SeatedHelm" ? importedSit
-                                     : null;
-                if (target != null && st.motion != target)
-                {
-                    st.motion = target;
-                    EditorUtility.SetDirty(st);
-                    updatedAny = true;
-                }
-            }
-
-            if (updatedAny)
-            {
-                EditorUtility.SetDirty(controller);
-                AssetDatabase.SaveAssets();
-                Debug.Log($"[TacSim] Auto-bound imported Humanoid mocap clip(s) to {ControllerPath}.");
-            }
+            BuildOrRefreshController();
+            Debug.Log($"[TacSim] Refreshed {ControllerPath}.");
         }
 
         public static RuntimeAnimatorController BuildOrRefreshController()
@@ -100,6 +37,38 @@ namespace TacSim.Editor
             AnimationClip walkClip = FindImportedWalkClip() ?? generatedWalk;
             AnimationClip runClip = FindImportedRunClip() ?? generatedRun;
             AnimationClip seatedClip = FindImportedSitClip() ?? generatedSeated;
+
+            // Preserve the git-tracked .controller GUID if the asset already exists and has the 4 expected states.
+            var existing = AssetDatabase.LoadAssetAtPath<AnimatorController>(ControllerPath);
+            if (existing != null && existing.layers != null && existing.layers.Length > 0 &&
+                existing.layers[0].stateMachine != null && existing.layers[0].stateMachine.states != null &&
+                existing.layers[0].stateMachine.states.Length >= 4)
+            {
+                var existingStates = existing.layers[0].stateMachine.states;
+                bool updated = false;
+                for (int i = 0; i < existingStates.Length; i++)
+                {
+                    var st = existingStates[i].state;
+                    if (st == null) continue;
+                    AnimationClip target = st.name == "Idle" ? idleClip
+                                         : st.name == "Walk" ? walkClip
+                                         : st.name == "Run" ? runClip
+                                         : st.name == "SeatedHelm" ? seatedClip
+                                         : null;
+                    if (target != null && st.motion != target)
+                    {
+                        st.motion = target;
+                        EditorUtility.SetDirty(st);
+                        updated = true;
+                    }
+                }
+                if (updated)
+                {
+                    EditorUtility.SetDirty(existing);
+                    AssetDatabase.SaveAssets();
+                }
+                return existing;
+            }
 
             var controller = AnimatorController.CreateAnimatorControllerAtPath(ControllerPath);
             controller.AddParameter("Speed", AnimatorControllerParameterType.Float);
@@ -140,11 +109,16 @@ namespace TacSim.Editor
             tWalkRun.AddCondition(AnimatorConditionMode.If, 0f, "IsSprinting");
             tWalkRun.AddCondition(AnimatorConditionMode.Greater, 5.2f, "Speed");
 
-            // Run -> Walk
+            // Run -> Walk (sprint released OR blocked against wall below sprint speed)
             var tRunWalk = stRun.AddTransition(stWalk);
             tRunWalk.hasExitTime = false;
             tRunWalk.duration = 0.18f;
             tRunWalk.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsSprinting");
+
+            var tRunWalkSlow = stRun.AddTransition(stWalk);
+            tRunWalkSlow.hasExitTime = false;
+            tRunWalkSlow.duration = 0.18f;
+            tRunWalkSlow.AddCondition(AnimatorConditionMode.Less, 4.8f, "Speed");
 
             var tRunIdle = stRun.AddTransition(stIdle);
             tRunIdle.hasExitTime = false;
@@ -256,7 +230,7 @@ namespace TacSim.Editor
         private static AnimationClip LoadHumanoidClipFromAssetPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return null;
-            Object[] subAssets = AssetDatabase.LoadAllAssetsAtPath(path);
+            UnityEngine.Object[] subAssets = AssetDatabase.LoadAllAssetsAtPath(path);
             if (subAssets == null) return null;
             foreach (var obj in subAssets)
             {
@@ -378,15 +352,22 @@ namespace TacSim.Editor
         private static void SetLoopTime(AnimationClip clip, bool loop)
         {
             var so = new SerializedObject(clip);
-            var settings = so.FindProperty("m_AnimationClipSettings");
-            if (settings != null)
+            try
             {
-                var loopProp = settings.FindPropertyRelative("m_LoopTime");
-                if (loopProp != null) loopProp.boolValue = loop;
-                var loopPose = settings.FindPropertyRelative("m_LoopBlend");
-                if (loopPose != null) loopPose.boolValue = loop;
+                var settings = so.FindProperty("m_AnimationClipSettings");
+                if (settings != null)
+                {
+                    var loopProp = settings.FindPropertyRelative("m_LoopTime");
+                    if (loopProp != null) loopProp.boolValue = loop;
+                    var loopPose = settings.FindPropertyRelative("m_LoopBlend");
+                    if (loopPose != null) loopPose.boolValue = loop;
+                }
+                so.ApplyModifiedPropertiesWithoutUndo();
             }
-            so.ApplyModifiedPropertiesWithoutUndo();
+            finally
+            {
+                (so as IDisposable)?.Dispose();
+            }
         }
 
         private static void SaveOrReplaceClip(AnimationClip clip, string assetPath)

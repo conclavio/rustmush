@@ -2083,12 +2083,12 @@ fn market_panels_project_no_private_field() -> TestResult {
         .map(|token| token.to_string())
         .ok_or("the planted operation")?;
     // The owner charter is left out here: it is the owner frame's cursor
-    // (checked below, with the row's own text).
-    let forbidden_numbers = [
-        listing.charter.get().to_string(),
-        owner.owner_licence.to_string(),
-        paid.charter.to_string(),
-    ];
+    // (checked below, with the row's own text). `owner_licence` is deliberately
+    // exposed ONLY on the actor's own `owner` holding row (needed for Track 7
+    // `+ship/mind filed:<licence>` sealing) and remains forbidden on
+    // `mind.market` and `mind.holdings paid`.
+    let forbidden_numbers = [listing.charter.get().to_string(), paid.charter.to_string()];
+    let owner_licence_str = owner.owner_licence.to_string();
     let mut forbidden: Vec<&str> = vec![
         &publication_text,
         publication_text.get(8..).ok_or("the token's tail")?,
@@ -2097,7 +2097,6 @@ fn market_panels_project_no_private_field() -> TestResult {
         "\"publication\"",
         "\"protocol\"",
         "\"charter\":",
-        "\"owner_licence\"",
         "\"renewal_operation\"",
         "\"account",
         "\"digest\"",
@@ -2107,25 +2106,46 @@ fn market_panels_project_no_private_field() -> TestResult {
         "Exceptional",
     ];
     forbidden.extend(forbidden_numbers.iter().map(String::as_str));
+    let mut non_owner_forbidden = forbidden.clone();
+    non_owner_forbidden.push("\"owner_licence\"");
+    non_owner_forbidden.push(&owner_licence_str);
     check_eq!(listing.protocol, Protocol::Original, "the planted protocol");
+    mush_contract_tests::assert_projection_text_clean(
+        "mind.holdings owner",
+        &owner_frame.to_string(),
+        &forbidden,
+    );
     for (surface, frame) in [
         ("mind.market", &market),
-        ("mind.holdings owner", &owner_frame),
         ("mind.holdings paid", &paid_frame),
     ] {
-        mush_contract_tests::assert_projection_text_clean(surface, &frame.to_string(), &forbidden);
+        mush_contract_tests::assert_projection_text_clean(
+            surface,
+            &frame.to_string(),
+            &non_owner_forbidden,
+        );
     }
     // The owner charter's id is the owner frame's `after` and nothing else:
     // never in the row, never in the other frames.
     let owner_charter = owner.charter.to_string();
     let mut charter_forbidden = forbidden.clone();
     charter_forbidden.push(&owner_charter);
+    mush_contract_tests::assert_projection_text_clean(
+        "mind.holdings owner row",
+        &owner_row(&owner).to_string(),
+        &charter_forbidden,
+    );
+    let mut non_owner_charter_forbidden = non_owner_forbidden.clone();
+    non_owner_charter_forbidden.push(&owner_charter);
     for (surface, text) in [
-        ("mind.holdings owner row", owner_row(&owner).to_string()),
         ("mind.market", market.to_string()),
         ("mind.holdings paid", paid_frame.to_string()),
     ] {
-        mush_contract_tests::assert_projection_text_clean(surface, &text, &charter_forbidden);
+        mush_contract_tests::assert_projection_text_clean(
+            surface,
+            &text,
+            &non_owner_charter_forbidden,
+        );
     }
     check_eq!(
         owner_frame.get("after").cloned(),
@@ -2165,12 +2185,23 @@ fn market_panels_project_no_private_field() -> TestResult {
             "schema": {"id": "mind.holdings", "version": 1},
             "open": true, "notice": null, "section": "owner",
             "rows": [{
-                "kind": "owner", "filed": 41, "name": "Sentinel Line Of Exc",
+                "kind": "owner", "filed": 41, "owner_licence": 7_000_003,
+                "name": "Sentinel Line Of Exc",
                 "dependent": false, "phase": {"state": "active", "days_left": 88},
                 "selling": false, "actions": ["publish", "withdraw", "charter"],
             }],
             "after": 7_000_002,
         })
+    );
+    // Regression U-C06: absent/zero owner_licence serializes as null while preserving `filed`.
+    let no_licence_row = owner_row(&OwnerFacts {
+        owner_licence: 0,
+        ..owner.clone()
+    });
+    check_eq!(no_licence_row.get("filed"), Some(&serde_json::json!(41)));
+    check_eq!(
+        no_licence_row.get("owner_licence"),
+        Some(&serde_json::Value::Null)
     );
     check_eq!(
         paid_frame,

@@ -2,7 +2,12 @@
 // machine, Sailing Plan route presets, and NPC dialogue prompt builders.
 // Mirrors Unity's `TacSimTradeAndShipState.cs` and `TacSimGameCoordinator.cs`.
 
-import { parseStowageNode, type SimulatorSlotInfo, type StowageSnapshot } from "./spatial";
+import {
+  parseStowageNode,
+  type DockedHullSummary,
+  type SimulatorSlotInfo,
+  type StowageSnapshot,
+} from "./spatial";
 
 export const PORT_TRADE_FEED = "port.trade";
 export const TACSIM_CONTENT_FEED = "tacsim.content";
@@ -41,6 +46,15 @@ export interface OpenBuyerQuote {
   totalMinor: number;
 }
 
+export interface BerthGallerySnapshot {
+  portEntry: string | null;
+  dockedCount: number;
+  dockedHulls: DockedHullSummary[];
+  ownHull: string | null;
+  ownHullName: string | null;
+  ownHullDockedHere: boolean;
+}
+
 export interface PortTradeSnapshot {
   venueId: string;
   venueLabel: string;
@@ -53,10 +67,12 @@ export interface PortTradeSnapshot {
   nextAfterId: number | null;
   quotes: OpenBuyerQuote[];
   stowage: StowageSnapshot;
-  hullName: string | null;
   /** The helm hull's dbref as the server writes it (`#123`); `null` with no hull. */
   hullId: string | null;
+  hullName: string | null;
   hullDocked: boolean;
+  hullPort: string | null;
+  berth: BerthGallerySnapshot | null;
   simulator: {
     matchState: string;
     aiFill: number;
@@ -70,6 +86,8 @@ export interface PendingQuoteLatch {
   listingId: number;
   quantity: number;
   maxUnitPriceMinor: number;
+  maxTotalMinor: number;
+  preExistingQuoteIds: ReadonlySet<number>;
   requestedAtMs: number;
 }
 
@@ -189,9 +207,11 @@ export function emptyPortTradeSnapshot(): PortTradeSnapshot {
     nextAfterId: null,
     quotes: [],
     stowage: emptyStowageSnapshot(),
-    hullName: null,
     hullId: null,
+    hullName: null,
     hullDocked: true,
+    hullPort: null,
+    berth: null,
     simulator: null,
   };
 }
@@ -205,29 +225,50 @@ function parseListingRow(
   rowVal: unknown,
   goodsById: ReadonlyMap<string, GoodItemDef>,
   fallbackVenue: string,
+  defaultSide: "ask" | "bid" = "ask",
 ): PortListingRow | null {
   const r = asObj(rowVal);
   if (!r) return null;
-  const listingId = Math.trunc(asNum(r["id"], 0));
+  const listingId = Math.trunc(asNum(r["id"], asNum(r["listing_id"], 0)));
   if (listingId <= 0) return null;
 
-  const side: "ask" | "bid" = asStr(r["side"]).toLowerCase() === "bid" ? "bid" : "ask";
-  const goodId = asStr(r["good"]);
-  const goodDef = goodsById.get(goodId);
+  const sideRaw = asStr(r["side"], defaultSide).toLowerCase();
+  const side: "ask" | "bid" = sideRaw === "bid" ? "bid" : "ask";
+  const goodId = asStr(r["good"], asStr(r["item_id"], asStr(r["sku"])));
+  const goodDef =
+    goodsById.get(goodId) ?? goodsById.get(goodId.replace(/^tacsim:/i, ""));
   const itemName =
-    asStr(r["good_label"]) || (goodDef ? goodDef.label : goodId || `Lot #${listingId}`);
-  const unitPriceMinor = Math.round(asNum(r["unit_price_minor"], 0));
-  const unitPriceText = asStr(r["price_text"]) || formatMinorCredits(unitPriceMinor);
+    asStr(r["good_label"]) ||
+    asStr(r["label"]) ||
+    asStr(r["item_name"]) ||
+    (goodDef ? goodDef.label : goodId || `Lot #${listingId}`);
+  const unitPriceMinor = Math.round(
+    asNum(
+      r["unit_price_minor"],
+      asNum(r["execution_price_minor"], asNum(r["price_minor"], 0)),
+    ),
+  );
+  const unitPriceText =
+    asStr(r["price_text"]) ||
+    asStr(r["execution_price_text"]) ||
+    formatMinorCredits(unitPriceMinor);
 
   return {
     listingId,
     side,
     goodId,
     itemName,
-    vendorName: asStr(r["vendor_name"]) || fallbackVenue,
-    venue: fallbackVenue,
-    quantity: Math.max(0, Math.trunc(asNum(r["available_qty"], 0))),
-    unit: goodDef ? goodDef.ledgerUnit : "t",
+    vendorName:
+      asStr(r["vendor_name"]) ||
+      asStr(r["vendor"]) ||
+      asStr(r["party"]) ||
+      fallbackVenue,
+    venue: asStr(r["venue"], fallbackVenue),
+    quantity: Math.max(
+      0,
+      Math.trunc(asNum(r["available_qty"], asNum(r["qty"], asNum(r["quantity"], 0)))),
+    ),
+    unit: asStr(r["unit"], goodDef ? goodDef.ledgerUnit : "t"),
     unitPriceMinor,
     unitPriceText,
     funded: asBool(r["funded"], true),
@@ -239,9 +280,9 @@ function parseListingRow(
  * (`tacsim::client_sync::build_port_trade_frame`; the shared fixture
  * `fixtures/port/port_trade.json` is a real frame, held to the live shape by
  * tacsim's `port_trade_frame_matches_the_clients_shared_fixture`). 48e L8
- * (clients:G2): the keys are the server's — `balance_minor`, `port_name`,
+ * (clients:G2): reads the server's exact keys — `balance_minor`, `port_name`,
  * `listings[].available_qty`, `next_after`, `open_quotes`, `ship.hull_name`,
- * `ship.hull_id` and `ship.stowage` — never invented aliases.
+ * `ship.hull_id`, `ship.stowage`, `berth.docked_hulls` — cleanly.
  */
 export function decodePortTradeFeed(
   data: unknown,
@@ -252,55 +293,129 @@ export function decodePortTradeFeed(
   const root = asObj(data);
   if (!root) return previous;
 
-  const venueId = asStr(root["venue"]);
-  const portName = asStr(root["port_name"]) || asStr(root["aboard_docked_port"]);
-  const venueLabel = portName || venueId || previous.venueLabel;
+  const venueObj = asObj(root["venue"]);
+  const venueId = venueObj
+    ? asStr(venueObj["id"], asStr(root["venue_id"], previous.venueId))
+    : typeof root["venue"] === "string"
+      ? root["venue"]
+      : "venue" in root && root["venue"] === null
+        ? ""
+        : previous.venueId;
+  const hasPortField =
+    "port_name" in root || "aboard_docked_port" in root || "port" in root;
+  const portName =
+    asStr(root["port_name"]) ||
+    asStr(root["aboard_docked_port"]) ||
+    asStr(root["port"]) ||
+    (venueObj ? asStr(venueObj["port"]) : "") ||
+    (hasPortField ? "" : previous.portName);
+  const venueLabel =
+    (venueObj ? asStr(venueObj["label"], asStr(venueObj["name"])) : "") ||
+    asStr(root["venue_label"]) ||
+    portName ||
+    venueId ||
+    previous.venueLabel;
 
-  const creditsMinor = Math.round(asNum(root["balance_minor"], previous.creditsMinor));
-  const creditsText = asStr(root["balance_text"]) || formatMinorCredits(creditsMinor);
+  const creditObj = asObj(root["credit"]) ?? asObj(root["account"]);
+  const creditsMinor =
+    typeof root["balance_minor"] === "number" && Number.isFinite(root["balance_minor"])
+      ? Math.round(root["balance_minor"])
+      : creditObj
+        ? Math.round(asNum(creditObj["minor"], asNum(creditObj["balance_minor"], previous.creditsMinor)))
+        : Math.round(asNum(root["credits_minor"], previous.creditsMinor));
+  const creditsText =
+    asStr(root["balance_text"]) ||
+    (creditObj ? asStr(creditObj["text"]) : "") ||
+    asStr(root["credits_text"]) ||
+    formatMinorCredits(creditsMinor);
 
-  const asks: PortListingRow[] = appendPage ? [...previous.asks] : [];
-  const bids: PortListingRow[] = appendPage ? [...previous.bids] : [];
+  const hasListingsField =
+    Array.isArray(root["listings"]) ||
+    Array.isArray(root["asks"]) ||
+    Array.isArray(root["bids"]);
+  const asks: PortListingRow[] = appendPage || !hasListingsField ? [...previous.asks] : [];
+  const bids: PortListingRow[] = appendPage || !hasListingsField ? [...previous.bids] : [];
   const seenIds = new Set<number>([...asks.map((a) => a.listingId), ...bids.map((b) => b.listingId)]);
 
   for (const item of asArr(root["listings"]) ?? []) {
-    const parsed = parseListingRow(item, goodsById, venueLabel);
+    const parsed = parseListingRow(item, goodsById, venueLabel, "ask");
     if (!parsed || seenIds.has(parsed.listingId)) continue;
     seenIds.add(parsed.listingId);
     if (parsed.side === "bid") bids.push(parsed);
     else asks.push(parsed);
   }
-
-  const quotes: OpenBuyerQuote[] = [];
-  for (const qVal of asArr(root["open_quotes"]) ?? []) {
-    const q = asObj(qVal);
-    if (!q) continue;
-    const quoteId = Math.trunc(asNum(q["quote_id"], 0));
-    if (quoteId <= 0) continue;
-    const quantity = Math.max(1, Math.trunc(asNum(q["quantity"], 1)));
-    const unitPriceMinor = Math.round(asNum(q["unit_price_minor"], 0));
-    quotes.push({
-      quoteId,
-      listingId: Math.trunc(asNum(q["listing_id"], 0)),
-      quantity,
-      unitPriceMinor,
-      totalMinor: Math.round(asNum(q["total_minor"], unitPriceMinor * quantity)),
-    });
+  for (const item of asArr(root["asks"]) ?? []) {
+    const parsed = parseListingRow(item, goodsById, venueLabel, "ask");
+    if (parsed && !seenIds.has(parsed.listingId)) {
+      seenIds.add(parsed.listingId);
+      asks.push(parsed);
+    }
+  }
+  for (const item of asArr(root["bids"]) ?? []) {
+    const parsed = parseListingRow(item, goodsById, venueLabel, "bid");
+    if (parsed && !seenIds.has(parsed.listingId)) {
+      seenIds.add(parsed.listingId);
+      bids.push(parsed);
+    }
   }
 
-  const ship = asObj(root["ship"]);
-  const parsedStowage = ship ? parseStowageNode(ship["stowage"]) : null;
-  const stowage = parsedStowage
-    ? {
-        ...parsedStowage,
-        cargoLines: parsedStowage.cargoLines.map((ln) => {
-          const def = goodsById.get(ln.good);
-          return def
-            ? { ...ln, label: def.label, unit: def.ledgerUnit, massKg: def.massKgPerUnit * ln.qty }
-            : ln;
-        }),
+  const quotes: OpenBuyerQuote[] = [];
+  const quotesArr = asArr(root["open_quotes"]) ?? asArr(root["quotes"]);
+  if (quotesArr) {
+    for (const qVal of quotesArr) {
+      const q = asObj(qVal);
+      if (!q) continue;
+      const quoteId = Math.trunc(asNum(q["quote_id"], asNum(q["id"], 0)));
+      const listingId = Math.trunc(asNum(q["listing_id"], asNum(q["listing"], 0)));
+      const quantity = Math.trunc(asNum(q["quantity"], asNum(q["qty"], 0)));
+      if (quoteId <= 0 || listingId <= 0 || quantity <= 0) continue;
+      const unitPriceMinor = Math.round(
+        asNum(q["unit_price_minor"], asNum(q["execution_price_minor"], 0)),
+      );
+      const totalMinor = Math.round(asNum(q["total_minor"], unitPriceMinor * quantity));
+      quotes.push({ quoteId, listingId, quantity, unitPriceMinor, totalMinor });
+    }
+  }
+
+  const hullObj = asObj(root["ship"]) ?? asObj(root["hull"]);
+  const shipCleared = "ship" in root && root["ship"] === null && !hullObj;
+  const stowage =
+    parseStowageNode(root["stowage"], goodsById) ??
+    (hullObj ? parseStowageNode(hullObj["stowage"], goodsById) : null) ??
+    previous.stowage;
+
+  let berth: BerthGallerySnapshot | null = previous.berth;
+  const berthObj = asObj(root["berth"]);
+  if (berthObj) {
+    const dockedHulls: DockedHullSummary[] = [];
+    const dhArr = asArr(berthObj["docked_hulls"]);
+    const ownHull = asStr(berthObj["own_hull"]) || null;
+    if (dhArr) {
+      for (const hVal of dhArr) {
+        const h = asObj(hVal);
+        if (!h) continue;
+        const id = asStr(h["id"]);
+        dockedHulls.push({
+          id,
+          name: asStr(h["name"]),
+          mark: asStr(h["mark"]),
+          unit: asStr(h["unit"], "dray"),
+          captain: asStr(h["captain"]),
+          yours: asBool(h["yours"], Boolean(ownHull && id === ownHull)),
+        });
       }
-    : previous.stowage;
+    }
+    berth = {
+      portEntry: asStr(berthObj["port_entry"]) || null,
+      dockedCount: Math.trunc(asNum(berthObj["docked_count"], dockedHulls.length)),
+      dockedHulls,
+      ownHull,
+      ownHullName: asStr(berthObj["own_hull_name"]) || null,
+      ownHullDockedHere: asBool(berthObj["own_hull_docked_here"], false),
+    };
+  } else if ("berth" in root && root["berth"] === null) {
+    berth = null;
+  }
 
   let simulator: PortTradeSnapshot["simulator"] = previous.simulator;
   const simObj = asObj(root["simulator"]);
@@ -327,13 +442,27 @@ export function decodePortTradeFeed(
       myUnit: asStr(simObj["my_unit"]).replace("tacsim.unit.", ""),
       slots,
     };
+  } else if ("simulator" in root && root["simulator"] === null) {
+    simulator = null;
   }
 
-  const nextAfter = root["next_after"];
-  const nextAfterId =
-    typeof nextAfter === "number" && Number.isFinite(nextAfter) && nextAfter > 0
-      ? Math.trunc(nextAfter)
-      : null;
+  let hasMore: boolean;
+  let nextAfterId: number | null;
+  if ("next_after" in root) {
+    const na = root["next_after"];
+    if (typeof na === "number" && Number.isFinite(na) && na > 0) {
+      hasMore = true;
+      nextAfterId = Math.trunc(na);
+    } else {
+      hasMore = false;
+      nextAfterId = null;
+    }
+  } else {
+    const allLoaded = [...asks, ...bids];
+    const maxId = allLoaded.reduce((acc, r) => (r.listingId > acc ? r.listingId : acc), 0);
+    hasMore = asBool(root["has_more"], false);
+    nextAfterId = hasMore && maxId > 0 ? maxId : null;
+  }
 
   return {
     venueId,
@@ -343,13 +472,27 @@ export function decodePortTradeFeed(
     creditsText,
     asks,
     bids,
-    hasMore: nextAfterId !== null,
+    hasMore,
     nextAfterId,
     quotes,
     stowage,
-    hullName: ship ? asStr(ship["hull_name"]) || null : null,
-    hullId: ship ? asStr(ship["hull_id"]) || null : null,
-    hullDocked: ship ? asBool(ship["docked"], previous.hullDocked) : previous.hullDocked,
+    hullId: hullObj
+      ? asStr(hullObj["hull_id"]) || previous.hullId
+      : shipCleared
+        ? null
+        : previous.hullId,
+    hullName: hullObj
+      ? asStr(hullObj["hull_name"], asStr(hullObj["name"])) || previous.hullName
+      : shipCleared
+        ? null
+        : previous.hullName,
+    hullDocked: hullObj ? asBool(hullObj["docked"], previous.hullDocked) : previous.hullDocked,
+    hullPort: hullObj
+      ? asStr(hullObj["port"]) || null
+      : shipCleared
+        ? null
+        : previous.hullPort,
+    berth,
     simulator,
   };
 }
@@ -364,7 +507,8 @@ export function computeMaxFitQuantity(
   if (row.unitPriceMinor > 0 && creditsMinor > 0) {
     cap = Math.min(cap, Math.max(1, Math.floor(creditsMinor / row.unitPriceMinor)));
   }
-  const good = goodsById.get(row.goodId);
+  const good =
+    goodsById.get(row.goodId) ?? goodsById.get(row.goodId.replace(/^tacsim:/i, ""));
   if (good) {
     if (good.stowage === "stow.propellant") {
       const remKg = Math.max(0, stowage.propellantMaxKg - stowage.propellantKg);
@@ -386,6 +530,7 @@ export function beginOneClickBuy(
   row: PortListingRow,
   quantity: number,
   nowMs: number,
+  existingQuotes: ReadonlyArray<Pick<OpenBuyerQuote, "quoteId">> = [],
 ): { quoteCommand: string; latch: PendingQuoteLatch } | null {
   if (row.listingId <= 0 || row.unitPriceMinor <= 0) return null;
   const qty = Math.max(1, Math.min(row.quantity || quantity, Math.trunc(quantity)));
@@ -395,6 +540,8 @@ export function beginOneClickBuy(
       listingId: row.listingId,
       quantity: qty,
       maxUnitPriceMinor: row.unitPriceMinor,
+      maxTotalMinor: row.unitPriceMinor * qty,
+      preExistingQuoteIds: new Set(existingQuotes.map((q) => q.quoteId)),
       requestedAtMs: nowMs,
     },
   };
@@ -410,15 +557,31 @@ export function resolvePendingQuoteFromFeed(
     return { acceptCommand: null, priceWarning: null, clearLatch: true };
   }
 
-  const matched = snapshot.quotes.find((q) => q.listingId === latch.listingId);
-  if (!matched) {
+  const freshMatches = snapshot.quotes.filter(
+    (q) =>
+      !latch.preExistingQuoteIds.has(q.quoteId) &&
+      q.listingId === latch.listingId &&
+      q.quantity === latch.quantity,
+  );
+  if (freshMatches.length === 0) {
     return { acceptCommand: null, priceWarning: null, clearLatch: false };
   }
 
-  if (matched.unitPriceMinor > latch.maxUnitPriceMinor) {
+  const matched = freshMatches.reduce((best, q) => (q.quoteId > best.quoteId ? q : best));
+  const authorizedMaxTotal =
+    typeof latch.maxTotalMinor === "number" && Number.isFinite(latch.maxTotalMinor)
+      ? latch.maxTotalMinor
+      : latch.maxUnitPriceMinor * latch.quantity;
+
+  if (
+    matched.unitPriceMinor <= 0 ||
+    matched.totalMinor <= 0 ||
+    matched.unitPriceMinor > latch.maxUnitPriceMinor ||
+    matched.totalMinor > authorizedMaxTotal
+  ) {
     return {
       acceptCommand: null,
-      priceWarning: `Quote #${matched.quoteId} moved to ${formatMinorCredits(matched.unitPriceMinor)} (above ${formatMinorCredits(latch.maxUnitPriceMinor)}) — review before accepting.`,
+      priceWarning: `Quote #${matched.quoteId} moved to ${formatMinorCredits(matched.unitPriceMinor)} (total ${formatMinorCredits(matched.totalMinor)}, above authorized ${formatMinorCredits(authorizedMaxTotal)}) — review before accepting.`,
       clearLatch: true,
     };
   }
