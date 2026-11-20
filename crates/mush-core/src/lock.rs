@@ -158,6 +158,12 @@ pub enum LockExpr {
 /// Default / maximum indirection depth for [`eval_lock`].
 pub const MAX_LOCK_DEPTH: u8 = 10;
 
+/// Maximum total AST evaluation steps [`eval_lock`] will perform across all
+/// branches and indirect lock hops before failing closed to `false`. Bounds
+/// DAG/branching blowup (`k^MAX_LOCK_DEPTH`) even on locks that bypassed
+/// [`parse_lock`].
+pub const MAX_LOCK_STEPS: u32 = 512;
+
 /// Does this node own children — and so cost a level of every walk over the
 /// tree, `Drop` included?
 fn compound(e: &LockExpr) -> bool {
@@ -221,10 +227,21 @@ pub(crate) fn eval_lock_with<'w, R: ObjectRead<'w>>(
     who: ObjId,
     depth: u8,
 ) -> Result<bool, R::Error> {
-    // `None` — the key read an attribute it is not allowed to read — is not a
-    // third answer anyone outside can see: it lands as "does not pass", which
-    // is the same thing an empty key would say.
-    Ok(eval_with(read, expr, who, depth, MAX_LOCK_STRUCTURAL_DEPTH)?.unwrap_or(false))
+    // `None` — the key read an attribute it is not allowed to read, or hit
+    // the total evaluation step budget — is not a third answer anyone outside
+    // can see: it lands as "does not pass", failing closed even through `!`.
+    let mut steps = MAX_LOCK_STEPS;
+    let mut active: Vec<(ObjId, LockType)> = Vec::new();
+    Ok(eval_with(
+        read,
+        expr,
+        who,
+        depth,
+        MAX_LOCK_STRUCTURAL_DEPTH,
+        &mut steps,
+        &mut active,
+    )?
+    .unwrap_or(false))
 }
 
 /// Is this attribute one a lock key may not read?
@@ -273,7 +290,15 @@ fn eval_with<'w, R: ObjectRead<'w>>(
     who: ObjId,
     indirect: u8,
     structural: u32,
+    steps: &mut u32,
+    active: &mut Vec<(ObjId, LockType)>,
 ) -> Result<Option<bool>, R::Error> {
+    if *steps == 0 {
+        // Total evaluation step budget exhausted: poison so enclosing `!`
+        // cannot invert the refusal into a pass (fail closed).
+        return Ok(None);
+    }
+    *steps -= 1;
     read.charge_work(1)?;
     Ok(match expr {
         LockExpr::Const(b) => Some(*b),
@@ -292,14 +317,32 @@ fn eval_with<'w, R: ObjectRead<'w>>(
             if indirect == 0 {
                 return Ok(Some(false));
             }
+            let key = (*obj, *lt);
+            if active.contains(&key) {
+                // Active recursion cycle detected: fail closed immediately
+                // without exponential branching.
+                return Ok(Some(false));
+            }
             match read.object(*obj)? {
                 None => Some(false),
                 Some(o) => match o.locks.get(lt) {
                     None => Some(true),
-                    // A fresh tree: the structural budget starts over, the
-                    // indirect one does not.
+                    // A fresh tree: the structural budget starts over, while
+                    // the indirect budget, total step budget, and active cycle
+                    // set carry through.
                     Some(inner) => {
-                        eval_with(read, inner, who, indirect - 1, MAX_LOCK_STRUCTURAL_DEPTH)?
+                        active.push(key);
+                        let res = eval_with(
+                            read,
+                            inner,
+                            who,
+                            indirect - 1,
+                            MAX_LOCK_STRUCTURAL_DEPTH,
+                            steps,
+                            active,
+                        );
+                        active.pop();
+                        res?
                     }
                 },
             }
@@ -308,14 +351,14 @@ fn eval_with<'w, R: ObjectRead<'w>>(
             if structural == 0 {
                 return Ok(Some(false));
             }
-            eval_with(read, e, who, indirect, structural - 1)?.map(|v| !v)
+            eval_with(read, e, who, indirect, structural - 1, steps, active)?.map(|v| !v)
         }
         LockExpr::And(a, b) => {
             if structural == 0 {
                 return Ok(Some(false));
             }
-            match eval_with(read, a, who, indirect, structural - 1)? {
-                Some(true) => eval_with(read, b, who, indirect, structural - 1)?,
+            match eval_with(read, a, who, indirect, structural - 1, steps, active)? {
+                Some(true) => eval_with(read, b, who, indirect, structural - 1, steps, active)?,
                 short => short,
             }
         }
@@ -323,8 +366,8 @@ fn eval_with<'w, R: ObjectRead<'w>>(
             if structural == 0 {
                 return Ok(Some(false));
             }
-            match eval_with(read, a, who, indirect, structural - 1)? {
-                Some(false) => eval_with(read, b, who, indirect, structural - 1)?,
+            match eval_with(read, a, who, indirect, structural - 1, steps, active)? {
+                Some(false) => eval_with(read, b, who, indirect, structural - 1, steps, active)?,
                 short => short,
             }
         }
@@ -512,6 +555,19 @@ pub enum LockParseError {
         /// The limit that was exceeded.
         max: u32,
     },
+    /// The key contains more AST nodes than [`MAX_LOCK_NODES`].
+    #[error("lock expression is too large (limit {max} nodes)")]
+    TooLarge {
+        /// The limit that was exceeded.
+        max: u32,
+    },
+    /// The key contains more indirect (`@obj/lock`) references than
+    /// [`MAX_LOCK_INDIRECTS`].
+    #[error("lock expression has too many indirect references (limit {max})")]
+    TooManyIndirects {
+        /// The limit that was exceeded.
+        max: u32,
+    },
 }
 
 /// Maximum recursion budget the parser will spend on nested `(` and `!`.
@@ -547,6 +603,18 @@ pub const MAX_LOCK_PARSE_FRAMES: u32 = 64;
 /// a handful of terms — so a refusal here is a refusal of an attack.
 pub const MAX_LOCK_EXPR_DEPTH: u32 = 48;
 
+/// Maximum total AST nodes (leaves + operators) [`parse_lock`] will build.
+///
+/// Complementary to [`MAX_LOCK_EXPR_DEPTH`]: a balanced tree of depth 8 stays
+/// far under depth 48 while containing hundreds of nodes. Capping total AST
+/// size bounds memory, serialization, and evaluation work for every parsed key.
+pub const MAX_LOCK_NODES: u32 = 128;
+
+/// Maximum indirect (`@obj/lock`) leaves [`parse_lock`] will accept in one
+/// lock expression. Bounds indirection fan-out at parse time alongside
+/// [`MAX_LOCK_STEPS`] and cycle detection in [`eval_lock`].
+pub const MAX_LOCK_INDIRECTS: u32 = 16;
+
 /// Parse TinyMUX-ish lock syntax into a [`LockExpr`].
 ///
 /// Names are **not** resolvable at parse time by this crate (that needs
@@ -577,6 +645,8 @@ where
         src,
         pos: 0,
         frames: 0,
+        nodes: 0,
+        indirects: 0,
         resolve,
     };
     let (expr, depth) = p.parse_or()?;
@@ -602,6 +672,10 @@ struct Parser<'a, R> {
     /// on **every** path out of the recursive arms, error paths included, so
     /// a failed sub-parse cannot make a later sibling refuse spuriously.
     frames: u32,
+    /// Total AST nodes built so far — bounded by [`MAX_LOCK_NODES`].
+    nodes: u32,
+    /// Total `Indirect` leaves built so far — bounded by [`MAX_LOCK_INDIRECTS`].
+    indirects: u32,
     resolve: R,
 }
 
@@ -654,6 +728,30 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
         self.frames = self.frames.saturating_sub(cost);
     }
 
+    /// Count one AST node, refusing past [`MAX_LOCK_NODES`].
+    fn count_node(&mut self) -> Result<(), LockParseError> {
+        let next = self.nodes.saturating_add(1);
+        if next > MAX_LOCK_NODES {
+            return Err(LockParseError::TooLarge {
+                max: MAX_LOCK_NODES,
+            });
+        }
+        self.nodes = next;
+        Ok(())
+    }
+
+    /// Count one indirect (`@obj/lock`) leaf, refusing past [`MAX_LOCK_INDIRECTS`].
+    fn count_indirect(&mut self) -> Result<(), LockParseError> {
+        let next = self.indirects.saturating_add(1);
+        if next > MAX_LOCK_INDIRECTS {
+            return Err(LockParseError::TooManyIndirects {
+                max: MAX_LOCK_INDIRECTS,
+            });
+        }
+        self.indirects = next;
+        Ok(())
+    }
+
     /// Each parser fn returns its expression **and** that expression's depth,
     /// so the iterative `&`/`|` loops below can hold the tree height without
     /// a second walk (and without any stack of their own).
@@ -665,6 +763,7 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
                 self.bump();
                 let (right, rd) = self.parse_and()?;
                 depth = combine_depth(depth, rd)?;
+                self.count_node()?;
                 left = LockExpr::Or(Box::new(left), Box::new(right));
             } else {
                 return Ok((left, depth));
@@ -680,6 +779,7 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
                 self.bump();
                 let (right, rd) = self.parse_unary()?;
                 depth = combine_depth(depth, rd)?;
+                self.count_node()?;
                 left = LockExpr::And(Box::new(left), Box::new(right));
             } else {
                 return Ok((left, depth));
@@ -697,6 +797,7 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
             self.leave(1);
             let (expr, d) = inner?;
             let depth = combine_depth(d, 0)?;
+            self.count_node()?;
             Ok((LockExpr::Not(Box::new(expr)), depth))
         } else {
             self.parse_primary()
@@ -744,8 +845,10 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
                 LockParseError::EmptyTerm
             });
         }
-        // Every leaf is depth 1.
-        self.classify(raw).map(|e| (e, 1))
+        // Every leaf is depth 1 and costs 1 AST node.
+        let expr = self.classify(raw)?;
+        self.count_node()?;
+        Ok((expr, 1))
     }
 
     /// `#123` directly; anything else (with optional `*`) via the resolver.
@@ -782,7 +885,9 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
                 Some((o, t)) => (o, t.trim().parse::<LockType>()?),
                 None => (rest, LockType::Basic),
             };
-            return Ok(LockExpr::Indirect(self.objref(obj_part)?, lt));
+            let id = self.objref(obj_part)?;
+            self.count_indirect()?;
+            return Ok(LockExpr::Indirect(id, lt));
         }
         if let Some((left, right)) = raw.split_once('^') {
             let name = right.trim();
@@ -1624,5 +1729,150 @@ mod tests {
         // Four hops is one too few to reach the end of a five-link chain.
         assert!(!eval_lock(&w, &e, nick, 4));
         assert!(eval_lock(&w, &e, nick, 5));
+    }
+
+    #[test]
+    fn parse_lock_caps_total_nodes_and_indirect_leaves() {
+        // Exactly MAX_LOCK_INDIRECTS indirect leaves parses and round-trips.
+        let at_limit = std::iter::repeat_n("@me/page", MAX_LOCK_INDIRECTS as usize)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        round_trips(&at_limit);
+
+        // One more indirect leaf is refused at parse time.
+        let over_indirects = std::iter::repeat_n("@me/page", MAX_LOCK_INDIRECTS as usize + 1)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert_eq!(
+            parse_lock(&over_indirects, fake_resolver),
+            Err(LockParseError::TooManyIndirects {
+                max: MAX_LOCK_INDIRECTS,
+            })
+        );
+
+        // A balanced tree of 64 leaves has 64 + 63 = 127 <= MAX_LOCK_NODES (128)
+        // nodes and depth 7 <= MAX_LOCK_EXPR_DEPTH (48): accepted.
+        fn balanced(leaves: usize) -> String {
+            if leaves <= 1 {
+                return "#1".to_string();
+            }
+            let left = leaves / 2;
+            let right = leaves - left;
+            format!("({} | {})", balanced(left), balanced(right))
+        }
+        assert!(parse_lock(&balanced(64), fake_resolver).is_ok());
+
+        // 65 leaves = 65 + 64 = 129 > MAX_LOCK_NODES: refused as TooLarge.
+        assert_eq!(
+            parse_lock(&balanced(65), fake_resolver),
+            Err(LockParseError::TooLarge {
+                max: MAX_LOCK_NODES,
+            })
+        );
+    }
+
+    #[test]
+    fn wide_self_referential_indirect_lock_terminates_fast_and_false() {
+        let (mut w, nick, _sword, _door) = eval_world();
+        // Construct a wide self-referential lock `@me/page | @me/page | ...`
+        // right at the parser's indirect ceiling, AND a programmatic 64-wide
+        // tree that bypasses parse limits (e.g., decoded from legacy storage).
+        let src = std::iter::repeat_n("@me/page", MAX_LOCK_INDIRECTS as usize)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let parsed = parse_lock(&src, |name| (name == "me").then_some(nick)).unwrap();
+        w.get_mut(nick)
+            .unwrap()
+            .locks
+            .insert(LockType::Page, parsed.clone());
+
+        let start = std::time::Instant::now();
+        assert!(!eval_lock(&w, &parsed, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(
+            &w,
+            &LockExpr::Indirect(nick, LockType::Page),
+            nick,
+            MAX_LOCK_DEPTH
+        ));
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "wide self-referential indirect lock must not explode exponentially: {:?}",
+            start.elapsed()
+        );
+
+        // Even an unparsed 64-wide self-referential lock (64^10 without bounds)
+        // terminates almost instantly and fails closed.
+        let mut wide = LockExpr::Indirect(nick, LockType::Page);
+        for _ in 1..64 {
+            wide = LockExpr::Or(
+                Box::new(wide),
+                Box::new(LockExpr::Indirect(nick, LockType::Page)),
+            );
+        }
+        w.get_mut(nick)
+            .unwrap()
+            .locks
+            .insert(LockType::Page, wide.clone());
+        let start = std::time::Instant::now();
+        assert!(!eval_lock(&w, &wide, nick, MAX_LOCK_DEPTH));
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "programmatic 64-wide self-referential lock must terminate fast: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn exponential_indirect_dag_hits_step_budget_and_fails_closed_even_under_not() {
+        // Non-cyclic 10-level binary-branching DAG (each level references the
+        // next 4 times -> 4^10 > 1M evaluations without MAX_LOCK_STEPS).
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        let nodes: Vec<ObjId> = (0..10)
+            .map(|i| {
+                w.create(ObjKind::Thing, &format!("dag{i}"), GOD, Some(LIMBO))
+                    .unwrap()
+            })
+            .collect();
+        // Tail always fails so every OR branch is explored.
+        w.get_mut(nodes[9])
+            .unwrap()
+            .locks
+            .insert(LockType::Basic, LockExpr::Const(false));
+        for pair in nodes.windows(2) {
+            let (here, next) = (pair[0], pair[1]);
+            let mut expr = LockExpr::Indirect(next, LockType::Basic);
+            for _ in 1..4 {
+                expr = LockExpr::Or(
+                    Box::new(expr),
+                    Box::new(LockExpr::Indirect(next, LockType::Basic)),
+                );
+            }
+            w.get_mut(here).unwrap().locks.insert(LockType::Basic, expr);
+        }
+        let root = LockExpr::Indirect(nodes[0], LockType::Basic);
+        let negated_root = LockExpr::Not(Box::new(root.clone()));
+
+        let start = std::time::Instant::now();
+        assert!(!eval_lock(&w, &root, nick, MAX_LOCK_DEPTH));
+        // Exhausted step budget must fail closed even when wrapped in `!`.
+        assert!(!eval_lock(&w, &negated_root, nick, MAX_LOCK_DEPTH));
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "exponential DAG must hit MAX_LOCK_STEPS fast: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn repeated_sibling_indirects_are_not_mistaken_for_a_cycle() {
+        let (w, nick, _sword, door) = eval_world();
+        // `door`'s Enter lock passes for `nick`. Referencing it twice as
+        // siblings is a valid DAG, not a cycle, so both references pass.
+        let expr = LockExpr::And(
+            Box::new(LockExpr::Indirect(door, LockType::Enter)),
+            Box::new(LockExpr::Indirect(door, LockType::Enter)),
+        );
+        assert!(eval_lock(&w, &expr, nick, MAX_LOCK_DEPTH));
     }
 }

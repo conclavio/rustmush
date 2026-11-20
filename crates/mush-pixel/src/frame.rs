@@ -13,13 +13,35 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// A black frame of the given size.
+    /// Maximum single axis accepted by [`Frame::new`] (4K UHD width).
+    pub const MAX_DIM: usize = 4096;
+    /// Maximum total pixel count accepted by [`Frame::new`] (`4096 × 2160`,
+    /// ~25.3 MiB packed RGB), preventing unbounded allocation from hostile or
+    /// miscomputed dimensions without panicking.
+    pub const MAX_PIXELS: usize = 4096 * 2160;
+
+    /// A black frame of the given size, bounded to [`MAX_DIM`](Self::MAX_DIM)
+    /// per axis and [`MAX_PIXELS`](Self::MAX_PIXELS) total pixels.
     #[must_use]
     pub fn new(width: usize, height: usize) -> Frame {
+        let w = width.min(Self::MAX_DIM);
+        let mut h = height.min(Self::MAX_DIM);
+        if w > 0 && h > 0 && w.saturating_mul(h) > Self::MAX_PIXELS {
+            h = (Self::MAX_PIXELS / w).max(1);
+        }
+        let bytes = w
+            .checked_mul(h)
+            .and_then(|px| px.checked_mul(3))
+            .unwrap_or(0);
+        let (width, height) = if bytes == 0 && w > 0 && h > 0 {
+            (0, 0)
+        } else {
+            (w, h)
+        };
         Frame {
             width,
             height,
-            rgb: vec![0; width * height * 3],
+            rgb: vec![0; bytes],
         }
     }
 
@@ -158,5 +180,31 @@ mod tests {
         f.put(4, 2, [0, 0, 1]);
         assert!(seen.insert(f.hash()), "the last byte");
         assert_ne!(Frame::new(3, 5).hash(), Frame::new(5, 3).hash());
+    }
+
+    #[test]
+    fn oversized_dimensions_are_clamped_without_overflow_or_oom() {
+        let huge = Frame::new(usize::MAX, usize::MAX);
+        assert!(huge.width() <= Frame::MAX_DIM);
+        assert!(huge.height() <= Frame::MAX_DIM);
+        assert!(huge.width() * huge.height() <= Frame::MAX_PIXELS);
+        assert_eq!(huge.rgb().len(), huge.width() * huge.height() * 3);
+
+        let hostile = Frame::new(131_068, 87_376);
+        assert_eq!(hostile.width(), Frame::MAX_DIM);
+        assert!(hostile.width() * hostile.height() <= Frame::MAX_PIXELS);
+        assert_eq!(hostile.rgb().len(), hostile.width() * hostile.height() * 3);
+
+        let canvas = Frame::new(2560, 1440);
+        assert_eq!((canvas.width(), canvas.height()), (2560, 1440));
+        assert_eq!(canvas.rgb().len(), 2560 * 1440 * 3);
+
+        let zero = Frame::new(0, 0);
+        assert_eq!((zero.width(), zero.height(), zero.rgb().len()), (0, 0, 0));
+        let zero_w = Frame::new(0, 100);
+        assert_eq!(
+            (zero_w.width(), zero_w.height(), zero_w.rgb().len()),
+            (0, 100, 0)
+        );
     }
 }

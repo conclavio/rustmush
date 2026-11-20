@@ -384,18 +384,31 @@ impl fmt::Display for MemFault {
     }
 }
 
-/// Whether `value` is or holds a FLOAT, at any depth.
+/// Whether `value` is or holds a FLOAT within [`crate::MAX_CONTAINER_DEPTH`].
+///
+/// Bounded to at most `MAX_CONTAINER_DEPTH` (8) levels using scoped
+/// `read_lock` references without cloning `Dynamic` (since `Dynamic::clone`
+/// itself recurses through nested containers in `rhai 1.26.0`), so arbitrarily
+/// deep container trees cannot overflow the stack. Any container nested past
+/// `MAX_CONTAINER_DEPTH` is subsequently rejected as an invalid memory shape
+/// by [`value_of`].
 fn holds_float(value: &Dynamic) -> bool {
-    if value.is_float() {
-        return true;
+    fn scan(value: &Dynamic, remaining_depth: usize) -> bool {
+        if value.is_float() {
+            return true;
+        }
+        if remaining_depth == 0 {
+            return false;
+        }
+        if let Some(items) = value.read_lock::<Array>() {
+            return items.iter().any(|item| scan(item, remaining_depth - 1));
+        }
+        if let Some(map) = value.read_lock::<Map>() {
+            return map.values().any(|item| scan(item, remaining_depth - 1));
+        }
+        false
     }
-    if let Some(items) = value.read_lock::<Array>() {
-        return items.iter().any(holds_float);
-    }
-    if let Some(map) = value.read_lock::<Map>() {
-        return map.values().any(holds_float);
-    }
-    false
+    scan(value, crate::guards::MAX_CONTAINER_DEPTH)
 }
 
 /// One script value as a memory value, or `None` when it has no memory shape.

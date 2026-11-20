@@ -27,6 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 #[derive(Debug, Default)]
 pub struct KillSwitch {
     killed: AtomicBool,
+    armed: AtomicBool,
     wakers: Mutex<[Option<Waker>; 2]>,
 }
 
@@ -51,14 +52,20 @@ impl KillSwitch {
         }
     }
 
-    /// Cut the stream after `delay`, from a task of its own. Harmless when
-    /// the stream is already gone (the task flips a switch nobody reads), so
-    /// every server-initiated disconnect can arm it without checking. Outside
-    /// a tokio runtime (a synchronous unit test) nothing is armed.
+    /// Cut the stream after `delay`, from a task of its own. Idempotent: at
+    /// most one timer task is ever spawned per switch, even under repeated
+    /// disconnect triggers, and calling it on an already-killed switch or
+    /// outside a tokio runtime is a no-op.
     pub fn arm(self: &Arc<Self>, delay: Duration) {
+        if self.is_killed() {
+            return;
+        }
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        if self.armed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let switch = Arc::clone(self);
         rt.spawn(async move {
             tokio::time::sleep(delay).await;
@@ -201,5 +208,25 @@ mod tests {
             .unwrap();
         assert!(r.is_err());
         assert!(switch.is_killed());
+    }
+
+    #[tokio::test]
+    async fn arm_is_idempotent_and_spawns_at_most_one_timer_task() {
+        let switch = KillSwitch::new();
+        assert_eq!(Arc::strong_count(&switch), 1);
+        for _ in 0..1_000 {
+            switch.arm(Duration::from_millis(80));
+        }
+        // Only the single spawned timer task holds an additional Arc reference.
+        assert_eq!(Arc::strong_count(&switch), 2);
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        assert!(switch.is_killed());
+        assert_eq!(Arc::strong_count(&switch), 1);
+
+        // Arming an already-killed switch spawns nothing.
+        let already_killed = KillSwitch::new();
+        already_killed.kill();
+        already_killed.arm(Duration::from_secs(60));
+        assert_eq!(Arc::strong_count(&already_killed), 1);
     }
 }

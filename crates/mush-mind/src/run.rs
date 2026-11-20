@@ -25,7 +25,7 @@ use rhai::{CallFnOptions, Dynamic, EvalAltResult, Map, Scope};
 use crate::cache::Compiled;
 use crate::engine::{self, Sandbox};
 use crate::memory::{self, Limits, MemError, MemFault};
-use crate::{budget, trace};
+use crate::{budget, guards, trace};
 
 /// **One think's input** (doc 17 §6, §7).
 #[derive(Clone, Debug)]
@@ -183,6 +183,7 @@ impl Sandbox {
         budget::begin(think.ops_limit);
         trace::begin();
         engine::refusal_begin();
+        guards::limit_begin();
         // 17b cut M3.1: fail closed — a think asking for more than this
         // engine was built for is refused before it runs, with nothing spent
         // and an empty trace.
@@ -206,13 +207,13 @@ impl Sandbox {
         // no other (`memory::check_held`).
         let held: BTreeSet<String> = decoded.keys().cloned().collect();
         let map = memory::to_map(&decoded);
-        let mut this = Dynamic::from_map(map);
+        let mut this = SafeThis(Dynamic::from_map(map));
         let ast = &think.compiled.ast;
         let args = think.args;
         let called = catch_unwind(AssertUnwindSafe(|| {
             self.engine.call_fn_with_options::<Dynamic>(
                 CallFnOptions::new()
-                    .bind_this_ptr(&mut this)
+                    .bind_this_ptr(&mut this.0)
                     .eval_ast(false),
                 &mut Scope::new(),
                 ast,
@@ -230,6 +231,12 @@ impl Sandbox {
         if let Some(refusal) = engine::refusal_take() {
             return Err(Fault::Type(refusal));
         }
+        // A latched container depth/size limit (raised in formatting paths
+        // where Rhai's `print_with_func` swallows `Err`) ends the think
+        // `limit`, caught or not.
+        if guards::limit_take() {
+            return Err(Fault::Limit);
+        }
         if let Ended::Faulted(fault) = returned {
             return Err(fault);
         }
@@ -237,18 +244,41 @@ impl Sandbox {
         if budget::tripped() {
             return Err(Fault::Ops);
         }
-        let map = this
-            .try_cast::<Map>()
-            .ok_or_else(|| Fault::Type("this is no longer a map".to_owned()))?;
-        let memory =
-            memory::from_map_held(&map, think.limits, &held).map_err(|fault| match fault {
-                MemFault::Float(key) => Fault::Type(trace::line(&key)),
-                MemFault::Shape(error) => Fault::Memory(error),
-            })?;
+        let map = if this.0.is_map() {
+            std::mem::take(&mut this.0)
+                .try_cast::<Map>()
+                .ok_or_else(|| Fault::Type("this is no longer a map".to_owned()))?
+        } else {
+            return Err(Fault::Type("this is no longer a map".to_owned()));
+        };
+        let memory = match memory::from_map_held(&map, think.limits, &held) {
+            Ok(mem) => {
+                guards::drop_map_iteratively(map);
+                mem
+            }
+            Err(fault) => {
+                guards::drop_map_iteratively(map);
+                return Err(match fault {
+                    MemFault::Float(key) => Fault::Type(trace::line(&key)),
+                    MemFault::Shape(error) => Fault::Memory(error),
+                });
+            }
+        };
         Ok(Outcome {
             memory: memory::encode(&memory),
             ops,
             fee,
         })
+    }
+}
+
+/// RAII guard that iteratively dismantles `this` on drop (normal return,
+/// fault, or panic unwind) so deeply nested `Array`/`Map` trees never overflow
+/// the call stack in `Drop` (CRIT-7 defense-in-depth).
+struct SafeThis(Dynamic);
+
+impl Drop for SafeThis {
+    fn drop(&mut self) {
+        guards::drop_dynamic_iteratively(std::mem::take(&mut self.0));
     }
 }

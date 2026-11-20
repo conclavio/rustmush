@@ -21,8 +21,8 @@ use smol_str::SmolStr;
 
 use crate::api::{JobsApi, OpenJob, add_comment, job_doc, note_doc, open_job, queue_spec};
 use crate::data::{
-    Approval, Job, JobComment, JobStatus, JobsState, NS, Note, REQ_QUEUE, canon_category, fmt_ago,
-    note_key, validate_terminal_comment,
+    Approval, Job, JobComment, JobStatus, JobsState, NS, Note, REQ_QUEUE, fmt_ago, note_key,
+    validate_note_category, validate_terminal_comment,
 };
 
 /// Minimum role treated as "staff" for character notes.
@@ -685,19 +685,18 @@ fn cmd_note(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let lhs = ctx.args.lhs().to_string();
     let rhs = ctx.args.rhs().map(str::to_string);
-    let (char_name, category) = match lhs.split_once('/') {
-        Some((c, cat)) => (c.trim().to_string(), Some(canon_category(cat))),
+    let (char_name, raw_category) = match lhs.split_once('/') {
+        Some((c, cat)) => (c.trim().to_string(), Some(cat)),
         None => (lhs.trim().to_string(), None),
     };
     if char_name.is_empty() {
         return Err(CmdError::msg("Usage: +note <char>[/<category>][=<text>]"));
     }
     let who = resolve_char(ctx.w, ctx.actor, &char_name)?;
-    if let Some(cat) = &category
-        && cat.is_empty()
-    {
-        return Err(CmdError::msg("Which category?"));
-    }
+    let category = match raw_category {
+        Some(cat) => Some(validate_note_category(cat).map_err(CmdError::msg)?),
+        None => None,
+    };
 
     if approve {
         return note_approve(ctx, who, category, rhs);

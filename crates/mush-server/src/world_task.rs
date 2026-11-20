@@ -474,6 +474,20 @@ pub enum WorldMsg {
         /// `true` = still held.
         reply: oneshot::Sender<Result<bool, WorldReadError>>,
     },
+    /// Re-check a staff role (and optionally that `actor` is not outranked by
+    /// any character in `targets`, e.g. every character on a target account)
+    /// on the world loop before executing a queued privileged staff op.
+    RecheckStaffRole {
+        /// The requesting actor whose role is re-verified.
+        actor: ObjId,
+        /// Minimum required staff role (typically `Role::Wizard`).
+        min_role: Role,
+        /// Target characters whose ranks must not exceed `actor` (and must not
+        /// include `GOD` unless `actor == GOD`).
+        targets: Vec<ObjId>,
+        /// `true` = still authorized.
+        reply: oneshot::Sender<Result<bool, WorldReadError>>,
+    },
     /// Ordering barrier: replied to once every message queued before it has
     /// been processed *and its output delivered*. The QUIT flow uses this to
     /// flush a quitting player's in-flight output before detaching them.
@@ -804,6 +818,33 @@ impl WorldHandle {
                 privilege,
                 subject,
                 command,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return Err(WorldReadError::Unavailable);
+        }
+        rx.await.unwrap_or(Err(WorldReadError::Unavailable))
+    }
+
+    /// Re-check a staff role (and optionally target/account rank bounds) on
+    /// the world loop before executing a queued off-loop staff op. `Ok(false)`
+    /// means the caller was demoted or outranked; `Err` means the world could
+    /// not answer and callers must fail closed.
+    pub async fn recheck_staff_role(
+        &self,
+        actor: ObjId,
+        min_role: Role,
+        targets: Vec<ObjId>,
+    ) -> Result<bool, WorldReadError> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(WorldMsg::RecheckStaffRole {
+                actor,
+                min_role,
+                targets,
                 reply,
             })
             .await
@@ -3562,6 +3603,9 @@ async fn run(
     // Store-backed staff operations drained beside a local operation remain
     // ordered behind any commit that local operation starts.
     let mut deferred_staff_ops: Vec<StaffOp> = Vec::new();
+    // Per-actor in-flight tracker for the bounded `staff_ops` executor queue
+    // so no single actor can monopolize `STAFF_OPS_CAPACITY`.
+    let staff_in_flight = StaffInFlight::default();
     // Whether the writer's control mailbox is still open (disabled once the
     // writer is gone and its final latched facts have been drained, so the
     // closed wake channel does not busy-loop the select).
@@ -4313,6 +4357,21 @@ async fn run(
                                 command,
                             );
                             let _ = reply.send(Ok(held));
+                            StepOutcome::Continue
+                        }
+                        WorldMsg::RecheckStaffRole {
+                            actor,
+                            min_role,
+                            targets,
+                            reply,
+                        } => {
+                            let allowed = crate::staff::check_staff_role(
+                                &engine.world,
+                                actor,
+                                min_role,
+                                &targets,
+                            );
+                            let _ = reply.send(Ok(allowed));
                             StepOutcome::Continue
                         }
                         WorldMsg::LegalActions {
@@ -5854,12 +5913,13 @@ async fn run(
         let staff_shutdown = if pending_commit.is_none() {
             run_staff_ops(
                 &deps,
+                &engine.world,
                 &gateway,
                 &writer,
                 &staff_ops,
+                &staff_in_flight,
                 std::mem::take(&mut deferred_staff_ops),
             )
-            .await
         } else {
             false
         };

@@ -86,6 +86,15 @@ pub struct CellSize {
 }
 
 impl CellSize {
+    /// Minimum accepted cell pixel width (guards against extreme aspect amplification).
+    pub const MIN_WIDTH: u16 = 4;
+    /// Maximum accepted cell pixel width (covers high-DPI zoomed terminal fonts).
+    pub const MAX_WIDTH: u16 = 64;
+    /// Minimum accepted cell pixel height (guards against extreme aspect amplification).
+    pub const MIN_HEIGHT: u16 = 6;
+    /// Maximum accepted cell pixel height (covers high-DPI zoomed terminal fonts).
+    pub const MAX_HEIGHT: u16 = 128;
+
     /// The VT340's cell, and Windows Terminal's virtual one: what a terminal
     /// that did not answer is taken to have.
     pub const DEFAULT: CellSize = CellSize {
@@ -93,19 +102,35 @@ impl CellSize {
         height: 20,
     };
 
+    const fn clamp_u16(value: u16, min: u16, max: u16) -> u16 {
+        if value < min {
+            min
+        } else if value > max {
+            max
+        } else {
+            value
+        }
+    }
+
     /// Build a [`CellSize`] from non-zero pixel dimensions (e.g. derived from
-    /// SSH `pty-req` / `window-change` pixel width and height).
+    /// SSH `pty-req` / `window-change` pixel width and height), clamped to
+    /// [`MIN_WIDTH`](Self::MIN_WIDTH)..=[`MAX_WIDTH`](Self::MAX_WIDTH) ×
+    /// [`MIN_HEIGHT`](Self::MIN_HEIGHT)..=[`MAX_HEIGHT`](Self::MAX_HEIGHT).
     #[must_use]
     pub const fn from_px(width: u16, height: u16) -> Option<CellSize> {
         if width > 0 && height > 0 {
-            Some(CellSize { width, height })
+            Some(CellSize {
+                width: Self::clamp_u16(width, Self::MIN_WIDTH, Self::MAX_WIDTH),
+                height: Self::clamp_u16(height, Self::MIN_HEIGHT, Self::MAX_HEIGHT),
+            })
         } else {
             None
         }
     }
 
     /// The report's parameters as the key parser holds them, `"6;20;10"`;
-    /// `None` for any other `CSI … t` report or a zero side.
+    /// `None` for any other `CSI … t` report or a zero side. Non-zero values
+    /// are clamped to the sane cell-pixel bounds of [`from_px`](Self::from_px).
     #[must_use]
     pub fn parse(params: &str) -> Option<CellSize> {
         let mut fields = params.split(';');
@@ -114,7 +139,10 @@ impl CellSize {
         }
         let height: u16 = fields.next()?.parse().ok()?;
         let width: u16 = fields.next()?.parse().ok()?;
-        (width > 0 && height > 0 && fields.next().is_none()).then_some(CellSize { width, height })
+        if fields.next().is_some() {
+            return None;
+        }
+        Self::from_px(width, height)
     }
 }
 
@@ -307,6 +335,55 @@ mod tests {
         assert!(
             probe.ends_with("\x1b\\\x1b[16t\x1b[?u\x1b[>0q\x1b[c"),
             "{probe:?}"
+        );
+    }
+
+    #[test]
+    fn cell_size_clamps_extreme_values_and_rejects_zero() {
+        assert_eq!(CellSize::from_px(0, 10), None);
+        assert_eq!(CellSize::from_px(10, 0), None);
+        assert_eq!(
+            CellSize::from_px(1, u16::MAX),
+            Some(CellSize {
+                width: CellSize::MIN_WIDTH,
+                height: CellSize::MAX_HEIGHT,
+            })
+        );
+        assert_eq!(
+            CellSize::from_px(u16::MAX, 1),
+            Some(CellSize {
+                width: CellSize::MAX_WIDTH,
+                height: CellSize::MIN_HEIGHT,
+            })
+        );
+        assert_eq!(
+            CellSize::parse("6;65535;1"),
+            Some(CellSize {
+                width: CellSize::MIN_WIDTH,
+                height: CellSize::MAX_HEIGHT,
+            })
+        );
+        assert_eq!(
+            CellSize::parse("6;1;65535"),
+            Some(CellSize {
+                width: CellSize::MAX_WIDTH,
+                height: CellSize::MIN_HEIGHT,
+            })
+        );
+        // Common small and HiDPI cells stay untouched.
+        assert_eq!(
+            CellSize::from_px(8, 16),
+            Some(CellSize {
+                width: 8,
+                height: 16
+            })
+        );
+        assert_eq!(
+            CellSize::from_px(15, 28),
+            Some(CellSize {
+                width: 15,
+                height: 28
+            })
         );
     }
 }

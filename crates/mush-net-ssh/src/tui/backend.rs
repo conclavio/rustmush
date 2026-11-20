@@ -36,9 +36,9 @@ pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m";
 /// carries up to `u16::MAX` each) would OOM-abort the shared server process on
 /// `@tui` or the next resize paint. Clamp well beyond any real terminal so the
 /// allocation stays bounded (invariant T4).
-const MAX_WIDTH: u16 = 400;
+const MAX_WIDTH: u16 = crate::caps::MAX_WIDTH;
 /// Upper bound on reported terminal rows; see [`MAX_WIDTH`].
-const MAX_HEIGHT: u16 = 200;
+const MAX_HEIGHT: u16 = crate::caps::MAX_HEIGHT;
 
 /// A ratatui backend that accumulates VT100 output bytes.
 ///

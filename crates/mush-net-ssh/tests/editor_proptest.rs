@@ -17,8 +17,12 @@ use proptest::prelude::*;
 mod key_parser;
 
 /// Feed `bytes` to a fresh editor, split at the given chunk boundaries, and
-/// return `(submitted lines, all echo bytes)`.
-fn drive(bytes: &[u8], chunks: &[usize], mode: EchoMode) -> (Vec<String>, Vec<u8>) {
+/// return `(submitted lines, final line, final cursor, all echo bytes)`.
+fn drive_full(
+    bytes: &[u8],
+    chunks: &[usize],
+    mode: EchoMode,
+) -> (Vec<String>, String, usize, Vec<u8>) {
     let mut ed = LineEditor::new();
     ed.set_mode(mode);
     let mut echo = Vec::new();
@@ -40,6 +44,13 @@ fn drive(bytes: &[u8], chunks: &[usize], mode: EchoMode) -> (Vec<String>, Vec<u8
         echo.extend_from_slice(&out);
         pos = end;
     }
+    (lines, ed.line(), ed.cursor(), echo)
+}
+
+/// Feed `bytes` to a fresh editor, split at the given chunk boundaries, and
+/// return `(submitted lines, all echo bytes)`.
+fn drive(bytes: &[u8], chunks: &[usize], mode: EchoMode) -> (Vec<String>, Vec<u8>) {
+    let (lines, _, _, echo) = drive_full(bytes, chunks, mode);
     (lines, echo)
 }
 
@@ -115,9 +126,10 @@ proptest! {
         assert_invariants(&bytes, &chunks, EchoMode::Normal);
     }
 
-    /// Chunk boundaries must not change the parse: `feed` is defined as a
-    /// per-byte fold, so splitting a stream anywhere yields the same submitted
-    /// lines and the same echo bytes as feeding it whole. This guards the
+    /// Chunk boundaries must not change the parse: splitting a stream anywhere
+    /// yields the same submitted lines, final edit buffer, and cursor position
+    /// as feeding it whole (while per-`feed` redraw coalescing may emit fewer
+    /// redundant redraws when edits arrive in one chunk). This guards the
     /// carried state (pending UTF-8 bytes, escape state, CRLF swallow) across
     /// `feed` calls.
     #[test]
@@ -127,9 +139,15 @@ proptest! {
     ) {
         let mut chunks: Vec<usize> = splits.into_iter().map(|s| s % (bytes.len() + 1)).collect();
         chunks.sort_unstable();
-        let whole = drive(&bytes, &[], EchoMode::Normal);
-        let split = drive(&bytes, &chunks, EchoMode::Normal);
-        prop_assert_eq!(whole, split);
+        let (whole_lines, whole_buf, whole_cursor, whole_echo) =
+            drive_full(&bytes, &[], EchoMode::Normal);
+        let (split_lines, split_buf, split_cursor, split_echo) =
+            drive_full(&bytes, &chunks, EchoMode::Normal);
+        prop_assert_eq!(whole_lines, split_lines);
+        prop_assert_eq!(whole_buf, split_buf);
+        prop_assert_eq!(whole_cursor, split_cursor);
+        prop_assert!(std::str::from_utf8(&whole_echo).is_ok());
+        prop_assert!(std::str::from_utf8(&split_echo).is_ok());
     }
 
     /// The character cap holds no matter how much is thrown at it, and a
