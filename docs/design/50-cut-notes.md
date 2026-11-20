@@ -81,12 +81,16 @@ the haul; the 35 km breach records the pilot, not the hull, and writes a ruling.
   and `+haul/accept` of 51 t, all of it held. The ruling lands, the hold is (0, 0) and the
   ledger reads `(2, Seized)`. The arm closes the job, and the contract is `Expired`. Before the
   unit the ruling did not land.
-- `voyage::cr_burning_past_the_picket_is_a_run_ruled_with_the_pilot_as_its_officer`: the ship
-  is moved 40 km from the corvette. The tick submits one customs ruling, as the pilot. It lands
+- `voyage::cr_burning_past_the_picket_is_a_run_ruled_with_the_pilot_as_its_officer`: she burns
+  flat out away from the corvette under her own drive (tests may not write the space book). Past
+  35 km the tick submits one customs ruling, as the pilot. It lands
   as `Ran` with the pilot as actor and principal, the corvette is hostile and the front advances
   once. Before the unit no ruling was filed.
 - Each tacsim story was mutation-checked (the fix taken out, the story fails): `read_held` back
   to `read_pool` in `hold_reading`; `seize` handed no holds; the tick's old direct record.
+- Pinned sites moved with the change: the matter census (`domain_economy` `mill::sm12a_only_the_clerk_…`)
+  now finds the seizure's `seize` and `consume_products` in place of its `.debit(`, and the bot's
+  haul table has rows for `TOLD_SEIZED` and `TOLD_HAULER_SEIZED`.
 - Re-run beside them: `voyage::sfr26c_…`, `voyage::sfr12_…`, `voyage::sfr6_…`,
   `domain_economy` `ex6_haul::`, and the tacsim lib's haul, customs and picket tests.
 

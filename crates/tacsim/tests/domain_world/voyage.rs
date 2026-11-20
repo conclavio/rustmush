@@ -13661,54 +13661,80 @@ fn cr_a_seizure_takes_cargo_under_a_hauls_hold_and_fails_the_haul() {
     );
 }
 
+/// The direction from the customs corvette to `hull`'s ship in her bubble, scaled to a thousand
+/// on its longest axis, and how far apart they are, metres (read only); `None` once her bubble
+/// or its picket is gone.
+fn from_the_corvette(tw: &TestWorld, hull: ObjId) -> Option<([i64; 3], i64)> {
+    let active = tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()?
+        .active_for_hull(hull)?;
+    let corvette = &active.picket.as_ref()?.corvette_ship_id;
+    let at = active.bubble.ships[corvette].pos_m;
+    let her = active.bubble.ships[active.carrier_ship_id_for(hull)].pos_m;
+    let d = [her[0] - at[0], her[1] - at[1], her[2] - at[2]];
+    let long = d.iter().map(|v| v.abs()).max().unwrap_or(0).max(1);
+    let away = if d == [0, 0, 0] {
+        [1_000, 0, 0]
+    } else {
+        [
+            d[0] * 1_000 / long,
+            d[1] * 1_000 / long,
+            d[2] * 1_000 / long,
+        ]
+    };
+    Some((away, tacsim::space::distance_3d_m(her, at)))
+}
+
 /// **Doc 50 unit CR, the 35 km breach (doc 50a A-10e).** A hull that burns past
 /// [`tacsim::space::PICKET_RUN_BOUNDARY_M`] uncleared ran the picket as one that types
 /// `+helm/run` does. Before the unit the tick recorded the incident itself, naming the hull as
 /// its own pilot, and wrote no ruling. Now it files a `Ran` ruling with her pilot as its
-/// officer, and the incident and the corvette's turn follow the landed row.
+/// officer, and the incident and the corvette's turn follow the landed row. She burns out
+/// past the boundary under her own drive.
 #[test]
 fn cr_burning_past_the_picket_is_a_run_ruled_with_the_pilot_as_its_officer() {
     use tacsim::arena::party::Relation;
     use tacsim::space::{CustomsFinding, PicketInspectionStatus};
     let (mut rig, pilot, hull, _) = hove_to_at_the_picket("Breacher", 0);
     let front_before = customs_front_filled(&rig.tw);
-    {
-        let book = rig
-            .tw
-            .world_mut()
-            .module_state_mut::<tacsim::space::SpaceBubbleBook>()
-            .expect("SpaceBubbleBook");
-        let active = book.active_for_hull_mut(hull).expect("her bubble");
-        let corvette = active
-            .picket
-            .as_ref()
-            .expect("the picket")
-            .corvette_ship_id
-            .clone();
-        let carrier = active.carrier_ship_id_for(hull).to_owned();
-        let at = active.bubble.ships[&corvette].pos_m;
-        let ship = active.bubble.ships.get_mut(&carrier).expect("her ship");
-        ship.pos_m = [
-            at[0] + tacsim::space::PICKET_RUN_BOUNDARY_M + 5_000,
-            at[1],
-            at[2],
-        ];
-    }
+    // Burn straight away from the corvette, flat out, until she is past the boundary.
+    let (away, gap) = from_the_corvette(&rig.tw, hull).expect("hove to in her bubble");
+    let burn = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+helm/thrust 1000 {} {} {} force",
+            away[0], away[1], away[2]
+        ),
+    );
+    assert!(burn.contains("Helm thrust set"), "{burn}");
     let mut landed = false;
-    for _ in 0..10 {
+    let mut last_gap = gap;
+    for _ in 0..900 {
         let (_, submitted) = one_second(&mut rig, pilot);
         for submit in &submitted {
             if is_customs(submit) {
                 assert_eq!(submit.actor, pilot, "the ruling is the pilot's");
                 land(&mut rig, submit).expect("the run's ruling lands");
                 landed = true;
+            } else {
+                land_quietly(&mut rig, std::slice::from_ref(submit));
             }
         }
         if landed {
             break;
         }
+        match from_the_corvette(&rig.tw, hull) {
+            Some((_, gap)) => last_gap = gap,
+            None => break,
+        }
     }
-    assert!(landed, "the breach files a customs ruling");
+    assert!(
+        landed,
+        "the breach files a customs ruling (last {last_gap} m from the corvette, boundary {} m)",
+        tacsim::space::PICKET_RUN_BOUNDARY_M
+    );
     let _ = one_second(&mut rig, pilot);
     let row = landed_rulings(&rig, hull);
     assert_eq!(row.len(), 1);
