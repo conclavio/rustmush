@@ -18,7 +18,7 @@ use mush_inventory::LotId;
 
 use crate::driving_rig::{
     Rig, advance_to, board, cid, file_and_launch, hold_vault_of, land_quietly, load, port_map,
-    prospector, run, seed_pool, stocked,
+    prospector, run, seed_pool, station_room, stocked, teleport,
 };
 
 const QTY: u64 = 10;
@@ -80,6 +80,11 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     hop(&mut rig, pilot, hull, "stickney");
     load(&mut rig, &row, 20, 4, 0x0f53);
     hop(&mut rig, pilot, hull, "isidis");
+    // Ashore, at the Concession's market.
+    let ashore = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(!ashore.contains("Usage"), "{ashore}");
+    let market = station_room(&rig.tw, "isidis_port", "room.i03_market");
+    teleport(&mut rig.tw, pilot, market);
 
     // Under the Freeport: nothing levied.
     let before = (
