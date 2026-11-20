@@ -1257,8 +1257,9 @@ pub const DEBT_NAMESPACES: &[&str] = &[DEBT_NAMESPACE];
 
 /// **The sanction keys `+debts` reads beside them** (doc 42 cut CR.2, Q-42-7): a captive's
 /// release fee, a one-shot `Sanction` keyed `release:<captive>:<due>`
-/// (`crate::field::crew::release_key`), levied by a port authority's clerk.
-pub const DEBT_SANCTION_PREFIXES: &[&str] = &["release:"];
+/// (`crate::field::crew::release_key`), levied by a port authority's clerk; and the Registry
+/// mind's inspection fines, keyed `hull/<hull>/inspection/<seq>` (doc 50 unit LW.4, Q-50-40).
+pub const DEBT_SANCTION_PREFIXES: &[&str] = &["release:", "hull/"];
 
 /// **The ruleset namespace prefixes `+debts` reads beside [`DEBT_NAMESPACES`]** (doc 48e, 48d
 /// H-13 (d)): a port's berth arrears and a locker's, each keyed by its port and hull or player,

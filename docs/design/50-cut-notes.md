@@ -820,7 +820,95 @@ Not built.
 
 ## LW.4
 
-Not built.
+**Survey** (at `42b4c9f91`, #727's head):
+- **Standing.** `mush_faction::record_standing` writes a delta under a stable cause, once.
+  `public_standing` reads the score and band. Nothing in the law wrote standing.
+- **`+debts`.** It read this layer's debts, the berth and locker arrears, and the release fees
+  (`DEBT_SANCTION_PREFIXES = ["release:"]`). The Registry mind's inspection fines are sanctions
+  keyed `hull/<hull>/inspection/<seq>`, so `+debts` never listed them.
+- **The record.** LW.2's `tacsim:offense:*` rows carry the kind, the evidence, the proof and the
+  fine's obligation. No verb showed them to the offender, and no notice was sent when one opened.
+- **The license desk.** `+license/buy` checked the gateway account, its record, the entitlement
+  and the funds. Nothing read the law.
+
+**Built:**
+1. **The standing loss (`crate::port::record`, Q-50-69, provisional sizes).** It is recorded with
+   the polity that proved the offense, under a cause made of the offense's key and evidence, so a
+   retry records it once.
+   - A sale proven by a party's report (LW.3's `RestrictedSale` or `RestrictedPurchase`): −5.
+   - Running the picket (`+helm/run`, the `Ran` finding): −10 to the pilot, with the polity of the
+     picket's fine payee (`space::duty::fine_payee`).
+   - An audit's possession finding paid at once: nothing. Not paid at once: −5.
+   - Standing never decays, and paying a fine restores nothing (Q-50-42).
+2. **The trading restriction (`record::restriction`, Q-50-39).** It is in force while the actor's
+   standing with a polity is −10 or lower, or a fine on their record there is unpaid (`Active`,
+   `Grace` or `Delinquent`).
+   - **The board.** `port::law::may_trade` refuses a restricted good to a restricted character at
+     a venue that polity holds, even with both papers.
+   - **The license.** `+license/buy` refuses when any character on the buyer's gateway account is
+     under the restriction of the license port's holder (`record::account_barred`; the bar binds
+     the account, Q-50-68).
+   - Nothing holds a character (Q-42-7).
+3. **The notice (Q-50-40).** `offense::record_offense` tells a character offender at once when a
+   new row opens: which polity recorded it and what. It never names a reporter.
+4. **`+record` (Q-50-40, Q-50-70).** A pure read of the actor's own record:
+   - each proven offense, the polity that proved it, and the kind of evidence (a vacated claim, a
+     witness's report, a party's report of a receipt, a port audit), never who reported;
+   - its fine: paid, due with its grace in IC and in real hours, or past its grace;
+   - each restriction in force and what lifts it (paying fine #N, or standing rising above −10
+     through lawful work);
+   - the actor's receipts of private sales of restricted goods;
+   - a core under a live Registry impound on a hull the actor holds title to.
+   - It has a `legacy-handlers.toml` row (read-only).
+5. **`+debts` lists the Registry mind's fines** (`DEBT_SANCTION_PREFIXES` gains `hull/`), and
+   `+debts/pay` pays them.
+6. **A text fix to LW.3's fine levied when proven**: it read "it holds the your ship" and now
+   reads "it holds the ship".
+
+**Tests:**
+- `domain_economy` `lw4_record::lw4_an_unpaid_fine_restricts_until_it_is_paid`:
+  - A prospector with no money holds 6 t of strategic ore with a license and no claim. A staff
+    audit fines her 3,000 cr; she is told at once and cannot pay. She loses 5 standing and is
+    under the Freeport's restriction.
+  - Holding both papers now, the board still refuses her strategic ore, and `+license/buy go` is
+    refused.
+  - `+record` shows the offense, the port audit, the fine with its grace, and that paying the
+    fine lifts the restriction. `+debts` lists the fine.
+  - Paid through `+debts/pay`, the restriction lifts and the board buys from her. Her standing
+    stays at −5.
+- `domain_world` `voyage::sfr9_…`: running the picket leaves the pilot at −10 with the picket's
+  polity, under its restriction.
+- `domain_field` `ic_sortie_surface::m8d_the_registry_fines_the_holder_the_inspection_recorded`:
+  `+debts` lists the levied fine.
+- `tacsim` lib `record::tests`: the sizes against the band (one sale does not restrict; two do,
+  as does one run).
+- Mutation-checked, each failing its story: the board ignoring the restriction; the license desk
+  ignoring it; an unpaid fine not restricting; no notice; running the picket costing nothing;
+  `+debts` without the `hull/` prefix.
+- Re-run beside them:
+  - `domain_economy` `lw3_law_audit::`, `lw1_restricted_goods::`, `lw2_offense_record::`,
+    `port_security_rs7::`, `l2_title::`, `in11_matter::`, `plumbing::sm5_`, `coop::port_trade_`,
+    `claims::` and `mill::sm12a_only`;
+  - `domain_world` `voyage::lw5_` and `cr_`;
+  - `domain_field` `field_rs5::` and `crew_custody::` (`+debts`' other debts);
+  - the tacsim lib's record, audit, offense, security, law, license and retrieval tests.
+
+**Divergences:**
+- **An audit's finding not paid at once costs −5.** Q-50-69 names only the paid case (nothing).
+  The smallest loss in the table is taken for the unpaid one.
+- **"Below neutral" is −10 or lower**, the unfriendly band's top, read off the doc 47 bands.
+- **The license bar also refuses an extension.** Q-50-39 says no new license; a restricted
+  actor's renewal is treated as one.
+- **The run's polity is the picket's fine payee's** (the terms row's payee, else the license's
+  issuer), the polity whose terms the picket enforces.
+- **`+record` lists restrictions over every polity the actor has a record or a standing with.**
+
+**Not built:**
+- **The monthly lawful-work grant** that earns standing back (Q-50-69). It belongs with the OP
+  chain's producers, which have not landed.
+- **Appeal** (Q-50-41: none) and **decay** (Q-50-42: none), as ruled.
+- **An organization's restriction.** Organizations have no standing band; an organization's
+  unpaid fine holds its hull (LW.2) but bars no trade.
 
 ## LW.5
 

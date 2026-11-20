@@ -31,7 +31,7 @@ use crate::driving_rig::{
 const CERES: &str = "ceres_port";
 
 /// A live registered claim on the first strategic rock, held by `who` (a typed record).
-fn seed_strategic_claim(rig: &mut crate::driving_rig::Rig, who: ObjId) {
+pub(crate) fn seed_strategic_claim(rig: &mut crate::driving_rig::Rig, who: ObjId) {
     let (cluster, letter) = tacsim::space::mining::all_orbital_clusters(rig.tw.world())
         .into_iter()
         .find_map(|cluster| {
@@ -85,7 +85,7 @@ fn seed_strategic_claim(rig: &mut crate::driving_rig::Rig, who: ObjId) {
 }
 
 /// `who`'s available credit, minor units.
-fn credit(rig: &crate::driving_rig::Rig, who: ObjId) -> i64 {
+pub(crate) fn credit(rig: &crate::driving_rig::Rig, who: ObjId) -> i64 {
     let account = tacsim::port::credit::own_account(rig.tw.world(), who)
         .expect("an account")
         .id;
@@ -98,7 +98,7 @@ fn credit(rig: &crate::driving_rig::Rig, who: ObjId) -> i64 {
 }
 
 /// The Freeport's record of `who`.
-fn freeport_record(
+pub(crate) fn freeport_record(
     rig: &crate::driving_rig::Rig,
     who: ObjId,
 ) -> Option<tacsim::offense::OffenseRecord> {

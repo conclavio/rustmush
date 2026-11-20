@@ -1125,6 +1125,23 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
             )
         }
         CustomsFinding::Ran => {
+            // Doc 50 unit LW.4 (Q-50-69): running the picket costs the pilot standing with the
+            // polity whose terms it enforces.
+            if let Some(polity) = super::duty::fine_payee(ctx.w, hull)
+                .and_then(|(org, _, _)| crate::polity::polity_of_org(ctx.w, org))
+            {
+                crate::port::record::standing_loss(
+                    ctx,
+                    ruling.actor,
+                    polity,
+                    crate::port::record::RUN_STANDING,
+                    &format!(
+                        "tacsim.law/{}/{}/run/{}/{}",
+                        polity.0, ruling.actor.0, hull.0, ruling.seq
+                    ),
+                    "ran the picket",
+                );
+            }
             let front_raw =
                 super::picket::record_ran_the_picket_incident(ctx, ruling.principal, hull)
                     .map(|f| f.0);

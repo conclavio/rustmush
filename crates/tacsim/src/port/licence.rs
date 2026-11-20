@@ -785,6 +785,16 @@ fn plan_buy(ctx: &Ctx<'_>) -> Result<BuyPlan, String> {
     let Some(account) = gateway_account(w, actor) else {
         return Err(LICENCE_NO_MATCH.to_owned());
     };
+    // Doc 50 unit LW.4 (Q-50-39, Q-50-68): the Registry issues no new license to an account
+    // any character of which is under its port holder's restriction.
+    if let Some(polity) = crate::port::market::ports(w)
+        .into_iter()
+        .find(|(_, d, _)| d.licence.is_some())
+        .and_then(|(entry, _, _)| crate::offense::jurisdiction_at(w, &entry))
+        && crate::port::record::account_barred(w, actor, polity)
+    {
+        return Err(crate::port::record::license_refusal(w, polity));
+    }
     // 2. The account's record.
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Err(NOT_ENABLED.to_owned());

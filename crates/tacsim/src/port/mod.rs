@@ -203,6 +203,8 @@ pub mod price;
 pub mod proceeds;
 pub mod readiness;
 pub mod recall;
+// Doc 50 unit LW.4: the standing loss, the trading restriction and `+record`.
+pub mod record;
 pub mod refit;
 pub(crate) mod relationships;
 // Doc 50 unit LW.5 (Q-50-44): seized goods go to the enforcing authority, which offers them.
