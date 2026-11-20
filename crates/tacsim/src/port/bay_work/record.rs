@@ -84,6 +84,22 @@ pub enum Right {
     Retrieval,
 }
 
+/// **The pinned terms of a bay order's fee contract** (security hardening CRIT-19): recorded
+/// when the order is taken so `finish()` and `complete()` reconstruct and assert exact
+/// `ConsentSurface` equality before signing as the facility operator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeeContractTerms {
+    /// Payer account (`AccountId.0`).
+    pub payer: u64,
+    /// Facility operator org (`OrgId.0`).
+    pub operator: u64,
+    /// Facility operator payout account (`AccountId.0`).
+    pub operator_account: u64,
+    /// Exact real-UTC deadline stamped into `TypedCondition::Before` and `consent.deadline`.
+    pub deadline_real_s: i64,
+}
+
 /// **One repair order** (Q-36-32, Q-36-40).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,6 +167,10 @@ pub struct BayOrder {
     /// Q-41-5); `None` while it runs. Resumed, the order is due that long after.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<i64>,
+    /// **Pinned fee contract parameters** (CRIT-19): used to verify the exact `ConsentSurface`
+    /// before the operator signs. Omitted when no fee contract was filed (or on legacy orders).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_terms: Option<FeeContractTerms>,
 }
 
 /// **One hull's bay record.**

@@ -30,11 +30,15 @@ namespace TacSim.Net
     {
         public const int MaxInFlightPackRequests = 4;
         public const int MaxPackAttempts = 3;
+        public const int MaxPackBytes = 2 * 1024 * 1024;
+        public const long MaxTotalCacheBytes = 64L * 1024L * 1024L;
+        public const int MaxCachedPacks = 256;
         private const float MinBatchIntervalSec = 0.45f;
         private const float RequestRetryTimeoutSec = 5.0f;
 
         private string _cacheRootDir;
         private readonly Dictionary<string, string> _localDigests = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _localByteSizes = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly Dictionary<string, (string sha256, string json)> _cachedPackPayloads =
             new Dictionary<string, (string, string)>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _manifestPinnedDigests = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -61,6 +65,18 @@ namespace TacSim.Net
 
         public bool IsSyncComplete => _manifestReceived && _pendingPacks.Count == 0 && _inFlightPacks.Count == 0 && _failedPackIds.Count == 0;
         public int PendingPackCount => _pendingPacks.Count + _inFlightPacks.Count;
+        public int CachedPackCount => _localDigests.Count;
+
+        public long CachedTotalBytes
+        {
+            get
+            {
+                long total = 0;
+                foreach (var kv in _localByteSizes)
+                    total += kv.Value;
+                return total;
+            }
+        }
 
         private static void SafeLogWarn(string msg)
         {
@@ -144,19 +160,21 @@ namespace TacSim.Net
             return changed;
         }
 
-        private static string SanitizeFileSlug(string raw)
+        /// <summary>
+        /// Collision-free, OS-safe cache filename keyed by the SHA-256 hex digest of <paramref name="id"/>.
+        /// Prevents slug collisions (e.g. <c>a/b</c> vs <c>a_b</c>), path traversal, and Windows reserved device names (<c>CON</c>, <c>NUL</c>, etc.).
+        /// </summary>
+        public static string CacheFileNameForPackId(string id)
         {
-            if (string.IsNullOrWhiteSpace(raw)) return "default";
-            var sb = new StringBuilder(raw.Length);
-            for (int i = 0; i < raw.Length; i++)
-            {
-                char c = raw[i];
-                if (char.IsLetterOrDigit(c) || c == '.' || c == '_' || c == '-')
-                    sb.Append(c);
-                else
-                    sb.Append('_');
-            }
-            return sb.ToString();
+            return ComputeSha256Hex(id ?? string.Empty) + ".json";
+        }
+
+        private static string ComputeHostCacheDirName(string normalizedBaseUrl)
+        {
+            string key = "local";
+            if (!string.IsNullOrWhiteSpace(normalizedBaseUrl) && Uri.TryCreate(normalizedBaseUrl, UriKind.Absolute, out Uri u))
+                key = $"{u.Scheme.ToLowerInvariant()}://{u.Host.ToLowerInvariant()}:{u.Port}";
+            return "host_" + ComputeSha256Hex(key).Substring(0, 24);
         }
 
         public void InitializeDiskCacheForServer(string baseHttpUrl, string explicitCacheDir = null)
@@ -167,6 +185,7 @@ namespace TacSim.Net
             _manifestAttempts = 0;
             _manifestDirty = false;
             _localDigests.Clear();
+            _localByteSizes.Clear();
             _cachedPackPayloads.Clear();
             _manifestPinnedDigests.Clear();
             _pendingPacks.Clear();
@@ -181,10 +200,8 @@ namespace TacSim.Net
             // Cached disk bytes stay private to TacSimContentSync until the current session's live manifest authorizes each (id, sha256).
             TacSimContentLoader.ClearDynamicPacks();
 
-            string hostSlug = "local";
             string normalized = MushAuthClient.NormalizeBaseUrl(baseHttpUrl);
-            if (!string.IsNullOrWhiteSpace(normalized) && Uri.TryCreate(normalized, UriKind.Absolute, out Uri u))
-                hostSlug = SanitizeFileSlug($"{u.Host}_{u.Port}");
+            string hostSlug = ComputeHostCacheDirName(normalized);
 
             try
             {
@@ -226,19 +243,34 @@ namespace TacSim.Net
             if (!File.Exists(manifestPath)) return 0;
 
             int indexed = 0;
+            long totalBytes = 0;
             try
             {
-                var items = ParseManifestPacks(JsonNode.Parse(File.ReadAllText(manifestPath)));
-                for (int i = 0; i < items.Count; i++)
+                var manifestInfo = new FileInfo(manifestPath);
+                if (manifestInfo.Length > MaxPackBytes)
+                    return 0;
+                var items = ParseManifestPacks(JsonNode.Parse(File.ReadAllText(manifestPath, Encoding.UTF8)));
+                int limit = Math.Min(items.Count, MaxCachedPacks);
+                for (int i = 0; i < limit; i++)
                 {
                     var item = items[i];
-                    string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(item.Id) + ".json");
+                    if (string.IsNullOrWhiteSpace(item.Id) || string.IsNullOrWhiteSpace(item.Sha256))
+                        continue;
+                    string packFile = Path.Combine(_cacheRootDir, "packs", CacheFileNameForPackId(item.Id));
                     if (!File.Exists(packFile)) continue;
-                    string json = File.ReadAllText(packFile);
+                    var packInfo = new FileInfo(packFile);
+                    if (packInfo.Length > MaxPackBytes) continue;
+                    string json = File.ReadAllText(packFile, Encoding.UTF8);
+                    int byteCount = Encoding.UTF8.GetByteCount(json);
+                    if (byteCount > MaxPackBytes || totalBytes + byteCount > MaxTotalCacheBytes)
+                        continue;
                     if (string.Equals(ComputeSha256Hex(json), item.Sha256, StringComparison.OrdinalIgnoreCase))
                     {
-                        _localDigests[item.Id] = item.Sha256;
-                        _cachedPackPayloads[item.Id] = (item.Sha256, json);
+                        string lowerSha = item.Sha256.ToLowerInvariant();
+                        _localDigests[item.Id] = lowerSha;
+                        _localByteSizes[item.Id] = byteCount;
+                        totalBytes += byteCount;
+                        _cachedPackPayloads[item.Id] = (lowerSha, json);
                         indexed++;
                     }
                 }
@@ -268,7 +300,7 @@ namespace TacSim.Net
                 doc["packs"] = packsArr;
                 string manifestPath = Path.Combine(_cacheRootDir, "manifest.json");
                 string tmpPath = manifestPath + ".tmp";
-                File.WriteAllText(tmpPath, doc.ToJson());
+                File.WriteAllText(tmpPath, doc.ToJson(), Encoding.UTF8);
                 if (File.Exists(manifestPath))
                 {
                     try
@@ -295,11 +327,18 @@ namespace TacSim.Net
 
         public bool StoreVerifiedPack(string id, string expectedSha256, string json)
         {
-            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(json))
+            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrEmpty(json) || string.IsNullOrWhiteSpace(expectedSha256))
                 return false;
             if (!IsValidSha256Hex(expectedSha256))
             {
                 SafeLogWarn($"[TacSimContentSync] Missing or malformed SHA-256 digest for pack '{id}'.");
+                return false;
+            }
+
+            int byteCount = Encoding.UTF8.GetByteCount(json);
+            if (byteCount > MaxPackBytes)
+            {
+                SafeLogWarn($"[TacSimContentSync] Rejecting oversized pack '{id}' ({byteCount} bytes > {MaxPackBytes}).");
                 return false;
             }
 
@@ -310,7 +349,23 @@ namespace TacSim.Net
                 return false;
             }
 
+            bool isUpdate = _localDigests.ContainsKey(id);
+            if (!isUpdate && _localDigests.Count >= MaxCachedPacks)
+            {
+                SafeLogWarn($"[TacSimContentSync] Cache file-count quota reached ({MaxCachedPacks}); rejecting pack '{id}'.");
+                return false;
+            }
+
+            int previousBytes = _localByteSizes.TryGetValue(id, out int prev) ? prev : 0;
+            long projectedTotalBytes = CachedTotalBytes - previousBytes + byteCount;
+            if (projectedTotalBytes > MaxTotalCacheBytes)
+            {
+                SafeLogWarn($"[TacSimContentSync] Total cache byte quota exceeded ({projectedTotalBytes} > {MaxTotalCacheBytes}); rejecting pack '{id}'.");
+                return false;
+            }
+
             _localDigests[id] = actualSha;
+            _localByteSizes[id] = byteCount;
             _cachedPackPayloads[id] = (actualSha, json);
             TacSimContentLoader.RegisterDynamicPack(id, json);
 
@@ -318,9 +373,9 @@ namespace TacSim.Net
             {
                 try
                 {
-                    string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(id) + ".json");
+                    string packFile = Path.Combine(_cacheRootDir, "packs", CacheFileNameForPackId(id));
                     string tmpPackFile = packFile + ".tmp";
-                    File.WriteAllText(tmpPackFile, json);
+                    File.WriteAllText(tmpPackFile, json, Encoding.UTF8);
                     if (File.Exists(packFile))
                     {
                         try { File.Replace(tmpPackFile, packFile, null); }
@@ -376,6 +431,8 @@ namespace TacSim.Net
                 _manifestReceived = true;
                 _manifestRequested = false;
                 var remote = ParseManifestPacks(data);
+                if (remote.Count > MaxCachedPacks)
+                    remote = remote.GetRange(0, MaxCachedPacks);
                 _manifestPinnedDigests.Clear();
                 _pendingPacks.Clear();
                 _inFlightPacks.Clear();
@@ -449,58 +506,60 @@ namespace TacSim.Net
                 string id = data.Str("id", string.Empty);
                 string reqId = data.Str("requested_id", id);
 
-                bool hadInFlight = false;
-                (ContentPackManifestItem item, float sentAt, int attempts) inFlight = default;
-                if (!string.IsNullOrEmpty(id) && _inFlightPacks.TryGetValue(id, out inFlight))
+                (ContentPackManifestItem item, float sentAt, int attempts) inFlight;
+                string inFlightKey = null;
+                if (!string.IsNullOrEmpty(reqId) && _inFlightPacks.TryGetValue(reqId, out inFlight))
                 {
-                    hadInFlight = true;
+                    inFlightKey = reqId;
+                }
+                else if (!string.IsNullOrEmpty(id) && _inFlightPacks.TryGetValue(id, out inFlight))
+                {
+                    inFlightKey = id;
+                }
+                else
+                {
+                    SafeLogWarn($"[TacSimContentSync] Ignoring unsolicited pack frame '{id}' (requested_id='{reqId}').");
+                    return;
+                }
+
+                _inFlightPacks.Remove(inFlightKey);
+                if (!string.IsNullOrEmpty(id) && id != inFlightKey)
                     _inFlightPacks.Remove(id);
-                }
-                if (!string.IsNullOrEmpty(reqId) && _inFlightPacks.TryGetValue(reqId, out var reqInFlight))
-                {
-                    if (!hadInFlight)
-                    {
-                        inFlight = reqInFlight;
-                        hadInFlight = true;
-                    }
+                if (!string.IsNullOrEmpty(reqId) && reqId != inFlightKey)
                     _inFlightPacks.Remove(reqId);
-                }
 
                 bool stored = false;
                 if (data.Bool("found", false))
                 {
+                    string manifestSha = inFlight.item != null ? inFlight.item.Sha256 : string.Empty;
                     string replySha = data.Str("sha256", string.Empty);
                     string json = data.Str("json", string.Empty);
-                    string cat = data.Str("category", string.Empty);
-
-                    // Enforce manifest-pinned SHA-256 whenever a manifest has been received.
-                    string expectedSha = null;
-                    if (hadInFlight && inFlight.item != null && IsValidSha256Hex(inFlight.item.Sha256))
-                    {
-                        expectedSha = inFlight.item.Sha256;
-                    }
-                    else if (_manifestPinnedDigests.TryGetValue(id, out string pinned))
-                    {
-                        expectedSha = pinned;
-                    }
-                    else if (!string.IsNullOrEmpty(reqId) && _manifestPinnedDigests.TryGetValue(reqId, out string pinnedReq))
-                    {
-                        expectedSha = pinnedReq;
-                    }
-                    else if (!_manifestReceived && _manifestPinnedDigests.Count == 0)
-                    {
-                        expectedSha = replySha;
-                    }
+                    string cat = inFlight.item != null && !string.IsNullOrEmpty(inFlight.item.Category)
+                        ? inFlight.item.Category
+                        : data.Str("category", string.Empty);
+                    string storeId = inFlight.item != null && !string.IsNullOrEmpty(inFlight.item.Id)
+                        ? inFlight.item.Id
+                        : id;
 
                     bool replyDisagreesWithPin = !string.IsNullOrEmpty(replySha) &&
-                                                 !string.IsNullOrEmpty(expectedSha) &&
-                                                 !string.Equals(replySha, expectedSha, StringComparison.OrdinalIgnoreCase);
+                                                 !string.IsNullOrEmpty(manifestSha) &&
+                                                 !string.Equals(replySha, manifestSha, StringComparison.OrdinalIgnoreCase);
 
-                    if (!replyDisagreesWithPin && StoreVerifiedPack(id, expectedSha, json))
+                    if (!IsValidSha256Hex(manifestSha) || replyDisagreesWithPin)
+                    {
+                        SafeLogWarn($"[TacSimContentSync] Rejecting pack '{inFlightKey}': digest does not match manifest entry.");
+                        OnSyncLog?.Invoke($"[ContentSync] Rejected pack '{storeId}': SHA-256 did not match manifest pin.");
+                    }
+                    else if (StoreVerifiedPack(storeId, manifestSha, json))
                     {
                         stored = true;
-                        _attemptCounts.Remove(id);
-                        _failedPackIds.Remove(id);
+                        _attemptCounts.Remove(storeId);
+                        _failedPackIds.Remove(storeId);
+                        if (!string.IsNullOrEmpty(id))
+                        {
+                            _attemptCounts.Remove(id);
+                            _failedPackIds.Remove(id);
+                        }
                         if (!string.IsNullOrEmpty(reqId))
                         {
                             _attemptCounts.Remove(reqId);
@@ -515,7 +574,7 @@ namespace TacSim.Net
                     }
                     else
                     {
-                        OnSyncLog?.Invoke($"[ContentSync] Rejected pack '{id}': SHA-256 did not match manifest pin.");
+                        OnSyncLog?.Invoke($"[ContentSync] Rejected pack '{storeId}': SHA-256 did not match manifest pin.");
                     }
                 }
                 else
@@ -523,7 +582,7 @@ namespace TacSim.Net
                     OnSyncLog?.Invoke($"[ContentSync] Pack '{(!string.IsNullOrEmpty(id) ? id : reqId)}' returned found=false.");
                 }
 
-                if (!stored && hadInFlight && inFlight.item != null)
+                if (!stored && inFlight.item != null)
                 {
                     if (inFlight.attempts < MaxPackAttempts)
                     {
@@ -561,12 +620,13 @@ namespace TacSim.Net
         private void RemoveCachedPackEntry(string key)
         {
             _localDigests.Remove(key);
+            _localByteSizes.Remove(key);
             _cachedPackPayloads.Remove(key);
             if (!string.IsNullOrEmpty(_cacheRootDir))
             {
                 try
                 {
-                    string packFile = Path.Combine(_cacheRootDir, "packs", SanitizeFileSlug(key) + ".json");
+                    string packFile = Path.Combine(_cacheRootDir, "packs", CacheFileNameForPackId(key));
                     if (File.Exists(packFile))
                         File.Delete(packFile);
                 }

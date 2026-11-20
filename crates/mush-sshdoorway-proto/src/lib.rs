@@ -259,7 +259,8 @@ pub fn user_is_forwardable(user: &str) -> bool {
             .any(|c| c.is_control() || is_invisible_format(c))
 }
 
-/// The Unicode format characters a username must not carry.
+/// The Unicode format and line/paragraph separator characters a username must
+/// not carry (BiDi controls, zero-width joiners, BOM, `U+2028`, `U+2029`).
 fn is_invisible_format(c: char) -> bool {
     matches!(
         c,
@@ -267,6 +268,7 @@ fn is_invisible_format(c: char) -> bool {
             | '\u{061C}'
             | '\u{180E}'
             | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{2029}'
             | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{206F}'
@@ -422,6 +424,16 @@ mod tests {
         assert!(!user_is_forwardable("a\u{1b}[31m"));
         assert!(!user_is_forwardable("dev1+admin\u{202e}"));
         assert!(!user_is_forwardable("fae\u{200b}nix"));
+        for bad in [
+            '\u{061C}', '\u{200E}', '\u{200F}', '\u{2028}', '\u{2029}', '\u{202A}', '\u{202B}',
+            '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            assert!(
+                !user_is_forwardable(&format!("dev1+a{bad}b")),
+                "U+{:04X} must not be forwardable",
+                u32::from(bad)
+            );
+        }
         assert!(user_is_forwardable("Kïra"));
         assert!(!user_is_forwardable(&"x".repeat(MAX_USER_LEN + 1)));
     }

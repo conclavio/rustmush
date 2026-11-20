@@ -6550,15 +6550,32 @@ fn sfr11_one_ledger_rated_drive_debits_bubble_jink_in_vault_persists_across_reen
 
     let vault_prop_before_jink = pool(&mut rig.tw, vault_id, "propellant");
 
-    // 2. Execute a `CommandBurn` inside the active bubble (`+helm/thrust 600 0 1000 0`) and land the
+    // 2. Execute a `CommandBurn` inside the active bubble (`+helm/thrust 600 0 1000 0`), step
+    //    wall ticks so `step_substep` integrates the burn over elapsed time, and land the
     //    resulting `PendingSpaceBurn` submission on the hull's `stow.propellant` vault:
     let jink_out = run(&mut rig.tw, pilot, "+helm/thrust 600 0 1000 0");
     assert!(
         jink_out.contains("Helm thrust set: 600‰ burn=(0, 1000, 0)"),
         "bubble jink output: {jink_out}"
     );
+    let init_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &init_submits);
+    let mut jink_submits = Vec::new();
+    for _ in 0..5 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+        for s in drain(&mut rig.tw) {
+            if is_burn(&s) {
+                jink_submits.push(s);
+            } else {
+                let _ = land(&mut rig, &s);
+            }
+        }
+    }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
-    let jink_submits = drain(&mut rig.tw);
+    let stop_submits = drain(&mut rig.tw);
+    land_quietly(&mut rig, &stop_submits);
     assert_eq!(
         jink_submits.len(),
         1,
@@ -12163,10 +12180,11 @@ fn sfr25_hole_closeout_iii_customs_prepaid_linkdead_released_tow_docking_hold_an
         );
     }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let init_brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &init_brake);
     for _ in 0..6 {
-        let next_r = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_r);
-        let _ = rig.tw.fire_due(next_r * 1_000);
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
     }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
     let brake = drain_space_and_industry(&mut rig.tw);
@@ -13084,10 +13102,11 @@ fn hove_to_at_the_picket_with(
         "the picket's bubble opens on her"
     );
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    let init_brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &init_brake);
     for _ in 0..6 {
-        let next_r = rig.tw.world().now() + 1;
-        rig.tw.set_now(next_r);
-        let _ = rig.tw.fire_due(next_r * 1_000);
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
     }
     let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
     let brake = drain_space_and_industry(&mut rig.tw);
@@ -13512,9 +13531,12 @@ fn cr_the_picket_reads_ore_held_as_a_lot_and_the_seizure_takes_the_lot() {
         .expect("inventory handles")
         .0
         .clone();
-    assert!(
-        typed(&mut rig.tw, &families.lots, &LOT).is_none(),
-        "the lot left the hold in the ruling's transaction"
+    // Doc 50 unit LW.5: the lot is the same lot, in the enforcing authority's vault.
+    let authority = seized_vault(&rig.tw);
+    assert_eq!(
+        typed(&mut rig.tw, &families.lots, &LOT).map(|lot| lot.endpoint()),
+        Some(EndpointRef(authority)),
+        "the lot left the hold for the authority's vault in the ruling's transaction"
     );
     assert_eq!(
         picket_status(&rig.tw, hull),
@@ -13684,6 +13706,140 @@ fn from_the_corvette(tw: &TestWorld, hull: ObjId) -> Option<([i64; 3], i64)> {
         ]
     };
     Some((away, tacsim::space::distance_3d_m(her, at)))
+}
+
+/// The enforcing authority's vault for a seizure at the picket (doc 50 unit LW.5): its market
+/// vendor's, the Freeport Registry's at Ceres today.
+fn seized_vault(tw: &TestWorld) -> VaultId {
+    let authority = tacsim::port::seized::seizing_authority(tw.world()).expect("an authority");
+    market(tw)
+        .vendor_of_org(authority.org)
+        .map(|vendor| vendor.vault)
+        .expect("the authority is the port's vendor once it has seized")
+}
+
+/// **Doc 50 unit LW.5, seized goods to a vault (Q-50-44 as corrected).** An indigent pilot's
+/// 51 t of unlicensed strategic ore is seized at the picket. The ore leaves her hold for the
+/// enforcing authority's vault, the Freeport Registry's, in the ruling's own transaction, so the
+/// matter census's `balance` holds and its `seized` term stays at zero: a seizure is a transfer.
+/// The Registry, which keeps no storefront at Ceres, is made the port's vendor on first use, and
+/// the ore is offered there at three quarters of its reference. Before the unit the ore was
+/// debited to nobody, and the census lost 51,000 kg.
+#[test]
+fn lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port() {
+    use tacsim::space::PicketInspectionStatus;
+    let (mut rig, pilot, hull, vault) = hove_to_at_the_picket("Seized", 51);
+    let before = matter_terms(&mut rig.tw);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains("51 t confiscated in lieu of fine"),
+        "the ore is seized: {ruled}"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure)
+    );
+    let after = matter_terms(&mut rig.tw);
+    assert_eq!(
+        after["balance"], before["balance"],
+        "matter is conserved across the seizure: before {before:?}, after {after:?}"
+    );
+    assert_eq!(after["seized"], 0, "a seizure is a transfer, never a sink");
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        0,
+        "out of her hold"
+    );
+    let authority = seized_vault(&rig.tw);
+    assert_eq!(
+        pool(&mut rig.tw, authority, "strategic_ore"),
+        51,
+        "into the authority's vault"
+    );
+    let listing = market(&rig.tw)
+        .lot_listing_of(EndpointRef(authority), &cid("strategic_ore"))
+        .and_then(|id| market(&rig.tw).listing(id).cloned())
+        .expect("the authority offers the seized ore");
+    let offered = tacsim::port::seized::price_minor(rig.tw.world(), &cid("strategic_ore"))
+        .expect("a reference");
+    assert_eq!(
+        (
+            listing.market.as_str(),
+            listing.quantity,
+            listing.price.minor()
+        ),
+        ("ceres", 51, offered),
+        "at Ceres, all 51 t, at three quarters of the reference"
+    );
+
+    // A trader at Ceres buys a tonne of it: the draw comes out of the authority's vault.
+    let buyer = crate::voyage::pilot(&mut rig, "Trader", 2);
+    let enrolled = run(&mut rig.tw, buyer, "+coop/enroll Escort Hawk");
+    assert!(enrolled.contains("now the Escort Hawk"), "{enrolled}");
+    let charter = tacsim::port::live_charter(rig.tw.world(), buyer).expect("a charter");
+    let row = port_map(&rig.tw, "ceres_port")
+        .hulls
+        .into_iter()
+        .find(|r| r.hull == charter.hull.0)
+        .expect("her row");
+    let buyer_hold = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, buyer, desk);
+    let refit = run(&mut rig.tw, buyer, "+coop/refit prospector");
+    assert!(
+        refit.contains("Dray-P"),
+        "ore stows in a prospector's hold: {refit}"
+    );
+    let account = tacsim::port::credit::own_account(rig.tw.world(), buyer)
+        .expect("an account")
+        .id;
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={account} 10000000"),
+    );
+    let exchange = c07(&rig.tw);
+    teleport(&mut rig.tw, buyer, exchange);
+    let quoted = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/quote {}=1", listing.id),
+    );
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(&rig.tw)
+        .quotes_of_buyer(&mush_org::PrincipalId::Object(buyer))
+        .map(|q| q.id)
+        .max()
+        .expect("a quote");
+    let accepted = run(&mut rig.tw, buyer, &format!("+market/accept {quote}"));
+    let draw = drain(&mut rig.tw);
+    assert_eq!(draw.len(), 1, "one draw: {accepted}");
+    land_all(&mut rig, &draw);
+    for _ in 0..30 {
+        if market(&rig.tw)
+            .quote(quote)
+            .is_some_and(|q| q.drawn_at.is_some())
+        {
+            break;
+        }
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(
+        (
+            pool(&mut rig.tw, buyer_hold, "strategic_ore"),
+            pool(&mut rig.tw, authority, "strategic_ore")
+        ),
+        (1, 50),
+        "the tonne moved from the authority's vault to the buyer's hold"
+    );
+    let bought = matter_terms(&mut rig.tw);
+    assert_eq!(
+        bought["balance"], before["balance"],
+        "and matter is still conserved"
+    );
 }
 
 /// **Doc 50 unit CR, the 35 km breach (doc 50a A-10e).** A hull that burns past
@@ -16651,6 +16807,253 @@ fn helm_dock_refused_clamp_unpauses_hull_and_emits_closed_panel() {
     assert_eq!(closed_data["session_id"], serde_json::json!(session_a));
 }
 
+// ----------------------------------------------------------------------
+// Doc 50 cut KC.2: the terms schedule and the transit duty (Q-50-5, Q-50-6, Q-50-10, Q-50-14,
+// Q-50-53, Q-50-54, Q-50-55).
+// ----------------------------------------------------------------------
+
+/// The Republic takes the Kirkwood approach de facto, as Customs Assertion's fill does (KC.1).
+fn republic_holds_kirkwood(tw: &mut TestWorld) {
+    let depot = cid("kirkwood_depot");
+    let region = tacsim::polity::control_at(tw.world(), &depot)
+        .expect("Kirkwood is seeded")
+        .region;
+    let republic = tacsim::polity::polity(tw.world(), "republic").expect("the Republic");
+    crate::support::with_ctx(tw, |ctx| {
+        mush_faction::write_control(
+            ctx,
+            mush_faction::ControlWrite::new(region, republic, mush_faction::ControlKind::DeFacto),
+        )
+    })
+    .expect("the flip");
+}
+
+/// The Republic's customs office's available credit, minor units.
+fn customs_office_credit(tw: &TestWorld) -> i64 {
+    let (_, account) = tacsim::polity::lane_org_account(tw.world(), &cid("republic_customs"))
+        .expect("the customs office's account");
+    economy(tw)
+        .snapshot()
+        .account(account)
+        .and_then(|a| a.available())
+        .map_or(0, |a| a.minor())
+}
+
+/// The open `tacsim.debt` obligations `who` owes, by amount (minor units).
+fn duty_debts(tw: &TestWorld, who: ObjId) -> Vec<i64> {
+    let account = tacsim::port::credit::own_account(tw.world(), who)
+        .expect("a credit account")
+        .id;
+    economy(tw)
+        .snapshot()
+        .obligations()
+        .filter(|o| {
+            matches!(&o.cause, mush_economy::ObligationCause::Ruleset { namespace }
+                if namespace.as_str() == tacsim::surface::retrieval::DEBT_NAMESPACE)
+        })
+        .filter(|o| o.debit_account == account)
+        .filter(|o| {
+            !matches!(
+                o.status,
+                mush_economy::ObligationStatus::Satisfied
+                    | mush_economy::ObligationStatus::Cancelled
+            )
+        })
+        .map(|o| o.amount.minor())
+        .collect()
+}
+
+/// **Doc 50 cut KC.2: the duty before and after the flip, pinned at filing** (Q-50-6, Q-50-10,
+/// Q-50-53). A hull carrying 50 t of lawful `metals` (catalog 200 cr a tonne: 10,000 cr) meets
+/// the picket three times:
+/// A. under the Co-op's hold (no terms row): no duty, as today;
+/// B. with the Republic holding the approach before she files: 2% of 10,000 cr, 200 cr, paid to
+///    the Republic's customs office at the inspection, and she is cleared;
+/// C. filed under the Co-op, the Republic taking the approach while she is under way: she clears
+///    under the terms she filed under, and pays nothing.
+#[test]
+fn kc2_the_transit_duty_before_and_after_the_flip_is_pinned_at_filing() {
+    use tacsim::space::PicketInspectionStatus;
+    let metals = |rig: &mut Rig, vault: VaultId| seed_lot(rig, vault, "metals", 50, LotId(0x50c2));
+
+    // --- A. Before the flip --------------------------------------------------------------------
+    let (mut rig, pilot, hull, _) =
+        hove_to_at_the_picket_with("Before", 0, |rig, _, vault| metals(rig, vault));
+    let before = credit_of(&rig.tw, pilot);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(!ruled.contains("transit duty"), "no row, no duty: {ruled}");
+    assert_eq!(credit_of(&rig.tw, pilot), before);
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::Cleared)
+    );
+
+    // --- B. The Republic holds the approach when she files --------------------------------------
+    let (mut rig, pilot, hull, _) = hove_to_at_the_picket_with("After", 0, |rig, _, vault| {
+        metals(rig, vault);
+        republic_holds_kirkwood(&mut rig.tw);
+    });
+    let (before, office) = (credit_of(&rig.tw, pilot), customs_office_credit(&rig.tw));
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains("A transit duty of 200.00cr on cargo valued at 10000 cr is paid"),
+        "{ruled}"
+    );
+    assert_eq!(
+        credit_of(&rig.tw, pilot),
+        before - 20_000,
+        "2% of the catalog value"
+    );
+    assert_eq!(
+        customs_office_credit(&rig.tw),
+        office + 20_000,
+        "to the customs office"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::Cleared)
+    );
+
+    // --- C. Filed before the flip, assessed under the filing's terms ---------------------------
+    let (mut rig, pilot, _hull, _) =
+        hove_to_at_the_picket_with("Pinned", 0, |rig, _, vault| metals(rig, vault));
+    republic_holds_kirkwood(&mut rig.tw);
+    let before = credit_of(&rig.tw, pilot);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        !ruled.contains("transit duty"),
+        "the terms she filed under: {ruled}"
+    );
+    assert_eq!(credit_of(&rig.tw, pilot), before);
+}
+
+/// **Doc 50 cut KC.2: a pilot who cannot pay** (Q-50-54). Under the Republic's hold a pilot with
+/// no credit is cleared, her lawful cargo is not touched, and the duty is a debt to the customs
+/// office due in 28 IC days.
+#[test]
+fn kc2_a_pilot_who_cannot_pay_is_cleared_and_owes_the_duty() {
+    use tacsim::space::PicketInspectionStatus;
+    let (mut rig, pilot, hull, vault) =
+        hove_to_at_the_picket_with("Broke", 0, |rig, pilot, vault| {
+            seed_pool(rig, vault, "metals", 50, LotId(0x50c3));
+            republic_holds_kirkwood(&mut rig.tw);
+            let treasury = port_map(&rig.tw, "ceres_port")
+                .treasury
+                .expect("a treasury");
+            let account = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+                .expect("an account")
+                .id;
+            let all = credit_of(&rig.tw, pilot);
+            let out = run(
+                &mut rig.tw,
+                GOD,
+                &format!("@econ/pay #{}=#{treasury} {all}", account.0),
+            );
+            assert!(out.contains("Paid: transaction #"), "{out}");
+        });
+    assert_eq!(credit_of(&rig.tw, pilot), 0);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains(
+            "A transit duty of 200.00cr on cargo valued at 10000 cr is owed, due in 28 IC days"
+        ),
+        "{ruled}"
+    );
+    assert_eq!(
+        duty_debts(&rig.tw, pilot),
+        vec![20_000],
+        "a debt to the customs office"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::Cleared),
+        "cleared"
+    );
+    assert_eq!(
+        pool(&mut rig.tw, vault, "metals"),
+        50,
+        "lawful cargo is never seized for a duty"
+    );
+}
+
+/// **Doc 50 cut KC.2: a pilot who is away** (Q-50-54). Under the Republic's hold a hull flies the
+/// Kirkwood leg with nobody aboard: no picket opens on her, she is assessed the duty with no
+/// submission and cleared, and the duty is paid from her pilot's account.
+#[test]
+fn kc2_a_hull_whose_pilot_is_away_is_assessed_and_cleared() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Away", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, vault, "propellant", 75, LotId(2_611));
+    seed_pool(&mut rig, vault, "provisions", 25, LotId(2_612));
+    seed_pool(&mut rig, vault, "metals", 50, LotId(2_613));
+    republic_holds_kirkwood(&mut rig.tw);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    // She steps off before the leg ends: the hull flies on with nobody aboard.
+    rig.tw
+        .world_mut()
+        .move_to(pilot, desk)
+        .expect("she steps off");
+    let (before, office) = (credit_of(&rig.tw, pilot), customs_office_credit(&rig.tw));
+    let leg1_due = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    // The leg's end notes her; the space tick a moment later assesses her.
+    let _ = to_ic(&mut rig, leg1_due + 10);
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        None,
+        "no picket holds an empty hull"
+    );
+    assert_eq!(
+        credit_of(&rig.tw, pilot),
+        before - 20_000,
+        "the duty is paid"
+    );
+    assert_eq!(customs_office_credit(&rig.tw), office + 20_000);
+}
+
+/// **Doc 50 cut KC.2: the shortcut closes** (Q-50-55). A hull that left Ceres for its halo and
+/// engages the autopilot for Deimos, a venue Ceres lays no route to, owes the picket's leg: her
+/// recoupled journey opens on the interdicted Kirkwood leg. One for Luna, which Ceres routes by
+/// the long way, owes nothing.
+#[test]
+fn kc2_the_free_flight_shortcut_to_deimos_owes_the_picket_leg() {
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "Shortcut", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot deimos");
+    assert!(auto.contains("Autopilot engaged for"), "{auto}");
+    let burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &burn);
+    let recoupled = journey(&rig.tw, hull).expect("the recoupled journey");
+    assert!(
+        recoupled.route().legs().len() == 2 && recoupled.route().legs()[0].is_interdicted(),
+        "the shortcut owes the Kirkwood leg"
+    );
+
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "LongWay", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot luna");
+    assert!(auto.contains("Autopilot engaged for"), "{auto}");
+    let burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &burn);
+    let recoupled = journey(&rig.tw, hull).expect("the recoupled journey");
+    assert!(
+        !recoupled
+            .route()
+            .legs()
+            .iter()
+            .any(|leg| leg.is_interdicted()),
+        "the long way round stays free"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Doc 50 cut OP.1: the Isidis Concession
 // ---------------------------------------------------------------------------
@@ -16867,4 +17270,103 @@ fn op1_a_hull_flies_stickney_to_isidis_and_back() {
     );
     let back = ticket(&mut rig.tw, hull, 3).expect("ticket 3");
     assert_eq!(back.plan.legs.len(), 1, "one leg home");
+}
+
+// ----------------------------------------------------------------------
+// Doc 50 cut KC.3: the duty line and the reason clause (Q-50-8, Q-50-9).
+// ----------------------------------------------------------------------
+
+/// The lines of `text` that name the Kirkwood duty.
+fn duty_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|l| l.contains("Kirkwood duty"))
+        .collect()
+}
+
+/// **Doc 50 cut KC.3: the same run before and after the flip** (Q-50-8, Q-50-9; the first
+/// acceptance story). A Dray-P with 50 t of lawful `metals` (10,000 cr at catalog) plans and
+/// files Ceres to Stickney:
+/// - under the Co-op's hold, `+ship/plan` shows no duty;
+/// - with the Republic holding the Kirkwood approach, `+ship/plan` estimates 200 cr and names who
+///   holds the approach and since when, within 120 columns;
+/// - the filing shows the duty it pinned, with the same reason;
+/// - at the picket the charge carries the same clause.
+#[test]
+fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "SameRun", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, vault, "propellant", 75, LotId(2_621));
+    seed_pool(&mut rig, vault, "provisions", 25, LotId(2_622));
+    seed_pool(&mut rig, vault, "metals", 50, LotId(2_623));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let before = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    assert!(before.contains("Plan for Stickney Yards"), "{before}");
+    assert!(
+        duty_lines(&before).is_empty(),
+        "no duty under the Co-op: {before}"
+    );
+
+    republic_holds_kirkwood(&mut rig.tw);
+    let held = tacsim::polity::control_at(rig.tw.world(), &cid("kirkwood_depot"))
+        .and_then(|c| c.de_facto_since_ic)
+        .expect("the Republic's hold");
+    let d = mush_core::clock::CivilDate::from_ic_seconds(held);
+    let reason = format!(
+        "Republic hold since {} {}, {}",
+        d.month_name(),
+        d.day,
+        d.year
+    );
+
+    let after = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    let lines = duty_lines(&after);
+    assert_eq!(
+        lines,
+        vec![format!("Kirkwood duty ~200.00cr on 10000 cr of cargo ({reason}).").as_str()],
+        "{after}"
+    );
+    assert!(lines.iter().all(|l| l.chars().count() <= 120), "{lines:?}");
+
+    let (filed, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    let lines = duty_lines(&filed);
+    assert_eq!(
+        lines,
+        vec![
+            format!("Kirkwood duty ~200.00cr on 10000 cr of cargo, pinned at filing ({reason}).")
+                .as_str()
+        ],
+        "{filed}"
+    );
+    assert!(lines.iter().all(|l| l.chars().count() <= 120), "{lines:?}");
+    let pending = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("a filed passage");
+    land_all(&mut rig, &queued);
+    let _ = fire_quietly(&mut rig);
+    let leg1_due = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, leg1_due);
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains(&format!(
+            "A transit duty of 200.00cr on cargo valued at 10000 cr is paid ({reason})."
+        )),
+        "{ruled}"
+    );
 }

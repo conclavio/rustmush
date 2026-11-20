@@ -43,7 +43,7 @@ use mush_org::{OrgScopeId, PrincipalId};
 use mush_proto::RichText;
 
 use crate::access::Access;
-use crate::module::{HousingStore, LiveEntry, RoomEntry, is_let, is_staff, room_of};
+use crate::module::{HousingStore, LiveEntry, RoomEntry, enclosing_room, is_let, is_staff};
 use crate::record::{Property, PropertyStatus};
 
 /// The one refusal a stranger ever sees at a private door.
@@ -70,7 +70,12 @@ impl EventHook for AccessHook {
         // issued a `@teleport` (08d §1.1 scopes that limitation): a staffer
         // teleporting a stranger in is refused exactly like the stranger walking in,
         // which is the fail-closed direction. Add them as a guest first.
-        if matches!(may_reach(w, actor, dest), Access::Refused) {
+        //
+        // Walk `dest` transitively to its enclosing room so teleporting into a
+        // container, vehicle, or character standing inside an occupied home
+        // cannot bypass the room's access gate.
+        let dest_room = enclosing_room(w, dest).unwrap_or(dest);
+        if matches!(may_reach(w, actor, dest_room), Access::Refused) {
             return Err(RichText::tag("error", REFUSED));
         }
         // **The source half, for things** (verify fold, H2). A move only ever asked
@@ -82,9 +87,9 @@ impl EventHook for AccessHook {
         // and the reason the destination check is already phrased as "the moved
         // object's own standing"), so the source check is the same shape and fails
         // the same way: a thing has no standing of its own, so a thing standing in an
-        // occupied home cannot be teleported out of it **by anybody**. A tenant moves
-        // their own belongings with `get`/`drop`, which is `carry_attempt` and does
-        // ask about the mover.
+        // occupied home (even inside a nested container) cannot be teleported out of
+        // it **by anybody**. A tenant moves their own belongings with `get`/`drop`,
+        // which is `carry_attempt` and does ask about the mover.
         //
         // **People are exempt on purpose.** A person is never trapped by this hook:
         // an ex-tenant standing in the house they were just evicted from must always
@@ -92,7 +97,7 @@ impl EventHook for AccessHook {
         // out. It is the same asymmetry `to_unhome_on_end` has — the door is about
         // reaching *in*.
         if !crate::module::is_character(w, actor)
-            && let Some(from) = room_of(w, actor)
+            && let Some(from) = enclosing_room(w, actor)
             && matches!(may_reach(w, actor, from), Access::Refused)
         {
             return Err(RichText::tag("error", REFUSED_CARRY));
@@ -108,9 +113,13 @@ impl EventHook for AccessHook {
         dest: ObjId,
     ) -> Result<(), RichText> {
         let w = ctx.world();
-        // Where it is coming FROM, and where it is going TO. Reaching into somebody's
-        // home and dropping something into it are the same right.
-        for room in [room_of(w, obj), room_of(w, dest)].into_iter().flatten() {
+        // Where it is coming FROM, and where it is going TO, resolved transitively
+        // to the enclosing room so nested containers inside a private room cannot
+        // bypass either direction of the gate.
+        for room in [enclosing_room(w, obj), enclosing_room(w, dest)]
+            .into_iter()
+            .flatten()
+        {
             if matches!(may_reach(w, mover, room), Access::Refused) {
                 return Err(RichText::tag("error", REFUSED_CARRY));
             }

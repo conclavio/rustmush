@@ -41,9 +41,16 @@ namespace TacSim.Net
         public const int CloseCodeBadSession = 4401;
         public const int CloseCodeTokenCooloff = 4429;
         public const int MaxInboundFrameBytes = 4 * 1024 * 1024;
+        public const int MaxInboundMessageBytes = MaxInboundFrameBytes;
         public const int MaxOutboundFrameBytes = 272 * 1024;
         public const int MaxInboundQueueSize = 2048;
-        public const int MaxOutboundQueueSize = 512;
+        public const int MaxInboundQueueCount = MaxInboundQueueSize;
+        public const int MaxOutboundQueueCount = 256;
+        public const int MaxOutboundQueueSize = MaxOutboundQueueCount;
+        public const int MaxPanelFeeds = 64;
+        public const int MaxViewCursors = 64;
+        public const int MaxAdvertisedPanels = 128;
+        public const int MaxReplyUnwrapDepth = 1;
         private const int ConnectTimeoutMs = 15000;
         private static readonly float[] BackoffSeconds = { 0.5f, 1.0f, 2.0f, 5.0f, 15.0f };
         private static readonly Regex Http401Regex = new Regex(
@@ -149,7 +156,10 @@ namespace TacSim.Net
 
         public MushWsConnectionState State { get; private set; } = MushWsConnectionState.Disconnected;
         public ulong LastSeq => _lastSeq;
+        public int InboundQueueCount { get { lock (_inboundLock) { return _reliableInbound.Count + _latestTelemetry.Count; } } }
         public int OutboundQueueCount => _priorityOutbound.Count + _outbound.Count;
+        public int PanelFeedCount => _panelFeeds.Count;
+        public int ViewCursorCount => _viewCursors.Count;
         public int ReconnectAttemptCount => _reconnectAttempt;
         public bool InboundOverflowDetected { get { lock (_inboundLock) { return _inboundOverflowDetected; } } }
         public int PendingReliableInboundCount { get { lock (_inboundLock) { return _reliableInbound.Count; } } }
@@ -224,6 +234,57 @@ namespace TacSim.Net
                 : $"char={escapedChar}";
         }
 
+        private static bool DefaultAllowInsecureNonLoopback()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        public static Uri BuildValidatedWebSocketUri(
+            string httpBaseUrl,
+            string characterKey,
+            ulong lastSeq,
+            bool allowInsecureNonLoopback = false)
+        {
+            string wsBase = MushAuthClient.ToWebSocketBaseUrl(httpBaseUrl);
+            string query = BuildWsQuery(characterKey, lastSeq);
+            var uri = new Uri($"{wsBase}/ws?{query}");
+            bool isSecure = string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase);
+            if (!isSecure && !allowInsecureNonLoopback && !MushAuthClient.IsLoopbackUri(uri))
+            {
+                throw new InvalidOperationException(
+                    $"Refusing cleartext WebSocket connection ('{uri.Scheme}://{uri.Authority}') to non-loopback host in non-dev build; use https:// / wss://.");
+            }
+            return uri;
+        }
+
+        public static bool TryValidateInboundFrame(
+            WebSocketMessageType messageType,
+            long accumulatedBytes,
+            int chunkBytes,
+            out WebSocketCloseStatus closeStatus,
+            out string error)
+        {
+            if (messageType == WebSocketMessageType.Binary)
+            {
+                closeStatus = WebSocketCloseStatus.InvalidMessageType;
+                error = "Rejected unsupported binary WebSocket frame.";
+                return false;
+            }
+            if (chunkBytes < 0 || accumulatedBytes < 0 || accumulatedBytes + chunkBytes > MaxInboundMessageBytes)
+            {
+                closeStatus = WebSocketCloseStatus.MessageTooBig;
+                error = $"Inbound WebSocket frame exceeded {MaxInboundMessageBytes} bytes.";
+                return false;
+            }
+            closeStatus = WebSocketCloseStatus.NormalClosure;
+            error = null;
+            return true;
+        }
+
         public async Task ConnectAsync(MushAuthSession auth, string characterKey, bool resetResume = true)
         {
             await _connectGate.WaitAsync();
@@ -274,9 +335,11 @@ namespace TacSim.Net
             ws.Options.AddSubProtocol($"rustmush.v1.{_activeAuth.Token}");
             ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
 
-            string wsBase = MushAuthClient.ToWebSocketBaseUrl(_activeAuth.BaseHttpUrl);
-            string query = BuildWsQuery(_activeCharKey, _lastSeq);
-            var uri = new Uri($"{wsBase}/ws?{query}");
+            var uri = BuildValidatedWebSocketUri(
+                _activeAuth.BaseHttpUrl,
+                _activeCharKey,
+                _lastSeq,
+                DefaultAllowInsecureNonLoopback());
 
             State = isReconnect ? MushWsConnectionState.Reconnecting : MushWsConnectionState.Connecting;
             OnConnectionStatusChanged?.Invoke(isReconnect
@@ -581,6 +644,19 @@ namespace TacSim.Net
 
         private void DispatchEvent(string type, JsonNode d, bool pongAlreadySent = false)
         {
+            int replyDepth = 0;
+            while (type == "reply")
+            {
+                if (replyDepth >= MaxReplyUnwrapDepth || d == null || !d.IsObject)
+                    return;
+                var inner = d["event"];
+                if (inner == null || !inner.IsObject)
+                    return;
+                type = inner.Str("t", string.Empty);
+                d = inner["d"];
+                replyDepth++;
+            }
+
             switch (type)
             {
                 case "hello":
@@ -591,7 +667,8 @@ namespace TacSim.Net
                     var panels = d["panels"].AsArray();
                     if (panels != null)
                     {
-                        for (int i = 0; i < panels.Count; i++)
+                        int cap = Math.Min(panels.Count, MaxAdvertisedPanels);
+                        for (int i = 0; i < cap; i++)
                         {
                             string feed = panels[i].AsString();
                             if (!string.IsNullOrEmpty(feed))
@@ -730,12 +807,6 @@ namespace TacSim.Net
                     ApplyViewEnvelope(d);
                     break;
 
-                case "reply":
-                    var inner = d["event"];
-                    if (inner.IsObject)
-                        DispatchEvent(inner.Str("t", string.Empty), inner["d"]);
-                    break;
-
                 case "invoke_result":
                     if (d != null && d.IsObject && d["result"].IsObject)
                     {
@@ -779,6 +850,9 @@ namespace TacSim.Net
                 return;
             }
 
+            if (!_panelFeeds.ContainsKey(feed) && _panelFeeds.Count >= MaxPanelFeeds)
+                return;
+
             var copy = payload != null ? payload.Clone() : JsonNode.NewObject();
             _panelFeeds[feed] = copy;
             OnPanelUpdated?.Invoke(feed, copy);
@@ -792,6 +866,8 @@ namespace TacSim.Net
 
             if (!_viewCursors.TryGetValue(viewId, out var cursor))
             {
+                if (_viewCursors.Count >= MaxViewCursors)
+                    return;
                 cursor = new ViewStreamCursor();
                 _viewCursors[viewId] = cursor;
             }
@@ -801,6 +877,8 @@ namespace TacSim.Net
             {
                 case ViewCursorDisposition.ApplySnapshot:
                 {
+                    if (!_panelFeeds.ContainsKey(viewId) && _panelFeeds.Count >= MaxPanelFeeds)
+                        return;
                     var copy = d["data"] != null ? d["data"].Clone() : JsonNode.NewObject();
                     _panelFeeds[viewId] = copy;
                     OnPanelUpdated?.Invoke(viewId, copy);
@@ -1043,7 +1121,6 @@ namespace TacSim.Net
                     using (var ms = new MemoryStream())
                     {
                         WebSocketReceiveResult res;
-                        bool oversized = false;
                         do
                         {
                             res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
@@ -1056,20 +1133,14 @@ namespace TacSim.Net
                                 HandleSocketLoopFailureForEpoch(epoch, rt, closeCode, desc);
                                 return;
                             }
-                            if (ms.Length + res.Count > MaxInboundFrameBytes)
+                            if (!TryValidateInboundFrame(res.MessageType, ms.Length, res.Count, out WebSocketCloseStatus closeStatus, out string frameErr))
                             {
-                                oversized = true;
-                                break;
+                                try { ws.Abort(); } catch { /* ignore */ }
+                                HandleSocketLoopFailureForEpoch(epoch, rt, (int)closeStatus, frameErr);
+                                return;
                             }
                             ms.Write(buffer, 0, res.Count);
                         } while (!res.EndOfMessage);
-
-                        if (oversized)
-                        {
-                            try { ws.Abort(); } catch { /* ignore */ }
-                            HandleSocketLoopFailureForEpoch(epoch, rt, null, $"Inbound frame exceeded {MaxInboundFrameBytes / (1024 * 1024)} MiB limit");
-                            return;
-                        }
 
                         if (Interlocked.Read(ref _sessionEpoch) != epoch)
                             return;

@@ -400,15 +400,277 @@ doc 50a A-1; doc 11 §6). Stacked on KC.0. No lane bump.
 
 ## KC.2
 
-Not built.
+The terms schedule and the transit duty (Q-50-5, Q-50-6, Q-50-10, Q-50-11, Q-50-14, Q-50-53 to
+Q-50-55). Stacked on KC.1, with main (CR) merged in. **A lane bump: lane v47 and relay v38**, on OP.1's v46 (#719, merged into this branch). It
+must land after OP.1's.
+
+**Survey.**
+- **The picket's submission** (`space/commands.rs`, `submit_hull_to_customs`) chooses Cleared,
+  Fined or Seized and files one `tacsim_space_customs` action. The tick levies the fine through
+  a contract to the Freeport Registry (`picket.rs`, `levy_customs_fine_and_advance_front`). A
+  pilot who cannot pay the fine has the contraband seized.
+- **The picket opens** only when a connected player stands on the hull or the hull has a
+  link-loss record (`composition/sim_routes.rs`, `boundary`).
+  - A link-loss hull is submitted by the backup seat.
+  - A hull with nobody aboard and no record passed the picket untouched.
+- **CR's one hold reading** is `port::ship::hold_reading` (pooled plus lots, in the good's ledger
+  unit). It includes cargo under a haul's hold, which is a reservation on the pool.
+- **The value.** A good's catalog baseline is `GoodDef.reference_major`, in major credits per
+  quote unit; every good's quote unit is its ledger unit. Ship's stores are the goods with a
+  `consumable` (propellant, provisions).
+- **There is no filing verb.** A passage is filed by `+ship/undock` (`prepare_departure`, which
+  writes a `PendingVoyage`). The launch writes `Departed`, which outlives the passage.
+  `+helm/autopilot` from free flight writes no pending; it rewrites `Departed`.
+- **The shortcut.** `owed_interdicted_leg` reads the port of departure's `routes[dest]`. Ceres
+  lists no `deimos`, so a free-flight autopilot from Ceres' halo to Deimos owed nothing (§4.3).
+- **Debts with grace** already exist: `mush_economy::create_debt_due` in `tacsim.debt`, with
+  `debt_due` (28 IC days) as port security uses it.
+
+**Built.**
+- **The schedule** (`tacsim::polity`):
+  - A regions row gains `terms: BTreeMap<polity tag, TermsRow>`.
+  - `TermsRow { payee, transit_duty_permille, transit_floor_major, import_duty_permille,
+    import_goods, restricted: Vec<RestrictedGood { good, paper }>, audit_permille,
+    fine: Option<FineScale { per_t_major, floor_major }> }`.
+  - It is checked pack-wide: a known polity, a lane org as payee, rates of 1,000‰ at most,
+    majors of 1,000,000 at most.
+  - The reads:
+    - `terms_at(w, place) -> Option<PlaceTerms { holder, since_ic, row }>` gives the de facto
+      holder's polity's row (`row: None` means the terms as they are today);
+    - `picket_place(w)`;
+    - `lane_org_account(w, lane id) -> Option<(OrgId, AccountId)>`.
+- **The duty** (`tacsim::space::duty`):
+  - `hull_terms(w, hull)` gives the terms pinned on the passage, else the live ones.
+  - `dutiable_value_major` is every good with no `consumable`, pooled or as a lot, at its
+    catalog baseline.
+  - `quote_duty` is `transit_duty_permille` of the value, never under the floor, and nothing for
+    an empty hold or a row that levies no duty.
+  - `levy_transit_duty(ctx, hull, debtor)` opens a debt to the payee in `tacsim.debt`, due in 28
+    IC days, and pays it at once when the account covers it. `DutyOutcome::{Paid, Owed(id)}`.
+  - Also `duty_line`, `assess_absent`, `settle_absent` and `fine_payee`.
+- **At the picket:**
+  - `+helm/submit` levies the duty on the inspected hull, whatever the finding, and the line
+    names it. It never changes the finding: lawful cargo is never seized for a duty.
+  - A hull with nobody aboard and no link-loss record crosses the interdicted leg with no picket.
+    The leg's boundary notes her in `SpaceBubbleBook::absent_duty`, because that hook cannot read
+    a hold. The next space tick assesses her by `assess_absent` (`settle_absent`). The debtor is
+    the hull's customs principal; her absent tenant is told.
+  - A link-loss hull goes through the backup seat's submission as before, and so pays the same
+    way.
+  - Running stays a present pilot's choice.
+- **The payee** (Q-50-14). The contraband fine goes to `fine_payee`: the terms row's payee once
+  the holder has a row, else the Registry, as built. Lane v47 adds the Republic Customs Office
+  (`republic_customs`, at Stickney, capital 10,000, provisional), the payee of the Republic's
+  Kirkwood row.
+- **Pinning** (Q-50-10):
+  - `PendingVoyage.terms` is set at filing to the picket's live terms, and copied to
+    `Departed.terms` at the launch.
+  - An engagement from free flight rewrites `Departed.terms`.
+  - The picket reads the pinned terms.
+- **The shortcut** (Q-50-55). A destination the port of departure lays no route to owes the
+  first interdicted leg of any route out of that port, so Ceres' halo to Deimos flies through
+  the picket. Luna, routed by the long way, owes nothing, and the outward run stays free.
+- **Lane v47:**
+  - the Kirkwood row's `terms.republic` (payee `republic_customs`, 20‰, floor 50 cr);
+  - the customs office row;
+  - **for LW.1**, the Ceres row's `terms.freeport`: payee `freeport_registry`, `strategic_ore`
+    restricted unless `freeport_prospecting`. That paper id stands for the picket's two-paper
+    test (Q-50-32, Q-50-65): a Freeport Registry prospecting license and a registered claim, both
+    held. It is inert in KC.2: the duty reads only the Kirkwood row's transit duty and payee, and
+    nothing reads `restricted` until LW.1;
+  - relay v38, re-signed to require it.
+
+**Tests.** In `tests/domain_world/voyage.rs`, on the picket rig:
+- `kc2_the_transit_duty_before_and_after_the_flip_is_pinned_at_filing`, three cases:
+  - under the Co-op, no duty;
+  - the Republic holding Kirkwood at filing: 200 cr on 50 t of metals held as a lot (10,000 cr
+    of catalog value), paid to the customs office, and cleared;
+  - filed under the Co-op and flipped en route: no duty.
+- `kc2_a_pilot_who_cannot_pay_is_cleared_and_owes_the_duty`: a 200 cr debt to the office, the
+  hull cleared, the metals untouched.
+- `kc2_a_hull_whose_pilot_is_away_is_assessed_and_cleared`: no picket, and the duty is paid
+  from her pilot's account.
+- `kc2_the_free_flight_shortcut_to_deimos_owes_the_picket_leg`: Deimos owes the interdicted leg
+  and Luna does not.
+- Lane pins: `kc2_strip_terms_rebuilds_the_published_v46` (OP.1's digest); `lane_chain::strip_terms` as the new
+  head; the v47 and relay v38 digests and versions.
+- The count pins the customs office moves (`plumbing.rs`, `ports.rs`, `boot_parity.rs`) and
+  `ic_sortie_voyages.rs`'s departure record (now carrying the pin).
+- Mutation-checked on conclav.dev; each failed a story and was undone by a reverse edit:
+  - ignoring the pin;
+  - a duty never paid at once;
+  - the tick never settling the absent hull;
+  - the shortcut left open.
+  A first absent mutation, which suppressed only the line, survived: `assess_absent` still
+  levied. The tick-side mutation replaced it.
+- Green on conclav.dev on the merged branch (4e645b10a) with OP.1 in, all green: clippy `-D warnings` (tacsim,
+  mush-faction), every tacsim binary (`domain_economy` 700, `domain_field` 330, `domain_world`
+  288, the lib 2,501 among them), mush-server `split_boundary` (227), `commerce_composition`
+  and the `player_market` lib tests.
+- Earlier, before the merge: clippy `-D warnings` on tacsim; tacsim's `domain_economy` (698),
+  `domain_world` (291) and `domain_field`. With the duty levied at the boundary, before the move
+  to the tick: tacsim's other binaries and mush-server `split_boundary` (227) and
+  `commerce_composition`.
+  - `split_boundary`'s `ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field`
+    failed once and passed on the base and on a rerun with the patch: a flake.
+- Locally: rustdoc in both modes and the contract guards.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- **Every good with a `consumable` is a store, even held as a lot or under a haul's hold.** Q-50-53
+  makes propellant in a lot cargo; the known gap it accepts for unreserved propellant is widened
+  to every propellant and provision. Flagged for tuning.
+- **The duty is levied at the submission** (the command), not when the ruling lands, and on any
+  finding but a run. A seized hull owes it as a debt like anyone who cannot pay.
+- **The shortcut owes the picket's leg** rather than flying the long way's legs. The rule reaches
+  every destination the port of departure lays no route to: from Ceres that is Deimos and Titan.
+- **The pin is the picket's terms**, taken whatever the route, on every filing.
+- **The payee row lives at Stickney** (a port's org row needs a port). The fine scale, the import
+  duty, the restricted goods and the audit rate are carried and checked, and read by nothing yet.
+- **Q-50-39's penalties past the grace** are not built for the duty: the debt stands in `+debts`
+  and goes delinquent, and nothing quarantines on it yet.
+
+**Not built.**
+- The duty estimate on `+ship/plan`, the filing and the job board, and the reason clause (KC.3).
+- The Co-op's share by control (KC.4).
+- The import duty and the restricted goods (LW.1, OP.5).
+- The penalties past the grace.
 
 ## KC.3
 
-Not built.
+The duty line on `+ship/plan`, the filing and the job board, and the reason clause; the first
+acceptance story, which also measures the long way round (Q-50-8, Q-50-9, with Q-50-55). Stacked
+on KC.2. No lane bump.
+
+**Survey.**
+- **`+ship/plan`** is `port/voyage.rs`'s `plan_block`, one block per destination, ending at the
+  ETA and the window line.
+- **The filing's reply** is `undock_as`'s `CLEARANCE_FILED`, and KC.2 already pins the terms on
+  the `PendingVoyage`.
+- **The haul board** is `+market/jobs haul`. Its rows come from `services::haul::services`, with
+  the `subject` rendered by mush-market's `JOB_LINE`. A haul carries its origin and destination
+  venues, its good and its quantity, but no route.
+- **A route crosses the picket** when one of its legs is interdicted and ends at the picket's
+  host.
+- **Q-50-9's IC date** is the `since_ic` KC.0a stores.
+- **No shared 120-column constant** exists; tests assert widths line by line.
+
+**Built** (`tacsim::space::duty`).
+- `duty_on_value(w, value_major, row) -> Option<i64>`: the duty arithmetic on a value, for cargo
+  not yet aboard. `quote_duty` now uses it.
+- `route_crosses_picket(w, route) -> bool`.
+- `reason_clause(w, &PlaceTerms) -> Option<String>` gives `Republic hold since March 1, 2350`:
+  the de facto holder's name and the IC date its hold began.
+- `estimate_line(ctx, hull, route, &terms, pinned)` gives
+  `Kirkwood duty ~200.00cr on 10000 cr of cargo (Republic hold since …).`, with `, pinned at
+  filing` when `pinned`.
+  - `+ship/plan` shows it under the live terms, on a route that crosses the picket.
+  - The filing shows it under the terms it pinned.
+- `haul_clause(w, origin, destination, value_major)` adds ` (Kirkwood duty ~50 cr)` to a haul
+  row's subject when the origin port routes to the destination through the picket, under the
+  live terms. The value is the good's catalog baseline × quantity.
+- The picket's charge (`duty_line`, now taking the hull) ends with the same clause: `… is paid
+  (Republic hold since …).` and `… (see +debts; Republic hold since …).`
+- `+territory` and `+chronicle` already show the same hold and date (KC.0a, KC.1).
+
+**Tests.**
+- `tests/domain_world/voyage.rs`,
+  `kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why`: one Dray-P with 50 t of
+  metals, on one run.
+  - Under the Co-op, `+ship/plan` shows no duty.
+  - After the flip, `+ship/plan` shows the 200 cr estimate with the reason.
+  - `+ship/undock` shows the pinned estimate with the reason.
+  - The picket's charge carries the same clause.
+  - Every duty line fits in 120 columns.
+- `tests/domain_economy/ex6_haul.rs`, `kc3_the_job_board_shows_the_duty_a_hauler_will_meet`: a
+  6 t metals haul to Stickney shows no duty under the Co-op, and `(Kirkwood duty ~50 cr)` (the
+  floor) after the flip, within 120 columns.
+- `tests/domain_world/moon_ports.rs`,
+  `kc3_the_long_way_round_costs_time_the_direct_run_pays_the_duty` (pure planner, laden 100 t,
+  one soul, full throttle, at the epoch):
+  - Direct Ceres to Stickney: 1,448,368 s (16.8 IC days), 47 t.
+  - The long way by Luna and Deimos: 2,516,632 s (29.1 IC days), 82 t.
+  - The detour's extra 35 t is 1,400 cr at Ceres' 40 cr a tonne. The duty on 100 t of metals
+    is 400 cr, so the direct run stays worth taking for ordinary cargo at the provisional 2%.
+- Mutation-checked on conclav.dev; each failed its story and was undone by a reverse edit:
+  - the plan's line dropped;
+  - the reason clause's date dropped;
+  - the filing's line dropped;
+  - the board's clause dropped.
+- Green on conclav.dev: clippy `-D warnings` on tacsim, and every tacsim binary. Locally:
+  rustdoc in both modes and the contract guards.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- **The reason clause names the holder and the date, not the region** (`Republic hold since
+  March 1, 2350`); the line says Kirkwood. Every line fits in 120 columns that way.
+- **The board's duty is the major-credit ceiling** of the duty on the catalog value, under the
+  live terms. A hauler who files later pins the terms of that day.
+- **A haul shows the duty when any of its origin port's routes to the destination crosses the
+  picket**, whichever route the hauler later flies.
+- **The plan's estimate reads what is aboard now**; an empty hold shows no line.
+
+**Not built.**
+- The Co-op's share by control (KC.4).
+- A duty line on a queued departure's filing. It files through the executor, which writes no
+  reply.
 
 ## KC.4
 
-Not built.
+The Co-op's enrollment share by control (Q-50-7). Stacked on KC.3. **A lane bump: lane v48 and
+relay v39**, from KC.2's v47.
+
+**Survey.**
+- The share was one number, the lane programme's `share_permille` (250). It is frozen on the
+  enrollment at `+coop/enroll` (`EnrolPlan.share_permille`) and read by the proceeds at every
+  sale.
+- Two lines of copy said "a quarter": the registrar's line (`REGISTRAR_LINE`, shown by `+coop`)
+  and the `+coop` help (`COOP_HELP`).
+- `+coop`'s terms line printed the programme's permille. `docs/help/coop.md` describes the share
+  in the same words.
+
+**Built.**
+- A terms row gains `coop_share_permille: Option<u16>`, checked at 1,000 at most. Lane v48 sets
+  300 on the Republic's Kirkwood row.
+- `port::coop::signing_share_permille(w, programme_share) -> u32` gives the share a new
+  enrollment signs at: the Kirkwood approach's live terms row's `coop_share_permille` when the
+  holder's row sets one, else the programme's. `+coop/enroll` freezes it on the enrollment.
+  Standing enrollments keep what they signed at; the proceeds still read the enrollment.
+- **The copy:**
+  - `REGISTRAR_LINE` is a template (`{share}`), filled by `registrar_line(permille)` with
+    `share_words` ("a quarter" at 250, "three tenths" at 300, "half" at 500, else the permille).
+  - `+coop`'s terms line prints the signing share.
+  - `COOP_HELP` and `docs/help/coop.md` say the share is a quarter, or more while a holder of the
+    Kirkwood approach sets it so, fixed at signing.
+- **Lane v48:**
+  - the Republic row's `coop_share_permille: 300`;
+  - relay v39, re-signed to require it;
+  - `lane_chain::strip_coop_share` as the chain's new head, with
+    `kc4_strip_coop_share_rebuilds_the_published_v47` holding KC.2's digest;
+  - no venue word or other client-pinned list moved, so the SSH and web pins are unchanged.
+
+**Tests.**
+- `tests/domain_economy/coop.rs`,
+  `kc4_new_enrollments_sign_at_the_holders_share_and_standing_ones_keep_theirs`:
+  - under the Co-op's hold, `+coop` offers a quarter and 250‰, and the first captain signs at 250;
+  - after the flip, `+coop` offers three tenths and 300‰, and the second captain signs at 300;
+  - the first captain's enrollment keeps 250.
+- `ic6_enrol_once…` reads the registrar line through `registrar_line(250)`.
+- Mutation-checked on conclav.dev; each failed the story and was undone by a reverse edit:
+  - the signing share ignoring the row;
+  - "three tenths" spelled as a quarter.
+- Lane pins moved to v48 and relay v39: `lane.rs`, `cost_lane.rs`, `sites.rs`, `drones.rs`,
+  `mill.rs`, `stations.rs`, `boot_parity.rs`, `relay_registry.rs`.
+- Green on conclav.dev: clippy `-D warnings` on tacsim, every tacsim binary, mush-server
+  `split_boundary` and `commerce_composition`, and mush-bot's `coop_sentences` (the registrar
+  line's last sentence, which the bot mirrors, is unchanged). Locally: rustdoc in both modes, the
+  contract guards and the help lint.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- The share is read from the Kirkwood approach's terms (the region the flip changes), whichever
+  port the Co-op signs at.
+- Shares with no word of their own print as permille in the registrar's line.
+
+**Not built.**
+- Nothing of Q-50-7 is left. The Co-op's other terms (stake, buyout) are unchanged by control.
 
 ## LW.1
 
@@ -520,7 +782,81 @@ Not built.
 
 ## LW.5
 
-Not built.
+**Survey** (at `563a24b6a`, #716's head with main merged; CR #711 in main):
+- **The seizure** (CR) took the hold's unheld strategic-ore lots whole (`consume_products`) and
+  the pool past a haul's hold (`InventoryFamilies::seize`), and credited nobody.
+- **The census** (`port/census.rs`) scans every pool and lot of a chain good. A seizure that
+  destroys ore therefore lowers `pools` or `lots`, and `balance` moves. Its `seized` term is fed
+  only by an in-flight burn's receipt (`seized_t`), which nothing sets today.
+- **The payee.** The picket's fine is paid to the Freeport Registry, the licence issuer
+  (`resolve_registry_principal_and_account`). The Registry is an organization at Ceres with an
+  account but no vendor row, so it has no storefront or vault. Stickney's authority,
+  `stickney_yards`, is a vendor.
+- **The market** lists only for a registered vendor (`list_goods`). `register_vendor` works at
+  runtime, one vendor per organization. A `Supply::Stock` ask draws from the vendor's vault, and
+  `restock_ask` raises a standing one. The stock clerk lists only content's `asks`, so an
+  authority missing from content needs its own listing call.
+
+**Built:**
+1. **`InventoryFamilies::seize(…, into)`.** With a destination, the taken units are credited to
+   that endpoint's pool (made when absent), and their lineage is carried as `transfer` carries it.
+   It is still one write of each pair.
+2. **`crate::port::seized`:**
+   - `seizing_authority(w)` is the one payee lookup: the Freeport Registry at the licence port,
+     today. KC.2 re-points it at the Republic customs office after the flip (Q-50-14).
+   - `ensure_vault(ctx, &authority)` uses the authority's vendor vault when it has one. Otherwise
+     it makes an organization-owned vault (a container in LIMBO) and registers the authority as
+     the port's market vendor. It runs at runtime, so there is no lane change.
+   - `offer(ctx, &authority, vault, good, units)` raises a standing ask from the vault, or lists
+     one ask of the whole pool. It posts as the port's stock clerk, at `SEIZED_PRICE_PERMILLE`
+     (750, provisional) of the good's reference (`price_minor`).
+   - The new vendor's vault gives the port's clerk its `vault.withdraw` grant, as the content
+     applier gives every vendor.
+   - `sells_at(w, venue, org)`: the venue gate's `port_seller` admits the authority at its port,
+     so a hull's hold may take delivery of seized goods as it does from the port's counters.
+3. **Customs:**
+   - The filing makes the authority's vault and carries it on the ruling as
+     `PendingCustomsRuling.into`.
+   - The prepare relocates the hold's lots there and seizes the pool into it, in the ruling's
+     transaction. The haul's hold release and its ledger failure from CR are unchanged.
+   - When the ruling lands, the space tick offers the ore.
+   - With no authority, the old destroy path is kept as a logged fallback.
+
+**Tests:**
+- `mush-inventory` `pool::seizure::tests::…` adds a seizure into a vault: the taken units land
+  there, free.
+- `domain_world` `voyage::lw5_a_seizure_moves_the_ore_to_the_authority_which_offers_it_at_its_port`:
+  - An indigent pilot's 51 t is seized at the picket.
+  - The census `balance` is the same before and after, and `seized` is 0.
+  - Her hold reads 0 and the Registry's vault 51.
+  - A Ceres ask of 51 t stands at three quarters of the live reference (600 cr a tonne today).
+  - A trader at Ceres buys a tonne. It moves from the vault to their hold, and the census still
+    balances.
+  - Mutation-checked: the seizure without its destination (the census loses 51,000 kg), and the
+    offer of no units (no ask). Each fails the story.
+- `voyage::cr_the_picket_reads_ore_held_as_a_lot…` now finds the lot in the authority's vault.
+- Re-run: `voyage::cr_*`, `sfr26c`, `sfr12`, `sfr6`; `domain_economy` `mill::sm12a_only_the_clerk…`
+  (its doc notes the transfer), `ex6_haul::` and `lw2_offense_record::`.
+
+**Divergences:**
+- **The authority's vault is made at runtime**, with the authority registered as its port's
+  market vendor on first use. This avoids a lane bump. Its container is a Thing in LIMBO, not a
+  storefront in a port room.
+- **The offer is posted when the ruling lands**, not by the stock clerk's daily walk, which reads
+  only content's asks. A refused offer is logged, and the ore waits for the next seizure's offer.
+- **The price is provisional:** three quarters of the good's live reference
+  (`good_reference_minor`, as a haul's declared value reads it), 600 cr a tonne of strategic ore
+  today.
+- **A sale pays the authority's own account**, the Registry's, through the market's vendor seam.
+  No share goes to a polity treasury; no polity has one yet (KC.2).
+
+**Not built:**
+- **The Republic customs office as payee after the flip.** KC.2 adds the office and re-points
+  `seizing_authority`.
+- **An authority that is already a vendor** (Stickney Yards, if a seizure is ever enforced there)
+  takes seized goods into its storefront. No story covers that path: today's only seizure is the
+  picket's, enforced by the Registry at Ceres.
+- **No lane bump.**
 
 ## OP.0
 

@@ -31,6 +31,15 @@ pub const MAX_JOB_COMMENT_BYTES: usize = 16 * 1024;
 /// Maximum UTF-8 bytes in a note category name (well under
 /// [`mush_core::MAX_MODULE_KEY_BYTES`] even with the `note:{id}:` prefix).
 pub const MAX_NOTE_CATEGORY_BYTES: usize = 64;
+/// Maximum UTF-8 bytes in one character note body (`Note.text`).
+pub const MAX_NOTE_TEXT_BYTES: usize = 16 * 1024;
+/// Maximum notes stored on any single character/object.
+pub const MAX_NOTES_PER_OBJECT: usize = 64;
+/// Maximum simultaneously non-terminal `+request` jobs one non-staff player may
+/// hold open in the `REQ` queue.
+pub const MAX_OPEN_REQUESTS_PER_PLAYER: usize = 16;
+/// Number of jobs rendered per page by `+jobs`.
+pub const JOBS_LIST_PAGE_SIZE: usize = 50;
 /// Hard persisted comment cap, including terminal staff audit comments.
 pub const MAX_JOB_COMMENTS: usize = 256;
 /// Ordinary comment cap. The remainder is reserved for terminal staff actions.
@@ -207,6 +216,34 @@ impl JobsState {
         self.next_id = self.next_id.checked_add(1)?;
         Some(id)
     }
+
+    /// Number of non-terminal `REQ` jobs currently open for `opener`.
+    #[must_use]
+    pub fn open_request_count(&self, opener: ObjId) -> usize {
+        self.jobs
+            .values()
+            .filter(|j| j.opener == opener && j.queue == REQ_QUEUE && !j.status.is_terminal())
+            .count()
+    }
+
+    /// Number of notes currently attached to `owner`.
+    #[must_use]
+    pub fn note_count(&self, owner: ObjId) -> usize {
+        self.notes
+            .range((owner, SmolStr::default())..)
+            .take_while(|((o, _), _)| *o == owner)
+            .count()
+    }
+}
+
+/// Validate one note's body byte length against [`MAX_NOTE_TEXT_BYTES`].
+pub(crate) fn validate_note_text(text: &str) -> Result<(), String> {
+    if text.len() > MAX_NOTE_TEXT_BYTES {
+        return Err(format!(
+            "a note may contain at most {MAX_NOTE_TEXT_BYTES} UTF-8 bytes"
+        ));
+    }
+    Ok(())
 }
 
 /// Validate one comment's content independently of trail capacity.

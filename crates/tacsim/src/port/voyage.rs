@@ -154,6 +154,10 @@ pub struct Departed {
     pub to_venue: CanonicalId,
     /// The port entry the hull left.
     pub from: CanonicalId,
+    /// **Doc 50 cut KC.2 (Q-50-10)**: the picket's terms pinned when the passage was filed (or
+    /// engaged from free flight): the picket reads these, not the live ones. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<crate::polity::PlaceTerms>,
 }
 
 /// **What a hull bound for a site will arrive with** (doc 20 cut SM.2; Q-20-7): the
@@ -221,6 +225,10 @@ pub struct PendingVoyage {
     /// close any of them. Skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_behind: Vec<ObjId>,
+    /// **Doc 50 cut KC.2 (Q-50-10)**: the picket's terms pinned when the passage was filed (or
+    /// engaged from free flight): the picket reads these, not the live ones. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<crate::polity::PlaceTerms>,
 }
 
 impl Voyage {
@@ -2470,6 +2478,13 @@ fn plan_block(
         ),
         _ => format!("Passage {icdays} IC days; the clock is stopped."),
     });
+    // Doc 50 cut KC.3 (Q-50-8, Q-50-9): the duty the picket will assess on what is aboard now,
+    // under the terms live now, with who holds the approach and since when.
+    if let Some(line) = crate::space::duty::live_terms(w).and_then(|terms| {
+        crate::space::duty::estimate_line(ctx, view.hull(), &plan.route, &terms, false)
+    }) {
+        lines.push(line);
+    }
     // Doc 19 cut A.3 (§5): the window — the best departure in the next thirty IC
     // days against today's, when the sky moves.
     if let Some(window) = crate::port::chart::plan_window_line(w, basis, &dest.routes, &plan) {
@@ -3707,6 +3722,7 @@ pub(crate) fn prepare_departure(
         arrival,
         carried: basis.carried.clone(),
         left_behind,
+        terms: crate::space::duty::live_terms(w),
     };
     let voyage = Voyage {
         schema: VOYAGE_SCHEMA,
@@ -3822,6 +3838,12 @@ pub(crate) fn undock_as(ctx: &mut Ctx<'_>, raw: &str, lift: bool) -> Result<(), 
         None => base.replace(", about {hhmm} UTC {day}", ""),
     };
     ctx.out.sys_to_actor(actor, "tacsim", reply);
+    // Doc 50 cut KC.3 (Q-50-8, Q-50-10): the duty under the terms this filing pinned.
+    if let Some(line) = pending.terms.as_ref().and_then(|terms| {
+        crate::space::duty::estimate_line(ctx, charter.hull, &plan.route, terms, true)
+    }) {
+        ctx.out.sys_to_actor(actor, "tacsim", line);
+    }
     // Doc 32 cut CF.5 (doc 27 Q-H10): the decision is on the filed voyage; the pilot and every
     // left unit's operator hear it.
     if !pending.left_behind.is_empty() {
@@ -3939,6 +3961,7 @@ fn departed_of(
         depart_ic,
         to_venue: pending.to_venue.clone(),
         from,
+        terms: pending.terms.clone(),
     })
 }
 
@@ -4521,6 +4544,7 @@ mod tests {
             arrival: None,
             carried: Vec::new(),
             left_behind: Vec::new(),
+            terms: None,
         }
     }
 
@@ -4772,6 +4796,7 @@ mod tests {
                 depart_ic: 900,
                 to_venue: CanonicalId::new("stickney").unwrap(),
                 from: CanonicalId::new("ceres_port").unwrap(),
+                terms: None,
             }),
         };
         flown.check().unwrap();

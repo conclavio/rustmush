@@ -13,10 +13,12 @@ use mush_core::{
 };
 use mush_ipc::codec::{decode_frame, encode_frame_into};
 use mush_ipc::{
-    AttachRec, CanonicalHash, FrameDecoder, GatewayAction, GatewayInput, IPC_MIN_PROTO,
-    IPC_VERSION, MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUTS,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ToGateway, ToServer,
-    WireInbound, WireInboundError, encode_frame,
+    AttachRec, CanonicalHash, FrameDecoder, GatewayAction, GatewayInput, GatewayInputSizeError,
+    IPC_MIN_PROTO, IPC_VERSION, MAX_FRAME_LEN, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
+    MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, MAX_RESPOND_CHOICE_ID_BYTES, MAX_RESPOND_EPOCH_BYTES,
+    MAX_RESPOND_TEXT_CHARS, ToGateway, ToServer, WireInbound, WireInboundError, WireInboundLane,
+    encode_frame,
 };
 
 mod samples;
@@ -500,4 +502,128 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
     );
     assert_eq!(IPC_VERSION, 14);
     Ok(())
+}
+
+#[test]
+fn composing_and_respond_classify_as_sheddable_never_lifecycle() {
+    let composing = WireInbound::Composing {
+        conn: 1,
+        actor: ObjId(2),
+        active: true,
+    };
+    assert!(matches!(
+        composing.clone().classify(),
+        WireInboundLane::Sheddable(WireInbound::Composing { .. })
+    ));
+    assert!(composing.validate_sheddable().is_ok());
+
+    let respond = WireInbound::Respond {
+        epoch: "e-1".to_string(),
+        conn: 1,
+        actor: ObjId(2),
+        id: 7,
+        choice: mush_proto::RespondChoice::Text("hello".to_string()),
+    };
+    assert!(matches!(
+        respond.clone().classify(),
+        WireInboundLane::Sheddable(WireInbound::Respond { .. })
+    ));
+    assert!(respond.validate_sheddable().is_ok());
+
+    for lifecycle in [
+        WireInbound::ConnUp {
+            conn: 1,
+            actor: ObjId(2),
+            caps_structured: true,
+            from_linkdead: false,
+        },
+        WireInbound::ConnDown {
+            conn: 1,
+            actor: ObjId(2),
+            reason: DisconnectKind::Quit,
+        },
+        WireInbound::SessionGone { actor: ObjId(2) },
+        WireInbound::BareUp {
+            conn: 1,
+            actor: ObjId(2),
+        },
+        WireInbound::BareDown {
+            conn: 1,
+            actor: ObjId(2),
+        },
+    ] {
+        assert!(matches!(
+            lifecycle.classify(),
+            WireInboundLane::Lifecycle(_)
+        ));
+    }
+
+    let cmd = WireInbound::Cmd {
+        conn: 1,
+        actor: ObjId(2),
+        line: "look".to_string(),
+    };
+    assert!(matches!(
+        cmd.classify(),
+        WireInboundLane::Custodied(GatewayInput::Cmd { .. })
+    ));
+}
+
+#[test]
+fn validate_sheddable_bounds_respond_epoch_and_choice_payloads() {
+    let huge_epoch = WireInbound::Respond {
+        epoch: "e".repeat(MAX_RESPOND_EPOCH_BYTES + 1),
+        conn: 1,
+        actor: ObjId(2),
+        id: 1,
+        choice: mush_proto::RespondChoice::Cancel,
+    };
+    assert!(matches!(
+        huge_epoch.validate_sheddable(),
+        Err(GatewayInputSizeError::TooLarge {
+            maximum,
+            ..
+        }) if maximum == MAX_RESPOND_EPOCH_BYTES
+    ));
+
+    let huge_choice_id = WireInbound::Respond {
+        epoch: "e".to_string(),
+        conn: 1,
+        actor: ObjId(2),
+        id: 1,
+        choice: mush_proto::RespondChoice::Choose(
+            "x".repeat(MAX_RESPOND_CHOICE_ID_BYTES + 1).into(),
+        ),
+    };
+    assert!(matches!(
+        huge_choice_id.validate_sheddable(),
+        Err(GatewayInputSizeError::TooLarge {
+            maximum,
+            ..
+        }) if maximum == MAX_RESPOND_CHOICE_ID_BYTES
+    ));
+
+    let huge_text = WireInbound::Respond {
+        epoch: "e".to_string(),
+        conn: 1,
+        actor: ObjId(2),
+        id: 1,
+        choice: mush_proto::RespondChoice::Text("a".repeat(MAX_RESPOND_TEXT_CHARS + 1)),
+    };
+    assert!(matches!(
+        huge_text.validate_sheddable(),
+        Err(GatewayInputSizeError::TooLarge {
+            maximum,
+            ..
+        }) if maximum == MAX_RESPOND_TEXT_CHARS
+    ));
+
+    let ok_boundary = WireInbound::Respond {
+        epoch: "e".repeat(MAX_RESPOND_EPOCH_BYTES),
+        conn: 1,
+        actor: ObjId(2),
+        id: 1,
+        choice: mush_proto::RespondChoice::Text("a".repeat(MAX_RESPOND_TEXT_CHARS)),
+    };
+    assert!(ok_boundary.validate_sheddable().is_ok());
 }

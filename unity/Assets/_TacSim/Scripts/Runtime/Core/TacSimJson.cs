@@ -40,6 +40,25 @@ namespace TacSim.Core
             Kind = kind;
         }
 
+        private static bool IsFiniteDouble(double v) => !double.IsNaN(v) && !double.IsInfinity(v);
+
+        private static bool TryDoubleToLong(double v, out long result)
+        {
+            if (!IsFiniteDouble(v))
+            {
+                result = 0;
+                return false;
+            }
+            double rounded = Math.Round(v);
+            if (rounded < -9223372036854775808.0 || rounded >= 9223372036854775808.0)
+            {
+                result = 0;
+                return false;
+            }
+            result = (long)rounded;
+            return true;
+        }
+
         public static JsonNode FromBool(bool v) => new JsonNode(JsonKind.Bool) { _boolVal = v };
         public static JsonNode FromLong(long v) => new JsonNode(JsonKind.Int) { _intVal = v, _ulongVal = v >= 0 ? (ulong)v : 0UL, _floatVal = v };
         public static JsonNode FromULong(ulong v)
@@ -48,7 +67,15 @@ namespace TacSim.Core
                 return FromLong((long)v);
             return new JsonNode(JsonKind.Int) { _intVal = long.MaxValue, _ulongVal = v, _hasUlongVal = true, _floatVal = v };
         }
-        public static JsonNode FromDouble(double v) => new JsonNode(JsonKind.Float) { _floatVal = v, _intVal = SafeDoubleToLong(v, 0) };
+        public static JsonNode FromDouble(double v)
+        {
+            if (!IsFiniteDouble(v))
+                return Null;
+            long clampedInt = TryDoubleToLong(v, out long lv)
+                ? lv
+                : (v < 0.0 ? long.MinValue : long.MaxValue);
+            return new JsonNode(JsonKind.Float) { _floatVal = v, _intVal = clampedInt };
+        }
         public static JsonNode FromString(string v) => v == null ? Null : new JsonNode(JsonKind.String) { _strVal = v };
 
         public static JsonNode NewArray() => new JsonNode(JsonKind.Array) { _arrVal = new List<JsonNode>() };
@@ -57,16 +84,6 @@ namespace TacSim.Core
         public bool IsNull => Kind == JsonKind.Null;
         public bool IsObject => Kind == JsonKind.Object;
         public bool IsArray => Kind == JsonKind.Array;
-
-        private static long SafeDoubleToLong(double v, long fallback)
-        {
-            if (double.IsNaN(v) || double.IsInfinity(v))
-                return fallback;
-            double rounded = Math.Round(v);
-            if (rounded >= 9223372036854775808.0) return long.MaxValue;
-            if (rounded <= -9223372036854775808.0) return long.MinValue;
-            return (long)rounded;
-        }
 
         public bool AsBool(bool fallback = false)
         {
@@ -78,7 +95,8 @@ namespace TacSim.Core
         public long AsLong(long fallback = 0)
         {
             if (Kind == JsonKind.Int) return _hasUlongVal ? long.MaxValue : _intVal;
-            if (Kind == JsonKind.Float) return SafeDoubleToLong(_floatVal, fallback);
+            if (Kind == JsonKind.Float)
+                return TryDoubleToLong(_floatVal, out long lv) ? lv : fallback;
             if (Kind == JsonKind.String && long.TryParse(_strVal, NumberStyles.Integer, CultureInfo.InvariantCulture, out long p))
                 return p;
             return fallback;
@@ -93,7 +111,7 @@ namespace TacSim.Core
             }
             if (Kind == JsonKind.Float)
             {
-                if (double.IsNaN(_floatVal) || double.IsInfinity(_floatVal) || _floatVal < 0.0)
+                if (!IsFiniteDouble(_floatVal) || _floatVal < 0.0)
                     return fallback;
                 double rounded = Math.Round(_floatVal);
                 if (rounded >= 18446744073709551616.0) return ulong.MaxValue;
@@ -106,17 +124,21 @@ namespace TacSim.Core
 
         public int AsInt(int fallback = 0)
         {
-            long l = AsLong(fallback);
-            if (l > int.MaxValue) return int.MaxValue;
-            if (l < int.MinValue) return int.MinValue;
-            return (int)l;
+            long v = AsLong(fallback);
+            if (v < int.MinValue || v > int.MaxValue)
+                return fallback;
+            return (int)v;
         }
 
         public double AsDouble(double fallback = 0.0)
         {
-            if (Kind == JsonKind.Float) return _floatVal;
-            if (Kind == JsonKind.Int) return _hasUlongVal ? (double)_ulongVal : _intVal;
-            if (Kind == JsonKind.String && double.TryParse(_strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out double p))
+            if (Kind == JsonKind.Float)
+                return IsFiniteDouble(_floatVal) ? _floatVal : fallback;
+            if (Kind == JsonKind.Int)
+                return _hasUlongVal ? (double)_ulongVal : _intVal;
+            if (Kind == JsonKind.String &&
+                double.TryParse(_strVal, NumberStyles.Float, CultureInfo.InvariantCulture, out double p) &&
+                IsFiniteDouble(p))
                 return p;
             return fallback;
         }
@@ -193,7 +215,7 @@ namespace TacSim.Core
         private JsonNode CloneInternal(int depth)
         {
             if (depth > MaxDepth)
-                throw new InvalidOperationException($"JSON nesting exceeds maximum depth of {MaxDepth}.");
+                throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
             switch (Kind)
             {
                 case JsonKind.Null: return Null;
@@ -203,12 +225,16 @@ namespace TacSim.Core
                 case JsonKind.String: return FromString(_strVal);
                 case JsonKind.Array:
                 {
+                    if (depth >= MaxDepth)
+                        throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
                     var copy = NewArray();
                     foreach (var el in _arrVal) copy.Add((el ?? Null).CloneInternal(depth + 1));
                     return copy;
                 }
                 case JsonKind.Object:
                 {
+                    if (depth >= MaxDepth)
+                        throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
                     var copy = NewObject();
                     foreach (var kv in _objVal) copy[kv.Key] = (kv.Value ?? Null).CloneInternal(depth + 1);
                     return copy;
@@ -244,7 +270,7 @@ namespace TacSim.Core
         private void WriteJson(StringBuilder sb, int depth)
         {
             if (depth > MaxDepth)
-                throw new InvalidOperationException($"JSON nesting exceeds maximum depth of {MaxDepth}.");
+                throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
             switch (Kind)
             {
                 case JsonKind.Null:
@@ -259,7 +285,7 @@ namespace TacSim.Core
                         : _intVal.ToString(CultureInfo.InvariantCulture));
                     break;
                 case JsonKind.Float:
-                    if (double.IsNaN(_floatVal) || double.IsInfinity(_floatVal))
+                    if (!IsFiniteDouble(_floatVal))
                         sb.Append("0");
                     else
                         sb.Append(_floatVal.ToString("R", CultureInfo.InvariantCulture));
@@ -268,6 +294,8 @@ namespace TacSim.Core
                     WriteEscapedString(sb, _strVal ?? string.Empty);
                     break;
                 case JsonKind.Array:
+                    if (depth >= MaxDepth)
+                        throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
                     sb.Append('[');
                     for (int i = 0; i < _arrVal.Count; i++)
                     {
@@ -277,6 +305,8 @@ namespace TacSim.Core
                     sb.Append(']');
                     break;
                 case JsonKind.Object:
+                    if (depth >= MaxDepth)
+                        throw new InvalidOperationException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
                     sb.Append('{');
                     bool first = true;
                     foreach (var kv in _objVal)
@@ -343,7 +373,7 @@ namespace TacSim.Core
         private static JsonNode ParseValue(string s, ref int i, int depth)
         {
             if (depth > MaxDepth)
-                throw new FormatException($"JSON nesting exceeds maximum depth of {MaxDepth}.");
+                throw new FormatException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
             SkipWs(s, ref i);
             if (i >= s.Length)
                 throw new FormatException($"Unexpected end of JSON input at {i}");
@@ -372,7 +402,7 @@ namespace TacSim.Core
         private static JsonNode ParseObject(string s, ref int i, int depth)
         {
             if (depth > MaxDepth)
-                throw new FormatException($"JSON nesting exceeds maximum depth of {MaxDepth}.");
+                throw new FormatException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
             var obj = NewObject();
             i++; // '{'
             SkipWs(s, ref i);
@@ -402,7 +432,7 @@ namespace TacSim.Core
         private static JsonNode ParseArray(string s, ref int i, int depth)
         {
             if (depth > MaxDepth)
-                throw new FormatException($"JSON nesting exceeds maximum depth of {MaxDepth}.");
+                throw new FormatException($"JSON nesting depth exceeded maximum ({MaxDepth}).");
             var arr = NewArray();
             i++; // '['
             SkipWs(s, ref i);
@@ -533,7 +563,7 @@ namespace TacSim.Core
                     return FromULong(uval);
             }
             if (double.TryParse(slice, NumberStyles.Float, CultureInfo.InvariantCulture, out double dval) &&
-                !double.IsInfinity(dval) && !double.IsNaN(dval))
+                IsFiniteDouble(dval))
             {
                 return FromDouble(dval);
             }

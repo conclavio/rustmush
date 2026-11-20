@@ -1388,3 +1388,332 @@ fn a_domain_an_arena_holds_is_no_map_for_anybody() {
     let back = text(&tw, &events, rae);
     assert!(back.contains("You stand at"), "{back}");
 }
+
+/// HIGH-40: off-loop map compositing coalesces per window, bounds concurrency
+/// to `MAX_INFLIGHT_COMPOSITES`, throttles rapid non-staff map-edge `+move`
+/// growth, and debounces persistence writes during rapid growth.
+#[test]
+fn high40_coalesces_composites_throttles_edge_growth_and_debounces_persistence() {
+    let mut tw = lot();
+    let staff = GOD;
+    let coffee = room_named(&tw, "Coffee Shop");
+    let backlot = room_named(&tw, "Backlot");
+    tw.world_mut().move_to(staff, coffee).expect("staff");
+
+    let (domain, _) = open_over(&mut tw, staff, "312,240,334,272");
+    let rae = tw.spawn_player("Rae");
+    tw.world_mut().move_to(rae, backlot).expect("rae");
+    tw.run(rae, "coffee");
+    assert!(pose_of(&tw, rae).is_some());
+    // Clear ops from open_over.
+    let _ = tw.take_module_ops();
+
+    // 1. Trigger map-edge growth as non-staff Rae at t=0:
+    //    - emits exactly 1 ModuleAsync composite
+    //    - does NOT synchronously persist `window:{domain}` inside `grow()`
+    let (events1, effects1) = step(&mut tw, rae, "+move north 12");
+    assert!(
+        text(&tw, &events1, rae).contains("the map grows to take in Backlot"),
+        "{}",
+        text(&tw, &events1, rae)
+    );
+    let async_count_1 = effects1
+        .iter()
+        .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+        .count();
+    assert_eq!(async_count_1, 1, "first growth dispatches one composite");
+    let ops_during_grow = tw.take_module_ops();
+    let win_key = mush_atlas::window::window_key(domain.0);
+    assert!(
+        !ops_during_grow.iter().any(|op| matches!(
+            &op.op,
+            ModuleWrite::JsonSet { key, .. } if *key == win_key
+        )),
+        "grow() must not write window document synchronously before composite lands"
+    );
+
+    // 2. Rapid repeat `+move north 12` at the same timestamp while composite is in flight:
+    //    - throttled by per-actor growth cooldown AND emits 0 additional ModuleAsync jobs!
+    let (events2, effects2) = step(&mut tw, rae, "+move north 12");
+    assert!(
+        text(&tw, &events2, rae).contains("catching up"),
+        "rapid non-staff edge growth must hit cooldown: {}",
+        text(&tw, &events2, rae)
+    );
+    assert_eq!(
+        effects2
+            .iter()
+            .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+            .count(),
+        0,
+        "coalesced/throttled edge moves must spawn zero extra ModuleAsync jobs"
+    );
+
+    // 3. Deliver the first growth composite at t=0 (inside WINDOW_PERSIST_DEBOUNCE_SECS
+    //    of open's persist): persistence is debounced (`persist_dirty == true`, no
+    //    immediate disk write).
+    let (digest, _) = finish(&mut tw, staff, &effects1);
+    assert!(!digest.is_empty());
+    let ops_at_t0 = tw.take_module_ops();
+    let wrote_at_t0 = ops_at_t0.iter().any(|op| {
+        matches!(
+            &op.op,
+            ModuleWrite::JsonSet { key, .. } if *key == win_key
+        )
+    });
+    assert!(
+        !wrote_at_t0,
+        "growth composite inside WINDOW_PERSIST_DEBOUNCE_SECS must debounce persistence"
+    );
+    assert!(
+        atlas(&tw)
+            .windows
+            .open
+            .get(&domain.0)
+            .is_some_and(|e| e.persist_dirty),
+        "entry must be marked persist_dirty until debounce flush"
+    );
+
+    // Advance past WINDOW_PERSIST_DEBOUNCE_SECS and fire the 1s atlas tick -> flushes cleanly!
+    let flush_t = tw.world().now() + mush_atlas::WINDOW_PERSIST_DEBOUNCE_SECS + 1;
+    tw.set_now(flush_t);
+    let _ = tw.fire_due(flush_t.saturating_mul(1_000));
+    let ops_after_flush = tw.take_module_ops();
+    assert!(
+        ops_after_flush.iter().any(|op| {
+            matches!(
+                &op.op,
+                ModuleWrite::JsonSet { key, .. } if *key == win_key
+            )
+        }),
+        "debounced window document must flush after WINDOW_PERSIST_DEBOUNCE_SECS"
+    );
+    assert!(
+        atlas(&tw)
+            .windows
+            .open
+            .get(&domain.0)
+            .is_some_and(|e| !e.persist_dirty)
+    );
+
+    // 4. Per-window coalescing on a clean Lobby window: trigger 3 feature updates
+    //    while its initial composite is STILL in flight -> 0 extra ModuleAsync jobs
+    //    emitted during the burst, and completing the in-flight job emits exactly
+    //    ONE coalesced follow-up ModuleAsync!
+    let mut tw2 = lot();
+    let lobby = room_named(&tw2, "Lobby");
+    tw2.world_mut()
+        .move_to(staff, lobby)
+        .expect("staff to lobby");
+    let (_, lobby_open_eff) = step(&mut tw2, staff, "@atlas/window open here");
+    let lobby_open_async: Vec<Effect> = lobby_open_eff
+        .into_iter()
+        .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+        .collect();
+    assert_eq!(lobby_open_async.len(), 1);
+    let (_, f1) = step(
+        &mut tw2,
+        staff,
+        "@atlas/feature feature.reception_desk=damaged:80",
+    );
+    let (_, f2) = step(
+        &mut tw2,
+        staff,
+        "@atlas/feature feature.reception_desk=damaged:40",
+    );
+    let (_, f3) = step(
+        &mut tw2,
+        staff,
+        "@atlas/feature feature.reception_desk=destroyed",
+    );
+    let extra_during_inflight = f1
+        .iter()
+        .chain(f2.iter())
+        .chain(f3.iter())
+        .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+        .count();
+    assert_eq!(
+        extra_during_inflight, 0,
+        "repeated recomposites while in flight must coalesce instead of spawning parallel jobs"
+    );
+    let mut follow_up_jobs = 0usize;
+    for effect in &lobby_open_async {
+        if let Effect::ModuleAsync {
+            module,
+            correlation,
+            payload,
+            ..
+        } = effect
+        {
+            let outcome = mush_atlas::run_async(payload);
+            let mut out = Outbox::new();
+            let mut fx = Effects::new();
+            tw2.engine_mut().step(
+                Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                    module: module.clone(),
+                    actor: staff,
+                    correlation: *correlation,
+                    payload: outcome,
+                }),
+                &mut out,
+                &mut fx,
+            );
+            let follow_eff = fx.drain();
+            follow_up_jobs += follow_eff
+                .iter()
+                .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+                .count();
+            let _ = finish(&mut tw2, staff, &follow_eff);
+        }
+    }
+    assert_eq!(
+        follow_up_jobs, 1,
+        "three coalesced dirty updates must emit exactly one follow-up composite"
+    );
+    assert_eq!(atlas(&tw2).windows.inflight_composites(), 0);
+
+    // 5. Global concurrency cap (`MAX_INFLIGHT_COMPOSITES`): open
+    //    `MAX_INFLIGHT_COMPOSITES + 1` disjoint windows via the real
+    //    `@atlas/window open` verb (zero fiat writes) and verify only
+    //    `MAX_INFLIGHT_COMPOSITES` ModuleAsync jobs are dispatched initially,
+    //    the extra window queues (`in_flight == false, dirty == true`), and
+    //    completing one in-flight job drains the queued window automatically.
+    let cap = mush_atlas::MAX_INFLIGHT_COMPOSITES;
+    let total_rooms = cap + 1;
+    let sign_pack = |mut doc: serde_json::Value| -> mush_content::Pack {
+        doc["manifest"]["digest"] = serde_json::Value::String("0".repeat(64));
+        let raw = serde_json::to_string(&doc).expect("json");
+        let digest = mush_content::parse_pack(&raw)
+            .expect("parse")
+            .computed_digest()
+            .expect("digest")
+            .to_hex();
+        doc["manifest"]["digest"] = serde_json::Value::String(digest);
+        mush_content::parse_pack(&serde_json::to_string(&doc).expect("json")).expect("signed")
+    };
+    let region_pack = sign_pack(serde_json::json!({
+        "manifest": { "id": "region.grid", "version": 1, "kind": "region", "digest": "", "requires": [] },
+        "entries": {
+            "region.grid": { "kind": "region", "def": {
+                "name": "Grid", "kind": "surface", "body": "earth",
+                "extent": [[0, 0], [2000, 2000]], "datum_m": 0.0,
+                "background": { "surface": "paved", "mix": [["grass", 8]], "relief_cm": 0,
+                                "relief_period_cm": 800, "seed": 1 },
+                "ground_resolution_cm": 1000
+            } },
+            "locality.grid": { "kind": "locality", "def": {
+                "region": "region.grid", "name": "Grid", "kind": "district",
+                "footprint": [[0, 0], [2000, 0], [2000, 2000], [0, 2000]]
+            } }
+        }
+    }));
+    let mut nb_entries = serde_json::Map::new();
+    nb_entries.insert(
+        "neighborhood".to_string(),
+        serde_json::json!({ "kind": "neighborhood", "def": {
+            "region": "region.grid", "locality": "locality.grid", "name": "Grid Block",
+            "setting": "urban", "footprint": [[0, 0], [2000, 0], [2000, 2000], [0, 2000]],
+            "room_budget": { "target": 12, "maximum": 32 }
+        } }),
+    );
+    for i in 0..total_rooms {
+        let x0 = (i as u32) * 100 + 10;
+        let x1 = x0 + 10;
+        nb_entries.insert(
+            format!("room.r{i}"),
+            serde_json::json!({ "kind": "room", "def": {
+                "name": format!("CellRoom{i}"), "surface": "ground",
+                "footprint": { "rect": [[x0, 10], [x1, 20]] },
+                "desc": "A spaced test room."
+            } }),
+        );
+        nb_entries.insert(
+            format!("exit.limbo_r{i}"),
+            serde_json::json!({ "kind": "exit", "def": {
+                "from": "limbo", "to": format!("room.r{i}"),
+                "names": [format!("Room{i};r{i}"), "Limbo;limbo"]
+            } }),
+        );
+    }
+    let nb_pack = sign_pack(serde_json::json!({
+        "manifest": {
+            "id": "neighborhood.grid", "version": 1, "kind": "neighborhood", "digest": "",
+            "requires": [{ "id": "region.grid", "version": 1 }]
+        },
+        "entries": serde_json::Value::Object(nb_entries)
+    }));
+    let mut appliers = Appliers::new();
+    mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+    let mut tw3 = TestWorld::with_modules(vec![
+        Box::new(SimulationModule::new()),
+        Box::new(AtlasModule::new()),
+        Box::new(
+            ContentModule::new()
+                .with_appliers(appliers)
+                .with_boot_packs(vec![region_pack, nb_pack]),
+        ),
+    ]);
+    let mut first_eff: Vec<Effect> = Vec::new();
+    let mut total_emitted = 0usize;
+    for i in 0..total_rooms {
+        let r = room_named(&tw3, &format!("CellRoom{i}"));
+        let _ = tw3.run(staff, &format!("@teleport #{}=#{}", staff.0, r.0));
+        let (_, eff) = step(&mut tw3, staff, "@atlas/window open here");
+        let asyncs: Vec<Effect> = eff
+            .into_iter()
+            .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+            .collect();
+        if i == 0 {
+            first_eff = asyncs.clone();
+        }
+        total_emitted += asyncs.len();
+    }
+    assert_eq!(
+        total_emitted, cap,
+        "at most MAX_INFLIGHT_COMPOSITES windows may dispatch concurrently"
+    );
+    assert_eq!(atlas(&tw3).windows.inflight_composites(), cap);
+    let queued_count = atlas(&tw3)
+        .windows
+        .open
+        .values()
+        .filter(|e| e.pending.as_ref().is_some_and(|p| !p.in_flight && p.dirty))
+        .count();
+    assert_eq!(queued_count, 1, "the (cap+1)th window must be queued");
+
+    // Completing the 1st window's composite automatically drains the queued window!
+    let mut drained_jobs = 0usize;
+    for effect in &first_eff {
+        if let Effect::ModuleAsync {
+            module,
+            correlation,
+            payload,
+            ..
+        } = effect
+        {
+            let outcome = mush_atlas::run_async(payload);
+            let mut out = Outbox::new();
+            let mut fx = Effects::new();
+            tw3.engine_mut().step(
+                Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                    module: module.clone(),
+                    actor: staff,
+                    correlation: *correlation,
+                    payload: outcome,
+                }),
+                &mut out,
+                &mut fx,
+            );
+            drained_jobs += fx
+                .drain()
+                .iter()
+                .filter(|e| matches!(e, Effect::ModuleAsync { .. }))
+                .count();
+        }
+    }
+    assert_eq!(
+        drained_jobs, 1,
+        "completing one in-flight composite must drain the queued window"
+    );
+    assert_eq!(atlas(&tw3).windows.inflight_composites(), cap);
+}

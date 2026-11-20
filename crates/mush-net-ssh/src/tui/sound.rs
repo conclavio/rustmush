@@ -48,6 +48,9 @@ pub const DEBOUNCE: Duration = Duration::from_secs(2);
 /// How often a w11term is told the pack's version again (G.11).
 pub const REANNOUNCE: Duration = Duration::from_secs(600);
 
+/// Hard cap on queued sound/pack bytes awaiting the next paint (SSH-M1).
+pub const MAX_OUT_BYTES: usize = 512;
+
 /// w11term's OSC 440 `pack` announcement (wire version 1, ST-terminated).
 #[must_use]
 pub fn osc440_pack(version: &str) -> Vec<u8> {
@@ -208,12 +211,26 @@ impl Sounds {
         self.on
     }
 
+    fn push_out(&mut self, bytes: &[u8]) {
+        if self.out.len().saturating_add(bytes.len()) <= MAX_OUT_BYTES {
+            self.out.extend_from_slice(bytes);
+        }
+    }
+
     /// The terminal's `XTVERSION` reply (the text after `>|`); a w11term is
-    /// told the pack at once (G.11).
+    /// told the pack at once (G.11). Recorded at most once per session so
+    /// repeated unsolicited `XTVERSION` replies cannot re-queue pack
+    /// announcements or grow the output buffer without bound (SSH-M1).
     pub fn set_terminal(&mut self, version: &str) {
+        if self.terminal.is_some() {
+            return;
+        }
+        let was_w11term = self.w11term;
         self.w11term = names_w11term(version);
         self.terminal = Some(version.chars().take(64).collect());
-        self.announced = None;
+        if !was_w11term {
+            self.announced = None;
+        }
         self.tick(Instant::now());
     }
 
@@ -227,7 +244,8 @@ impl Sounds {
             .is_none_or(|at| now.saturating_duration_since(at) >= REANNOUNCE)
         {
             self.announced = Some(now);
-            self.out.extend(osc440_pack(pack));
+            let bytes = osc440_pack(pack);
+            self.push_out(&bytes);
         }
     }
 
@@ -311,10 +329,11 @@ impl Sounds {
         };
         self.last.insert(name.to_string(), now);
         if self.w11term {
-            self.out.extend(osc440_play(name));
+            let bytes = osc440_play(name);
+            self.push_out(&bytes);
         } else {
             self.last_bell = Some(now);
-            self.out.push(0x07);
+            self.push_out(&[0x07]);
         }
     }
 
@@ -477,6 +496,38 @@ mod tests {
         assert_eq!(
             Sounds::new().pack(),
             crate::assets::AssetPack::shipped().map(|p| p.pack_version())
+        );
+    }
+
+    /// Regression test (SSH-M1): repeated `set_terminal` calls are ignored once
+    /// recorded (no pack re-announcement storm) and `Sounds::out` never grows
+    /// past [`MAX_OUT_BYTES`].
+    #[test]
+    fn repeated_set_terminal_and_queued_sounds_stay_bounded() {
+        let mut s = Sounds::with_pack(Some("pack_abc".into()));
+        s.set_terminal("w11term 0.4.1");
+        let first = s.take_bytes();
+        assert_eq!(first, osc440_pack("pack_abc"));
+        // Flooding XTVERSION replies must not re-announce or overwrite terminal.
+        for _ in 0..1_000 {
+            s.set_terminal("w11term 0.4.1");
+            s.set_terminal("other 1.0");
+        }
+        assert!(s.take_bytes().is_empty());
+        assert_eq!(s.terminal(), Some("w11term 0.4.1"));
+        assert!(s.by_name());
+
+        // Even with many distinct sound names played before draining, `out` stays <= MAX_OUT_BYTES.
+        let t0 = Instant::now();
+        for i in 0..100 {
+            s.play(&format!("sound_name_{i:03}_padded_to_grow"), t0);
+        }
+        let drained = s.take_bytes();
+        assert!(!drained.is_empty());
+        assert!(
+            drained.len() <= MAX_OUT_BYTES,
+            "queued sound bytes {} exceeded cap {MAX_OUT_BYTES}",
+            drained.len()
         );
     }
 }

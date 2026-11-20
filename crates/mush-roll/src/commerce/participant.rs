@@ -1379,7 +1379,10 @@ impl OwnerParticipant for RootParticipant {
                 return false;
             };
             return RootAnchor::parse(record).is_ok_and(|anchor| {
-                matches!(anchor, RootAnchor::RatingPending(_)) && anchor.key().key() == key.as_str()
+                matches!(
+                    anchor,
+                    RootAnchor::RatingPending(_) | RootAnchor::CharterTransferOffer(_, _)
+                ) && anchor.key().key() == key.as_str()
             });
         }
         let ReplayWrite::ModuleJsonSet {

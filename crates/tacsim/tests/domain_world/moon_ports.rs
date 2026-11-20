@@ -892,3 +892,42 @@ fn a8_the_ring_outranks_the_shuttle_by_ordering_at_the_epoch() {
         "the Titan shuttle loses at the epoch"
     );
 }
+
+/// **Doc 50 cut KC.3: the long way round, measured** (Q-50-55). The direct run from Ceres to
+/// Stickney crosses the Kirkwood picket and pays the duty; the lawful detour by Luna and Deimos
+/// (`ceres_aitken`, `aitken_voltaire`, `voltaire_stickney`) carries no picket and costs time and
+/// propellant instead. At the epoch, laden with 100 t, one soul, full throttle, the detour takes
+/// longer than the direct run; the story prints both, and the duty on 100 t of metals (2% of
+/// 20,000 cr), so the tuning reads the trade.
+#[test]
+fn kc3_the_long_way_round_costs_time_the_direct_run_pays_the_duty() {
+    let pack = lane();
+    let sky = sky_at(&pack, 1_000);
+    let epoch = lane_epoch(&pack);
+    let laden = 100_000;
+    let direct = plan(&sky, &pack, "ceres_stickney", MAX_THROTTLE, laden, 1, epoch);
+    let mut depart = epoch;
+    let (mut long_s, mut long_t) = (0_i64, 0_u64);
+    for route in ["ceres_aitken", "aitken_voltaire", "voltaire_stickney"] {
+        let leg = plan(&sky, &pack, route, MAX_THROTTLE, laden, 1, depart);
+        long_s += leg.total_s;
+        long_t += leg.burn_t;
+        depart += leg.total_s;
+    }
+    let ceres = port(&pack, "ceres_port");
+    let propellant = ask(&ceres, "propellant");
+    let duty_major = 20_000 * 20 / 1_000;
+    println!(
+        "direct: {} s ({:.1} IC days), {} t; long way: {} s ({:.1} IC days), {} t; the detour's \
+         extra propellant at Ceres' {propellant} cr/t: {} cr; the duty on 100 t of metals: \
+         {duty_major} cr",
+        direct.total_s,
+        direct.total_s as f64 / DAY as f64,
+        direct.burn_t,
+        long_s,
+        long_s as f64 / DAY as f64,
+        long_t,
+        long_t.saturating_sub(direct.burn_t) * propellant
+    );
+    assert!(long_s > direct.total_s, "the detour costs time");
+}

@@ -60,9 +60,9 @@ use mush_proto::{
     RichText,
 };
 use mush_session::{CharKey, ConnId, ConnectionHandle, SessionManager};
-use mush_store::{AccountRec, CharacterRef, DiscordLinkRec, ObjectStore};
+use mush_store::{AccountRec, CharacterRef, DiscordLinkRec, ObjectStore, StoreError};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::accounts::AuthBackend;
@@ -568,6 +568,29 @@ struct Follow {
     last_input: Instant,
 }
 
+/// Bounded `ObjId -> account_name` cache avoiding full `list_accounts()` scans
+/// on linkdead auto-follow and `@discord/follow` controls (STRAG-M10).
+#[derive(Default)]
+struct CharAccountCache {
+    by_char: HashMap<ObjId, String>,
+    last_scan: Option<Instant>,
+}
+
+impl CharAccountCache {
+    fn insert(&mut self, actor: ObjId, account: String) {
+        if !self.by_char.contains_key(&actor) && self.by_char.len() >= MAX_CHAR_ACCOUNT_CACHE {
+            self.by_char.clear();
+        }
+        self.by_char.insert(actor, account);
+    }
+
+    fn insert_account(&mut self, account: &AccountRec) {
+        for ch in &account.characters {
+            self.insert(ch.id, account.name.clone());
+        }
+    }
+}
+
 /// The production [`DiscordHooks`]: the shared [`GameBridge`] core (the
 /// follow connections), the store (the link records) and the REST client
 /// (DM channels and the writers' sends).
@@ -589,7 +612,15 @@ pub struct DiscordBridge<A: AuthBackend + 'static> {
     relay: RelayMapper,
     /// Per-author inbound relay limiter (D4): at most [`RELAY_PER_USER`]
     /// lines per [`RELAY_WINDOW`]; over the limit is silently dropped.
+    /// Bounded to [`MAX_RELAY_LIMITER_ENTRIES`] and populated only for linked,
+    /// non-banned users (STRAG-M10).
     relay_limiter: Mutex<HashMap<u64, VecDeque<Instant>>>,
+    /// Per-actor rate limiter for in-game `@discord/follow` controls (STRAG-M10).
+    follow_limiter: Mutex<HashMap<ObjId, VecDeque<Instant>>>,
+    /// Bounded reverse cache from character id to account name (STRAG-M10).
+    char_accounts: Mutex<CharAccountCache>,
+    /// Bounds concurrent linkdead `auto_follow` tasks (STRAG-M10).
+    auto_follow_sem: Arc<Semaphore>,
     /// The Discord channel staff-facing lines go to (D5, `[discord]
     /// .staff_channel_id`); `0` drops them.
     staff_channel_id: u64,
@@ -602,6 +633,68 @@ pub const RELAY_PER_USER: usize = 5;
 /// The longest line the bridge relays into the game, characters (the server
 /// guards the same bound).
 pub const MAX_RELAY_LINE_CHARS: usize = 1_000;
+/// Discord's hard per-message content cap, characters (STRAG-M10).
+pub const DISCORD_MAX_CONTENT_CHARS: usize = 2_000;
+/// Rate-limit window for in-game `@discord/follow` requests (STRAG-M10).
+pub const FOLLOW_CONTROL_WINDOW: Duration = Duration::from_secs(60);
+/// Maximum `@discord/follow` control requests per actor per [`FOLLOW_CONTROL_WINDOW`].
+pub const FOLLOW_CONTROL_PER_ACTOR: usize = 5;
+/// Upper bound on distinct users tracked in `relay_limiter` (STRAG-M10).
+const MAX_RELAY_LIMITER_ENTRIES: usize = 4_096;
+/// Upper bound on distinct actors tracked in `follow_limiter` (STRAG-M10).
+const MAX_FOLLOW_LIMITER_ENTRIES: usize = 4_096;
+/// Upper bound on cached `ObjId -> account_name` mappings (STRAG-M10).
+const MAX_CHAR_ACCOUNT_CACHE: usize = 4_096;
+/// Minimum interval between fallback `list_accounts()` scans when a character
+/// has no live session and no cached mapping (STRAG-M10).
+const CHAR_ACCOUNT_SCAN_COOLDOWN: Duration = Duration::from_secs(30);
+/// Maximum concurrent linkdead `auto_follow` attaches in flight (STRAG-M10).
+const MAX_CONCURRENT_AUTO_FOLLOW: usize = 32;
+
+/// Sliding-window limiter admission with bounded map cardinality (STRAG-M10):
+/// prunes expired entries before admitting a new key and fails closed if the
+/// map remains at capacity.
+fn admit_bounded<K: Eq + std::hash::Hash>(
+    map: &mut HashMap<K, VecDeque<Instant>>,
+    key: K,
+    now: Instant,
+    window: Duration,
+    max_per_window: usize,
+    max_entries: usize,
+) -> bool {
+    if let Some(q) = map.get_mut(&key) {
+        while q.front().is_some_and(|t| now.duration_since(*t) >= window) {
+            q.pop_front();
+        }
+        if q.len() >= max_per_window {
+            return false;
+        }
+        q.push_back(now);
+        return true;
+    }
+    if map.len() >= max_entries {
+        map.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < window));
+        if map.len() >= max_entries {
+            return false;
+        }
+    }
+    let mut q = VecDeque::with_capacity(1);
+    q.push_back(now);
+    map.insert(key, q);
+    true
+}
+
+/// Clamp outbound Discord content to Discord's 2,000-character hard limit on a
+/// Unicode scalar boundary (STRAG-M10).
+fn clamp_discord_content(text: String) -> String {
+    if text.chars().count() <= DISCORD_MAX_CONTENT_CHARS {
+        text
+    } else {
+        let mut clamped: String = text.chars().take(DISCORD_MAX_CONTENT_CHARS - 1).collect();
+        clamped.push('…');
+        clamped
+    }
+}
 
 /// The `[discord.relay]` entries indexed both ways (D4).
 #[derive(Debug, Default)]
@@ -688,6 +781,9 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             next_conn: AtomicU64::new(DISCORD_CONN_ID_BASE),
             relay: RelayMapper::new(&config.relay),
             relay_limiter: Mutex::new(HashMap::new()),
+            follow_limiter: Mutex::new(HashMap::new()),
+            char_accounts: Mutex::new(CharAccountCache::default()),
+            auto_follow_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_AUTO_FOLLOW)),
             staff_channel_id: config.staff_channel_id,
         }
     }
@@ -721,15 +817,108 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 let Some(bridge) = weak.upgrade() else {
                     return;
                 };
+                // Bound concurrent auto-follow tasks so mass linkdead bursts
+                // cannot spawn unbounded Redis/Discord work (STRAG-M10).
+                let Ok(permit) = Arc::clone(&bridge.auto_follow_sem).try_acquire_owned() else {
+                    tracing::debug!(
+                        character = character.0,
+                        "discord auto-follow concurrency limit reached; skipping"
+                    );
+                    return;
+                };
                 // The hook runs inside the detaching task; the follow itself is
-                // store lookups and a world round trip, so it gets its own task.
+                // a single-account store lookup and a world round trip, so it
+                // gets its own task.
                 let Ok(rt) = tokio::runtime::Handle::try_current() else {
                     return;
                 };
                 rt.spawn(async move {
+                    let _permit = permit;
                     bridge.auto_follow(char_key_obj(character)).await;
                 });
             }));
+    }
+
+    /// Record `account`'s character mappings in the bounded reverse cache.
+    fn remember_account(&self, account: &AccountRec) {
+        locked(&self.char_accounts, "char_accounts").insert_account(account);
+    }
+
+    /// Resolve `actor`'s owning account name from the live/linkdead session
+    /// table without touching the backing store (STRAG-M10).
+    fn session_account_of(&self, actor: ObjId) -> Option<String> {
+        let key = char_key(actor);
+        let _ = self.core.sessions.session_of_char(key)?;
+        self.core
+            .sessions
+            .who()
+            .into_iter()
+            .find(|s| s.character == key)
+            .map(|s| s.account)
+    }
+
+    /// Resolve `actor`'s account record using O(1) lookups (live/linkdead
+    /// session table → bounded `char_accounts` cache → single `get_account`).
+    ///
+    /// Only when `allow_scan` is `true` and neither source knows `actor` does
+    /// this perform a cooldown-gated `list_accounts()` scan to populate the
+    /// cache; `auto_follow` passes `allow_scan = false` so linkdead players
+    /// never trigger full store scans (STRAG-M10).
+    async fn account_for_character(
+        &self,
+        actor: ObjId,
+        allow_scan: bool,
+    ) -> Result<Option<AccountRec>, StoreError> {
+        if let Some(account_name) = self.session_account_of(actor) {
+            locked(&self.char_accounts, "char_accounts").insert(actor, account_name.clone());
+            if let Some(account) = self.store.get_account(&account_name).await?
+                && account.characters.iter().any(|c| c.id == actor)
+            {
+                self.remember_account(&account);
+                return Ok(Some(account));
+            }
+            return Ok(None);
+        }
+        let cached = locked(&self.char_accounts, "char_accounts")
+            .by_char
+            .get(&actor)
+            .cloned();
+        if let Some(account_name) = cached {
+            if let Some(account) = self.store.get_account(&account_name).await?
+                && account.characters.iter().any(|c| c.id == actor)
+            {
+                return Ok(Some(account));
+            }
+            locked(&self.char_accounts, "char_accounts")
+                .by_char
+                .remove(&actor);
+        }
+        if !allow_scan {
+            return Ok(None);
+        }
+        let now = Instant::now();
+        {
+            let mut cache = locked(&self.char_accounts, "char_accounts");
+            if cache
+                .last_scan
+                .is_some_and(|t| now.duration_since(t) < CHAR_ACCOUNT_SCAN_COOLDOWN)
+            {
+                return Ok(None);
+            }
+            cache.last_scan = Some(now);
+        }
+        let accounts = self.store.list_accounts().await?;
+        let mut found = None;
+        {
+            let mut cache = locked(&self.char_accounts, "char_accounts");
+            for account in accounts {
+                cache.insert_account(&account);
+                if found.is_none() && account.characters.iter().any(|c| c.id == actor) {
+                    found = Some(account);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Tell every connected character of `account` something about its
@@ -816,6 +1005,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 return Err("account write failed");
             }
         }
+        self.remember_account(&account);
         Ok(account)
     }
 
@@ -877,6 +1067,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 return FollowOutcome::Failed("the account store is unavailable".to_string());
             }
         };
+        self.remember_account(&account);
         let Some(link) = account.discord.clone() else {
             return FollowOutcome::NotLinked;
         };
@@ -1027,16 +1218,10 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     }
 
     /// The auto-follow path (D-D-5): `actor`'s last terminal went linkdead.
+    /// Uses O(1) session/cache resolution and never scans `list_accounts()`
+    /// (STRAG-M10).
     async fn auto_follow(&self, actor: ObjId) {
-        // The reverse lookup is a scan, like `@discord`'s; a per-character
-        // index is the fix if linkdead events ever get frequent.
-        let Ok(accounts) = self.store.list_accounts().await else {
-            return;
-        };
-        let Some(account) = accounts
-            .into_iter()
-            .find(|a| a.characters.iter().any(|c| c.id == actor))
-        else {
+        let Ok(Some(account)) = self.account_for_character(actor, false).await else {
             return;
         };
         let Some(link) = account.discord.as_ref() else {
@@ -1540,21 +1725,25 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 }
             }
             DiscordControlOp::Follow => {
+                if !self.follow_admit(actor) {
+                    self.tell(
+                        actor,
+                        "Discord: too many follow requests; try again shortly.",
+                    );
+                    return;
+                }
                 if let Some((_, _, _)) = self.follow_of_character(actor) {
                     self.tell(actor, "Discord: already following you.");
                     return;
                 }
-                let Ok(accounts) = self.store.list_accounts().await else {
+                let Ok(maybe_account) = self.account_for_character(actor, true).await else {
                     self.tell(
                         actor,
                         "Discord: the account store is unavailable; try again.",
                     );
                     return;
                 };
-                let Some(account) = accounts
-                    .into_iter()
-                    .find(|a| a.characters.iter().any(|c| c.id == actor))
-                else {
+                let Some(account) = maybe_account else {
                     self.tell(
                         actor,
                         "Discord: your character is not linked to an account.",
@@ -1739,26 +1928,36 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         &self.relay
     }
 
+    /// Whether `actor` may run `@discord/follow` now; records the request if so
+    /// (STRAG-M10).
+    fn follow_admit(&self, actor: ObjId) -> bool {
+        let mut limiter = locked(&self.follow_limiter, "follow limiter");
+        admit_bounded(
+            &mut limiter,
+            actor,
+            Instant::now(),
+            FOLLOW_CONTROL_WINDOW,
+            FOLLOW_CONTROL_PER_ACTOR,
+            MAX_FOLLOW_LIMITER_ENTRIES,
+        )
+    }
+
     /// Whether `user` may relay another line now; records the line if so.
     fn relay_admit(&self, user: u64) -> bool {
-        let now = Instant::now();
         let mut limiter = locked(&self.relay_limiter, "relay limiter");
-        let window = limiter.entry(user).or_default();
-        while window
-            .front()
-            .is_some_and(|t| now.duration_since(*t) >= RELAY_WINDOW)
-        {
-            window.pop_front();
-        }
-        if window.len() >= RELAY_PER_USER {
-            return false;
-        }
-        window.push_back(now);
-        true
+        admit_bounded(
+            &mut limiter,
+            user,
+            Instant::now(),
+            RELAY_WINDOW,
+            RELAY_PER_USER,
+            MAX_RELAY_LIMITER_ENTRIES,
+        )
     }
 
     /// Game → Discord (D4): a relay-flagged channel's line, mirrored to its
-    /// mapped Discord channel under the character's name.
+    /// mapped Discord channel under the character's name. Clamps outbound text
+    /// to Discord's 2,000-character limit (STRAG-M10).
     pub async fn relay_out(&self, channel: &str, event: &OutputEvent) {
         // D5: the reserved staff sink — `+request` filings and staff alerts —
         // posts to the staff channel as the bot (system lines are never
@@ -1771,6 +1970,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             let Some(text) = staff_line(event) else {
                 return;
             };
+            let text = clamp_discord_content(text);
             match self
                 .api
                 .send(self.staff_channel_id, Outgoing::plain(text))
@@ -1791,7 +1991,12 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         else {
             return;
         };
-        let content = relay_content(*kind, &actor.name, &text.to_plain_text(), map.webhook);
+        let content = clamp_discord_content(relay_content(
+            *kind,
+            &actor.name,
+            &text.to_plain_text(),
+            map.webhook,
+        ));
         let result = if map.webhook {
             self.api
                 .webhook_send(map.discord_channel_id, &actor.name, &content)
@@ -1824,15 +2029,11 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         let Some(map) = self.relay.inbound(channel_id) else {
             return RelayLineOutcome::Ignored;
         };
-        let (kind, text) = relay_kind(content.trim());
-        let text = text.trim();
-        if text.is_empty() {
+        if content.trim().is_empty() {
             return RelayLineOutcome::Ignored;
         }
-        if !self.relay_admit(user_id) {
-            tracing::debug!("relay line over the per-author limit dropped");
-            return RelayLineOutcome::Ignored;
-        }
+        // STRAG-M10: verify linked account and ban status BEFORE admitting into
+        // `relay_limiter`, so unlinked guild chatter cannot bloat the limiter map.
         let account = match self.store.account_by_discord_user(user_id).await {
             Ok(Some(a)) => a,
             Ok(None) => return RelayLineOutcome::NotLinked,
@@ -1849,6 +2050,23 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 tracing::warn!(error = %e, "relay: ban lookup failed");
                 return RelayLineOutcome::Refused("the account store is unavailable".to_string());
             }
+        }
+        if !self.relay_admit(user_id) {
+            tracing::debug!("relay line over the per-author limit dropped");
+            return RelayLineOutcome::Ignored;
+        }
+        if content.len() > MAX_RELAY_LINE_CHARS.saturating_mul(4).saturating_add(64) {
+            return RelayLineOutcome::Refused(format!(
+                "that line is over the relay's {MAX_RELAY_LINE_CHARS}-character limit"
+            ));
+        }
+        // Strip ASCII/C1 control characters, ANSI escapes, and Unicode BiDi
+        // controls before crossing the boundary (SAN-M5, SSH-M6).
+        let clean = mush_session::sanitize_line(content);
+        let (kind, text) = relay_kind(clean.trim());
+        let text = text.trim();
+        if text.is_empty() {
+            return RelayLineOutcome::Ignored;
         }
         if text.chars().count() > MAX_RELAY_LINE_CHARS {
             return RelayLineOutcome::Refused(format!(
@@ -3817,5 +4035,221 @@ mod tests {
 
         let unlinked = rig(|_| {}).await;
         assert_eq!(unlinked.bridge.restore_follows(records).await, 0);
+    }
+
+    #[tokio::test]
+    async fn relay_in_sanitizes_control_and_bidi_characters() {
+        let r = rig_with(relay_config()).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        let b = &r.bridge;
+        assert_eq!(
+            b.relay_in(USER, 4242, "hi\x1b[31m\u{202E}\u{2066}\r\nworld\u{2028}!")
+                .await,
+            RelayLineOutcome::Accepted
+        );
+        let reqs = r.link.requests();
+        assert_eq!(reqs.len(), 1);
+        let Some(ServiceReq::RelaySpeak(spoken)) = reqs.first() else {
+            panic!("expected RelaySpeak request");
+        };
+        assert_eq!(spoken.text, "hi[31mworld!");
+        assert!(
+            !spoken
+                .text
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '\u{202E}' | '\u{2066}' | '\u{2028}')),
+            "relay text must be free of control and BiDi chars: {:?}",
+            spoken.text
+        );
+        // Pure control/BiDi payload becomes empty after sanitization and is ignored.
+        assert_eq!(
+            b.relay_in(USER, 4242, "\x1b\u{202E}\u{2066}\r\n").await,
+            RelayLineOutcome::Ignored
+        );
+        assert_eq!(r.link.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn strag_m10_auto_follow_avoids_full_account_scans_and_caches_reverse_map() {
+        let r = rig(|_| {}).await;
+        // Create an unlinked account too.
+        r.store
+            .create_account(AccountRec {
+                id: None,
+                name: "Unlinked".to_string(),
+                argon2_hash: "$argon2id$x".to_string(),
+                created: 1,
+                characters: vec![],
+                ssh_keys: vec![],
+                discord: None,
+            })
+            .await
+            .unwrap();
+        let unlinked_char = ObjId(42);
+        r.store
+            .link_character("Unlinked", unlinked_char, "UnlinkedChar")
+            .await
+            .unwrap();
+        linked(&r.store, "Nick", USER, |l| l.auto_follow = true).await;
+        r.bridge.install_auto_follow();
+
+        // Both characters log in via sessions and go linkdead.
+        for (conn_id, actor, account, name) in [
+            (1u64, unlinked_char, "Unlinked", "UnlinkedChar"),
+            (2u64, NICKY, "Nick", "Nicky"),
+        ] {
+            let (tx, _rx) = mpsc::channel::<Arc<Envelope>>(8);
+            let h = ConnectionHandle::new_structured(
+                ConnId(conn_id),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                discord_caps(),
+                tx,
+            );
+            r.bridge
+                .core
+                .enter_game(h, actor, account, name, true)
+                .await
+                .unwrap();
+            r.bridge.core.disconnected(ConnId(conn_id)).await;
+        }
+        let mut waited = 0;
+        while r.bridge.following(USER).is_none() && waited < 40 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            waited += 1;
+        }
+        assert_eq!(r.bridge.following(USER), Some((NICKY, "Nicky".to_string())));
+        // Neither linkdead character triggered a `list_accounts()` fallback scan.
+        let cache = locked(&r.bridge.char_accounts, "char_accounts");
+        assert!(
+            cache.last_scan.is_none(),
+            "auto_follow must resolve via session/cache without list_accounts() scan"
+        );
+        assert_eq!(cache.by_char.get(&NICKY).map(String::as_str), Some("Nick"));
+        assert_eq!(
+            cache.by_char.get(&unlinked_char).map(String::as_str),
+            Some("Unlinked")
+        );
+    }
+
+    #[tokio::test]
+    async fn strag_m10_discord_follow_control_is_rate_limited() {
+        let r = rig(|_| {}).await;
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        let (tx, mut rx) = mpsc::channel::<Arc<Envelope>>(32);
+        let h = ConnectionHandle::new_structured(
+            ConnId(10),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            discord_caps(),
+            tx,
+        );
+        r.bridge
+            .core
+            .enter_game(h, NICKY, "Nick", "Nicky", true)
+            .await
+            .unwrap();
+
+        // Exhaust the per-actor follow control allowance (attach + detach cycles).
+        for _ in 0..FOLLOW_CONTROL_PER_ACTOR {
+            r.bridge
+                .apply_control(NICKY, DiscordControlOp::Follow)
+                .await;
+            r.bridge
+                .apply_control(NICKY, DiscordControlOp::Unfollow)
+                .await;
+        }
+        assert_eq!(r.bridge.following(USER), None);
+
+        // Next `@discord/follow` within the window is refused and does not attach.
+        r.bridge
+            .apply_control(NICKY, DiscordControlOp::Follow)
+            .await;
+        assert_eq!(
+            r.bridge.following(USER),
+            None,
+            "rate-limited @discord/follow must not attach"
+        );
+        let mut saw_rate_limit = false;
+        while let Ok(env) = rx.try_recv() {
+            if let OutputEvent::Sys(t) = &env.event
+                && t.to_plain_text().contains("too many follow requests")
+            {
+                saw_rate_limit = true;
+            }
+        }
+        assert!(saw_rate_limit, "player must be told they are rate-limited");
+    }
+
+    #[tokio::test]
+    async fn strag_m10_relay_limiter_skips_unlinked_and_is_bounded() {
+        let r = rig_with(relay_config()).await;
+        // 50 distinct unlinked guild users never populate `relay_limiter`.
+        for u in 10_000..10_050u64 {
+            assert_eq!(
+                r.bridge.relay_in(u, 4242, "chatter").await,
+                RelayLineOutcome::NotLinked
+            );
+        }
+        assert!(
+            locked(&r.bridge.relay_limiter, "relay limiter").is_empty(),
+            "unlinked users must not allocate entries in relay_limiter"
+        );
+
+        // `admit_bounded` enforces max_entries, fails closed while full, and
+        // prunes expired entries once the window elapses.
+        let mut map: HashMap<u64, VecDeque<Instant>> = HashMap::new();
+        let t0 = Instant::now();
+        assert!(admit_bounded(&mut map, 1, t0, RELAY_WINDOW, 2, 2));
+        assert!(admit_bounded(&mut map, 2, t0, RELAY_WINDOW, 2, 2));
+        assert!(
+            !admit_bounded(&mut map, 3, t0, RELAY_WINDOW, 2, 2),
+            "at capacity with active entries must fail closed"
+        );
+        assert_eq!(map.len(), 2);
+        let t1 = t0 + RELAY_WINDOW;
+        assert!(
+            admit_bounded(&mut map, 3, t1, RELAY_WINDOW, 2, 2),
+            "expired entries are pruned to admit new users"
+        );
+        assert_eq!(map.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn strag_m10_relay_out_clamps_channel_and_staff_messages_to_2000_chars() {
+        let mut cfg = relay_config();
+        cfg.staff_channel_id = 9090;
+        let r = rig_with(cfg).await;
+        // 1,500 `*` characters expand to 3,000 chars after markdown escaping.
+        let stars = "*".repeat(1_500);
+        r.bridge
+            .relay_out(
+                "Public",
+                &channel_line("Public", NarrativeKind::Say, &stars),
+            )
+            .await;
+        r.bridge
+            .relay_out("Staff", &channel_line("Staff", NarrativeKind::Say, &stars))
+            .await;
+        r.bridge
+            .relay_out(
+                STAFF_RELAY_SINK,
+                &OutputEvent::Sys(RichText::tag("system", &stars)),
+            )
+            .await;
+
+        let calls = r.api.calls();
+        assert_eq!(calls.len(), 3);
+        for call in &calls {
+            let content = match call {
+                Call::WebhookSend { content, .. } => content.as_str(),
+                Call::Send { msg, .. } => msg.content.as_str(),
+                other => panic!("unexpected call: {other:?}"),
+            };
+            assert_eq!(
+                content.chars().count(),
+                DISCORD_MAX_CONTENT_CHARS,
+                "oversized outbound relay message must be clamped to 2,000 chars"
+            );
+            assert!(content.ends_with('…'));
+        }
     }
 }

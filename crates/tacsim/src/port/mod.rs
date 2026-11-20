@@ -199,6 +199,8 @@ pub mod readiness;
 pub mod recall;
 pub mod refit;
 pub(crate) mod relationships;
+// Doc 50 unit LW.5 (Q-50-44): seized goods go to the enforcing authority, which offers them.
+pub mod seized;
 pub mod ship;
 /// Doc 44 unit MW.13 (Q-44-26): a player-held mind sealed aboard a ship.
 pub mod ship_mind;

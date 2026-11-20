@@ -72,6 +72,11 @@ pub const MAX_RECOVERY_APPLICATIONS_PER_PRINCIPAL: usize = 1;
 /// applicant eligible at all holds few assets by construction.
 pub const MAX_RECOVERY_LOSS_VISIT: usize = 64;
 
+/// Maximum compensated wreck object IDs retained in campaign metadata so a single
+/// covered wreck can never waive cooldown on more than one grant (even if transferred
+/// to another principal).
+pub const MAX_COMPENSATED_WRECKS: usize = 1024;
+
 /// The recovery arm's **own** per-fire budget on cut 9's `campaign.operations` tick.
 ///
 /// It is a fourth arm beside `observe_activations`, `expire_grants` and the operation
@@ -502,6 +507,10 @@ pub struct RecoveryGrant {
     granted_at: i64,
     ended_at: Option<i64>,
     loss_covered: bool,
+    stipend_posted: bool,
+    prior_ended_at: Option<i64>,
+    prior_loss_covered: bool,
+    compensated_wreck: Option<ObjId>,
 }
 
 /// The strict wire form of [`RecoveryGrant`].
@@ -529,6 +538,19 @@ pub struct RecoveryGrantWire {
     /// as pass 1 left it.
     #[serde(default)]
     pub loss_covered: bool,
+    /// Whether the outfitting stipend has been disbursed (after `@contract/accept`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stipend_posted: bool,
+    /// Any prior ended grant's `ended_at` timestamp, preserved so expiring an
+    /// unaccepted offer can never wipe an active cooldown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_ended_at: Option<i64>,
+    /// Whether that prior ended grant carried `loss_covered`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prior_loss_covered: bool,
+    /// The specific wreck compensated by this grant, if `loss_covered` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensated_wreck: Option<ObjId>,
 }
 
 impl RecoveryGrant {
@@ -591,6 +613,10 @@ impl RecoveryGrant {
             granted_at,
             ended_at,
             loss_covered,
+            stipend_posted: false,
+            prior_ended_at: None,
+            prior_loss_covered: false,
+            compensated_wreck: None,
         })
     }
 
@@ -649,6 +675,64 @@ impl RecoveryGrant {
         self.loss_covered
     }
 
+    /// Whether the outfitting stipend has been disbursed for this grant.
+    #[must_use]
+    pub const fn stipend_posted(&self) -> bool {
+        self.stipend_posted
+    }
+
+    /// Record whether the outfitting stipend has been disbursed.
+    #[must_use]
+    pub fn with_stipend_posted(&self, posted: bool) -> RecoveryGrant {
+        let mut next = self.clone();
+        next.stipend_posted = posted;
+        next
+    }
+
+    /// Prior ended grant timestamp preserved across an unaccepted offer.
+    #[must_use]
+    pub const fn prior_ended_at(&self) -> Option<i64> {
+        self.prior_ended_at
+    }
+
+    /// Whether the prior ended grant carried `loss_covered`.
+    #[must_use]
+    pub const fn prior_loss_covered(&self) -> bool {
+        self.prior_loss_covered
+    }
+
+    /// Attach prior ended cooldown metadata to a newly offered grant.
+    #[must_use]
+    pub fn with_prior_cooldown(&self, ended_at: Option<i64>, loss_covered: bool) -> RecoveryGrant {
+        let mut next = self.clone();
+        next.prior_ended_at = ended_at;
+        next.prior_loss_covered = loss_covered;
+        next
+    }
+
+    /// The specific wreck compensated by this grant, if any.
+    #[must_use]
+    pub const fn compensated_wreck(&self) -> Option<ObjId> {
+        self.compensated_wreck
+    }
+
+    /// Attach the compensated wreck object id.
+    #[must_use]
+    pub fn with_compensated_wreck(&self, wreck: Option<ObjId>) -> RecoveryGrant {
+        let mut next = self.clone();
+        next.compensated_wreck = wreck;
+        next
+    }
+
+    /// Whether this ended grant currently holds an active (unexpired, unwaived)
+    /// cooldown at `now`.
+    #[must_use]
+    pub fn cooldown_active(&self, now: i64, cooldown_secs: i64, cover_voided: bool) -> bool {
+        self.ended_at.is_some_and(|ended| {
+            (!self.loss_covered || cover_voided) && now < ended.saturating_add(cooldown_secs)
+        })
+    }
+
     /// The post-image of an ending.
     #[must_use]
     pub fn ended(&self, at: i64) -> RecoveryGrant {
@@ -668,6 +752,10 @@ impl From<RecoveryGrant> for RecoveryGrantWire {
             granted_at: value.granted_at,
             ended_at: value.ended_at,
             loss_covered: value.loss_covered,
+            stipend_posted: value.stipend_posted,
+            prior_ended_at: value.prior_ended_at,
+            prior_loss_covered: value.prior_loss_covered,
+            compensated_wreck: value.compensated_wreck,
         }
     }
 }
@@ -675,7 +763,12 @@ impl From<RecoveryGrant> for RecoveryGrantWire {
 impl TryFrom<RecoveryGrantWire> for RecoveryGrant {
     type Error = RecoveryRecordError;
     fn try_from(value: RecoveryGrantWire) -> Result<Self, RecoveryRecordError> {
-        RecoveryGrant::with_cover(
+        if let Some(wreck) = value.compensated_wreck
+            && wreck.0 == 0
+        {
+            return Err(RecoveryRecordError::Zero("a grant's compensated wreck"));
+        }
+        let grant = RecoveryGrant::with_cover(
             value.applicant,
             value.contract,
             value.loaner,
@@ -683,7 +776,11 @@ impl TryFrom<RecoveryGrantWire> for RecoveryGrant {
             value.granted_at,
             value.ended_at,
             value.loss_covered,
-        )
+        )?;
+        Ok(grant
+            .with_stipend_posted(value.stipend_posted)
+            .with_prior_cooldown(value.prior_ended_at, value.prior_loss_covered)
+            .with_compensated_wreck(value.compensated_wreck))
     }
 }
 
@@ -1042,6 +1139,7 @@ pub fn upkeep_template(
     applicant_account: AccountId,
     now: i64,
 ) -> ObligationTemplate {
+    let period = i64::try_from(crate::tick::TICK_PERIOD_SECS).unwrap_or(15);
     ObligationTemplate {
         debtor: applicant.clone(),
         creditor: provider.clone(),
@@ -1050,8 +1148,10 @@ pub fn upkeep_template(
         amount: Amount::from_minor(cfg.upkeep_per_period),
         schedule: EconomicSchedule::new(
             EconomicClock::RealUtc,
-            now.saturating_add(i64::try_from(crate::tick::TICK_PERIOD_SECS).unwrap_or(15)),
-            Some(i64::try_from(crate::tick::TICK_PERIOD_SECS).unwrap_or(15)),
+            // Schedule first upkeep two periods out so the tick after `@contract/accept`
+            // disburses the stipend before the first upkeep debit settles.
+            now.saturating_add(period.saturating_mul(2)),
+            Some(period),
             1,
         ),
         grace: GracePolicy::default(),
@@ -1097,30 +1197,40 @@ pub fn cooldown_until(cfg: &RecoveryConfig, grant: Option<&RecoveryGrant>) -> Op
 /// [`MAX_RECOVERY_LOSS_VISIT`] records **visited** (D-LBK-5), and a census past the
 /// cap answers `false` rather than paging — the fail-closed direction, in which the
 /// cooldown applies.
+/// Find the first uncompensated approved-operation wreck owned by `applicant`.
+///
+/// Once a wreck is recorded in `CampaignStore::compensated_wrecks`, it cannot be
+/// reused to waive cooldown on subsequent grants (neither by the same applicant nor
+/// after transferring title to another principal).
 #[must_use]
-pub fn loss_is_covered(world: &World, applicant: ObjId) -> bool {
+pub fn uncompensated_covered_wreck(world: &World, applicant: ObjId) -> Option<ObjId> {
     if mush_sim::relay::cover_voided(world, applicant) {
-        return false;
+        return None;
     }
-    let Some(economy) = world.module_state::<EconomyStore>() else {
-        return false;
-    };
-    let Some(book) = world.module_state::<mush_sim::JourneyBook>() else {
-        return false;
-    };
+    let economy = world.module_state::<EconomyStore>()?;
+    let book = world.module_state::<mush_sim::JourneyBook>()?;
+    let store = world.module_state::<crate::store::CampaignStore>()?;
     let owner = PrincipalId::Object(applicant);
     economy
         .snapshot()
         .assets_of(&owner)
         .take(MAX_RECOVERY_LOSS_VISIT)
-        .any(|asset| {
-            book.get(asset.object).is_some_and(|journey| {
-                matches!(
-                    journey.state(),
-                    mush_sim::JourneyState::Failed | mush_sim::JourneyState::Captured { .. }
-                )
-            }) && is_deployable(world, asset.object)
+        .find(|asset| {
+            !store.is_wreck_compensated(asset.object)
+                && book.get(asset.object).is_some_and(|journey| {
+                    matches!(
+                        journey.state(),
+                        mush_sim::JourneyState::Failed | mush_sim::JourneyState::Captured { .. }
+                    )
+                })
+                && is_deployable(world, asset.object)
         })
+        .map(|asset| asset.object)
+}
+
+#[must_use]
+pub fn loss_is_covered(world: &World, applicant: ObjId) -> bool {
+    uncompensated_covered_wreck(world, applicant).is_some()
 }
 
 /// The IC second a `ClockStamp` names, for the records above.

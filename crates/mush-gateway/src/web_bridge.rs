@@ -69,7 +69,7 @@ use mush_config::ipguard::IpGuard;
 use mush_config::unix_now_s;
 
 use crate::accounts::{AuthBackend, CreateErr};
-use crate::bridge_common::{AuthResult, ConnectErr, GameBridge};
+use crate::bridge_common::{AuthCheckResult, ConnectErr, GameBridge};
 use crate::delivery::{char_key, send_event_to_conn};
 use crate::drain::{CloseWay, GatewayDrain};
 use crate::poison::locked;
@@ -391,8 +391,8 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             if self.core.guard.is_blocked(ip) {
                 return Err(LoginErr::RateLimited);
             }
-            match self.core.auth_account(account, password, ip).await {
-                AuthResult::Ok {
+            match self.core.auth_account_checked(account, password, ip).await {
+                AuthCheckResult::Ok {
                     account,
                     characters,
                 } => {
@@ -416,7 +416,8 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                             .collect(),
                     })
                 }
-                AuthResult::Denied => Err(LoginErr::BadCreds),
+                AuthCheckResult::Denied => Err(LoginErr::BadCreds),
+                AuthCheckResult::Busy => Err(LoginErr::RateLimited),
             }
         })
     }
@@ -444,6 +445,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                     return Err(RegisterErr::Taken);
                 }
                 Err(CreateErr::BadPassword) => return Err(RegisterErr::Weak),
+                Err(CreateErr::RateLimited) => return Err(RegisterErr::RateLimited),
                 Err(other) => return Err(RegisterErr::BadName(format!("{other}."))),
             };
             let token = self.issue_token(account).await.map_err(|e| {
@@ -619,6 +621,11 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             // removed again if the world's ConnUp confirmation fails.
             self.track_conn(conn_id.0, token);
             let (_sess, outcome) = self.core.sessions.attach(handle, char_key(actor), account);
+            if matches!(outcome, mush_session::AttachOutcome::Duplicate) {
+                self.core.link.cancel_connection_reservation(conn_id.0);
+                locked(&self.conn_tokens, "conn_tokens").remove(&conn_id.0);
+                return Err(ResumeErr::BadSession);
+            }
             let from_linkdead = matches!(
                 outcome,
                 mush_session::AttachOutcome::Rejoined {
@@ -677,27 +684,17 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
     fn request(&self, conn: u64, id: u64, q: Query) -> BoxFuture<'_, ()> {
         Box::pin(async move {
             let conn_id = ConnId(conn);
-            // Interface plan I12: the narrative backlog is answered LOCALLY from
-            // the caller's resume ring (the world cannot read the gateway ring),
-            // gated by a STRICT flood check that ignores flood-exempt — a
-            // locally-answered query has no world-side backpressure. Dispatched
-            // before the generic, exempt-honouring `check_input`. On a failed
-            // match `q` is untouched and flows to the world-routed match below.
-            if let Query::NarrativeBacklog { before_seq, limit } = q {
-                if self.core.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
-                    self.direct_error_reply(conn_id, id, "You're doing that too fast.");
-                    return;
-                }
-                self.core
-                    .narrative_backlog_reply(conn_id, id, before_seq, limit);
+            // Every structured query — local (`NarrativeBacklog`) or
+            // world-routed — charges the strict query flood bucket so
+            // `flood_exempt` (mail compose, chargen) can never be abused to
+            // bypass flood control (HIGH-2). Queries do NOT stamp idle time.
+            if self.core.sessions.check_query_flood(conn_id) == FloodVerdict::Throttled {
+                self.direct_error_reply(conn_id, id, "You're doing that too fast.");
                 return;
             }
-            // Requests share the per-connection input flood bucket with
-            // lines (a panel cannot spam the world task past the throttle)
-            // but do NOT stamp idle time — a background refresh is not the
-            // player typing.
-            if self.core.sessions.check_input(conn_id) == FloodVerdict::Throttled {
-                self.direct_error_reply(conn_id, id, "You're doing that too fast.");
+            if let Query::NarrativeBacklog { before_seq, limit } = q {
+                self.core
+                    .narrative_backlog_reply(conn_id, id, before_seq, limit);
                 return;
             }
             let Some(actor) = self.core.actor_of(conn_id) else {
@@ -873,9 +870,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
 
     fn composing(&self, conn: u64, active: bool) -> BoxFuture<'_, ()> {
         Box::pin(async move {
-            // A hint, not input: no flood bucket and no idle stamp. The
-            // limiter keeps a burst of keystrokes to one hint per interval;
-            // an `active: false` always passes (interface plan I4, D-I-11).
+            // A hint, not input: no idle stamp. The per-conn state machine
+            // enforces cooldown on both `true` and `false` transitions and
+            // ignores redundant hints, and the frame rides the bounded
+            // sheddable `to_server_input` lane (HIGH-1).
             let allowed =
                 locked(&self.composing, "composing limiter").allow(conn, active, Instant::now());
             if !allowed {
@@ -884,9 +882,10 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
             let Some(actor) = self.core.actor_of(ConnId(conn)) else {
                 return;
             };
-            self.core
+            let _ = self
+                .core
                 .link
-                .to_server(ToServer::Inbound(WireInbound::Composing {
+                .to_server_input(ToServer::Inbound(WireInbound::Composing {
                     conn,
                     actor,
                     active,
@@ -1378,5 +1377,153 @@ mod tests {
             state.delivered.as_slice(),
             [ToServer::Inbound(WireInbound::SessionGone { actor: gone })] if *gone == actor
         ));
+    }
+
+    #[tokio::test]
+    async fn web_bridge_throttles_flood_exempt_queries_routes_composing_to_input_and_maps_busy() {
+        use mush_session::SessionConfig;
+
+        struct ProbeAuth {
+            busy_login: bool,
+            rate_limited_create: bool,
+        }
+
+        impl AuthBackend for ProbeAuth {
+            async fn verify(&self, _: &str, _: &str) -> crate::accounts::AuthOutcome {
+                crate::accounts::AuthOutcome::BadCredentials
+            }
+            async fn verify_checked(&self, _: &str, _: &str) -> crate::accounts::AuthCheckOutcome {
+                if self.busy_login {
+                    crate::accounts::AuthCheckOutcome::Busy
+                } else {
+                    crate::accounts::AuthCheckOutcome::BadCredentials
+                }
+            }
+            async fn characters(&self, _: &str) -> Vec<crate::accounts::CharSummary> {
+                Vec::new()
+            }
+            async fn create(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<crate::accounts::CharSummary, CreateErr> {
+                if self.rate_limited_create {
+                    Err(CreateErr::RateLimited)
+                } else {
+                    Err(CreateErr::AccountExists)
+                }
+            }
+            async fn create_character(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<crate::accounts::CharSummary, CreateErr> {
+                Err(CreateErr::NoSuchAccount)
+            }
+        }
+
+        struct ProbeLink {
+            input_msgs: Mutex<Vec<ToServer>>,
+            raw_msgs: Mutex<Vec<ToServer>>,
+        }
+
+        impl mush_ipc::GatewayLink for ProbeLink {
+            fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
+                self.raw_msgs.lock().unwrap().push(msg);
+                Box::pin(async { true })
+            }
+            fn to_server_input(&self, msg: ToServer) -> BoxFuture<'_, InputSend> {
+                self.input_msgs.lock().unwrap().push(msg);
+                Box::pin(async { InputSend::Sent })
+            }
+            fn request(
+                &self,
+                _: mush_ipc::ServiceReq,
+            ) -> BoxFuture<'_, Option<mush_ipc::ServiceResp>> {
+                Box::pin(async { None })
+            }
+        }
+
+        let sessions = Arc::new(SessionManager::with_config(SessionConfig {
+            flood_rate: 0.0001,
+            flood_burst: 1.0,
+            ..SessionConfig::default()
+        }));
+        let link = Arc::new(ProbeLink {
+            input_msgs: Mutex::new(Vec::new()),
+            raw_msgs: Mutex::new(Vec::new()),
+        });
+        let store: Arc<dyn ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+        let bridge = WebBridge::with_link(
+            Arc::new(ProbeAuth {
+                busy_login: true,
+                rate_limited_create: true,
+            }),
+            Arc::clone(&sessions),
+            link.clone(),
+            Arc::new(IpGuard::new()),
+            store,
+            Vec::new(),
+        );
+
+        let ip: IpAddr = "203.0.113.10".parse().unwrap();
+        // Busy Argon2 semaphore maps to LoginErr::RateLimited (429).
+        assert_eq!(
+            bridge.login("nick", "pw", ip).await,
+            Err(LoginErr::RateLimited)
+        );
+        // RateLimited creation maps to RegisterErr::RateLimited (429).
+        assert_eq!(
+            bridge.register("nick", "secret123", "Nick", ip).await,
+            Err(RegisterErr::RateLimited)
+        );
+
+        let (tx, mut rx) = mpsc::channel::<Arc<Envelope>>(8);
+        let conn = ConnId(77);
+        let actor = ObjId(9);
+        let _ = sessions.attach(
+            ConnectionHandle::new_structured(
+                conn,
+                ip,
+                ClientCaps {
+                    kind: ClientKind::Web,
+                    color: ColorDepth::TrueColor,
+                    width: 0,
+                    height: 0,
+                    utf8: true,
+                    structured: true,
+                },
+                tx,
+            ),
+            char_key(actor),
+            "nick".to_string(),
+        );
+        sessions.set_flood_exempt(char_key(actor), true);
+
+        // First query uses the 1-token burst; second MUST be throttled despite flood_exempt.
+        bridge.request(conn.0, 1, Query::Who).await;
+        bridge.request(conn.0, 2, Query::Who).await;
+        assert_eq!(link.input_msgs.lock().unwrap().len(), 1);
+        let err_reply = rx.try_recv().expect("throttled query receives error reply");
+        assert!(matches!(err_reply.event, OutputEvent::Reply { id: 2, .. }));
+
+        // Composing rides `to_server_input` (NOT `to_server`), and redundant/fast toggle is dropped.
+        bridge.composing(conn.0, false).await;
+        bridge.composing(conn.0, true).await;
+        bridge.composing(conn.0, false).await;
+        bridge.composing(conn.0, true).await;
+        assert!(
+            link.raw_msgs.lock().unwrap().is_empty(),
+            "composing must never bypass to_server_input"
+        );
+        let composing_sent = link
+            .input_msgs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| matches!(m, ToServer::Inbound(WireInbound::Composing { .. })))
+            .count();
+        assert_eq!(composing_sent, 1);
     }
 }

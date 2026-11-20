@@ -58,9 +58,23 @@ const SLOWTEST_MAX_SECONDS: u64 = 60;
 /// Cap on `@wait` delays: one year, keeping `due_ms` far from overflow.
 const WAIT_MAX_SECONDS: u64 = 365 * 24 * 60 * 60;
 
+/// Minimum `@wait` delay enforced when `@wait 0=...` is queued (seconds),
+/// preventing zero-delay self-rearming timer spin loops (CORE-M2).
+const WAIT_MIN_SECONDS: u64 = 1;
+
 /// Cap on *pending* `@wait` entries per actor (classic MUSH queue limit) —
 /// without it any player could grow the scheduler heap without bound.
 const WAIT_QUEUE_MAX: u32 = 100;
+
+/// Maximum `WaitCmd` dispatches executed for any single live actor during one
+/// [`Engine::fire_due`] step (CORE-M2). Excess due entries for the same actor
+/// are re-queued with `WAIT_BURST_DEFER_MS` spacing so a 100-entry burst
+/// cannot monopolize one synchronous tick.
+pub const MAX_WAIT_FIRES_PER_ACTOR_PER_STEP: usize = 8;
+
+/// Spacing applied when a single actor's due `WaitCmd` burst overflows
+/// [`MAX_WAIT_FIRES_PER_ACTOR_PER_STEP`] in one step (milliseconds).
+const WAIT_BURST_DEFER_MS: i64 = 100;
 
 /// Why a connection went down — drives the engine's announcement and
 /// whether the actor fully disconnects at once.
@@ -4060,24 +4074,36 @@ impl Engine {
         // back-pressure refusal ([`Outbox::authoritative_pending`]). The note
         // is cleared after the one drain below.
         out.note_pending_authoritative(self.authoritative_submits.keys().copied());
+        let mut actor_wait_fires: HashMap<ObjId, usize> = HashMap::new();
+        let mut deferred_waits: Vec<ScheduledKind> = Vec::new();
         for kind in self.sched.pop_due(now_ms) {
             match kind {
                 ScheduledKind::WaitCmd { actor, line } => {
-                    self.dec_pending_waits(actor);
                     // Re-validate: the actor may be gone by the time the
                     // timer fires.
-                    if self.world.get(actor).is_some() {
-                        dispatch(
-                            &self.registry,
-                            &mut self.world,
-                            actor,
-                            &line,
-                            out,
-                            crate::action_state::TypedStateLens::Live(&self.action_state),
-                        );
-                    } else {
+                    if self.world.get(actor).is_none() {
+                        self.dec_pending_waits(actor);
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
+                        continue;
                     }
+                    // CORE-M2: cap per-actor synchronous `WaitCmd` dispatches
+                    // per tick so a 100-entry burst spreads smoothly across
+                    // ticks without losing work or starving other actors.
+                    let fired = actor_wait_fires.entry(actor).or_insert(0);
+                    if *fired >= MAX_WAIT_FIRES_PER_ACTOR_PER_STEP {
+                        deferred_waits.push(ScheduledKind::WaitCmd { actor, line });
+                        continue;
+                    }
+                    *fired += 1;
+                    self.dec_pending_waits(actor);
+                    dispatch(
+                        &self.registry,
+                        &mut self.world,
+                        actor,
+                        &line,
+                        out,
+                        crate::action_state::TypedStateLens::Live(&self.action_state),
+                    );
                 }
                 ScheduledKind::CommandContinuation(request) => {
                     self.dec_pending_waits(request.actor());
@@ -4132,6 +4158,14 @@ impl Engine {
                         }
                     }
                 }
+            }
+        }
+        // Re-schedule any excess per-actor WaitCmd burst slightly later so
+        // pending_waits stays exact and no entry is lost.
+        if !deferred_waits.is_empty() {
+            let next_due = now_ms.saturating_add(WAIT_BURST_DEFER_MS);
+            for kind in deferred_waits {
+                self.sched.insert(next_due, kind);
             }
         }
         self.drain_deferred(out, fx);
@@ -5452,8 +5486,10 @@ fn wait_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if line.is_empty() {
         return Err(CmdError::msg(USAGE));
     }
-    // i64 is safe: seconds <= WAIT_MAX_SECONDS.
-    let delay_ms = i64::try_from(seconds).expect("bounded above") * 1000;
+    // i64 is safe: clamped into [WAIT_MIN_SECONDS, WAIT_MAX_SECONDS] so
+    // `@wait 0=...` cannot spin in a 0 ms self-rearming loop (CORE-M2).
+    let clamped_seconds = seconds.max(WAIT_MIN_SECONDS);
+    let delay_ms = i64::try_from(clamped_seconds).expect("bounded above") * 1000;
     ctx.out.defer(Deferred::ScheduleIn {
         delay_ms,
         kind: ScheduledKind::WaitCmd {
@@ -7953,10 +7989,20 @@ mod tests {
         assert!(out.events().is_empty());
         assert_eq!(engine.sched.len() as u32, WAIT_QUEUE_MAX + 1);
 
-        // Firing releases slots: after the queue drains, @wait works again.
+        // Firing releases slots across bounded per-actor slices: once the
+        // queue finishes draining, @wait works again.
         engine.set_now(1_100);
-        let (mut out, mut fx) = (Outbox::new(), Effects::new());
-        engine.fire_due(1_100_000, &mut out, &mut fx);
+        let mut drain_steps = 0usize;
+        while let Some(due) = engine.sched.next_due() {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.fire_due(due.max(1_100_000), &mut out, &mut fx);
+            drain_steps += 1;
+            assert!(drain_steps <= 64, "queue must drain in bounded steps");
+        }
+        assert!(
+            drain_steps > 1,
+            "100 waits for one actor must spill across multiple steps"
+        );
         assert!(engine.sched.is_empty());
         let (mut out, mut fx) = (Outbox::new(), Effects::new());
         engine.step(
@@ -8036,6 +8082,85 @@ mod tests {
                 .any(|line| line == "Too many commands queued.")
         );
         assert_eq!(engine.sched.len() as u32, WAIT_QUEUE_MAX);
+    }
+
+    #[test]
+    fn core_m2_wait_zero_enforces_min_delay_and_per_actor_batch_cap() {
+        let (mut engine, nick) = setup();
+        let bob = engine
+            .world
+            .create(ObjKind::Player, "Bob", GOD, Some(LIMBO))
+            .unwrap();
+        // Queue 100 `@wait 0=<unknown>` bursts for Nick, plus 1 for Bob.
+        let garbage = "z".repeat(4_096);
+        for _ in 0..WAIT_QUEUE_MAX {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn: 2,
+                    actor: nick,
+                    line: format!("@wait 0={garbage}"),
+                },
+                &mut out,
+                &mut fx,
+            );
+            assert!(out.events().is_empty());
+        }
+        {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn: 3,
+                    actor: bob,
+                    line: "@wait 0=think bob-ran".into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+        }
+        // `@wait 0` is clamped to >= 1s (now=1000s -> due=1_001_000ms), so nothing
+        // fires at 1_000_000ms.
+        assert_eq!(engine.sched.next_due(), Some(1_001_000));
+        {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.fire_due(1_000_000, &mut out, &mut fx);
+            assert!(out.is_empty(), "@wait 0 must not fire at 0ms delay");
+        }
+        // At 1_001_000ms, Nick fires at most MAX_WAIT_FIRES_PER_ACTOR_PER_STEP
+        // entries synchronously, Bob still fires in the same tick, and Nick's
+        // remainder is deferred to 1_001_000 + WAIT_BURST_DEFER_MS.
+        engine.set_now(1_001);
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.fire_due(1_001_000, &mut out, &mut fx);
+        let nick_huhs = out
+            .events()
+            .iter()
+            .filter(|(aud, e)| {
+                matches!(aud, Audience::Actor(a) if *a == nick)
+                    && matches!(e, OutputEvent::Sys(t) if t.to_plain_text().contains("Huh?"))
+            })
+            .count();
+        assert_eq!(
+            nick_huhs, MAX_WAIT_FIRES_PER_ACTOR_PER_STEP,
+            "one actor's burst is bounded per fire_due step"
+        );
+        assert!(
+            out.events().iter().any(|(aud, e)| {
+                matches!(aud, Audience::Actor(a) if *a == bob)
+                    && matches!(e, OutputEvent::Narrative { text, .. } if text.to_plain_text() == "bob-ran")
+            }),
+            "another actor's due wait still fires in the same tick"
+        );
+        let expected_remaining = (WAIT_QUEUE_MAX as usize) - MAX_WAIT_FIRES_PER_ACTOR_PER_STEP;
+        assert_eq!(engine.sched.len(), expected_remaining);
+        assert_eq!(
+            engine.pending_waits.get(&nick),
+            Some(&(expected_remaining as u32))
+        );
+        assert_eq!(
+            engine.sched.next_due(),
+            Some(1_001_000 + WAIT_BURST_DEFER_MS)
+        );
     }
 
     #[test]

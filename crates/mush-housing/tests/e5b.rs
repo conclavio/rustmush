@@ -4507,3 +4507,245 @@ fn lb_rent_after_end_ending_a_pending_tenancy_ends_the_offered_lease() {
     period(&mut tw, &r, 1);
     assert_eq!(balance(&tw, pat_acct), 1_000);
 }
+
+// =========================================================================
+// Security hardening regressions (HIGH-27 & HIGH-28)
+// =========================================================================
+
+/// HIGH-27: `enclosing_room` walks nested containers transitively and is
+/// cycle-safe; `AccessHook` enforces both source and destination checks through
+/// `enclosing_room` on `move_attempt` and `carry_attempt`; ending a tenancy
+/// clears stale `Obj.home` pointers targeting objects enclosed inside the
+/// property (not just direct room `ObjId`s).
+#[test]
+fn high27_access_hook_blocks_nested_containers_and_end_clears_enclosed_homes() {
+    let mut tw = boot();
+    let r = rig(&mut tw);
+    let tid = tenant(&mut tw, &r, r.pat, 3);
+
+    // Nested container chain inside Pat's flat: anchor -> chest -> pouch -> gem.
+    let chest = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Chest", r.pat, Some(r.anchor))
+        .unwrap();
+    let pouch = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Pouch", r.pat, Some(chest))
+        .unwrap();
+    let gem = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Gem", r.pat, Some(pouch))
+        .unwrap();
+    let rock = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Rock", r.rex, Some(LIMBO))
+        .unwrap();
+
+    assert_eq!(
+        mush_housing::enclosing_room(tw.world(), r.anchor),
+        Some(r.anchor)
+    );
+    assert_eq!(
+        mush_housing::enclosing_room(tw.world(), chest),
+        Some(r.anchor)
+    );
+    assert_eq!(
+        mush_housing::enclosing_room(tw.world(), pouch),
+        Some(r.anchor)
+    );
+    assert_eq!(
+        mush_housing::enclosing_room(tw.world(), gem),
+        Some(r.anchor)
+    );
+
+    // Cycle-safety check on a standalone corrupt world with a location loop.
+    let mut cyclic = mush_core::World::new_minimal();
+    let a = cyclic
+        .create(mush_core::ObjKind::Thing, "A", GOD, None)
+        .unwrap();
+    let b = cyclic
+        .create(mush_core::ObjKind::Thing, "B", GOD, Some(a))
+        .unwrap();
+    cyclic.get_mut(a).unwrap().location = Some(b);
+    assert_eq!(mush_housing::enclosing_room(&cyclic, a), None);
+
+    // 1. MoveAttempt dest bypass: stranger Rex cannot be teleported into `chest` or `pouch`.
+    let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", r.rex.0, chest.0)));
+    assert!(
+        out.contains(mush_housing::REFUSED),
+        "dest container bypass: {out}"
+    );
+    assert_eq!(tw.world().get(r.rex).unwrap().location, Some(LIMBO));
+    let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", r.rex.0, pouch.0)));
+    assert!(
+        out.contains(mush_housing::REFUSED),
+        "nested dest bypass: {out}"
+    );
+    assert_eq!(tw.world().get(r.rex).unwrap().location, Some(LIMBO));
+
+    // 2. MoveAttempt source bypass: `gem` nested inside `pouch -> chest -> anchor`
+    //    cannot be teleported out to `LIMBO`.
+    let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", gem.0, LIMBO.0)));
+    assert!(
+        out.contains(mush_housing::REFUSED_CARRY),
+        "nested source teleport bypass: {out}"
+    );
+    assert_eq!(tw.world().get(gem).unwrap().location, Some(pouch));
+
+    // 3. CarryAttempt source & dest bypass: stranger Rex cannot carry `gem` out of
+    //    `pouch` OR carry `rock` into `pouch`.
+    let detached = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+    assert!(
+        mush_core::module::check_carry_attempt(
+            &tw.engine().registry,
+            tw.world(),
+            r.rex,
+            gem,
+            r.rex,
+            detached,
+        )
+        .is_err(),
+        "stranger carried nested item out of locked flat"
+    );
+    assert!(
+        mush_core::module::check_carry_attempt(
+            &tw.engine().registry,
+            tw.world(),
+            r.rex,
+            rock,
+            pouch,
+            detached,
+        )
+        .is_err(),
+        "stranger deposited item into nested container inside locked flat"
+    );
+    // Tenant Pat IS allowed to carry into and out of her own nested container.
+    assert!(
+        mush_core::module::check_carry_attempt(
+            &tw.engine().registry,
+            tw.world(),
+            r.pat,
+            gem,
+            r.pat,
+            detached,
+        )
+        .is_ok()
+    );
+
+    // 4. Stale `Obj.home` pointing to containers enclosed inside the property
+    //    (whether the homed object stands inside OR outside the flat) is cleared
+    //    when the tenancy ends.
+    let outside_lamp = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Lamp", r.pat, Some(LIMBO))
+        .unwrap();
+    tw.world_mut().set_home(outside_lamp, Some(chest)).unwrap();
+    tw.world_mut().set_home(gem, Some(pouch)).unwrap();
+    tw.world_mut().set_home(r.pat, Some(chest)).unwrap();
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {tid}=end lease over"),
+    );
+    assert_eq!(status(&tw, tid), TenancyStatusKind::Ended);
+    assert_eq!(
+        home_of(&tw, outside_lamp),
+        None,
+        "item standing outside with home=chest inside flat was not unhomed"
+    );
+    assert_eq!(
+        home_of(&tw, gem),
+        None,
+        "nested item with home=pouch inside flat was not unhomed"
+    );
+    assert_eq!(
+        home_of(&tw, r.pat),
+        None,
+        "departing tenant with home=chest inside flat was not unhomed"
+    );
+}
+
+/// HIGH-28: `may_view_tenancy` checks landlord standing directly instead of
+/// falling back to `may_view_property`, so a current tenant or current guest on
+/// a property can view only their own live tenancy — never ended or other
+/// tenants' tenancy records on the same property.
+#[test]
+fn high28_may_view_tenancy_blocks_cross_tenancy_disclosure() {
+    let mut tw = boot();
+    let r = rig(&mut tw);
+    let sam = tw.spawn_player("Sam");
+    let p = org_property(&mut tw, r.quinn, "property.view", true, "Tower");
+
+    // Tenancy 1: Pat lives in Tower, then moves out (tenancy ends).
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/create {p}=#{} cadence={}", r.pat.0, r.cadence),
+    );
+    let old_tid = store(&tw).tenancies().last().expect("tenancy").id;
+    ok(&mut tw, GOD, &format!("+plan {old_tid}=#{} 3", r.pat.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/resolve {old_tid}=end pat moved out"),
+    );
+    assert_eq!(status(&tw, old_tid), TenancyStatusKind::Ended);
+
+    // Tenancy 2: Rex becomes the new tenant on Tower, with Sam as guest.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/create {p}=#{} cadence={}", r.rex.0, r.cadence),
+    );
+    let new_tid = store(&tw).tenancies().last().expect("tenancy").id;
+    ok(&mut tw, GOD, &format!("+plan {new_tid}=#{} 3", r.rex.0));
+    ok(&mut tw, r.rex, &format!("+guest add #{}", sam.0));
+
+    let old_rec = tenancy(&tw, old_tid);
+    let new_rec = tenancy(&tw, new_tid);
+
+    // Current tenant Rex sees his own live tenancy, NOT Pat's ended tenancy.
+    assert!(mush_housing::may_view_tenancy(tw.world(), r.rex, &new_rec));
+    assert!(!mush_housing::may_view_tenancy(tw.world(), r.rex, &old_rec));
+    let rex_old = texts(&tw.run(r.rex, &format!("@tenancy/show {old_tid}")));
+    assert!(
+        rex_old.contains(mush_housing::NO_SUCH_TENANCY) && !rex_old.contains("Pat"),
+        "current tenant read previous tenant's ended record: {rex_old}"
+    );
+    let rex_list = ok(&mut tw, r.rex, "@tenancy/list");
+    assert!(
+        rex_list.contains(&format!("#{new_tid}")) && !rex_list.contains(&format!("#{old_tid}")),
+        "current tenant list leaked ended tenancy: {rex_list}"
+    );
+
+    // Current guest Sam sees only his reduced guest line on Tenancy 2, and
+    // gets NO_SUCH_TENANCY on Pat's ended Tenancy 1 (never Pat's full record).
+    assert!(mush_housing::may_view_tenancy(tw.world(), sam, &new_rec));
+    assert!(!mush_housing::may_view_tenancy(tw.world(), sam, &old_rec));
+    let sam_old = texts(&tw.run(sam, &format!("@tenancy/show {old_tid}")));
+    assert!(
+        sam_old.contains(mush_housing::NO_SUCH_TENANCY) && !sam_old.contains("Pat"),
+        "current guest read previous tenant's ended record: {sam_old}"
+    );
+    let sam_list = ok(&mut tw, sam, "@tenancy/list");
+    assert!(
+        sam_list.contains("you are a guest here") && !sam_list.contains(&format!("#{old_tid}")),
+        "current guest list leaked ended tenancy: {sam_list}"
+    );
+
+    // Ex-tenant Pat cannot view Rex's live tenancy or ended Tenancy 1.
+    assert!(!mush_housing::may_view_tenancy(tw.world(), r.pat, &new_rec));
+    assert!(!mush_housing::may_view_tenancy(tw.world(), r.pat, &old_rec));
+
+    // Landlord officer Quinn and staff GOD still view BOTH tenancies in full.
+    for viewer in [r.quinn, GOD] {
+        assert!(mush_housing::may_view_tenancy(tw.world(), viewer, &old_rec));
+        assert!(mush_housing::may_view_tenancy(tw.world(), viewer, &new_rec));
+        let seen_old = ok(&mut tw, viewer, &format!("@tenancy/show {old_tid}"));
+        assert!(
+            seen_old.contains("Pat"),
+            "{viewer} lost landlord view: {seen_old}"
+        );
+    }
+}

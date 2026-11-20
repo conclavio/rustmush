@@ -1516,6 +1516,9 @@ fn hash_atlas_records(h: &mut Sha256, w: &World, records: &mush_atlas::Records) 
     for (room_id, geo) in &records.roomgeo {
         h.update(room_id.0.to_le_bytes());
         h.update(geo.revision.to_le_bytes());
+        h.update(geo.key.pack.as_str().as_bytes());
+        h.update(b":");
+        h.update(geo.key.entry.as_str().as_bytes());
         h.update([match geo.kind {
             mush_atlas::RoomKind::Outdoor => 0,
             mush_atlas::RoomKind::Indoor => 1,
@@ -1531,6 +1534,8 @@ fn hash_atlas_records(h: &mut Sha256, w: &World, records: &mush_atlas::Records) 
                 structure, index, ..
             } => {
                 h.update([1u8]);
+                h.update(structure.pack.as_str().as_bytes());
+                h.update(b":");
                 h.update(structure.entry.as_str().as_bytes());
                 h.update(index.to_le_bytes());
             }
@@ -1644,6 +1649,11 @@ fn hash_atlas_records(h: &mut Sha256, w: &World, records: &mush_atlas::Records) 
     }
 }
 
+/// Non-allocating revision/geometry fingerprint for [`ClientContentQuery`] Level-2 cache validation.
+///
+/// Avoids per-query `serde_json::to_vec(&geo.footprint)` heap serialization while invalidating
+/// whenever applied latches, atlas packs/records/portals, room geometry/names, or TacSim store
+/// enablement/packs/designs change.
 fn world_content_fingerprint(w: &World, actor: ObjId) -> [u8; 32] {
     let mut h = Sha256::new();
     let is_staff_viewer = mush_atlas::is_staff(w, actor);
@@ -1669,6 +1679,7 @@ fn world_content_fingerprint(w: &World, actor: ObjId) -> [u8; 32] {
     }
     if let Some(store) = w.module_state::<TacsimStore>() {
         h.update(b"|tacsim:");
+        h.update([u8::from(store.enabled())]);
         for loaded in store.packs() {
             let id = loaded.pack.manifest().id();
             let ver = loaded.pack.manifest().version();
@@ -1875,6 +1886,34 @@ impl QueryHandler for ClientContentQuery {
             }
             _ => return Err(RichText::plain(BAD_QUERY)),
         };
+
+        if w.module_state::<TacsimStore>()
+            .is_some_and(|store| !store.enabled())
+        {
+            let data = match op {
+                ContentQueryOp::Pack => {
+                    let req_id = parsed.id.as_deref().unwrap_or("").trim();
+                    json!({
+                        "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
+                        "enabled": false,
+                        "op": "pack",
+                        "found": false,
+                        "id": req_id,
+                    })
+                }
+                ContentQueryOp::Manifest => json!({
+                    "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
+                    "enabled": false,
+                    "op": "manifest",
+                    "packs": [],
+                }),
+            };
+            return Ok(OutputEvent::Panel {
+                feed: SmolStr::new_static(CLIENT_CONTENT_FEED),
+                kind: PanelFrameKind::Keyframe,
+                data,
+            });
+        }
 
         let bundle = self.bundle_for(w, actor);
         let data = match op {
@@ -2855,6 +2894,108 @@ mod tests {
         }
         let disk_val: Value = serde_json::from_str(&std::fs::read_to_string(&fixture_path)?)?;
         check_eq!(disk_val, projected_val);
+        Ok(())
+    }
+
+    #[test]
+    fn high2_world_content_fingerprint_tracks_roomgeo_changes_and_respects_disabled_store()
+    -> TestResult {
+        use mush_atlas::{
+            Access, AtlasState, Footprint, Point2, RecordKey, Rect2, RoomGeo, RoomKind, SurfaceRef,
+        };
+        use mush_core::CanonicalId;
+
+        let fp_of = |w: &World, atlas: &AtlasState| -> [u8; 32] {
+            let mut h = Sha256::new();
+            hash_atlas_records(&mut h, w, &atlas.records);
+            h.finalize().into()
+        };
+
+        let mut tw = mush_testkit::TestWorld::new();
+        let room = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "Bay Alpha", ObjId(1), None)?;
+        let pack_id = CanonicalId::new("neighborhood.fp_test")?;
+        let nb_key = RecordKey::new(pack_id.clone(), CanonicalId::new("neighborhood.main")?);
+        let st_key = RecordKey::new(pack_id.clone(), CanonicalId::new("structure.hub")?);
+
+        let mut atlas = AtlasState::default();
+        atlas.records.roomgeo.insert(
+            room,
+            RoomGeo {
+                room,
+                key: RecordKey::new(pack_id.clone(), CanonicalId::new("room.bay")?),
+                neighborhood: nb_key,
+                site: None,
+                surface: SurfaceRef::Floor {
+                    structure: st_key.clone(),
+                    index: 1,
+                },
+                footprint: Footprint::Rect(Rect2(Point2(0.0, 0.0), Point2(10.0, 10.0))),
+                kind: RoomKind::Indoor,
+                access: Access::Public,
+                revision: 1,
+            },
+        );
+
+        let fp_initial = fp_of(&tw.engine().world, &atlas);
+        check_eq!(fp_initial, fp_of(&tw.engine().world, &atlas));
+
+        // Mutating roomgeo footprint must change the non-allocating fingerprint.
+        if let Some(geo) = atlas.records.roomgeo.get_mut(&room) {
+            geo.footprint = Footprint::Rect(Rect2(Point2(0.0, 0.0), Point2(25.0, 10.0)));
+        }
+        let fp_after_footprint = fp_of(&tw.engine().world, &atlas);
+        check!(fp_after_footprint != fp_initial);
+
+        // Mutating roomgeo floor surface must also invalidate the fingerprint.
+        if let Some(geo) = atlas.records.roomgeo.get_mut(&room) {
+            geo.surface = SurfaceRef::Floor {
+                structure: st_key,
+                index: 2,
+            };
+        }
+        let fp_after_surface = fp_of(&tw.engine().world, &atlas);
+        check!(fp_after_surface != fp_after_footprint);
+
+        // Disabled TacsimStore (registered via TacsimRuleset) must short-circuit
+        // `tacsim.content` queries with `enabled: false` and stay stable across repeated fingerprints.
+        let disabled_cfg = crate::config::TacsimConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let mut tw_disabled = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(disabled_cfg),
+        )]);
+        let player = tw_disabled.spawn_player("DisabledStorePilot");
+        let fp_disabled = world_content_fingerprint(&tw_disabled.engine().world, player);
+        check_eq!(
+            fp_disabled,
+            world_content_fingerprint(&tw_disabled.engine().world, player)
+        );
+        let q = ClientContentQuery::new();
+        let Ok(OutputEvent::Panel { data, .. }) = q.query(
+            &tw_disabled.engine().world,
+            player,
+            &json!({"op": "manifest"}),
+        ) else {
+            return crate::test_checks::failed("expected panel response");
+        };
+        check_eq!(data["enabled"], json!(false));
+        check_eq!(data["packs"], json!([]));
+
+        let Ok(OutputEvent::Panel {
+            data: pack_data, ..
+        }) = q.query(
+            &tw_disabled.engine().world,
+            player,
+            &json!({"op": "pack", "id": "dray"}),
+        )
+        else {
+            return crate::test_checks::failed("expected pack panel response");
+        };
+        check_eq!(pack_data["enabled"], json!(false));
+        check_eq!(pack_data["found"], json!(false));
         Ok(())
     }
 

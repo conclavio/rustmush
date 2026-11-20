@@ -58,6 +58,79 @@ pub struct RegionRow {
     pub places: Vec<CanonicalId>,
     /// Its holds at world start: at most one de facto; one record a (holder, kind).
     pub holds: Vec<HoldDef>,
+    /// **Doc 50 cut KC.2: the terms schedule** (Q-50-5): for each polity that may hold the
+    /// region, by tag, the terms its de facto hold sets. A holder with no row sets the terms as
+    /// they are today (no duty; the contraband fine to the license's issuer, as built). Skipped
+    /// when empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub terms: BTreeMap<CanonicalId, TermsRow>,
+}
+
+/// The highest rate a terms row authors, permille.
+pub const MAX_TERMS_PERMILLE: u16 = 1_000;
+
+/// The highest floor or fine a terms row authors, major credits.
+pub const MAX_TERMS_MAJOR: u64 = 1_000_000;
+
+/// **One polity's terms in one region** (Q-50-5). All numbers provisional. KC.2 reads the transit
+/// duty and the payee; the import duty, the restricted goods, the audit rate and the fine scale
+/// are carried and checked for the units that read them (LW.1, OP.5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermsRow {
+    /// The lane organization charges under these terms are paid to (Q-50-14: the Republic's
+    /// customs office).
+    pub payee: CanonicalId,
+    /// The transit duty on a laden hull at the picket, permille of its cargo's catalog value
+    /// (Q-50-6: 20, provisional).
+    #[serde(default)]
+    pub transit_duty_permille: u16,
+    /// The transit duty's floor on a laden hull, major credits (Q-50-6: 50).
+    #[serde(default)]
+    pub transit_floor_major: u64,
+    /// The import duty, permille of value, on the goods of `import_goods`.
+    #[serde(default)]
+    pub import_duty_permille: u16,
+    /// The goods the import duty is assessed on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub import_goods: Vec<CanonicalId>,
+    /// The goods restricted here, each with the paper that lifts it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restricted: Vec<RestrictedGood>,
+    /// How often a hold is audited, permille.
+    #[serde(default)]
+    pub audit_permille: u16,
+    /// What an offense costs, if this row sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fine: Option<FineScale>,
+    /// **Doc 50 cut KC.4 (Q-50-7)**: the Co-op's share, permille of trading margin, that a new
+    /// enrollment signs at while this holder holds the region (300 for the Republic at Kirkwood,
+    /// provisional). `None` keeps the programme's own share. Standing enrollments keep the share
+    /// frozen at their signing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coop_share_permille: Option<u16>,
+}
+
+/// A restricted good and the paper that lifts it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestrictedGood {
+    /// The good.
+    pub good: CanonicalId,
+    /// The paper that lifts the restriction. `freeport_prospecting` stands for the Kirkwood
+    /// picket's two-paper test (Q-50-32, Q-50-65): a Freeport Registry prospecting license **and**
+    /// a registered claim, both held. KC.2 carries and checks it; nothing reads it until LW.1.
+    pub paper: CanonicalId,
+}
+
+/// A fine scale: so much a tonne begun, never under the floor (major credits).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FineScale {
+    /// Major credits a tonne begun.
+    pub per_t_major: u64,
+    /// The floor, major credits.
+    pub floor_major: u64,
 }
 
 /// One authored hold.
@@ -225,6 +298,37 @@ pub fn check_regions(
             return Err(format!(
                 "regions: row {at}: one de facto holder at most (Q-50-50)"
             ));
+        }
+        for (tag, terms) in &row.terms {
+            if !polities.contains(tag) {
+                return Err(format!("regions: row {at}: terms for {tag}, no polity"));
+            }
+            if !tags.contains_key(&terms.payee) {
+                return Err(format!(
+                    "regions: row {at}: the payee {} of {tag} is no lane org",
+                    terms.payee
+                ));
+            }
+            let rates = [
+                terms.transit_duty_permille,
+                terms.import_duty_permille,
+                terms.audit_permille,
+                terms.coop_share_permille.unwrap_or(0),
+            ];
+            let majors = [
+                terms.transit_floor_major,
+                terms.fine.map_or(0, |f| f.per_t_major),
+                terms.fine.map_or(0, |f| f.floor_major),
+            ];
+            if rates.iter().any(|&r| r > MAX_TERMS_PERMILLE)
+                || majors.iter().any(|&m| m > MAX_TERMS_MAJOR)
+                || terms.import_goods.len() > MAX_ROW_PLACES
+                || terms.restricted.len() > MAX_ROW_PLACES
+            {
+                return Err(format!(
+                    "regions: row {at}: the terms of {tag} are out of bounds"
+                ));
+            }
         }
     }
     Ok(())
@@ -537,4 +641,76 @@ pub fn papers_authority(w: &World, place: &CanonicalId, enforcer: FactionId) -> 
         return Some(enforcer);
     }
     control.de_jure.first().copied()
+}
+
+/// **The terms a place stands under** (Q-50-5): the region's de facto holder, and the terms
+/// row of the holder's polity when it has one. Pinned on a passage at filing (Q-50-10).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaceTerms {
+    /// The de facto holder (`FactionId.0`) when the terms were read; `None` for an unheld place.
+    pub holder: Option<u64>,
+    /// The IC second the holder's hold began.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_ic: Option<i64>,
+    /// The holder's polity's row; `None` means the terms as they are today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<TermsRow>,
+}
+
+/// **The terms at a lane place, live** (Q-50-5): the de facto holder's polity's row of the
+/// regions block row the place lies in. `None` for a place in no row.
+#[must_use]
+pub fn terms_at(w: &World, place: &CanonicalId) -> Option<PlaceTerms> {
+    let pack = lane(w)?;
+    let row = regions_of(pack)?
+        .rows
+        .iter()
+        .find(|r| r.places.contains(place))?;
+    let control = control_at(w, place)?;
+    let st = w.module_state::<FactionState>()?;
+    let tag = control.de_facto.and_then(|holder| {
+        let name = st.factions.get(&holder)?.name.to_string();
+        row.terms
+            .keys()
+            .find(|tag| polity_name(tag.as_str()) == name)
+    });
+    Some(PlaceTerms {
+        holder: control.de_facto.map(|f| f.0),
+        since_ic: control.de_facto_since_ic,
+        row: tag.and_then(|t| row.terms.get(t)).cloned(),
+    })
+}
+
+/// **The Kirkwood picket's place** (the `location` with `kirkwood_picket`) on the latched lane.
+#[must_use]
+pub fn picket_place(w: &World) -> Option<CanonicalId> {
+    lane(w)?.entries().iter().find_map(|(id, e)| match e {
+        PackEntry::Location(loc) if loc.kirkwood_picket => Some(id.clone()),
+        _ => None,
+    })
+}
+
+/// **A lane organization's org and live account, by its lane id** (doc 50 cut KC.2: a terms
+/// row's payee).
+#[must_use]
+pub fn lane_org_account(
+    w: &World,
+    id: &CanonicalId,
+) -> Option<(mush_org::OrgId, mush_economy::AccountId)> {
+    let row = w
+        .module_state::<crate::store::TacsimStore>()?
+        .port_maps()
+        .filter(|map| map.pack.as_str() == crate::definitions::content::LANE_PACK)
+        .find_map(|map| map.orgs.get(id))?;
+    let org = mush_org::OrgId(row.org);
+    let live = w
+        .module_state::<mush_org::OrgStore>()
+        .is_some_and(|orgs| orgs.state().org(org).is_some());
+    let account = mush_economy::AccountId(row.account?);
+    let active = w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| e.snapshot().account(account).map(|a| a.status))
+        == Some(mush_economy::AccountStatus::Active);
+    (live && active).then_some((org, account))
 }

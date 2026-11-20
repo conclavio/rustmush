@@ -334,11 +334,12 @@ impl ActionCoordinator {
             request.epoch,
             IdempotencyKey::Request(request.uid),
         );
+        let validated_parameters = validate_gateway_action_parameters(&input.parameters)?;
         let canonical_payload = IngressPayload::structured(serde_json::json!({
             "offered_action": input.offered_action,
             "subject": input.subject,
             "targets": input.targets,
-            "parameters": input.parameters,
+            "parameters": validated_parameters,
         }))
         .map_err(|error| error.to_string())?;
         IngressEnvelope::new(
@@ -1362,4 +1363,126 @@ pub enum ActionCoordinatorError {
     Bundle(#[from] mush_core::AuthoritativeBundleError),
     #[error("authoritative action staging failed: {0}")]
     Stage(#[source] StagePreparedActionError),
+}
+
+/// Defensively validate [`mush_ipc::GatewayAction::parameters`] against
+/// [`mush_proto::LegalActionParameters`] before the coordinator hashes or
+/// admits a gateway action (SAN-M7).
+fn validate_gateway_action_parameters(
+    raw: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let obj = raw
+        .as_object()
+        .ok_or_else(|| "action parameters must be a flat JSON object".to_owned())?;
+    if obj.len() > mush_proto::MAX_LEGAL_ACTION_PARAMETERS {
+        return Err("too many action parameters".to_owned());
+    }
+    let mut values = std::collections::BTreeMap::new();
+    for (key, value) in obj {
+        let scalar = match value {
+            serde_json::Value::Bool(v) => mush_proto::LegalActionScalar::Boolean { value: *v },
+            serde_json::Value::Number(num) => {
+                let signed = num
+                    .as_i64()
+                    .ok_or_else(|| "action parameter integers must be exact i64".to_owned())?;
+                let integer = mush_proto::LegalActionInteger::new(signed.to_string())
+                    .map_err(str::to_owned)?;
+                mush_proto::LegalActionScalar::Integer { value: integer }
+            }
+            serde_json::Value::String(text) => mush_proto::LegalActionScalar::Text {
+                value: text.clone(),
+            },
+            _ => {
+                return Err(
+                    "action parameters must contain only flat boolean, integer, or text values"
+                        .to_owned(),
+                );
+            }
+        };
+        values.insert(key.clone(), scalar);
+    }
+    mush_proto::LegalActionParameters::new(values)
+        .and_then(|params| params.to_json())
+        .map_err(str::to_owned)
+}
+
+#[cfg(test)]
+mod gateway_ingress_tests {
+    use super::*;
+    use mush_core::PerceivedRef;
+    use mush_ipc::GatewayAction;
+    use serde_json::json;
+
+    #[test]
+    fn gateway_ingress_rejects_malformed_and_oversized_parameters() {
+        let valid = validate_gateway_action_parameters(&json!({
+            "pool": "strength+brawl",
+            "difficulty": 6,
+            "focused": true,
+        }))
+        .expect("valid flat scalar parameters");
+        assert_eq!(valid["difficulty"], 6);
+
+        for bad in [
+            json!([]),
+            json!("raw"),
+            json!({"nested": {"a": 1}}),
+            json!({"arr": [1, 2]}),
+            json!({"flt": 1.25}),
+            json!({"nil": null}),
+            json!({"UPPER": 1}),
+            json!({"msg": "bad\u{001b}[31m"}),
+            json!({"msg": "x".repeat(4097)}),
+        ] {
+            assert!(
+                validate_gateway_action_parameters(&bad).is_err(),
+                "expected parameter validation failure for {bad}"
+            );
+        }
+
+        // Also exercise ActionCoordinator::gateway_ingress directly against a
+        // real registered offer route from the toy fixture.
+        let (mut world, families) = mush_contract_tests::toy_world_with_state();
+        mush_contract_tests::install_toy_focus(world.engine_mut(), &families, mush_core::GOD, 3);
+        world.engine_mut().set_offer_keys(
+            mush_core::OfferKeyRing::new(mush_core::OfferSecret::new(1, [0x53; 32]).unwrap(), [])
+                .unwrap(),
+        );
+        let offers =
+            mush_contract_tests::toy_brace_offers(world.engine(), mush_core::GOD, 11, 4).unwrap();
+        let offer = offers.projected()[0].offer();
+        let routes = world
+            .engine()
+            .registry
+            .action_providers()
+            .expect("toy action providers")
+            .offer_route_table();
+        let bad_req = GatewayRequest::new(
+            1,
+            1,
+            GatewayInput::Action(Box::new(GatewayAction {
+                conn: 1,
+                actor: mush_core::GOD,
+                offered_action: offer,
+                subject: PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: json!({"nested": {"bad": true}}),
+            })),
+        );
+        assert!(ActionCoordinator::gateway_ingress(&bad_req, &routes).is_err());
+
+        let good_req = GatewayRequest::new(
+            1,
+            2,
+            GatewayInput::Action(Box::new(GatewayAction {
+                conn: 1,
+                actor: mush_core::GOD,
+                offered_action: offer,
+                subject: PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: json!({"stance": "brace"}),
+            })),
+        );
+        assert!(ActionCoordinator::gateway_ingress(&good_req, &routes).is_ok());
+    }
 }

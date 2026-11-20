@@ -2,13 +2,15 @@
 //! into [`DiscordHooks`] calls and ephemeral replies.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use mush_config::discord::normalize_link_code;
+use tokio::sync::Semaphore;
 
 use crate::api::{
-    DiscordApi, DiscordEvent, EventSource, InteractionHandle, Outgoing, SlashCommand, SlashOption,
+    DiscordApi, DiscordEvent, EventSource, InteractionHandle, InteractionReply, Outgoing,
+    SlashCommand, SlashOption,
 };
 use crate::config::DiscordConfig;
 use crate::hooks::{
@@ -21,6 +23,22 @@ pub const LINK_ATTEMPT_WINDOW: Duration = Duration::from_secs(600);
 
 /// How often an unfollowed user typing in the DM is reminded to `/follow`.
 pub const HINT_INTERVAL: Duration = Duration::from_secs(600);
+
+/// Maximum Discord interaction/message handler tasks permitted in flight at
+/// once (STRAG-M11). Spawning handlers under this semaphore keeps slow REST,
+/// Redis, or IPC calls from stalling `twilight-gateway::Shard` heartbeats.
+pub const MAX_CONCURRENT_EVENTS: usize = 64;
+
+/// Sliding window for per-user interaction rate limiting (STRAG-M11).
+pub const INTERACTION_WINDOW: Duration = Duration::from_secs(10);
+
+/// Maximum slash/component/modal interactions one Discord user may initiate
+/// per [`INTERACTION_WINDOW`] (STRAG-M11).
+pub const INTERACTION_PER_USER: usize = 10;
+
+/// Maximum distinct Discord user ids tracked simultaneously in each in-memory
+/// limiter/hint map (STRAG-M11).
+pub const MAX_TRACKED_USERS: usize = 4_096;
 
 /// The slash commands the bot registers (guild-scoped, so they appear at once).
 #[must_use]
@@ -98,65 +116,153 @@ pub enum ServeError {
     GatewayClosed,
 }
 
-/// The per-user `/link` attempt limiter: at most `max` failed attempts per
-/// [`LINK_ATTEMPT_WINDOW`], counted **before** any lookup, so an attacker
-/// cannot probe codes at store speed.
-struct LinkLimiter {
-    max: u32,
+/// Bounded sliding-window per-user rate limiter (STRAG-M11): tracks at most
+/// `max_entries` distinct users, pruning expired entries before admitting a
+/// new key and failing closed if the table remains full.
+struct SlidingLimiter {
+    max: usize,
+    window: Duration,
+    max_entries: usize,
     attempts: HashMap<u64, VecDeque<Instant>>,
 }
 
-impl LinkLimiter {
-    fn new(max: u32) -> LinkLimiter {
-        LinkLimiter {
+impl SlidingLimiter {
+    fn new(max: usize, window: Duration, max_entries: usize) -> SlidingLimiter {
+        SlidingLimiter {
             max: max.max(1),
+            window,
+            max_entries: max_entries.max(1),
             attempts: HashMap::new(),
         }
     }
 
+    /// Whether `user` may proceed now; records the event if so.
+    fn admit(&mut self, user: u64, now: Instant) -> bool {
+        if let Some(q) = self.attempts.get_mut(&user) {
+            while q
+                .front()
+                .is_some_and(|t| now.duration_since(*t) >= self.window)
+            {
+                q.pop_front();
+            }
+            if q.len() >= self.max {
+                return false;
+            }
+            q.push_back(now);
+            return true;
+        }
+        if self.attempts.len() >= self.max_entries {
+            self.attempts.retain(|_, q| {
+                q.back()
+                    .is_some_and(|t| now.duration_since(*t) < self.window)
+            });
+            if self.attempts.len() >= self.max_entries {
+                return false;
+            }
+        }
+        let mut q = VecDeque::with_capacity(1);
+        q.push_back(now);
+        self.attempts.insert(user, q);
+        true
+    }
+
+    /// Forget a user's window.
+    fn forgive(&mut self, user: u64) {
+        self.attempts.remove(&user);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.attempts.len()
+    }
+}
+
+/// The per-user `/link` attempt limiter: at most `max` failed attempts per
+/// [`LINK_ATTEMPT_WINDOW`], counted **before** any lookup, so an attacker
+/// cannot probe codes at store speed. Bounded to [`MAX_TRACKED_USERS`].
+struct LinkLimiter(SlidingLimiter);
+
+impl LinkLimiter {
+    #[cfg(test)]
+    fn new(max: u32) -> LinkLimiter {
+        LinkLimiter::with_cap(max, MAX_TRACKED_USERS)
+    }
+
+    fn with_cap(max: u32, max_entries: usize) -> LinkLimiter {
+        LinkLimiter(SlidingLimiter::new(
+            (max as usize).max(1),
+            LINK_ATTEMPT_WINDOW,
+            max_entries,
+        ))
+    }
+
     /// Whether `user` may attempt now; records the attempt if so.
     fn admit(&mut self, user: u64, now: Instant) -> bool {
-        let window = self.attempts.entry(user).or_default();
-        while window
-            .front()
-            .is_some_and(|t| now.duration_since(*t) >= LINK_ATTEMPT_WINDOW)
-        {
-            window.pop_front();
-        }
-        if window.len() >= self.max as usize {
-            return false;
-        }
-        window.push_back(now);
-        true
+        self.0.admit(user, now)
     }
 
     /// A successful link clears the user's window.
     fn forgive(&mut self, user: u64) {
-        self.attempts.remove(&user);
+        self.0.forgive(user);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
-/// Per-user state the loop keeps: the link limiter and the last time a user
-/// was hinted (the "use `/follow`" reminder, the relay's "not linked" and
-/// refusal notes share one clock per user).
+/// Per-user state the bot shares across spawned event tasks: the `/link`
+/// limiter, the per-user interaction rate limiter, and the bounded hint clock
+/// (the "use `/follow`" reminder, relay notes, and rate-limit warnings share
+/// one clock per user).
 struct Loop {
     limiter: LinkLimiter,
+    interactions: SlidingLimiter,
     hinted: HashMap<u64, Instant>,
+    max_hinted: usize,
 }
 
 impl Loop {
-    /// Whether `user` may be hinted now; records the hint if so.
-    fn hint_due(&mut self, user: u64) -> bool {
-        let now = Instant::now();
-        let due = self
-            .hinted
-            .get(&user)
-            .is_none_or(|t| now.duration_since(*t) >= HINT_INTERVAL);
-        if due {
-            self.hinted.insert(user, now);
+    fn new(link_attempts: u32, interaction_limit: usize, max_users: usize) -> Loop {
+        Loop {
+            limiter: LinkLimiter::with_cap(link_attempts, max_users),
+            interactions: SlidingLimiter::new(interaction_limit, INTERACTION_WINDOW, max_users),
+            hinted: HashMap::new(),
+            max_hinted: max_users.max(1),
         }
-        due
     }
+
+    /// Whether `user` may be hinted now; records the hint if so, keeping
+    /// `hinted` bounded to `max_hinted` (STRAG-M11).
+    fn hint_due(&mut self, user: u64) -> bool {
+        self.hint_due_at(user, Instant::now())
+    }
+
+    fn hint_due_at(&mut self, user: u64, now: Instant) -> bool {
+        if let Some(last) = self.hinted.get_mut(&user) {
+            if now.duration_since(*last) >= HINT_INTERVAL {
+                *last = now;
+                return true;
+            }
+            return false;
+        }
+        if self.hinted.len() >= self.max_hinted {
+            self.hinted
+                .retain(|_, t| now.duration_since(*t) < HINT_INTERVAL);
+            if self.hinted.len() >= self.max_hinted {
+                return false;
+            }
+        }
+        self.hinted.insert(user, now);
+        true
+    }
+}
+
+fn lock_loop(state: &Mutex<Loop>) -> MutexGuard<'_, Loop> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The relay's note to an unlinked author, sent as a DM.
@@ -186,8 +292,32 @@ async fn dm_user(api: &dyn DiscordApi, user_id: u64, text: &str) {
 pub async fn serve(
     hooks: Arc<dyn DiscordHooks>,
     api: Arc<dyn DiscordApi>,
+    events: Box<dyn EventSource>,
+    config: DiscordConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), ServeError> {
+    serve_with_limits(
+        hooks,
+        api,
+        events,
+        config,
+        MAX_CONCURRENT_EVENTS,
+        INTERACTION_PER_USER,
+        MAX_TRACKED_USERS,
+        shutdown,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_with_limits(
+    hooks: Arc<dyn DiscordHooks>,
+    api: Arc<dyn DiscordApi>,
     mut events: Box<dyn EventSource>,
     config: DiscordConfig,
+    max_concurrent: usize,
+    interaction_limit: usize,
+    max_tracked_users: usize,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServeError> {
     api.register_commands(&commands()).await?;
@@ -195,10 +325,12 @@ pub async fn serve(
         guild = config.guild_id,
         "discord bot: slash commands registered (global; guild and bot-DM contexts)"
     );
-    let mut state = Loop {
-        limiter: LinkLimiter::new(config.link_attempts_per_10m),
-        hinted: HashMap::new(),
-    };
+    let state = Arc::new(Mutex::new(Loop::new(
+        config.link_attempts_per_10m,
+        interaction_limit,
+        max_tracked_users,
+    )));
+    let sem = Arc::new(Semaphore::new(max_concurrent.max(1)));
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -211,10 +343,83 @@ pub async fn serve(
                     tracing::error!("discord bot: gateway closed permanently");
                     return Err(ServeError::GatewayClosed);
                 };
-                handle_event(&*hooks, &*api, &mut state, event).await;
+                dispatch_event(&hooks, &api, &state, &sem, event);
             }
         }
     }
+}
+
+/// Dispatch one gateway event onto a semaphore-bounded spawned task without
+/// ever blocking the gateway event loop (STRAG-M11).
+fn dispatch_event(
+    hooks: &Arc<dyn DiscordHooks>,
+    api: &Arc<dyn DiscordApi>,
+    state: &Arc<Mutex<Loop>>,
+    sem: &Arc<Semaphore>,
+    event: DiscordEvent,
+) {
+    match &event {
+        DiscordEvent::Ready => {
+            tracing::info!("discord bot: gateway ready");
+            return;
+        }
+        DiscordEvent::SlashCommand { user_id, .. }
+        | DiscordEvent::Component { user_id, .. }
+        | DiscordEvent::Modal { user_id, .. } => {
+            let user_id = *user_id;
+            let (admitted, warn_user) = {
+                let mut st = lock_loop(state);
+                let now = Instant::now();
+                if st.interactions.admit(user_id, now) {
+                    (true, false)
+                } else {
+                    (false, st.hint_due_at(user_id, now))
+                }
+            };
+            if !admitted {
+                tracing::debug!("discord bot: per-user interaction rate limit exceeded");
+                if warn_user && let Ok(permit) = Arc::clone(sem).try_acquire_owned() {
+                    let api = Arc::clone(api);
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        const MSG: &str = "Too many requests; slow down and try again shortly.";
+                        match event {
+                            DiscordEvent::SlashCommand { handle, .. } => {
+                                reply(&*api, &handle, MSG).await;
+                            }
+                            DiscordEvent::Component { handle, .. }
+                            | DiscordEvent::Modal { handle, .. } => {
+                                if let Err(error) = api
+                                    .respond_component(
+                                        &handle,
+                                        InteractionReply::Ephemeral(MSG.to_string()),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(%error, "discord bot: rate-limit reply failed");
+                                }
+                            }
+                            DiscordEvent::Ready | DiscordEvent::Message { .. } => {}
+                        }
+                    });
+                }
+                return;
+            }
+        }
+        DiscordEvent::Message { .. } => {}
+    }
+
+    let Ok(permit) = Arc::clone(sem).try_acquire_owned() else {
+        tracing::warn!("discord bot: event concurrency cap reached; shedding event");
+        return;
+    };
+    let hooks = Arc::clone(hooks);
+    let api = Arc::clone(api);
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        let _permit = permit;
+        handle_event(&*hooks, &*api, &state, event).await;
+    });
 }
 
 async fn reply(api: &dyn DiscordApi, handle: &InteractionHandle, text: &str) {
@@ -264,7 +469,7 @@ fn follow_reply(outcome: &FollowOutcome) -> String {
 async fn handle_event(
     hooks: &dyn DiscordHooks,
     api: &dyn DiscordApi,
-    state: &mut Loop,
+    state: &Mutex<Loop>,
     event: DiscordEvent,
 ) {
     match event {
@@ -286,7 +491,8 @@ async fn handle_event(
             };
             match name.as_str() {
                 "link" => {
-                    if !state.limiter.admit(user_id, Instant::now()) {
+                    let admitted = lock_loop(state).limiter.admit(user_id, Instant::now());
+                    if !admitted {
                         reply(
                             api,
                             &handle,
@@ -301,7 +507,7 @@ async fn handle_event(
                     };
                     match hooks.link_redeem(user_id, &code).await {
                         LinkOutcome::Linked { account } => {
-                            state.limiter.forgive(user_id);
+                            lock_loop(state).limiter.forgive(user_id);
                             reply(
                                 api,
                                 &handle,
@@ -469,12 +675,12 @@ async fn handle_event(
                 {
                     RelayLineOutcome::Ignored | RelayLineOutcome::Accepted => {}
                     RelayLineOutcome::NotLinked => {
-                        if state.hint_due(user_id) {
+                        if lock_loop(state).hint_due(user_id) {
                             dm_user(api, user_id, RELAY_NOT_LINKED).await;
                         }
                     }
                     RelayLineOutcome::Refused(why) => {
-                        if state.hint_due(user_id) {
+                        if lock_loop(state).hint_due(user_id) {
                             dm_user(api, user_id, &format!("Not relayed: {why}.")).await;
                         }
                     }
@@ -484,7 +690,7 @@ async fn handle_event(
             match hooks.dm_message(user_id, message_id, &content).await {
                 LineOutcome::Accepted | LineOutcome::Closed => {}
                 LineOutcome::NotFollowing => {
-                    if state.hint_due(user_id)
+                    if lock_loop(state).hint_due(user_id)
                         && let Err(error) =
                             api.send(channel_id, Outgoing::plain(NOT_FOLLOWING)).await
                     {
@@ -913,5 +1119,192 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(ServeError::GatewayClosed)));
+    }
+
+    #[test]
+    fn strag_m11_link_limiter_and_hinted_maps_are_bounded_and_prune_expired() {
+        let t0 = Instant::now();
+        let mut limiter = LinkLimiter::with_cap(2, 2);
+        assert!(limiter.admit(1, t0));
+        assert!(limiter.admit(2, t0));
+        assert!(
+            !limiter.admit(3, t0),
+            "full active limiter must fail closed"
+        );
+        assert_eq!(limiter.len(), 2);
+        assert!(
+            limiter.admit(3, t0 + LINK_ATTEMPT_WINDOW),
+            "expired entries are pruned to admit new users"
+        );
+        assert_eq!(limiter.len(), 1);
+
+        let mut lp = Loop::new(5, 10, 2);
+        assert!(lp.hint_due_at(1, t0));
+        assert!(lp.hint_due_at(2, t0));
+        assert!(
+            !lp.hint_due_at(3, t0),
+            "full active hinted map must not grow unboundedly"
+        );
+        assert_eq!(lp.hinted.len(), 2);
+        assert!(
+            lp.hint_due_at(3, t0 + HINT_INTERVAL),
+            "expired hint entries are pruned"
+        );
+        assert_eq!(lp.hinted.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn strag_m11_slow_interaction_does_not_block_gateway_and_concurrency_is_bounded() {
+        struct StallingHooks {
+            stall_user: u64,
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            completed: Mutex<Vec<u64>>,
+        }
+
+        impl DiscordHooks for StallingHooks {
+            fn link_redeem<'a>(&'a self, _: u64, _: &'a str) -> BoxFuture<'a, LinkOutcome> {
+                Box::pin(async { LinkOutcome::Refused })
+            }
+            fn unlink(&self, _: u64) -> BoxFuture<'_, UnlinkOutcome> {
+                Box::pin(async { UnlinkOutcome::NotLinked })
+            }
+            fn whoami(&self, user_id: u64) -> BoxFuture<'_, Option<WhoAmI>> {
+                Box::pin(async move {
+                    if user_id == self.stall_user {
+                        self.entered.notify_waiters();
+                        self.release.notified().await;
+                    }
+                    self.completed.lock().unwrap().push(user_id);
+                    None
+                })
+            }
+            fn follow<'a>(&'a self, _: u64, _: Option<&'a str>) -> BoxFuture<'a, FollowOutcome> {
+                Box::pin(async { FollowOutcome::NotLinked })
+            }
+            fn detach(&self, _: u64) -> BoxFuture<'_, DetachOutcome> {
+                Box::pin(async { DetachOutcome::NotFollowing })
+            }
+            fn dm_line<'a>(&'a self, _: u64, _: &'a str) -> BoxFuture<'a, LineOutcome> {
+                Box::pin(async { LineOutcome::NotFollowing })
+            }
+            fn interaction(&self, _: u64, _: Interaction) -> BoxFuture<'_, InteractionReply> {
+                Box::pin(async { InteractionReply::Ack })
+            }
+            fn relay_line<'a>(
+                &'a self,
+                _: u64,
+                _: u64,
+                _: &'a str,
+            ) -> BoxFuture<'a, RelayLineOutcome> {
+                Box::pin(async { RelayLineOutcome::Ignored })
+            }
+        }
+
+        let api = FakeApi::new();
+        let hooks = Arc::new(StallingHooks {
+            stall_user: 10,
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            completed: Mutex::new(Vec::new()),
+        });
+        let (source, tx) = FakeEvents::new();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        // Concurrency cap = 2: stall 1 task (user 10), verify user 20 finishes
+        // immediately while user 10 is stalled; then stall 2 tasks and verify
+        // a 3rd is shed without blocking shutdown / event polling.
+        let task = tokio::spawn(serve_with_limits(
+            hooks.clone(),
+            api.clone(),
+            Box::new(source),
+            config(),
+            2,
+            10,
+            100,
+            async move {
+                let _ = stop_rx.await;
+            },
+        ));
+
+        let entered = hooks.entered.notified();
+        tx.send(slash(10, "whoami", &[])).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), entered)
+            .await
+            .expect("stalled task must start");
+
+        // User 20's interaction completes immediately while user 10 is stalled.
+        tx.send(slash(20, "whoami", &[])).unwrap();
+        let mut waited = 0;
+        while !hooks.completed.lock().unwrap().contains(&20) && waited < 40 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        assert!(
+            hooks.completed.lock().unwrap().contains(&20),
+            "non-stalled user must complete while another interaction stalls"
+        );
+
+        // Fill the second concurrency permit with another stalled user-10 task,
+        // then send a 3rd event (user 30) which must be shed without blocking.
+        let entered2 = hooks.entered.notified();
+        tx.send(slash(10, "whoami", &[])).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), entered2)
+            .await
+            .expect("second stalled task must start");
+        tx.send(slash(30, "whoami", &[])).unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !hooks.completed.lock().unwrap().contains(&30),
+            "event over concurrency cap must be shed cleanly"
+        );
+
+        // Release stalled tasks; a new event (user 40) succeeds afterward.
+        hooks.release.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        tx.send(slash(40, "whoami", &[])).unwrap();
+        let mut waited = 0;
+        while !hooks.completed.lock().unwrap().contains(&40) && waited < 40 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        assert!(hooks.completed.lock().unwrap().contains(&40));
+
+        let _ = stop_tx.send(());
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn strag_m11_per_user_interaction_rate_limit_throttles_bursts() {
+        let mut events: Vec<DiscordEvent> = (0..(INTERACTION_PER_USER + 5))
+            .map(|i| component(7, &format!("btn:{i}"), &[], 500))
+            .collect();
+        // Another user must remain unaffected by user 7's flood.
+        events.push(component(8, "btn:other", &[], 501));
+
+        let (api, hooks) = run_events(events).await;
+        let routed = hooks.interactions.lock().unwrap();
+        let user7_count = routed.iter().filter(|(u, _)| *u == 7).count();
+        let user8_count = routed.iter().filter(|(u, _)| *u == 8).count();
+        assert_eq!(
+            user7_count, INTERACTION_PER_USER,
+            "per-user interaction rate limit must cap hook invocations"
+        );
+        assert_eq!(user8_count, 1, "other users must not be throttled");
+
+        // Rate-limited user gets at most one ephemeral warning per hint window.
+        let throttled_replies = api
+            .calls()
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Call::Respond {
+                        reply: InteractionReply::Ephemeral(t),
+                        ..
+                    } if t.contains("Too many requests")
+                )
+            })
+            .count();
+        assert_eq!(throttled_replies, 1);
     }
 }

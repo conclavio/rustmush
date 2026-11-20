@@ -230,14 +230,36 @@ fn seat_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     // The operation must exist AND be visible: an invisible one is refused
     // byte-identically to one that never existed.
-    let (doc, _) = render::visible_operation(ctx.w, operation, ctx.actor)
+    let (doc, lens) = render::visible_operation(ctx.w, operation, ctx.actor)
         .ok_or_else(|| CmdError::msg(NO_SUCH_OPERATION))?;
+    // HIGH-31: prevent cross-operation seat injection & 32-offer exhaustion by
+    // requiring Plan lens, roster authority over the operation, and a non-terminal
+    // operation. All authority/membership failures return `no_seat()` so the
+    // refusal stays existence-hiding (G3).
+    if lens != Lens::Plan
+        || !crate::commands::may_roster(ctx, &doc)
+        || doc.runtime.state.is_terminal()
+    {
+        return Err(no_seat());
+    }
     let unit = UnitRef(match_object(ctx.w, ctx.actor, &unit_ref).map_err(|_| no_seat())?);
     let npc = UnitRef(match_object(ctx.w, ctx.actor, &npc_ref).map_err(|_| no_seat())?);
-    // **Existence-hidden authority** (hazard axis 2): a caller without
-    // `force.assign` over the unit's own compartment is refused with the SAME
-    // line whether the unit and station exist or not.
-    if !may_seat(ctx, unit) {
+    // **Existence-hidden authority** (hazard axis 2) + HIGH-31: the unit must
+    // be live, committed to THIS operation (`holds`), and under `may_seat`.
+    let unit_live = ctx
+        .w
+        .get(unit.0)
+        .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING));
+    if !unit_live || !doc.runtime.holds(unit) || !may_seat(ctx, unit) {
+        return Err(no_seat());
+    }
+    // HIGH-29: `<npc>` must be a live `ObjKind::Npc` (`!GOING`) that the caller
+    // controls or has `may_seat` authority over, preventing player/actor hijack
+    // or focus eviction via `+seat/offer`.
+    let npc_valid = ctx.w.get(npc.0).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Npc && !o.flags.contains(mush_core::Flags::GOING)
+    });
+    if !npc_valid || !may_seat(ctx, npc) {
         return Err(no_seat());
     }
     if channels.is_empty() {
@@ -456,6 +478,13 @@ fn seat_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let account = crate::seatstate::account_of(ctx, ctx.actor)
         .ok_or_else(|| CmdError::msg(NO_ACCOUNT_ON_RECORD))?;
     let actor = offer.fallback.holder;
+    // HIGH-29 defense-in-depth: refuse accepting a seat whose fallback actor is
+    // no longer a live NPC.
+    if !ctx.w.get(actor.0).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Npc && !o.flags.contains(mush_core::Flags::GOING)
+    }) {
+        return Err(no_seat());
+    }
     // K5: the SEED is the seat's own coordinates; the token itself is minted
     // server-side with a process nonce folded in, so it cannot be inverted from
     // four public coordinates and cannot be forged for a seat one does not hold.
@@ -565,6 +594,12 @@ fn seat_activate(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // satisfies. The point of the frozen hash is to catch a future edit verb, a
     // held-document repair or a hand-edited `seat_offer:` key.
     if grant.consent_hash != offer.consent_hash {
+        return Err(no_seat());
+    }
+    // HIGH-29 defense-in-depth: a seat grant may only drive a live NPC.
+    if !ctx.w.get(grant.actor.0).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Npc && !o.flags.contains(mush_core::Flags::GOING)
+    }) {
         return Err(no_seat());
     }
     let now = ctx.w.world_ic_now();
@@ -1002,8 +1037,15 @@ pub(crate) fn cmd_muster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )
         })
         .collect();
-    let vacancies = report.vacancies();
-    if lock {
+    // HIGH-32: filter vacancies to `commandable` so a viewer without command
+    // authority over the other side's units learns neither slot details nor
+    // their vacancy count.
+    let vacancies = report
+        .slots
+        .iter()
+        .filter(|slot| commandable.contains(&slot.unit.0.0) && slot.fill == SlotFill::Vacant)
+        .count();
+    let locked = if lock {
         // **Roster lock stores only the VERDICT** (Q11A/R3): the account id never
         // enters this or any other record, and an oracle answering `None` fails
         // closed — the lock is refused, the operation is untouched.
@@ -1021,17 +1063,22 @@ pub(crate) fn cmd_muster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 ));
             }
         }
-    }
-    if !put_muster(ctx, report) {
-        return Err(CmdError::msg("That muster could not be recorded."));
-    }
-    persist_meta(ctx);
+        if !put_muster(ctx, report) {
+            return Err(CmdError::msg("That muster could not be recorded."));
+        }
+        persist_meta(ctx);
+        true
+    } else {
+        // HIGH-32: unswitched `+muster <op>` is strictly read-only — it never
+        // writes a muster report and never clears an existing `+muster/lock`.
+        roster_locked(ctx, operation)
+    };
     info(
         ctx,
         format!(
             "Muster for operation {operation}{}:\n{}\n{vacancies} vacancy(ies) — the operation \
              stands.",
-            if lock { " (roster locked)" } else { "" },
+            if locked { " (roster locked)" } else { "" },
             if lines.is_empty() {
                 "  (no committed units)".to_owned()
             } else {

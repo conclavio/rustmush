@@ -153,6 +153,20 @@ pub fn wo_holder(order: WorkOrderId) -> Result<ScopedIdempotencyKey, IndustryErr
     ))
 }
 
+/// Extract the [`WorkOrderId`] from a holder key built by [`wo_holder`], if it is one.
+#[must_use]
+pub fn parse_wo_holder(holder: &ScopedIdempotencyKey) -> Option<WorkOrderId> {
+    if let CorePrincipalId::Scoped { owner, class, id } = &holder.scope().principal
+        && *owner == crate::record::owner()
+        && class.as_str() == "workorder"
+        && let Some(hex) = id.as_str().strip_prefix("wo")
+        && hex.len() == 16
+    {
+        return u64::from_str_radix(hex, 16).ok().map(WorkOrderId);
+    }
+    None
+}
+
 /// The `wo/{order}` text form, asserted once to be inside
 /// `MAX_IDEMPOTENCY_KEY_BYTES`.
 #[must_use]
@@ -1262,4 +1276,300 @@ pub fn quote_price(pinned: &PinnedRecipe, quantity: u32) -> u64 {
 #[must_use]
 pub fn quote_duration(pinned: &PinnedRecipe, quantity: u32) -> u64 {
     pinned.work_units().saturating_mul(u64::from(quantity))
+}
+
+/// Wire cap on [`RequesterOrders`] (the durable per-requester index of open work
+/// orders). Large enough to accommodate admin/test seeding while `wo_draft` and
+/// `@wo/draft` enforce [`MAX_WORK_ORDERS_PER_REQUESTER`].
+pub const MAX_REQUESTER_OPEN_ORDERS_RECORD: usize = 512;
+
+/// Retained unfunded/draft-cancelled work orders in bucket `0` of the terminal ring.
+/// Older draft-cancelled orders are pruned atomically inside `put_work_order` so a
+/// zero-cost draft+cancel loop can never bloat `industry.work_orders` past 4,096.
+pub const MAX_RETAINED_TERMINAL_DRAFT_CANCELS: usize = 64;
+
+/// Retained completed/failed/funded terminal work orders in bucket `1` of the terminal ring.
+/// Settled entries past this cap are pruned by subsequent work-order commits once no
+/// live economy budget hold remains.
+pub const MAX_RETAINED_TERMINAL_WORK_ORDERS: usize = 256;
+
+/// Wire cap on [`TerminalWorkOrderRing`].
+pub const MAX_TERMINAL_WO_RING: usize = 256;
+
+/// Bucket key for unfunded draft cancellations (no holds, no reservations).
+pub const TERMINAL_RING_DRAFT_CANCELS: u8 = 0;
+
+/// Bucket key for funded/completed/failed terminal orders.
+pub const TERMINAL_RING_SETTLED_ORDERS: u8 = 1;
+
+/// Durable per-requester index of non-terminal work order IDs (`industry_requester_orders`),
+/// maintained atomically alongside `industry.work_orders` so open-order checks, submit
+/// bindings, and deliver/cancel checks are O(1) point lookups rather than truncated scans.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct RequesterOrders {
+    orders: Vec<WorkOrderId>,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct RequesterOrdersWire(Vec<WorkOrderId>);
+
+impl<'de> Deserialize<'de> for RequesterOrders {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RequesterOrdersWire::deserialize(deserializer)?;
+        Self::new(wire.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl RequesterOrders {
+    /// Construct a validated canonical requester open-order list.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::NonCanonicalRows`] if unsorted/duplicated or over cap.
+    pub fn new(orders: Vec<WorkOrderId>) -> Result<Self, IndustryRecordError> {
+        if orders.len() > MAX_REQUESTER_OPEN_ORDERS_RECORD {
+            return Err(IndustryRecordError::NonCanonicalRows);
+        }
+        let mut prev: Option<WorkOrderId> = None;
+        for id in &orders {
+            if prev.is_some_and(|p| p >= *id) {
+                return Err(IndustryRecordError::NonCanonicalRows);
+            }
+            prev = Some(*id);
+        }
+        Ok(Self { orders })
+    }
+
+    /// Empty index.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { orders: Vec::new() }
+    }
+
+    /// Open work order IDs in ascending order.
+    #[must_use]
+    pub fn orders(&self) -> &[WorkOrderId] {
+        &self.orders
+    }
+
+    /// Number of open work orders recorded.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.orders.len()
+    }
+
+    /// Whether empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.orders.is_empty()
+    }
+
+    /// Return the post-image with `order` inserted.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::NonCanonicalRows`] if past cap.
+    pub fn with(&self, order: WorkOrderId) -> Result<Self, IndustryRecordError> {
+        if self.orders.contains(&order) {
+            return Ok(self.clone());
+        }
+        let mut next = self.orders.clone();
+        next.push(order);
+        next.sort_unstable();
+        Self::new(next)
+    }
+
+    /// Return the post-image with `order` removed.
+    #[must_use]
+    pub fn without(&self, order: WorkOrderId) -> Self {
+        let orders = self
+            .orders
+            .iter()
+            .copied()
+            .filter(|id| *id != order)
+            .collect();
+        Self { orders }
+    }
+}
+
+/// Bounded FIFO ring of terminal work order IDs (`industry_wo_terminal_ring`),
+/// keeping `industry.work_orders` bounded so cumulative draft+cancel / completion
+/// traffic cannot exceed the 4,096 scan budget and flip `IndustryStore::complete`.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct TerminalWorkOrderRing {
+    orders: Vec<WorkOrderId>,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct TerminalWorkOrderRingWire(Vec<WorkOrderId>);
+
+impl<'de> Deserialize<'de> for TerminalWorkOrderRing {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TerminalWorkOrderRingWire::deserialize(deserializer)?;
+        Self::new(wire.0).map_err(serde::de::Error::custom)
+    }
+}
+
+impl TerminalWorkOrderRing {
+    /// Construct a validated terminal work-order ring.
+    ///
+    /// # Errors
+    /// [`IndustryRecordError::NonCanonicalRows`] if past [`MAX_TERMINAL_WO_RING`].
+    pub fn new(orders: Vec<WorkOrderId>) -> Result<Self, IndustryRecordError> {
+        if orders.len() > MAX_TERMINAL_WO_RING {
+            return Err(IndustryRecordError::NonCanonicalRows);
+        }
+        Ok(Self { orders })
+    }
+
+    /// Empty ring.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { orders: Vec::new() }
+    }
+
+    /// Retained terminal order IDs, oldest first.
+    #[must_use]
+    pub fn orders(&self) -> &[WorkOrderId] {
+        &self.orders
+    }
+
+    /// Number of retained IDs.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.orders.len()
+    }
+
+    /// Whether empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.orders.is_empty()
+    }
+
+    /// Append `order` (deduplicating if already present), evicting the oldest entry
+    /// if the ring exceeds `cap` (clamped to [`MAX_TERMINAL_WO_RING`]).
+    #[must_use]
+    pub fn push(&self, order: WorkOrderId, cap: usize) -> (Self, Option<WorkOrderId>) {
+        let cap = cap.clamp(1, MAX_TERMINAL_WO_RING);
+        let mut next: Vec<WorkOrderId> = self
+            .orders
+            .iter()
+            .copied()
+            .filter(|id| *id != order)
+            .collect();
+        next.push(order);
+        let evicted = if next.len() > cap {
+            Some(next.remove(0))
+        } else {
+            None
+        };
+        (Self { orders: next }, evicted)
+    }
+
+    /// Return the post-image with `order` removed.
+    #[must_use]
+    pub fn without(&self, order: WorkOrderId) -> Self {
+        let orders = self
+            .orders
+            .iter()
+            .copied()
+            .filter(|id| *id != order)
+            .collect();
+        Self { orders }
+    }
+}
+
+/// Sidecar job for a scheduled facility slot expiry (`industry_slot_expiry_job`, HIGH-33).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlotExpiryJob {
+    schedule: ScheduleId,
+    facility: ObjId,
+    reservation: ReservationId,
+    order: Option<WorkOrderId>,
+    actor: ObjId,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlotExpiryJobWire {
+    schedule: ScheduleId,
+    facility: ObjId,
+    reservation: ReservationId,
+    order: Option<WorkOrderId>,
+    actor: ObjId,
+}
+
+impl<'de> Deserialize<'de> for SlotExpiryJob {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SlotExpiryJobWire::deserialize(deserializer)?;
+        Ok(Self {
+            schedule: wire.schedule,
+            facility: wire.facility,
+            reservation: wire.reservation,
+            order: wire.order,
+            actor: wire.actor,
+        })
+    }
+}
+
+impl SlotExpiryJob {
+    /// Build a slot-expiry job sidecar.
+    #[must_use]
+    pub const fn new(
+        schedule: ScheduleId,
+        facility: ObjId,
+        reservation: ReservationId,
+        order: Option<WorkOrderId>,
+        actor: ObjId,
+    ) -> Self {
+        Self {
+            schedule,
+            facility,
+            reservation,
+            order,
+            actor,
+        }
+    }
+
+    /// The schedule ID.
+    #[must_use]
+    pub const fn schedule(&self) -> ScheduleId {
+        self.schedule
+    }
+
+    /// Facility object whose slot reservation expires.
+    #[must_use]
+    pub const fn facility(&self) -> ObjId {
+        self.facility
+    }
+
+    /// Slot reservation ID.
+    #[must_use]
+    pub const fn reservation(&self) -> ReservationId {
+        self.reservation
+    }
+
+    /// Associated work order, if any.
+    #[must_use]
+    pub const fn order(&self) -> Option<WorkOrderId> {
+        self.order
+    }
+
+    /// Actor context for scheduled reclaim.
+    #[must_use]
+    pub const fn actor(&self) -> ObjId {
+        self.actor
+    }
 }

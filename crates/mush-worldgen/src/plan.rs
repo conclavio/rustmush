@@ -12,6 +12,9 @@
 //! `+build/go`. The run stops early when the pack validates with no error finding,
 //! when the model asks, at `plan_max_rounds` calls, or at the proposal's cost cap.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use mush_atlas::{Finding, Severity, ValidateContext, validate};
 use mush_content::{Pack, PackKind, parse_pack};
 use mush_llm::agent::{
@@ -252,6 +255,7 @@ pub fn tools() -> Vec<ToolDef> {
 
 struct PlanHost<'a> {
     snap: &'a PlanSnapshot,
+    cancel: Option<Arc<AtomicBool>>,
     candidate: Option<serde_json::Value>,
     pack: Option<Pack>,
     findings: Vec<Finding>,
@@ -262,6 +266,11 @@ struct PlanHost<'a> {
 }
 
 impl PlanHost<'_> {
+    fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    }
     fn reply(content: impl Into<String>, more: bool) -> Option<ToolReply> {
         Some(ToolReply {
             content: content.into(),
@@ -404,7 +413,8 @@ impl PlanHost<'_> {
             return Self::refuse("pack.validate: propose a pack first with pack.propose");
         };
         let mut cx = self.snap.context.clone();
-        cx.player_build = !self.snap.staff;
+        cx.player_build =
+            !self.snap.staff || matches!(self.snap.source, ProposalSource::Request { .. });
         let findings = validate(pack, &cx);
         let errors = findings.iter().filter(|f| f.blocks()).count();
         self.validated = true;
@@ -462,6 +472,13 @@ impl PlanHost<'_> {
 
 impl ToolHost for PlanHost<'_> {
     fn call(&mut self, name: &str, input: &serde_json::Value) -> Option<ToolReply> {
+        if self.is_cancelled() {
+            return Some(ToolReply {
+                content: "planning canceled: proposal was withdrawn".to_string(),
+                is_error: true,
+                more: false,
+            });
+        }
         match name {
             "atlas.read" => self.read(input.get("what").and_then(|w| w.as_str()).unwrap_or("")),
             "atlas.search_sites" => {
@@ -494,6 +511,9 @@ impl ToolHost for PlanHost<'_> {
     }
 
     fn on_text(&mut self, _reply: &CompletionResponse) -> TextVerdict {
+        if self.is_cancelled() {
+            return TextVerdict::Done;
+        }
         if self.pack.is_none() {
             TextVerdict::Repair(
                 "Reply by calling a tool: atlas.read to look, pack.propose with the whole pack, \
@@ -506,7 +526,7 @@ impl ToolHost for PlanHost<'_> {
     }
 
     fn finished(&self) -> bool {
-        self.clean || self.asked
+        self.clean || self.asked || self.is_cancelled()
     }
 }
 
@@ -543,8 +563,40 @@ fn bounded(text: &str) -> String {
 // The run
 // ---------------------------------------------------------------------------
 
+struct RunTokenGuard(u64);
+
+impl Drop for RunTokenGuard {
+    fn drop(&mut self) {
+        crate::proposal::finish_run_token(self.0);
+    }
+}
+
 /// Run one planning round off the world loop.
 pub async fn run_plan(llm: &LlmService, snap: &PlanSnapshot) -> PlanOutcome {
+    let _token_guard = RunTokenGuard(snap.run_token);
+    let cancel = crate::proposal::lookup_run_token(snap.run_token);
+    // STRAG-M9: if the proposal was withdrawn or superseded before this off-loop
+    // task started, exit immediately with zero LLM calls and $0.00 spend.
+    if cancel
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        return PlanOutcome {
+            proposal: snap.proposal,
+            revision: snap.revision,
+            pack: None,
+            findings: Vec::new(),
+            questions: Vec::new(),
+            cost_usd: 0.0,
+            rounds: 0,
+            status: PlanStatus::Failed {
+                message: "proposal was withdrawn before planning started".to_string(),
+                retryable: false,
+            },
+            model: String::new(),
+            prompt_hash: String::new(),
+        };
+    }
     let system = system_prompt(snap);
     let opening = user_prompt(snap);
     let prompt_hash = {
@@ -575,6 +627,7 @@ pub async fn run_plan(llm: &LlmService, snap: &PlanSnapshot) -> PlanOutcome {
     };
     let mut host = PlanHost {
         snap,
+        cancel,
         candidate: None,
         pack: None,
         findings: Vec::new(),
@@ -584,6 +637,23 @@ pub async fn run_plan(llm: &LlmService, snap: &PlanSnapshot) -> PlanOutcome {
         asked: false,
     };
     let report = agent::run(llm, spec, &mut host).await;
+    if host.is_cancelled() {
+        return PlanOutcome {
+            proposal: snap.proposal,
+            revision: snap.revision,
+            pack: None,
+            findings: Vec::new(),
+            questions: Vec::new(),
+            cost_usd: report.cost_usd,
+            rounds: u32::try_from(report.rounds).unwrap_or(u32::MAX),
+            status: PlanStatus::Failed {
+                message: "proposal was withdrawn during planning".to_string(),
+                retryable: false,
+            },
+            model: report.model,
+            prompt_hash,
+        };
+    }
     // A pack the model never validated is validated here, so the record says
     // where it stands.
     if host.pack.is_some() && !host.validated {

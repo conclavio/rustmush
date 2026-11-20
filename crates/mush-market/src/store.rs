@@ -185,6 +185,9 @@ pub struct MarketStore {
     /// strands the hold when it lands). RAM only: after a reboot the map is empty and a
     /// listing a crash left unheld is withdrawn as before. Pruned by the arm past the grace.
     pub(crate) reserve_staged: BTreeMap<ListingId, u64>,
+    /// CRIT-9: lot listings deleted by `api::withdraw_listing` whose release leg is authorized
+    /// to land. RAM only, bounded by `MAX_LISTINGS` and pruned by `boot::sweep`.
+    pub(crate) withdrawn_holds: BTreeMap<ListingId, WithdrawnHold>,
     /// Doc 18 cut IC14 row 16: the market sweeps run this boot (RAM only).
     pub(crate) sweeps: u64,
     /// Doc 18 cut IC14 row 16: how many `hold_standing` reads the sweep made this boot
@@ -193,6 +196,15 @@ pub struct MarketStore {
     /// Doc 48e (exchange G21; 48d M-01): the lot-hold reconcile's round-robin cursor, the last
     /// listing it visited. RAM only: a reboot starts the lap again from the lowest id.
     pub(crate) lot_reconcile_cursor: Option<crate::ids::ListingId>,
+}
+
+/// One withdrawn lot listing's hold coordinates, retained until its release leg lands or sweeps out.
+#[derive(Clone, Debug)]
+pub(crate) struct WithdrawnHold {
+    pub(crate) endpoint: mush_inventory::EndpointRef,
+    pub(crate) commodity: mush_core::CanonicalId,
+    pub(crate) lot: Option<mush_inventory::LotId>,
+    pub(crate) at_sweep: u64,
 }
 
 impl MarketStore {

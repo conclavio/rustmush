@@ -98,15 +98,21 @@ fn ready(ctx: &mut Ctx<'_>, hull: ObjId, act: Act) -> Result<(BayHull, super::Fa
     Ok((record, facility))
 }
 
-/// **Whether the hold takes what `lots` lay in it** (doc 36a P2-4; doc 39 cut IN.1): every lot,
-/// a part by its catalogue mass, summed by commodity, against [`PortCapacity`]'s plan for the
-/// hold as it stands (the parts already aboard included). An ungoverned hold takes anything; an
-/// unreadable plan or pool refuses.
+/// **Whether the hold takes what `lots` and `rounds` lay in it** (doc 36a P2-4; doc 39 cut IN.1;
+/// security hardening HIGH-48 & HIGH-53): every lot and stripped weapon magazine's rounds, a part
+/// by its catalogue mass, summed by commodity, against [`PortCapacity`]'s plan for the hold as it
+/// stands (every good's pooled and lot balance included, accumulating an overlay across commodities
+/// in the batch). An ungoverned hold takes anything; an unreadable plan or pool refuses.
 ///
 /// # Errors
 ///
 /// The refusal, as a sentence carrying the hold's own line.
-fn hold_takes(ctx: &Ctx<'_>, vault: VaultId, lots: &[LotMint]) -> Result<(), String> {
+fn hold_takes(
+    ctx: &Ctx<'_>,
+    vault: VaultId,
+    lots: &[LotMint],
+    rounds: &[act::GoodUnits],
+) -> Result<(), String> {
     let endpoint = EndpointRef(vault);
     let Some(plan) = PortCapacity.plan(ctx.w, endpoint) else {
         return Ok(());
@@ -116,12 +122,22 @@ fn hold_takes(ctx: &Ctx<'_>, vault: VaultId, lots: &[LotMint]) -> Result<(), Str
         let slot = bulk.entry(lot.commodity.clone()).or_insert(0);
         *slot = slot.saturating_add(lot.quantity);
     }
+    for row in rounds.iter().filter(|r| r.units > 0) {
+        let slot = bulk.entry(row.good.clone()).or_insert(0);
+        *slot = slot.saturating_add(row.units);
+    }
+    let mut staged: BTreeMap<CanonicalId, u64> = BTreeMap::new();
     for (commodity, quantity) in &bulk {
         let mut read = |good: &CanonicalId| {
-            crate::port_tick::read_pool(ctx, endpoint, good).map_err(|_| CapacityReadError)
+            let held =
+                crate::port_tick::read_held(ctx, endpoint, good).map_err(|_| CapacityReadError)?;
+            Ok(held.saturating_add(staged.get(good).copied().unwrap_or(0)))
         };
         match PortCapacity.check(&plan, commodity, *quantity, &mut read) {
-            Ok(()) => {}
+            Ok(()) => {
+                let slot = staged.entry(commodity.clone()).or_insert(0);
+                *slot = slot.saturating_add(*quantity);
+            }
             Err(CapacityRefusal::Refused { line, .. }) => {
                 return Err(format!(
                     "Her carrier's hold will not take what comes off her: {line}"
@@ -261,7 +277,11 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             false,
         )),
     };
-    hold_takes(ctx, vault, std::slice::from_ref(&row))?;
+    // 48e review rounds:G12 (A-14: salvage conserves rounds) & HIGH-53: compute the part's whole
+    // units of rounds before the capacity pre-check so the hold's room counts both the part and
+    // its rounds together.
+    let rounds = stripped_rounds(ctx.w, &before, &spec, &anatomy, &slot);
+    hold_takes(ctx, vault, std::slice::from_ref(&row), &rounds)?;
     let mut record = record;
     // Doc 41 §4.6: a lot that comes off under a pending claim is listed under it, so the claim's
     // vacate flags it. Dormant on the ruled rights table (a salvor never strips, Q-36-33): no
@@ -279,9 +299,6 @@ pub fn strip(ctx: &mut Ctx<'_>, hull: ObjId, part: &str) -> Result<LotId, String
             vacated: None,
         });
     }
-    // 48e review rounds:G12 (A-14: salvage conserves rounds): the part's whole units of rounds
-    // come off with it, into the same hold.
-    let rounds = stripped_rounds(ctx.w, &before, &spec, &anatomy, &slot);
     owe_mint(
         ctx,
         record,
@@ -593,7 +610,7 @@ pub fn scrap(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Scrapped, String> {
     )
     .map_err(|e| e.to_string())?;
     // The operator's storefront takes what the holder sells it (the scrap vault is uncapped).
-    hold_takes(ctx, stores, &lots)?;
+    hold_takes(ctx, stores, &lots, &[])?;
     // Doc 41 cut RS.9a: what the scrap mints is a source in the matter census, counted when its
     // lots land (`scrap::land`).
     let part_kg = lots
@@ -671,7 +688,7 @@ pub fn return_bale(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<Returned, String> {
     }
     let act_no = super::next_act(ctx, &record);
     let lots = bulk_lots(hull, act_no, &terms)?;
-    hold_takes(ctx, stores, &lots)?;
+    hold_takes(ctx, stores, &lots, &[])?;
     let vault = super::scrap::open_scrap_vault(ctx, ctx.actor, &venue)?;
     let settle = super::scrap::Settlement {
         credit_minor: credit,

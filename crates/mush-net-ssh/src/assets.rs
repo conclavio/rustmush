@@ -27,7 +27,12 @@
 //! connection and syncs what changed.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::OnceLock;
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use russh_sftp::protocol::{
@@ -35,6 +40,10 @@ use russh_sftp::protocol::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::mpsc;
+
+use crate::kill::KillSwitch;
 
 /// Where the pack is, in the `sftp` tree.
 pub const ROOT: &str = "/assets";
@@ -51,6 +60,17 @@ pub const BYTES_PER_SEC: usize = 1024 * 1024;
 
 /// The most handles one `sftp` session holds open.
 pub const MAX_HANDLES: usize = 32;
+
+/// Bounded chunk queue between `Handler::data` and [`SftpChannelStream`].
+pub const SFTP_MAX_CHUNKS: usize = 64;
+
+/// Bounded buffered inbound bytes between `Handler::data` and
+/// [`SftpChannelStream`] (512 KiB, HIGH-6). Exceeding this closes the SFTP
+/// channel cleanly without blocking `russh::Session::run`.
+pub const SFTP_MAX_BUFFERED_BYTES: usize = 512 * 1024;
+
+/// Maximum single write chunk passed to `russh::server::Handle::data`.
+const SFTP_WRITE_CHUNK: usize = 32 * 1024;
 
 // The limits w11term's client enforces, held here so a pack it would refuse
 // is never served.
@@ -695,6 +715,373 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for EndOnError<S> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+type SftpFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send>>;
+
+/// Transport sink backing [`SftpChannelStream`]: `russh::server::Handle` in
+/// production, or a controllable mock in unit tests.
+pub(crate) trait SftpSink: Send + Sync + 'static {
+    fn send_data(&self, bytes: Vec<u8>) -> SftpFuture;
+    fn close_channel(&self) -> SftpFuture;
+}
+
+struct RusshSftpSink {
+    handle: russh::server::Handle,
+    channel: russh::ChannelId,
+}
+
+impl SftpSink for RusshSftpSink {
+    fn send_data(&self, bytes: Vec<u8>) -> SftpFuture {
+        let handle = self.handle.clone();
+        let channel = self.channel;
+        Box::pin(async move { handle.data(channel, bytes).await.map_err(|_| ()) })
+    }
+
+    fn close_channel(&self) -> SftpFuture {
+        let handle = self.handle.clone();
+        let channel = self.channel;
+        Box::pin(async move {
+            let _ = handle.eof(channel).await;
+            let _ = handle.close(channel).await;
+            Ok(())
+        })
+    }
+}
+
+/// Non-blocking inbound feeder from `russh::server::Handler::data` into
+/// [`SftpChannelStream`]. Dropping it delivers EOF to the SFTP server task.
+#[derive(Debug)]
+pub struct SftpInbound {
+    tx: mpsc::Sender<Vec<u8>>,
+    buffered: Arc<AtomicUsize>,
+    max_buffered: usize,
+}
+
+impl SftpInbound {
+    /// Push `data` without ever blocking the SSH session task.
+    ///
+    /// Returns `false` when the SFTP server task has already exited or the
+    /// bounded inbound queue/byte budget would be exceeded; callers should
+    /// close the SFTP channel and drop this feeder.
+    #[must_use]
+    pub fn try_push(&self, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return !self.tx.is_closed();
+        }
+        let mut cur = self.buffered.load(Ordering::Acquire);
+        loop {
+            let Some(next) = cur.checked_add(data.len()) else {
+                return false;
+            };
+            if next > self.max_buffered {
+                return false;
+            }
+            match self.buffered.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+        if self.tx.try_send(data.to_vec()).is_err() {
+            self.buffered.fetch_sub(data.len(), Ordering::AcqRel);
+            return false;
+        }
+        true
+    }
+}
+
+/// Bounded, timeout-enforced `AsyncRead + AsyncWrite` adapter for the secondary
+/// `sftp` channel (HIGH-6).
+///
+/// - Reads drain a bounded non-blocking `mpsc` fed by `Handler::data`, so
+///   `russh::Session::run` never blocks on `Channel<Msg>::send().await`.
+/// - Writes are bounded by `write_timeout` and raced against [`KillSwitch`].
+/// - On any write timeout, transport error, or kill, the stream closes the SSH
+///   channel and transitions to EOF on subsequent reads so `russh_sftp`'s
+///   server loop exits cleanly instead of looping on I/O errors.
+pub struct SftpChannelStream {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buffered: Arc<AtomicUsize>,
+    pending_read: Vec<u8>,
+    read_pos: usize,
+    sink: Arc<dyn SftpSink>,
+    kill: Arc<KillSwitch>,
+    kill_wait: Pin<Box<dyn Future<Output = ()> + Send>>,
+    write_timeout: Duration,
+    write_fut: Option<(usize, SftpFuture)>,
+    shutdown_fut: Option<SftpFuture>,
+    closed: bool,
+}
+
+impl std::fmt::Debug for SftpChannelStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SftpChannelStream")
+            .field("closed", &self.closed)
+            .field("buffered", &self.buffered.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl SftpChannelStream {
+    /// Pair a non-blocking [`SftpInbound`] feeder with a bounded
+    /// [`SftpChannelStream`] backed by `handle` and `channel`.
+    #[must_use]
+    pub fn new(
+        handle: russh::server::Handle,
+        channel: russh::ChannelId,
+        kill: Arc<KillSwitch>,
+        write_timeout: Duration,
+    ) -> (SftpInbound, SftpChannelStream) {
+        Self::with_sink(
+            Arc::new(RusshSftpSink { handle, channel }),
+            kill,
+            write_timeout,
+            SFTP_MAX_CHUNKS,
+            SFTP_MAX_BUFFERED_BYTES,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn with_sink(
+        sink: Arc<dyn SftpSink>,
+        kill: Arc<KillSwitch>,
+        write_timeout: Duration,
+        max_chunks: usize,
+        max_buffered: usize,
+    ) -> (SftpInbound, SftpChannelStream) {
+        let (tx, rx) = mpsc::channel(max_chunks.max(1));
+        let buffered = Arc::new(AtomicUsize::new(0));
+        let kill_for_wait = Arc::clone(&kill);
+        let kill_wait = Box::pin(async move {
+            kill_for_wait.wait_killed().await;
+        });
+        (
+            SftpInbound {
+                tx,
+                buffered: Arc::clone(&buffered),
+                max_buffered,
+            },
+            SftpChannelStream {
+                rx,
+                buffered,
+                pending_read: Vec::new(),
+                read_pos: 0,
+                sink,
+                kill,
+                kill_wait,
+                write_timeout,
+                write_fut: None,
+                shutdown_fut: None,
+                closed: false,
+            },
+        )
+    }
+}
+
+impl Drop for SftpChannelStream {
+    fn drop(&mut self) {
+        if !self.closed {
+            self.closed = true;
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let sink = Arc::clone(&self.sink);
+                let timeout = self.write_timeout.min(Duration::from_secs(2));
+                rt.spawn(async move {
+                    let _ = tokio::time::timeout(timeout, sink.close_channel()).await;
+                });
+            }
+        }
+    }
+}
+
+impl AsyncRead for SftpChannelStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.closed || self.kill.is_killed() {
+            self.closed = true;
+            return Poll::Ready(Ok(()));
+        }
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        if self.read_pos < self.pending_read.len() {
+            let remaining = self.pending_read.get(self.read_pos..).unwrap_or(&[]);
+            let take = remaining.len().min(buf.remaining());
+            if let Some(slice) = remaining.get(..take) {
+                buf.put_slice(slice);
+            }
+            self.read_pos = self.read_pos.saturating_add(take);
+            if self.read_pos >= self.pending_read.len() {
+                let freed = self.pending_read.len();
+                self.pending_read.clear();
+                self.read_pos = 0;
+                self.buffered.fetch_sub(freed, Ordering::AcqRel);
+            }
+            return Poll::Ready(Ok(()));
+        }
+        if self.kill_wait.as_mut().poll(cx).is_ready() {
+            self.closed = true;
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(chunk)) => {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    let take = chunk.len().min(buf.remaining());
+                    if let Some(slice) = chunk.get(..take) {
+                        buf.put_slice(slice);
+                    }
+                    if take < chunk.len() {
+                        self.pending_read = chunk;
+                        self.read_pos = take;
+                    } else {
+                        self.buffered.fetch_sub(chunk.len(), Ordering::AcqRel);
+                    }
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(None) => {
+                    self.closed = true;
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl AsyncWrite for SftpChannelStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if self.closed {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "sftp channel closed",
+            )));
+        }
+        if self.write_fut.is_none() {
+            if self.kill.is_killed() {
+                self.closed = true;
+                if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                    let sink = Arc::clone(&self.sink);
+                    let timeout = self.write_timeout.min(Duration::from_secs(2));
+                    rt.spawn(async move {
+                        let _ = tokio::time::timeout(timeout, sink.close_channel()).await;
+                    });
+                }
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "sftp channel closed",
+                )));
+            }
+            if buf.is_empty() {
+                return Poll::Ready(Ok(0));
+            }
+            let take = buf.len().min(SFTP_WRITE_CHUNK);
+            let chunk = buf.get(..take).unwrap_or(&[]).to_vec();
+            let sink = Arc::clone(&self.sink);
+            let kill = Arc::clone(&self.kill);
+            let timeout = self.write_timeout;
+            let fut: SftpFuture = Box::pin(async move {
+                let outcome = tokio::select! {
+                    biased;
+                    () = kill.wait_killed() => Err(()),
+                    res = tokio::time::timeout(timeout, sink.send_data(chunk)) => match res {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(())) | Err(_) => Err(()),
+                    },
+                };
+                if outcome.is_err() {
+                    let close_timeout = timeout.min(Duration::from_secs(2));
+                    let _ = tokio::time::timeout(close_timeout, sink.close_channel()).await;
+                }
+                outcome
+            });
+            self.write_fut = Some((take, fut));
+        }
+        if let Some((len, fut)) = self.write_fut.as_mut() {
+            let written = *len;
+            match fut.as_mut().poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(())) => {
+                    self.write_fut = None;
+                    Poll::Ready(Ok(written))
+                }
+                Poll::Ready(Err(())) => {
+                    self.write_fut = None;
+                    self.closed = true;
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "sftp write timed out or closed",
+                    )))
+                }
+            }
+        } else {
+            Poll::Ready(Ok(0))
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if let Some((_, fut)) = self.write_fut.as_mut() {
+            match fut.as_mut().poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(())) => {
+                    self.write_fut = None;
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Ready(Err(())) => {
+                    self.write_fut = None;
+                    self.closed = true;
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "sftp write timed out or closed",
+                    )))
+                }
+            }
+        } else {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.closed = true;
+        if self.shutdown_fut.is_none() {
+            let sink = Arc::clone(&self.sink);
+            let kill = Arc::clone(&self.kill);
+            let timeout = self.write_timeout.min(Duration::from_secs(2));
+            let fut: SftpFuture = Box::pin(async move {
+                tokio::select! {
+                    biased;
+                    () = kill.wait_killed() => {}
+                    _ = tokio::time::timeout(timeout, sink.close_channel()) => {}
+                }
+                Ok(())
+            });
+            self.shutdown_fut = Some(fut);
+        }
+        if let Some(fut) = self.shutdown_fut.as_mut() {
+            match fut.as_mut().poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => {
+                    self.shutdown_fut = None;
+                    Poll::Ready(Ok(()))
+                }
+            }
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
 }
 

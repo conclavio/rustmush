@@ -798,7 +798,9 @@ impl SpaceFreeFlightRecord {
         let credit = u128::from(self.prepaid_unflown_t)
             .saturating_mul(u128::from(remaining_s.unsigned_abs()))
             / u128::from(total_s.unsigned_abs());
-        u64::try_from(credit).unwrap_or(self.prepaid_unflown_t)
+        u64::try_from(credit)
+            .unwrap_or(self.prepaid_unflown_t)
+            .min(self.prepaid_unflown_t)
     }
 
     /// Advance the free-flight state by `dt_ic_s` IC seconds under solar gravity
@@ -807,7 +809,8 @@ impl SpaceFreeFlightRecord {
     ///
     /// - Timed burns (`burn_remaining_ic_s = Some(rem)`) apply thrust for `min(dt_ic_s, rem)`
     ///   seconds and cut off (`thrust_mmps2 = [0, 0, 0]`, `burn_remaining_ic_s = None`) once
-    ///   `rem` expires so thrust never latches.
+    ///   `rem` expires so thrust never latches. Without an active timed burn (`None`), no
+    ///   unpaid thrust is integrated.
     /// - `Intercept` and `MatchVelocity` evaluate their flip/braking condition against
     ///   `target_vel_mps` ($\vec{v}_{\text{rel}} = \vec{v}_{\text{ship}} - \vec{v}_{\text{target}}$)
     ///   rather than heliocentric speed, so a ship co-moving with its target body at zero
@@ -832,11 +835,11 @@ impl SpaceFreeFlightRecord {
             self.braking_flipped = false;
         }
 
-        // Timed burn cutoff (`35a` §5 #4, `35b` §3 #3): apply thrust only for the remaining burn duration,
-        // and clear thrust whenever a timed burn finishes (including when `burn_s == dt_ic_s`).
-        let had_timed_burn = self.burn_remaining_ic_s.is_some();
+        // Timed burn cutoff (`35a` §5 #4, `35b` §3 #3): apply thrust only for the remaining
+        // paid burn duration, and clear thrust whenever no timed burn remains (including when
+        // `burn_s == dt_ic_s` or `burn_remaining_ic_s` is `None`).
         let burn_s = match self.burn_remaining_ic_s {
-            Some(rem) => {
+            Some(rem) if rem > 0 => {
                 let rem_i64 = i64::from(rem);
                 if dt_ic_s >= rem_i64 {
                     self.burn_remaining_ic_s = None;
@@ -846,7 +849,11 @@ impl SpaceFreeFlightRecord {
                     dt_ic_s
                 }
             }
-            None => dt_ic_s,
+            Some(_) => {
+                self.burn_remaining_ic_s = None;
+                0
+            }
+            None => 0,
         };
 
         // Solar gravity acceleration in mm/s² (`a_sun = -mu_sun * r / |r|^3`).
@@ -883,7 +890,7 @@ impl SpaceFreeFlightRecord {
                 v1_mps.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64;
         }
 
-        if had_timed_burn && self.burn_remaining_ic_s.is_none() {
+        if self.burn_remaining_ic_s.is_none() {
             self.thrust_mmps2 = [0, 0, 0];
         }
         self.last_ic_s = self.last_ic_s.saturating_add(dt_ic_s);
@@ -1107,6 +1114,10 @@ pub struct SpaceBubbleBook {
     /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
     #[serde(default)]
     pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
+    /// **Doc 50 cut KC.2 (Q-50-54)**: hulls that crossed the Kirkwood picket's leg with nobody
+    /// aboard, awaiting the space tick's transit-duty assessment. Skipped when empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub absent_duty: std::collections::BTreeSet<ObjId>,
     /// Active 6-DOF docking sessions keyed by carrier hull [`ObjId`] (`SF.R7`, `Q-35-5`, `D-35-14`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub docking_sessions: BTreeMap<ObjId, super::docking::DockingSession>,
@@ -1417,6 +1428,7 @@ pub fn clear_interdiction_bubble(w: &mut World, hull: ObjId) -> bool {
                 life_support_remaining_s: DERELICT_LIFE_SUPPORT_S,
             };
             ship.thrust_mps2 = [0, 0, 0];
+            ship.thrust_mmps2 = [0, 0, 0];
         }
     }
     true
@@ -2950,6 +2962,7 @@ fn begin_linkdead_for_hull(ctx: &mut Ctx<'_>, hull: ObjId, announce_grace: bool)
             if let Some(ship) = active.bubble.ships.get_mut(&ship_id) {
                 ship.crew_linkdead = true;
                 ship.thrust_mps2 = [0, 0, 0];
+                ship.thrust_mmps2 = [0, 0, 0];
                 ship.pdc_auto = true;
                 affected = true;
             }
@@ -3175,6 +3188,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::surface::claim::tick(ctx);
     reconcile_space_burns(ctx);
     super::customs::reconcile_customs_rulings(ctx);
+    super::duty::settle_absent(ctx);
     prune_space_book_collections(ctx);
     persist_space_state(ctx);
 }
@@ -5221,6 +5235,7 @@ fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble) {
         return;
     };
     carrier.thrust_mps2 = [0, 0, 0];
+    carrier.thrust_mmps2 = [0, 0, 0];
     let dist_m = super::picket::distance_3d_m(carrier.pos_m, d_pos);
     let step_m = 6_000_i64;
     if dist_m <= 250 {
@@ -5800,6 +5815,7 @@ fn build_carrier_ship_state(
     if is_linkdead {
         ship.crew_linkdead = true;
         ship.thrust_mps2 = [0, 0, 0];
+        ship.thrust_mmps2 = [0, 0, 0];
         ship.pdc_auto = true;
     }
     Some(ship)
@@ -6254,5 +6270,33 @@ mod interdictor_tests {
             Some(b)
         );
         assert!(reloaded_seal(None, None).is_none());
+    }
+
+    #[test]
+    fn high15_free_flight_does_not_integrate_unpaid_thrust_without_timed_burn() {
+        let place = mush_core::CanonicalId::new("ceres").expect("cid");
+        let mut ff = SpaceFreeFlightRecord {
+            hull: ObjId(42),
+            origin_place: place.clone(),
+            target_place: place,
+            pos_km: [0, 0, 0], // r_sq <= 1e6 -> zero solar gravity for exact thrust isolation
+            vel_mps: [100, 0, 0],
+            thrust_mmps2: [5_000, 0, 0],
+            burn_remaining_ic_s: None,
+            guidance: FreeFlightGuidanceMode::Manual,
+            braking_flipped: false,
+            decoupled_at_ic_s: 1_000,
+            last_ic_s: 1_000,
+            cluster_arrival_ic_s: None,
+            prepaid_unflown_t: 10,
+        };
+        ff.step_ic_s(60, None);
+        assert_eq!(
+            ff.vel_mps,
+            [100, 0, 0],
+            "unpaid free-flight record (burn_remaining_ic_s = None) must not accelerate"
+        );
+        assert_eq!(ff.thrust_mmps2, [0, 0, 0]);
+        assert_eq!(ff.prepaid_credit_t(2_000), 10);
     }
 }

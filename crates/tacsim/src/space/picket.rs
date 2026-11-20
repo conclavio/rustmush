@@ -1477,9 +1477,11 @@ pub fn levy_customs_fine_and_advance_front(
     let pilot_account = crate::port::credit::own_account(ctx.w, pilot)
         .map(|credit| credit.id)
         .ok_or_else(|| "pilot holds no credit account for customs fine".to_owned())?;
+    // Doc 50 cut KC.2 (Q-50-14): the fine goes to the terms row's payee (the Republic's
+    // customs office) once the holder's row sets one, else to the Registry, as built.
     let (_registry_org, registry_principal, registry_account) =
-        resolve_registry_principal_and_account(ctx.w)
-            .ok_or_else(|| "Freeport Registry account unavailable".to_owned())?;
+        super::duty::fine_payee(ctx.w, hull)
+            .ok_or_else(|| "customs fine payee account unavailable".to_owned())?;
 
     let saved_actor = ctx.actor;
     ctx.actor = pilot;

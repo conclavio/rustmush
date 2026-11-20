@@ -83,8 +83,9 @@ pub use protocol::{
     LegalActionsError, MAX_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION, MAX_IN_FLIGHT_GATEWAY_INPUTS,
     MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION, MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS,
-    MAX_IN_FLIGHT_SERVICE_REQUESTS, RelayError, RelaySpeak, ServiceReq, ServiceResp, ToGateway,
-    ToServer, WireInbound, WireInboundError,
+    MAX_IN_FLIGHT_SERVICE_REQUESTS, MAX_RESPOND_CHOICE_ID_BYTES, MAX_RESPOND_EPOCH_BYTES,
+    MAX_RESPOND_TEXT_CHARS, RelayError, RelaySpeak, ServiceReq, ServiceResp, ToGateway, ToServer,
+    WireInbound, WireInboundError, WireInboundLane,
 };
 pub use target::SendTarget;
 pub use window::{EmissionGate, IPC_VERSION_SKEW_MARKER, LinkVersion, PRE_WINDOW, ProtoWindow};

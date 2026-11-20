@@ -303,3 +303,74 @@ fn ap1_an_unwired_notice_is_still_said() {
     );
     assert!(!fire(&mut tw).contains("eligible defender"), "once");
 }
+
+/// **HIGH-30.** Defender notices target only live players (never NPCs/Things
+/// or the attacker) and enforce per-(issuer, recipient) cooldown across restarts.
+#[test]
+fn high30_defender_notices_filter_non_players_and_rate_limit_repeat_spam() {
+    let log: Log = Arc::default();
+    let mut tw = boot(Some(&log));
+    let attacker = tw.spawn_player("Attacker");
+    let defender = tw.spawn_player("Defender");
+    let npc = tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Npc,
+            "BystanderNpc",
+            mush_core::GOD,
+            Some(mush_core::LIMBO),
+        )
+        .expect("npc");
+    let thing = tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "BystanderThing",
+            mush_core::GOD,
+            Some(mush_core::LIMBO),
+        )
+        .expect("thing");
+
+    let fire_notice_op = |tw: &mut TestWorld, targets: &[ObjId]| {
+        let id = declared(tw, attacker, targets, "audience");
+        ok(tw, attacker, &format!("@op/activate {}", id.0));
+        let _ = fire(tw);
+        ok(tw, attacker, &format!("@op/resolve {}=success", id.0));
+        for _ in 0..8 {
+            let _ = fire(tw);
+        }
+    };
+
+    // Only the live Player defender gets a letter — never NPC, Thing, or attacker.
+    fire_notice_op(&mut tw, &[attacker, defender, npc, thing]);
+    {
+        let got = log.lock().expect("lock");
+        assert_eq!(got.len(), 1, "expected exactly 1 player delivery: {got:?}");
+        assert_eq!(got[0].0, defender);
+    }
+
+    // Immediate repeat activation inside NOTICE_RECIPIENT_COOLDOWN_SECS is suppressed.
+    fire_notice_op(&mut tw, &[defender]);
+    assert_eq!(
+        log.lock().expect("lock").len(),
+        1,
+        "repeat notice inside cooldown must be suppressed"
+    );
+
+    // The cooldown persists across reboot.
+    let mut kv = Kv::new();
+    fold_into(&mut tw, &mut kv);
+    reboot(&mut tw, &kv);
+    fire_notice_op(&mut tw, &[defender]);
+    assert_eq!(
+        log.lock().expect("lock").len(),
+        1,
+        "cooldown must persist across reboot"
+    );
+
+    // After NOTICE_RECIPIENT_COOLDOWN_SECS, delivery succeeds again.
+    let later = tw.world().now() + mush_campaign::NOTICE_RECIPIENT_COOLDOWN_SECS + 1;
+    tw.set_now(later);
+    fire_notice_op(&mut tw, &[defender]);
+    assert_eq!(log.lock().expect("lock").len(), 2);
+}

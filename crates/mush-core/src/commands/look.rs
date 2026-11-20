@@ -7,7 +7,7 @@ use mush_proto::{OutputEvent, RichText};
 
 use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
-use crate::flags::{Flags, Role};
+use crate::flags::{Flags, Powers, Role};
 use crate::matchit::{MatchErr, is_nearby, match_object};
 use crate::module::{HookPoint, perceives_via};
 use crate::obj::{ObjId, ObjKind};
@@ -186,6 +186,31 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .text(format!("({target})"));
 
     if !perm::can_examine(w, ctx.actor, target) {
+        // CORE-M4: prevent non-controllers from using `examine #dbref` /
+        // `*name` as a global database or `DARK` presence oracle. Same-room
+        // visible objects keep the classic public owner line.
+        if o.flags.contains(Flags::GOING) || !is_nearby(w, ctx.actor, target) {
+            return Err(MatchErr::NoMatch.into());
+        }
+        let see_hidden = perm::has_power(w, ctx.actor, Powers::SEE_HIDDEN);
+        if !see_hidden && o.kind != ObjKind::Room {
+            if o.flags.contains(Flags::DARK) {
+                return Err(MatchErr::NoMatch.into());
+            }
+            // In a DARK room the actor does not control, uncarried room
+            // occupants are hidden (matching `room_view`).
+            let carried = w.contents_of(ctx.actor).contains(&target);
+            let in_dark_room = !carried
+                && w.get(ctx.actor)
+                    .and_then(|a| a.location)
+                    .is_some_and(|loc| {
+                        w.get(loc).is_some_and(|r| r.flags.contains(Flags::DARK))
+                            && !perm::controls(w, ctx.actor, loc)
+                    });
+            if in_dark_room {
+                return Err(MatchErr::NoMatch.into());
+            }
+        }
         // Classic public view: name and owner only.
         let owner = w.get(o.owner).map_or_else(
             || o.owner.to_string(),

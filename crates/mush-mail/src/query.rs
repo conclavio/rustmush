@@ -14,7 +14,9 @@ use mush_core::{ObjId, QueryHandler, Role, World, perm};
 use mush_proto::{OutputEvent, PanelFrameKind, RichText};
 use smol_str::SmolStr;
 
-use crate::data::{ARCHIVE, INBOX, MailState, MailStatus, SENT};
+use crate::data::{
+    ARCHIVE, INBOX, MAIL_LIST_PAGE_SIZE, MAIL_QUERY_MAX_LIMIT, MailState, MailStatus, SENT,
+};
 
 fn err(msg: impl Into<String>) -> RichText {
     RichText::tag("error", msg)
@@ -82,13 +84,34 @@ impl QueryHandler for ListQuery {
             })
             .collect();
 
-        let entries: Vec<serde_json::Value> = st
-            .folder_ids(actor, &folder)
+        let limit = params
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| usize::try_from(v).ok())
+            .map_or(MAIL_LIST_PAGE_SIZE, |n| n.clamp(1, MAIL_QUERY_MAX_LIMIT));
+        let offset = match params
+            .get("offset")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| usize::try_from(v).ok())
+        {
+            Some(off) => off,
+            None => params
+                .get("page")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| usize::try_from(v).ok())
+                .map_or(0, |p| p.saturating_sub(1).saturating_mul(limit)),
+        };
+
+        let ids = st.folder_ids(actor, &folder);
+        let total = ids.len();
+        let entries: Vec<serde_json::Value> = ids
             .iter()
             .enumerate()
-            .map(|(i, &id)| {
-                let e = st.entry(actor, id).expect("listed entry exists");
-                let m = st.message(id).expect("entry references stored message");
+            .skip(offset)
+            .take(limit)
+            .filter_map(|(i, &id)| {
+                let e = st.entry(actor, id)?;
+                let m = st.message(id)?;
                 let status = match e.status {
                     MailStatus::Urgent => "urgent",
                     MailStatus::Unread => "unread",
@@ -97,7 +120,7 @@ impl QueryHandler for ListQuery {
                 let from = w
                     .get(m.from)
                     .map_or_else(|| "(vanished)".to_string(), |o| o.name.clone());
-                serde_json::json!({
+                Some(serde_json::json!({
                     "index": i + 1,
                     "id": m.id,
                     "from": { "id": m.from.to_string(), "name": from },
@@ -106,9 +129,10 @@ impl QueryHandler for ListQuery {
                     "sent_at": m.sent_at,
                     "reply_to": m.reply_to,
                     "delivery": st.delivery_text(actor, id),
-                })
+                }))
             })
             .collect();
+        let has_more = offset.saturating_add(entries.len()) < total;
 
         // Staff are quota-exempt, mirroring the send path.
         let quota = if perm::has_role(w, actor, Role::Wizard) {
@@ -124,6 +148,10 @@ impl QueryHandler for ListQuery {
                 "folder": folder,
                 "folders": folders,
                 "entries": entries,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "has_more": has_more,
                 "quota": quota,
             }),
         })

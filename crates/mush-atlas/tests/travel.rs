@@ -1200,3 +1200,352 @@ fn k4_a_disconnect_leaves_the_traveler_where_it_is() {
     let _ = tick_at(&mut tw, T0 + 400);
     assert_eq!(loc(&tw, alice), Some(transit_room(&tw)), "and stays there");
 }
+
+/// CRIT-17: a passenger aboard a moving service vehicle MUST NOT be able to
+/// `+stakeout` (teleporting off the moving vehicle to a road patch) or list
+/// checkpoints while the vehicle is under way.
+#[test]
+fn crit17_moving_vehicle_passenger_cannot_stakeout() {
+    let mut tw = lot();
+    let bus = room(&tw, "Studio Tour Bus");
+    let stop = room(&tw, "Bus Stop (OOC)");
+    let rider = player(&mut tw, "Rider", stop);
+    let _ = run(&mut tw, rider, "board");
+    assert_eq!(loc(&tw, rider), Some(bus));
+
+    // Advance until the bus departs and is UnderWay.
+    let mut departed = false;
+    for t in (T0 + 1)..=(T0 + 200) {
+        let _ = tick_at(&mut tw, t);
+        if journey_of(&tw, bus).is_some_and(|j| j.state == JourneyState::UnderWay) {
+            departed = true;
+            break;
+        }
+    }
+    assert!(departed, "the bus departed");
+
+    let list = run(&mut tw, rider, "+stakeout");
+    assert!(
+        list.contains("under way") || list.contains("No road"),
+        "moving vehicle passenger must not be offered stakeout checkpoints: {list}"
+    );
+    let attempt = run(&mut tw, rider, "+stakeout Water Tower");
+    assert!(
+        attempt.contains("under way"),
+        "moving vehicle passenger must be refused +stakeout: {attempt}"
+    );
+    assert_eq!(
+        loc(&tw, rider),
+        Some(bus),
+        "rider stayed aboard the moving bus"
+    );
+    assert!(
+        !atlas(&tw).travel.watches.contains_key(&rider),
+        "no watch was registered"
+    );
+}
+
+#[derive(Clone, Default)]
+struct TravelVetoState {
+    blocked_actor: std::sync::Arc<std::sync::Mutex<Option<ObjId>>>,
+    blocked_dest: std::sync::Arc<std::sync::Mutex<Option<ObjId>>>,
+}
+
+impl mush_core::module::EventHook for TravelVetoState {
+    fn move_attempt(
+        &self,
+        _ctx: &mush_core::module::HookReadContext<'_>,
+        actor: ObjId,
+        _exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), mush_proto::RichText> {
+        if *self.blocked_actor.lock().expect("lock") == Some(actor) {
+            return Err(mush_proto::RichText::plain("You are held fast."));
+        }
+        if *self.blocked_dest.lock().expect("lock") == Some(dest) {
+            return Err(mush_proto::RichText::plain("That destination is warded."));
+        }
+        Ok(())
+    }
+}
+
+struct TravelVetoModule(TravelVetoState);
+
+impl GameModule for TravelVetoModule {
+    fn name(&self) -> &'static str {
+        "travel_veto"
+    }
+
+    fn register(
+        &mut self,
+        reg: &mut mush_core::module::Registrar<'_>,
+    ) -> Result<(), mush_core::module::ModError> {
+        reg.hook(
+            mush_core::module::HookPoint::MoveAttempt,
+            std::sync::Arc::new(self.0.clone()),
+        );
+        Ok(())
+    }
+}
+
+/// CRIT-17: `+travel` departure/arrival and `+stakeout` / `+stakeout/end` MUST
+/// consult `MoveAttempt` hooks rather than calling raw `World::move_to`.
+#[test]
+fn crit17_travel_and_stakeout_relocations_obey_move_attempt_hooks() {
+    let veto = TravelVetoState::default();
+    let mut mods = modules(vec![region_pack(), west(), east(), hollow()]);
+    mods.insert(0, Box::new(TravelVetoModule(veto.clone())));
+    let mut tw = TestWorld::with_modules(mods);
+    tw.set_now(T0);
+    let _ = tw.fire_due(T0 * 1000);
+
+    let west_gate = room(&tw, "West Gate");
+    let east_gate = room(&tw, "East Gate");
+    let alice = player(&mut tw, "Alice", west_gate);
+
+    // 1. Frozen/vetoed actor cannot escape via +stakeout or +travel.
+    *veto.blocked_actor.lock().expect("lock") = Some(alice);
+    let out = run(&mut tw, alice, "+stakeout First Milestone");
+    assert!(
+        out.contains("held fast"),
+        "stakeout blocked by MoveAttempt: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+    assert!(!atlas(&tw).travel.watches.contains_key(&alice));
+
+    let out = run(&mut tw, alice, "+travel East End");
+    assert!(
+        out.contains("held fast"),
+        "travel depart blocked by MoveAttempt: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+    assert!(journey_of(&tw, alice).is_none());
+
+    // 2. Unfreeze actor, start stakeout, then freeze at patch -> +stakeout/end blocked.
+    *veto.blocked_actor.lock().expect("lock") = None;
+    let _ = run(&mut tw, alice, "+stakeout First Milestone");
+    let patch = loc(&tw, alice).expect("in patch");
+    assert_ne!(patch, west_gate);
+    *veto.blocked_actor.lock().expect("lock") = Some(alice);
+    let out = run(&mut tw, alice, "+stakeout/end");
+    assert!(
+        out.contains("held fast"),
+        "stakeout/end blocked by MoveAttempt: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(patch), "watcher stayed in patch");
+    assert!(
+        atlas(&tw).travel.watches.contains_key(&alice),
+        "watch preserved when return move is vetoed"
+    );
+
+    // Unfreeze and cleanly end watch.
+    *veto.blocked_actor.lock().expect("lock") = None;
+    let _ = run(&mut tw, alice, "+stakeout/end");
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+
+    // 3. Destination warded BEFORE departure blocks +travel immediately.
+    *veto.blocked_dest.lock().expect("lock") = Some(east_gate);
+    let out = run(&mut tw, alice, "+travel East End");
+    assert!(
+        out.contains("warded"),
+        "warded destination blocks +travel departure: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+    assert!(journey_of(&tw, alice).is_none());
+
+    // 4. Destination warded WHILE EN ROUTE aborts arrival instead of bypassing hook.
+    *veto.blocked_dest.lock().expect("lock") = None;
+    let _ = run(&mut tw, alice, "+travel East End");
+    assert!(journey_of(&tw, alice).is_some(), "departed normally");
+    *veto.blocked_dest.lock().expect("lock") = Some(east_gate);
+    let _ = tick_at(&mut tw, T0 + 400);
+    assert_ne!(
+        loc(&tw, alice),
+        Some(east_gate),
+        "arrival into newly-warded room must be blocked by MoveAttempt hook"
+    );
+    assert!(
+        journey_of(&tw, alice).is_none(),
+        "aborted cleanly when arrival was vetoed"
+    );
+}
+
+/// HIGH-38: `service.held_by` and `HoldReason::Intercept` holds clear when the
+/// holder leaves, disconnects, or is destroyed, expire after
+/// `MAX_INTERCEPT_HOLD_REAL_S` without allowing TTL reset, and can be
+/// overridden by staff (`@atlas/journey release` and `+intercept/release`).
+#[test]
+fn high38_service_and_intercept_holds_clear_on_leave_disconnect_destroy_ttl_and_staff_override() {
+    // 1. Holder walks away from the stop -> hold clears immediately, bus departs.
+    {
+        let mut tw = lot();
+        let bus = room(&tw, "Studio Tour Bus");
+        let stop = room(&tw, "Bus Stop (OOC)");
+        let backlot = room(&tw, "Backlot");
+        let blocker = player(&mut tw, "Blocker", stop);
+        let out = run(&mut tw, blocker, "+intercept bus");
+        assert!(out.contains("You hold the Studio Tour Bus here"), "{out}");
+
+        // Move blocker away via real @teleport (emits WorldEvent::Moved).
+        let _ = run(
+            &mut tw,
+            GOD,
+            &format!("@teleport #{}=#{}", blocker.0, backlot.0),
+        );
+        assert!(
+            atlas(&tw)
+                .travel
+                .services
+                .values()
+                .all(|s| s.held_by.is_none()),
+            "leaving the stop must clear service.held_by"
+        );
+        let _ = tick_at(&mut tw, T0 + 300);
+        assert!(
+            journey_of(&tw, bus).is_some(),
+            "bus departed after holder left the stop"
+        );
+    }
+
+    // 2. Holder disconnects -> hold clears immediately, bus departs.
+    {
+        let mut tw = lot();
+        let bus = room(&tw, "Studio Tour Bus");
+        let stop = room(&tw, "Bus Stop (OOC)");
+        let blocker = player(&mut tw, "Blocker", stop);
+        let _ = run(&mut tw, blocker, "+intercept bus");
+        disconnect(&mut tw, blocker);
+        assert!(
+            atlas(&tw)
+                .travel
+                .services
+                .values()
+                .all(|s| s.held_by.is_none()),
+            "disconnecting must clear service.held_by"
+        );
+        let _ = tick_at(&mut tw, T0 + 300);
+        assert!(
+            journey_of(&tw, bus).is_some(),
+            "bus departed after holder disconnected"
+        );
+    }
+
+    // 3. Holder is destroyed -> hold clears immediately, bus departs.
+    {
+        let mut tw = lot();
+        let bus = room(&tw, "Studio Tour Bus");
+        let stop = room(&tw, "Bus Stop (OOC)");
+        let blocker = tw
+            .world_mut()
+            .create(ObjKind::Npc, "BlockerNpc", GOD, Some(stop))
+            .expect("npc");
+        let _ = run(&mut tw, blocker, "+intercept bus");
+        let _ = run(&mut tw, GOD, &format!("@destroy #{}", blocker.0));
+        assert!(
+            atlas(&tw)
+                .travel
+                .services
+                .values()
+                .all(|s| s.held_by.is_none()),
+            "destroying holder must clear service.held_by"
+        );
+        let _ = tick_at(&mut tw, T0 + 300);
+        assert!(
+            journey_of(&tw, bus).is_some(),
+            "bus departed after holder was destroyed"
+        );
+    }
+
+    // 4. TTL expiry + cannot reset TTL by re-running `+intercept bus`.
+    {
+        let mut tw = lot();
+        let bus = room(&tw, "Studio Tour Bus");
+        let stop = room(&tw, "Bus Stop (OOC)");
+        let blocker = player(&mut tw, "Blocker", stop);
+        let _ = run(&mut tw, blocker, "+intercept bus");
+        // Re-running `+intercept bus` at T0 + 200 must be refused so TTL is not reset.
+        let _ = tick_at(&mut tw, T0 + 200);
+        let retry = run(&mut tw, blocker, "+intercept bus");
+        assert!(retry.contains("already holding"), "{retry}");
+        // Still held at T0 + 300.
+        let _ = tick_at(&mut tw, T0 + 300);
+        assert!(journey_of(&tw, bus).is_none());
+        // Released automatically at TTL (T0 + MAX_INTERCEPT_HOLD_REAL_S).
+        let _ = tick_at(&mut tw, T0 + mush_atlas::MAX_INTERCEPT_HOLD_REAL_S);
+        assert!(
+            atlas(&tw)
+                .travel
+                .services
+                .values()
+                .all(|s| s.held_by.is_none()),
+            "TTL must clear service.held_by"
+        );
+        assert!(
+            journey_of(&tw, bus).is_some(),
+            "bus departed once TTL expired"
+        );
+    }
+
+    // 5. Staff override via `@atlas/journey release bus` (and grace window prevents instant re-hold).
+    {
+        let mut tw = lot();
+        let bus = room(&tw, "Studio Tour Bus");
+        let stop = room(&tw, "Bus Stop (OOC)");
+        let blocker = player(&mut tw, "Blocker", stop);
+        let _ = run(&mut tw, blocker, "+intercept bus");
+        // Non-staff bystander cannot release blocker's hold.
+        let bystander = player(&mut tw, "Bystander", stop);
+        let refused = run(&mut tw, bystander, "+intercept/release bus");
+        assert!(refused.contains("not the one holding"), "{refused}");
+        // Staff can release standing vehicle via `@atlas/journey release`.
+        let released = run(&mut tw, GOD, "@atlas/journey release bus");
+        assert!(released.contains("released"), "{released}");
+        assert!(
+            atlas(&tw)
+                .travel
+                .services
+                .values()
+                .all(|s| s.held_by.is_none())
+        );
+        // Immediate re-intercept by blocker during RESUME_GRACE_S is refused.
+        let rehold = run(&mut tw, blocker, "+intercept bus");
+        assert!(rehold.contains("try again"), "{rehold}");
+        let _ = tick_at(&mut tw, T0 + 300);
+        assert!(
+            journey_of(&tw, bus).is_some(),
+            "bus departed after staff override"
+        );
+    }
+
+    // 6. En-route `HoldReason::Intercept` clears when interceptor disconnects or TTL expires.
+    {
+        let mut tw = valley();
+        let west_gate = room(&tw, "West Gate");
+        let east_gate = room(&tw, "East Gate");
+        let alice = player(&mut tw, "Alice", west_gate);
+        let carol = player(&mut tw, "Carol", east_gate);
+        let _ = run(&mut tw, alice, "+travel East End");
+        let _ = run(&mut tw, carol, "+stakeout First Milestone");
+        let _ = run(&mut tw, carol, "+intercept Alice");
+        let _ = tick_at(&mut tw, T0 + 70);
+        assert!(
+            matches!(
+                journey_of(&tw, alice).map(|j| j.state),
+                Some(mush_atlas::JourneyState::Held {
+                    by: mush_atlas::HoldReason::Intercept { .. },
+                    ..
+                })
+            ),
+            "Alice should be held by Carol's intercept"
+        );
+        // Carol disconnects -> intercept hold releases automatically!
+        disconnect(&mut tw, carol);
+        assert!(
+            matches!(
+                journey_of(&tw, alice).map(|j| j.state),
+                Some(mush_atlas::JourneyState::UnderWay)
+            ),
+            "disconnecting interceptor must release HoldReason::Intercept"
+        );
+    }
+}

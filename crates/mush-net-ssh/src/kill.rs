@@ -22,6 +22,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::Notify;
 
 /// The switch. Cheap to clone through an `Arc`.
 #[derive(Debug, Default)]
@@ -29,6 +30,7 @@ pub struct KillSwitch {
     killed: AtomicBool,
     armed: AtomicBool,
     wakers: Mutex<[Option<Waker>; 2]>,
+    notify: Notify,
 }
 
 impl KillSwitch {
@@ -41,6 +43,7 @@ impl KillSwitch {
     /// Cut the stream: pending and future reads and writes fail.
     pub fn kill(&self) {
         self.killed.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
         let wakers = std::mem::take(
             &mut *self
                 .wakers
@@ -49,6 +52,17 @@ impl KillSwitch {
         );
         for w in wakers.into_iter().flatten() {
             w.wake();
+        }
+    }
+
+    /// Resolve once [`kill`](Self::kill) has been called.
+    pub async fn wait_killed(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.is_killed() {
+                return;
+            }
+            notified.await;
         }
     }
 
