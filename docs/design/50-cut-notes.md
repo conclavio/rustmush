@@ -1583,7 +1583,142 @@ Q-50-63; doc 50a A-8, A-8b). Stacked on OP.2. **No lane bump.**
 
 ## OP.4
 
-Not built.
+The stockpile, its drain and the Freeport arm's budget; NPC hulls at the picket (Q-50-21, Q-50-22,
+Q-50-24, Q-50-56, Q-50-60). On OP.3 and KC.2 to KC.4. **Lane v49 (relay v40)**, taken from KC.4's
+v48 with the lead's word.
+
+**Survey.** At OP.3's head with KC.2 to KC.4 merged:
+- **The tank farm** (OP.1) holds 3,000 t of propellant and a standing bid of 2,000 t at 50 cr,
+  with no refresh and no consumption.
+- **Close probes.** OP.0 named none (`operations::CLOSE_PROBES` empty).
+- **Hold the Concession** has no cause (OP.2).
+- **EX.10's hauling house** sails trade trips only, from a sailing plan the IC11 executor flies as
+  the house's `DARK` helm. Under way the house's mind holds her helm, so the Kirkwood picket
+  promotes her into its bubble. Nothing more of the picket was tested.
+- **Procurement** is the precedent for an arm with a budget: an agent of the House's, a monthly
+  cap counted from its own rows.
+- **What the stories found** (all live defects, fixed here where OP.4 needs them):
+  - **A house hull at the picket was never inspected.** Her passage commits all her reaction mass,
+    so she enters the bubble with 0 kg, cannot brake, and is never hove to. Had she been, nobody
+    was aboard to submit her: the captain resolver fell back to the tick's own actor, and the
+    customs ruling's offer (`filed_by`) wanted an actor aboard. She sat in the bubble until it
+    let her go, uninspected.
+  - **A haul's first contract could not move.** The haul leg's offer took contract numbers from
+    1, and a world's first contract is `ContractId(0)`. The arm's first post on a fresh world is
+    one.
+  - **A tank-good haul blocked its own fuel.** Propellant stows in a Dray's tank, not her hold.
+    The executor's `fill` counts held units as aboard, while the departure burn spends only free
+    units, so a hull carrying a propellant haul fills short and the burn is refused.
+
+**Built.**
+- **The stockpile** (`tacsim::stockpile`; Q-50-21, Q-50-58).
+  - The good is propellant and the threshold is `STOCKPILE_THRESHOLD_T`, 4,000 t (provisional:
+    1,000 over what a fresh farm holds).
+  - The port tick reads the farm's storefront every fire and keeps the level on the arm's record
+    (`tacsim:freeport_arm`, `FreeportArm::level`).
+  - The close probe `isidis.tank_farm` (`operations::CLOSE_PROBES`) reads that record: met at the
+    threshold, `None` before any reading. OP.5's objective names it, with the defenders' polarity.
+- **The threshold is news** (Q-50-21 as corrected): an IC month in which a reading stands at the
+  threshold moves Hold the Concession one segment. The cause id is `stockpile.threshold/<month>`,
+  and the clock's line is the chronicle's record. It decides no operation.
+- **The drain** (Q-50-60), lane v49: a `consume` row on the tank farm, 20 t an IC day, with an
+  export share of 1,000 cr (the good's price for the units), so EX.9's arm uses it up and the
+  faucet keeps the farm's treasury funding its bid.
+- **The Freeport arm** (Q-50-22, procurement's pattern).
+  - Its agent is a `DARK` Thing of Occator's at Ceres' exchange, granted `tacsim.jobs.post` on
+    Occator's root compartment.
+  - It posts through the players' own verbs (OP.3's `as=` and `into=`), at most once an IC day,
+    while the farm is under its threshold and fewer than `ARM_MAX_OPEN` (2) of its hauls are open:
+    - a haul of `ARM_HAUL_T` (20 t) of propellant from Occator's vault at Ceres into the tank
+      farm's at Isidis, fee `ARM_HAUL_FEE_CR` (600 cr);
+    - an escort for it, `haul=<job>`, fee `ARM_ESCORT_FEE_CR` (400 cr).
+  - Its money is Occator's treasury. A month's posts are capped at `ARM_MONTHLY_CAP_CR`
+    (20,000 cr), counted from its own rows (`ArmPost`, `FreeportArm::within_cap`). Posting stops
+    when the cap or the treasury runs out; nothing is minted.
+  - The standing bid at Isidis is the tank farm's own, refreshed by lane v49 (40 t an IC day, back
+    to 2,000).
+- **An untaken haul** (Q-50-24): an arm's haul still untaken `FALLBACK_IC_DAYS` (7) after it was
+  posted is taken by the hauling house at its origin.
+  - A docked house hull with no plan running funds her purse for the bond and takes it as her
+    helm (`+haul/accept`), so the goods load under the haul's hold.
+  - She carries it hop by hop (`Trip::haul`): at each port short of the destination, a plan of
+    the fill and a departure toward it (Ceres to Stickney by the Kirkwood route, then Isidis).
+    At the destination the helm delivers it (`+haul/deliver`), and the trip closes with the purse's
+    surplus, the fee among it, sent home.
+  - She is a real hull: the picket inspects her, and she can be intercepted.
+- **NPC hulls at the picket** (Q-50-56), by rule:
+  - **She heaves to by rule.** In the backup seat's bubble step, a hauling house's hull under a
+    customs stop takes the stopping ship's velocity, whatever her tank holds, and is submitted.
+  - **Her helm is her captain.** `resolve_hull_captain_aboard` answers a house hull's helm when
+    nobody is aboard her. So the customs submission, the make-for-port burn and every queued space
+    burn are the helm's, never the tick's. The ruling's offer reads the hull a house helm sails.
+  - **The house pays.** The transit duty's debtor account is the house's own account for a house
+    helm (`hauler::house_account_of_helm`), not the helm's purse.
+- **The fixes the arm needs:**
+  - the haul leg's offer takes contract 0;
+  - a carried haul of the propellant good buys the held tonnes back over the fill.
+
+**Tests** (`tacsim::domain_economy::op4_stockpile`, the composed world; a unit test in
+`stockpile`).
+- `op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator`:
+  - The agent is made and granted. The farm reads short, and the probe is not met.
+  - The arm's haul is 20 t of propellant, posted by the agent for Occator, from Occator's vault
+    at Ceres into the tank farm's. Its escort names the haul. The row records 1,000 cr.
+  - There is one post an IC day, a second the next day, and never more than two open.
+- `op4_the_tank_farm_drains_and_at_its_threshold_hold_advances`:
+  - The farm uses 20 t an IC day.
+  - Seeded past its threshold, the next reading meets the probe and moves Hold one segment, its
+    cause the month's. A later reading in the same month moves it no further, and the arm posts
+    nothing while the farm stands there.
+- `op4_an_untaken_haul_is_carried_by_the_hauling_house`:
+  - Seven IC days after the arm posts, no player has taken it. Staff open Ceres' house, and VCC-01
+    takes the haul.
+  - She flies it by Stickney to Isidis through the Kirkwood picket, and delivers. The contract
+    settles.
+- `op4_a_house_hull_pays_the_kirkwood_duty_from_the_house`:
+  - With the Republic holding the approach (`@faction/control`, as KC.1's fill makes it), VCC-01
+    sails for Stickney laden with water and meets the picket.
+  - She is inspected and cleared. The duty reaches Republic Customs from the house's own
+    account, and her helm's purse is untouched.
+- `op4_the_arms_cap_counts_its_own_months_rows` (unit): exactly at the cap fits, past it does not,
+  and another month's rows do not count.
+- The lane's pins move to v49 and relay v40. `op4_strip_tank_farm_rebuilds_the_published_v48`
+  pins the new strip-chain head (`lane_chain::strip_tank_farm`). `e48_consumers_…` counts five
+  consumers, and the OP.0 frame test names the tank farm's probe.
+- MUTATIONS
+- GATES
+
+**Divergences.**
+- **The level is read every fire**, kept on the arm's record when it changes. Q-50-21 says "read on
+  the port tick", and a once-a-day reading saw an unstocked farm at 0 t on a fresh world.
+- **A post marks its day; a refusal does not.** The arm looks again on the next fire, so a post
+  refused while Occator's vault is still being stocked is not lost for the day.
+- **Hold moves once an IC month at the threshold**, not once ever: a farm kept full keeps
+  advancing it, as doc 11's cause reads.
+- **The cap counts what the arm committed**, the fee and the escort's, as procurement counts its
+  funded rows. A refunded lapse still counts in its month.
+- **Only the arm's hauls fall back to the house.** Q-50-24 is the operation's; a player's untaken
+  haul lapses as it does today.
+- **The haul is the house's helm's**, bonded from her purse, which the house funds, and paid
+  into it; the purse's surplus goes home when the trip closes. The house's own account pays the
+  picket.
+- **Heaving to by rule sets her velocity.** Q-50-56 asks for compiled code, not flying: a house
+  hull's passage commits all her reaction mass, so she could never brake for the picket herself.
+- **The executor's `fill` is not changed.** A carried propellant haul buys its held tonnes back by
+  count. A player's `+ship/order` fill with a tank-good haul aboard still fills short: see Not
+  built.
+- **The lane's figures are provisional**: the 20 t drain, the 1,000 cr export share and the
+  40 t-a-day refresh, as are the threshold, the haul's size and fees, and the cap.
+
+**Not built.**
+- **The executor's `fill` counting held units as aboard** (a live defect): a player whose tank
+  holds a propellant haul fills short and is refused at the burn. This is a fix for the IC11
+  executor's owner.
+- **The objective's use of the probe** and the declaring arm (OP.5).
+- **A house hull flying for a side by a live job**, and the other side's clock on her loss
+  (Q-50-61, Q-50-25; OP.5).
+- **The Belt Raider taking a house hull at the picket** was not exercised by a story here; the
+  bubble promotes her, as EX.10 showed.
 
 ## OP.5
 
