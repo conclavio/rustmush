@@ -10,7 +10,10 @@
 //! took and which holds it released, so the caller can fail the jobs those holds belonged to in
 //! the same transaction.
 //!
-//! It credits nothing: where seized goods go is the caller's to decide.
+//! **Where the goods go** (doc 50 unit LW.5; Q-50-44 as corrected): given a destination, the
+//! taken units are credited there in the same bundle, with their lineage carried as
+//! [`InventoryFamilies::transfer`] carries it, so a seizure is a transfer and mints and destroys
+//! nothing. With none, the units leave the world (CR's behavior).
 
 use mush_core::{ActionTxn, CanonicalId, ReservationId, ReservationState};
 
@@ -31,7 +34,9 @@ impl InventoryFamilies {
     /// `release`, in order and only while what is available falls short of `amount`, then
     /// debit `amount`, or what is then available when that is less, in one write of the pair.
     /// A named hold the book does not hold live is passed over. No pool, or nothing available
-    /// once the holds are released, takes nothing and writes nothing.
+    /// once the holds are released, takes nothing and writes nothing. With `into`, the taken
+    /// units are credited to that endpoint's pool (made when absent) and their lineage carried,
+    /// one write of each pair; `into` must differ from `endpoint`.
     ///
     /// # Errors
     ///
@@ -44,7 +49,11 @@ impl InventoryFamilies {
         commodity: &CanonicalId,
         amount: u64,
         release: &[ReservationId],
+        into: Option<EndpointRef>,
     ) -> Result<Seized, InventoryError> {
+        if into == Some(endpoint) {
+            return Err(InventoryError::SameEndpoint);
+        }
         let (key, pair) = self.load_pair(txn, endpoint, commodity)?;
         let Some((scalar, mut book)) = pair else {
             return Ok(Seized::default());
@@ -79,6 +88,25 @@ impl InventoryFamilies {
         )?;
         book.checked_available(scalar)?;
         self.write_pair(txn, key, true, scalar, book)?;
+        if let Some(to) = into {
+            let (to_key, pair) = self.load_pair(txn, to, commodity)?;
+            let existed = pair.is_some();
+            let (scalar, book) = match pair {
+                Some(pair) => pair,
+                None => {
+                    self.add_pool(txn, to)?;
+                    self.fresh_pair(to, commodity)?
+                }
+            };
+            let (book, scalar) = book.checked_apply_resource(
+                book.revision(),
+                scalar,
+                mush_core::ResourceOperation::Increase { amount: taken },
+            )?;
+            book.checked_available(scalar)?;
+            self.write_pair(txn, to_key, existed, scalar, book)?;
+            self.carry_lineage(txn, endpoint, to, commodity, taken)?;
+        }
         Ok(Seized { taken, released })
     }
 }
@@ -201,7 +229,7 @@ mod tests {
             "a debit cannot reach held cargo"
         );
         let first = bundle(engine, &families, |txn| {
-            families.seize(txn, hold, &ore, 4, &placed[..1])
+            families.seize(txn, hold, &ore, 4, &placed[..1], None)
         })
         .expect("the seizure");
         assert_eq!((first.taken, first.released.clone()), (4, vec![placed[0]]));
@@ -210,8 +238,9 @@ mod tests {
             (5, 4),
             "the job's hold is released and four are gone; the other hold stands"
         );
+        let vault = EndpointRef(VaultId(4));
         let second = bundle(engine, &families, |txn| {
-            families.seize(txn, hold, &ore, 9, &placed[..1])
+            families.seize(txn, hold, &ore, 9, &placed[..1], Some(vault))
         })
         .expect("the rest");
         assert_eq!(
@@ -220,11 +249,16 @@ mod tests {
             "a released hold is passed over, and an unnamed one is not taken"
         );
         assert_eq!(quantity(engine, &families, hold, &ore), (1, 0));
+        assert_eq!(
+            quantity(engine, &families, vault, &ore),
+            (4, 4),
+            "doc 50 unit LW.5: given a destination, what is taken lands there, free"
+        );
         let mut txn = engine
             .action_transaction(&families.pools)
             .expect("inventory transaction");
         let none = families
-            .seize(&mut txn, EndpointRef(VaultId(3)), &ore, 1, &[])
+            .seize(&mut txn, EndpointRef(VaultId(3)), &ore, 1, &[], None)
             .expect("no pool");
         assert_eq!(none, super::Seized::default(), "no pool takes nothing");
     }
