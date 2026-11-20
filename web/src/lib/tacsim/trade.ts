@@ -110,6 +110,8 @@ export const CORRIDOR_DESTINATIONS: ReadonlyArray<{ id: string; label: string; b
   { id: "occator", label: "Occator Rim", body: "Ceres · extraction" },
   { id: "rheasilvia", label: "Rheasilvia Commons", body: "Vesta · extraction" },
   { id: "urvara", label: "Urvara Reach", body: "Ceres · extraction" },
+  // Doc 50 cut OP.1: the Isidis Concession, a ground port of the lane.
+  { id: "isidis", label: "Isidis Concession", body: "Mars · port" },
 ];
 
 function asObj(v: unknown): Record<string, unknown> | null {
