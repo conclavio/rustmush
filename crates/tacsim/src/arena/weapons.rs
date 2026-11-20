@@ -334,16 +334,50 @@ impl UnitState {
             .unwrap_or(0)
     }
 
+    /// Whether this hull carries a fitted sensor that is currently offline
+    /// (jammed, destroyed, or missing via `part_effects::derive`), as opposed
+    /// to a hull never fitted with a sensor (`sensor.is_none() && sensor_authored.is_none()`).
+    #[must_use]
+    pub const fn sensor_offline(&self) -> bool {
+        self.sensor.is_none() && self.sensor_authored.is_some()
+    }
+
+    /// **This platform's sight cap**, distinguishing an operational sensor, an
+    /// offline (jammed/destroyed/missing) fitted sensor, and an unfitted hull.
+    #[must_use]
+    pub fn sight_cap(&self, cell_cm: u16) -> crate::arena::view::SightCap {
+        if let Some(sensor) = self.sensor.as_ref() {
+            crate::arena::view::SightCap::ReachCm(
+                u32::from(sensor.max_range_cells).saturating_mul(u32::from(cell_cm)),
+            )
+        } else if self.sensor_authored.is_some() {
+            crate::arena::view::SightCap::Offline
+        } else {
+            crate::arena::view::SightCap::Unfitted
+        }
+    }
+
+    /// **Nominal scope size for frame/band display**, centimetres: the live
+    /// sight when operational, the authored sensor's reach while offline (so
+    /// aging contacts never expand 5x to uncapped weapon reach when a fitted
+    /// sight jams), and `0` only for a hull unfitted with any sensor.
+    #[must_use]
+    pub fn scope_sight_cm(&self, cell_cm: u16) -> u32 {
+        self.sensor
+            .as_ref()
+            .or(self.sensor_authored.as_ref())
+            .map_or(0, |sensor| {
+                u32::from(sensor.max_range_cells).saturating_mul(u32::from(cell_cm))
+            })
+    }
+
     /// **How far this platform's own sight reaches**, centimetres (16b cut E.1;
-    /// doc 16 §3.6), or `0` for a hull that carries no sensor at all.
+    /// doc 16 §3.6), or `0` for a hull that carries no operational sensor.
     ///
     /// The **nominal** reach — `SensorProfile::max_range_cells × cell_cm` — and
     /// deliberately so, for the reason [`crate::arena::step::Frame::sight_cm`]
     /// gives at length: it is the size of the scope and not what the scope can
-    /// resolve this second. It is the one product, and
-    /// [`crate::arena::step::Frame::sight_cm`],
-    /// [`crate::arena::command::SquadSignal::sight_cm`] and the three readings
-    /// below are its readers.
+    /// resolve this second.
     #[must_use]
     pub fn sight_cm(&self, cell_cm: u16) -> u32 {
         self.sensor.as_ref().map_or(0, |sensor| {
@@ -389,6 +423,9 @@ impl UnitState {
     /// the native stock mind.
     #[must_use]
     pub fn fight_limit_cm(&self, cell_cm: u16) -> u64 {
+        if self.sensor_offline() {
+            return 0;
+        }
         fight_limit_cm_of(
             self.loaded_weapon().map(|loaded| loaded.max_range_cm),
             self.sight_cm(cell_cm),
@@ -407,6 +444,9 @@ impl UnitState {
     /// the native stock mind.
     #[must_use]
     pub fn fight_inner_cm(&self, cell_cm: u16) -> u64 {
+        if self.sensor_offline() {
+            return 0;
+        }
         fight_inner_cm_of(
             self.loaded_weapon().map(WeaponSummary::inner_band_cm),
             self.sight_cm(cell_cm),
@@ -878,6 +918,11 @@ impl Arena {
         if state.limits.wreck {
             return Err(Refusal::Wreck);
         }
+        // Doc 40 cut FR.5 / M24: a fitted sensor that is jammed, destroyed, or
+        // missing cannot acquire or hold a lock.
+        if state.sensor_offline() {
+            return Err(Refusal::NoContact);
+        }
         let held = state.lock;
         let Some(target) = self.contacts.resolve(unit, contact).map(|held| held.target) else {
             return Err(Refusal::NoContact);
@@ -1022,6 +1067,9 @@ impl Arena {
         // the `lost` arm of the pulse clears one the moment it expires — this is the
         // same rule read again at the moment of the shot, for a contact the world's
         // frame had and the arena has since let go.
+        if state.sensor_offline() {
+            return Err(Refusal::NoLock);
+        }
         let Some(contact) = state.lock else {
             return Err(Refusal::NoLock);
         };

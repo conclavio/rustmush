@@ -568,7 +568,7 @@ fn play_on(
                 view: &view,
                 memory: &memory,
                 map: &clone.definition,
-                wrecks: &clone.mind_wrecks(),
+                wrecks: &clone.mind_wrecks_for(thought.unit),
                 card: &card,
                 program: &runtime.program,
                 profile_token: runtime.token(),
@@ -953,7 +953,7 @@ fn shadow(arena: &Arena, cfg: &ReflexConfig, thought: &Thought) -> Divergences {
                 (Some(own), Some(cell)) => line_to(
                     &Ground {
                         def,
-                        wrecks: &arena.mind_wrecks(),
+                        wrecks: &arena.mind_wrecks_for(unit),
                     },
                     own,
                     cell,
@@ -1209,6 +1209,14 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// PRF, which changes the numeric `ContactId` tiebreak order when two hostiles tie on score
 /// (`stock_mind.rs`); zero twin divergences (`unlawful=0`, `reads_dead=0`,
 /// `first_divergence_ms=101377` and `time_to_first_shot_ms` unchanged).
+/// **Tier 2B M23/M24 re-records it**: observer-facing wreck advice (`mind_wrecks_for` and
+/// `fire_trace_at`) now filters to viewer-known dead wrecks (M23, increasing `line` where an
+/// undetected wreck stands on a sightline), and a jammed fitted sensor (`sensor_offline`) now
+/// clears its lock, refuses `LOCK`/`FIRE`, stops receiving mesh shares, drops `sight_condition`
+/// to `0`, and caps range bands instead of expanding 5x (M24). Thirteen of fifteen seeds are
+/// unchanged; seeds 2359 and 2362 move (`248500` → `369500`, `412750` → `322750`) with the
+/// 11–4 split, `unlawful=0`, `reads_dead=0`, `first_divergence_ms=101377`,
+/// `time_to_first_shot_ms`, and zero twin divergences all preserved.
 const M4_5_POOLED_RECORD: [&str; 21] = [
     "twin_match: seed=2350 end=elimination_blue t_ms=262250",
     "twin_match: seed=2351 end=elimination_blue t_ms=321750",
@@ -1219,18 +1227,18 @@ const M4_5_POOLED_RECORD: [&str; 21] = [
     "twin_match: seed=2356 end=elimination_red t_ms=412750",
     "twin_match: seed=2357 end=elimination_red t_ms=262750",
     "twin_match: seed=2358 end=elimination_red t_ms=293000",
-    "twin_match: seed=2359 end=elimination_red t_ms=248500",
+    "twin_match: seed=2359 end=elimination_red t_ms=369500",
     "twin_match: seed=2360 end=elimination_red t_ms=263750",
     "twin_match: seed=2361 end=elimination_red t_ms=324000",
-    "twin_match: seed=2362 end=elimination_red t_ms=412750",
+    "twin_match: seed=2362 end=elimination_red t_ms=322750",
     "twin_match: seed=2363 end=elimination_red t_ms=325750",
     "twin_match: seed=2364 end=elimination_red t_ms=294750",
     "twin_pooled: n=15 red_wins=11 blue_wins=4 draws=0",
-    "twin_divergences: tiebreak=129 line=12 reads_dead=0 landing=16911 no_line=2 fan=11 order_end=0 deg_round=0 fallback=3 cond_fire=1153 cond_stale=4 unwarranted=21 unlawful=0 floor_held=4798 slot_parallel=14 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=16911 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=678 shots_per_min=8.409 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=21,withdraw=0,disabled=8] wrecked=8 cond_shots=645 parallel=9",
-    "twin_gate_b: side=blue shots=543 shots_per_min=6.735 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=2,approach=0,engage=10,withdraw=0,disabled=18] wrecked=17 cond_shots=508 parallel=5",
-    "twin_gate_b_pool: path_queries=558 corner_refusals=0",
+    "twin_divergences: tiebreak=109 line=19 reads_dead=0 landing=17106 no_line=2 fan=11 order_end=0 deg_round=0 fallback=2 cond_fire=1189 cond_stale=4 unwarranted=22 unlawful=0 floor_held=4785 slot_parallel=22 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=17106 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=676 shots_per_min=8.331 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=2,approach=0,engage=20,withdraw=0,disabled=8] wrecked=8 cond_shots=643 parallel=16",
+    "twin_gate_b: side=blue shots=583 shots_per_min=7.185 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=11,withdraw=0,disabled=18] wrecked=18 cond_shots=546 parallel=6",
+    "twin_gate_b_pool: path_queries=566 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1838,10 +1846,15 @@ impl Coverage {
 /// **Tier 1D HIGH-60 re-bless of all three**: `DrawLabel::Contact` SHA-256 PRF changes tied-target
 /// `ContactId` tiebreaks with zero twin divergences across all three lanes (`pooled` 16,386 / 525,
 /// `mixed` 30,832 / 534, `lance` 8,273 / 99; `POOLED_MATCHES_WITH_STAND_IN` remains 8).
+/// **Tier 2B M23/M24 re-bless of `pooled` and `lance`**: viewer-known wreck filtering (M23) and
+/// offline-sensor lock/fire/mesh/band enforcement (M24) move `pooled` (`16_386 / 525` →
+/// `16_399 / 707`, `POOLED_MATCHES_WITH_STAND_IN` remains 8) and `lance` (`8_273 / 99` →
+/// `8_350 / 86`), while `mixed` (`30_832 / 534`) is unchanged and all three lanes keep zero twin
+/// divergences.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (16_386, 525)),
+    ("pooled", (16_399, 707)),
     ("mixed", (30_832, 534)),
-    ("lance", (8_273, 99)),
+    ("lance", (8_350, 86)),
 ];
 
 /// **The two-tank lanes' bound on a Rhai think's operations plus fees**, the

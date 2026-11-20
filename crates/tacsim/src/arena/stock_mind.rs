@@ -806,10 +806,21 @@ fn obeyed<'v>(view: &'v MindView, mem: &StockMemory) -> Option<&'v FrameOrder> {
     view.order.as_ref().filter(|order| !mem.ignores(order))
 }
 
+fn bounded_order_identity(identity: &smol_str::SmolStr) -> smol_str::SmolStr {
+    if identity.len() <= crate::arena::mind::STOCK_MEMORY_LIMITS.string_bytes {
+        identity.clone()
+    } else {
+        crate::arena::detachment::compact_order_identity(identity)
+    }
+}
+
 impl StockMemory {
     fn ignores(&self, order: &FrameOrder) -> bool {
         match &order.identity {
-            Some(identity) => self.ignore_identity.as_ref() == Some(identity),
+            Some(identity) => self
+                .ignore_identity
+                .as_ref()
+                .is_some_and(|held| held == identity || held == &bounded_order_identity(identity)),
             None => {
                 self.ignore_identity.is_none() && Some(order.expires_ms) == self.ignore_until_ms
             }
@@ -817,7 +828,8 @@ impl StockMemory {
     }
 
     fn ignore(&mut self, order: Option<&FrameOrder>) {
-        self.ignore_identity = order.and_then(|order| order.identity.clone());
+        self.ignore_identity =
+            order.and_then(|order| order.identity.as_ref().map(bounded_order_identity));
         self.ignore_until_ms = order
             .filter(|order| order.identity.is_none())
             .map(|order| order.expires_ms);

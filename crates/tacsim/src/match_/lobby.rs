@@ -1516,7 +1516,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     require_layer(ctx.w)?;
     in_centre(ctx.w, actor)?;
     let account = account_of(ctx.w, actor)?;
-    let (team, index, seated, emptied) = {
+    let (pilot, team, index, seated, emptied) = {
         let book = ctx
             .w
             .module_state_mut::<MatchBook>()
@@ -1540,7 +1540,7 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         // made this the second writer of the `Idle` transition. It is [`to_idle`]
         // below now — the same pair [`reset`] runs, in the same order.
         let emptied = centre.slots.is_empty();
-        (held.team, held.index, held.is_seated(), emptied)
+        (held.pilot, held.team, held.index, held.is_seated(), emptied)
     };
     super::selection_refs::reconcile(ctx);
     // **16b cut F.1**: the seat goes with the slot.
@@ -1553,7 +1553,12 @@ pub fn leave(ctx: &mut Ctx<'_>) -> Result<(), SimError> {
     // slot to give it back. The next pilot of that pod was then refused
     // `StationHeld`, and after the next reset moved the body out, `EXIT` itself
     // answered "You are not in a pod." Giving up the slot gives up the seat.
-    if seated || crate::match_::cockpit::in_a_pod(ctx.w, actor) {
+    // Eject `held.pilot` (even when an alt on the same account runs `SIM LEAVE`)
+    // so the seated pilot's billet and pod are always freed.
+    if seated || crate::match_::cockpit::in_a_pod(ctx.w, pilot) {
+        crate::match_::cockpit::eject_pilot(ctx, pilot);
+    }
+    if actor != pilot && crate::match_::cockpit::in_a_pod(ctx.w, actor) {
         crate::match_::cockpit::eject_pilot(ctx, actor);
     }
     // **16b cut Q.8 (fixer): the last leave is a return to `Idle`, and every
@@ -4015,6 +4020,45 @@ pub(crate) fn practice_span(ctx: &mut Ctx<'_>, pilot: ObjId, open: bool) {
             fold.reclaimed(at_ms);
         }
     }
+}
+
+/// Whether `pilot` closed a `MIND AWAY` practice span fewer than `cooldown_ms`
+/// arena milliseconds ago (preventing rapid `MIND AWAY`/`MIND BACK` spam).
+#[must_use]
+pub(crate) fn practice_cooldown_due(w: &World, pilot: ObjId, cooldown_ms: i64) -> bool {
+    let Some(match_id) = centre(w).and_then(|centre| centre.match_id) else {
+        return false;
+    };
+    let Some(at_ms) = arena_now_ms(w, match_id) else {
+        return false;
+    };
+    let Some(book) = w.module_state::<MatchBook>() else {
+        return false;
+    };
+    practice_cooldown_active(book, match_id, pilot, at_ms, cooldown_ms)
+}
+
+#[must_use]
+fn practice_cooldown_active(
+    book: &MatchBook,
+    match_id: MatchId,
+    pilot: ObjId,
+    at_ms: i64,
+    cooldown_ms: i64,
+) -> bool {
+    let Some(last_end_ms) = book
+        .get(match_id)
+        .and_then(|record| {
+            record
+                .folds
+                .values()
+                .find(|fold| fold.pilot() == Some(pilot))
+        })
+        .and_then(crate::match_::report::Fold::last_let_go_end_ms)
+    else {
+        return false;
+    };
+    at_ms.saturating_sub(last_end_ms) < cooldown_ms
 }
 
 /// **`pilot`'s debrief fold in match `match_id`** (17b cut M5.6): the one
@@ -6697,6 +6741,186 @@ mod tests {
         assert_eq!(
             caps::slot_choice(&access, &centre, &selected).unwrap().held,
             HeldMind::doctrine()
+        );
+    }
+
+    #[test]
+    fn t2b_m21_alt_character_sim_leave_during_boarding_ejects_seated_pilot() {
+        use crate::composition as comp;
+        use crate::match_::{LOBBY_ENTRY, RED_ROOM_ENTRY, centre_object};
+        use mush_core::{AccountId, AccountIdentity};
+        use std::collections::BTreeMap;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct TestAccounts(Mutex<BTreeMap<ObjId, AccountId>>);
+        impl AccountIdentity for TestAccounts {
+            fn account_of(&self, character: ObjId) -> Option<AccountId> {
+                self.0.lock().ok()?.get(&character).copied()
+            }
+        }
+
+        let accounts = Arc::new(TestAccounts::default());
+        let cfg = crate::TacsimConfig {
+            enabled: true,
+            ..crate::TacsimConfig::default()
+        };
+        let game = crate::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
+            mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+        );
+        for module in &mut mods {
+            if module.name() == "sim" {
+                *module = Box::new(
+                    mush_sim::SimulationModule::new()
+                        .with_field_crew_control(true)
+                        .with_accounts(accounts.clone()),
+                );
+            }
+        }
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        let game_content = cfg.enabled;
+        mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
+        mods.push(
+            comp::content_module_with(true, game_content).expect("the content module composes"),
+        );
+        let mut tw = mush_testkit::TestWorld::with_modules(mods);
+        let lobby = centre_object(tw.world(), LOBBY_ENTRY).expect("centre lobby");
+        let char1 = tw.spawn_player("MainPilot");
+        let char2 = tw.spawn_player("AltPilot");
+        let char3 = tw.spawn_player("OtherPilot");
+        let char4 = tw.spawn_player("BluePilot");
+        for pilot in [char1, char2, char3, char4] {
+            tw.world_mut().move_to(pilot, lobby).expect("move to lobby");
+        }
+        let shared_account = AccountId::mint("shared-acct", 42).expect("account");
+        let other_account = AccountId::mint("other-acct", 99).expect("account");
+        let blue_account = AccountId::mint("blue-acct", 100).expect("account");
+        {
+            let mut map = accounts.0.lock().expect("accounts lock");
+            map.insert(char1, shared_account);
+            map.insert(char2, shared_account);
+            map.insert(char3, other_account);
+            map.insert(char4, blue_account);
+        }
+
+        // char1 claims red, char4 claims blue, char1 starts -> Boarding.
+        let _ = tw.run(char1, "SIM TEAM red");
+        let _ = tw.run(char4, "SIM TEAM blue");
+        let _ = tw.run(char1, "SIM START");
+        assert_eq!(
+            centre(tw.world()).map(|c| c.state),
+            Some(MatchState::Boarding),
+            "lobby entered Boarding"
+        );
+
+        // char1 walks to red room and boards red pod 1.
+        let red_room = centre_object(tw.world(), RED_ROOM_ENTRY).expect("red room");
+        tw.world_mut()
+            .move_to(char1, red_room)
+            .expect("char1 to red room");
+        let _ = tw.run(char1, "BOARD");
+        assert!(
+            crate::match_::cockpit::in_a_pod(tw.world(), char1),
+            "char1 boarded red pod 1"
+        );
+
+        // char2 (same account, standing in the centre lobby) runs SIM LEAVE.
+        let _ = tw.run(char2, "SIM LEAVE");
+        assert!(
+            !crate::match_::cockpit::in_a_pod(tw.world(), char1),
+            "alt-character SIM LEAVE must eject held.pilot (char1) from the pod"
+        );
+        assert!(
+            centre(tw.world())
+                .and_then(|c| c.slot_of_account(shared_account))
+                .is_none(),
+            "account slot removed"
+        );
+
+        // Now char4 also leaves (returns centre to Idle), then char3 + char4 start
+        // a new Boarding and char3 boards red pod 1 cleanly without StationHeld.
+        let _ = tw.run(char4, "SIM LEAVE");
+        let _ = tw.run(char3, "SIM TEAM red");
+        let _ = tw.run(char4, "SIM TEAM blue");
+        let _ = tw.run(char3, "SIM START");
+        tw.world_mut()
+            .move_to(char3, red_room)
+            .expect("char3 to red room");
+        let board_out = tw.run(char3, "BOARD");
+        assert!(
+            crate::match_::cockpit::in_a_pod(tw.world(), char3),
+            "red pod 1 must not be persistently locked by StationHeld: {board_out:?}"
+        );
+    }
+
+    #[test]
+    fn t2b_m20_practice_cooldown_blocks_rapid_toggle() {
+        use crate::match_::practice::PRACTICE_COOLDOWN_MS;
+        use crate::match_::record::TeamRoster;
+        use crate::match_::report::{Fold, HandOver, Reader, ReportRules, Roster};
+        use crate::match_::{MatchId, MatchRecord};
+        use std::collections::BTreeMap;
+
+        let pilot = ObjId(10);
+        let unit = ObjId(101);
+        let match_id = MatchId(55);
+        let mut record = MatchRecord {
+            id: match_id,
+            state: MatchState::Running,
+            arena: SmolStr::new("proving_ground"),
+            arena_definition_digest: String::new(),
+            teams: vec![TeamRoster {
+                team: PartyId::RED,
+                units: vec![unit],
+                pilots: vec![(pilot, unit)],
+            }],
+            started_ms: 1_000,
+            ended: None,
+            ledger_log_id: "match.55".to_owned(),
+            ledger_digest: String::new(),
+            seed: 1,
+            last_pose: BTreeMap::new(),
+            squads: Vec::new(),
+            leaders: Vec::new(),
+            callsigns: BTreeMap::new(),
+            folds: BTreeMap::new(),
+            unparsed: 0,
+            replay: None,
+            mode: MatchMode::Skirmish,
+            minds: BTreeMap::new(),
+        };
+        let roster = Roster::from_record(&record);
+        let mut fold = Fold::new(
+            roster,
+            Reader::Pilot { unit },
+            ReportRules {
+                designate_on_detection: false,
+            },
+        );
+        fold.released(4_000, HandOver::LetGo);
+        fold.reclaimed(5_000);
+        record.folds.insert(unit, fold);
+        let mut book = MatchBook::default();
+        book.centre_mut().state = MatchState::Running;
+        book.centre_mut().match_id = Some(match_id);
+        book.insert_for_tests(record);
+
+        assert!(
+            practice_cooldown_active(&book, match_id, pilot, 5_500, PRACTICE_COOLDOWN_MS),
+            "within cooldown after closing LetGo span"
+        );
+        assert!(
+            !practice_cooldown_active(
+                &book,
+                match_id,
+                pilot,
+                5_000 + PRACTICE_COOLDOWN_MS,
+                PRACTICE_COOLDOWN_MS,
+            ),
+            "cooldown clears at >= PRACTICE_COOLDOWN_MS"
         );
     }
 }

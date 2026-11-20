@@ -383,6 +383,60 @@ pub(crate) fn relative_mdeg(heading_mdeg: u32, bearing_mdeg: u32) -> u32 {
 ///
 /// On the stock tank that is `close` to 200 m, `effective` to 400 m, `far` beyond
 /// — and a mesh plot past the platform's own sight is `far`.
+/// **The sight cap distinguishing an unfitted hull from an offline (jammed,
+/// destroyed, or missing) sensor** (`M24`):
+///
+/// * [`SightCap::Unfitted`] — a hull that carries no sensor at all; range bands
+///   and weapon reach fall back to the weapon's own last band.
+/// * [`SightCap::Offline`] — a hull fitted with a sensor that is currently
+///   non-operational (`sensor == None && sensor_authored.is_some()`); never
+///   uncaps to the weapon's full range.
+/// * [`SightCap::ReachCm`] — an operational sensor with the given nominal reach
+///   in centimetres.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SightCap {
+    /// No sensor component is fitted on this hull.
+    Unfitted,
+    /// A fitted sensor is offline (jammed, destroyed, or missing).
+    Offline,
+    /// An operational sensor reaches this many centimetres.
+    ReachCm(u32),
+}
+
+/// [`contact_band`] distinguishing [`SightCap::Offline`] from [`SightCap::Unfitted`]:
+/// an offline sensor reports `"beyond"` rather than uncapping to full weapon reach.
+#[must_use]
+pub fn contact_band_for(range_cm: u64, bands_cm: &[u32], sight: SightCap) -> &'static str {
+    match sight {
+        SightCap::Offline => "beyond",
+        SightCap::Unfitted => contact_band(range_cm, bands_cm, 0),
+        SightCap::ReachCm(sight_cm) => {
+            if sight_cm == 0 {
+                "beyond"
+            } else {
+                contact_band(range_cm, bands_cm, sight_cm)
+            }
+        }
+    }
+}
+
+/// [`band_bounds_m`] distinguishing [`SightCap::Offline`] from [`SightCap::Unfitted`]:
+/// an offline sensor has no operational band bounds (`None`).
+#[must_use]
+pub fn band_bounds_m_for(sight: SightCap, bands_cm: &[u32]) -> Option<[(u32, u32); 3]> {
+    match sight {
+        SightCap::Offline => None,
+        SightCap::Unfitted => band_bounds_m(0, bands_cm),
+        SightCap::ReachCm(sight_cm) => {
+            if sight_cm == 0 {
+                None
+            } else {
+                band_bounds_m(sight_cm, bands_cm)
+            }
+        }
+    }
+}
+
 #[must_use]
 pub fn contact_band(range_cm: u64, bands_cm: &[u32], sight_cm: u32) -> &'static str {
     let Some(last) = bands_cm.last() else {

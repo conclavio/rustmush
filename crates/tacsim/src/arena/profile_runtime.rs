@@ -67,13 +67,35 @@ impl ProfileRuntime {
         channels: &[Channel],
         floor: u32,
     ) -> Result<Self, SchemaError> {
+        Self::new_with_floors(
+            catalog, unit, profiles, rom, profile, weapons, channels, floor, floor,
+        )
+    }
+
+    /// Initial state when the sealed cards' floor differs from the captured ROM's
+    /// floor (ungoverned cores lift the cards floor to `0` while keeping the ROM
+    /// held to the captured Compact floor).
+    /// # Errors
+    /// Missing keys/capacity or an invalid bound profile.
+    #[allow(clippy::too_many_arguments)] // Explicit immutable custody plus separate card/ROM floors at admission.
+    pub fn new_with_floors(
+        catalog: &CardCatalog,
+        unit: ObjId,
+        profiles: RuntimeProfiles,
+        rom: RuntimeCard,
+        profile: &CoreProfile,
+        weapons: &[SmolStr],
+        channels: &[Channel],
+        cards_floor: u32,
+        rom_floor: u32,
+    ) -> Result<Self, SchemaError> {
         profiles.validate_for(catalog, profile)?;
         let key = profiles
             .key(0)
             .ok_or_else(|| invalid("profiles", "missing opening"))?;
         let card = catalog.resolve(key)?;
-        let program = bind(&card, profile, weapons, channels, floor)?;
-        validate_rom(catalog, &rom, channels, floor)?;
+        let program = bind(&card, profile, weapons, channels, cards_floor)?;
+        validate_rom(catalog, &rom, channels, rom_floor)?;
         Ok(Self {
             unit,
             weapons: weapons.to_vec(),
@@ -353,6 +375,36 @@ impl ProfileRuntime {
         floor: u32,
         now_ms: i64,
     ) -> Result<(), SchemaError> {
+        self.hydrate_with_floors(
+            catalog,
+            unit,
+            profile,
+            rom_profile,
+            weapons,
+            channels,
+            floor,
+            floor,
+            now_ms,
+        )
+    }
+
+    /// Rebuild skipped card caches and verify all references using separate
+    /// `cards_floor` (0 for ungoverned cores) and `rom_floor` (captured Compact floor).
+    /// # Errors
+    /// Missing catalog, stale active key, corrupt program, ROM, or switch stamp.
+    #[allow(clippy::too_many_arguments)] // Snapshot hydration validates all carried facts and separate card/ROM floors.
+    pub fn hydrate_with_floors(
+        &mut self,
+        catalog: &CardCatalog,
+        unit: ObjId,
+        profile: &CoreProfile,
+        rom_profile: &CoreProfile,
+        weapons: &[SmolStr],
+        channels: &[Channel],
+        cards_floor: u32,
+        rom_floor: u32,
+        now_ms: i64,
+    ) -> Result<(), SchemaError> {
         self.profiles.validate_for(catalog, profile)?;
         if self.unit != unit
             || weapons != self.weapons
@@ -368,7 +420,7 @@ impl ProfileRuntime {
         }
         catalog.hydrate_card(&mut self.card)?;
         catalog.hydrate_card(&mut self.rom)?;
-        validate_rom(catalog, &self.rom, channels, floor)?;
+        validate_rom(catalog, &self.rom, channels, rom_floor)?;
         let expected = if self.dropped {
             self.rom.key()
         } else {
@@ -389,9 +441,18 @@ impl ProfileRuntime {
                 "active card differs from selected or ROM key",
             ));
         }
-        let active_profile = if self.dropped { rom_profile } else { profile };
-        self.program
-            .verify(&bind(&self.card, active_profile, weapons, channels, floor)?)?;
+        let (active_profile, active_floor) = if self.dropped {
+            (rom_profile, rom_floor)
+        } else {
+            (profile, cards_floor)
+        };
+        self.program.verify(&bind(
+            &self.card,
+            active_profile,
+            weapons,
+            channels,
+            active_floor,
+        )?)?;
         // The arena validates the lease against the current sampled class and
         // exact scheduled expiry. Original sealed class is only the immutable
         // program admission budget; damage can lower its live sampling rate.

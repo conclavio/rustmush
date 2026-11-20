@@ -599,7 +599,7 @@ impl ValidatedEnvelope {
                     ));
                 }
                 if let Some(fire) = authored.rule.fire() {
-                    let expected = authored
+                    let explicit = authored
                         .rule
                         .predicates()
                         .iter()
@@ -612,10 +612,16 @@ impl ValidatedEnvelope {
                             }
                             _ => None,
                         })
-                        .max()
-                        .unwrap_or(floor_permille)
-                        .max(floor_permille);
-                    if fire.min_permille != expected {
+                        .max();
+                    let matches_expected = match explicit {
+                        Some(explicit) => fire.min_permille == explicit.max(floor_permille),
+                        None if floor_permille > 0 => fire.min_permille == floor_permille,
+                        // An ungoverned core lifts the floor to 0 while still admitting
+                        // rules authored against a non-zero match floor (without explicit
+                        // weapon odds predicates).
+                        None => fire.min_permille <= 1_000,
+                    };
+                    if !matches_expected {
                         return Err(invalid(
                             format!("rules.{profile}[{index}]"),
                             "fire minimum must equal its explicit weapon odds or the current floor; no hidden fifth term",

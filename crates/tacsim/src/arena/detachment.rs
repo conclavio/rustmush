@@ -19,6 +19,35 @@ fn required_option<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     Option::<T>::deserialize(deserializer)
 }
 
+/// Deterministic, memory-bounded detachment order identity (`<= 32` printable
+/// ASCII bytes, fitting `STOCK_MEMORY_LIMITS.string_bytes`). Short triples
+/// keep the literal `"dt:{detachment:x}:{revision:x}:{sequence:x}"` form; longer
+/// triples compact deterministically via SHA-256 into `"dth:{28 hex}"` (32 B).
+pub(crate) fn order_identity(detachment: u64, revision: u64, sequence: u64) -> smol_str::SmolStr {
+    let raw = format!("dt:{detachment:x}:{revision:x}:{sequence:x}");
+    if raw.len() <= super::mind::STOCK_MEMORY_LIMITS.string_bytes {
+        smol_str::SmolStr::new(raw)
+    } else {
+        compact_order_identity(&raw)
+    }
+}
+
+/// Hash an over-limit detachment order identity into a 32-byte printable-ASCII
+/// `"dth:{28 hex}"` tag so both scripted and native minds stay within
+/// `STOCK_MEMORY_LIMITS.string_bytes`.
+pub(crate) fn compact_order_identity(raw: &str) -> smol_str::SmolStr {
+    use sha2::{Digest as _, Sha256};
+    use std::fmt::Write as _;
+
+    let digest = Sha256::digest(raw.as_bytes());
+    let mut out = String::with_capacity(32);
+    out.push_str("dth:");
+    for byte in &digest[..14] {
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    smol_str::SmolStr::new(out)
+}
+
 /// Common roster authority admitted by the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -267,13 +296,16 @@ impl Arena {
                 directive,
                 command.expires_at_ms.unwrap_or(i64::MAX),
             );
-            // Exact admitted source identity, at most 53 printable ASCII bytes.
+            // Exact admitted source identity, bounded to `STOCK_MEMORY_LIMITS.string_bytes`
+            // (32 printable ASCII bytes) so both scripted and native Standard Doctrine
+            // can persist it in `ignore_until_ms` without exceeding memory limits.
             // The OOC host gives each activation a fresh roster revision, so a
             // resumed mind cannot confuse a new order with its former host's.
-            rekeyed.identity = Some(smol_str::SmolStr::new(format!(
-                "dt:{:x}:{:x}:{:x}",
-                command.authority.detachment, command.authority.revision, command.sequence
-            )));
+            rekeyed.identity = Some(order_identity(
+                command.authority.detachment,
+                command.authority.revision,
+                command.sequence,
+            ));
             if !self.minds.contains_key(&unit) {
                 let seal_digest = self.unit(unit).map_or([0; 32], |state| state.seal.digest);
                 self.minds.insert(
@@ -781,5 +813,65 @@ mod tests {
             arena.detachment_owns(MEMBER),
             "expiry cannot reactivate legacy authority"
         );
+    }
+
+    #[test]
+    fn t2b_m26_large_detachment_order_identity_is_bounded_and_survives_snapshot() {
+        let large_detachment = 1_u64 << 62;
+        let large_revision = u64::MAX - 1;
+        let large_sequence = u64::MAX - 2;
+
+        // Short identities remain literal; over-32-byte identities compact to 32-byte `dth:...`.
+        assert_eq!(order_identity(1, 2, 3), "dt:1:2:3");
+        let compact = order_identity(large_detachment, large_revision, large_sequence);
+        assert_eq!(compact.len(), 32);
+        assert!(compact.starts_with("dth:"));
+        assert!(super::super::perception::valid_order_identity(&compact));
+        assert_ne!(
+            compact,
+            order_identity(large_detachment, large_revision, large_sequence - 1)
+        );
+
+        let mut arena = field();
+        arena.unit_mut(MEMBER).unwrap().power = super::super::state::Power::Online;
+        let large_authority = DetachmentAuthority {
+            detachment: large_detachment,
+            revision: large_revision,
+            term: 1,
+        };
+        assert!(arena.apply_detachment_control(DetachmentControl {
+            unit: MEMBER,
+            epoch: 1,
+            authority: Some(large_authority),
+        }));
+        let mut large_cmd = command(1, 1, large_sequence);
+        large_cmd.authority = large_authority;
+        assert_eq!(
+            issue(&mut arena, large_cmd),
+            IntentOutcome::AppliedContinuous
+        );
+        let order = held(&arena).expect("order held");
+        let identity = order.identity.as_ref().expect("identity");
+        assert_eq!(identity.as_str(), compact.as_str());
+        assert!(identity.len() <= crate::arena::STOCK_MEMORY_LIMITS.string_bytes);
+
+        // Simulate Standard Doctrine storing ignore_identity for this large order.
+        let mem = super::super::stock_mind::StockMemory {
+            ignore_until_ms: Some(10_000),
+            ignore_identity: Some(identity.clone()),
+            ..super::super::stock_mind::StockMemory::default()
+        };
+        let encoded = super::super::mind::encode_memory(&mem.into());
+        assert!(
+            super::super::memory_bound::fits(&arena, MEMBER, &encoded),
+            "bounded order identity fits STOCK_MEMORY_LIMITS"
+        );
+        arena.minds.get_mut(&MEMBER).expect("mind").memory = encoded;
+
+        let snap = Snapshot::encode(&arena).expect("snapshot encodes");
+        let decoded =
+            Snapshot::decode(&snap.document, arena.definition.as_ref().clone()).expect("decodes");
+        assert_eq!(state_hash(&decoded), state_hash(&arena));
+        assert_eq!(held(&decoded).expect("order").identity, order.identity);
     }
 }

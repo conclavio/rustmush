@@ -301,7 +301,7 @@ mod tests {
                     slot: None,
                 },
             ],
-            memory: b"[1]".to_vec(),
+            memory: br#"{"a":1}"#.to_vec(),
             trace: vec!["deliberate own line".into()],
             ..ThinkResult::default()
         }
@@ -332,7 +332,7 @@ mod tests {
         assert!(
             matches!(&trace.intents[1].outcome, Outcome::Refused { reason } if reason == "no_lock")
         );
-        assert_eq!(arena.minds[&OWN].memory, b"[1]");
+        assert_eq!(arena.minds[&OWN].memory, br#"{"a":1}"#);
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
             &landed.intents[1].outcome,
             Outcome::Refused { reason } if reason == "no_lock"
         ));
-        assert_eq!(arena.minds[&OWN].memory, b"[1]");
+        assert_eq!(arena.minds[&OWN].memory, br#"{"a":1}"#);
         let next = collect(&mut arena, 1000);
         arena.set_controller(
             OWN,
