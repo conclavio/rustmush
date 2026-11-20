@@ -1963,6 +1963,11 @@ impl LocalSpaceBubble {
 
     /// Command a 3D burn vector `[ax, ay, az]` in $\text{m/s}^2$ on `ship_id` (`D-35-6`).
     ///
+    /// Sets the target thrust vector only; all velocity integration and propellant consumption
+    /// happen strictly in `step_substep` (via [`Self::step_wall_ms_at`]) over elapsed wall time.
+    ///
+    /// Rejects non-zero thrust (zeroing thrust) when the ship is not operational, linkdead,
+    /// under `docking_hold`, landed as a collector drone, or out of propellant/$\Delta v$.
     /// If `force_into_reserve` is `false` and the ship is at or below `return_reserve_dv_mps`,
     /// refuses the burn and returns `Err(SpaceCombatEvent::TankReserveWarning)`.
     pub fn command_burn(
@@ -1974,7 +1979,11 @@ impl LocalSpaceBubble {
         let Some(ship) = self.ships.get_mut(ship_id) else {
             return Ok(());
         };
-        if ship.status != HullStatus::Operational || ship.crew_linkdead {
+        if ship.status != HullStatus::Operational
+            || ship.crew_linkdead
+            || ship.docking_hold
+            || ship.collector.as_ref().is_some_and(|kit| kit.landed)
+        {
             ship.thrust_mps2 = [0, 0, 0];
             ship.thrust_mmps2 = [0, 0, 0];
             return Ok(());
@@ -1987,6 +1996,11 @@ impl LocalSpaceBubble {
         let requested_mag = isqrt_i128(
             (clamped[0] as i128).pow(2) + (clamped[1] as i128).pow(2) + (clamped[2] as i128).pow(2),
         ) as i64;
+        if requested_mag > 0 && (ship.propellant_kg == 0 || ship.delta_v_mps <= 0) {
+            ship.thrust_mps2 = [0, 0, 0];
+            ship.thrust_mmps2 = [0, 0, 0];
+            return Ok(());
+        }
         if requested_mag > 0
             && !force_into_reserve
             && ship.delta_v_mps <= ship.return_reserve_dv_mps
@@ -2028,28 +2042,6 @@ impl LocalSpaceBubble {
                 return_reserve_dv_mps: ship.return_reserve_dv_mps,
             });
         }
-        if actual_mag > 0 && ship.thrust_mps2 != next_thrust {
-            let law = crate::definitions::logistics::DriveLaw::Flip {
-                accel_mg: ship.rated_accel_mg,
-                exhaust_kms: ship.exhaust_kms.max(1),
-            };
-            let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
-            let payload_kg = ship
-                .non_prop_payload_kg
-                .saturating_add(u64::from(ship.propellant_kg));
-            let dv_u32 = u32::try_from(actual_mag).unwrap_or(1).max(1);
-            let burn_kg =
-                crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
-                    .unwrap_or(1)
-                    .max(1);
-            ship.propellant_kg = ship
-                .propellant_kg
-                .saturating_sub(u32::try_from(burn_kg).unwrap_or(u32::MAX));
-            ship.delta_v_mps = (ship.delta_v_mps - actual_mag).max(0);
-            ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add(next_thrust[0] * 1_000);
-            ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(next_thrust[1] * 1_000);
-            ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(next_thrust[2] * 1_000);
-        }
         ship.thrust_mps2 = next_thrust;
         ship.thrust_mmps2 = [
             next_thrust[0].saturating_mul(1_000),
@@ -2063,6 +2055,8 @@ impl LocalSpaceBubble {
     ///
     /// Caps acceleration magnitude by `ship.max_accel_mmps2` (halved when `DriveDegraded`)
     /// so sub-$1\text{ m/s}^2$ haulers accelerate at their true mass-adjusted flip-drive rate.
+    /// Sets the target thrust vector only; all velocity integration and propellant consumption
+    /// happen strictly in `step_substep` (via [`Self::step_wall_ms_at`]) over elapsed wall time.
     pub fn command_burn_mmps2(
         &mut self,
         ship_id: &str,
@@ -2072,7 +2066,11 @@ impl LocalSpaceBubble {
         let Some(ship) = self.ships.get_mut(ship_id) else {
             return Ok([0, 0, 0]);
         };
-        if ship.status != HullStatus::Operational || ship.crew_linkdead {
+        if ship.status != HullStatus::Operational
+            || ship.crew_linkdead
+            || ship.docking_hold
+            || ship.collector.as_ref().is_some_and(|kit| kit.landed)
+        {
             ship.thrust_mps2 = [0, 0, 0];
             ship.thrust_mmps2 = [0, 0, 0];
             return Ok([0, 0, 0]);
@@ -2085,6 +2083,11 @@ impl LocalSpaceBubble {
         let requested_mag_mmps2 = isqrt_i128(
             (clamped[0] as i128).pow(2) + (clamped[1] as i128).pow(2) + (clamped[2] as i128).pow(2),
         ) as i64;
+        if requested_mag_mmps2 > 0 && (ship.propellant_kg == 0 || ship.delta_v_mps <= 0) {
+            ship.thrust_mps2 = [0, 0, 0];
+            ship.thrust_mmps2 = [0, 0, 0];
+            return Ok([0, 0, 0]);
+        }
         if requested_mag_mmps2 > 0
             && !force_into_reserve
             && ship.delta_v_mps <= ship.return_reserve_dv_mps
@@ -2131,28 +2134,6 @@ impl LocalSpaceBubble {
                 remaining_dv_mps: ship.delta_v_mps,
                 return_reserve_dv_mps: ship.return_reserve_dv_mps,
             });
-        }
-        if actual_mag_mmps2 > 0 && ship.thrust_mmps2 != next_thrust_mmps2 {
-            let law = crate::definitions::logistics::DriveLaw::Flip {
-                accel_mg: ship.rated_accel_mg,
-                exhaust_kms: ship.exhaust_kms.max(1),
-            };
-            let dry_kg = u64::from(ship.dry_mass_t).saturating_mul(1_000);
-            let payload_kg = ship
-                .non_prop_payload_kg
-                .saturating_add(u64::from(ship.propellant_kg));
-            let dv_u32 = u32::try_from(actual_dv_mps).unwrap_or(1).max(1);
-            let burn_kg =
-                crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
-                    .unwrap_or(1)
-                    .max(1);
-            ship.propellant_kg = ship
-                .propellant_kg
-                .saturating_sub(u32::try_from(burn_kg).unwrap_or(u32::MAX));
-            ship.delta_v_mps = (ship.delta_v_mps - actual_dv_mps).max(0);
-            ship.vel_mmps[0] = ship.vel_mmps[0].saturating_add(next_thrust_mmps2[0]);
-            ship.vel_mmps[1] = ship.vel_mmps[1].saturating_add(next_thrust_mmps2[1]);
-            ship.vel_mmps[2] = ship.vel_mmps[2].saturating_add(next_thrust_mmps2[2]);
         }
         ship.thrust_mmps2 = next_thrust_mmps2;
         ship.thrust_mps2 = [
@@ -2689,6 +2670,8 @@ impl LocalSpaceBubble {
                 || ship.docking_hold
                 || ship.status != HullStatus::Operational
                 || ship.collector.as_ref().is_some_and(|kit| kit.landed)
+                || ship.propellant_kg == 0
+                || ship.delta_v_mps <= 0
             {
                 ship.thrust_mps2 = [0, 0, 0];
                 ship.thrust_mmps2 = [0, 0, 0];
@@ -3805,6 +3788,162 @@ mod cc6_tests {
             def.modes.offence.map(|mode| mode.cycle_ms),
             "offense keeps its own"
         );
+    }
+
+    #[test]
+    fn high15_alternating_thrust_commands_cannot_exceed_rated_acceleration() {
+        let mut bubble = LocalSpaceBubble::new(
+            "bubble.high15_spam",
+            "site.test",
+            "HIGH-15 Thrust Spam",
+            1_000,
+        );
+        let ship = SpaceShipState::new_dray(
+            "ship.carrier",
+            "Carrier",
+            admitted_party(0),
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        let rated_mmps2 = ship.max_accel_mmps2;
+        let rated_mps2 = ship.max_accel_mps2;
+        let initial_prop = ship.propellant_kg;
+        bubble.insert_ship(ship);
+
+        // Alternate 1000‰ and 999‰ 30 times without advancing wall time: velocity and propellant
+        // must remain completely unchanged until `step_substep` integrates elapsed wall time!
+        for i in 0..30 {
+            let thrust = if i % 2 == 0 {
+                [rated_mmps2, 0, 0]
+            } else {
+                [rated_mmps2 - 1, 0, 0]
+            };
+            let res = bubble.command_burn_mmps2("ship.carrier", thrust, true);
+            assert!(res.is_ok());
+        }
+        {
+            let s = &bubble.ships["ship.carrier"];
+            assert_eq!(
+                s.vel_mmps,
+                [0, 0, 0],
+                "command_burn_mmps2 must never inject synchronous velocity impulses"
+            );
+            assert_eq!(
+                s.propellant_kg, initial_prop,
+                "command_burn_mmps2 must not synchronously debit propellant before wall time elapses"
+            );
+        }
+
+        // Same check for `command_burn` (m/s² variant):
+        for i in 0..10 {
+            let thrust = if i % 2 == 0 {
+                [rated_mps2, 0, 0]
+            } else {
+                [0, rated_mps2, 0]
+            };
+            assert!(bubble.command_burn("ship.carrier", thrust, true).is_ok());
+        }
+        assert_eq!(bubble.ships["ship.carrier"].vel_mmps, [0, 0, 0]);
+
+        // Set full rated thrust along +X and step exactly 1,000 ms (4 × 250 ms substeps):
+        // total velocity delta must equal at most rated_mmps2 (1 s of acceleration).
+        assert!(
+            bubble
+                .command_burn_mmps2("ship.carrier", [rated_mmps2, 0, 0], true)
+                .is_ok()
+        );
+        let _ = bubble.step_wall_ms_at(1_000, 1_024);
+        let vx = bubble.ships["ship.carrier"].vel_mmps[0];
+        assert!(
+            vx > 0 && vx <= rated_mmps2,
+            "1 s of stepping must accelerate at most rated_mmps2 ({rated_mmps2}), got {vx}"
+        );
+    }
+
+    #[test]
+    fn high15_dry_tank_cannot_accelerate_even_with_force() {
+        let mut bubble =
+            LocalSpaceBubble::new("bubble.high15_dry", "site.test", "HIGH-15 Dry Tank", 2_000);
+        let mut dry_prop = SpaceShipState::new_dray(
+            "ship.dry_prop",
+            "Dry Prop",
+            admitted_party(0),
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        dry_prop.propellant_kg = 0;
+        dry_prop.delta_v_mps = 500;
+        bubble.insert_ship(dry_prop);
+
+        let mut dry_dv = SpaceShipState::new_dray(
+            "ship.dry_dv",
+            "Dry Dv",
+            admitted_party(0),
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        dry_dv.propellant_kg = 1_000;
+        dry_dv.delta_v_mps = 0;
+        bubble.insert_ship(dry_dv);
+
+        for id in ["ship.dry_prop", "ship.dry_dv"] {
+            let out = bubble
+                .command_burn_mmps2(id, [645, 0, 0], true)
+                .expect("dry tank returns zero thrust");
+            assert_eq!(out, [0, 0, 0], "{id} must reject non-zero mmps2 thrust");
+            assert!(bubble.command_burn(id, [1, 0, 0], true).is_ok());
+            assert_eq!(bubble.ships[id].thrust_mmps2, [0, 0, 0]);
+            assert_eq!(bubble.ships[id].thrust_mps2, [0, 0, 0]);
+        }
+        let _ = bubble.step_wall_ms_at(2_000, 2_048);
+        assert_eq!(bubble.ships["ship.dry_prop"].vel_mmps, [0, 0, 0]);
+        assert_eq!(bubble.ships["ship.dry_dv"].vel_mmps, [0, 0, 0]);
+    }
+
+    #[test]
+    fn high15_docking_hold_and_landed_collector_reject_thrust() {
+        let mut bubble = LocalSpaceBubble::new(
+            "bubble.high15_hold",
+            "site.test",
+            "HIGH-15 Docking Hold",
+            3_000,
+        );
+        let mut held =
+            SpaceShipState::new_dray("ship.held", "Held", admitted_party(0), [0, 0, 0], [0, 0, 0]);
+        held.docking_hold = true;
+        bubble.insert_ship(held);
+
+        let mut landed = SpaceShipState::new_dray(
+            "ship.drone",
+            "Drone",
+            admitted_party(0),
+            [0, 0, 0],
+            [0, 0, 0],
+        );
+        landed.collector = Some(CollectorKit {
+            id: "col.1".to_owned(),
+            home: "ship.held".to_owned(),
+            hold_kg: 0,
+            hold_cap_kg: 500,
+            cooldown_remaining_ms: 0,
+            away: true,
+            landed: true,
+        });
+        bubble.insert_ship(landed);
+
+        for id in ["ship.held", "ship.drone"] {
+            let out = bubble
+                .command_burn_mmps2(id, [645, 0, 0], true)
+                .expect("held/landed returns zero thrust");
+            assert_eq!(out, [0, 0, 0]);
+            assert!(bubble.command_burn(id, [1, 0, 0], true).is_ok());
+            assert_eq!(bubble.ships[id].thrust_mmps2, [0, 0, 0]);
+            assert_eq!(bubble.ships[id].thrust_mps2, [0, 0, 0]);
+            assert_eq!(bubble.ships[id].vel_mmps, [0, 0, 0]);
+        }
+        let _ = bubble.step_wall_ms_at(2_000, 3_048);
+        assert_eq!(bubble.ships["ship.held"].vel_mmps, [0, 0, 0]);
+        assert_eq!(bubble.ships["ship.drone"].vel_mmps, [0, 0, 0]);
     }
 }
 

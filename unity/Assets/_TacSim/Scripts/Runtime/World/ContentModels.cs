@@ -394,6 +394,8 @@ namespace TacSim.World
             // Embedded standalone fallback (`Resources/TacSimFallbackPacks/<key>` staged by TacSimStandaloneBuilder)
             // so cold-cache standalone `.exe` / `.app` builds render the full 16-room 3-deck Ceres Freeport, Dray,
             // and Goods catalog immediately on launch before WebSocket login!
+            if (!IsSafeContentSlug(key))
+                return false;
             try
             {
                 TextAsset embedded = Resources.Load<TextAsset>("TacSimFallbackPacks/" + key);
@@ -521,16 +523,91 @@ namespace TacSim.World
             return root.ToJson();
         }
 
+        /// <summary>
+        /// Strict slug allowlist (<c>^[A-Za-z0-9._-]+$</c>, rejecting <c>..</c>, separators, colons, and empty/overlong IDs).
+        /// Prevents Windows UNC/SMB NTLMv2 disclosure and local <c>.json</c> path traversal.
+        /// </summary>
+        public static bool IsSafeContentSlug(string slug)
+        {
+            if (string.IsNullOrEmpty(slug) || slug.Length > 128)
+                return false;
+            if (slug == "." || slug == ".." || slug.Contains("..", StringComparison.Ordinal))
+                return false;
+            for (int i = 0; i < slug.Length; i++)
+            {
+                char c = slug[i];
+                bool ok = (c >= 'A' && c <= 'Z') ||
+                          (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') ||
+                          c == '.' || c == '_' || c == '-';
+                if (!ok)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool IsSafeRelativeContentPath(string relativePath)
+        {
+            if (string.IsNullOrWhiteSpace(relativePath))
+                return false;
+            if (Path.IsPathRooted(relativePath))
+                return false;
+            if (relativePath.StartsWith("\\", StringComparison.Ordinal) ||
+                relativePath.StartsWith("/", StringComparison.Ordinal) ||
+                relativePath.IndexOf(':') >= 0)
+                return false;
+
+            string[] segments = relativePath.Split(new[] { '/', '\\' });
+            if (segments.Length == 0)
+                return false;
+            for (int i = 0; i < segments.Length; i++)
+            {
+                string seg = segments[i];
+                if (!IsSafeContentSlug(seg))
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool TryResolveContainedPath(string contentRoot, string relativePath, out string resolved)
+        {
+            resolved = string.Empty;
+            if (string.IsNullOrWhiteSpace(contentRoot) || !IsSafeRelativeContentPath(relativePath))
+                return false;
+            try
+            {
+                string canonicalRoot = Path.GetFullPath(contentRoot)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string rootPrefix = canonicalRoot + Path.DirectorySeparatorChar;
+                string candidate = Path.GetFullPath(Path.Combine(canonicalRoot, relativePath));
+                StringComparison cmp = Path.DirectorySeparatorChar == '\\'
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal;
+                if (!candidate.StartsWith(rootPrefix, cmp))
+                    return false;
+                resolved = candidate;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static string ResolveRepoContentPath(string relativeUnderTacsimContent)
         {
+            if (!IsSafeRelativeContentPath(relativeUnderTacsimContent))
+                return string.Empty;
+
             // Application.dataPath is <repo>/unity/Assets when running inside Unity
             try
             {
                 string assetsDir = Application.dataPath;
                 if (!string.IsNullOrEmpty(assetsDir))
                 {
-                    string candidate = Path.GetFullPath(Path.Combine(assetsDir, "..", "..", "crates", "tacsim", "content", relativeUnderTacsimContent));
-                    if (File.Exists(candidate))
+                    string root = Path.Combine(assetsDir, "..", "..", "crates", "tacsim", "content");
+                    if (TryResolveContainedPath(root, relativeUnderTacsimContent, out string candidate) &&
+                        (File.Exists(candidate) || Directory.Exists(candidate)))
                         return candidate;
                 }
             }
@@ -542,24 +619,32 @@ namespace TacSim.World
             string dir = Directory.GetCurrentDirectory();
             for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
             {
-                string candidate = Path.Combine(dir, "crates", "tacsim", "content", relativeUnderTacsimContent);
-                if (File.Exists(candidate))
-                    return Path.GetFullPath(candidate);
+                string root = Path.Combine(dir, "crates", "tacsim", "content");
+                if (TryResolveContainedPath(root, relativeUnderTacsimContent, out string candidate) &&
+                    (File.Exists(candidate) || Directory.Exists(candidate)))
+                    return candidate;
                 dir = Directory.GetParent(dir)?.FullName;
             }
 
-            return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "crates", "tacsim", "content", relativeUnderTacsimContent));
+            string fallbackRoot = Path.Combine(Directory.GetCurrentDirectory(), "crates", "tacsim", "content");
+            return TryResolveContainedPath(fallbackRoot, relativeUnderTacsimContent, out string fallback)
+                ? fallback
+                : string.Empty;
         }
 
         public static string ResolveMushAtlasContentPath(string relativeUnderMushAtlasContent)
         {
+            if (!IsSafeRelativeContentPath(relativeUnderMushAtlasContent))
+                return string.Empty;
+
             try
             {
                 string assetsDir = Application.dataPath;
                 if (!string.IsNullOrEmpty(assetsDir))
                 {
-                    string candidate = Path.GetFullPath(Path.Combine(assetsDir, "..", "..", "crates", "mush-atlas", "content", relativeUnderMushAtlasContent));
-                    if (File.Exists(candidate))
+                    string root = Path.Combine(assetsDir, "..", "..", "crates", "mush-atlas", "content");
+                    if (TryResolveContainedPath(root, relativeUnderMushAtlasContent, out string candidate) &&
+                        (File.Exists(candidate) || Directory.Exists(candidate)))
                         return candidate;
                 }
             }
@@ -571,13 +656,17 @@ namespace TacSim.World
             string dir = Directory.GetCurrentDirectory();
             for (int depth = 0; depth < 6 && !string.IsNullOrEmpty(dir); depth++)
             {
-                string candidate = Path.Combine(dir, "crates", "mush-atlas", "content", relativeUnderMushAtlasContent);
-                if (File.Exists(candidate))
-                    return Path.GetFullPath(candidate);
+                string root = Path.Combine(dir, "crates", "mush-atlas", "content");
+                if (TryResolveContainedPath(root, relativeUnderMushAtlasContent, out string candidate) &&
+                    (File.Exists(candidate) || Directory.Exists(candidate)))
+                    return candidate;
                 dir = Directory.GetParent(dir)?.FullName;
             }
 
-            return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "crates", "mush-atlas", "content", relativeUnderMushAtlasContent));
+            string fallbackRoot = Path.Combine(Directory.GetCurrentDirectory(), "crates", "mush-atlas", "content");
+            return TryResolveContainedPath(fallbackRoot, relativeUnderMushAtlasContent, out string fallback)
+                ? fallback
+                : string.Empty;
         }
 
         public static AtlasNeighborhoodPack LoadCeresFreeport()
@@ -594,6 +683,12 @@ namespace TacSim.World
                 normalized = "neighborhood." + normalized;
 
             string slug = normalized.Substring("neighborhood.".Length);
+            if (!IsSafeContentSlug(slug) || !IsSafeContentSlug(normalized))
+            {
+                Debug.LogWarning($"[TacSimContentLoader] Rejected unsafe neighborhood pack id '{packId}'; building fallback layout.");
+                return BuildFallbackFreeport();
+            }
+
             AtlasNeighborhoodPack pack;
             if (TryGetSyncedOrResourceJson(normalized, out string syncedNeighborhoodJson))
             {
@@ -605,13 +700,13 @@ namespace TacSim.World
                     ? ResolveMushAtlasContentPath("neighborhood.ooc_area.json")
                     : ResolveRepoContentPath(Path.Combine("atlas", $"{normalized}.json"));
 
-                if (!File.Exists(path))
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
                 {
                     string alt = ResolveMushAtlasContentPath($"{normalized}.json");
-                    if (File.Exists(alt)) path = alt;
+                    if (!string.IsNullOrEmpty(alt) && File.Exists(alt)) path = alt;
                 }
 
-                if (File.Exists(path))
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
                 {
                     pack = ParseNeighborhoodJson(File.ReadAllText(path), normalized);
                 }
@@ -629,7 +724,7 @@ namespace TacSim.World
             else
             {
                 string castPath = ResolveRepoContentPath(Path.Combine("cast", $"{slug}.json"));
-                if (File.Exists(castPath))
+                if (!string.IsNullOrEmpty(castPath) && File.Exists(castPath))
                 {
                     MergeCastJsonIntoPack(pack, File.ReadAllText(castPath));
                 }
@@ -901,7 +996,7 @@ namespace TacSim.World
                 return ParseGoodsJson(syncedGoods);
             }
             string path = ResolveRepoContentPath(Path.Combine("market", "goods.json"));
-            if (File.Exists(path))
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
             {
                 return ParseGoodsJson(File.ReadAllText(path));
             }
@@ -966,12 +1061,17 @@ namespace TacSim.World
                 normalized = "tacsim.unit." + normalized;
 
             string fileStem = normalized.Substring("tacsim.unit.".Length);
+            if (!IsSafeContentSlug(fileStem) || !IsSafeContentSlug(normalized))
+            {
+                Debug.LogWarning($"[TacSimContentLoader] Rejected unsafe ship unit id '{unitId}'; using fallback Dray.");
+                return BuildFallbackDray("tacsim.unit.dray");
+            }
             if (TryGetSyncedOrResourceJson(fileStem, out string syncedUnitJson))
             {
                 return ParseShipUnitJson(syncedUnitJson, normalized);
             }
             string path = ResolveRepoContentPath(Path.Combine("units", $"{fileStem}.json"));
-            if (File.Exists(path))
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
             {
                 return ParseShipUnitJson(File.ReadAllText(path), normalized);
             }

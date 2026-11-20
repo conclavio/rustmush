@@ -996,56 +996,158 @@ pub fn client_content_bundle() -> &'static ClientContentBundle {
     })
 }
 
-fn world_content_fingerprint(w: &World, actor: ObjId) -> String {
-    let mut h = Sha256::new();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorldContentFingerprint(u64, u64);
+
+fn hash_str_dual(h1: &mut std::collections::hash_map::DefaultHasher, h2: &mut u64, s: &str) {
+    use std::hash::Hash as _;
+    s.hash(h1);
+    hash_fnv1a64(h2, s.as_bytes());
+    hash_fnv1a64(h2, &[0xff]);
+}
+
+fn hash_bytes_dual(h1: &mut std::collections::hash_map::DefaultHasher, h2: &mut u64, bytes: &[u8]) {
+    use std::hash::Hash as _;
+    bytes.hash(h1);
+    hash_fnv1a64(h2, bytes);
+}
+
+fn hash_fnv1a64(state: &mut u64, bytes: &[u8]) {
+    let mut h = *state;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    *state = h;
+}
+
+fn hash_footprint_dual(
+    h1: &mut std::collections::hash_map::DefaultHasher,
+    h2: &mut u64,
+    footprint: &mush_atlas::Footprint,
+) {
+    match footprint {
+        mush_atlas::Footprint::Rect(rect) => {
+            hash_bytes_dual(h1, h2, &[1]);
+            hash_bytes_dual(h1, h2, &rect.0.0.to_bits().to_le_bytes());
+            hash_bytes_dual(h1, h2, &rect.0.1.to_bits().to_le_bytes());
+            hash_bytes_dual(h1, h2, &rect.1.0.to_bits().to_le_bytes());
+            hash_bytes_dual(h1, h2, &rect.1.1.to_bits().to_le_bytes());
+        }
+        mush_atlas::Footprint::Polygon(poly) => {
+            hash_bytes_dual(h1, h2, &[2]);
+            hash_bytes_dual(h1, h2, &(poly.0.len() as u64).to_le_bytes());
+            for pt in &poly.0 {
+                hash_bytes_dual(h1, h2, &pt.0.to_bits().to_le_bytes());
+                hash_bytes_dual(h1, h2, &pt.1.to_bits().to_le_bytes());
+            }
+        }
+        mush_atlas::Footprint::Anchor { point, radius_m } => {
+            hash_bytes_dual(h1, h2, &[3]);
+            hash_bytes_dual(h1, h2, &point.0.to_bits().to_le_bytes());
+            hash_bytes_dual(h1, h2, &point.1.to_bits().to_le_bytes());
+            hash_bytes_dual(h1, h2, &radius_m.to_bits().to_le_bytes());
+        }
+    }
+}
+
+fn hash_surface_dual(
+    h1: &mut std::collections::hash_map::DefaultHasher,
+    h2: &mut u64,
+    surface: &mush_atlas::SurfaceRef,
+) {
+    match surface {
+        mush_atlas::SurfaceRef::Ground => hash_bytes_dual(h1, h2, &[0]),
+        mush_atlas::SurfaceRef::Floor { structure, index } => {
+            hash_bytes_dual(h1, h2, &[1]);
+            hash_str_dual(h1, h2, structure.pack.as_str());
+            hash_str_dual(h1, h2, structure.entry.as_str());
+            hash_bytes_dual(h1, h2, &index.to_le_bytes());
+        }
+    }
+}
+
+fn hash_atlas_state(
+    h1: &mut std::collections::hash_map::DefaultHasher,
+    h2: &mut u64,
+    w: &World,
+    atlas: &mush_atlas::AtlasState,
+) {
+    hash_bytes_dual(h1, h2, b"|shelf:");
+    for (id, pack) in &atlas.shelf {
+        hash_str_dual(h1, h2, id.as_str());
+        hash_bytes_dual(h1, h2, &pack.manifest().version().to_le_bytes());
+        hash_bytes_dual(h1, h2, pack.manifest().digest().as_bytes());
+    }
+    hash_bytes_dual(h1, h2, b"|nb:");
+    for (nkey, nb) in &atlas.records.neighborhoods {
+        hash_str_dual(h1, h2, nkey.pack.as_str());
+        hash_str_dual(h1, h2, nkey.entry.as_str());
+        hash_bytes_dual(h1, h2, &nb.revision.to_le_bytes());
+        hash_str_dual(h1, h2, &nb.name);
+        hash_str_dual(h1, h2, &nb.setting);
+    }
+    hash_bytes_dual(h1, h2, b"|st:");
+    for (skey, st) in &atlas.records.structures {
+        hash_str_dual(h1, h2, skey.pack.as_str());
+        hash_str_dual(h1, h2, skey.entry.as_str());
+        hash_bytes_dual(h1, h2, &st.revision.to_le_bytes());
+        hash_bytes_dual(h1, h2, &(st.floors.len() as u64).to_le_bytes());
+    }
+    hash_bytes_dual(h1, h2, b"|geo:");
+    for (room_id, geo) in &atlas.records.roomgeo {
+        hash_bytes_dual(h1, h2, &room_id.0.to_le_bytes());
+        hash_bytes_dual(h1, h2, &geo.revision.to_le_bytes());
+        hash_str_dual(h1, h2, geo.key.pack.as_str());
+        hash_str_dual(h1, h2, geo.key.entry.as_str());
+        if let Some(obj) = w.get(*room_id) {
+            hash_str_dual(h1, h2, &obj.name);
+        }
+        hash_surface_dual(h1, h2, &geo.surface);
+        hash_footprint_dual(h1, h2, &geo.footprint);
+    }
+}
+
+/// Fast, non-allocating revision/geometry fingerprint for [`ClientContentQuery`] cache hits.
+///
+/// Avoids per-query `serde_json::to_vec(&geo.footprint)` heap serialization and SHA-256 hashing
+/// while still invalidating whenever applied latches, atlas packs, room geometry/names, or
+/// TacSim pack versions change.
+fn world_content_fingerprint(w: &World, actor: ObjId) -> WorldContentFingerprint {
+    use std::hash::Hasher as _;
+
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    let mut h2: u64 = 0xcbf2_9ce4_8422_2325;
     let is_staff_viewer = mush_atlas::is_staff(w, actor);
-    h.update([u8::from(is_staff_viewer)]);
+    hash_bytes_dual(&mut h1, &mut h2, &[u8::from(is_staff_viewer)]);
     if let Some(content) = w.module_state::<mush_content::ContentState>() {
-        h.update(b"|content:");
+        hash_bytes_dual(&mut h1, &mut h2, b"|content:");
         for applied in content.latches.all() {
-            h.update(applied.pack().as_str().as_bytes());
-            h.update(b":");
-            h.update(applied.version().to_le_bytes());
-            h.update(applied.digest().as_bytes());
-            h.update([u8::from(applied.is_retired())]);
+            hash_str_dual(&mut h1, &mut h2, applied.pack().as_str());
+            hash_bytes_dual(&mut h1, &mut h2, &applied.version().to_le_bytes());
+            hash_bytes_dual(&mut h1, &mut h2, applied.digest().as_bytes());
+            hash_bytes_dual(&mut h1, &mut h2, &[u8::from(applied.is_retired())]);
         }
     }
     if let Some(atlas) = w.module_state::<mush_atlas::AtlasState>() {
-        h.update(b"|shelf:");
-        for (id, pack) in &atlas.shelf {
-            h.update(id.as_str().as_bytes());
-            h.update(pack.manifest().version().to_le_bytes());
-            h.update(pack.manifest().digest().as_bytes());
-        }
-        h.update(b"|geo:");
-        for (room_id, geo) in &atlas.records.roomgeo {
-            h.update(room_id.0.to_le_bytes());
-            h.update(geo.revision.to_le_bytes());
-            if let Some(obj) = w.get(*room_id) {
-                h.update(obj.name.as_bytes());
-            }
-            if let Ok(fp_bytes) = serde_json::to_vec(&geo.footprint) {
-                h.update(&fp_bytes);
-            }
-        }
+        hash_atlas_state(&mut h1, &mut h2, w, atlas);
     }
     if let Some(store) = w.module_state::<TacsimStore>() {
-        h.update(b"|tacsim:");
+        hash_bytes_dual(&mut h1, &mut h2, b"|tacsim:");
+        hash_bytes_dual(&mut h1, &mut h2, &[u8::from(store.enabled())]);
         for loaded in store.packs() {
             let id = loaded.pack.manifest().id();
-            h.update(id.as_str().as_bytes());
-            h.update(loaded.pack.manifest().version().to_le_bytes());
+            hash_str_dual(&mut h1, &mut h2, id.as_str());
+            hash_bytes_dual(
+                &mut h1,
+                &mut h2,
+                &loaded.pack.manifest().version().to_le_bytes(),
+            );
             let applied = store.applied_in(w, id).unwrap_or(0);
-            h.update(applied.to_le_bytes());
+            hash_bytes_dual(&mut h1, &mut h2, &applied.to_le_bytes());
         }
     }
-    let digest = h.finalize();
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut out, "{b:02x}");
-    }
-    out
+    WorldContentFingerprint(h1.finish(), h2)
 }
 
 /// Register the `port.trade` and `tacsim.content` pulled panel feeds and query handlers.
@@ -1062,8 +1164,8 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 }
 
 struct ClientContentQuery {
-    player_cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
-    staff_cache: Mutex<Option<(String, Arc<ClientContentBundle>)>>,
+    player_cache: Mutex<Option<(WorldContentFingerprint, Arc<ClientContentBundle>)>>,
+    staff_cache: Mutex<Option<(WorldContentFingerprint, Arc<ClientContentBundle>)>>,
 }
 
 impl ClientContentQuery {
@@ -1098,11 +1200,37 @@ impl ClientContentQuery {
 
 impl QueryHandler for ClientContentQuery {
     fn query(&self, w: &World, actor: ObjId, params: &Value) -> Result<OutputEvent, RichText> {
-        let bundle = self.bundle_for(w, actor);
         let op = params
             .get("op")
             .and_then(Value::as_str)
             .unwrap_or("manifest");
+        if w.module_state::<TacsimStore>()
+            .is_some_and(|store| !store.enabled())
+        {
+            let data = if op == "pack" {
+                let req_id = params.get("id").and_then(Value::as_str).unwrap_or("");
+                json!({
+                    "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
+                    "enabled": false,
+                    "op": "pack",
+                    "found": false,
+                    "id": req_id,
+                })
+            } else {
+                json!({
+                    "schema": { "id": CLIENT_CONTENT_FEED, "version": SCHEMA_VERSION },
+                    "enabled": false,
+                    "op": "manifest",
+                    "packs": [],
+                })
+            };
+            return Ok(OutputEvent::Panel {
+                feed: SmolStr::new_static(CLIENT_CONTENT_FEED),
+                kind: PanelFrameKind::Keyframe,
+                data,
+            });
+        }
+        let bundle = self.bundle_for(w, actor);
         let data = if op == "pack" {
             let req_id = params.get("id").and_then(Value::as_str).unwrap_or("");
             match bundle.find(req_id) {
@@ -1734,6 +1862,110 @@ mod tests {
         }
         let disk_val: Value = serde_json::from_str(&std::fs::read_to_string(&fixture_path)?)?;
         check_eq!(disk_val, projected_val);
+        Ok(())
+    }
+
+    #[test]
+    fn high2_world_content_fingerprint_tracks_roomgeo_changes_and_respects_disabled_store()
+    -> TestResult {
+        use std::hash::Hasher as _;
+
+        use mush_atlas::{
+            Access, AtlasState, Footprint, Point2, RecordKey, Rect2, RoomGeo, RoomKind, SurfaceRef,
+        };
+        use mush_core::CanonicalId;
+
+        let fp_of = |w: &World, atlas: &AtlasState| {
+            let mut h1 = std::collections::hash_map::DefaultHasher::new();
+            let mut h2: u64 = 0xcbf2_9ce4_8422_2325;
+            hash_atlas_state(&mut h1, &mut h2, w, atlas);
+            WorldContentFingerprint(h1.finish(), h2)
+        };
+
+        let mut tw = mush_testkit::TestWorld::new();
+        let room = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "Bay Alpha", ObjId(1), None)?;
+        let pack_id = CanonicalId::new("neighborhood.fp_test")?;
+        let nb_key = RecordKey::new(pack_id.clone(), CanonicalId::new("neighborhood.main")?);
+        let st_key = RecordKey::new(pack_id.clone(), CanonicalId::new("structure.hub")?);
+
+        let mut atlas = AtlasState::default();
+        atlas.records.roomgeo.insert(
+            room,
+            RoomGeo {
+                room,
+                key: RecordKey::new(pack_id.clone(), CanonicalId::new("room.bay")?),
+                neighborhood: nb_key,
+                site: None,
+                surface: SurfaceRef::Floor {
+                    structure: st_key.clone(),
+                    index: 1,
+                },
+                footprint: Footprint::Rect(Rect2(Point2(0.0, 0.0), Point2(10.0, 10.0))),
+                kind: RoomKind::Indoor,
+                access: Access::Public,
+                revision: 1,
+            },
+        );
+
+        let fp_initial = fp_of(&tw.engine().world, &atlas);
+        check_eq!(fp_initial, fp_of(&tw.engine().world, &atlas));
+
+        // Mutating roomgeo footprint must change the non-allocating fingerprint.
+        if let Some(geo) = atlas.records.roomgeo.get_mut(&room) {
+            geo.footprint = Footprint::Rect(Rect2(Point2(0.0, 0.0), Point2(25.0, 10.0)));
+        }
+        let fp_after_footprint = fp_of(&tw.engine().world, &atlas);
+        check!(fp_after_footprint != fp_initial);
+
+        // Mutating roomgeo floor surface must also invalidate the fingerprint.
+        if let Some(geo) = atlas.records.roomgeo.get_mut(&room) {
+            geo.surface = SurfaceRef::Floor {
+                structure: st_key,
+                index: 2,
+            };
+        }
+        let fp_after_surface = fp_of(&tw.engine().world, &atlas);
+        check!(fp_after_surface != fp_after_footprint);
+
+        // Disabled TacsimStore (registered via TacsimRuleset) must short-circuit
+        // `tacsim.content` queries with `enabled: false` and stay stable across repeated fingerprints.
+        let disabled_cfg = crate::config::TacsimConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let tw_disabled = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            crate::TacsimRuleset::with_config(disabled_cfg),
+        )]);
+        let fp_disabled = world_content_fingerprint(&tw_disabled.engine().world, ObjId(1));
+        check_eq!(
+            fp_disabled,
+            world_content_fingerprint(&tw_disabled.engine().world, ObjId(1))
+        );
+        let q = ClientContentQuery::new();
+        let Ok(OutputEvent::Panel { data, .. }) = q.query(
+            &tw_disabled.engine().world,
+            ObjId(1),
+            &json!({"op": "manifest"}),
+        ) else {
+            return crate::test_checks::failed("expected panel response");
+        };
+        check_eq!(data["enabled"], json!(false));
+        check_eq!(data["packs"], json!([]));
+
+        let Ok(OutputEvent::Panel {
+            data: pack_data, ..
+        }) = q.query(
+            &tw_disabled.engine().world,
+            ObjId(1),
+            &json!({"op": "pack", "id": "dray"}),
+        )
+        else {
+            return crate::test_checks::failed("expected pack panel response");
+        };
+        check_eq!(pack_data["enabled"], json!(false));
+        check_eq!(pack_data["found"], json!(false));
         Ok(())
     }
 }

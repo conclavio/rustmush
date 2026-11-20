@@ -213,15 +213,18 @@ namespace TacSim.World
             }
         }
 
+        public const int MaxGridDimension = 512;
+        public const int MaxTileBase64Chars = 4 * 1024 * 1024;
+
         /// <summary>
         /// Decodes `arena.map` v1 `elev.data` ("zigzag-leb128-delta" centimetres) into int[] elev_cm.
         /// Mirrors crates/tacsim/src/match_/cockpit/frames.rs exact zigzag + LEB128 accumulator.
         /// </summary>
         public static int[] DecodeZigzagLeb128DeltaElevCm(string base64Data, int expectedCells)
         {
-            int count = Mathf.Max(0, expectedCells);
+            int count = Mathf.Clamp(expectedCells, 0, MaxGridDimension * MaxGridDimension);
             var outCm = new int[count];
-            if (string.IsNullOrWhiteSpace(base64Data) || count == 0)
+            if (string.IsNullOrWhiteSpace(base64Data) || count == 0 || base64Data.Length > MaxTileBase64Chars)
                 return outCm;
 
             byte[] bytes;
@@ -285,28 +288,30 @@ namespace TacSim.World
         /// </summary>
         public static char[] DecodeRleGlyphRows(JsonNode rowsNode, int width, int height)
         {
-            var grid = new char[Mathf.Max(1, width * height)];
+            int w = Mathf.Clamp(width, 1, MaxGridDimension);
+            int h = Mathf.Clamp(height, 1, MaxGridDimension);
+            var grid = new char[w * h];
             for (int i = 0; i < grid.Length; i++) grid[i] = ',';
 
             var rows = rowsNode != null ? rowsNode.AsArray() : null;
             if (rows == null) return grid;
 
-            int rowCount = Mathf.Min(height, rows.Count);
+            int rowCount = Mathf.Min(h, rows.Count);
             for (int y = 0; y < rowCount; y++)
             {
                 var runs = rows[y].AsArray();
                 if (runs == null) continue;
                 int x = 0;
-                for (int r = 0; r < runs.Count && x < width; r++)
+                for (int r = 0; r < runs.Count && x < w; r++)
                 {
                     var pair = runs[r].AsArray();
                     if (pair == null || pair.Count < 2) continue;
                     string gStr = pair[0].AsString(",");
                     char ch = !string.IsNullOrEmpty(gStr) ? gStr[0] : ',';
-                    int runLen = Mathf.Max(0, pair[1].AsInt(1));
-                    for (int k = 0; k < runLen && x < width; k++)
+                    int runLen = Mathf.Clamp(pair[1].AsInt(1), 0, w - x);
+                    for (int k = 0; k < runLen && x < w; k++)
                     {
-                        grid[y * width + x] = ch;
+                        grid[y * w + x] = ch;
                         x++;
                     }
                 }
@@ -320,9 +325,10 @@ namespace TacSim.World
         public static DecodedTerrainGrid DecodeArenaMapFrame(JsonNode mapFrame)
         {
             if (mapFrame == null || !mapFrame.IsObject) return null;
-            int w = Mathf.Clamp(mapFrame.Int("width", 256), 1, 512);
-            int h = Mathf.Clamp(mapFrame.Int("height", 256), 1, 512);
-            float cellM = mapFrame.Int("cell_cm", 1000) * 0.01f;
+            int w = Mathf.Clamp(mapFrame.Int("width", 256), 1, MaxGridDimension);
+            int h = Mathf.Clamp(mapFrame.Int("height", 256), 1, MaxGridDimension);
+            int cellCm = Mathf.Clamp(mapFrame.Int("cell_cm", 1000), 100, 100000);
+            float cellM = cellCm * 0.01f;
 
             int ox = 0, oy = 0;
             var orig = mapFrame["origin_cell"].AsArray();
@@ -339,7 +345,8 @@ namespace TacSim.World
 
             var elevObj = mapFrame["elev"];
             string elevB64 = elevObj.IsObject ? elevObj.Str("data", string.Empty) : string.Empty;
-            float unitScaleM = (elevObj.IsObject ? elevObj.Int("unit_cm", 1) : 1) * 0.01f;
+            int unitCm = Mathf.Clamp(elevObj.IsObject ? elevObj.Int("unit_cm", 1) : 1, 1, 10000);
+            float unitScaleM = unitCm * 0.01f;
             int[] rawElev = DecodeZigzagLeb128DeltaElevCm(elevB64, w * h);
             var elevM = new float[w * h];
             for (int i = 0; i < elevM.Length; i++)
@@ -410,7 +417,7 @@ namespace TacSim.World
             }
 
             int span = 1;
-            int baseCellCm = siteMapFrame.Int("cell_cm", 1000);
+            int baseCellCm = Mathf.Clamp(siteMapFrame.Int("cell_cm", 1000), 100, 100000);
             bool hasHullCell = false;
             int hullFx = 0;
             int hullFy = 0;
@@ -424,13 +431,13 @@ namespace TacSim.World
                 {
                     ox = gridObj.Int("x0", ox);
                     oy = gridObj.Int("y0", oy);
-                    span = Mathf.Max(1, gridObj.Int("span", 1));
+                    span = Mathf.Clamp(gridObj.Int("span", 1), 1, 64);
                     // `site.grid.cell_cm` is a single site cell's edge (1000 cm); multiply by `span` below!
-                    baseCellCm = gridObj.Int("cell_cm", 1000);
+                    baseCellCm = Mathf.Clamp(gridObj.Int("cell_cm", 1000), 100, 100000);
                 }
                 else if (span > 1)
                 {
-                    baseCellCm = Mathf.Max(100, baseCellCm / span);
+                    baseCellCm = Mathf.Clamp(baseCellCm / span, 100, 100000);
                 }
 
                 var hullArr = siteObj["marks"]?["hull"].AsArray();
@@ -509,17 +516,23 @@ namespace TacSim.World
         public static DecodedTerrainGrid LoadStaticArena(string arenaSlug)
         {
             string slug = string.IsNullOrWhiteSpace(arenaSlug) ? "mars_canyon" : arenaSlug.Trim().ToLowerInvariant();
-            string arenaPath = TacSimContentLoader.ResolveRepoContentPath(Path.Combine("arenas", $"{slug}.json"));
-            string atlasPath = TacSimContentLoader.ResolveRepoContentPath(Path.Combine("atlas", $"{slug}.json"));
+            bool safeSlug = TacSimContentLoader.IsSafeContentSlug(slug);
+            string safeId = safeSlug ? slug : "mars_canyon";
+            string arenaPath = safeSlug
+                ? TacSimContentLoader.ResolveRepoContentPath(Path.Combine("arenas", $"{slug}.json"))
+                : string.Empty;
+            string atlasPath = safeSlug
+                ? TacSimContentLoader.ResolveRepoContentPath(Path.Combine("atlas", $"{slug}.json"))
+                : string.Empty;
 
             int side = 256;
             float cellM = 10f;
-            string biome = slug.Contains("mars") ? "desert" : slug.Contains("winter") ? "arctic" : "temperate";
+            string biome = safeId.Contains("mars") ? "desert" : safeId.Contains("winter") ? "arctic" : "temperate";
 
             var grid = new DecodedTerrainGrid
             {
-                Id = slug,
-                DisplayName = FormatTitle(slug),
+                Id = safeId,
+                DisplayName = FormatTitle(safeId),
                 Biome = biome,
                 Width = side,
                 Height = side,
@@ -529,14 +542,24 @@ namespace TacSim.World
             };
 
             string arenaJsonText = null;
-            if (TacSimContentLoader.TryGetSyncedOrResourceJson($"arena.{slug}", out string syncedArenaJson))
+            if (safeSlug && TacSimContentLoader.TryGetSyncedOrResourceJson($"arena.{slug}", out string syncedArenaJson))
                 arenaJsonText = syncedArenaJson;
-            else if (File.Exists(arenaPath))
+            else if (safeSlug && !string.IsNullOrEmpty(arenaPath) && File.Exists(arenaPath))
                 arenaJsonText = File.ReadAllText(arenaPath);
 
             if (!string.IsNullOrEmpty(arenaJsonText))
             {
-                var docRoot = JsonNode.Parse(arenaJsonText);
+                JsonNode docRoot = null;
+                try
+                {
+                    docRoot = JsonNode.Parse(arenaJsonText);
+                }
+                catch (FormatException)
+                {
+                    docRoot = null;
+                }
+                if (docRoot != null && docRoot.IsObject)
+                {
                 JsonNode aDef = docRoot;
                 var entriesObj = docRoot["entries"].AsObject();
                 if (entriesObj != null)
@@ -561,11 +584,11 @@ namespace TacSim.World
                 grid.DisplayName = aDef.Str("label", grid.DisplayName);
                 biome = aDef.Str("biome", biome);
                 grid.Biome = biome;
-                side = Mathf.Clamp(aDef.Int("cols", aDef.Int("width_cells", 256)), 64, 512);
-                int hSide = Mathf.Clamp(aDef.Int("rows", aDef.Int("height_cells", side)), 64, 512);
+                side = Mathf.Clamp(aDef.Int("cols", aDef.Int("width_cells", 256)), 64, MaxGridDimension);
+                int hSide = Mathf.Clamp(aDef.Int("rows", aDef.Int("height_cells", side)), 64, MaxGridDimension);
                 grid.Width = side;
                 grid.Height = hSide;
-                grid.CellSizeM = Mathf.Max(1f, aDef.Int("cell_cm", 1000) * 0.01f);
+                grid.CellSizeM = Mathf.Clamp(aDef.Int("cell_cm", 1000), 100, 100000) * 0.01f;
                 grid.Classes = new TerrainCellClass[side * hSide];
                 grid.ElevMeters = new float[side * hSide];
 
@@ -701,14 +724,15 @@ namespace TacSim.World
                         });
                     }
                 }
+                }
             }
 
             bool loadedTiles = false;
-            if (TacSimContentLoader.TryGetSyncedOrResourceJson($"arena_atlas.{slug}", out string syncedAtlasJson))
+            if (safeSlug && TacSimContentLoader.TryGetSyncedOrResourceJson($"arena_atlas.{slug}", out string syncedAtlasJson))
             {
                 loadedTiles = StitchAtlasQuadrantTiles(syncedAtlasJson, grid);
             }
-            else if (File.Exists(atlasPath))
+            else if (safeSlug && !string.IsNullOrEmpty(atlasPath) && File.Exists(atlasPath))
             {
                 loadedTiles = StitchAtlasQuadrantTiles(File.ReadAllText(atlasPath), grid);
             }
@@ -738,9 +762,25 @@ namespace TacSim.World
             return grid;
         }
 
+        public static bool TryStitchAtlasQuadrantTiles(string atlasJson, DecodedTerrainGrid grid)
+        {
+            return StitchAtlasQuadrantTiles(atlasJson, grid);
+        }
+
         private static bool StitchAtlasQuadrantTiles(string atlasJson, DecodedTerrainGrid grid)
         {
-            var root = JsonNode.Parse(atlasJson);
+            if (string.IsNullOrWhiteSpace(atlasJson) || grid == null || grid.Classes == null || grid.ElevMeters == null)
+                return false;
+
+            JsonNode root;
+            try
+            {
+                root = JsonNode.Parse(atlasJson);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
             var entries = root["entries"].AsObject();
             if (entries == null) return false;
 
@@ -755,14 +795,29 @@ namespace TacSim.World
                 string classesB64 = def.Str("classes", string.Empty);
                 string dataB64 = def.Str("data", string.Empty);
                 if (string.IsNullOrEmpty(classesB64) || string.IsNullOrEmpty(dataB64)) continue;
+                if (classesB64.Length > MaxTileBase64Chars || dataB64.Length > MaxTileBase64Chars) continue;
 
-                byte[] classBytes = Convert.FromBase64String(classesB64);
-                byte[] elevBytes = Convert.FromBase64String(dataB64);
+                byte[] classBytes;
+                byte[] elevBytes;
+                try
+                {
+                    classBytes = Convert.FromBase64String(classesB64);
+                    elevBytes = Convert.FromBase64String(dataB64);
+                }
+                catch (FormatException)
+                {
+                    continue;
+                }
                 if (classBytes.Length < 4) continue;
 
                 int tw = classBytes[0] | (classBytes[1] << 8);
                 int th = classBytes[2] | (classBytes[3] << 8);
-                int total = tw * th;
+                if (tw <= 0 || th <= 0 || tw > MaxGridDimension || th > MaxGridDimension)
+                    continue;
+                long totalLong = (long)tw * th;
+                if (totalLong <= 0 || totalLong > (long)MaxGridDimension * MaxGridDimension)
+                    continue;
+                int total = (int)totalLong;
 
                 var tileClasses = new TerrainCellClass[total];
                 int cur = 4;
@@ -782,18 +837,21 @@ namespace TacSim.World
                 for (int ty = 0; ty < th; ty++)
                 {
                     int gy = oy + ty;
-                    if (gy >= grid.Height) continue;
+                    if (gy < 0 || gy >= grid.Height) continue;
                     for (int tx = 0; tx < tw; tx++)
                     {
                         int gx = ox + tx;
-                        if (gx >= grid.Width) continue;
-                        int ti = ty * tw + tx;
-                        int gi = gy * grid.Width + gx;
+                        if (gx < 0 || gx >= grid.Width) continue;
+                        long ti = (long)ty * tw + tx;
+                        long gi = (long)gy * grid.Width + gx;
+                        if (ti < 0 || ti >= tileClasses.Length || gi < 0 || gi >= grid.Classes.Length)
+                            continue;
                         grid.Classes[gi] = tileClasses[ti];
 
-                        if (ti * 2 + 1 < elevBytes.Length)
+                        long elevOff = ti * 2L;
+                        if (elevOff + 1L < elevBytes.Length && gi < grid.ElevMeters.Length)
                         {
-                            short elevCm = (short)(elevBytes[ti * 2] | (elevBytes[ti * 2 + 1] << 8));
+                            short elevCm = (short)(elevBytes[elevOff] | (elevBytes[elevOff + 1L] << 8));
                             grid.ElevMeters[gi] = elevCm * 0.01f;
                         }
                     }
@@ -809,38 +867,50 @@ namespace TacSim.World
         /// </summary>
         public static DecodedTerrainGrid BuildPlanetarySiteGrid(string siteSlug, int side = 64)
         {
+            side = Mathf.Clamp(side, 8, MaxGridDimension);
             string clean = string.IsNullOrWhiteSpace(siteSlug) ? "occator_rim" : siteSlug.Replace("region.", "").Trim().ToLowerInvariant();
-            string path = TacSimContentLoader.ResolveRepoContentPath(Path.Combine("atlas", $"region.{clean}.json"));
+            bool safeSlug = TacSimContentLoader.IsSafeContentSlug(clean);
+            string safeId = safeSlug ? clean : "occator_rim";
+            string path = safeSlug
+                ? TacSimContentLoader.ResolveRepoContentPath(Path.Combine("atlas", $"region.{clean}.json"))
+                : string.Empty;
 
-            string displayName = FormatTitle(clean);
-            string body = clean.Contains("rheasilvia") ? "vesta" : "ceres";
+            string displayName = FormatTitle(safeId);
+            string body = safeId.Contains("rheasilvia") ? "vesta" : "ceres";
             int seed = 2605;
             float reliefM = 3.8f;
 
-            if (File.Exists(path))
+            if (safeSlug && !string.IsNullOrEmpty(path) && File.Exists(path))
             {
-                var root = JsonNode.Parse(File.ReadAllText(path));
-                var entries = root["entries"].AsObject();
-                if (entries != null)
+                try
                 {
-                    foreach (var kv in entries)
+                    var root = JsonNode.Parse(File.ReadAllText(path));
+                    var entries = root["entries"].AsObject();
+                    if (entries != null)
                     {
-                        if (kv.Value.Str("kind") == "region")
+                        foreach (var kv in entries)
                         {
-                            var def = kv.Value["def"];
-                            displayName = def.Str("name", displayName);
-                            body = def.Str("body", body);
-                            seed = def["background"].Int("seed", seed);
-                            reliefM = Mathf.Max(1.8f, def["background"].Int("relief_cm", 220) * 0.018f);
-                            break;
+                            if (kv.Value.Str("kind") == "region")
+                            {
+                                var def = kv.Value["def"];
+                                displayName = def.Str("name", displayName);
+                                body = def.Str("body", body);
+                                seed = def["background"].Int("seed", seed);
+                                reliefM = Mathf.Max(1.8f, def["background"].Int("relief_cm", 220) * 0.018f);
+                                break;
+                            }
                         }
                     }
+                }
+                catch (FormatException)
+                {
+                    // Ignore malformed regional JSON and proceed with safe procedural fallback.
                 }
             }
 
             var grid = new DecodedTerrainGrid
             {
-                Id = clean,
+                Id = safeId,
                 DisplayName = displayName,
                 Biome = body,
                 Width = side,

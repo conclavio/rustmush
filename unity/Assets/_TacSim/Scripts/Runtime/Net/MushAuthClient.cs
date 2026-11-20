@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Text;
 using System.Threading.Tasks;
 using TacSim.Core;
@@ -39,24 +40,54 @@ namespace TacSim.Net
             return s;
         }
 
-        private static bool IsLoopbackAuthority(string rawAuthority)
+        public static bool IsLoopbackAuthority(string rawAuthority)
         {
             if (string.IsNullOrWhiteSpace(rawAuthority))
                 return true;
-            string hostPart = rawAuthority;
+            string hostPart = rawAuthority.Trim();
             int slash = hostPart.IndexOf('/');
             if (slash >= 0) hostPart = hostPart.Substring(0, slash);
             if (hostPart.StartsWith("[", StringComparison.Ordinal))
             {
                 int close = hostPart.IndexOf(']');
                 string v6 = close > 1 ? hostPart.Substring(1, close - 1) : hostPart;
-                return string.Equals(v6, "::1", StringComparison.OrdinalIgnoreCase);
+                return IPAddress.TryParse(v6, out IPAddress v6Addr) && IPAddress.IsLoopback(v6Addr);
             }
-            int colon = hostPart.IndexOf(':');
-            string host = (colon >= 0 ? hostPart.Substring(0, colon) : hostPart).Trim();
-            return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(host, "0.0.0.0", StringComparison.OrdinalIgnoreCase);
+            string host = hostPart;
+            int firstColon = hostPart.IndexOf(':');
+            int lastColon = hostPart.LastIndexOf(':');
+            if (firstColon >= 0 && firstColon == lastColon)
+                host = hostPart.Substring(0, firstColon);
+            host = host.Trim();
+            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return IPAddress.TryParse(host, out IPAddress addr) && IPAddress.IsLoopback(addr);
+        }
+
+        public static bool IsLoopbackUri(Uri uri)
+        {
+            if (uri == null || string.IsNullOrWhiteSpace(uri.Host))
+                return false;
+            return IsLoopbackAuthority(uri.Host);
+        }
+
+        public static string ExtractErrorMessage(string responseBody, string fallbackError)
+        {
+            string serverMsg = responseBody;
+            if (!string.IsNullOrWhiteSpace(responseBody))
+            {
+                try
+                {
+                    var errNode = JsonNode.Parse(responseBody);
+                    if (errNode != null && errNode.IsObject)
+                        serverMsg = errNode.Str("error", responseBody);
+                }
+                catch (FormatException)
+                {
+                    serverMsg = responseBody;
+                }
+            }
+            return string.IsNullOrWhiteSpace(serverMsg) ? (fallbackError ?? "Unknown error") : serverMsg;
         }
 
         public static string ToWebSocketBaseUrl(string httpBaseUrl)
@@ -107,13 +138,19 @@ namespace TacSim.Net
                 string text = req.downloadHandler != null ? req.downloadHandler.text : string.Empty;
                 if (req.result != UnityWebRequest.Result.Success)
                 {
-                    var errNode = JsonNode.Parse(text);
-                    string serverMsg = errNode.IsObject ? errNode.Str("error", text) : text;
-                    if (string.IsNullOrWhiteSpace(serverMsg)) serverMsg = req.error;
+                    string serverMsg = ExtractErrorMessage(text, req.error);
                     throw new InvalidOperationException($"Auth failed ({req.responseCode}): {serverMsg}");
                 }
 
-                var json = JsonNode.Parse(text);
+                JsonNode json;
+                try
+                {
+                    json = JsonNode.Parse(text);
+                }
+                catch (FormatException)
+                {
+                    throw new InvalidOperationException("Auth response was not valid JSON.");
+                }
                 if (!json.IsObject || string.IsNullOrEmpty(json.Str("token")))
                     throw new InvalidOperationException("Auth response did not include a session token.");
 

@@ -37,6 +37,13 @@ namespace TacSim.Net
     {
         public const int CloseCodeBadSession = 4401;
         public const int CloseCodeTokenCooloff = 4429;
+        public const int MaxInboundMessageBytes = 4 * 1024 * 1024;
+        public const int MaxInboundQueueCount = 2048;
+        public const int MaxOutboundQueueCount = 256;
+        public const int MaxPanelFeeds = 64;
+        public const int MaxViewCursors = 64;
+        public const int MaxAdvertisedPanels = 128;
+        public const int MaxReplyUnwrapDepth = 1;
         private static readonly float[] BackoffSeconds = { 0.5f, 1.0f, 2.0f, 5.0f, 15.0f };
 
         public static MushWsClient LatestInstance { get; private set; }
@@ -74,7 +81,10 @@ namespace TacSim.Net
         public bool IsConnected => _isConnected && _ws != null && _ws.State == WebSocketState.Open;
         public MushWsConnectionState State { get; private set; } = MushWsConnectionState.Disconnected;
         public ulong LastSeq => _lastSeq;
+        public int InboundQueueCount => _inbound.Count;
         public int OutboundQueueCount => _outbound.Count;
+        public int PanelFeedCount => _panelFeeds.Count;
+        public int ViewCursorCount => _viewCursors.Count;
         public MushObjRef ActiveCharacter { get; private set; }
         public string ConnectedServer { get; private set; }
         public IReadOnlyCollection<string> AdvertisedPanels => _advertisedPanels;
@@ -110,6 +120,57 @@ namespace TacSim.Net
             return lastSeq > 0
                 ? $"char={escapedChar}&resume={lastSeq}"
                 : $"char={escapedChar}";
+        }
+
+        private static bool DefaultAllowInsecureNonLoopback()
+        {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            return true;
+#else
+            return false;
+#endif
+        }
+
+        public static Uri BuildValidatedWebSocketUri(
+            string httpBaseUrl,
+            string characterKey,
+            ulong lastSeq,
+            bool allowInsecureNonLoopback = false)
+        {
+            string wsBase = MushAuthClient.ToWebSocketBaseUrl(httpBaseUrl);
+            string query = BuildWsQuery(characterKey, lastSeq);
+            var uri = new Uri($"{wsBase}/ws?{query}");
+            bool isSecure = string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase);
+            if (!isSecure && !allowInsecureNonLoopback && !MushAuthClient.IsLoopbackUri(uri))
+            {
+                throw new InvalidOperationException(
+                    $"Refusing cleartext WebSocket connection ('{uri.Scheme}://{uri.Authority}') to non-loopback host in non-dev build; use https:// / wss://.");
+            }
+            return uri;
+        }
+
+        public static bool TryValidateInboundFrame(
+            WebSocketMessageType messageType,
+            long accumulatedBytes,
+            int chunkBytes,
+            out WebSocketCloseStatus closeStatus,
+            out string error)
+        {
+            if (messageType == WebSocketMessageType.Binary)
+            {
+                closeStatus = WebSocketCloseStatus.InvalidMessageType;
+                error = "Rejected unsupported binary WebSocket frame.";
+                return false;
+            }
+            if (chunkBytes < 0 || accumulatedBytes < 0 || accumulatedBytes + chunkBytes > MaxInboundMessageBytes)
+            {
+                closeStatus = WebSocketCloseStatus.MessageTooBig;
+                error = $"Inbound WebSocket frame exceeded {MaxInboundMessageBytes} bytes.";
+                return false;
+            }
+            closeStatus = WebSocketCloseStatus.NormalClosure;
+            error = null;
+            return true;
         }
 
         public async Task ConnectAsync(MushAuthSession auth, string characterKey, bool resetResume = true)
@@ -150,9 +211,11 @@ namespace TacSim.Net
             _ws.Options.AddSubProtocol($"rustmush.v1.{_activeAuth.Token}");
             _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
 
-            string wsBase = MushAuthClient.ToWebSocketBaseUrl(_activeAuth.BaseHttpUrl);
-            string query = BuildWsQuery(_activeCharKey, _lastSeq);
-            var uri = new Uri($"{wsBase}/ws?{query}");
+            var uri = BuildValidatedWebSocketUri(
+                _activeAuth.BaseHttpUrl,
+                _activeCharKey,
+                _lastSeq,
+                DefaultAllowInsecureNonLoopback());
 
             State = isReconnect ? MushWsConnectionState.Reconnecting : MushWsConnectionState.Connecting;
             OnConnectionStatusChanged?.Invoke(isReconnect
@@ -269,8 +332,16 @@ namespace TacSim.Net
             if (env != null)
             {
                 _intentionalDisconnect = false;
-                _inbound.Enqueue((Interlocked.Read(ref _sessionEpoch), env));
+                EnqueueInbound(Interlocked.Read(ref _sessionEpoch), env);
             }
+        }
+
+        private bool EnqueueInbound(long epoch, MushEnvelope env)
+        {
+            if (env == null || _inbound.Count >= MaxInboundQueueCount)
+                return false;
+            _inbound.Enqueue((epoch, env));
+            return true;
         }
 
         public bool TryDequeueOutbound(out string rawJson)
@@ -393,6 +464,19 @@ namespace TacSim.Net
 
         private void DispatchEvent(string type, JsonNode d)
         {
+            int replyDepth = 0;
+            while (type == "reply")
+            {
+                if (replyDepth >= MaxReplyUnwrapDepth || d == null || !d.IsObject)
+                    return;
+                var inner = d["event"];
+                if (inner == null || !inner.IsObject)
+                    return;
+                type = inner.Str("t", string.Empty);
+                d = inner["d"];
+                replyDepth++;
+            }
+
             switch (type)
             {
                 case "hello":
@@ -401,7 +485,8 @@ namespace TacSim.Net
                     var panels = d["panels"].AsArray();
                     if (panels != null)
                     {
-                        for (int i = 0; i < panels.Count; i++)
+                        int cap = Math.Min(panels.Count, MaxAdvertisedPanels);
+                        for (int i = 0; i < cap; i++)
                         {
                             string feed = panels[i].AsString();
                             if (!string.IsNullOrEmpty(feed))
@@ -490,12 +575,6 @@ namespace TacSim.Net
                     ApplyViewEnvelope(d);
                     break;
 
-                case "reply":
-                    var inner = d["event"];
-                    if (inner.IsObject)
-                        DispatchEvent(inner.Str("t", string.Empty), inner["d"]);
-                    break;
-
                 case "invoke_result":
                     if (d != null && d.IsObject && d["result"].IsObject)
                     {
@@ -539,6 +618,9 @@ namespace TacSim.Net
                 return;
             }
 
+            if (!_panelFeeds.ContainsKey(feed) && _panelFeeds.Count >= MaxPanelFeeds)
+                return;
+
             var copy = payload != null ? payload.Clone() : JsonNode.NewObject();
             _panelFeeds[feed] = copy;
             OnPanelUpdated?.Invoke(feed, copy);
@@ -552,6 +634,8 @@ namespace TacSim.Net
 
             if (!_viewCursors.TryGetValue(viewId, out var cursor))
             {
+                if (_viewCursors.Count >= MaxViewCursors)
+                    return;
                 cursor = new ViewStreamCursor();
                 _viewCursors[viewId] = cursor;
             }
@@ -561,6 +645,8 @@ namespace TacSim.Net
             {
                 case ViewCursorDisposition.ApplySnapshot:
                 {
+                    if (!_panelFeeds.ContainsKey(viewId) && _panelFeeds.Count >= MaxPanelFeeds)
+                        return;
                     var copy = d["data"] != null ? d["data"].Clone() : JsonNode.NewObject();
                     _panelFeeds[viewId] = copy;
                     OnPanelUpdated?.Invoke(viewId, copy);
@@ -589,7 +675,7 @@ namespace TacSim.Net
 
         private void EnqueueRaw(string json)
         {
-            if (string.IsNullOrEmpty(json)) return;
+            if (string.IsNullOrEmpty(json) || _outbound.Count >= MaxOutboundQueueCount) return;
             _outbound.Enqueue(json);
         }
 
@@ -616,14 +702,32 @@ namespace TacSim.Net
                                 _socketDrops.Enqueue((epoch, closeCode, desc));
                                 return;
                             }
+                            if (!TryValidateInboundFrame(res.MessageType, ms.Length, res.Count, out WebSocketCloseStatus closeStatus, out string frameErr))
+                            {
+                                _isConnected = false;
+                                try
+                                {
+                                    await ws.CloseAsync(closeStatus, frameErr, CancellationToken.None);
+                                }
+                                catch { /* ignore close errors */ }
+                                _socketDrops.Enqueue((epoch, (int)closeStatus, frameErr));
+                                return;
+                            }
                             ms.Write(buffer, 0, res.Count);
                         } while (!res.EndOfMessage);
 
                         if (res.MessageType == WebSocketMessageType.Text)
                         {
                             string json = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
-                            var env = MushProtocol.ParseEnvelope(json);
-                            if (env != null) _inbound.Enqueue((epoch, env));
+                            try
+                            {
+                                var env = MushProtocol.ParseEnvelope(json);
+                                if (env != null) EnqueueInbound(epoch, env);
+                            }
+                            catch (FormatException)
+                            {
+                                // Drop malformed or excessively nested JSON frames safely.
+                            }
                         }
                     }
                 }
