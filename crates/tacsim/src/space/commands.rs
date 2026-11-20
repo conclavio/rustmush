@@ -5200,7 +5200,7 @@ pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(
     // pinned on her passage: paid now, or owed with 28 IC days of grace. It never changes the
     // finding: lawful cargo is never seized for a duty.
     let levied = super::duty::levy_transit_duty(ctx, hull, customs_principal);
-    let duty = super::duty::duty_line(ctx, levied.as_ref());
+    let duty = super::duty::duty_line(ctx, hull, levied.as_ref());
 
     let line = format!(
         "[PICKET] Republic Customs Corvette `{corvette_ship_id}` is inspecting `{carrier_ship_id}` manifest ({found}).{duty} Hold your heave-to: the ruling follows once it is recorded."

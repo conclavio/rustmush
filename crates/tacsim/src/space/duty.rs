@@ -93,16 +93,111 @@ pub fn quote_duty(ctx: &Ctx<'_>, hull: ObjId, row: &TermsRow) -> Option<DutyQuot
     if units == 0 {
         return None;
     }
-    let scale = crate::port::apply::credit_scale(ctx.w);
-    let value_minor = crate::port::apply::minor_of(value_major, scale)?;
-    let share = value_minor.saturating_mul(i64::from(row.transit_duty_permille)) / 1_000;
-    let floor = crate::port::apply::minor_of(row.transit_floor_major, scale)?;
-    let duty_minor = share.max(floor);
-    (duty_minor > 0).then(|| DutyQuote {
+    let duty_minor = duty_on_value(ctx.w, value_major, row)?;
+    Some(DutyQuote {
         value_major,
         duty_minor,
         payee: row.payee.clone(),
     })
+}
+
+/// **The duty on cargo of `value_major`** (doc 50 cut KC.3: the estimate a job board shows for
+/// cargo not yet aboard): `transit_duty_permille` of the value, never under the floor, minor
+/// units. `None` for a row that levies no duty.
+#[must_use]
+pub fn duty_on_value(w: &World, value_major: u64, row: &TermsRow) -> Option<i64> {
+    if row.transit_duty_permille == 0 && row.transit_floor_major == 0 {
+        return None;
+    }
+    let scale = crate::port::apply::credit_scale(w);
+    let value_minor = crate::port::apply::minor_of(value_major, scale)?;
+    let share = value_minor.saturating_mul(i64::from(row.transit_duty_permille)) / 1_000;
+    let floor = crate::port::apply::minor_of(row.transit_floor_major, scale)?;
+    let duty_minor = share.max(floor);
+    (duty_minor > 0).then_some(duty_minor)
+}
+
+/// **Whether a lane route crosses the Kirkwood picket** (doc 50 cut KC.3): one of its legs is
+/// interdicted and ends at the picket's host.
+#[must_use]
+pub fn route_crosses_picket(w: &World, route: &CanonicalId) -> bool {
+    w.module_state::<crate::store::TacsimStore>()
+        .and_then(|store| store.route_in_world(w, route))
+        .is_some_and(|route| {
+            route.legs().iter().any(|leg| {
+                leg.is_interdicted() && super::picket::is_kirkwood_picket_host(w, leg.to())
+            })
+        })
+}
+
+/// **The reason clause** (Q-50-9): who holds the Kirkwood approach and the IC date its hold
+/// began, as `Republic hold since March 1, 2350`. `None` when the terms name no holder.
+#[must_use]
+pub fn reason_clause(w: &World, terms: &PlaceTerms) -> Option<String> {
+    let holder = terms.holder?;
+    let name = w
+        .module_state::<mush_faction::FactionState>()?
+        .factions
+        .get(&mush_faction::FactionId(holder))?
+        .name
+        .to_string();
+    let since = terms.since_ic.map(|ic| {
+        let d = mush_core::clock::CivilDate::from_ic_seconds(ic);
+        format!(" since {} {}, {}", d.month_name(), d.day, d.year)
+    });
+    Some(format!("{name} hold{}", since.unwrap_or_default()))
+}
+
+/// **The duty estimate a pilot reads before the picket** (Q-50-8, Q-50-9): on `+ship/plan` and at
+/// the filing, for a route that crosses the picket, under `terms` (live for the plan, pinned for
+/// the filing). `None` when the route does not cross, the terms levy nothing, or the hold is
+/// empty. `pinned` adds the filing's note.
+#[must_use]
+pub fn estimate_line(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    route: &CanonicalId,
+    terms: &PlaceTerms,
+    pinned: bool,
+) -> Option<String> {
+    if !route_crosses_picket(ctx.w, route) {
+        return None;
+    }
+    let quote = quote_duty(ctx, hull, terms.row.as_ref()?)?;
+    let duty = crate::port::coop::money_minor(ctx, quote.duty_minor);
+    let reason = reason_clause(ctx.w, terms).map_or_else(String::new, |r| format!(" ({r})"));
+    let note = if pinned { ", pinned at filing" } else { "" };
+    Some(format!(
+        "Kirkwood duty ~{duty} on {} cr of cargo{note}{reason}.",
+        quote.value_major
+    ))
+}
+
+/// **The duty clause a haul row on the job board carries** (Q-50-8): for cargo of `value_major`
+/// carried from `origin` to `destination` on a route that crosses the picket, under the live
+/// terms: ` (Kirkwood duty ~400 cr)`. Empty otherwise.
+#[must_use]
+pub fn haul_clause(w: &World, origin: &str, destination: &str, value_major: u64) -> String {
+    let crosses = crate::port::voyage::lane_ports(w)
+        .into_iter()
+        .any(|(def, _)| {
+            def.venue.as_str() == origin
+                && def
+                    .routes
+                    .iter()
+                    .filter(|(venue, _)| venue.as_str() == destination)
+                    .flat_map(|(_, ids)| ids.iter())
+                    .any(|id| route_crosses_picket(w, id))
+        });
+    let duty = crosses
+        .then(|| live_terms(w).and_then(|t| t.row))
+        .flatten()
+        .and_then(|row| duty_on_value(w, value_major, &row));
+    let Some(minor) = duty else {
+        return String::new();
+    };
+    let unit = 10_i64.pow(u32::from(crate::port::apply::credit_scale(w)));
+    format!(" (Kirkwood duty ~{} cr)", (minor + unit - 1) / unit)
 }
 
 /// How a duty was met.
@@ -184,18 +279,22 @@ fn open_and_pay(
 
 /// **The line a duty adds to the picket's report**, or nothing when none was levied.
 #[must_use]
-pub fn duty_line(ctx: &Ctx<'_>, levied: Option<&(DutyQuote, DutyOutcome)>) -> String {
+pub fn duty_line(ctx: &Ctx<'_>, hull: ObjId, levied: Option<&(DutyQuote, DutyOutcome)>) -> String {
     let Some((quote, outcome)) = levied else {
         return String::new();
     };
     let duty = crate::port::coop::money_minor(ctx, quote.duty_minor);
+    // Doc 50 cut KC.3 (Q-50-9): the charge names who holds the approach and since when.
+    let reason = hull_terms(ctx.w, hull)
+        .and_then(|terms| reason_clause(ctx.w, &terms))
+        .unwrap_or_default();
     match outcome {
         DutyOutcome::Paid => format!(
-            " A transit duty of {duty} on cargo valued at {} cr is paid.",
+            " A transit duty of {duty} on cargo valued at {} cr is paid ({reason}).",
             quote.value_major
         ),
         DutyOutcome::Owed(_) => format!(
-            " A transit duty of {duty} on cargo valued at {} cr is owed, due in 28 IC days (see +debts).",
+            " A transit duty of {duty} on cargo valued at {} cr is owed, due in 28 IC days (see +debts; {reason}).",
             quote.value_major
         ),
     }
@@ -217,7 +316,7 @@ pub fn assess_absent(ctx: &mut Ctx<'_>, hull: ObjId) -> Option<String> {
     let levied = levy_transit_duty(ctx, hull, debtor)?;
     Some(format!(
         "[PICKET] Republic Customs assessed the hull at Kirkwood in her pilot's absence and cleared her.{}",
-        duty_line(ctx, Some(&levied))
+        duty_line(ctx, hull, Some(&levied))
     ))
 }
 

@@ -537,7 +537,81 @@ must land after OP.1's.
 
 ## KC.3
 
-Not built.
+The duty line on `+ship/plan`, the filing and the job board, and the reason clause; the first
+acceptance story, which also measures the long way round (Q-50-8, Q-50-9, with Q-50-55). Stacked
+on KC.2. No lane bump.
+
+**Survey.**
+- **`+ship/plan`** is `port/voyage.rs`'s `plan_block`, one block per destination, ending at the
+  ETA and the window line.
+- **The filing's reply** is `undock_as`'s `CLEARANCE_FILED`, and KC.2 already pins the terms on
+  the `PendingVoyage`.
+- **The haul board** is `+market/jobs haul`. Its rows come from `services::haul::services`, with
+  the `subject` rendered by mush-market's `JOB_LINE`. A haul carries its origin and destination
+  venues, its good and its quantity, but no route.
+- **A route crosses the picket** when one of its legs is interdicted and ends at the picket's
+  host.
+- **Q-50-9's IC date** is the `since_ic` KC.0a stores.
+- **No shared 120-column constant** exists; tests assert widths line by line.
+
+**Built** (`tacsim::space::duty`).
+- `duty_on_value(w, value_major, row) -> Option<i64>`: the duty arithmetic on a value, for cargo
+  not yet aboard. `quote_duty` now uses it.
+- `route_crosses_picket(w, route) -> bool`.
+- `reason_clause(w, &PlaceTerms) -> Option<String>` gives `Republic hold since March 1, 2350`:
+  the de facto holder's name and the IC date its hold began.
+- `estimate_line(ctx, hull, route, &terms, pinned)` gives
+  `Kirkwood duty ~200.00cr on 10000 cr of cargo (Republic hold since …).`, with `, pinned at
+  filing` when `pinned`.
+  - `+ship/plan` shows it under the live terms, on a route that crosses the picket.
+  - The filing shows it under the terms it pinned.
+- `haul_clause(w, origin, destination, value_major)` adds ` (Kirkwood duty ~50 cr)` to a haul
+  row's subject when the origin port routes to the destination through the picket, under the
+  live terms. The value is the good's catalog baseline × quantity.
+- The picket's charge (`duty_line`, now taking the hull) ends with the same clause: `… is paid
+  (Republic hold since …).` and `… (see +debts; Republic hold since …).`
+- `+territory` and `+chronicle` already show the same hold and date (KC.0a, KC.1).
+
+**Tests.**
+- `tests/domain_world/voyage.rs`,
+  `kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why`: one Dray-P with 50 t of
+  metals, on one run.
+  - Under the Co-op, `+ship/plan` shows no duty.
+  - After the flip, `+ship/plan` shows the 200 cr estimate with the reason.
+  - `+ship/undock` shows the pinned estimate with the reason.
+  - The picket's charge carries the same clause.
+  - Every duty line fits in 120 columns.
+- `tests/domain_economy/ex6_haul.rs`, `kc3_the_job_board_shows_the_duty_a_hauler_will_meet`: a
+  6 t metals haul to Stickney shows no duty under the Co-op, and `(Kirkwood duty ~50 cr)` (the
+  floor) after the flip, within 120 columns.
+- `tests/domain_world/moon_ports.rs`,
+  `kc3_the_long_way_round_costs_time_the_direct_run_pays_the_duty` (pure planner, laden 100 t,
+  one soul, full throttle, at the epoch):
+  - Direct Ceres to Stickney: 1,448,368 s (16.8 IC days), 47 t.
+  - The long way by Luna and Deimos: 2,516,632 s (29.1 IC days), 82 t.
+  - The detour's extra 35 t is 1,400 cr at Ceres' 40 cr a tonne. The duty on 100 t of metals
+    is 400 cr, so the direct run stays worth taking for ordinary cargo at the provisional 2%.
+- Mutation-checked on conclav.dev; each failed its story and was undone by a reverse edit:
+  - the plan's line dropped;
+  - the reason clause's date dropped;
+  - the filing's line dropped;
+  - the board's clause dropped.
+- Green on conclav.dev: clippy `-D warnings` on tacsim, and every tacsim binary. Locally:
+  rustdoc in both modes and the contract guards.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- **The reason clause names the holder and the date, not the region** (`Republic hold since
+  March 1, 2350`); the line says Kirkwood. Every line fits in 120 columns that way.
+- **The board's duty is the major-credit ceiling** of the duty on the catalog value, under the
+  live terms. A hauler who files later pins the terms of that day.
+- **A haul shows the duty when any of its origin port's routes to the destination crosses the
+  picket**, whichever route the hauler later flies.
+- **The plan's estimate reads what is aboard now**; an empty hold shows no line.
+
+**Not built.**
+- The Co-op's share by control (KC.4).
+- A duty line on a queued departure's filing. It files through the executor, which writes no
+  reply.
 
 ## KC.4
 
