@@ -1262,16 +1262,60 @@ impl Registry {
     /// suggestion.
     #[must_use]
     pub fn suggest(&self, verb: &str) -> Option<SmolStr> {
-        let v = verb.to_lowercase();
-        if v.is_empty() {
+        const MAX_SUGGEST_DIST: usize = 2;
+        if verb.is_empty() {
             return None;
         }
+        // Lowercasing never reduces Unicode scalar count, so if `verb` is
+        // already more than MAX_SUGGEST_DIST chars longer than the longest
+        // registered command/alias, no match is possible — return without
+        // allocating (CORE-M2).
+        let max_candidate_chars = self
+            .entries
+            .iter()
+            .flat_map(|e| std::iter::once(&e.spec.name).chain(e.spec.aliases.iter()))
+            .map(|n| {
+                if n.is_ascii() {
+                    n.len()
+                } else {
+                    n.chars().flat_map(char::to_lowercase).count()
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        if verb.chars().count() > max_candidate_chars.saturating_add(MAX_SUGGEST_DIST) {
+            return None;
+        }
+
+        // Hoist all working buffers out of the candidate loop (CORE-M2).
+        let v_chars: Vec<char> = verb.chars().flat_map(char::to_lowercase).collect();
+        let v_len = v_chars.len();
+        if v_len == 0 {
+            return None;
+        }
+        let mut name_chars: Vec<char> = Vec::with_capacity(max_candidate_chars);
+        let mut prev: Vec<usize> = Vec::with_capacity(max_candidate_chars + 1);
+        let mut cur: Vec<usize> = Vec::with_capacity(max_candidate_chars + 1);
         let mut best: Option<(usize, &SmolStr)> = None;
         for e in &self.entries {
             for name in std::iter::once(&e.spec.name).chain(e.spec.aliases.iter()) {
-                let d = edit_distance(&v, &name.to_lowercase());
-                if d <= 2
-                    && d < v.len().max(1)
+                if name.is_ascii() && v_len.abs_diff(name.len()) > MAX_SUGGEST_DIST {
+                    continue;
+                }
+                name_chars.clear();
+                name_chars.extend(name.chars().flat_map(char::to_lowercase));
+                if v_len.abs_diff(name_chars.len()) > MAX_SUGGEST_DIST {
+                    continue;
+                }
+                let d = edit_distance_bounded(
+                    &v_chars,
+                    &name_chars,
+                    MAX_SUGGEST_DIST,
+                    &mut prev,
+                    &mut cur,
+                );
+                if d <= MAX_SUGGEST_DIST
+                    && d < v_len.max(1)
                     && best
                         .is_none_or(|(bd, bn)| d < bd || (d == bd && name.as_str() < bn.as_str()))
                 {
@@ -1283,21 +1327,51 @@ impl Registry {
     }
 }
 
+/// Bounded Levenshtein distance reusing caller-provided scratch rows; returns
+/// `max_dist + 1` early whenever length difference or a full DP row exceeds
+/// `max_dist` (CORE-M2).
+fn edit_distance_bounded(
+    a: &[char],
+    b: &[char],
+    max_dist: usize,
+    prev: &mut Vec<usize>,
+    cur: &mut Vec<usize>,
+) -> usize {
+    let cutoff = max_dist.saturating_add(1);
+    if a.len().abs_diff(b.len()) > max_dist {
+        return cutoff;
+    }
+    prev.clear();
+    prev.extend(0..=b.len());
+    cur.clear();
+    cur.resize(b.len() + 1, 0);
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        let mut row_min = cur[0];
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            let val = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+            cur[j + 1] = val;
+            if val < row_min {
+                row_min = val;
+            }
+        }
+        if row_min > max_dist {
+            return cutoff;
+        }
+        std::mem::swap(prev, cur);
+    }
+    prev[b.len()]
+}
+
 /// Plain Levenshtein distance (small strings; O(m·n)).
+#[cfg(test)]
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
-    for (i, &ca) in a.iter().enumerate() {
-        cur[0] = i + 1;
-        for (j, &cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b.len()]
+    let mut prev = Vec::new();
+    let mut cur = Vec::new();
+    edit_distance_bounded(&a, &b, usize::MAX, &mut prev, &mut cur)
 }
 
 impl Registry {
@@ -2182,6 +2256,25 @@ mod tests {
         assert_eq!(reg.suggest("lok").as_deref(), Some("look"));
         assert_eq!(reg.suggest("poze").as_deref(), Some("pose"));
         assert_eq!(reg.suggest("xyzzy"), None);
+    }
+
+    #[test]
+    fn core_m2_suggest_early_returns_on_oversized_and_distant_verbs() {
+        let mut reg = Registry::new();
+        crate::commands::register_core_commands(&mut reg).unwrap();
+        // Exact boundary matches (edit distance 2) still work.
+        assert_eq!(reg.suggest("lookzz").as_deref(), Some("look"));
+        assert_eq!(reg.suggest("examin").as_deref(), Some("examine"));
+        // Length difference > 2 returns None cleanly and quickly even on huge verbs.
+        let huge = "x".repeat(8_192);
+        let start = std::time::Instant::now();
+        for _ in 0..200 {
+            assert_eq!(reg.suggest(&huge), None);
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "suggest must early-return without O(m*n) work on oversized verbs"
+        );
     }
 
     #[test]

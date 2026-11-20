@@ -127,8 +127,10 @@ pub use settle::{
     enter_resolving, outcome_abandons, outcome_forfeits, scope_for,
 };
 pub use store::{
-    CampaignStore, HeldDoc, MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_OPERATIONS,
-    MAX_OPERATIONS_PER_ISSUER, META_KEY, NS, TickStats,
+    CampaignStore, DECLARATION_WINDOW_SECS, HeldDoc, MAX_DECLARATIONS_PER_ISSUER_WINDOW,
+    MAX_FORMATION_NODES, MAX_HELD_DOCUMENTS, MAX_NOTICES_PER_ISSUER_WINDOW, MAX_OPERATIONS,
+    MAX_OPERATIONS_PER_ISSUER, MAX_RETAINED_TERMINAL_OPERATIONS, META_KEY,
+    NOTICE_RECIPIENT_COOLDOWN_SECS, NOTICE_WINDOW_SECS, NS, TickStats,
 };
 pub use terms::operation_consent_hash;
 pub use tick::{

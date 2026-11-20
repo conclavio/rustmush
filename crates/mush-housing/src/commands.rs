@@ -372,18 +372,18 @@ pub fn officer_of(w: &World, actor: ObjId, p: &Property) -> bool {
     holds(w, actor, "property.view", scope) || holds(w, actor, "property.manage", scope)
 }
 
+/// Whether `actor` has landlord-side view standing over `p`: a landlord officer on
+/// its compartment, or the personal landlord themselves.
+#[must_use]
+fn landlord_viewer(w: &World, actor: ObjId, p: &Property) -> bool {
+    officer_of(w, actor, p) || p.landlord == PrincipalId::Object(actor)
+}
+
 /// §4.5 view standing over a property: staff, a landlord officer on its compartment,
 /// or somebody who lives (or is invited) there.
 #[must_use]
 pub fn may_view_property(w: &World, actor: ObjId, p: &Property) -> bool {
-    if is_staff(w, actor) {
-        return true;
-    }
-    if officer_of(w, actor, p) {
-        return true;
-    }
-    // A landlord who is a person sees their own.
-    if p.landlord == PrincipalId::Object(actor) {
+    if is_staff(w, actor) || landlord_viewer(w, actor, p) {
         return true;
     }
     w.module_state::<HousingStore>().is_some_and(|s| {
@@ -402,7 +402,7 @@ pub fn may_view_property(w: &World, actor: ObjId, p: &Property) -> bool {
 /// landlord's books: a guest gets the name of the place and their own standing.
 #[must_use]
 fn guest_only_property(w: &World, actor: ObjId, p: &Property) -> bool {
-    if is_staff(w, actor) || officer_of(w, actor, p) || p.landlord == PrincipalId::Object(actor) {
+    if is_staff(w, actor) || landlord_viewer(w, actor, p) {
         return false;
     }
     w.module_state::<HousingStore>().is_some_and(|s| {
@@ -425,15 +425,24 @@ fn guest_line(name: &str) -> String {
     format!("{name}: you are a guest here.")
 }
 
-/// §4.5 view standing over a tenancy.
+/// §4.5 view standing over a tenancy: staff, the property's landlord (or landlord
+/// officer), or a current tenant or guest of **this** live tenancy.
+///
+/// Deliberately checks landlord standing directly rather than falling back to
+/// [`may_view_property`]: a current tenant or guest on a property must only see
+/// their own live tenancy, never ended or other tenants' tenancies on the same
+/// property.
 #[must_use]
 pub fn may_view_tenancy(w: &World, actor: ObjId, t: &Tenancy) -> bool {
-    if is_staff(w, actor) || t.is_tenant(actor) || t.is_guest(actor) {
+    if is_staff(w, actor) {
+        return true;
+    }
+    if t.status.is_live() && (t.is_tenant(actor) || t.is_guest(actor)) {
         return true;
     }
     w.module_state::<HousingStore>()
         .and_then(|s| s.property(t.property).cloned())
-        .is_some_and(|p| may_view_property(w, actor, &p))
+        .is_some_and(|p| landlord_viewer(w, actor, &p))
 }
 
 /// Resolve a property the actor may view, or the one refusal text.
@@ -2029,12 +2038,11 @@ fn drop_home_here(ctx: &mut Ctx<'_>, who: ObjId, t: &Tenancy) {
     else {
         return;
     };
-    let rooms = crate::module::live_rooms(ctx.w, &p);
     let inside = ctx
         .w
         .get(who)
         .and_then(|o| o.home)
-        .is_some_and(|h| h == p.anchor || rooms.contains(&h));
+        .is_some_and(|h| crate::module::is_inside_property(ctx.w, h, p.anchor, &p.rooms));
     if !inside {
         return;
     }

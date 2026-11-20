@@ -2057,7 +2057,7 @@ fn renotify(ctx: &mut Ctx<'_>, now: i64) {
 /// the journal, the approval and escalation allocators from every parsable key plus
 /// `meta`'s high-water mark, which boot persists on every boot.
 fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
-    let (approvals, holds, escalations) = {
+    let (approvals, holds, escalations, cancelled_drafts) = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
             return;
         };
@@ -2105,7 +2105,13 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             .take(MAX_GC_PER_SWEEP)
             .map(|e| e.id)
             .collect();
-        (approvals, holds, escalations)
+        let cancelled_drafts: Vec<_> = snap
+            .contracts()
+            .filter(|c| crate::contract_live::is_prunable_cancelled_draft(c, snap))
+            .take(MAX_GC_PER_SWEEP)
+            .map(|c| c.id)
+            .collect();
+        (approvals, holds, escalations, cancelled_drafts)
     };
     // E6a step 1 verify fold (D4 + R3): the rolling-window index is pruned on **read**
     // as well as on write — an account debited once and never again used to hold its
@@ -2136,7 +2142,11 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             );
         }
     }
-    if approvals.is_empty() && holds.is_empty() && escalations.is_empty() {
+    if approvals.is_empty()
+        && holds.is_empty()
+        && escalations.is_empty()
+        && cancelled_drafts.is_empty()
+    {
         return;
     }
     {
@@ -2154,6 +2164,9 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         for id in &escalations {
             store.escalations.remove(id);
         }
+        for id in &cancelled_drafts {
+            store.snapshot.remove_contract(*id);
+        }
     }
     for id in &approvals {
         api::delete_key(ctx.out, api::approval_key(*id));
@@ -2163,6 +2176,9 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
     }
     for id in &escalations {
         api::delete_key(ctx.out, crate::escalation::escalation_key(*id));
+    }
+    for id in &cancelled_drafts {
+        api::delete_key(ctx.out, api::contract_key(*id));
     }
 }
 

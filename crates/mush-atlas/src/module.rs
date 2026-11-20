@@ -469,6 +469,7 @@ impl GameModule for AtlasModule {
             Arc::new(
                 move |ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>| {
                     crate::travel::tick(ctx, &pending);
+                    crate::window::tick_flush(ctx);
                 },
             ),
         )?;

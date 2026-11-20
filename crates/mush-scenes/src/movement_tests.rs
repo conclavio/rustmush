@@ -154,8 +154,11 @@ fn self_loop_and_absent_or_inactive_scenes_produce_no_events() {
         SceneStatus::Paused,
         SceneStatus::Closed,
     ] {
-        for scene in state.scenes.values_mut() {
-            scene.status = status;
+        let ids: Vec<SceneUid> = state.scenes.keys().copied().collect();
+        for id in ids {
+            state.scenes.update_scene(id, |scene| {
+                scene.status = status;
+            });
         }
         assert!(planned(&state).is_empty());
     }
@@ -164,22 +167,26 @@ fn self_loop_and_absent_or_inactive_scenes_produce_no_events() {
 #[test]
 fn first_paused_holding_scene_masks_later_active_scene_as_before() {
     let mut state = state();
-    let first = state.scenes.get_mut(&SceneUid(1)).expect("first");
-    first.status = SceneStatus::Paused;
-    first.pause_reason = Some(PauseReason::ServerRestart);
+    state.scenes.update_scene(SceneUid(1), |first| {
+        first.status = SceneStatus::Paused;
+        first.pause_reason = Some(PauseReason::ServerRestart);
+    });
     state.scenes.insert(SceneUid(3), scene(3, ObjId(10)));
     let events = planned(&state);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event().kind, SceneEventKind::Joined);
-    state.scenes.get_mut(&SceneUid(1)).expect("first").status = SceneStatus::Closed;
+    state.scenes.update_scene(SceneUid(1), |first| {
+        first.status = SceneStatus::Closed;
+    });
     assert_eq!(planned(&state)[1].scene(), SceneUid(3));
 }
 
 #[test]
 fn witnesses_are_unbounded_on_the_observer_path() {
     let mut state = state();
-    let destination = state.scenes.get_mut(&SceneUid(2)).expect("destination");
-    destination.participants = (0..128).map(ObjId).collect();
-    destination.observers = (128..257).map(ObjId).collect();
+    state.scenes.update_scene(SceneUid(2), |destination| {
+        destination.participants = (0..128).map(ObjId).collect();
+        destination.observers = (128..257).map(ObjId).collect();
+    });
     assert_eq!(planned(&state)[0].event().witnesses.len(), 257);
 }
