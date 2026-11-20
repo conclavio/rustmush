@@ -53,6 +53,7 @@ mod editor;
 mod hooks;
 mod hostkey;
 pub mod kill;
+pub mod resume;
 mod line;
 mod mind_exec;
 mod server;
