@@ -91,7 +91,7 @@ reason = "DT.2b1 production-coordinator fixture supplies the host account mappin
 module = "tacsim/tests::op5_operation"
 accessor = "World::module_state_insert"
 slot = "OperationFrameSlot"
-owner = ""
+owner = "campaign"
 reason = "Doc 50 cut OP.5: TacSim has no campaign edge, so the declaring arm's story seats a fake operation frame (TacSim's own OperationFrame trait) in the slot the composition root fills with the campaign's. The real frame is OP.0's, proven over the campaign in mush-composition's op0_frame; nothing else writes the slot."
 
 [[site]]

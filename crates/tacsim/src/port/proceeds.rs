@@ -378,7 +378,7 @@ fn coop_proceeds(w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRe
 }
 
 impl ProceedsPolicy for CoopProceeds {
-    /// The Co-op's share and the house's line ([`coop_proceeds`]), and (doc 50 cut OP.5,
+    /// The Co-op's share and the house's line (`coop_proceeds`), and (doc 50 cut OP.5,
     /// Q-50-59) the import duty the venue's holder levies on the good
     /// ([`crate::port::import_duty`]), out of the seller's proceeds, its clause on the line.
     fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {

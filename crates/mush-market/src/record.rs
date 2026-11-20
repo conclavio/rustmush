@@ -1123,10 +1123,11 @@ pub struct Quote {
 }
 
 /// The most payees a proceeds policy names on one sale beyond its two parties (doc 18 §4.1,
-/// cut IC10, lead ruling (b)): one — the Co-op First Captain Trust's share. A sale into a
-/// person's bid also pays the venue's cut and levy (doc 48e, exchange G4), which the quote
-/// does not carry: they are the venue's, read again from it.
-pub const MAX_PROCEEDS_CUTS: usize = 1;
+/// cut IC10, lead ruling (b)): two — the Co-op First Captain Trust's share and (doc 50 cut OP.5,
+/// Q-50-59) a place's import duty. A sale into a person's bid also pays the venue's cut and levy
+/// (doc 48e, exchange G4), which the quote does not carry: they are the venue's, read again from
+/// it.
+pub const MAX_PROCEEDS_CUTS: usize = 2;
 /// The longest label a proceeds cut carries (cut IC10).
 pub const MAX_PROCEEDS_LABEL_BYTES: usize = 32;
 
@@ -1898,11 +1899,17 @@ mod tests {
             .expect("a sale with its share loads");
         assert_eq!(q.cuts.len(), 1);
         assert_eq!(q.basis, Amount::from_minor(160_000));
-        // Two payees beyond the parties.
+        // Two payees beyond the parties (doc 50 cut OP.5: the share and an import duty) load;
+        // a third does not.
         let two = serde_json::json!([
             { "to": 7, "amount": 1, "label": "a" }, { "to": 8, "amount": 1, "label": "b" }
         ]);
-        assert!(!loads(sale_quote(deliver.clone(), two, 0)));
+        assert!(loads(sale_quote(deliver.clone(), two, 0)));
+        let three = serde_json::json!([
+            { "to": 7, "amount": 1, "label": "a" }, { "to": 8, "amount": 1, "label": "b" },
+            { "to": 9, "amount": 1, "label": "c" }
+        ]);
+        assert!(!loads(sale_quote(deliver.clone(), three, 0)));
         // A cut that pays nothing, names no label, carries a label over the cap, or an
         // unknown field.
         for bad in [
