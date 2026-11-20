@@ -2698,7 +2698,10 @@ fn occurrences(files: &[(String, String)], needle: &str) -> Vec<(String, usize)>
 /// **Only the mill restocks** (12a-M3): across the production text of `tacsim`, `mush-server`
 /// (the one other crate with a production edge to the market) and `mush-market`, comment lines
 /// ignored, `restock_ask` is defined once, in the market's `api.rs`, and called at exactly one
-/// other place, the mill's step.
+/// other place, the mill's step. **Doc 50 unit LW.5** (Q-50-44) adds a second: the enforcing
+/// authority's offer of seized goods (`port/seized.rs`) raises its standing ask by the units the
+/// customs ruling's own bundle moved into its vault, the rule the mill keeps (matter put in the
+/// pool by its owner before the raise, never minted by the market).
 #[test]
 fn sm12a_only_the_mill_restocks() {
     let mut files = production_files("tacsim/src");
@@ -2713,8 +2716,9 @@ fn sm12a_only_the_mill_restocks() {
         vec![
             ("mush-market/src/api.rs".to_owned(), 1),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
+            ("tacsim/src/port/seized.rs".to_owned(), 1),
         ],
-        "one definition and one call"
+        "one definition, the mill's call and the seized goods' offer"
     );
 }
 
