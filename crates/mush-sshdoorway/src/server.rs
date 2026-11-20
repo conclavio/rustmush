@@ -26,7 +26,7 @@
 //!   direction); past that the doorway stops reading upstream and the
 //!   instance's own write timeout fires, as for a direct connection.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -39,7 +39,7 @@ use russh::{
     MethodSet, Pty, Sig, client,
 };
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::config::Config;
 use crate::drain::{DoorwaySession, Drain, INJECT_QUEUE, LiveGuard, Phase};
@@ -68,7 +68,7 @@ pub const DISCONNECT_GRACE: Duration = Duration::from_secs(5);
 /// memory a client can park at the doorway per channel: 1 MiB.
 pub const UP_QUEUE: usize = 32;
 
-/// At most this many session channels per connection: the game and `sftp`.
+/// At most this many live session channels per connection.
 pub const MAX_CHANNELS: usize = 2;
 
 /// At most this many session-channel opens over a connection's life, so an
@@ -299,8 +299,7 @@ impl Doorway {
         let over_cap = !slot.counted();
         let live = self.drain.enter(id);
         let authed = Arc::new(AtomicBool::new(false));
-        let opened = Arc::new(AtomicBool::new(false));
-        let mut conn = Conn::new(
+        let conn = Conn::new(
             Arc::clone(self),
             id,
             peer,
@@ -309,7 +308,7 @@ impl Doorway {
             live,
             Arc::clone(&authed),
         );
-        conn.opened = Arc::clone(&opened);
+        let opened = conn.opened.subscribe();
         let config = Arc::clone(&self.server_config);
         let deadline = if over_cap {
             Duration::from_secs(5).min(Duration::from_secs(cfg.limits.auth_deadline_secs))
@@ -349,7 +348,9 @@ impl Doorway {
                     "authentication timed out"
                 } else {
                     tokio::time::sleep(deadline).await;
-                    if opened.load(Ordering::SeqCst) {
+                    // Once the first channel was opened, its own retirement
+                    // starts a full idle grace, even if it has since closed.
+                    if opened.has_changed().unwrap_or(true) {
                         return;
                     }
                     "no session was opened"
@@ -431,8 +432,6 @@ struct Pair {
     writer: tokio::task::JoinHandle<()>,
     /// Replies the pump still owes the handler.
     pending: Pending,
-    /// Set once the client has closed its side of the channel.
-    closed: Arc<AtomicBool>,
     /// Set when the client asks this channel for a shell; see
     /// [`PumpCtx::shell`].
     shell: Arc<AtomicBool>,
@@ -475,8 +474,8 @@ struct Conn {
     slot: Slot,
     _live: LiveGuard,
     authed: Arc<AtomicBool>,
-    /// Set at the first accepted channel (the watchdog's second deadline).
-    opened: Arc<AtomicBool>,
+    /// A channel leaves this set on the first CLOSE from either direction.
+    opened: OpenChannels,
     channel_opens: usize,
     dials: usize,
     key_queries: usize,
@@ -513,6 +512,42 @@ fn abort_after(drain: Arc<Drain>, conn: u64, delay: Duration) {
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
         drain.abort(conn);
+    });
+}
+
+type OpenChannels = watch::Sender<HashSet<ChannelId>>;
+
+/// russh removes a locally closed channel before the peer's acknowledgement
+/// arrives. Either end can retire the slot. Only closing the last live channel
+/// starts the idle timeout, and accepting a new one cancels that timeout.
+fn retire_channel(
+    opened: &OpenChannels,
+    channel: ChannelId,
+    handle: &Handle,
+    drain: &Arc<Drain>,
+    conn: u64,
+    grace: Duration,
+) {
+    let mut idle = opened.subscribe();
+    if !opened.send_if_modified(|ids| ids.remove(&channel)) || !idle.borrow_and_update().is_empty()
+    {
+        return;
+    }
+    let handle = handle.clone();
+    let drain = Arc::clone(drain);
+    tokio::spawn(async move {
+        if tokio::time::timeout(grace, idle.changed()).await.is_err() {
+            let _ = tokio::time::timeout(
+                DISCONNECT_GRACE,
+                handle.disconnect(
+                    Disconnect::ByApplication,
+                    "no session is open".into(),
+                    String::new(),
+                ),
+            )
+            .await;
+            abort_after(drain, conn, DISCONNECT_GRACE);
+        }
     });
 }
 
@@ -583,9 +618,9 @@ struct PumpCtx {
     farewell: String,
     drain: Arc<Drain>,
     conn: u64,
-    /// Set by `channel_close` when the client closes its side.
-    closed: Arc<AtomicBool>,
-    /// How long a client may leave a channel the doorway closed unanswered.
+    opened: OpenChannels,
+    writer: tokio::task::AbortHandle,
+    /// How long an authenticated client may stay without a live channel.
     close_grace: Duration,
 }
 
@@ -611,16 +646,14 @@ async fn pump(mut ctx: PumpCtx) {
                     ctx.bytes.down.fetch_add(data.len() as u64, Ordering::Relaxed);
                     match tokio::time::timeout(WRITE_TIMEOUT, ctx.down.data_bytes(data)).await {
                         Ok(Ok(())) => {}
-                        Ok(Err(_)) => break End::Closed,
-                        Err(_) => break End::Wedged,
+                        Ok(Err(_)) | Err(_) => break End::Wedged,
                     }
                 }
                 Some(ChannelMsg::ExtendedData { data, ext }) => {
                     ctx.bytes.down.fetch_add(data.len() as u64, Ordering::Relaxed);
                     match tokio::time::timeout(WRITE_TIMEOUT, ctx.down.extended_data_bytes(ext, data)).await {
                         Ok(Ok(())) => {}
-                        Ok(Err(_)) => break End::Closed,
-                        Err(_) => break End::Wedged,
+                        Ok(Err(_)) | Err(_) => break End::Wedged,
                     }
                 }
                 Some(ChannelMsg::Eof) => {
@@ -628,10 +661,7 @@ async fn pump(mut ctx: PumpCtx) {
                         break End::Wedged;
                     }
                 }
-                Some(ChannelMsg::Close) => {
-                    let _ = tokio::time::timeout(WRITE_TIMEOUT, ctx.down.close()).await;
-                    break End::Closed;
-                }
+                Some(ChannelMsg::Close) => break End::Closed,
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
                     if tokio::time::timeout(WRITE_TIMEOUT, ctx.down.exit_status(exit_status)).await.is_err() {
                         break End::Wedged;
@@ -673,29 +703,16 @@ async fn pump(mut ctx: PumpCtx) {
     }
     match end {
         End::Closed => {
-            // The doorway has closed the channel downstream. A client that
-            // never answers with its own close would keep the connection,
-            // and its slot, with nothing open; it gets the same grace the
-            // last channel's close gets before the no-session watchdog.
-            if !ctx.closed.load(Ordering::SeqCst) {
-                tokio::time::sleep(ctx.close_grace).await;
-                if !ctx.closed.load(Ordering::SeqCst) {
-                    tracing::info!(
-                        conn = ctx.conn,
-                        "a closed channel was never acknowledged; closing"
-                    );
-                    let _ = tokio::time::timeout(
-                        DISCONNECT_GRACE,
-                        ctx.handle.disconnect(
-                            Disconnect::ByApplication,
-                            "the channel was left half-closed".into(),
-                            String::new(),
-                        ),
-                    )
-                    .await;
-                    abort_after(ctx.drain, ctx.conn, DISCONNECT_GRACE);
-                }
-            }
+            ctx.writer.abort();
+            retire_channel(
+                &ctx.opened,
+                ctx.down_id,
+                &ctx.handle,
+                &ctx.drain,
+                ctx.conn,
+                ctx.close_grace,
+            );
+            let _ = tokio::time::timeout(WRITE_TIMEOUT, ctx.down.close()).await;
         }
         End::Gone => {
             let reason = ctx
@@ -833,7 +850,7 @@ impl Conn {
             slot,
             _live: live,
             authed,
-            opened: Arc::default(),
+            opened: watch::Sender::new(HashSet::new()),
             channel_opens: 0,
             dials: 0,
             key_queries: 0,
@@ -1093,7 +1110,6 @@ impl Conn {
             _ => DisconnectSlot::default(),
         };
         let (tx, rx) = mpsc::channel(UP_QUEUE);
-        let closed = Arc::new(AtomicBool::new(false));
         let writer = tokio::spawn(writer(
             up_write,
             rx,
@@ -1115,7 +1131,8 @@ impl Conn {
             farewell: self.farewell(),
             drain: Arc::clone(&self.door.drain),
             conn: self.id,
-            closed: Arc::clone(&closed),
+            opened: self.opened.clone(),
+            writer: writer.abort_handle(),
             close_grace: Duration::from_secs(self.door.config().limits.auth_deadline_secs),
         }));
         self.pairs.insert(
@@ -1125,7 +1142,6 @@ impl Conn {
                 pump,
                 writer,
                 pending,
-                closed,
                 shell,
             },
         );
@@ -1748,6 +1764,7 @@ impl Handler for Conn {
         drop(read);
         match self.stage {
             Stage::Spliced => {
+                self.pairs.retain(|id, _| self.opened.borrow().contains(id));
                 if self.pairs.len() >= MAX_CHANNELS {
                     drop(reply);
                     return Ok(());
@@ -1759,7 +1776,9 @@ impl Handler for Conn {
                 match timed(handle.channel_open_session()).await {
                     Ok(up) => {
                         reply.accept().await;
-                        self.opened.store(true, Ordering::SeqCst);
+                        self.opened.send_modify(|ids| {
+                            ids.insert(id);
+                        });
                         // Not a shell until the client asks for one.
                         self.pair_up(id, write, up, session.handle(), false);
                     }
@@ -1772,7 +1791,9 @@ impl Handler for Conn {
                     return Ok(());
                 }
                 reply.accept().await;
-                self.opened.store(true, Ordering::SeqCst);
+                self.opened.send_modify(|ids| {
+                    ids.insert(id);
+                });
                 self.door.drain.register(
                     self.id,
                     DoorwaySession::new(session.handle(), Some(id), None),
@@ -2020,7 +2041,6 @@ impl Handler for Conn {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if let Some(pair) = self.pairs.remove(&channel) {
-            pair.closed.store(true, Ordering::SeqCst);
             // The client has closed its side: nothing more goes down this
             // channel, so the pump stops now. Left running, a pump blocked on
             // this channel's exhausted window would wait out `WRITE_TIMEOUT`
@@ -2044,29 +2064,14 @@ impl Handler for Conn {
         if self.front_id() == Some(channel) {
             self.front = None;
         }
-        if self.pairs.is_empty() && self.front.is_none() {
-            self.opened.store(false, Ordering::SeqCst);
-            let opened = Arc::clone(&self.opened);
-            let drain = Arc::clone(&self.door.drain);
-            let conn = self.id;
-            let handle = session.handle();
-            let grace = Duration::from_secs(self.door.config().limits.auth_deadline_secs);
-            tokio::spawn(async move {
-                tokio::time::sleep(grace).await;
-                if !opened.load(Ordering::SeqCst) {
-                    let _ = tokio::time::timeout(
-                        DISCONNECT_GRACE,
-                        handle.disconnect(
-                            Disconnect::ByApplication,
-                            "no session is open".into(),
-                            String::new(),
-                        ),
-                    )
-                    .await;
-                    abort_after(drain, conn, DISCONNECT_GRACE);
-                }
-            });
-        }
+        retire_channel(
+            &self.opened,
+            channel,
+            &session.handle(),
+            &self.door.drain,
+            self.id,
+            Duration::from_secs(self.door.config().limits.auth_deadline_secs),
+        );
         Ok(())
     }
 }

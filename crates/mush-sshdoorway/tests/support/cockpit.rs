@@ -167,7 +167,7 @@ async fn refused_resume_reissues_on_the_same_doorway_connection() {
 }
 
 async fn verify_reissue_after_refusal(routed: bool) {
-    let rig = Rig::start(Hooks::default()).await;
+    let rig = Rig::start_with(Hooks::default(), |cfg| cfg.limits.auth_deadline_secs = 2).await;
     let (addr, user) = if routed {
         (rig.addr, "dev1+faenix+Kira")
     } else {
@@ -189,15 +189,29 @@ async fn verify_reissue_after_refusal(routed: bool) {
         Some("denied" | "expired")
     ));
     assert!(rig.hooks.connected().is_empty());
-    // The doorway permits a shell and one auxiliary channel. Queue CLOSE
-    // on this connection before opening the fresh Issue subsystem.
-    exchange.close().await.unwrap();
+    // Read the upstream-initiated CLOSE. russh can consume the downstream
+    // acknowledgement without delivering it to the doorway's handler.
+    read_to_close(&mut exchange).await;
     let mut fresh = side(&handle, "issue", None).await;
     assert_eq!(reply(&mut fresh).await["status"], "auth_required");
     shell.data(&b"1\r"[..]).await.unwrap();
     wait_for(|| rig.hooks.connected().len() == 1).await;
     assert_eq!(reply(&mut fresh).await["status"], "issued");
     assert!(rig.hooks.lines().is_empty());
+    if routed {
+        // A second upstream-initiated CLOSE must also return its slot.
+        read_to_close(&mut fresh).await;
+        let mut assets = handle.channel_open_session().await.unwrap();
+        assets.request_subsystem(true, "sftp").await.unwrap();
+        assert!(next_reply(&mut assets).await);
+        assets.close().await.unwrap();
+        // Neither finished subsystem owns the live shell's idle timeout.
+        tokio::time::sleep(Duration::from_millis(2250)).await;
+        shell.data(&b"look\r"[..]).await.unwrap();
+        wait_for(|| rig.hooks.lines() == ["look"]).await;
+        shell.close().await.unwrap();
+        wait_for(|| handle.is_closed()).await;
+    }
 }
 
 /// No packet follows the shell/partial request until the server has attached.
