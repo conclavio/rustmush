@@ -2,13 +2,13 @@
 //! Q-50-65), over the composed lane (`driving`'s stocked rig), through the market's own verbs.
 //!
 //! Strategic ore is restricted at Ceres: the Freeport, which holds Ceres de facto, lifts it only
-//! for a holder of the picket's papers, a prospecting licence **and** a registered claim on a
+//! for a holder of the picket's papers, a prospecting license **and** a registered claim on a
 //! strategic rock (lane v47's terms row, paper `freeport_prospecting`).
 //!
 //! 1. **The seller into a house bid.** A licensed prospector holding no claim is refused at
-//!    `+market/sell` into the Exchange's strategic ore bid: a licence alone does not lift it.
+//!    `+market/sell` into the Exchange's strategic ore bid: a license alone does not lift it.
 //!    With a live claim on a strategic rock as well, the sale goes through.
-//! 2. **The buyer.** The prospector posts a public ask of a lot. A trader with no licence is
+//! 2. **The buyer.** The prospector posts a public ask of a lot. A trader with no license is
 //!    refused a quote on it, and still refused holding a claim: the claim alone does not lift it
 //!    either.
 //! 3. **A private offer goes through** (Q-50-34): the same prospector offers a lot to the trader
@@ -31,7 +31,7 @@ use crate::driving_rig::{
 const CERES: &str = "ceres_port";
 
 /// The refusal's words, whatever the venue and the good are called.
-const REFUSED: &str = "only with a holder of a Freeport Registry prospecting licence and a \
+const REFUSED: &str = "only with a holder of a Freeport Registry prospecting license and a \
      registered claim on a strategic rock";
 
 /// The `n`th strategic rock of the lane's orbital clusters: its cluster and letter.
@@ -142,7 +142,7 @@ async fn lw1_the_ceres_board_trades_strategic_ore_only_with_the_picket_papers() 
     let now = rig.tw.world().world_ic_now().at;
     assert!(
         tacsim::port::licence::licence_gate(rig.tw.world(), seller, now).is_ok(),
-        "a prospector holds the Registry's licence"
+        "a prospector holds the Registry's license"
     );
     let (refused, queued) = command(&mut rig, seller, &format!("+market/sell {bid}=1"));
     assert!(
@@ -184,7 +184,7 @@ async fn lw1_the_ceres_board_trades_strategic_ore_only_with_the_picket_papers() 
     let quoted = run(&mut rig.tw, trader, &format!("+market/quote {public}=1"));
     assert!(
         quoted.contains(REFUSED),
-        "a claim with no licence: {quoted}"
+        "a claim with no license: {quoted}"
     );
 
     // ---- 3. A private offer goes through ----

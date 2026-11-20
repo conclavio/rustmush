@@ -9,12 +9,12 @@
 //! never asked (Q-50-34): it goes through, and is an offense only if it comes to light.
 //!
 //! - **The papers** ([`papers_clear`], Q-50-65): one test, the picket's. A restricted good whose
-//!   paper is [`PICKET_PAPERS`] is lifted by a Freeport Registry prospecting licence **and** a
+//!   paper is [`PICKET_PAPERS`] is lifted by a Freeport Registry prospecting license **and** a
 //!   live registered claim on a strategic rock in an orbital cluster, both. A paper this crate
 //!   does not know lifts nothing.
 //! - **The claims mirror** ([`PapersMirror`]): the claims are an action-state family that only
 //!   this module's own lens reads, and the market asks its policy with the world alone. The port
-//!   tick therefore copies every live claim on a strategic rock into the store ([`refresh`]),
+//!   tick therefore copies every live claim on a strategic rock into the store (`refresh`),
 //!   and the board reads the copy through the same predicate the picket's live read uses
 //!   ([`crate::space::mining::claim_covers`]). The copy is at most one port fire old.
 
@@ -25,12 +25,12 @@ use mush_org::PrincipalId;
 use crate::surface::claims::BlockClaim;
 
 /// **The picket's papers** (Q-50-65): the paper id a terms row names for "a Freeport prospecting
-/// licence and a registered claim on a strategic rock".
+/// license and a registered claim on a strategic rock".
 pub const PICKET_PAPERS: &str = "freeport_prospecting";
 
 /// The board's refusal: `{label}`, `{venue}`.
 pub const RESTRICTED_REFUSED: &str = "The {venue} board trades {label} only with a holder of a \
-     Freeport Registry prospecting licence and a registered claim on a strategic rock; nothing was \
+     Freeport Registry prospecting license and a registered claim on a strategic rock; nothing was \
      traded.";
 
 /// The most claims the mirror keeps (a lane's strategic rocks are a few dozen).
@@ -87,7 +87,7 @@ pub(crate) fn refresh(ctx: &mut Ctx<'_>) {
 }
 
 /// **Whether `actor` holds the picket's papers** (Q-50-65), read from the mirror: a prospecting
-/// licence in force (or in its grace) and a live claim on a strategic rock covering them.
+/// license in force (or in its grace) and a live claim on a strategic rock covering them.
 #[must_use]
 pub fn papers_clear(w: &World, actor: ObjId, now_ic: i64) -> bool {
     if crate::port::licence::licence_gate(w, actor, now_ic).is_err() {
@@ -121,7 +121,7 @@ pub fn restriction_at(w: &World, venue: &MarketId, commodity: &CanonicalId) -> O
 
 /// **The law of a public trade** (`ProceedsPolicy::may_trade`): free unless the venue restricts
 /// the good, and then only for a character holding its paper. An organization holds no
-/// prospecting licence, so it is refused a restricted good on the public board.
+/// prospecting license, so it is refused a restricted good on the public board.
 ///
 /// # Errors
 ///
