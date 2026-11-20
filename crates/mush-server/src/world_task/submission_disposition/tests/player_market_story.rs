@@ -112,6 +112,7 @@ async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> Test
     let end = started + REGISTRY_GUARD;
     let mut settled = false;
     let mut completed: Option<Instant> = None;
+    let mut report = Instant::now();
     loop {
         settled |= w
             .server
@@ -153,6 +154,10 @@ async fn rated(w: &World, author: ObjId, revision: &mush_roll::Revision) -> Test
                 "Registry work finished. after the completion"
             ),
             None => check!(Instant::now() < end, "the genuine rating completes"),
+        }
+        if completed.is_none() && report.elapsed() >= Duration::from_secs(60) {
+            super::paid_purchase::rating_progress(&w.launch.store).await?;
+            report = Instant::now();
         }
         let pause = if completed.is_some() { 50 } else { 2_000 };
         tokio::time::sleep(Duration::from_millis(pause)).await;
