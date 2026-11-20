@@ -90,6 +90,8 @@ use crate::kill::{KillSwitch, Killable};
 use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
+mod cockpit;
+use cockpit::{Cockpit, OutputQueues};
 
 /// Per-connection output queue depth (design 02 §8.4).
 const OUTPUT_BUFFER: usize = 256;
@@ -604,6 +606,7 @@ impl Ingress {
             exec_input: None,
             exec_submitted: false,
             channel: None,
+            cockpit: Cockpit::default(),
             sftp_channel: None,
             sftp_in: None,
             sftp_handshake_watchdog: None,
@@ -846,6 +849,7 @@ pub(crate) struct ConnHandler {
     /// `Channel<Msg>` is dropped immediately on open (HIGH-6) so russh never
     /// blocks `Session::run` on an unread channel queue.
     sftp_channel: Option<ChannelId>,
+    cockpit: Cockpit,
     /// Bounded non-blocking inbound feeder into the active `sftp` stream
     /// (`Some` only after `subsystem_request("sftp")` succeeds, HIGH-6).
     sftp_in: Option<crate::assets::SftpInbound>,
@@ -1437,6 +1441,25 @@ impl ConnHandler {
         chars: Vec<CharSummary>,
         requested_char: Option<String>,
     ) -> Result<(), russh::Error> {
+        if self.cockpit.waiting_for_redeem() {
+            let selected = requested_char
+                .as_ref()
+                .map(|want| {
+                    chars
+                        .iter()
+                        .find(|c| c.name.eq_ignore_ascii_case(want))
+                        .map(|c| c.key)
+                        .ok_or(crate::resume::Failure::Denied)
+                })
+                .transpose();
+            self.cockpit.authenticated = Some((account.clone(), selected));
+            self.lock().mode = Mode::CharSelect {
+                account: account.clone(),
+                chars: chars.clone(),
+            };
+            self.print_char_select(session, &account, &chars)?;
+            return self.try_cockpit(session).await;
+        }
         if let Some(want) = requested_char {
             if let Some(c) = chars.iter().find(|c| c.name.eq_ignore_ascii_case(&want)) {
                 let c = c.clone();
@@ -1543,19 +1566,10 @@ impl ConnHandler {
         account: &str,
         character: &CharSummary,
     ) -> Result<(), russh::Error> {
-        let Some(channel) = self.channel else {
+        if self.channel.is_none() {
             return Ok(());
-        };
-        let (tx, rx) = mpsc::channel::<Arc<OutputEvent>>(OUTPUT_BUFFER);
-        let (stamped_tx, stamped_rx) = mpsc::channel(OUTPUT_BUFFER);
-        let snapshot = self.lock().caps;
-        let conn = NewConn {
-            id: self.conn_id,
-            addr: self.addr,
-            caps: snapshot,
-            tx,
-            stamped_tx: Some(stamped_tx),
-        };
+        }
+        let (conn, queues) = self.output_queues();
         // Armed *before* the await via compare_exchange so a duplicate entry
         // cannot attach twice on the same ConnId or clear an active `connected`
         // flag on refusal (HIGH-9).
@@ -1572,89 +1586,133 @@ impl ConnHandler {
             .await
         {
             Ok(()) => {
-                if let Some(watchdog) = self.preauth_watchdog.take() {
-                    watchdog.abort();
-                }
-                tracing::info!(
-                    conn = self.conn_id,
-                    account,
-                    character = character.name,
-                    "character connected"
-                );
-                let repaint = {
-                    let mut sh = self.lock();
-                    sh.mode = Mode::InGame;
-                    Arc::clone(&sh.repaint)
-                };
-                let (tx, mut commands) = mpsc::channel::<GameAction>(128);
-                self.commands = Some(tx);
-                let mut worker = GameCommands {
-                    hooks: Arc::clone(&self.hooks),
-                    shared: Arc::clone(&self.shared),
-                    conn_id: self.conn_id,
-                    channel: Some(channel),
-                    handle: session.handle(),
-                };
-                self.command_task = Some(tokio::spawn(async move {
-                    while let Some(action) = commands.recv().await {
-                        match action {
-                            GameAction::Line(line) => {
-                                match worker.local_line(&line).await {
-                                    Ok(true) => {}
-                                    Ok(false) => {
-                                        worker.hooks.line(worker.conn_id, line.clone()).await;
-                                    }
-                                    Err(_) => {
-                                        let _ = worker.handle.close(channel).await;
-                                        break;
-                                    }
-                                }
-                                if line.trim().eq_ignore_ascii_case("QUIT") {
-                                    break;
-                                }
-                            }
-                            GameAction::Invoke { id, request } => {
-                                worker.hooks.invoke(worker.conn_id, id, request).await;
-                            }
-                            GameAction::Query { name, args } => {
-                                submit_query(
-                                    worker.hooks.as_ref(),
-                                    &worker.shared,
-                                    worker.conn_id,
-                                    name,
-                                    args,
-                                    None,
-                                )
-                                .await;
-                            }
-                            GameAction::Respond { id, epoch, choice } => {
-                                worker
-                                    .hooks
-                                    .respond(worker.conn_id, id, epoch, choice)
-                                    .await;
-                            }
-                        }
-                    }
-                }));
-                spawn_output_pump(
-                    rx,
-                    stamped_rx,
-                    Arc::clone(&self.shared),
-                    session.handle(),
-                    channel,
-                    Arc::clone(&self.hooks),
-                    self.conn_id,
-                    repaint,
-                    Arc::clone(&self.connected),
-                    self.cut(),
-                );
-                Ok(())
+                self.activate_player(session, account, character.key, queues, false)?;
+                self.try_cockpit(session).await
             }
             Err(why) => {
                 self.connected.store(false, Ordering::SeqCst);
                 self.write_text(session, &format!("Connection failed: {why}"))
             }
         }
+    }
+
+    fn activate_player(
+        &mut self,
+        session: &mut Session,
+        account: &str,
+        character: u64,
+        queues: OutputQueues,
+        resumed: bool,
+    ) -> Result<(), russh::Error> {
+        if let Some(watchdog) = self.preauth_watchdog.take() {
+            watchdog.abort();
+        }
+        tracing::info!(
+            conn = self.conn_id,
+            account,
+            character,
+            "character connected"
+        );
+        let repaint = {
+            let mut sh = self.lock();
+            sh.mode = Mode::InGame;
+            Arc::clone(&sh.repaint)
+        };
+        let Some(channel) = self.channel else {
+            return Err(russh::Error::Disconnect);
+        };
+        let negotiated = self.cockpit.hint.is_some();
+        if negotiated {
+            self.cockpit.playing = Some((account.to_owned(), character));
+        }
+        let OutputQueues {
+            events: rx,
+            stamped: stamped_rx,
+        } = queues;
+        let (tx, mut commands) = mpsc::channel::<GameAction>(128);
+        self.commands = Some(tx);
+        let mut worker = GameCommands {
+            hooks: Arc::clone(&self.hooks),
+            shared: Arc::clone(&self.shared),
+            conn_id: self.conn_id,
+            channel: Some(channel),
+            handle: session.handle(),
+        };
+        let hydration = if resumed {
+            let (bytes, queries) = worker.prepare_tui(true);
+            session.data(channel, bytes)?;
+            queries
+        } else {
+            Vec::new()
+        };
+        self.command_task = Some(tokio::spawn(async move {
+            for (name, args) in hydration {
+                submit_query(
+                    worker.hooks.as_ref(),
+                    &worker.shared,
+                    worker.conn_id,
+                    name,
+                    args,
+                    None,
+                )
+                .await;
+            }
+            while let Some(action) = commands.recv().await {
+                match action {
+                    GameAction::Line(line) => {
+                        if negotiated && line.trim().eq_ignore_ascii_case("QUIT") {
+                            worker.hooks.cockpit_close(worker.conn_id);
+                        }
+                        match worker.local_line(&line).await {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                worker.hooks.line(worker.conn_id, line.clone()).await;
+                            }
+                            Err(_) => {
+                                let _ = worker.handle.close(channel).await;
+                                break;
+                            }
+                        }
+                        if line.trim().eq_ignore_ascii_case("QUIT") {
+                            break;
+                        }
+                    }
+                    GameAction::Invoke { id, request } => {
+                        worker.hooks.invoke(worker.conn_id, id, request).await;
+                    }
+                    GameAction::Query { name, args } => {
+                        submit_query(
+                            worker.hooks.as_ref(),
+                            &worker.shared,
+                            worker.conn_id,
+                            name,
+                            args,
+                            None,
+                        )
+                        .await;
+                    }
+                    GameAction::Respond { id, epoch, choice } => {
+                        worker
+                            .hooks
+                            .respond(worker.conn_id, id, epoch, choice)
+                            .await;
+                    }
+                }
+            }
+        }));
+        spawn_output_pump(
+            rx,
+            stamped_rx,
+            Arc::clone(&self.shared),
+            session.handle(),
+            channel,
+            Arc::clone(&self.hooks),
+            self.conn_id,
+            repaint,
+            Arc::clone(&self.connected),
+            self.cut(),
+        );
+        Ok(())
     }
 
     fn exec_error(
@@ -2005,11 +2063,15 @@ impl Handler for ConnHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.channel.is_some() {
-            // One session channel per connection — and (doc 21 cut G.11)
-            // one more, for the asset pack's `sftp`, once the connection is
-            // in game and the pack is served. Drop `channel` immediately so
-            // russh never blocks `Session::run` on an unread `Channel<Msg>`
-            // queue before `subsystem_request("sftp")` (HIGH-6).
+            // The game channel may have one negotiated cockpit sideband and
+            // one in-game asset SFTP channel. Drop each auxiliary Channel so
+            // its unread queue cannot block russh before subsystem selection.
+            if self.shell_started && self.cockpit.can_open() {
+                self.cockpit.open(channel.id(), session.handle());
+                drop(channel);
+                reply.accept().await;
+                return Ok(());
+            }
             if self.connected.load(Ordering::SeqCst)
                 && self.sftp_channel.is_none()
                 && !self.sftp_started
@@ -2103,6 +2165,19 @@ impl Handler for ConnHandler {
         variable_value: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if variable_name == crate::resume::ENV_NAME {
+            if self.channel == Some(channel)
+                && !self.shell_started
+                && self.cockpit.hint.is_none()
+                && let Some(hint) = crate::resume::Hint::parse(variable_value)
+            {
+                self.cockpit.hint = Some(hint);
+                session.channel_success(channel)?;
+            } else {
+                session.channel_failure(channel)?;
+            }
+            return Ok(());
+        }
         if self.channel == Some(channel) {
             let mut sh = self.lock();
             match variable_name.to_ascii_uppercase().as_str() {
@@ -2267,13 +2342,40 @@ impl Handler for ConnHandler {
 
     /// **`sftp` on the asset pack's channel** (doc 21 cut G.11): the pack's
     /// read-only tree, served from memory ([`crate::assets::AssetsSftp`]).
-    /// Any other subsystem, or `sftp` on the game's own channel, is refused.
+    /// A negotiated cockpit channel carries its own bounded request and reply.
+    /// Neither auxiliary subsystem runs on the game's primary channel.
     async fn subsystem_request(
         &mut self,
         channel: ChannelId,
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.cockpit.match_pending(
+            channel,
+            name,
+            &mut self.sftp_channel,
+            &mut self.sftp_handshake_watchdog,
+        );
+        if self.cockpit.channel == Some(channel) {
+            if name == crate::resume::SUBSYSTEM && self.cockpit.start_subsystem() {
+                session.channel_success(channel)?;
+                return Ok(());
+            }
+            if !self.cockpit.started
+                && name == "sftp"
+                && self.sftp_channel.is_none()
+                && !self.sftp_started
+                && self.connected.load(Ordering::SeqCst)
+                && crate::assets::AssetPack::shipped().is_some()
+            {
+                self.cockpit.release_candidate();
+                self.sftp_channel = Some(channel);
+            } else {
+                session.channel_failure(channel)?;
+                self.cockpit.close(session);
+                return Ok(());
+            }
+        }
         let ours = self.sftp_channel == Some(channel);
         let pack = crate::assets::AssetPack::shipped();
         match (name, ours, !self.sftp_started, pack) {
@@ -2314,6 +2416,9 @@ impl Handler for ConnHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.cockpit.channel == Some(channel) {
+            return self.cockpit_data(session, data).await;
+        }
         if self.sftp_channel == Some(channel) {
             if self.closing {
                 return Ok(());
@@ -2398,6 +2503,10 @@ impl Handler for ConnHandler {
         _data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.cockpit.channel == Some(channel) {
+            self.cockpit.close(session);
+            return Ok(());
+        }
         if self.sftp_channel == Some(channel) {
             self.close_sftp_channel(session);
         }
@@ -2409,6 +2518,16 @@ impl Handler for ConnHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.cockpit.channel == Some(channel) {
+            // A client can half-close its one request before in-band login.
+            if self.cockpit.pending.is_none() {
+                self.cockpit.close(session);
+            }
+            return Ok(());
+        }
+        if self.channel == Some(channel) && self.cockpit.hint.is_some() {
+            self.hooks.cockpit_close(self.conn_id);
+        }
         if self.sftp_channel == Some(channel) {
             if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
                 watchdog.abort();
@@ -2438,6 +2557,13 @@ impl Handler for ConnHandler {
         channel: ChannelId,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.cockpit.channel == Some(channel) {
+            self.cockpit.finish();
+            return Ok(());
+        }
+        if self.channel == Some(channel) && self.cockpit.hint.is_some() {
+            self.hooks.cockpit_close(self.conn_id);
+        }
         if self.sftp_channel == Some(channel) {
             if let Some(watchdog) = self.sftp_handshake_watchdog.take() {
                 watchdog.abort();
@@ -2612,29 +2738,7 @@ impl GameCommands {
         let Some(channel) = self.channel else {
             return Ok(());
         };
-        let (bytes, queries) = {
-            let mut sh = self.lock();
-            let caps = sh.caps;
-            let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
-            if let Some(cell) = sh.cell_size {
-                tui.set_cell_size(cell);
-            }
-            tui.set_pixel_choice(sh.pixel_choice);
-            tui.set_sounds(sh.sounds_on);
-            tui.set_pixel_config(self.hooks.pixel_config());
-            let mut out = TuiSession::enter_bytes().to_vec();
-            out.extend_from_slice(&tui.paint());
-            // Pixel cockpit spike (2026-10-21): ask the terminal whether it
-            // speaks the kitty graphics protocol; the answer comes back
-            // through the input path as marker keys.
-            out.extend_from_slice(&tui.probe_bytes());
-            let queries = tui.entry_queries();
-            sh.tui = Some(tui);
-            sh.history_request = None;
-            sh.mode_generation = sh.mode_generation.wrapping_add(1);
-            sh.mode = Mode::Tui;
-            (out, queries)
-        };
+        let (bytes, queries) = self.prepare_tui(false);
         self.write_ordered(channel, bytes).await?;
         // Read-only hydration (WHO, the command table, channels, vitals, the
         // screen's own feeds); every reply lands on the pump, which repaints.
@@ -2653,6 +2757,33 @@ impl GameCommands {
         Ok(())
     }
 
+    fn prepare_tui(&self, resumed: bool) -> (Vec<u8>, Vec<(String, serde_json::Value)>) {
+        let mut sh = self.lock();
+        let caps = sh.caps;
+        let mut tui = Box::new(TuiSession::new(caps, sh.manifest.clone()));
+        if let Some(cell) = sh.cell_size {
+            tui.set_cell_size(cell);
+        }
+        tui.set_pixel_choice(sh.pixel_choice);
+        tui.set_sounds(sh.sounds_on);
+        tui.set_pixel_config(self.hooks.pixel_config());
+        let mut out = TuiSession::enter_bytes().to_vec();
+        out.extend_from_slice(&tui.paint());
+        // Pixel cockpit spike (2026-10-21): ask the terminal whether it
+        // speaks the kitty graphics protocol; the answer comes back
+        // through the input path as marker keys.
+        out.extend_from_slice(&tui.probe_bytes());
+        let queries = if resumed {
+            tui.resume_queries()
+        } else {
+            tui.entry_queries()
+        };
+        sh.tui = Some(tui);
+        sh.history_request = None;
+        sh.mode_generation = sh.mode_generation.wrapping_add(1);
+        sh.mode = Mode::Tui;
+        (out, queries)
+    }
     /// `@notui` / detach: leave the alternate screen, restore the cursor, drop
     /// the TUI state, and hand the resumed line client its prompt back
     /// (invariant T5 — never leave a client stuck on the alternate screen).

@@ -331,6 +331,8 @@ pub enum AuthCheckResult {
 /// accept time via its `connection_opened` hook, not here.)
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ConnectErr {
+    #[error("the previous connection's recovery window has ended")]
+    ResumeExpired,
     /// The character does not belong to that account.
     #[error("that is not your character")]
     NotYourCharacter,
@@ -1198,6 +1200,20 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         char_name: &str,
         caps_structured: bool,
     ) -> Result<EnterOutcome, ConnectErr> {
+        self.enter_game_with_resume(handle, actor, account, char_name, caps_structured, None)
+            .await
+            .map(|(outcome, _)| outcome)
+    }
+
+    pub(crate) async fn enter_game_with_resume(
+        &self,
+        handle: ConnectionHandle,
+        actor: ObjId,
+        account: &str,
+        char_name: &str,
+        caps_structured: bool,
+        previous: Option<(SessId, ConnId)>,
+    ) -> Result<(EnterOutcome, Option<mush_session::ResumeWindow>), ConnectErr> {
         let conn_id = handle.id;
         // Reserve split-process lifecycle custody BEFORE `SessionManager`
         // mutation. Once this succeeds, ConnUp is must-deliver; an overloaded
@@ -1208,9 +1224,38 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             ConnectionAdmission::Busy => return Err(ConnectErr::Busy),
             ConnectionAdmission::Gone => return Err(self.gone()),
         }
-        let (sess, outcome) = self
-            .sessions
-            .attach(handle, char_key(actor), account.to_string());
+        let (sess, outcome, window) = if let Some((session, previous)) = previous {
+            let window = self
+                .sessions
+                .resume_linkdead(handle, char_key(actor), account, session, previous)
+                .map_err(|reason| {
+                    self.link.cancel_connection_reservation(conn_id.0);
+                    match reason {
+                        mush_session::ResumeRefusal::Expired => ConnectErr::ResumeExpired,
+                        mush_session::ResumeRefusal::Busy => ConnectErr::Busy,
+                        mush_session::ResumeRefusal::Denied => ConnectErr::NotYourCharacter,
+                    }
+                })?;
+            (
+                session,
+                mush_session::AttachOutcome::Rejoined {
+                    others: 0,
+                    from_linkdead: true,
+                },
+                Some(window),
+            )
+        } else {
+            let (sess, outcome) =
+                self.sessions
+                    .attach(handle, char_key(actor), account.to_string());
+            (sess, outcome, None)
+        };
+        let rollback_error = |error| {
+            if let Some(window) = window {
+                self.restore_resume_window(conn_id, window);
+            }
+            error
+        };
         // The resume baseline is captured BEFORE this connection's own
         // entry output advances the session counter.
         let resume_from = self.sessions.last_seq(sess).unwrap_or(0);
@@ -1241,7 +1286,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         {
             self.link.cancel_connection_reservation(conn_id.0);
             self.rollback_local_attach(conn_id, from_linkdead);
-            return Err(self.gone());
+            return Err(rollback_error(self.gone()));
         }
         // `ConnUp` may run persistent connect/reconnect hooks. Fence their
         // exact durable outcome before publishing the local session or asking
@@ -1252,7 +1297,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         if !self.delivery_barrier(conn_id, "connect readiness").await {
             self.compensate_announced_attach(conn_id, actor, from_linkdead)
                 .await;
-            return Err(self.gone());
+            return Err(rollback_error(self.gone()));
         }
 
         // A barrier proves ordering/durability, but it does not by itself prove
@@ -1270,7 +1315,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         ) {
             self.compensate_announced_attach(conn_id, actor, from_linkdead)
                 .await;
-            return Err(self.not_admitted());
+            return Err(rollback_error(self.not_admitted()));
         }
 
         send_event_to_conn(
@@ -1316,7 +1361,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
                 .await;
         }
         tracing::info!(conn = conn_id.0, %actor, account, "character connected");
-        Ok(EnterOutcome { sess, resume_from })
+        Ok((EnterOutcome { sess, resume_from }, window))
     }
 
     /// Bind an already-authenticated, already-authorized connection to a
@@ -1756,6 +1801,10 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// The transport lost (or closed) a connection. (Its IP-guard slot is
     /// released by the transport's own accept/drop accounting, not here.)
     pub async fn disconnected(&self, conn: ConnId) {
+        self.disconnect_outcome(conn).await;
+    }
+
+    pub(crate) async fn disconnect_outcome(&self, conn: ConnId) -> Option<DetachOutcome> {
         let actor = self.actor_of(conn);
         // A bare connection (doc 44 unit MW.24) has no session to detach: its
         // end is a `BareDown` and nothing else.
@@ -1764,7 +1813,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             && self.sessions.conn_handle(conn).is_some()
         {
             self.leave_bare(conn, actor).await;
-            return;
+            return None;
         }
         let outcome = self.sessions.detach(conn, DetachReason::Lost);
         self.forget_view_sequences(conn);
@@ -1773,7 +1822,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         let (Some(actor), Some(outcome)) = (actor, outcome) else {
             // Already detached (QUIT raced the transport teardown) or never
             // attached: nothing game-side.
-            return;
+            return None;
         };
         match outcome {
             DetachOutcome::OthersRemain | DetachOutcome::Linkdead { .. } => {
@@ -1808,6 +1857,7 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::info!(conn = conn.0, %actor, grace_s = grace.as_secs(), "linkdead");
             self.arm_linkdead_reaper(grace);
         }
+        Some(outcome)
     }
 
     /// Auth gate: is the address currently blocked (tempban or siteban)?
@@ -1893,6 +1943,17 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
         );
         self.sessions.detach(conn, DetachReason::Quit);
         self.forget_view_sequences(conn);
+    }
+
+    pub(crate) fn restore_resume_window(
+        &self,
+        failed: ConnId,
+        original: mush_session::ResumeWindow,
+    ) {
+        // The old timer may already have fired during provisional world admission.
+        if let Some(remaining) = self.sessions.restore_resume_window(failed, original) {
+            self.arm_linkdead_reaper(remaining);
+        }
     }
 
     /// Arm one reaper for a session that just went linkdead: after the

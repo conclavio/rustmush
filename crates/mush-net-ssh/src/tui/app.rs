@@ -1357,7 +1357,6 @@ impl TuiApp {
     /// here is a read of state.
     #[must_use]
     pub fn entry_queries(&mut self) -> Vec<(String, Value)> {
-        let empty = || Value::Object(serde_json::Map::new());
         // Interface plan I12: prime the first page of scene history — the
         // player value of the whole feature (reconnect into a scene and read
         // the last few minutes without pressing anything).
@@ -1372,11 +1371,19 @@ impl TuiApp {
         // call; it does not close it — a line already queued at the mode flip
         // is still painted twice, and that residue is recorded, not fixed.
         self.backlog_pending = Some(self.now());
-        let mut q: Vec<(String, Value)> = vec![
-            (
-                "narrative.backlog".to_string(),
-                serde_json::json!({ "before_seq": self.backlog_cursor, "limit": NARRATIVE_PAGE }),
-            ),
+        let mut q = vec![(
+            "narrative.backlog".to_string(),
+            serde_json::json!({ "before_seq": self.backlog_cursor, "limit": NARRATIVE_PAGE }),
+        )];
+        q.extend(self.current_state_queries());
+        q
+    }
+
+    /// Rebuild the visible world from its current feeds. Historical narrative
+    /// remains available on demand through the normal scrollback action.
+    pub(super) fn current_state_queries(&self) -> Vec<(String, Value)> {
+        let empty = || Value::Object(serde_json::Map::new());
+        let mut q = vec![
             ("who".to_string(), empty()),
             ("commands.list".to_string(), empty()),
         ];
@@ -7918,6 +7925,21 @@ mod tests {
         // The priming request arms the latch, so an immediate `g` does not
         // ask for the same page twice.
         assert!(app.feed_input(b"g").queries.is_empty());
+    }
+
+    #[test]
+    fn cockpit_recovery_hydrates_current_state_and_keeps_history_on_demand() {
+        let mut app = app();
+        let queries = app.current_state_queries();
+        assert!(queries.iter().any(|(name, _)| name == COCKPIT_FEED));
+        assert!(!queries.iter().any(|(name, _)| name == "narrative.backlog"));
+        assert!(app.backlog_pending.is_none());
+        assert!(
+            app.feed_input(b"g")
+                .queries
+                .iter()
+                .any(|(name, _)| name == "narrative.backlog")
+        );
     }
 
     /// `/clear` is a VIEW floor, not a data clear: the entries stay in the

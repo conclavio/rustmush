@@ -315,6 +315,13 @@ pub struct Term {
 }
 
 impl Term {
+    pub fn new(channel: russh::Channel<russh::client::Msg>) -> Self {
+        Self {
+            channel,
+            seen: String::new(),
+        }
+    }
+
     /// Byte offset of "now" in the raw stream, for [`Term::expect_after`]
     /// when the needle may already occur earlier in the scrollback.
     pub fn mark(&self) -> usize {
@@ -531,13 +538,7 @@ pub async fn play_client_sized(
         .await
         .expect("pty");
     channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
+    (handle, Term::new(channel))
 }
 
 /// Rewrite a Redis URL to a specific logical database, dropping any db (or

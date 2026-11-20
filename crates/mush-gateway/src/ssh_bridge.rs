@@ -71,10 +71,23 @@ pub struct NewConn {
     pub stamped_tx: Option<mpsc::Sender<Arc<mush_proto::Envelope>>>,
 }
 
+impl From<mush_net_ssh::NewConn> for NewConn {
+    fn from(conn: mush_net_ssh::NewConn) -> Self {
+        Self {
+            id: ConnId(conn.id),
+            addr: conn.addr,
+            caps: conn.caps,
+            tx: conn.tx,
+            stamped_tx: conn.stamped_tx,
+        }
+    }
+}
+
 /// The production hooks implementation. Generic over [`AuthBackend`] so the
 /// M2 Redis store slots in without touching this file.
 pub struct SshBridge<A: AuthBackend + 'static> {
     core: GameBridge<A>,
+    resume: mush_net_ssh::resume::Registry,
     /// Shared metrics registry — SSH transport connection counters. Defaults
     /// to a throwaway registry (tests); the real server injects the shared one
     /// via [`SshBridge::with_metrics`].
@@ -111,6 +124,7 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
     ) -> SshBridge<A> {
         SshBridge {
             core: GameBridge::with_link(accounts, sessions, link, guard),
+            resume: Default::default(),
             metrics: Arc::new(mush_net_web::Metrics::new()),
             pixel: mush_net_ssh::PixelConfig::default(),
             conn_id_bit: 0,
@@ -197,6 +211,18 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
         account: &str,
         character: u64,
     ) -> Result<(), ConnectErr> {
+        self.enter_character(conn, account, character, None)
+            .await
+            .map(|_| ())
+    }
+
+    async fn enter_character(
+        &self,
+        conn: NewConn,
+        account: &str,
+        character: u64,
+        previous: Option<(mush_session::SessId, ConnId)>,
+    ) -> Result<Option<mush_session::ResumeWindow>, ConnectErr> {
         let actor = ObjId(u32::try_from(character).map_err(|_| ConnectErr::NotYourCharacter)?);
         let characters = self.core.accounts.characters(account).await;
         let Some(char_name) = characters
@@ -218,13 +244,97 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
             ),
             None => ConnectionHandle::new(conn_id, conn.addr, conn.caps, conn.tx),
         };
-        self.core
-            .enter_game(handle, actor, account, &char_name, caps_structured)
+        let (_, window) = self
+            .core
+            .enter_game_with_resume(
+                handle,
+                actor,
+                account,
+                &char_name,
+                caps_structured,
+                previous,
+            )
             .await?;
         // Doc 33 §4.6: attached, so one of the generation's live connections,
         // closed at a drain's deadline by the `Disconnect` its pump ends on.
         self.core.watch_connection(conn_id, CloseWay::Disconnect);
-        Ok(())
+        Ok(window)
+    }
+
+    fn cockpit_issue(
+        &self,
+        conn: ConnId,
+        pane: &str,
+        account: &str,
+        character: u64,
+    ) -> Result<(mush_net_ssh::resume::Ticket, u32), mush_net_ssh::resume::Failure> {
+        use mush_net_ssh::resume::Failure;
+        let session = self
+            .core
+            .sessions
+            .exclusive_session(conn, mush_session::CharKey(character), account)
+            .ok_or(Failure::Denied)?;
+        let grace = self.core.sessions.config().linkdead_grace;
+        let ticket = self
+            .resume
+            .issue(conn.0, pane, account, character, session, grace)?;
+        Ok((ticket, grace.as_secs().min(300) as u32))
+    }
+
+    async fn cockpit_redeem(
+        &self,
+        conn: NewConn,
+        pane: &str,
+        account: &str,
+        selected: Option<u64>,
+        ticket: &mush_net_ssh::resume::Ticket,
+    ) -> Result<(u64, mush_net_ssh::resume::Ticket, u32), mush_net_ssh::resume::Failure> {
+        use mush_net_ssh::resume::Failure;
+        let id = conn.id;
+        // TCP teardown and the replacement handshake use independent tasks. Give the
+        // loss callback a bounded chance to finish before reporting an active owner.
+        let mut retries = 10;
+        let claim = loop {
+            match self.resume.reserve(id.0, pane, account, selected, ticket) {
+                Err(Failure::Busy) if retries > 0 => {
+                    retries -= 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                result => break result?,
+            }
+        };
+        let character = claim.character();
+        let previous = (claim.session(), ConnId(claim.previous_conn()));
+        let window = self
+            .enter_character(conn, account, character, Some(previous))
+            .await
+            .map_err(|error| match error {
+                ConnectErr::NotYourCharacter => Failure::Denied,
+                ConnectErr::ResumeExpired => Failure::Expired,
+                ConnectErr::NotAdmitted => Failure::Unavailable,
+                ConnectErr::Busy => Failure::Busy,
+                _ => Failure::Unavailable,
+            })?;
+        let rotated = match claim.commit() {
+            Ok(ticket) => ticket,
+            Err(failure) => {
+                self.core.disconnected(id).await;
+                if let Some(window) = window {
+                    self.core.restore_resume_window(id, window);
+                }
+                return Err(failure);
+            }
+        };
+        Ok((
+            character,
+            rotated,
+            self.core
+                .sessions
+                .config()
+                .linkdead_grace
+                .as_secs()
+                .min(300) as u32,
+        ))
     }
 
     /// Bind an authenticated connection to a character for one exec request
@@ -263,7 +373,11 @@ impl<A: AuthBackend + 'static> SshBridge<A> {
 
     /// The transport lost (or closed) a connection.
     pub async fn disconnected(&self, conn: ConnId) {
-        self.core.disconnected(conn).await;
+        let outcome = self.core.disconnect_outcome(conn).await;
+        self.resume.detach(
+            conn.0,
+            matches!(outcome, Some(mush_session::DetachOutcome::Linkdead { .. })),
+        );
     }
 
     /// Terminal resize / capability renegotiation.
@@ -418,18 +532,41 @@ mod net {
             account: &'a str,
             character: u64,
         ) -> BoxFuture<'a, Result<(), String>> {
-            let conn = NewConn {
-                id: ConnId(conn.id),
-                addr: conn.addr,
-                caps: conn.caps,
-                tx: conn.tx,
-                stamped_tx: conn.stamped_tx,
-            };
             Box::pin(async move {
-                self.connect_character(conn, account, character)
+                self.connect_character(conn.into(), account, character)
                     .await
                     .map_err(|e| e.to_string())
             })
+        }
+
+        fn cockpit_issue<'a>(
+            &'a self,
+            conn: u64,
+            pane: &'a str,
+            account: &'a str,
+            character: u64,
+        ) -> BoxFuture<'a, Result<(net_ssh::resume::Ticket, u32), net_ssh::resume::Failure>>
+        {
+            Box::pin(async move { self.cockpit_issue(ConnId(conn), pane, account, character) })
+        }
+
+        fn cockpit_redeem<'a>(
+            &'a self,
+            conn: net_ssh::NewConn,
+            pane: &'a str,
+            account: &'a str,
+            selected: Option<u64>,
+            ticket: &'a net_ssh::resume::Ticket,
+        ) -> BoxFuture<'a, Result<(u64, net_ssh::resume::Ticket, u32), net_ssh::resume::Failure>>
+        {
+            Box::pin(async move {
+                self.cockpit_redeem(conn.into(), pane, account, selected, ticket)
+                    .await
+            })
+        }
+
+        fn cockpit_close(&self, conn: u64) {
+            self.resume.detach(conn, false);
         }
 
         fn connect_exec<'a>(
@@ -438,15 +575,8 @@ mod net {
             account: &'a str,
             character: u64,
         ) -> BoxFuture<'a, Result<(), String>> {
-            let conn = NewConn {
-                id: ConnId(conn.id),
-                addr: conn.addr,
-                caps: conn.caps,
-                tx: conn.tx,
-                stamped_tx: conn.stamped_tx,
-            };
             Box::pin(async move {
-                self.connect_exec(conn, account, character)
+                self.connect_exec(conn.into(), account, character)
                     .await
                     .map_err(|e| e.to_string())
             })
@@ -850,6 +980,7 @@ mod exec_tests {
 
         fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
             let resp = match req {
+                ServiceReq::Barrier => Some(ServiceResp::Barrier),
                 ServiceReq::ConnectionReady { .. } => Some(ServiceResp::ConnectionReady(
                     self.0.binds.load(Ordering::SeqCst),
                 )),
@@ -885,6 +1016,99 @@ mod exec_tests {
             utf8: true,
             structured: true,
         }
+    }
+
+    #[tokio::test]
+    async fn cockpit_ticket_rebinds_only_the_dropped_session_after_world_admission() {
+        use mush_net_ssh::resume::Failure;
+        const PANE: &str = "00112233445566778899aabbccddeeff";
+        let (bridge, sessions, seen) = rig(true);
+        let character = u64::from(PILOT.0);
+        let (origin, _original_output) = exec_conn(45);
+        bridge
+            .connect_character(origin, "pilot", character)
+            .await
+            .unwrap();
+        let session = sessions.session_of_conn(ConnId(45)).unwrap();
+        sessions.send_event_to_session(
+            session,
+            OutputEvent::Sys(mush_proto::RichText::plain("old one-shot")),
+        );
+        let (ticket, _) = bridge
+            .cockpit_issue(ConnId(45), PANE, "pilot", character)
+            .unwrap();
+        let redeem = |id, account, selected| {
+            let (conn, output) = exec_conn(id);
+            (
+                bridge.cockpit_redeem(conn, PANE, account, selected, &ticket),
+                output,
+            )
+        };
+        assert_eq!(
+            redeem(46, "pilot", Some(character)).0.await.unwrap_err(),
+            Failure::Busy
+        );
+        bridge.disconnected(ConnId(45)).await;
+        assert_eq!(
+            redeem(46, "other", Some(character)).0.await.unwrap_err(),
+            Failure::Denied
+        );
+        assert_eq!(
+            redeem(46, "pilot", Some(8)).0.await.unwrap_err(),
+            Failure::Denied
+        );
+        seen.binds.store(false, Ordering::SeqCst);
+        assert_eq!(
+            redeem(46, "pilot", None).0.await.unwrap_err(),
+            Failure::Unavailable
+        );
+        assert!(
+            sessions.is_linkdead(session),
+            "rejected world binding restores the old drop"
+        );
+        seen.binds.store(true, Ordering::SeqCst);
+        let (result, mut output) = redeem(47, "pilot", None);
+        assert_eq!(result.await.unwrap().0, character);
+        assert_eq!(sessions.session_of_conn(ConnId(47)), Some(session));
+        assert!(matches!(
+            &*output.try_recv().unwrap(),
+            OutputEvent::SessionInfo { .. }
+        ));
+        assert!(
+            output.try_recv().is_err(),
+            "previous session effects are not replayed"
+        );
+        assert!(seen.frames.lock().unwrap().iter().any(|frame| matches!(frame, ToServer::Inbound(WireInbound::ConnUp {conn:47,actor,from_linkdead:true,..}) if *actor == PILOT)));
+        assert!(
+            redeem(48, "pilot", None).0.await.is_err(),
+            "old ticket cannot acquire a second transport"
+        );
+    }
+
+    #[tokio::test]
+    async fn cockpit_ticket_allows_a_late_loss_callback_before_reported_busy() {
+        let pane = "00112233445566778899aabbccddeeff";
+        let (bridge, sessions, _) = rig(true);
+        let character = u64::from(PILOT.0);
+        let (original, _rx) = exec_conn(49);
+        bridge
+            .connect_character(original, "pilot", character)
+            .await
+            .unwrap();
+        let original_session = sessions.session_of_conn(ConnId(49)).unwrap();
+        let (ticket, _) = bridge
+            .cockpit_issue(ConnId(49), pane, "pilot", character)
+            .unwrap();
+        let (replacement, _rx2) = exec_conn(50);
+        let (result, ()) = tokio::join!(
+            bridge.cockpit_redeem(replacement, pane, "pilot", Some(character), &ticket),
+            async {
+                tokio::time::sleep(Duration::from_millis(35)).await;
+                bridge.disconnected(ConnId(49)).await;
+            }
+        );
+        assert_eq!(result.unwrap().0, character);
+        assert_eq!(sessions.session_of_conn(ConnId(50)), Some(original_session));
     }
 
     fn exec_conn(id: u64) -> (NewConn, mpsc::Receiver<Arc<OutputEvent>>) {
