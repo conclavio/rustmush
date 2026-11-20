@@ -1952,6 +1952,14 @@ fn sm5_a_filled_intake_drips_back_within_the_hour() {
         boot_rows,
         "a row at its cap is left alone"
     );
+    // And it is passed over unpriced. A premium port's price reads the reach, a route plot per
+    // supplier, and the drip walks every refresh row of every port each fire: only a row that
+    // acts is priced, one act a clerk, where every row of every port was priced before.
+    let stats = tacsim::port_tick::last_fire(rig.tw.world()).expect("the port tick fired");
+    assert!(
+        stats.drip_priced <= stats.stock.visited,
+        "a refresh row with nothing to do is not priced: {stats:?}"
+    );
 
     // The banked drip: 50 t sold leaves 190; the next fire posts 230, one drip.
     sell(&mut rig, pilot, "freeport_exchange", "metal_ore", "50");

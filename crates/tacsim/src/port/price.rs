@@ -245,6 +245,22 @@ pub fn bid_price_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
     )
 }
 
+/// **The most [`bid_price_major`] can read**, major units: the factored price under the
+/// premium's cap, with no reach read. `priced` rises with the premium and the premium never
+/// passes its cap, so the bid's price is never above this. The intake drip uses it to pass
+/// over a row cheaply: a house that funds the row's unfilled intake at this price funds it at
+/// the real one too.
+#[must_use]
+pub fn bid_price_ceiling_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
+    let base = factored(
+        bid.price_major,
+        factor_of(w, def, &bid.good, mush_market::PriceSide::Bid),
+    );
+    def.premium
+        .as_ref()
+        .map_or(base, |policy| priced(base, policy.cap_permille))
+}
+
 // ---- doc 19 cut A.4b: the emergency bids ----------------------------------------
 
 /// How often the stock clerk takes a port's emergency reading, real seconds: once

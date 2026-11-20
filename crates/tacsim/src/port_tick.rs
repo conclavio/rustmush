@@ -1821,6 +1821,10 @@ pub struct PortFireStats {
     /// **Doc 23 cut S.2**: the epoch arm's agents this fire (`Arm::Epoch`). RAM only, never
     /// persisted, never shown to a player.
     pub epoch: ArmFireStats,
+    /// The refresh rows the stock clerks' intake drip priced this fire (`stock::drip_step`). A
+    /// row with nothing to do is passed over unpriced, since a premium's price reads the reach,
+    /// a route plot per supplier. RAM only, never persisted, never shown to a player.
+    pub drip_priced: u32,
 }
 
 /// **One arm's share of a port fire** (doc 20 cut SM.12c, the cost lane; doc 20a §5.6's "by
@@ -2503,6 +2507,11 @@ pub(crate) enum SwapRefused {
 }
 
 impl Fire {
+    /// Count one refresh row the intake drip priced this fire ([`PortFireStats::drip_priced`]).
+    pub(crate) fn drip_priced(&mut self) {
+        self.stats.drip_priced = self.stats.drip_priced.saturating_add(1);
+    }
+
     /// A fire's ledger, starting from `owed` (doc 20 cut SM.3b: the surface tick starts
     /// every fire from an empty map, finding F8).
     pub(crate) fn new(owed: BTreeMap<ObjId, ObjId>) -> Fire {
