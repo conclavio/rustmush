@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 45,
+    "version": 46,
     "kind": "campaign_seed",
-    "digest": "ecb08a2c9c609d82649291ad597b4cde33793545f542b6e659ee6d984efb04e2",
+    "digest": "2dc9c2eba3cf71e3fa7e3295c7bfef79747ce1996fc6aaa9d7444869986ed3d7",
     "requires": []
   },
   "entries": {
@@ -2904,7 +2904,8 @@
         "orgs": [
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic", "roles": [ "acceptor" ] },
           { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ], "roles": [ "acceptor" ] },
-          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] }
+          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] },
+          { "id": "republic_customs", "name": "Republic Customs Office", "capital_major": 10000, "faction": "republic" }
         ],
         "vendors": [
           { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
@@ -3289,7 +3290,11 @@
               { "kind": "de_facto", "holder": { "org": "coop" },
                 "contested_by": [ { "polity": "republic" } ] },
               { "kind": "economic", "holder": { "org": "tycho_mutual" } }
-            ] },
+            ],
+            "terms": {
+              "republic": { "payee": "republic_customs", "transit_duty_permille": 20,
+                            "transit_floor_major": 50 }
+            } },
           { "id": "ceres", "name": "Ceres station", "places": [ "ceres_freeport", "ceres_port" ],
             "holds": [
               { "kind": "de_jure", "holder": { "polity": "freeport" } },

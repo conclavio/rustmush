@@ -2352,12 +2352,13 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
     // cut IN.9 (lane v27): Stickney Yards' 50,000 raise (IN.7's), one more. Doc 41 cut RS.6a
     // (lane v28): Tycho Mutual's 450,000 raise (Q-41-17), one more. Doc 39 cut IN.10 (lane v29):
     // the Trust's 250,000 raise, one more, the same amount as Occator's. Doc 48 unit EX.10
-    // (lane v43): the Vesta Carrying Company's 400,000 base, one more.
+    // (lane v43): the Vesta Carrying Company's 400,000 base, one more. Doc 50 cut KC.2 (lane
+    // v46): the Republic Customs Office's 10,000 base, one more.
     assert_eq!(
         made.len(),
-        9,
+        10,
         "Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two, \
-         Stickney Yards' raise, Tycho's, the Trust's and Vesta's"
+         Stickney Yards' raise, Tycho's, the Trust's, Vesta's and the customs office's"
     );
     let trust = port_map(&rig.tw, "ceres_port").orgs[&cid("coop_trust")]
         .account
@@ -2367,6 +2368,8 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
         .filter(|o| {
             ![
                 5_000_000, 10_000_000, 80_000_000, 20_000_000, 45_000_000, 40_000_000,
+                // Doc 50 cut KC.2 (lane v46): the Republic Customs Office's 10,000 base.
+                1_000_000,
             ]
             .contains(&o.amount.minor())
         })

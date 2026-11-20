@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v45 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v46 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,9 +45,37 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
-/// **Doc 50 cut KC.0 (lane v45): the regions block taken out** — the `regions` entry, so a strip
-/// chain rebuilds a lane before v45 (idempotent). The chain's head.
+/// **Doc 50 cut KC.2 (lane v46): the terms taken out**: the regions rows' `terms` and Stickney's
+/// Republic customs office, so a strip chain rebuilds a lane before v46 (idempotent). The chain's
+/// head.
+pub fn strip_terms(doc: &mut Value) {
+    let Some(entries) = doc.get_mut("entries") else {
+        return;
+    };
+    if let Some(rows) = entries
+        .get_mut("regions")
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("rows"))
+        .and_then(Value::as_array_mut)
+    {
+        for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+            row.remove("terms");
+        }
+    }
+    if let Some(orgs) = entries
+        .get_mut("stickney_port")
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("orgs"))
+        .and_then(Value::as_array_mut)
+    {
+        orgs.retain(|org| org["id"] != "republic_customs");
+    }
+}
+
+/// **Doc 50 cut KC.0 (lane v45): the regions block taken out**: the `regions` entry, so a strip
+/// chain rebuilds a lane before v45 (idempotent); lane v46's [`strip_terms`] first.
 pub fn strip_regions(doc: &mut Value) {
+    strip_terms(doc);
     if let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) {
         entries.remove("regions");
     }

@@ -154,6 +154,10 @@ pub struct Departed {
     pub to_venue: CanonicalId,
     /// The port entry the hull left.
     pub from: CanonicalId,
+    /// **Doc 50 cut KC.2 (Q-50-10)**: the picket's terms pinned when the passage was filed (or
+    /// engaged from free flight): the picket reads these, not the live ones. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<crate::polity::PlaceTerms>,
 }
 
 /// **What a hull bound for a site will arrive with** (doc 20 cut SM.2; Q-20-7): the
@@ -221,6 +225,10 @@ pub struct PendingVoyage {
     /// close any of them. Skipped when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_behind: Vec<ObjId>,
+    /// **Doc 50 cut KC.2 (Q-50-10)**: the picket's terms pinned when the passage was filed (or
+    /// engaged from free flight): the picket reads these, not the live ones. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<crate::polity::PlaceTerms>,
 }
 
 impl Voyage {
@@ -3702,6 +3710,7 @@ pub(crate) fn prepare_departure(
         arrival,
         carried: basis.carried.clone(),
         left_behind,
+        terms: crate::space::duty::live_terms(w),
     };
     let voyage = Voyage {
         schema: VOYAGE_SCHEMA,
@@ -3934,6 +3943,7 @@ fn departed_of(
         depart_ic,
         to_venue: pending.to_venue.clone(),
         from,
+        terms: pending.terms.clone(),
     })
 }
 
@@ -4516,6 +4526,7 @@ mod tests {
             arrival: None,
             carried: Vec::new(),
             left_behind: Vec::new(),
+            terms: None,
         }
     }
 
@@ -4767,6 +4778,7 @@ mod tests {
                 depart_ic: 900,
                 to_venue: CanonicalId::new("stickney").unwrap(),
                 from: CanonicalId::new("ceres_port").unwrap(),
+                terms: None,
             }),
         };
         flown.check().unwrap();

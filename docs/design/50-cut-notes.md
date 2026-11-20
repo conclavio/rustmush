@@ -400,7 +400,131 @@ doc 50a A-1; doc 11 §6). Stacked on KC.0. No lane bump.
 
 ## KC.2
 
-Not built.
+The terms schedule and the transit duty (Q-50-5, Q-50-6, Q-50-10, Q-50-11, Q-50-14, Q-50-53 to
+Q-50-55). Stacked on KC.1, with main (CR) merged in. **A lane bump: lane v46 and relay v37.** It
+must land after OP.1's lane bump and be re-signed from OP.1's version (see the PR).
+
+**Survey.**
+- **The picket's submission** (`space/commands.rs`, `submit_hull_to_customs`) chooses Cleared,
+  Fined or Seized and files one `tacsim_space_customs` action. The tick levies the fine through
+  a contract to the Freeport Registry (`picket.rs`, `levy_customs_fine_and_advance_front`). A
+  pilot who cannot pay the fine has the contraband seized.
+- **The picket opens** only when a connected player stands on the hull or the hull has a
+  link-loss record (`composition/sim_routes.rs`, `boundary`).
+  - A link-loss hull is submitted by the backup seat.
+  - A hull with nobody aboard and no record passed the picket untouched.
+- **CR's one hold reading** is `port::ship::hold_reading` (pooled plus lots, in the good's ledger
+  unit). It includes cargo under a haul's hold, which is a reservation on the pool.
+- **The value.** A good's catalog baseline is `GoodDef.reference_major`, in major credits per
+  quote unit; every good's quote unit is its ledger unit. Ship's stores are the goods with a
+  `consumable` (propellant, provisions).
+- **There is no filing verb.** A passage is filed by `+ship/undock` (`prepare_departure`, which
+  writes a `PendingVoyage`). The launch writes `Departed`, which outlives the passage.
+  `+helm/autopilot` from free flight writes no pending; it rewrites `Departed`.
+- **The shortcut.** `owed_interdicted_leg` reads the port of departure's `routes[dest]`. Ceres
+  lists no `deimos`, so a free-flight autopilot from Ceres' halo to Deimos owed nothing (§4.3).
+- **Debts with grace** already exist: `mush_economy::create_debt_due` in `tacsim.debt`, with
+  `debt_due` (28 IC days) as port security uses it.
+
+**Built.**
+- **The schedule** (`tacsim::polity`):
+  - A regions row gains `terms: BTreeMap<polity tag, TermsRow>`.
+  - `TermsRow { payee, transit_duty_permille, transit_floor_major, import_duty_permille,
+    import_goods, restricted: Vec<RestrictedGood { good, paper }>, audit_permille,
+    fine: Option<FineScale { per_t_major, floor_major }> }`.
+  - It is checked pack-wide: a known polity, a lane org as payee, rates of 1,000‰ at most,
+    majors of 1,000,000 at most.
+  - The reads:
+    - `terms_at(w, place) -> Option<PlaceTerms { holder, since_ic, row }>` gives the de facto
+      holder's polity's row (`row: None` means the terms as they are today);
+    - `picket_place(w)`;
+    - `lane_org_account(w, lane id) -> Option<(OrgId, AccountId)>`.
+- **The duty** (`tacsim::space::duty`):
+  - `hull_terms(w, hull)` gives the terms pinned on the passage, else the live ones.
+  - `dutiable_value_major` is every good with no `consumable`, pooled or as a lot, at its
+    catalog baseline.
+  - `quote_duty` is `transit_duty_permille` of the value, never under the floor, and nothing for
+    an empty hold or a row that levies no duty.
+  - `levy_transit_duty(ctx, hull, debtor)` opens a debt to the payee in `tacsim.debt`, due in 28
+    IC days, and pays it at once when the account covers it. `DutyOutcome::{Paid, Owed(id)}`.
+  - Also `duty_line`, `assess_absent`, `settle_absent` and `fine_payee`.
+- **At the picket:**
+  - `+helm/submit` levies the duty on the inspected hull, whatever the finding, and the line
+    names it. It never changes the finding: lawful cargo is never seized for a duty.
+  - A hull with nobody aboard and no link-loss record crosses the interdicted leg with no picket.
+    The leg's boundary notes her in `SpaceBubbleBook::absent_duty`, because that hook cannot read
+    a hold. The next space tick assesses her by `assess_absent` (`settle_absent`). The debtor is
+    the hull's customs principal; her absent tenant is told.
+  - A link-loss hull goes through the backup seat's submission as before, and so pays the same
+    way.
+  - Running stays a present pilot's choice.
+- **The payee** (Q-50-14). The contraband fine goes to `fine_payee`: the terms row's payee once
+  the holder has a row, else the Registry, as built. Lane v46 adds the Republic Customs Office
+  (`republic_customs`, at Stickney, capital 10,000, provisional), the payee of the Republic's
+  Kirkwood row.
+- **Pinning** (Q-50-10):
+  - `PendingVoyage.terms` is set at filing to the picket's live terms, and copied to
+    `Departed.terms` at the launch.
+  - An engagement from free flight rewrites `Departed.terms`.
+  - The picket reads the pinned terms.
+- **The shortcut** (Q-50-55). A destination the port of departure lays no route to owes the
+  first interdicted leg of any route out of that port, so Ceres' halo to Deimos flies through
+  the picket. Luna, routed by the long way, owes nothing, and the outward run stays free.
+- **Lane v46:**
+  - the Kirkwood row's `terms.republic` (payee `republic_customs`, 20‰, floor 50 cr);
+  - the customs office row;
+  - relay v37, re-signed to require it.
+
+**Tests.** In `tests/domain_world/voyage.rs`, on the picket rig:
+- `kc2_the_transit_duty_before_and_after_the_flip_is_pinned_at_filing`, three cases:
+  - under the Co-op, no duty;
+  - the Republic holding Kirkwood at filing: 200 cr on 50 t of metals held as a lot (10,000 cr
+    of catalog value), paid to the customs office, and cleared;
+  - filed under the Co-op and flipped en route: no duty.
+- `kc2_a_pilot_who_cannot_pay_is_cleared_and_owes_the_duty`: a 200 cr debt to the office, the
+  hull cleared, the metals untouched.
+- `kc2_a_hull_whose_pilot_is_away_is_assessed_and_cleared`: no picket, and the duty is paid
+  from her pilot's account.
+- `kc2_the_free_flight_shortcut_to_deimos_owes_the_picket_leg`: Deimos owes the interdicted leg
+  and Luna does not.
+- Lane pins: `kc2_strip_terms_rebuilds_the_published_v45`; `lane_chain::strip_terms` as the new
+  head; the v46 and relay v37 digests and versions.
+- The count pins the customs office moves (`plumbing.rs`, `ports.rs`, `boot_parity.rs`) and
+  `ic_sortie_voyages.rs`'s departure record (now carrying the pin).
+- Mutation-checked on conclav.dev; each failed a story and was undone by a reverse edit:
+  - ignoring the pin;
+  - a duty never paid at once;
+  - the tick never settling the absent hull;
+  - the shortcut left open.
+  A first absent mutation, which suppressed only the line, survived: `assess_absent` still
+  levied. The tick-side mutation replaced it.
+- Green on conclav.dev: clippy `-D warnings` on tacsim; tacsim's `domain_economy` (698),
+  `domain_world` (291) and `domain_field`. With the duty levied at the boundary, before the move
+  to the tick: tacsim's other binaries and mush-server `split_boundary` (227) and
+  `commerce_composition`.
+  - `split_boundary`'s `ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field`
+    failed once and passed on the base and on a rerun with the patch: a flake.
+- Locally: rustdoc in both modes and the contract guards.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- **Every good with a `consumable` is a store, even held as a lot or under a haul's hold.** Q-50-53
+  makes propellant in a lot cargo; the known gap it accepts for unreserved propellant is widened
+  to every propellant and provision. Flagged for tuning.
+- **The duty is levied at the submission** (the command), not when the ruling lands, and on any
+  finding but a run. A seized hull owes it as a debt like anyone who cannot pay.
+- **The shortcut owes the picket's leg** rather than flying the long way's legs. The rule reaches
+  every destination the port of departure lays no route to: from Ceres that is Deimos and Titan.
+- **The pin is the picket's terms**, taken whatever the route, on every filing.
+- **The payee row lives at Stickney** (a port's org row needs a port). The fine scale, the import
+  duty, the restricted goods and the audit rate are carried and checked, and read by nothing yet.
+- **Q-50-39's penalties past the grace** are not built for the duty: the debt stands in `+debts`
+  and goes delinquent, and nothing quarantines on it yet.
+
+**Not built.**
+- The duty estimate on `+ship/plan`, the filing and the job board, and the reason clause (KC.3).
+- The Co-op's share by control (KC.4).
+- The import duty and the restricted goods (LW.1, OP.5).
+- The penalties past the grace.
 
 ## KC.3
 

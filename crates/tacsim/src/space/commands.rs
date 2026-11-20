@@ -3621,17 +3621,24 @@ fn owed_interdicted_leg(
     let (def, _) = crate::port::voyage::lane_ports(w)
         .into_iter()
         .find(|(_, map)| map.is_some_and(|map| map.entry == from))?;
-    def.routes
-        .get(dest_venue)?
-        .iter()
-        .filter_map(|id| store.route_in_world(w, id))
-        .find_map(|route| {
-            route
-                .legs()
-                .iter()
-                .copied()
-                .find(|leg| leg.is_interdicted() && leg.to() != dest_host)
-        })
+    let first_interdicted = |ids: &[mush_core::CanonicalId]| {
+        ids.iter()
+            .filter_map(|id| store.route_in_world(w, id))
+            .find_map(|route| {
+                route
+                    .legs()
+                    .iter()
+                    .copied()
+                    .find(|leg| leg.is_interdicted() && leg.to() != dest_host)
+            })
+    };
+    match def.routes.get(dest_venue) {
+        Some(ids) => first_interdicted(ids),
+        // Doc 50 cut KC.2 (Q-50-55): a destination the port of departure lays no route to (Ceres
+        // to Deimos, the free-flight shortcut) flies none of the lane's lawful legs, so it owes
+        // the picket's leg: the first interdicted leg of any route out of that port.
+        None => def.routes.values().find_map(|ids| first_interdicted(ids)),
+    }
 }
 
 /// Recouple `hull`, in free flight or at an orbital cluster, onto a carrier journey to `port`:
@@ -3847,6 +3854,8 @@ pub(crate) fn engage_port_autopilot(
         if let Some(dep) = &mut voyage.departed {
             dep.to_venue = dest_def.venue.clone();
             dep.depart_ic = now.at;
+            // Doc 50 cut KC.2 (Q-50-10): an engagement from free flight pins the terms too.
+            dep.terms = crate::space::duty::live_terms(ctx.w);
         }
         crate::store::put_voyage(ctx, &voyage);
     }
@@ -5076,9 +5085,14 @@ pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(
         finding,
         (corvette_ship_id.clone(), carrier_ship_id.clone()),
     )?;
+    // Doc 50 cut KC.2 (Q-50-6, Q-50-54): the transit duty on a laden hull, under the terms
+    // pinned on her passage: paid now, or owed with 28 IC days of grace. It never changes the
+    // finding: lawful cargo is never seized for a duty.
+    let levied = super::duty::levy_transit_duty(ctx, hull, customs_principal);
+    let duty = super::duty::duty_line(ctx, levied.as_ref());
 
     let line = format!(
-        "[PICKET] Republic Customs Corvette `{corvette_ship_id}` is inspecting `{carrier_ship_id}` manifest ({found}). Hold your heave-to: the ruling follows once it is recorded."
+        "[PICKET] Republic Customs Corvette `{corvette_ship_id}` is inspecting `{carrier_ship_id}` manifest ({found}).{duty} Hold your heave-to: the ruling follows once it is recorded."
     );
     crate::port::voyage::narrate_hull(ctx, hull, &line);
     ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);

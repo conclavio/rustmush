@@ -134,6 +134,16 @@ impl CarrierHooks for TacsimCarrierHooks {
                 .w
                 .module_state::<crate::space::SpaceBubbleBook>()
                 .is_some_and(|book| book.linkdead_state(hull).is_some());
+            // Doc 50 cut KC.2 (Q-50-54): a hull whose pilot is away, and not under the backup
+            // seat's cover, opens no picket; she is noted here and assessed the transit duty by
+            // the space tick with no submission, and cleared.
+            if !active_bridge_crew
+                && !crew_away_under_cover
+                && crate::space::picket::is_kirkwood_picket_host(ctx.w, leg.to())
+                && let Some(book) = ctx.w.module_state_mut::<crate::space::SpaceBubbleBook>()
+            {
+                book.absent_duty.insert(hull);
+            }
             if active_bridge_crew || crew_away_under_cover {
                 let dom_opt = ctx
                     .w

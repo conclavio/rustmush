@@ -123,6 +123,8 @@ fn s2_ceres_to_stickney_opens_and_closes() {
             depart_ic: departed_at,
             to_venue: CanonicalId::new("stickney").expect("a venue"),
             from: CanonicalId::new("ceres_port").expect("an entry"),
+            // Doc 50 cut KC.2 (Q-50-10): and the picket's terms pinned at filing.
+            terms: tacsim::space::duty::live_terms(rig.tw.world()),
         }),
         "the launch records the departure (V5)"
     );
