@@ -162,8 +162,9 @@ async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
         loaded,
         "the rearm's munitions: before {before:?}, after {after:?}"
     );
-    // Doc 48 unit EX.9: the only consumer in this run is the Lunar Habitat Board, which uses up
-    // 16 crew-days of its provisions an IC day.
+    // Doc 48 unit EX.9: the consumers in this run are the Lunar Habitat Board, which uses up
+    // 16 crew-days of its provisions an IC day, and (doc 50 cut OP.4) the Isidis tank farm, 20 t
+    // of propellant an IC day.
     let provisions_kg = store(&rig.tw)
         .goods()
         .and_then(|goods| {
@@ -172,10 +173,18 @@ async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
                 .and_then(|g| g.mass_kg_per_unit())
         })
         .expect("provisions weigh");
-    let used = after["consumed"] - before["consumed"];
+    let propellant_kg = store(&rig.tw)
+        .goods()
+        .and_then(|goods| {
+            goods
+                .good(&mush_core::CanonicalId::new("propellant").expect("an id"))
+                .and_then(|g| g.mass_kg_per_unit())
+        })
+        .expect("propellant weighs");
+    let used = (after["consumed"] - before["consumed"]) % (20 * i128::from(propellant_kg));
     assert!(
         used >= 0 && used % (16 * i128::from(provisions_kg)) == 0,
-        "only the Board's whole days of provisions are used up: {used}"
+        "past the farm's whole days of propellant, only the Board's whole days of provisions are used up: {used}"
     );
     assert_eq!(
         after["balance"], before["balance"],

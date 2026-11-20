@@ -2582,7 +2582,7 @@ pub fn script_figures(source: &str) -> (usize, usize, String, usize) {
 /// off`), as staff would: a stock rig whose stories pin a port's stocks, legs or burns boots
 /// with the Vesta Carrying Company's house idle, and laid up before the first fire it seeds no
 /// hull. A lane variant with no hauling house (an older lane) is left as it is. `ex10_haulers`
-/// turns it back on.
+/// turns it back on. Doc 50 cut OP.4: it lays the Freeport arm up too.
 pub fn lay_up_haulers(tw: &mut TestWorld) {
     let events = tw.run(mush_core::GOD, "@tacsim/port haulers ceres_port off");
     let said = tw.seen_by(&events, mush_core::GOD).join("\n");
@@ -2591,6 +2591,11 @@ pub fn lay_up_haulers(tw: &mut TestWorld) {
             || said.contains("ceres_port has no hauling house."),
         "{said}"
     );
+    // Doc 50 cut OP.4: the Freeport arm too (`@tacsim/port arm off`), laid up before the first
+    // fire so it makes no agent and posts nothing. `op4_stockpile` opens it.
+    let events = tw.run(mush_core::GOD, "@tacsim/port arm off");
+    let said = tw.seen_by(&events, mush_core::GOD).join("\n");
+    assert!(said.contains("Freeport arm: laid up"), "{said}");
 }
 
 /// Historical/operator-edited lanes do not satisfy the full star's exact lane

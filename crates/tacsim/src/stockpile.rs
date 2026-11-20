@@ -82,6 +82,11 @@ pub const MAX_POSTS: usize = 128;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FreeportArm {
+    /// **Laid up by staff** (`@tacsim/port arm off`): it reads nothing and posts nothing; what it
+    /// posted runs on. A rig whose stories predate OP.4 lays it up before its first fire, so it
+    /// makes no agent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub laid_up: bool,
     /// Its agent, a `DARK` Thing of Occator's at Ceres' exchange.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<u32>,
@@ -262,6 +267,9 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     }
     let kept = arm(ctx.w).cloned();
     let mut doc = kept.clone().unwrap_or_default();
+    if doc.laid_up {
+        return;
+    }
     step(ctx, occator, &mut doc);
     if kept.as_ref() != Some(&doc) {
         put(ctx, &doc);
@@ -349,6 +357,25 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
             doc.posts.drain(..drop);
         }
     }
+}
+
+/// **`@tacsim/port arm [on|off]`** (staff): the arm's state, or lay it up and open it again.
+pub(crate) fn arm_cmd(ctx: &mut Ctx<'_>, set: Option<bool>) -> Vec<String> {
+    let mut doc = arm(ctx.w).cloned().unwrap_or_default();
+    if let Some(open) = set {
+        doc.laid_up = !open;
+        put(ctx, &doc);
+    }
+    let month = crate::concession::ic_month(ctx.w.world_ic_now().at);
+    vec![format!(
+        "Freeport arm: {}; the tank farm at {}, threshold {STOCKPILE_THRESHOLD_T} t; {} posts, \
+         {} cr committed this IC month of {ARM_MONTHLY_CAP_CR} cr.",
+        if doc.laid_up { "laid up" } else { "open" },
+        doc.level
+            .map_or_else(|| "no reading".to_owned(), |level| format!("{level} t")),
+        doc.posts.len(),
+        doc.spent_in(month) / 100,
+    )]
 }
 
 /// The haul and its escort, posted as the agent. `None` when the haul did not post.

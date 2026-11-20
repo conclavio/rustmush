@@ -113,6 +113,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    \x20                                 (staff) commission one ship of <design> for an organization (a House) at <port> under the fresh <mark>: the port's next fires lay her up, dock her and title her to it on its root scope. A member granted unit.deploy there may take her out.\n\
                    @tacsim/port haulers <port> [on|off]\n\
                    \x20                                 (staff) a hauling house's hulls, their trips and why each waits; `off` lays it up (what is under way docks and no new trip is planned), `on` opens it again.\n\
+                   @tacsim/port arm [on|off]           (staff) the Freeport arm: the Isidis tank farm's level, its posts and its month's spend; `off` lays it up (it posts nothing more and what it posted runs on), `on` opens it again.\n\
                    @tacsim/tv close #<rig>             (staff) stop a rig's work and clear its plan and queued unload in place.\n\
                    @tacsim/tv home #<rig>              (staff) stop work and bring a stranded rig into its assigned hull's bay, preserving its hopper.\n\
                    @tacsim/tv home #<rig> #<hull>      (staff) bring a rig whose excursion staff closed with it out into another hull settled on its site, preserving its hopper and its lease.\n\
@@ -1038,7 +1039,7 @@ fn time_rate(ctx: &mut Ctx<'_>, rhs: &str) -> Result<(), CmdError> {
 /// The one usage line of `@tacsim/port`.
 pub const PORT_USAGE: &str = "Usage: @tacsim/port status | @tacsim/port clear #<hull> | \
      @tacsim/port seed <port> <design> <mark>=org:<organization> | \
-     @tacsim/port haulers <port> [on|off]";
+     @tacsim/port haulers <port> [on|off] | @tacsim/port arm [on|off]";
 
 /// `@tacsim/port [status]` (doc 18 §4.7; staff): the port readiness report
 /// ([`crate::port::readiness()`]), a pure read of the port maps, the economy, org
@@ -1085,6 +1086,13 @@ fn port_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     {
         return port_haulers(ctx, &lhs);
     }
+    if lhs
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("arm"))
+    {
+        return port_arm(ctx, &lhs);
+    }
     if !(lhs.is_empty() || lhs.eq_ignore_ascii_case("status")) {
         return Err(CmdError::msg(PORT_USAGE));
     }
@@ -1108,6 +1116,24 @@ fn port_haulers(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
     };
     let entry = CanonicalId::new(port).map_err(|_| CmdError::msg(PORT_USAGE))?;
     let rows = crate::port::hauler::haulers_cmd(ctx, &entry, set).map_err(CmdError::msg)?;
+    lines(ctx, rows);
+    Ok(())
+}
+
+/// `@tacsim/port arm [on|off]` (doc 50 cut OP.4; staff): the Freeport arm's state, or lay it up
+/// and open it again (`crate::stockpile::arm_cmd`).
+fn port_arm(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
+    let mut words = lhs.split_whitespace().skip(1);
+    let (set, None) = (words.next(), words.next()) else {
+        return Err(CmdError::msg(PORT_USAGE));
+    };
+    let set = match set.map(str::to_ascii_lowercase).as_deref() {
+        None => None,
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some(_) => return Err(CmdError::msg(PORT_USAGE)),
+    };
+    let rows = crate::stockpile::arm_cmd(ctx, set);
     lines(ctx, rows);
     Ok(())
 }

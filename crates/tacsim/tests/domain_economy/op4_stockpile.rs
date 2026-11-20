@@ -114,6 +114,15 @@ fn ahead(rig: &mut Rig, secs: i64) {
     fires(rig, 3);
 }
 
+/// The stock rig with the Freeport arm opened again (`@tacsim/port arm on`): the stock rig lays
+/// it up, as it does the hauling house.
+fn opened() -> Rig {
+    let mut rig = stocked();
+    let said = run(&mut rig.tw, GOD, "@tacsim/port arm on");
+    assert!(said.contains("Freeport arm: open"), "{said}");
+    rig
+}
+
 /// Fires until the arm has made `n` posts.
 fn until_posts(rig: &mut Rig, n: usize) -> FreeportArm {
     for _ in 0..60 {
@@ -132,7 +141,7 @@ fn until_posts(rig: &mut Rig, n: usize) -> FreeportArm {
 /// both paid from Occator's account; a day later a second; never more than two open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
-    let mut rig = stocked();
+    let mut rig = opened();
     let occator = port_map(&rig.tw, "ceres_port").orgs[&cid("occator")].org;
     let farm = port_map(&rig.tw, "isidis_port").orgs[&cid("isidis_tank_farm")].org;
     let first = until_posts(&mut rig, 1);
@@ -192,7 +201,7 @@ async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
 /// nothing while the farm stands there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
-    let mut rig = stocked();
+    let mut rig = opened();
     let vault = farm_vault(&rig);
     let _ = until_posts(&mut rig, 1);
     let start = hold_pool(&mut rig.tw, vault, stockpile::STOCKPILE_GOOD);
@@ -250,7 +259,7 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
 /// delivers it into the tank farm; the contract settles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
-    let mut rig = stocked();
+    let mut rig = opened();
     let first = until_posts(&mut rig, 1).posts[0].haul;
     ahead(&mut rig, stockpile::FALLBACK_IC_DAYS * DAY);
     assert_eq!(
@@ -309,7 +318,7 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
 /// on her cargo comes out of the house's own account, not her helm's purse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_a_house_hull_pays_the_kirkwood_duty_from_the_house() {
-    let mut rig = stocked();
+    let mut rig = opened();
     // The Republic holds the approach, as Customs Assertion's fill makes it (KC.1): its terms row
     // levies the duty.
     let held = run(
