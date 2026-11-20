@@ -1007,6 +1007,15 @@ pub(crate) fn land_in_bubble(
     };
     flown.events = answered;
 
+    // Doc 50 cut OP.4 (Q-50-56): a hauling house's hull answers a customs picket by rule. She
+    // heaves to beside the stopping ship at once, and is submitted, whatever her tank holds:
+    // her passage commits all her reaction mass, so she could never brake for it herself.
+    let by_rule = customs_holds && crate::port::hauler::is_hauler(w, state.hull);
+    if by_rule
+        && let (Some(theirs), Some(ship)) = (stopper_vel, active.bubble.ships.get_mut(ship_id))
+    {
+        ship.vel_mmps = theirs;
+    }
     // What the seat does with the world in hand, and what the crew are told.
     let hove_to = active.bubble.ships.get(ship_id).is_some_and(|ship| {
         stopper_vel.is_some_and(|stopper_vel| {
@@ -1018,7 +1027,7 @@ pub(crate) fn land_in_bubble(
         state.backup_act = BackupAct::ReturningFire;
         flown.line = Some(BACKUP_RETURNS_FIRE);
     }
-    if applied.asked_hold && customs_holds && hove_to {
+    if (applied.asked_hold || by_rule) && customs_holds && hove_to {
         flown.submit = true;
     } else if applied.asked_burn
         && stop.holds()
