@@ -283,6 +283,11 @@ category = "read-only"
 note = "Personal trust and guarded lore: +npc/lore reads an exact authored topic from a present, enabled NPC. The connected player must currently share its room and mutual perception; guarded entries require the player's earned personal trust, and secret entries are never disclosed. The reply goes only to the asker. No relationship, memory, lore, standing, or other durable state is written; no authoritative action is submitted."
 
 [[handler]]
+name = "+operation"
+category = "read-only"
+note = "Doc 50 cut OP.7 (Q-50-30): the Isidis operation's page -- the operation through the frame's seam (tacsim:isidis_op and OperationFrame::status), the Concession Review and Hold the Concession clocks, the tank farm's last reading (tacsim:freeport_arm), the arm's open hauls and escorts, Isidis's de facto holder and its terms rows. A pure read; no durable mutation of any kind."
+
+[[handler]]
 name = "+order"
 category = "legacy-post-image"
 family = "propagation.envelope"
