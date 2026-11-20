@@ -373,3 +373,40 @@ async fn ex6_cargo_still_aboard_at_the_deadline_stays_held_and_goes_back() {
     let told = run(&mut rig.tw, shipper, "+haul");
     assert!(told.contains("You have no hauls."), "{told}");
 }
+
+/// **Doc 50 cut KC.3: the job board names the duty** (Q-50-8). A haul from Ceres to Stickney
+/// crosses the Kirkwood picket; under the Co-op's hold its row carries no duty, and once the
+/// Republic holds the approach it shows the duty its hauler will meet: 6 t of metals is 1,200 cr
+/// at catalog, 2% of it is under the 50 cr floor, so 50 cr.
+#[test]
+fn kc3_the_job_board_shows_the_duty_a_hauler_will_meet() {
+    let mut rig = stocked();
+    let shipper = shipper(&mut rig);
+    let _ = post(&mut rig, shipper);
+    let board = run(&mut rig.tw, shipper, "+market/jobs haul");
+    assert!(board.contains("carry 6 "), "{board}");
+    assert!(
+        !board.contains("Kirkwood duty"),
+        "no duty under the Co-op: {board}"
+    );
+
+    let depot = mush_core::CanonicalId::new("kirkwood_depot").expect("an id");
+    let region = tacsim::polity::control_at(rig.tw.world(), &depot)
+        .expect("Kirkwood is seeded")
+        .region;
+    let republic = tacsim::polity::polity(rig.tw.world(), "republic").expect("the Republic");
+    crate::support::with_ctx(&mut rig.tw, |ctx| {
+        mush_faction::write_control(
+            ctx,
+            mush_faction::ControlWrite::new(region, republic, mush_faction::ControlKind::DeFacto),
+        )
+    })
+    .expect("the flip");
+    let board = run(&mut rig.tw, shipper, "+market/jobs haul");
+    let row = board
+        .lines()
+        .find(|l| l.contains("carry 6 "))
+        .expect("the haul's row");
+    assert!(row.contains("(Kirkwood duty ~50 cr)"), "{board}");
+    assert!(row.chars().count() <= 120, "{row}");
+}

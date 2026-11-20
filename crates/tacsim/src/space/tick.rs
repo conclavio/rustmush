@@ -1114,6 +1114,10 @@ pub struct SpaceBubbleBook {
     /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
     #[serde(default)]
     pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
+    /// **Doc 50 cut KC.2 (Q-50-54)**: hulls that crossed the Kirkwood picket's leg with nobody
+    /// aboard, awaiting the space tick's transit-duty assessment. Skipped when empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub absent_duty: std::collections::BTreeSet<ObjId>,
     /// Active 6-DOF docking sessions keyed by carrier hull [`ObjId`] (`SF.R7`, `Q-35-5`, `D-35-14`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub docking_sessions: BTreeMap<ObjId, super::docking::DockingSession>,
@@ -3184,6 +3188,7 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     crate::surface::claim::tick(ctx);
     reconcile_space_burns(ctx);
     super::customs::reconcile_customs_rulings(ctx);
+    super::duty::settle_absent(ctx);
     prune_space_book_collections(ctx);
     persist_space_state(ctx);
 }

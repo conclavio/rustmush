@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 46,
+    "version": 48,
     "kind": "campaign_seed",
-    "digest": "865dd33de775289963bbb476faf4ffb18a45cdf6a5e25ddb92e987774ac2f233",
+    "digest": "117842fb4e4d12016639fe88180d59b39e646759eff185b04862f1e46b9fcde6",
     "requires": []
   },
   "entries": {
@@ -2942,7 +2942,8 @@
         "orgs": [
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic", "roles": [ "acceptor" ] },
           { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ], "roles": [ "acceptor" ] },
-          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] }
+          { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] },
+          { "id": "republic_customs", "name": "Republic Customs Office", "capital_major": 10000, "faction": "republic" }
         ],
         "vendors": [
           { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
@@ -3356,14 +3357,22 @@
               { "kind": "de_facto", "holder": { "org": "coop" },
                 "contested_by": [ { "polity": "republic" } ] },
               { "kind": "economic", "holder": { "org": "tycho_mutual" } }
-            ] },
+            ],
+            "terms": {
+              "republic": { "payee": "republic_customs", "transit_duty_permille": 20,
+                            "transit_floor_major": 50, "coop_share_permille": 300 }
+            } },
           { "id": "ceres", "name": "Ceres station", "places": [ "ceres_freeport", "ceres_port" ],
             "holds": [
               { "kind": "de_jure", "holder": { "polity": "freeport" } },
               { "kind": "de_facto", "holder": { "polity": "freeport" } },
               { "kind": "economic", "holder": { "org": "occator" } },
               { "kind": "economic", "holder": { "org": "ceres_clearing" } }
-            ] },
+            ],
+            "terms": {
+              "freeport": { "payee": "freeport_registry",
+                            "restricted": [ { "good": "strategic_ore", "paper": "freeport_prospecting" } ] }
+            } },
           { "id": "stickney", "name": "Phobos and Stickney Yards",
             "places": [ "stickney_yards", "stickney_port" ],
             "holds": [

@@ -1102,10 +1102,22 @@ pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
                 .get(j.shipper)
                 .map_or_else(|| SmolStr::new("someone"), |o| o.name.clone().into()),
             subject: format!(
-                "carry {} {} to {}",
+                "carry {} {} to {}{}",
                 j.quantity,
                 label(w, &j.good),
-                super::venue_name(w, &j.destination)
+                super::venue_name(w, &j.destination),
+                // Doc 50 cut KC.3 (Q-50-8): the duty its hauler will meet at Kirkwood.
+                crate::space::duty::haul_clause(
+                    w,
+                    j.origin.as_str(),
+                    j.destination.as_str(),
+                    j.quantity.saturating_mul(
+                        w.module_state::<crate::store::TacsimStore>()
+                            .and_then(crate::store::TacsimStore::goods)
+                            .and_then(|g| g.good(&j.good))
+                            .map_or(0, |g| g.reference_major)
+                    )
+                )
             )
             .into(),
             pay: Amount::from_minor(j.fee_minor),

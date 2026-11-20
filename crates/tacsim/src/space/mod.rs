@@ -17,6 +17,7 @@ pub mod commands;
 pub mod custody;
 pub mod customs;
 pub mod docking;
+pub mod duty;
 pub mod mining;
 pub mod picket;
 pub mod save;

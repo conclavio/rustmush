@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v46 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v48 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,6 +45,58 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut KC.4 (lane v48): the Co-op share taken out**: each terms row's
+/// `coop_share_permille`, so a strip chain rebuilds a lane before v48 (idempotent). The chain's
+/// head.
+pub fn strip_coop_share(doc: &mut Value) {
+    let Some(rows) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("regions"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("rows"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for row in rows.iter_mut() {
+        if let Some(terms) = row.get_mut("terms").and_then(Value::as_object_mut) {
+            for (_, polity) in terms.iter_mut() {
+                if let Some(polity) = polity.as_object_mut() {
+                    polity.remove("coop_share_permille");
+                }
+            }
+        }
+    }
+}
+
+/// **Doc 50 cut KC.2 (lane v47): the terms taken out**: the regions rows' `terms` and Stickney's
+/// Republic customs office, so a strip chain rebuilds a lane before v47 (idempotent); lane v48's
+/// [`strip_coop_share`] first.
+pub fn strip_terms(doc: &mut Value) {
+    strip_coop_share(doc);
+    let Some(entries) = doc.get_mut("entries") else {
+        return;
+    };
+    if let Some(rows) = entries
+        .get_mut("regions")
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("rows"))
+        .and_then(Value::as_array_mut)
+    {
+        for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+            row.remove("terms");
+        }
+    }
+    if let Some(orgs) = entries
+        .get_mut("stickney_port")
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("orgs"))
+        .and_then(Value::as_array_mut)
+    {
+        orgs.retain(|org| org["id"] != "republic_customs");
+    }
+}
+
 /// **Doc 50 cut OP.1: the Isidis Concession's rows** — its place, its two routes and its port.
 pub const ISIDIS_ROWS: [&str; 4] = [
     "isidis_concession",
@@ -55,8 +107,9 @@ pub const ISIDIS_ROWS: [&str; 4] = [
 
 /// **Doc 50 cut OP.1 (lane v46): the Isidis Concession taken out** — its place, its two routes
 /// and its port, Stickney's `isidis` routes key, and the regions block's `isidis` row, so a strip
-/// chain rebuilds a lane before v46 (idempotent). The chain's head.
+/// chain rebuilds a lane before v46 (idempotent); lane v47's [`strip_terms`] first.
 pub fn strip_isidis(doc: &mut Value) {
+    strip_terms(doc);
     let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) else {
         return;
     };

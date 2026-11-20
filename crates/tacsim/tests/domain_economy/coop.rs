@@ -42,8 +42,8 @@ use tacsim::port::apply::room_by_key;
 use tacsim::port::coop::{
     BAD_NAME, BOOKS_UNREADABLE, CHARTER_NOT_IN_FORCE, ENROLLED_ONCE, EndCause, EnrolmentState,
     EnrolmentStatus, FAILED, NAME_TAKEN, NAME_USAGE, NO_ACCOUNT_MATCH, NO_CAPITAL, NO_HULL,
-    NOT_OPEN, RECHARTER_HINT, RECHARTER_WAIT, RECHARTERED_TERMS, REGISTRAR_LINE, enrol_gate,
-    enrolment_key, stake_key,
+    NOT_OPEN, RECHARTER_HINT, RECHARTER_WAIT, RECHARTERED_TERMS, enrol_gate, enrolment_key,
+    stake_key,
 };
 use tacsim::port::{HullRow, PortDef, PortMap, PortMapState, readiness, room_key};
 use tacsim::port_tick::pending_notices;
@@ -924,7 +924,10 @@ fn ic6_enrol_once_opens_the_account_charters_stakes_and_names_the_hull() {
     assert_eq!(e.entry, cid("ceres_port"));
     // `+coop` now.
     let terms = run(&mut rig.tw, who, "+coop");
-    let registrar = format!("The registrar says, \"{REGISTRAR_LINE}\"");
+    let registrar = format!(
+        "The registrar says, \"{}\"",
+        tacsim::port::coop::registrar_line(250)
+    );
     assert!(
         has_block(
             &terms,
@@ -3048,5 +3051,65 @@ fn port_trade_frame_matches_the_clients_shared_fixture() {
         frame_shape(&fixture),
         frame_shape(&frame),
         "port_trade.json no longer has the live port.trade shape: rerun with TACSIM_BLESS=1, fix the decoders"
+    );
+}
+
+/// The share frozen on `who`'s enrollment (`{who}Acct`, `seed`).
+fn share_of(rig: &Rig, who: &str, seed: i64) -> u32 {
+    match store(&rig.tw).enrolment_state(account(&format!("{who}Acct"), seed)) {
+        EnrolmentState::Present(e) => e.share_permille,
+        other => panic!("{who}'s enrollment: {other:?}"),
+    }
+}
+
+/// **Doc 50 cut KC.4: the Co-op's share by control** (Q-50-7). Under the Co-op's own hold of the
+/// Kirkwood approach a new captain signs at the programme's quarter (250‰). Once the Republic
+/// holds it, `+coop` offers three tenths (300‰), in the registrar's line and the terms line, and a
+/// new captain signs at it; the first captain's enrollment keeps the quarter it was signed at.
+#[test]
+fn kc4_new_enrollments_sign_at_the_holders_share_and_standing_ones_keep_theirs() {
+    let mut rig = boot(Roster::bare());
+    let first = pilot(&mut rig, "First", 41);
+    let terms = run(&mut rig.tw, first, "+coop");
+    assert!(
+        terms.contains("a quarter of your trading margin")
+            && terms.contains("250‰ of trading margin"),
+        "{terms}"
+    );
+    let out = enrol(&mut rig, first, "Early Bird");
+    assert!(out.contains("Early Bird"), "{out}");
+    assert_eq!(share_of(&rig, "First", 41), 250);
+
+    let depot = cid("kirkwood_depot");
+    let region = tacsim::polity::control_at(rig.tw.world(), &depot)
+        .expect("Kirkwood is seeded")
+        .region;
+    let republic = tacsim::polity::polity(rig.tw.world(), "republic").expect("the Republic");
+    crate::support::with_ctx(&mut rig.tw, |ctx| {
+        mush_faction::write_control(
+            ctx,
+            mush_faction::ControlWrite::new(region, republic, mush_faction::ControlKind::DeFacto),
+        )
+    })
+    .expect("the flip");
+
+    let second = pilot(&mut rig, "Second", 42);
+    let terms = run(&mut rig.tw, second, "+coop");
+    assert!(
+        terms.contains("three tenths of your trading margin")
+            && terms.contains("300‰ of trading margin"),
+        "{terms}"
+    );
+    let out = enrol(&mut rig, second, "Late Bird");
+    assert!(out.contains("Late Bird"), "{out}");
+    assert_eq!(
+        share_of(&rig, "Second", 42),
+        300,
+        "signs at the holder's share"
+    );
+    assert_eq!(
+        share_of(&rig, "First", 41),
+        250,
+        "a standing enrollment keeps its terms"
     );
 }
