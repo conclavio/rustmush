@@ -932,7 +932,9 @@ mod exec_tests {
 
     const PILOT: ObjId = ObjId(7);
 
-    struct OnePilot;
+    struct OnePilot {
+        owns_character: AtomicBool,
+    }
 
     impl AuthBackend for OnePilot {
         async fn verify(&self, _account: &str, _password: &str) -> AuthOutcome {
@@ -940,6 +942,9 @@ mod exec_tests {
         }
 
         async fn characters(&self, _account: &str) -> Vec<crate::accounts::CharSummary> {
+            if !self.owns_character.load(Ordering::SeqCst) {
+                return Vec::new();
+            }
             vec![crate::accounts::CharSummary {
                 id: PILOT,
                 name: "Pilot".to_string(),
@@ -999,7 +1004,9 @@ mod exec_tests {
             binds: AtomicBool::new(binds),
         });
         let bridge = SshBridge::new(
-            Arc::new(OnePilot),
+            Arc::new(OnePilot {
+                owns_character: AtomicBool::new(true),
+            }),
             Arc::clone(&sessions),
             Recording(Arc::clone(&seen)),
             Arc::new(IpGuard::new()),
@@ -1057,6 +1064,23 @@ mod exec_tests {
             redeem(46, "pilot", Some(8)).0.await.unwrap_err(),
             Failure::Denied
         );
+        // Auth still names the same account and character. Removing that
+        // character from the live roster after issue must revoke admission.
+        bridge
+            .core
+            .accounts
+            .owns_character
+            .store(false, Ordering::SeqCst);
+        assert_eq!(
+            redeem(46, "pilot", Some(character)).0.await.unwrap_err(),
+            Failure::Denied
+        );
+        assert!(sessions.is_linkdead(session));
+        bridge
+            .core
+            .accounts
+            .owns_character
+            .store(true, Ordering::SeqCst);
         seen.binds.store(false, Ordering::SeqCst);
         assert_eq!(
             redeem(46, "pilot", None).0.await.unwrap_err(),

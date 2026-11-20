@@ -2066,7 +2066,12 @@ impl Handler for ConnHandler {
             // The game channel may have one negotiated cockpit sideband and
             // one in-game asset SFTP channel. Drop each auxiliary Channel so
             // its unread queue cannot block russh before subsystem selection.
-            if self.shell_started && self.cockpit.can_open() {
+            if self.shell_started
+                && self.pty_seen
+                && !self.exec_submitted
+                && !self.closing
+                && self.cockpit.can_open()
+            {
                 self.cockpit.open(channel.id(), session.handle());
                 drop(channel);
                 reply.accept().await;
