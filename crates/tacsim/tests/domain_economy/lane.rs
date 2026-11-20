@@ -398,8 +398,8 @@ fn e48_consumers_refresh_and_titan_makes_its_volatiles() {
         }
     }
     assert_eq!(
-        consumers, 4,
-        "the Board, the Reserve, Syrtis Bonded and the Selk Townships"
+        consumers, 5,
+        "the Board, the Reserve, Syrtis Bonded, the Selk Townships and (doc 50 cut OP.4) the          Isidis tank farm"
     );
     let titan = doc["entries"]["titan_port"]["def"]["vendors"]
         .as_array()

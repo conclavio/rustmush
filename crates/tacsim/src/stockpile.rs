@@ -3,7 +3,7 @@
 //!
 //! - **The stockpile** (Q-50-21, Q-50-58): what Occator's tank farm at Isidis holds of
 //!   [`STOCKPILE_GOOD`] in its storefront vault, against [`STOCKPILE_THRESHOLD_T`]. The port tick
-//!   reads the level once an IC day and keeps it on the arm's record ([`FreeportArm::level`]); the
+//!   reads the level every fire and keeps it on the arm's record ([`FreeportArm::level`]); the
 //!   operation's close probe ([`TANK_FARM_PROBE`], [`close_probe`]) reads that record at the
 //!   window's close, so a level is safe across a restart and nothing reads canon.
 //! - **The threshold is news** (Q-50-21 as corrected): an IC month in which a reading stands at the
@@ -91,10 +91,10 @@ pub struct FreeportArm {
     /// The tank farm's level at the last reading, whole tonnes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<u64>,
-    /// The IC day of that reading.
+    /// The IC day that reading was first taken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_day: Option<i64>,
-    /// The IC day the arm last posted (or found it could not), so it looks once a day.
+    /// The IC day the arm last posted, so it posts at most once a day.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub posted_day: Option<i64>,
     /// Every post, oldest first (at most [`MAX_POSTS`]).
@@ -126,6 +126,13 @@ impl FreeportArm {
             .filter(|p| p.month == month)
             .map(|p| p.spent_minor)
             .sum()
+    }
+
+    /// **Whether a post costing `cost_minor` fits month `month`'s cap** (Q-50-22): what the
+    /// month's rows committed, and it, no more than [`ARM_MONTHLY_CAP_CR`].
+    #[must_use]
+    pub fn within_cap(&self, month: i64, cost_minor: i64) -> bool {
+        self.spent_in(month).saturating_add(cost_minor) <= ARM_MONTHLY_CAP_CR.saturating_mul(100)
     }
 }
 
@@ -244,7 +251,7 @@ fn threshold_news(ctx: &mut Ctx<'_>, level: u64) -> bool {
 }
 
 /// **The arm's fire** (on the port tick, after the hauling houses): the agent and its grant, one
-/// step a fire; then once an IC day the reading, the news and a post.
+/// step a fire; then every fire the reading and the news, and at most once an IC day a post.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
     let Some(occator) = org_of(ctx.w, ARM_ENTRY, ARM_ORG) else {
         return;
@@ -288,22 +295,21 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
         }
         return;
     }
-    // 3. Once an IC day: the reading and the news.
+    // 3. Every fire: the reading (kept when it changes) and the news.
     let now = ctx.w.world_ic_now().at;
     let today = now.div_euclid(IC_DAY);
-    if doc.read_day != Some(today) {
-        if let Some(level) = read_level(ctx) {
+    if let Some(level) = read_level(ctx) {
+        if doc.level != Some(level) {
             doc.level = Some(level);
             doc.read_day = Some(today);
-            let _ = threshold_news(ctx, level);
         }
-        return;
+        let _ = threshold_news(ctx, level);
     }
-    // 4. Once an IC day: a post, while the farm is short.
+    // 4. Once an IC day: a post, while the farm is short. A refusal is looked at again on the
+    //    next fire; only a post marks the day.
     if doc.posted_day == Some(today) {
         return;
     }
-    doc.posted_day = Some(today);
     if doc
         .level
         .is_some_and(|level| level >= STOCKPILE_THRESHOLD_T)
@@ -326,7 +332,7 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
     }
     let month = crate::concession::ic_month(now);
     let cost = (ARM_HAUL_FEE_CR + ARM_ESCORT_FEE_CR).saturating_mul(100);
-    if doc.spent_in(month).saturating_add(cost) > ARM_MONTHLY_CAP_CR.saturating_mul(100) {
+    if !doc.within_cap(month, cost) {
         return;
     }
     let Some(account) = org_account(ctx.w, occator) else {
@@ -336,6 +342,7 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
         return;
     }
     if let Some(post) = post(ctx, agent, occator, month) {
+        doc.posted_day = Some(today);
         doc.posts.push(post);
         if doc.posts.len() > MAX_POSTS {
             let drop = doc.posts.len() - MAX_POSTS;
@@ -374,7 +381,7 @@ fn post(ctx: &mut Ctx<'_>, agent: ObjId, occator: OrgId, month: i64) -> Option<A
             })
         }
         Err(why) => {
-            tracing::info!(%why, "tacsim: the Freeport arm's haul did not post");
+            tracing::debug!(%why, "tacsim: the Freeport arm's haul did not post");
             None
         }
     };
@@ -442,4 +449,32 @@ fn grant(ctx: &mut Ctx<'_>, org: OrgId, agent: ObjId) -> Result<u64, String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(id.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ARM_MONTHLY_CAP_CR, ArmPost, FreeportArm};
+
+    fn post(month: i64, spent_minor: i64) -> ArmPost {
+        ArmPost {
+            haul: 1,
+            escort: None,
+            month,
+            spent_minor,
+        }
+    }
+
+    /// **The cap is a month's rows** (Q-50-22): posts of other months do not count, and a post
+    /// that would take the month past the cap does not fit.
+    #[test]
+    fn op4_the_arms_cap_counts_its_own_months_rows() {
+        let cap = ARM_MONTHLY_CAP_CR * 100;
+        let mut arm = FreeportArm::default();
+        arm.posts.push(post(3, cap - 100_000));
+        arm.posts.push(post(2, cap));
+        assert_eq!(arm.spent_in(3), cap - 100_000);
+        assert!(arm.within_cap(3, 100_000), "exactly at the cap fits");
+        assert!(!arm.within_cap(3, 100_001), "past it does not");
+        assert!(arm.within_cap(4, cap), "a new month starts afresh");
+    }
 }
