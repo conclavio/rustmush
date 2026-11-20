@@ -1637,6 +1637,11 @@ v48 with the lead's word.
     when the cap or the treasury runs out; nothing is minted.
   - The standing bid at Isidis is the tank farm's own, refreshed by lane v49 (40 t an IC day, back
     to 2,000).
+  - **Staff lay it up** with `@tacsim/port arm off` (and open it with `on`), as EX.10's house is
+    laid up: laid up, it reads nothing and posts nothing, and what it posted runs on. The stock
+    rigs whose stories predate OP.4 lay it up beside the house (`support::lay_up_haulers`, and
+    the three `commerce_composition` rigs), so it makes no agent there and moves no contract
+    number, no stock and no dice. `op4_stockpile` opens it.
 - **An untaken haul** (Q-50-24): an arm's haul still untaken `FALLBACK_IC_DAYS` (7) after it was
   posted is taken by the hauling house at its origin.
   - A docked house hull with no plan running funds her purse for the bond and takes it as her
@@ -1651,7 +1656,7 @@ v48 with the lead's word.
     customs stop takes the stopping ship's velocity, whatever her tank holds, and is submitted.
   - **Her helm is her captain.** `resolve_hull_captain_aboard` answers a house hull's helm when
     nobody is aboard her. So the customs submission, the make-for-port burn and every queued space
-    burn are the helm's, never the tick's. The ruling's offer reads the hull a house helm sails.
+    burn are the helm's, never the tick's.
   - **The house pays.** The transit duty's debtor account is the house's own account for a house
     helm (`hauler::house_account_of_helm`), not the helm's purse.
 - **The fixes the arm needs:**
@@ -1685,6 +1690,9 @@ v48 with the lead's word.
 - The lane's pins move to v49 and relay v40. `op4_strip_tank_farm_rebuilds_the_published_v48`
   pins the new strip-chain head (`lane_chain::strip_tank_farm`). `e48_consumers_…` counts five
   consumers, and the OP.0 frame test names the tank farm's probe.
+- **Totals that count the new consumer:** `ex9_the_consumers_use_up_what_they_buy_…` adds the
+  farm's refunds to the faucet's payout, and `ex0_the_census_holds_across_a_burn_and_a_rearm`
+  reads the farm's whole days of propellant beside the Board's provisions.
 - MUTATIONS
 - GATES
 
