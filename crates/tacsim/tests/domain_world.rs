@@ -51,6 +51,8 @@ mod minds_at_size;
 mod moon_ports;
 #[path = "domain_world/op5_operation.rs"]
 mod op5_operation;
+#[path = "domain_world/op6_sides.rs"]
+mod op6_sides;
 #[path = "domain_world/passage.rs"]
 mod passage;
 #[path = "domain_world/polities.rs"]
