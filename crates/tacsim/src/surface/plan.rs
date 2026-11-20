@@ -1219,6 +1219,15 @@ impl PlanUpdate {
     }
 }
 
+/// Maximum synchronous full-site A* leg searches one fill-plan tick step may run (HIGH-54).
+/// When the walk reaches this ceiling after passing at least one unreachable or out-of-range
+/// target, it emits [`PlanMove::Pass`] so the passed steps/pockets persist onto the rig record
+/// and the next tick resumes without re-searching them.
+pub const MAX_PLAN_LEG_SEARCHES_PER_STEP: usize = 2;
+
+/// Maximum cached [`PendingPlanStep`] rows held in RAM across all rigs (HIGH-54).
+const MAX_PLAN_STEP_ORDERS: usize = 512;
+
 /// **The interpreter's move** — never `Serialize`: its [`PlanAct`] holds a `MinePlan` (truth).
 #[derive(Clone, Debug)]
 pub enum PlanMove {
@@ -1234,12 +1243,27 @@ pub enum PlanMove {
         /// The act's world plan.
         act: PlanAct,
     },
+    /// Persist passed steps/pockets onto the live plan without starting an act (HIGH-54): emitted
+    /// when a tick step exhausts [`MAX_PLAN_LEG_SEARCHES_PER_STEP`] so passed targets are saved
+    /// durably (`act: plan_end` with `end: None`) and never re-searched on the next tick.
+    Pass {
+        /// The cursor step persisted in `update`.
+        step: u16,
+        /// The plan's update (`cursor`, `passed`, `notes`).
+        update: PlanUpdate,
+    },
     /// End the plan (nothing to start): `plan_end` with its reason and update.
     End {
         /// Why.
         why: PlanEnd,
         /// The update.
         update: PlanUpdate,
+    },
+    /// Read-only preview of an upcoming drive leg (HIGH-54): returned only by
+    /// `decide_preview` for `+tv/<n> plan show` so the read-only command never runs A*.
+    PreviewDrive {
+        /// The human-readable drive target address (e.g. `A12` or `B3`).
+        target: String,
     },
     /// Nothing can start now.
     Wait(PlanWait),
@@ -1254,10 +1278,123 @@ pub struct PlanAct(pub(crate) PlanActInner);
 pub(crate) enum PlanActInner {
     /// A sounding or a recover.
     Act(ActPlan),
-    /// A drive (its leg is the plan's own).
-    Drive(ActPlan),
+    /// A drive (its leg is the plan's own, alongside its target for offer caching).
+    Drive(ActPlan, Target),
     /// A mining run.
     Mine(Box<MinePlan>),
+}
+
+/// Server-authored tick step cached in RAM for one rig's active plan so read-only `LegalActions`
+/// (`plan_variants`) never executes synchronous full-site A* (HIGH-54). Never `Serialize`.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingPlanStep {
+    pub no: u32,
+    pub seq: u32,
+    pub rig_cell: (i64, i64),
+    pub in_bay: bool,
+    pub update: PlanUpdate,
+    pub drive: Option<Box<(u16, Target, ActPlan)>>,
+    pub capped_pass: Option<u16>,
+}
+
+impl PendingPlanStep {
+    fn matches(&self, plan: &FillPlan, rig_cell: (i64, i64), in_bay: bool) -> bool {
+        self.no == plan.no
+            && self.seq == plan.seq
+            && self.rig_cell == rig_cell
+            && self.in_bay == in_bay
+    }
+}
+
+/// RAM slot holding tick-authored [`PendingPlanStep`] entries keyed by rig `ObjId` (HIGH-54).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PlanStepOrders {
+    rows: BTreeMap<ObjId, PendingPlanStep>,
+}
+
+impl PlanStepOrders {
+    /// Read the cached step for `tv`, if any.
+    #[must_use]
+    pub(crate) fn get(&self, tv: ObjId) -> Option<&PendingPlanStep> {
+        self.rows.get(&tv)
+    }
+
+    /// Cache the tick's decision for `tv` when it performed a drive leg, a persisted pass, or any
+    /// A* search, so `plan_variants` can project the exact move without running A*.
+    pub(crate) fn record_from_move(
+        &mut self,
+        tv: ObjId,
+        plan: &FillPlan,
+        rig_cell: (i64, i64),
+        in_bay: bool,
+        moved: &PlanMove,
+        legs_searched: u64,
+    ) {
+        let entry = match moved {
+            PlanMove::Start {
+                step,
+                update,
+                act: PlanAct(PlanActInner::Drive(act, target)),
+                ..
+            } => Some(PendingPlanStep {
+                no: plan.no,
+                seq: plan.seq,
+                rig_cell,
+                in_bay,
+                update: update.clone(),
+                drive: Some(Box::new((*step, *target, act.clone()))),
+                capped_pass: None,
+            }),
+            PlanMove::Pass { step, update } => Some(PendingPlanStep {
+                no: plan.no,
+                seq: plan.seq,
+                rig_cell,
+                in_bay,
+                update: update.clone(),
+                drive: None,
+                capped_pass: Some(*step),
+            }),
+            PlanMove::Start { update, .. } | PlanMove::End { update, .. } if legs_searched > 0 => {
+                Some(PendingPlanStep {
+                    no: plan.no,
+                    seq: plan.seq,
+                    rig_cell,
+                    in_bay,
+                    update: update.clone(),
+                    drive: None,
+                    capped_pass: None,
+                })
+            }
+            _ => None,
+        };
+        if let Some(step) = entry {
+            if self.rows.len() >= MAX_PLAN_STEP_ORDERS
+                && !self.rows.contains_key(&tv)
+                && let Some(&oldest) = self.rows.keys().next()
+            {
+                self.rows.remove(&oldest);
+            }
+            self.rows.insert(tv, step);
+        } else {
+            self.rows.remove(&tv);
+        }
+    }
+
+    /// Drop cached entries whose rig record no longer holds a live plan with matching `(no, seq)`.
+    pub(crate) fn prune(&mut self, records: &[RigRecord]) {
+        let live: BTreeMap<ObjId, (u32, u32)> = records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .plan
+                    .as_ref()
+                    .filter(|plan| plan.live())
+                    .map(|plan| (record.tv, (plan.no, plan.seq)))
+            })
+            .collect();
+        self.rows
+            .retain(|tv, step| live.get(tv) == Some(&(step.no, step.seq)));
+    }
 }
 
 /// **How the interpreter takes a world plan's refusal** (the brief's 3.4 step 6, D18).
@@ -1736,6 +1873,34 @@ pub(crate) fn bay_hopper(last: Option<&crate::surface::excursion::Outcome>) -> B
 /// run in flight holds it (`Busy`: the end needs an idle rig, and the step finishes by its own
 /// rules first). A plan past its bound with nothing barring it still parks as before: from the
 /// ground it recovers, from the bay it ends.
+/// How many synchronous full-site A* leg searches [`decide_walk`] may execute (HIGH-54).
+#[derive(Clone, Copy)]
+enum SearchBudget<'a> {
+    /// Surface tick: bounded at [`MAX_PLAN_LEG_SEARCHES_PER_STEP`]; hitting the cap after passing
+    /// at least one target emits [`PlanMove::Pass`] so progress persists onto the rig record.
+    Full(usize),
+    /// Read-only `LegalActions` offer projection: zero A*; reuses a matching tick-authored
+    /// [`PendingPlanStep`] from RAM, or waits `Busy` if an uncached drive leg is needed.
+    OfferCached(Option<&'a PendingPlanStep>),
+    /// Read-only `+tv/<n> plan show`: zero A*; reports an upcoming drive target as
+    /// [`PlanMove::PreviewDrive`].
+    PreviewOnly,
+}
+
+/// Resolve `(in_bay, rig_cell)` for `rig` on its carrier's site berth, matching [`decide_walk`].
+pub(crate) fn rig_cell_and_bay(w: &World, rig: &RigAt) -> Option<(bool, (i64, i64))> {
+    let view = crate::port::ship::hull_view(w, rig.hull)?;
+    let berth = crate::surface::act::site_berth(w, &view).ok()?;
+    let ramp_cell = site_cell(berth.ramp.x_cm, berth.ramp.y_cm);
+    match where_is(w, rig.tv) {
+        Where::Bay { hull } if hull == rig.hull => Some((true, ramp_cell)),
+        Where::Ground {
+            domain, x_cm, y_cm, ..
+        } if domain == berth.domain => Some((false, site_cell(x_cm, y_cm))),
+        Where::Bay { .. } | Where::Ground { .. } | Where::Elsewhere => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // `decide_walk`'s arguments, passed through
 pub(crate) fn decide(
     w: &World,
@@ -1747,7 +1912,79 @@ pub(crate) fn decide(
     peeks: &mut Peeks,
     now_ic: i64,
 ) -> Option<PlanMove> {
-    let moved = decide_walk(w, reads, rig, record, counts, tools, peeks, now_ic)?;
+    let moved = decide_walk(
+        w,
+        reads,
+        rig,
+        record,
+        counts,
+        tools,
+        peeks,
+        now_ic,
+        SearchBudget::Full(MAX_PLAN_LEG_SEARCHES_PER_STEP),
+    )?;
+    let plan = record.live_plan_for(rig.record.pilot)?;
+    let in_flight = record.act.is_some() || record.run.is_some();
+    Some(bound_over(plan, moved, in_flight, now_ic))
+}
+
+/// Read-only plan preview for `+tv/<n> plan show` (HIGH-54): runs every O(1) gate and returns
+/// [`PlanMove::PreviewDrive`] instead of executing synchronous full-site A*.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_preview(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    rig: &RigAt,
+    record: &RigRecord,
+    counts: &ExcursionCounts,
+    tools: &BTreeMap<CanonicalId, ToolDef>,
+    peeks: &mut Peeks,
+    now_ic: i64,
+) -> Option<PlanMove> {
+    let moved = decide_walk(
+        w,
+        reads,
+        rig,
+        record,
+        counts,
+        tools,
+        peeks,
+        now_ic,
+        SearchBudget::PreviewOnly,
+    )?;
+    let plan = record.live_plan_for(rig.record.pilot)?;
+    let in_flight = record.act.is_some() || record.run.is_some();
+    Some(bound_over(plan, moved, in_flight, now_ic))
+}
+
+/// Read-only offer decision for `LegalActions` (`plan_variants`, HIGH-54): never runs A*; reuses
+/// the tick-authored [`PendingPlanStep`] from [`PlanStepOrders`] when `(no, seq, rig_cell, in_bay)`
+/// still match, while re-checking every O(1) live gate fresh.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_for_offer(
+    w: &World,
+    reads: &dyn SurfaceReads,
+    rig: &RigAt,
+    record: &RigRecord,
+    counts: &ExcursionCounts,
+    tools: &BTreeMap<CanonicalId, ToolDef>,
+    peeks: &mut Peeks,
+    now_ic: i64,
+) -> Option<PlanMove> {
+    let cached = w
+        .module_state::<PlanStepOrders>()
+        .and_then(|orders| orders.get(rig.tv));
+    let moved = decide_walk(
+        w,
+        reads,
+        rig,
+        record,
+        counts,
+        tools,
+        peeks,
+        now_ic,
+        SearchBudget::OfferCached(cached),
+    )?;
     let plan = record.live_plan_for(rig.record.pilot)?;
     let in_flight = record.act.is_some() || record.run.is_some();
     Some(bound_over(plan, moved, in_flight, now_ic))
@@ -1794,6 +2031,7 @@ fn decide_walk(
     tools: &BTreeMap<CanonicalId, ToolDef>,
     peeks: &mut Peeks,
     now_ic: i64,
+    budget: SearchBudget<'_>,
 ) -> Option<PlanMove> {
     let plan = record.live_plan_for(rig.record.pilot)?;
     count(w, rig.tv, |c| &c.decides);
@@ -1972,6 +2210,36 @@ fn decide_walk(
     };
     let read_rig = |tv: ObjId| reads.rig(tv);
     let scheme = plan.scheme();
+    if let SearchBudget::OfferCached(Some(cached)) = budget
+        && cached.matches(plan, rig_cell, in_bay)
+    {
+        if let Some(pass_step) = cached.capped_pass
+            && matches!(plan.state, FillState::Live)
+            && usize::from(cached.update.cursor) <= plan.steps.len()
+            && (cached.update.cursor != plan.cursor
+                || cached.update.passed != plan.passed
+                || !cached.update.notes.is_empty())
+        {
+            return Some(PlanMove::Pass {
+                step: pass_step,
+                update: cached.update.clone(),
+            });
+        }
+        if cached.update.cursor >= plan.cursor
+            && usize::from(cached.update.cursor) <= plan.steps.len()
+        {
+            update.cursor = cached.update.cursor;
+            update.passed.clone_from(&cached.update.passed);
+            update.notes = cached
+                .update
+                .notes
+                .iter()
+                .copied()
+                .filter(|note| matches!(note, PlanNoteKind::Passed { .. }))
+                .collect();
+        }
+    }
+    let mut leg_searches: usize = 0;
     let mut passes: usize = 0;
     let bound = MAX_PLAN_STEPS.saturating_add(passed_bound(scheme));
     loop {
@@ -2257,7 +2525,7 @@ fn decide_walk(
                 OnShort::Recover => return Some(recover(peeks, update, step)),
             }
         }
-        let leg = if standing {
+        let leg: Option<ActPlan> = if standing {
             None
         } else {
             let stand_of = match crate::surface::act::stand_of(w, author, rig) {
@@ -2288,51 +2556,87 @@ fn decide_walk(
                     }
                 },
             };
-            count(w, rig.tv, |c| &c.legs);
-            // Doc 20 cut SM.12c (the cost lane): every leg searched, yard rigs included, counted
-            // and timed into the call's own `Peeks` (RAM only; `count` above skips yard rigs).
-            let searched = std::time::Instant::now();
-            let planned =
-                crate::surface::act::drive_plan(w, rig, &stand_of, &target, &rates, peeks);
-            peeks.legs = peeks.legs.saturating_add(1);
-            peeks.leg_us = peeks
-                .leg_us
-                .saturating_add(u64::try_from(searched.elapsed().as_micros()).unwrap_or(u64::MAX));
-            match planned {
-                Ok(planned) => Some(planned),
-                Err(refusal) => match fate_of(&refusal) {
-                    Fate::Pass(why) => {
-                        pass(&mut update, why);
-                        continue;
+            match budget {
+                SearchBudget::PreviewOnly => {
+                    return Some(PlanMove::PreviewDrive {
+                        target: drive::target_words_in(&target, scheme),
+                    });
+                }
+                SearchBudget::OfferCached(cached) => {
+                    if let Some(cached) = cached
+                        && cached.matches(plan, rig_cell, in_bay)
+                        && let Some(drive_leg) = cached.drive.as_deref()
+                        && drive_leg.0 == step
+                        && drive_leg.1 == target
+                    {
+                        Some(drive_leg.2.clone())
+                    } else {
+                        return Some(PlanMove::Wait(PlanWait::Busy));
                     }
-                    Fate::Wait(wait) => return Some(PlanMove::Wait(wait)),
-                    Fate::Short => match on_short(in_bay, full, until(home_cu)) {
-                        OnShort::Charge(until_ic) => {
-                            return Some(PlanMove::Wait(PlanWait::Charging { until_ic }));
-                        }
-                        OnShort::Pass => {
-                            pass(&mut update, PassWhy::TooFar);
-                            continue;
-                        }
-                        OnShort::Recover => return Some(recover(peeks, update, step)),
-                    },
-                    Fate::Park(_)
-                    | Fate::Licence
-                    | Fate::Recover
-                    | Fate::Room
-                    | Fate::Stranded
-                    | Fate::Unreachable => {
-                        tracing::error!(
-                            tv = rig.tv.0,
-                            word = refusal.word(),
-                            "tacsim: a plan's drive met a refusal it cannot answer; it waits"
-                        );
-                        return Some(PlanMove::Wait(PlanWait::Dark));
+                }
+                SearchBudget::Full(max_searches) => {
+                    if leg_searches >= max_searches {
+                        let progressed = update.cursor != plan.cursor
+                            || update.passed != plan.passed
+                            || !update.notes.is_empty();
+                        return Some(if progressed {
+                            PlanMove::Pass {
+                                step: update.cursor,
+                                update,
+                            }
+                        } else {
+                            PlanMove::Wait(PlanWait::Busy)
+                        });
                     }
-                },
+                    leg_searches = leg_searches.saturating_add(1);
+                    count(w, rig.tv, |c| &c.legs);
+                    // Doc 20 cut SM.12c (the cost lane): every leg searched, yard rigs included,
+                    // counted and timed into the call's own `Peeks` (RAM only; `count` above skips
+                    // yard rigs).
+                    let searched = std::time::Instant::now();
+                    let planned =
+                        crate::surface::act::drive_plan(w, rig, &stand_of, &target, &rates, peeks);
+                    peeks.legs = peeks.legs.saturating_add(1);
+                    peeks.leg_us = peeks.leg_us.saturating_add(
+                        u64::try_from(searched.elapsed().as_micros()).unwrap_or(u64::MAX),
+                    );
+                    match planned {
+                        Ok((act, _leg)) => Some(act),
+                        Err(refusal) => match fate_of(&refusal) {
+                            Fate::Pass(why) => {
+                                pass(&mut update, why);
+                                continue;
+                            }
+                            Fate::Wait(wait) => return Some(PlanMove::Wait(wait)),
+                            Fate::Short => match on_short(in_bay, full, until(home_cu)) {
+                                OnShort::Charge(until_ic) => {
+                                    return Some(PlanMove::Wait(PlanWait::Charging { until_ic }));
+                                }
+                                OnShort::Pass => {
+                                    pass(&mut update, PassWhy::TooFar);
+                                    continue;
+                                }
+                                OnShort::Recover => return Some(recover(peeks, update, step)),
+                            },
+                            Fate::Park(_)
+                            | Fate::Licence
+                            | Fate::Recover
+                            | Fate::Room
+                            | Fate::Stranded
+                            | Fate::Unreachable => {
+                                tracing::error!(
+                                    tv = rig.tv.0,
+                                    word = refusal.word(),
+                                    "tacsim: a plan's drive met a refusal it cannot answer; it waits"
+                                );
+                                return Some(PlanMove::Wait(PlanWait::Dark));
+                            }
+                        },
+                    }
+                }
             }
         };
-        let leg_cu = leg.as_ref().map_or(0, |(plan, _)| plan.cost_cu);
+        let leg_cu = leg.as_ref().map_or(0, |plan| plan.cost_cu);
         if short(leg_cu) {
             match on_short(in_bay, full, until(leg_cu)) {
                 OnShort::Charge(until_ic) => {
@@ -2346,12 +2650,12 @@ fn decide_walk(
             }
         }
         // The move: drive there, or the act standing there.
-        if let Some((act, _leg)) = leg {
+        if let Some(act) = leg {
             return Some(PlanMove::Start {
                 word: "drive",
                 step,
                 update,
-                act: PlanAct(PlanActInner::Drive(act)),
+                act: PlanAct(PlanActInner::Drive(act, target)),
             });
         }
         let planned: Result<PlanActInner, Refusal> = match chosen {
@@ -3688,7 +3992,10 @@ mod tests {
             now,
         ) {
             PlanMove::End { why, .. } => Some(why),
-            PlanMove::Wait(_) | PlanMove::Start { .. } => None,
+            PlanMove::Wait(_)
+            | PlanMove::Start { .. }
+            | PlanMove::Pass { .. }
+            | PlanMove::PreviewDrive { .. } => None,
         };
         // The author is a player (a plain `ObjId`, no yard).
         assert_eq!(parking.author, ObjId(7));
@@ -3708,5 +4015,47 @@ mod tests {
             why: PlanEnd::HoldFull,
         };
         assert_eq!(ended(&full, false, past), Some(PlanEnd::HoldFull));
+    }
+
+    #[test]
+    fn high54_plan_step_orders_caches_pass_and_prunes_on_seq_advance() {
+        assert!((1..=2).contains(&MAX_PLAN_LEG_SEARCHES_PER_STEP));
+        let tv = ObjId(77);
+        let plan = sample();
+        let mut update = PlanUpdate::of(&plan);
+        update.cursor = 2;
+        update.note(PlanNoteKind::Passed {
+            at: [1, 1],
+            field: false,
+            why: PassWhy::NoWay,
+        });
+        let moved = PlanMove::Pass {
+            step: 2,
+            update: update.clone(),
+        };
+
+        let mut orders = PlanStepOrders::default();
+        orders.record_from_move(tv, &plan, (10, 10), true, &moved, 2);
+        let cached = orders.get(tv).expect("cached pass step");
+        assert!(cached.matches(&plan, (10, 10), true));
+        assert!(!cached.matches(&plan, (11, 10), true));
+        assert!(!cached.matches(&plan, (10, 10), false));
+        assert_eq!(cached.capped_pass, Some(2));
+        assert_eq!(cached.update.cursor, 2);
+
+        // Keys for persisted pass advances per seq and never collide with plan_end_key.
+        let k1 = crate::surface::act::plan_pass_key(tv, plan.no, 1).expect("pass key 1");
+        let k2 = crate::surface::act::plan_pass_key(tv, plan.no, 2).expect("pass key 2");
+        let kend = crate::surface::act::plan_end_key(tv, plan.no).expect("end key");
+        assert_ne!(k1, k2);
+        assert_ne!(k1, kend);
+
+        // Pruning drops the cached step once `plan.seq` advances on the committed RigRecord.
+        let mut rec = RigRecord::fresh_unread(tv);
+        let mut advanced = plan.clone();
+        advanced.seq = plan.seq.saturating_add(1);
+        rec.plan = Some(advanced);
+        orders.prune(&[rec]);
+        assert!(orders.get(tv).is_none());
     }
 }

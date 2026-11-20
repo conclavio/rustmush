@@ -86,6 +86,16 @@ use crate::config::ReflexConfig;
 /// never applied.
 pub const PATH_CELLS_PER_WINDOW: u32 = 48_128;
 
+/// Maximum path cells a single unit may expand in one `reflex.decide_ms`
+/// window — strictly below [`PATH_CELLS_PER_WINDOW`] so one hull cannot
+/// exhaust the arena's shared path budget on its own.
+pub const PATH_CELLS_PER_UNIT_WINDOW: u32 = 21_504;
+
+/// Maximum path cells a single party/team may expand in one `reflex.decide_ms`
+/// window when two or more parties are present (`PATH_CELLS_PER_WINDOW / 2`),
+/// guaranteeing opposing parties retain at least half the window's path cells.
+pub const PATH_CELLS_PER_TEAM_WINDOW: u32 = PATH_CELLS_PER_WINDOW / 2;
+
 /// **What one search may expand past the budget it is handed**: the expansion
 /// that breaks a `Budget` (counted, as the search loop counts it) and the
 /// goal-side probe's flood, at most `POCKET_PROBE_CELLS + 1` cells
@@ -258,6 +268,10 @@ pub struct MotorRow {
     /// a failure costs a search, or an unreachable goal would be rediscovered
     /// every tick.
     pub searched_ms: Option<i64>,
+    /// The arena millisecond a seated `DRIVE` last reset [`MotorRow::searched_ms`],
+    /// rate-limiting seated replan bursts to at most once per `repath_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_reset_ms: Option<i64>,
     /// **The cell the last search started from** (16b cut AI.1; 16c `B-84`),
     /// written with [`MotorRow::searched_ms`] by the tick that spends one, and
     /// never cleared by anything short of a new search (or the reset of a
@@ -453,6 +467,14 @@ pub struct MotorTable {
     /// (`SNAPSHOT_FORMAT` 20), so a match resumed mid-window defers as an
     /// unbroken one does.
     cells: u32,
+    /// Per-unit path cells expanded in `window`, bounded by
+    /// [`PATH_CELLS_PER_UNIT_WINDOW`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    unit_cells: BTreeMap<ObjId, u32>,
+    /// Per-party path cells expanded in `window`, bounded by
+    /// [`PATH_CELLS_PER_TEAM_WINDOW`] on multi-party fields.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    team_cells: BTreeMap<PartyId, u32>,
     #[serde(skip)]
     scratch: PathScratch,
 }
@@ -468,6 +490,8 @@ impl MotorTable {
             window: i64::MIN,
             spent: 0,
             cells: 0,
+            unit_cells: BTreeMap::new(),
+            team_cells: BTreeMap::new(),
             scratch: PathScratch::default(),
         }
     }
@@ -525,14 +549,21 @@ impl MotorTable {
     /// expand past its budget, is under [`POCKET_PROBE_CELLS`] (the expansions
     /// that close most routes): the hull keeps the path it has and searches in a
     /// later window, as a hull the query budget refused does.
-    pub(crate) fn may_search(&mut self, t_ms: i64, cfg: &ReflexConfig) -> bool {
+    fn reset_window_if_needed(&mut self, t_ms: i64, cfg: &ReflexConfig) {
         let window_ms = i64::from(cfg.decide_ms.max(1));
         let window = t_ms.div_euclid(window_ms);
         if window != self.window {
             self.window = window;
             self.spent = 0;
             self.cells = 0;
+            self.unit_cells.clear();
+            self.team_cells.clear();
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn may_search(&mut self, t_ms: i64, cfg: &ReflexConfig) -> bool {
+        self.reset_window_if_needed(t_ms, cfg);
         if self.spent >= cfg.max_path_queries {
             return false;
         }
@@ -543,9 +574,42 @@ impl MotorTable {
         true
     }
 
+    /// Admit one A* search for `unit` on `team`, enforcing global
+    /// ([`PATH_CELLS_PER_WINDOW`]), per-unit ([`PATH_CELLS_PER_UNIT_WINDOW`]),
+    /// and multi-party per-team ([`PATH_CELLS_PER_TEAM_WINDOW`]) cell budgets
+    /// in the current `decide_ms` window.
+    pub(crate) fn may_search_for(
+        &mut self,
+        t_ms: i64,
+        cfg: &ReflexConfig,
+        unit: ObjId,
+        team: PartyId,
+        teams_active: usize,
+    ) -> bool {
+        self.reset_window_if_needed(t_ms, cfg);
+        if self.spent >= cfg.max_path_queries {
+            return false;
+        }
+        let unit_spent = self.unit_cells.get(&unit).copied().unwrap_or(0);
+        let team_spent = if teams_active >= 2 {
+            self.team_cells.get(&team).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        if (self.cells > 0 || unit_spent > 0 || team_spent > 0)
+            && self.cell_allowance_for(cfg.path_max_cells, unit, team, teams_active)
+                < POCKET_PROBE_CELLS
+        {
+            return false;
+        }
+        self.spent = self.spent.saturating_add(1);
+        true
+    }
+
     /// **The expansions the next search may make** (doc 49 unit CC.2b): what
     /// the window has left of [`PATH_CELLS_PER_WINDOW`], less
     /// [`SEARCH_OVERHEAD_CELLS`], and never more than `path_max_cells`.
+    #[cfg(test)]
     fn cell_allowance(&self, path_max_cells: u32) -> u32 {
         PATH_CELLS_PER_WINDOW
             .saturating_sub(self.cells)
@@ -553,18 +617,73 @@ impl MotorTable {
             .min(path_max_cells)
     }
 
-    /// **The budget the search [`MotorTable::may_search`] admitted runs under**,
+    fn cell_allowance_for(
+        &self,
+        path_max_cells: u32,
+        unit: ObjId,
+        team: PartyId,
+        teams_active: usize,
+    ) -> u32 {
+        let global_rem = PATH_CELLS_PER_WINDOW.saturating_sub(self.cells);
+        let unit_spent = self.unit_cells.get(&unit).copied().unwrap_or(0);
+        let unit_rem = PATH_CELLS_PER_UNIT_WINDOW.saturating_sub(unit_spent);
+        let team_rem = if teams_active >= 2 {
+            let team_spent = self.team_cells.get(&team).copied().unwrap_or(0);
+            PATH_CELLS_PER_TEAM_WINDOW.saturating_sub(team_spent)
+        } else {
+            PATH_CELLS_PER_WINDOW
+        };
+        global_rem
+            .min(unit_rem)
+            .min(team_rem)
+            .saturating_sub(SEARCH_OVERHEAD_CELLS)
+            .min(path_max_cells)
+    }
+
+    /// **The budget the search admitted runs under**,
     /// and whether the window was untouched when it started (doc 49 unit
     /// CC.2b): a search that runs out of an untouched window's allowance found
     /// no route a window could pay for, which is the `unreachable` edge's
     /// `Budget`; one that runs out of what others left is deferred.
+    #[cfg(test)]
     pub(crate) fn search_budget(&self, path_max_cells: u32) -> (u32, bool) {
         (self.cell_allowance(path_max_cells), self.cells == 0)
     }
 
+    /// Partitioned search budget for `unit` on `team`, plus whether this unit
+    /// received its full single-unit allowance (true) or was shorted by prior
+    /// spend in this window (false, so `PathFailure::Budget` defers rather than
+    /// declaring the route unreachable).
+    pub(crate) fn search_budget_for(
+        &self,
+        path_max_cells: u32,
+        unit: ObjId,
+        team: PartyId,
+        teams_active: usize,
+    ) -> (u32, bool) {
+        let allowance = self.cell_allowance_for(path_max_cells, unit, team, teams_active);
+        let full_unit = PATH_CELLS_PER_UNIT_WINDOW
+            .saturating_sub(SEARCH_OVERHEAD_CELLS)
+            .min(path_max_cells);
+        (allowance, allowance >= full_unit)
+    }
+
     /// Count a search's expansions, the probe's included, against the window.
+    #[cfg(test)]
     pub(crate) fn spend_cells(&mut self, cells: u32) {
         self.cells = self.cells.saturating_add(cells);
+    }
+
+    /// Count a search's expansions against the global, unit, and team window
+    /// budgets.
+    pub(crate) fn spend_cells_for(&mut self, unit: ObjId, team: PartyId, cells: u32) {
+        self.cells = self.cells.saturating_add(cells);
+        if cells > 0 {
+            let unit_slot = self.unit_cells.entry(unit).or_insert(0);
+            *unit_slot = unit_slot.saturating_add(cells);
+            let team_slot = self.team_cells.entry(team).or_insert(0);
+            *team_slot = team_slot.saturating_add(cells);
+        }
     }
 
     /// Forget a path invalidated by staff PLACE, preserving the requested
@@ -1277,9 +1396,14 @@ impl Arena {
                 // or past its time — is dropped where it is read.
                 row.refused = None;
             }
+            let multi_team = self
+                .units
+                .iter()
+                .any(|other| !other.limits.wreck && other.team != unit.team);
+            let teams_active = if multi_team { 2 } else { 1 };
             if fresh_enough {
                 counters.path_deferred = counters.path_deferred.saturating_add(1);
-            } else if motors.may_search(t_ms, cfg) {
+            } else if motors.may_search_for(t_ms, cfg, id, unit.team, teams_active) {
                 // Doc 49 unit CC.2b: what a deferred search puts back.
                 let before = (row.searched_ms, row.searched_from);
                 row.searched_ms = Some(t_ms);
@@ -1288,9 +1412,9 @@ impl Arena {
                 row.searched_from = Some(here);
                 row.refused = None;
                 counters.path_queries = counters.path_queries.saturating_add(1);
-                // Doc 49 unit CC.2b: what the window has left, not the whole
-                // `path_max_cells`, and whether this search opened the window.
-                let (budget, opened) = motors.search_budget(cfg.path_max_cells);
+                // Partitioned per-unit/per-team window budget.
+                let (budget, opened) =
+                    motors.search_budget_for(cfg.path_max_cells, id, unit.team, teams_active);
                 // **16b cut AE.1**: the heuristic's scale is this unit's own
                 // row's cheapest cell. A scale above the row's true minimum makes
                 // the heuristic inadmissible (`crate::arena::path::path`'s own
@@ -1335,7 +1459,7 @@ impl Arena {
                 // region, and `harness.max_path_cells_per_pulse` bounds this.
                 let expanded = motors.scratch.last_expanded();
                 counters.path_cells = counters.path_cells.saturating_add(u64::from(expanded));
-                motors.spend_cells(expanded);
+                motors.spend_cells_for(id, unit.team, expanded);
                 match searched {
                     Ok(found) => {
                         row.route = found.cells;
@@ -5442,5 +5566,193 @@ mod tests {
             }
         }
         assert_eq!(fan_rows(4, 4, 4).collect::<Vec<_>>(), vec![4], "one row");
+    }
+
+    #[test]
+    fn high65_path_budget_partitions_per_unit_and_team_and_rate_limits_seat_resets() {
+        use crate::arena::MotorGoal;
+        use crate::arena::intents::{
+            Intent, IntentKind, IntentOutcome, IntentSource, apply_intent,
+        };
+        use crate::arena::state::{Channel, Power};
+
+        let cfg = ReflexConfig {
+            decide_ms: 1_000,
+            repath_ms: 4_000,
+            ..ReflexConfig::default()
+        };
+        const {
+            assert!(PATH_CELLS_PER_UNIT_WINDOW < PATH_CELLS_PER_WINDOW);
+            assert!(PATH_CELLS_PER_TEAM_WINDOW <= PATH_CELLS_PER_WINDOW / 2);
+        }
+
+        // 1) Per-unit and per-team caps isolate opposing teams and teammates.
+        let mut motors = MotorTable::new();
+        let red1 = ObjId(4);
+        let red2 = ObjId(5);
+        let blue1 = ObjId(9);
+        assert!(motors.may_search_for(0, &cfg, red1, PartyId::RED, 2));
+        let (red1_budget, red1_opened) =
+            motors.search_budget_for(cfg.path_max_cells, red1, PartyId::RED, 2);
+        assert!(red1_opened);
+        assert_eq!(
+            red1_budget,
+            PATH_CELLS_PER_UNIT_WINDOW - SEARCH_OVERHEAD_CELLS
+        );
+        motors.spend_cells_for(red1, PartyId::RED, PATH_CELLS_PER_UNIT_WINDOW);
+        // red1 exhausted its own unit cap in this window.
+        assert!(!motors.may_search_for(100, &cfg, red1, PartyId::RED, 2));
+        // red2 on RED can still get the remaining RED team allowance (> POCKET_PROBE_CELLS),
+        // and once RED exhausts PATH_CELLS_PER_TEAM_WINDOW, BLUE still retains its full
+        // single-unit allowance in the exact same window!
+        assert!(motors.may_search_for(200, &cfg, red2, PartyId::RED, 2));
+        motors.spend_cells_for(
+            red2,
+            PartyId::RED,
+            PATH_CELLS_PER_TEAM_WINDOW - PATH_CELLS_PER_UNIT_WINDOW,
+        );
+        assert!(!motors.may_search_for(300, &cfg, red2, PartyId::RED, 2));
+        assert!(
+            motors.may_search_for(400, &cfg, blue1, PartyId::BLUE, 2),
+            "opposing team must retain full budget after RED saturates its team cap"
+        );
+        let (blue_budget, blue_opened) =
+            motors.search_budget_for(cfg.path_max_cells, blue1, PartyId::BLUE, 2);
+        assert!(blue_opened);
+        assert_eq!(
+            blue_budget,
+            PATH_CELLS_PER_UNIT_WINDOW - SEARCH_OVERHEAD_CELLS
+        );
+
+        // 2) Seated DRIVE spam at 1/s in Phase 2 cannot reset searched_ms within
+        // repath_ms and cannot starve an opposing hull's pathfinding.
+        let mut arena = burst_arena();
+        // Put unit 9 on BLUE on the same 200x200 walled map so there are 2 active teams.
+        arena.unit_mut(ObjId(4)).expect("red").power = Power::Online;
+        arena.unit_mut(ObjId(4)).expect("red").team = PartyId::RED;
+        arena.unit_mut(ObjId(5)).expect("blue").power = Power::Online;
+        arena.unit_mut(ObjId(5)).expect("blue").team = PartyId::BLUE;
+        arena.epochs.raise(ObjId(4), Channel::Helm, 1);
+        arena.epochs.raise(ObjId(5), Channel::Helm, 1);
+
+        // Seat sends DRIVE #1 at t=0: gets its initial reset & search, capped below global window.
+        let drive = |unit: ObjId, x: u16, y: u16, seq: u64| Intent {
+            unit,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Goal(MotorGoal::Cell { x, y }),
+            seq,
+        };
+        assert_eq!(
+            apply_intent(&mut arena, &drive(ObjId(4), 160, 10, 1), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        let mut counters = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(4), 0, &mut counters);
+        assert!(
+            counters.path_cells <= u64::from(PATH_CELLS_PER_UNIT_WINDOW),
+            "one hull expanded {} > {}",
+            counters.path_cells,
+            PATH_CELLS_PER_UNIT_WINDOW
+        );
+        assert_eq!(
+            arena.motors.row(ObjId(4)).and_then(|r| r.searched_ms),
+            Some(0)
+        );
+
+        // Opposing BLUE hull routes in the VERY SAME decide_ms window!
+        let mut blue_counters = MotorCounters::default();
+        assert_eq!(
+            apply_intent(&mut arena, &drive(ObjId(5), 160, 12, 1), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        let _ = arena.motor_step(ObjId(5), 0, &mut blue_counters);
+        assert!(
+            !arena
+                .motors
+                .row(ObjId(5))
+                .expect("blue row")
+                .route
+                .is_empty(),
+            "BLUE must not be starved by RED's Phase-2 DRIVE in the same window"
+        );
+
+        // First retarget at t=1_000 consumes the single seat reset per repath_ms window.
+        arena.now_ms = 1_000;
+        assert_eq!(
+            apply_intent(&mut arena, &drive(ObjId(4), 160, 14, 2), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(
+            arena.motors.row(ObjId(4)).and_then(|r| r.searched_ms),
+            None,
+            "first seated retarget resets searched_ms once"
+        );
+        let mut retarget_counters = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(4), 1_000, &mut retarget_counters);
+        assert_eq!(
+            arena.motors.row(ObjId(4)).and_then(|r| r.searched_ms),
+            Some(1_000)
+        );
+
+        // 1 second later (< repath_ms = 4_000 ms after seat_reset_ms = 1_000), RED spams
+        // another DRIVE: `searched_ms` is NOT reset, so Phase-2 `motor_step` expands 0 cells!
+        arena.now_ms = 2_000;
+        assert_eq!(
+            apply_intent(&mut arena, &drive(ObjId(4), 160, 15, 3), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(
+            arena.motors.row(ObjId(4)).and_then(|r| r.searched_ms),
+            Some(1_000),
+            "repeated seated DRIVE within repath_ms must not reset searched_ms"
+        );
+        let mut spam_counters = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(4), 2_000, &mut spam_counters);
+        assert_eq!(
+            spam_counters.path_cells, 0,
+            "rate-limited seated DRIVE must expand zero cells"
+        );
+        assert_eq!(spam_counters.path_deferred, 1);
+
+        // Even DRIVE HOLD + DRIVE within repath_ms cannot reset seat_reset_ms.
+        arena.now_ms = 3_000;
+        let hold = Intent {
+            unit: ObjId(4),
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Goal(MotorGoal::Hold),
+            seq: 4,
+        };
+        assert_eq!(
+            apply_intent(&mut arena, &hold, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(
+            apply_intent(&mut arena, &drive(ObjId(4), 160, 16, 5), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(
+            arena.motors.row(ObjId(4)).and_then(|r| r.searched_ms),
+            Some(1_000),
+            "HOLD + DRIVE within repath_ms must not bypass seat_reset_ms throttle"
+        );
+
+        // Once repath_ms (4_000 ms) elapses from seat_reset_ms (1_000 -> 5_000), seated DRIVE
+        // resets cleanly again.
+        arena.now_ms = 5_000;
+        assert_eq!(
+            apply_intent(&mut arena, &drive(ObjId(4), 160, 18, 6), IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.motors.row(ObjId(4)).and_then(|r| r.searched_ms), None);
+
+        // Snapshot round-trip preserves partitioned window counters.
+        let snap = crate::arena::snapshot::Snapshot::encode(&arena).expect("encode");
+        let decoded =
+            crate::arena::snapshot::Snapshot::decode(&snap.document, (*arena.definition).clone())
+                .expect("decode");
+        assert_eq!(decoded.motors.unit_cells, arena.motors.unit_cells);
+        assert_eq!(decoded.motors.team_cells, arena.motors.team_cells);
     }
 }

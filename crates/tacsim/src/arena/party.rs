@@ -228,6 +228,14 @@ pub struct Book {
 #[serde(deny_unknown_fields)]
 pub struct Relations {
     books: BTreeMap<PartyId, Book>,
+    /// Parties whose sparse book entry was created by [`Relations::befriend`] or
+    /// [`Relations::mark`] before [`Relations::admit`] actually admitted them.
+    ///
+    /// Stored as the sparse complement of admitted parties and omitted on the
+    /// wire when empty, so arenas where every referenced party is admitted keep
+    /// identical snapshots and state hashes.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    unadmitted: BTreeSet<PartyId>,
 }
 
 impl Relations {
@@ -240,23 +248,29 @@ impl Relations {
     /// Admit `party` with an empty book, if it has none.
     pub fn admit(&mut self, party: PartyId) {
         self.books.entry(party).or_default();
+        self.unadmitted.remove(&party);
     }
 
     /// Every admitted party, in letter order.
     pub fn parties(&self) -> impl Iterator<Item = PartyId> + '_ {
-        self.books.keys().copied()
+        self.books
+            .keys()
+            .copied()
+            .filter(|party| !self.unadmitted.contains(party))
     }
 
     /// Whether `party` is admitted.
     #[must_use]
     pub fn contains(&self, party: PartyId) -> bool {
-        self.books.contains_key(&party)
+        self.books.contains_key(&party) && !self.unadmitted.contains(&party)
     }
 
     /// `party`'s book, if it is admitted.
     #[must_use]
     pub fn book(&self, party: PartyId) -> Option<&Book> {
-        self.books.get(&party)
+        self.contains(party)
+            .then(|| self.books.get(&party))
+            .flatten()
     }
 
     /// **What `viewer` believes `other` is** (Q-CF-7's precedence): its own
@@ -302,13 +316,17 @@ impl Relations {
         if by == of {
             return;
         }
-        let book = self.books.entry(by).or_default();
         match mark {
             Some(mark) => {
-                book.marks.insert(of, mark);
+                if !self.books.contains_key(&by) {
+                    self.unadmitted.insert(by);
+                }
+                self.books.entry(by).or_default().marks.insert(of, mark);
             }
             None => {
-                book.marks.remove(&of);
+                if let Some(book) = self.books.get_mut(&by) {
+                    book.marks.remove(&of);
+                }
             }
         }
     }
@@ -324,6 +342,12 @@ impl Relations {
     pub fn befriend(&mut self, a: PartyId, b: PartyId) {
         if a == b {
             return;
+        }
+        if !self.books.contains_key(&a) {
+            self.unadmitted.insert(a);
+        }
+        if !self.books.contains_key(&b) {
+            self.unadmitted.insert(b);
         }
         self.books.entry(a).or_default().friends.insert(b);
         self.books.entry(b).or_default().friends.insert(a);
@@ -735,5 +759,43 @@ mod tests {
             .map(|id| (red, id))
             .collect();
         assert_eq!(draw_unit_letters(7, &full), Err(red));
+    }
+
+    #[test]
+    fn high66_befriend_and_mark_do_not_admit_unadmitted_parties() {
+        let [a, b, c] = [0, 1, 2].map(|n| PartyId::nth(n).unwrap());
+        let mut relations = Relations::new();
+        relations.admit(a);
+        relations.befriend(a, b);
+        relations.mark(c, a, Some(Mark::Hostile));
+
+        assert!(relations.contains(a));
+        assert!(
+            !relations.contains(b),
+            "befriend must not mark the peer party admitted"
+        );
+        assert!(
+            !relations.contains(c),
+            "mark must not mark an unadmitted marker admitted"
+        );
+        assert_eq!(relations.parties().collect::<Vec<_>>(), vec![a]);
+        assert!(relations.book(b).is_none());
+        assert!(relations.book(c).is_none());
+
+        // Snapshot round-trip preserves unadmitted tracking.
+        let encoded = serde_json::to_string(&relations).unwrap();
+        let decoded: Relations = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, relations);
+        assert!(!decoded.contains(b));
+        assert!(!decoded.contains(c));
+
+        // Once all referenced parties are admitted, `unadmitted` disappears on the wire.
+        relations.admit(b);
+        relations.admit(c);
+        assert!(relations.contains(b) && relations.contains(c));
+        assert_eq!(relations.relation(b, a), Relation::Friend);
+        assert_eq!(relations.relation(c, a), Relation::Hostile);
+        let clean_json = serde_json::to_string(&relations).unwrap();
+        assert!(!clean_json.contains("unadmitted"), "{clean_json}");
     }
 }

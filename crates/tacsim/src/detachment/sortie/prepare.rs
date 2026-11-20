@@ -9,6 +9,12 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+const MAX_RETAINED_CANCELLED_FLIGHTS_PER_UNIT: usize = 1;
+const MAX_RETAINED_RETURNED_FLIGHTS_PER_UNIT: usize = 32;
+const MAX_PRUNED_FLIGHTS_PER_TXN: usize = 8;
+const MAX_PRUNE_SCAN_STEPS: u64 = 48;
+const MAX_PRUNE_CONSECUTIVE_MISSES: usize = 4;
+
 #[derive(Serialize)]
 pub(super) struct Write<T> {
     pub before: Option<T>,
@@ -22,6 +28,10 @@ pub(super) struct Snapshot {
     index: Option<Write<FlightIndex>>,
     heads: Vec<Write<UnitHead>>,
     flights: Vec<Write<Flight>>,
+    /// HIGH-68: older non-head closed (`Cancelled`/`Returned`) flights removed
+    /// via `txn.remove` to keep `ActionStateStore` bounded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    removed_flights: Vec<FlightKey>,
     surface_records: Vec<Write<crate::surface::excursion::RigRecord>>,
     /// Doc 36 cut GC.0 (Q-36-17): the site's record with a recovering unit off its index.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -41,12 +51,23 @@ impl Snapshot {
             index: None,
             heads: Vec::new(),
             flights: Vec::new(),
+            removed_flights: Vec::new(),
             surface_records: Vec::new(),
             site_records: Vec::new(),
             observations: Vec::new(),
             lines: Vec::new(),
             transport: None,
         })
+    }
+    pub(super) fn operation(&self) -> OperationId {
+        self.operation
+    }
+    pub(super) fn touched_flights(&self) -> BTreeSet<FlightKey> {
+        self.flights
+            .iter()
+            .map(|write| write.after.key)
+            .chain(self.removed_flights.iter().copied())
+            .collect()
     }
     /// **The lapses this write records for the first time** (doc 45 unit AP.8): the operation,
     /// its roster's leader after the write, and each lapse with its order and who gave it.
@@ -189,6 +210,9 @@ impl Snapshot {
                 write.after.clone(),
             )?;
         }
+        for key in self.removed_flights {
+            txn.remove(&handles.flights, &key).map_err(runtime::error)?;
+        }
         Ok(json!({"operation":self.operation,"flights":result}))
     }
 }
@@ -284,7 +308,7 @@ fn member(op: &OperationRecord, slot: u16) -> Result<(ObjId, ObjId), String> {
         row.controller.character().ok_or("Operator unavailable.")?,
     ))
 }
-fn selected(
+pub(super) fn selected(
     read: &mut impl Read,
     h: &SortieHandles,
     id: OperationId,
@@ -712,6 +736,14 @@ fn launch(
             .after
             .flights
             .push(key);
+        prune_unit_flights(
+            read,
+            h,
+            &mut patch,
+            chosen.unit,
+            key.ordinal,
+            Phase::Departing,
+        )?;
         patch
             .observations
             .push(json!({"unit":unit,"person":person,"ship":ship,"roster":roster}));
@@ -860,10 +892,15 @@ fn finish(
     }
     patch.observations.push(json!({"parent":world.module_state::<mush_sim::SpatialState>().map(|s|s.parent_of(key.unit)),
         "unit_revision":mush_tactics::module::unit_of(world,key.unit).map(|u|u.revision())}));
+    let returned = next.phase == Phase::Returned;
     patch.flights.push(Write {
         before: Some(flight),
         after: next,
     });
+    if returned {
+        prune_unit_flights(read, h, &mut patch, key.unit, key.ordinal, Phase::Returned)?;
+        strip_pruned_from_operation(&mut patch, op);
+    }
     Ok(patch)
 }
 /// **`+sortie/recover`'s prepare**: a field member at its carrier's ramp starts home. Its own
@@ -938,13 +975,14 @@ fn cancel(
     operation: &OperationId,
     slot: &u16,
 ) -> Result<Snapshot, String> {
-    let (_, flight) = selected(read, h, *operation, *slot)?;
+    let (op, flight) = selected(read, h, *operation, *slot)?;
     if actor != operation.organizer
         || flight.phase != Phase::Departing
         || !facts::in_bay(world, &flight)
     {
         return Err("Only an unlaunched member can be canceled.".into());
     }
+    let key = flight.key;
     let mut next = flight.clone();
     next.phase = Phase::Cancelled;
     next.revision = next
@@ -957,9 +995,11 @@ fn cancel(
         before: Some(flight),
         after: next,
     });
+    prune_unit_flights(read, h, &mut patch, key.unit, key.ordinal, Phase::Cancelled)?;
+    strip_pruned_from_operation(&mut patch, op);
     Ok(patch)
 }
-/// **`+sortie/end`'s prepare**: the operation ends, cancelling the departures still aboard and
+/// **`+sortie/end`'s prepare**: the operation ends, canceling the departures still aboard and
 /// dropping their pending launches (doc 40 cut FR.3). Its own function for `snapshot`'s frame.
 fn end(
     world: &World,
@@ -986,6 +1026,7 @@ fn end(
                 && flight.phase == Phase::Departing
                 && facts::in_bay(world, &flight)
             {
+                let key = flight.key;
                 let mut next = flight.clone();
                 next.phase = Phase::Cancelled;
                 next.revision = next
@@ -997,14 +1038,121 @@ fn end(
                     before: Some(flight),
                     after: next,
                 });
+                prune_unit_flights(read, h, &mut patch, key.unit, key.ordinal, Phase::Cancelled)?;
             }
         }
+    }
+    if !patch.removed_flights.is_empty() {
+        next.flights
+            .retain(|key| !patch.removed_flights.contains(key));
     }
     patch.record = Some(Box::new(Write {
         before: Some(old),
         after: next,
     }));
     Ok(patch)
+}
+/// HIGH-68: walk backward from `head_ordinal` and schedule older non-head
+/// closed (`Cancelled` beyond 1, `Returned` beyond 32) flights for `txn.remove`.
+/// Never removes `head_ordinal`, any open flight, or a flight bound to `field_crew`.
+fn prune_unit_flights(
+    read: &mut impl Read,
+    h: &SortieHandles,
+    patch: &mut Snapshot,
+    unit: ObjId,
+    head_ordinal: u64,
+    head_phase: Phase,
+) -> Result<(), String> {
+    let active_crew_flight = read
+        .get(
+            &h.ports.excursions,
+            &crate::surface::excursion::RigKey(unit),
+        )?
+        .and_then(|record| record.field_crew.as_deref().map(|crew| crew.flight));
+    prune_unit_flights_with(
+        patch,
+        unit,
+        head_ordinal,
+        head_phase,
+        active_crew_flight,
+        |key| Ok(read.get(&h.flights, &key)?.map(|flight| flight.phase)),
+    )
+}
+fn prune_unit_flights_with(
+    patch: &mut Snapshot,
+    unit: ObjId,
+    head_ordinal: u64,
+    head_phase: Phase,
+    active_crew_flight: Option<FlightKey>,
+    mut phase_of: impl FnMut(FlightKey) -> Result<Option<Phase>, String>,
+) -> Result<(), String> {
+    let mut cancelled_seen = usize::from(head_phase == Phase::Cancelled);
+    let mut returned_seen = usize::from(head_phase == Phase::Returned);
+    let mut misses = 0_usize;
+    let mut steps = 0_u64;
+    let mut ordinal = head_ordinal.saturating_sub(1);
+    while ordinal > 0
+        && steps < MAX_PRUNE_SCAN_STEPS
+        && misses < MAX_PRUNE_CONSECUTIVE_MISSES
+        && patch.removed_flights.len() < MAX_PRUNED_FLIGHTS_PER_TXN
+    {
+        steps += 1;
+        let key = FlightKey { unit, ordinal };
+        ordinal -= 1;
+        if patch.flights.iter().any(|write| write.after.key == key)
+            || patch.removed_flights.contains(&key)
+            || active_crew_flight == Some(key)
+        {
+            continue;
+        }
+        let Some(phase) = phase_of(key)? else {
+            misses += 1;
+            continue;
+        };
+        misses = 0;
+        let prune = match phase {
+            Phase::Cancelled => {
+                cancelled_seen += 1;
+                cancelled_seen > MAX_RETAINED_CANCELLED_FLIGHTS_PER_UNIT
+            }
+            Phase::Returned => {
+                returned_seen += 1;
+                returned_seen > MAX_RETAINED_RETURNED_FLIGHTS_PER_UNIT
+            }
+            Phase::Departing | Phase::Field | Phase::Returning => false,
+        };
+        if prune {
+            patch.removed_flights.push(key);
+        }
+    }
+    if let Some(record) = patch.record.as_mut()
+        && !patch.removed_flights.is_empty()
+    {
+        record
+            .after
+            .flights
+            .retain(|key| !patch.removed_flights.contains(key));
+    }
+    Ok(())
+}
+fn strip_pruned_from_operation(patch: &mut Snapshot, op: OperationRecord) {
+    if patch.removed_flights.is_empty()
+        || patch.record.is_some()
+        || !op
+            .flights
+            .iter()
+            .any(|key| patch.removed_flights.contains(key))
+    {
+        return;
+    }
+    let mut after = op.clone();
+    after
+        .flights
+        .retain(|key| !patch.removed_flights.contains(key));
+    patch.record = Some(Box::new(Write {
+        before: Some(op),
+        after,
+    }));
 }
 /// **The abort's half of the pending row** (doc 40 cut FR.3; Q-40-24, §4.4 step 5): a departure
 /// cancelled before its ramp drops its hull's pending launch from its site's record, in the
@@ -1493,6 +1641,14 @@ fn message(
             sequence,
             response,
         } => {
+            // HIGH-67: deduplicate repeatable responses per `(slot, sequence)` and treat NEGATIVE
+            // as terminal (preserving the legitimate `Wilco -> Negative` failure transition).
+            let existing = book
+                .delivered(*slot)
+                .filter(|delivered| delivered.order.sequence == *sequence)
+                .and_then(|delivered| delivered.acknowledgement)
+                .map(|ack| ack.response);
+            check_response_transition(existing, *response)?;
             book.respond(*slot, *sequence, actor, *response, now)
                 .map_err(|e| e.to_string())?;
             let original = *orders
@@ -1544,4 +1700,84 @@ fn message(
         after: next,
     }));
     Ok(patch)
+}
+
+fn check_response_transition(
+    existing: Option<mush_tactics::detachment::Response>,
+    next: mush_tactics::detachment::Response,
+) -> Result<(), String> {
+    if let Some(existing) = existing {
+        if existing == next {
+            return Err("Order already has that response.".into());
+        }
+        if existing == mush_tactics::detachment::Response::Negative {
+            return Err("Order was already answered NEGATIVE.".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_tactics::detachment::Response;
+    use mush_tactics::detachment::planning::PlanId;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn high67_response_transition_deduplicates_and_makes_negative_terminal() {
+        assert!(check_response_transition(None, Response::Wilco).is_ok());
+        assert!(check_response_transition(None, Response::Negative).is_ok());
+        assert!(check_response_transition(Some(Response::Wilco), Response::Negative).is_ok());
+        assert!(check_response_transition(Some(Response::Wilco), Response::Wilco).is_err());
+        assert!(check_response_transition(Some(Response::Negative), Response::Negative).is_err());
+        assert!(check_response_transition(Some(Response::Negative), Response::Wilco).is_err());
+    }
+
+    #[test]
+    fn high68_flight_pruning_caps_cancelled_flights_and_preserves_head_and_crew() {
+        let unit = ObjId(42);
+        let op = OperationId {
+            organizer: ObjId(1),
+            draft: PlanId(1),
+            activation: 1,
+        };
+        let history = BTreeMap::from([
+            (FlightKey { unit, ordinal: 1 }, Phase::Cancelled),
+            (FlightKey { unit, ordinal: 2 }, Phase::Cancelled),
+            (FlightKey { unit, ordinal: 3 }, Phase::Cancelled),
+            (FlightKey { unit, ordinal: 4 }, Phase::Field),
+        ]);
+        let mut patch = Snapshot::new(op).expect("snapshot");
+        let crew_flight = FlightKey { unit, ordinal: 1 };
+        prune_unit_flights_with(
+            &mut patch,
+            unit,
+            5,
+            Phase::Departing,
+            Some(crew_flight),
+            |key| Ok(history.get(&key).copied()),
+        )
+        .expect("prune launch");
+        // Ordinal 4 is Field (open -> kept), ordinal 3 is the 1 retained Cancelled flight,
+        // ordinal 2 exceeds MAX_RETAINED_CANCELLED_FLIGHTS_PER_UNIT (pruned), and ordinal 1
+        // is protected by `active_crew_flight`.
+        assert_eq!(patch.removed_flights, vec![FlightKey { unit, ordinal: 2 }]);
+
+        // When head itself transitions to Cancelled, only the head cancelled flight is kept
+        // and earlier non-protected Cancelled flights are pruned.
+        let mut cancel_patch = Snapshot::new(op).expect("cancel snapshot");
+        prune_unit_flights_with(&mut cancel_patch, unit, 4, Phase::Cancelled, None, |key| {
+            Ok(history.get(&key).copied())
+        })
+        .expect("prune cancel");
+        assert_eq!(
+            cancel_patch.removed_flights,
+            vec![
+                FlightKey { unit, ordinal: 3 },
+                FlightKey { unit, ordinal: 2 },
+                FlightKey { unit, ordinal: 1 },
+            ]
+        );
+    }
 }

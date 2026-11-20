@@ -21,8 +21,10 @@
 //!   object with its mass, and a rig's open epoch closes `Destroyed` in the same bundle, its
 //!   `sortie_closed` line riding the black box's participant.
 //!
-//! **Who may write.** `open` is offered to anybody and refused at the prepare on the record's own
-//! state; the verbs (`+field/mark`, `+field/fire`) decide who leads. `close` closes only what the
+//! **Who may write.** `open` authoritatively enforces `Gate::Operate`, live-actor presence on the
+//! named lane site's ground, party leadership (`mark`) or active cockpit seat (`fire`), and
+//! server-side rig settlement so direct `SubmitSelf` cannot promote remote sites, forge hostile
+//! marks, or manipulate settled rigs. `close` closes only what the
 //! host owes: the offer fixes the host's owed closes — each site's ordinal and the units it
 //! leaves, from the host's RAM — into the invocation, so no player can demote a field, or write
 //! a unit index, by submitting it. `exit` writes only the host's owed exits, fixed the same way.
@@ -215,14 +217,177 @@ fn settleable(act: &crate::surface::excursion::Act) -> bool {
         }
 }
 
+/// Server-sealed opening authority for one lane site, computed in `project_offer` and
+/// re-verified live inside `open` whenever `PrepareCtx::world` is present (HIGH-57).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenSiteAuth {
+    parties: Vec<super::parties::GroundParty>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seated: Option<ObjId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rigs: Vec<ObjId>,
+}
+
+/// **Verify presence and leadership/seat ownership for a field promotion** (HIGH-57): both
+/// units must stand on the named site's ground in distinct parties; `Mark` requires the actor to
+/// lead `from`'s party (and not `at`'s), and `Fire` requires the actor to be actively seated in
+/// `shooter`.
+fn validate_open_authority_with_seat(
+    party_rows: &[super::parties::GroundParty],
+    seated_unit: Option<ObjId>,
+    by: &PromotedBy,
+) -> Result<(), ActionError> {
+    let find = |unit: ObjId| party_rows.iter().find(|row| row.unit == unit);
+    match *by {
+        PromotedBy::Mark {
+            leader,
+            by: from,
+            of: at,
+        } => {
+            if from == at {
+                return Err(rejected(
+                    "a field opens against another party on that site's ground",
+                ));
+            }
+            let from_party = find(from)
+                .ok_or_else(|| rejected("your unit does not stand on that site's ground"))?;
+            let at_party = find(at)
+                .ok_or_else(|| rejected("that target does not stand on that site's ground"))?;
+            if from_party.key == at_party.key || at_party.leader == Some(leader) {
+                return Err(rejected(
+                    "a field opens against another party on that site's ground",
+                ));
+            }
+            if from_party.leader != Some(leader) {
+                return Err(rejected("only that party's leader can mark it hostile"));
+            }
+            Ok(())
+        }
+        PromotedBy::Fire {
+            shooter, target, ..
+        } => {
+            if shooter == target {
+                return Err(rejected(
+                    "a field opens against another party on that site's ground",
+                ));
+            }
+            let shooter_party = find(shooter)
+                .ok_or_else(|| rejected("your unit does not stand on that site's ground"))?;
+            let target_party = find(target)
+                .ok_or_else(|| rejected("that target does not stand on that site's ground"))?;
+            if shooter_party.key == target_party.key {
+                return Err(rejected(
+                    "a field opens against another party on that site's ground",
+                ));
+            }
+            if seated_unit != Some(shooter) {
+                return Err(rejected(
+                    "you must be seated in the firing unit on that site's ground",
+                ));
+            }
+            Ok(())
+        }
+        PromotedBy::Staff { .. } => Err(rejected("only staff fixtures open a staff field")),
+    }
+}
+
+fn validate_open_authority(
+    world: &World,
+    party_rows: &[super::parties::GroundParty],
+    by: &PromotedBy,
+) -> Result<(), ActionError> {
+    let seated_unit = match *by {
+        PromotedBy::Fire { pilot, shooter, .. } => super::parties::seated(world, shooter)
+            .filter(|(who, _)| *who == pilot)
+            .map(|_| shooter),
+        _ => None,
+    };
+    validate_open_authority_with_seat(party_rows, seated_unit, by)
+}
+
+fn build_open_auth(
+    engine: &mush_core::Engine,
+    sites: &StateFamilyHandle<SiteKey, SiteRecord>,
+    excursions: &StateFamilyHandle<RigKey, RigRecord>,
+    actor: ObjId,
+) -> Result<Map<String, Value>, ActionError> {
+    let w = &engine.world;
+    if w.get(actor)
+        .is_none_or(|o| !o.kind.is_actor() || o.flags.contains(mush_core::Flags::GOING))
+        || crate::field::crew::refusal(w, actor, crate::field::crew::Gate::Operate).is_some()
+    {
+        return Ok(Map::new());
+    }
+    let all_rigs = crate::surface::act::world_rigs(w);
+    let mut out = Map::new();
+    for site in crate::surface::chart::lane_sites(w) {
+        let already_open = engine
+            .action_state()
+            .get(sites, &SiteKey(site.entry.clone()))
+            .ok()
+            .flatten()
+            .is_some_and(|record| record.open_field().is_some());
+        if already_open {
+            continue;
+        }
+        let Some(domain) = super::parties::site_domain(w, &site.entry) else {
+            continue;
+        };
+        let ground = super::parties::on_ground(w, domain);
+        if ground.is_empty() {
+            continue;
+        }
+        let parties =
+            super::parties::ground_parties_in_engine(engine, excursions, &site.entry, &ground)?;
+        let seated = ground
+            .iter()
+            .copied()
+            .find(|&unit| super::parties::seated(w, unit).is_some_and(|(who, _)| who == actor));
+        let leads_here = parties.iter().any(|row| row.leader == Some(actor));
+        if !leads_here && seated.is_none() {
+            continue;
+        }
+        let rigs: Vec<ObjId> = all_rigs
+            .iter()
+            .copied()
+            .filter(|&tv| {
+                engine
+                    .action_state()
+                    .get(excursions, &RigKey(tv))
+                    .ok()
+                    .flatten()
+                    .is_some_and(|rec| {
+                        rec.act.as_ref().is_some_and(|a| a.site == site.entry)
+                            || rec.run.as_ref().is_some_and(|r| r.site == site.entry)
+                    })
+            })
+            .collect();
+        if let Ok(value) = serde_json::to_value(OpenSiteAuth {
+            parties,
+            seated,
+            rigs,
+        }) {
+            out.insert(site.entry.to_string(), value);
+        }
+    }
+    Ok(out)
+}
+
 impl FieldProvider {
     fn open(
         &self,
         txn: &mut ActionTxn<'_>,
+        context: &mush_core::PrepareCtx<'_>,
         record: &mut SiteRecord,
         parameters: &Map<String, Value>,
         (actor, now): (ObjId, i64),
     ) -> Result<String, ActionError> {
+        if parameters.contains_key("rigs") {
+            return Err(invalid(
+                "a field write derives its settled rigs server-side",
+            ));
+        }
         let by = match parameters.get("by").and_then(Value::as_str) {
             Some("mark") => PromotedBy::Mark {
                 leader: actor,
@@ -236,21 +401,46 @@ impl FieldProvider {
             },
             _ => return Err(invalid("a field opens by a mark or a fire order")),
         };
+        // HIGH-57: require server-sealed offer authority for this site, and when the live
+        // world is present in `PrepareCtx` (composed production path), re-verify everything
+        // live against `world` + `txn` and include live `world_rigs`.
+        let auth: OpenSiteAuth = parameters
+            .get("open_auth")
+            .and_then(Value::as_object)
+            .and_then(|map| map.get(record.site.as_str()))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .ok_or_else(|| rejected("you have no authority to open a field on that site"))?;
+        validate_open_authority_with_seat(&auth.parties, auth.seated, &by)?;
+        let mut rigs: BTreeSet<ObjId> = auth.rigs.into_iter().collect();
+        if let Ok(world) = context.world() {
+            if world
+                .get(actor)
+                .is_none_or(|o| !o.kind.is_actor() || o.flags.contains(mush_core::Flags::GOING))
+            {
+                return Err(rejected("only a live actor can open a field"));
+            }
+            if crate::field::crew::refusal(world, actor, crate::field::crew::Gate::Operate)
+                .is_some()
+            {
+                return Err(rejected("a held character cannot open a field"));
+            }
+            let domain = super::parties::site_domain(world, &record.site)
+                .ok_or_else(|| rejected("that site is not a lane site"))?;
+            let ground = super::parties::on_ground(world, domain);
+            let party_rows = super::parties::ground_parties_in_txn(
+                world,
+                txn,
+                &self.excursions,
+                &record.site,
+                &ground,
+            )?;
+            validate_open_authority(world, &party_rows, &by)?;
+            rigs.extend(crate::surface::act::world_rigs(world));
+        }
         let field = record
             .promote(now, by)
             .map_err(|why| rejected(why.sentence()))?;
-        let rigs: BTreeSet<ObjId> = parameters
-            .get("rigs")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .split(',')
-            .filter(|word| !word.is_empty())
-            .map(|word| {
-                crate::port::families::strict_decimal_u32(word)
-                    .map(ObjId)
-                    .ok_or_else(|| invalid("a field's rig list is numbers"))
-            })
-            .collect::<Result<_, _>>()?;
         let mut settled = Vec::new();
         for tv in rigs {
             let key = RigKey(tv);
@@ -913,7 +1103,27 @@ impl ActionProvider for FieldProvider {
         if all_sites.is_empty() {
             return Ok(None);
         }
-        let (fixed, priority_sites) = build_fixed_parameters(w, query.actor());
+        let (mut fixed, mut priority_sites) = build_fixed_parameters(w, query.actor());
+        let open_auth = build_open_auth(engine, &self.sites, &self.excursions, query.actor())?;
+        let mut offer_open = false;
+        if !open_auth.is_empty() {
+            let mut candidate = fixed.clone();
+            if let Some(obj) = candidate.as_object_mut() {
+                obj.insert("open_auth".to_owned(), Value::Object(open_auth.clone()));
+            }
+            if mush_core::mechanics::canonical_json_bytes_with_limit(
+                &candidate,
+                MAX_OFFER_FIXED_BYTES,
+            )
+            .is_ok()
+            {
+                for site in open_auth.keys() {
+                    priority_sites.insert(site.clone());
+                }
+                fixed = candidate;
+                offer_open = true;
+            }
+        }
         // Bound choice list to `MAX_PROJECTED_ACTION_CHOICES` (prioritizing active owed sites)
         // so schema construction never fails globally.
         let mut sites: Vec<String> = Vec::new();
@@ -934,9 +1144,17 @@ impl ActionProvider for FieldProvider {
         }
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
-        let text = ProjectedParameterKind::Text {
-            maximum_bytes: MAX_LIST_BYTES,
-        };
+        let mut ops = Vec::with_capacity(6);
+        if offer_open {
+            ops.push("open".to_owned());
+        }
+        ops.extend([
+            "close".to_owned(),
+            "exit".to_owned(),
+            "rejoin".to_owned(),
+            "set_down".to_owned(),
+            "carry".to_owned(),
+        ]);
         let Ok(parameters) = (|| -> Result<Vec<mush_core::ProjectedParameter>, ActionError> {
             Ok(vec![
                 crate::surface::act::parameter(
@@ -947,16 +1165,7 @@ impl ActionProvider for FieldProvider {
                 crate::surface::act::parameter(
                     "op",
                     true,
-                    ProjectedParameterKind::Choice {
-                        choices: vec![
-                            "open".to_owned(),
-                            "close".to_owned(),
-                            "exit".to_owned(),
-                            "rejoin".to_owned(),
-                            "set_down".to_owned(),
-                            "carry".to_owned(),
-                        ],
-                    },
+                    ProjectedParameterKind::Choice { choices: ops },
                 )?,
                 crate::surface::act::parameter(
                     "by",
@@ -967,7 +1176,6 @@ impl ActionProvider for FieldProvider {
                 )?,
                 crate::surface::act::parameter("from", false, integer(1, i64::from(u32::MAX)))?,
                 crate::surface::act::parameter("at", false, integer(1, i64::from(u32::MAX)))?,
-                crate::surface::act::parameter("rigs", false, text)?,
                 crate::surface::act::parameter("unit", false, integer(1, i64::from(u32::MAX)))?,
             ])
         })() else {
@@ -995,14 +1203,16 @@ impl ActionProvider for FieldProvider {
         }
     }
 
-    /// Doc 36 cut GC.3: the close takes its preparation context, through which a close-destroyed
-    /// epoch's line is appended in this act's own bundle.
-    fn prepare_authoritative_with_context(
+    /// Doc 36 cut GC.3 + HIGH-57: only Core's regenerated, resolved offer can supply the
+    /// server-sealed fixed parameters (`now`, `open_auth`, `closing`, `exiting`, etc.). Raw
+    /// invocations retain the default refusal.
+    fn prepare_resolved_authoritative_with_context(
         &self,
-        invocation: &ActionInvocation,
+        resolved: &mush_core::ResolvedActionInvocation,
         txn: &mut ActionTxn<'_>,
         context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
+        let invocation = resolved.invocation();
         self.validate_invocation(invocation)?;
         let parameters = parameters(invocation)?;
         let now = int(parameters, "now")
@@ -1056,7 +1266,13 @@ impl ActionProvider for FieldProvider {
         let mut record =
             found.unwrap_or_else(|| crate::surface::site_record::fixed_record(parameters, &key.0));
         let said = match op {
-            "open" => self.open(txn, &mut record, parameters, (invocation.actor(), now))?,
+            "open" => self.open(
+                txn,
+                context,
+                &mut record,
+                parameters,
+                (invocation.actor(), now),
+            )?,
             "exit" => {
                 let unit = obj(parameters, "unit")?;
                 let owed = parameters
@@ -1511,5 +1727,152 @@ mod tests {
             super::super::known::MAX_LEARNED_EYES
         );
         assert!(close.minds.is_empty(), "single oversized mind is dropped");
+    }
+
+    /// **HIGH-57**: `validate_open_authority` enforces ground presence on the named site,
+    /// distinct parties, leadership for `Mark`, and active seat ownership for `Fire`.
+    #[test]
+    fn high57_open_authority_rejects_remote_forged_and_unseated_promotions() {
+        use super::super::parties::GroundParty;
+        use super::super::record::PartyKey;
+
+        struct SpatialSeed(Option<mush_sim::SpatialState>);
+        impl mush_core::GameModule for SpatialSeed {
+            fn name(&self) -> &'static str {
+                "sim"
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                if let Some(spatial) = self.0.take() {
+                    reg.state(spatial);
+                }
+                Ok(())
+            }
+        }
+        let leader_a = ObjId(10);
+        let leader_b = ObjId(20);
+        let remote_attacker = ObjId(30);
+        let hull_a = ObjId(100);
+        let hull_b = ObjId(200);
+        let remote_hull = ObjId(300);
+
+        let mut spatial = mush_sim::SpatialState::default();
+        spatial.assignments.insert(
+            hull_a,
+            mush_sim::data::HostAssignments {
+                host: hull_a,
+                seats: [(
+                    mush_sim::data::StationId::new("cockpit").expect("station"),
+                    mush_sim::data::StationAssignment {
+                        actor: leader_a,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+        let w = mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(SpatialSeed(Some(spatial)))],
+        )
+        .expect("engine")
+        .world;
+
+        let ground = vec![
+            GroundParty {
+                unit: hull_a,
+                key: PartyKey::Unit { unit: hull_a },
+                leader: Some(leader_a),
+            },
+            GroundParty {
+                unit: hull_b,
+                key: PartyKey::Unit { unit: hull_b },
+                leader: Some(leader_b),
+            },
+        ];
+
+        // Legitimate leader mark & seated fire pass.
+        assert!(
+            validate_open_authority(
+                &w,
+                &ground,
+                &PromotedBy::Mark {
+                    leader: leader_a,
+                    by: hull_a,
+                    of: hull_b,
+                },
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_open_authority(
+                &w,
+                &ground,
+                &PromotedBy::Fire {
+                    pilot: leader_a,
+                    shooter: hull_a,
+                    target: hull_b,
+                },
+            )
+            .is_ok()
+        );
+
+        // Remote attacker forging a hostile mark between A and B is refused.
+        assert!(
+            validate_open_authority(
+                &w,
+                &ground,
+                &PromotedBy::Mark {
+                    leader: remote_attacker,
+                    by: hull_a,
+                    of: hull_b,
+                },
+            )
+            .is_err()
+        );
+        // Unit not on this site's ground is refused.
+        assert!(
+            validate_open_authority(
+                &w,
+                &ground,
+                &PromotedBy::Mark {
+                    leader: remote_attacker,
+                    by: remote_hull,
+                    of: hull_b,
+                },
+            )
+            .is_err()
+        );
+        // Unseated attacker forging a fire order from A's hull is refused.
+        assert!(
+            validate_open_authority(
+                &w,
+                &ground,
+                &PromotedBy::Fire {
+                    pilot: leader_b,
+                    shooter: hull_a,
+                    target: hull_b,
+                },
+            )
+            .is_err()
+        );
+        // Self-targeting is refused.
+        assert!(
+            validate_open_authority(
+                &w,
+                &ground,
+                &PromotedBy::Mark {
+                    leader: leader_a,
+                    by: hull_a,
+                    of: hull_a,
+                },
+            )
+            .is_err()
+        );
     }
 }

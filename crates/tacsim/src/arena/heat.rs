@@ -106,6 +106,7 @@ impl UnitState {
     #[must_use]
     pub fn plant_heat_permille(&self) -> u32 {
         match crate::arena::part_effects::plant_condition(&self.unit) {
+            Some(condition) if !condition.is_operational() => 0,
             Some(mush_tactics::field_ops::ComponentCondition::Damaged) => {
                 u32::from(self.profile.effects().power.damaged_heat_permille)
             }

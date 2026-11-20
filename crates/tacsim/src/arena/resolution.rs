@@ -748,6 +748,9 @@ impl Arena {
     /// at and not the curve's floor.
     #[must_use]
     pub fn resolve_seen(&self, shooter: ObjId, aim: &LockAim, weapon: &str) -> Resolution {
+        if !aim.classified {
+            return Resolution::blind("front", MIN_ERROR_URAD, Cover::None);
+        }
         let (Some(from), Some(at)) = (self.unit(shooter), self.unit(aim.target)) else {
             return Resolution::blind("front", MIN_ERROR_URAD, aim.cover);
         };
@@ -863,6 +866,9 @@ impl Arena {
             aim.range_cm,
             lateral_seen_cms(shooter, &aim.seen_at),
             || {
+                if !aim.classified {
+                    return 0;
+                }
                 aim.seen_at
                     .cell(&self.definition.terrain)
                     .map_or(0, |cell| {
@@ -1081,16 +1087,27 @@ impl Arena {
         // Only that it is still in the match: the range and the cover below come
         // off the plot.
         let _ = self.unit(target)?;
+        let classified = matches!(
+            held.class,
+            crate::arena::state::Classification::Classified { .. }
+        );
+        // Unclassified contacts must never read target chassis eye height
+        // (`sensor_height_cm`) through `fire_cover_at`.
+        let cover = if classified {
+            held.seen_at
+                .cell(&self.definition.terrain)
+                .map_or(Cover::None, |cell| {
+                    self.fire_cover_at(platform, target, cell)
+                })
+        } else {
+            Cover::None
+        };
         Some(LockAim {
             target,
             seen_at: held.seen_at,
             range_cm: held.seen_at.range_from(&state.pose),
-            cover: held
-                .seen_at
-                .cell(&self.definition.terrain)
-                .map_or(Cover::None, |cell| {
-                    self.fire_cover_at(platform, target, cell)
-                }),
+            cover,
+            classified,
         })
     }
 }
@@ -1109,8 +1126,11 @@ pub struct LockAim {
     pub seen_at: SeenPose,
     /// The range to the plot, centimetres.
     pub range_cm: u64,
-    /// What the ground under the plot gives it.
+    /// What the ground under the plot gives it (only traced when classified).
     pub cover: Cover,
+    /// Whether the platform has classified the target (required before reading
+    /// target silhouette or `sensor_height_cm`).
+    pub classified: bool,
 }
 
 /// One error term in microradians: `weight × units / 1000`, where both are per
@@ -1430,6 +1450,7 @@ mod tests {
             seen_at: SeenPose::of(blue),
             range_cm: edge_cm + 1,
             cover: Cover::None,
+            classified: true,
         };
         let seen = arena.resolve_seen(RED, &aim, "cannon");
         assert!(seen.beyond && seen.p_permille == 0, "{seen:?}");
@@ -1604,5 +1625,90 @@ mod tests {
             blue.pose.heading_mdeg = 90_000;
         }
         assert_eq!(arena.aim_at(RED, held), Some(aim));
+    }
+
+    #[test]
+    fn high62_unclassified_lock_withholds_odds_silhouette_and_eye_height() {
+        use crate::arena::state::{Classification, SeenPose, ShadowContact, TerrainCell};
+
+        let mut arena = duel();
+        // Move BLUE to cell (1, 5) and place heavy woods with elevation at (1, 3)
+        // between RED (1, 1) and BLUE (1, 5) so target `sensor_height_cm` and
+        // terrain attenuation apply once classified.
+        arena.unit_mut(BLUE).expect("blue").pose = pose(1_500, 5_500);
+        let wall_cell = TerrainCell {
+            class: mush_atlas::TerrainClass::WoodsHeavy,
+            elev_cm: 120,
+            move_cost: 100,
+        };
+        let mut cells = std::sync::Arc::make_mut(&mut arena.definition)
+            .terrain
+            .cells()
+            .to_vec();
+        let width = usize::from(arena.definition.terrain.width());
+        let height = arena.definition.terrain.height();
+        let cell_cm = arena.definition.terrain.cell_cm();
+        if let Some(cell) = cells.get_mut(3 * width + 1) {
+            *cell = wall_cell;
+        }
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            crate::arena::state::ArenaTerrain::new(
+                u16::try_from(width).expect("width"),
+                height,
+                cell_cm,
+                cells,
+            )
+            .expect("terrain");
+
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let plot = SeenPose::of(arena.unit(BLUE).expect("blue"));
+        let blue_cell = plot.cell(&arena.definition.terrain).expect("blue cell");
+        arena.contacts.insert(
+            RED,
+            contact,
+            ShadowContact::sighted(BLUE, Classification::Unknown, 0, plot),
+        );
+        arena.unit_mut(RED).expect("red").lock = Some(contact);
+
+        // Unclassified: `aim_at` does not read target `sensor_height_cm`,
+        // `resolve_seen` is blind, `frame_weapons` hides `p_permille`, and
+        // `fire_cover_at` / `fire_attenuation_at` return neutral defaults.
+        for height_cm in [50_u32, 400_u32] {
+            arena.unit_mut(BLUE).expect("blue").sensor_height_cm = height_cm;
+            let aim = arena.lock_aim(RED).expect("lock aim");
+            assert!(!aim.classified);
+            assert_eq!(aim.cover, Cover::None);
+            assert_eq!(arena.fire_cover_at(RED, BLUE, blue_cell), Cover::None);
+            assert_eq!(arena.fire_attenuation_at(RED, BLUE, blue_cell), 0);
+            assert_eq!(arena.resolve_seen(RED, &aim, "cannon").p_permille, 0);
+            let weapons = arena.frame_weapons(RED, Some(&aim));
+            assert!(
+                weapons.iter().all(|row| row.p_permille.is_none()),
+                "unclassified lock must not expose p_permille: {weapons:?}"
+            );
+        }
+
+        // Once classified, `p_permille`, `cover`, and attenuation resolve normally.
+        arena.contacts.insert(
+            RED,
+            contact,
+            ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                plot,
+            ),
+        );
+        let aim = arena.lock_aim(RED).expect("classified lock aim");
+        assert!(aim.classified);
+        assert!(
+            arena
+                .frame_weapons(RED, Some(&aim))
+                .iter()
+                .any(|row| row.p_permille.is_some_and(|p| p > 0))
+        );
+        assert!(arena.fire_attenuation_at(RED, BLUE, blue_cell) > 0);
     }
 }

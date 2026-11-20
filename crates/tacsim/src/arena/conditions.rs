@@ -1104,12 +1104,16 @@ impl Arena {
     }
 
     fn rule_odds(&self, unit: ObjId, contact: ContactId, weapon: &str) -> Option<u32> {
-        // The lock's weapon odds are always on WEAPONSTATUS; other contacts
-        // have only the bounded published odds rows, never a secret extra query.
+        // The lock's weapon odds are always on WEAPONSTATUS once classified;
+        // other contacts have only the bounded published odds rows, never a
+        // secret extra query, and unclassified contacts expose no odds.
         let own = self.unit(unit)?;
         own.weapon(weapon)?;
         if own.lock == Some(contact) {
             let aim = self.aim_at(unit, contact)?;
+            if !aim.classified {
+                return None;
+            }
             return Some(self.resolve_seen(unit, &aim, weapon).p_permille);
         }
         self.frame_odds(unit)
@@ -1553,6 +1557,9 @@ impl Arena {
         counters: &mut MotorCounters,
     ) -> Vec<(u8, Result<u64, Held>)> {
         if self.conditions.is_empty_for(unit) {
+            return Vec::new();
+        }
+        if self.unit(unit).is_none_or(|state| state.limits.wreck) {
             return Vec::new();
         }
         if self.ended.is_some() || self.rule_evaluation_deferred(unit, t_ms) {
@@ -2143,8 +2150,12 @@ impl Arena {
     /// controller transition (`Arena::set_controller`) and a wreck
     /// (`Arena::destroy_unit`).
     pub(crate) fn clear_conditions(&mut self, unit: ObjId) {
+        let has_profile_state = self.profiles.get(&unit).is_some_and(|runtime| {
+            !runtime.program.rows.is_empty() || runtime.lease.sample().is_some()
+        });
         if self.conditions.is_empty_for(unit)
             && !self.held_said.keys().any(|(on, _, _)| *on == unit)
+            && !has_profile_state
         {
             return;
         }
@@ -4584,6 +4595,7 @@ mod tests {
     }
 
     fn m6_old_sample(arena: &mut Arena, boundary: i64, truth: Vec<bool>) -> (u64, i64) {
+        arena.unit_mut(RED).expect("own").controller = Controller::Mind;
         let runtime = arena.profiles.get(&RED).expect("runtime");
         let generation = runtime.generation;
         let period = arena.mind_profile(RED).think_ms;
@@ -4961,5 +4973,193 @@ mod tests {
             &mut counters,
         );
         assert_eq!(arena.unit(RED).expect("own").lock, None);
+    }
+
+    #[test]
+    fn high62_rule_odds_returns_none_for_unclassified_lock() {
+        let mut arena = locked();
+        let contact = id_of(RED, BLUE);
+        let plot = crate::arena::state::SeenPose::of(arena.unit(BLUE).expect("blue"));
+        arena.contacts.insert(
+            RED,
+            contact,
+            crate::arena::state::ShadowContact::sighted(BLUE, Classification::Unknown, 0, plot),
+        );
+        arena.unit_mut(RED).expect("red").lock = Some(contact);
+        assert_eq!(
+            arena.rule_odds(RED, contact, "cannon"),
+            None,
+            "unclassified locked contact must never expose rule_odds"
+        );
+        arena.contacts.insert(
+            RED,
+            contact,
+            crate::arena::state::ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: crate::arena::state::PartyId::BLUE,
+                },
+                0,
+                plot,
+            ),
+        );
+        assert!(arena.rule_odds(RED, contact, "cannon").is_some());
+    }
+
+    #[test]
+    fn high64_pilot_admission_and_profile_switch_never_arm_autonomous_rules_and_decode_cleanly() {
+        use crate::arena::FieldHost;
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::doctrine::MachineState;
+        use crate::arena::profile_seal::SealedCards;
+        use crate::arena::runtime_card::stock_definition;
+        use crate::arena::snapshot::Snapshot;
+        use crate::arena::state::{Controller, CustodyOut, MatchMode, PartyId, Power};
+        use crate::arena::test_support::{
+            cannon, definition, pose, resolution, tactical_unit_cored, tank,
+        };
+
+        let fire_a = Rule::fire_rule(slot("cannon", 100), Vec::new());
+        let fire_b = Rule::fire_rule(
+            slot("cannon", 100),
+            vec![RulePredicate::Aspect { mask: ASPECTS_ANY }],
+        );
+        let reflex = crate::config::ReflexConfig::default();
+        let alpha = crate::arena::card::preset("Sniper", &reflex).expect("Sniper preset");
+        let bravo = crate::arena::card::preset("Line", &reflex).expect("Line preset");
+        let mut def = stock_definition(
+            &[("Alpha".into(), alpha), ("Bravo".into(), bravo)],
+            CoreClass::I,
+        )
+        .expect("definition");
+        if let Some(p0) = def.profiles.first_mut() {
+            p0.rules = vec![m6_authored(fire_a.clone(), false)];
+        }
+        if let Some(p1) = def.profiles.get_mut(1) {
+            p1.rules = vec![m6_authored(fire_b.clone(), false)];
+        }
+
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 1_500));
+        red.controller = Controller::Pilot;
+        red.unit = tactical_unit_cored(RED, CoreClass::I);
+        red.weapons = vec![cannon()];
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("reseal");
+        let cards = SealedCards::prepare(
+            def,
+            &[SmolStr::new_static("Alpha"), SmolStr::new_static("Bravo")],
+            &ClassTable::STOCK.row(CoreClass::I),
+            &red.seal.weapons,
+            &red.seal.channels,
+            red.seal.effective_floor(),
+        )
+        .expect("sealed cards");
+        red.seal.card = cards.opening_card.clone();
+        red.seal.card_digest = cards.opening_digest;
+        red.seal.cards = cards;
+
+        let blue = tank(BLUE, PartyId::BLUE, pose(1_500, 5_500));
+        let mut arena = Arena::new(
+            CustodyOut {
+                definition: definition(),
+                units: vec![red, blue],
+                pilots: Vec::new(),
+                resolution: resolution(),
+                seed: 2_350,
+                mode: MatchMode::Skirmish,
+                host: FieldHost::all_hostile(),
+            },
+            &crate::config::ArenaConfig::default(),
+            &crate::config::MatchConfig::default(),
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("piloted hull with authored profile rules admits cleanly");
+
+        // Admitted piloted hull must have empty conditions AND round-trip Snapshot::decode.
+        assert!(arena.conditions.is_empty_for(RED));
+        let snap = Snapshot::encode(&arena).expect("encode admitted piloted hull");
+        let _ = Snapshot::decode(&snap.document, (*arena.definition).clone())
+            .expect("decode admitted piloted hull without native-table mismatch");
+
+        // Give RED power, a classified locked hostile, and a seat epoch.
+        arena.unit_mut(RED).expect("red").power = Power::Online;
+        let contact = id_of(RED, BLUE);
+        let plot = crate::arena::state::SeenPose::of(arena.unit(BLUE).expect("blue"));
+        arena.contacts.insert(
+            RED,
+            contact,
+            crate::arena::state::ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                plot,
+            ),
+        );
+        arena.unit_mut(RED).expect("red").lock = Some(contact);
+        arena.epochs.raise(RED, Channel::Helm, 1);
+
+        // Seated pilot sends `MIND PROFILE 1` (Bravo, which carries an autonomous fire rule):
+        // dormant profile switches, but `arena.conditions` stays empty and nothing fires.
+        let switch = Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Profile { index: 1 },
+            seq: 1,
+        };
+        assert_eq!(
+            apply_intent(&mut arena, &switch, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.profiles.get(&RED).map(|p| p.index), Some(1));
+        assert!(
+            arena.conditions.is_empty_for(RED),
+            "MIND PROFILE while seated must never arm autonomous rules"
+        );
+        let ammo_before = arena.unit(RED).expect("red").weapon_ammo("cannon");
+        let mut counters = MotorCounters::default();
+        assert!(
+            arena
+                .evaluate_conditions(RED, 0, ConditionTrigger::Pass, None, &mut counters)
+                .is_empty()
+        );
+        assert_eq!(
+            arena.unit(RED).expect("red").weapon_ammo("cannon"),
+            ammo_before
+        );
+
+        // Snapshot still encodes and decodes cleanly after dormant profile switch.
+        let snap2 = Snapshot::encode(&arena).expect("encode after dormant switch");
+        let _ = Snapshot::decode(&snap2.document, (*arena.definition).clone())
+            .expect("decode after dormant switch");
+
+        // Handback to Controller::Mind restores Bravo's authored rule (fire_b).
+        arena.set_controller(RED, Controller::Mind, MachineState::Startup);
+        assert_eq!(
+            arena.conditions.slots(RED).first().and_then(Option::as_ref),
+            Some(&fire_b)
+        );
+        assert_eq!(arena.profiles.get(&RED).map(|p| p.overridden), Some(0));
+
+        // Wreck never evaluates conditions or switches profiles.
+        arena.unit_mut(RED).expect("red").limits.wreck = true;
+        assert!(
+            arena
+                .evaluate_conditions(RED, 1_000, ConditionTrigger::Pass, None, &mut counters)
+                .is_empty()
+        );
+        let wreck_switch = Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Profile { index: 0 },
+            seq: 2,
+        };
+        assert_eq!(
+            apply_intent(&mut arena, &wreck_switch, IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Wreck)
+        );
     }
 }

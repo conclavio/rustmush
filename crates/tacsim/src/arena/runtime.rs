@@ -70,11 +70,26 @@ pub(crate) fn weapons_for(unit: &UnitState) -> Vec<RuleWeapon> {
 
 impl Arena {
     /// Shared native authority check. Manual slots carry their own override bit;
-    /// complete authored rows retain sampled gates on FIRE, HOLD and LOCK alike.
+    /// complete authored rows retain sampled gates on FIRE, HOLD and LOCK alike
+    /// and are permitted only while the hull is mind-flown and not a wreck.
     pub(crate) fn runtime_permits(&self, unit: ObjId, slot: u8, rule: &Rule, t_ms: i64) -> bool {
-        self.profiles
-            .get(&unit)
-            .is_some_and(|runtime| runtime.permits(slot, rule, t_ms))
+        let Some(own) = self.unit(unit) else {
+            return false;
+        };
+        if own.limits.wreck {
+            return false;
+        }
+        self.profiles.get(&unit).is_some_and(|runtime| {
+            let Some(index) = slot.checked_sub(1).filter(|index| *index < 6) else {
+                return false;
+            };
+            let is_manual = runtime.overridden & (1 << index) != 0
+                || usize::from(index) >= runtime.program.rows.len();
+            if own.controller != super::state::Controller::Mind {
+                return is_manual;
+            }
+            runtime.permits(slot, rule, t_ms)
+        })
     }
 
     /// Ordinary native triggers at a renewal boundary wait for the already
@@ -138,6 +153,11 @@ impl Arena {
     /// does not regain slots; no pilot arming or sampled truth survives.
     pub(crate) fn restore_profile_bindings(&mut self, unit: ObjId) -> Result<(), SchemaError> {
         let own = self.unit(unit).ok_or_else(|| invalid("missing hull"))?;
+        if own.controller != super::state::Controller::Mind || own.limits.wreck {
+            self.clear_conditions(unit);
+            self.cancel_profile_think(unit);
+            return Ok(());
+        }
         let capacity = self.arming_capacity(unit);
         let mut next = self
             .profiles
@@ -395,19 +415,21 @@ impl Arena {
                 None if expiry.next().is_some() => return Err(invalid("expiry without sample")),
                 None => {}
             }
-            for (index, expected) in runtime.program.native_rows().iter().enumerate() {
-                let bit = 1_u8
-                    .checked_shl(u32::try_from(index).unwrap_or(8))
-                    .unwrap_or(0);
-                if runtime.overridden & bit == 0
-                    && self
-                        .conditions
-                        .slots(own.id)
-                        .get(index)
-                        .and_then(Option::as_ref)
-                        != expected.as_ref()
-                {
-                    return Err(invalid("native table differs from active program"));
+            if own.controller == super::state::Controller::Mind && !own.limits.wreck {
+                for (index, expected) in runtime.program.native_rows().iter().enumerate() {
+                    let bit = 1_u8
+                        .checked_shl(u32::try_from(index).unwrap_or(8))
+                        .unwrap_or(0);
+                    if runtime.overridden & bit == 0
+                        && self
+                            .conditions
+                            .slots(own.id)
+                            .get(index)
+                            .and_then(Option::as_ref)
+                            != expected.as_ref()
+                    {
+                        return Err(invalid("native table differs from active program"));
+                    }
                 }
             }
             if let Some(pending) = self

@@ -15,6 +15,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
+/// Per-actor cap on in-flight (`Queued` / `Transmitted`) detachment field replies (HIGH-67):
+/// strictly below [`crate::admission::CONTROL_RESERVE`] (16) so a single detachment slot
+/// controller cannot exhaust the shared control reserve.
+pub const MAX_ACTOR_PENDING_FIELD_REPLIES: usize = 8;
+
 pub struct FieldTransport;
 #[derive(Clone, Debug, Serialize)]
 pub struct Message {
@@ -104,7 +109,17 @@ fn selected(
         return Err(refused("field sender unavailable"));
     }
     let (messages, kind, original) = match request {
-        Request::Send(messages) => (messages.clone(), DispatchKind::Detachment, None),
+        Request::Send(messages) => {
+            if messages.iter().any(|m| {
+                state.envelopes().any(|e| {
+                    e.kind() == DispatchKind::Detachment
+                        && e.dispatch_ref().is_some_and(|r| r.key == m.reference.key)
+                })
+            }) {
+                return Err(refused("duplicate field message"));
+            }
+            (messages.clone(), DispatchKind::Detachment, None)
+        }
         Request::Reply {
             original,
             reference,
@@ -127,11 +142,35 @@ fn selected(
                     .ok_or_else(|| refused("field reference unavailable"))?
                     .key
             );
-            if !matches!(
-                reference.key.strip_prefix(&prefix),
-                Some(":wilco" | ":negative")
-            ) {
+            let suffix = reference.key.strip_prefix(&prefix);
+            if !matches!(suffix, Some(":wilco" | ":negative")) {
                 return Err(refused("reply does not name its original field message"));
+            }
+            // HIGH-67: cap per-actor in-flight field replies strictly below CONTROL_RESERVE (16)
+            // so one detachment controller cannot starve unrelated `+orders/ack` control traffic.
+            let pending_field_replies = state
+                .envelopes()
+                .filter(|env| {
+                    env.issuer() == actor
+                        && env.kind() == DispatchKind::DetachmentReply
+                        && matches!(
+                            env.state(),
+                            EnvelopeState::Queued | EnvelopeState::Transmitted
+                        )
+                })
+                .count();
+            if pending_field_replies >= MAX_ACTOR_PENDING_FIELD_REPLIES {
+                return Err(refused("too many pending field replies"));
+            }
+            // HIGH-67: deduplicate field replies per original dispatch key, and treat NEGATIVE
+            // as terminal so a slot controller cannot loop WILCO/NEGATIVE to flood the pool.
+            if reply_already_recorded(
+                state,
+                &prefix,
+                reference.key.as_str(),
+                suffix == Some(":wilco"),
+            ) {
+                return Err(refused("duplicate or superseded field reply"));
             }
             (
                 vec![Message {
@@ -317,5 +356,110 @@ impl OwnerParticipant for FieldTransport {
                     )
                     && e.dispatch_ref().is_some_and(|r| r.key.starts_with("dt:"))
             })
+    }
+}
+
+/// Whether a reply with `key` (or a terminal `:negative` reply when submitting `:wilco`) is
+/// already recorded in `state` for this original dispatch `prefix` (HIGH-67).
+fn reply_already_recorded(
+    state: &PropagationStore,
+    prefix: &str,
+    key: &str,
+    is_wilco: bool,
+) -> bool {
+    let negative_key = is_wilco.then(|| format!("{prefix}:negative"));
+    state.envelopes().any(|e| {
+        e.kind() == DispatchKind::DetachmentReply
+            && e.dispatch_ref().is_some_and(|r| {
+                r.key == key
+                    || negative_key
+                        .as_deref()
+                        .is_some_and(|neg| r.key.as_str() == neg)
+            })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::{ClockStamp, World};
+
+    fn ref_key(key: &str) -> DispatchRef {
+        DispatchRef {
+            version: 1,
+            key: key.to_owned(),
+            bytes: 64,
+            origin: None,
+            fallback: None,
+        }
+    }
+
+    #[test]
+    fn high67_field_reply_deduplication_and_bounded_ttl() {
+        let w = World::new_minimal();
+        let now = w.world_ic_now();
+        let mut store = PropagationStore::default();
+        let prefix = "dt:1:1:1:1:1:reply";
+        let wilco = format!("{prefix}:wilco");
+        let negative = format!("{prefix}:negative");
+
+        assert!(!reply_already_recorded(&store, prefix, &wilco, true));
+        assert!(!reply_already_recorded(&store, prefix, &negative, false));
+
+        // Recording WILCO blocks duplicate WILCO, still allows one NEGATIVE transition.
+        let id = store.alloc_envelope().expect("alloc");
+        let env = Envelope::dispatch(
+            id,
+            ObjId(2),
+            ObjId(1),
+            DispatchKind::DetachmentReply,
+            ref_key(&wilco),
+            now.clone(),
+        )
+        .expect("wilco envelope")
+        .in_state(EnvelopeState::Delivered, now.clone());
+        store.put_envelope(env).expect("put wilco");
+
+        assert!(reply_already_recorded(&store, prefix, &wilco, true));
+        assert!(!reply_already_recorded(&store, prefix, &negative, false));
+
+        // Recording NEGATIVE blocks both duplicate NEGATIVE and WILCO flip-flop.
+        let id2 = store.alloc_envelope().expect("alloc");
+        let env2 = Envelope::dispatch(
+            id2,
+            ObjId(2),
+            ObjId(1),
+            DispatchKind::DetachmentReply,
+            ref_key(&negative),
+            now.clone(),
+        )
+        .expect("negative envelope")
+        .in_state(EnvelopeState::Delivered, now.clone());
+        store.put_envelope(env2).expect("put negative");
+
+        assert!(reply_already_recorded(&store, prefix, &negative, false));
+        assert!(reply_already_recorded(&store, prefix, &wilco, true));
+
+        // Bounded TTL: detachment replies become reapable after FIELD_ENVELOPE_TTL_SECS (1 IC day),
+        // long before the 30-day ENVELOPE_TTL_SECS.
+        let before_ttl = ClockStamp {
+            clock: now.clock.clone(),
+            at: now.at + crate::FIELD_ENVELOPE_TTL_SECS - 1,
+        };
+        let after_ttl = ClockStamp {
+            clock: now.clock,
+            at: now.at + crate::FIELD_ENVELOPE_TTL_SECS,
+        };
+        assert!(!crate::pass::is_reapable(
+            store.envelope(id).expect("env"),
+            &before_ttl
+        ));
+        assert!(crate::pass::is_reapable(
+            store.envelope(id).expect("env"),
+            &after_ttl
+        ));
+        const {
+            assert!(crate::FIELD_ENVELOPE_TTL_SECS < crate::ENVELOPE_TTL_SECS);
+        }
     }
 }

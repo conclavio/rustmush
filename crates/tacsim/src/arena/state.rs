@@ -3516,6 +3516,11 @@ impl EpochTable {
     pub fn is_empty(&self) -> bool {
         self.epochs.is_empty()
     }
+
+    /// Remove every channel epoch belonging to `unit`.
+    pub fn remove_unit(&mut self, unit: ObjId) {
+        self.epochs.retain(|(on, _), _| *on != unit);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4821,20 +4826,26 @@ impl Arena {
                 &mut profiles,
                 &mut admitted,
             )?;
-            if state.controller == Controller::Mind
-                && let Some(runtime) = profiles.get(&state.id)
+            if state.controller == Controller::Mind && !state.limits.wreck {
+                if let Some(runtime) = profiles.get(&state.id) {
+                    runtime
+                        .program
+                        .install(
+                            &mut conditions,
+                            state.id,
+                            minds_cfg.classes.row(class).slots,
+                        )
+                        .map_err(|error| ArenaError::Mind {
+                            unit: state.id,
+                            reason: error.to_string(),
+                        })?;
+                }
+            } else if let Some(runtime) = profiles.get_mut(&state.id)
+                && !runtime.program.rows.is_empty()
             {
-                runtime
-                    .program
-                    .install(
-                        &mut conditions,
-                        state.id,
-                        minds_cfg.classes.row(class).slots,
-                    )
-                    .map_err(|error| ArenaError::Mind {
-                        unit: state.id,
-                        reason: error.to_string(),
-                    })?;
+                for slot in 1..=crate::arena::core::MAX_CONDITION_SLOTS as u8 {
+                    runtime.override_slot(slot);
+                }
             }
             sealed.push((state.id, line));
             states.push(state);

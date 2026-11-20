@@ -76,6 +76,57 @@ pub const LIST_AT_PORT: &str = "List yourself for crew hire from a port's statio
 pub const BOARD_SUBJECT: &str = "{rank} for hire ({duties})";
 /// The board's take for a listing: `{name}`.
 pub const BOARD_TAKE: &str = "page {name}";
+/// Refusal when hiring at a waged port without an active credit account.
+pub const HIRE_NO_ACCOUNT: &str = "Open an active credit account before hiring crew at this port.";
+/// Refusal when hiring with a delinquent obligation on the employer's account.
+pub const HIRE_DELINQUENT: &str = "Settle your delinquent obligations before hiring crew.";
+/// Refusal when hiring while unpaid crew wage debts stand on the employer's account.
+pub const HIRE_UNPAID_WAGES: &str = "Settle your unpaid crew wages before hiring again.";
+
+/// HIGH-69: whether `employer` is in good standing to accept a hire on `terms`.
+///
+/// At a port with no wage authority (`payee` is `None`), no wage or debt is ever opened,
+/// so hiring stays unrestricted. At a waged port, the employer must hold an active credit
+/// account with no delinquent obligations and no standing unpaid crew wage debts.
+pub(super) fn hiring_allowed(
+    w: &World,
+    employer: ObjId,
+    terms: &HireTerms,
+) -> Result<(), &'static str> {
+    if payee(w, terms).is_none() {
+        return Ok(());
+    }
+    hiring_standing(w, employer)
+}
+
+fn hiring_standing(w: &World, employer: ObjId) -> Result<(), &'static str> {
+    if crate::port::credit::own_account(w, employer).is_none() {
+        return Err(HIRE_NO_ACCOUNT);
+    }
+    let Some(store) = w.module_state::<EconomyStore>() else {
+        return Err(HIRE_NO_ACCOUNT);
+    };
+    let debtor = PrincipalId::Object(employer);
+    for obligation in store.snapshot().obligations() {
+        if obligation.debtor != debtor {
+            continue;
+        }
+        if obligation.status == ObligationStatus::Delinquent {
+            return Err(HIRE_DELINQUENT);
+        }
+        if obligation.schedule.cadence.is_none()
+            && live_debt(obligation)
+            && matches!(
+                &obligation.cause,
+                mush_economy::ObligationCause::Ruleset { namespace }
+                    if namespace.starts_with(WAGE_NS_PREFIX)
+            )
+        {
+            return Err(HIRE_UNPAID_WAGES);
+        }
+    }
+    Ok(())
+}
 
 /// **The namespace a hire's wage is kept under**: its obligation and its arrears.
 #[must_use]
@@ -404,15 +455,119 @@ pub(super) struct FinalWage {
     pub(super) payee: String,
 }
 
+/// Pay the final IC day directly when the employer's account already covers it, avoiding
+/// minting a transient debt obligation in `EconomyStore` on funded discharges (HIGH-69).
+fn pay_final_day(
+    ctx: &mut Ctx<'_>,
+    contract: &CrewContract,
+    debit: AccountId,
+    credit: AccountId,
+    amount: Amount,
+    ns: &str,
+) -> Result<mush_economy::PostOutcome, mush_economy::EconomyError> {
+    let minor = amount.minor();
+    if minor <= 0 {
+        return Err(mush_economy::EconomyError::ZeroLine(0));
+    }
+    let rev = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().account(debit).map(|a| a.revision))
+        .unwrap_or(0);
+    let key = mush_economy::IdempotencyKey::new(
+        "tacsim.crew.final_wage",
+        format!(
+            "{}/{}/{}/{}/{}",
+            contract.employer.0,
+            contract.npc.0,
+            contract.hired_at.at,
+            ctx.w.world_ic_now().at,
+            rev
+        ),
+    );
+    let mut plan = mush_economy::EconomyPlan::new(
+        key,
+        PrincipalId::Object(ctx.actor),
+        mush_economy::EconomicCause::Internal {
+            kind: SmolStr::new(ns),
+            id: u64::from(contract.npc.0),
+        },
+        vec![
+            mush_economy::RequestedLine {
+                account: debit,
+                delta: Amount::from_minor(minor.saturating_neg()),
+                memo: "final crew wage".into(),
+            },
+            mush_economy::RequestedLine {
+                account: credit,
+                delta: Amount::from_minor(minor),
+                memo: "final crew wage".into(),
+            },
+        ],
+    );
+    plan.description = format!("final crew wage for #{}", contract.npc.0);
+    mush_economy::post(ctx, &plan)
+}
+
+/// Coalesce any remaining multiple live unpaid debts under `(debtor, ns)` sharing the same
+/// `(debit_account, credit_account)` pair into a single debt obligation (HIGH-69).
+fn coalesce_remaining_debts(
+    ctx: &mut Ctx<'_>,
+    debtor: &PrincipalId,
+    ns: &str,
+) -> Result<(), mush_economy::EconomyError> {
+    let debts = mush_economy::debts_of(ctx.w, debtor, &[ns]);
+    let mut grouped: BTreeMap<(AccountId, AccountId), Vec<Obligation>> = BTreeMap::new();
+    for debt in debts {
+        grouped
+            .entry((debt.debit_account, debt.credit_account))
+            .or_default()
+            .push(debt);
+    }
+    for ((debit, credit), group) in grouped {
+        if group.len() <= 1 {
+            continue;
+        }
+        let combined = group
+            .iter()
+            .try_fold(0_i64, |acc, d| acc.checked_add(d.amount.minor()))
+            .ok_or(mush_economy::EconomyError::Overflow)?;
+        let due = group
+            .iter()
+            .map(|d| d.schedule.next_due)
+            .min()
+            .unwrap_or_else(|| ctx.w.world_ic_now().at);
+        let _merged = mush_economy::create_debt_due(
+            ctx,
+            (debit, credit),
+            Amount::from_minor(combined),
+            ns,
+            due,
+        )?;
+        for old in group {
+            if let Err(error) = mush_economy::cancel_obligation(ctx, old.id, ns) {
+                tracing::warn!(
+                    debt = old.id.0,
+                    %error,
+                    "tacsim: a coalesced crew wage debt did not cancel"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// **Settle a hire's final wage at its discharge** (doc 48 cut EX.7b): the IC day in progress,
 /// charged whole, beside whatever stands in arrears, to the wage's own payee.
 ///
-/// - The day in progress becomes one one-term debt under the wage's name, the wage's obligation
-///   is ended, so **no further period accrues** whatever fires afterwards.
-/// - Each debt under the name is paid whole now, oldest first, if the employer's account covers
-///   it. One it cannot cover stands, first swept [`mush_economy::ARREARS_DUE_IC_SECS`] on and
-///   collected at a port fire once the account covers it (`collect_ended`, the same rule). **A
-///   discharge is never refused for want of money.**
+/// - Covered arrears and a covered day in progress are paid directly without creating extra
+///   debt obligations, and the recurring wage obligation is ended so **no further period
+///   accrues** whatever fires afterwards.
+/// - Any unpaid day in progress is coalesced with remaining unpaid arrears under the same
+///   `(employer, namespace)` into a single live debt obligation (HIGH-69), first swept
+///   [`mush_economy::ARREARS_DUE_IC_SECS`] on (or the earliest existing due instant) and
+///   collected at a port fire once the account covers it (`collect_ended`). **A discharge is
+///   never refused for want of money.**
 ///
 /// `None` when the hire owed no wage and no debt (a port with no authority, or an employer with
 /// no account).
@@ -424,6 +579,13 @@ pub(super) fn settle_final(
     ctx: &mut Ctx<'_>,
     contract: &CrewContract,
 ) -> Result<Option<FinalWage>, mush_economy::EconomyError> {
+    if ctx
+        .w
+        .module_state::<EconomyStore>()
+        .is_some_and(EconomyStore::is_frozen)
+    {
+        return Err(mush_economy::EconomyError::EconomyFrozen);
+    }
     let ns = wage_namespace(contract.npc);
     let debtor = PrincipalId::Object(contract.employer);
     let open = mush_economy::player_obligations_of(ctx.w, &debtor, &ns)
@@ -439,30 +601,9 @@ pub(super) fn settle_final(
             (debit != credit).then_some((debit, credit, amount))
         }),
     };
-    if let Some((debit, credit, amount)) = day {
-        let due = ctx
-            .w
-            .world_ic_now()
-            .at
-            .saturating_add(mush_economy::ARREARS_DUE_IC_SECS);
-        let last = mush_economy::create_debt_due(ctx, (debit, credit), amount, &ns, due)?;
-        if let Some(o) = &open
-            && let Err(error) = mush_economy::cancel_obligation(ctx, o.id, &ns)
-        {
-            // The wage still runs, so the day is not owed twice: take the debt back.
-            if let Err(undo) = mush_economy::cancel_obligation(ctx, last, &ns) {
-                tracing::error!(debt = last.0, %undo, "tacsim: a refused discharge's last day stands");
-            }
-            return Err(error);
-        }
-    }
-    let debts = mush_economy::debts_of(ctx.w, &debtor, &[ns.as_str()]);
-    if debts.is_empty() {
-        return Ok(None);
-    }
-    let total: i64 = debts.iter().map(|d| d.amount.minor()).sum();
     let mut paid = 0_i64;
-    for debt in &debts {
+    let existing = mush_economy::debts_of(ctx.w, &debtor, &[ns.as_str()]);
+    for debt in &existing {
         if !covers(ctx.w, debt.debit_account, debt.amount.minor()) {
             continue;
         }
@@ -471,10 +612,100 @@ pub(super) fn settle_final(
                 mush_economy::PostOutcome::Posted(_) | mush_economy::PostOutcome::AlreadyPosted(_),
             ) => paid = paid.saturating_add(debt.amount.minor()),
             Ok(mush_economy::PostOutcome::NeedsApproval(_)) => {}
+            Err(mush_economy::EconomyError::EconomyFrozen) => {
+                return Err(mush_economy::EconomyError::EconomyFrozen);
+            }
             Err(error) => {
                 tracing::warn!(debt = debt.id.0, %error, "tacsim: a final wage was not paid; it stands");
             }
         }
+    }
+    if let Some((debit, credit, amount)) = day {
+        let mut day_paid = false;
+        if covers(ctx.w, debit, amount.minor()) {
+            match pay_final_day(ctx, contract, debit, credit, amount, &ns) {
+                Ok(
+                    mush_economy::PostOutcome::Posted(_)
+                    | mush_economy::PostOutcome::AlreadyPosted(_),
+                ) => {
+                    paid = paid.saturating_add(amount.minor());
+                    day_paid = true;
+                    if let Some(o) = &open
+                        && let Err(error) = mush_economy::cancel_obligation(ctx, o.id, &ns)
+                    {
+                        tracing::error!(
+                            obligation = o.id.0,
+                            %error,
+                            "tacsim: a paid discharge's recurring wage did not cancel"
+                        );
+                    }
+                }
+                Ok(mush_economy::PostOutcome::NeedsApproval(_)) => {}
+                Err(mush_economy::EconomyError::EconomyFrozen) => {
+                    return Err(mush_economy::EconomyError::EconomyFrozen);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        npc = contract.npc.0,
+                        %error,
+                        "tacsim: direct final wage payment failed; falling back to debt"
+                    );
+                }
+            }
+        }
+        if !day_paid {
+            let remaining = mush_economy::debts_of(ctx.w, &debtor, &[ns.as_str()]);
+            let same_pair: Vec<Obligation> = remaining
+                .into_iter()
+                .filter(|d| d.debit_account == debit && d.credit_account == credit)
+                .collect();
+            let combined = same_pair
+                .iter()
+                .try_fold(amount.minor(), |acc, d| acc.checked_add(d.amount.minor()))
+                .ok_or(mush_economy::EconomyError::Overflow)?;
+            let default_due = ctx
+                .w
+                .world_ic_now()
+                .at
+                .saturating_add(mush_economy::ARREARS_DUE_IC_SECS);
+            let due = same_pair
+                .iter()
+                .map(|d| d.schedule.next_due)
+                .fold(default_due, i64::min);
+            let last = mush_economy::create_debt_due(
+                ctx,
+                (debit, credit),
+                Amount::from_minor(combined),
+                &ns,
+                due,
+            )?;
+            if let Some(o) = &open
+                && let Err(error) = mush_economy::cancel_obligation(ctx, o.id, &ns)
+            {
+                // The wage still runs, so the day is not owed twice: take the debt back.
+                if let Err(undo) = mush_economy::cancel_obligation(ctx, last, &ns) {
+                    tracing::error!(debt = last.0, %undo, "tacsim: a refused discharge's last day stands");
+                }
+                return Err(error);
+            }
+            for old in same_pair {
+                if let Err(error) = mush_economy::cancel_obligation(ctx, old.id, &ns) {
+                    tracing::warn!(
+                        debt = old.id.0,
+                        %error,
+                        "tacsim: a coalesced crew wage debt did not cancel"
+                    );
+                }
+            }
+        }
+    }
+    coalesce_remaining_debts(ctx, &debtor, &ns)?;
+    let owing: i64 = mush_economy::debts_of(ctx.w, &debtor, &[ns.as_str()])
+        .iter()
+        .map(|d| d.amount.minor())
+        .sum();
+    if paid == 0 && owing == 0 {
+        return Ok(None);
     }
     let payee = payee(ctx.w, &contract.terms).map_or_else(
         || "the hiring port".to_string(),
@@ -483,11 +714,7 @@ pub(super) fn settle_final(
                 .to_string()
         },
     );
-    Ok(Some(FinalWage {
-        paid,
-        owing: total.saturating_sub(paid),
-        payee,
-    }))
+    Ok(Some(FinalWage { paid, owing, payee }))
 }
 
 /// A sum of minor units in the credit's render.
@@ -715,9 +942,141 @@ mod tests {
             NOT_LISTED.to_string(),
             UNLISTED.to_string(),
             LIST_AT_PORT.to_string(),
+            HIRE_NO_ACCOUNT.to_string(),
+            HIRE_DELINQUENT.to_string(),
+            HIRE_UNPAID_WAGES.to_string(),
         ];
         for line in filled {
             assert!(line.chars().count() <= 120, "{} wide: {line}", line.len());
         }
+    }
+
+    #[test]
+    fn high69_hiring_standing_and_debt_coalescing() {
+        let (base, reg) = mush_testkit::boot_world();
+        let mut engine = mush_core::Engine::with_modules(
+            base,
+            reg,
+            vec![Box::new(mush_economy::EconomyModule::new())],
+        )
+        .expect("engine");
+        let employer = engine
+            .world
+            .create(ObjKind::Player, "Employer", mush_core::GOD, None)
+            .expect("employer");
+        let npc = engine
+            .world
+            .create(ObjKind::Npc, "Mendes", mush_core::GOD, None)
+            .expect("npc");
+        // Without an active credit account, hiring at a waged port is refused.
+        assert_eq!(
+            hiring_standing(&engine.world, employer),
+            Err(HIRE_NO_ACCOUNT)
+        );
+
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            actor: employer,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(crate::economy::ensure_instrument(&mut ctx, &Default::default()).is_some());
+        let instrument =
+            mush_economy::InstrumentId::new(crate::economy::CREDIT).expect("credit instrument");
+        let emp_acc = AccountId(101);
+        mush_economy::open_account(
+            &mut ctx,
+            mush_economy::Account {
+                id: emp_acc,
+                owner: PrincipalId::Object(employer),
+                instrument: instrument.clone(),
+                scope: None,
+                name: SmolStr::new("employer"),
+                status: mush_economy::AccountStatus::Active,
+                posted_balance: Amount::ZERO,
+                held_amount: Amount::ZERO,
+                last_hold_seq: 0,
+                credit: mush_economy::CreditPolicy::forbid(),
+                last_journal_seq: 0,
+                revision: 1,
+                approval: None,
+            },
+        );
+        let hall_acc = AccountId(102);
+        mush_economy::open_account(
+            &mut ctx,
+            mush_economy::Account {
+                id: hall_acc,
+                owner: PrincipalId::Organization(OrgId(77)),
+                instrument,
+                scope: None,
+                name: SmolStr::new("hall"),
+                status: mush_economy::AccountStatus::Active,
+                posted_balance: Amount::ZERO,
+                held_amount: Amount::ZERO,
+                last_hold_seq: 0,
+                credit: mush_economy::CreditPolicy::forbid(),
+                last_journal_seq: 0,
+                revision: 1,
+                approval: None,
+            },
+        );
+
+        // Clean active account (even at zero balance before any default) is allowed to hire.
+        assert_eq!(hiring_standing(ctx.w, employer), Ok(()));
+
+        // Create two unpaid crew wage debts under the same (employer, namespace).
+        let ns = wage_namespace(npc);
+        let due_a = ctx.w.world_ic_now().at + 500;
+        let due_b = ctx.w.world_ic_now().at + 1_000;
+        let _d1 = mush_economy::create_debt_due(
+            &mut ctx,
+            (emp_acc, hall_acc),
+            Amount::from_minor(1_000),
+            &ns,
+            due_a,
+        )
+        .expect("debt 1");
+        let _d2 = mush_economy::create_debt_due(
+            &mut ctx,
+            (emp_acc, hall_acc),
+            Amount::from_minor(2_500),
+            &ns,
+            due_b,
+        )
+        .expect("debt 2");
+        assert_eq!(hiring_standing(ctx.w, employer), Err(HIRE_UNPAID_WAGES));
+
+        // Coalescing merges both live debts into one single live obligation of 3_500 with earliest due.
+        let debtor = PrincipalId::Object(employer);
+        coalesce_remaining_debts(&mut ctx, &debtor, &ns).expect("coalesce");
+        let remaining = mush_economy::debts_of(ctx.w, &debtor, &[ns.as_str()]);
+        assert_eq!(remaining.len(), 1);
+        let merged = remaining.first().expect("merged debt");
+        assert_eq!(merged.amount.minor(), 3_500);
+        assert_eq!(merged.schedule.next_due, due_a);
+
+        // Canceling the wage debt restores standing; a non-wage active debt does not block
+        // until delinquent.
+        mush_economy::cancel_obligation(&mut ctx, merged.id, &ns).expect("cancel");
+        assert_eq!(hiring_standing(ctx.w, employer), Ok(()));
+        let other = mush_economy::create_debt_due(
+            &mut ctx,
+            (emp_acc, hall_acc),
+            Amount::from_minor(500),
+            "tacsim.other.fee",
+            due_a,
+        )
+        .expect("other debt");
+        let recorded = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .is_some_and(|store| store.snapshot().obligation(other).is_some());
+        assert!(recorded);
     }
 }

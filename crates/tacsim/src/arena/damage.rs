@@ -634,12 +634,26 @@ impl Arena {
 
     /// The same walk, to a cell the target is not necessarily in (16b cut F.3) —
     /// the one `fire_cover_at` and `fire_attenuation_at` are two readings of.
+    ///
+    /// Gated strictly on `shooter` holding `target` as
+    /// [`crate::arena::state::Classification::Classified`] so advice queries
+    /// never read an unclassified target's `sensor_height_cm`.
     fn fire_trace_at(
         &self,
         shooter: ObjId,
         target: ObjId,
         cell: (u16, u16),
     ) -> Option<mush_atlas::trace::CellTrace> {
+        let classified = self.contacts.of(shooter).any(|(_, held)| {
+            held.target == target
+                && matches!(
+                    held.class,
+                    crate::arena::state::Classification::Classified { .. }
+                )
+        });
+        if !classified {
+            return None;
+        }
         self.trace_eye_to(self.fire_eye(self.unit(shooter)?)?, target, cell)
     }
 

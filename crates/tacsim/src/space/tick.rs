@@ -2257,6 +2257,16 @@ pub const BUBBLE_INPUT_OUTCOME: &str = "tacsim_space_bubble_input_outcome";
 /// each is one `tacsim_space_customs`, whose own row is its record ([`super::customs`]).
 pub const BUBBLE_TAPE_FAMILY: &str = "tacsim.space_bubble_tape";
 
+/// Maximum uncommitted [`PendingBubbleInput`] rows retained per hull (HIGH-44).
+pub const MAX_PENDING_BUBBLE_INPUTS_PER_HULL: usize = 8;
+/// Global ceiling on uncommitted [`PendingBubbleInput`] rows across all hulls (HIGH-44).
+pub const MAX_PENDING_BUBBLE_INPUTS_GLOBAL: usize = 256;
+/// Maximum in-flight [`crate::port::burn::PendingSpaceBurn`] rows per hull (HIGH-46).
+pub const MAX_PENDING_SPACE_BURNS_PER_HULL: usize = 8;
+/// Global ceiling on in-flight [`crate::port::burn::PendingSpaceBurn`] rows across all hulls
+/// (HIGH-46).
+pub const MAX_PENDING_SPACE_BURNS_GLOBAL: usize = 256;
+
 /// Staged authoritative bubble-input ledger for a hull in `tacsim.space_bubble_tape` (`SF.R21`, `35b` §3b).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2447,6 +2457,41 @@ pub fn submit_drone_excursions(
     )
 }
 
+/// Prune any [`PendingBubbleInput`] entries whose `seq` has already been committed onto
+/// `tacsim.space_bubble_tape` (HIGH-44).
+fn prune_committed_bubble_inputs(ctx: &mut Ctx<'_>) {
+    let Some((tapes, pending_keys)) = ctx.w.module_state::<BubbleInputHandles>().map(|handles| {
+        let keys: Vec<(ObjId, u64)> = handles
+            .pending_bubble_inputs
+            .iter()
+            .map(|e| (e.hull, e.seq))
+            .collect();
+        (handles.tapes.clone(), keys)
+    }) else {
+        return;
+    };
+    if pending_keys.is_empty() {
+        return;
+    }
+    let mut committed_by_hull: BTreeMap<ObjId, u64> = BTreeMap::new();
+    for (hull, _) in &pending_keys {
+        if let std::collections::btree_map::Entry::Vacant(slot) = committed_by_hull.entry(*hull) {
+            let last_seq = ctx
+                .action_state(&tapes, hull)
+                .ok()
+                .flatten()
+                .map_or(0, |ledger| ledger.last_seq);
+            slot.insert(last_seq);
+        }
+    }
+    if let Some(handles) = ctx.w.module_state_mut::<BubbleInputHandles>() {
+        handles.pending_bubble_inputs.retain(|entry| {
+            let last_seq = committed_by_hull.get(&entry.hull).copied().unwrap_or(0);
+            entry.seq > last_seq
+        });
+    }
+}
+
 fn submit_bubble_input_with_drones(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
@@ -2457,21 +2502,54 @@ fn submit_bubble_input_with_drones(
 ) -> Option<u64> {
     let at_ic = ctx.w.world_ic_now().at;
     let actor = ctx.actor;
+    // HIGH-44: skip enqueue entirely when this actor cannot submit or the action is unwired so we
+    // never strand unsubmitted entries in RAM that another call could later replay.
+    let (action, tapes) = {
+        let handles = ctx.w.module_state::<BubbleInputHandles>()?;
+        let can_submit = !ctx.out.authoritative_pending(actor)
+            && !handles.pending_burn_submit_actors.contains(&actor);
+        if !can_submit {
+            return None;
+        }
+        (handles.action.clone()?, handles.tapes.clone())
+    };
+    prune_committed_bubble_inputs(ctx);
+    let committed_last_seq = ctx
+        .action_state(&tapes, &hull)
+        .ok()
+        .flatten()
+        .map_or(0, |ledger| ledger.last_seq);
     let seq_floor = u64::try_from(ctx.w.now())
         .unwrap_or(0)
-        .saturating_mul(1_000);
-    let (seq, can_submit, action) = {
+        .saturating_mul(1_000)
+        .max(committed_last_seq);
+    let (seq, key) = {
         let handles = ctx.w.module_state_mut::<BubbleInputHandles>()?;
+        let hull_pending = handles
+            .pending_bubble_inputs
+            .iter()
+            .filter(|e| e.hull == hull)
+            .count();
+        if hull_pending >= MAX_PENDING_BUBBLE_INPUTS_PER_HULL
+            || handles.pending_bubble_inputs.len() >= MAX_PENDING_BUBBLE_INPUTS_GLOBAL
+        {
+            return None;
+        }
         // `SF.R26` (doc 35d §4): the allocator is RAM, so it restarts with the server. Flooring
-        // it on the wall clock keeps a sequence, and the idempotency key built from it, from
-        // repeating one issued before a restart.
-        handles.next_bubble_input_seq = handles
+        // it on the wall clock and the committed ledger keeps a sequence, and the idempotency key
+        // built from it, from repeating one issued before a restart.
+        let candidate_seq = handles
             .next_bubble_input_seq
             .max(seq_floor)
             .saturating_add(1);
-        let seq = handles.next_bubble_input_seq;
+        let key = mush_core::IdempotencyKeyText::parse_canonical(format!(
+            "tacsim.space.input/{}/{}/{}",
+            hull.0, candidate_seq, switch
+        ))
+        .ok()?;
+        handles.next_bubble_input_seq = candidate_seq;
         handles.pending_bubble_inputs.push(PendingBubbleInput {
-            seq,
+            seq: candidate_seq,
             actor,
             hull,
             switch: switch.to_owned(),
@@ -2480,33 +2558,19 @@ fn submit_bubble_input_with_drones(
             drone_excursions,
             drone_landings,
         });
-        if handles.pending_bubble_inputs.len() > 64 {
-            let excess = handles.pending_bubble_inputs.len() - 64;
-            handles.pending_bubble_inputs.drain(0..excess);
-        }
-        let can_submit = !ctx.out.authoritative_pending(actor)
-            && !handles.pending_burn_submit_actors.contains(&actor);
-        (seq, can_submit, handles.action.clone())
+        (candidate_seq, key)
     };
-    if can_submit
-        && let Some(action) = action
-        && let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
-            "tacsim.space.input/{}/{}/{}",
-            hull.0, seq, switch
-        ))
-    {
-        ctx.submit_authoritative(
-            action,
-            mush_core::PerceivedRef::SelfActor,
-            Vec::new(),
-            serde_json::json!({
-                "hull": hull.0,
-                "seq": seq,
-                "switch": switch,
-            }),
-            key,
-        );
-    }
+    ctx.submit_authoritative(
+        action,
+        mush_core::PerceivedRef::SelfActor,
+        Vec::new(),
+        serde_json::json!({
+            "hull": hull.0,
+            "seq": seq,
+            "switch": switch,
+        }),
+        key,
+    );
     Some(seq)
 }
 
@@ -2576,6 +2640,15 @@ impl mush_core::ActionProvider for BubbleInputProvider {
             .iter()
             .filter(|e| e.actor == query.actor())
         {
+            let committed_last_seq = engine
+                .action_state()
+                .get(&self.tapes, &entry.hull)
+                .ok()
+                .flatten()
+                .map_or(0, |ledger| ledger.last_seq);
+            if entry.seq <= committed_last_seq {
+                continue;
+            }
             if let Ok(val) = serde_json::to_value(entry) {
                 pending_map.insert(entry.seq.to_string(), val);
             }
@@ -2655,7 +2728,11 @@ impl mush_core::ActionProvider for BubbleInputProvider {
             .ok_or_else(invalid)?;
         let pending: PendingBubbleInput =
             serde_json::from_value(pending_val.clone()).map_err(|_| invalid())?;
-        if pending.actor != invocation.actor() || pending.hull != hull || pending.switch != switch {
+        if pending.actor != invocation.actor()
+            || pending.hull != hull
+            || pending.seq != seq
+            || pending.switch != switch
+        {
             return Err(crate::port_tick::port_error(
                 mush_core::ActionErrorCode::Unauthorized,
                 "that space bubble input belongs to another actor or hull",
@@ -2670,6 +2747,13 @@ impl mush_core::ActionProvider for BubbleInputProvider {
                 )
             })?
             .cloned();
+        // HIGH-44: reject non-monotonic / replayed sequence numbers atomically inside txn.
+        if prior.as_ref().is_some_and(|ledger| seq <= ledger.last_seq) {
+            return Err(crate::port_tick::port_error(
+                mush_core::ActionErrorCode::Conflict,
+                "that space bubble input has already been staged",
+            ));
+        }
         let mut recent = prior.as_ref().map(|l| l.recent.clone()).unwrap_or_default();
         recent.push(StagedBubbleTapeEntry {
             seq,
@@ -3279,13 +3363,6 @@ fn reconcile_space_burns(ctx: &mut Ctx<'_>) {
                 burn.idle_ticks = 0;
             }
         }
-        for gone in &lapsed {
-            let ledger = book.propellant_ledger_mut(gone.hull);
-            ledger.unlanded_burn_t = ledger.unlanded_burn_t.saturating_sub(gone.burn_t);
-            ledger.total_burned_kg = ledger
-                .total_burned_kg
-                .saturating_sub(gone.burn_t.saturating_mul(1_000));
-        }
     }
     for burn in retried {
         let _ = super::commands::submit_queued_space_burn(
@@ -3295,6 +3372,28 @@ fn reconcile_space_burns(ctx: &mut Ctx<'_>) {
             burn.attempts.saturating_add(1),
             burn.actor,
         );
+    }
+    lapse_space_burns(ctx, lapsed);
+}
+
+/// Roll back and narrate space burns that could not land or were cleanly lapsed (HIGH-46):
+/// always decrements `unlanded_burn_t` and `total_burned_kg`, cuts any unpaid passage so eviction
+/// never forgives unpaid passages, and narrates the lapse to the hull.
+pub(crate) fn lapse_space_burns(
+    ctx: &mut Ctx<'_>,
+    lapsed: Vec<crate::port::burn::PendingSpaceBurn>,
+) {
+    if lapsed.is_empty() {
+        return;
+    }
+    if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
+        for gone in &lapsed {
+            let ledger = book.propellant_ledger_mut(gone.hull);
+            ledger.unlanded_burn_t = ledger.unlanded_burn_t.saturating_sub(gone.burn_t);
+            ledger.total_burned_kg = ledger
+                .total_burned_kg
+                .saturating_sub(gone.burn_t.saturating_mul(1_000));
+        }
     }
     for burn in lapsed {
         tracing::warn!(
@@ -3318,6 +3417,7 @@ fn reconcile_space_burns(ctx: &mut Ctx<'_>) {
 }
 
 fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
+    prune_committed_bubble_inputs(ctx);
     let ic_now_s = ctx.w.world_ic_now().at;
     let active_journey_hulls: std::collections::BTreeSet<ObjId> = ctx
         .w
@@ -3411,9 +3511,37 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
                     && b.crew_days == 0)
         });
     }
-    if book.pending_space_burns.len() > 16 {
-        let excess = book.pending_space_burns.len() - 16;
-        book.pending_space_burns.drain(0..excess);
+    // HIGH-46: never silently drain `pending_space_burns` globally (which forgives unpaid passages
+    // and strands `unlanded_burn_t`). If any hull exceeds its per-hull cap (e.g. from legacy
+    // persisted state), collect only its oldest excess and roll it back via `lapse_space_burns`.
+    let mut overflow_lapsed: Vec<crate::port::burn::PendingSpaceBurn> = Vec::new();
+    {
+        let mut counts: BTreeMap<ObjId, usize> = BTreeMap::new();
+        for burn in &book.pending_space_burns {
+            *counts.entry(burn.hull).or_insert(0) += 1;
+        }
+        let mut drop_budget: BTreeMap<ObjId, usize> = counts
+            .into_iter()
+            .filter_map(|(hull, n)| {
+                n.checked_sub(MAX_PENDING_SPACE_BURNS_PER_HULL)
+                    .filter(|&excess| excess > 0)
+                    .map(|excess| (hull, excess))
+            })
+            .collect();
+        if !drop_budget.is_empty() {
+            let mut kept = Vec::with_capacity(book.pending_space_burns.len());
+            for burn in book.pending_space_burns.drain(..) {
+                if let Some(rem) = drop_budget.get_mut(&burn.hull)
+                    && *rem > 0
+                {
+                    *rem -= 1;
+                    overflow_lapsed.push(burn);
+                } else {
+                    kept.push(burn);
+                }
+            }
+            book.pending_space_burns = kept;
+        }
     }
 
     let clamped_set: std::collections::BTreeSet<ObjId> =
@@ -3484,6 +3612,7 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
             .pending_burn_submit_actors
             .retain(|a| remaining_burn_actors.contains(a));
     }
+    lapse_space_burns(ctx, overflow_lapsed);
     // An NPC hull whose derelict record has lapsed and that nothing holds is gone with it.
     for hull in lapsed_derelicts {
         destroy_unclaimed_npc_hull(ctx, hull);
@@ -3974,10 +4103,6 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 }
                 book.completed.insert(ch, completed);
             }
-            if book.pending_space_burns.len() > 16 {
-                let excess = book.pending_space_burns.len() - 16;
-                book.pending_space_burns.drain(0..excess);
-            }
             to_finalize.push((active.hull, domain, carrier_entries, npc_contacts));
         }
     }
@@ -4186,10 +4311,6 @@ fn settle_disabled_carrier_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                     book.completed.remove(&oldest_hull);
                 }
                 book.completed.insert(ch, completed);
-            }
-            if book.pending_space_burns.len() > 16 {
-                let excess = book.pending_space_burns.len() - 16;
-                book.pending_space_burns.drain(0..excess);
             }
             settled.push((interdictor_hull, domain, carrier_ships, npc_contacts));
         }
@@ -5479,10 +5600,28 @@ fn interdicted_domain_for_journey(w: &World, journey: &CarrierJourney) -> Option
     active_interception.then_some(domain)
 }
 
+/// Roll back a failed space check-out cleanly so `hull` never leaks an orphaned `DeployedMark`
+/// (HIGH-47).
+fn rollback_space_checkout(ctx: &mut Ctx<'_>, hull: ObjId) {
+    let _ = mush_tactics::custody::check_in(ctx, hull, None);
+    let _ = mush_sim::deployed::clear(ctx.w, hull);
+}
+
 /// Let a carrier whose bubble could not be built fly on (`SF.R28`, doc 35d §6.3): her journey,
 /// promoted for the bubble, is resumed and the leg marked cleared, so she is neither left parked
-/// in `Promoted` nor promoted again on the next tick.
+/// in `Promoted` nor promoted again on the next tick. Any orphaned check-out from a failed build
+/// is cleanly rolled back (HIGH-47).
 fn release_uninterdicted_carrier(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, now: &ClockStamp) {
+    let in_active_bubble = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .is_some_and(|b| b.active_for_hull(hull).is_some());
+    if !in_active_bubble
+        && (mush_tactics::custody::marker_of(ctx.w, hull).is_some()
+            || mush_sim::deployed::is_deployed(ctx.w, hull))
+    {
+        rollback_space_checkout(ctx, hull);
+    }
     let _ = resume_carrier_journey(ctx, hull, now);
     let cursor_now = ctx
         .w
@@ -5567,14 +5706,18 @@ fn build_interdiction_bubble(
 
     let (interdictor_hull, interdictor_ship_id, mut picket, interdictor_seal) = match cast_of {
         CastOf::Picket(corvette_doctrine, raider_doctrine) => {
-            let picket_state = super::picket::spawn_kirkwood_picket_ships_in_world(
+            let Some(picket_state) = super::picket::spawn_kirkwood_picket_ships_in_world(
                 ctx,
                 &mut bubble,
                 domain,
                 leg_cursor,
                 &corvette_doctrine,
                 &raider_doctrine,
-            )?;
+            ) else {
+                // HIGH-47: roll back carrier checkout if picket ship creation fails.
+                rollback_space_checkout(ctx, hull);
+                return None;
+            };
             ship_hulls.insert(
                 picket_state.corvette_ship_id.clone(),
                 picket_state.corvette_hull,
@@ -5588,21 +5731,35 @@ fn build_interdiction_bubble(
             (raider_hull, raider_ship_id, Some(picket_state), None)
         }
         CastOf::Interdictor(doctrine) => {
-            let cast = super::picket::picket_cast_book()?;
+            let Some(cast) = super::picket::picket_cast_book() else {
+                rollback_space_checkout(ctx, hull);
+                return None;
+            };
             let interdictor_ship_id = format!("picket.{}.{}", domain.0, leg_cursor);
-            let interdictor_commander = reuse_or_create_npc_commander(
+            let Some(interdictor_commander) = reuse_or_create_npc_commander(
                 ctx,
                 &cast.interdictor.commander,
                 cast.interdictor.organization.as_deref(),
-            )?;
-            let interdictor_hull =
-                reuse_or_create_npc_hull(ctx, &cast.interdictor.hull_name, interdictor_commander)?;
-            super::custody::create_stock_space_unit_in_world(
+            ) else {
+                rollback_space_checkout(ctx, hull);
+                return None;
+            };
+            let Some(interdictor_hull) =
+                reuse_or_create_npc_hull(ctx, &cast.interdictor.hull_name, interdictor_commander)
+            else {
+                rollback_space_checkout(ctx, hull);
+                return None;
+            };
+            if super::custody::create_stock_space_unit_in_world(
                 ctx,
                 interdictor_hull,
                 &cast.interdictor.unit,
             )
-            .ok()?;
+            .is_err()
+            {
+                rollback_space_checkout(ctx, hull);
+                return None;
+            }
             super::custody::ensure_space_hull_titled(ctx, interdictor_hull, interdictor_commander);
             let interdictor_seal = super::picket::seal_space_unit_in_world(
                 ctx,
@@ -5611,7 +5768,7 @@ fn build_interdiction_bubble(
                 doctrine.name.as_str(),
                 doctrine.digest,
             );
-            let mut interdictor_ship = check_out_space_unit(
+            let Ok(mut interdictor_ship) = check_out_space_unit(
                 ctx,
                 interdictor_hull,
                 &site_id,
@@ -5621,8 +5778,10 @@ fn build_interdiction_bubble(
                 INTERDICTOR_PARTY,
                 cast.interdictor.pos_m,
                 cast.interdictor.vel_mmps,
-            )
-            .ok()?;
+            ) else {
+                rollback_space_checkout(ctx, hull);
+                return None;
+            };
             super::custody::apply_space_unit_overlay(
                 &mut interdictor_ship,
                 &super::custody::space_unit_overlay_for_id(&cast.interdictor.overlay),
@@ -5853,8 +6012,83 @@ pub(crate) fn reuse_or_create_npc_commander(
     Some(npc)
 }
 
+/// Whether an existing `Thing` is truly idle and eligible to be reused as a fresh NPC hull
+/// without clobbering any player/org title, berth, tactical unit record, or salvage state
+/// (HIGH-47).
+fn npc_hull_reusable(w: &World, hull: ObjId, name: &str, owner: ObjId) -> bool {
+    let Some(o) = w.get(hull) else {
+        return false;
+    };
+    if o.kind != mush_core::ObjKind::Thing
+        || o.flags.contains(mush_core::Flags::GOING)
+        || o.owner != owner
+        || o.name.as_str() != name
+        || mush_tactics::custody::marker_of(w, hull).is_some()
+        || mush_sim::deployed::is_deployed(w, hull)
+    {
+        return false;
+    }
+    // `create_stock_space_unit_in_world` calls `create_unit`, which refuses any object already
+    // bound in `UnitStore` (`units`, `deployed`, or `records`).
+    let unit_claimed = w
+        .module_state::<mush_tactics::UnitStore>()
+        .is_some_and(|store| {
+            store.units.contains_key(&hull)
+                || store.deployed.contains_key(&hull)
+                || store
+                    .records
+                    .iter()
+                    .any(|r| r.key_object == Some(hull) || r.object == Some(hull))
+        });
+    if unit_claimed {
+        return false;
+    }
+    // Never reuse a hull titled to another owner (e.g. salvaged by a player/org) or encumbered.
+    if let Some(asset) = w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|econ| econ.snapshot().asset(hull))
+        && (asset.title_owner != mush_org::PrincipalId::Object(owner)
+            || !asset.encumbrances.is_empty()
+            || asset.scope.is_some())
+    {
+        return false;
+    }
+    // Never reuse a hull berthed at a port, in a journey, owned, or crewed.
+    if !matches!(
+        crate::port::ship::berth_of(w, hull),
+        crate::port::ship::Berth::Elsewhere
+    ) || w
+        .module_state::<JourneyBook>()
+        .is_some_and(|jb| jb.journeys.contains_key(&hull))
+        || crate::port::owned::owned(w, hull).is_some()
+        || crate::port::coop::helm_holder(w, hull).is_some()
+        || crate::field::crew::seated_in(w, hull).is_some()
+    {
+        return false;
+    }
+    let in_space_book = w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
+        b.by_domain.values().any(|a| {
+            a.interdictor_hull == hull
+                || a.picket
+                    .as_ref()
+                    .is_some_and(|p| p.corvette_hull == hull || p.raider_hull == hull)
+                || a.ship_hulls.values().any(|&h| h == hull)
+                || a.carriers.contains_key(&hull)
+        }) || b.clamped_derelicts.values().any(|&dh| dh == hull)
+            || b.active_tows.values().any(|t| t.derelict_hull == hull)
+            || b.space_custody.contains_key(&hull)
+            || b.derelict_pins.contains_key(&hull)
+            || b.derelicts.contains_key(&hull)
+            || b.free_flights.contains_key(&hull)
+            || b.cluster_sessions.contains_key(&hull)
+            || b.docking_sessions.contains_key(&hull)
+    });
+    !in_space_book
+}
+
 /// Reuse an idle NPC space hull (`ObjKind::Thing` owned by `owner` with `name`) or create a fresh
-/// one (`SF.R20`, `35b` §5 #11).
+/// one (`SF.R20`, `35b` §5 #11; HIGH-47). Checks title, berth, salvage/derelict records, and
+/// `UnitStore` eligibility strictly BEFORE returning or touching any book state.
 pub(crate) fn reuse_or_create_npc_hull(
     ctx: &mut Ctx<'_>,
     name: &str,
@@ -5863,33 +6097,9 @@ pub(crate) fn reuse_or_create_npc_hull(
     let existing = ctx
         .w
         .iter()
-        .find(|o| {
-            if o.kind != mush_core::ObjKind::Thing
-                || o.flags.contains(mush_core::Flags::GOING)
-                || o.owner != owner
-                || o.name.as_str() != name
-                || mush_tactics::custody::marker_of(ctx.w, o.id).is_some()
-            {
-                return false;
-            }
-            let in_space_custody = ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
-                b.by_domain.values().any(|a| {
-                    a.interdictor_hull == o.id
-                        || a.picket
-                            .as_ref()
-                            .is_some_and(|p| p.corvette_hull == o.id || p.raider_hull == o.id)
-                        || a.ship_hulls.values().any(|&h| h == o.id)
-                }) || b.clamped_derelicts.values().any(|&dh| dh == o.id)
-                    || b.active_tows.values().any(|t| t.derelict_hull == o.id)
-                    || b.space_custody.contains_key(&o.id)
-            });
-            !in_space_custody
-        })
+        .find(|o| npc_hull_reusable(ctx.w, o.id, name, owner))
         .map(|o| o.id);
     if let Some(hull) = existing {
-        if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
-            book.derelicts.remove(&hull);
-        }
         return Some(hull);
     }
     ctx.w
@@ -5898,17 +6108,34 @@ pub(crate) fn reuse_or_create_npc_hull(
 }
 
 /// Destroy an unclaimed NPC picket/raider hull (`Thing` + `TacticalUnit` + `EconomyStore` asset)
-/// when its bubble closes without a clamp, tow, or salvage claim (`SF.R20`, `35b` §5 #11).
+/// when its bubble closes without a clamp, tow, or salvage claim (`SF.R20`, `35b` §5 #11; HIGH-47).
 pub(crate) fn destroy_unclaimed_npc_hull(ctx: &mut Ctx<'_>, npc_hull: ObjId) {
-    let is_npc_hull = ctx.w.get(npc_hull).is_some_and(|o| {
-        o.kind == mush_core::ObjKind::Thing
+    let Some(owner_id) = ctx.w.get(npc_hull).and_then(|o| {
+        (o.kind == mush_core::ObjKind::Thing
             && !o.flags.contains(mush_core::Flags::GOING)
             && ctx
                 .w
                 .get(o.owner)
-                .is_some_and(|owner| owner.kind == mush_core::ObjKind::Npc)
-    });
-    if !is_npc_hull {
+                .is_some_and(|owner| owner.kind == mush_core::ObjKind::Npc))
+        .then_some(o.owner)
+    }) else {
+        return;
+    };
+    if let Some(asset) = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|econ| econ.snapshot().asset(npc_hull))
+        && (asset.title_owner != mush_org::PrincipalId::Object(owner_id)
+            || !asset.encumbrances.is_empty()
+            || asset.scope.is_some())
+    {
+        return;
+    }
+    if !matches!(
+        crate::port::ship::berth_of(ctx.w, npc_hull),
+        crate::port::ship::Berth::Elsewhere
+    ) || crate::port::owned::owned(ctx.w, npc_hull).is_some()
+    {
         return;
     }
     let retained = ctx.w.module_state::<SpaceBubbleBook>().is_some_and(|b| {
@@ -5918,9 +6145,14 @@ pub(crate) fn destroy_unclaimed_npc_hull(ctx: &mut Ctx<'_>, npc_hull: ObjId) {
                     .as_ref()
                     .is_some_and(|p| p.corvette_hull == npc_hull || p.raider_hull == npc_hull)
                 || a.ship_hulls.values().any(|&h| h == npc_hull)
+                || a.carriers.contains_key(&npc_hull)
         }) || b.clamped_derelicts.values().any(|&dh| dh == npc_hull)
             || b.active_tows.values().any(|t| t.derelict_hull == npc_hull)
             || b.space_custody.contains_key(&npc_hull)
+            || b.derelict_pins.contains_key(&npc_hull)
+            || b.derelicts
+                .get(&npc_hull)
+                .is_some_and(|d| d.salvage_title_status.is_some())
     });
     if retained {
         return;
@@ -6298,5 +6530,507 @@ mod interdictor_tests {
         );
         assert_eq!(ff.thrust_mmps2, [0, 0, 0]);
         assert_eq!(ff.prepaid_credit_t(2_000), 10);
+    }
+
+    fn test_ctx<'a>(
+        w: &'a mut World,
+        reg: &'a mush_core::Registry,
+        out: &'a mut mush_core::Outbox,
+        actor: ObjId,
+    ) -> Ctx<'a> {
+        Ctx {
+            w,
+            reg,
+            out,
+            actor,
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        }
+    }
+
+    #[test]
+    fn high44_bubble_input_skips_when_busy_caps_per_hull_and_rejects_replay() {
+        use mush_core::ActionProvider;
+        let excursions_cell: std::sync::Arc<
+            std::sync::Mutex<
+                Option<
+                    mush_core::StateFamilyHandle<
+                        crate::surface::excursion::RigKey,
+                        crate::surface::excursion::RigRecord,
+                    >,
+                >,
+            >,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let outcome_cell: std::sync::Arc<std::sync::Mutex<Option<mush_core::DefinitionRef>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        struct TestMod {
+            excursions: std::sync::Arc<
+                std::sync::Mutex<
+                    Option<
+                        mush_core::StateFamilyHandle<
+                            crate::surface::excursion::RigKey,
+                            crate::surface::excursion::RigRecord,
+                        >,
+                    >,
+                >,
+            >,
+            outcome: std::sync::Arc<std::sync::Mutex<Option<mush_core::DefinitionRef>>>,
+        }
+        impl mush_core::module::GameModule for TestMod {
+            fn name(&self) -> &'static str {
+                "tacsim"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                let port_families = crate::port::families::register(reg)?;
+                if let Ok(mut guard) = self.excursions.lock() {
+                    *guard = Some(port_families.excursions.clone());
+                }
+                let out_desc = outcome_descriptor()?;
+                reg.definition_validator(
+                    mush_core::DefinitionKind::new("outcome")
+                        .map_err(|e| ModError::msg(e.to_string()))?,
+                    crate::definitions::exact_validator(vec![out_desc.clone()]),
+                )?;
+                let out_ref = reg.definition(out_desc)?;
+                if let Ok(mut guard) = self.outcome.lock() {
+                    *guard = Some(out_ref.clone());
+                }
+                let mut outcomes = BTreeMap::new();
+                outcomes.insert(BUBBLE_INPUT_OUTCOME.to_owned(), out_ref);
+                let act_desc = action_descriptor(&outcomes)?;
+                reg.definition_validator(
+                    mush_core::DefinitionKind::new("action")
+                        .map_err(|e| ModError::msg(e.to_string()))?,
+                    crate::definitions::exact_validator(vec![act_desc.clone()]),
+                )?;
+                let act_ref = reg.definition(act_desc)?;
+                let mut actions = BTreeMap::new();
+                actions.insert(BUBBLE_INPUT_ACTION.to_owned(), act_ref);
+                register_bubble_input(reg, &actions, &outcomes, &port_families)?;
+                Ok(())
+            }
+        }
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(TestMod {
+            excursions: std::sync::Arc::clone(&excursions_cell),
+            outcome: std::sync::Arc::clone(&outcome_cell),
+        })]);
+        let engine = tw.engine_mut();
+
+        let actor_a = engine
+            .world
+            .create(mush_core::ObjKind::Player, "PilotA", mush_core::GOD, None)
+            .expect("pilot a");
+        let actor_b = engine
+            .world
+            .create(mush_core::ObjKind::Player, "PilotB", mush_core::GOD, None)
+            .expect("pilot b");
+        let hull_a = engine
+            .world
+            .create(mush_core::ObjKind::Thing, "HullA", actor_a, None)
+            .expect("hull a");
+        let hull_b = engine
+            .world
+            .create(mush_core::ObjKind::Thing, "HullB", actor_b, None)
+            .expect("hull b");
+
+        // 1. When actor_a already has a pending burn submit, submit_bubble_input_with_drones must
+        //    skip enqueue completely (no stranded pending entry in RAM).
+        engine
+            .world
+            .module_state_mut::<BubbleInputHandles>()
+            .expect("handles")
+            .pending_burn_submit_actors
+            .insert(actor_a);
+        {
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = test_ctx(&mut engine.world, &engine.registry, &mut out, actor_a);
+            let res = submit_bubble_input_with_drones(
+                &mut ctx,
+                hull_a,
+                "heading",
+                None,
+                Vec::new(),
+                Vec::new(),
+            );
+            assert!(res.is_none(), "must skip enqueue when burn submit pending");
+        }
+        assert!(
+            engine
+                .world
+                .module_state::<BubbleInputHandles>()
+                .expect("handles")
+                .pending_bubble_inputs
+                .is_empty()
+        );
+        engine
+            .world
+            .module_state_mut::<BubbleInputHandles>()
+            .expect("handles")
+            .pending_burn_submit_actors
+            .clear();
+
+        // 2. Seed hull_b with 1 pending entry and hull_a with MAX_PENDING_BUBBLE_INPUTS_PER_HULL:
+        //    another enqueue for hull_a is refused without evicting hull_b.
+        {
+            let handles = engine
+                .world
+                .module_state_mut::<BubbleInputHandles>()
+                .expect("handles");
+            handles.pending_bubble_inputs.push(PendingBubbleInput {
+                seq: 1,
+                actor: actor_b,
+                hull: hull_b,
+                switch: "heading".to_owned(),
+                at_ic: 100,
+                cmd: None,
+                drone_excursions: Vec::new(),
+                drone_landings: Vec::new(),
+            });
+            for i in 0..MAX_PENDING_BUBBLE_INPUTS_PER_HULL {
+                handles.pending_bubble_inputs.push(PendingBubbleInput {
+                    seq: 10 + u64::try_from(i).unwrap_or(0),
+                    actor: actor_a,
+                    hull: hull_a,
+                    switch: "thrust".to_owned(),
+                    at_ic: 100,
+                    cmd: None,
+                    drone_excursions: Vec::new(),
+                    drone_landings: Vec::new(),
+                });
+            }
+        }
+        {
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = test_ctx(&mut engine.world, &engine.registry, &mut out, actor_a);
+            let res = submit_bubble_input_with_drones(
+                &mut ctx,
+                hull_a,
+                "thrust",
+                None,
+                Vec::new(),
+                Vec::new(),
+            );
+            assert!(res.is_none(), "per-hull cap must refuse overflow");
+        }
+        let handles = engine
+            .world
+            .module_state::<BubbleInputHandles>()
+            .expect("handles")
+            .clone();
+        assert!(
+            handles
+                .pending_bubble_inputs
+                .iter()
+                .any(|e| e.hull == hull_b),
+            "hull_b entry must never be evicted by hull_a saturation"
+        );
+
+        // 3. Commit last_seq = 10 on tapes, verify project_offer hides seq=10, and verify
+        //    BubbleInputProvider::prepare_authoritative rejects replaying seq=10 with Conflict.
+        let action_ref = handles.action.clone().expect("action ref");
+        let outcome_ref = outcome_cell
+            .lock()
+            .expect("outcome lock")
+            .clone()
+            .expect("outcome ref");
+        let excursions_handle = excursions_cell
+            .lock()
+            .expect("excursions lock")
+            .clone()
+            .expect("excursions handle");
+        {
+            let prepared = {
+                let mut txn = engine
+                    .action_transaction(&handles.tapes)
+                    .expect("tapes txn");
+                txn.insert(
+                    &handles.tapes,
+                    &hull_a,
+                    StagedBubbleTapeLedger {
+                        hull: hull_a,
+                        last_seq: 10,
+                        recent: Vec::new(),
+                    },
+                )
+                .expect("insert ledger");
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+        let provider = BubbleInputProvider {
+            action: action_ref.clone(),
+            outcome: outcome_ref,
+            tapes: handles.tapes.clone(),
+            excursions: excursions_handle,
+        };
+        let query = mush_core::LegalActionQuery::new(
+            mush_core::PrincipalId::Object { id: actor_a },
+            actor_a,
+            mush_core::SubjectKey::Object { id: actor_a },
+            mush_core::PerceivedRef::SelfActor,
+            0,
+            None,
+        )
+        .expect("query");
+        let draft = provider
+            .project_offer(&action_ref, &query, engine)
+            .expect("project_offer succeeds")
+            .expect("offer for remaining uncommitted seqs 11..17");
+        let pending_map = draft
+            .fixed_parameters
+            .get("pending")
+            .and_then(serde_json::Value::as_object)
+            .expect("pending map");
+        assert!(
+            !pending_map.contains_key("10"),
+            "committed seq=10 must be filtered out of project_offer"
+        );
+        assert!(
+            pending_map.contains_key("11"),
+            "uncommitted seq=11 remains offered"
+        );
+
+        let replay_entry = PendingBubbleInput {
+            seq: 10,
+            actor: actor_a,
+            hull: hull_a,
+            switch: "thrust".to_owned(),
+            at_ic: 100,
+            cmd: None,
+            drone_excursions: Vec::new(),
+            drone_landings: Vec::new(),
+        };
+        let req_id = mush_core::RequestUid::from_bytes(10_u128.to_be_bytes());
+        let principal = mush_core::PrincipalId::Object { id: actor_a };
+        let replay_inv = mush_core::ActionInvocation::new(mush_core::ActionInvocationDraft {
+            request: req_id,
+            principal: principal.clone(),
+            actor: actor_a,
+            offered_action: mush_core::ActionOfferId(mush_core::CanonicalHash::from_bytes([7; 32])),
+            subject: mush_core::PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: serde_json::json!({
+                "hull": hull_a.0,
+                "seq": 10,
+                "switch": "thrust",
+                "pending": { "10": replay_entry },
+            }),
+            idempotency: mush_core::ScopedIdempotencyKey::new(
+                mush_core::IdempotencyScope {
+                    principal,
+                    owner: mush_core::OwnerId::new("tacsim").expect("owner"),
+                    namespace: mush_core::CanonicalId::new("tacsim.space.input").expect("ns"),
+                },
+                1,
+                mush_core::IdempotencyKey::Request(req_id),
+            ),
+        })
+        .expect("invocation");
+        let mut txn = engine
+            .action_transaction(&handles.tapes)
+            .expect("tapes txn");
+        let err = provider
+            .prepare_authoritative(&replay_inv, &mut txn)
+            .expect_err("replayed seq=10 must be rejected");
+        assert_eq!(err.code(), mush_core::ActionErrorCode::Conflict);
+    }
+
+    #[test]
+    fn high46_per_hull_burn_cap_and_lapsed_rollback() {
+        struct BookMod;
+        impl mush_core::module::GameModule for BookMod {
+            fn name(&self) -> &'static str {
+                "tacsim"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                reg.state(SpaceBubbleBook::default());
+                Ok(())
+            }
+        }
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(BookMod)]);
+        let engine = tw.engine_mut();
+        let hull_a = engine
+            .world
+            .create(mush_core::ObjKind::Thing, "HullA", mush_core::GOD, None)
+            .expect("hull a");
+        let hull_b = engine
+            .world
+            .create(mush_core::ObjKind::Thing, "HullB", mush_core::GOD, None)
+            .expect("hull b");
+        {
+            let book = engine
+                .world
+                .module_state_mut::<SpaceBubbleBook>()
+                .expect("book");
+            for seq in 1..=u32::try_from(MAX_PENDING_SPACE_BURNS_PER_HULL).unwrap_or(8) {
+                book.pending_space_burns
+                    .push(crate::port::burn::PendingSpaceBurn {
+                        seq,
+                        hull: hull_a,
+                        actor: mush_core::GOD,
+                        vault: 1,
+                        burn_t: 5,
+                        crew_days: 0,
+                        seized_strategic_ore_t: 0,
+                        passage: true,
+                        attempts: 0,
+                        idle_ticks: 0,
+                        tracked: true,
+                    });
+            }
+            book.propellant_ledger_mut(hull_a).unlanded_burn_t = 40;
+            book.propellant_ledger_mut(hull_a).total_burned_kg = 40_000;
+            let place = mush_core::CanonicalId::new("ceres").expect("cid");
+            book.free_flights.insert(
+                hull_a,
+                SpaceFreeFlightRecord {
+                    hull: hull_a,
+                    origin_place: place.clone(),
+                    target_place: place,
+                    pos_km: [0, 0, 0],
+                    vel_mps: [10, 0, 0],
+                    thrust_mmps2: [1_000, 0, 0],
+                    burn_remaining_ic_s: Some(300),
+                    guidance: FreeFlightGuidanceMode::Intercept,
+                    braking_flipped: false,
+                    decoupled_at_ic_s: 100,
+                    last_ic_s: 100,
+                    cluster_arrival_ic_s: Some(500),
+                    prepaid_unflown_t: 10,
+                },
+            );
+        }
+
+        // Hull A is at per-hull cap -> rejected; Hull B still has capacity -> admitted.
+        assert!(crate::space::commands::ensure_space_burn_capacity(&engine.world, hull_a).is_err());
+        assert!(crate::space::commands::ensure_space_burn_capacity(&engine.world, hull_b).is_ok());
+
+        // Lapsing an unpaid passage burn rolls back ledger tonnes and cuts the unpaid passage.
+        let lapsed_burn = crate::port::burn::PendingSpaceBurn {
+            seq: 1,
+            hull: hull_a,
+            actor: mush_core::GOD,
+            vault: 1,
+            burn_t: 5,
+            crew_days: 0,
+            seized_strategic_ore_t: 0,
+            passage: true,
+            attempts: SPACE_BURN_MAX_ATTEMPTS,
+            idle_ticks: 0,
+            tracked: true,
+        };
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = test_ctx(
+            &mut engine.world,
+            &engine.registry,
+            &mut out,
+            mush_core::GOD,
+        );
+        lapse_space_burns(&mut ctx, vec![lapsed_burn]);
+        let book = engine
+            .world
+            .module_state::<SpaceBubbleBook>()
+            .expect("book");
+        assert_eq!(book.propellant_ledgers[&hull_a].unlanded_burn_t, 35);
+        assert_eq!(book.propellant_ledgers[&hull_a].total_burned_kg, 35_000);
+        let ff = book.free_flights.get(&hull_a).expect("free flight");
+        assert!(
+            ff.cluster_arrival_ic_s.is_none(),
+            "lapsed passage burn must cut unpaid autopilot arrival"
+        );
+        assert!(matches!(ff.guidance, FreeFlightGuidanceMode::Manual));
+    }
+
+    #[test]
+    fn high47_npc_hull_reuse_skips_derelicts_and_unit_records_without_mutating_derelicts() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_tactics::TacticsModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let engine = tw.engine_mut();
+        let npc = engine
+            .world
+            .create(mush_core::ObjKind::Npc, "PicketCmd", mush_core::GOD, None)
+            .expect("npc");
+        let derelict_hull = engine
+            .world
+            .create(mush_core::ObjKind::Thing, "Ceres Corvette", npc, None)
+            .expect("derelict hull");
+        let unit_bound_hull = engine
+            .world
+            .create(mush_core::ObjKind::Thing, "Ceres Corvette", npc, None)
+            .expect("unit bound hull");
+
+        engine
+            .world
+            .module_state_mut::<SpaceBubbleBook>()
+            .expect("book")
+            .derelicts
+            .insert(
+                derelict_hull,
+                SpaceDerelictRecord {
+                    hull: derelict_hull,
+                    domain: DomainId(1),
+                    disabled_at_ic_s: 100,
+                    epoch_open: true,
+                    life_support_remaining_s: 3600,
+                    life_support_checked_wall_s: 0,
+                    assessment: None,
+                    salvage_title_status: None,
+                },
+            );
+        {
+            let cast = crate::space::picket::picket_cast_book().expect("picket cast book");
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = test_ctx(
+                &mut engine.world,
+                &engine.registry,
+                &mut out,
+                mush_core::GOD,
+            );
+            crate::space::custody::create_stock_space_unit_in_world(
+                &mut ctx,
+                unit_bound_hull,
+                &cast.corvette.unit,
+            )
+            .expect("bind stock tactical unit");
+        }
+
+        assert!(!npc_hull_reusable(
+            &engine.world,
+            derelict_hull,
+            "Ceres Corvette",
+            npc
+        ));
+        assert!(!npc_hull_reusable(
+            &engine.world,
+            unit_bound_hull,
+            "Ceres Corvette",
+            npc
+        ));
+
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = test_ctx(
+            &mut engine.world,
+            &engine.registry,
+            &mut out,
+            mush_core::GOD,
+        );
+        let chosen = reuse_or_create_npc_hull(&mut ctx, "Ceres Corvette", npc)
+            .expect("creates fresh hull when existing ones are ineligible");
+        assert_ne!(chosen, derelict_hull);
+        assert_ne!(chosen, unit_bound_hull);
+        assert!(
+            engine
+                .world
+                .module_state::<SpaceBubbleBook>()
+                .expect("book")
+                .derelicts
+                .contains_key(&derelict_hull),
+            "existing derelict record must not be wiped when checking reuse"
+        );
     }
 }

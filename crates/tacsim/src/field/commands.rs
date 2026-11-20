@@ -344,7 +344,8 @@ fn mark_in_field(
         .filter(|hosted| hosted.live.parties.iter().any(|party| party.party == of))
         .map(|hosted| {
             let led = parties::led_all(ctx, &hosted.live, actor);
-            let own = led.contains(&of);
+            let seated = seated_parties(ctx.w, &hosted.live, actor);
+            let own = led.contains(&of) || seated.contains(&of);
             let standing = |book: PartyId| {
                 hosted
                     .live
@@ -356,7 +357,7 @@ fn mark_in_field(
             // The 38b review's F-08: every party the leader leads, not only the first.
             let books: Vec<(PartyId, bool)> = std::iter::once(by)
                 .chain(led)
-                .chain(seated_parties(ctx, &hosted.live, actor))
+                .chain(seated)
                 .filter(|book| *book != of)
                 .collect::<BTreeSet<PartyId>>()
                 .into_iter()
@@ -417,15 +418,21 @@ fn mark_in_field(
     Ok(())
 }
 
-/// **The unit parties whose hulls `actor` seats in a field** (the owner's ruling of 2026-11-04):
-/// each row of the live record whose pilot is `actor`, by the record's own pilot or the seat as it
-/// stands now, as its party.
-fn seated_parties(ctx: &Ctx<'_>, live: &super::record::FieldLive, actor: ObjId) -> Vec<PartyId> {
+/// **The unit parties whose hulls `actor` currently seats in a field** (the owner's ruling of
+/// 2026-11-04; HIGH-59): strictly `PartyKey::Unit` parties whose hull `actor` actively sits in
+/// now (`parties::seated`), never another party's `PartyKey::Operation` or `PartyKey::Fixture`
+/// book and never a stale admission-time seat.
+fn seated_parties(
+    w: &mush_core::World,
+    live: &super::record::FieldLive,
+    actor: ObjId,
+) -> Vec<PartyId> {
     live.units
         .iter()
         .filter(|row| {
-            row.pilot.as_ref().is_some_and(|(pilot, _)| *pilot == actor)
-                || parties::seated(ctx.w, row.unit).is_some_and(|(pilot, _)| pilot == actor)
+            live.parties.iter().any(|party| {
+                party.party == row.party && party.key == PartyKey::Unit { unit: row.unit }
+            }) && parties::seated(w, row.unit).is_some_and(|(pilot, _)| pilot == actor)
         })
         .map(|row| row.party)
         .collect()
@@ -538,23 +545,6 @@ fn open_site(
         .field
         .clone()
         .ok_or_else(|| CmdError::msg("The field host is unavailable."))?;
-    // Every rig whose work is in flight on the site, for the promotion to settle.
-    let rigs: Vec<String> = crate::surface::act::world_rigs(ctx.w)
-        .into_iter()
-        .filter(|rig| {
-            ctx.action_state(
-                &handles.families.excursions,
-                &crate::surface::excursion::RigKey(*rig),
-            )
-            .ok()
-            .flatten()
-            .is_some_and(|record| {
-                record.act.as_ref().is_some_and(|act| &act.site == site)
-                    || record.run.as_ref().is_some_and(|run| &run.site == site)
-            })
-        })
-        .map(|rig| rig.0.to_string())
-        .collect();
     let now = ctx.w.world_ic_now().at;
     let ordinal = crate::field::close::site_record(ctx, site).map_or(0, |record| record.ordinal);
     let key = super::provider::field_key(actor, site, "open", ordinal.saturating_add(1), now)
@@ -569,7 +559,6 @@ fn open_site(
             "by": door,
             "from": from.0,
             "at": at.0,
-            "rigs": rigs.join(","),
         }),
         key,
     );
@@ -600,4 +589,176 @@ pub fn mark_from_order(
     let result = open_site(ctx, leader, site, "mark", (from, at));
     ctx.actor = saved;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detachment::sortie::OperationId;
+    use crate::field::record::{FIELD_LIVE_FORMAT, FieldLive, FieldParty, FieldUnit};
+    use crate::surface::site_record::FieldId;
+    use mush_tactics::detachment::planning::PlanId;
+    use smol_str::SmolStr;
+
+    fn seat(spatial: &mut mush_sim::SpatialState, hull: ObjId, pilot: ObjId) {
+        spatial.assignments.insert(
+            hull,
+            mush_sim::data::HostAssignments {
+                host: hull,
+                seats: [(
+                    mush_sim::data::StationId::new("cockpit").expect("station"),
+                    mush_sim::data::StationAssignment {
+                        actor: pilot,
+                        assigned_at: 0,
+                        granted: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            },
+        );
+    }
+
+    #[test]
+    fn high59_seated_parties_restricts_to_actively_seated_unit_parties_only() {
+        struct SpatialSeed(Option<mush_sim::SpatialState>);
+        impl mush_core::GameModule for SpatialSeed {
+            fn name(&self) -> &'static str {
+                "sim"
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                if let Some(spatial) = self.0.take() {
+                    reg.state(spatial);
+                }
+                Ok(())
+            }
+        }
+        let leader = ObjId(10);
+        let other_leader = ObjId(20);
+        let own_hull = ObjId(100);
+        let vacated_hull = ObjId(101);
+        let op_hull = ObjId(102);
+        let fixture_hull = ObjId(103);
+
+        let mut spatial = mush_sim::SpatialState::default();
+        seat(&mut spatial, own_hull, leader);
+        // `leader` sits in another party's `PartyKey::Operation` hull AND a `PartyKey::Fixture`
+        // hull, and has vacated `vacated_hull` (which still has a stale admission-time `pilot`).
+        seat(&mut spatial, op_hull, leader);
+        seat(&mut spatial, fixture_hull, leader);
+        let w = mush_core::Engine::with_modules(
+            mush_core::World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(SpatialSeed(Some(spatial)))],
+        )
+        .expect("engine")
+        .world;
+
+        let p_unit_active = PartyId::nth(0).expect("party A");
+        let p_unit_vacated = PartyId::nth(1).expect("party B");
+        let p_operation = PartyId::nth(2).expect("party C");
+        let p_fixture = PartyId::nth(3).expect("party D");
+
+        let live = FieldLive {
+            format: FIELD_LIVE_FORMAT,
+            field: FieldId {
+                site: CanonicalId::new("ahuna_flank").expect("site"),
+                ordinal: 1,
+            },
+            opened_ic: 100,
+            segment: 1,
+            at_ms: 0,
+            parties: vec![
+                FieldParty {
+                    party: p_unit_active,
+                    key: PartyKey::Unit { unit: own_hull },
+                    leader: Some(leader),
+                    stance_hostile: Vec::new(),
+                    director: false,
+                },
+                FieldParty {
+                    party: p_unit_vacated,
+                    key: PartyKey::Unit { unit: vacated_hull },
+                    leader: Some(leader),
+                    stance_hostile: Vec::new(),
+                    director: false,
+                },
+                FieldParty {
+                    party: p_operation,
+                    key: PartyKey::Operation {
+                        operation: OperationId {
+                            organizer: other_leader,
+                            draft: PlanId(1),
+                            activation: 1,
+                        },
+                    },
+                    leader: Some(other_leader),
+                    stance_hostile: Vec::new(),
+                    director: false,
+                },
+                FieldParty {
+                    party: p_fixture,
+                    key: PartyKey::Fixture {
+                        leader: other_leader,
+                    },
+                    leader: Some(other_leader),
+                    stance_hostile: Vec::new(),
+                    director: false,
+                },
+            ],
+            units: vec![
+                FieldUnit {
+                    unit: own_hull,
+                    party: p_unit_active,
+                    pilot: Some((leader, SmolStr::new("cockpit"))),
+                    epoch: None,
+                    aboard: Vec::new(),
+                    arrived: false,
+                    away: None,
+                },
+                FieldUnit {
+                    unit: vacated_hull,
+                    party: p_unit_vacated,
+                    pilot: Some((leader, SmolStr::new("cockpit"))),
+                    epoch: None,
+                    aboard: Vec::new(),
+                    arrived: false,
+                    away: None,
+                },
+                FieldUnit {
+                    unit: op_hull,
+                    party: p_operation,
+                    pilot: Some((leader, SmolStr::new("cockpit"))),
+                    epoch: None,
+                    aboard: Vec::new(),
+                    arrived: false,
+                    away: None,
+                },
+                FieldUnit {
+                    unit: fixture_hull,
+                    party: p_fixture,
+                    pilot: Some((leader, SmolStr::new("cockpit"))),
+                    epoch: None,
+                    aboard: Vec::new(),
+                    arrived: false,
+                    away: None,
+                },
+            ],
+            homes: Vec::new(),
+            fire: None,
+            owed_exits: Vec::new(),
+            held: Vec::new(),
+            tally: Vec::new(),
+            carried: Vec::new(),
+        };
+
+        assert_eq!(
+            seated_parties(&w, &live, leader),
+            vec![p_unit_active],
+            "only actively seated PartyKey::Unit hulls are included; Operation, Fixture, and vacated seats are excluded"
+        );
+    }
 }

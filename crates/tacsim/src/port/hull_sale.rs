@@ -304,6 +304,61 @@ pub(crate) fn core_leg_hold_empty(ctx: &Ctx<'_>, hull: ObjId) -> Result<(), Stri
     Ok(())
 }
 
+/// **A cored hull's hold is empty, verified atomically inside an [`mush_core::ActionTxn`]**
+/// (HIGH-42): every non-consumable goods-table row must read zero in both its pool balance and its
+/// lot tally. Her fuel and stores (consumables) go with her.
+///
+/// # Errors
+/// The refusal line: laden, or unreadable.
+pub(crate) fn core_leg_hold_empty_in_txn(
+    w: &World,
+    txn: &mut mush_core::ActionTxn<'_>,
+    hull: ObjId,
+) -> Result<(), String> {
+    let name = w.get(hull).map(|o| o.name.to_string()).unwrap_or_default();
+    let line = |text: &str| text.replace("{name}", &name);
+    let hold = crate::port::ship::hull_view(w, hull)
+        .and_then(|view| crate::port::ship::hold_vault(w, &view))
+        .ok_or_else(|| line(HULL_HOLD_DARK))?;
+    let goods = w
+        .module_state::<TacsimStore>()
+        .and_then(TacsimStore::goods)
+        .ok_or_else(|| line(HULL_HOLD_DARK))?;
+    let inventory = w
+        .module_state::<crate::port::families::PortHandles>()
+        .and_then(|handles| handles.inventory.as_ref())
+        .ok_or_else(|| line(HULL_HOLD_DARK))?;
+    endpoint_non_consumables_empty_in_txn(goods, inventory, txn, EndpointRef(hold), &name)
+}
+
+fn endpoint_non_consumables_empty_in_txn(
+    goods: &crate::definitions::goods::GoodsTable,
+    inventory: &mush_inventory::InventoryFamilies,
+    txn: &mut mush_core::ActionTxn<'_>,
+    endpoint: EndpointRef,
+    name: &str,
+) -> Result<(), String> {
+    let line = |text: &str| text.replace("{name}", name);
+    for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
+        let key = mush_inventory::pool_key(endpoint, &good.id).map_err(|_| line(HULL_HOLD_DARK))?;
+        let pooled = match txn.get(&inventory.pools, &key) {
+            Ok(None) => 0_u64,
+            Ok(Some(scalar)) => {
+                u64::try_from(scalar.current()).map_err(|_| line(HULL_HOLD_DARK))?
+            }
+            Err(_) => return Err(line(HULL_HOLD_DARK)),
+        };
+        let in_lots = match txn.get(&inventory.lot_tally, &key) {
+            Ok(found) => found.copied().unwrap_or(0),
+            Err(_) => return Err(line(HULL_HOLD_DARK)),
+        };
+        if pooled > 0 || in_lots > 0 {
+            return Err(line(HULL_HOLD_LADEN));
+        }
+    }
+    Ok(())
+}
+
 /// **Whether `hull` has a governed core fitted**: its fitted core is one the economy manages.
 #[must_use]
 pub fn cored(w: &World, hull: ObjId) -> bool {
@@ -442,6 +497,108 @@ mod tests {
             HULL_RIG_ABOARD,
         ] {
             assert!(line.chars().count() < 120, "{line}");
+        }
+    }
+
+    #[test]
+    fn high42_hold_empty_in_txn_rejects_non_consumable_pools_and_lots() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            mush_inventory::InventoryModule::new(),
+        )]);
+        let families = tw
+            .world()
+            .module_state::<mush_inventory::InventoryHandles>()
+            .expect("inventory handles")
+            .0
+            .clone();
+        let engine = tw.engine_mut();
+        let goods = crate::definitions::goods::goods_table().expect("shipped goods table");
+        let consumable = goods
+            .goods
+            .iter()
+            .find(|g| g.consumable.is_some())
+            .expect("shipped consumable good")
+            .id
+            .clone();
+        let non_consumable = goods
+            .goods
+            .iter()
+            .find(|g| g.consumable.is_none())
+            .expect("shipped non-consumable good")
+            .id
+            .clone();
+        let endpoint = EndpointRef(mush_economy::VaultId(42));
+
+        // 1. Empty hold passes.
+        {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory txn");
+            endpoint_non_consumables_empty_in_txn(&goods, &families, &mut txn, endpoint, "Vesper")
+                .expect("empty hold is admitted");
+        }
+
+        // 2. Consumables alone (fuel/stores) still pass.
+        {
+            let prepared = {
+                let mut txn = engine
+                    .action_transaction(&families.pools)
+                    .expect("inventory txn");
+                families
+                    .credit(&mut txn, endpoint, &consumable, 10)
+                    .expect("credit consumable");
+                endpoint_non_consumables_empty_in_txn(
+                    &goods, &families, &mut txn, endpoint, "Vesper",
+                )
+                .expect("consumables alone still pass");
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+
+        // 3. Non-consumable pooled cargo is rejected atomically inside txn.
+        {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory txn");
+            families
+                .credit(&mut txn, endpoint, &non_consumable, 5)
+                .expect("credit non-consumable pool");
+            let err = endpoint_non_consumables_empty_in_txn(
+                &goods, &families, &mut txn, endpoint, "Vesper",
+            )
+            .expect_err("non-consumable pool must be refused");
+            assert!(err.contains("must be empty"), "{err}");
+        }
+
+        // 4. Non-consumable lot cargo (with zero pool balance) is also rejected atomically inside txn.
+        {
+            let mut txn = engine
+                .action_transaction(&families.pools)
+                .expect("inventory txn");
+            let source = mush_economy::ExternalRef {
+                provider: "tacsim".into(),
+                kind: "high42_test".into(),
+                id: "lot_99".into(),
+                revision: None,
+            };
+            families
+                .mint_origin(
+                    &mut txn,
+                    endpoint,
+                    &non_consumable,
+                    3,
+                    mush_inventory::Grade::new(50).expect("valid grade"),
+                    source,
+                    mush_inventory::LotId(99),
+                )
+                .expect("mint non-consumable lot");
+            let err = endpoint_non_consumables_empty_in_txn(
+                &goods, &families, &mut txn, endpoint, "Vesper",
+            )
+            .expect_err("non-consumable lot must be refused");
+            assert!(err.contains("must be empty"), "{err}");
         }
     }
 }

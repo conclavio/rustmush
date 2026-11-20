@@ -3655,34 +3655,44 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `3_852_494_849_714_086_324` / `83f0b046…` / `d73bdfc5…`,
 /// `7_412_855_432_781_915_332` / `b023d660…` / `21a5c9bb…`,
 /// `10_332_904_847_498_022_810` / `41143353…` / `533b3444…`.
+///
+/// **Re-blessed by Tier 1D HIGH-60** (`DrawLabel::Contact` derived via a domain-separated SHA-256
+/// PRF so exposed `ContactId`s cannot invert to the combat RNG seed/state): no fight moved — the
+/// stopping times `262,250`, `321,750`, `250,500`, and `900,000`, the probe's `3,600` thinks, and
+/// the `369098751` bitmask are identical; only `state_hash`, substep hashes, and ledger digests
+/// moved with the non-invertible contact IDs. Were (CC.1b's):
+/// `16_000_682_199_109_245_849` / `8221dac5…` / `e84f0f26…`,
+/// `16_293_227_761_906_457_789` / `b1907260…` / `89bc84bd…`,
+/// `17_189_525_096_992_751_847` / `c93ebe43…` / `ca9d56cc…`,
+/// `6_558_500_431_099_612_070` / `0a5f5cb5…` / `7e0756f2…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         262250,
-        16000682199109245849,
-        "8221dac51c8c9721ab62fdf345fea461d185122b59970b66e03bc7d265f23db5",
-        "e84f0f2697becf21545bf55a2ffe3c9c12a18ad1044efe420987f4ccc42a941f",
+        4882261508918946971,
+        "ad8815f4c2cf6dd9fc300962d074b5cb04fd0189c3fb4d098f756a06f7e8820b",
+        "c0a0d3f19704b0943c84721347cbccf9b7851cc45780ca75279330c4c04baf55",
     ),
     (
         2351,
         321750,
-        16293227761906457789,
-        "b1907260bba87212ebd30913c8e7b7b335b8dc5a5ad9960d14c1e21949b0bbef",
-        "89bc84bdb44125f3c227b09d8c32f9488c32274dd99f2bb05a5a4b8032e0d35f",
+        16986972971248132576,
+        "14e06264bc899bf0eb05d4b0950051719b059aac4df4257d66631af426443eec",
+        "fa572a6b40ca32986a198d160f6d0d6f9a234c5d1f2701762a5d7687b7539bc9",
     ),
     (
         2352,
         250500,
-        17189525096992751847,
-        "c93ebe434bf8d5dd1df653540943f1a0e90af63d875ace70456e9931bea6c1e8",
-        "ca9d56cc2a4913d1f9690f1d8a97034d4368fb8a0f15bf68494d3e229071c1d8",
+        17574625988479028105,
+        "72c4828796b96c2ca20371a71893d71f23eccf8b413fa417bb16cea646e4aea5",
+        "ef4570ff3673bcf2475dc16114a317308dd3523de3f8f46f262b7d028547abc9",
     ),
     (
         2350,
         900000,
-        6558500431099612070,
-        "0a5f5cb546d3de1a17525936100b9b684519e05c90699e40242e2526a62cea65",
-        "7e0756f2a149c57bcc6ee99d11e0f340d4f9cb3e506d2391ae3d4010d65ec5cb",
+        15511909787633190310,
+        "c4fb4187dea25d2222e96a36851e08edb682edf36ca3c59e7978d64c93d09d66",
+        "837e4f628b68672e8a1bb6e98af164d143525567b834a036c2504ae8b2f6d0e1",
     ),
 ];
 

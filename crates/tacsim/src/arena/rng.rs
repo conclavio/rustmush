@@ -216,17 +216,38 @@ fn decimal(field: &str) -> Option<u64> {
 /// want the type. The same array as [`DrawLabel::LABEL_KINDS`].
 pub const LABEL_KINDS: [&str; 7] = DrawLabel::LABEL_KINDS;
 
+/// Domain separator for [`DrawLabel::Contact`] / [`draw_contact_id`], keeping
+/// exposed 64-bit contact identifiers cryptographically isolated from the
+/// FNV-1a + splitmix64 combat draw state.
+const CONTACT_DRAW_DOMAIN: &[u8] = b"tacsim.arena.rng.contact.v1\0";
+
+/// Derive the non-invertible 64-bit contact draw via domain-separated SHA-256.
+fn draw_contact_prf(seed: u64, viewer: ObjId, target: ObjId) -> u64 {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(CONTACT_DRAW_DOMAIN);
+    hasher.update(seed.to_le_bytes());
+    hasher.update(viewer.0.to_le_bytes());
+    hasher.update(target.0.to_le_bytes());
+    let [b0, b1, b2, b3, b4, b5, b6, b7, ..]: [u8; 32] = hasher.finalize().into();
+    u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
+}
+
 /// **`draw(seed, label)`** — the keyed 64-bit value doc 16 §3.5 asks for.
 ///
-/// FNV-1a 64 over `seed.to_le_bytes()` followed by the label's encoded bytes,
-/// finished through [`splitmix64`]. Both halves are written out in this file:
-/// FNV-1a's avalanche is poor in the high bits, which matters because callers
-/// take `% 1000` and slice ranges out of the result, and splitmix64's finalizer
-/// fixes that without introducing any state. Neither depends on the standard
-/// library's hashing, the platform's endianness or the compiler's version, so a
-/// ledger replayed on another machine draws the same numbers.
+/// [`DrawLabel::Contact`] is derived via domain-separated SHA-256 so that
+/// exposing a full 64-bit [`ContactId`] to cockpit frames or scripted minds can
+/// never be inverted to recover the FNV-1a seed state behind combat rolls.
+/// Every other label uses FNV-1a 64 over `seed.to_le_bytes()` followed by the
+/// label's encoded bytes, finished through [`splitmix64`]. Neither depends on
+/// the standard library's hashing, the platform's endianness or the compiler's
+/// version, so a ledger replayed on another machine draws the same numbers.
 #[must_use]
 pub fn draw(seed: u64, label: &DrawLabel) -> u64 {
+    if let DrawLabel::Contact { viewer, target } = *label {
+        return draw_contact_prf(seed, viewer, target);
+    }
     let mut state = fnv1a64_update(FNV_OFFSET_BASIS, &seed.to_le_bytes());
     state = fnv1a64_update(state, label.encode().as_bytes());
     splitmix64(state)
@@ -505,7 +526,7 @@ mod tests {
                     target: ObjId(9)
                 }
             ),
-            5_852_833_454_602_713_067
+            10_326_624_078_539_967_089
         );
         // And the mix itself, so a failure says which half moved.
         assert_eq!(splitmix64(0), 16_294_208_416_658_607_535);
@@ -621,5 +642,67 @@ mod tests {
             }
         }
         assert_eq!(seen.len(), 576);
+    }
+
+    /// Invert `splitmix64` (exact bijection on `u64`), representing the old
+    /// O(1) state-recovery step from an exposed 64-bit `ContactId`.
+    fn invert_splitmix64(mut z: u64) -> u64 {
+        // Inverse of `z ^ (z >> 31)`
+        z ^= z >> 31;
+        z ^= z >> 62;
+        // Modular inverse of 0x94D0_49BB_1331_11EB mod 2^64
+        z = z.wrapping_mul(0x3196_42B2_D24D_8EC3);
+        // Inverse of `z ^ (z >> 27)`
+        z ^= z >> 27;
+        z ^= z >> 54;
+        // Modular inverse of 0xBF58_476D_1CE4_E5B9 mod 2^64
+        z = z.wrapping_mul(0x96DE_1B17_3F11_9089);
+        // Inverse of `z ^ (z >> 30)`
+        z ^= z >> 30;
+        z ^= z >> 60;
+        z.wrapping_sub(0x9E37_79B9_7F4A_7C15)
+    }
+
+    /// Invert `fnv1a64_update(state, bytes)` byte-by-byte, representing the
+    /// old O(1) recovery of `fnv1a64_update(FNV_OFFSET_BASIS, seed_le)`.
+    fn invert_fnv1a64(mut state: u64, bytes: &[u8]) -> u64 {
+        // Modular inverse of FNV_PRIME (0x0000_0100_0000_01b3) mod 2^64
+        const FNV_PRIME_INV: u64 = 0xce96_5057_aff6_957b;
+        for byte in bytes.iter().rev() {
+            state = state.wrapping_mul(FNV_PRIME_INV);
+            state ^= u64::from(*byte);
+        }
+        state
+    }
+
+    #[test]
+    fn high60_contact_id_does_not_invert_to_combat_rng_state() {
+        let seed = 2_350_u64;
+        let viewer = ObjId(4);
+        let target = ObjId(9);
+        let label = DrawLabel::Contact { viewer, target };
+
+        // Sanity-check that our attacker's inverse helpers really invert the
+        // legacy FNV-1a + splitmix64 construction in O(1).
+        let true_seed_state = fnv1a64_update(FNV_OFFSET_BASIS, &seed.to_le_bytes());
+        let legacy_contact = splitmix64(fnv1a64_update(true_seed_state, label.encode().as_bytes()));
+        assert_eq!(
+            invert_fnv1a64(invert_splitmix64(legacy_contact), label.encode().as_bytes()),
+            true_seed_state,
+            "legacy construction was O(1)-invertible"
+        );
+
+        // Under the domain-separated SHA-256 PRF, the same O(1) inversion on
+        // the exposed ContactId never recovers `true_seed_state` or `hit:1`.
+        let exposed = draw_contact_id(seed, viewer, target);
+        assert_eq!(exposed.0, draw(seed, &label));
+        let forged_seed_state =
+            invert_fnv1a64(invert_splitmix64(exposed.0), label.encode().as_bytes());
+        assert_ne!(forged_seed_state, true_seed_state);
+        let forged_hit = splitmix64(fnv1a64_update(
+            forged_seed_state,
+            DrawLabel::Hit { shot_seq: 1 }.encode().as_bytes(),
+        ));
+        assert_ne!(forged_hit, draw(seed, &DrawLabel::Hit { shot_seq: 1 }));
     }
 }

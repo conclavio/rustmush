@@ -248,6 +248,17 @@ impl Arena {
             group.members.0.remove(&unit);
         }
     }
+    /// Remove a departing unit from every order-watch group and drop any group
+    /// whose issuer departed or that no longer has members.
+    pub(super) fn purge_order_watches_for_unit(&mut self, unit: ObjId) {
+        self.order_watches.0.0.retain(|_, group| {
+            if group.issuer == Some(unit) {
+                return false;
+            }
+            group.members.0.remove(&unit);
+            !group.members.0.is_empty()
+        });
+    }
     pub(super) fn validate_order_watches(&self) -> Result<(), super::SnapshotError> {
         let bad = || {
             super::SnapshotError::Malformed(

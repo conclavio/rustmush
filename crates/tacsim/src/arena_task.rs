@@ -870,8 +870,12 @@ pub fn spawn_field(
     let mut arena = Arena::new_with_minds(custody, arena_cfg, match_cfg, sensors_cfg, minds_cfg)?;
     // A hull standing on IC ground is running (it drove or mined there a moment ago): the
     // simulator's cold start (`STARTUP`, `match.startup_ms`) is the OOC range's, not the field's.
+    // Only hulls whose power plant is operational come online; a jammed, destroyed, or missing
+    // plant stays offline.
     for unit in &mut arena.units {
-        unit.power = crate::arena::state::Power::Online;
+        if crate::arena::part_effects::plant_operational(unit) {
+            unit.power = crate::arena::state::Power::Online;
+        }
     }
     install_field_runners(&mut arena, sources, retained)?;
     let callsigns = arena.callsigns();
@@ -2851,7 +2855,9 @@ impl Task {
             }
         };
         let name = joined.map_err(|error| error.to_string())?;
-        if let Some(state) = self.arena.unit_mut(id) {
+        if let Some(state) = self.arena.unit_mut(id)
+            && crate::arena::part_effects::plant_operational(state)
+        {
             state.power = crate::arena::state::Power::Online;
         }
         Ok(name)
@@ -5436,6 +5442,161 @@ mod tests {
                 ArenaOut::Joined { unit, outcome: Ok(_), .. } if *unit == arrival
             )),
             "answered behind the ledger"
+        );
+    }
+
+    #[inline(never)]
+    fn high63_tank_with_plant(
+        id: ObjId,
+        team: PartyId,
+        at: mush_sim::data::Pose,
+        plant_word: &str,
+    ) -> CustodyUnit {
+        use mush_tactics::{
+            CapabilityId, CapabilityInit, CapabilityKey, ComponentId, ComponentSpec, ConditionId,
+            InstallPoint, SectionId, TacticalUnit,
+        };
+        let mut spec =
+            crate::arena::test_support::tactical_unit_spec(crate::arena::test_support::rules());
+        spec.components.push(ComponentSpec {
+            id: ComponentId::new("plant").expect("plant"),
+            definition: crate::arena::test_support::dref(
+                "component",
+                "tacsim.unit.line_tank.plant",
+            ),
+            install: InstallPoint::Section(SectionId::new("hull").expect("hull")),
+            condition: ConditionId::new(plant_word).expect("condition"),
+            cells: Vec::new(),
+            asset: None,
+        });
+        spec.capabilities.push(CapabilityInit {
+            key: CapabilityKey {
+                id: CapabilityId::new(crate::arena::damage::POWER_CAPABILITY).expect("power"),
+                source: Some(ComponentId::new("plant").expect("plant")),
+            },
+            rules: crate::arena::test_support::rules(),
+        });
+        CustodyUnit {
+            unit: TacticalUnit::from_spec(&spec, id).expect("unit"),
+            ..tank(id, team, at)
+        }
+        .sealed()
+    }
+
+    #[test]
+    fn high63_field_join_and_spawn_do_not_power_non_operational_plants() {
+        use crate::arena::state::Power;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let _guard = rt.enter();
+
+        // ArenaTask::join keeps jammed/destroyed/missing plants Power::Off and
+        // brings intact plants Power::Online.
+        let (mut task, _world, _senders) = minded_task(Gated::closed(), 5_000);
+        task.arena.end = crate::arena::party::EndCondition::Host;
+        task.terms = Some(FieldTerms {
+            disengage_ms: 60_000,
+            idle_demote_ms: 600_000,
+        });
+        let host = crate::arena::FieldHost {
+            every_class: true,
+            weapons_hold: true,
+            ..crate::arena::FieldHost::default()
+        };
+        for (idx, (word, expected)) in [
+            ("jammed", Power::Off),
+            ("destroyed", Power::Off),
+            ("missing", Power::Off),
+            ("intact", Power::Online),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = ObjId(80 + u32::try_from(idx).expect("idx"));
+            let at = pose(4_500 + i64::try_from(idx).expect("idx") * 1_000, 4_500);
+            let joined = task.join(
+                high63_tank_with_plant(id, PartyId::RED, at, word),
+                None,
+                &host,
+                8,
+                None,
+            );
+            assert!(joined.is_ok(), "{word} join failed: {joined:?}");
+            assert_eq!(
+                task.arena.unit(id).map(|state| state.power),
+                Some(expected),
+                "ArenaTask::join power mismatch for {word} plant"
+            );
+        }
+
+        // spawn_field applies the exact same plant_operational gate.
+        let custody = CustodyOut {
+            definition: crate::arena::test_support::definition(),
+            units: vec![
+                high63_tank_with_plant(ObjId(90), PartyId::RED, pose(1_500, 1_500), "destroyed"),
+                high63_tank_with_plant(ObjId(91), PartyId::BLUE, pose(5_500, 5_500), "intact"),
+            ],
+            pilots: Vec::new(),
+            resolution: crate::arena::test_support::resolution(),
+            seed: 2_350,
+            mode: crate::arena::state::MatchMode::Skirmish,
+            host: crate::arena::FieldHost {
+                end: crate::arena::party::EndCondition::Host,
+                every_class: true,
+                ..crate::arena::FieldHost::default()
+            },
+        };
+        let (arena_cfg, match_cfg, sensors_cfg, minds_cfg) = (
+            ArenaConfig::default(),
+            MatchConfig::default(),
+            SensorsConfig::default(),
+            MindsConfig::default(),
+        );
+        let pool = MindPool::new(1);
+        let (egress, mut rx) = mpsc::channel(32);
+        let (handle, join_handle, _) = spawn_field(
+            rt.handle(),
+            MatchId(42),
+            custody,
+            (&arena_cfg, &match_cfg, &sensors_cfg, &minds_cfg),
+            (&BTreeMap::new(), &mut |_| std::collections::BTreeSet::new()),
+            pool,
+            egress,
+            FieldTerms {
+                disengage_ms: 60_000,
+                idle_demote_ms: 600_000,
+            },
+        )
+        .expect("spawn_field");
+        let snapshot = rt.block_on(async {
+            let mut found = None;
+            while let Some(out) = rx.recv().await {
+                if let ArenaOut::Snapshot { snapshot, .. } = out {
+                    found = Some(snapshot);
+                    break;
+                }
+            }
+            handle.signal_stop();
+            let _ = join_handle.await;
+            found.expect("opening snapshot from spawn_field")
+        });
+        let decoded = crate::arena::snapshot::Snapshot::decode(
+            &snapshot.document,
+            crate::arena::test_support::definition(),
+        )
+        .expect("decode spawned field snapshot");
+        assert_eq!(
+            decoded.unit(ObjId(90)).map(|u| u.power),
+            Some(Power::Off),
+            "spawn_field must not power a destroyed plant online"
+        );
+        assert_eq!(
+            decoded.unit(ObjId(91)).map(|u| u.power),
+            Some(Power::Online),
+            "spawn_field powers an intact plant online"
         );
     }
 }

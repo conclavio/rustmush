@@ -212,7 +212,9 @@ fn render_party_envelope(
     let state = match envelope.state() {
         EnvelopeState::Queued => EnvelopeState::Queued,
         EnvelopeState::Acknowledged => EnvelopeState::Acknowledged,
-        EnvelopeState::Expired if envelope.age(at) >= crate::record::ENVELOPE_TTL_SECS => {
+        EnvelopeState::Expired
+            if envelope.age(at) >= crate::record::envelope_ttl_secs(envelope.kind()) =>
+        {
             EnvelopeState::Expired
         }
         _ => EnvelopeState::Transmitted,

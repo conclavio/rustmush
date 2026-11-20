@@ -206,6 +206,15 @@ fn request_as(
     then: Then,
     quiet: bool,
 ) -> Result<(), CmdError> {
+    // HIGH-58 defensive gate: verify active matching sortie flight, targeted slot authority,
+    // unit rights, and recoverability before sending `ArenaMsg::Withdraw`.
+    if let Then::Sortie { operation, slot } = &then {
+        let expected_ramp =
+            crate::detachment::sortie::verify_field_recover(ctx, *operation, *slot, unit, quiet)?;
+        if ramp != Some(expected_ramp) {
+            return Err(CmdError::msg("Carrier's recovery ramp changed."));
+        }
+    }
     let site = super::field_of_unit(ctx.w, unit)
         .ok_or_else(|| CmdError::msg(WithdrawRefusal::NotHere.sentence()))?;
     let (task, ordinal) = ctx

@@ -2297,7 +2297,7 @@ impl SurfaceActProvider {
                 Some(plan) => {
                     let reads = crate::port::site_map::EngineReads(engine);
                     let counts = excursion_counts(w, &|tv| reads.rig(tv), plan.author, &plan.site);
-                    match crate::surface::plan::decide(
+                    match crate::surface::plan::decide_for_offer(
                         w,
                         &reads,
                         rig,
@@ -2588,8 +2588,17 @@ impl SurfaceActProvider {
             return Err(moved_on());
         };
         let live = record.live_plan_for(actor).map(|plan| (plan.no, plan.seq));
+        // HIGH-54: `plan_end` with `end: None` is a persisted-pass progress commit that advances
+        // `cursor` / `passed` / `notes` / `seq` while leaving the plan `Live`.
+        let is_progress_pass = binding.end.is_none()
+            && record.live_plan_for(actor).is_some_and(|plan| {
+                binding.update.cursor != plan.cursor
+                    || binding.update.passed != plan.passed
+                    || !binding.update.notes.is_empty()
+                    || binding.update.parking.is_some()
+            });
         if binding.word != "plan_end"
-            || binding.end.is_none()
+            || (binding.end.is_none() && !is_progress_pass)
             || Some(binding.no) != by.plan
             || Some(binding.step) != by.step
             || live != Some((binding.no, binding.seq))

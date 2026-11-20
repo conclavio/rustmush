@@ -144,6 +144,17 @@ fn generation(
 struct Validator {
     contracts: StateFamilyHandle<ObjId, CrewContract>,
 }
+fn eligible_offers(
+    world: &World,
+    actor: ObjId,
+    contracted: impl FnMut(ObjId) -> Result<bool, String>,
+) -> Result<Vec<HireOffer>, String> {
+    let rows = offers(world, actor, contracted)?;
+    Ok(rows
+        .into_iter()
+        .filter(|offer| super::wages::hiring_allowed(world, actor, &offer.terms).is_ok())
+        .collect())
+}
 impl RevisionValidator for Validator {
     fn current_generation(
         &self,
@@ -156,7 +167,7 @@ impl RevisionValidator for Validator {
         if coordinate != &key(actor)? {
             return Ok(None);
         }
-        let offered = offers(ctx.world(), actor, |npc| {
+        let offered = eligible_offers(ctx.world(), actor, |npc| {
             check_contract(
                 npc,
                 ctx.action_state(&self.contracts, &npc)
@@ -219,7 +230,7 @@ impl ActionProvider for Provider {
         {
             return Ok(None);
         }
-        let offered = offers(&engine.world, query.actor(), |npc| {
+        let offered = eligible_offers(&engine.world, query.actor(), |npc| {
             check_contract(
                 npc,
                 engine
@@ -287,6 +298,14 @@ impl ActionProvider for Provider {
             || stamp.at > world.world_ic_now().at
         {
             return Err(refused());
+        }
+        // HIGH-69: gate hiring at a waged port on an active non-delinquent account
+        // with no standing unpaid crew wage debts.
+        if let Err(reason) = super::wages::hiring_allowed(world, invocation.actor(), &offer.terms) {
+            return Err(crate::port_tick::port_error(
+                ActionErrorCode::ProviderRejected,
+                reason,
+            ));
         }
         let contract = CrewContract {
             schema: 1,

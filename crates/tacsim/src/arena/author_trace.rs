@@ -358,6 +358,11 @@ impl TraceStore {
             self.published_at = None;
         }
     }
+
+    /// Drop retained diagnostic rows for a unit that has left the arena.
+    pub(crate) fn remove_unit(&mut self, unit: ObjId) {
+        self.units.remove(&unit);
+    }
     /// Bounded pending joins, for diagnostic cancellation at lifecycle boundaries.
     pub(crate) fn pending(&self) -> Vec<(ObjId, u64)> {
         self.units
