@@ -1656,7 +1656,8 @@ v48 with the lead's word.
     customs stop takes the stopping ship's velocity, whatever her tank holds, and is submitted.
   - **Her helm is her captain.** `resolve_hull_captain_aboard` answers a house hull's helm when
     nobody is aboard her. So the customs submission, the make-for-port burn and every queued space
-    burn are the helm's, never the tick's.
+    burn are the helm's, never the tick's. The customs ruling's offer reads the hull a house helm
+    sails, so the helm records it.
   - **The house pays.** The transit duty's debtor account is the house's own account for a house
     helm (`hauler::house_account_of_helm`), not the helm's purse.
 - **The fixes the arm needs:**
