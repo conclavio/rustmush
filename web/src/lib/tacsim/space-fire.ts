@@ -45,6 +45,7 @@ export interface SpaceFireSnapshot {
   lock: SpaceHeldLock | null;
   emcon: string;
   thrustPermille: number;
+  siteId: string | null;
   mining: SpaceMiningState | null;
 }
 
@@ -61,6 +62,7 @@ export function emptySpaceFireSnapshot(): SpaceFireSnapshot {
     lock: null,
     emcon: "standard",
     thrustPermille: 0,
+    siteId: null,
     mining: null,
   };
 }
@@ -105,12 +107,17 @@ export function decodeSpaceFireFeed(cockpitData: unknown): SpaceFireSnapshot {
     typeof root["emcon"] === "string" && root["emcon"].trim().length > 0
       ? root["emcon"].trim()
       : "standard";
-  const thrustPermille =
-    typeof root["thrust_permille"] === "number"
+  const rawThrust =
+    typeof root["thrust_permille"] === "number" && Number.isFinite(root["thrust_permille"])
       ? root["thrust_permille"]
-      : typeof root["throttle_permille"] === "number"
+      : typeof root["throttle_permille"] === "number" && Number.isFinite(root["throttle_permille"])
         ? root["throttle_permille"]
         : 0;
+  const thrustPermille = Math.max(0, Math.min(1000, Math.round(rawThrust)));
+  const siteId =
+    typeof root["site_id"] === "string" && root["site_id"].trim().length > 0
+      ? root["site_id"].trim()
+      : null;
 
   let mining: SpaceMiningState | null = null;
   const miningObj = asObj(root["mining"]);
@@ -145,6 +152,7 @@ export function decodeSpaceFireFeed(cockpitData: unknown): SpaceFireSnapshot {
       lock: null,
       emcon,
       thrustPermille,
+      siteId,
       mining,
     };
   }
@@ -208,6 +216,7 @@ export function decodeSpaceFireFeed(cockpitData: unknown): SpaceFireSnapshot {
     lock,
     emcon,
     thrustPermille,
+    siteId,
     mining,
   };
 }

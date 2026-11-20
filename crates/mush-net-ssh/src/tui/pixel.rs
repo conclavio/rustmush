@@ -534,10 +534,27 @@ pub struct PixelView {
     frame_arrived_at: Option<Instant>,
     /// Local 60 Hz 6-DOF client docking session (`SF.R16`, `D-35-14`).
     docking_session: Option<mush_pixel::docking::DockingClientSession>,
+    /// Whether an active, unclosed `space.docking` keyframe is currently held (`SSH-M-07`).
+    docking_active: bool,
     /// Session ID of the most recently submitted `+helm/dock tape` command.
     docking_submitted_session: Option<String>,
+    /// Last painted `StationWalk` key so idle ticks short-circuit before building JSON/frames (`SSH-H-01`).
+    station_walk_last_paint: Option<StationWalkPaintKey>,
     /// Counters.
     pub stats: Stats,
+}
+
+/// Cache key preventing idle `StationWalk` ticks from rebuilding JSON/frames (`SSH-H-01`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StationWalkPaintKey {
+    pub scene_gen: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub look_mdeg: i64,
+    pub zoom_permille: u16,
+    pub cell: Option<CellSize>,
+    pub stepped_down: bool,
+    pub encoder: Encoder,
 }
 
 struct DockingFeedsOverride<'a> {
@@ -630,19 +647,32 @@ impl PixelView {
             weapon_ids: Vec::new(),
             frame_arrived_at: None,
             docking_session: None,
+            docking_active: false,
             docking_submitted_session: None,
+            station_walk_last_paint: None,
             stats: Stats::default(),
         }
     }
 
-    /// Synchronize the local 60 Hz [`mush_pixel::docking::DockingClientSession`] with the
-    /// `space.docking` feed keyframe (`SF.R16`, `D-35-14`).
-    pub fn sync_docking_session(&mut self, feeds: &dyn Feeds) {
-        let Some(dock_feed) = feeds.feed(mush_pixel::docking::SPACE_DOCKING_FEED) else {
+    /// Synchronize the local 60 Hz [`mush_pixel::docking::DockingClientSession`] with a
+    /// `space.docking` keyframe value directly (called on frame arrival so key presses
+    /// before the next paint see the live/closed state immediately, `SSH-C-05` / `SSH-M-07`).
+    pub fn observe_docking(&mut self, dock_feed: &Value) {
+        let is_closed = dock_feed.is_null()
+            || dock_feed.get("closed").and_then(Value::as_bool) == Some(true)
+            || dock_feed.get("refused").and_then(Value::as_bool) == Some(true)
+            || dock_feed.as_object().is_some_and(serde_json::Map::is_empty);
+        if is_closed {
             self.docking_session = None;
+            self.docking_active = false;
             return;
-        };
-        let Some(feed_sid) = dock_feed.get("session_id").and_then(Value::as_str) else {
+        }
+        self.docking_active = true;
+        let Some(feed_sid) = dock_feed
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
             self.docking_session = None;
             return;
         };
@@ -657,10 +687,70 @@ impl PixelView {
         }
     }
 
+    /// Synchronize the local 60 Hz [`mush_pixel::docking::DockingClientSession`] with the
+    /// `space.docking` feed keyframe (`SF.R16`, `D-35-14`).
+    pub fn sync_docking_session(&mut self, feeds: &dyn Feeds) {
+        let Some(dock_feed) = feeds.feed(mush_pixel::docking::SPACE_DOCKING_FEED) else {
+            self.docking_session = None;
+            self.docking_active = false;
+            return;
+        };
+        self.observe_docking(dock_feed);
+    }
+
+    /// Clear any live client docking session (e.g. when a `"closed": true` / `"refused": true`
+    /// terminal `space.docking` keyframe arrives, `SSH-C-05`).
+    pub fn clear_docking_session(&mut self) {
+        self.docking_session = None;
+        self.docking_active = false;
+        self.last_sent = None;
+    }
+
+    /// Compute the current `StationWalk` paint key if the view is active and ready to draw.
+    pub fn station_walk_paint_key(
+        &mut self,
+        scene_gen: u64,
+        cols: u16,
+        rows: u16,
+        now: Instant,
+    ) -> Option<StationWalkPaintKey> {
+        if !self.active || self.kind != PictureKind::StationWalk {
+            return None;
+        }
+        let encoder = self.encoder(now)?;
+        Some(StationWalkPaintKey {
+            scene_gen,
+            cols: cols.min(crate::caps::MAX_WIDTH),
+            rows: rows.min(crate::caps::MAX_HEIGHT),
+            look_mdeg: self.look_mdeg,
+            zoom_permille: self.zoom_permille(),
+            cell: self.cell,
+            stepped_down: self.stepped_down || self.want == FRAME_W_LO,
+            encoder,
+        })
+    }
+
+    /// Whether the `StationWalk` scene is unchanged since the last paint (`SSH-H-01`).
+    #[must_use]
+    pub fn station_walk_is_unchanged(&self, key: StationWalkPaintKey) -> bool {
+        self.station_walk_last_paint == Some(key)
+    }
+
+    /// Record that `StationWalk` was painted for `key` (`SSH-H-01`).
+    pub fn mark_station_walk_painted(&mut self, key: StationWalkPaintKey) {
+        self.station_walk_last_paint = Some(key);
+    }
+
     /// Inspect the active 60 Hz client docking session, if any (`SF.R16`).
     #[must_use]
     pub fn docking_session(&self) -> Option<&mush_pixel::docking::DockingClientSession> {
         self.docking_session.as_ref()
+    }
+
+    /// Whether an active, unclosed `space.docking` session is currently open.
+    #[must_use]
+    pub fn docking_active(&self) -> bool {
+        self.docking_active || self.docking_session.is_some()
     }
 
     /// The frame clock's wait: `[pixel]`'s clock (20 Hz, in either encoder),
@@ -725,6 +815,7 @@ impl PixelView {
                 self.stepped_down = true;
                 self.stats.step_downs += 1;
                 self.last_sent = None;
+                self.station_walk_last_paint = None;
                 return StepChange::Down;
             }
             return StepChange::Skip;
@@ -736,6 +827,7 @@ impl PixelView {
                 self.stepped_down = false;
                 self.clean_since = None;
                 self.last_sent = None;
+                self.station_walk_last_paint = None;
                 return StepChange::Up;
             }
         }
@@ -812,6 +904,7 @@ impl PixelView {
     pub fn set_cell_size(&mut self, cell: CellSize) {
         self.cell = Some(cell);
         self.last_sent = None;
+        self.station_walk_last_paint = None;
     }
 
     /// A `q=1` Kitty graphics error reply named `image_id` as missing or
@@ -829,6 +922,7 @@ impl PixelView {
         self.docking_pic.invalidate_image(image_id);
         self.station_walk_pic.invalidate_image(image_id);
         self.last_sent = None;
+        self.station_walk_last_paint = None;
     }
 
     /// Emit Kitty delete commands for all retained images and placements owned
@@ -995,6 +1089,7 @@ impl PixelView {
             PictureKind::StationWalk => Box::new(StationWalkPicture::new()),
         };
         self.last_sent = None;
+        self.station_walk_last_paint = None;
         self.chart_asked = None;
     }
 
@@ -1015,6 +1110,7 @@ impl PixelView {
     /// Mark the cached frame hash dirty so the next tick repaints immediately.
     pub fn invalidate_last_sent(&mut self) {
         self.last_sent = None;
+        self.station_walk_last_paint = None;
     }
 
     /// Cycle the view mode (`v` toggle) across the orbital/space views (`Chart` $\to$
@@ -1270,6 +1366,7 @@ impl PixelView {
         self.last_25d_size = None;
         self.letters_held = false;
         self.last_sent = None;
+        self.station_walk_last_paint = None;
         self.wipe_pending = false;
         if let Some((encoder, _)) = self.shown.take() {
             self.closed = Some(encoder);
@@ -1296,6 +1393,7 @@ impl PixelView {
     pub fn text_touched(&mut self) {
         if self.shown() == Some(Encoder::Sixel) {
             self.last_sent = None;
+            self.station_walk_last_paint = None;
         }
         if self.kind == PictureKind::Cockpit && self.camera == CockpitCamera::Tactical25D {
             self.iso25d.invalidate_placements();
@@ -1435,7 +1533,8 @@ impl PixelView {
             return KeyUse::Used;
         }
         // The 3D Holo-Tank's keys (doc 35 cut SF.7, SF.R3, D-35-16): `,`/`.` or `a`/`d` rotate azimuth,
-        // `v` cycles space views, `z`/`x`/`c` or F1-F3 fire weapon groups, Esc/`q` close.
+        // `v` cycles space views, `z`/`x`/`c` or F1-F3 fire weapon groups, Esc/`q` close, while
+        // digits '0'..'9', chat triggers, and Ctrl/Alt pass through for global navigation (`SSH-H-06`).
         if self.kind == PictureKind::Holotank {
             match key {
                 Key::Char(',' | 'a') => {
@@ -1452,6 +1551,10 @@ impl PixelView {
                 Key::Char('r') => self.orders.push("+tac/scan".to_string()),
                 Key::Char('v') => self.cycle_space_view(),
                 Key::Esc | Key::Char('q') => self.close(),
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                | Key::Enter
+                | Key::Ctrl(_)
+                | Key::Alt(_) => return KeyUse::Passed,
                 _ => {}
             }
             return KeyUse::Used;
@@ -1484,20 +1587,24 @@ impl PixelView {
                 Key::Char(',') => {
                     self.look_mdeg = (self.look_mdeg - 15_000).rem_euclid(360_000);
                     self.last_sent = None;
+                    self.station_walk_last_paint = None;
                 }
                 Key::Char('.') => {
                     self.look_mdeg = (self.look_mdeg + 15_000).rem_euclid(360_000);
                     self.last_sent = None;
+                    self.station_walk_last_paint = None;
                 }
                 Key::Char('+' | '=') => {
                     let next = self.zoom_permille().saturating_add(250).min(2000);
                     self.set_zoom_permille(next);
                     self.last_sent = None;
+                    self.station_walk_last_paint = None;
                 }
                 Key::Char('-' | '_') => {
                     let next = self.zoom_permille().saturating_sub(250).max(500);
                     self.set_zoom_permille(next);
                     self.last_sent = None;
+                    self.station_walk_last_paint = None;
                 }
                 Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?')
                 | Key::Enter
@@ -1509,8 +1616,8 @@ impl PixelView {
         }
         // The Out-of-Time-Loop 6-DOF Docking Camera's keys (doc 35 cut SF.7, SF.R16 & SF.R24, D-35-14, D-35-16):
         // WASD translation, Arrow Keys pitch/yaw, Q/E roll, R/F closure pulse, X dampeners,
-        // `v` view mode toggle, while preserving digits '0'..'9' for global screen switching.
-        // (`c`/Space auto-solver removed in SF.R24.)
+        // Backspace abort (`+helm/dock abort`), `v` view mode toggle, while preserving digits '0'..'9'
+        // for global screen switching. (`c`/Space auto-solver removed in SF.R24.)
         if self.kind == PictureKind::Docking {
             if matches!(
                 key,
@@ -1524,6 +1631,15 @@ impl PixelView {
             }
             if key == Key::Char('v') {
                 self.cycle_space_view();
+                return KeyUse::Used;
+            }
+            if key == Key::Backspace {
+                if self.docking_session.is_some() || self.docking_active {
+                    self.orders.push("+helm/dock abort".to_string());
+                    self.docking_session = None;
+                    self.docking_active = false;
+                    self.last_sent = None;
+                }
                 return KeyUse::Used;
             }
             if let Some(ref mut session) = self.docking_session {
@@ -1596,6 +1712,11 @@ impl PixelView {
                         self.orders.push(session.format_tape_command());
                     }
                 }
+                return KeyUse::Used;
+            }
+            // Only emit legacy single-frame text DOCK orders when an active unclosed
+            // `space.docking` session is open (`SSH-M-07`).
+            if !self.docking_active {
                 return KeyUse::Used;
             }
             match key {
@@ -1953,6 +2074,8 @@ impl PixelView {
             self.stats.slow_skips += 1;
             return Vec::new();
         }
+        let cols = cols.min(crate::caps::MAX_WIDTH);
+        let rows = rows.min(crate::caps::MAX_HEIGHT);
         let cell = self.cell.unwrap_or(CellSize::DEFAULT);
         let area = picture_area(cols, rows);
         let width = if self.stepped_down {
@@ -2187,6 +2310,66 @@ impl PixelView {
                 format!("ARMOR  |  {probe}, drawing {drawing}, redrawn on change"),
                 "Enter: chat   Esc/q: close   ^]: detach".to_string(),
             );
+        }
+        if matches!(
+            self.kind,
+            PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
+        ) {
+            let probe = self.probe_words(now);
+            let drawing = match (self.current_encoder(), self.choice) {
+                (Some(e), EncoderChoice::Forced(_)) => format!("{} (forced)", e.name()),
+                (Some(e), _) => e.name().to_string(),
+                (None, _) => "nothing".to_string(),
+            };
+            let (w, h) = self.size();
+            let clock = if self.uncapped {
+                "uncapped".to_string()
+            } else {
+                format!("{} Hz", 1_000 / self.interval().as_millis().max(1))
+            };
+            let slow = if self.stepped_down {
+                "  (slow link: stepped down)"
+            } else {
+                ""
+            };
+            if let Some(hud) = match self.kind {
+                PictureKind::SpaceCockpit => Some((
+                    format!(
+                        "Bridge Canopy  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}"
+                    ),
+                    "z/F1: beam   x/F2: torp   c/F3: railgun   r: scan   v: view   Enter: chat   Esc/q: close"
+                        .to_string(),
+                )),
+                PictureKind::Holotank => Some((
+                    format!(
+                        "Holo-Tank  az {:+}°  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}",
+                        self.look_mdeg() / 1_000
+                    ),
+                    ",/. a/d: rotate   z/x/c: fire   r: scan   v: view   Enter: chat   Esc/q: close"
+                        .to_string(),
+                )),
+                PictureKind::Docking => {
+                    let top = if let Some(s) = &self.docking_session {
+                        format!(
+                            "6-DOF Docking  dz {:.1}m  vz {:.2}m/s  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}",
+                            s.pose.dz_mm as f64 / 1000.0,
+                            s.pose.vz_mmps as f64 / 1000.0
+                        )
+                    } else {
+                        format!(
+                            "6-DOF Docking  |  {probe}, drawing {drawing}  {w}x{h} {clock}{slow}"
+                        )
+                    };
+                    Some((
+                        top,
+                        "WASD: trans   Arrows: pitch/yaw   Q/E: roll   R/F: closure   X: damp   Bksp: abort   v: view   Esc: exit"
+                            .to_string(),
+                    ))
+                }
+                _ => None,
+            } {
+                return hud;
+            }
         }
         let heading = cockpit
             .and_then(|c| c.get("heading_mdeg"))
@@ -4085,6 +4268,39 @@ mod tests {
             "unexpected order: {}",
             orders[0]
         );
+    }
+
+    #[test]
+    fn space_and_docking_hud_is_not_ground_tank_and_holotank_passes_global_keys() {
+        let t0 = Instant::now();
+        let mut v = PixelView::new();
+        v.probe_sent(t0);
+        v.graphics_reply(true);
+
+        for kind in [
+            PictureKind::SpaceCockpit,
+            PictureKind::Holotank,
+            PictureKind::Docking,
+        ] {
+            assert!(v.toggle_for(kind, t0));
+            let (top, bottom) = v.hud(None, t0);
+            assert!(
+                !top.contains("PIXEL VIEW") && !bottom.contains("NOT_IN_A_COCKPIT"),
+                "{kind:?} HUD leaked ground-tank text: top={top:?} bottom={bottom:?}"
+            );
+            v.close();
+        }
+
+        // `SSH-H-06`: `Holotank` must pass global screen/overlay keys (`0..=9`, `?`, `"`, `:`, Ctrl, Alt).
+        assert!(v.toggle_for(PictureKind::Holotank, t0));
+        for digit in '0'..='9' {
+            assert_eq!(v.key(Key::Char(digit), t0), KeyUse::Passed);
+        }
+        for ch in ['?', '"', ':', ';', '/', '\\'] {
+            assert_eq!(v.key(Key::Char(ch), t0), KeyUse::Passed);
+        }
+        assert_eq!(v.key(Key::Ctrl('k'), t0), KeyUse::Passed);
+        assert_eq!(v.key(Key::Alt('1'), t0), KeyUse::Passed);
     }
 
     #[test]

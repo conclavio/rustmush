@@ -2,7 +2,7 @@
 // exit resolvers for the Web 3D Station & Ship Interior viewport.
 // Mirrors Unity's `ContentModels.cs`, `StationWorldController.cs`, and `ShipInteriorController.cs`.
 
-import type { ObjRef, RoomView } from "../proto";
+import type { RoomView } from "../proto";
 import { plainText } from "../render";
 
 export interface Vec2 {
@@ -137,6 +137,7 @@ export interface ShipUnitTemplate {
   label: string;
   compartments: Map<string, ShipCompartmentDef>;
   exits: ShipExitPairDef[];
+  isFallback?: boolean;
 }
 
 export interface DockedHullSummary {
@@ -172,6 +173,7 @@ export interface DecodedRoomAmbient {
   atlasPack: string | null;
   atlasEntry: string | null;
   atlasSurface: string | null;
+  hasOccupantsManifest: boolean;
   playerIds: Set<string>;
   npcIds: Set<string>;
   thingIds: Set<string>;
@@ -179,6 +181,7 @@ export interface DecodedRoomAmbient {
   tacsimMode: string | null;
   unit: string | null;
   roomTemplateId: string | null;
+  hullId: string | null;
   hullName: string | null;
   mark: string | null;
   classWord: string | null;
@@ -238,12 +241,261 @@ function asArr(v: unknown): unknown[] | null {
 
 export function getFloorElevationY(pack: AtlasNeighborhoodPack, floorIdx: number): number {
   const f = pack.floors.get(floorIdx);
-  return f ? f.zOffsetM : floorIdx * 5.0;
+  if (f) return f.zOffsetM;
+  return floorIdx === 0 ? 0 : floorIdx * 5.0;
 }
 
 export function getFloorHeight(pack: AtlasNeighborhoodPack, floorIdx: number): number {
   const f = pack.floors.get(floorIdx);
   return f ? f.heightM : 4.5;
+}
+
+/**
+ * Right-handed Three.js atlas-to-world conversion (`East = +ax -> +X`, `North = +ay -> -Z`).
+ * `originOffsetX = -center.x`, `originOffsetZ = -center.y`.
+ */
+export function atlasToWorldPos(
+  ax: number,
+  elevY: number,
+  ay: number,
+  originOffsetX: number,
+  originOffsetZ: number,
+): Vec3 {
+  const x = ax + originOffsetX;
+  const z = -(ay + originOffsetZ);
+  return {
+    x: x === 0 ? 0 : x,
+    y: elevY === 0 ? 0 : elevY,
+    z: z === 0 ? 0 : z,
+  };
+}
+
+/** Exact inverse of `atlasToWorldPos` for XZ -> atlas `(ax, ay)`. */
+export function worldToAtlas2D(
+  wx: number,
+  wz: number,
+  originOffsetX: number,
+  originOffsetZ: number,
+): Vec2 {
+  const x = wx - originOffsetX;
+  const y = -wz - originOffsetZ;
+  return {
+    x: x === 0 ? 0 : x,
+    y: y === 0 ? 0 : y,
+  };
+}
+
+/**
+ * Right-handed Three.js camera-relative horizontal locomotion delta.
+ * Camera looks along `Forward = (+sin(yaw), 0, +cos(yaw))` with `Up = (0, 1, 0)`,
+ * so screen-right is `Forward × Up = (-cos(yaw), 0, +sin(yaw))`.
+ */
+export function computeRightHandedMoveDelta(
+  camYawRad: number,
+  fwdIn: number,
+  rightIn: number,
+  speed: number,
+  dt: number,
+): { dx: number; dz: number } {
+  const len = Math.hypot(fwdIn, rightIn);
+  if (len <= 0.01) return { dx: 0, dz: 0 };
+  const nf = fwdIn / len;
+  const nr = rightIn / len;
+  const sin = Math.sin(camYawRad);
+  const cos = Math.cos(camYawRad);
+  return {
+    dx: (sin * nf - cos * nr) * speed * dt,
+    dz: (cos * nf + sin * nr) * speed * dt,
+  };
+}
+
+export interface InterFloorStairPlacement {
+  exitId: string;
+  upperRoomId: string;
+  lowerRoomId: string;
+  axis: "x" | "y";
+  centerAx: number;
+  centerAy: number;
+  halfRun: number;
+  halfWidth: number;
+  cutMinAx: number;
+  cutMaxAx: number;
+  cutMinAy: number;
+  cutMaxAy: number;
+}
+
+/**
+ * Compute an inter-floor stair's authored atlas placement & stairwell cutout using `portal.at`
+ * (when present) and clamping strictly within the intersection of the upper and lower rooms.
+ */
+export function computeInterFloorStairPlacement(
+  pack: AtlasNeighborhoodPack,
+  ex: AtlasExitDef,
+): InterFloorStairPlacement | null {
+  const rA = pack.rooms.get(ex.fromRoom);
+  const rB = pack.rooms.get(ex.toRoom);
+  if (!rA || !rB || rA.floorIndex === rB.floorIndex) return null;
+
+  const upper = rA.floorIndex > rB.floorIndex ? rA : rB;
+  const lower = rA.floorIndex > rB.floorIndex ? rB : rA;
+
+  const ovMinX = Math.max(upper.minX, lower.minX);
+  const ovMaxX = Math.min(upper.maxX, lower.maxX);
+  const ovMinY = Math.max(upper.minY, lower.minY);
+  const ovMaxY = Math.min(upper.maxY, lower.maxY);
+  const hasOverlap = ovMaxX - ovMinX > 0.5 && ovMaxY - ovMinY > 0.5;
+
+  const boundMinX = hasOverlap ? ovMinX : upper.minX;
+  const boundMaxX = hasOverlap ? ovMaxX : upper.maxX;
+  const boundMinY = hasOverlap ? ovMinY : upper.minY;
+  const boundMaxY = hasOverlap ? ovMaxY : upper.maxY;
+  const spanX = boundMaxX - boundMinX;
+  const spanY = boundMaxY - boundMinY;
+
+  // Run stairs along X when the overlap is shallow in Y (e.g., aitken_highport l07_l08 5m Y overlap)
+  const axis: "x" | "y" = spanY < 7.0 && spanX > spanY ? "x" : "y";
+  const runSpan = axis === "x" ? spanX : spanY;
+  const widthSpan = axis === "x" ? spanY : spanX;
+
+  const halfRun = Math.min(2.8, Math.max(1.0, (runSpan - 0.8) * 0.5));
+  const halfWidth = Math.min(1.35, Math.max(0.75, (widthSpan - 0.6) * 0.5));
+
+  let centerAx = (boundMinX + boundMaxX) * 0.5;
+  let centerAy = (boundMinY + boundMaxY) * 0.5;
+  if (ex.portalA && ex.portalB) {
+    centerAx = (ex.portalA.x + ex.portalB.x) * 0.5;
+    centerAy = (ex.portalA.z + ex.portalB.z) * 0.5;
+  } else if (ex.portalA) {
+    centerAx = ex.portalA.x;
+    centerAy = ex.portalA.z;
+  } else if (ex.portalB) {
+    centerAx = ex.portalB.x;
+    centerAy = ex.portalB.z;
+  }
+
+  const cutHalfX = axis === "x" ? halfRun + 0.35 : halfWidth + 0.15;
+  const cutHalfY = axis === "y" ? halfRun + 0.35 : halfWidth + 0.15;
+  const clampPadX = Math.min(cutHalfX + 0.15, spanX * 0.49);
+  const clampPadY = Math.min(cutHalfY + 0.15, spanY * 0.49);
+
+  if (boundMinX + clampPadX <= boundMaxX - clampPadX) {
+    centerAx = Math.max(boundMinX + clampPadX, Math.min(boundMaxX - clampPadX, centerAx));
+  } else {
+    centerAx = (boundMinX + boundMaxX) * 0.5;
+  }
+  if (boundMinY + clampPadY <= boundMaxY - clampPadY) {
+    centerAy = Math.max(boundMinY + clampPadY, Math.min(boundMaxY - clampPadY, centerAy));
+  } else {
+    centerAy = (boundMinY + boundMaxY) * 0.5;
+  }
+
+  return {
+    exitId: ex.entryId,
+    upperRoomId: upper.entryId,
+    lowerRoomId: lower.entryId,
+    axis,
+    centerAx,
+    centerAy,
+    halfRun,
+    halfWidth,
+    cutMinAx: Math.max(boundMinX + 0.05, centerAx - cutHalfX),
+    cutMaxAx: Math.min(boundMaxX - 0.05, centerAx + cutHalfX),
+    cutMinAy: Math.max(boundMinY + 0.05, centerAy - cutHalfY),
+    cutMaxAy: Math.min(boundMaxY - 0.05, centerAy + cutHalfY),
+  };
+}
+
+export interface StationDeskSpec {
+  deskKey: string;
+  title: string;
+  subtitle: string;
+}
+
+/**
+ * Classify a station room into its interactive service desk (or `null` if none).
+ * Co-op First Captain enrollment is exclusive to Ceres Freeport (`port/coop.rs:64`).
+ */
+export function classifyStationDesk(
+  packId: string,
+  room: Pick<AtlasRoomDef, "entryId" | "name">,
+): StationDeskSpec | null {
+  const low = `${room.entryId} ${room.name}`.toLowerCase();
+  const isCeres = packId.toLowerCase().includes("ceres");
+
+  if (low.includes("simulator_lobby")) {
+    return {
+      deskKey: "ui:open_sim",
+      title: "Simulator Roster Selector",
+      subtitle: "Pick Red/Blue team, unit & AI fill",
+    };
+  }
+  if (low.includes("registry")) {
+    if (isCeres) {
+      return {
+        deskKey: "ui:open_coop",
+        title: "Co-op First Captain Desk",
+        subtitle: "Enroll a charter Dray hull (+coop)",
+      };
+    }
+    return {
+      deskKey: "ui:open_sailing",
+      title: "Port Registry Annex Desk",
+      subtitle: "Registry filings, clearances & sailing plans",
+    };
+  }
+  if (low.includes("exchange")) {
+    return {
+      deskKey: "ui:open_trade",
+      title: "Commodity Exchange Terminal",
+      subtitle: "Live asks, standing bids & 1-click trade",
+    };
+  }
+  if (low.includes("chandlery") || low.includes("victualling")) {
+    return {
+      deskKey: "ui:open_trade",
+      title: "Chandlery & Bunkering Desk",
+      subtitle: "Reaction mass & crew provisions",
+    };
+  }
+  if (low.includes("commissary")) {
+    return {
+      deskKey: "ui:open_trade",
+      title: "Port Commissary Terminal",
+      subtitle: "Provisions, supplies & local exchange",
+    };
+  }
+  if (low.includes("bunkering")) {
+    return {
+      deskKey: "ui:open_trade",
+      title: "Bunkering & Fuel Desk",
+      subtitle: "Reaction mass loading & supplies",
+    };
+  }
+  if (low.includes("dockmaster") || low.includes("harbourmaster") || low.includes("roadsmaster")) {
+    const label = low.includes("roadsmaster")
+      ? "Roadsmaster Clearance Desk"
+      : low.includes("harbourmaster")
+        ? "Harbourmaster Clearance Desk"
+        : "Dockmaster Clearance Desk";
+    return {
+      deskKey: "ui:open_sailing",
+      title: label,
+      subtitle: "Sailing plans & corridor departures",
+    };
+  }
+  return null;
+}
+
+function parseSurfaceFloorIndex(surfaceVal: unknown): number {
+  if (typeof surfaceVal === "string") {
+    return surfaceVal.trim().toLowerCase() === "ground" ? 0 : 0;
+  }
+  const surface = asObj(surfaceVal);
+  const floorTuple = surface ? asArr(surface["floor"]) : null;
+  if (floorTuple && floorTuple.length >= 2) {
+    return Math.trunc(asNum(floorTuple[1], 0));
+  }
+  return 0;
 }
 
 export function getPackBoundsCenter2D(pack: AtlasNeighborhoodPack): Vec2 {
@@ -279,6 +531,29 @@ export function computePackGeometrySignature(pack: AtlasNeighborhoodPack): strin
   for (const k of keys) {
     const r = pack.rooms.get(k);
     if (r) parts.push(`${r.entryId}:${r.floorIndex}:${r.minX},${r.minY},${r.maxX},${r.maxY}`);
+  }
+  return parts.join("|");
+}
+
+export function computeShipTemplateSignature(tpl: ShipUnitTemplate): string {
+  const parts: string[] = [
+    tpl.unitId,
+    tpl.isFallback ? "fallback" : "pack",
+    tpl.label,
+    `c=${tpl.compartments.size}`,
+    `e=${tpl.exits.length}`,
+  ];
+  const keys = [...tpl.compartments.keys()].sort();
+  for (const k of keys) {
+    const c = tpl.compartments.get(k);
+    if (c) {
+      parts.push(
+        `${c.id}:${c.name}:${c.shortDesc}:${c.localCenter.x},${c.localCenter.y},${c.localCenter.z}:${c.localSize.x},${c.localSize.y},${c.localSize.z}`,
+      );
+    }
+  }
+  for (const ex of tpl.exits) {
+    parts.push(`${ex.from}->${ex.to}:${ex.forwardCommand}/${ex.reverseCommand}`);
   }
   return parts.join("|");
 }
@@ -336,12 +611,15 @@ export function parseNeighborhoodPack(
   }
   const root = asObj(parsed);
   const entries = root ? asObj(root["entries"]) : null;
-  if (!entries) {
+  if (!root || !entries) {
     return fallbackId.includes("ooc") ? buildFallbackOocArea() : buildFallbackFreeport();
   }
 
+  const manifest = asObj(root["manifest"]);
+  const manifestId = manifest ? asStr(manifest["id"]) : "";
+
   const pack: AtlasNeighborhoodPack = {
-    packId: fallbackId,
+    packId: manifestId || fallbackId,
     name: "Station",
     floors: new Map(),
     rooms: new Map(),
@@ -359,7 +637,9 @@ export function parseNeighborhoodPack(
     if (!def) continue;
 
     if (kind === "neighborhood") {
-      pack.packId = id;
+      if (id && id !== "neighborhood") {
+        pack.packId = id;
+      }
       pack.name = asStr(def["name"], pack.name);
     } else if (kind === "structure") {
       const floors = asArr(def["floors"]);
@@ -377,10 +657,7 @@ export function parseNeighborhoodPack(
         }
       }
     } else if (kind === "room") {
-      const surface = asObj(def["surface"]);
-      const floorTuple = surface ? asArr(surface["floor"]) : null;
-      const floorIdx =
-        floorTuple && floorTuple.length >= 2 ? Math.trunc(asNum(floorTuple[1], 1)) : 1;
+      const floorIdx = parseSurfaceFloorIndex(def["surface"]);
 
       const footprint = asObj(def["footprint"]);
       const rect = footprint ? asArr(footprint["rect"]) : asArr(def["rect"]);
@@ -488,10 +765,7 @@ export function parseNeighborhoodPack(
       const p1 = asArr(poly[1]);
       if (!p0 || p0.length < 2 || !p1 || p1.length < 2) continue;
 
-      const surface = asObj(def["surface"]);
-      const floorTuple = surface ? asArr(surface["floor"]) : null;
-      const floorIdx =
-        floorTuple && floorTuple.length >= 2 ? Math.trunc(asNum(floorTuple[1], 1)) : 1;
+      const floorIdx = parseSurfaceFloorIndex(def["surface"]);
       const zRange = asArr(def["z_range"]);
       const h =
         zRange && zRange.length >= 2
@@ -711,8 +985,7 @@ export function tryFindContainingRoomWithHysteresis(
   currentRoomEntryId: string | null,
   hysteresisM = 0.85,
 ): string | null {
-  const ax = worldPos.x - originOffsetX;
-  const ay = worldPos.z - originOffsetZ;
+  const { x: ax, y: ay } = worldToAtlas2D(worldPos.x, worldPos.z, originOffsetX, originOffsetZ);
 
   if (currentRoomEntryId && hysteresisM > 0) {
     const cur = pack.rooms.get(currentRoomEntryId);
@@ -807,6 +1080,7 @@ export function parseShipUnitJson(
     label: asStr(def["label"], "Dray-class bulk hauler"),
     compartments: new Map(),
     exits: [],
+    isFallback: false,
   };
 
   rooms.forEach((rVal, i) => {
@@ -895,9 +1169,12 @@ export function tryFindContainingCompartment(
       const hx = cur.localSize.x * 0.5;
       const hy = cur.localSize.y * 0.5;
       const hz = cur.localSize.z * 0.5;
+      const floorY = cur.localCenter.y - hy;
+      const ceilY = cur.localCenter.y + hy;
       if (
         Math.abs(localPos.x - cur.localCenter.x) <= hx + hysteresisM &&
-        Math.abs(localPos.y - cur.localCenter.y) <= hy + 0.9 &&
+        localPos.y >= floorY - 0.45 &&
+        localPos.y <= ceilY - 0.15 &&
         Math.abs(localPos.z - cur.localCenter.z) <= hz + hysteresisM
       ) {
         return currentCompId;
@@ -905,19 +1182,31 @@ export function tryFindContainingCompartment(
     }
   }
 
+  let bestId: string | null = null;
+  let bestScore = Infinity;
   for (const [k, c] of tpl.compartments) {
     const hx = c.localSize.x * 0.5;
     const hy = c.localSize.y * 0.5;
     const hz = c.localSize.z * 0.5;
     if (
-      Math.abs(localPos.x - c.localCenter.x) <= hx &&
-      Math.abs(localPos.y - c.localCenter.y) <= hy + 0.9 &&
-      Math.abs(localPos.z - c.localCenter.z) <= hz
+      Math.abs(localPos.x - c.localCenter.x) > hx ||
+      Math.abs(localPos.z - c.localCenter.z) > hz
     ) {
-      return k;
+      continue;
+    }
+    const floorY = c.localCenter.y - hy;
+    const ceilY = c.localCenter.y + hy;
+    // Accept positions from slightly below deck surface up to just below deck ceiling
+    // so lower decks (e.g., passage ceil +1.6 vs bridge floor +1.8; hold ceil -1.9 vs passage floor -1.6)
+    // never shadow upper decks on companionway ramps.
+    if (localPos.y < floorY - 0.45 || localPos.y > ceilY - 0.1) continue;
+    const distFromFloor = Math.abs(localPos.y - floorY);
+    if (distFromFloor < bestScore) {
+      bestScore = distFromFloor;
+      bestId = k;
     }
   }
-  return currentCompId;
+  return bestId ?? currentCompId;
 }
 
 export function findShipExitPath(
@@ -976,6 +1265,12 @@ function parseIdSet(arrVal: unknown): Set<string> {
   return out;
 }
 
+export interface StowageGoodMeta {
+  label: string;
+  ledgerUnit: string;
+  massKgPerUnit: number;
+}
+
 /**
  * Decodes `ship.stowage` as `tacsim::port::ship::hull_stowage_json` writes it:
  * `cargo_kg` / `cargo_limit_kg`, `cargo_l` / `cargo_limit_l`, `tank_kg` /
@@ -983,26 +1278,59 @@ function parseIdSet(arrVal: unknown): Set<string> {
  * `{ good, qty }` (48e L8, clients:G2). A limit the server reports as 0 (no such
  * compartment) reads as 1 so the gauges never divide by zero.
  */
-export function parseStowageNode(nodeVal: unknown): StowageSnapshot | null {
+export function parseStowageNode(
+  nodeVal: unknown,
+  goodsLookup?: ReadonlyMap<string, StowageGoodMeta>,
+): StowageSnapshot | null {
   const node = asObj(nodeVal);
   if (!node) return null;
   const cargoLines: StowageSnapshot["cargoLines"] = [];
-  for (const lnVal of asArr(node["items"]) ?? []) {
-    const ln = asObj(lnVal);
-    if (!ln) continue;
-    const good = asStr(ln["good"]);
-    if (!good) continue;
-    cargoLines.push({ good, label: good, qty: asNum(ln["qty"], 0), unit: "t", massKg: 0 });
+  const linesArr = asArr(node["items"]) ?? asArr(node["cargo"]) ?? asArr(node["lines"]);
+  if (linesArr) {
+    for (const lnVal of linesArr) {
+      const ln = asObj(lnVal);
+      if (!ln) continue;
+      const good = asStr(ln["good"], asStr(ln["id"]));
+      if (!good) continue;
+      const shortGood = good.replace(/^tacsim:/i, "");
+      const meta = goodsLookup?.get(good) ?? goodsLookup?.get(shortGood);
+      const qty = asNum(ln["qty"], asNum(ln["quantity"], 0));
+      cargoLines.push({
+        good,
+        label: asStr(ln["label"], meta?.label ?? good),
+        qty,
+        unit: asStr(ln["unit"], meta?.ledgerUnit ?? "t"),
+        massKg: asNum(ln["mass_kg"], meta ? qty * meta.massKgPerUnit : 0),
+      });
+    }
   }
   return {
     cargoKg: asNum(node["cargo_kg"], 0),
-    cargoMaxKg: Math.max(1, asNum(node["cargo_limit_kg"], 0)),
+    cargoMaxKg: Math.max(
+      1,
+      asNum(
+        node["cargo_limit_kg"],
+        asNum(node["mass_limit_kg"], asNum(node["cargo_max_kg"], 0)),
+      ),
+    ),
     cargoL: asNum(node["cargo_l"], 0),
-    cargoMaxL: Math.max(1, asNum(node["cargo_limit_l"], 0)),
-    propellantKg: asNum(node["tank_kg"], 0),
-    propellantMaxKg: Math.max(1, asNum(node["tank_limit_kg"], 0)),
-    provisionsCrewDays: asNum(node["stores_days"], 0),
-    provisionsMaxCrewDays: Math.max(1, asNum(node["stores_limit_days"], 0)),
+    cargoMaxL: Math.max(1, asNum(node["cargo_limit_l"], asNum(node["cargo_max_l"], 0))),
+    propellantKg: asNum(node["tank_kg"], asNum(node["propellant_kg"], 0)),
+    propellantMaxKg: Math.max(
+      1,
+      asNum(
+        node["tank_limit_kg"],
+        asNum(node["propellant_max_kg"], asNum(node["tank_max_kg"], 0)),
+      ),
+    ),
+    provisionsCrewDays: asNum(node["stores_days"], asNum(node["provisions_crew_days"], 0)),
+    provisionsMaxCrewDays: Math.max(
+      1,
+      asNum(
+        node["stores_limit_days"],
+        asNum(node["provisions_max_crew_days"], asNum(node["stores_max_days"], 0)),
+      ),
+    ),
     cargoLines,
   };
 }
@@ -1011,6 +1339,7 @@ export function decodeTacsimRoomAmbient(view: RoomView | null): DecodedRoomAmbie
   const amb = view?.ambient ? asObj(view.ambient) : null;
   const atlas = amb ? asObj(amb["atlas"]) : null;
   const tac = amb ? asObj(amb["tacsim"]) : null;
+  const occ = amb ? asObj(amb["occupants"]) : null;
 
   const dockedHulls: DockedHullSummary[] = [];
   const dhArr = tac ? asArr(tac["docked_hulls"]) : null;
@@ -1045,21 +1374,38 @@ export function decodeTacsimRoomAmbient(view: RoomView | null): DecodedRoomAmbie
     }
   }
 
+  // Server (`crates/mush-npc/src/module.rs:4570-4589`) consolidates room occupants under
+  // `ambient.occupants.{npcs, dormant, players, things}`; fall back to legacy top-level keys.
+  const playerIds = parseIdSet(occ ? occ["players"] : amb?.["players"]);
+  const npcIds = parseIdSet(occ ? occ["npcs"] : amb?.["npcs"]);
+  const thingIds = parseIdSet(occ ? occ["things"] : amb?.["things"]);
+  const dormantNpcIds = parseIdSet(
+    occ ? (occ["dormant"] ?? occ["dormant_npcs"]) : amb?.["dormant_npcs"],
+  );
+  const hasOccupantsManifest =
+    occ !== null ||
+    playerIds.size > 0 ||
+    npcIds.size > 0 ||
+    thingIds.size > 0 ||
+    dormantNpcIds.size > 0;
+
   return {
     atlasPack: atlas
       ? asStr(atlas["pack"]) || asStr(atlas["neighborhood_pack"]) || null
       : null,
     atlasEntry: atlas ? asStr(atlas["entry"]) || null : null,
     atlasSurface: atlas ? asStr(atlas["surface"]) || null : null,
-    playerIds: amb ? parseIdSet(amb["players"]) : new Set(),
-    npcIds: amb ? parseIdSet(amb["npcs"]) : new Set(),
-    thingIds: amb ? parseIdSet(amb["things"]) : new Set(),
-    dormantNpcIds: amb ? parseIdSet(amb["dormant_npcs"]) : new Set(),
+    hasOccupantsManifest,
+    playerIds,
+    npcIds,
+    thingIds,
+    dormantNpcIds,
     tacsimMode: tac ? asStr(tac["mode"]) || null : null,
     unit: tac ? asStr(tac["unit"]) || null : null,
     roomTemplateId: tac
       ? asStr(tac["room"]) || asStr(tac["room_template_id"]) || null
       : null,
+    hullId: tac ? asStr(tac["hull_id"]) || null : null,
     hullName: tac ? asStr(tac["hull_name"]) || null : null,
     mark: tac ? asStr(tac["mark"]) || null : null,
     classWord: tac ? asStr(tac["class"], "Dray") || null : null,
@@ -1158,6 +1504,7 @@ export function filterVisibleRoomActors(
   decoded: DecodedRoomAmbient,
   selfActorId: string | null,
   pack: AtlasNeighborhoodPack | null,
+  extraDockedHulls?: ReadonlyArray<DockedHullSummary>,
 ): VisibleRoomActor[] {
   if (!view) return [];
   const dockedHullIds = new Set<string>();
@@ -1168,9 +1515,19 @@ export function filterVisibleRoomActors(
     if (dh.id) dockedHullIds.add(dh.id);
     if (dh.name) dockedHullNames.add(dh.name.toLowerCase());
   }
+  if (extraDockedHulls) {
+    for (const dh of extraDockedHulls) {
+      if (dh.id) dockedHullIds.add(dh.id);
+      if (dh.name) dockedHullNames.add(dh.name.toLowerCase());
+    }
+  }
 
   const hasAuthoritativeTyping =
-    decoded.thingIds.size > 0 || decoded.playerIds.size > 0 || decoded.npcIds.size > 0;
+    decoded.hasOccupantsManifest ||
+    decoded.thingIds.size > 0 ||
+    decoded.playerIds.size > 0 ||
+    decoded.npcIds.size > 0 ||
+    decoded.dormantNpcIds.size > 0;
   const isBerthGallery =
     decoded.tacsimMode === "berth_gallery" ||
     (decoded.atlasEntry?.toLowerCase().includes("berth_gallery") ?? false);
@@ -1342,7 +1699,7 @@ export function buildFallbackOocArea(): AtlasNeighborhoodPack {
   const pack: AtlasNeighborhoodPack = {
     packId: "neighborhood.ooc_area",
     name: "OOC Simulator Center",
-    floors: new Map([[1, { index: 1, name: "Main Floor", zOffsetM: 0, heightM: 4.5 }]]),
+    floors: new Map([[0, { index: 0, name: "Main Floor", zOffsetM: 0, heightM: 4.5 }]]),
     rooms: new Map(),
     exits: [],
     features: [],
@@ -1364,7 +1721,7 @@ export function buildFallbackOocArea(): AtlasNeighborhoodPack {
       name,
       shortDesc,
       desc: shortDesc,
-      floorIndex: 1,
+      floorIndex: 0,
       minX,
       minY,
       maxX,
@@ -1466,6 +1823,7 @@ export function buildFallbackDray(unitId = "tacsim.unit.dray"): ShipUnitTemplate
       { from: "passage", to: "hold", forwardLabel: "Cargo Hold", forwardCommand: "d", reverseLabel: "Central Passage", reverseCommand: "u" },
       { from: "hold", to: "engineering", forwardLabel: "Engineering Access", forwardCommand: "aft", reverseLabel: "Cargo Hold", reverseCommand: "fore" },
     ],
+    isFallback: true,
   };
 
   const bounds = getStandardDrayCompartmentBounds();
@@ -1512,17 +1870,74 @@ export type QuickActionItem = {
   accent?: boolean;
 };
 
+/**
+ * Normalize a location slug, pack id, port entry, or venue word into a canonical
+ * `+helm/dock` target across all 12 corridor venues (`ceres`, `stickney`, `luna`,
+ * `deimos`, `titan`, `commons`, `kerwan`, `ahuna`, `juling`, `occator`,
+ * `rheasilvia`, `urvara`).
+ */
+export function normalizePortVenueTarget(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const low = raw.trim().toLowerCase();
+  if (!low) return null;
+  if (low.includes("rheasilvia")) return "rheasilvia";
+  if (low.includes("commons")) return "commons";
+  if (low.includes("kerwan")) return "kerwan";
+  if (low.includes("ahuna")) return "ahuna";
+  if (low.includes("juling")) return "juling";
+  if (low.includes("occator")) return "occator";
+  if (low.includes("urvara")) return "urvara";
+  if (low.includes("stickney") || low.includes("phobos")) return "stickney";
+  if (low.includes("aitken") || low.includes("luna")) return "luna";
+  if (low.includes("voltaire") || low.includes("deimos")) return "deimos";
+  if (low.includes("ligeia") || low.includes("titan")) return "titan";
+  if (low.includes("ceres") || low.includes("freeport")) return "ceres";
+  const stripped = low.replace(/^neighborhood\./, "").replace(/_port$/, "");
+  if (/^[a-z0-9_-]+$/.test(stripped) && stripped !== "ooc_area" && stripped !== "neighborhood") {
+    return stripped;
+  }
+  return null;
+}
+
+export function resolveDynamicDockTarget(sources: {
+  cockpitSiteId?: string | null;
+  ambientPort?: string | null;
+  ambientPortEntry?: string | null;
+  tradeHullPort?: string | null;
+  tradeVenueId?: string | null;
+  stationPackId?: string | null;
+  selectedDestination?: string | null;
+}): string {
+  const ordered = [
+    sources.cockpitSiteId,
+    sources.ambientPort,
+    sources.ambientPortEntry,
+    sources.tradeHullPort,
+    sources.tradeVenueId,
+    sources.selectedDestination,
+    sources.stationPackId,
+  ];
+  for (const cand of ordered) {
+    const norm = normalizePortVenueTarget(cand);
+    if (norm) return norm;
+  }
+  return "ceres";
+}
+
 export function contextualQuickActions(
   roomEntryOrComp: string | null,
   isAboardShip: boolean,
   isSeatedAtHelm: boolean,
+  dockTarget = "ceres",
+  packId = "neighborhood.ceres_freeport",
 ): QuickActionItem[] {
+  const safeDock = normalizePortVenueTarget(dockTarget) ?? "ceres";
   if (isSeatedAtHelm) {
     return [
       { label: "Stand From Helm", action: "ui:stand_helm", accent: true },
       { label: "Undock", action: "ui:open_sailing" },
-      // Docks at the sailing plan's destination (48e L8, clients:G7), not always Ceres.
-      { label: "Dock Collar", action: "ui:dock_destination" },
+      // Docks at the resolved orbital site / sailing destination (48e L8, clients:G7), not always Ceres.
+      { label: `Dock ${safeDock}`, action: `+helm/dock ${safeDock}` },
       { label: "Mine Ping", action: "+mine/ping" },
       { label: "Ship Status", action: "+ship" },
     ];
@@ -1559,21 +1974,39 @@ export function contextualQuickActions(
   }
 
   const entry = (roomEntryOrComp ?? "").toLowerCase();
+  const isCeres = packId.toLowerCase().includes("ceres");
   if (entry.includes("registry")) {
+    if (isCeres) {
+      return [
+        { label: "Enroll Charter Hull", action: "ui:open_coop", accent: true },
+        { label: "Co-op Terms", action: "+coop" },
+        { label: "Credits", action: "+credit" },
+      ];
+    }
     return [
-      { label: "Enroll Charter Hull", action: "ui:open_coop", accent: true },
-      { label: "Co-op Terms", action: "+coop" },
+      { label: "Sailing & Route Plan", action: "ui:open_sailing", accent: true },
+      { label: "Port Exchange", action: "ui:open_trade" },
       { label: "Credits", action: "+credit" },
     ];
   }
-  if (entry.includes("exchange") || entry.includes("chandlery")) {
+  if (
+    entry.includes("exchange") ||
+    entry.includes("chandlery") ||
+    entry.includes("commissary") ||
+    entry.includes("victualling") ||
+    entry.includes("bunkering")
+  ) {
     return [
       { label: "Port Exchange", action: "ui:open_trade", accent: true },
       { label: "Sailing Plan", action: "ui:open_sailing" },
       { label: "Credits", action: "+credit" },
     ];
   }
-  if (entry.includes("dockmaster")) {
+  if (
+    entry.includes("dockmaster") ||
+    entry.includes("harbourmaster") ||
+    entry.includes("roadsmaster")
+  ) {
     return [
       { label: "Sailing & Route Plan", action: "ui:open_sailing", accent: true },
       { label: "Port Exchange", action: "ui:open_trade" },
@@ -1594,10 +2027,17 @@ export function contextualQuickActions(
       { label: "Match Status", action: "SIM" },
     ];
   }
-  return [
-    { label: "Port Exchange", action: "ui:open_trade" },
-    { label: "Co-op Charter", action: "ui:open_coop" },
-    { label: "Ship Status", action: "+ship" },
-    { label: "Credits", action: "+credit" },
-  ];
+  return isCeres
+    ? [
+        { label: "Port Exchange", action: "ui:open_trade" },
+        { label: "Co-op Charter", action: "ui:open_coop" },
+        { label: "Ship Status", action: "+ship" },
+        { label: "Credits", action: "+credit" },
+      ]
+    : [
+        { label: "Port Exchange", action: "ui:open_trade" },
+        { label: "Sailing Plan", action: "ui:open_sailing" },
+        { label: "Ship Status", action: "+ship" },
+        { label: "Credits", action: "+credit" },
+      ];
 }

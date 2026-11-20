@@ -54,12 +54,17 @@ namespace TacSim.Space
         public bool IsDockingActive => ActiveDockingSession != null;
         public DockingClientSession ActiveDockingSession { get; private set; }
         public bool GuidanceAssistEnabled { get; set; }
+        public bool KeyboardSuspended { get; set; }
+        public int LiveTorpedoCount => _liveTorpedoMarkers.Count;
+        public bool HasPendingDockingAbort => _pendingAbort;
+        public bool HasPendingDampenerToggle => _pendingDampenerToggle;
 
         public float ShipYawDeg { get; private set; }
         public float ShipPitchDeg { get; private set; }
         public float ShipRollDeg { get; private set; }
         public float ThrottlePermille { get; private set; }
         public string EmconPosture { get; private set; } = "standard";
+        public string ActiveSiteId { get; private set; } = string.Empty;
         public string SelectedRockId { get; private set; } = string.Empty;
         public string LockedContactId { get; private set; } = string.Empty;
         public IReadOnlyList<SpaceMountTelemetry> FireMounts => _fireMounts;
@@ -83,9 +88,16 @@ namespace TacSim.Space
         private Transform _dockingCollarTarget;
         private readonly List<MeshRenderer> _gateRingRenderers = new List<MeshRenderer>();
         private readonly Dictionary<string, Transform> _namedOrbitalTargets = new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextMeshPro> _targetLabelTexts = new Dictionary<string, TextMeshPro>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _contactStyleKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Transform> _liveTorpedoMarkers = new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextMeshPro> _torpedoLabelTexts = new Dictionary<string, TextMeshPro>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _knownRockIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<Transform> _collectorDrones = new List<Transform>();
         private readonly List<SpaceMountTelemetry> _fireMounts = new List<SpaceMountTelemetry>(8);
+        private float _lastHolotankBurnPermille;
+        private bool _hasLastCockpitSpeed;
+        private float _lastCockpitSpeedMps;
 
         private Transform _lockAspectIndicator;
         private Transform _lockAspectSectorPlate;
@@ -168,17 +180,25 @@ namespace TacSim.Space
             }
             _gateRingRenderers.Clear();
             _namedOrbitalTargets.Clear();
+            _targetLabelTexts.Clear();
+            _contactStyleKeys.Clear();
+            _liveTorpedoMarkers.Clear();
+            _torpedoLabelTexts.Clear();
             _knownRockIds.Clear();
             _collectorDrones.Clear();
             _fireMounts.Clear();
             ActiveLock = null;
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
+            OwnShipHolotankId = string.Empty;
             HasClusterMiningTelemetry = false;
             AuthoritativeMatchedRockId = string.Empty;
             AuthoritativeApproachingRockId = string.Empty;
             IsAuthoritativeMiningLaserActive = false;
             _droneSortieActive = false;
+            _lastHolotankBurnPermille = 0f;
+            _hasLastCockpitSpeed = false;
+            _lastCockpitSpeedMps = 0f;
 
             transform.position = OrbitalStageOrigin;
 
@@ -383,21 +403,112 @@ namespace TacSim.Space
         }
 
         /// <summary>
-        /// Reconciles 3D orbital contacts and asteroid cluster rocks strictly from authoritative `space.holotank` JSON
-        /// (`x_km`/`y_km`/`z_km`, filtering `you: true` as the observer's own hull reference origin).
+        /// Clears all session-scoped orbital contacts, locks, weapons VFX, and active docking state on disconnect/re-login.
+        /// </summary>
+        public void ResetSessionState()
+        {
+            StopDockingSession();
+            StopMiningLaser();
+            ToggleDroneSortie(false);
+            _pendingDampenerToggle = false;
+            _pendingAbort = false;
+            GuidanceAssistEnabled = false;
+            KeyboardSuspended = false;
+            ShipYawDeg = 0f;
+            ShipPitchDeg = 0f;
+            ShipRollDeg = 0f;
+            ThrottlePermille = 0f;
+            EmconPosture = "standard";
+            ActiveSiteId = string.Empty;
+            SelectedRockId = string.Empty;
+            LockedContactId = string.Empty;
+            OwnShipHolotankId = string.Empty;
+            ActiveLock = null;
+            _fireMounts.Clear();
+            HasClusterMiningTelemetry = false;
+            AuthoritativeMatchedRockId = string.Empty;
+            AuthoritativeApproachingRockId = string.Empty;
+            _lastHolotankBurnPermille = 0f;
+            _hasLastCockpitSpeed = false;
+            _lastCockpitSpeedMps = 0f;
+            _torpProgress = -1f;
+            if (_activeTorpedoVisual != null)
+                _activeTorpedoVisual.gameObject.SetActive(false);
+
+            if (_contactsContainer != null)
+            {
+                for (int i = _contactsContainer.childCount - 1; i >= 0; i--)
+                {
+                    var ch = _contactsContainer.GetChild(i).gameObject;
+                    if (Application.isPlaying) Destroy(ch);
+                    else DestroyImmediate(ch);
+                }
+            }
+            _namedOrbitalTargets.Clear();
+            _targetLabelTexts.Clear();
+            _contactStyleKeys.Clear();
+            _liveTorpedoMarkers.Clear();
+            _torpedoLabelTexts.Clear();
+            _knownRockIds.Clear();
+
+            if (PlayerShipTransform != null)
+                PlayerShipTransform.rotation = Quaternion.identity;
+            UpdateDrivePlume();
+            SyncLockedAspectIndicator();
+            OnSpaceTelemetryChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Computes Unity ship rotation matching `crates/tacsim/src/space/bubble.rs:951-991`:
+        /// positive `rollDeg` tilts starboard (`+X`) UP toward `+Y` (CCW looking forward along `+Z`).
+        /// </summary>
+        public static Quaternion ComputePlayerShipRotation(float yawDeg, float pitchDeg, float rollDeg)
+        {
+            return Quaternion.Euler(-pitchDeg, yawDeg, rollDeg);
+        }
+
+        public static Quaternion ComputeContactRotation(JsonNode c, Vector3 contactStagePos, Vector3 observerStagePos)
+        {
+            if (c != null && c.IsObject)
+            {
+                if (c.ContainsKey("yaw_deg") || c.ContainsKey("pitch_deg") || c.ContainsKey("roll_deg"))
+                {
+                    return ComputePlayerShipRotation(
+                        c.Float("yaw_deg", 0f),
+                        c.Float("pitch_deg", 0f),
+                        c.Float("roll_deg", 0f));
+                }
+
+                if (c.ContainsKey("vx_kms") || c.ContainsKey("vy_kms") || c.ContainsKey("vz_kms"))
+                {
+                    // Same bubble -> Unity axis mapping as ComputeRelativeStageOffset: +x->+Z, +y->+X, +z->+Y
+                    Vector3 velUnity = new Vector3(
+                        c.Float("vy_kms", 0f),
+                        c.Float("vz_kms", 0f),
+                        c.Float("vx_kms", 0f));
+                    if (velUnity.sqrMagnitude > 1e-8f)
+                        return Quaternion.LookRotation(velUnity.normalized, Vector3.up);
+                }
+            }
+
+            Vector3 towardObserver = observerStagePos - contactStagePos;
+            if (towardObserver.sqrMagnitude > 1e-4f)
+                return Quaternion.LookRotation(towardObserver.normalized, Vector3.up);
+            return Quaternion.Euler(0f, 180f, 0f);
+        }
+
+        /// <summary>
+        /// Reconciles 3D orbital contacts, live torpedoes, and asteroid cluster rocks strictly from authoritative
+        /// `space.holotank` JSON (`x_km`/`y_km`/`z_km`, filtering `you: true` as the observer's own hull reference origin).
+        /// Reuses existing GameObjects by ID to avoid per-frame destroy/create churn.
         /// </summary>
         public void ApplyHolotankFeed(JsonNode holotank)
         {
-            if (holotank == null || !holotank.IsObject || _contactsContainer == null)
+            if (holotank == null || !holotank.IsObject || holotank.Bool("refused", false) || _contactsContainer == null)
                 return;
 
-            for (int i = _contactsContainer.childCount - 1; i >= 0; i--)
-            {
-                var ch = _contactsContainer.GetChild(i).gameObject;
-                if (Application.isPlaying) Destroy(ch);
-                else DestroyImmediate(ch);
-            }
-            _namedOrbitalTargets.Clear();
+            var seenTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenTorpedoes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _knownRockIds.Clear();
             OwnShipHolotankId = string.Empty;
 
@@ -422,7 +533,10 @@ namespace TacSim.Space
                         double burnMag = Math.Abs(c.Double("ax_mps2", 0.0)) +
                                          Math.Abs(c.Double("ay_mps2", 0.0)) +
                                          Math.Abs(c.Double("az_mps2", 0.0));
-                        ThrottlePermille = burnMag > 0.01 ? 350f : 0f;
+                        _lastHolotankBurnPermille = burnMag > 0.01
+                            ? Mathf.Clamp((float)(burnMag * 100.0), 150f, 1000f)
+                            : 0f;
+                        ThrottlePermille = _lastHolotankBurnPermille;
                         UpdateDrivePlume();
                         break;
                     }
@@ -440,7 +554,8 @@ namespace TacSim.Space
                     if (string.IsNullOrEmpty(rId)) continue;
                     string spectral = rk.Str("spectral", rk.Str("label", "Pocket"));
                     Vector3 offset = ComputeRelativeStageOffset(rk, obsXKm, obsYKm, obsZKm, defaultRadius: 48f, index: r);
-                    SpawnOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
+                    UpsertOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
+                    seenTargets.Add(rId);
                 }
             }
 
@@ -464,7 +579,8 @@ namespace TacSim.Space
                         string rKey = id.ToUpperInvariant();
                         string lbl = c.Str("label", c.Str("name", $"ROCK {rKey}"));
                         Vector3 offset = ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 50f, index: i);
-                        SpawnOreRockTarget(rKey, lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        UpsertOreRockTarget(rKey, lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        seenTargets.Add(rKey);
                         if (c.Bool("locked", false))
                             SelectedRockId = rKey;
                         continue;
@@ -473,14 +589,50 @@ namespace TacSim.Space
                     string relation = c.Str("relation", c.Str("iff", "neutral"));
                     bool hostile = relation.IndexOf("hostile", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                    relation.IndexOf("enemy", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool friendly = !hostile && (relation.IndexOf("friend", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                 relation.IndexOf("ally", StringComparison.OrdinalIgnoreCase) >= 0);
                     string name = c.Str("name", c.Str("label", id));
                     Vector3 pos = OrbitalStageOrigin + ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 85f, index: i);
-                    Color col = hostile ? new Color(1f, 0.42f, 0.36f) : new Color(0.45f, 0.82f, 1f);
-                    SpawnNavalContact(id, $"{id} — {name}", pos, Quaternion.Euler(0f, 180f, 0f), col, hostile);
+                    Quaternion rot = ComputeContactRotation(c, pos, OrbitalStageOrigin);
+                    Color col = hostile ? new Color(1f, 0.42f, 0.36f)
+                              : (friendly ? new Color(0.45f, 1.0f, 0.65f) : new Color(0.45f, 0.82f, 1f));
+                    UpsertNavalContact(id, $"{id} — {name}", pos, rot, col, hostile, friendly);
+                    seenTargets.Add(id);
                     if (c.Bool("locked", false))
                         LockedContactId = id;
                 }
             }
+
+            // Render live server-perceived torpedoes (`space.holotank.torpedoes[]`)
+            var torpsArr = holotank["torpedoes"].AsArray();
+            if (torpsArr != null)
+            {
+                for (int t = 0; t < torpsArr.Count; t++)
+                {
+                    var tp = torpsArr[t];
+                    if (!tp.IsObject) continue;
+                    string tid = tp.Str("id", t.ToString());
+                    if (string.IsNullOrEmpty(tid)) continue;
+
+                    Vector3 torpPos = OrbitalStageOrigin + ComputeRelativeStageOffset(tp, obsXKm, obsYKm, obsZKm, defaultRadius: 65f, index: t);
+                    Vector3 aimTargetPos = OrbitalStageOrigin;
+                    if (tp.ContainsKey("target_x_km") || tp.ContainsKey("target_y_km") || tp.ContainsKey("target_z_km"))
+                    {
+                        var tgtNode = JsonNode.NewObject();
+                        tgtNode["x_km"] = JsonNode.FromDouble(tp.Double("target_x_km", obsXKm));
+                        tgtNode["y_km"] = JsonNode.FromDouble(tp.Double("target_y_km", obsYKm));
+                        tgtNode["z_km"] = JsonNode.FromDouble(tp.Double("target_z_km", obsZKm));
+                        aimTargetPos = OrbitalStageOrigin + ComputeRelativeStageOffset(tgtNode, obsXKm, obsYKm, obsZKm, defaultRadius: 65f, index: t);
+                    }
+                    int ttiS = tp.Int("tti_s", -1);
+                    string tLabel = ttiS >= 0 ? $"TORP-{tid} ({ttiS}s)" : $"TORP-{tid}";
+                    UpsertLiveTorpedoMarker(tid, tLabel, torpPos, aimTargetPos);
+                    seenTorpedoes.Add(tid);
+                }
+            }
+
+            PruneStalePooledTargets(seenTargets);
+            PruneStalePooledTorpedoes(seenTorpedoes);
 
             if (!string.IsNullOrEmpty(SelectedRockId) && !_knownRockIds.Contains(SelectedRockId))
                 SelectedRockId = string.Empty;
@@ -494,6 +646,57 @@ namespace TacSim.Space
 
             SyncLockedAspectIndicator();
             OnSpaceTelemetryChanged?.Invoke();
+        }
+
+        private void PruneStalePooledTargets(HashSet<string> seenTargets)
+        {
+            List<string> stale = null;
+            foreach (var kv in _namedOrbitalTargets)
+            {
+                if (!seenTargets.Contains(kv.Key))
+                {
+                    if (stale == null) stale = new List<string>();
+                    stale.Add(kv.Key);
+                }
+            }
+            if (stale == null) return;
+            for (int i = 0; i < stale.Count; i++)
+            {
+                string key = stale[i];
+                if (_namedOrbitalTargets.TryGetValue(key, out var tr) && tr != null)
+                {
+                    if (Application.isPlaying) Destroy(tr.gameObject);
+                    else DestroyImmediate(tr.gameObject);
+                }
+                _namedOrbitalTargets.Remove(key);
+                _targetLabelTexts.Remove(key);
+                _contactStyleKeys.Remove(key);
+            }
+        }
+
+        private void PruneStalePooledTorpedoes(HashSet<string> seenTorpedoes)
+        {
+            List<string> stale = null;
+            foreach (var kv in _liveTorpedoMarkers)
+            {
+                if (!seenTorpedoes.Contains(kv.Key))
+                {
+                    if (stale == null) stale = new List<string>();
+                    stale.Add(kv.Key);
+                }
+            }
+            if (stale == null) return;
+            for (int i = 0; i < stale.Count; i++)
+            {
+                string key = stale[i];
+                if (_liveTorpedoMarkers.TryGetValue(key, out var tr) && tr != null)
+                {
+                    if (Application.isPlaying) Destroy(tr.gameObject);
+                    else DestroyImmediate(tr.gameObject);
+                }
+                _liveTorpedoMarkers.Remove(key);
+                _torpedoLabelTexts.Remove(key);
+            }
         }
 
         public static Vector3 ComputeRelativeStageOffset(
@@ -550,8 +753,23 @@ namespace TacSim.Space
                 Mathf.Cos(bRad) * cosP * scaledDist);
         }
 
-        private void SpawnOreRockTarget(string id, string label, Vector3 pos, int idx, Material rockMat, Material veinMat)
+        private void UpsertOreRockTarget(string id, string label, Vector3 pos, int idx, Material rockMat, Material veinMat)
         {
+            if (_namedOrbitalTargets.TryGetValue(id, out var existing) && existing != null &&
+                _contactStyleKeys.TryGetValue(id, out string styleKey) && styleKey == "rock")
+            {
+                existing.position = pos;
+                if (_targetLabelTexts.TryGetValue(id, out var existingTmp) && existingTmp != null)
+                    existingTmp.text = MushProtocolLiteEscape(label);
+                _knownRockIds.Add(id);
+                return;
+            }
+            if (existing != null)
+            {
+                if (Application.isPlaying) Destroy(existing.gameObject);
+                else DestroyImmediate(existing.gameObject);
+            }
+
             var pocketRoot = new GameObject($"OreRock_{id}");
             pocketRoot.transform.SetParent(_contactsContainer, false);
             pocketRoot.transform.position = pos;
@@ -578,13 +796,34 @@ namespace TacSim.Space
                 CreateDockBox(pocketRoot.transform, "OreSeam", new Vector3(0f, 1.2f, -3.2f), new Vector3(4.5f, 0.65f, 2.2f), veinMat);
             }
 
-            AddOrbitalTag(pocketRoot.transform, label, new Vector3(0f, 7.2f, 0f), new Color(0.55f, 1f, 0.85f));
+            var tmp = AddOrbitalTag(pocketRoot.transform, label, new Vector3(0f, 7.2f, 0f), new Color(0.55f, 1f, 0.85f));
             _namedOrbitalTargets[id] = pocketRoot.transform;
+            _targetLabelTexts[id] = tmp;
+            _contactStyleKeys[id] = "rock";
             _knownRockIds.Add(id);
         }
 
-        private void SpawnNavalContact(string id, string label, Vector3 pos, Quaternion rot, Color tagColor, bool isHostile)
+        private void UpsertNavalContact(string id, string label, Vector3 pos, Quaternion rot, Color tagColor, bool isHostile, bool isFriendly)
         {
+            string factionKey = isHostile ? "ship_hostile" : (isFriendly ? "ship_friendly" : "ship_neutral");
+            if (_namedOrbitalTargets.TryGetValue(id, out var existing) && existing != null &&
+                _contactStyleKeys.TryGetValue(id, out string styleKey) && styleKey == factionKey)
+            {
+                existing.position = pos;
+                existing.rotation = rot;
+                if (_targetLabelTexts.TryGetValue(id, out var existingTmp) && existingTmp != null)
+                {
+                    existingTmp.text = MushProtocolLiteEscape(label);
+                    existingTmp.color = tagColor;
+                }
+                return;
+            }
+            if (existing != null)
+            {
+                if (Application.isPlaying) Destroy(existing.gameObject);
+                else DestroyImmediate(existing.gameObject);
+            }
+
             var cRoot = new GameObject($"NavalContact_{id}");
             cRoot.transform.SetParent(_contactsContainer, false);
             cRoot.transform.position = pos;
@@ -602,16 +841,61 @@ namespace TacSim.Space
             }
             else
             {
-                Material cHull = UrpMaterialFactory.GetOpaque($"ContactHull_{id}", isHostile ? new Color(0.38f, 0.22f, 0.22f) : new Color(0.32f, 0.38f, 0.46f), 0.5f, 0.65f);
+                string matKey = isHostile ? "ContactHull_Hostile" : (isFriendly ? "ContactHull_Friendly" : "ContactHull_Neutral");
+                Color hullCol = isHostile ? new Color(0.38f, 0.22f, 0.22f)
+                              : (isFriendly ? new Color(0.24f, 0.38f, 0.30f) : new Color(0.32f, 0.38f, 0.46f));
+                Material cHull = UrpMaterialFactory.GetOpaque(matKey, hullCol, 0.5f, 0.65f);
                 Material cTrim = UrpMaterialFactory.GetOpaque("ContactTrim", new Color(0.18f, 0.20f, 0.24f), 0.5f, 0.7f);
-                StationWorldController.BuildSculptedDrayExterior(cRoot.transform, pos, cHull, cTrim, "CutterSilhouette");
+                var sculpted = StationWorldController.BuildSculptedDrayExterior(cRoot.transform, pos, cHull, cTrim, "CutterSilhouette");
+                if (sculpted != null)
+                {
+                    sculpted.transform.localPosition = Vector3.zero;
+                    sculpted.transform.localRotation = Quaternion.identity;
+                }
             }
 
-            AddOrbitalTag(cRoot.transform, label, new Vector3(0f, 8.5f, 0f), tagColor);
+            var tmp = AddOrbitalTag(cRoot.transform, label, new Vector3(0f, 8.5f, 0f), tagColor);
             _namedOrbitalTargets[id] = cRoot.transform;
+            _targetLabelTexts[id] = tmp;
+            _contactStyleKeys[id] = factionKey;
         }
 
-        private static void AddOrbitalTag(Transform parent, string label, Vector3 localOffset, Color color)
+        private void UpsertLiveTorpedoMarker(string torpId, string label, Vector3 pos, Vector3 aimTargetPos)
+        {
+            Vector3 dir = aimTargetPos - pos;
+            Quaternion rot = dir.sqrMagnitude > 1e-4f
+                ? Quaternion.LookRotation(dir.normalized, Vector3.up) * Quaternion.Euler(90f, 0f, 0f)
+                : Quaternion.Euler(90f, 0f, 0f);
+
+            if (_liveTorpedoMarkers.TryGetValue(torpId, out var existing) && existing != null)
+            {
+                existing.position = pos;
+                existing.rotation = rot;
+                if (_torpedoLabelTexts.TryGetValue(torpId, out var existingTmp) && existingTmp != null)
+                    existingTmp.text = MushProtocolLiteEscape(label);
+                return;
+            }
+
+            var torpRoot = new GameObject($"LiveTorpedo_{torpId}");
+            torpRoot.transform.SetParent(_contactsContainer, false);
+            torpRoot.transform.position = pos;
+            torpRoot.transform.rotation = rot;
+
+            var meshGo = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            meshGo.name = "TorpedoBody";
+            meshGo.transform.SetParent(torpRoot.transform, false);
+            meshGo.transform.localScale = new Vector3(0.85f, 2.2f, 0.85f);
+            var col = meshGo.GetComponent<Collider>();
+            if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+            meshGo.GetComponent<MeshRenderer>().sharedMaterial =
+                UrpMaterialFactory.GetEmissive("LiveTorpFlare", new Color(1.0f, 0.38f, 0.14f), new Color(1.0f, 0.50f, 0.18f) * 2.8f);
+
+            var tmp = AddOrbitalTag(torpRoot.transform, label, new Vector3(0f, 4.0f, 0f), new Color(1.0f, 0.55f, 0.25f));
+            _liveTorpedoMarkers[torpId] = torpRoot.transform;
+            _torpedoLabelTexts[torpId] = tmp;
+        }
+
+        private static TextMeshPro AddOrbitalTag(Transform parent, string label, Vector3 localOffset, Color color)
         {
             var bbGo = new GameObject("OrbitalBillboard");
             bbGo.transform.SetParent(parent, false);
@@ -627,6 +911,7 @@ namespace TacSim.Space
             tmp.textWrappingMode = TextWrappingModes.NoWrap;
             tmp.rectTransform.sizeDelta = new Vector2(45f, 6f);
             bb.NameplateText = tmp;
+            return tmp;
         }
 
         private static string MushProtocolLiteEscape(string s) =>
@@ -719,6 +1004,9 @@ namespace TacSim.Space
                 return;
             }
 
+            if (_activeBeamRenderer == null)
+                return;
+
             Color beamCol = wk.Contains("rail") ? new Color(0.55f, 0.85f, 1.0f, 0.98f) : new Color(1.0f, 0.24f, 0.32f, 0.95f);
             _activeBeamRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"Weapon_{wk}", beamCol);
             _activeBeamRenderer.startWidth = wk.Contains("rail") ? 0.28f : 0.52f;
@@ -786,7 +1074,7 @@ namespace TacSim.Space
                 var rc = ring.GetComponent<Collider>();
                 if (rc != null) { if (Application.isPlaying) Destroy(rc); else DestroyImmediate(rc); }
                 var mr = ring.GetComponent<MeshRenderer>();
-                mr.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"GateMat_{g}", new Color(1.0f, 0.65f, 0.15f, 0.16f));
+                mr.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DockGate_Amber", new Color(1.0f, 0.58f, 0.16f, 0.18f));
                 _gateRingRenderers.Add(mr);
             }
 
@@ -930,15 +1218,81 @@ namespace TacSim.Space
 
         public void ApplyCockpitFeed(JsonNode cockpit)
         {
-            if (cockpit == null || !cockpit.IsObject) return;
+            if (cockpit == null || !cockpit.IsObject || cockpit.Bool("refused", false)) return;
             ShipYawDeg = cockpit.Float("yaw_deg", ShipYawDeg);
             ShipPitchDeg = cockpit.Float("pitch_deg", ShipPitchDeg);
             ShipRollDeg = cockpit.Float("roll_deg", ShipRollDeg);
+
             if (cockpit.ContainsKey("thrust_permille") || cockpit.ContainsKey("throttle_permille"))
             {
-                ThrottlePermille = cockpit.Float("thrust_permille", cockpit.Float("throttle_permille", 0f));
+                ThrottlePermille = Mathf.Clamp(cockpit.Float("thrust_permille", cockpit.Float("throttle_permille", 0f)), 0f, 1000f);
             }
+            else if (cockpit.ContainsKey("accel_mps2"))
+            {
+                ThrottlePermille = Mathf.Clamp(Mathf.Abs(cockpit.Float("accel_mps2", 0f)) * 100f, 0f, 1000f);
+            }
+            else if (cockpit.ContainsKey("thrust"))
+            {
+                ThrottlePermille = Mathf.Clamp(Mathf.Abs(cockpit.Float("thrust", 0f)) * 1000f, 0f, 1000f);
+            }
+            else if (cockpit.ContainsKey("burning"))
+            {
+                ThrottlePermille = cockpit.Bool("burning", false) ? 350f : 0f;
+            }
+            else if (_lastHolotankBurnPermille > 0f)
+            {
+                ThrottlePermille = _lastHolotankBurnPermille;
+            }
+            else if (cockpit.ContainsKey("speed_mps"))
+            {
+                float speedMps = cockpit.Float("speed_mps", 0f);
+                if (_hasLastCockpitSpeed && Mathf.Abs(speedMps - _lastCockpitSpeedMps) > 0.25f)
+                    ThrottlePermille = 350f;
+                else if (_hasLastCockpitSpeed)
+                    ThrottlePermille = 0f;
+                _lastCockpitSpeedMps = speedMps;
+                _hasLastCockpitSpeed = true;
+            }
+
             EmconPosture = cockpit.Str("emcon", EmconPosture);
+            string siteId = cockpit.Str("site_id", string.Empty).Trim();
+            if (!string.IsNullOrEmpty(siteId))
+                ActiveSiteId = siteId;
+
+            // Fallback contact/torpedo projection from `space.cockpit.contacts[]` when `space.holotank` has not populated contacts yet
+            var cockpitContacts = cockpit["contacts"].AsArray();
+            if (cockpitContacts != null && cockpitContacts.Count > 0 && _contactsContainer != null &&
+                _namedOrbitalTargets.Count == 0 && _liveTorpedoMarkers.Count == 0)
+            {
+                for (int i = 0; i < cockpitContacts.Count; i++)
+                {
+                    var c = cockpitContacts[i];
+                    if (!c.IsObject) continue;
+                    string cid = c.Str("id", string.Empty).Trim();
+                    if (string.IsNullOrEmpty(cid)) continue;
+                    string kind = c.Str("kind", "ship");
+                    string label = c.Str("label", cid);
+                    Vector3 pos = OrbitalStageOrigin + ComputeRelativeStageOffset(c, 0.0, 0.0, 0.0, defaultRadius: 85f, index: i);
+                    if (string.Equals(kind, "torpedo", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int tti = c.Int("tti_s", -1);
+                        UpsertLiveTorpedoMarker(cid, tti >= 0 ? $"{label} ({tti}s)" : label, pos, OrbitalStageOrigin);
+                    }
+                    else
+                    {
+                        string relation = c.Str("relation", "neutral");
+                        bool hostile = relation.IndexOf("hostile", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                       relation.IndexOf("enemy", StringComparison.OrdinalIgnoreCase) >= 0;
+                        bool friendly = !hostile && (relation.IndexOf("friend", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                     relation.IndexOf("ally", StringComparison.OrdinalIgnoreCase) >= 0);
+                        Color col = hostile ? new Color(1f, 0.42f, 0.36f)
+                                  : (friendly ? new Color(0.45f, 1.0f, 0.65f) : new Color(0.45f, 0.82f, 1f));
+                        UpsertNavalContact(cid, $"{cid} — {label}", pos, ComputeContactRotation(c, pos, OrbitalStageOrigin), col, hostile, friendly);
+                        if (c.Bool("locked", false))
+                            LockedContactId = cid;
+                    }
+                }
+            }
 
             var fireNode = cockpit["fire"];
             if (fireNode.IsObject)
@@ -1001,7 +1355,7 @@ namespace TacSim.Space
             }
 
             if (PlayerShipTransform != null)
-                PlayerShipTransform.rotation = Quaternion.Euler(-ShipPitchDeg, ShipYawDeg, -ShipRollDeg);
+                PlayerShipTransform.rotation = ComputePlayerShipRotation(ShipYawDeg, ShipPitchDeg, ShipRollDeg);
             UpdateDrivePlume();
             SyncLockedAspectIndicator();
             OnSpaceTelemetryChanged?.Invoke();
@@ -1087,7 +1441,7 @@ namespace TacSim.Space
             ShipPitchDeg = Mathf.Clamp(pitchDeg, -85f, 85f);
             ThrottlePermille = Mathf.Clamp(throttlePermille, 0f, 1000f);
             if (PlayerShipTransform != null)
-                PlayerShipTransform.rotation = Quaternion.Euler(-ShipPitchDeg, ShipYawDeg, -ShipRollDeg);
+                PlayerShipTransform.rotation = ComputePlayerShipRotation(ShipYawDeg, ShipPitchDeg, ShipRollDeg);
             UpdateDrivePlume();
         }
 
@@ -1166,12 +1520,10 @@ namespace TacSim.Space
             if (ActiveDockingSession == null)
                 return;
 
-            if (Input.GetKeyDown(KeyCode.X))
-                _pendingDampenerToggle = true;
-            if (Input.GetKeyDown(KeyCode.G))
-                GuidanceAssistEnabled = !GuidanceAssistEnabled;
-            if (Input.GetKeyDown(KeyCode.Backspace))
-                _pendingAbort = true;
+            ProcessDockingHotkeys(
+                Input.GetKeyDown(KeyCode.X),
+                Input.GetKeyDown(KeyCode.G),
+                Input.GetKeyDown(KeyCode.Backspace));
 
             _dockingAccumulatorS += Mathf.Min(0.1f, Time.unscaledDeltaTime);
             const float StepDt = 1f / 60f;
@@ -1318,8 +1670,34 @@ namespace TacSim.Space
             }
         }
 
-        private DockingControlInput SamplePilotDockingInput()
+        public bool ProcessDockingHotkeys(bool keyXDown, bool keyGDown, bool keyBackspaceDown)
         {
+            if (KeyboardSuspended || ActiveDockingSession == null)
+                return false;
+            bool handled = false;
+            if (keyXDown)
+            {
+                _pendingDampenerToggle = true;
+                handled = true;
+            }
+            if (keyGDown)
+            {
+                GuidanceAssistEnabled = !GuidanceAssistEnabled;
+                handled = true;
+            }
+            if (keyBackspaceDown)
+            {
+                _pendingAbort = true;
+                handled = true;
+            }
+            return handled;
+        }
+
+        public DockingControlInput SamplePilotDockingInput()
+        {
+            if (KeyboardSuspended)
+                return default;
+
             var inp = new DockingControlInput();
             if (Input.GetKey(KeyCode.D)) inp.TransX = 1;
             else if (Input.GetKey(KeyCode.A)) inp.TransX = -1;
@@ -1359,16 +1737,16 @@ namespace TacSim.Space
             BowDockingCameraAnchor.localRotation = Quaternion.Euler(-pitchDeg, yawDeg, -rollDeg);
 
             var gates = ActiveDockingSession.EvaluateGates();
-            Color ringCol = gates.AllGreen
-                ? new Color(0.2f, 1.0f, 0.55f, 0.34f)
+            Material gateMat = gates.AllGreen
+                ? UrpMaterialFactory.GetHologramUnlit("DockGate_Green", new Color(0.2f, 1.0f, 0.55f, 0.34f))
                 : (gates.LateralOk && gates.AttitudeOk && gates.RollOk
-                    ? new Color(0.35f, 0.88f, 1.0f, 0.26f)
-                    : new Color(1.0f, 0.58f, 0.16f, 0.18f));
+                    ? UrpMaterialFactory.GetHologramUnlit("DockGate_Cyan", new Color(0.35f, 0.88f, 1.0f, 0.26f))
+                    : UrpMaterialFactory.GetHologramUnlit("DockGate_Amber", new Color(1.0f, 0.58f, 0.16f, 0.18f)));
 
             for (int i = 0; i < _gateRingRenderers.Count; i++)
             {
-                if (_gateRingRenderers[i] != null)
-                    _gateRingRenderers[i].sharedMaterial.color = ringCol;
+                if (_gateRingRenderers[i] != null && _gateRingRenderers[i].sharedMaterial != gateMat)
+                    _gateRingRenderers[i].sharedMaterial = gateMat;
             }
         }
 

@@ -14,6 +14,11 @@ namespace TacSim.Core
     /// </summary>
     public static class UnityPackageArchiveExtractor
     {
+        public const int MaxEntries = 32768;
+        public const int MaxMetaHeaderBytes = 64 * 1024;
+        public const long MaxSingleEntryBytes = 256L * 1024 * 1024;
+        public const long MaxTotalUncompressedBytes = 2L * 1024 * 1024 * 1024;
+
         public static int ExtractPackageFile(string packageFilePath, string projectRootDir)
         {
             if (string.IsNullOrWhiteSpace(packageFilePath) || !File.Exists(packageFilePath))
@@ -26,8 +31,19 @@ namespace TacSim.Core
 
         public static int ExtractPackageStream(Stream seekableGzipTarStream, string projectRootDir)
         {
+            return ExtractPackageStream(seekableGzipTarStream, projectRootDir, MaxSingleEntryBytes, MaxTotalUncompressedBytes);
+        }
+
+        public static int ExtractPackageStream(
+            Stream seekableGzipTarStream,
+            string projectRootDir,
+            long maxSingleEntryBytes,
+            long maxTotalUncompressedBytes)
+        {
             if (seekableGzipTarStream == null) throw new ArgumentNullException(nameof(seekableGzipTarStream));
             if (string.IsNullOrWhiteSpace(projectRootDir)) throw new ArgumentNullException(nameof(projectRootDir));
+            if (maxSingleEntryBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxSingleEntryBytes));
+            if (maxTotalUncompressedBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxTotalUncompressedBytes));
 
             string fullProjectRoot = Path.GetFullPath(projectRootDir);
             string fullAssetsRoot = Path.GetFullPath(Path.Combine(fullProjectRoot, "Assets"));
@@ -40,7 +56,7 @@ namespace TacSim.Core
 
             using (var gz1 = new GZipStream(seekableGzipTarStream, CompressionMode.Decompress, leaveOpen: true))
             {
-                WalkTarEntries(gz1, (entryPath, typeFlag, size, dataStream) =>
+                WalkTarEntries(gz1, maxSingleEntryBytes, maxTotalUncompressedBytes, (entryPath, typeFlag, size, dataStream) =>
                 {
                     if (!TrySplitGuidEntry(entryPath, out string guid, out string leaf))
                     {
@@ -55,7 +71,7 @@ namespace TacSim.Core
                         int nl = raw.IndexOfAny(new[] { '\r', '\n', '\0' });
                         if (nl >= 0) raw = raw.Substring(0, nl);
                         string cleaned = raw.Trim().Replace('\\', '/');
-                        if (cleaned.StartsWith("Assets/", StringComparison.Ordinal) && cleaned.Length > "Assets/".Length)
+                        if (TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, cleaned, out _))
                             guidToRelPath[guid] = cleaned;
                     }
                     else
@@ -84,7 +100,7 @@ namespace TacSim.Core
 
             using (var gz2 = new GZipStream(seekableGzipTarStream, CompressionMode.Decompress, leaveOpen: true))
             {
-                WalkTarEntries(gz2, (entryPath, typeFlag, size, dataStream) =>
+                WalkTarEntries(gz2, maxSingleEntryBytes, maxTotalUncompressedBytes, (entryPath, typeFlag, size, dataStream) =>
                 {
                     if (!TrySplitGuidEntry(entryPath, out string guid, out string leaf) ||
                         !guidToRelPath.TryGetValue(guid, out string relAssetPath) ||
@@ -127,14 +143,56 @@ namespace TacSim.Core
             return filesWritten;
         }
 
-        private static bool TryResolveSafeAssetDestination(string fullProjectRoot, string assetsPrefix, string relAssetPath, out string fullDest)
+        internal static bool TryResolveSafeAssetDestination(string fullProjectRoot, string assetsPrefix, string relAssetPath, out string fullDest)
         {
             fullDest = null;
-            if (string.IsNullOrWhiteSpace(relAssetPath) || !relAssetPath.StartsWith("Assets/", StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(relAssetPath))
                 return false;
 
-            string combined = Path.GetFullPath(Path.Combine(fullProjectRoot, relAssetPath.Replace('/', Path.DirectorySeparatorChar)));
-            if (!combined.StartsWith(assetsPrefix, StringComparison.OrdinalIgnoreCase))
+            string normalized = relAssetPath.Trim().Replace('\\', '/');
+            if (!normalized.StartsWith("Assets/", StringComparison.Ordinal) || normalized.Length <= "Assets/".Length)
+                return false;
+
+            // Reject drive prefixes, alternate data streams, NUL/control characters.
+            for (int i = 0; i < normalized.Length; i++)
+            {
+                char ch = normalized[i];
+                if (ch < 0x20 || ch == ':')
+                    return false;
+            }
+
+            string[] segments = normalized.Split('/');
+            if (segments.Length < 2 || !string.Equals(segments[0], "Assets", StringComparison.Ordinal))
+                return false;
+
+            bool hasEditorSegment = false;
+            for (int i = 0; i < segments.Length; i++)
+            {
+                string seg = segments[i];
+                if (string.IsNullOrEmpty(seg) || seg == "." || seg == "..")
+                    return false;
+                if (i == 1 && string.Equals(seg, "_TacSim", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (i >= 1 && i < segments.Length - 1 && string.Equals(seg, "Editor", StringComparison.OrdinalIgnoreCase))
+                    hasEditorSegment = true;
+            }
+
+            // Never permit external packages to drop or overwrite Editor C# scripts / assemblies.
+            if (hasEditorSegment)
+            {
+                string leaf = segments[segments.Length - 1];
+                if (leaf.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
+                    leaf.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase) ||
+                    leaf.EndsWith(".asmref", StringComparison.OrdinalIgnoreCase) ||
+                    leaf.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            string combined = Path.GetFullPath(Path.Combine(fullProjectRoot, normalized.Replace('/', Path.DirectorySeparatorChar)));
+            // Use strict case-sensitive canonical prefix verification so Assets/../assets/... cannot escape on Linux/macOS.
+            if (!combined.StartsWith(assetsPrefix, StringComparison.Ordinal))
                 return false;
 
             fullDest = combined;
@@ -161,10 +219,23 @@ namespace TacSim.Core
             return leaf.IndexOf('/') < 0;
         }
 
-        private static void WalkTarEntries(Stream tarStream, Action<string, byte, long, Stream> onEntry)
+        private static void WalkTarEntries(
+            Stream tarStream,
+            long maxSingleEntryBytes,
+            long maxTotalUncompressedBytes,
+            Action<string, byte, long, Stream> onEntry)
         {
             byte[] header = new byte[512];
             string pendingLongName = null;
+            long totalBytesConsumed = 0;
+            int entryCount = 0;
+
+            void AccountBytes(long delta)
+            {
+                if (delta < 0 || delta > maxTotalUncompressedBytes - totalBytesConsumed)
+                    throw new InvalidDataException($"Archive exceeds maximum uncompressed limit ({maxTotalUncompressedBytes} bytes).");
+                totalBytesConsumed += delta;
+            }
 
             while (true)
             {
@@ -174,8 +245,17 @@ namespace TacSim.Core
                 if (read < 512)
                     throw new InvalidDataException("Truncated tar header in .unitypackage.");
 
+                AccountBytes(512);
+                entryCount++;
+                if (entryCount > MaxEntries)
+                    throw new InvalidDataException($"Archive exceeds maximum entry count ({MaxEntries}).");
+
+                ValidateTarChecksum(header);
+
                 byte typeFlag = header[156];
                 long size = ParseTarSize(header, 124, 12);
+                if (size < 0 || size > maxSingleEntryBytes)
+                    throw new InvalidDataException($"Tar entry size {size} exceeds permitted limit ({maxSingleEntryBytes} bytes).");
 
                 string name = ParseNullTerminatedUtf8(header, 0, 100);
                 string magic = ParseNullTerminatedUtf8(header, 257, 6);
@@ -193,9 +273,13 @@ namespace TacSim.Core
                 }
 
                 long pad = (512 - (size % 512)) % 512;
+                AccountBytes(size);
+                AccountBytes(pad);
 
                 if (typeFlag == (byte)'L')
                 {
+                    if (size > MaxMetaHeaderBytes)
+                        throw new InvalidDataException($"GNU longname header size {size} exceeds limit ({MaxMetaHeaderBytes}).");
                     byte[] nameBytes = ReadExact(tarStream, (int)size);
                     pendingLongName = ParseNullTerminatedUtf8(nameBytes, 0, nameBytes.Length);
                     SkipExact(tarStream, pad);
@@ -204,6 +288,8 @@ namespace TacSim.Core
 
                 if (typeFlag == (byte)'x' || typeFlag == (byte)'g')
                 {
+                    if (size > MaxMetaHeaderBytes)
+                        throw new InvalidDataException($"PAX header size {size} exceeds limit ({MaxMetaHeaderBytes}).");
                     byte[] paxBytes = ReadExact(tarStream, (int)size);
                     if (TryExtractPaxPath(paxBytes, out string paxPath))
                         pendingLongName = paxPath;
@@ -220,6 +306,44 @@ namespace TacSim.Core
                 onEntry(name, typeFlag, size, tarStream);
                 SkipExact(tarStream, pad);
             }
+        }
+
+        private static void ValidateTarChecksum(byte[] header)
+        {
+            long expected = ParseStrictOctal(header, 148, 8);
+            long unsignedSum = 0;
+            long signedSum = 0;
+            for (int i = 0; i < 512; i++)
+            {
+                byte b = (i >= 148 && i < 156) ? (byte)' ' : header[i];
+                unsignedSum += b;
+                signedSum += (sbyte)b;
+            }
+            if (expected != unsignedSum && expected != signedSum)
+                throw new InvalidDataException($"Invalid tar header checksum (expected {expected}, got {unsignedSum}).");
+        }
+
+        private static long ParseStrictOctal(byte[] buf, int offset, int length)
+        {
+            long octal = 0;
+            bool sawDigit = false;
+            bool sawTerminator = false;
+            for (int i = 0; i < length; i++)
+            {
+                byte c = buf[offset + i];
+                if (c == 0 || c == (byte)' ')
+                {
+                    if (sawDigit) sawTerminator = true;
+                    continue;
+                }
+                if (sawTerminator || c < (byte)'0' || c > (byte)'7')
+                    throw new InvalidDataException($"Invalid octal digit 0x{c:x2} in tar header.");
+                if (octal > (long.MaxValue >> 3))
+                    throw new InvalidDataException("Octal field overflow in tar header.");
+                octal = (octal << 3) + (c - (byte)'0');
+                sawDigit = true;
+            }
+            return octal;
         }
 
         private static bool TryExtractPaxPath(byte[] paxBytes, out string paxPath)
@@ -251,25 +375,31 @@ namespace TacSim.Core
         {
             if ((buf[offset] & 0x80) != 0)
             {
-                long val = 0;
-                for (int i = 1; i < length; i++)
-                    val = (val << 8) | buf[offset + i];
-                return val;
+                // GNU base-256 positive integer only; reject negative two's complement or values > Int64.MaxValue.
+                if ((buf[offset] & 0x40) != 0)
+                    throw new InvalidDataException("Negative base-256 tar entry size is not supported.");
+                if ((buf[offset] & 0x7F) != 0)
+                    throw new InvalidDataException("Tar entry size exceeds 63-bit positive range.");
+
+                // For standard 12-byte size field: bytes [offset+1..offset+3] must be 0, and byte [offset+4] sign bit must be 0.
+                int lowStart = Math.Max(offset + 1, offset + length - 8);
+                for (int i = offset + 1; i < lowStart; i++)
+                {
+                    if (buf[i] != 0)
+                        throw new InvalidDataException("Tar entry size exceeds 63-bit positive range.");
+                }
+                if (length >= 9 && (buf[lowStart] & 0x80) != 0)
+                    throw new InvalidDataException("Tar entry size exceeds Int64.MaxValue.");
+
+                ulong acc = 0;
+                for (int i = lowStart; i < offset + length; i++)
+                    acc = (acc << 8) | buf[i];
+                if (acc > (ulong)long.MaxValue)
+                    throw new InvalidDataException("Tar entry size exceeds Int64.MaxValue.");
+                return (long)acc;
             }
 
-            long octal = 0;
-            for (int i = 0; i < length; i++)
-            {
-                byte c = buf[offset + i];
-                if (c == 0 || c == (byte)' ')
-                {
-                    if (octal > 0) break;
-                    continue;
-                }
-                if (c >= (byte)'0' && c <= (byte)'7')
-                    octal = (octal << 3) + (c - (byte)'0');
-            }
-            return octal;
+            return ParseStrictOctal(buf, offset, length);
         }
 
         private static string ParseNullTerminatedUtf8(byte[] buf, int offset, int maxLen)

@@ -52,6 +52,21 @@ namespace TacSim.Character
         private float _vehiclePitchDeg = 22f;
         private Vector3 _smoothedPivot;
         private bool _pivotInitialized;
+        private bool _rmbOrbitDragging;
+
+        private bool UpdateRmbOrbitDragState(bool overUi)
+        {
+            if (!OrbitInputEnabled)
+            {
+                _rmbOrbitDragging = false;
+                return false;
+            }
+            if (Input.GetMouseButtonDown(1))
+                _rmbOrbitDragging = !overUi;
+            if (!Input.GetMouseButton(1))
+                _rmbOrbitDragging = false;
+            return _rmbOrbitDragging;
+        }
 
         private void Awake()
         {
@@ -134,24 +149,41 @@ namespace TacSim.Character
         {
             if (WalkFollowTarget == null) return;
 
+            bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             if (OrbitInputEnabled)
             {
-                if (Input.GetMouseButton(1))
+                if (UpdateRmbOrbitDragState(overUi))
                 {
                     _yawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.6f;
                     _pitchDeg = Mathf.Clamp(_pitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, -22f, 68f);
                 }
 
                 float scroll = Input.mouseScrollDelta.y;
-                bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
                     walkDistance = Mathf.Clamp(walkDistance - scroll * 0.45f, minWalkDistance, maxWalkDistance);
                 }
             }
+            else
+            {
+                _rmbOrbitDragging = false;
+            }
 
             Quaternion orbitRot = Quaternion.Euler(_pitchDeg, _yawDeg, 0f);
-            Vector3 desiredPivot = WalkFollowTarget.position + Vector3.up * shoulderOffset.y + (Quaternion.Euler(0f, _yawDeg, 0f) * new Vector3(shoulderOffset.x, 0f, 0f));
+            Vector3 headCenter = WalkFollowTarget.position + Vector3.up * shoulderOffset.y;
+            Vector3 shoulderDelta = Quaternion.Euler(0f, _yawDeg, 0f) * new Vector3(shoulderOffset.x, 0f, 0f);
+            Vector3 desiredPivot = headCenter + shoulderDelta;
+            float shoulderLen = shoulderDelta.magnitude;
+            if (shoulderLen > 0.01f &&
+                Physics.SphereCast(headCenter, 0.16f, shoulderDelta / shoulderLen, out RaycastHit shoulderHit, shoulderLen, ~0, QueryTriggerInteraction.Ignore))
+            {
+                if (shoulderHit.transform != WalkFollowTarget && !shoulderHit.transform.IsChildOf(WalkFollowTarget))
+                {
+                    float clampedShoulder = Mathf.Max(0f, shoulderHit.distance - 0.12f);
+                    desiredPivot = headCenter + (shoulderDelta / shoulderLen) * clampedShoulder;
+                }
+            }
+
             if (!_pivotInitialized)
             {
                 _smoothedPivot = desiredPivot;
@@ -182,44 +214,54 @@ namespace TacSim.Character
         {
             if (OrbitalShipTarget == null) return;
 
+            bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             if (OrbitInputEnabled)
             {
-                if (Input.GetMouseButton(1))
+                if (UpdateRmbOrbitDragState(overUi))
                 {
                     _orbitalYawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.8f;
                     _orbitalPitchDeg = Mathf.Clamp(_orbitalPitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.4f, -55f, 75f);
                 }
                 float scroll = Input.mouseScrollDelta.y;
-                bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
                     orbitalDistance = Mathf.Clamp(orbitalDistance - scroll * 2.5f, 10f, 110f);
                 }
             }
+            else
+            {
+                _rmbOrbitDragging = false;
+            }
 
             Quaternion rot = Quaternion.Euler(_orbitalPitchDeg, _orbitalYawDeg, 0f);
             Vector3 desiredPos = OrbitalShipTarget.position + rot * (Vector3.back * orbitalDistance) + Vector3.up * 2.2f;
             ControlledCamera.transform.position = Vector3.Lerp(ControlledCamera.transform.position, desiredPos, 1f - Mathf.Exp(-10f * dt));
-            ControlledCamera.transform.rotation = Quaternion.LookRotation((OrbitalShipTarget.position - ControlledCamera.transform.position).normalized, Vector3.up);
+            Vector3 toShip = OrbitalShipTarget.position - ControlledCamera.transform.position;
+            if (toShip.sqrMagnitude > 1e-6f)
+                ControlledCamera.transform.rotation = Quaternion.LookRotation(toShip.normalized, Vector3.up);
         }
 
         private void UpdateGroundVehicleChase(float dt)
         {
             if (GroundVehicleTarget == null) return;
 
+            bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             if (OrbitInputEnabled)
             {
-                if (Input.GetMouseButton(1))
+                if (UpdateRmbOrbitDragState(overUi))
                 {
                     _vehicleYawOffsetDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.8f;
                     _vehiclePitchDeg = Mathf.Clamp(_vehiclePitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, 5f, 72f);
                 }
                 float scroll = Input.mouseScrollDelta.y;
-                bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
                     vehicleDistance = Mathf.Clamp(vehicleDistance - scroll * 2.2f, 6.5f, 85f);
                 }
+            }
+            else
+            {
+                _rmbOrbitDragging = false;
             }
 
             float hullYaw = GroundVehicleTarget.eulerAngles.y + _vehicleYawOffsetDeg;
@@ -238,7 +280,9 @@ namespace TacSim.Character
 
             Vector3 desiredPos = pivot + backDir * safeDist;
             ControlledCamera.transform.position = Vector3.Lerp(ControlledCamera.transform.position, desiredPos, 1f - Mathf.Exp(-14f * dt));
-            ControlledCamera.transform.rotation = Quaternion.LookRotation((pivot - ControlledCamera.transform.position).normalized, Vector3.up);
+            Vector3 toPivot = pivot - ControlledCamera.transform.position;
+            if (toPivot.sqrMagnitude > 1e-6f)
+                ControlledCamera.transform.rotation = Quaternion.LookRotation(toPivot.normalized, Vector3.up);
         }
     }
 }

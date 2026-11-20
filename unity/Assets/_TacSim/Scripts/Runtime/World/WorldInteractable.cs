@@ -108,14 +108,6 @@ namespace TacSim.World
             if (_hasRoomBounds && transform.parent != null)
             {
                 Vector3 anchor = transform.parent.position + new Vector3(0f, AnchorLocalY, 0f);
-                float safeMinX = _minWorldX + _wallMarginM;
-                float safeMaxX = _maxWorldX - _wallMarginM;
-                float safeMinZ = _minWorldZ + _wallMarginM;
-                float safeMaxZ = _maxWorldZ - _wallMarginM;
-
-                anchor.x = safeMinX < safeMaxX ? Mathf.Clamp(anchor.x, safeMinX, safeMaxX) : (_minWorldX + _maxWorldX) * 0.5f;
-                anchor.z = safeMinZ < safeMaxZ ? Mathf.Clamp(anchor.z, safeMinZ, safeMaxZ) : (_minWorldZ + _maxWorldZ) * 0.5f;
-
                 if (cam != null)
                 {
                     Vector3 toCam = cam.transform.position - anchor;
@@ -123,6 +115,14 @@ namespace TacSim.World
                     if (toCam.sqrMagnitude > 0.01f)
                         anchor += toCam.normalized * 0.25f;
                 }
+
+                float safeMinX = _minWorldX + _wallMarginM;
+                float safeMaxX = _maxWorldX - _wallMarginM;
+                float safeMinZ = _minWorldZ + _wallMarginM;
+                float safeMaxZ = _maxWorldZ - _wallMarginM;
+
+                anchor.x = safeMinX < safeMaxX ? Mathf.Clamp(anchor.x, safeMinX, safeMaxX) : (_minWorldX + _maxWorldX) * 0.5f;
+                anchor.z = safeMinZ < safeMaxZ ? Mathf.Clamp(anchor.z, safeMinZ, safeMaxZ) : (_minWorldZ + _maxWorldZ) * 0.5f;
 
                 transform.position = anchor;
             }

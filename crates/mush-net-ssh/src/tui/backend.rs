@@ -30,15 +30,93 @@ pub const ENTER_ALT_SCREEN: &[u8] = b"\x1b[?1049h\x1b[?25l";
 /// client is ever left stuck on the alternate screen (invariant T5).
 pub const LEAVE_ALT_SCREEN: &[u8] = b"\x1b[?25h\x1b[?1049l\x1b[0m";
 
-/// Upper bound on reported terminal columns. ratatui allocates a
-/// `width * height` cell buffer (twice — front and back), so a client that
-/// reports a window size in the tens of thousands (a pty/window-change request
-/// carries up to `u16::MAX` each) would OOM-abort the shared server process on
-/// `@tui` or the next resize paint. Clamp well beyond any real terminal so the
-/// allocation stays bounded (invariant T4).
+/// Upper bound on reported terminal columns; shared with [`crate::caps::MAX_WIDTH`].
+/// ratatui allocates a `width * height` cell buffer (twice — front and back),
+/// so a client that reports a window size in the tens of thousands (a
+/// pty/window-change request carries up to `u16::MAX` each) would OOM-abort
+/// the shared server process on `@tui` or the next resize paint. Clamp well
+/// beyond any real terminal so the allocation stays bounded (invariant T4).
 const MAX_WIDTH: u16 = crate::caps::MAX_WIDTH;
-/// Upper bound on reported terminal rows; see [`MAX_WIDTH`].
+/// Upper bound on reported terminal rows; shared with [`crate::caps::MAX_HEIGHT`].
 const MAX_HEIGHT: u16 = crate::caps::MAX_HEIGHT;
+
+/// Strip ANSI / CSI / OSC / DCS / APC (Kitty Graphics) / PM / SOS escape sequences
+/// and all remaining C0 (`0x00..=0x1F`), DEL (`0x7F`), and C1 (`0x80..=0x9F`) control
+/// characters from untrusted server or player strings (`SSH-C-03`).
+#[must_use]
+pub(crate) fn sanitize_control_sequences(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\x1b' => {
+                // Escape sequence introducer
+                match it.peek().copied() {
+                    Some('[') => {
+                        // CSI: ESC [ params intermediates final(0x40..=0x7E)
+                        it.next();
+                        for ch in it.by_ref() {
+                            if ('@'..='~').contains(&ch) {
+                                break;
+                            }
+                        }
+                    }
+                    Some(']' | '_' | 'P' | '^' | 'X') => {
+                        // OSC (`]`), APC/Kitty (`_`), DCS (`P`), PM (`^`), SOS (`X`):
+                        // terminated by BEL (`\x07`), ST (`ESC \`), or C1 ST (`\u{009C}`).
+                        it.next();
+                        while let Some(ch) = it.next() {
+                            if ch == '\x07' || ch == '\u{009c}' {
+                                break;
+                            }
+                            if ch == '\x1b' && it.peek() == Some(&'\\') {
+                                it.next();
+                                break;
+                            }
+                        }
+                    }
+                    Some(ch) if (' '..='/').contains(&ch) => {
+                        // nF escape sequence: intermediate bytes 0x20..=0x2F + final 0x30..=0x7E
+                        it.next();
+                        for ch2 in it.by_ref() {
+                            if ('0'..='~').contains(&ch2) {
+                                break;
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        // Two-byte escape sequence (e.g. ESC 7, ESC 8, ESC M)
+                        it.next();
+                    }
+                    None => {}
+                }
+            }
+            '\u{009b}' => {
+                // 8-bit C1 CSI
+                for ch in it.by_ref() {
+                    if ('@'..='~').contains(&ch) {
+                        break;
+                    }
+                }
+            }
+            '\u{009d}' | '\u{009f}' | '\u{0090}' | '\u{009e}' | '\u{0098}' => {
+                // 8-bit C1 OSC / APC / DCS / PM / SOS
+                while let Some(ch) = it.next() {
+                    if ch == '\x07' || ch == '\u{009c}' {
+                        break;
+                    }
+                    if ch == '\x1b' && it.peek() == Some(&'\\') {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            ch if ch.is_control() => {}
+            ch => out.push(ch),
+        }
+    }
+    out
+}
 
 /// A ratatui backend that accumulates VT100 output bytes.
 ///
@@ -240,7 +318,23 @@ impl Backend for SshBackend {
                 expected = None;
                 continue;
             }
-            self.out.extend_from_slice(sym.as_bytes());
+            // Defense-in-depth (`SSH-C-03`): never allow raw C0/C1/ESC/OSC/Kitty
+            // control bytes inside a ratatui cell glyph to reach the SSH stream.
+            let has_control = if sym.is_ascii() {
+                sym.bytes().any(|b| b < 0x20 || b == 0x7f)
+            } else {
+                sym.chars().any(char::is_control)
+            };
+            if has_control {
+                let clean = sanitize_control_sequences(sym);
+                if clean.is_empty() {
+                    self.out.push(b' ');
+                } else {
+                    self.out.extend_from_slice(clean.as_bytes());
+                }
+            } else {
+                self.out.extend_from_slice(sym.as_bytes());
+            }
             self.cursor = Position {
                 x: x.saturating_add(1),
                 y,
@@ -411,5 +505,23 @@ mod tests {
         be.draw(cells.into_iter()).unwrap();
         let out = String::from_utf8(be.take_output()).unwrap();
         assert!(out.contains("\x1b[96m"), "got {out:?}");
+    }
+
+    #[test]
+    fn draw_strips_injected_ansi_osc_and_kitty_escape_sequences() {
+        let mut be = SshBackend::new(80, 24, ColorDepth::None);
+        let osc = cell("\x1b]52;c;ZGF0YQ==\x07A");
+        let kitty = cell("\x1b_Ga=t,f=100;AAAA\x1b\\B");
+        let csi = cell("\x1b[31mC\x1b[0m");
+        let c1 = cell("\u{009b}2J\x00\x7f");
+        let cells = [(0, 0, &osc), (1, 0, &kitty), (2, 0, &csi), (3, 0, &c1)];
+        be.draw(cells.into_iter()).unwrap();
+        let out = String::from_utf8(be.take_output()).unwrap();
+        // Only the initial CUP `\x1b[1;1H` may contain ESC; zero injected escapes!
+        assert_eq!(out, "\x1b[1;1HABC ");
+        assert!(!out.contains("]52;"));
+        assert!(!out.contains("_Ga=t"));
+        assert!(!out.contains("[31m"));
+        assert!(!out.contains('\u{009b}'));
     }
 }

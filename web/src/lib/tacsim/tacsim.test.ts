@@ -7,21 +7,38 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import Game from "../../components/Game.svelte";
+import TacsimSceneDeck from "../../components/TacsimSceneDeck.svelte";
 import { GameApp } from "../game.svelte";
 import type { Envelope, OutputEvent, RoomView } from "../proto";
+import {
+  PACK_IN_FLIGHT_TIMEOUT_MS,
+  PACK_MAX_RETRIES,
+  PACK_RETRY_BASE_DELAY_MS,
+  TacsimPortStore,
+} from "../stores/tacsim.svelte";
 import type { WebSocketLike } from "../ws";
 import {
+  atlasToWorldPos,
+  classifyStationDesk,
   computeDoorwaysAndStairs,
+  computeInterFloorStairPlacement,
+  computeRightHandedMoveDelta,
+  contextualQuickActions,
   decodeTacsimRoomAmbient,
   filterVisibleRoomActors,
   findShipExitPath,
   findStationExitPath,
+  getFloorElevationY,
+  normalizePortVenueTarget,
   parseNeighborhoodPack,
   parseShipUnitJson,
+  resolveDynamicDockTarget,
+  tryFindContainingCompartment,
   tryFindContainingRoomWithHysteresis,
+  worldToAtlas2D,
 } from "./spatial";
 import {
   beginOneClickBuy,
@@ -41,6 +58,7 @@ import {
   formatMountMeta,
   formatMountStateLabel,
 } from "./space-fire";
+import { TacsimStage3D } from "./stage3d";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
@@ -101,12 +119,38 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
     expect(stationPath.length).toBeGreaterThanOrEqual(2);
     expect(stationPath[stationPath.length - 1]?.targetRoom).toBe("room.c07_exchange");
 
-    // Hysteresis keeps current room across a 0.6 m doorway threshold band
+    // Right-handed atlasToWorldPos / worldToAtlas2D (`W3D-C2`: East=+X, North=-Z)
     const arrivals = ceres.rooms.get("room.c03_arrivals")!;
     const elev = ceres.floors.get(arrivals.floorIndex)?.zOffsetM ?? 6;
+    const probePos = atlasToWorldPos(
+      arrivals.maxX + 0.5,
+      elev,
+      (arrivals.minY + arrivals.maxY) * 0.5,
+      -160,
+      -150,
+    );
+    const back = worldToAtlas2D(probePos.x, probePos.z, -160, -150);
+    expect(back.x).toBeCloseTo(arrivals.maxX + 0.5, 5);
+    expect(back.y).toBeCloseTo((arrivals.minY + arrivals.maxY) * 0.5, 5);
+    // North (+ay) maps to -Z, East (+ax) maps to +X
+    const northPos = atlasToWorldPos(150, elev, 180, -160, -150);
+    const southPos = atlasToWorldPos(150, elev, 120, -160, -150);
+    expect(northPos.z).toBeLessThan(southPos.z);
+
+    // Right-handed camera strafing (`W3D-C2`):
+    // Facing North (`camYawRad = Math.PI`, Forward = -Z), pressing D (`rightIn = +1`) moves +X (East / screen-right).
+    const strafeRightFacingNorth = computeRightHandedMoveDelta(Math.PI, 0, 1, 5, 1);
+    expect(strafeRightFacingNorth.dx).toBeCloseTo(5, 5);
+    expect(strafeRightFacingNorth.dz).toBeCloseTo(0, 5);
+    // Facing South (`camYawRad = 0`, Forward = +Z), pressing D (`rightIn = +1`) moves -X (screen-right).
+    const strafeRightFacingSouth = computeRightHandedMoveDelta(0, 0, 1, 5, 1);
+    expect(strafeRightFacingSouth.dx).toBeCloseTo(-5, 5);
+    expect(strafeRightFacingSouth.dz).toBeCloseTo(0, 5);
+
+    // Hysteresis keeps current room across a 0.5 m doorway threshold band
     const held = tryFindContainingRoomWithHysteresis(
       ceres,
-      { x: arrivals.maxX + 0.5 - 160, y: elev, z: (arrivals.minY + arrivals.maxY) * 0.5 - 150 },
+      probePos,
       -160,
       -150,
       "room.c03_arrivals",
@@ -120,6 +164,11 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
     expect(dray.compartments.has("bridge")).toBe(true);
     expect(dray.compartments.has("hold")).toBe(true);
 
+    // W3D-H7: vertical hysteresis must not shadow bridge (+1.8) with passage, or passage (-1.6) with hold
+    expect(tryFindContainingCompartment(dray, { x: 0, y: 1.8, z: 7.0 }, "passage", 0.55)).toBe("bridge");
+    expect(tryFindContainingCompartment(dray, { x: 0, y: -1.6, z: 2.0 }, "hold", 0.55)).toBe("passage");
+    expect(tryFindContainingCompartment(dray, { x: 0, y: -5.3, z: 2.0 }, "passage", 0.55)).toBe("hold");
+
     const drayP = parseShipUnitJson(readRepoContent("units/dray_p.json"), "tacsim.unit.dray_p");
     expect(drayP.compartments.has("bay")).toBe(true);
     const bayPath = findShipExitPath(drayP, "airlock", "bay");
@@ -130,7 +179,82 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
     });
   });
 
-  it("filters inanimate Things, dormant NPCs, docked hulls, and self from 3D room actors", () => {
+  it("W3D-H3 & W3D-M6: places inter-floor stairs inside both upper and lower footprints and classifies non-Ceres desks", () => {
+    const multiFloorPorts = [
+      "neighborhood.aitken_highport.json",
+      "neighborhood.ceres_freeport.json",
+      "neighborhood.stickney_yards.json",
+      "neighborhood.voltaire_anchorage.json",
+      "neighborhood.ligeia_terminal.json",
+    ];
+    for (const file of multiFloorPorts) {
+      const packId = file.replace(/\.json$/, "");
+      const pack = parseNeighborhoodPack(readRepoContent(`atlas/${file}`), packId);
+      for (const ex of pack.exits) {
+        const rA = pack.rooms.get(ex.fromRoom);
+        const rB = pack.rooms.get(ex.toRoom);
+        if (!rA || !rB || rA.floorIndex === rB.floorIndex) continue;
+        const st = computeInterFloorStairPlacement(pack, ex);
+        expect(st).not.toBeNull();
+        const upper = pack.rooms.get(st!.upperRoomId)!;
+        const lower = pack.rooms.get(st!.lowerRoomId)!;
+        expect(upper.floorIndex).toBeGreaterThan(lower.floorIndex);
+        // Entire stair cutout must lie strictly inside BOTH upper and lower rooms!
+        expect(st!.cutMinAx).toBeGreaterThanOrEqual(upper.minX);
+        expect(st!.cutMaxAx).toBeLessThanOrEqual(upper.maxX);
+        expect(st!.cutMinAy).toBeGreaterThanOrEqual(upper.minY);
+        expect(st!.cutMaxAy).toBeLessThanOrEqual(upper.maxY);
+        expect(st!.cutMinAx).toBeGreaterThanOrEqual(lower.minX);
+        expect(st!.cutMaxAx).toBeLessThanOrEqual(lower.maxX);
+        expect(st!.cutMinAy).toBeGreaterThanOrEqual(lower.minY);
+        expect(st!.cutMaxAy).toBeLessThanOrEqual(lower.maxY);
+      }
+    }
+
+    // W3D-M6: parseNeighborhoodPack preserves manifest.id (not bare "neighborhood"), Ceres registry
+    // gets Co-op desk, Aitken registry does NOT, and Stickney/Voltaire/Ligeia desks resolve.
+    const ceres = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.ceres_freeport.json"));
+    expect(ceres.packId).toBe("neighborhood.ceres_freeport");
+    expect(classifyStationDesk(ceres.packId, ceres.rooms.get("room.c05_registry")!)?.deskKey).toBe("ui:open_coop");
+    expect(normalizePortVenueTarget("neighborhood")).toBeNull();
+
+    const aitken = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.aitken_highport.json"));
+    expect(aitken.packId).toBe("neighborhood.aitken_highport");
+    const aitkenReg = classifyStationDesk(aitken.packId, aitken.rooms.get("room.l05_registry")!);
+    expect(aitkenReg?.deskKey).toBe("ui:open_sailing");
+    expect(aitkenReg?.title).not.toContain("Co-op");
+
+    const stickney = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.stickney_yards.json"));
+    expect(stickney.packId).toBe("neighborhood.stickney_yards");
+    expect(classifyStationDesk(stickney.packId, stickney.rooms.get("room.p05_harbourmaster")!)?.deskKey).toBe("ui:open_sailing");
+    expect(classifyStationDesk(stickney.packId, stickney.rooms.get("room.p09_commissary")!)?.deskKey).toBe("ui:open_trade");
+
+    const voltaire = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.voltaire_anchorage.json"));
+    expect(voltaire.packId).toBe("neighborhood.voltaire_anchorage");
+    expect(classifyStationDesk(voltaire.packId, voltaire.rooms.get("room.d05_harbourmaster")!)?.deskKey).toBe("ui:open_sailing");
+    expect(classifyStationDesk(voltaire.packId, voltaire.rooms.get("room.d09_commissary")!)?.deskKey).toBe("ui:open_trade");
+
+    const ligeia = parseNeighborhoodPack(readRepoContent("atlas/neighborhood.ligeia_terminal.json"));
+    expect(ligeia.packId).toBe("neighborhood.ligeia_terminal");
+    expect(classifyStationDesk(ligeia.packId, ligeia.rooms.get("room.t11_bunkering")!)?.deskKey).toBe("ui:open_trade");
+  });
+
+  it("W3D-H6: maps surface 'ground' to floorIndex 0 (elevation 0m) on real neighborhood.ooc_area.json", () => {
+    const oocJson = readFileSync(
+      resolve(REPO_ROOT, "crates/mush-atlas/content/neighborhood.ooc_area.json"),
+      "utf-8",
+    );
+    const ooc = parseNeighborhoodPack(oocJson, "neighborhood.ooc_area");
+    for (const roomId of ["room.welcome_hall", "room.simulator_lobby", "room.sim_red", "room.sim_blue", "room.bus_stop"]) {
+      const r = ooc.rooms.get(roomId);
+      expect(r, `expected ${roomId}`).toBeDefined();
+      expect(r!.floorIndex).toBe(0);
+      expect(getFloorElevationY(ooc, r!.floorIndex)).toBe(0);
+    }
+  });
+
+  it("W3D-H5 & W3D-L4: decodes live RoomView.ambient.occupants.{npcs,dormant,players,things} and tac.hull_id", () => {
+    // Matches `crates/mush-npc/src/module.rs:4570-4589` and `crates/tacsim/src/port/ship.rs:1455-1507`
     const view: RoomView = {
       id: "#101",
       name: "Visiting Berth Gallery",
@@ -141,17 +265,21 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
         { id: "#22", name: "Maya Vance" },
         { id: "#44", name: "Ilse Oduya-Brandt" },
         { id: "#77", name: "Dormant Extra" },
-        { id: "#88", name: "Departures Board" },
+        { id: "#88", name: "Mooring Bollard" },
         { id: "#99", name: "Salt Moth" },
       ],
       ambient: {
-        players: ["#10", "#22"],
-        npcs: ["#44"],
-        dormant_npcs: ["#77"],
-        things: ["#88"],
+        occupants: {
+          players: ["#10", "#22"],
+          npcs: ["#44"],
+          dormant: ["#77"],
+          things: ["#88", "#99"],
+        },
         atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c01_berth_gallery" },
         tacsim: {
           mode: "berth_gallery",
+          port_entry: "ceres_port",
+          docked_count: 1,
           own_hull: "#99",
           own_hull_name: "Salt Moth",
           own_hull_docked_here: true,
@@ -159,10 +287,34 @@ describe("Track 4A spatial pack parsers & BFS navigation", () => {
       },
     };
     const dec = decodeTacsimRoomAmbient(view);
+    expect(dec.hasOccupantsManifest).toBe(true);
+    expect(dec.dormantNpcIds.has("#77")).toBe(true);
+    expect(dec.thingIds.has("#88")).toBe(true);
     const actors = filterVisibleRoomActors(view, dec, "#10", null);
+    // Other player #22 MUST render in Berth Gallery; dormant #77 & Thing #88/#99 must NOT!
     expect(actors.map((a) => a.id)).toEqual(["#22", "#44"]);
     expect(actors[0]?.isNpc).toBe(false);
     expect(actors[1]?.isNpc).toBe(true);
+
+    // Ship interior ambient carries `hull_id` (`W3D-L4`)
+    const shipDec = decodeTacsimRoomAmbient({
+      id: "#802",
+      name: "Salt Moth - Bridge",
+      desc: [],
+      exits: [],
+      contents: [],
+      ambient: {
+        tacsim: {
+          mode: "interior",
+          hull_id: "#99",
+          hull_name: "Salt Moth",
+          unit: "tacsim.unit.dray",
+          room: "bridge",
+          docked: false,
+        },
+      },
+    });
+    expect(shipDec.hullId).toBe("#99");
   });
 });
 
@@ -180,6 +332,190 @@ describe("Corridor destinations (48e L8, clients:G7)", () => {
 });
 
 describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
+  it("C-19 & W3D-H4 & H-40: decodes LIVE client_sync.rs port.trade schema (berth, open_quotes, stowage.items, next_after)", () => {
+    const goods = parseGoodsJson(readRepoContent("market/goods.json"));
+    expect(goods.size).toBeGreaterThanOrEqual(6);
+
+    // Exact live JSON shape emitted by `crates/tacsim/src/client_sync.rs:1206-1347`
+    // and `crates/tacsim/src/port/ship.rs:1639-1773`.
+    const feed1 = decodePortTradeFeed(
+      {
+        schema: { id: "port.trade", version: 1 },
+        enabled: true,
+        venue: "ceres",
+        port_name: "Ceres Freeport",
+        aboard_docked_port: null,
+        balance_minor: 50_000,
+        balance_text: "500.00cr",
+        listings: [
+          {
+            id: 41,
+            side: "ask",
+            good: "volatiles",
+            good_label: "water ice",
+            vendor_name: "Occator Ice",
+            is_personal: false,
+            funded: true,
+            unit_price_minor: 10_000,
+            price_text: "100.00cr",
+            available_qty: 80,
+          },
+          {
+            id: 52,
+            side: "bid",
+            good: "metals",
+            good_label: "metal concentrate",
+            vendor_name: "Freeport Works",
+            is_personal: false,
+            funded: true,
+            unit_price_minor: 22_000,
+            price_text: "220.00cr",
+            available_qty: 40,
+          },
+        ],
+        next_after: 52,
+        open_quotes: [],
+        ship: {
+          hull_id: "#99",
+          hull_name: "Salt Moth",
+          mark: "CF-DR-01",
+          unit: "tacsim.unit.dray",
+          class: "Dray",
+          docked: true,
+          port: "ceres_port",
+          standing: "charter",
+          sales: 2,
+          buyout_minor: 150_000,
+          buyout_text: "1500.00cr",
+          stowage: {
+            cargo_kg: 10_000,
+            cargo_limit_kg: 100_000,
+            cargo_l: 14_000,
+            cargo_limit_l: 120_000,
+            tank_kg: 40_000,
+            tank_limit_kg: 80_000,
+            stores_days: 30,
+            stores_limit_days: 120,
+            items: [{ good: "volatiles", qty: 10 }],
+          },
+        },
+        berth: {
+          port_entry: "ceres_port",
+          docked_count: 2,
+          docked_hulls: [
+            { id: "#99", name: "Salt Moth", mark: "CF-DR-01", unit: "tacsim.unit.dray" },
+            { id: "#104", name: "Copper Lantern", mark: "CF-DR-02", unit: "tacsim.unit.dray" },
+          ],
+          own_hull: "#99",
+          own_hull_name: "Salt Moth",
+          own_hull_docked_here: true,
+        },
+        simulator: {
+          room: "lobby",
+          in_pod: false,
+          match_state: "staging",
+          ai_fill: 4,
+          my_team: "red",
+          my_unit: "tacsim.unit.line_tank",
+          slots: [
+            { team: "red", index: 1, pilot: "#10", pilot_name: "Pilot", unit: "tacsim.unit.line_tank", seated: true },
+          ],
+        },
+      },
+      goods,
+      emptyPortTradeSnapshot(),
+    );
+
+    expect(feed1.venueId).toBe("ceres");
+    expect(feed1.portName).toBe("Ceres Freeport");
+    expect(feed1.creditsMinor).toBe(50_000);
+    expect(feed1.creditsText).toBe("500.00cr");
+    expect(feed1.hasMore).toBe(true);
+    expect(feed1.nextAfterId).toBe(52);
+    expect(feed1.hullId).toBe("#99");
+    expect(feed1.hullName).toBe("Salt Moth");
+    expect(feed1.stowage.cargoMaxKg).toBe(100_000);
+    expect(feed1.stowage.propellantMaxKg).toBe(80_000);
+    expect(feed1.stowage.provisionsMaxCrewDays).toBe(120);
+    expect(feed1.stowage.cargoLines).toHaveLength(1);
+    expect(feed1.stowage.cargoLines[0]?.good).toBe("volatiles");
+    expect(feed1.stowage.cargoLines[0]?.qty).toBe(10);
+    expect(feed1.berth?.dockedHulls).toHaveLength(2);
+    expect(feed1.berth?.dockedHulls[1]?.name).toBe("Copper Lantern");
+    expect(feed1.simulator?.slots).toHaveLength(1);
+
+    expect(feed1.asks).toHaveLength(1);
+    expect(feed1.bids).toHaveLength(1);
+    const ask = feed1.asks[0]!;
+    expect(ask.itemName).toBe("water ice");
+    expect(ask.vendorName).toBe("Occator Ice");
+    expect(ask.quantity).toBe(80);
+    // 500 Cr / 100 Cr per t = 5 t affordable
+    expect(computeMaxFitQuantity(ask, goods, feed1.stowage, feed1.creditsMinor)).toBe(5);
+
+    const started = beginOneClickBuy(ask, 4, 1_000)!;
+    expect(started.quoteCommand).toBe("+market/quote 41=4");
+
+    // Live `open_quotes` key with `quote_id` & `quantity` auto-accepts when <= maxUnitPriceMinor
+    const withGoodQuote = decodePortTradeFeed(
+      {
+        open_quotes: [
+          {
+            quote_id: 901,
+            listing_id: 41,
+            good: "volatiles",
+            market: "ceres",
+            quantity: 4,
+            unit_price_minor: 10_000,
+            total_minor: 40_000,
+          },
+        ],
+      },
+      goods,
+      feed1,
+    );
+    const okRes = resolvePendingQuoteFromFeed(withGoodQuote, started.latch, 1_500);
+    expect(okRes.acceptCommand).toBe("+market/accept 901");
+    expect(okRes.priceWarning).toBeNull();
+
+    // Quote whose price moved above maxUnitPriceMinor refuses auto-accept and warns
+    const withMovedQuote = decodePortTradeFeed(
+      {
+        open_quotes: [
+          { quote_id: 902, listing_id: 41, quantity: 4, unit_price_minor: 13_500, total_minor: 54_000 },
+        ],
+      },
+      goods,
+      feed1,
+    );
+    const warnRes = resolvePendingQuoteFromFeed(withMovedQuote, started.latch, 1_500);
+    expect(warnRes.acceptCommand).toBeNull();
+    expect(warnRes.priceWarning).toContain("Quote #902 moved");
+
+    // H-40 & 48e L8 (clients:G7): all 12 canonical corridor venue IDs and dynamic dock target
+    expect(CORRIDOR_DESTINATIONS.map((d) => d.id)).toEqual([
+      "ceres",
+      "stickney",
+      "luna",
+      "deimos",
+      "titan",
+      "commons",
+      "kerwan",
+      "ahuna",
+      "juling",
+      "occator",
+      "rheasilvia",
+      "urvara",
+    ]);
+    expect(resolveDynamicDockTarget({ cockpitSiteId: "stickney_yards" })).toBe("stickney");
+    expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.aitken_highport" })).toBe("luna");
+    expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.freeport_commons" })).toBe("commons");
+    expect(resolveDynamicDockTarget({ stationPackId: "neighborhood.rheasilvia_commons" })).toBe("rheasilvia");
+    expect(resolveDynamicDockTarget({ selectedDestination: "titan" })).toBe("titan");
+    const helmActions = contextualQuickActions("bridge", true, true, "stickney");
+    expect(helmActions.some((a) => a.action === "+helm/dock stickney")).toBe(true);
+  });
+
   it("decodes a real port.trade frame, computes MAX FIT, and guards 1-click Quote-to-Accept", () => {
     const goods = parseGoodsJson(readRepoContent("market/goods.json"));
     expect(goods.size).toBeGreaterThanOrEqual(6);
@@ -229,7 +565,7 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
       expectFit,
     );
 
-    const started = beginOneClickBuy(ask, 4, 1_000)!;
+    const started = beginOneClickBuy(ask, 4, 1_000, feed1.quotes)!;
     expect(started.quoteCommand).toBe(`+market/quote ${ask.listingId}=4`);
 
     // Matching quote at <= maxUnitPriceMinor auto-accepts
@@ -452,5 +788,1091 @@ describe("Track 4A port.trade Quote-to-Accept & Svelte 5 Scene UI", () => {
       activeDrones: 2,
       laserRock: "B",
     });
+  });
+
+  it("sends canonical {op:'pack', id} requests on tacsim.content without storming on retries or found:false (C-18)", () => {
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (url) => (ws = new FakeSocket(url)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const socket = ws as unknown as FakeSocket;
+    socket.readyState = 1;
+    socket.onopen?.();
+    socket.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+
+    app.tacsim.ensurePacksSynced();
+
+    // Server sends initial manifest listing two categorized packs (matching client_sync.rs:1102)
+    const manifestEvt = {
+      t: "panel",
+      d: {
+        feed: TACSIM_CONTENT_FEED,
+        kind: "keyframe",
+        data: {
+          op: "manifest",
+          packs: [
+            { id: "neighborhood.ceres_freeport", category: "neighborhood", sha256: "d1" },
+            { id: "missing.unit", category: "unit", sha256: "d2" },
+          ],
+        },
+      },
+    } as OutputEvent;
+    socket.deliver(manifestEvt, 1);
+
+    const parseContentParams = (): Array<Record<string, unknown>> =>
+      socket.sent
+        .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+        .map((msg) => {
+          if (msg["t"] === "req" && msg["d"] && typeof msg["d"] === "object") {
+            const q = (msg["d"] as Record<string, unknown>)["q"];
+            if (q && typeof q === "object") return q as Record<string, unknown>;
+          }
+          return msg;
+        })
+        .filter((msg) => msg["t"] === "panel_subscribe")
+        .map((msg) => msg["d"] as Record<string, unknown>)
+        .filter((d) => d["feed"] === TACSIM_CONTENT_FEED && d["params"] && typeof d["params"] === "object")
+        .map((d) => d["params"] as Record<string, unknown>);
+
+    const firstParams = parseContentParams();
+    expect(firstParams.some((p) => p["op"] === "manifest")).toBe(true);
+    const packReqs = firstParams.filter((p) => p["op"] === "pack");
+    expect(packReqs).toEqual([
+      { op: "pack", id: "neighborhood.ceres_freeport" },
+      { op: "pack", id: "missing.unit" },
+    ]);
+    // Must NEVER emit the broken legacy `{ pack: id }` shape!
+    expect(firstParams.some((p) => "pack" in p)).toBe(false);
+
+    // Repeating the same manifest while packs are in-flight must NOT re-request them
+    const sentBeforeDup = socket.sent.length;
+    socket.deliver(manifestEvt, 2);
+    expect(socket.sent.length).toBe(sentBeforeDup);
+
+    // Server returns `found: false` for `missing.unit` — must NOT retry on subsequent manifests
+    socket.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: TACSIM_CONTENT_FEED,
+          kind: "keyframe",
+          data: { op: "pack", id: "missing.unit", found: false },
+        },
+      } as OutputEvent,
+      3,
+    );
+    const sentAfterNotFound = socket.sent.length;
+    socket.deliver(manifestEvt, 4);
+    expect(socket.sent.length).toBe(sentAfterNotFound);
+  });
+
+  it("clears spaceDockingData when server sends closed or refused docking panel and derives dynamic dock target", () => {
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (url) => (ws = new FakeSocket(url)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const socket = ws as unknown as FakeSocket;
+    socket.readyState = 1;
+    socket.onopen?.();
+    socket.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.cockpit",
+          kind: "keyframe",
+          data: { active: true, site_id: "aitken_highport" },
+        },
+      } as OutputEvent,
+      1,
+    );
+    expect(app.tacsim.dockTarget).toBe("luna");
+
+    socket.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.docking",
+          kind: "keyframe",
+          data: { active: true, site_id: "aitken_highport", range_m: 120 },
+        },
+      } as OutputEvent,
+      2,
+    );
+    expect(app.picture.spaceDockingData).not.toBeNull();
+
+    socket.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.docking",
+          kind: "keyframe",
+          data: { closed: true, refused: true },
+        },
+      } as OutputEvent,
+      3,
+    );
+    expect(app.picture.spaceDockingData).toBeNull();
+  });
+
+  it("removes despawned actors cleanly, avoids rubber-band snap on chat/typing, disposes GPU resources, and enforces ship/Berth/UI fixes (W3D-C1/H1/H2/M5/M7/L3)", () => {
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const drayP = parseShipUnitJson(readRepoContent("units/dray_p.json"), "tacsim.unit.dray_p");
+    const canvas = document.createElement("canvas");
+    let uiBlocked = false;
+    const triggered: string[] = [];
+
+    const mockRenderer = () => ({
+      setPixelRatio: () => {},
+      setSize: () => {},
+      render: () => {},
+      dispose: () => {},
+      toneMapping: 0 as unknown as import("three").ToneMapping,
+      toneMappingExposure: 1,
+    });
+
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: (wi) => triggered.push(wi.id),
+      isUiBlockingInput: () => uiBlocked,
+      createRenderer: mockRenderer,
+    });
+
+    const intern = stage as unknown as {
+      actorsRoot: { children: unknown[] };
+      interactables: Array<{ id: string }>;
+      shipInteractables: Array<{ id: string }>;
+      shipWallObstacles: Array<{ min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } }>;
+      cradleHullGroups: Array<{ visible: boolean }>;
+      cargoPalletsGroup: { children: unknown[] } | null;
+      holotankContactsGroup: { children: unknown[] } | null;
+      pendingMoveTarget: string | null;
+      pendingMoveSentAtMs: number;
+      camYawRad: number;
+      camDist: number;
+      contextLost: boolean;
+      playerGroup: { position: { x: number; y: number; z: number; set: (x: number, y: number, z: number) => void } };
+    };
+
+    const baseAmbient = decodeTacsimRoomAmbient(null);
+
+    // 1. W3D-C1 & W3D-L3: Spawn two actors in Berth Gallery with 0 docked hulls
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c01_berth_gallery",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: baseAmbient,
+      berthDockedHulls: [],
+      berthOwnHullName: null,
+      berthOwnHullDockedHere: false,
+      visibleActors: [
+        { id: "#41", name: "Dock Clerk", isNpc: true, isMale: false, shortDesc: "" },
+        { id: "#77", name: "Other Pilot", isNpc: false, isMale: false, shortDesc: "" },
+      ],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    // 2 actors -> 2 suit roots + 2 billboard sprites = 4 children in actorsRoot
+    expect(intern.actorsRoot.children.length).toBe(4);
+    expect(intern.interactables.filter((i) => i.id.startsWith("actor:"))).toHaveLength(2);
+    // W3D-L3: No ghost hull in Cradle 01 when 0 ships are docked
+    expect(intern.cradleHullGroups.length).toBe(4);
+    expect(intern.cradleHullGroups.every((g) => g.visible === false)).toBe(true);
+
+    // W3D-H4: Populate cradles live from berthDockedHulls
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c01_berth_gallery",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: baseAmbient,
+      berthDockedHulls: [
+        { id: "#99", name: "Salt Moth", mark: "CF-DR-01", unit: "dray", captain: "", yours: true },
+        { id: "#104", name: "Copper Lantern", mark: "CF-DR-02", unit: "dray", captain: "", yours: false },
+      ],
+      berthOwnHullName: "Salt Moth",
+      berthOwnHullDockedHere: true,
+      visibleActors: [{ id: "#41", name: "Dock Clerk", isNpc: true, isMale: false, shortDesc: "" }],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    // Despawned actor #77 must be fully removed (suit + billboard + interactable)
+    expect(intern.actorsRoot.children.length).toBe(2);
+    expect(intern.interactables.filter((i) => i.id.startsWith("actor:"))).toHaveLength(1);
+    expect(intern.cradleHullGroups[0]?.visible).toBe(true);
+    expect(intern.cradleHullGroups[1]?.visible).toBe(true);
+    expect(intern.cradleHullGroups[2]?.visible).toBe(false);
+
+    // 2. W3D-H1: Non-movement reactive update (chat/typing) with unchanged roomRevision
+    //    must NOT wipe pendingMoveTarget or teleport player / snap camera yaw!
+    intern.pendingMoveTarget = "room.c02_concourse";
+    intern.pendingMoveSentAtMs = performance.now();
+    intern.camYawRad = 1.23;
+    intern.playerGroup.position.set(12.5, 0, -4.5);
+
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c01_berth_gallery",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: baseAmbient,
+      berthDockedHulls: [
+        { id: "#99", name: "Salt Moth", mark: "CF-DR-01", unit: "dray", captain: "", yours: true },
+      ],
+      visibleActors: [{ id: "#41", name: "Dock Clerk", isNpc: true, isMale: false, shortDesc: "" }],
+      actorSpeech: { "#41": { text: "Berth clamps locked.", expiresAt: Date.now() + 8000 } },
+      actorComposing: { "#41": true },
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    expect(intern.pendingMoveTarget).toBe("room.c02_concourse");
+    expect(intern.camYawRad).toBeCloseTo(1.23, 5);
+    expect(intern.playerGroup.position.x).toBeCloseTo(12.5, 5);
+
+    // Moving to a new room clears all previous actors with zero leaks (W3D-C1)
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c02_concourse",
+      serverShipCompartment: null,
+      roomRevision: 2,
+      ambient: baseAmbient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    expect(intern.actorsRoot.children.length).toBe(0);
+    expect(intern.interactables.filter((i) => i.id.startsWith("actor:"))).toHaveLength(0);
+
+    // 3. W3D-M5 & W3D-H2: Board Dray-P ship interior, verify sealed engineering/bay & bridge doorway
+    const holoFeed = {
+      range_km: 1000,
+      contacts: [
+        { x_km: 250, y_km: 100, z_km: 0, kind: "ship", relation: "hostile" },
+        { x_km: -300, y_km: -200, z_km: 50, kind: "asteroid", relation: "neutral" },
+      ],
+    };
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: true,
+      serverStationRoomEntry: null,
+      serverShipCompartment: "bridge",
+      roomRevision: 3,
+      ambient: baseAmbient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 45_000,
+      holotankData: holoFeed,
+    });
+
+    // Bridge aft wall (local z = 4.5, world y = 160 + 1.8..5.0) must leave BRIDGE_STAIRWELL_XZ
+    // (x in -2.65..-0.55) unblocked while sealing both solid side panels.
+    const bridgeAftObstacles = intern.shipWallObstacles.filter(
+      (b) =>
+        b.max.z - b.min.z < 0.5 &&
+        b.min.z <= 4.5 &&
+        b.max.z >= 4.5 &&
+        b.min.y >= 161.5 &&
+        b.max.y <= 165.5,
+    );
+    expect(bridgeAftObstacles).toHaveLength(2);
+    for (const box of bridgeAftObstacles) {
+      // No solid obstacle may overlap the center of the bridge stairwell doorway (x = -1.6)
+      expect(box.min.x > -1.5 || box.max.x < -1.7).toBe(true);
+    }
+
+    // Engineering aft bulkhead (local z = -14.0, world y = 160 - 5.3..-1.9) must be sealed solid!
+    const engAftWall = intern.shipWallObstacles.find(
+      (b) =>
+        b.max.z - b.min.z < 0.5 &&
+        b.min.z <= -14.0 &&
+        b.max.z >= -14.0 &&
+        b.min.y <= 155.5 &&
+        b.max.y >= 157.5,
+    );
+    expect(engAftWall).toBeDefined();
+
+    // W3D-H2: Repeated identical cargo/holotank sync keeps pooled meshes without recreating
+    const firstCargoMesh = intern.cargoPalletsGroup?.children[0];
+    const firstHoloMesh = intern.holotankContactsGroup?.children[0];
+    expect(firstCargoMesh).toBeDefined();
+    expect(firstHoloMesh).toBeDefined();
+    expect(intern.holotankContactsGroup?.children).toHaveLength(3); // self + 2 contacts
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: true,
+      serverStationRoomEntry: null,
+      serverShipCompartment: "bridge",
+      roomRevision: 3,
+      ambient: baseAmbient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 45_000,
+      holotankData: holoFeed,
+    });
+    expect(intern.cargoPalletsGroup?.children[0]).toBe(firstCargoMesh);
+    expect(intern.holotankContactsGroup?.children[0]).toBe(firstHoloMesh);
+
+    // W3D-M7: UI blocking suppresses wheel zoom and pointer interaction
+    uiBlocked = true;
+    const distBeforeWheel = intern.camDist;
+    canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: 200, cancelable: true }));
+    expect(intern.camDist).toBe(distBeforeWheel);
+    uiBlocked = false;
+    canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: 200, cancelable: true }));
+    expect(intern.camDist).toBeGreaterThan(distBeforeWheel);
+
+    // W3D-H2: webglcontextlost prevents default & pauses; webglcontextrestored resumes
+    const lostEv = new Event("webglcontextlost", { cancelable: true });
+    const preventSpy = vi.spyOn(lostEv, "preventDefault");
+    canvas.dispatchEvent(lostEv);
+    expect(preventSpy).toHaveBeenCalledTimes(1);
+    expect(intern.contextLost).toBe(true);
+    canvas.dispatchEvent(new Event("webglcontextrestored"));
+    expect(intern.contextLost).toBe(false);
+
+    // Dispose cleans everything cleanly without throwing
+    expect(() => stage.dispose()).not.toThrow();
+    expect(triggered).toHaveLength(0);
+  });
+});
+
+describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
+  const makeMockRenderer = () => ({
+    setPixelRatio: () => {},
+    setSize: () => {},
+    render: () => {},
+    dispose: () => {},
+    toneMapping: 0 as unknown as import("three").ToneMapping,
+    toneMappingExposure: 1,
+  });
+
+  it("Item 1 [P1]: rejects pre-existing or larger quotes and auto-accepts only a fresh exact quote within authorized max total", () => {
+    const sentCommands: string[] = [];
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: (line) => sentCommands.push(line),
+      selfCharacterId: () => "#10",
+    });
+
+    // Existing open quote #2 for 100 units of listing #41 at 100.00 Cr/t (10,000 Cr total)
+    store.observePortTrade({
+      venue: "ceres",
+      balance_minor: 5_000_000,
+      listings: [
+        {
+          id: 41,
+          side: "ask",
+          good: "volatiles",
+          good_label: "water ice",
+          vendor_name: "Occator Ice",
+          unit_price_minor: 10_000,
+          available_qty: 200,
+        },
+      ],
+      open_quotes: [
+        {
+          quote_id: 2,
+          listing_id: 41,
+          quantity: 100,
+          unit_price_minor: 10_000,
+          total_minor: 1_000_000,
+        },
+      ],
+    });
+    const ask = store.trade.asks[0]!;
+    expect(store.trade.quotes).toHaveLength(1);
+
+    // User clicks Buy 1 unit on listing #41
+    store.buyListing(ask, 1);
+    expect(sentCommands).toEqual(["+market/quote 41=1"]);
+
+    // Feed arrives still carrying only old 100-unit quote #2 -> MUST NOT accept #2!
+    store.observePortTrade({
+      open_quotes: [
+        {
+          quote_id: 2,
+          listing_id: 41,
+          quantity: 100,
+          unit_price_minor: 10_000,
+          total_minor: 1_000_000,
+        },
+      ],
+    });
+    expect(sentCommands).toEqual(["+market/quote 41=1"]);
+
+    // Even if a pre-existing quote has the exact same listingId & quantity, it must NOT be accepted
+    const preSameQtyLatch = beginOneClickBuy(ask, 1, 1_000, [{ quoteId: 2 }])!.latch;
+    const staleSameQtySnap = decodePortTradeFeed(
+      {
+        open_quotes: [
+          { quote_id: 2, listing_id: 41, quantity: 1, unit_price_minor: 10_000, total_minor: 10_000 },
+        ],
+      },
+      store.goodsById,
+      store.trade,
+    );
+    expect(resolvePendingQuoteFromFeed(staleSameQtySnap, preSameQtyLatch, 1_200)).toEqual({
+      acceptCommand: null,
+      priceWarning: null,
+      clearLatch: false,
+    });
+
+    // Fresh quote #3 with inflated total_minor (> authorizedMaxTotal) must warn and NOT accept
+    const inflatedSnap = decodePortTradeFeed(
+      {
+        open_quotes: [
+          { quote_id: 2, listing_id: 41, quantity: 100, unit_price_minor: 10_000, total_minor: 1_000_000 },
+          { quote_id: 3, listing_id: 41, quantity: 1, unit_price_minor: 10_000, total_minor: 15_000 },
+        ],
+      },
+      store.goodsById,
+      store.trade,
+    );
+    const inflatedRes = resolvePendingQuoteFromFeed(inflatedSnap, preSameQtyLatch, 1_200);
+    expect(inflatedRes.acceptCommand).toBeNull();
+    expect(inflatedRes.priceWarning).toContain("Quote #3 moved");
+    expect(inflatedRes.clearLatch).toBe(true);
+
+    // Fresh quote #4 for 1 unit at 10,000 minor total arrives alongside old quote #2 -> accepts ONLY #4!
+    store.observePortTrade({
+      open_quotes: [
+        { quote_id: 2, listing_id: 41, quantity: 100, unit_price_minor: 10_000, total_minor: 1_000_000 },
+        { quote_id: 4, listing_id: 41, quantity: 1, unit_price_minor: 10_000, total_minor: 10_000 },
+      ],
+    });
+    expect(sentCommands).toEqual(["+market/quote 41=1", "+market/accept 4"]);
+  });
+
+  it("Item 2 [P2]: cold web port immediately swaps Ceres fallback to Stickney Yards when Stickney pack arrives", () => {
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: () => {},
+      selfCharacterId: () => "#10",
+    });
+
+    // Cold room arrival in Stickney Berth Gallery before Stickney pack has streamed in
+    store.observeRoom({
+      id: "#201",
+      name: "Visiting Berth Gallery",
+      desc: [{ text: "Stickney basalt gallery." }],
+      contents: [],
+      exits: [],
+      ambient: {
+        atlas: { pack: "neighborhood.stickney_yards", entry: "room.p01_berth_gallery", surface: "station" },
+        tacsim: { mode: "berth_gallery", port_entry: "stickney_port" },
+      },
+    });
+    expect(store.serverStationRoomEntry).toBe("room.p01_berth_gallery");
+    expect(store.stationPack.packId).toBe("neighborhood.ceres_freeport"); // fallback before pack arrives
+
+    const revBefore = store.packsRevision;
+    const stickneyJson = readRepoContent("atlas/neighborhood.stickney_yards.json");
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "neighborhood.stickney_yards",
+      sha256: "sha-stickney-1",
+      json: stickneyJson,
+    });
+
+    expect(store.stationPack.packId).toBe("neighborhood.stickney_yards");
+    expect(store.stationPack.rooms.has("room.p01_berth_gallery")).toBe(true);
+    expect(store.stationPack.rooms.has("room.p05_harbourmaster")).toBe(true);
+    expect(store.serverStationRoomEntry).toBe("room.p01_berth_gallery");
+    expect(store.packsRevision).toBeGreaterThan(revBefore);
+  });
+
+  it("Item 3 [P2]: text-mode quick actions follow authoritative server location on station and ship walks", () => {
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: () => {},
+      selfCharacterId: () => "#10",
+    });
+    store.toggle3dView(false);
+
+    // Start in Freeport Concourse
+    store.observeRoom({
+      id: "#104",
+      name: "Freeport Concourse",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: {
+        atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c04_concourse" },
+      },
+    });
+    expect(store.physicalLocationKey).toBe("room.c04_concourse");
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(false);
+
+    // Walk within 2 hops to Registry & Co-op Desk in text mode (3D view closed)
+    store.observeRoom({
+      id: "#105",
+      name: "Registry & Co-op Desk",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: {
+        atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c05_registry" },
+      },
+    });
+    expect(store.serverStationRoomEntry).toBe("room.c05_registry");
+    expect(store.physicalLocationKey).toBe("room.c05_registry");
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(true);
+
+    // Even if physicalLocationKey was left ahead from an earlier 3D walk, closing 3D view uses server room
+    store.toggle3dView(true);
+    store.physicalLocationKey = "room.c04_concourse";
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(false);
+    store.toggle3dView(false);
+    expect(store.physicalLocationKey).toBe("room.c05_registry");
+    expect(store.quickActions.some((a) => a.label === "Enroll Charter Hull")).toBe(true);
+
+    // Same invariant aboard ship: text-mode walk from Airlock -> Bridge switches toolbar to Take Bridge Helm
+    store.observeRoom({
+      id: "#801",
+      name: "Salt Moth - Airlock",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: { tacsim: { mode: "interior", unit: "dray", room: "airlock", docked: true } },
+    });
+    expect(store.quickActions.some((a) => a.label === "Disembark Ashore")).toBe(true);
+    store.observeRoom({
+      id: "#802",
+      name: "Salt Moth - Bridge",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: { tacsim: { mode: "interior", unit: "dray", room: "bridge", docked: true } },
+    });
+    expect(store.physicalLocationKey).toBe("bridge");
+    expect(store.quickActions.some((a) => a.label === "Take Bridge Helm")).toBe(true);
+  });
+
+  it("Item 4 [P2]: failed WebGL initialization does not capture WASD, Shift, or Arrow keys", () => {
+    const canvas = document.createElement("canvas");
+    const failedStage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+      createRenderer: () => {
+        throw new Error("WebGL context creation failed");
+      },
+    });
+    expect(failedStage.supported).toBe(false);
+
+    const bubbleReceived: string[] = [];
+    const onBubble = (ev: KeyboardEvent): void => {
+      bubbleReceived.push(ev.code);
+    };
+    window.addEventListener("keydown", onBubble);
+    try {
+      for (const code of ["ArrowUp", "ArrowDown", "KeyW", "KeyA", "ShiftLeft"]) {
+        const ev = new KeyboardEvent("keydown", { code, cancelable: true, bubbles: true });
+        window.dispatchEvent(ev);
+        expect(ev.defaultPrevented).toBe(false);
+      }
+      expect(bubbleReceived).toEqual(["ArrowUp", "ArrowDown", "KeyW", "KeyA", "ShiftLeft"]);
+    } finally {
+      window.removeEventListener("keydown", onBubble);
+      failedStage.dispose();
+    }
+
+    // Contrast: a supported stage DOES capture movement keys while mounted and releases on dispose
+    const liveStage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+      createRenderer: makeMockRenderer,
+    });
+    expect(liveStage.supported).toBe(true);
+    const activeEv = new KeyboardEvent("keydown", { code: "ArrowUp", cancelable: true, bubbles: true });
+    window.dispatchEvent(activeEv);
+    expect(activeEv.defaultPrevented).toBe(true);
+    liveStage.dispose();
+    const afterDisposeEv = new KeyboardEvent("keydown", { code: "ArrowUp", cancelable: true, bubbles: true });
+    window.dispatchEvent(afterDisposeEv);
+    expect(afterDisposeEv.defaultPrevented).toBe(false);
+  });
+
+  it("Item 5 [P2]: resizing TacsimSceneDeck viewport resizes the live Stage3D without disposing or recreating it", async () => {
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (url) => (ws = new FakeSocket(url)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const socket = ws as unknown as FakeSocket;
+    socket.readyState = 1;
+    socket.onopen?.();
+    socket.deliver(
+      {
+        t: "hello",
+        d: { proto: 1, server: "test", features: [], panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED] },
+      } as OutputEvent,
+      0,
+    );
+    app.tacsim.toggle3dView(true);
+
+    const resizeSpy = vi.spyOn(TacsimStage3D.prototype, "resize");
+    const disposeSpy = vi.spyOn(TacsimStage3D.prototype, "dispose");
+
+    const { container, unmount } = render(TacsimSceneDeck, {
+      props: { app, onCmd: () => {} },
+    });
+    await tick();
+
+    expect(disposeSpy).toHaveBeenCalledTimes(0);
+    const resizeCallsAfterMount = resizeSpy.mock.calls.length;
+    expect(resizeCallsAfterMount).toBeGreaterThanOrEqual(1);
+
+    // Drag the resize separator across multiple heights
+    const grip = container.querySelector(".resize-grip") as HTMLElement;
+    expect(grip).not.toBeNull();
+    await fireEvent.pointerDown(grip, { clientY: 400, pointerId: 1 });
+    await fireEvent.pointerMove(grip, { clientY: 460, pointerId: 1 });
+    await tick();
+    await fireEvent.pointerMove(grip, { clientY: 520, pointerId: 1 });
+    await tick();
+    await fireEvent.pointerUp(grip, { clientY: 520, pointerId: 1 });
+    await tick();
+
+    // Stage must NEVER have been disposed/recreated during resize!
+    expect(disposeSpy).toHaveBeenCalledTimes(0);
+    expect(app.tacsim.viewportHeightPx).toBe(500);
+    expect(resizeSpy.mock.calls.length).toBeGreaterThan(resizeCallsAfterMount);
+    expect(resizeSpy.mock.calls.some((call) => call[1] === 500)).toBe(true);
+
+    unmount();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+    resizeSpy.mockRestore();
+    disposeSpy.mockRestore();
+  });
+
+  it("Items 6 & 7 [P2]: holotank plots contacts in observer-relative frame and renders no fabricated contacts when empty or unavailable", () => {
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const dray = parseShipUnitJson(readRepoContent("units/dray.json"), "tacsim.unit.dray");
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+
+    const intern = stage as unknown as {
+      holotankContactsGroup: {
+        children: Array<{
+          position: { x: number; y: number; z: number };
+          userData: Record<string, unknown>;
+        }>;
+      } | null;
+      holotankStatusBanner: { lastText: string } | null;
+    };
+    const baseAmbient = decodeTacsimRoomAmbient(null);
+    const syncBridge = (holotankData: unknown): void => {
+      stage.syncWorldState({
+        stationPack: ceres,
+        shipTemplate: dray,
+        isAboardShip: true,
+        serverStationRoomEntry: null,
+        serverShipCompartment: "bridge",
+        roomRevision: 1,
+        ambient: baseAmbient,
+        visibleActors: [],
+        actorSpeech: {},
+        actorComposing: {},
+        stowageCargoKg: 0,
+        holotankData,
+      });
+    };
+
+    // Item 7: Missing / null / refused feed produces ZERO fabricated blips
+    syncBridge(null);
+    expect(intern.holotankContactsGroup?.children).toHaveLength(0);
+    expect(intern.holotankStatusBanner?.lastText).toContain("NO TELEMETRY");
+
+    syncBridge({ refused: true });
+    expect(intern.holotankContactsGroup?.children).toHaveLength(0);
+
+    // Item 7: Empty scan (0 other contacts) renders ONLY own-ship center blip, NO dummy ship/asteroid
+    syncBridge({
+      range_km: 250,
+      contacts: [{ id: "self", you: true, x_km: 500, y_km: -300, z_km: 50 }],
+    });
+    expect(intern.holotankContactsGroup?.children).toHaveLength(1);
+    expect(intern.holotankContactsGroup?.children[0]?.userData["holoKind"]).toBe("self");
+    expect(intern.holotankStatusBanner?.lastText).toContain("0 CONTACTS");
+
+    // Item 6: Nearby contact in bubble-absolute coordinates is plotted relative to observer (`you: true`)
+    syncBridge({
+      range_km: 250,
+      contacts: [
+        { id: "self", you: true, x_km: 500, y_km: -300, z_km: 50, kind: "ship" },
+        { id: "raider", you: false, x_km: 525, y_km: -250, z_km: 75, kind: "ship", relation: "hostile" },
+      ],
+    });
+    expect(intern.holotankContactsGroup?.children).toHaveLength(2);
+    const selfBlip = intern.holotankContactsGroup!.children[0]!;
+    const raiderBlip = intern.holotankContactsGroup!.children[1]!;
+    expect(selfBlip.position).toMatchObject({ x: 0, y: 0, z: 0 });
+    // Relative delta = (+25, +50, +25) km / 250 km => x=0.065, z=0.13, y=0.045
+    expect(raiderBlip.position.x).toBeCloseTo((25 / 250) * 0.65, 5);
+    expect(raiderBlip.position.z).toBeCloseTo((50 / 250) * 0.65, 5);
+    expect(raiderBlip.position.y).toBeCloseTo((25 / 250) * 0.45, 5);
+
+    stage.dispose();
+  });
+
+  it("Item 9 [P2]: failed sends are not stuck in flight and timed-out/throttled pack requests retry with bounded backoff", () => {
+    vi.useFakeTimers();
+    try {
+      let allowSend = false;
+      const requestedPacks: string[] = [];
+      const store = new TacsimPortStore({
+        hasPanel: () => true,
+        subscribePanel: (_feed, params) => {
+          if (params?.["op"] === "pack" && typeof params["id"] === "string") {
+            requestedPacks.push(params["id"]);
+          }
+          return allowSend;
+        },
+        sendCommand: () => {},
+        selfCharacterId: () => "#10",
+      });
+
+      // 1. Failed send (`subscribePanel` returns false) must NOT lock ID in flight forever
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "goods", category: "market", sha256: "g-1" }],
+      });
+      expect(requestedPacks).toEqual(["goods"]);
+
+      // Transport recovers before retry timer fires -> retry sends successfully
+      allowSend = true;
+      vi.advanceTimersByTime(PACK_RETRY_BASE_DELAY_MS);
+      expect(requestedPacks).toEqual(["goods", "goods"]);
+
+      // 2. Sent successfully (`true`), but server throttles/drops the reply:
+      //    duplicate manifest within timeout does NOT spam
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "goods", category: "market", sha256: "g-1" }],
+      });
+      expect(requestedPacks).toHaveLength(2);
+
+      //    Once in-flight timeout elapses + backoff fires, store retries automatically and bounds retries
+      vi.advanceTimersByTime(60_000);
+      // 1 failed attempt (retry #1) + 1 sent attempt + remaining retries up to PACK_MAX_RETRIES
+      expect(requestedPacks.length).toBe(PACK_MAX_RETRIES + 1);
+
+      // No further sends after bounded retry budget is exhausted for digest g-1
+      const countAtCap = requestedPacks.length;
+      vi.advanceTimersByTime(120_000);
+      expect(requestedPacks.length).toBe(countAtCap);
+
+      // A later manifest with a new digest (g-2) resets retry budget and refetches immediately
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "goods", category: "market", sha256: "g-2" }],
+      });
+      expect(requestedPacks.length).toBe(countAtCap + 1);
+      expect(requestedPacks[requestedPacks.length - 1]).toBe("goods");
+      store.observeContentFeed({
+        op: "pack",
+        found: true,
+        id: "goods",
+        sha256: "g-2",
+        json: readRepoContent("market/goods.json"),
+      });
+
+      // Separate pack: verify timeout expiry -> retry -> successful delivery stops retries
+      requestedPacks.length = 0;
+      store.observeContentFeed({
+        op: "manifest",
+        packs: [{ id: "dray", category: "unit", sha256: "d-1" }],
+      });
+      expect(requestedPacks).toEqual(["dray"]);
+      vi.advanceTimersByTime(PACK_IN_FLIGHT_TIMEOUT_MS + PACK_RETRY_BASE_DELAY_MS);
+      expect(requestedPacks).toEqual(["dray", "dray"]);
+
+      // Deliver reply -> stops all retries
+      store.observeContentFeed({
+        op: "pack",
+        found: true,
+        id: "dray",
+        sha256: "d-1",
+        json: readRepoContent("units/dray.json"),
+      });
+      vi.advanceTimersByTime(60_000);
+      expect(requestedPacks).toEqual(["dray", "dray"]);
+
+      store.clear();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Item 10 [P2]: compares manifest digests, invalidates stale packs, and resets raw + derived caches across sessions/characters", () => {
+    let charId = "#10";
+    const requestedPacks: string[] = [];
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: (_feed, params) => {
+        if (params?.["op"] === "pack" && typeof params["id"] === "string") {
+          requestedPacks.push(params["id"]);
+        }
+        return true;
+      },
+      sendCommand: () => {},
+      selfCharacterId: () => charId,
+    });
+
+    const goodsV1 = JSON.stringify({
+      goods: [
+        {
+          id: "metals",
+          label: "ore v1",
+          class: "trade",
+          ledger_unit: "t",
+          measures: { "si.mass_kg": 1000, "si.volume_l": 400 },
+          stowage: "stow.bulk",
+          reference_major: 200,
+        },
+      ],
+    });
+    const goodsV2 = JSON.stringify({
+      goods: [
+        {
+          id: "metals",
+          label: "ore v2",
+          class: "trade",
+          ledger_unit: "t",
+          measures: { "si.mass_kg": 2500, "si.volume_l": 900 },
+          stowage: "stow.bulk",
+          reference_major: 350,
+        },
+      ],
+    });
+
+    // 1. Initial manifest with digest A -> fetches & caches goods v1
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-A" }],
+    });
+    expect(requestedPacks).toEqual(["goods"]);
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-A",
+      json: goodsV1,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v1");
+
+    // 2. Identical digest A -> zero refetches
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-A" }],
+    });
+    expect(requestedPacks).toEqual(["goods"]);
+
+    // 3. Updated manifest with digest B -> invalidates stale cache and re-fetches!
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-B" }],
+    });
+    expect(requestedPacks).toEqual(["goods", "goods"]);
+    // Out-of-order stale digest-A reply must be rejected
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-A",
+      json: goodsV1,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v1");
+    // Fresh digest-B reply updates derived goods table
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-B",
+      json: goodsV2,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v2");
+    expect(store.goodsById.get("metals")?.massKgPerUnit).toBe(2500);
+
+    // 4. Clearing session resets BOTH raw and derived caches; receiving digest-B again fetches fresh!
+    store.clear();
+    expect(store.goodsById.get("metals")?.label).toBe("metal concentrate"); // fallback restored
+    requestedPacks.length = 0;
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-B" }],
+    });
+    expect(requestedPacks).toEqual(["goods"]);
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "goods",
+      sha256: "digest-B",
+      json: goodsV2,
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("ore v2");
+
+    // 5. Switching character automatically partitions/resets raw & derived pack caches
+    charId = "#20";
+    requestedPacks.length = 0;
+    store.observeContentFeed({
+      op: "manifest",
+      packs: [{ id: "goods", category: "market", sha256: "digest-B" }],
+    });
+    expect(store.goodsById.get("metals")?.label).toBe("metal concentrate");
+    expect(requestedPacks).toEqual(["goods"]);
+  });
+
+  it("Item 11 [P2]: arriving ship pack replaces fallback geometry for a cold Tycho Lifter and builds its vehicle bay", () => {
+    const store = new TacsimPortStore({
+      hasPanel: () => true,
+      subscribePanel: () => true,
+      sendCommand: () => {},
+      selfCharacterId: () => "#10",
+    });
+
+    // Cold room arrival aboard Tycho Lifter before `tycho_lifter` unit pack has arrived
+    store.observeRoom({
+      id: "#901",
+      name: "Iron Anchor - Airlock",
+      desc: [],
+      contents: [],
+      exits: [],
+      ambient: {
+        tacsim: {
+          mode: "interior",
+          unit: "tacsim.unit.tycho_lifter",
+          room: "airlock",
+          hull_name: "Iron Anchor",
+          docked: true,
+        },
+      },
+    });
+    expect(store.shipTemplate.unitId).toBe("tacsim.unit.tycho_lifter");
+    expect(store.shipTemplate.isFallback).toBe(true);
+    expect(store.shipTemplate.compartments.has("bay")).toBe(false);
+
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+    const intern = stage as unknown as {
+      shipInteractables: Array<{ id: string }>;
+    };
+
+    stage.syncWorldState({
+      stationPack: store.stationPack,
+      shipTemplate: store.shipTemplate,
+      isAboardShip: true,
+      serverStationRoomEntry: null,
+      serverShipCompartment: "airlock",
+      roomRevision: store.roomRevision,
+      ambient: store.ambient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    // Fallback 6-room interior has no vehicle bay rigs
+    expect(intern.shipInteractables.filter((i) => i.id.startsWith("ship:rig:"))).toHaveLength(0);
+
+    // Real Tycho Lifter pack arrives over `tacsim.content`
+    store.observeContentFeed({
+      op: "pack",
+      found: true,
+      id: "tycho_lifter",
+      sha256: "sha-tycho-1",
+      json: readRepoContent("units/tycho_lifter.json"),
+    });
+    expect(store.shipTemplate.unitId).toBe("tacsim.unit.tycho_lifter");
+    expect(store.shipTemplate.isFallback).toBe(false);
+    expect(store.shipTemplate.compartments.has("bay")).toBe(true);
+
+    // Next syncWorldState MUST rebuild ship interior despite unchanged unitId!
+    stage.syncWorldState({
+      stationPack: store.stationPack,
+      shipTemplate: store.shipTemplate,
+      isAboardShip: true,
+      serverStationRoomEntry: null,
+      serverShipCompartment: "airlock",
+      roomRevision: store.roomRevision,
+      ambient: store.ambient,
+      visibleActors: [],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    expect(intern.shipInteractables.filter((i) => i.id.startsWith("ship:rig:"))).toHaveLength(2);
+    stage.dispose();
   });
 });

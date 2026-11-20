@@ -51,6 +51,7 @@ namespace TacSim.Arena
         public string Power = "online";
         public bool IsWreck;
         public bool Immobile;
+        public bool HasEcm;
         public bool EmconSilent;
         public bool WeaponsFree = true;
 
@@ -120,6 +121,36 @@ namespace TacSim.Arena
         public event Action OnArenaStateUpdated;
         public event Action<string> OnArenaCombatLog;
         public event Action OnToggleCameraViewRequested;
+        public event Action<bool> OnWeaponShotFired; // (isLaser)
+
+        private void OnDestroy()
+        {
+            if (_terrainRoot != null)
+                TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
+        }
+
+        public void ResetSessionState()
+        {
+            IsArenaActive = false;
+            CachedMapMatchId = 0;
+            _desiredLiveSpeedKph = 0f;
+            _lastSentSpeedKph = 0f;
+            _lastSentHeadingDeg = -999f;
+            LiveLobbyMatchState = "idle";
+            LiveLobbySlotSummary = string.Empty;
+            State = new ArenaCockpitState();
+
+            foreach (var kv in _contactRigs)
+            {
+                if (kv.Value?.Root != null)
+                {
+                    if (Application.isPlaying) Destroy(kv.Value.Root);
+                    else DestroyImmediate(kv.Value.Root);
+                }
+            }
+            _contactRigs.Clear();
+            OnArenaStateUpdated?.Invoke();
+        }
 
         private Transform _terrainRoot;
         private Transform _beaconsRoot;
@@ -311,7 +342,24 @@ namespace TacSim.Arena
             State.Power = d.Str("power", "online");
             State.IsWreck = d.Bool("wreck", false);
             State.Immobile = d.Bool("immobile", false);
-            State.EmconSilent = d["ecm"].IsObject && d["ecm"].Bool("emcon", false);
+
+            // Live frames.rs:633 emits "ecm": "on" (radiating) | "off" (silent) | null (no pod); keep object fallback too.
+            var ecmNode = d["ecm"];
+            if (ecmNode.Kind == JsonKind.String)
+            {
+                State.HasEcm = true;
+                State.EmconSilent = string.Equals(ecmNode.AsString(), "off", StringComparison.OrdinalIgnoreCase);
+            }
+            else if (ecmNode.IsObject)
+            {
+                State.HasEcm = true;
+                State.EmconSilent = ecmNode.Bool("emcon", false);
+            }
+            else
+            {
+                State.HasEcm = false;
+                State.EmconSilent = false;
+            }
 
             State.Xm = d.Int("x_cm", (int)(State.Xm * 100f)) * 0.01f;
             State.Zm = d.Int("y_cm", (int)(State.Zm * 100f)) * 0.01f;
@@ -377,6 +425,7 @@ namespace TacSim.Arena
 
                     string desig = c.Str("designator", $"C{i + 1}");
                     activeDesignators.Add(desig);
+                    float bearingDeg = c.Float("bearing_deg", 0f);
                     var cs = new ArenaContactState
                     {
                         Designator = desig,
@@ -388,11 +437,11 @@ namespace TacSim.Arena
                         CellX = cellArr[0].AsInt(128),
                         CellY = cellArr[1].AsInt(128),
                         RangeM = c.Float("range_m", 0f),
-                        BearingDeg = c.Float("bearing_deg", 0f),
-                        FacingDeg = ParseFacingWordOrDeg(c["facing"]),
+                        BearingDeg = bearingDeg,
+                        FacingDeg = ParseFacingWordOrDeg(c["facing"], bearingDeg),
                         HealthWord = c.Str("health", "intact"),
                         IsWreck = c.Bool("reads_dead", false) || c.Str("health") == "wreck",
-                        HitOddsPct = c["odds"].IsObject ? c["odds"].Int("percent", 0) : 0
+                        HitOddsPct = ParseContactHitOddsPct(c["odds"])
                     };
                     if (!cs.IsWreck)
                     {
@@ -435,14 +484,16 @@ namespace TacSim.Arena
                     string txt = n.Str("text", string.Empty);
                     string kind = n.Str("kind", string.Empty).ToLowerInvariant();
                     if (!string.IsNullOrEmpty(txt))
-                        OnArenaCombatLog?.Invoke($"<color=#FFCC66>[COCKPIT]</color> {txt}");
+                        OnArenaCombatLog?.Invoke($"<color=#FFCC66>[COCKPIT]</color> {TacSim.Net.MushProtocol.EscapeUnityRichText(txt)}");
 
                     if (kind.Contains("fire") || kind.Contains("hit") || kind.Contains("shot"))
                     {
+                        bool isLaser = n.Str("weapon", "").IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                       txt.IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0;
+                        OnWeaponShotFired?.Invoke(isLaser);
                         string tgtDesig = n.Str("designator", State.LockedDesignator);
                         if (_contactRigs.TryGetValue(tgtDesig, out var tgtRig) && PlayerRig?.MuzzlePoint != null && tgtRig?.Root != null)
                         {
-                            bool isLaser = n.Str("weapon", "").IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0;
                             SpawnShotTracer(PlayerRig.MuzzlePoint.position, tgtRig.Root.transform.position + Vector3.up * 1.5f, isLaser);
                         }
                     }
@@ -484,23 +535,96 @@ namespace TacSim.Arena
             }
         }
 
-        private static float ParseFacingWordOrDeg(JsonNode node)
+        public static int ParseContactHitOddsPct(JsonNode oddsNode)
+        {
+            if (oddsNode == null || oddsNode.IsNull) return 0;
+            // Live frames.rs:363-377 emits an array [{ weapon, p_permille, percent }, ...] with default weapon first.
+            if (oddsNode.IsArray)
+            {
+                var arr = oddsNode.AsArray();
+                if (arr == null || arr.Count == 0) return 0;
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    var row = arr[i];
+                    if (!row.IsObject) continue;
+                    int pct = row.ContainsKey("percent") ? row.Int("percent", 0) : row.Int("p_permille", 0) / 10;
+                    return Mathf.Clamp(pct, 0, 100);
+                }
+                return 0;
+            }
+            if (oddsNode.IsObject)
+            {
+                int pct = oddsNode.ContainsKey("percent") ? oddsNode.Int("percent", 0) : oddsNode.Int("p_permille", 0) / 10;
+                return Mathf.Clamp(pct, 0, 100);
+            }
+            return 0;
+        }
+
+        public static float ParseFacingWordOrDeg(JsonNode node, float bearingFromViewerDeg = 0f)
         {
             if (node == null || node.IsNull) return 0f;
             if (node.Kind == JsonKind.Int || node.Kind == JsonKind.Float) return node.AsFloat(0f);
-            string s = node.AsString("").ToUpperInvariant();
+            string s = node.AsString("").Trim().ToLowerInvariant();
+            // Live frames.rs:346 emits 8-way viewer-relative aspect words ("front".."front_left").
+            // Vector from contact back toward viewer is (bearingFromViewerDeg + 180).
             switch (s)
             {
-                case "N":  return 0f;
-                case "NE": return 45f;
-                case "E":  return 90f;
-                case "SE": return 135f;
-                case "S":  return 180f;
-                case "SW": return 225f;
-                case "W":  return 270f;
-                case "NW": return 315f;
+                case "front":       return (bearingFromViewerDeg + 180f) % 360f;
+                case "front_right": return (bearingFromViewerDeg + 135f) % 360f;
+                case "right":       return (bearingFromViewerDeg + 90f) % 360f;
+                case "rear_right":  return (bearingFromViewerDeg + 45f) % 360f;
+                case "rear":        return ((bearingFromViewerDeg % 360f) + 360f) % 360f;
+                case "rear_left":   return (bearingFromViewerDeg + 315f) % 360f;
+                case "left":        return (bearingFromViewerDeg + 270f) % 360f;
+                case "front_left":  return (bearingFromViewerDeg + 225f) % 360f;
+                // Legacy compass strings
+                case "n":  return 0f;
+                case "ne": return 45f;
+                case "e":  return 90f;
+                case "se": return 135f;
+                case "s":  return 180f;
+                case "sw": return 225f;
+                case "w":  return 270f;
+                case "nw": return 315f;
                 default:   return 0f;
             }
+        }
+
+        public Vector3 ArenaWorldMetersToLocalPos(float worldXm, float worldZm)
+        {
+            if (TerrainGrid == null)
+                return new Vector3(worldXm, 0f, worldZm);
+            float siteCellM = TerrainGrid.CellSizeM / Math.Max(1, TerrainGrid.SpanCells);
+            float originXm = TerrainGrid.OriginCellX * siteCellM;
+            float originZm = TerrainGrid.OriginCellY * siteCellM;
+            float lx = Mathf.Clamp(worldXm - originXm, 0f, TerrainGrid.Width * TerrainGrid.CellSizeM);
+            float lz = Mathf.Clamp(worldZm - originZm, 0f, TerrainGrid.Height * TerrainGrid.CellSizeM);
+            float ly = TerrainGrid.SampleElevationMeters(lx, lz);
+            return new Vector3(lx, ly, lz);
+        }
+
+        private string ResolveDefaultAdvanceSpot()
+        {
+            if (TerrainGrid != null)
+            {
+                if (TerrainGrid.KeySpots != null && TerrainGrid.KeySpots.Count > 0)
+                {
+                    if (!string.IsNullOrWhiteSpace(TerrainGrid.HoldSpotLetter))
+                    {
+                        string hold = TerrainGrid.HoldSpotLetter.Trim();
+                        for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
+                        {
+                            if (string.Equals(TerrainGrid.KeySpots[i].Letter, hold, StringComparison.OrdinalIgnoreCase))
+                                return TerrainGrid.KeySpots[i].Letter.Trim();
+                        }
+                    }
+                    if (!string.IsNullOrWhiteSpace(TerrainGrid.KeySpots[0].Letter))
+                        return TerrainGrid.KeySpots[0].Letter.Trim();
+                }
+                if (!string.IsNullOrWhiteSpace(TerrainGrid.HoldSpotLetter))
+                    return TerrainGrid.HoldSpotLetter.Trim();
+            }
+            return "B";
         }
 
         private void EnsurePlayerRigSpawned(string unitType, string callsign, string party)
@@ -512,8 +636,7 @@ namespace TacSim.Arena
                 else DestroyImmediate(PlayerRig.Root);
             }
 
-            float groundY = TerrainGrid != null ? TerrainGrid.SampleElevationMeters(State.Xm, State.Zm) : 0f;
-            Vector3 wp = ArenaStageOrigin + new Vector3(State.Xm, groundY, State.Zm);
+            Vector3 wp = ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
             PlayerRig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, unitType, $"{callsign} [YOU]", party, wp, State.HeadingDeg);
             _desiredLiveHeadingDeg = State.HeadingDeg;
         }
@@ -564,8 +687,20 @@ namespace TacSim.Arena
                 TriggerRadarPulseVfx();
             else if (low == "stop")
             {
+                // COCKPIT_VERBS has no "stop" verb; stopping requires "speed 0" (cockpit.rs:217-235).
                 _desiredLiveSpeedKph = 0f;
                 _lastSentSpeedKph = 0f;
+                trimmed = "speed 0";
+            }
+            else if (low == "emcon")
+            {
+                // Bare "emcon" is read-only status print (notices.rs:2005); emit explicit toggle "emcon on" / "emcon off".
+                trimmed = State.EmconSilent ? "emcon on" : "emcon off";
+            }
+            else if (low == "order all advance")
+            {
+                // ORDER <squad|ALL> ADVANCE <spot> requires a spot argument (orders.rs:191-193).
+                trimmed = $"order all advance {ResolveDefaultAdvanceSpot()}";
             }
             else if (low.StartsWith("throttle ", StringComparison.Ordinal))
             {
@@ -614,7 +749,7 @@ namespace TacSim.Arena
                 else if (Input.GetKeyDown(KeyCode.Alpha2)) ExecuteCockpitAction("throttle half");
                 else if (Input.GetKeyDown(KeyCode.Alpha3)) ExecuteCockpitAction("throttle cruise");
                 else if (Input.GetKeyDown(KeyCode.Alpha4)) ExecuteCockpitAction("throttle full");
-                else if (Input.GetKeyDown(KeyCode.Alpha0)) ExecuteCockpitAction("stop");
+                else if (Input.GetKeyDown(KeyCode.Alpha0)) ExecuteCockpitAction("speed 0");
             }
 
             if (!overUi && Input.GetMouseButtonDown(0))
@@ -642,8 +777,8 @@ namespace TacSim.Arena
                         if (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift))
                         {
                             Vector3 lp = hit.point - ArenaStageOrigin;
-                            int cx = Mathf.Clamp(Mathf.FloorToInt(lp.x / TerrainGrid.CellSizeM), 1, TerrainGrid.Width - 2);
-                            int cy = Mathf.Clamp(Mathf.FloorToInt(lp.z / TerrainGrid.CellSizeM), 1, TerrainGrid.Height - 2);
+                            int cx = TerrainGrid.LocalPosToSiteCellX(lp.x);
+                            int cy = TerrainGrid.LocalPosToSiteCellY(lp.z);
                             ExecuteCockpitAction($"drive {cx},{cy}");
                         }
                     }
@@ -670,7 +805,7 @@ namespace TacSim.Arena
                 {
                     _desiredLiveSpeedKph = 0f;
                     _lastSentSpeedKph = 0f;
-                    OnLiveCockpitVerbRequested?.Invoke("stop");
+                    OnLiveCockpitVerbRequested?.Invoke("speed 0");
                 }
 
                 if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow))
@@ -706,8 +841,13 @@ namespace TacSim.Arena
             {
                 float mps = State.SpeedKph / 3.6f;
                 Vector3 fwd = Quaternion.Euler(0f, State.HeadingDeg, 0f) * Vector3.forward;
-                State.Xm = Mathf.Clamp(State.Xm + fwd.x * mps * dt, 10f, TerrainGrid.Width * TerrainGrid.CellSizeM - 10f);
-                State.Zm = Mathf.Clamp(State.Zm + fwd.z * mps * dt, 10f, TerrainGrid.Height * TerrainGrid.CellSizeM - 10f);
+                float siteCellM = TerrainGrid.CellSizeM / Math.Max(1, TerrainGrid.SpanCells);
+                float minWorldX = TerrainGrid.OriginCellX * siteCellM + 10f;
+                float minWorldZ = TerrainGrid.OriginCellY * siteCellM + 10f;
+                float maxWorldX = minWorldX + Math.Max(10f, TerrainGrid.Width * TerrainGrid.CellSizeM - 20f);
+                float maxWorldZ = minWorldZ + Math.Max(10f, TerrainGrid.Height * TerrainGrid.CellSizeM - 20f);
+                State.Xm = Mathf.Clamp(State.Xm + fwd.x * mps * dt, minWorldX, maxWorldX);
+                State.Zm = Mathf.Clamp(State.Zm + fwd.z * mps * dt, minWorldZ, maxWorldZ);
             }
             UpdateOwnPlayerRigPose(dt);
         }
@@ -715,8 +855,7 @@ namespace TacSim.Arena
         private void UpdateOwnPlayerRigPose(float dt)
         {
             if (PlayerRig?.Root == null || TerrainGrid == null) return;
-            float gy = TerrainGrid.SampleElevationMeters(State.Xm, State.Zm);
-            Vector3 targetPos = ArenaStageOrigin + new Vector3(State.Xm, gy, State.Zm);
+            Vector3 targetPos = ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
             PlayerRig.Root.transform.position = Vector3.Lerp(PlayerRig.Root.transform.position, targetPos, 1f - Mathf.Exp(-14f * dt));
             PlayerRig.Root.transform.rotation = Quaternion.Slerp(PlayerRig.Root.transform.rotation, Quaternion.Euler(0f, State.HeadingDeg, 0f), 1f - Mathf.Exp(-12f * dt));
             PlayerRig.SetWrecked(State.IsWreck);

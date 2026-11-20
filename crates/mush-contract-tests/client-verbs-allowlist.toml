@@ -52,6 +52,10 @@ head = "JSON"
 reason = "a content studio label, not a command"
 
 [[allow]]
+head = "HOLOTANK"
+reason = "a 3D bridge holotank status banner label (\"HOLOTANK STANDBY/CLEAR/LIVE — ...\"), not a command"
+
+[[allow]]
 head = "ECCM"
 reason = "a works recipe label (`ECCM pods`, recipes-v2.json) in the web works picker (48e L8, clients:G11), not a line the client sends"
 
