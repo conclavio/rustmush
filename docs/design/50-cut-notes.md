@@ -401,8 +401,8 @@ doc 50a A-1; doc 11 §6). Stacked on KC.0. No lane bump.
 ## KC.2
 
 The terms schedule and the transit duty (Q-50-5, Q-50-6, Q-50-10, Q-50-11, Q-50-14, Q-50-53 to
-Q-50-55). Stacked on KC.1, with main (CR) merged in. **A lane bump: lane v46 and relay v37.** It
-must land after OP.1's lane bump and be re-signed from OP.1's version (see the PR).
+Q-50-55). Stacked on KC.1, with main (CR) merged in. **A lane bump: lane v47 and relay v38**, on OP.1's v46 (#719, merged into this branch). It
+must land after OP.1's.
 
 **Survey.**
 - **The picket's submission** (`space/commands.rs`, `submit_hull_to_customs`) chooses Cleared,
@@ -459,7 +459,7 @@ must land after OP.1's lane bump and be re-signed from OP.1's version (see the P
     way.
   - Running stays a present pilot's choice.
 - **The payee** (Q-50-14). The contraband fine goes to `fine_payee`: the terms row's payee once
-  the holder has a row, else the Registry, as built. Lane v46 adds the Republic Customs Office
+  the holder has a row, else the Registry, as built. Lane v47 adds the Republic Customs Office
   (`republic_customs`, at Stickney, capital 10,000, provisional), the payee of the Republic's
   Kirkwood row.
 - **Pinning** (Q-50-10):
@@ -470,10 +470,10 @@ must land after OP.1's lane bump and be re-signed from OP.1's version (see the P
 - **The shortcut** (Q-50-55). A destination the port of departure lays no route to owes the
   first interdicted leg of any route out of that port, so Ceres' halo to Deimos flies through
   the picket. Luna, routed by the long way, owes nothing, and the outward run stays free.
-- **Lane v46:**
+- **Lane v47:**
   - the Kirkwood row's `terms.republic` (payee `republic_customs`, 20‰, floor 50 cr);
   - the customs office row;
-  - relay v37, re-signed to require it.
+  - relay v38, re-signed to require it.
 
 **Tests.** In `tests/domain_world/voyage.rs`, on the picket rig:
 - `kc2_the_transit_duty_before_and_after_the_flip_is_pinned_at_filing`, three cases:
@@ -487,8 +487,8 @@ must land after OP.1's lane bump and be re-signed from OP.1's version (see the P
   from her pilot's account.
 - `kc2_the_free_flight_shortcut_to_deimos_owes_the_picket_leg`: Deimos owes the interdicted leg
   and Luna does not.
-- Lane pins: `kc2_strip_terms_rebuilds_the_published_v45`; `lane_chain::strip_terms` as the new
-  head; the v46 and relay v37 digests and versions.
+- Lane pins: `kc2_strip_terms_rebuilds_the_published_v46` (OP.1's digest); `lane_chain::strip_terms` as the new
+  head; the v47 and relay v38 digests and versions.
 - The count pins the customs office moves (`plumbing.rs`, `ports.rs`, `boot_parity.rs`) and
   `ic_sortie_voyages.rs`'s departure record (now carrying the pin).
 - Mutation-checked on conclav.dev; each failed a story and was undone by a reverse edit:
@@ -498,7 +498,11 @@ must land after OP.1's lane bump and be re-signed from OP.1's version (see the P
   - the shortcut left open.
   A first absent mutation, which suppressed only the line, survived: `assess_absent` still
   levied. The tick-side mutation replaced it.
-- Green on conclav.dev: clippy `-D warnings` on tacsim; tacsim's `domain_economy` (698),
+- Green on conclav.dev on the merged branch (4e645b10a) with OP.1 in, all green: clippy `-D warnings` (tacsim,
+  mush-faction), every tacsim binary (`domain_economy` 700, `domain_field` 330, `domain_world`
+  288, the lib 2,501 among them), mush-server `split_boundary` (227), `commerce_composition`
+  and the `player_market` lib tests.
+- Earlier, before the merge: clippy `-D warnings` on tacsim; tacsim's `domain_economy` (698),
   `domain_world` (291) and `domain_field`. With the duty levied at the boundary, before the move
   to the tick: tacsim's other binaries and mush-server `split_boundary` (227) and
   `commerce_composition`.
