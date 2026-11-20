@@ -881,7 +881,14 @@ pub mod haul {
     /// `tacsim::services::haul::TOLD_SEIZED`.
     pub const TOLD_SEIZED: &str = "was seized by customs on the way; its goods are lost.";
     /// `tacsim::services::haul::TOLD_HAULER_SEIZED`.
-    pub const TOLD_HAULER_SEIZED: &str = "the job has failed and your bond is lost.";
+    pub const TOLD_HAULER_SEIZED: &str =
+        "from your hold; the job has failed and your bond is lost.";
+    /// `tacsim::services::haul::TOLD_LOST`.
+    pub const TOLD_LOST: &str = "was lost on the way with its hull;";
+    /// `tacsim::services::haul::TOLD_HAULER_LOST`.
+    pub const TOLD_HAULER_LOST: &str = "is lost with your hull; its goods are part of the wreck";
+    /// `tacsim::services::haul::NO_ORG_VAULT`.
+    pub const NO_ORG_VAULT: &str = "That organization keeps no vault at";
     /// `tacsim::services::haul::NOT_WITHDRAWABLE`.
     pub const NOT_WITHDRAWABLE: &str =
         "Only the shipper withdraws a haul, and only before it is tak";
@@ -962,6 +969,10 @@ pub mod escort {
     pub const HEAD: &str = "Your escorts:";
     /// `tacsim::services::escort::ROW`.
     pub const ROW: &str = ", escorted on";
+    /// `tacsim::services::escort::NO_HAUL`.
+    pub const NO_HAUL: &str = "of yours still on its way to escort.";
+    /// `tacsim::services::escort::TOLD_HAUL_GONE`.
+    pub const TOLD_HAUL_GONE: &str = "is called off: the haul it was posted for closed";
 }
 
 pub mod core_resale {
@@ -1431,6 +1442,9 @@ mod tests {
             TOLD_RETURNED,
             TOLD_SEIZED,
             TOLD_HAULER_SEIZED,
+            TOLD_LOST,
+            TOLD_HAULER_LOST,
+            NO_ORG_VAULT,
             NOT_WITHDRAWABLE,
             WITHDRAWN,
             NONE,
@@ -1487,6 +1501,8 @@ mod tests {
             NONE,
             HEAD,
             ROW,
+            NO_HAUL,
+            TOLD_HAUL_GONE,
         )
     }
     const ESCORT_EXCLUDED: &[(&str, &str)] = &[
