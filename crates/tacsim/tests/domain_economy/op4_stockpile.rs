@@ -344,9 +344,13 @@ async fn op4_a_house_hull_pays_the_kirkwood_duty_from_the_house() {
         }
     }
     assert!(met, "she meets the Kirkwood picket");
+    // In the bubble a tick a wall second: her house's mind brakes her against the corvette,
+    // heaves to and submits her to inspection.
     let mut paid = 0;
-    for _ in 0..240 {
-        fires(&mut rig, 1);
+    for _ in 0..900 {
+        sweep(&mut rig.tw, 1);
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued);
         paid = balance(rig.tw.world(), customs) - customs_at;
         if paid > 0 {
             break;

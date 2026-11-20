@@ -680,7 +680,17 @@ fn explain(ctx: &Ctx<'_>, hauler: &HaulerDef, hull: ObjId, here: (&PortDef, &Por
 
 /// **The sailing plan for a choice**: the lot within the ask, the fill, the departure, the sale
 /// at no less than the ask (an empty hop: the fill and the departure).
-fn plan(ctx: &Ctx<'_>, hull: ObjId, helm: ObjId, choice: &Choice) -> Option<Orders> {
+///
+/// `held_fuel` (doc 50 cut OP.4) is reaction mass in her tank held for a carried haul: the
+/// executor's fill counts it as aboard while the burn spends only what is free, so that much more
+/// is bought after the fill.
+fn plan(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    helm: ObjId,
+    choice: &Choice,
+    held_fuel: u64,
+) -> Option<Orders> {
     let goods = ctx.w.module_state::<TacsimStore>()?.goods()?;
     let propellant = crate::port::burn::consumable_good(goods, Consumable::Propellant)?;
     let provisions = crate::port::burn::consumable_good(goods, Consumable::Provisions)?;
@@ -693,10 +703,18 @@ fn plan(ctx: &Ctx<'_>, hull: ObjId, helm: ObjId, choice: &Choice) -> Option<Orde
             on_short: OnShort::Partial,
         });
     }
-    for good in [propellant, provisions] {
+    for good in [propellant.clone(), provisions] {
         whats.push(What::Buy {
             good,
             qty: Qty::Fill,
+            max_major: None,
+            on_short: OnShort::Partial,
+        });
+    }
+    if held_fuel > 0 {
+        whats.push(What::Buy {
+            good: propellant,
+            qty: Qty::Units(held_fuel),
             max_major: None,
             on_short: OnShort::Partial,
         });
@@ -1056,7 +1074,12 @@ fn carry(
                 profit_minor: 0,
                 carried: true,
             };
-            if let Some(doc) = plan(ctx, hull, helm, &choice)
+            let goods = ctx.w.module_state::<TacsimStore>().and_then(|s| s.goods());
+            let held_fuel = goods
+                .and_then(|g| crate::port::burn::consumable_good(g, Consumable::Propellant))
+                .filter(|propellant| propellant == &job.good)
+                .map_or(0, |_| job.quantity);
+            if let Some(doc) = plan(ctx, hull, helm, &choice, held_fuel)
                 && let Err(error) = crate::store::put_orders(ctx, &doc)
             {
                 tracing::warn!(
@@ -1511,7 +1534,7 @@ fn step(
     ) {
         return;
     }
-    let Some(doc) = plan(ctx, hull, helm, &choice) else {
+    let Some(doc) = plan(ctx, hull, helm, &choice, 0) else {
         return;
     };
     if let Err(error) = crate::store::put_orders(ctx, &doc) {
