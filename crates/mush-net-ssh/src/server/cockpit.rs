@@ -12,8 +12,9 @@ pub(super) struct Cockpit {
     /// None means the SSH or welcome account has not authenticated yet.
     /// A requested name that is absent from its owned roster is refused.
     pub authenticated: Option<(String, Result<Option<u64>, Failure>)>,
-    pub playing: Option<(String, u64)>,
+    fallback: Option<Fallback>,
     used: bool,
+    require_playing: bool,
     prompted: bool,
     bytes: Zeroizing<Vec<u8>>,
     timer: Option<tokio::task::JoinHandle<()>>,
@@ -22,16 +23,63 @@ pub(super) struct Cockpit {
 impl Drop for Cockpit {
     fn drop(&mut self) {
         self.cancel_timer();
+        self.stop_fallback();
     }
 }
 
+/// Bounds how long a hint alone can defer an ordinary zero-step login.
+const REDEEM_WAIT: Duration = Duration::from_secs(3);
+struct Fallback {
+    waiting: Arc<Mutex<bool>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 impl Cockpit {
-    pub fn can_open(&self) -> bool {
-        self.hint.is_some() && self.channel.is_none() && !self.used
+    pub fn can_open(&self, playing: bool) -> bool {
+        self.hint.is_some()
+            && self.channel.is_none()
+            && !self.used
+            && (!self.require_playing || playing)
     }
     pub fn start_subsystem(&mut self) -> bool {
-        !std::mem::replace(&mut self.started, true)
+        if self.started {
+            return false;
+        }
+        self.started = true;
+        // A partial ticket must never be left in a freed allocation on growth.
+        self.bytes.reserve_exact(4 + MAX_FRAME);
+        true
     }
+    pub(super) fn cancel_fallback(&mut self) {
+        if let Some(fallback) = &self.fallback {
+            let mut waiting = fallback.waiting.lock().expect("login timer poisoned");
+            if *waiting {
+                *waiting = false;
+                fallback.task.abort();
+            }
+        }
+    }
+
+    pub(super) fn stop_fallback(&mut self) {
+        self.cancel_fallback();
+        if let Some(fallback) = self.fallback.take() {
+            fallback.task.abort();
+        }
+    }
+
+    /// A failed or abandoned redemption may be followed by one fresh issue.
+    fn allow_issue(&mut self, require_playing: bool) {
+        if let Some(hint) = &mut self.hint
+            && hint.mode == resume::Mode::Redeem
+        {
+            hint.mode = resume::Mode::Issue;
+            self.require_playing = require_playing;
+            self.used = false;
+            self.started = false;
+            self.prompted = false;
+        }
+    }
+
     pub fn waiting_for_redeem(&self) -> bool {
         self.hint
             .as_ref()
@@ -79,6 +127,14 @@ impl Cockpit {
         self.bytes = Zeroizing::new(Vec::new());
         self.used = true;
     }
+    pub fn abandon_closed(&mut self) {
+        self.finish();
+        self.allow_issue(true);
+    }
+    pub fn abandon(&mut self, session: &mut Session) {
+        self.close(session);
+        self.allow_issue(true);
+    }
     pub fn close(&mut self, session: &mut Session) {
         if let Some(channel) = self.channel {
             let _ = session.close(channel);
@@ -118,6 +174,55 @@ pub(super) struct OutputQueues {
 }
 
 impl ConnHandler {
+    pub(super) fn defer_login(
+        &mut self,
+        session: &Session,
+        account: String,
+        character: CharSummary,
+    ) -> Result<(), russh::Error> {
+        self.cockpit.stop_fallback();
+        let player = self.player(session)?;
+        let (mut conn, queues) = self.output_queues();
+        let waiting = Arc::new(Mutex::new(true));
+        let gate = Arc::clone(&waiting);
+        let task = tokio::spawn(async move {
+            tokio::time::sleep(REDEEM_WAIT).await;
+            {
+                // Cancellation and claiming connected are one operation with
+                // respect to handler teardown or a complete sideband request.
+                let mut waiting = gate.lock().expect("login timer poisoned");
+                if !std::mem::take(&mut *waiting)
+                    || player
+                        .connected
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_err()
+                {
+                    return;
+                }
+            }
+            conn.caps = player.worker.lock().caps;
+            match player
+                .worker
+                .hooks
+                .connect_character(conn, &account, character.key)
+                .await
+            {
+                Ok(()) => {
+                    let _ = player.activate(&account, &character, queues, None, |_, _| Ok(()));
+                }
+                Err(why) => {
+                    player.connected.store(false, Ordering::SeqCst);
+                    let _ = player
+                        .worker
+                        .write_sys(&format!("Connection failed: {why}"))
+                        .await;
+                }
+            }
+        });
+        self.cockpit.fallback = Some(Fallback { waiting, task });
+        Ok(())
+    }
+
     pub(super) fn output_queues(&self) -> (NewConn, OutputQueues) {
         let (tx, events) = mpsc::channel(OUTPUT_BUFFER);
         let (stamped_tx, stamped) = mpsc::channel(OUTPUT_BUFFER);
@@ -141,7 +246,7 @@ impl ConnHandler {
     ) -> Result<(), russh::Error> {
         if let Some(channel) = self.cockpit.channel {
             let bytes = resume::encode_reply(&reply).map_err(|_| russh::Error::Disconnect)?;
-            session.data(channel, bytes)?;
+            session.data(channel, bytes::Bytes::from_owner(bytes))?;
             if final_reply {
                 session.eof(channel)?;
                 self.cockpit.close(session);
@@ -158,7 +263,11 @@ impl ConnHandler {
         match self.cockpit.feed(part) {
             Ok(false) => Ok(()),
             Ok(true) => self.try_cockpit(session).await,
-            Err(()) => self.cockpit_reply(session, Reply::failure(Failure::Denied), true),
+            Err(()) => {
+                self.cockpit_reply(session, Reply::failure(Failure::Denied), true)?;
+                self.cockpit.allow_issue(true);
+                Ok(())
+            }
         }
     }
 
@@ -169,19 +278,31 @@ impl ConnHandler {
         let Some(hint) = self.cockpit.hint.as_ref() else {
             return Ok(());
         };
-        if request.mode != hint.mode || request.pane != hint.pane {
-            return self.cockpit_reply(session, Reply::failure(Failure::Denied), true);
+        let playing = self.lock().playing.clone();
+        // A hint can expire without a request. A player admitted by the
+        // ordinary path can now ask for a first lease on the same pane.
+        let issue_after_login = playing.is_some() && request.mode == resume::Mode::Issue;
+        if request.pane != hint.pane || (request.mode != hint.mode && !issue_after_login) {
+            self.cockpit_reply(session, Reply::failure(Failure::Denied), true)?;
+            self.cockpit.allow_issue(true);
+            return Ok(());
         }
+        let mut allow_issue = false;
         let reply = match request.mode {
             resume::Mode::Issue => {
-                if let Some((account, ch)) = &self.cockpit.playing {
+                if let Some((account, ch, _)) = &playing {
                     Some(
                         match self
                             .hooks
                             .cockpit_issue(self.conn_id, &request.pane, account, *ch)
                             .await
                         {
-                            Ok((ticket, grace)) => Reply::issued(ticket, grace),
+                            Ok((ticket, grace)) => {
+                                self.hooks
+                                    .cockpit_transport(self.conn_id, Arc::clone(&self.kill));
+                                self.lock().record_view(self.hooks.as_ref(), self.conn_id);
+                                Reply::issued(ticket, grace)
+                            }
                             Err(e) => Reply::failure(e),
                         },
                     )
@@ -190,7 +311,9 @@ impl ConnHandler {
                 }
             }
             resume::Mode::Redeem => {
-                if self.cockpit.playing.is_some() {
+                self.cockpit.cancel_fallback();
+                if playing.is_some() {
+                    allow_issue = true;
                     Some(Reply::failure(Failure::Denied))
                 } else if let Some((account, selected)) = self.cockpit.authenticated.clone() {
                     let result = if let (Ok(selected), Some(ticket)) = (selected, &request.ticket) {
@@ -207,8 +330,26 @@ impl ConnHandler {
                                 .cockpit_redeem(conn, &request.pane, &account, selected, ticket)
                                 .await
                             {
-                                Ok((ch, ticket, grace)) => {
-                                    self.activate_player(session, &account, ch, queues, true)?;
+                                Ok((ch, ticket, grace, view)) => {
+                                    self.hooks
+                                        .cockpit_transport(self.conn_id, Arc::clone(&self.kill));
+                                    let character = match &self.lock().mode {
+                                        Mode::CharSelect { chars, .. } => {
+                                            chars.iter().find(|c| c.key == ch).cloned()
+                                        }
+                                        _ => None,
+                                    }
+                                    .unwrap_or_else(|| CharSummary {
+                                        key: ch,
+                                        name: ch.to_string(),
+                                    });
+                                    self.player(session)?.activate(
+                                        &account,
+                                        &character,
+                                        queues,
+                                        Some(view),
+                                        |id, bytes| session.data(id, bytes),
+                                    )?;
                                     Ok(Reply::redeemed(ticket, grace))
                                 }
                                 Err(error) => {
@@ -220,6 +361,7 @@ impl ConnHandler {
                     } else {
                         Err(Failure::Denied)
                     };
+                    allow_issue = result.is_err();
                     Some(result.unwrap_or_else(Reply::failure))
                 } else {
                     None
@@ -227,7 +369,12 @@ impl ConnHandler {
             }
         };
         if let Some(reply) = reply {
-            return self.cockpit_reply(session, reply, true);
+            self.cockpit_reply(session, reply, true)?;
+            if allow_issue {
+                // A client may park its issue request while the user chooses a character.
+                self.cockpit.allow_issue(false);
+            }
+            return Ok(());
         }
         self.cockpit.pending = Some(request);
         if !self.cockpit.prompted {
@@ -254,9 +401,11 @@ mod tests {
         let body = br#"{"v":1,"op":"issue","pane":"0123456789abcdef0123456789abcdef"}"#;
         let header = (body.len() as u32).to_be_bytes();
         assert_eq!(state.feed(&header), Ok(false));
+        let allocation = state.bytes.as_ptr();
         for byte in body.iter().take(body.len() - 1) {
             assert_eq!(state.feed(std::slice::from_ref(byte)), Ok(false));
             assert!(state.pending.is_none());
+            assert_eq!(state.bytes.as_ptr(), allocation);
         }
         assert_eq!(state.feed(b"}"), Ok(true));
         assert!(state.pending.is_some());

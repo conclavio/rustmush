@@ -844,11 +844,12 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     say(&mut ada, "HEADING 180", "Steering to 180").await;
 }
 
-/// A real SSH client with a cuttable TCP relay. Aborting the relay loses the
-/// transport while both SSH channels are still open, just like a network loss.
+/// A real SSH client behind a relay. Tests can close TCP or stop forwarding
+/// while keeping the server end open, as on a network change without a FIN.
 struct CockpitLink {
     ssh: russh::client::Handle<support::AcceptAll>,
-    relay: tokio::task::JoinHandle<std::io::Result<(u64, u64)>>,
+    park: Option<tokio::sync::oneshot::Sender<()>>,
+    relay: tokio::task::JoinHandle<std::io::Result<Option<tokio::net::TcpStream>>>,
 }
 
 impl Drop for CockpitLink {
@@ -863,8 +864,13 @@ impl CockpitLink {
     async fn open(addr: SocketAddr, mode: &str) -> (Self, Term) {
         let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
         let (client, mut proxy) = tokio::io::duplex(128 * 1024);
-        let relay =
-            tokio::spawn(async move { tokio::io::copy_bidirectional(&mut proxy, &mut tcp).await });
+        let (park, parking) = tokio::sync::oneshot::channel();
+        let relay = tokio::spawn(async move {
+            tokio::select! {
+                result = tokio::io::copy_bidirectional(&mut proxy, &mut tcp) => result.map(|_| None),
+                _ = parking => Ok(Some(tcp)),
+            }
+        });
         let mut ssh = russh::client::connect_stream(
             Arc::new(russh::client::Config::default()),
             client,
@@ -892,7 +898,14 @@ impl CockpitLink {
             .await
             .unwrap();
         channel.request_shell(true).await.unwrap();
-        (Self { ssh, relay }, Term::new(channel))
+        (
+            Self {
+                ssh,
+                park: Some(park),
+                relay,
+            },
+            Term::new(channel),
+        )
     }
 
     async fn ticket(&self, op: &str, ticket: Option<&str>, expected: &str) -> Option<String> {
@@ -934,10 +947,28 @@ impl CockpitLink {
         self.relay.abort();
         let _ = (&mut self.relay).await;
     }
+
+    async fn lose_route(mut self) -> tokio::net::TcpStream {
+        self.park.take().unwrap().send(()).unwrap();
+        (&mut self.relay)
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("the server socket stays open")
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cockpit_ticket_recovers_the_held_seat_and_paints_a_new_authoritative_frame() {
+    verify_cockpit_recovery(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cockpit_ticket_recovers_the_held_seat_when_the_old_tcp_connection_is_still_open() {
+    verify_cockpit_recovery(true).await;
+}
+
+async fn verify_cockpit_recovery(silent_loss: bool) {
     let server = boot("cockpit-ticket-held", Duration::from_secs(60)).await;
     let (_gm, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
@@ -968,7 +999,17 @@ async fn cockpit_ticket_recovers_the_held_seat_and_paints_a_new_authoritative_fr
     // A plain xterm hears power_online as BEL. Its notification belongs to
     // this socket and must not be repeated in the new pilot's first frame.
     ada.expect_after(powering, "\x07").await;
-    original.cut().await;
+    let parked = if silent_loss {
+        let tcp = original.lose_route().await;
+        assert!(
+            !server.sessions.is_linkdead(session),
+            "no disconnect reached the server"
+        );
+        Some(tcp)
+    } else {
+        original.cut().await;
+        None
+    };
     drop(ada);
 
     let (resumed, mut ada) = CockpitLink::open(server.addr, "redeem").await;
@@ -980,6 +1021,23 @@ async fn cockpit_ticket_recovers_the_held_seat_and_paints_a_new_authoritative_fr
         ticket != rotated,
         "successful handoff must rotate the ticket"
     );
+    if let Some(mut tcp) = parked {
+        let closed = tokio::time::timeout(
+            STEP_TIMEOUT,
+            tokio::io::copy(&mut tcp, &mut tokio::io::sink()),
+        )
+        .await
+        .expect("the gateway closes the displaced TCP connection");
+        if let Err(error) = closed {
+            assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ),
+                "{error}"
+            );
+        }
+    }
     assert_eq!(
         server
             .sessions

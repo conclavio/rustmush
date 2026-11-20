@@ -60,7 +60,7 @@ async fn verify_path(issue_routed: bool) {
     let (mut initial, cut) = rig.droppable_client(first).await;
     let welcome = if issue_routed { "dev1" } else { "play" };
     assert!(initial.authenticate_none(welcome).await.unwrap().success());
-    let shell = game(&initial, "issue").await;
+    let mut shell = game(&initial, "issue").await;
     let mut exchange = side(&initial, "issue", None).await;
     assert_eq!(reply(&mut exchange).await["status"], "auth_required");
     shell.data(&b"connect faenix pw\r"[..]).await.unwrap();
@@ -69,6 +69,14 @@ async fn verify_path(issue_routed: bool) {
     let ticket = result["ticket"].as_str().unwrap();
     assert_eq!(ticket.len(), 43);
     assert_eq!(rig.hooks.connected().len(), 1);
+    shell.data(&b"@sounds off\r"[..]).await.unwrap();
+    read_until(&mut shell, "Sounds are off").await;
+    shell.data(&b"@pixel/encoder off\r"[..]).await.unwrap();
+    read_until(&mut shell, "Picture encoder for this connection: off").await;
+    if issue_routed {
+        shell.data(&b"@tui\r"[..]).await.unwrap();
+        read_until(&mut shell, "\x1b[?1049h").await;
+    }
     // Drop the TCP transport without sending shell EOF/CLOSE.
     cut.shutdown(std::net::Shutdown::Both).unwrap();
     wait_for(|| rig.hooks.state.lock().unwrap().disconnected.len() == 1).await;
@@ -96,7 +104,22 @@ async fn verify_path(issue_routed: bool) {
             .as_str()
             .is_some_and(|new| new.len() == 43 && new != ticket)
     );
-    let vt = read_until(&mut shell, "\x1b[?1049h").await;
+    let mut vt = String::new();
+    if issue_routed {
+        vt += &read_until(&mut shell, "\x1b[?1049h").await;
+        shell.data(&b"\x1d"[..]).await.unwrap();
+        vt += &read_until(&mut shell, "\x1b[?1049l").await;
+    }
+    shell.data(&b"@sounds\r"[..]).await.unwrap();
+    vt += &read_until(&mut shell, "Sounds are off").await;
+    shell.data(&b"@pixel/encoder\r"[..]).await.unwrap();
+    vt += &read_until(&mut shell, "Picture encoder: off").await;
+    if !issue_routed {
+        assert!(
+            !vt.contains("\x1b[?1049h"),
+            "a line player stays in line mode"
+        );
+    }
     assert!(!vt.contains(ticket));
     assert!(!vt.contains(restored["ticket"].as_str().unwrap()));
     assert_eq!(
@@ -153,9 +176,48 @@ async fn refused_resume_keeps_manual_character_selection_available() {
         Some("denied" | "expired")
     ));
     assert!(rig.hooks.connected().is_empty());
+    let mut fresh = side(&handle, "issue", None).await;
+    assert_eq!(reply(&mut fresh).await["status"], "auth_required");
     shell.data(&b"1\r"[..]).await.unwrap();
     wait_for(|| rig.hooks.connected().len() == 1).await;
+    assert_eq!(reply(&mut fresh).await["status"], "issued");
     assert!(rig.hooks.lines().is_empty());
+}
+
+/// No packet follows the shell/partial request until the server has attached.
+async fn fallback_without_more_input(user: &str, incomplete: bool) {
+    let rig = Rig::start(Hooks::default()).await;
+    let (mut h, _cut) = rig.droppable_client(rig.direct_listener().await).await;
+    assert!(h.authenticate_password(user, "pw").await.unwrap().success());
+    let shell = game(&h, "redeem").await;
+    let mut pending = None;
+    if incomplete {
+        let mut ch = h.channel_open_session().await.unwrap();
+        ch.request_subsystem(true, mush_net_ssh::resume::SUBSYSTEM)
+            .await
+            .unwrap();
+        assert!(next_reply(&mut ch).await);
+        ch.data(&[0u8, 0][..]).await.unwrap();
+        pending = Some(ch);
+    }
+    wait_for(|| rig.hooks.connected().len() == 1).await;
+    assert_eq!(rig.hooks.connected(), vec![("faenix".into(), 1)]);
+    shell.data(&b"look\r"[..]).await.unwrap();
+    wait_for(|| rig.hooks.lines() == ["look"]).await;
+    if let Some(ch) = pending {
+        ch.close().await.unwrap();
+    }
+    let mut fresh = side(&h, "issue", None).await;
+    assert_eq!(reply(&mut fresh).await["status"], "issued");
+}
+
+#[tokio::test]
+async fn redeem_hint_alone_preserves_requested_character_login() {
+    fallback_without_more_input("faenix+Kira", false).await;
+}
+#[tokio::test]
+async fn unfinished_redeem_frame_preserves_single_character_login() {
+    fallback_without_more_input("faenix", true).await;
 }
 
 #[tokio::test]

@@ -206,8 +206,21 @@ pub trait SshHooks: Send + Sync {
         _account: &'a str,
         _selected: Option<u64>,
         _ticket: &'a crate::resume::Ticket,
-    ) -> BoxFuture<'a, Result<(u64, crate::resume::Ticket, u32), crate::resume::Failure>> {
+    ) -> BoxFuture<'a, Result<crate::resume::Redeemed, crate::resume::Failure>> {
         Box::pin(async { Err(crate::resume::Failure::Unavailable) })
+    }
+
+    /// Associate the authenticated owner of a granted lease with its SSH transport.
+    fn cockpit_transport(&self, _conn: u64, _cut: Arc<crate::kill::KillSwitch>) {}
+
+    /// Save the current presentation for this specific lease owner.
+    fn cockpit_view(
+        &self,
+        _conn: u64,
+        _account: &str,
+        _pane: &str,
+        _view: crate::resume::ViewPrefs,
+    ) {
     }
 
     /// A deliberate shell close or QUIT revokes reconnection eligibility.

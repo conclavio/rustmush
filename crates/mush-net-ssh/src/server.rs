@@ -91,6 +91,7 @@ use crate::tui::{TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
 mod cockpit;
+use crate::resume::ViewPrefs;
 use cockpit::{Cockpit, OutputQueues};
 
 /// Per-connection output queue depth (design 02 §8.4).
@@ -588,6 +589,7 @@ impl Ingress {
                 width: 0,
                 height: 0,
                 cell_size: None,
+                playing: None,
                 mode: Mode::Welcome,
                 tui: None,
                 manifest: TuiManifest::default(),
@@ -761,6 +763,8 @@ struct Shared {
     /// `pix_height` on `pty-req` or `window-change`. `CSI 16 t` in `@tui`
     /// remains the fallback when the client sends `0`.
     cell_size: Option<CellSize>,
+    /// Negotiated character and pane; only an issued lease accepts updates.
+    playing: Option<(String, u64, String)>,
     mode: Mode,
     /// Active TUI state while [`Mode::Tui`]; `None` in every other mode.
     /// Reached under this same lock by both the input handler and the output
@@ -819,6 +823,21 @@ impl Default for HistoryCursor {
 }
 
 impl Shared {
+    fn record_view(&self, hooks: &dyn SshHooks, conn: u64) {
+        if let Some((account, _, pane)) = &self.playing {
+            hooks.cockpit_view(
+                conn,
+                account,
+                pane,
+                crate::resume::ViewPrefs {
+                    tui: self.tui.is_some(),
+                    sounds: self.sounds_on,
+                    encoder: self.pixel_choice,
+                },
+            );
+        }
+    }
+
     fn recompute_caps(&mut self) {
         self.caps = caps::detect_caps(
             self.term.as_deref(),
@@ -916,6 +935,7 @@ pub(crate) struct Attested {
 
 impl Drop for ConnHandler {
     fn drop(&mut self) {
+        self.cockpit.stop_fallback();
         if let Some(watchdog) = self.preauth_watchdog.take() {
             watchdog.abort();
         }
@@ -1204,6 +1224,7 @@ impl ConnHandler {
     /// Farewell + close channel + disconnect, and the cut [`DISCONNECT_GRACE`]
     /// later for a client that does not take the disconnect for an answer.
     fn close_polite(&mut self, session: &mut Session, msg: &str) -> Result<(), russh::Error> {
+        self.cockpit.cancel_fallback();
         if self.closing {
             return Ok(());
         }
@@ -1441,48 +1462,30 @@ impl ConnHandler {
         chars: Vec<CharSummary>,
         requested_char: Option<String>,
     ) -> Result<(), russh::Error> {
+        // Some(None) is an explicit, unowned name. It always falls through
+        // to this account's menu, even for a single-character account.
+        let requested = requested_char
+            .as_deref()
+            .map(|name| chars.iter().find(|c| c.name.eq_ignore_ascii_case(name)));
+        let auto = match requested {
+            Some(owned) => owned,
+            None if chars.len() == 1 => chars.first(),
+            None => None,
+        };
         if self.cockpit.waiting_for_redeem() {
-            let selected = requested_char
-                .as_ref()
-                .map(|want| {
-                    chars
-                        .iter()
-                        .find(|c| c.name.eq_ignore_ascii_case(want))
-                        .map(|c| c.key)
-                        .ok_or(crate::resume::Failure::Denied)
-                })
+            let selected = requested
+                .map(|owned| owned.map(|c| c.key).ok_or(crate::resume::Failure::Denied))
                 .transpose();
             self.cockpit.authenticated = Some((account.clone(), selected));
-            self.lock().mode = Mode::CharSelect {
-                account: account.clone(),
-                chars: chars.clone(),
-            };
-            self.print_char_select(session, &account, &chars)?;
-            return self.try_cockpit(session).await;
-        }
-        if let Some(want) = requested_char {
-            if let Some(c) = chars.iter().find(|c| c.name.eq_ignore_ascii_case(&want)) {
-                let c = c.clone();
-                return self.do_connect(session, &account, &c).await;
+            if let Some(character) = auto {
+                self.defer_login(session, account.clone(), character.clone())?;
             }
-            // Requested a character this account does not own (typo, or a
-            // cross-account name): fall to this account's own char-select,
-            // never auto-enter and never reveal another account.
-            self.lock().mode = Mode::CharSelect {
-                account: account.clone(),
-                chars: chars.clone(),
-            };
-            return self.print_char_select(session, &account, &chars);
+        } else if let Some(character) = auto {
+            return self.do_connect(session, &account, character).await;
         }
-        if chars.len() == 1 {
-            let c = chars[0].clone();
-            return self.do_connect(session, &account, &c).await;
-        }
-        self.lock().mode = Mode::CharSelect {
-            account: account.clone(),
-            chars: chars.clone(),
-        };
-        self.print_char_select(session, &account, &chars)
+        self.print_char_select(session, &account, &chars)?;
+        self.lock().mode = Mode::CharSelect { account, chars };
+        self.try_cockpit(session).await
     }
 
     fn print_char_select(
@@ -1569,6 +1572,7 @@ impl ConnHandler {
         if self.channel.is_none() {
             return Ok(());
         }
+        self.cockpit.cancel_fallback();
         let (conn, queues) = self.output_queues();
         // Armed *before* the await via compare_exchange so a duplicate entry
         // cannot attach twice on the same ConnId or clear an active `connected`
@@ -1586,7 +1590,8 @@ impl ConnHandler {
             .await
         {
             Ok(()) => {
-                self.activate_player(session, account, character.key, queues, false)?;
+                self.player(session)?
+                    .activate(account, character, queues, None, |_, _| Ok(()))?;
                 self.try_cockpit(session).await
             }
             Err(why) => {
@@ -1596,123 +1601,40 @@ impl ConnHandler {
         }
     }
 
-    fn activate_player(
-        &mut self,
-        session: &mut Session,
-        account: &str,
-        character: u64,
-        queues: OutputQueues,
-        resumed: bool,
-    ) -> Result<(), russh::Error> {
-        if let Some(watchdog) = self.preauth_watchdog.take() {
-            watchdog.abort();
-        }
-        tracing::info!(
-            conn = self.conn_id,
-            account,
-            character,
-            "character connected"
-        );
-        let repaint = {
-            let mut sh = self.lock();
-            sh.mode = Mode::InGame;
-            Arc::clone(&sh.repaint)
-        };
-        let Some(channel) = self.channel else {
-            return Err(russh::Error::Disconnect);
-        };
-        let negotiated = self.cockpit.hint.is_some();
-        if negotiated {
-            self.cockpit.playing = Some((account.to_owned(), character));
-        }
-        let OutputQueues {
-            events: rx,
-            stamped: stamped_rx,
-        } = queues;
-        let (tx, mut commands) = mpsc::channel::<GameAction>(128);
-        self.commands = Some(tx);
-        let mut worker = GameCommands {
+    /// The timer and the SSH handler use the same admission and output path.
+    /// Queue game input only after the shared mode enters the game.
+    fn player(&mut self, session: &Session) -> Result<Player, russh::Error> {
+        let channel = self.channel.ok_or(russh::Error::Disconnect)?;
+        let worker = GameCommands {
             hooks: Arc::clone(&self.hooks),
             shared: Arc::clone(&self.shared),
             conn_id: self.conn_id,
             channel: Some(channel),
             handle: session.handle(),
         };
-        let hydration = if resumed {
-            let (bytes, queries) = worker.prepare_tui(true);
-            session.data(channel, bytes)?;
-            queries
+        let negotiated = self.cockpit.hint.is_some();
+        let tx = if let Some(tx) = &self.commands {
+            tx.clone()
         } else {
-            Vec::new()
+            let (tx, commands) = mpsc::channel::<GameAction>(128);
+            self.commands = Some(tx.clone());
+            self.command_task = Some(tokio::spawn(
+                worker.clone().run(commands, channel, negotiated),
+            ));
+            tx
         };
-        self.command_task = Some(tokio::spawn(async move {
-            for (name, args) in hydration {
-                submit_query(
-                    worker.hooks.as_ref(),
-                    &worker.shared,
-                    worker.conn_id,
-                    name,
-                    args,
-                    None,
-                )
-                .await;
-            }
-            while let Some(action) = commands.recv().await {
-                match action {
-                    GameAction::Line(line) => {
-                        if negotiated && line.trim().eq_ignore_ascii_case("QUIT") {
-                            worker.hooks.cockpit_close(worker.conn_id);
-                        }
-                        match worker.local_line(&line).await {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                worker.hooks.line(worker.conn_id, line.clone()).await;
-                            }
-                            Err(_) => {
-                                let _ = worker.handle.close(channel).await;
-                                break;
-                            }
-                        }
-                        if line.trim().eq_ignore_ascii_case("QUIT") {
-                            break;
-                        }
-                    }
-                    GameAction::Invoke { id, request } => {
-                        worker.hooks.invoke(worker.conn_id, id, request).await;
-                    }
-                    GameAction::Query { name, args } => {
-                        submit_query(
-                            worker.hooks.as_ref(),
-                            &worker.shared,
-                            worker.conn_id,
-                            name,
-                            args,
-                            None,
-                        )
-                        .await;
-                    }
-                    GameAction::Respond { id, epoch, choice } => {
-                        worker
-                            .hooks
-                            .respond(worker.conn_id, id, epoch, choice)
-                            .await;
-                    }
-                }
-            }
-        }));
-        spawn_output_pump(
-            rx,
-            stamped_rx,
-            Arc::clone(&self.shared),
-            session.handle(),
+        Ok(Player {
+            worker,
             channel,
-            Arc::clone(&self.hooks),
-            self.conn_id,
-            repaint,
-            Arc::clone(&self.connected),
-            self.cut(),
-        );
-        Ok(())
+            tx,
+            pane: self.cockpit.hint.as_ref().map(|hint| hint.pane.clone()),
+            connected: Arc::clone(&self.connected),
+            cut: self.cut(),
+            preauth_watchdog: self
+                .preauth_watchdog
+                .as_ref()
+                .map(tokio::task::JoinHandle::abort_handle),
+        })
     }
 
     fn exec_error(
@@ -2070,7 +1992,7 @@ impl Handler for ConnHandler {
                 && self.pty_seen
                 && !self.exec_submitted
                 && !self.closing
-                && self.cockpit.can_open()
+                && self.cockpit.can_open(self.lock().playing.is_some())
             {
                 self.cockpit.open(channel.id(), session.handle());
                 drop(channel);
@@ -2377,7 +2299,7 @@ impl Handler for ConnHandler {
                 self.sftp_channel = Some(channel);
             } else {
                 session.channel_failure(channel)?;
-                self.cockpit.close(session);
+                self.cockpit.abandon(session);
                 return Ok(());
             }
         }
@@ -2509,7 +2431,7 @@ impl Handler for ConnHandler {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.cockpit.channel == Some(channel) {
-            self.cockpit.close(session);
+            self.cockpit.abandon(session);
             return Ok(());
         }
         if self.sftp_channel == Some(channel) {
@@ -2526,7 +2448,7 @@ impl Handler for ConnHandler {
         if self.cockpit.channel == Some(channel) {
             // A client can half-close its one request before in-band login.
             if self.cockpit.pending.is_none() {
-                self.cockpit.close(session);
+                self.cockpit.abandon(session);
             }
             return Ok(());
         }
@@ -2563,7 +2485,7 @@ impl Handler for ConnHandler {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         if self.cockpit.channel == Some(channel) {
-            self.cockpit.finish();
+            self.cockpit.abandon_closed();
             return Ok(());
         }
         if self.channel == Some(channel) && self.cockpit.hint.is_some() {
@@ -2700,9 +2622,73 @@ async fn flush_pump_side_effects(
     }
 }
 
+/// Activates an admitted character on either the SSH handler or the login timer.
+struct Player {
+    worker: GameCommands,
+    channel: ChannelId,
+    tx: mpsc::Sender<GameAction>,
+    pane: Option<String>,
+    connected: Arc<AtomicBool>,
+    cut: Cut,
+    preauth_watchdog: Option<tokio::task::AbortHandle>,
+}
+
+impl Player {
+    fn activate(
+        self,
+        account: &str,
+        character: &CharSummary,
+        queues: OutputQueues,
+        view: Option<ViewPrefs>,
+        send_enter: impl FnOnce(ChannelId, Vec<u8>) -> Result<(), russh::Error>,
+    ) -> Result<(), russh::Error> {
+        if let Some(watchdog) = self.preauth_watchdog {
+            watchdog.abort();
+        }
+        let worker = self.worker;
+        let repaint = {
+            let mut sh = worker.lock();
+            sh.mode = Mode::InGame;
+            sh.playing = self
+                .pane
+                .map(|pane| (account.to_owned(), character.key, pane));
+            if let Some(view) = view {
+                sh.pixel_choice = view.encoder;
+                sh.sounds_on = view.sounds;
+            }
+            Arc::clone(&sh.repaint)
+        };
+        tracing::info!(conn = worker.conn_id, account, character = %character.name,
+                       character_id = character.key, "character connected");
+        if view.is_some_and(|v| v.tui) {
+            let (bytes, queries) = worker.prepare_tui(true);
+            send_enter(self.channel, bytes)?;
+            for (name, args) in queries {
+                self.tx
+                    .try_send(GameAction::Query { name, args })
+                    .map_err(|_| russh::Error::Disconnect)?;
+            }
+        }
+        spawn_output_pump(
+            queues.events,
+            queues.stamped,
+            worker.shared,
+            worker.handle,
+            self.channel,
+            worker.hooks,
+            worker.conn_id,
+            repaint,
+            self.connected,
+            self.cut,
+        );
+        Ok(())
+    }
+}
+
 // Connected typed commands may wait on persistence, restart, or output fences.
 // Their worker owns a Handle, never a borrowed Session, so the SSH event loop
 // can flush progress and process window adjustments throughout that wait.
+#[derive(Clone)]
 struct GameCommands {
     hooks: Arc<dyn SshHooks>,
     shared: Arc<Mutex<Shared>>,
@@ -2733,6 +2719,53 @@ fn cell_size_from_pty_px(
 }
 
 impl GameCommands {
+    async fn run(
+        mut self,
+        mut commands: mpsc::Receiver<GameAction>,
+        channel: ChannelId,
+        negotiated: bool,
+    ) {
+        while let Some(action) = commands.recv().await {
+            match action {
+                GameAction::Line(line) => {
+                    if negotiated && line.trim().eq_ignore_ascii_case("QUIT") {
+                        self.hooks.cockpit_close(self.conn_id);
+                    }
+                    match self.local_line(&line).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.hooks.line(self.conn_id, line.clone()).await;
+                        }
+                        Err(_) => {
+                            let _ = self.handle.close(channel).await;
+                            break;
+                        }
+                    }
+                    if line.trim().eq_ignore_ascii_case("QUIT") {
+                        break;
+                    }
+                }
+                GameAction::Invoke { id, request } => {
+                    self.hooks.invoke(self.conn_id, id, request).await;
+                }
+                GameAction::Query { name, args } => {
+                    submit_query(
+                        self.hooks.as_ref(),
+                        &self.shared,
+                        self.conn_id,
+                        name,
+                        args,
+                        None,
+                    )
+                    .await;
+                }
+                GameAction::Respond { id, epoch, choice } => {
+                    self.hooks.respond(self.conn_id, id, epoch, choice).await;
+                }
+            }
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
         connection_state(&self.shared)
     }
@@ -2787,6 +2820,7 @@ impl GameCommands {
         sh.history_request = None;
         sh.mode_generation = sh.mode_generation.wrapping_add(1);
         sh.mode = Mode::Tui;
+        sh.record_view(self.hooks.as_ref(), self.conn_id);
         (out, queries)
     }
     /// `@notui` / detach: leave the alternate screen, restore the cursor, drop
@@ -2817,6 +2851,7 @@ impl GameCommands {
             sh.mode_generation = sh.mode_generation.wrapping_add(1);
             sh.history.pending = None;
             sh.mode = Mode::InGame;
+            sh.record_view(self.hooks.as_ref(), self.conn_id);
             out.extend_from_slice(TuiSession::leave_bytes());
             // Repaint the line editor's prompt + in-progress buffer so the
             // resumed line client is not left on a blank line.
@@ -2841,6 +2876,7 @@ impl GameCommands {
             if let Some(tui) = sh.tui.as_mut() {
                 tui.set_pixel_choice(choice);
             }
+            sh.record_view(self.hooks.as_ref(), self.conn_id);
         }
         let choice = sh.pixel_choice;
         let report = sh.tui.as_mut().map(|t| t.pixel_report());
@@ -2861,6 +2897,7 @@ impl GameCommands {
             if let Some(tui) = sh.tui.as_mut() {
                 tui.set_sounds(on);
             }
+            sh.record_view(self.hooks.as_ref(), self.conn_id);
         }
         let report = sh.tui.as_ref().map(|t| t.sounds_report());
         sounds_reply(sh.sounds_on, report)
@@ -4066,6 +4103,7 @@ mod tests {
             width: 0,
             height: 0,
             cell_size: None,
+            playing: None,
             mode: Mode::InGame,
             tui: None,
             manifest: TuiManifest::default(),

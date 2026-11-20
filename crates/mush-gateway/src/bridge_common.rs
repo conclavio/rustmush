@@ -1801,10 +1801,15 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
     /// The transport lost (or closed) a connection. (Its IP-guard slot is
     /// released by the transport's own accept/drop accounting, not here.)
     pub async fn disconnected(&self, conn: ConnId) {
-        self.disconnect_outcome(conn).await;
+        self.disconnect_with(conn, |_| {}).await;
     }
 
-    pub(crate) async fn disconnect_outcome(&self, conn: ConnId) -> Option<DetachOutcome> {
+    /// Publish a transport's session transition before waiting on the world link.
+    pub(crate) async fn disconnect_with(
+        &self,
+        conn: ConnId,
+        on_detach: impl FnOnce(Option<DetachOutcome>),
+    ) {
         let actor = self.actor_of(conn);
         // A bare connection (doc 44 unit MW.24) has no session to detach: its
         // end is a `BareDown` and nothing else.
@@ -1812,17 +1817,19 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             && self.sessions.session_of_conn(conn).is_none()
             && self.sessions.conn_handle(conn).is_some()
         {
+            on_detach(None);
             self.leave_bare(conn, actor).await;
-            return None;
+            return;
         }
         let outcome = self.sessions.detach(conn, DetachReason::Lost);
+        on_detach(outcome);
         self.forget_view_sequences(conn);
         // Doc 33 §4.6: no longer one of the generation's live connections.
         drop(locked(&self.live, "live connections").remove(&conn));
         let (Some(actor), Some(outcome)) = (actor, outcome) else {
             // Already detached (QUIT raced the transport teardown) or never
             // attached: nothing game-side.
-            return None;
+            return;
         };
         match outcome {
             DetachOutcome::OthersRemain | DetachOutcome::Linkdead { .. } => {
@@ -1857,7 +1864,6 @@ impl<A: AuthBackend + 'static> GameBridge<A> {
             tracing::info!(conn = conn.0, %actor, grace_s = grace.as_secs(), "linkdead");
             self.arm_linkdead_reaper(grace);
         }
-        Some(outcome)
     }
 
     /// Auth gate: is the address currently blocked (tempban or siteban)?

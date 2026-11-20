@@ -177,16 +177,14 @@ impl SshHooks for Hooks {
     ) -> BoxFuture<'a, Result<(mush_net_ssh::resume::Ticket, u32), mush_net_ssh::resume::Failure>>
     {
         Box::pin(async move {
-            self.leases
-                .issue(
-                    id,
-                    pane,
-                    account,
-                    character,
-                    mush_session::SessId(19),
-                    Duration::from_secs(60),
-                )
-                .map(|ticket| (ticket, 60))
+            self.leases.issue(
+                id,
+                pane,
+                account,
+                character,
+                mush_session::SessId(19),
+                Duration::from_secs(60),
+            )
         })
     }
     fn cockpit_redeem<'a>(
@@ -196,19 +194,26 @@ impl SshHooks for Hooks {
         account: &'a str,
         selected: Option<u64>,
         ticket: &'a mush_net_ssh::resume::Ticket,
-    ) -> BoxFuture<
-        'a,
-        Result<(u64, mush_net_ssh::resume::Ticket, u32), mush_net_ssh::resume::Failure>,
-    > {
+    ) -> BoxFuture<'a, Result<mush_net_ssh::resume::Redeemed, mush_net_ssh::resume::Failure>> {
         Box::pin(async move {
             let claim = self
                 .leases
                 .reserve(conn.id, pane, account, selected, ticket)?;
             let character = claim.character();
-            let ticket = claim.commit()?;
+            let view = claim.view();
+            let (ticket, grace) = claim.commit()?;
             self.st().conns.push(conn);
-            Ok((character, ticket, 60))
+            Ok((character, ticket, grace, view))
         })
+    }
+    fn cockpit_view(
+        &self,
+        id: u64,
+        account: &str,
+        pane: &str,
+        view: mush_net_ssh::resume::ViewPrefs,
+    ) {
+        self.leases.update_view(id, account, pane, view);
     }
     fn cockpit_close(&self, id: u64) {
         self.leases.detach(id, false);
