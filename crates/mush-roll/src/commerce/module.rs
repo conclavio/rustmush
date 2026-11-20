@@ -841,7 +841,7 @@ impl CommerceConfig {
         )
     }
 
-    fn definitions(&self) -> Result<Vec<DefinitionDescriptor>, ModError> {
+    pub(crate) fn definitions(&self) -> Result<Vec<DefinitionDescriptor>, ModError> {
         let mut definitions = vec![
             descriptor(
                 "action",
@@ -2088,9 +2088,27 @@ fn register_owner_paths(
             config.terms.clone(),
             personal,
         )?;
+        let mut seal_authorities = Vec::new();
+        if let Some(inspection) = config.registry_inspection.as_deref() {
+            seal_authorities.push((inspection.0.organization, inspection.0.scope));
+        }
+        if let Some(policy) = config.registry_revocation.as_deref() {
+            seal_authorities.push((policy.organization, policy.scope));
+        }
+        if let Some(policy) = config.registry_recall.as_deref() {
+            seal_authorities.push((policy.organization, policy.scope));
+        }
+        seal_authorities.sort();
+        seal_authorities.dedup();
         // M8c B5: the seal-mark writer, beside the attestation that consults
         // the ring.
-        super::seal_marks::register(reg, families.clone(), seal_marks, &config.seal_marks)?;
+        super::seal_marks::register(
+            reg,
+            families.clone(),
+            seal_marks,
+            &config.seal_marks,
+            seal_authorities,
+        )?;
         // M8c B4: the House attestation shares the personal one's readiness
         // latch.
         if let Some(definitions) = house {

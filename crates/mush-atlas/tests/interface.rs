@@ -327,3 +327,48 @@ fn a_read_writes_nothing() {
     assert!(ops.is_empty(), "a read persisted nothing: {ops:?}");
     assert_eq!(tw.world().iter().count(), before, "a read made nothing");
 }
+
+#[test]
+fn atlas_describe_staff_view_is_private_while_mortal_view_is_public() {
+    let mut tw = lot();
+    let susie = named(&tw, ObjKind::Npc, "Susie");
+    let lobby = named(&tw, ObjKind::Room, "Lobby");
+    let rae = tw.spawn_player("Rae");
+    tw.world_mut().move_to(rae, lobby).expect("rae");
+    tw.world_mut().move_to(GOD, lobby).expect("god");
+
+    let mortal = invoke(
+        &mut tw,
+        "atlas",
+        susie,
+        rae,
+        "atlas.describe",
+        serde_json::json!({}),
+    )
+    .expect("mortal describe");
+    assert_eq!(
+        mortal.audience,
+        mush_core::ReplyAudience::Room,
+        "mortal atlas.describe stays public to the room"
+    );
+    assert!(
+        !mortal.text.contains("Production Office"),
+        "mortal view excludes restricted rooms: {}",
+        mortal.text
+    );
+
+    let staff = invoke(
+        &mut tw,
+        "atlas",
+        susie,
+        GOD,
+        "atlas.describe",
+        serde_json::json!({}),
+    )
+    .expect("staff describe");
+    assert_eq!(
+        staff.audience,
+        mush_core::ReplyAudience::Asker,
+        "staff atlas.describe must be private so restricted rooms are not spoken aloud to mortals"
+    );
+}

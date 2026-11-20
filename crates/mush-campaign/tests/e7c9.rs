@@ -4115,3 +4115,82 @@ fn high30_terminal_pruning_prevents_global_exhaustion_and_enforces_declaration_r
     tw.set_now(later);
     ok(&mut tw, spammer, "@op/declare after window");
 }
+
+#[test]
+fn force_attach_rejects_unauthorized_and_cross_org_parents() {
+    let mut tw = boot();
+    let officer_a = tw.spawn_player("OfficerA");
+    let dual = tw.spawn_player("DualOfficer");
+    ok(&mut tw, GOD, "@org/create Alpha");
+    ok(&mut tw, GOD, "@org/create Beta");
+    let (scope_a, scope_b) = {
+        let orgs = tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("org")
+            .state();
+        let a = orgs
+            .orgs()
+            .find(|o| o.name == "Alpha")
+            .expect("Alpha")
+            .root_scope;
+        let b = orgs
+            .orgs()
+            .find(|o| o.name == "Beta")
+            .expect("Beta")
+            .root_scope;
+        (a, b)
+    };
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Alpha force.attach scope={}",
+            officer_a.0, scope_a.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Alpha force.attach scope={}",
+            dual.0, scope_a.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Beta force.attach scope={}",
+            dual.0, scope_b.0
+        ),
+    );
+    ok(&mut tw, GOD, &format!("@force/create lance={}", scope_a.0));
+    ok(&mut tw, GOD, &format!("@force/create lance={}", scope_b.0));
+    let ids: Vec<_> = camp(&tw).formations().map(|n| n.id).collect();
+    let (fm_a, fm_b) = (ids[0], ids[1]);
+
+    // OfficerA has authority only in Alpha: attaching fm_a under Beta's fm_b must fail
+    // with NO_SUCH_FORMATION, byte-identical to a nonexistent parent (no existence oracle).
+    let unauth = err(&mut tw, officer_a, &format!("@force/attach {fm_a}={fm_b}"));
+    let absent = err(&mut tw, officer_a, &format!("@force/attach {fm_a}=fm99999"));
+    assert!(
+        unauth.contains(mush_campaign::NO_SUCH_FORMATION),
+        "{unauth}"
+    );
+    assert_eq!(
+        unauth, absent,
+        "parent lookup leaked foreign formation existence"
+    );
+    assert_eq!(camp(&tw).formation(fm_a).expect("a").parent, None);
+
+    // Even a dual-org officer (or staff) cannot attach a formation across org boundaries.
+    for actor in [dual, GOD] {
+        let cross = err(&mut tw, actor, &format!("@force/attach {fm_a}={fm_b}"));
+        assert!(
+            cross.contains("same organization"),
+            "cross-org parent must be refused for {actor:?}: {cross}"
+        );
+        assert_eq!(camp(&tw).formation(fm_a).expect("a").parent, None);
+    }
+}

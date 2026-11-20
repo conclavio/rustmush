@@ -53,7 +53,7 @@ import { MarketStore } from "./stores/market.svelte";
 import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import type { PixelModule } from "./pixel/wasm";
 
-import { exitKeys, type NavIntent } from "./keys";
+import { exitCommand, exitKeys, type NavIntent } from "./keys";
 import { paletteEntries, type PaletteEntry } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
@@ -1576,9 +1576,14 @@ export class GameApp {
       case "help":
         this.screens.helpOpen = !this.screens.helpOpen;
         return true;
-      case "exit":
-        this.submit(intent.name);
+      case "exit": {
+        const cmd = exitCommand(intent.name);
+        if (cmd === null) {
+          return false;
+        }
+        this.submit(cmd);
         return true;
+      }
       case "binding":
         return this.runBinding(intent.key);
       case "pane":

@@ -402,6 +402,15 @@ impl OwnerReadService for EntitlementSaleReader {
         if status.withdrawn_by.is_some() || status.recalled_by.is_some() {
             return Err(OwnerReadError::Refused);
         }
+        super::super::charter_pending::current::require_clear(
+            ctx,
+            &self.families,
+            holding.charter(),
+        )
+        .map_err(|e| match e {
+            PublicationError::Unavailable => OwnerReadError::Refused,
+            _ => OwnerReadError::Integrity,
+        })?;
         let filed =
             history::read(ctx, &self.families.filed, holding.filed().key()).map_err(integrity)?;
         let qualifying_parent = if let Some(parent) = filed.content.parent() {

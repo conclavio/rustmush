@@ -329,9 +329,17 @@ struct Request {
     sortie: String,
 }
 /// Whether `actor` may write seal marks (M8c F7): GOD, or a live character
-/// granted [`SEAL_MARK_CAPABILITY`] on the root scope of an organisation
-/// that granted it, asked LIVE with no amount.
-pub(crate) fn authorized(world: &World, actor: ObjId) -> bool {
+/// granted [`SEAL_MARK_CAPABILITY`] LIVE with no amount.
+///
+/// When explicit Registry policies are configured on the Roll, authorization
+/// is strictly bound to those configured Registry `(organization, scope)`
+/// authorities so a grant on a non-Registry organization cannot authorize
+/// Registry seal marks.
+pub(crate) fn authorized(
+    world: &World,
+    actor: ObjId,
+    bound: &[(mush_org::OrgId, mush_org::OrgScopeId)],
+) -> bool {
     if actor == GOD {
         return true;
     }
@@ -339,6 +347,9 @@ pub(crate) fn authorized(world: &World, actor: ObjId) -> bool {
         || world
             .get(actor)
             .is_none_or(|o| o.flags.contains(Flags::GOING))
+        || world
+            .module_state_owner(std::any::TypeId::of::<mush_org::OrgStore>())
+            .is_none_or(|owner| owner.as_str() != "org")
     {
         return false;
     }
@@ -349,22 +360,52 @@ pub(crate) fn authorized(world: &World, actor: ObjId) -> bool {
         return false;
     };
     let state = store.state();
+    if !bound.is_empty() {
+        return bound.iter().any(|&(org_id, scope_id)| {
+            let Some(org) = state.org(org_id) else {
+                return false;
+            };
+            let Some(scope) = state.scope(scope_id) else {
+                return false;
+            };
+            org.status == mush_org::OrgStatus::Active
+                && scope.status == mush_org::ScopeStatus::Active
+                && scope.org == org_id
+                && matches!(
+                    mush_org::authorize_in_world(
+                        world,
+                        &mush_org::AuthRequest {
+                            actor,
+                            capability: capability.clone(),
+                            scope: scope_id,
+                            now: world.now(),
+                            amount: None,
+                        },
+                    ),
+                    mush_org::Decision::Allow(_)
+                )
+        });
+    }
     let orgs: std::collections::BTreeSet<mush_org::OrgId> = state.grant_orgs(actor).collect();
     orgs.into_iter().any(|org| {
         state.org(org).is_some_and(|o| {
-            matches!(
-                mush_org::authorize_in_world(
-                    world,
-                    &mush_org::AuthRequest {
-                        actor,
-                        capability: capability.clone(),
-                        scope: o.root_scope,
-                        now: world.now(),
-                        amount: None,
-                    },
-                ),
-                mush_org::Decision::Allow(_)
-            )
+            o.status == mush_org::OrgStatus::Active
+                && state
+                    .scope(o.root_scope)
+                    .is_some_and(|s| s.status == mush_org::ScopeStatus::Active && s.org == org)
+                && matches!(
+                    mush_org::authorize_in_world(
+                        world,
+                        &mush_org::AuthRequest {
+                            actor,
+                            capability: capability.clone(),
+                            scope: o.root_scope,
+                            now: world.now(),
+                            amount: None,
+                        },
+                    ),
+                    mush_org::Decision::Allow(_)
+                )
         })
     })
 }
@@ -510,6 +551,7 @@ struct Provider {
     action: DefinitionRef,
     outcome: DefinitionRef,
     f: CommerceFamilies,
+    registry_authorities: Vec<(mush_org::OrgId, mush_org::OrgScopeId)>,
     refusal: ActionError,
 }
 impl Provider {
@@ -521,7 +563,7 @@ impl Provider {
     ) -> Result<AuthoritativeActionOutput, PublicationError> {
         let request = Request::parse(inv)?;
         let world = ctx.world().map_err(invalid)?;
-        if !authorized(world, inv.actor()) {
+        if !authorized(world, inv.actor(), &self.registry_authorities) {
             return Err(PublicationError::Invalid);
         }
         world
@@ -564,7 +606,7 @@ impl ActionProvider for Provider {
         engine: &mush_core::Engine,
     ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
         if action != &self.action
-            || !authorized(&engine.world, q.actor())
+            || !authorized(&engine.world, q.actor(), &self.registry_authorities)
             || q.principal() != &(PrincipalId::Object { id: q.actor() })
             || q.projected_subject() != &PerceivedRef::SelfActor
             || q.truth_subject() != &(mush_core::SubjectKey::Object { id: q.actor() })
@@ -637,6 +679,7 @@ pub(crate) fn register(
     f: CommerceFamilies,
     definitions: [DefinitionRef; 2],
     writer: &SealMarkWriter,
+    registry_authorities: Vec<(mush_org::OrgId, mush_org::OrgScopeId)>,
 ) -> Result<(), ModError> {
     let [action, outcome] = definitions;
     if reg.module() != crate::NS || action != self::action()? {
@@ -650,6 +693,7 @@ pub(crate) fn register(
             action,
             outcome,
             f,
+            registry_authorities,
             refusal: ActionError::new(
                 ActionErrorCode::ProviderRejected,
                 false,
@@ -809,5 +853,116 @@ mod tests {
         // At `grace_end` its flight counts; after it nothing more does.
         assert_eq!(seen(300), vec![100, 300]);
         assert_eq!(seen(1_000), vec![100, 300]);
+    }
+
+    #[test]
+    fn seal_mark_authorization_binds_to_configured_registry_org() {
+        let mut engine = mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(mush_org::OrgModule::new())],
+        )
+        .unwrap();
+        let reg_op = engine
+            .world
+            .create(
+                mush_core::ObjKind::Player,
+                "RegOp",
+                GOD,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+        let rogue_op = engine
+            .world
+            .create(
+                mush_core::ObjKind::Player,
+                "RogueOp",
+                GOD,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+        let outsider = engine
+            .world
+            .create(
+                mush_core::ObjKind::Player,
+                "Outsider",
+                GOD,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+
+        let run = |engine: &mut mush_core::Engine, cmd: &str| {
+            let mut out = mush_core::Outbox::new();
+            let mut fx = mush_core::Effects::new();
+            engine.step(
+                mush_core::Inbound::Cmd {
+                    conn: 1,
+                    actor: GOD,
+                    line: cmd.into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+            assert!(
+                !out.events().is_empty(),
+                "command produced no output: {cmd:?}"
+            );
+        };
+
+        run(&mut engine, "@org/create Registry");
+        run(&mut engine, "@org/scope create Registry=Inspections");
+        run(&mut engine, "@org/create RogueCorp");
+        run(
+            &mut engine,
+            &format!("@org/grant #{}=Registry {SEAL_MARK_CAPABILITY}", reg_op.0),
+        );
+        run(
+            &mut engine,
+            &format!(
+                "@org/grant #{}=RogueCorp {SEAL_MARK_CAPABILITY}",
+                rogue_op.0
+            ),
+        );
+
+        let (registry_org, registry_scope) = {
+            let store = engine.world.module_state::<mush_org::OrgStore>().unwrap();
+            let st = store.state();
+            let org = st
+                .orgs()
+                .find(|o| o.name == "Registry")
+                .expect("Registry org");
+            let child = st
+                .scopes_in(org.id)
+                .find(|s| s.name == "Inspections")
+                .expect("Inspections scope");
+            (org.id, child.id)
+        };
+
+        let bound = vec![(registry_org, registry_scope)];
+        assert!(authorized(&engine.world, GOD, &bound));
+        assert!(
+            authorized(&engine.world, reg_op, &bound),
+            "grant on configured Registry org subtree must authorize child Registry scope"
+        );
+        assert!(
+            !authorized(&engine.world, rogue_op, &bound),
+            "grant on a non-Registry org must NOT authorize Registry seal marks"
+        );
+        assert!(!authorized(&engine.world, outsider, &bound));
+
+        // Unbound minimal composition preserves fallback for active org grants.
+        assert!(authorized(&engine.world, reg_op, &[]));
+        assert!(authorized(&engine.world, rogue_op, &[]));
+        assert!(!authorized(&engine.world, outsider, &[]));
+
+        // Retiring the Registry scope revokes authorization even for Registry grantees.
+        run(
+            &mut engine,
+            &format!("@org/scope retire Registry=#{}", registry_scope.0),
+        );
+        assert!(
+            !authorized(&engine.world, reg_op, &bound),
+            "retired Registry scope must fail closed"
+        );
     }
 }

@@ -1877,4 +1877,101 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(intern.shipInteractables.filter((i) => i.id.startsWith("ship:rig:"))).toHaveLength(2);
     stage.dispose();
   });
+
+  it("disposes actor meshes/materials on despawn and uses prototype-safe lookups for actorComposing and actorSpeech", () => {
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const drayP = parseShipUnitJson(readRepoContent("units/dray_p.json"), "tacsim.unit.dray_p");
+    const baseAmbient = decodeTacsimRoomAmbient(null);
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+    const intern = stage as unknown as {
+      spawnedActors: Map<
+        string,
+        {
+          group: { userData: Record<string, unknown>; traverse: (fn: (o: { userData: Record<string, unknown> }) => void) => void };
+          billboardSprite: { userData: Record<string, unknown> };
+          lastIsTyping: boolean;
+          speechExpiresAt: number;
+        }
+      >;
+      interactables: Array<{ id: string }>;
+    };
+
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c01_berth_gallery",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: baseAmbient,
+      visibleActors: [
+        { id: "#501", name: "Constructor", isNpc: false, isMale: false, shortDesc: "" },
+        { id: "#502", name: "toString", isNpc: false, isMale: false, shortDesc: "" },
+        { id: "#503", name: "__proto__", isNpc: false, isMale: false, shortDesc: "" },
+      ],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    // Prototype properties on empty plain records must never evaluate truthy.
+    for (const id of ["#501", "#502", "#503"]) {
+      const rec = intern.spawnedActors.get(id)!;
+      expect(rec.lastIsTyping).toBe(false);
+      expect(rec.speechExpiresAt).toBe(0);
+    }
+
+    // Track mesh/sprite nodes of #501, then despawn it and verify disposal + interactable cleanup.
+    const rec501 = intern.spawnedActors.get("#501")!;
+    const visitedNodes: Array<{ userData: Record<string, unknown> }> = [];
+    rec501.group.traverse((o) => visitedNodes.push(o));
+    expect(visitedNodes.length).toBeGreaterThan(1);
+
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c01_berth_gallery",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: baseAmbient,
+      visibleActors: [{ id: "#502", name: "toString", isNpc: false, isMale: false, shortDesc: "" }],
+      actorSpeech: {},
+      actorComposing: { "#502": true },
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    expect(visitedNodes.every((n) => n.userData["disposed"] === true)).toBe(true);
+    expect(rec501.billboardSprite.userData["disposed"]).toBe(true);
+    expect(intern.interactables.some((i) => i.id === "actor:#501")).toBe(false);
+    expect(intern.spawnedActors.get("#502")!.lastIsTyping).toBe(true);
+
+    // TacsimPortStore.observeNarrative must not mutate prototype when actor name is "__proto__".
+    const store = new TacsimPortStore({
+      sendCommand: () => {},
+      subscribePanel: () => true,
+      hasPanel: () => true,
+      selfCharacterId: () => "#1",
+    });
+    store.observeNarrative({
+      kind: "say",
+      actor: { id: "#503", name: "__proto__" },
+      text: "hello",
+    });
+    expect(Object.getPrototypeOf(store.actorSpeech)).toBe(Object.prototype);
+    expect(Object.hasOwn(store.actorSpeech, "__proto__")).toBe(true);
+    stage.dispose();
+  });
 });

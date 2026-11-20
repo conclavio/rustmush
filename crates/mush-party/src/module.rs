@@ -43,7 +43,7 @@ use mush_core::{Ctx, ModuleOp, ModuleWrite, ObjId, Outbox, Role, World};
 use smol_str::SmolStr;
 
 use crate::ids::PartyId;
-use crate::record::{MAX_PARTIES, Party};
+use crate::record::{MAX_PARTIES, MAX_RETAINED_DISBANDED_PARTIES, Party};
 
 /// The module id and persistence namespace.
 pub const NS: &str = "party";
@@ -180,6 +180,30 @@ impl PartyStore {
             .map(|p| p.id)
             .collect();
     }
+
+    /// Evict the oldest terminal (`Disbanded`) parties once their count exceeds
+    /// [`MAX_RETAINED_DISBANDED_PARTIES`], returning the removed ids so callers
+    /// can emit matching `Del` persistence ops.
+    ///
+    /// Live parties are never evicted and `next_party` is never lowered.
+    pub(crate) fn prune_disbanded(&mut self) -> Vec<PartyId> {
+        let terminal_count = self.parties.len().saturating_sub(self.live.len());
+        let excess = terminal_count.saturating_sub(MAX_RETAINED_DISBANDED_PARTIES);
+        if excess == 0 {
+            return Vec::new();
+        }
+        let doomed: Vec<PartyId> = self
+            .parties
+            .iter()
+            .filter(|(_, p)| p.is_terminal())
+            .map(|(id, _)| *id)
+            .take(excess)
+            .collect();
+        for id in &doomed {
+            self.parties.remove(id);
+        }
+        doomed
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +231,7 @@ pub(crate) fn put_party(ctx: &mut Ctx<'_>, p: Party) {
         p.validate().is_ok(),
         "party: a record was written that its own wire would refuse"
     );
+    let mut pruned = Vec::new();
     if let Some(store) = ctx.w.module_state_mut::<PartyStore>() {
         if p.is_terminal() {
             store.live.remove(&p.id);
@@ -214,16 +239,24 @@ pub(crate) fn put_party(ctx: &mut Ctx<'_>, p: Party) {
             store.live.insert(p.id);
         }
         store.parties.insert(p.id, p.clone());
+        if p.is_terminal() {
+            pruned = store.prune_disbanded();
+        }
     }
-    match serde_json::to_value(&p) {
-        Ok(value) => push_op(
-            ctx.out,
-            ModuleWrite::JsonSet {
-                key: party_key(p.id),
-                value,
-            },
-        ),
-        Err(e) => tracing::error!(id = %p.id, error = %e, "party: record would not serialize"),
+    if !pruned.contains(&p.id) {
+        match serde_json::to_value(&p) {
+            Ok(value) => push_op(
+                ctx.out,
+                ModuleWrite::JsonSet {
+                    key: party_key(p.id),
+                    value,
+                },
+            ),
+            Err(e) => tracing::error!(id = %p.id, error = %e, "party: record would not serialize"),
+        }
+    }
+    for id in pruned {
+        push_op(ctx.out, ModuleWrite::Del { key: party_key(id) });
     }
 }
 

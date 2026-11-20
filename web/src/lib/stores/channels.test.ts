@@ -54,6 +54,22 @@ describe("ChannelsStore", () => {
     expect(st.totalUnread).toBe(3);
   });
 
+  it("drops malformed or CSS-injecting colorHex values during applyState", () => {
+    const st = new ChannelsStore();
+    st.applyState(
+      stateData([
+        { name: "Safe3", color: { ansi: "red", web_hex: "#f0a" } },
+        { name: "Safe6", color: { ansi: "cyan", web_hex: "#00FFFF" } },
+        { name: "Evil", color: { ansi: "red", web_hex: "red; background-image:url(https://evil.example)" } },
+        { name: "BadLen", color: { ansi: "red", web_hex: "#12345" } },
+      ]),
+    );
+    expect(st.byName("Safe3")!.colorHex).toBe("#f0a");
+    expect(st.byName("Safe6")!.colorHex).toBe("#00FFFF");
+    expect(st.byName("Evil")!.colorHex).toBeNull();
+    expect(st.byName("BadLen")!.colorHex).toBeNull();
+  });
+
   it("accrues unread on live messages for inactive tabs only", () => {
     const st = new ChannelsStore();
     st.applyState(stateData([{ name: "Public", seq: 5, last_read: 5 }]));

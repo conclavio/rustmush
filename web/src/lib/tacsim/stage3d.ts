@@ -961,9 +961,17 @@ export class TacsimStage3D {
     actorComposing: Record<string, boolean>,
     nowMs: number,
   ): void {
-    const sp = actorSpeech[act.id] ?? actorSpeech[act.name.toLowerCase()];
+    const lowerName = act.name.toLowerCase();
+    const sp = Object.hasOwn(actorSpeech, act.id)
+      ? actorSpeech[act.id]
+      : Object.hasOwn(actorSpeech, lowerName)
+        ? actorSpeech[lowerName]
+        : undefined;
     const activeSpeech = sp && sp.expiresAt > nowMs ? sp.text : "";
-    const isTyping = Boolean(actorComposing[act.id] || actorComposing[act.name.toLowerCase()]);
+    const isTyping = Boolean(
+      (Object.hasOwn(actorComposing, act.id) && actorComposing[act.id]) ||
+        (Object.hasOwn(actorComposing, lowerName) && actorComposing[lowerName]),
+    );
     rec.speechExpiresAt = activeSpeech && sp ? sp.expiresAt : 0;
     rec.lastIsTyping = isTyping;
     this.renderActorBillboard(rec, act, activeSpeech, isTyping);

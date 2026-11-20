@@ -1372,9 +1372,16 @@ impl StoreReadCompletion for ScenesArchiveRead {
                 to_actor(ctx, format!("  {l}"));
             }
         } else {
+            let privileged = actor == s.facilitator || staff;
             let lines: Vec<String> = events
                 .iter()
-                .map(|(seq, ev)| format!("  {:>3}. {}", seq, render_event(ctx.w, ev)))
+                .map(|(seq, ev)| {
+                    format!(
+                        "  {:>3}. {}",
+                        seq,
+                        render_event(ctx.w, actor, privileged, ev)
+                    )
+                })
                 .collect();
             to_actor(
                 ctx,
@@ -1398,8 +1405,13 @@ impl StoreReadCompletion for ScenesArchiveRead {
 // +scene  (read-only)  +  +timestop/log  +  +recap
 // ----------------------------------------------------------------------
 
-/// Render one recorded [`SceneEvent`] to a one-line summary.
-fn render_event(w: &World, ev: &SceneEvent) -> String {
+/// Render one recorded [`SceneEvent`] to a one-line summary for `viewer`.
+///
+/// Consent votes are attributed only when `privileged` (facilitator or staff)
+/// or when the event is the viewer's own vote, matching [`consent_lines`] so
+/// `+timestop/log` and `+timestop/log/archive` cannot deanonymize another
+/// participant's consent choice.
+fn render_event(w: &World, viewer: ObjId, privileged: bool, ev: &SceneEvent) -> String {
     let who = ev.actor.map_or_else(String::new, |a| display_name(w, a));
     let s = |k: &str| ev.detail.get(k).and_then(|v| v.as_str()).unwrap_or("");
     match ev.kind {
@@ -1425,7 +1437,14 @@ fn render_event(w: &World, ev: &SceneEvent) -> String {
         SceneEventKind::Joined => format!("{who} arrives."),
         SceneEventKind::Left => format!("{who} leaves."),
         SceneEventKind::Sealed => format!("{who} sealed the outcome: {}.", s("outcome")),
-        SceneEventKind::Consent => format!("{who} on {}: {}.", s("about"), s("choice")),
+        SceneEventKind::Consent => {
+            let label = if privileged || ev.actor == Some(viewer) {
+                who
+            } else {
+                "A participant".to_string()
+            };
+            format!("{label} on {}: {}.", s("about"), s("choice"))
+        }
         SceneEventKind::Rewound => format!("{who} rewound the turn (round {}).", s("round")),
     }
 }
@@ -1455,13 +1474,21 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         to_actor(ctx, msg);
         return Ok(());
     }
+    let privileged = ctx.actor == s.facilitator || is_staff(ctx.w, ctx.actor);
+    let viewer = ctx.actor;
     let entries = state_ref(ctx).events.open_entries(&log_id).to_vec();
     let lines: Vec<String> = entries
         .iter()
         .filter_map(|e| {
             serde_json::from_value::<SceneEvent>(e.value.clone())
                 .ok()
-                .map(|ev| format!("  {:>3}. {}", e.seq, render_event(ctx.w, &ev)))
+                .map(|ev| {
+                    format!(
+                        "  {:>3}. {}",
+                        e.seq,
+                        render_event(ctx.w, viewer, privileged, &ev)
+                    )
+                })
         })
         .collect();
     let omitted = total.saturating_sub(lines.len() as u64);

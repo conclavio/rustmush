@@ -878,13 +878,18 @@ describe("GameApp.act", () => {
     expect(app.act({ kind: "binding", key: "z" })).toBe(false);
   });
 
-  it("an exit key walks the room, on the wire", () => {
+  it("an exit key walks the room via goto, on the wire, and refuses control-injected exit names", () => {
     const { app, ws, c } = withComposer();
     const before = ws.sentJson().length;
 
     expect(app.act({ kind: "exit", name: "North" })).toBe(true);
+    expect(app.act({ kind: "exit", name: "@destroy me" })).toBe(true);
+    expect(app.act({ kind: "exit", name: "North\nQUIT" })).toBe(false);
 
-    expect(ws.sentJson().slice(before)).toEqual([{ t: "line", d: "North" }]);
+    expect(ws.sentJson().slice(before)).toEqual([
+      { t: "line", d: "goto North" },
+      { t: "line", d: "goto @destroy me" },
+    ]);
     expect(c.focuses).toEqual([]); // an exit never opens the box
   });
 

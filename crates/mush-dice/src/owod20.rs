@@ -205,10 +205,10 @@ impl Owod20Pool {
             let doubled = is_success && double_tens && face == 10;
             if is_success {
                 any_success = true;
-                raw_successes += if doubled { 2 } else { 1 };
+                raw_successes = raw_successes.saturating_add(if doubled { 2 } else { 1 });
             }
             if is_one {
-                ones += 1;
+                ones = ones.saturating_add(1);
             }
             dice.push(Owod20Die {
                 face,
@@ -219,7 +219,10 @@ impl Owod20Pool {
         }
 
         let willpower = i32::from(opts.willpower);
-        let net = raw_successes - ones + willpower + opts.extra_successes;
+        let net = raw_successes
+            .saturating_sub(ones)
+            .saturating_add(willpower)
+            .saturating_add(opts.extra_successes);
 
         let result = if !any_success && ones >= 1 && !opts.willpower {
             RollResult::Botch(clamp_u8(ones))
@@ -311,7 +314,9 @@ impl ExtendedRoll {
     /// Record one roll and return the resulting status.
     pub fn add(&mut self, outcome: Owod20Outcome) -> ExtendedStatus {
         match outcome.result {
-            RollResult::Success(n) => self.accumulated += i32::from(n),
+            RollResult::Success(n) => {
+                self.accumulated = self.accumulated.saturating_add(i32::from(n));
+            }
             RollResult::Failure => {}
             RollResult::Botch(_) => self.botched = true,
         }

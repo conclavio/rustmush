@@ -4749,3 +4749,133 @@ fn high28_may_view_tenancy_blocks_cross_tenancy_disclosure() {
         );
     }
 }
+
+#[test]
+fn paying_co_tenant_home_leave_ends_exact_lease_and_cancels_rent() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    ok(&mut tw, GOD, "@dig SharedLoft=upshared,downshared");
+    let loft = room_named(&tw, "SharedLoft");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create SharedLoft=#{} tier=1 landlord=#{}",
+            loft.0, r.quinn.0
+        ),
+    );
+    r.property = store(&tw).properties().last().expect("property").id;
+    r.anchor = loft;
+    ok(&mut tw, GOD, "@instrument/register gold=0");
+    ok(&mut tw, GOD, "@account/system faucet=gold");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", r.pat.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", r.quinn.0));
+    let (faucet, pat_acct, quinn_acct) = {
+        let econ = tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("economy");
+        let snap = econ.snapshot();
+        let faucet = snap
+            .accounts()
+            .find(|a| matches!(&a.owner, mush_org::PrincipalId::System(_)))
+            .expect("faucet")
+            .id;
+        let p = snap
+            .accounts()
+            .find(|a| a.owner == mush_org::PrincipalId::Object(r.pat))
+            .expect("pat account")
+            .id;
+        let q = snap
+            .accounts()
+            .find(|a| a.owner == mush_org::PrincipalId::Object(r.quinn))
+            .expect("quinn account")
+            .id;
+        (faucet, p, q)
+    };
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={pat_acct} 1000"),
+    );
+
+    // Pat (rent payer), Rex, and Sam share an exact lease.
+    let sam = tw.spawn_player("Sam");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {}=#{},#{},#{} cadence={} mode=exact rent=10 from={pat_acct} to={quinn_acct}",
+            r.property, r.pat.0, r.rex.0, sam.0, r.cadence
+        ),
+    );
+    let tid = store(&tw).tenancies().last().expect("tenancy").id;
+    let contract = match tenancy(&tw, tid).funding {
+        mush_housing::Funding::Exact { contract, .. } => contract,
+        other => panic!("expected exact funding, got {other:?}"),
+    };
+    for tenant in [r.pat, r.rex, sam] {
+        ok(&mut tw, tenant, &format!("@contract/accept {contract}"));
+    }
+    assert_eq!(status(&tw, tid), TenancyStatusKind::Active);
+    let obligation = match tenancy(&tw, tid).funding {
+        mush_housing::Funding::Exact { obligation, .. } => obligation,
+        other => panic!("expected exact funding, got {other:?}"),
+    };
+
+    // Non-paying co-tenant Sam leaves: only Sam drops from the roster; lease stays active.
+    ok(&mut tw, sam, "+home/leave");
+    assert_eq!(status(&tw, tid), TenancyStatusKind::Active);
+    assert!(!tenancy(&tw, tid).is_tenant(sam));
+    assert!(tenancy(&tw, tid).is_tenant(r.pat));
+    assert!(tenancy(&tw, tid).is_tenant(r.rex));
+
+    // Paying co-tenant Pat leaves: tenancy AND lease end, rent obligation is canceled.
+    ok(&mut tw, r.pat, "+home/leave");
+    assert_eq!(status(&tw, tid), TenancyStatusKind::Ended);
+    assert_eq!(home_of(&tw, r.pat), None);
+    assert_eq!(home_of(&tw, r.rex), None);
+    let econ = tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .expect("economy");
+    let snap = econ.snapshot();
+    assert!(
+        !snap.contract(contract).expect("contract").state.is_live(),
+        "lease contract must not stay live after paying co-tenant leaves"
+    );
+    assert_eq!(
+        snap.obligation(obligation)
+            .expect("obligation")
+            .status
+            .kind(),
+        mush_economy::ObligationStatusKind::Cancelled,
+        "rent obligation must be canceled when paying co-tenant leaves"
+    );
+}
+
+#[test]
+fn list_filters_do_not_leak_landlord_to_guests_or_widen_on_bad_property() {
+    let mut tw = boot();
+    let r = rig(&mut tw);
+    let p = org_property(&mut tw, r.quinn, "property.view", true, "SecretTower");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@tenancy/create {p}=#{} cadence={}", r.pat.0, r.cadence),
+    );
+    ok(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
+
+    // Guest Rex cannot probe who owns SecretTower via `@property/list landlord=org:...`.
+    let real = texts(&tw.run(r.rex, "@property/list landlord=org:Ironhold"));
+    let fake = texts(&tw.run(r.rex, "@property/list landlord=org:Nowhere"));
+    assert_eq!(real, fake);
+    assert!(real.contains(mush_housing::NO_SUCH_PROPERTY), "{real}");
+
+    // `@tenancy/list property=...` never widens on malformed ids and unifies missing/unauthorized.
+    let bad = texts(&tw.run(r.pat, "@tenancy/list property=notanumber"));
+    let missing = texts(&tw.run(r.pat, "@tenancy/list property=999999"));
+    assert_eq!(bad, missing);
+    assert!(bad.contains(mush_housing::NO_SUCH_TENANCY), "{bad}");
+    assert!(!bad.contains(&format!("#{p}")), "filter widened: {bad}");
+}

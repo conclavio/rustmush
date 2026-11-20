@@ -4,7 +4,7 @@
   import { tick } from "svelte";
 
   import type { GameApp } from "$lib/game.svelte";
-  import { channelLine, fmtClock } from "$lib/render";
+  import { channelLine, fmtClock, safeColorHex } from "$lib/render";
 
   import InputBar from "./InputBar.svelte";
   import RichLine from "./RichLine.svelte";
@@ -16,6 +16,7 @@
   }: { app: GameApp; channel: string; onCmd: (cmd: string) => void } = $props();
 
   const meta = $derived(app.channels.byName(channel));
+  const titleColor = $derived(safeColorHex(meta?.colorHex));
   const messages = $derived(app.channels.messagesOf(channel));
 
   let viewport: HTMLDivElement | undefined = $state();
@@ -45,7 +46,7 @@
   <div class="head">
     <span class="half" class:ic={meta?.ic}>{meta?.ic ? "IC" : "OOC"}</span>
     <span class="dot">·</span>
-    <strong style={meta?.colorHex ? `color:${meta.colorHex}` : ""}>{meta?.name ?? channel}</strong>
+    <strong style={titleColor ? `color:${titleColor}` : ""}>{meta?.name ?? channel}</strong>
     {#if meta?.title}<span class="muted">title: {meta.title}</span>{/if}
     {#if meta?.gagged}<span class="warn">gagged — you won't hear new messages</span>{/if}
     {#if meta && !meta.logged}<span class="muted">(no history: LOGGED is off)</span>{/if}

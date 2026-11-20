@@ -108,6 +108,55 @@ impl GameModule for Producer {
                 Ok(())
             }),
         )?;
+        reg.command(
+            CommandSpec {
+                name: "test-enroll".into(),
+                shape: ArgShape::EqPair,
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| {
+                let org = OrgId(
+                    ctx.args
+                        .lhs()
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| CmdError::msg("org id"))?,
+                );
+                let member = ObjId(
+                    ctx.args
+                        .rhs()
+                        .unwrap_or_default()
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| CmdError::msg("member id"))?,
+                );
+                let plan =
+                    mush_org::OrgMutationPlan::of(vec![mush_org::OrgMutationOp::PutMembership {
+                        membership: mush_org::OrgMembership {
+                            org,
+                            member,
+                            status: mush_org::MembershipStatus::Active,
+                            titles: Vec::new(),
+                            roles: std::collections::BTreeSet::new(),
+                            visibility: mush_org::Visibility::Public,
+                            since: 1_000,
+                            revision: 1,
+                        },
+                    }]);
+                mush_org::submit(
+                    ctx,
+                    &plan,
+                    mush_org::OrgAction {
+                        action: SmolStr::new_static("test.enroll"),
+                        org: Some(org),
+                        detail: serde_json::json!({}),
+                    },
+                )
+                .map_err(|e| CmdError::msg(e.to_string()))?;
+                ctx.out.sys_to_actor(ctx.actor, "test", "enrolled");
+                Ok(())
+            }),
+        )?;
         Ok(())
     }
 }
@@ -513,5 +562,131 @@ fn a_voidable_grant_is_voided_only_by_its_named_leader_and_replays() {
     assert_eq!(
         standing_receipt(world.world(), cause).and_then(|receipt| receipt.voided_by),
         Some(pilot)
+    );
+}
+
+#[test]
+fn open_factions_excludes_hidden_factions_and_hidden_backing_orgs() {
+    let (mut world, pilot, _) = boot(true);
+
+    // Create two visible orgs and one hidden org, enroll Pilot actively in all three.
+    run(&mut world, GOD, "@org/create VisibleOrg");
+    run(&mut world, GOD, "@org/create VisibleOrg2");
+    run(&mut world, GOD, "@org/create ShadowOrg");
+    let (vis_org, vis_org2, shadow_org) = {
+        let state = world
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("org")
+            .state();
+        let vis = state
+            .orgs()
+            .find(|o| o.name == "VisibleOrg")
+            .expect("vis")
+            .id;
+        let vis2 = state
+            .orgs()
+            .find(|o| o.name == "VisibleOrg2")
+            .expect("vis2")
+            .id;
+        let sh = state
+            .orgs()
+            .find(|o| o.name == "ShadowOrg")
+            .expect("shadow")
+            .id;
+        (vis, vis2, sh)
+    };
+    for org in [vis_org, vis_org2, shadow_org] {
+        assert!(
+            run(
+                &mut world,
+                GOD,
+                &format!("test-enroll {}={}", org.0, pilot.0)
+            )
+            .contains("enrolled")
+        );
+        assert!(
+            run(&mut world, GOD, &format!("test-ensure {}", org.0)).contains("Faction"),
+            "ensure org faction for {org:?}"
+        );
+    }
+    let control_fid = faction(&world, "VisibleOrg");
+
+    // Hide ShadowOrg (so its visible faction must not leak via org link) and hide
+    // VisibleOrg2's faction (so a hidden faction must not leak via a visible org link).
+    run(&mut world, GOD, "@org/status ShadowOrg=active hidden=yes");
+    assert!(
+        world
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("org")
+            .state()
+            .org(shadow_org)
+            .expect("shadow")
+            .hidden
+    );
+    run(&mut world, GOD, "@faction/set VisibleOrg2=hidden:yes");
+
+    // Direct public membership + principal on a hidden faction must not leak either.
+    run(&mut world, GOD, "@faction/create SecretMemberFac");
+    run(
+        &mut world,
+        GOD,
+        "@faction/add SecretMemberFac=Pilot/vis:public",
+    );
+    run(&mut world, GOD, "@faction/principal SecretMemberFac=Pilot");
+    run(&mut world, GOD, "@faction/set SecretMemberFac=hidden:yes");
+
+    let open = mush_faction::open_factions(world.world(), pilot);
+    assert_eq!(
+        open,
+        vec![control_fid],
+        "only visible faction backed by visible org should appear in open_factions: {open:?}"
+    );
+}
+
+#[test]
+fn standing_store_per_subject_quota_prevents_global_exhaustion_and_allows_incidents() {
+    let (mut world, pilot, victim) = boot(true);
+    run(&mut world, GOD, "@faction/create Surveyors");
+    let fid = faction(&world, "Surveyors");
+
+    // Pilot hits the per-subject ordinary grant cap.
+    for n in 0..mush_faction::MAX_GRANTS_PER_SUBJECT {
+        let out = run(
+            &mut world,
+            GOD,
+            &format!("test-grant spam:{n}={}/{}:1/ok", pilot.0, fid.0),
+        );
+        assert!(out.contains("applied"), "grant {n} failed: {out}");
+    }
+    let blocked = run(
+        &mut world,
+        GOD,
+        &format!("test-grant spam:over={}/{}:1/over", pilot.0, fid.0),
+    );
+    assert!(
+        blocked.contains("limit reached for this subject"),
+        "expected per-subject quota refusal: {blocked}"
+    );
+
+    // Another player (Victim) is completely unaffected by Pilot's quota exhaustion.
+    let other = run(
+        &mut world,
+        GOD,
+        &format!("test-grant other:1={}/{}:5/other", victim.0, fid.0),
+    );
+    assert!(other.contains("applied"), "other subject blocked: {other}");
+
+    // Staff-published attack incidents against Pilot STILL land despite Pilot hitting
+    // their ordinary grant quota (cannot self-DOS to dodge penalties).
+    let report = format!(
+        "@faction/incident attack:quota=Surveyors/#{}/#{}/Adjudicated attack",
+        victim.0, pilot.0
+    );
+    assert!(run(&mut world, GOD, &report).contains("Private incident recorded"));
+    assert!(
+        run(&mut world, GOD, "@faction/publish-incident attack:quota")
+            .contains("Incident published")
     );
 }
