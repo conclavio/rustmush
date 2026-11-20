@@ -2355,8 +2355,8 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
     // (lane v43): the Vesta Carrying Company's 400,000 base, one more.
     assert_eq!(
         made.len(),
-        9,
-        "Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two, \
+        11,
+        "the Isidis Concession's two bases (doc 50 cut OP.1), Occator's one new tranche, the Syndicate's and the Fleet's bases, Freeport Works' two, \
          Stickney Yards' raise, Tycho's, the Trust's and Vesta's"
     );
     let trust = port_map(&rig.tw, "ceres_port").orgs[&cid("coop_trust")]
@@ -2371,6 +2371,9 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
             .contains(&o.amount.minor())
         })
         .filter(|o| o.credit_account.0 != trust)
+        // Doc 50 cut OP.1: the Isidis tank farm's 300,000 base (the Factor's 50,000 is one of
+        // the sizes above).
+        .filter(|o| o.amount.minor() != 30_000_000)
         .collect();
     assert_eq!(made.len(), 1, "exactly one new Occator tranche");
     assert_eq!(made[0].amount.minor(), 25_000_000);

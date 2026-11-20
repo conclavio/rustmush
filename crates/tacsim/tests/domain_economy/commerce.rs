@@ -771,11 +771,18 @@ fn ic8_the_applier_submits_nothing() {
     assert_eq!(first.action.key().id.as_str(), tacsim::port::STOCK_ACTION);
     let rest = drain(&mut rig.tw);
     // Doc 19 cut A.8: the other four clerks' — Stickney's and the three moon ports'.
-    let others: BTreeSet<ObjId> = ["stickney_port", "luna_port", "deimos_port", "titan_port"]
-        .iter()
-        .map(|entry| clerk(&rig.tw, entry))
-        .collect();
-    assert_eq!(rest.len(), 4, "{rest:?}");
+    // Doc 50 cut OP.1: and the Isidis Concession's.
+    let others: BTreeSet<ObjId> = [
+        "stickney_port",
+        "luna_port",
+        "deimos_port",
+        "titan_port",
+        "isidis_port",
+    ]
+    .iter()
+    .map(|entry| clerk(&rig.tw, entry))
+    .collect();
+    assert_eq!(rest.len(), 5, "{rest:?}");
     assert!(
         rest.iter().all(|s| others.contains(&s.actor)),
         "the others are the other clerks': {rest:?}"
@@ -795,7 +802,11 @@ fn ic8_the_ticks_seed_every_pool_exactly_once() {
     let mut rig = boot(Roster::bare());
     // The first fire mints; the lot stands with its origin before the dissolve.
     let (_, queued) = fire(&mut rig);
-    assert_eq!(queued.len(), 5, "one mint per clerk (doc 19 cut A.8: five)");
+    assert_eq!(
+        queued.len(),
+        6,
+        "one mint per clerk (doc 19 cut A.8: five; doc 50 cut OP.1: six)"
+    );
     land_all(&mut rig, &queued);
     let families = inventory(&rig.tw);
     let minted = receipts(&mut rig.tw);
@@ -3199,7 +3210,7 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
             // doc 36 cut GC.7 (lane v18): and Stickney's port (its workshop and munitions);
             // doc 38 cut SF.R14 (lane v19): and Kirkwood Depot and Ceres Stickney places;
             // doc 50 cut KC.0 (lane v45): and the regions block.
-            "Plan for {LANE_PACK}@{LANE_VERSION}: 41 create, 13 update, 0 retire, 11 unchanged"
+            "Plan for {LANE_PACK}@{LANE_VERSION}: 45 create, 13 update, 0 retire, 11 unchanged"
         )),
         "{plan}"
     );
@@ -3210,7 +3221,7 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     );
     assert!(
         apply.contains(&format!(
-            "Applied {LANE_PACK}@{LANE_VERSION}: 41 created, 13 updated, 0 retired, 11 unchanged."
+            "Applied {LANE_PACK}@{LANE_VERSION}: 45 created, 13 updated, 0 retired, 11 unchanged."
         )),
         "{plan}\n{apply}"
     );

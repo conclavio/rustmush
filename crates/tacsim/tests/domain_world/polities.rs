@@ -249,7 +249,8 @@ fn kc0_a_fresh_world_has_six_polities_seeded_regions_and_a_control_read() {
         Some(republic),
         "a re-apply never undoes a flip"
     );
-    assert_eq!(factions(&tw).regions.len(), 3, "no region made twice");
+    // Doc 50 cut OP.1: the Isidis Concession is the fourth.
+    assert_eq!(factions(&tw).regions.len(), 4, "no region made twice");
 }
 
 /// A player's view of a command, as one text.

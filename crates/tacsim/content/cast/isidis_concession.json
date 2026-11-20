@@ -1,0 +1,128 @@
+{
+  "manifest": {
+    "id": "tacsim.cast.isidis_concession",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "10acd6c5c5435f80ad2018307e80b5d848d6925fe643a6432d906b34adb54495",
+    "requires": [
+      {
+        "id": "neighborhood.isidis_concession",
+        "version": 1
+      }
+    ]
+  },
+  "brief": {
+    "prose": "Station cast and lore pools for neighborhood.isidis_concession (doc 50 cut OP.1)."
+  },
+  "entries": {
+    "lore.port_isidis": {
+      "kind": "lore",
+      "def": {
+        "entries": [
+          {
+            "subject": "The Concession",
+            "tier": "public",
+            "fact": "In the Dry Decade the Concord, unable to guarantee Mars its water, granted Belt carriers a tariff-free treaty enclave at Isidis Planitia, administered by the carriers' own port authority, in return for guaranteed water and propellant deliveries."
+          },
+          {
+            "subject": "The inheritance",
+            "tier": "public",
+            "fact": "The Republic inherited the Concession with the Concord's other debts. The Assembly at Coprates claims it; the Freeport claims it by treaty. Both administrations call the other's papers a courtesy."
+          },
+          {
+            "subject": "The review",
+            "tier": "public",
+            "fact": "In late 2349 the Assembly voted to review the Concession. The Port Council answered by extending Meridiani Security's contract and stockpiling propellant at the tank farm."
+          },
+          {
+            "subject": "Meridiani",
+            "tier": "public",
+            "fact": "Meridiani Security holds the Concession on the Freeport's contract, under a Republic operating license it expects to lose."
+          },
+          {
+            "subject": "The tank farm",
+            "tier": "public",
+            "fact": "Occator owns the Isidis tank farm. It buys propellant over what Ceres asks for it and under what Phobos and Deimos ask, so a tonne hauled from Ceres earns and a tonne bought in Mars orbit does not."
+          }
+        ],
+        "tag": "port_isidis"
+      }
+    },
+    "npc.oyelaran": {
+      "kind": "npc",
+      "def": {
+        "name": "Beatrix Oyelaran",
+        "profile": {
+          "background": "Factor of the Isidis Concession, the Freeport's officer on Mars, and the defender of record if the Republic moves against the Concession.",
+          "does_not_know": [
+            "what the Assembly's committee will vote",
+            "Meridiani's dispositions beyond what the contract says",
+            "the tank farm's figures beyond Occator's posted board"
+          ],
+          "fallback": [
+            "The Concession is tariff-free by treaty. The board out there says so.",
+            "Entry forms are in the rack, in the Registry's numbering.",
+            "Coprates may say what it likes about the boundary. The map is the treaty's."
+          ],
+          "interfaces": [
+            "atlas"
+          ],
+          "knows": [
+            "the treaty's terms: a tariff-free enclave for Belt carriers, in return for water and propellant delivered",
+            "that the Republic and the Freeport both claim the Concession",
+            "that Meridiani Security holds it on the Freeport's contract",
+            "that Occator's tank farm buys propellant at the counter off the market",
+            "the layout of the field level"
+          ],
+          "persona": "an administrator who has read the treaty more often than anyone alive and expects to have to read it aloud. Courteous, exact, unhurried, and never once willing to concede a word of it.",
+          "speech_style": "measured and formal; cites the treaty by clause; says \"by treaty\" and \"of record\"; glances at the clocks when Coprates comes up."
+        },
+        "room": "room.i02_factor",
+        "room_pack": "neighborhood.isidis_concession",
+        "tags": [
+          "corridor_trade",
+          "port_isidis"
+        ],
+        "tier": "minor"
+      }
+    },
+    "npc.achterberg": {
+      "kind": "npc",
+      "def": {
+        "name": "Ilse Achterberg-Mensah",
+        "profile": {
+          "background": "Superintendent of Occator's Isidis tank farm, and the Warrant signatory of its standing bid for propellant at the counter.",
+          "does_not_know": [
+            "the Port Council's plans for the stockpile",
+            "the Factor's correspondence with Coprates",
+            "Meridiani's contract terms"
+          ],
+          "fallback": [
+            "Propellant, by the tonne, at the posted price. The board says how much more the farm takes.",
+            "Over Ceres' ask and under Phobos'. Haul it from the Belt and it pays.",
+            "Sign at the counter. The meters are sealed by the Factor's office."
+          ],
+          "interfaces": [
+            "market",
+            "atlas"
+          ],
+          "knows": [
+            "the tank farm's line: it buys propellant at the counter, by the board's own figures, intake finite and posted",
+            "that the price sits over what Ceres asks and under what Phobos and Deimos ask, by design",
+            "that Occator owns the farm and the Freeport administers the ground it stands on",
+            "the layout of the field level"
+          ],
+          "persona": "a superintendent who thinks in tank levels and transfer windows. Blunt, practical, proud of the farm, and indifferent to whose flag flies over it as long as the meters are read.",
+          "speech_style": "short and practical; tonnes before credits; says \"posted\", \"by the meter\" and \"laid in\"."
+        },
+        "room": "room.i04_tank_farm",
+        "room_pack": "neighborhood.isidis_concession",
+        "tags": [
+          "corridor_trade",
+          "port_isidis"
+        ],
+        "tier": "minor"
+      }
+    }
+  }
+}

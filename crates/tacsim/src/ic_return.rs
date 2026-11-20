@@ -76,8 +76,8 @@ pub struct IcPort {
 /// the Limbo door goes), and a character carrying two stamps — which [`stamp`]
 /// never writes — reads as the first of its own stamped ports with no foot route,
 /// which fails closed (see [`last_port`]). Doc 19 cut A.8 appended the three moon
-/// ports, reached by ship.
-pub const PORTS: [IcPort; 5] = [
+/// ports, reached by ship; doc 50 cut OP.1 the Isidis Concession, reached from Stickney.
+pub const PORTS: [IcPort; 6] = [
     IcPort {
         id: "ceres",
         name: "Ceres Freeport",
@@ -113,6 +113,13 @@ pub const PORTS: [IcPort; 5] = [
         arrival: "room.t03_arrivals",
         foot_route: false,
     },
+    IcPort {
+        id: "isidis",
+        name: "Isidis Concession",
+        area: crate::definitions::content::ISIDIS_PACK,
+        arrival: "room.i01_landing_field",
+        foot_route: false,
+    },
 ];
 
 /// The IC door's pack: the forward exit the content latch records for
@@ -131,8 +138,8 @@ pub const IC_VERB: &str = "+ic";
 pub const IC_HELP: &str = "+ic  --  Go back into the corridor where you left it. The game \
      remembers the port you last stood in when you stepped out to Limbo or the OOC area, and \
      +ic puts you back there: Ceres Freeport's arrivals hall, Stickney Yards' berth gallery, \
-     Aitken Highport's arrivals, Voltaire Anchorage's berth gallery or Ligeia Terminal's \
-     arrivals. With no port remembered it takes you to Ceres Freeport, where the Limbo door \
+     Aitken Highport's arrivals, Voltaire Anchorage's berth gallery, Ligeia Terminal's \
+     arrivals or the Isidis Concession's landing field gallery. With no port remembered it takes you to Ceres Freeport, where the Limbo door \
      goes. A port you can only reach by ship has no door from Limbo, so +ic is the way back \
      to it.";
 
