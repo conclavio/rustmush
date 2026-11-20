@@ -1062,7 +1062,11 @@ pub(crate) fn settle_bubble_backup(ctx: &mut Ctx<'_>, hull: ObjId, flown: Bubble
     }
     // The ruling is one submitted action, and the engine holds one submission an actor: with
     // one of her captain's still in flight the seat waits a tick.
-    let captain = super::commands::resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
+    // Doc 50 cut OP.4 (Q-50-56): a hauling house's hull has nobody aboard; her helm, the house's
+    // own actor, submits her.
+    let captain = crate::port::coop::helm_holder(ctx.w, hull)
+        .filter(|_| crate::port::hauler::is_hauler(ctx.w, hull))
+        .unwrap_or_else(|| super::commands::resolve_hull_captain_aboard(ctx.w, hull, ctx.actor));
     if ctx.authoritative_pending(captain) || ctx.authoritative_queue_full() {
         return;
     }
