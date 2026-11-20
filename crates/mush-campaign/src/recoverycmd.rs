@@ -1100,49 +1100,64 @@ fn pool_instrument(ctx: &Ctx<'_>, cfg: &RecoveryConfig) -> String {
 /// lease is `end_lease`d and the grant closed, which frees the hull and lets the
 /// applicant apply again. An **accepted** lease is never touched — the acceptance is
 /// the applicant's consent and the hull is genuinely theirs until they return it.
+fn contract_is_unaccepted(world: &mush_core::World, contract: ContractId) -> bool {
+    world
+        .module_state::<EconomyStore>()
+        .and_then(|store| store.snapshot().contract(contract))
+        .is_some_and(|c| {
+            matches!(
+                c.state,
+                mush_economy::ContractState::Offered | mush_economy::ContractState::Draft
+            )
+        })
+}
+
 fn expire_unaccepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> usize {
+    if budget == 0 {
+        return 0;
+    }
     let now = ctx.w.world_ic_now().at;
     let Some(lessor) = provider(ctx.w, cfg) else {
         return 0;
     };
-    let doomed: Vec<RecoveryGrant> = {
+    // Filter to actually-unaccepted expired offers BEFORE applying `.take(budget)`
+    // so accepted live loaners past the TTL can never starve expiry, and rotate via
+    // `expire_cursor` so a transiently failing `end_lease` cannot stall later offers.
+    let (doomed, next_cursor): (Vec<RecoveryGrant>, Option<u32>) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
             return 0;
         };
-        store
+        let cursor = store.expire_cursor;
+        let all_expired: Vec<&RecoveryGrant> = store
             .recovery_grants()
             .filter(|grant| {
                 grant.is_live()
                     && now.saturating_sub(grant.granted_at())
                         >= crate::recovery::RECOVERY_ACCEPT_TTL_SECS
+                    && contract_is_unaccepted(ctx.w, ContractId(grant.contract()))
             })
+            .collect();
+        let chosen: Vec<RecoveryGrant> = all_expired
+            .iter()
+            .copied()
+            .filter(|g| g.applicant().0 >= cursor)
+            .chain(
+                all_expired
+                    .iter()
+                    .copied()
+                    .filter(|g| g.applicant().0 < cursor),
+            )
             .take(budget)
             .cloned()
-            .collect()
+            .collect();
+        let next = chosen.last().map(|g| g.applicant().0.wrapping_add(1));
+        (chosen, next)
     };
+    if let (Some(next), Some(store)) = (next_cursor, ctx.w.module_state_mut::<CampaignStore>()) {
+        store.expire_cursor = next;
+    }
     let mut worked = 0usize;
     for grant in doomed {
-        // Still `Offered` means the tenant never accepted — `offer_lease` records the
-        // lessor's own acceptance at once, so the acceptance LIST is not the test.
-        // Anything past `Offered` is a lease somebody is flying and is left alone.
-        let unaccepted = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .and_then(|store| {
-                store
-                    .snapshot()
-                    .contract(ContractId(grant.contract()))
-                    .cloned()
-            })
-            .is_some_and(|contract| {
-                matches!(
-                    contract.state,
-                    mush_economy::ContractState::Offered | mush_economy::ContractState::Draft
-                )
-            });
-        if !unaccepted {
-            continue;
-        }
         let key = LeaseKey {
             lessor: lessor.clone(),
             premises: grant.loaner(),

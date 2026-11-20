@@ -502,22 +502,87 @@ pub(crate) fn sequence(c: &crate::Channel, m: &Membership) -> u64 {
         c.seq
     }
 }
-pub(crate) fn history<'a>(st: &'a ComsysState, m: &'a Membership) -> Vec<ChanMsg> {
+/// Return up to `limit` newest messages in chronological (oldest-first) order
+/// by reference, without cloning the recall ring or message payloads.
+pub(crate) fn recall_tail<'a>(
+    st: &'a ComsysState,
+    m: &'a Membership,
+    limit: usize,
+) -> Vec<(u64, &'a ChanMsg)> {
+    if limit == 0 {
+        return Vec::new();
+    }
     if st.channels.get(&m.channel).is_some_and(|c| c.flags.ic) {
-        m.ic.as_ref().map_or_else(Vec::new, |k| {
-            k.received
-                .iter()
-                .filter_map(|r| {
-                    let mut msg = st.ic.messages.get(&(m.channel, r.message))?.msg.clone();
-                    msg.seq = r.seq;
-                    Some(msg)
+        let mut out: Vec<(u64, &'a ChanMsg)> =
+            m.ic.as_ref()
+                .map(|k| {
+                    k.received
+                        .iter()
+                        .rev()
+                        .filter_map(|r| {
+                            st.ic
+                                .messages
+                                .get(&(m.channel, r.message))
+                                .map(|msg| (r.seq, &msg.msg))
+                        })
+                        .take(limit)
+                        .collect()
                 })
-                .collect()
-        })
+                .unwrap_or_default();
+        out.reverse();
+        out
     } else {
         st.rings
             .get(&m.channel)
-            .map_or_else(Vec::new, |r| r.iter().cloned().collect())
+            .map(|r| {
+                let skip = r.len().saturating_sub(limit);
+                r.iter().skip(skip).map(|msg| (msg.seq, msg)).collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Return up to `limit` messages strictly older than `before_seq` (when given),
+/// newest-first, by reference — without cloning the recall ring or message
+/// payloads.
+pub(crate) fn backlog_newest_first<'a>(
+    st: &'a ComsysState,
+    m: &'a Membership,
+    before_seq: Option<u64>,
+    limit: usize,
+) -> Vec<(u64, &'a ChanMsg)> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    if st.channels.get(&m.channel).is_some_and(|c| c.flags.ic) {
+        m.ic.as_ref()
+            .map(|k| {
+                k.received
+                    .iter()
+                    .rev()
+                    .filter(|r| before_seq.is_none_or(|b| r.seq < b))
+                    .filter_map(|r| {
+                        st.ic
+                            .messages
+                            .get(&(m.channel, r.message))
+                            .map(|msg| (r.seq, &msg.msg))
+                    })
+                    .take(limit)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        st.rings
+            .get(&m.channel)
+            .map(|r| {
+                r.iter()
+                    .rev()
+                    .filter(|msg| before_seq.is_none_or(|b| msg.seq < b))
+                    .take(limit)
+                    .map(|msg| (msg.seq, msg))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

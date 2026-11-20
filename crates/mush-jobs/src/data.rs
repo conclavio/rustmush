@@ -226,12 +226,15 @@ impl JobsState {
             .count()
     }
 
-    /// Number of notes currently attached to `owner`.
+    /// Number of notes currently attached to `owner` in the requested
+    /// visibility bucket (`staff_only == true` vs player-visible), so hidden
+    /// staff-only notes never consume or disclose a player's visible quota.
     #[must_use]
-    pub fn note_count(&self, owner: ObjId) -> usize {
+    pub fn note_count_by_visibility(&self, owner: ObjId, staff_only: bool) -> usize {
         self.notes
             .range((owner, SmolStr::default())..)
             .take_while(|((o, _), _)| *o == owner)
+            .filter(|(_, n)| n.staff_only == staff_only)
             .count()
     }
 }

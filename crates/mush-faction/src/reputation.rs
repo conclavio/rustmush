@@ -16,6 +16,12 @@ const MAX_REASON: usize = 512;
 const MAX_EFFECTS: usize = 8;
 const MAX_DOCUMENT: usize = 4096;
 const MAX_RECORDS: usize = 16_384;
+/// Per-subject cap on ordinary (non-incident) standing grant receipts,
+/// preventing any single actor from exhausting the global `MAX_RECORDS` table.
+pub const MAX_GRANTS_PER_SUBJECT: usize = 512;
+/// Global headroom inside [`MAX_RECORDS`] reserved for staff-published incident
+/// grants so ordinary grant churn cannot starve adjudicated penalties.
+const RESERVED_INCIDENT_GRANTS: usize = 1_024;
 const HISTORY: usize = 10;
 /// The authored penalty for a publicly adjudicated attack, once per incident.
 pub const PUBLIC_ATTACK_PENALTY: i16 = -20;
@@ -123,6 +129,8 @@ pub(crate) struct StandingStore {
     publications: BTreeMap<String, Publication>,
     voids: BTreeMap<String, Void>,
     scores: BTreeMap<(FactionId, ObjId), i64>,
+    ordinary_grants: usize,
+    ordinary_grants_per_subject: BTreeMap<ObjId, usize>,
 }
 
 /// A public faction's standing toward a character. No membership is implied.
@@ -217,7 +225,7 @@ fn live_actor(w: &World, actor: ObjId) -> bool {
         .is_some_and(|o| o.kind.is_actor() && !o.flags.contains(mush_core::Flags::GOING))
 }
 
-fn prepare_grant(w: &World, grant: &Grant) -> Result<bool, String> {
+fn prepare_grant(w: &World, grant: &Grant, is_incident_publication: bool) -> Result<bool, String> {
     check_grant(grant)?;
     let store = w
         .module_state::<StandingStore>()
@@ -235,6 +243,19 @@ fn prepare_grant(w: &World, grant: &Grant) -> Result<bool, String> {
     }
     if store.grants.len() >= MAX_RECORDS {
         return Err("Standing receipt store is full.".into());
+    }
+    if !is_incident_publication {
+        if store.ordinary_grants >= MAX_RECORDS.saturating_sub(RESERVED_INCIDENT_GRANTS) {
+            return Err("Standing receipt store is full.".into());
+        }
+        let subject_count = store
+            .ordinary_grants_per_subject
+            .get(&grant.subject)
+            .copied()
+            .unwrap_or(0);
+        if subject_count >= MAX_GRANTS_PER_SUBJECT {
+            return Err("Standing receipt limit reached for this subject.".into());
+        }
     }
     if !live_actor(w, grant.subject) {
         return Err("Standing subject is not a live character.".into());
@@ -259,6 +280,14 @@ fn install_grant(store: &mut StandingStore, grant: Grant) {
             .entry((effect.faction, grant.subject))
             .or_default();
         *total += i64::from(effect.delta);
+    }
+    if !grant.cause.starts_with("incident:") {
+        store.ordinary_grants = store.ordinary_grants.saturating_add(1);
+        let entry = store
+            .ordinary_grants_per_subject
+            .entry(grant.subject)
+            .or_default();
+        *entry = entry.saturating_add(1);
     }
     store.grants.insert(grant.cause.clone(), grant);
 }
@@ -323,7 +352,7 @@ pub fn record_voidable_standing(
         voidable_by,
         window,
     };
-    if !prepare_grant(ctx.w, &grant)? {
+    if !prepare_grant(ctx.w, &grant, false)? {
         return Ok(false);
     }
     let op = prepared("grant", cause, &grant)?;
@@ -473,7 +502,7 @@ pub fn open_factions(w: &World, who: ObjId) -> Vec<FactionId> {
             matches!(
                 m.visibility,
                 crate::Visibility::Public | crate::Visibility::MembersKnow
-            )
+            ) && state.factions.get(&m.faction).is_some_and(|f| !f.hidden)
         })
         .map(|m| m.faction)
         .collect();
@@ -483,20 +512,24 @@ pub fn open_factions(w: &World, who: ObjId) -> Vec<FactionId> {
             let orgs = store.state();
             orgs.member_orgs(who)
                 .filter(|org| {
-                    orgs.membership(*org, who).is_some_and(|m| {
-                        m.status == mush_org::MembershipStatus::Active
-                            && matches!(
-                                m.visibility,
-                                mush_org::Visibility::Public | mush_org::Visibility::MembersKnow
-                            )
-                    })
+                    orgs.org(*org)
+                        .is_some_and(|o| !o.hidden && o.status == mush_org::OrgStatus::Active)
+                        && orgs.membership(*org, who).is_some_and(|m| {
+                            m.status == mush_org::MembershipStatus::Active
+                                && matches!(
+                                    m.visibility,
+                                    mush_org::Visibility::Public
+                                        | mush_org::Visibility::MembersKnow
+                                )
+                        })
                 })
                 .collect()
         })
         .unwrap_or_default();
     for faction in state.factions.values() {
-        if (!faction.hidden && faction.principals.contains(&who))
-            || faction.org.is_some_and(|org| orgs.contains(&org))
+        if !faction.hidden
+            && (faction.principals.contains(&who)
+                || faction.org.is_some_and(|org| orgs.contains(&org)))
         {
             out.insert(faction.id);
         }
@@ -712,7 +745,7 @@ pub fn publish_attack_incident(ctx: &mut Ctx<'_>, cause: &str) -> Result<bool, S
         window: None,
     });
     let grant_op = if let Some(grant) = &grant {
-        if !prepare_grant(ctx.w, grant)? {
+        if !prepare_grant(ctx.w, grant, true)? {
             return Err("Incident publication is missing its receipt; repair required.".into());
         }
         Some(prepared("grant", &grant_cause, grant)?)

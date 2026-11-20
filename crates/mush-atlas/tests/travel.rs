@@ -1549,3 +1549,50 @@ fn high38_service_and_intercept_holds_clear_on_leave_disconnect_destroy_ttl_and_
         );
     }
 }
+
+#[test]
+fn intercept_does_not_act_as_travel_status_or_dark_actor_oracle() {
+    let mut tw = valley();
+    let west_gate = room(&tw, "West Gate");
+    let east_gate = room(&tw, "East Gate");
+    let alice = player(&mut tw, "Alice", west_gate);
+    let _bob = player(&mut tw, "Bob", west_gate);
+    let shadow = player(&mut tw, "Shadow", west_gate);
+    tw.world_mut()
+        .set_flag(shadow, mush_core::Flags::DARK, true)
+        .expect("dark");
+    let carol = player(&mut tw, "Carol", east_gate);
+
+    // Only Alice is traveling; Bob is sitting still at West Gate.
+    let _ = run(&mut tw, alice, "+travel East End");
+    let _ = run(&mut tw, shadow, "+travel East End");
+
+    // Carol gets the exact same answer whether the target is traveling or stationary.
+    let traveling = run(&mut tw, carol, "+intercept Alice");
+    let stationary = run(&mut tw, carol, "+intercept Bob");
+    assert_eq!(
+        traveling.replace("Alice", "X"),
+        stationary.replace("Bob", "X"),
+        "+intercept must not distinguish traveling from stationary characters"
+    );
+
+    // `+intercept/release` on someone Carol is not waiting for gives the same answer
+    // whether Alice is traveling or not (remember Carol's second `+intercept Bob` replaced
+    // her pending watch on Alice).
+    let rel_traveling = run(&mut tw, carol, "+intercept/release Alice");
+    // Cancel Bob's watch first, then test releasing Bob when stationary.
+    let _ = run(&mut tw, carol, "+intercept/release Bob");
+    let rel_stationary = run(&mut tw, carol, "+intercept/release Bob");
+    assert_eq!(
+        rel_traveling, rel_stationary,
+        "+intercept/release must not distinguish traveling from stationary characters"
+    );
+
+    // A DARK traveler is indistinguishable from a nonexistent name.
+    let dark = run(&mut tw, carol, "+intercept Shadow");
+    let missing = run(&mut tw, carol, "+intercept NobodyAtAll");
+    assert_eq!(
+        dark, missing,
+        "DARK traveler must not be disclosed by +intercept"
+    );
+}

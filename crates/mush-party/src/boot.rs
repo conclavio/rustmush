@@ -40,7 +40,7 @@ use mush_core::module::{ModError, ModuleBootData, ModuleCtx};
 use smol_str::SmolStr;
 
 use crate::ids::PartyId;
-use crate::module::{META_KEY, PartyStore, drop_doc, persist_meta};
+use crate::module::{META_KEY, PartyStore, drop_doc, party_key, persist_meta};
 use crate::record::Party;
 
 /// What one boot decided about the persisted documents.
@@ -100,6 +100,9 @@ fn parse(data: &ModuleBootData) -> Loaded {
         None => meta_next,
     };
     store.reindex_live();
+    for id in store.prune_disbanded() {
+        dropped.push(party_key(id));
+    }
     Loaded { store, dropped }
 }
 

@@ -99,6 +99,6 @@ pub use module::{
 };
 pub use record::{
     DisbandCause, Invitation, MAX_PARTIES, MAX_PARTIES_PER_LEADER, MAX_PARTY_INVITES,
-    MAX_PARTY_NAME_BYTES, MAX_PARTY_ROLE_BYTES, MAX_PARTY_SIZE, PARTY_IDLE_TTL, Party, PartyStatus,
-    check_label,
+    MAX_PARTY_NAME_BYTES, MAX_PARTY_ROLE_BYTES, MAX_PARTY_SIZE, MAX_RETAINED_DISBANDED_PARTIES,
+    PARTY_IDLE_TTL, Party, PartyStatus, check_label,
 };

@@ -1803,3 +1803,64 @@ fn crit13_prune_recovery_grants_preserves_active_cooldowns_on_low_objids() {
         "expired ended grants are still bounded by MAX_RETAINED_RECOVERY_RECORDS"
     );
 }
+
+#[test]
+fn expire_unaccepted_is_not_starved_by_older_accepted_live_grants() {
+    // Provision 10 hulls: 9 early applicants accept their leases (exceeding the 8-per-fire
+    // budget), and the 10th leaves their offer unaccepted past RECOVERY_ACCEPT_TTL_SECS.
+    let (mut tw, _fx) = scene(enabled, 50_000, 10);
+    let mut accepted_applicants = Vec::new();
+    for i in 0..9 {
+        let p = tw.spawn_player(&format!("Accepted{i}"));
+        ok(&mut tw, GOD, &format!("@account/open #{}=gold", p.0));
+        ok(&mut tw, p, "@recovery/apply");
+        accepted_applicants.push(p);
+    }
+    let laggard = tw.spawn_player("Unaccepted10");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", laggard.0));
+    ok(&mut tw, laggard, "@recovery/apply");
+
+    // Two sweep fires grant all 10 offers (budget is 8 per fire).
+    fire(&mut tw);
+    fire(&mut tw);
+
+    for p in &accepted_applicants {
+        let grant = camp(&tw)
+            .recovery_grant(*p)
+            .cloned()
+            .expect("accepted applicant granted");
+        ok(
+            &mut tw,
+            *p,
+            &format!("@contract/accept {}", grant.contract()),
+        );
+    }
+    let laggard_grant = camp(&tw)
+        .recovery_grant(laggard)
+        .cloned()
+        .expect("laggard granted");
+
+    // Advance past RECOVERY_ACCEPT_TTL_SECS and fire ONE tick: the 9 accepted live
+    // grants must NOT fill the budget and starve expiry of the 10th unaccepted offer.
+    let then = tw.world().now() + mush_campaign::RECOVERY_ACCEPT_TTL_SECS + 1;
+    tw.set_now(then);
+    fire(&mut tw);
+
+    assert!(
+        snap(&tw)
+            .contract(mush_economy::ContractId(laggard_grant.contract()))
+            .is_some_and(|c| c.state.is_terminal()),
+        "unaccepted offer behind 9 accepted grants must still expire"
+    );
+    assert!(
+        camp(&tw).recovery_grant(laggard).is_none(),
+        "expired unaccepted offer must be cleared"
+    );
+    // All 9 accepted grants remain live.
+    for p in &accepted_applicants {
+        assert!(
+            camp(&tw).recovery_grant(*p).is_some_and(|g| g.is_live()),
+            "accepted grant must remain untouched"
+        );
+    }
+}

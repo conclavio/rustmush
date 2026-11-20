@@ -1717,3 +1717,100 @@ fn high40_coalesces_composites_throttles_edge_growth_and_debounces_persistence()
     );
     assert_eq!(atlas(&tw3).windows.inflight_composites(), cap);
 }
+
+#[test]
+fn dark_and_restricted_moves_do_not_disclose_and_move_honors_deployed_exclusion() {
+    let mut tw = lot();
+    let staff = GOD;
+    let lobby = room_named(&tw, "Lobby");
+    let office = room_named(&tw, "Production Office");
+    let forecourt = room_named(&tw, "Forecourt & Bus Stop");
+    tw.world_mut().move_to(staff, office).expect("staff");
+    let (domain, _) = open_over(&mut tw, staff, &format!("#{},#{}", lobby.0, office.0));
+    with_ctx(&mut tw, staff, move |ctx| {
+        mush_atlas::window::place_in_room(ctx, domain, staff, office, None)
+    })
+    .expect("place staff in office");
+
+    let rae = tw.spawn_player("Rae");
+    let ghost = tw.spawn_player("Ghost");
+    tw.world_mut()
+        .set_flag(ghost, mush_core::Flags::DARK, true)
+        .expect("dark");
+    tw.world_mut().move_to(rae, forecourt).expect("rae");
+    tw.world_mut().move_to(ghost, forecourt).expect("ghost");
+    tw.run(rae, "lobby");
+    // Ghost enters Lobby while DARK: Rae must NOT see Ghost in `+map` or delta notes.
+    let ghost_enter = tw.run(ghost, "lobby");
+    let enter_deltas = panel_frames(&ghost_enter, rae, mush_proto::PanelFrameKind::Delta);
+    for d in &enter_deltas {
+        let delta: mush_proto::AtlasMapDelta = serde_json::from_value(d.clone()).expect("delta");
+        assert!(
+            delta.note.is_none(),
+            "DARK arrival leaked note to mortal: {:?}",
+            delta.note
+        );
+        assert!(
+            !delta.units.iter().any(|u| u.name.contains("Ghost")),
+            "DARK unit leaked in delta: {:?}",
+            delta.units
+        );
+    }
+
+    let map_out = tw.run(rae, "+map");
+    assert!(
+        !text(&tw, &map_out, rae).contains("Ghost"),
+        "DARK actor leaked in +map: {}",
+        text(&tw, &map_out, rae)
+    );
+    let rae_frame =
+        mush_atlas::frame::frame_for(tw.world(), atlas(&tw), rae, domain).expect("rae frame");
+    assert!(
+        !rae_frame.units.iter().any(|u| u.name.contains("Ghost")),
+        "DARK actor leaked in frame_for: {:?}",
+        rae_frame.units
+    );
+
+    // Ghost moves via `+move`: Rae's delta must carry NO note disclosing Ghost's move.
+    let ghost_move = tw.run(ghost, "+move north 1");
+    for d in panel_frames(&ghost_move, rae, mush_proto::PanelFrameKind::Delta) {
+        let delta: mush_proto::AtlasMapDelta = serde_json::from_value(d).expect("delta");
+        assert!(
+            delta.note.is_none(),
+            "DARK +move leaked note to mortal: {:?}",
+            delta.note
+        );
+    }
+
+    // Staff moves inside Restricted Production Office: Rae must NOT receive a move note.
+    let staff_move = tw.run(staff, "+move east 1");
+    for d in panel_frames(&staff_move, rae, mush_proto::PanelFrameKind::Delta) {
+        let delta: mush_proto::AtlasMapDelta = serde_json::from_value(d).expect("delta");
+        assert!(
+            delta.note.is_none(),
+            "Restricted-room +move leaked note to mortal: {:?}",
+            delta.note
+        );
+    }
+
+    // `+move` must honor `mush_sim::deployed::excluded`: once the domain is excluded,
+    // `+move` refuses and leaves the pose unchanged.
+    let before_pose = pose_of(&tw, rae).expect("pose before");
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        staff,
+        mush_sim::DeployedMark::new(99, "tacsim.arena.test"),
+    );
+    let blocked = tw.run(rae, "+move north 1");
+    assert!(
+        text(&tw, &blocked, rae).contains("your map is closed"),
+        "+move on excluded domain must refuse: {}",
+        text(&tw, &blocked, rae)
+    );
+    assert_eq!(
+        pose_of(&tw, rae),
+        Some(before_pose),
+        "+move on excluded domain must not change pose"
+    );
+    mush_sim::deployed::clear(tw.world_mut(), staff);
+}

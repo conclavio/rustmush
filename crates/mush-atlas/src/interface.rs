@@ -129,8 +129,14 @@ impl InterfaceAbilityProvider for AtlasInterface {
                 };
                 let lines = prose_lines(crate::view::neighborhood(st, ctx.w, asker, nb, staff));
                 let lines: Vec<String> = lines.into_iter().take(MAX_DESCRIBE_LINES).collect();
-                // Said aloud: a place's description is anyone's to hear.
-                Ok(InterfaceReply::public_lines(&lines))
+                if staff {
+                    // Staff views may include restricted rooms and hidden connections;
+                    // keep them private to the staff asker rather than speaking aloud.
+                    Ok(InterfaceReply::lines(&lines))
+                } else {
+                    // Said aloud: a mortal's public view of a place is anyone's to hear.
+                    Ok(InterfaceReply::public_lines(&lines))
+                }
             }
             "who.nearby" => {
                 let Some(room) = here_of(ctx.w, asker) else {

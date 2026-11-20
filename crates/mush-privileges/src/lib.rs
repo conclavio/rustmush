@@ -322,4 +322,42 @@ mod tests {
             serde_json::json!({ "outcome": "shown", "dm_reachable": true, "at": 1_700_000_000 });
         assert!(!contains_identity(&serde_json::to_string(&fine).unwrap()));
     }
+
+    #[test]
+    fn failed_audit_does_not_mutate_or_dirty_subject() {
+        // Register the `@privilege` command without the `PrivilegesState` slot so
+        // `crate::audit` returns `Err(PrivilegeError::NotLoaded)`.
+        struct CmdOnly;
+        impl GameModule for CmdOnly {
+            fn name(&self) -> &'static str {
+                NS
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+                commands::register(reg)
+            }
+        }
+        let mut tw = TestWorld::with_modules(vec![Box::new(CmdOnly)]);
+        let wiz = tw.spawn_player("Wiz");
+        tw.world_mut().set_flag(wiz, Flags::WIZARD, true).unwrap();
+        let nick = tw.spawn_player("Nick");
+        tw.connect(wiz);
+        tw.connect(nick);
+        let _ = tw.drain_write_batch();
+
+        let out = tw.run(
+            wiz,
+            "@privilege/grant Nick=discord_identity=on-call rotation",
+        );
+        tw.assert_saw(&out, wiz, "The audit could not be recorded");
+        assert!(
+            !holds(&tw, nick),
+            "subject privilege bit must not flip when audit fails"
+        );
+        let dirty = tw.world_mut().take_dirty();
+        assert!(
+            !dirty.contains(&nick),
+            "subject must not be marked dirty when audit fails: {dirty:?}"
+        );
+    }
 }

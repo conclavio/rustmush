@@ -130,11 +130,9 @@ fn grant_or_revoke(ctx: &mut Ctx<'_>, grant: bool) -> Result<(), CmdError> {
             display_name(ctx.w, subject)
         )));
     }
-    // Mutate first (a no-op re-grant still audits: the act was requested).
-    if let Some(o) = ctx.w.get_mut(subject) {
-        o.privileges.set(privilege, grant);
-        o.modified = now;
-    }
+    // Audit before mutating the subject so a failed audit never leaves the
+    // privilege bit flipped or the subject marked dirty in RAM (a no-op
+    // re-grant still audits: the act was requested).
     crate::audit(
         ctx,
         PrivilegeAction {
@@ -150,6 +148,10 @@ fn grant_or_revoke(ctx: &mut Ctx<'_>, grant: bool) -> Result<(), CmdError> {
         },
     )
     .map_err(|e| CmdError::msg(format!("The audit could not be recorded: {e}.")))?;
+    if let Some(o) = ctx.w.get_mut(subject) {
+        o.privileges.set(privilege, grant);
+        o.modified = now;
+    }
     let subject_name = display_name(ctx.w, subject);
     let actor_name = display_name(ctx.w, ctx.actor);
     if grant {

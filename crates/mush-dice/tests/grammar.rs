@@ -281,3 +281,46 @@ fn zero_count_rolls_nothing() {
     assert_eq!(out.total, 4);
     assert!(out.dice.is_empty());
 }
+
+#[test]
+fn parser_rejects_newlines_and_control_characters() {
+    for bad in ["3d6\n+2", "3d6\r\n", "1d20\x00", "\x1b[31m2d6", "2d6\t+1"] {
+        assert!(
+            parse(bad).is_err(),
+            "control char input {bad:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn owod20_score_and_extended_roll_saturate_without_overflow() {
+    use mush_dice::owod20::{ExtendedRoll, ExtendedStatus, Owod20Opts, Owod20Pool, RollResult};
+
+    let hi = Owod20Pool::score(
+        &[10, 10],
+        &Owod20Opts {
+            willpower: true,
+            extra_successes: i32::MAX,
+            ..Owod20Opts::default()
+        },
+    );
+    assert_eq!(hi.net, i32::MAX);
+    assert_eq!(hi.result, RollResult::Success(u8::MAX));
+
+    let lo = Owod20Pool::score(
+        &[1, 1],
+        &Owod20Opts {
+            extra_successes: i32::MIN,
+            ..Owod20Opts::default()
+        },
+    );
+    assert_eq!(lo.net, i32::MIN);
+    assert_eq!(lo.result, RollResult::Botch(2));
+
+    let mut ext = ExtendedRoll::new(i32::MAX);
+    ext.accumulated = i32::MAX - 2;
+    let status = ext.add(hi);
+    assert_eq!(ext.accumulated, i32::MAX);
+    assert!(ext.is_complete());
+    assert_eq!(status, ExtendedStatus::Complete);
+}

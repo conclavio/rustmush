@@ -96,8 +96,8 @@ pub use data::{
 pub use econ::{LinkError, backing_org};
 pub use lifecycle::{ClockAdvance, MAX_CAUSE_LEN, advance_clock_by_cause, reopen_front, set_clock};
 pub use reputation::{
-    AttackIncident, PUBLIC_ATTACK_PENALTY, StandingEffect, StandingReceipt, StandingView,
-    VoidWindow, ensure_organization_faction, open_factions, public_standing,
+    AttackIncident, MAX_GRANTS_PER_SUBJECT, PUBLIC_ATTACK_PENALTY, StandingEffect, StandingReceipt,
+    StandingView, VoidWindow, ensure_organization_faction, open_factions, public_standing,
     publish_attack_incident, record_standing, record_voidable_standing, report_attack_incident,
     standing_causes, standing_receipt, void_standing, voidable_causes,
 };

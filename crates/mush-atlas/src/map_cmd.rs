@@ -274,7 +274,7 @@ fn cmd_move(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             report.at.0,
             report.at.1
         );
-        crate::frame::publish_delta(ctx, domain, &note);
+        crate::frame::publish_actor_delta(ctx, domain, actor, report.room, &note);
     }
     Ok(())
 }
