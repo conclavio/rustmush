@@ -60,11 +60,11 @@ partition: domain_arena domain_economy domain_field domain_world
 weight: 120 harness
 weight: 1176 cost_lane
 default-weight: 10.5
-weight: 769 domain_economy::drones::sm12b_the_drones_mine_deliver_and_never_sell
-weight: 441 domain_economy::drones::sm12b_the_restart_changes_nothing
+weight: 199 domain_economy::drones::sm12b_the_drones_mine_deliver_and_never_sell
+weight: 105 domain_economy::drones::sm12b_the_restart_changes_nothing
 weight: 220 domain_field::field_story::s2_the_field_story_at_512
-weight: 204 domain_economy::mill::sm12a_a_month_of_milling_conserves_and_restocks_only_by_the_mill
-weight: 168 domain_economy::drones::sm12b_a_full_storefront_parks_the_drones
+weight: 56 domain_economy::mill::sm12a_a_month_of_milling_conserves_and_restocks_only_by_the_mill
+weight: 40 domain_economy::drones::sm12b_a_full_storefront_parks_the_drones
 weight: 167 domain_economy::in8_mass_scrap::ex3_scrap_sells_on_the_board_past_twenty_tonnes_and_a_missed_leg_refunds
 weight: 165 domain_economy::house_sweep_rs6c::rs6c_tycho_sweeps_and_scraps_a_wreck_on_urvara_reach
 weight: 153 domain_economy::in11_matter::in11_the_port_half_ore_to_parts_to_a_prospector_conserves_matter
