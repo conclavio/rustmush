@@ -712,7 +712,9 @@ fn land_adrift(
         Asks::MakeForPort => {
             // The engine holds one submission an actor: a passage engaged behind another
             // would be flown on a debit that was turned away. Wait a tick instead.
-            let payer = super::commands::resolve_hull_captain_aboard(ctx.w, hull, ctx.actor);
+            let payer = house_helm(ctx.w, hull).unwrap_or_else(|| {
+                super::commands::resolve_hull_captain_aboard(ctx.w, hull, ctx.actor)
+            });
             if ctx.authoritative_pending(payer) || ctx.authoritative_queue_full() {
                 keep(ctx, hull, state);
                 return still_adrift(ctx, hull);
@@ -722,7 +724,13 @@ fn land_adrift(
                 .clone()
                 .or_else(|| super::commands::return_port_for_hull(ctx.w, hull))
                 .unwrap_or_default();
-            match super::commands::execute_linkdead_return_journey(ctx, hull, &port) {
+            // Doc 50 cut OP.4: a hauling house's hull files as her helm, the house's one soul
+            // aboard; the tick's own actor never submits.
+            let saved = ctx.actor;
+            ctx.actor = payer;
+            let filed = super::commands::execute_linkdead_return_journey(ctx, hull, &port);
+            ctx.actor = saved;
+            match filed {
                 Ok(Some(engaged)) => {
                     state.backup_act = BackupAct::MakingForPort;
                     state.return_retry_at_wall_s = 0;
@@ -753,6 +761,12 @@ fn land_adrift(
         crate::port::voyage::narrate_hull(ctx, hull, &line);
     }
     still_adrift(ctx, hull)
+}
+
+/// **A hauling house's hull's helm** (doc 50 cut OP.4): the house's one soul aboard her, who
+/// files and submits for her; `None` for any other hull.
+fn house_helm(w: &World, hull: ObjId) -> Option<ObjId> {
+    crate::port::coop::helm_holder(w, hull).filter(|_| crate::port::hauler::is_hauler(w, hull))
 }
 
 /// `hull`'s record as the book now holds it, if the seat still flies her outside a bubble.
@@ -1064,8 +1078,7 @@ pub(crate) fn settle_bubble_backup(ctx: &mut Ctx<'_>, hull: ObjId, flown: Bubble
     // one of her captain's still in flight the seat waits a tick.
     // Doc 50 cut OP.4 (Q-50-56): a hauling house's hull has nobody aboard; her helm, the house's
     // own actor, submits her.
-    let captain = crate::port::coop::helm_holder(ctx.w, hull)
-        .filter(|_| crate::port::hauler::is_hauler(ctx.w, hull))
+    let captain = house_helm(ctx.w, hull)
         .unwrap_or_else(|| super::commands::resolve_hull_captain_aboard(ctx.w, hull, ctx.actor));
     if ctx.authoritative_pending(captain) || ctx.authoritative_queue_full() {
         return;
