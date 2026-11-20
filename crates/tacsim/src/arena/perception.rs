@@ -376,7 +376,12 @@ impl Jammer {
         let signature =
             mush_tactics::CellId::new(crate::definitions::unit::JAM_SIGNATURE_CELL).ok()?;
         let condition = mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL).ok()?;
-        unit.components().find_map(|(component, _)| {
+        unit.components().find_map(|(component, part)| {
+            if !mush_tactics::field_ops::ComponentCondition::classify_condition_id(&part.condition)
+                .is_operational()
+            {
+                return None;
+            }
             let at = |cell: &mush_tactics::CellId| {
                 let addr = mush_tactics::CellAddr::Component {
                     component: component.clone(),
@@ -451,7 +456,12 @@ impl Eccm {
         let signature =
             mush_tactics::CellId::new(crate::definitions::unit::ECCM_SIGNATURE_CELL).ok()?;
         let condition = mush_tactics::CellId::new(crate::definitions::unit::CONDITION_CELL).ok()?;
-        unit.components().find_map(|(component, _)| {
+        unit.components().find_map(|(component, part)| {
+            if !mush_tactics::field_ops::ComponentCondition::classify_condition_id(&part.condition)
+                .is_operational()
+            {
+                return None;
+            }
             let at = |cell: &mush_tactics::CellId| {
                 let addr = mush_tactics::CellAddr::Component {
                     component: component.clone(),

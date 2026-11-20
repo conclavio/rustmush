@@ -453,6 +453,259 @@ pub(crate) fn rig_record(
     .cloned()
 }
 
+/// **Party identity and current leader of one unit standing on a site's ground**, read
+/// authoritatively inside an offer projection or [`mush_core::ActionTxn`] (HIGH-57).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GroundParty {
+    /// The unit.
+    pub unit: ObjId,
+    /// Its party's key.
+    pub key: PartyKey,
+    /// Who leads its party, when anyone does.
+    pub leader: Option<ObjId>,
+}
+
+/// Shared party-ownership resolution for [`ground_parties_in_engine`] (offer projection)
+/// and [`ground_parties_in_txn`] (live transaction recheck).
+fn ground_parties_with(
+    w: &World,
+    entry: &CanonicalId,
+    units: &[ObjId],
+    mut head_of: impl FnMut(
+        ObjId,
+    ) -> Result<
+        Option<crate::detachment::sortie::UnitHead>,
+        mush_core::ActionError,
+    >,
+    mut flight_of: impl FnMut(
+        &crate::detachment::sortie::FlightKey,
+    ) -> Result<
+        Option<crate::detachment::sortie::Flight>,
+        mush_core::ActionError,
+    >,
+    mut operation_of: impl FnMut(
+        &crate::detachment::sortie::OperationId,
+    ) -> Result<
+        Option<crate::detachment::sortie::OperationRecord>,
+        mush_core::ActionError,
+    >,
+    mut rig_of: impl FnMut(
+        ObjId,
+    ) -> Result<
+        Option<crate::surface::excursion::RigRecord>,
+        mush_core::ActionError,
+    >,
+) -> Result<Vec<GroundParty>, mush_core::ActionError> {
+    type OpenFlight = (
+        ObjId,
+        (crate::detachment::sortie::OperationId, Option<ObjId>, ObjId),
+    );
+    let mut flights: Vec<OpenFlight> = Vec::new();
+    for &unit in units {
+        let Some(head) = head_of(unit)? else {
+            continue;
+        };
+        let Some(flight) = flight_of(&head.flight)? else {
+            continue;
+        };
+        if !flight.phase.open() || &flight.site != entry {
+            continue;
+        }
+        let leader = operation_of(&flight.operation)?
+            .as_ref()
+            .and_then(roster_leader);
+        flights.push((unit, (flight.operation, leader, flight.carrier)));
+    }
+    let mut out = Vec::with_capacity(units.len());
+    for &unit in units {
+        if super::carrier::is_carrier(w, unit) {
+            let roster = flights
+                .iter()
+                .map(|(_, facts)| facts)
+                .filter(|facts| facts.2 == unit)
+                .min_by_key(|facts| facts.0);
+            let commander = crate::port::coop::helm_holder(w, unit);
+            let (key, leader) = match roster {
+                Some((operation, leader, _)) => (
+                    PartyKey::Operation {
+                        operation: *operation,
+                    },
+                    *leader,
+                ),
+                None => (PartyKey::Unit { unit }, commander),
+            };
+            out.push(GroundParty { unit, key, leader });
+            continue;
+        }
+        if let Some((_, (operation, leader, _))) = flights.iter().find(|(flier, _)| *flier == unit)
+        {
+            out.push(GroundParty {
+                unit,
+                key: PartyKey::Operation {
+                    operation: *operation,
+                },
+                leader: *leader,
+            });
+            continue;
+        }
+        if let Some(leader) = super::raiders::leader_of(w, unit) {
+            out.push(GroundParty {
+                unit,
+                key: PartyKey::Fixture { leader },
+                leader: Some(leader),
+            });
+            continue;
+        }
+        let pilot = seated(w, unit).map(|(actor, _)| actor);
+        let operator =
+            rig_of(unit)?.and_then(|record| record.excursion.as_ref().map(|ex| ex.operator));
+        out.push(GroundParty {
+            unit,
+            key: PartyKey::Unit { unit },
+            leader: pilot.or(operator),
+        });
+    }
+    Ok(out)
+}
+
+/// **Resolve each unit's party and leader on `entry`'s ground from `engine`** (HIGH-57, offer
+/// projection).
+pub(crate) fn ground_parties_in_engine(
+    engine: &mush_core::Engine,
+    excursions: &mush_core::StateFamilyHandle<
+        crate::surface::excursion::RigKey,
+        crate::surface::excursion::RigRecord,
+    >,
+    entry: &CanonicalId,
+    units: &[ObjId],
+) -> Result<Vec<GroundParty>, mush_core::ActionError> {
+    let w = &engine.world;
+    let handles = w.module_state::<crate::detachment::sortie::SortieHandles>();
+    let state = engine.action_state();
+    ground_parties_with(
+        w,
+        entry,
+        units,
+        |unit| match handles {
+            Some(h) => state.get(&h.heads, &unit).map(|v| v.cloned()).map_err(|_| {
+                crate::port_tick::port_error(
+                    mush_core::ActionErrorCode::Integrity,
+                    "the flight heads are unavailable",
+                )
+            }),
+            None => Ok(None),
+        },
+        |key| match handles {
+            Some(h) => state.get(&h.flights, key).map(|v| v.cloned()).map_err(|_| {
+                crate::port_tick::port_error(
+                    mush_core::ActionErrorCode::Integrity,
+                    "the flight records are unavailable",
+                )
+            }),
+            None => Ok(None),
+        },
+        |op| match handles {
+            Some(h) => state
+                .get(&h.operations, op)
+                .map(|v| v.cloned())
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the operation records are unavailable",
+                    )
+                }),
+            None => Ok(None),
+        },
+        |unit| {
+            state
+                .get(excursions, &crate::surface::excursion::RigKey(unit))
+                .map(|v| v.cloned())
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the rig records are unavailable",
+                    )
+                })
+        },
+    )
+}
+
+/// **Authoritatively resolve each unit's party and leader on `entry`'s ground inside `txn`**
+/// (HIGH-57): matches [`entrants`]'s party-ownership rules using transaction reads of
+/// detachment flights and rig records.
+pub(crate) fn ground_parties_in_txn(
+    w: &World,
+    txn: &mut mush_core::ActionTxn<'_>,
+    excursions: &mush_core::StateFamilyHandle<
+        crate::surface::excursion::RigKey,
+        crate::surface::excursion::RigRecord,
+    >,
+    entry: &CanonicalId,
+    units: &[ObjId],
+) -> Result<Vec<GroundParty>, mush_core::ActionError> {
+    let handles = w
+        .module_state::<crate::detachment::sortie::SortieHandles>()
+        .cloned();
+    let txn_cell = std::cell::RefCell::new(txn);
+    ground_parties_with(
+        w,
+        entry,
+        units,
+        |unit| match &handles {
+            Some(h) => txn_cell
+                .borrow_mut()
+                .get(&h.heads, &unit)
+                .map(|v| v.cloned())
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the flight heads are unavailable",
+                    )
+                }),
+            None => Ok(None),
+        },
+        |key| match &handles {
+            Some(h) => txn_cell
+                .borrow_mut()
+                .get(&h.flights, key)
+                .map(|v| v.cloned())
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the flight records are unavailable",
+                    )
+                }),
+            None => Ok(None),
+        },
+        |op| match &handles {
+            Some(h) => txn_cell
+                .borrow_mut()
+                .get(&h.operations, op)
+                .map(|v| v.cloned())
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the operation records are unavailable",
+                    )
+                }),
+            None => Ok(None),
+        },
+        |unit| {
+            txn_cell
+                .borrow_mut()
+                .get(excursions, &crate::surface::excursion::RigKey(unit))
+                .map(|v| v.cloned())
+                .map_err(|_| {
+                    crate::port_tick::port_error(
+                        mush_core::ActionErrorCode::Integrity,
+                        "the rig records are unavailable",
+                    )
+                })
+        },
+    )
+}
+
 /// **Each unit on the ground as the field admits it** (this module's head), in unit order. A
 /// carrier takes the party of the first open flight on this site it launched (by operation),
 /// else a party of one led by its commander (doc 32 cut CF.3).

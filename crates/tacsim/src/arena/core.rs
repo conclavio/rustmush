@@ -424,16 +424,23 @@ pub fn read_core_under(
         CoreClass::from_ordinal(n)
     });
     let mut class = live.unwrap_or(fitted);
-    let lost = component
+    let lost = match component
         .and_then(|component| unit.component(component))
-        .map_or(0, |part| {
-            use mush_tactics::field_ops::ComponentCondition;
-            match ComponentCondition::classify_condition_id(&part.condition) {
-                ComponentCondition::Jammed => effects.core.jammed_classes_lost,
-                ComponentCondition::Damaged => effects.core.damaged_classes_lost,
-                _ => 0,
-            }
-        });
+        .map(|part| {
+            mush_tactics::field_ops::ComponentCondition::classify_condition_id(&part.condition)
+        }) {
+        Some(
+            mush_tactics::field_ops::ComponentCondition::Destroyed
+            | mush_tactics::field_ops::ComponentCondition::Missing,
+        ) => return None,
+        Some(mush_tactics::field_ops::ComponentCondition::Jammed) => {
+            effects.core.jammed_classes_lost
+        }
+        Some(mush_tactics::field_ops::ComponentCondition::Damaged) => {
+            effects.core.damaged_classes_lost
+        }
+        Some(mush_tactics::field_ops::ComponentCondition::Intact) | None => 0,
+    };
     for _ in 0..lost {
         class = class.lower();
     }

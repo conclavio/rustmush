@@ -342,6 +342,18 @@ pub fn plan_end_key(tv: ObjId, no: u32) -> Option<IdempotencyKeyText> {
     IdempotencyKeyText::parse_canonical(format!("{SURFACE_KEY_PREFIX}{}/plan/{no}/end", tv.0)).ok()
 }
 
+/// **A plan's persisted-pass key** (HIGH-54): `tacsim.surface/{tv}/plan/{no}/pass/{seq}` —
+/// persists passed steps/pockets when the per-step A* search budget is hit, advancing `plan.seq`
+/// without colliding with [`plan_end_key`].
+#[must_use]
+pub fn plan_pass_key(tv: ObjId, no: u32, seq: u32) -> Option<IdempotencyKeyText> {
+    IdempotencyKeyText::parse_canonical(format!(
+        "{SURFACE_KEY_PREFIX}{}/plan/{no}/pass/{seq}",
+        tv.0
+    ))
+    .ok()
+}
+
 /// **A plan step's start key** (the brief's 3.6, D9): `tacsim.surface/{tv}/{ordinal}/plan/{step}/
 /// {word}` — the word in the key, because a step whose submission did not land may be re-decided
 /// as another move at the same ordinal (a drive becomes a recover), and a reused key with other

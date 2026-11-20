@@ -199,20 +199,28 @@ impl Arena {
             .ok_or(ArenaError::DuplicateUnit { unit: id })?;
         self.units.insert(at, state);
         // Doc 36a lane 3 (P1-9): the rules `admit_unit` installed went into a scratch table; a
-        // mind hull's native profile rows go into the arena's own (a piloted hull keeps none, by
-        // design: `crate::arena::conditions`).
+        // live mind hull's native profile rows go into the arena's own (a piloted or wrecked hull
+        // keeps none, by design: `crate::arena::conditions`).
         if controller == super::state::Controller::Mind
-            && let Some(runtime) = self.profiles.get(&id)
+            && !self.unit(id).is_none_or(|state| state.limits.wreck)
         {
-            runtime
-                .program
-                .install(&mut self.conditions, id, self.classes.row(class).slots)
-                .map_err(|error| {
-                    refused(
-                        id,
-                        &format!("its profile rules were not installed: {error}"),
-                    )
-                })?;
+            if let Some(runtime) = self.profiles.get(&id) {
+                runtime
+                    .program
+                    .install(&mut self.conditions, id, self.classes.row(class).slots)
+                    .map_err(|error| {
+                        refused(
+                            id,
+                            &format!("its profile rules were not installed: {error}"),
+                        )
+                    })?;
+            }
+        } else if let Some(runtime) = self.profiles.get_mut(&id)
+            && !runtime.program.rows.is_empty()
+        {
+            for slot in 1..=crate::arena::core::MAX_CONDITION_SLOTS as u8 {
+                runtime.override_slot(slot);
+            }
         }
         // Doc 23 cut S.4b-3's kernel half (doc 40 cut FR.5): a scripted seal's runner, by the
         // fresh check-out's rule, on this copy.
@@ -532,5 +540,70 @@ mod tests {
                 .is_err()
         );
         assert_eq!(crate::arena::hash::state_hash(&arena), hash);
+    }
+
+    #[test]
+    fn high66_join_applies_friends_and_marks_even_after_peer_prepopulated_book() {
+        use crate::arena::party::{Mark, Relation};
+        let mut arena = field();
+        let p_a = party(0);
+        let p_b = party(1);
+        let p_c = party(2);
+        let p_d = party(3);
+        let p_e = party(4);
+
+        // Party C joins first with a standing friendship to D and a mark from D on C,
+        // populating D's sparse book before any unit of party D has joined.
+        let host_c = FieldHost {
+            friends: vec![(p_c, p_d)],
+            marks: vec![(p_d, p_c, Mark::Friendly)],
+            ..ic_host()
+        };
+        arena
+            .join(
+                line_tank(ARRIVAL, p_c, pose(3_500, 3_500)),
+                None,
+                &host_c,
+                8,
+            )
+            .expect("party C joins");
+        assert!(arena.relations.contains(p_c));
+        assert!(
+            !arena.relations.contains(p_d),
+            "party D must remain unadmitted until a unit of D joins"
+        );
+
+        // A refused join for party D leaves D unadmitted.
+        let occupied = arena.unit(MINER).expect("miner").pose.clone();
+        let host_d_bad = FieldHost {
+            friends: vec![(p_d, p_a)],
+            marks: vec![(p_d, p_b, Mark::Hostile)],
+            ..ic_host()
+        };
+        assert!(
+            arena
+                .join(line_tank(ObjId(19), p_d, occupied), None, &host_d_bad, 0)
+                .is_err()
+        );
+        assert!(!arena.relations.contains(p_d));
+
+        // Now party D joins with its own friendships and marks; none may be dropped.
+        let host_d = FieldHost {
+            friends: vec![(p_c, p_d), (p_d, p_e)],
+            marks: vec![(p_d, p_b, Mark::Hostile)],
+            ..ic_host()
+        };
+        arena
+            .join(
+                line_tank(ObjId(19), p_d, pose(4_500, 3_500)),
+                None,
+                &host_d,
+                8,
+            )
+            .expect("party D joins");
+        assert!(arena.relations.contains(p_d));
+        assert_eq!(arena.relation(p_d, p_c), Relation::Friend);
+        assert_eq!(arena.relation(p_d, p_e), Relation::Friend);
+        assert_eq!(arena.relation(p_d, p_b), Relation::Hostile);
     }
 }

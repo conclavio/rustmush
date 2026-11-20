@@ -239,7 +239,9 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
             });
         match joined {
             Ok(_) => {
-                if let Some(state) = arena.unit_mut(hull) {
+                if let Some(state) = arena.unit_mut(hull)
+                    && can_power_online(&state.unit, state.limits.wreck)
+                {
                     state.power = crate::arena::state::Power::Online;
                 }
             }
@@ -375,5 +377,60 @@ fn void(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) {
             .is_some_and(|open| open.by.hosted())
     {
         super::admit::owe_close(ctx, site, &record, Some(demoted), Vec::new());
+    }
+}
+
+/// Whether a resumed field arrival's plant can come online (HIGH-63): never a wreck and never
+/// a hull whose power plant is non-operational (`Jammed`, `Destroyed`, or `Missing`).
+fn can_power_online(unit: &mush_tactics::TacticalUnit, wreck: bool) -> bool {
+    !wreck
+        && crate::arena::part_effects::plant_condition(unit)
+            .is_none_or(mush_tactics::field_ops::ComponentCondition::is_operational)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arena::test_support::{dref, rules, tactical_unit_spec};
+    use mush_tactics::{
+        CapabilityId, CapabilityInit, CapabilityKey, ComponentId, ComponentSpec, ConditionId,
+        InstallPoint, SectionId, TacticalUnit,
+    };
+
+    fn unit_with_plant(plant_condition: Option<&str>) -> TacticalUnit {
+        let mut spec = tactical_unit_spec(rules());
+        if let Some(cond) = plant_condition {
+            spec.components.push(ComponentSpec {
+                id: ComponentId::new("plant").expect("component"),
+                definition: dref("component", "tacsim.unit.test.plant"),
+                install: InstallPoint::Section(SectionId::new("hull").expect("section")),
+                condition: ConditionId::new(cond).expect("condition"),
+                cells: Vec::new(),
+                asset: None,
+            });
+            spec.capabilities.push(CapabilityInit {
+                key: CapabilityKey {
+                    id: CapabilityId::new(crate::arena::damage::POWER_CAPABILITY)
+                        .expect("capability"),
+                    source: Some(ComponentId::new("plant").expect("component")),
+                },
+                rules: rules(),
+            });
+        }
+        TacticalUnit::from_spec(&spec, ObjId(50)).expect("tactical unit")
+    }
+
+    #[test]
+    fn high63_boot_arrival_does_not_force_online_with_non_operational_plant() {
+        assert!(can_power_online(&unit_with_plant(None), false));
+        assert!(can_power_online(&unit_with_plant(Some("intact")), false));
+        assert!(can_power_online(&unit_with_plant(Some("damaged")), false));
+        assert!(!can_power_online(&unit_with_plant(Some("jammed")), false));
+        assert!(!can_power_online(
+            &unit_with_plant(Some("destroyed")),
+            false
+        ));
+        assert!(!can_power_online(&unit_with_plant(Some("missing")), false));
+        assert!(!can_power_online(&unit_with_plant(Some("intact")), true));
     }
 }

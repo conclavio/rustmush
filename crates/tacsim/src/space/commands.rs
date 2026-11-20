@@ -2396,20 +2396,49 @@ pub(crate) fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor
     fallback_actor
 }
 
+/// Refusal when a hull (or the server-wide burn queue) already has the maximum in-flight space
+/// burns queued (HIGH-46). Rejecting rather than evicting guarantees unpaid passages are never
+/// forgiven and victim fuel is never stranded.
+pub const SPACE_BURN_QUEUE_FULL: &str = "Too many reaction-mass debits are still committing for this hull; wait a moment and try again.";
+
+/// Check whether `pending_space_burns` has capacity for another burn on `hull` without evicting
+/// any existing queued burn (HIGH-46).
+pub(crate) fn ensure_space_burn_capacity(w: &World, hull: ObjId) -> Result<(), CmdError> {
+    let book = w
+        .module_state::<SpaceBubbleBook>()
+        .ok_or_else(|| CmdError::msg("Space bubble state is not registered."))?;
+    let hull_pending = book
+        .pending_space_burns
+        .iter()
+        .filter(|b| b.hull == hull)
+        .count();
+    if hull_pending >= super::tick::MAX_PENDING_SPACE_BURNS_PER_HULL
+        || book.pending_space_burns.len() >= super::tick::MAX_PENDING_SPACE_BURNS_GLOBAL
+    {
+        return Err(CmdError::msg(SPACE_BURN_QUEUE_FULL));
+    }
+    Ok(())
+}
+
 /// Sync any reaction mass burned inside `hull`'s active interdiction bubble (`propellant_kg`)
 /// into [`super::tick::HullPropellantLedger`] and submit a whole-tonne [`crate::port::burn::PendingSpaceBurn`]
 /// whenever a whole-tonne boundary is crossed (`SF.R11`, `D-35-6`).
 pub(crate) fn sync_bubble_propellant_to_ledger(ctx: &mut Ctx<'_>, hull: ObjId) {
-    let Some(burned_kg) = ctx
+    // HIGH-46: do not advance `last_synced_propellant_kg` or mutate the ledger when this hull's
+    // burn queue is already at cap; leave the diff unsynced so the next tick retries cleanly.
+    if ensure_space_burn_capacity(ctx.w, hull).is_err() {
+        return;
+    }
+    let Some((burned_kg, prior_synced, cur_kg)) = ctx
         .w
-        .module_state_mut::<SpaceBubbleBook>()
-        .and_then(|b| b.active_for_hull_mut(hull))
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|b| b.active_for_hull(hull))
         .and_then(|active| {
-            let ship_id = active.carrier_ship_id_for(hull).to_owned();
+            let ship_id = active.carrier_ship_id_for(hull);
             let cur_kg = active
                 .bubble
                 .ships
-                .get(&ship_id)
+                .get(ship_id)
                 .map_or(0, |s| s.propellant_kg);
             let last_synced = active
                 .carriers
@@ -2417,18 +2446,7 @@ pub(crate) fn sync_bubble_propellant_to_ledger(ctx: &mut Ctx<'_>, hull: ObjId) {
                 .map_or(active.last_synced_propellant_kg, |c| {
                     c.last_synced_propellant_kg
                 });
-            let diff = if last_synced > cur_kg {
-                Some(u64::from(last_synced - cur_kg))
-            } else {
-                None
-            };
-            if let Some(entry) = active.carriers.get_mut(&hull) {
-                entry.last_synced_propellant_kg = cur_kg;
-            }
-            if active.hull == hull {
-                active.last_synced_propellant_kg = cur_kg;
-            }
-            diff
+            (last_synced > cur_kg).then_some((u64::from(last_synced - cur_kg), last_synced, cur_kg))
         })
     else {
         return;
@@ -2436,14 +2454,44 @@ pub(crate) fn sync_bubble_propellant_to_ledger(ctx: &mut Ctx<'_>, hull: ObjId) {
     let Ok((basis, _)) = live_hull_basis_and_propellant_kg(ctx, hull) else {
         return;
     };
-    let whole_tonnes = ctx
-        .w
-        .module_state_mut::<SpaceBubbleBook>()
-        .map_or(0, |book| {
-            book.propellant_ledger_mut(hull)
-                .record_burn_kg(basis.tank, burned_kg)
-        });
-    let _ = submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0);
+    let (whole_tonnes, prior_ledger) = {
+        let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
+            return;
+        };
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            if let Some(entry) = active.carriers.get_mut(&hull) {
+                entry.last_synced_propellant_kg = cur_kg;
+            }
+            if active.hull == hull {
+                active.last_synced_propellant_kg = cur_kg;
+            }
+        }
+        let prior_ledger = book.propellant_ledgers.get(&hull).cloned();
+        let whole_tonnes = book
+            .propellant_ledger_mut(hull)
+            .record_burn_kg(basis.tank, burned_kg);
+        (whole_tonnes, prior_ledger)
+    };
+    if submit_space_burn_if_needed(ctx, hull, basis.vault.0, whole_tonnes, 0).is_err()
+        && let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
+    {
+        if let Some(active) = book.active_for_hull_mut(hull) {
+            if let Some(entry) = active.carriers.get_mut(&hull) {
+                entry.last_synced_propellant_kg = prior_synced;
+            }
+            if active.hull == hull {
+                active.last_synced_propellant_kg = prior_synced;
+            }
+        }
+        match prior_ledger {
+            Some(prev) => {
+                book.propellant_ledgers.insert(hull, prev);
+            }
+            None => {
+                book.propellant_ledgers.remove(&hull);
+            }
+        }
+    }
 }
 
 /// `+helm/autopilot`'s refusal when the passage's debit could not be admitted (doc 35 cut
@@ -2489,6 +2537,7 @@ fn queue_space_burn(
     {
         return Err(CmdError::msg("The port burn action is not wired."));
     }
+    ensure_space_burn_capacity(ctx.w, hull)?;
     // A sequence the receipt row already holds would read as landed.
     let landed_high = space_burn_receipts_of(ctx, hull)
         .ok()
@@ -3054,6 +3103,7 @@ fn engage_free_flight_burn(
         )));
     }
 
+    ensure_space_burn_capacity(ctx.w, hull)?;
     let whole_tonnes = {
         let book = ctx
             .w
@@ -4768,6 +4818,7 @@ pub(crate) fn debit_hull_propellant_for_dv(
             reserve.reserve_kg
         )));
     }
+    ensure_space_burn_capacity(ctx.w, hull)?;
     let whole_tonnes = {
         let book = ctx
             .w
@@ -5290,6 +5341,7 @@ pub(crate) fn debit_hull_propellant_kg(
     if clamped_kg == 0 {
         return Ok(());
     }
+    ensure_space_burn_capacity(ctx.w, hull)?;
     let whole_tonnes = {
         let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() else {
             return Ok(());

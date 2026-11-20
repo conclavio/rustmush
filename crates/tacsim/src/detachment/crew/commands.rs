@@ -195,6 +195,18 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "An authoritative request is already pending.",
         ));
     }
+    // HIGH-69: fail fast at a waged port when the employer lacks an active
+    // non-delinquent credit account or has standing unpaid crew wages.
+    if let Ok(rows) = offers(ctx.w, ctx.actor, |id| {
+        check_contract(
+            id,
+            ctx.action_state(&handles.contracts, &id)
+                .map_err(|e| e.to_string())?,
+        )
+    }) && let Some(offer) = rows.iter().find(|row| row.npc == npc)
+    {
+        super::wages::hiring_allowed(ctx.w, ctx.actor, &offer.terms).map_err(CmdError::msg)?;
+    }
     let digest = CanonicalHash::for_canonical_value(
         "tacsim.crew_hire_input.v1",
         1,

@@ -70,6 +70,14 @@ pub fn plant_condition(unit: &TacticalUnit) -> Option<ComponentCondition> {
         .map(|part| ComponentCondition::classify_condition_id(&part.condition))
 }
 
+/// Whether `state`'s power plant is operational and may come online (`!wreck`
+/// and its power plant part, if any, reads operational).
+#[must_use]
+pub fn plant_operational(state: &UnitState) -> bool {
+    !state.limits.wreck
+        && plant_condition(&state.unit).is_none_or(ComponentCondition::is_operational)
+}
+
 /// **The condition of the hull's relay** (doc 40 cut FR.5, Q-40-5): the part the
 /// `tacsim.relay.mobile` capability names as its source, or `None` for a hull with no relay —
 /// every hull but the Halcyon.
@@ -90,9 +98,9 @@ fn capability_part<'a>(unit: &'a TacticalUnit, id: &str) -> Option<&'a Component
         .and_then(|key| key.source.as_ref())
 }
 
-/// **The part a pod or a filter is read off**: the first component, in component order, that
-/// carries `cell` and whose `condition` cell is above nought — the one [`Jammer::read`] and
-/// [`Eccm::read`] find.
+/// **The part a pod or a filter is read off**: the first operational component, in component
+/// order, that carries `cell` and whose `condition` cell is above zero — the one [`Jammer::read`]
+/// and [`Eccm::read`] find.
 fn mounted_part(unit: &TacticalUnit, cell: &str) -> Option<ComponentId> {
     let (Ok(cell), Ok(condition)) = (
         CellId::new(cell),
@@ -100,7 +108,10 @@ fn mounted_part(unit: &TacticalUnit, cell: &str) -> Option<ComponentId> {
     ) else {
         return None;
     };
-    unit.components().find_map(|(component, _)| {
+    unit.components().find_map(|(component, part)| {
+        if !ComponentCondition::classify_condition_id(&part.condition).is_operational() {
+            return None;
+        }
         let at = |cell: &CellId| {
             unit.cell(&CellAddr::Component {
                 component: component.clone(),
@@ -115,7 +126,7 @@ fn mounted_part(unit: &TacticalUnit, cell: &str) -> Option<ComponentId> {
 /// Whether a pod or filter in `condition` is off under `row`.
 fn pod_off(condition: Option<ComponentCondition>, row: PodEffect) -> bool {
     match condition {
-        Some(ComponentCondition::Jammed) => true,
+        Some(condition) if !condition.is_operational() => true,
         Some(ComponentCondition::Damaged) => row.damaged_off,
         _ => false,
     }
@@ -153,7 +164,7 @@ pub(crate) fn derive(state: &mut UnitState, cell_cm: u16) -> Derived {
         .or_else(|| state.sensor.clone())
     {
         let live = match part_condition(&state.unit, &authored.component) {
-            Some(ComponentCondition::Jammed) => None,
+            Some(condition) if !condition.is_operational() => None,
             Some(ComponentCondition::Damaged) => Some(SensorProfile {
                 max_range_cells: scaled(
                     authored.max_range_cells,
@@ -181,20 +192,17 @@ pub(crate) fn derive(state: &mut UnitState, cell_cm: u16) -> Derived {
     } else {
         Eccm::read(&state.unit)
     };
-    // The plant: off while jammed. Unjamming restores STARTUP, never the power.
-    let plant_off = plant_condition(&state.unit) == Some(ComponentCondition::Jammed);
+    // The plant: off whenever non-operational (jammed, destroyed, or missing).
+    // Restoring it restores STARTUP, never the power.
+    let plant_off =
+        plant_condition(&state.unit).is_some_and(|condition| !condition.is_operational());
     if plant_off {
         state.power = Power::Off;
     }
     // The core: read-side (`read_core_under`); the slots follow in the arena.
-    let core_down = crate::arena::core::read_core(&state.unit)
-        .and_then(|core| part_condition(&state.unit, core.component.as_str()))
-        .is_some_and(|condition| {
-            matches!(
-                condition,
-                ComponentCondition::Jammed | ComponentCondition::Damaged
-            )
-        });
+    let core_down = capability_part(&state.unit, crate::definitions::unit::CORE_CAPABILITY)
+        .and_then(|part| part_condition(&state.unit, part.as_str()))
+        .is_some_and(|condition| condition != ComponentCondition::Intact);
     Derived {
         plant_off,
         core_down,
@@ -497,5 +505,98 @@ mod tests {
             Some(visual().max_range_cells / 4),
             "the unit's own table"
         );
+    }
+
+    #[test]
+    fn high63_destroyed_and_missing_non_weapon_parts_are_offline() {
+        for word in ["destroyed", "missing"] {
+            let mut arena = arena_of(vec![unit(RED, PartyId::RED, word, word, word)]);
+            let state = arena.unit(RED).expect("red");
+            assert!(
+                state.sensor.is_none(),
+                "{word} sight must be offline at admission"
+            );
+            assert_eq!(state.power, Power::Off, "{word} plant must stay offline");
+            assert!(
+                !plant_operational(state),
+                "{word} plant must report non-operational"
+            );
+            assert_eq!(
+                state.plant_heat_permille(),
+                0,
+                "{word} plant must provide zero heat capacity/dissipation"
+            );
+            assert_eq!(
+                arena.core_of(RED),
+                None,
+                "{word} core must read offline (None)"
+            );
+            assert_eq!(arena.mind_class(RED), CoreClass::Zero);
+            assert_eq!(resolve_startup(&mut arena, RED, 0), Err(Refusal::Plant));
+
+            // Mid-match transition from intact -> destroyed/missing turns power,
+            // sensor, core, and heat offline and cancels scheduled startup.
+            let mut live = arena_of(vec![unit(RED, PartyId::RED, "intact", "intact", "intact")]);
+            assert_eq!(resolve_startup(&mut live, RED, 0), Ok(()));
+            live.unit_mut(RED).expect("red").power = Power::Online;
+            set_word(&mut live, RED, "plant", word);
+            set_word(&mut live, RED, "visual_sensor", word);
+            set_word(&mut live, RED, "core", word);
+            live.apply_part_effects(RED);
+            let after = live.unit(RED).expect("red");
+            assert_eq!(after.power, Power::Off, "{word} plant turns power off");
+            assert!(after.sensor.is_none(), "{word} sight turns sensor off");
+            assert_eq!(after.plant_heat_permille(), 0);
+            assert_eq!(live.core_of(RED), None);
+            assert!(
+                !live.due.iter().any(
+                    |due| matches!(due.kind, DueKind::StartupComplete { unit } if unit == RED)
+                )
+            );
+        }
+
+        // Destroyed/missing/jammed jammer pod and ECCM filter read offline even
+        // when their numeric `condition` cell is still > 0.
+        for word in ["jammed", "destroyed", "missing"] {
+            let mut spec = tactical_unit_spec(rules());
+            let cell = |name: &str, init: i64| CellSpec {
+                id: CellId::new(name).expect("cell"),
+                min: 0,
+                max: 1_000,
+                init,
+            };
+            spec.components.push(ComponentSpec {
+                id: ComponentId::new("ecm_pod").expect("ecm"),
+                definition: dref("component", "tacsim.unit.ecm.pod"),
+                install: InstallPoint::Section(SectionId::new("hull").expect("hull")),
+                condition: ConditionId::new(word).expect("condition"),
+                cells: vec![
+                    cell(crate::definitions::unit::JAM_RADIUS_CELL, 10),
+                    cell(crate::definitions::unit::JAM_ATTENUATION_CELL, 25),
+                    cell(crate::definitions::unit::JAM_SIGNATURE_CELL, 500),
+                    cell(crate::definitions::unit::CONDITION_CELL, 100),
+                ],
+                asset: None,
+            });
+            spec.components.push(ComponentSpec {
+                id: ComponentId::new("eccm_filter").expect("eccm"),
+                definition: dref("component", "tacsim.unit.eccm.filter"),
+                install: InstallPoint::Section(SectionId::new("hull").expect("hull")),
+                condition: ConditionId::new(word).expect("condition"),
+                cells: vec![
+                    cell(crate::definitions::unit::ECCM_ATTENUATION_CELL, 20),
+                    cell(crate::definitions::unit::ECCM_SIGNATURE_CELL, 250),
+                    cell(crate::definitions::unit::CONDITION_CELL, 100),
+                ],
+                asset: None,
+            });
+            let tactical = TacticalUnit::from_spec(&spec, RED).expect("pod unit");
+            assert_eq!(
+                Jammer::read(&tactical, 1_000),
+                None,
+                "{word} jammer must read offline"
+            );
+            assert_eq!(Eccm::read(&tactical), None, "{word} eccm must read offline");
+        }
     }
 }

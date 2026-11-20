@@ -380,6 +380,8 @@ pub(crate) fn register(
     reg.state(crate::surface::act::ActOrders::default());
     // Doc 20 cut SM.11: the plan's test counters (RAM; read by test hooks only).
     reg.state(crate::surface::plan::PlanCounters::default());
+    // HIGH-54: tick-authored plan legs/passes cached for read-only LegalActions offer projection.
+    reg.state(crate::surface::plan::PlanStepOrders::default());
     // Doc 36 cut GC.11: the raid director's RAM.
     reg.state(crate::surface::raid::RaidBook::default());
     reg.tick(
@@ -916,6 +918,12 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     // was overtaken) leaves the RAM slot, read against the whole family — never a capped scan.
     if complete {
         crate::surface::act::prune_mine_orders(ctx.w, &records);
+        if let Some(steps) = ctx
+            .w
+            .module_state_mut::<crate::surface::plan::PlanStepOrders>()
+        {
+            steps.prune(&records);
+        }
     }
     // Every act still due over the whole scan, taken **before** the visit cut: an act past
     // the cut is still due, so its retry bookkeeping must survive the prune (the brief's
@@ -2016,6 +2024,15 @@ fn plan_step(
     let Some(action) = handles.surface_act.clone() else {
         return Step::Refused;
     };
+    // HIGH-54: cache tick-authored drive leg / persisted-pass / A*-walked progress so
+    // `LegalActions` (`plan_variants`) reuses it without running synchronous full-site A*.
+    if let Some((in_bay, rig_cell)) = crate::surface::plan::rig_cell_and_bay(ctx.w, &rig)
+        && let Some(steps) = ctx
+            .w
+            .module_state_mut::<crate::surface::plan::PlanStepOrders>()
+    {
+        steps.record_from_move(tv, &plan, rig_cell, in_bay, &moved, u64::from(peeks.legs));
+    }
     let key = plan_attempt(record);
     let (parameters, idempotency) = match &moved {
         PlanMove::Start { word, step, .. } => {
@@ -2032,6 +2049,17 @@ fn plan_step(
                 crate::surface::act::plan_step_key(tv, ordinal, *step, word),
             )
         }
+        PlanMove::Pass { step, .. } => (
+            json!({
+                "tv": tv.0.to_string(),
+                "act": "plan_end",
+                "ordinal": record.ordinal.max(1),
+                "by": "plan",
+                "plan": plan.no,
+                "step": step,
+            }),
+            crate::surface::act::plan_pass_key(tv, plan.no, plan.seq),
+        ),
         PlanMove::End { .. } => (
             json!({
                 "tv": tv.0.to_string(),
@@ -2043,6 +2071,7 @@ fn plan_step(
             }),
             crate::surface::act::plan_end_key(tv, plan.no),
         ),
+        PlanMove::PreviewDrive { .. } => return Step::Worked,
         PlanMove::Wait(wait) => {
             let until = match wait {
                 PlanWait::Busy => return Step::Worked,

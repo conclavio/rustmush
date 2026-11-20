@@ -1352,6 +1352,7 @@ impl Arena {
                     // compares it, so the pilot would be pushed a frame each time
                     // the hidden tank turned.
                     p_permille: aim
+                        .filter(|aim| aim.classified)
                         .map(|aim| self.resolve_seen(platform, aim, &weapon.id).p_permille),
                     // 16b cut F.3: the edges, for the contact band.
                     bands_cm: weapon.bands_cm(),
@@ -2046,6 +2047,7 @@ mod tests {
             seen_at: plot,
             range_cm,
             cover: mush_atlas::Cover::None,
+            classified: true,
         };
         let inside = arena
             .frame_weapons(RED, Some(&aim(4_000)))

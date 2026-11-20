@@ -3299,12 +3299,14 @@ pub(super) fn plan_now_words(
     use crate::surface::plan::{PlanActInner, PlanMove};
     match moved {
         Some(PlanMove::Start { word, act, .. }) => match act.0 {
-            PlanActInner::Act(planned) | PlanActInner::Drive(planned) => {
+            PlanActInner::Act(planned) | PlanActInner::Drive(planned, _) => {
                 let kind = ActKind::from_word(word).unwrap_or(ActKind::Recover);
                 doing_words(kind, &planned.params, &ramp_label(w, rig.hull))
             }
             PlanActInner::Mine(planned) => drilling_words(&planned.addr),
         },
+        Some(PlanMove::PreviewDrive { target }) => format!("driving to {target}"),
+        Some(PlanMove::Pass { .. }) => "passing unreachable steps".to_owned(),
         Some(PlanMove::End { why, .. }) => {
             format!("it ends: {}", end_why(w, plan.author, why, words))
                 .trim_end_matches('.')
@@ -3437,7 +3439,7 @@ pub(crate) fn plan_show_cmd(ctx: &mut Ctx<'_>, rig: &RigAt) -> Result<(), CmdErr
             let read_rig = |tv: ObjId| SurfaceReads::rig(&*ctx, tv);
             let counts = excursion_counts(w, &read_rig, plan.author, &plan.site);
             let mut peeks = Peeks::default();
-            let moved = crate::surface::plan::decide(
+            let moved = crate::surface::plan::decide_preview(
                 w,
                 &*ctx,
                 rig,

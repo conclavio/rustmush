@@ -185,6 +185,22 @@ impl ProfileRuntime {
         *self = prepared.next;
         Ok(())
     }
+    /// Commit a prepared profile switch for a dormant (seated) hull without
+    /// modifying `arena.conditions` or arming autonomous profile rules.
+    pub fn commit_dormant(&mut self, mut prepared: PreparedSwitch) -> Result<(), SchemaError> {
+        if self.token() != prepared.expected {
+            return Err(invalid("profile", "prepared profile change is stale"));
+        }
+        if prepared.next.program.rows.is_empty() {
+            prepared.next.overridden = self.overridden;
+        } else {
+            for slot in 1..=crate::arena::core::MAX_CONDITION_SLOTS as u8 {
+                prepared.next.override_slot(slot);
+            }
+        }
+        *self = prepared.next;
+        Ok(())
+    }
     /// Prepare a permanent drop to the captured ROM, never current defaults.
     /// Caller journals the drop and applies the existing ROM memory policy.
     /// # Errors

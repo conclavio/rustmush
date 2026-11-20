@@ -100,6 +100,76 @@ pub(crate) fn field_carrier(ctx: &Ctx<'_>, unit: ObjId) -> Option<ObjId> {
     (flight.key.unit == unit && flight.phase.open()).then_some(flight.carrier)
 }
 
+/// Whether `actor` is authorized to recover `slot`'s flight (organizer or that slot's operator;
+/// HIGH-58).
+fn can_recover_slot(operation: OperationId, flight_operator: ObjId, actor: ObjId) -> bool {
+    actor == operation.organizer || actor == flight_operator
+}
+
+/// **Verify active matching flight, slot-targeted caller authority, unit rights, and physical
+/// recoverability before requesting a field exit** (HIGH-58).
+///
+/// When `quiet` is false (player-invoked `+sortie/recover`), also verifies caller physical
+/// presence aboard the carrier/unit, matching recovery berth, `UnitCapability::RecoverLoad`
+/// (`check_caller_rights`), and `facts::recover_unit`. Returns the verified ramp `(x_cm, y_cm)`.
+pub(crate) fn verify_field_recover(
+    ctx: &Ctx<'_>,
+    operation: OperationId,
+    slot: u16,
+    unit: ObjId,
+    quiet: bool,
+) -> Result<(i64, i64), CmdError> {
+    let h = ctx
+        .w
+        .module_state::<runtime::SortieHandles>()
+        .ok_or_else(error)?;
+    let (op, flight) =
+        super::prepare::selected(&mut &*ctx, h, operation, slot).map_err(CmdError::msg)?;
+    if flight.key.unit != unit || flight.phase != Phase::Field {
+        return Err(CmdError::msg(
+            "Return unavailable. That slot has no active field flight.",
+        ));
+    }
+    if !can_recover_slot(operation, flight.operator, ctx.actor) {
+        return Err(CmdError::msg(
+            "Only the operation organizer or that slot's operator can recover that unit.",
+        ));
+    }
+    if !quiet {
+        if !(crate::detachment::planning::projection::physically_aboard(
+            ctx.w,
+            ctx.actor,
+            flight.carrier,
+        ) || crate::detachment::planning::projection::physically_aboard(
+            ctx.w,
+            ctx.actor,
+            flight.key.unit,
+        )) {
+            return Err(CmdError::msg(
+                "Return unavailable. Bring the unit physically to the carrier's ramp.",
+            ));
+        }
+        let berth = super::facts::berth(ctx.w, flight.carrier).map_err(CmdError::msg)?;
+        if berth.domain != flight.domain
+            || berth.bay_room != flight.bay_room
+            || berth.bay_slot != flight.bay_slot
+        {
+            return Err(CmdError::msg("Carrier's recovery berth changed."));
+        }
+        check_caller_rights(
+            ctx,
+            &Command::Recover {
+                operation,
+                slot,
+                unit,
+            },
+        )
+        .map_err(CmdError::msg)?;
+        super::facts::recover_unit(ctx.w, &op.roster, &flight).map_err(CmdError::msg)?;
+    }
+    Ok((flight.ramp.x_cm, flight.ramp.y_cm))
+}
+
 /// **The DT recover the field host submits once `unit` is out of its field** (doc 32 cut CF.5;
 /// Q-CF-18), as the player who asked (`ctx.actor`): the same command `+sortie/recover` submits.
 ///
@@ -245,19 +315,27 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     } else {
         let slot = slot(selection.ok_or_else(error)?)?;
         let op = read(ctx, id)?;
-        let unit = op
+        let slot_row = op
             .roster
             .plan
             .slots
             .iter()
             .find(|s| s.slot.get() == slot)
-            .and_then(|s| s.unit)
             .ok_or_else(error)?;
+        let unit = slot_row.unit.ok_or_else(error)?;
         if ctx.switches.has("recover") {
+            // HIGH-58: authorize specifically for the targeted slot (organizer or that slot's
+            // controller), never merely co-participation in another slot of the same operation.
+            let slot_operator = slot_row.controller.character().ok_or_else(error)?;
+            if !can_recover_slot(id, slot_operator, ctx.actor) {
+                return Err(CmdError::msg(
+                    "Only the operation organizer or that slot's operator can recover that unit.",
+                ));
+            }
             // Doc 32 cut CF.5 (Q-CF-18): a unit in a running field leaves it at the carrier's
             // ramp first; the recover is submitted again once it is out.
             if crate::field::field_of_unit(ctx.w, unit).is_some() {
-                let ramp = field_ramp(ctx, unit).ok_or_else(error)?;
+                let ramp = verify_field_recover(ctx, id, slot, unit, false)?;
                 return crate::field::exit::request(
                     ctx,
                     unit,
@@ -552,4 +630,29 @@ fn history(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn high58_slot_recover_authority_allows_only_organizer_or_targeted_slot_operator() {
+        let organizer = ObjId(10);
+        let slot1_operator = ObjId(11);
+        let slot2_coparticipant = ObjId(12);
+        let stranger = ObjId(13);
+        let op = OperationId {
+            organizer,
+            draft: PlanId(1),
+            activation: 1,
+        };
+        assert!(can_recover_slot(op, slot1_operator, organizer));
+        assert!(can_recover_slot(op, slot1_operator, slot1_operator));
+        assert!(
+            !can_recover_slot(op, slot1_operator, slot2_coparticipant),
+            "co-participant controller of another slot must not recover slot 1"
+        );
+        assert!(!can_recover_slot(op, slot1_operator, stranger));
+    }
 }

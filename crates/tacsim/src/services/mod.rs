@@ -12,7 +12,7 @@
 pub mod escort;
 pub mod haul;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{Ctx, World};
 
@@ -24,8 +24,16 @@ use crate::store::TacsimStore;
 pub struct ServicesBook {
     /// The hauls, by contract.
     pub(crate) hauls: BTreeMap<u64, Held<haul::HaulJob>>,
+    /// Non-closed haul contract ids, kept in sync for O(live) ref walks.
+    pub(crate) live_hauls: BTreeSet<u64>,
+    /// Retained closed haul contract ids, oldest first, capped by [`haul::MAX_CLOSED_HAULS`].
+    pub(crate) closed_hauls: BTreeSet<u64>,
     /// The escorts, by contract.
     pub(crate) escorts: BTreeMap<u64, Held<escort::EscortJob>>,
+    /// Non-closed escort contract ids, kept in sync for O(live) ref walks.
+    pub(crate) live_escorts: BTreeSet<u64>,
+    /// Retained closed escort contract ids, oldest first, capped by [`escort::MAX_CLOSED_ESCORTS`].
+    pub(crate) closed_escorts: BTreeSet<u64>,
 }
 
 fn book(w: &World) -> Option<&ServicesBook> {
@@ -71,6 +79,15 @@ pub(crate) fn load(store: &mut TacsimStore, key: &str, value: &serde_json::Value
                     .then_some(())
                     .ok_or_else(|| "the record disagrees with its own key".to_owned())
             });
+            if let Some(job) = held.present() {
+                if job.stage == haul::HaulStage::Closed {
+                    store.services.live_hauls.remove(&contract);
+                    store.services.closed_hauls.insert(contract);
+                } else {
+                    store.services.closed_hauls.remove(&contract);
+                    store.services.live_hauls.insert(contract);
+                }
+            }
             store.services.hauls.insert(contract, held);
         } else {
             let held = decode::<escort::EscortJob>(key, value, |job| {
@@ -79,6 +96,15 @@ pub(crate) fn load(store: &mut TacsimStore, key: &str, value: &serde_json::Value
                     .then_some(())
                     .ok_or_else(|| "the record disagrees with its own key".to_owned())
             });
+            if let Some(job) = held.present() {
+                if job.stage == escort::EscortStage::Closed {
+                    store.services.live_escorts.remove(&contract);
+                    store.services.closed_escorts.insert(contract);
+                } else {
+                    store.services.closed_escorts.remove(&contract);
+                    store.services.live_escorts.insert(contract);
+                }
+            }
             store.services.escorts.insert(contract, held);
         }
         return true;

@@ -626,6 +626,10 @@ impl ActionProvider for OfferProvider {
             {
                 return Err(fail());
             }
+            if let Some((hull, _, _)) = &held.hull {
+                crate::port::hull_sale::core_leg_hold_empty_in_txn(world, txn, *hull)
+                    .map_err(|_| fail())?;
+            }
             let now = world.world_ic_now().at;
             let offer = ResaleOffer {
                 format: 1,
@@ -832,6 +836,10 @@ impl ActionProvider for AcceptProvider {
                 || !buyer_ok(world, offer.seller, buyer)
             {
                 return Err(fail());
+            }
+            if let Some((hull, _, _)) = &held.hull {
+                crate::port::hull_sale::core_leg_hold_empty_in_txn(world, txn, *hull)
+                    .map_err(|_| fail())?;
             }
             let account = |who| crate::port::credit::own_account(world, who).map(|a| a.id);
             let request = RegistryCoreResale {

@@ -1042,6 +1042,7 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
     let room =
         tacsim::port::apply::room_by_key(rig.world.world(), &key).ok_or("actual crew bar")?;
     rig.world.world_mut().move_to(rig.organizer, room)?;
+    ensure_credit_account(&mut rig.world, rig.organizer)?;
     let npc =
         rig.world
             .world_mut()
@@ -1070,6 +1071,34 @@ async fn hire_field_operator(rig: &mut Rig, store: &InMemoryStore, commander: bo
     )
     .await?;
     rig.invitee = npc;
+    Ok(())
+}
+
+fn has_active_credit_account(world: &TestWorld, who: ObjId) -> bool {
+    world
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|econ| {
+            econ.snapshot()
+                .accounts_of(&mush_org::PrincipalId::Object(who))
+                .any(|a| {
+                    a.instrument.as_str() == "tacsim.credit"
+                        && a.status == mush_economy::AccountStatus::Active
+                })
+        })
+}
+
+fn ensure_credit_account(world: &mut TestWorld, who: ObjId) -> TestResult {
+    if !has_active_credit_account(world, who) {
+        let reply = text(
+            world,
+            GOD,
+            &format!("@account/open #{}=tacsim.credit", who.0),
+        );
+        if !has_active_credit_account(world, who) {
+            return Err(format!("failed to open credit account for #{}: {reply}", who.0).into());
+        }
+    }
     Ok(())
 }
 
@@ -2777,20 +2806,40 @@ async fn ic_field_orders_use_real_transport_and_advisory_responses() -> TestResu
             .completed_at_ms
             .is_none()
     );
-    // Repeat replies are distinct actual packets. Neither boot nor the generic
-    // mail/channel reconciler may discard them as duplicate external handoffs.
-    commit(
-        &mut rig.world,
-        &store,
-        player,
-        &format!(
-            "WILCO DT:{}:{} {}",
-            roster.id().0,
-            roster.revision(),
-            sequence
-        ),
-    )
-    .await?;
+    // HIGH-67: duplicate replies on the same (slot, sequence) are rejected, while a
+    // distinct `WILCO -> NEGATIVE` transition sends a distinct actual packet that
+    // neither boot nor the generic mail/channel reconciler may discard.
+    let wilco = format!(
+        "WILCO DT:{}:{} {}",
+        roster.id().0,
+        roster.revision(),
+        sequence
+    );
+    assert!(
+        commit(&mut rig.world, &store, player, &wilco)
+            .await
+            .is_err(),
+        "duplicate WILCO on the same (slot, sequence) must be rejected"
+    );
+    let negative = format!(
+        "NEGATIVE DT:{}:{} {}",
+        roster.id().0,
+        roster.revision(),
+        sequence
+    );
+    commit(&mut rig.world, &store, player, &negative).await?;
+    assert!(
+        commit(&mut rig.world, &store, player, &negative)
+            .await
+            .is_err(),
+        "duplicate NEGATIVE on the same (slot, sequence) must be rejected"
+    );
+    assert!(
+        commit(&mut rig.world, &store, player, &wilco)
+            .await
+            .is_err(),
+        "WILCO after terminal NEGATIVE must be rejected"
+    );
     let repeated = field_orders(&rig.world, organizer)?
         .replies
         .get(&slot)

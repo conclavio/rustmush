@@ -89,6 +89,12 @@ pub const RETURN_GRACE_IC_DAYS: i64 = 28;
 pub const HAUL_BOND_PERMILLE: i64 = 250;
 /// How many times the arm submits one leg before it gives up on it.
 pub const MAX_LEG_TRIES: u32 = 8;
+/// Most open (non-closed) hauls one actor may post concurrently.
+pub const MAX_OPEN_HAULS_PER_ACTOR: usize = 16;
+/// Most open (non-closed) hauls across the world concurrently.
+pub const MAX_OPEN_HAULS_GLOBAL: usize = 512;
+/// Most recently-closed hauls retained before oldest closed records are deleted.
+pub const MAX_CLOSED_HAULS: usize = 64;
 /// The most legs one offer carries.
 const MAX_OFFER_ROWS: usize = 16;
 /// IC seconds in an IC day.
@@ -144,6 +150,10 @@ pub const OVER_CAP: &str = "A declared value is at most the reference price of t
 pub const NO_REFERENCE: &str = "That good has no reference price, so its value cannot be declared.";
 /// The economy's refusal (`{why}`).
 pub const POST_FAILED: &str = "The haul could not be posted: {why}.";
+/// The refusal when the shipper already has the maximum number of open hauls (`{cap}`).
+pub const TOO_MANY_OPEN: &str = "You already have {cap} open hauls; finish or withdraw one first.";
+/// The refusal when the world's open haul board is full.
+pub const BOARD_FULL: &str = "The haul board is full right now; try again later.";
 /// The refusal for no such open job (`{job}`).
 pub const NO_SUCH_JOB: &str = "There is no open haul {job}; +market/jobs haul lists them.";
 /// The refusal for the shipper's own job.
@@ -430,21 +440,83 @@ pub fn hauls(w: &World) -> Vec<HaulJob> {
         .unwrap_or_default()
 }
 
+/// Every readable non-closed haul, by reference (O(live), no cloning).
+pub(crate) fn live_hauls(w: &World) -> impl Iterator<Item = &HaulJob> {
+    super::book(w).into_iter().flat_map(|book| {
+        book.live_hauls.iter().filter_map(|id| {
+            book.hauls
+                .get(id)
+                .and_then(Held::present)
+                .filter(|job| job.stage != HaulStage::Closed)
+        })
+    })
+}
+
 /// The haul of `contract`, when it reads.
 #[must_use]
 pub fn haul_of(w: &World, contract: u64) -> Option<HaulJob> {
     super::book(w)?.hauls.get(&contract)?.present().cloned()
 }
 
+/// Delete a haul record from RAM and persistent storage.
+pub(crate) fn delete(ctx: &mut Ctx<'_>, contract: u64) {
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.services.hauls.remove(&contract);
+        store.services.live_hauls.remove(&contract);
+        store.services.closed_hauls.remove(&contract);
+    }
+    crate::store::push_op(
+        ctx.out,
+        mush_core::ModuleWrite::Del {
+            key: haul_key(contract).into(),
+        },
+    );
+}
+
+/// Delete oldest retained `Closed` hauls once closed count exceeds [`MAX_CLOSED_HAULS`].
+pub(crate) fn prune_closed(ctx: &mut Ctx<'_>) {
+    let excess: Vec<u64> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            let over = store
+                .services
+                .closed_hauls
+                .len()
+                .saturating_sub(MAX_CLOSED_HAULS);
+            store
+                .services
+                .closed_hauls
+                .iter()
+                .take(over)
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
+    for contract in excess {
+        delete(ctx, contract);
+    }
+}
+
 /// Install a record and queue its document.
 pub(crate) fn put(ctx: &mut Ctx<'_>, job: &HaulJob) {
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        if job.stage == HaulStage::Closed {
+            store.services.live_hauls.remove(&job.contract);
+            store.services.closed_hauls.insert(job.contract);
+        } else {
+            store.services.closed_hauls.remove(&job.contract);
+            store.services.live_hauls.insert(job.contract);
+        }
         store
             .services
             .hauls
             .insert(job.contract, Held::Present(Box::new(job.clone())));
     }
     crate::port::owned::write(ctx, job.key(), job);
+    if job.stage == HaulStage::Closed {
+        prune_closed(ctx);
+    }
 }
 
 /// **The holder a job's cargo is reserved to**: a `Scoped` principal of this crate, class
@@ -572,9 +644,7 @@ pub(crate) fn haul_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 fn list(ctx: &Ctx<'_>) -> String {
-    let rows: Vec<String> = hauls(ctx.w)
-        .into_iter()
-        .filter(|j| j.stage != HaulStage::Closed)
+    let rows: Vec<String> = live_hauls(ctx.w)
         .filter(|j| {
             j.shipper == ctx.actor
                 || j.pilot == Some(ctx.actor)
@@ -705,6 +775,14 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         return Err(OVER_CAP.replace("{cap}", &money_minor(ctx, cap)));
     }
     let bond = bond_of(declared);
+    let open_total = live_hauls(ctx.w).count();
+    let open_actor = live_hauls(ctx.w).filter(|j| j.shipper == ctx.actor).count();
+    if open_actor >= MAX_OPEN_HAULS_PER_ACTOR {
+        return Err(TOO_MANY_OPEN.replace("{cap}", &MAX_OPEN_HAULS_PER_ACTOR.to_string()));
+    }
+    if open_total >= MAX_OPEN_HAULS_GLOBAL {
+        return Err(BOARD_FULL.to_owned());
+    }
     if !go {
         return Ok(POST_PREVIEW
             .replace("{qty}", &quantity.to_string())
@@ -950,7 +1028,7 @@ fn deliver_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String
 
 fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let word = rest.trim();
-    let mut job = job_word(word)
+    let job = job_word(word)
         .and_then(|c| haul_of(ctx.w, c))
         .filter(|j| j.shipper == ctx.actor && j.stage == HaulStage::Posted)
         .ok_or_else(|| NOT_WITHDRAWABLE.to_owned())?;
@@ -963,9 +1041,9 @@ fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, Strin
     }
     mush_economy::cancel_job(ctx, ContractId(job.contract))
         .map_err(|error| POST_FAILED.replace("{why}", &error.to_string()))?;
-    job.stage = HaulStage::Closed;
-    put(ctx, &job);
-    Ok(WITHDRAWN.replace("{job}", &job.job()))
+    let job_word = job.job();
+    delete(ctx, job.contract);
+    Ok(WITHDRAWN.replace("{job}", &job_word))
 }
 
 // ---- the arm --------------------------------------------------------------------------------
@@ -1014,13 +1092,47 @@ fn landed(ctx: &Ctx<'_>, contract: u64) -> Option<HaulLedger> {
     }
 }
 
+/// Whether `job` needs a mutable step on this fire (read-only check by ref, zero cloning).
+fn needs_step(ctx: &Ctx<'_>, job: &HaulJob) -> bool {
+    if job.stage == HaulStage::Closed {
+        return false;
+    }
+    let ledger = landed(ctx, job.contract);
+    if ledger
+        .as_ref()
+        .is_some_and(|l| matches!(l.last, LegKind::Seized | LegKind::Lost))
+    {
+        return true;
+    }
+    let now = ctx.w.world_ic_now().at;
+    let state = super::contract_state(ctx.w, job.contract);
+    match job.stage {
+        HaulStage::Posted => now > job.accept_by_ic || !state.as_ref().is_some_and(|s| s.is_live()),
+        HaulStage::Taken | HaulStage::Returning => true,
+        HaulStage::Aboard => {
+            job.owed.is_some()
+                || job.hull.is_some_and(|hull| {
+                    super::escort::wrecked(ctx.w, hull) || super::escort::captured(ctx.w, hull)
+                })
+                || job.due_ic.is_none_or(|due| now >= due)
+                || state.as_ref().is_some_and(|s| s.is_terminal())
+        }
+        HaulStage::Delivered => state.as_ref().is_none_or(|s| s.is_terminal()),
+        HaulStage::Closed => false,
+    }
+}
+
 /// **The port arm** (doc 48 cut EX.6): each live haul's next step.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
-    let live: Vec<HaulJob> = hauls(ctx.w)
-        .into_iter()
-        .filter(|j| j.stage != HaulStage::Closed)
+    prune_closed(ctx);
+    let due: Vec<u64> = live_hauls(ctx.w)
+        .filter(|job| needs_step(ctx, job))
+        .map(|job| job.contract)
         .collect();
-    for mut job in live {
+    for contract in due {
+        let Some(mut job) = haul_of(ctx.w, contract) else {
+            continue;
+        };
         if step(ctx, &mut job) {
             put(ctx, &job);
         }
@@ -1268,8 +1380,7 @@ fn locker_venue(w: &World, player: ObjId, vault: u64) -> Option<SmolStr> {
 #[must_use]
 pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
     let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT);
-    hauls(w)
-        .into_iter()
+    live_hauls(w)
         .filter(|j| j.stage == HaulStage::Posted && j.origin.as_str() == venue.as_str())
         .map(|j| mush_market::Service {
             kind: mush_market::ServiceKind::Haul,
@@ -1359,7 +1470,7 @@ fn parameters(
 /// submitter.
 fn owed_rows(w: &World, actor: ObjId) -> Map<String, Value> {
     let mut rows = Map::new();
-    for job in hauls(w) {
+    for job in live_hauls(w) {
         if rows.len() >= MAX_OFFER_ROWS {
             break;
         }
@@ -1747,5 +1858,82 @@ mod tests {
         let holder = haul_holder(7).expect("holder");
         assert_eq!(holder, haul_holder(7).expect("holder"), "one holder a job");
         assert_ne!(holder, haul_holder(8).expect("holder"));
+    }
+
+    #[test]
+    fn high41_closed_hauls_are_pruned_and_live_iter_skips_closed() {
+        struct StoreMod;
+        impl mush_core::module::GameModule for StoreMod {
+            fn name(&self) -> &'static str {
+                "tacsim"
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                reg.state(TacsimStore::default());
+                Ok(())
+            }
+        }
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(StoreMod)]);
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: ObjId(5),
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+
+        // Insert MAX_CLOSED_HAULS + 5 closed rows plus 2 live rows.
+        for id in 1..=(MAX_CLOSED_HAULS as u64 + 5) {
+            let mut row = job();
+            row.contract = id;
+            row.stage = HaulStage::Closed;
+            put(&mut ctx, &row);
+        }
+        for id in 1_000..=1_001 {
+            let mut row = job();
+            row.contract = id;
+            row.stage = HaulStage::Posted;
+            put(&mut ctx, &row);
+        }
+
+        // Oldest 5 closed rows were deleted from RAM and emitted ModuleWrite::Del.
+        let store = ctx.w.module_state::<TacsimStore>().expect("store");
+        assert_eq!(store.services.closed_hauls.len(), MAX_CLOSED_HAULS);
+        assert_eq!(store.services.live_hauls.len(), 2);
+        assert!(haul_of(ctx.w, 1).is_none());
+        assert!(haul_of(ctx.w, 5).is_none());
+        assert!(haul_of(ctx.w, 6).is_some());
+
+        // Live iterator sees only the 2 live rows by ref.
+        let live_ids: Vec<u64> = live_hauls(ctx.w).map(|j| j.contract).collect();
+        assert_eq!(live_ids, vec![1_000, 1_001]);
+
+        // Direct deletion (used on withdraw) removes the live row immediately and emits Del.
+        delete(&mut ctx, 1_000);
+        assert!(haul_of(ctx.w, 1_000).is_none());
+        let live_after: Vec<u64> = live_hauls(ctx.w).map(|j| j.contract).collect();
+        assert_eq!(live_after, vec![1_001]);
+        let dels: Vec<String> = ctx
+            .out
+            .deferred()
+            .iter()
+            .filter_map(|d| match d {
+                mush_core::Deferred::Persist(op) => match &op.op {
+                    mush_core::ModuleWrite::Del { key } => Some(key.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert!(dels.contains(&haul_key(1)));
+        assert!(dels.contains(&haul_key(5)));
+        assert!(dels.contains(&haul_key(1_000)));
     }
 }

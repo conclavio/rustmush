@@ -649,6 +649,7 @@ impl Snapshot {
         }
         arena.validate_order_watches()?;
         arena.validate_detachment_commands()?;
+        validate_conditions(&arena.units, &arena.conditions)?;
         let state = String::from_utf8(super::snapshot_capacity::json_bytes(
             &ArenaStateRef::from(arena),
             limit,
@@ -1245,19 +1246,7 @@ impl ArenaState {
         } = self;
         // M5rules carries bounded typed rows. A digest authenticates bytes;
         // it does not substitute for validating their supported shape.
-        for (unit, slots) in conditions.rows() {
-            if slots.len() > crate::arena::core::MAX_CONDITION_SLOTS
-                || !units.iter().any(|state| state.id == *unit)
-            {
-                return Err(SnapshotError::Malformed(
-                    "invalid native rule row".to_owned(),
-                ));
-            }
-            for rule in slots.iter().flatten() {
-                crate::arena::conditions::validate_rule_shape(rule)
-                    .map_err(|_| SnapshotError::Malformed("invalid native rule".to_owned()))?;
-            }
-        }
+        validate_conditions(&units, &conditions)?;
         // 17b cut M4.3: the doctrine's cached state, re-derived from each
         // row's memory (never carried).
         let mut minds = minds;
@@ -1355,6 +1344,7 @@ impl ArenaState {
             .map_err(|error| SnapshotError::Malformed(error.to_string()))?;
         arena.validate_order_watches()?;
         arena.validate_detachment_commands()?;
+        validate_conditions(&arena.units, &arena.conditions)?;
         Ok(arena)
     }
 }
@@ -1362,6 +1352,29 @@ impl ArenaState {
 // ---------------------------------------------------------------------------
 // The pairs helper
 // ---------------------------------------------------------------------------
+
+/// Validate that every native rule row belongs to a live unit in `units` and
+/// carries only bounded supported rule shapes (shared by [`Snapshot::encode`]
+/// and [`Snapshot::decode`]).
+fn validate_conditions(
+    units: &[UnitState],
+    conditions: &ConditionTable,
+) -> Result<(), SnapshotError> {
+    for (unit, slots) in conditions.rows() {
+        if slots.len() > crate::arena::core::MAX_CONDITION_SLOTS
+            || !units.iter().any(|state| state.id == *unit)
+        {
+            return Err(SnapshotError::Malformed(
+                "invalid native rule row".to_owned(),
+            ));
+        }
+        for rule in slots.iter().flatten() {
+            crate::arena::conditions::validate_rule_shape(rule)
+                .map_err(|_| SnapshotError::Malformed("invalid native rule".to_owned()))?;
+        }
+    }
+    Ok(())
+}
 
 /// **A map whose key JSON cannot write as an object key, as an array of
 /// `[key, value]` pairs** (16b cut AF.1), in the map's own key order.

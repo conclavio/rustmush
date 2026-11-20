@@ -30,6 +30,18 @@ pub const MAX_ENVELOPE_HOPS: u8 = 4;
 pub const ENVELOPE_TTL_DAYS: i64 = 30;
 /// The same figure in IC seconds — the arithmetic the pass actually does.
 pub const ENVELOPE_TTL_SECS: i64 = ENVELOPE_TTL_DAYS * 86_400;
+/// Bounded TTL in IC seconds for detachment orders and replies (HIGH-67): 1 IC day so tactical
+/// field dispatches and replies cannot hold slots in the global envelope pool for 30 IC days.
+pub const FIELD_ENVELOPE_TTL_SECS: i64 = 86_400;
+
+/// Retention and expiry TTL in IC seconds for an envelope of `kind` (HIGH-67).
+#[must_use]
+pub const fn envelope_ttl_secs(kind: DispatchKind) -> i64 {
+    match kind {
+        DispatchKind::Detachment | DispatchKind::DetachmentReply => FIELD_ENVELOPE_TTL_SECS,
+        _ => ENVELOPE_TTL_SECS,
+    }
+}
 /// The most bytes one order payload may carry. **Refused at issue, never
 /// truncated at delivery.**
 pub const MAX_ENVELOPE_PAYLOAD_BYTES: usize = 512;

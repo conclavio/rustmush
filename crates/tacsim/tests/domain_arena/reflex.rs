@@ -1380,18 +1380,22 @@ fn replay(cadence_ms: i64, until_ms: i64) -> Replay {
 /// folded in every seal: `0x18aa_60d9_5785_a83f` became `0x53d2_1504_a61a_ee67` and
 /// `0x9e8b_b51a_5d8b_a7bf` became `0x93f9_3932_663c_b6b2`; the 50 lines differ from the prior
 /// pins in `hash` alone.
+/// Tier 1D HIGH-60: `DrawLabel::Contact` moved to a domain-separated SHA-256 PRF;
+/// `0x53d2_1504_a61a_ee67` became `0x1cbb_7635_0929_d93d` and `0x93f9_3932_663c_b6b2` became
+/// `0x662e_8bd3_856a_c31a`. Every timestamp, pose, shot, and combat draw in the 50 lines is
+/// unchanged.
 #[test]
 fn m1a1_the_moved_motor_folds_the_same_bytes() {
     let run = replay(1_000, 30_000);
     assert_eq!(run.hashes.len(), 120, "the substeps of 30 s at 250 ms");
     assert_eq!(
         run.hashes.first().copied(),
-        Some(0x53d2_1504_a61a_ee67),
+        Some(0x1cbb_7635_0929_d93d),
         "the first substep's hash moved"
     );
     assert_eq!(
         run.hashes.last().copied(),
-        Some(0x93f9_3932_663c_b6b2),
+        Some(0x662e_8bd3_856a_c31a),
         "the last substep's hash moved"
     );
 }
@@ -1460,57 +1464,61 @@ fn m1a1_the_moved_motor_folds_the_same_bytes() {
 /// **Doc 49 unit CC.1b — re-recorded, hashes only** (50 lines to 50): the Standard source moved
 /// (the Engage path's cost, behaviour unchanged) and every seal folds it; compared with every
 /// `hash` taken out, the 50 lines are byte-equal to the prior record.
+///
+/// **Tier 1D HIGH-60 — re-recorded, contact IDs and hashes only** (50 lines to 50):
+/// `DrawLabel::Contact` moved to a domain-separated SHA-256 PRF; every timestamp, pose, shot,
+/// and combat draw is byte-equal to CC.1b's record.
 const M1B0_J_LINES: &[&str] = &[
     r#"{"seq":1,"t_ms":0,"kind":"match_started","hash":2832128064015180063}"#,
     r#"{"seq":2,"t_ms":0,"kind":"mind_sealed","unit":4,"sortie":4,"mind":"Standard Doctrine","source":"e9f1a863eabc0570","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":2832128064015180063}"#,
     r#"{"seq":3,"t_ms":0,"kind":"mind_sealed","unit":6,"sortie":6,"mind":"Standard Doctrine","source":"e9f1a863eabc0570","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":2832128064015180063}"#,
     r#"{"seq":4,"t_ms":0,"kind":"mind_sealed","unit":9,"sortie":9,"mind":"Standard Doctrine","source":"e9f1a863eabc0570","card_digest":"4b4913e307e7ceda3d922049c59eaec45c159f14449b80b80dcc605bd90be85a","class":"I","governed":true,"licence":"doctrine","licence_state":"doctrine","hash":2832128064015180063}"#,
-    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":7330038967278110817,"target":4,"hash":6039913159968091751}"#,
-    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":10007312734772483259,"target":9,"hash":6039913159968091751}"#,
-    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":15474813515948476951,"target":4,"hash":6039913159968091751}"#,
-    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":14127509583146488135,"target":6,"hash":6039913159968091751}"#,
-    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":1572520841926198256}"#,
-    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":527481421542167805,"target":6,"hash":15727732435322711208}"#,
-    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":5852833454602713067,"target":9,"hash":15727732435322711208}"#,
-    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":4783735596952088544}"#,
-    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":12600032164751195905}"#,
-    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":9798776892254047751}"#,
-    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":7330038967278110817,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":1619282942277270137}"#,
-    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":10007312734772483259,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":1619282942277270137}"#,
-    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":15474813515948476951,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":1619282942277270137}"#,
-    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":14127509583146488135,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":1619282942277270137}"#,
-    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":527481421542167805,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":8992452411404069837}"#,
-    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":5852833454602713067,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":8992452411404069837}"#,
-    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":5852833454602713067,"target":9,"hash":4045557292160653615}"#,
-    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":4045557292160653615}"#,
-    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":18039384720405309230}"#,
-    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":18039384720405309230}"#,
-    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":18039384720405309230}"#,
-    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":1954409942704833248}"#,
-    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":12609092875972817040}"#,
-    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":13501297877949493209}"#,
-    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":8656081702154627132}"#,
-    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":8656081702154627132}"#,
-    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":16126456960972952950}"#,
-    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":2436997300297042283}"#,
-    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":7888689157247470607}"#,
-    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":7888689157247470607}"#,
-    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":16624734472575498518}"#,
-    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":7892535671005044246}"#,
-    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":4468219941663184853}"#,
-    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":4468219941663184853}"#,
-    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":14584104261043871373}"#,
-    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":4101298491901594586}"#,
-    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":4101298491901594586}"#,
-    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":4101298491901594586}"#,
-    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":13198421104053140320}"#,
-    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":6773566322975916933}"#,
-    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":6773566322975916933}"#,
-    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":11930455063491468248}"#,
-    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":2348234639195228065}"#,
-    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":10073251952082395633}"#,
-    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":10073251952082395633}"#,
-    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":10662616481402762930}"#,
+    r#"{"seq":5,"t_ms":4,"kind":"detected","viewer":6,"contact":8204615927055967777,"target":4,"hash":2070378423865956669}"#,
+    r#"{"seq":6,"t_ms":4,"kind":"detected","viewer":6,"contact":3549678812771060111,"target":9,"hash":2070378423865956669}"#,
+    r#"{"seq":7,"t_ms":189,"kind":"detected","viewer":9,"contact":6998466453356873636,"target":4,"hash":2070378423865956669}"#,
+    r#"{"seq":8,"t_ms":189,"kind":"detected","viewer":9,"contact":12390848833207293132,"target":6,"hash":2070378423865956669}"#,
+    r#"{"seq":9,"t_ms":254,"kind":"startup","unit":6,"hash":14365495928014041713}"#,
+    r#"{"seq":10,"t_ms":482,"kind":"detected","viewer":4,"contact":12170543857261040268,"target":6,"hash":3154437416054563279}"#,
+    r#"{"seq":11,"t_ms":482,"kind":"detected","viewer":4,"contact":10326624078539967089,"target":9,"hash":3154437416054563279}"#,
+    r#"{"seq":12,"t_ms":732,"kind":"startup","unit":4,"hash":14149957018033222150}"#,
+    r#"{"seq":13,"t_ms":754,"kind":"power_online","unit":6,"hash":8304926669434686460}"#,
+    r#"{"seq":14,"t_ms":1232,"kind":"power_online","unit":4,"hash":12333159196043903731}"#,
+    r#"{"seq":15,"t_ms":3004,"kind":"classified","viewer":6,"contact":8204615927055967777,"target":4,"team":"red","draws":[["classify:6:4:4",3994458990081984151]],"hash":9294495891383071705}"#,
+    r#"{"seq":16,"t_ms":3004,"kind":"classified","viewer":6,"contact":3549678812771060111,"target":9,"team":"blue","draws":[["classify:6:9:4",16446071241866099752]],"hash":9294495891383071705}"#,
+    r#"{"seq":17,"t_ms":3189,"kind":"classified","viewer":9,"contact":6998466453356873636,"target":4,"team":"red","draws":[["classify:9:4:4",3682179631169270960]],"hash":9294495891383071705}"#,
+    r#"{"seq":18,"t_ms":3189,"kind":"classified","viewer":9,"contact":12390848833207293132,"target":6,"team":"red","draws":[["classify:9:6:4",28171549963284800]],"hash":9294495891383071705}"#,
+    r#"{"seq":19,"t_ms":3482,"kind":"classified","viewer":4,"contact":12170543857261040268,"target":6,"team":"red","draws":[["classify:4:6:4",18412658312983768788]],"hash":8425039312286768894}"#,
+    r#"{"seq":20,"t_ms":3482,"kind":"classified","viewer":4,"contact":10326624078539967089,"target":9,"team":"blue","draws":[["classify:4:9:4",2838647583109313249]],"hash":8425039312286768894}"#,
+    r#"{"seq":21,"t_ms":3732,"kind":"locked","unit":4,"contact":10326624078539967089,"target":9,"hash":14825993798401794952}"#,
+    r#"{"seq":22,"t_ms":3732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":1,"target":9,"range_cm":4116,"rounds":1,"by":"mind","slot":1,"hash":14825993798401794952}"#,
+    r#"{"seq":23,"t_ms":3760,"kind":"impact","shot_seq":1,"unit":4,"target":9,"hash":16575604145345372818}"#,
+    r#"{"seq":24,"t_ms":3760,"kind":"hit","shot_seq":1,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:1","draws":[["hit:1",12072725193963834385],["facet:1",2237253966278422799]],"hash":16575604145345372818}"#,
+    r#"{"seq":25,"t_ms":3760,"kind":"section_destroyed","unit":9,"section":"hull","by":4,"hash":16575604145345372818}"#,
+    r#"{"seq":26,"t_ms":5000,"kind":"position_summary","units":[[4,4630,8434,0,224848],[6,5000,9000,0,225000],[9,9500,8500,0,0]],"hash":11713395329496472278}"#,
+    r#"{"seq":27,"t_ms":6750,"kind":"blocked","unit":6,"x":4,"y":8,"cause":"occupied","hash":6696242837458999010}"#,
+    r#"{"seq":28,"t_ms":7732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":2,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":3267788077280653161}"#,
+    r#"{"seq":29,"t_ms":7765,"kind":"impact","shot_seq":2,"unit":4,"target":9,"hash":5838379150416630675}"#,
+    r#"{"seq":30,"t_ms":7765,"kind":"hit","shot_seq":2,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:2","draws":[["hit:2",11307540289106727687],["facet:2",4135577070013810089]],"hash":5838379150416630675}"#,
+    r#"{"seq":31,"t_ms":10000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,2956,8673,0,249288],[9,9500,8500,0,0]],"hash":16626248996659692409}"#,
+    r#"{"seq":32,"t_ms":11732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":3,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":14623227933500456299}"#,
+    r#"{"seq":33,"t_ms":11765,"kind":"impact","shot_seq":3,"unit":4,"target":9,"hash":8662369242465988701}"#,
+    r#"{"seq":34,"t_ms":11765,"kind":"hit","shot_seq":3,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:3","draws":[["hit:3",17241375169118599602],["facet:3",10008162893314153691]],"hash":8662369242465988701}"#,
+    r#"{"seq":35,"t_ms":15000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,5627,7497,0,89847],[9,9500,8500,0,0]],"hash":2539086043073312393}"#,
+    r#"{"seq":36,"t_ms":15732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":4,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":8464564230912128054}"#,
+    r#"{"seq":37,"t_ms":15765,"kind":"impact","shot_seq":4,"unit":4,"target":9,"hash":12520946466519402536}"#,
+    r#"{"seq":38,"t_ms":15765,"kind":"hit","shot_seq":4,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:4","draws":[["hit:4",9783297951381390390],["facet:4",8754771002850247076]],"hash":12520946466519402536}"#,
+    r#"{"seq":39,"t_ms":19732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":5,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":4698155514590099940}"#,
+    r#"{"seq":40,"t_ms":19765,"kind":"impact","shot_seq":5,"unit":4,"target":9,"hash":4564311508841331183}"#,
+    r#"{"seq":41,"t_ms":19765,"kind":"hit","shot_seq":5,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:5","draws":[["hit:5",3759784274594068254],["facet:5",4443187530762531632]],"hash":4564311508841331183}"#,
+    r#"{"seq":42,"t_ms":20000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,10627,7500,0,90000],[9,9500,8500,0,0]],"hash":4564311508841331183}"#,
+    r#"{"seq":43,"t_ms":23732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":6,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":15629808149013314140}"#,
+    r#"{"seq":44,"t_ms":23765,"kind":"impact","shot_seq":6,"unit":4,"target":9,"hash":14555010846031174683}"#,
+    r#"{"seq":45,"t_ms":23765,"kind":"hit","shot_seq":6,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:6","draws":[["hit:6",12808839036685962400],["facet:6",15270049831497957593]],"hash":14555010846031174683}"#,
+    r#"{"seq":46,"t_ms":25000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,12843,7339,0,295055],[9,9500,8500,0,0]],"hash":15114618800385149864}"#,
+    r#"{"seq":47,"t_ms":27732,"kind":"fired","unit":4,"weapon":"cannon","shot_seq":7,"target":9,"range_cm":4849,"rounds":1,"by":"cond","slot":1,"hash":6832386951942312203}"#,
+    r#"{"seq":48,"t_ms":27765,"kind":"impact","shot_seq":7,"unit":4,"target":9,"hash":10145450504585339845}"#,
+    r#"{"seq":49,"t_ms":27765,"kind":"hit","shot_seq":7,"unit":4,"target":9,"section":"hull","facet":"front","armor_section":"hull","rounds":1,"damage":120,"armor_left":0,"internals_left":0,"cause":"shot:7","draws":[["hit:7",9819418404979189944],["facet:7",11750702725261985454]],"hash":10145450504585339845}"#,
+    r#"{"seq":50,"t_ms":30000,"kind":"position_summary","units":[[4,4653,8350,0,88000],[6,7868,7500,0,270000],[9,9500,8500,0,0]],"hash":7362976181390066458}"#,
 ];
 
 /// **17b cut M1b.0: the production line-hash pin, the reflex shots.** The (j)

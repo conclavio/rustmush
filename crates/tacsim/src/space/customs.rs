@@ -840,13 +840,8 @@ fn seizable(ctx: &Ctx<'_>, vault: u64) -> (Vec<u64>, Vec<LotId>) {
     let Ok(ore) = CanonicalId::new("strategic_ore") else {
         return (Vec::new(), Vec::new());
     };
-    let hauls = crate::services::haul::hauls(ctx.w)
-        .into_iter()
-        .filter(|job| {
-            job.stage != crate::services::haul::HaulStage::Closed
-                && job.hold == Some(vault)
-                && job.good == ore
-        })
+    let hauls = crate::services::haul::live_hauls(ctx.w)
+        .filter(|job| job.hold == Some(vault) && job.good == ore)
         .map(|job| job.contract)
         .take(MAX_SEIZED_ROWS)
         .collect();

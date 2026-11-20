@@ -27,6 +27,8 @@ pub(crate) const RESERVATIONS: &str = "tacsim.detachment_reservations";
 const REVISION: &str = "detachment_activation_input";
 const MAX_INPUT: usize = 16 * 1024;
 const MAX_PENDING: usize = 256;
+const MAX_PRUNE_CLOSED_RECORDS: usize = 8;
+const PRUNE_SCAN_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -547,23 +549,79 @@ struct Provider {
     handles: ActivationHandles,
     outcome: DefinitionRef,
 }
-fn chosen(i: &ActionInvocation) -> Result<Input, ActionError> {
+fn can_prune_closed_record(
+    actor: ObjId,
+    exclude: PlanId,
+    book: Option<&PlanningBook>,
+    record: &ActiveDetachment,
+) -> bool {
+    record.organizer == actor
+        && !record.active()
+        && record.draft != exclude
+        && book.is_none_or(|b| !b.drafts.contains_key(&record.draft))
+}
+fn prunable_closed_records(
+    engine: &Engine,
+    handles: &ActivationHandles,
+    actor: ObjId,
+    exclude: PlanId,
+) -> Result<Vec<PlanId>, ActionError> {
+    let book = engine
+        .action_state()
+        .get(&handles.plans, &actor)
+        .map_err(|_| refused())?;
+    let prefix = format!("{}-", actor.0);
+    let page = engine
+        .action_state()
+        .scan_family(&handles.records, Some(&prefix), PRUNE_SCAN_LIMIT)
+        .map_err(|_| refused())?;
+    let mut prune = Vec::new();
+    for entry in page.entries() {
+        if !entry.encoded_key().starts_with(&prefix) {
+            break;
+        }
+        if can_prune_closed_record(actor, exclude, book, entry.value()) {
+            prune.push(entry.value().draft);
+            if prune.len() >= MAX_PRUNE_CLOSED_RECORDS {
+                break;
+            }
+        }
+    }
+    Ok(prune)
+}
+fn chosen(i: &ActionInvocation) -> Result<(Input, Vec<PlanId>), ActionError> {
+    let Some(params) = i.parameters().as_object() else {
+        return Err(refused());
+    };
+    let valid_shape = params.len() == 2 || (params.len() == 3 && params.contains_key("prune"));
     if i.principal() != &(PrincipalId::Object { id: i.actor() })
         || i.subject() != &PerceivedRef::SelfActor
         || !i.targets().is_empty()
-        || i.parameters().as_object().is_none_or(|p| p.len() != 2)
+        || !valid_shape
     {
         return Err(refused());
     }
-    let value = i.parameters().get("input").ok_or_else(refused)?;
+    let value = params.get("input").ok_or_else(refused)?;
     mush_core::canonical_json_bytes_with_limit(value, MAX_INPUT).map_err(|_| refused())?;
     let input: Input = serde_json::from_value(value.clone()).map_err(|_| refused())?;
-    if i.parameters().get("request").and_then(Value::as_str)
+    if params.get("request").and_then(Value::as_str)
         != Some(fingerprint(i.actor(), &input.intent)?.to_hex().as_str())
     {
         return Err(refused());
     }
-    Ok(input)
+    let prune = if let Some(prune_val) = params.get("prune") {
+        let ids: Vec<PlanId> = serde_json::from_value(prune_val.clone()).map_err(|_| refused())?;
+        if ids.is_empty()
+            || ids.len() > MAX_PRUNE_CLOSED_RECORDS
+            || ids.iter().copied().collect::<BTreeSet<_>>().len() != ids.len()
+        {
+            return Err(refused());
+        }
+        ids
+    } else {
+        Vec::new()
+    };
+    Ok((input, prune))
 }
 impl ActionProvider for Provider {
     fn validate_invocation(&self, i: &ActionInvocation) -> Result<(), ActionError> {
@@ -627,6 +685,19 @@ impl ActionProvider for Provider {
         );
         let Ok(state) = state else { return Ok(None) };
         let fixed = serde_json::to_value(&state.input).map_err(|_| refused())?;
+        let prune = if matches!(
+            intent.operation,
+            Operation::Activate { .. } | Operation::Deactivate { .. }
+        ) {
+            prunable_closed_records(engine, &self.handles, actor, reference.id)?
+        } else {
+            Vec::new()
+        };
+        let fixed_params = if prune.is_empty() {
+            json!({"input": fixed})
+        } else {
+            json!({"input": fixed, "prune": prune})
+        };
         let revisions = RevisionSet::from_stamps([RevisionStamp {
             key: key(actor)?,
             generation: generation(&engine.world, Ok(state))?,
@@ -635,7 +706,7 @@ impl ActionProvider for Provider {
         crate::surface::act::offer_draft_with_revisions(
             action,
             engine,
-            json!({"input":fixed}),
+            fixed_params,
             vec![ProjectedParameter {
                 id: CanonicalId::new("request").map_err(|_| refused())?,
                 required: true,
@@ -654,7 +725,7 @@ impl ActionProvider for Provider {
         &self,
         resolved: &ResolvedActionInvocation,
     ) -> Result<Vec<RevisionKey>, ActionError> {
-        let input = chosen(resolved.invocation())?;
+        let (input, _) = chosen(resolved.invocation())?;
         let Selection::Activate { draft } = input.selection else {
             return Ok(Vec::new());
         };
@@ -679,7 +750,7 @@ impl ActionProvider for Provider {
         resolved: &ResolvedActionInvocation,
         _engine: &Engine,
     ) -> Result<Vec<AuthorityWitnessRequest>, ActionError> {
-        let input = chosen(resolved.invocation())?;
+        let (input, _) = chosen(resolved.invocation())?;
         let Selection::Activate { draft } = input.selection else {
             return Ok(Vec::new());
         };
@@ -713,20 +784,24 @@ impl ActionProvider for Provider {
             return Err(refused());
         }
         let i = resolved.invocation();
-        let input = chosen(i)?;
+        let (input, prune) = chosen(i)?;
         let reference = input.intent.operation.reference(i.actor());
         let before = txn
             .get(&self.handles.records, &reference)
             .map_err(|_| refused())?
             .cloned();
+        let book = if matches!(
+            input.intent.operation,
+            Operation::Activate { .. } | Operation::Deactivate { .. }
+        ) {
+            txn.get(&self.handles.plans, &i.actor())
+                .map_err(|_| refused())?
+                .cloned()
+        } else {
+            None
+        };
         let draft = match input.intent.operation {
-            Operation::Activate { id, .. } => source(
-                txn.get(&self.handles.plans, &i.actor())
-                    .map_err(|_| refused())?,
-                i.actor(),
-                id,
-            )
-            .ok(),
+            Operation::Activate { id, .. } => source(book.as_ref(), i.actor(), id).ok(),
             _ => None,
         };
         let world = context.world().map_err(|_| refused())?;
@@ -855,12 +930,45 @@ impl ActionProvider for Provider {
         }
         // The source row anchors this composed action even when only channel
         // membership changes; its accepted revision and contents stay identical.
-        if state.before.is_some() {
+        // HIGH-68: remove a closed activation immediately if its draft was already
+        // discarded, and prune older closed records whose drafts are gone.
+        let remove_closed = matches!(input.intent.operation, Operation::Deactivate { .. })
+            && book
+                .as_ref()
+                .is_none_or(|b| !b.drafts.contains_key(&reference.id));
+        if remove_closed {
+            if state.before.is_some() {
+                txn.remove(&self.handles.records, &reference)
+            } else {
+                Ok(())
+            }
+        } else if state.before.is_some() {
             txn.replace(&self.handles.records, &reference, record.clone())
         } else {
             txn.insert(&self.handles.records, &reference, record.clone())
         }
         .map_err(|_| refused())?;
+        if matches!(
+            input.intent.operation,
+            Operation::Activate { .. } | Operation::Deactivate { .. }
+        ) {
+            for prune_id in prune {
+                let prune_ref = DraftRef {
+                    organizer: i.actor(),
+                    id: prune_id,
+                };
+                if txn
+                    .get(&self.handles.records, &prune_ref)
+                    .map_err(|_| refused())?
+                    .is_some_and(|rec| {
+                        can_prune_closed_record(i.actor(), reference.id, book.as_ref(), rec)
+                    })
+                {
+                    txn.remove(&self.handles.records, &prune_ref)
+                        .map_err(|_| refused())?;
+                }
+            }
+        }
         let outcome = RulesValue::new(
             self.outcome.clone(),
             json!({
@@ -956,4 +1064,103 @@ pub fn channel_action_ref() -> Result<DefinitionRef, ModError> {
             action_descriptor(&BTreeMap::from([(OUTCOME.to_owned(), outcome)]))?,
         )
         .map_err(bad)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::{ClockRef, ClockStamp};
+    use mush_tactics::detachment::planning::{Plan, PlanningOperation};
+
+    #[test]
+    fn high68_can_prune_closed_record_selects_only_closed_discarded_records() {
+        let organizer = ObjId(10);
+        let other = ObjId(11);
+        let plan = Plan {
+            carrier: ObjId(20),
+            slots: Vec::new(),
+            npc_commander: None,
+            financial_terms: None,
+            work_point: None,
+        };
+        let book = PlanningBook::new(organizer)
+            .expect("book")
+            .apply(
+                organizer,
+                &PlanningOperation::CreateDraft { plan: plan.clone() },
+            )
+            .expect("draft")
+            .book;
+        let live_draft = book.drafts.keys().next().copied().expect("live draft");
+        let discarded_draft = PlanId(live_draft.0 + 1);
+        let stamp = ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at: 100,
+        };
+        let live_draft_hash = book
+            .drafts
+            .get(&live_draft)
+            .expect("live draft")
+            .plan_hash
+            .clone();
+        let make = |owner: ObjId, draft: PlanId, closed: bool| ActiveDetachment {
+            schema: 1,
+            organizer: owner,
+            draft,
+            detachment: detachment_id(DraftRef {
+                organizer: owner,
+                id: draft,
+            })
+            .expect("detachment id"),
+            revision: 1,
+            source_revision: 1,
+            plan_hash: live_draft_hash.clone(),
+            plan: plan.clone(),
+            duty: CrewDuty::Mining,
+            npc_terms: BTreeMap::new(),
+            activated_at: stamp.clone(),
+            closed_at: closed.then(|| stamp.clone()),
+        };
+        let closed_discarded = make(organizer, discarded_draft, true);
+        let active_discarded = make(organizer, discarded_draft, false);
+        let closed_live = make(organizer, live_draft, true);
+        let closed_foreign = make(other, discarded_draft, true);
+
+        assert!(can_prune_closed_record(
+            organizer,
+            PlanId(99),
+            Some(&book),
+            &closed_discarded
+        ));
+        assert!(!can_prune_closed_record(
+            organizer,
+            discarded_draft,
+            Some(&book),
+            &closed_discarded
+        ));
+        assert!(!can_prune_closed_record(
+            organizer,
+            PlanId(99),
+            Some(&book),
+            &active_discarded
+        ));
+        assert!(!can_prune_closed_record(
+            organizer,
+            PlanId(99),
+            Some(&book),
+            &closed_live
+        ));
+        assert!(!can_prune_closed_record(
+            organizer,
+            PlanId(99),
+            Some(&book),
+            &closed_foreign
+        ));
+        assert!(can_prune_closed_record(
+            organizer,
+            PlanId(99),
+            None,
+            &closed_live
+        ));
+    }
 }

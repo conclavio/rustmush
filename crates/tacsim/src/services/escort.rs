@@ -75,6 +75,12 @@ pub const LAUNCH_GRACE_WALL_S: i64 = 60;
 /// **The protected hull of an escort posted for a haul not yet taken** (doc 50 cut OP.3): no
 /// hull is Limbo.
 pub const UNBOUND: ObjId = ObjId(0);
+/// Most open (non-closed) escorts one actor may post concurrently.
+pub const MAX_OPEN_ESCORTS_PER_ACTOR: usize = 16;
+/// Most open (non-closed) escorts across the world concurrently.
+pub const MAX_OPEN_ESCORTS_GLOBAL: usize = 512;
+/// Most recently-closed escorts retained before oldest closed records are deleted.
+pub const MAX_CLOSED_ESCORTS: usize = 64;
 /// IC seconds in an IC day.
 const DAY: i64 = 86_400;
 /// The channel lines go out on.
@@ -127,6 +133,11 @@ pub const NO_VENUE: &str = "There is no market here to post at.";
 pub const ALREADY: &str = "An escort of her is open already ({job}).";
 /// The economy's refusal (`{why}`).
 pub const POST_FAILED: &str = "The escort could not be posted: {why}.";
+/// The refusal when the poster already has the maximum number of open escorts (`{cap}`).
+pub const TOO_MANY_OPEN: &str =
+    "You already have {cap} open escorts; finish or withdraw one first.";
+/// The refusal when the world's open escort board is full.
+pub const BOARD_FULL: &str = "The escort board is full right now; try again later.";
 /// The refusal for no such open job (`{job}`).
 pub const NO_SUCH_JOB: &str = "There is no open escort {job}; +market/jobs escort lists them.";
 /// The refusal for the poster's own job.
@@ -377,21 +388,89 @@ pub fn escorts(w: &World) -> Vec<EscortJob> {
         .unwrap_or_default()
 }
 
+/// Every readable non-closed escort, by reference (O(live), no cloning).
+pub(crate) fn live_escorts(w: &World) -> impl Iterator<Item = &EscortJob> {
+    super::book(w).into_iter().flat_map(|book| {
+        book.live_escorts.iter().filter_map(|id| {
+            book.escorts
+                .get(id)
+                .and_then(Held::present)
+                .filter(|job| job.stage != EscortStage::Closed)
+        })
+    })
+}
+
 /// The escort of `contract`, when it reads.
 #[must_use]
 pub fn escort_of(w: &World, contract: u64) -> Option<EscortJob> {
     super::book(w)?.escorts.get(&contract)?.present().cloned()
 }
 
+/// The record key of escort `contract`.
+#[must_use]
+pub fn escort_key(contract: u64) -> String {
+    format!("{ESCORT_PREFIX}{contract}")
+}
+
+/// Delete an escort record from RAM and persistent storage.
+pub(crate) fn delete(ctx: &mut Ctx<'_>, contract: u64) {
+    if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        store.services.escorts.remove(&contract);
+        store.services.live_escorts.remove(&contract);
+        store.services.closed_escorts.remove(&contract);
+    }
+    crate::store::push_op(
+        ctx.out,
+        mush_core::ModuleWrite::Del {
+            key: escort_key(contract).into(),
+        },
+    );
+}
+
+/// Delete oldest retained `Closed` escorts once closed count exceeds [`MAX_CLOSED_ESCORTS`].
+pub(crate) fn prune_closed(ctx: &mut Ctx<'_>) {
+    let excess: Vec<u64> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            let over = store
+                .services
+                .closed_escorts
+                .len()
+                .saturating_sub(MAX_CLOSED_ESCORTS);
+            store
+                .services
+                .closed_escorts
+                .iter()
+                .take(over)
+                .copied()
+                .collect()
+        })
+        .unwrap_or_default();
+    for contract in excess {
+        delete(ctx, contract);
+    }
+}
+
 /// Install a record and queue its document.
 pub(crate) fn put(ctx: &mut Ctx<'_>, job: &EscortJob) {
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
+        if job.stage == EscortStage::Closed {
+            store.services.live_escorts.remove(&job.contract);
+            store.services.closed_escorts.insert(job.contract);
+        } else {
+            store.services.closed_escorts.remove(&job.contract);
+            store.services.live_escorts.insert(job.contract);
+        }
         store
             .services
             .escorts
             .insert(job.contract, Held::Present(Box::new(job.clone())));
     }
     crate::port::owned::write(ctx, job.key(), job);
+    if job.stage == EscortStage::Closed {
+        prune_closed(ctx);
+    }
 }
 
 /// The fact a job's contract reads.
@@ -558,13 +637,45 @@ fn left(w: &World, job: &EscortJob, escort: ObjId) -> bool {
 
 // ---- the arm --------------------------------------------------------------------------------
 
+/// Whether `job` needs a mutable step on this fire (read-only check by ref, zero cloning).
+fn needs_step(ctx: &Ctx<'_>, job: &EscortJob) -> bool {
+    let now = ctx.w.world_ic_now().at;
+    let live = super::contract_state(ctx.w, job.contract).is_some_and(|s| s.is_live());
+    match job.stage {
+        EscortStage::Posted => now > job.accept_by_ic || !live,
+        EscortStage::Taken => {
+            job.with.is_none()
+                || (job.protected == UNBOUND
+                    && job.haul.is_some_and(|contract| {
+                        let haul = super::haul::haul_of(ctx.w, contract);
+                        haul.as_ref().and_then(|h| h.hull).is_some()
+                            || haul
+                                .as_ref()
+                                .is_none_or(|h| h.stage == super::haul::HaulStage::Closed)
+                    }))
+                || !live
+                || job.due_ic.is_some_and(|due| now >= due)
+                || wrecked(ctx.w, job.protected)
+                || captured(ctx.w, job.protected)
+                || journey_now(ctx.w, job).0
+        }
+        EscortStage::Watching => true,
+        EscortStage::Kept | EscortStage::Failed => !live,
+        EscortStage::Closed => false,
+    }
+}
+
 /// **The host's watch** (doc 48 cut EX.6): each live escort's next step, at the port arm's fire.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
-    let live: Vec<EscortJob> = escorts(ctx.w)
-        .into_iter()
-        .filter(|j| j.stage != EscortStage::Closed)
+    prune_closed(ctx);
+    let due: Vec<u64> = live_escorts(ctx.w)
+        .filter(|job| needs_step(ctx, job))
+        .map(|job| job.contract)
         .collect();
-    for mut job in live {
+    for contract in due {
+        let Some(mut job) = escort_of(ctx.w, contract) else {
+            continue;
+        };
         if step(ctx, &mut job) {
             put(ctx, &job);
         }
@@ -842,9 +953,7 @@ fn name(w: &World, hull: ObjId) -> String {
 }
 
 fn list(ctx: &Ctx<'_>) -> String {
-    let rows: Vec<String> = escorts(ctx.w)
-        .into_iter()
-        .filter(|j| j.stage != EscortStage::Closed)
+    let rows: Vec<String> = live_escorts(ctx.w)
         .filter(|j| {
             j.poster == ctx.actor
                 || j.escort
@@ -1019,7 +1128,7 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         }
         _ => return Err(ESCORT_USAGE.to_owned()),
     };
-    if let Some(open) = escorts(ctx.w).into_iter().find(|j| {
+    if let Some(open) = live_escorts(ctx.w).find(|j| {
         (if let Some(h) = &haul {
             j.haul == Some(h.contract)
         } else {
@@ -1030,6 +1139,16 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         )
     }) {
         return Err(ALREADY.replace("{job}", &open.job()));
+    }
+    let open_total = live_escorts(ctx.w).count();
+    let open_actor = live_escorts(ctx.w)
+        .filter(|j| j.poster == ctx.actor)
+        .count();
+    if open_actor >= MAX_OPEN_ESCORTS_PER_ACTOR {
+        return Err(TOO_MANY_OPEN.replace("{cap}", &MAX_OPEN_ESCORTS_PER_ACTOR.to_string()));
+    }
+    if open_total >= MAX_OPEN_ESCORTS_GLOBAL {
+        return Err(BOARD_FULL.to_owned());
     }
     let journey_line = journey_words(ctx.w, &journey);
     if !go {
@@ -1181,7 +1300,7 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
 
 fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let word = rest.trim();
-    let mut job = word
+    let job = word
         .trim_start_matches('#')
         .parse::<u64>()
         .ok()
@@ -1197,9 +1316,9 @@ fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, Strin
     }
     mush_economy::cancel_job(ctx, ContractId(job.contract))
         .map_err(|error| POST_FAILED.replace("{why}", &error.to_string()))?;
-    job.stage = EscortStage::Closed;
-    put(ctx, &job);
-    Ok(WITHDRAWN.replace("{job}", &job.job()))
+    let job_word = job.job();
+    delete(ctx, job.contract);
+    Ok(WITHDRAWN.replace("{job}", &job_word))
 }
 
 // ---- the board ------------------------------------------------------------------------------
@@ -1208,8 +1327,7 @@ fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, Strin
 #[must_use]
 pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
     let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT);
-    escorts(w)
-        .into_iter()
+    live_escorts(w)
         .filter(|j| j.stage == EscortStage::Posted && j.venue.as_str() == venue.as_str())
         .map(|j| mush_market::Service {
             kind: mush_market::ServiceKind::Escort,
@@ -1297,5 +1415,94 @@ mod tests {
         };
         assert_eq!(count(&mut first, 130, false, true), 30);
         assert_eq!((first.journey_ic, first.near_ic), (30, 0));
+    }
+
+    #[test]
+    fn high41_closed_escorts_are_pruned_and_live_iter_skips_closed() {
+        struct StoreMod;
+        impl mush_core::module::GameModule for StoreMod {
+            fn name(&self) -> &'static str {
+                "tacsim"
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                reg.state(TacsimStore::default());
+                Ok(())
+            }
+        }
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(StoreMod)]);
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: ObjId(5),
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+
+        let sample = |contract: u64, stage: EscortStage| EscortJob {
+            schema: ESCORT_SCHEMA,
+            contract,
+            poster: ObjId(5),
+            poster_org: None,
+            haul: None,
+            protected: ObjId(10),
+            journey: Journey::Passage {
+                from: "ceres".into(),
+                to: "vesta".into(),
+            },
+            venue: "ceres".into(),
+            fee_minor: 5_000,
+            bond_minor: 0,
+            posted_ic: 1,
+            accept_by_ic: 100,
+            escort: None,
+            with: None,
+            accepted_ic: None,
+            due_ic: None,
+            watch: None,
+            why: None,
+            stage,
+        };
+
+        for id in 1..=(MAX_CLOSED_ESCORTS as u64 + 4) {
+            put(&mut ctx, &sample(id, EscortStage::Closed));
+        }
+        put(&mut ctx, &sample(2_000, EscortStage::Posted));
+        put(&mut ctx, &sample(2_001, EscortStage::Taken));
+
+        let store = ctx.w.module_state::<TacsimStore>().expect("store");
+        assert_eq!(store.services.closed_escorts.len(), MAX_CLOSED_ESCORTS);
+        assert_eq!(store.services.live_escorts.len(), 2);
+        assert!(escort_of(ctx.w, 1).is_none());
+        assert!(escort_of(ctx.w, 4).is_none());
+        assert!(escort_of(ctx.w, 5).is_some());
+
+        let live_ids: Vec<u64> = live_escorts(ctx.w).map(|j| j.contract).collect();
+        assert_eq!(live_ids, vec![2_000, 2_001]);
+
+        delete(&mut ctx, 2_000);
+        assert!(escort_of(ctx.w, 2_000).is_none());
+        let dels: Vec<String> = ctx
+            .out
+            .deferred()
+            .iter()
+            .filter_map(|d| match d {
+                mush_core::Deferred::Persist(op) => match &op.op {
+                    mush_core::ModuleWrite::Del { key } => Some(key.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert!(dels.contains(&escort_key(1)));
+        assert!(dels.contains(&escort_key(4)));
+        assert!(dels.contains(&escort_key(2_000)));
     }
 }
