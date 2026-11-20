@@ -166,6 +166,10 @@ pub const TOLD_DELIVERED: &str = "Haul {job} is delivered to your locker at {por
 /// The shipper's notice of the return (`{job}`, `{port}`).
 pub const TOLD_RETURNED: &str =
     "Haul {job} was not delivered in time; its goods are back in your locker at {port}.";
+/// The shipper's notice of a seizure (`{job}`): doc 50 unit CR.
+pub const TOLD_SEIZED: &str = "Haul {job} was seized by customs on the way; its goods are lost. The fee comes back to you, and the hauler's bond is yours.";
+/// The hauler's notice of a seizure (`{job}`).
+pub const TOLD_HAULER_SEIZED: &str = "Customs took the goods of haul {job} from your hold; the job has failed and your bond is lost.";
 /// The refusal for withdrawing a taken or another's job.
 pub const NOT_WITHDRAWABLE: &str =
     "Only the shipper withdraws a haul, and only before it is taken.";
@@ -223,6 +227,10 @@ pub enum LegKind {
     Deliver,
     /// The hold to the shipper's locker at the hull's port, after the term.
     Return,
+    /// **Not a leg: the cargo was seized** (doc 50 unit CR; Q-50-25 as corrected). The customs
+    /// ruling that took it released the job's hold and wrote this on the job's ledger in its
+    /// own transaction, so no leg of the job lands after it; the arm then fails the job.
+    Seized,
 }
 
 /// **The leg a haul owes**: what the arm submits and the offer projects.
@@ -923,6 +931,10 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
     let state = super::contract_state(ctx.w, job.contract);
     let ledger = landed(ctx, job.contract);
     let acts = ledger.as_ref().map_or(0, |l| l.acts);
+    if job.stage != HaulStage::Closed && ledger.as_ref().is_some_and(|l| l.last == LegKind::Seized)
+    {
+        return seized(ctx, job);
+    }
     match job.stage {
         HaulStage::Posted => {
             if now <= job.accept_by_ic && state.as_ref().is_some_and(|s| s.is_live()) {
@@ -986,6 +998,24 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
         }
         HaulStage::Closed => false,
     }
+}
+
+/// **A seizure fails the job** (doc 50 unit CR; Q-50-25 as corrected): the customs ruling took
+/// the cargo and wrote [`LegKind::Seized`] on the ledger; the arm lapses the contract now, as its
+/// deadline would (the fee back to the shipper and the bond to them, Q-48-42), and closes the
+/// record. A contract that will not lapse here (a frozen economy) still lapses at its deadline.
+fn seized(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
+    let _ = mush_economy::lapse_job(ctx, ContractId(job.contract));
+    job.owed = None;
+    job.tries = 0;
+    job.stage = HaulStage::Closed;
+    let line = TOLD_SEIZED.replace("{job}", &job.job());
+    super::tell(ctx, &PrincipalId::Object(job.shipper), CHANNEL, &line);
+    if let Some(pilot) = job.pilot {
+        let line = TOLD_HAULER_SEIZED.replace("{job}", &job.job());
+        super::tell(ctx, &PrincipalId::Object(pilot), CHANNEL, &line);
+    }
+    true
 }
 
 /// The return: at the hull's next port, the goods go back to the shipper's locker there.
@@ -1280,6 +1310,8 @@ impl ActionProvider for HaulProvider {
         let in_order = match owed.kind {
             LegKind::Load => act == 1,
             LegKind::Deliver | LegKind::Return => act == 2,
+            // Doc 50 unit CR: a seizure is written by the customs ruling, never owed as a leg.
+            LegKind::Seized => false,
         };
         if next != act || !in_order {
             return Err(port_error(
@@ -1300,7 +1332,7 @@ impl ActionProvider for HaulProvider {
         let holder =
             haul_holder(contract).map_err(|_| refused("the haul's holder will not form"))?;
         let held = match owed.kind {
-            LegKind::Load => None,
+            LegKind::Load | LegKind::Seized => None,
             LegKind::Deliver | LegKind::Return => Some(
                 haul_reservation(contract, owed.from, &owed.good)
                     .map_err(|_| refused("the haul's hold will not form"))?,
@@ -1308,7 +1340,7 @@ impl ActionProvider for HaulProvider {
         };
         let keep = match owed.kind {
             LegKind::Load => Some((&holder, owed.lead_ic.max(0))),
-            LegKind::Deliver | LegKind::Return => None,
+            LegKind::Deliver | LegKind::Return | LegKind::Seized => None,
         };
         let commit = CommitToken::from_bytes(*invocation.request().as_bytes());
         self.inventory
@@ -1396,7 +1428,9 @@ pub(crate) fn outcome_descriptor() -> Result<DefinitionDescriptor, ModError> {
 }
 
 /// **Register the haul** (doc 48 cut EX.6): its ledger family always, and its provider when
-/// the inventory cell is filled (the works rule).
+/// the inventory cell is filled (the works rule). Answers the ledger family's handle: a customs
+/// seizure that takes a job's cargo fails the job on its ledger in the seizure's own transaction
+/// (doc 50 unit CR).
 ///
 /// # Errors
 ///
@@ -1406,7 +1440,7 @@ pub(crate) fn register(
     actions: &BTreeMap<String, DefinitionRef>,
     outcomes: &BTreeMap<String, DefinitionRef>,
     inventory: Option<&InventoryFamilies>,
-) -> Result<(), ModError> {
+) -> Result<StateFamilyHandle<u64, HaulLedger>, ModError> {
     use crate::port::families::family_descriptor;
     let ledgers = reg.state_family::<u64, HaulLedger, _, _, _, _>(
         family_descriptor(
@@ -1444,8 +1478,11 @@ pub(crate) fn register(
         }
         _ => None,
     };
-    reg.state(HaulHandles { action, ledgers });
-    Ok(())
+    reg.state(HaulHandles {
+        action,
+        ledgers: ledgers.clone(),
+    });
+    Ok(ledgers)
 }
 
 #[cfg(test)]

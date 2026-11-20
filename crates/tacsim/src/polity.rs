@@ -300,9 +300,56 @@ impl RegionsApplier {
                 }
             }
         }
+        seed_customs_front(ctx, &rules, &def)?;
         ctx.out.pin_deferred();
         Ok(())
     }
+}
+
+/// **Customs Assertion on the Republic's board, at world start** (doc 50 cut KC.1; Q-50-12,
+/// Q-50-13): its flip is the region that holds the picket's place (the `location` with
+/// `kirkwood_picket`). A lane with no such row, or no Republic, seeds nothing. Idempotent.
+fn seed_customs_front(
+    ctx: &mut Ctx<'_>,
+    rules: &RulesPack,
+    def: &RegionsDef,
+) -> Result<(), String> {
+    let Some(row) = def.rows.iter().find(|row| {
+        row.places.iter().any(|place| {
+            matches!(rules.entry(place), Some(PackEntry::Location(loc)) if loc.kirkwood_picket)
+        })
+    }) else {
+        return Ok(());
+    };
+    let (Some(republic), Some(approach)) = (
+        polity(ctx.w, "republic"),
+        ctx.w
+            .module_state::<FactionState>()
+            .and_then(|st| st.region_by_name(&row.name))
+            .map(|r| r.id),
+    ) else {
+        return Ok(());
+    };
+    let draft = mush_canon::CanonDraft {
+        kind: "space.customs_front".into(),
+        summary: format!(
+            "{}: the Republic presses its claim to the {}.",
+            mush_faction::CUSTOMS_ASSERTION_TITLE,
+            row.name
+        ),
+        entities: Vec::new(),
+        scope: mush_canon::CanonScope::Public,
+        ic_time: ctx.w.world_ic_now().at,
+        source: "tacsim.customs.assertion".into(),
+        detail: serde_json::json!({ "region": approach.0 }),
+    };
+    mush_faction::seed_customs_assertion_front(ctx, republic, approach, draft).map(|_| ())
+}
+
+/// **The board Kirkwood picket incidents advance** (doc 50 cut KC.1, Q-50-13): the Republic's.
+#[must_use]
+pub fn customs_board(w: &World) -> Option<FactionId> {
+    polity(w, "republic")
 }
 
 impl EntryApplier for RegionsApplier {

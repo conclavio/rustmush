@@ -3255,12 +3255,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         // the recovery it vacated is proven and goes port-side.
         if settlement == Settlement::Vacate && vacated_on_recovery(file) {
             let act = proven_recovery(ctx, &site, &row);
-            let _ = crate::surface::security::prove(
-                ctx,
-                &site,
-                &act,
-                crate::surface::security::Proof::Vacated,
-            );
+            let _ =
+                crate::surface::security::prove(ctx, &site, &act, crate::offense::Proof::Vacated);
         }
         // Doc 41 §4.6: every lot the hull's record lists under this claim is flagged hot.
         if settlement == Settlement::Vacate

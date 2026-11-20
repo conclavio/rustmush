@@ -19,7 +19,107 @@ The cargo reading, and two live defects beside it from doc 50 §4.3: the picket 
 fill check count a bulk good held as a lot; a seizure can take cargo under a haul's hold and fails
 the haul; the 35 km breach records the pilot, not the hull, and writes a ruling.
 
-Not built.
+**Survey** (at `ecb96979d`):
+- **The reading.** `read_pool` (`tacsim/src/port_tick.rs:2626-2646`) adds `lot_tally` only for a
+  part. Doc 48e had already added `read_held` beside it (`:2658-2675`), which counts lots for every
+  good, and the planner, the gauges and the hull sale read through it. The picket's manifest
+  (`space/picket.rs:688-704`) and the hold's fill check (`space/mining.rs:1301-1320`, read by the
+  mining commands and the mining tick) still read `read_pool`. So a 51 t lot of strategic ore read
+  as 0 kg and cleared the picket.
+- **The seizure.** The ruling's prepare (`space/customs.rs:451-490`) took
+  `min(seize_t, pool.available)` and debited it. `seize_t` is all the unlicensed ore aboard
+  (`space/commands.rs:5001`). A haul's cargo is a pool hold in the hull's hold under the job's
+  holder (`services/haul.rs:413-463`, `mush-inventory/src/pool/carriage.rs`), so it is not
+  available. Ore held as a lot is not in the pool at all.
+- **One write a key.** An `ActionTxn` writes a key once (`mush-core/src/action_state.rs`,
+  `require_fresh_mutation`), so a `release` then a `debit` of one pool cannot share a bundle.
+  Inventory had no call that releases a hold and debits in one write (`carry` is the precedent
+  for one-write compound moves).
+- **The breach.** `space/tick.rs:4639-4650` called `record_ran_the_picket_incident(ctx, hull,
+  hull)` and set the outcome itself. `+helm/run` files a `Ran` ruling (`file_ruling`), and the
+  incident follows the landed row, with `ruling.principal` as the pilot (`customs.rs:877-892`).
+
+**Built:**
+1. **The cargo reading: `crate::port::ship::hold_reading(ctx, hull, good)`.** It is
+   `read_held` on the hull's hold vault, `Ok(0)` for a hull with no hold. The picket's manifest and
+   `hull_hold_used_tonnes` read through it. KC.2's duty, LW.3's audit and OP.3's haul handling
+   should call it too. `Lot` is unchanged.
+2. **`InventoryFamilies::seize(txn, endpoint, commodity, amount, release)`**
+   (`mush-inventory/src/pool/seizure.rs`). In one write of the pool's pair it releases the named
+   live holds, in order and only while what is available falls short, then debits. It answers
+   `Seized { taken, released }`. It credits nothing.
+3. **The seizure takes lots and held cargo, and fails the haul.**
+   - At the filing, `seizable` lists the live hauls whose strategic ore is held in that hold and
+     the exact lots of it there, at most 16 of each. They ride on `PendingCustomsRuling` as
+     `hauls` and `lots`, which are serde-defaulted, so the landed finding's shape is unchanged.
+   - The prepare (`CustomsProvider::seize`) takes the unheld lots whole while they fit
+     (`consume_products`). It then takes the pool through `seize`, naming each haul's
+     reservation (`haul_reservation`).
+   - For each released hold it writes `HaulLedger { acts: 2, last: LegKind::Seized }` in the same
+     transaction. A later delivery or return then fails the ledger's replay guard. The customs
+     provider gets the ledger handle from `haul::register`, which now returns it.
+   - The haul arm sees `Seized` on the ledger. It calls `mush_economy::lapse_job`, which forfeits
+     the bond to the shipper and refunds the fee, as a deadline does. Then it closes the record
+     and tells the shipper and the hauler.
+   - The seized ore still goes to nobody (LW.5).
+4. **The breach is a run ruled as `+helm/run`'s.** The tick calls `customs::file_breach`, which
+   files a `Ran` ruling with the hull's pilot as its officer. The pilot is
+   `commands::helm_pilot_aboard`: the crew member aboard on a movement station, else the first of
+   her crew aboard. The principal is resolved from that pilot. The incident, the corvette's turn
+   and the outcome follow the landed row through `apply_landed`, as for `+helm/run`. The crew hear
+   that the corvette is logging the run. A ruling already pending waits. A lapsed ruling is filed
+   again on the next step, because she is still past the boundary.
+
+**Tests:**
+- `mush-inventory` `pool::seizure::tests::cr_a_seizure_releases_the_holds_it_needs_and_takes_held_cargo`:
+  a debit cannot reach held cargo. `seize` releases only the named hold it needs and takes the
+  rest. An unnamed hold stands, and no pool takes nothing.
+- `tacsim` `domain_world` `voyage::cr_the_picket_reads_ore_held_as_a_lot_and_the_seizure_takes_the_lot`:
+  51 t of strategic ore held as one lot, none pooled. The picket finds 51,000 kg, the ruling
+  seizes 51 t and the lot is gone. Before the unit she was cleared with 0 kg.
+- `voyage::cr_a_seizure_takes_cargo_under_a_hauls_hold_and_fails_the_haul`: a real `+haul/post`
+  and `+haul/accept` of 51 t, all of it held. The ruling lands, the hold is (0, 0) and the
+  ledger reads `(2, Seized)`. The arm closes the job, and the contract is `Expired`. Before the
+  unit the ruling did not land.
+- `voyage::cr_burning_past_the_picket_is_a_run_ruled_with_the_pilot_as_its_officer`: she burns
+  flat out away from the corvette under her own drive (tests may not write the space book). Past
+  35 km the tick submits one customs ruling, as the pilot. It lands
+  as `Ran` with the pilot as actor and principal, the corvette is hostile and the front advances
+  once. Before the unit no ruling was filed.
+- Each tacsim story was mutation-checked (the fix taken out, the story fails): `read_held` back
+  to `read_pool` in `hold_reading`; `seize` handed no holds; the tick's old direct record.
+- Pinned sites moved with the change: the matter census (`domain_economy` `mill::sm12a_only_the_clerk_…`)
+  now finds the seizure's `seize` and `consume_products` in place of its `.debit(`, and the bot's
+  haul table has rows for `TOLD_SEIZED` and `TOLD_HAULER_SEIZED`.
+- Re-run beside them: `voyage::sfr26c_…`, `voyage::sfr12_…`, `voyage::sfr6_…`,
+  `domain_economy` `ex6_haul::`, and the tacsim lib's haul, customs and picket tests.
+
+**Divergences:**
+- **A new inventory call.** The brief kept CR to tacsim's cargo, customs and picket code. Taking
+  held cargo in the ruling's one transaction needs a release and a debit in one write of the
+  pair, and only `mush-inventory` can make that write. `seize` is additive, beside `carry`.
+- **"Fail the job in the same transaction"** is the job's ledger row, written in the ruling's
+  transaction. The contract's lapse follows on the haul arm's next fire. The economy's contracts
+  are not action-state families, so no action can write them; the customs fine already follows
+  this pattern. A contract that will not lapse then (a frozen economy) lapses at its own deadline.
+- **Lots are taken whole.** A lot larger than what is left to take is passed over. Today
+  `seize_t` is all the strategic ore aboard, so every unheld lot fits.
+- **A breach with nobody of her crew aboard** has no officer to submit a ruling as. `filed_by`
+  projects only to an actor aboard. The incident is then recorded at once, as before, but it
+  names the hull's principal (`resolve_hull_customs_principal`) as its pilot, not the hull.
+
+**Not built:**
+- Where seized goods go (to the enforcing authority's vault, Q-50-44): LW.5.
+- The full loss handling for wrecks and captures, and the canon record that advances the other
+  side's clock: OP.3.
+- **A held lot is not seized.** A lot under a lot hold (a listing, a dispute's evidence) is
+  counted by the reading but skipped by the seizure. When all the unlicensed ore is in such a
+  lot, the ruling still fails to land, as A-5 did. Releasing a lot hold in the ruling (ending
+  the listing that placed it) is left to LW.3 or LW.5.
+- **A haul whose hold has lapsed** but whose record is not closed is not failed by a seizure.
+  Its ore is free and taken, so the return leg finds nothing and gives up after its tries.
+- The fill check's switch to the reading has no story of its own. It calls the same function the
+  picket's story mutation-checks.
 
 ## KC.0a
 
@@ -221,7 +321,82 @@ branch**; the next lane bump (KC.2, KC.4 or OP.1) starts from v45.
 
 ## KC.1
 
-Not built.
+Customs Assertion on the Republic's board, seeded at world start, completing through the
+engine's one path with a control flip (Q-50-12, Q-50-13; with Q-50-11, Q-50-14, Q-50-16, Q-50-51;
+doc 50a A-1; doc 11 §6). Stacked on KC.0. No lane bump.
+
+**Survey.** As §3.2 says:
+- `record_customs_assertion` made the front lazily, on the first incident, on the Freeport
+  Registry's faction (the license issuer's org).
+- It advanced the clock by hand, appended the consequence sentence to the incident's own line,
+  resolved the front and flipped nothing.
+- Its three callers in `space/picket.rs` (the fine, the seizure and the run) pass a canon draft
+  whose `source` already names the incident: `space.picket.fine/<hull>/<contract>`, and
+  `.../seize/` or `.../run/` with `<hull>/<ic>`.
+- A Cleared ruling never calls it.
+- `voyage.rs`'s picket stories read the front by title, not by board.
+
+**Built.**
+- `mush-faction`, the opener KC.0a and KC.0 left undone:
+  `open_faction_front(ctx, board: FactionId, spec: &FrontSpec, draft: CanonDraft) -> Result<FrontId, String>`.
+  - `FrontSpec { title, clock_title, segments, initial, consequence, control: Option<(RegionId, ControlKind)>, visibility }`.
+  - The clock watches no canon kind (Q-50-51), so only `advance_clock_by_cause` moves it.
+  - It is idempotent by title on the board and makes one canon append.
+  - The private `open_front_clock` now carries the clock's control and visibility.
+- `seed_customs_assertion_front(ctx, republic, approach, draft)`:
+  - six segments opening at one (`CUSTOMS_ASSERTION_SEGMENTS`, `CUSTOMS_ASSERTION_OPENS_AT`);
+  - the flip is the approach, de facto;
+  - the consequence is `CUSTOMS_ASSERTION_CONSEQUENCE`.
+- `record_customs_assertion(ctx, board: FactionId, draft)` now takes the board, not an org:
+  - It finds the seeded front and moves it one through `advance_clock_by_cause`, with the
+    incident's `source` as cause id. The fill fires `fire_consequence`: the Republic takes the
+    approach de facto, displacing the Co-op, the hold is dated in IC time, and the front resolves.
+  - After the fill, an incident still commits its line and moves nothing.
+  - A front not seeded on that board is an error. The picket swallows it, as it did before.
+- TacSim:
+  - The regions applier seeds the front after its rows, on `polity(republic)`. Its flip is the
+    row holding the `location` with `kirkwood_picket`.
+  - `polity::customs_board(w)` is the Republic. The picket's three calls pass it; the fine is
+    still paid to the Registry (Q-50-14).
+- Nothing reads the new holder yet (the transit duty is KC.2). `+territory` and `+chronicle`
+  show the flip.
+
+**Tests.**
+- `tests/domain_world/polities.rs`,
+  `kc1_picket_incidents_fill_customs_assertion_and_the_republic_takes_kirkwood`, on a fresh
+  production world. It checks:
+  - the front on the Republic's board at 1 of 6, with its flip, and on `+clocks` from the first
+    day;
+  - four incidents fill it to 5, and a retried cause moves nothing;
+  - the sixth flips Kirkwood de facto to the Republic, dated at the flip's IC time, and moves the
+    Co-op out;
+  - the front resolves, and a later incident records its line and moves nothing;
+  - `+territory` and `+chronicle` show the flip.
+- Mutation-checked on conclav.dev; each failed the story, and each was undone by a reverse edit:
+  - the seed with no flip;
+  - incidents bypassing the cause call;
+  - the front not seeded;
+  - the clock opening at zero.
+- The picket's own stories in `voyage.rs` and the rest of tacsim, mush-faction and mush-server
+  `commerce_composition` ran on conclav.dev; clippy `-D warnings` too.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- The consequence line is new: "Republic Customs holds the Kirkwood approach: the picket now
+  answers to the Republic." The old sentence said the picket "seizes unlicensed strategic ore
+  shipments", which Q-50-15 rules does not change.
+- The consequence is now its own `front.progress` canon line. It is no longer appended to the
+  sixth incident's line.
+- The front is seeded by the lane's regions applier, the apply that makes the Republic and the
+  approach, not by a boot pass.
+- A world whose lane has no picket row, or no Republic, has no front, and its incidents advance
+  nothing (they did, lazily, before).
+- A seizure's and a run's cause id is `<hull>/<IC second>`, as the picket already wrote it. Two
+  such incidents on one hull in one IC second would count once.
+
+**Not built.**
+- The transit duty, the payee and any reader of the new holder (KC.2).
+- No push-back clock (Q-50-16).
+- `record_relay_discovery` and `advance_relay_terms_front` still advance by hand.
 
 ## KC.2
 
@@ -241,7 +416,99 @@ Not built.
 
 ## LW.2
 
-Not built.
+**Survey** (at `f668f082a`, #713's head):
+- **Port security's record** was `tacsim:security:{actor}` (`surface/security.rs`), one per
+  character, rows copied from a site's evidence log at the proof (a vacated `recovery` contest,
+  `claim.rs:3258`, or `+salvage/report … registry`). Nothing else wrote or read it, beside the
+  rs7 story.
+- **`SECURITY_VENUES = ["ceres", "stickney"]`** gated only the fine at docking (`on_docked`,
+  called from `composition/sim_routes.rs` for a port, never a site). The fine went to the Freeport
+  Registry's account at both ports.
+- **The quarantine** (`quarantine_line`, `port/voyage.rs` `prepare_departure`) had no venue test.
+  A past-due fine held every hull its debtor helms or holds title to, at every berth, a site's pad
+  included (A-10c).
+- **Who answered** was the helm holder plus a character title holder. For an organization's hull
+  docked with nothing filed, `helm_holder` is `None` and the title holder is an organization, so
+  nobody answered (A-10b).
+- **KC.0's read:** `polity::control_at(w, place)` takes a lane port entry id (`ceres_port`,
+  `stickney_port`). Sites are in no region. `polity_of_org` maps the Freeport Registry to the
+  Freeport.
+- **Each port's `authority`:** Ceres is `freeport_registry`, Stickney is `stickney_yards`.
+
+**Built:**
+1. **The record (`crate::offense`).**
+   - The key is actor by polity: `OffenseKey { offender: Offender, polity: FactionId }`, stored as
+     `tacsim:offense:{c<obj>|o<org>|a<account hash>}:{polity}`.
+   - The actor is `Offender::Character(ObjId)`, `Organization(OrgId)` or
+     `Account(mush_core::AccountId)` (Q-50-68).
+   - The kinds are a closed list, `OffenseKind`: `SalvagePickup`, `SalvageScrap` and
+     `SalvageRecovery` today.
+   - Evidence stays where it is, and each row names it: `Evidence::Site { site, act }` copies the
+     ring row. `Proof` moved here.
+   - A row is `ProvenOffense { kind, evidence, proof, proven_ic, debt }`. The record is
+     `OffenseRecord { schema, key, rows ≤ 64 }`, loaded at boot. An unreadable record claims its
+     key and proves or fines nothing.
+2. **The API LW.3, LW.4 and LW.5 build on:**
+   - Writing: `record_offense(ctx, key, offense, settled)` is the one function every prover
+     calls. It dedupes, and a full record drops its oldest settled row.
+   - Reading: `record_of(w, &key)` and `records_against(w, offender)`.
+   - Where an offense binds: `jurisdiction_at(w, place)`, the place's de facto holder, and
+     `binds_at(w, polity, place)`.
+   - Who answers: `answerer_for_hull(w, hull)` is the organization for an organization's hull,
+     else the helm holder.
+   - Receipts: `put_receipts` (crate-only) rewrites a record whose fine receipts changed.
+   - The polity that proves a salvage offense: `surface::security::proving_polity(w)`.
+3. **Port security on the record.**
+   - `prove` writes `Offender::Character(act.actor)` under `proving_polity`. That is the
+     Freeport Registry's polity, the Freeport.
+   - `on_docked(ctx, hull, entry, port)` fines the record of (the hull's answerer, the port's de
+     facto holder). The fine goes to the port's governing authority's account.
+   - `quarantine_line(ctx, hull, entry, (name, port))` and `holds_at(w, hull, entry)` hold the
+     hull that docked, only at a port its polity holds.
+   - `SECURITY_VENUES`, `answers_at` and the old `SecurityRecord` are gone. Pre-launch, so there
+     is no migration of `tacsim:security:` documents.
+4. **An organization's hull answers through its organization.** Its fine is drawn on the
+   organization's account (`port::berth::org_account`, now `pub(crate)`).
+5. **The fine's lines** name the authority (`The {authority} fines you …`). The owed line says
+   the fine holds her "at this polity's ports".
+
+**Tests:**
+- `tacsim` lib `offense::tests`: the key is actor by polity, and a document key parses back. The
+  record's kinds and its one-actor rule are checked.
+- `domain_economy` `lw2_offense_record::lw2_an_offense_binds_only_where_its_polity_holds_and_the_house_answers_for_its_hull`:
+  - A House's Dray carries a Freeport offense against the House, seeded as a stored record the
+    boot reads.
+  - Docked at Stickney, the Republic's port, nothing is fined.
+  - Docked at Ceres, the House is fined 5,000 cr to the Freeport Registry, and the receipt is on
+    the House's record.
+  - The grace runs out while she is at Stickney, and she lifts from there.
+  - Home at Ceres, she is held. Staff hand Ceres station to the Republic de facto, and she may
+    lift.
+  - Mutation-checked: an offense binding wherever its polity proved it; an organization's hull
+    answered by its pilot; the quarantine ignoring the port. Each fails the story.
+- `port_security_rs7::` (both sites) is moved onto the record: O's Freeport record, its kinds and
+  its receipts, `holds_at` at Ceres.
+
+**Divergences:**
+- **The proving polity is the Freeport Registry's polity**, not the de facto holder of the place
+  of the act. Sites are in no region, and the Registry is the one adjudicating. If Ceres changes
+  hands, a Freeport proof binds nowhere until the Freeport holds a port again.
+- **An organization's fine is levied with staff authority.** At a docking, no character acts for
+  the organization, and the economy lets only an authorized actor open a debt on an organization's
+  account. A character's fine is still opened and paid as that character.
+- **A member's own offense is not fined when they dock an organization's hull.** The hull answers
+  through the organization only, as Q-50-68 words it. The member answers when they dock a hull
+  they command.
+- **A fine with no authority account at the port waits** (logged). Every lane port with a
+  jurisdiction authors one today.
+
+**Not built:**
+- **No path writes an organization's or an account's offense yet.** No salvage verb takes
+  `as=<org>`, so the story seeds one. The license bar on the account is LW.4.
+- **An offender with no hull is not fined when proven** (Q-50-68's last line). Port security
+  still fines at a docking only; immediate fines belong with LW.4's penalties.
+- **No lane bump.**
+- Fine sizes, the standing loss, the trading restriction, `+record` and `+debts`: LW.4.
 
 ## LW.3
 

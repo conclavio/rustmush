@@ -264,7 +264,7 @@ fn berths_wanted(w: &World) -> BTreeMap<String, Want> {
 /// An organization's credit account: a lane institution's from the first port map that names it,
 /// else its root-scope treasury (doc 48e, 48c#13 and 48d H-14: a launch House or a player's
 /// organization berths too, as upkeep already charges them).
-fn org_account(w: &World, org: OrgId) -> Option<AccountId> {
+pub(crate) fn org_account(w: &World, org: OrgId) -> Option<AccountId> {
     w.module_state::<crate::store::TacsimStore>()
         .and_then(|store| {
             store

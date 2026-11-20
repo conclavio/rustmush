@@ -686,22 +686,19 @@ pub fn inspect_hull_manifest(
     now_ic: i64,
 ) -> LiveCustomsManifest {
     let mut manifest = LiveCustomsManifest::default();
-    if let Some(view) = crate::port::ship::hull_view(ctx.w, hull)
-        && let Some(hold_vault) = crate::port::ship::hold_vault(ctx.w, &view)
-    {
-        let ep = mush_inventory::record::EndpointRef(hold_vault);
-        let read_kg = |good_str: &str| -> u64 {
-            CanonicalId::new(good_str)
-                .ok()
-                .and_then(|good| crate::port_tick::read_pool(ctx, ep, &good).ok())
-                .unwrap_or(0)
-                .saturating_mul(1_000)
-        };
-        manifest.strategic_ore_kg = read_kg("strategic_ore");
-        manifest.metal_ore_kg = read_kg("metal_ore");
-        manifest.ice_ore_kg = read_kg("ice_ore");
-        manifest.carbon_ore_kg = read_kg("carbon_ore");
-    }
+    // Doc 50 unit CR (doc 50a A-4): the hold is read through the one cargo reading, which counts
+    // a bulk good held as a lot (ore bought off a personal ask) beside the pool.
+    let read_kg = |good_str: &str| -> u64 {
+        CanonicalId::new(good_str)
+            .ok()
+            .and_then(|good| crate::port::ship::hold_reading(ctx, hull, &good).ok())
+            .unwrap_or(0)
+            .saturating_mul(1_000)
+    };
+    manifest.strategic_ore_kg = read_kg("strategic_ore");
+    manifest.metal_ore_kg = read_kg("metal_ore");
+    manifest.ice_ore_kg = read_kg("ice_ore");
+    manifest.carbon_ore_kg = read_kg("carbon_ore");
     if let Some(raw_actor) = pilot {
         let principal_actor = resolve_hull_customs_principal(ctx.w, hull, raw_actor);
         manifest.licensed = licence_gate(ctx.w, principal_actor, now_ic).is_ok()
@@ -1480,7 +1477,7 @@ pub fn levy_customs_fine_and_advance_front(
     let pilot_account = crate::port::credit::own_account(ctx.w, pilot)
         .map(|credit| credit.id)
         .ok_or_else(|| "pilot holds no credit account for customs fine".to_owned())?;
-    let (registry_org, registry_principal, registry_account) =
+    let (_registry_org, registry_principal, registry_account) =
         resolve_registry_principal_and_account(ctx.w)
             .ok_or_else(|| "Freeport Registry account unavailable".to_owned())?;
 
@@ -1523,9 +1520,12 @@ pub fn levy_customs_fine_and_advance_front(
         return Err("Registry customs fine acceptance failed".to_owned());
     }
 
-    let front_id = mush_faction::record_customs_assertion(
+    // Doc 50 cut KC.1 (Q-50-13): the incident advances the Republic's front; the fine is still
+    // the Registry's (Q-50-14).
+    let front_id = crate::polity::customs_board(ctx.w).and_then(|board| {
+        mush_faction::record_customs_assertion(
         ctx,
-        registry_org,
+        board,
         mush_canon::CanonDraft {
             kind: "space.customs_fine".into(),
             summary: format!(
@@ -1547,7 +1547,8 @@ pub fn levy_customs_fine_and_advance_front(
             }),
         },
     )
-    .ok();
+    .ok()
+    });
 
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
@@ -1567,12 +1568,13 @@ pub fn record_customs_seizure(
     hull: ObjId,
     seized_strategic_ore_kg: u64,
 ) -> Option<FrontId> {
-    let (registry_org, _, _) = resolve_registry_principal_and_account(ctx.w)?;
+    // Doc 50 cut KC.1 (Q-50-13): the Republic's front.
+    let board = crate::polity::customs_board(ctx.w)?;
     let saved_actor = ctx.actor;
     ctx.actor = pilot;
     let front_id = mush_faction::record_customs_assertion(
         ctx,
-        registry_org,
+        board,
         mush_canon::CanonDraft {
             kind: "space.customs_seizure".into(),
             summary: format!(
@@ -1606,12 +1608,13 @@ pub fn record_ran_the_picket_incident(
     pilot: ObjId,
     hull: ObjId,
 ) -> Option<FrontId> {
-    let (registry_org, _, _) = resolve_registry_principal_and_account(ctx.w)?;
+    // Doc 50 cut KC.1 (Q-50-13): the Republic's front.
+    let board = crate::polity::customs_board(ctx.w)?;
     let saved_actor = ctx.actor;
     ctx.actor = pilot;
     let front_id = mush_faction::record_customs_assertion(
         ctx,
-        registry_org,
+        board,
         mush_canon::CanonDraft {
             kind: "space.ran_the_picket".into(),
             summary: format!(
