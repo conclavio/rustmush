@@ -33,9 +33,9 @@ fn state_of(w: &World) -> Result<&ComsysState, RichText> {
 /// One backlog entry / recall message as JSON for the web panel: the same
 /// field names the live [`OutputEvent::Channel`] frame carries, so the
 /// client renders both with one code path.
-fn msg_json(m: &ChanMsg) -> serde_json::Value {
+fn msg_json(seq: u64, m: &ChanMsg) -> serde_json::Value {
     serde_json::json!({
-        "seq": m.seq,
+        "seq": seq,
         "actor": { "id": m.actor.to_string(), "name": m.actor_name },
         "title": m.title,
         "kind": serde_json::to_value(m.kind).expect("kind serializes"),
@@ -172,15 +172,11 @@ impl QueryHandler for BacklogQuery {
                 c.name
             )));
         }
-        let ring = crate::transit::history(st, membership);
-        let messages: Vec<serde_json::Value> = {
-            ring.iter()
-                .rev() // newest-first
-                .filter(|m| before_seq.is_none_or(|b| m.seq < b))
-                .take(limit as usize)
-                .map(msg_json)
-                .collect()
-        };
+        let messages: Vec<serde_json::Value> =
+            crate::transit::backlog_newest_first(st, membership, before_seq, limit as usize)
+                .into_iter()
+                .map(|(seq, m)| msg_json(seq, m))
+                .collect();
         Ok(OutputEvent::Panel {
             feed: SmolStr::new_static("comsys"),
             kind: PanelFrameKind::Delta,

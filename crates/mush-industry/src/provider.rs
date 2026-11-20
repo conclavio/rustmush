@@ -406,6 +406,15 @@ pub const CLAIM_CONTEST_STAFF: &str = "claim_contest_staff";
 /// strings, published beside the offer's `Choice` (the issuer gate's layer-3
 /// shape).
 pub const CLAIM_ADMINISTRABLE: &str = "claim_administrable";
+/// Server-authored list of titled claim object IDs currently carrying
+/// `Encumbrance::Collateral`, published beside `ClaimContest` so a direct
+/// offer (`SubmitSelf`) cannot seize a pledged claim by bypassing `@claim/seize`.
+pub const CLAIM_CONTEST_PLEDGED: &str = "claim_contest_pledged";
+/// Server-authored list of titled claim object IDs currently carrying
+/// `Encumbrance::Disputed`, published beside `ClaimContest` so a direct
+/// offer (`SubmitSelf`) cannot mark a claim `"contested"` while its adjudicator
+/// is itself disputed.
+pub const CLAIM_CONTEST_DISPUTED: &str = "claim_contest_disputed";
 /// Doc 20 cut SM.10 (§9): the actor a tenure act was offered to, published as a
 /// fixed parameter so `tenure()` can tell its own offer from somebody else's.
 pub const TENURE_ACTOR: &str = "tenure_actor";
@@ -1000,6 +1009,71 @@ pub fn jurisdiction_claims(
     out.dedup();
     out.truncate(MAX_DEPOSIT_CHOICES);
     out
+}
+
+/// Server-authored bindings carried on a `ClaimContest` offer.
+struct ClaimContestBinding {
+    claims: Vec<String>,
+    pledged: Vec<u32>,
+    disputed: Vec<u32>,
+}
+
+/// Collect titled object IDs that carry `Encumbrance::Collateral` (pledged) or
+/// `Encumbrance::Disputed` for the claims reachable by this `ClaimContest` offer.
+///
+/// For non-staff offers, only the offered `claims` are inspected; for staff
+/// offers, all encumbered assets in [`mush_economy::EconomyStore`] are scanned
+/// directly (avoiding claim-family pagination truncation). Both outputs are
+/// sorted and deduplicated for deterministic offer IDs.
+fn claim_contest_encumbrances(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    claims: Option<&[ClaimId]>,
+) -> (Vec<u32>, Vec<u32>) {
+    let Some(econ) = engine.world.module_state::<mush_economy::EconomyStore>() else {
+        return (Vec::new(), Vec::new());
+    };
+    let snap = econ.snapshot();
+    let mut pledged = Vec::new();
+    let mut disputed = Vec::new();
+    let mut record_asset = |asset: &mush_economy::EconomicAsset| {
+        if asset
+            .encumbrances
+            .iter()
+            .any(|e| matches!(e, mush_economy::Encumbrance::Collateral { .. }))
+        {
+            pledged.push(asset.object.0);
+        }
+        if asset
+            .encumbrances
+            .iter()
+            .any(|e| matches!(e, mush_economy::Encumbrance::Disputed { .. }))
+        {
+            disputed.push(asset.object.0);
+        }
+    };
+    match claims {
+        Some(ids) => {
+            let state = engine.action_state();
+            for id in ids {
+                if let Ok(Some(claim)) = state.get(&families.claims, id)
+                    && let Some(asset) = snap.asset(claim.object())
+                {
+                    record_asset(asset);
+                }
+            }
+        }
+        None => {
+            for asset in snap.assets() {
+                record_asset(asset);
+            }
+        }
+    }
+    pledged.sort_unstable();
+    pledged.dedup();
+    disputed.sort_unstable();
+    disputed.dedup();
+    (pledged, disputed)
 }
 
 /// The contest offer's structural half (doc 20 cut SM.6, §9.6; the issuer
@@ -1891,7 +1965,7 @@ impl ActionProvider for IndustryProvider {
         // the contest offer's administrable union (§9.6), published below as
         // fixed parameters.
         let mut system_opening: Option<crate::seams::SystemOpening> = None;
-        let mut contest_claims: Option<Vec<String>> = None;
+        let mut contest_binding: Option<Box<ClaimContestBinding>> = None;
         // Doc 20 cut SM.10: the one server-authored tenure act (§9).
         let mut tenure_act: Option<crate::seams::TenureAct> = None;
         // CRIT-15 / CRIT-14 / HIGH-33 / HIGH-35 / HIGH-37 server-authored bindings.
@@ -2058,7 +2132,13 @@ impl ActionProvider for IndustryProvider {
                 // `CLAIM_ADMINISTRABLE` list `contest()` re-checks.
                 if staff {
                     parameters.push(text("claim", 32)?);
-                    contest_claims = Some(Vec::new());
+                    let (pledged, disputed) =
+                        claim_contest_encumbrances(engine, &self.families, None);
+                    contest_binding = Some(Box::new(ClaimContestBinding {
+                        claims: Vec::new(),
+                        pledged,
+                        disputed,
+                    }));
                 } else {
                     let mut claims = administrable_claims(engine, &self.families, actor);
                     claims.extend(self.jurisdiction.claims(engine, &self.families, actor));
@@ -2068,6 +2148,8 @@ impl ActionProvider for IndustryProvider {
                     if claims.is_empty() {
                         return Ok(None);
                     }
+                    let (pledged, disputed) =
+                        claim_contest_encumbrances(engine, &self.families, Some(&claims));
                     let choices: Vec<String> = claims.iter().map(ToString::to_string).collect();
                     parameters.push(parameter(
                         "claim",
@@ -2076,7 +2158,11 @@ impl ActionProvider for IndustryProvider {
                             choices: choices.clone(),
                         },
                     )?);
-                    contest_claims = Some(choices);
+                    contest_binding = Some(Box::new(ClaimContestBinding {
+                        claims: choices,
+                        pledged,
+                        disputed,
+                    }));
                 }
                 parameters.push(text("state", 16)?);
                 parameters.push(integer("revision", 1, i64::MAX)?);
@@ -2328,12 +2414,14 @@ impl ActionProvider for IndustryProvider {
             map.insert(CLAIM_ISSUERS.to_owned(), json!(claim_issuers));
         }
         // ---- Doc 20 cut SM.6: the contest gate's structural half (§9.6) ----
-        if let Some(claims) = contest_claims
+        if let Some(binding) = contest_binding
             && let Some(map) = fixed.as_object_mut()
         {
             map.insert(CLAIM_CONTEST_BY.to_owned(), json!(actor.0));
             map.insert(CLAIM_CONTEST_STAFF.to_owned(), json!(staff));
-            map.insert(CLAIM_ADMINISTRABLE.to_owned(), json!(claims));
+            map.insert(CLAIM_ADMINISTRABLE.to_owned(), json!(binding.claims));
+            map.insert(CLAIM_CONTEST_PLEDGED.to_owned(), json!(binding.pledged));
+            map.insert(CLAIM_CONTEST_DISPUTED.to_owned(), json!(binding.disputed));
         }
         // ---- Doc 20 cut SM.6: the one server-authored system opening (§3.4) ----
         if let Some(opening) = system_opening
@@ -3430,6 +3518,31 @@ impl IndustryProvider {
             return Err(error(
                 ActionErrorCode::InvalidRequest,
                 "a holder goes with a seizure",
+            ));
+        }
+        // Server-authored encumbrance guard: require the projection's pledged
+        // and disputed lists and refuse seizing a pledged claim or contesting
+        // a disputed claim even via direct `SubmitSelf` bypassing `@claim`.
+        let pledged_list = parameters
+            .get(CLAIM_CONTEST_PLEDGED)
+            .and_then(Value::as_array)
+            .ok_or_else(|| error(ActionErrorCode::Unauthorized, REFUSED))?;
+        let disputed_list = parameters
+            .get(CLAIM_CONTEST_DISPUTED)
+            .and_then(Value::as_array)
+            .ok_or_else(|| error(ActionErrorCode::Unauthorized, REFUSED))?;
+        let claim_obj = u64::from(live.object().0);
+        if state_word == "seized" && pledged_list.iter().any(|v| v.as_u64() == Some(claim_obj)) {
+            return Err(error(
+                ActionErrorCode::ProviderRejected,
+                "a pledged claim cannot be seized while its collateral stands",
+            ));
+        }
+        if state_word == "contested" && disputed_list.iter().any(|v| v.as_u64() == Some(claim_obj))
+        {
+            return Err(error(
+                ActionErrorCode::ProviderRejected,
+                "a claim whose adjudicator is disputed must be suspended, not contested",
             ));
         }
         // ---- Doc 20 §9.4, cut SM.6: the seize-transfers-tenure fix ----

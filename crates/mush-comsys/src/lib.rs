@@ -81,13 +81,14 @@ use mush_core::module::{
 use mush_core::{Ctx, Flags, ObjId, ObjKind, lock::MAX_LOCK_DEPTH};
 use smol_str::SmolStr;
 
+pub use commands::MAX_RECALL;
 pub use data::{
     ChanMsg, Channel, ChannelColor, ChannelFlags, ChannelId, ChannelPerms, ComsysState,
     DEFAULT_ALIAS, DEFAULT_CHANNEL, DEFAULT_HISTORY_CAP, HistoryPolicy, MAX_HISTORY_CAP, META_KEY,
     Membership, NS, chan_key, hist_key, member_key,
 };
 pub use query::{BacklogQuery, MAX_BACKLOG_LIMIT, StateQuery};
-pub use speak::ComsysAliases;
+pub use speak::{ComsysAliases, MAX_OOC_TEXT_BYTES, OOC_RATE_MAX_PER_WINDOW, OOC_RATE_WINDOW_SECS};
 
 use data::{persist_channel, persist_del, persist_membership, persist_meta};
 
@@ -205,6 +206,7 @@ impl GameModule for ComsysModule {
     fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
         reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
         reg.state(ComsysState::default());
+        reg.state(speak::OocSpeakRate::default());
         reg.tick(
             transit::TICK,
             mush_core::module::TickCadence::Coarse(std::time::Duration::from_secs(1)),
@@ -301,6 +303,9 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::ObjDestroyed { obj } = ev else {
         return;
     };
+    if let Some(rate) = ctx.w.module_state_mut::<speak::OocSpeakRate>() {
+        rate.remove_actor(*obj);
+    }
     let removed: Vec<(ObjId, ChannelId)> = {
         let Some(st) = ctx.w.module_state_mut::<ComsysState>() else {
             return;

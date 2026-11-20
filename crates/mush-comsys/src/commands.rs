@@ -28,6 +28,9 @@ const MAX_ALIAS_LEN: usize = 16;
 /// Default `@channel/recall` depth.
 const DEFAULT_RECALL: usize = 10;
 
+/// Hard cap on messages returned by a single `@channel/recall` command.
+pub const MAX_RECALL: usize = 200;
+
 // ----------------------------------------------------------------------
 // Shared helpers
 // ----------------------------------------------------------------------
@@ -861,20 +864,17 @@ fn channel_recall(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .ok()
             .filter(|&v| v >= 1)
             .ok_or_else(|| CmdError::msg("Recall how many?  (a positive number)"))?,
-    };
+    }
+    .min(MAX_RECALL);
     let lines: Vec<String> = {
         let st = ctx
             .w
             .module_state::<ComsysState>()
             .ok_or_else(|| CmdError::msg("Comsys is not loaded."))?;
-        let ring = crate::transit::history(st, &mem);
-        {
-            let skip = ring.len().saturating_sub(n);
-            ring.iter()
-                .skip(skip)
-                .map(|m| format!("[{}] {}", c.name, render_recall(m)))
-                .collect()
-        }
+        crate::transit::recall_tail(st, &mem, n)
+            .into_iter()
+            .map(|(_, m)| format!("[{}] {}", c.name, render_recall(m)))
+            .collect()
     };
     if lines.is_empty() {
         ctx.out

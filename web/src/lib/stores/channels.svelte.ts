@@ -13,6 +13,7 @@
 // read state is client-local by design — documented in web/README.md.
 
 import type { NarrativeKind, ObjRef, RichText } from "../proto";
+import { safeColorHex } from "../render";
 
 /** One joined channel, from the comsys.state keyframe. */
 export interface ChannelMeta {
@@ -177,7 +178,7 @@ export class ChannelsStore {
         alias: str(o.alias) ?? name,
         title: str(o.title),
         gagged: o.gagged === true,
-        colorHex: str(color.web_hex),
+        colorHex: safeColorHex(str(color.web_hex)),
         seq: Math.max(seq, existing?.seq ?? 0),
         // Keep the local cursor when we already track this channel; else
         // trust the server's (delivery-driven) cursor.

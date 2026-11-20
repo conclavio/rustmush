@@ -300,6 +300,11 @@ impl OwnerReadService for OriginalSaleReader {
         if status.withdrawn_by.is_some() || status.recalled_by.is_some() {
             return Err(OwnerReadError::Refused);
         }
+        super::charter_pending::current::require_clear(ctx, &self.families, holding.charter())
+            .map_err(|e| match e {
+                super::records::PublicationError::Unavailable => OwnerReadError::Refused,
+                _ => OwnerReadError::Integrity,
+            })?;
         OriginalSaleFacts::capture(ctx.actor(), holding, ctx.world().world_ic_now())
     }
 }

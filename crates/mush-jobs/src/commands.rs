@@ -775,7 +775,21 @@ fn cmd_note(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if char_name.is_empty() {
         return Err(CmdError::msg("Usage: +note <char>[/<category>][=<text>]"));
     }
-    let who = resolve_char(ctx.w, ctx.actor, &char_name)?;
+    let staff = is_notes_staff(ctx.w, ctx.actor);
+    // Gate staff-only switches and target resolution before inspecting other
+    // objects, so non-staff players cannot probe dbrefs or character existence
+    // via "No such character" vs "is not a character" vs "Permission denied".
+    if !staff && (approve || staff_mark || public) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    let who = if staff {
+        resolve_char(ctx.w, ctx.actor, &char_name)?
+    } else {
+        match resolve_char(ctx.w, ctx.actor, &char_name) {
+            Ok(id) if id == ctx.actor => id,
+            _ => return Err(CmdError::msg("Permission denied.")),
+        }
+    };
     let category = match raw_category {
         Some(cat) => Some(validate_note_category(cat).map_err(CmdError::msg)?),
         None => None,
@@ -872,7 +886,16 @@ fn note_write(
         .module_state::<JobsState>()
         .and_then(|st| st.notes.get(&(who, cat.clone())))
         .is_some_and(|n| n.staff_only);
-    if !staff && (flag != StaffFlag::Keep || who != ctx.actor || existing_staff_only) {
+    if !staff && (flag != StaffFlag::Keep || who != ctx.actor) {
+        return Err(CmdError::msg("Permission denied."));
+    }
+    if !staff && existing_staff_only {
+        // On deletion (`+note me/<cat>=`), return the same "No such note."
+        // as an absent category so a player cannot probe for hidden staff-only
+        // note categories via empty-text deletes.
+        if text.is_empty() {
+            return Err(CmdError::msg("No such note."));
+        }
         return Err(CmdError::msg("Permission denied."));
     }
     let author = ctx.actor;
@@ -898,8 +921,15 @@ fn note_write(
         return Ok(());
     }
     validate_note_text(&text).map_err(CmdError::msg)?;
+    let target_staff_only = match flag {
+        StaffFlag::Keep => existing_staff_only,
+        StaffFlag::Set => true,
+        StaffFlag::Clear => false,
+    };
     let is_new = !st.notes.contains_key(&(who, cat.clone()));
-    if is_new && st.note_count(who) >= MAX_NOTES_PER_OBJECT {
+    if (is_new || existing_staff_only != target_staff_only)
+        && st.note_count_by_visibility(who, target_staff_only) >= MAX_NOTES_PER_OBJECT
+    {
         return Err(CmdError::msg(format!(
             "{} already has the maximum of {MAX_NOTES_PER_OBJECT} notes.",
             display_name(ctx.w, who)
@@ -910,11 +940,7 @@ fn note_write(
         category: cat.clone(),
         text,
         author,
-        staff_only: match flag {
-            StaffFlag::Keep => existing_staff_only,
-            StaffFlag::Set => true,
-            StaffFlag::Clear => false,
-        },
+        staff_only: target_staff_only,
         approved: None,
     };
     let doc = note_doc(&note);

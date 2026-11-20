@@ -4,9 +4,17 @@
   // their nav keys (D-I-19), and the presence pills (NPCs thinking, people
   // typing) — all from `RoomView` plus `ambient`, read defensively.
   import type { GameApp } from "$lib/game.svelte";
+  import { exitCommand } from "$lib/keys";
   import { clockText, roomBand } from "$lib/roomband";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
+
+  function walkExit(name: string): void {
+    const cmd = exitCommand(name);
+    if (cmd !== null) {
+      onCmd(cmd);
+    }
+  }
 
   const band = $derived(roomBand(app.roomView, app.screens.exits));
 
@@ -78,7 +86,7 @@
     {#if band.exits.length > 0}
       <span class="exits" aria-label="exits">
         {#each band.exits as exit (exit.name)}
-          <button type="button" class="exit" onclick={() => onCmd(exit.name)} title={exit.key ? `${exit.name} (key ${exit.key})` : exit.name}>
+          <button type="button" class="exit" onclick={() => walkExit(exit.name)} title={exit.key ? `${exit.name} (key ${exit.key})` : exit.name}>
             {#if exit.key}<kbd>{exit.key}</kbd>{/if}{exit.name}
           </button>
         {/each}

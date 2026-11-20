@@ -826,6 +826,20 @@ impl Shared {
             self.height,
         );
     }
+
+    fn set_term(&mut self, term: &str) {
+        self.term = Some(caps::cap_env_str(term, caps::MAX_TERM_BYTES));
+    }
+
+    fn set_env_var(&mut self, name: &str, value: &str) {
+        if name.eq_ignore_ascii_case("COLORTERM") {
+            self.colorterm = Some(caps::cap_env_str(value, caps::MAX_ENV_VALUE_BYTES));
+        } else if name.eq_ignore_ascii_case("LANG") {
+            self.lang = Some(caps::cap_env_str(value, caps::MAX_ENV_VALUE_BYTES));
+        } else if name.eq_ignore_ascii_case("LC_ALL") {
+            self.lc_all = Some(caps::cap_env_str(value, caps::MAX_ENV_VALUE_BYTES));
+        }
+    }
 }
 
 pub(crate) struct ConnHandler {
@@ -2083,7 +2097,7 @@ impl Handler for ConnHandler {
             sh.base_echo = pty_echo_mode(modes);
             let base = sh.base_echo;
             sh.editor.set_mode(base);
-            sh.term = Some(term.to_owned());
+            sh.set_term(term);
             sh.width = caps::clamp_pty_dim(col_width, caps::MAX_WIDTH);
             sh.height = caps::clamp_pty_dim(row_height, caps::MAX_HEIGHT);
             if let Some(cell) = cell_size_from_pty_px(col_width, row_height, pix_width, pix_height)
@@ -2105,12 +2119,7 @@ impl Handler for ConnHandler {
     ) -> Result<(), Self::Error> {
         if self.channel == Some(channel) {
             let mut sh = self.lock();
-            match variable_name.to_ascii_uppercase().as_str() {
-                "COLORTERM" => sh.colorterm = Some(variable_value.to_owned()),
-                "LANG" => sh.lang = Some(variable_value.to_owned()),
-                "LC_ALL" => sh.lc_all = Some(variable_value.to_owned()),
-                _ => {} // read-only interest; everything else ignored
-            }
+            sh.set_env_var(variable_name, variable_value);
             sh.recompute_caps();
         }
         session.channel_success(channel)?;
@@ -4335,5 +4344,35 @@ mod tests {
                 height: CellSize::MIN_HEIGHT,
             })
         );
+    }
+
+    #[test]
+    fn shared_caps_term_and_env_lengths_are_bounded() {
+        let mut sh = line_mode_shared();
+        let huge_term = format!("xterm-256color-{}", "x".repeat(4_096));
+        sh.set_term(&huge_term);
+        assert_eq!(sh.term.as_deref().map(str::len), Some(caps::MAX_TERM_BYTES));
+
+        let huge_val = format!("truecolor-{}", "y".repeat(4_096));
+        sh.set_env_var("colorterm", &huge_val);
+        sh.set_env_var("LANG", &format!("en_US.UTF-8-{}", "z".repeat(4_096)));
+        sh.set_env_var("lc_all", &format!("C-{}", "w".repeat(4_096)));
+        sh.set_env_var(&"IGNORED_".repeat(512), &"v".repeat(4_096));
+
+        assert_eq!(
+            sh.colorterm.as_deref().map(str::len),
+            Some(caps::MAX_ENV_VALUE_BYTES)
+        );
+        assert_eq!(
+            sh.lang.as_deref().map(str::len),
+            Some(caps::MAX_ENV_VALUE_BYTES)
+        );
+        assert_eq!(
+            sh.lc_all.as_deref().map(str::len),
+            Some(caps::MAX_ENV_VALUE_BYTES)
+        );
+        sh.recompute_caps();
+        assert_eq!(sh.caps.color, mush_proto::ColorDepth::TrueColor);
+        assert!(!sh.caps.utf8);
     }
 }

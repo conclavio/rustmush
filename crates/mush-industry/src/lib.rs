@@ -113,9 +113,9 @@ pub use money::{
     wo_hold_key, wo_settle_key,
 };
 pub use provider::{
-    ACTION_CLAIM_TENURE, CLAIM_ADMINISTRABLE, CLAIM_CONTEST_BY, CLAIM_CONTEST_STAFF, IndustryVerb,
-    SYSTEM_OPENER, SYSTEM_OPENINGS, TENURE_ACT, TENURE_ACTOR, action_ref, deposit_backing,
-    deposit_of_backing, jurisdiction_claims,
+    ACTION_CLAIM_TENURE, CLAIM_ADMINISTRABLE, CLAIM_CONTEST_BY, CLAIM_CONTEST_DISPUTED,
+    CLAIM_CONTEST_PLEDGED, CLAIM_CONTEST_STAFF, IndustryVerb, SYSTEM_OPENER, SYSTEM_OPENINGS,
+    TENURE_ACT, TENURE_ACTOR, action_ref, deposit_backing, deposit_of_backing, jurisdiction_claims,
 };
 pub use record::{
     Accessibility, AppliedMarker, BandId, ClaimId, ClaimIndex, ClaimRecord, ClaimSubject,

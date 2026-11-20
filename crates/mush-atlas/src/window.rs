@@ -2273,7 +2273,7 @@ pub fn on_moved(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
             return;
         }
         let line = format!("{} leaves the map.", name(ctx.w, who));
-        crate::frame::publish_delta(ctx, d, &line);
+        crate::frame::publish_actor_delta(ctx, d, who, from, &line);
         crate::frame::publish_closed(ctx, d, &[who]);
     }
     let Some(domain) = covering else {
@@ -2289,7 +2289,7 @@ pub fn on_moved(ctx: &mut Ctx<'_>, ev: &mush_core::WorldEvent) {
             } else {
                 format!("{} arrives on the map.", name(ctx.w, who))
             };
-            crate::frame::publish_delta(ctx, domain, &line);
+            crate::frame::publish_actor_delta(ctx, domain, who, Some(to), &line);
             if placed != Some(domain) {
                 crate::frame::send_keyframe(ctx, who, domain);
             }
@@ -2451,6 +2451,11 @@ fn blocked_by_feature(
 pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepReport, String> {
     let (domain, pose) =
         mush_sim::pose_of(ctx.w, actor).ok_or_else(|| "you are not on a map".to_string())?;
+    // 16b cut S.2 (world-side exclusion): a domain an arena holds is closed to
+    // `+map` and `+move` alike.
+    if mush_sim::deployed::excluded(ctx.w, mush_sim::deployed::Shown::Domain(domain)) {
+        return Err("your map is closed".to_string());
+    }
     let staff = crate::module::is_staff(ctx.w, actor);
     let (mut walk, heading, end_surface, grow_at, start_location, _end_last_room) = {
         let st = state(ctx)?;
