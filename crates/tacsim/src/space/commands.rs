@@ -2386,6 +2386,13 @@ pub(crate) fn resolve_hull_captain_aboard(w: &World, hull: ObjId, fallback_actor
     {
         return owner;
     }
+    // Doc 50 cut OP.4 (Q-50-56): a hauling house's hull has nobody aboard; her helm, the house's
+    // one soul aboard her, is her captain, so what she files and submits is never the tick's.
+    if let Some(helm) =
+        crate::port::coop::helm_holder(w, hull).filter(|_| crate::port::hauler::is_hauler(w, hull))
+    {
+        return helm;
+    }
     fallback_actor
 }
 
