@@ -540,6 +540,10 @@ pub struct TravelState {
     /// and the heading they had, so `+travel` can offer the ends. RAM only: after a
     /// restart a stranded traveler sets out from the near end.
     pub stranded: BTreeMap<ObjId, (Way, u32, Heading)>,
+    /// Transient marker set while `travel.rs` itself authorizes an internal journey
+    /// relocation through `Ctx::authorize_traversal`, so `TravelHook` skips its own
+    /// "already under way" self-veto while all other `MoveAttempt` hooks still run.
+    pub(crate) internal_move: Option<(ObjId, ObjId)>,
 }
 
 impl TravelState {
@@ -1344,6 +1348,35 @@ pub fn vehicle_connection<'a>(
         .find(|c| service_vehicle(w, c) == Some(vehicle))
 }
 
+/// Whether `room` is a service vehicle currently on a journey or not at an open stop.
+#[must_use]
+pub(crate) fn aboard_moving_vehicle(st: &AtlasState, w: &World, room: ObjId) -> bool {
+    st.travel.journey_of(room).is_some()
+        || (vehicle_connection(st, w, room).is_some() && vehicle_stop(st, w, room).is_none())
+}
+
+/// Authorize a travel or stake-out relocation through the engine's `MoveAttempt`
+/// hook chain before calling `World::move_to` (CRIT-17).
+///
+/// When `allow_own_journey` is true, `TravelHook` waives only its own
+/// "already under way" self-veto for `(who, dest)` so every other module's
+/// `MoveAttempt` hook (scenes, tactics, housing, sim, custody) still runs.
+fn authorize_travel_move(
+    ctx: &mut Ctx<'_>,
+    who: ObjId,
+    dest: ObjId,
+    allow_own_journey: bool,
+) -> Result<(), String> {
+    if allow_own_journey && let Some(st) = state_mut(ctx) {
+        st.travel.internal_move = Some((who, dest));
+    }
+    let result = ctx.authorize_traversal(who, None, dest);
+    if allow_own_journey && let Some(st) = state_mut(ctx) {
+        st.travel.internal_move = None;
+    }
+    result.map_err(|refusal| refusal.reason())
+}
+
 // ---------------------------------------------------------------------------
 // Depart
 // ---------------------------------------------------------------------------
@@ -1445,6 +1478,14 @@ pub fn depart(
     // The projection first, so a refusal leaves no record.
     if !traveler.is_carrier() {
         let transit = transit_room(ctx, &way, &route.name)?;
+        authorize_travel_move(ctx, obj, transit, false)
+            .map_err(|e| format!("You cannot set off: {e}"))?;
+        if matches!(way, Way::Connection(_))
+            && let Some(dest) = rec.destination()
+        {
+            authorize_travel_move(ctx, obj, dest, false)
+                .map_err(|e| format!("You cannot set off: {e}"))?;
+        }
         ctx.w
             .move_to(obj, transit)
             .map_err(|e| format!("You cannot set off: {e}"))?;
@@ -1775,6 +1816,14 @@ fn apply_hold(
         );
     } else {
         let from = ctx.w.get(obj).and_then(|o| o.location);
+        if let Err(error) = authorize_travel_move(ctx, obj, place, true) {
+            return abort(
+                ctx,
+                id,
+                &format!("could not be held at {where_}: {error}"),
+                None,
+            );
+        }
         if let Err(error) = ctx.w.move_to(obj, place) {
             return abort(
                 ctx,
@@ -1865,6 +1914,9 @@ fn apply_arrival(ctx: &mut Ctx<'_>, journey: JourneyRec, live: bool) -> Step {
         }
     } else {
         let from = ctx.w.get(obj).and_then(|o| o.location);
+        if let Err(error) = authorize_travel_move(ctx, obj, dest, true) {
+            return abort(ctx, id, &format!("could not arrive: {error}"), None);
+        }
         if let Err(error) = ctx.w.move_to(obj, dest) {
             return abort(ctx, id, &format!("could not arrive: {error}"), None);
         }
@@ -1946,7 +1998,9 @@ fn abort(ctx: &mut Ctx<'_>, id: JourneyId, why: &str, by: Option<ObjId>) -> Step
             && ctx.w.get(obj).and_then(|o| o.location) != Some(room)
         {
             let from = ctx.w.get(obj).and_then(|o| o.location);
-            if ctx.w.move_to(obj, room).is_ok() {
+            if authorize_travel_move(ctx, obj, room, true).is_ok()
+                && ctx.w.move_to(obj, room).is_ok()
+            {
                 ctx.emit_world_event(&WorldEvent::Moved {
                     who: obj,
                     from,
@@ -2115,6 +2169,8 @@ pub fn release(ctx: &mut Ctx<'_>, id: JourneyId, by: Option<ObjId>) -> Result<()
     } else {
         let transit = transit_room(ctx, &journey.way, &way_name)?;
         if place != Some(transit) {
+            authorize_travel_move(ctx, obj, transit, true)
+                .map_err(|e| format!("It cannot go on: {e}"))?;
             ctx.w
                 .move_to(obj, transit)
                 .map_err(|e| format!("It cannot go on: {e}"))?;
@@ -2353,8 +2409,8 @@ fn sweep_patches(ctx: &mut Ctx<'_>) {
 ///
 /// A message for the actor.
 pub fn end_watch(ctx: &mut Ctx<'_>, who: ObjId, walk_back: bool) -> Result<(), String> {
-    let registered = state_mut(ctx).and_then(|st| st.travel.watches.remove(&who));
-    let watch = match registered {
+    let peek = state_of(ctx).and_then(|st| st.travel.watches.get(&who).cloned());
+    let watch_preview = match peek {
         Some(w) => w,
         None => {
             // Standing in a patch without having staked it out: a passenger who
@@ -2370,8 +2426,22 @@ pub fn end_watch(ctx: &mut Ctx<'_>, who: ObjId, walk_back: bool) -> Result<(), S
         }
     };
     let patch = state_of(ctx)
-        .and_then(|st| st.travel.patches.get(&watch.checkpoint))
+        .and_then(|st| st.travel.patches.get(&watch_preview.checkpoint))
         .map(|d| d.room);
+    let back_target = if walk_back
+        && let Some(patch_room_id) = patch
+        && ctx.w.get(who).and_then(|o| o.location) == Some(patch_room_id)
+    {
+        let back = state_of(ctx)
+            .map(|st| way_back(st, ctx.w, &watch_preview.checkpoint, watch_preview.from))
+            .unwrap_or(mush_core::LIMBO);
+        authorize_travel_move(ctx, who, back, false)?;
+        Some((patch_room_id, back))
+    } else {
+        None
+    };
+    let _ = state_mut(ctx).and_then(|st| st.travel.watches.remove(&who));
+    let watch = watch_preview;
     // Travelers this watcher held, and no other watcher still holds, go on.
     let held: Vec<JourneyId> = state_of(ctx)
         .map(|st| {
@@ -2392,28 +2462,22 @@ pub fn end_watch(ctx: &mut Ctx<'_>, who: ObjId, walk_back: bool) -> Result<(), S
             tracing::debug!(journey = %id, %error, "atlas: a held traveler stayed after its watcher left");
         }
     }
-    if walk_back
-        && let Some(patch) = patch
-        && ctx.w.get(who).and_then(|o| o.location) == Some(patch)
+    if let Some((patch, back)) = back_target
+        && ctx.w.move_to(who, back).is_ok()
     {
-        let back = state_of(ctx)
-            .map(|st| way_back(st, ctx.w, &watch.checkpoint, watch.from))
-            .unwrap_or(mush_core::LIMBO);
-        if ctx.w.move_to(who, back).is_ok() {
-            let text = RichText::new()
-                .span(name_span(ctx.w, who))
-                .text(" gives up the watch and heads back.");
-            tell_room(ctx, patch, who, text);
-            let text = RichText::new()
-                .span(name_span(ctx.w, who))
-                .text(" comes back from the road.");
-            tell_room(ctx, back, who, text);
-            ctx.emit_world_event(&WorldEvent::Moved {
-                who,
-                from: Some(patch),
-                to: back,
-            });
-        }
+        let text = RichText::new()
+            .span(name_span(ctx.w, who))
+            .text(" gives up the watch and heads back.");
+        tell_room(ctx, patch, who, text);
+        let text = RichText::new()
+            .span(name_span(ctx.w, who))
+            .text(" comes back from the road.");
+        tell_room(ctx, back, who, text);
+        ctx.emit_world_event(&WorldEvent::Moved {
+            who,
+            from: Some(patch),
+            to: back,
+        });
     }
     retire_patch_if_idle(ctx, &watch.checkpoint);
     Ok(())
@@ -2433,7 +2497,16 @@ pub fn begin_watch(ctx: &mut Ctx<'_>, who: ObjId, checkpoint: &RecordKey) -> Res
         return Err("You are already staking a checkpoint out (+stakeout/end first).".to_string());
     }
     let from = ctx.w.get(who).and_then(|o| o.location);
+    if let Some(here) = from
+        && state_of(ctx).is_some_and(|st| aboard_moving_vehicle(st, ctx.w, here))
+    {
+        return Err("You are under way; you cannot watch a road from the road.".to_string());
+    }
     let patch = patch_room(ctx, checkpoint)?;
+    if let Err(e) = authorize_travel_move(ctx, who, patch, false) {
+        retire_patch_if_idle(ctx, checkpoint);
+        return Err(format!("You cannot get there: {e}"));
+    }
     ctx.w
         .move_to(who, patch)
         .map_err(|e| format!("You cannot get there: {e}"))?;
@@ -2621,6 +2694,9 @@ impl EventHook for TravelHook {
             return Ok(());
         };
         // A traveler under way or held moves only through the journey.
+        if exit.is_none() && st.travel.internal_move == Some((actor, dest)) {
+            return Ok(());
+        }
         if let Some(j) = st.travel.journey_of(actor)
             && !j.traveler.is_carrier()
         {
@@ -2630,6 +2706,19 @@ impl EventHook for TravelHook {
             ));
         }
         let here = w.get(actor).and_then(|o| o.location);
+        if exit.is_none()
+            && let Some(vehicle) = here
+            && vehicle_connection(st, w, vehicle).is_some()
+            && vehicle_stop(st, w, vehicle).is_none()
+        {
+            return Err(RichText::tag(
+                "error",
+                format!(
+                    "The {} is moving; wait for the next stop.",
+                    display_name(w, vehicle)
+                ),
+            ));
+        }
         if let Some(exit) = exit {
             // A vehicle's doors open only at its stop.
             if w.get(dest).is_some_and(|o| o.kind == ObjKind::Room)

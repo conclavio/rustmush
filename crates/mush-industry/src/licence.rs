@@ -208,6 +208,26 @@ pub fn extraction_authorized(
             }
             Ok(_) => {}
         }
+        // HIGH-34: when a deposit records a governing jurisdiction, only a claim
+        // issued by that jurisdiction authorizes extraction.
+        if let Some(jurisdiction) = deposit.jurisdiction()
+            && claim.issuer() != jurisdiction
+        {
+            best = Some(best.unwrap_or(ExtractionRefusal::NoClaim));
+            continue;
+        }
+        // HIGH-37: a Bound claim whose titled E4 asset exists must have its title
+        // owner aligned with the recorded holder (and remain active).
+        if claim.transferability() == crate::record::Transferability::Bound
+            && let Some(asset) = world
+                .module_state::<EconomyStore>()
+                .and_then(|store| store.snapshot().asset(claim.object()))
+            && (asset.title_owner != *claim.holder()
+                || !matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active))
+        {
+            best = Some(best.unwrap_or(ExtractionRefusal::NoClaim));
+            continue;
+        }
         // The holder must authorize this actor. An org-held claim authorizes a
         // member acting **on the org's scope** — `acts_for` is E3's own rule,
         // not a second one.

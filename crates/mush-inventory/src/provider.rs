@@ -126,6 +126,7 @@ pub struct InventoryProvider {
     outcome: DefinitionRef,
     families: InventoryFamilies,
     capacity: Option<std::sync::Arc<dyn PoolCapacity>>,
+    move_policy: Option<std::sync::Arc<dyn MovePolicy>>,
 }
 
 /// **The room an endpoint has for pooled quantity** (doc 36a P2-4): the composition's capacity
@@ -603,6 +604,52 @@ impl InventoryProvider {
         }
         Ok(())
     }
+
+    /// Enforce the server-authenticated `MovePolicy` admission bitmask injected by
+    /// `project_offer` so a direct `inv_move` submission cannot bypass `@inv/move`'s policy.
+    fn check_move_policy(
+        &self,
+        parameters: &serde_json::Map<String, Value>,
+        from: EndpointRef,
+        to: EndpointRef,
+    ) -> Result<(), ActionError> {
+        if self.move_policy.is_none() {
+            return Ok(());
+        }
+        if parameters
+            .get("move_policy_exempt")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let endpoints = parameters
+            .get("move_policy_endpoints")
+            .and_then(Value::as_array);
+        let masks = parameters
+            .get("move_policy_masks")
+            .and_then(Value::as_array);
+        let admitted = endpoints
+            .zip(masks)
+            .filter(|(eps, ms)| eps.len() == ms.len())
+            .and_then(|(eps, ms)| {
+                let from_idx = eps
+                    .iter()
+                    .position(|v| v.as_u64() == Some(from.vault().0))?;
+                let to_idx = eps.iter().position(|v| v.as_u64() == Some(to.vault().0))?;
+                let mask = ms.get(from_idx)?.as_u64()?;
+                let bit = 1_u64.checked_shl(u32::try_from(to_idx).ok()?)?;
+                Some((mask & bit) != 0)
+            })
+            .unwrap_or(false);
+        if !admitted {
+            return Err(error(
+                ActionErrorCode::ProviderRejected,
+                "That move is not allowed here.",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl ActionProvider for InventoryProvider {
@@ -634,19 +681,82 @@ impl ActionProvider for InventoryProvider {
         }
         let choices = endpoint_choices(&endpoints);
         let mut parameters = Vec::new();
+        let mut move_policy_fixed: Option<(bool, Vec<u64>, Vec<u64>)> = None;
         match self.verb {
             InventoryVerb::Move => {
+                let (from_choices, to_choices) = if let Some(policy) = &self.move_policy {
+                    if mush_core::perm::has_role(
+                        &engine.world,
+                        query.actor(),
+                        mush_core::Role::Royalty,
+                    ) {
+                        move_policy_fixed = Some((true, Vec::new(), Vec::new()));
+                        (choices.clone(), choices)
+                    } else {
+                        let mut masks = vec![0_u64; endpoints.len()];
+                        let mut to_mask = 0_u64;
+                        for (i, from) in endpoints.iter().enumerate() {
+                            let mut row_mask = 0_u64;
+                            for (j, to) in endpoints.iter().enumerate() {
+                                if let Ok(shift) = u32::try_from(j)
+                                    && let Some(bit) = 1_u64.checked_shl(shift)
+                                    && policy
+                                        .admit(
+                                            &engine.world,
+                                            query.actor(),
+                                            EndpointRef(*from),
+                                            EndpointRef(*to),
+                                        )
+                                        .is_ok()
+                                {
+                                    row_mask |= bit;
+                                    to_mask |= bit;
+                                }
+                            }
+                            if let Some(slot) = masks.get_mut(i) {
+                                *slot = row_mask;
+                            }
+                        }
+                        let from_allowed: Vec<String> = endpoints
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| masks.get(*i).copied().unwrap_or(0) != 0)
+                            .map(|(_, id)| id.0.to_string())
+                            .collect();
+                        let to_allowed: Vec<String> = endpoints
+                            .iter()
+                            .enumerate()
+                            .filter(|(j, _)| {
+                                u32::try_from(*j)
+                                    .ok()
+                                    .and_then(|s| 1_u64.checked_shl(s))
+                                    .is_some_and(|bit| (to_mask & bit) != 0)
+                            })
+                            .map(|(_, id)| id.0.to_string())
+                            .collect();
+                        if from_allowed.is_empty() || to_allowed.is_empty() {
+                            return Ok(None);
+                        }
+                        let ep_ids = endpoints.iter().map(|v| v.0).collect();
+                        move_policy_fixed = Some((false, ep_ids, masks));
+                        (from_allowed, to_allowed)
+                    }
+                } else {
+                    (choices.clone(), choices)
+                };
                 parameters.push(parameter(
                     "from",
                     true,
                     ProjectedParameterKind::Choice {
-                        choices: choices.clone(),
+                        choices: from_choices,
                     },
                 )?);
                 parameters.push(parameter(
                     "to",
                     true,
-                    ProjectedParameterKind::Choice { choices },
+                    ProjectedParameterKind::Choice {
+                        choices: to_choices,
+                    },
                 )?);
                 parameters.push(parameter(
                     "commodity",
@@ -793,6 +903,14 @@ impl ActionProvider for InventoryProvider {
                 fixed["capacity"] = Value::Object(plans);
             }
         }
+        if let Some((exempt, ep_ids, masks)) = move_policy_fixed {
+            if exempt {
+                fixed["move_policy_exempt"] = json!(true);
+            } else {
+                fixed["move_policy_endpoints"] = json!(ep_ids);
+                fixed["move_policy_masks"] = json!(masks);
+            }
+        }
         Ok(Some(ProviderOfferDraft {
             fixed_parameters: fixed,
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
@@ -884,6 +1002,7 @@ impl ActionProvider for InventoryProvider {
                 let to = endpoint_field(&parameters, "to")?;
                 let commodity = commodity_field(&parameters)?;
                 let quantity = u64_field(&parameters, "quantity")?;
+                self.check_move_policy(&parameters, from, to)?;
                 // Doc 48e (exchange G7): the destination's room, by the plan the offer carried.
                 if from != to {
                     self.move_room(txn, &parameters, to, &commodity, quantity)?;
@@ -1120,6 +1239,7 @@ pub fn register(
     families: &InventoryFamilies,
     salvage: Option<&std::sync::Arc<dyn crate::salvage::SalvageSource>>,
     capacity: Option<&std::sync::Arc<dyn PoolCapacity>>,
+    move_policy: Option<&std::sync::Arc<dyn MovePolicy>>,
 ) -> Result<(), ModError> {
     let outcome_descriptor = descriptor(
         "outcome",
@@ -1180,6 +1300,9 @@ pub fn register(
                 outcome: outcome.clone(),
                 families: families.clone(),
                 capacity: capacity.cloned(),
+                move_policy: (verb == InventoryVerb::Move)
+                    .then(|| move_policy.cloned())
+                    .flatten(),
             },
         )?;
     }
@@ -1260,8 +1383,17 @@ pub fn tranche_of(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_wall;
+    use super::*;
+    use crate::{InventoryHandleCell, InventoryModule};
+    use mush_core::{
+        CommitToken, GOD, IdempotencyKey, IdempotencyScope, ObjKind, OfferExecutionContext,
+        OfferSubmission, RequestUid, ScopedIdempotencyKey,
+    };
+    use mush_economy::{EconomyModule, EconomyStore};
+    use mush_testkit::TestWorld;
     use serde_json::json;
+    use std::sync::Arc;
+    type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
     /// Doc 18 cut IC14 row 1: an offer drafted before the cut carries no
     /// `"wall"` stamp and is refused (re-drafted), never stamped with a guess;
@@ -1275,5 +1407,209 @@ mod tests {
             prepare_wall(&params(json!({ "now": 1, "wall": 1_700_000_000 }))),
             Ok(1_700_000_000)
         ));
+    }
+
+    /// Policy that admits only explicit directed pairs `(from, to)` (plus optional same-endpoint).
+    #[derive(Debug)]
+    struct PairPolicy {
+        allowed: Vec<(EndpointRef, EndpointRef)>,
+    }
+
+    impl MovePolicy for PairPolicy {
+        fn admit(
+            &self,
+            _w: &mush_core::World,
+            _actor: ObjId,
+            from: EndpointRef,
+            to: EndpointRef,
+        ) -> std::result::Result<(), String> {
+            if self.allowed.contains(&(from, to)) {
+                Ok(())
+            } else {
+                Err("blocked by move policy".to_owned())
+            }
+        }
+    }
+
+    fn make_vault(w: &mut TestWorld, owner: ObjId, name: &str) -> Result<EndpointRef> {
+        let object = w.world_mut().create(ObjKind::Thing, name, owner, None)?;
+        w.run(
+            GOD,
+            &format!(
+                "@vault/create {name}=container:#{} owner=#{}",
+                object.0, owner.0
+            ),
+        );
+        let id = w
+            .world()
+            .module_state::<EconomyStore>()
+            .ok_or("economy")?
+            .snapshot()
+            .vaults()
+            .find(|v| v.name.as_str() == name)
+            .ok_or("vault")?
+            .id;
+        Ok(EndpointRef(id))
+    }
+
+    fn direct_move(
+        w: &mut TestWorld,
+        actor: ObjId,
+        from: EndpointRef,
+        to: EndpointRef,
+        qty: u64,
+        salt: u8,
+    ) -> std::result::Result<(), String> {
+        let action = action_ref(&w.engine().registry, InventoryVerb::Move)
+            .ok_or_else(|| "missing inv_move".to_owned())?;
+        let principal = PrincipalId::Object { id: actor };
+        let query = w
+            .engine()
+            .legal_action_query(principal.clone(), actor, PerceivedRef::SelfActor)
+            .map_err(|e| format!("query: {e:?}"))?;
+        let offers = w
+            .engine()
+            .project_legal_actions(&query)
+            .map_err(|e| format!("project: {e:?}"))?;
+        let offer = offers
+            .projected_for_action(&action)
+            .ok_or_else(|| "no_offer".to_owned())?
+            .clone();
+        let req = RequestUid::from_bytes([salt; 16]);
+        let key = ScopedIdempotencyKey::new(
+            IdempotencyScope {
+                principal: principal.clone(),
+                owner: crate::record::owner(),
+                namespace: CanonicalId::new("inv_test").map_err(|e| e.to_string())?,
+            },
+            1,
+            IdempotencyKey::Request(req),
+        );
+        let resolved = w
+            .engine()
+            .resolve_legal_action(
+                &offers,
+                OfferExecutionContext {
+                    request: req,
+                    principal,
+                    actor,
+                    idempotency: key,
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                },
+                OfferSubmission {
+                    offer: offer.offer(),
+                    subject: PerceivedRef::SelfActor,
+                    targets: Vec::new(),
+                    parameters: json!({
+                        "from": from.vault().0.to_string(),
+                        "to": to.vault().0.to_string(),
+                        "commodity": "iron",
+                        "quantity": qty,
+                    }),
+                },
+            )
+            .map_err(|e| format!("resolve: {e:?}"))?;
+        let (act, inv, _) = resolved.into_authoritative_parts();
+        let (prepared, _) = w
+            .engine_mut()
+            .prepare_registered_authoritative_action(
+                &act,
+                inv.invocation(),
+                CommitToken::from_bytes([salt; 16]),
+            )
+            .map_err(|e| format!("prepare: {e:?}"))?;
+        let (_, install) = prepared.into_parts();
+        w.engine_mut()
+            .install_prepared_action(install)
+            .map_err(|e| format!("install: {e:?}"))
+    }
+
+    /// HIGH-21 regression: direct `inv_move` submissions (bypassing `@inv/move`) must still be
+    /// gated by the registered `MovePolicy` in both `project_offer` and `prepare_authoritative`,
+    /// while admitted pairs and staff moves succeed.
+    #[test]
+    fn high21_direct_inv_move_enforces_move_policy() -> Result {
+        // First build a world with an empty policy to check total-denial yields no offer,
+        // then a world where A->C and B->A are allowed (so A and B are both in from/to choices)
+        // while A->B is forbidden.
+        let cell: InventoryHandleCell = Arc::default();
+        // Predict vault ids: 0, 1, 2 for A, B, C.
+        let policy = Arc::new(PairPolicy {
+            allowed: vec![
+                (EndpointRef(VaultId(0)), EndpointRef(VaultId(2))),
+                (EndpointRef(VaultId(1)), EndpointRef(VaultId(0))),
+            ],
+        });
+        let inventory = InventoryModule::new()
+            .with_handle_cell(Arc::clone(&cell))
+            .with_move_policy(policy);
+        let mut w =
+            TestWorld::with_modules(vec![Box::new(EconomyModule::new()), Box::new(inventory)]);
+        w.engine_mut().set_offer_keys(
+            mush_core::OfferKeyRing::new(
+                mush_core::OfferSecret::new(1, [0x41; 32]).map_err(|e| format!("{e:?}"))?,
+                [],
+            )
+            .map_err(|e| format!("{e:?}"))?,
+        );
+        w.world_mut().set_now(1000);
+        let pilot = w.spawn_player("Pilot");
+        let a = make_vault(&mut w, pilot, "HoldA")?;
+        let b = make_vault(&mut w, pilot, "HoldB")?;
+        let c = make_vault(&mut w, pilot, "HoldC")?;
+        check_eq!(a.vault().0, 0);
+        check_eq!(b.vault().0, 1);
+        check_eq!(c.vault().0, 2);
+
+        let families = cell.get().ok_or("families")?.clone();
+        let iron = CanonicalId::new("iron")?;
+        {
+            let mut txn = w.engine_mut().action_transaction(&families.pools)?;
+            families.credit(&mut txn, a, &iron, 50)?;
+            let (_, install) = txn.prepare()?.into_parts();
+            w.engine_mut().install_prepared_action(install)?;
+        }
+
+        // Direct `inv_move` for forbidden pair A -> B fails (even though A is an allowed `from`
+        // and B is a valid endpoint, B is dropped from `to` choices -> resolve fails!).
+        let err_ab = direct_move(&mut w, pilot, a, b, 10, 1);
+        check!(err_ab.is_err(), "A -> B must be refused by MovePolicy");
+
+        // Direct `inv_move` for B -> C (B is in `from` choices via B->A, C is in `to` choices via
+        // A->C, so BOTH endpoints appear in parameter choices, yet pair (B, C) is NOT admitted!).
+        {
+            let mut txn = w.engine_mut().action_transaction(&families.pools)?;
+            families.credit(&mut txn, b, &iron, 20)?;
+            let (_, install) = txn.prepare()?.into_parts();
+            w.engine_mut().install_prepared_action(install)?;
+        }
+        let err_bc = direct_move(&mut w, pilot, b, c, 5, 2);
+        check!(
+            err_bc.as_ref().is_err_and(|e| e.starts_with("prepare:")),
+            "B -> C must be refused inside prepare_authoritative: {err_bc:?}"
+        );
+
+        // Direct `inv_move` for admitted pair A -> C succeeds.
+        direct_move(&mut w, pilot, a, c, 10, 3).map_err(|e| format!("A -> C should pass: {e}"))?;
+
+        // Staff (GOD) is exempt from MovePolicy and can move A -> B directly.
+        direct_move(&mut w, GOD, a, b, 5, 4).map_err(|e| format!("staff move should pass: {e}"))?;
+
+        // When MovePolicy admits NO pair at all for an actor, no `inv_move` offer is projected.
+        let stranger = w.spawn_player("Stranger");
+        let _d = make_vault(&mut w, stranger, "HoldD")?;
+        let action = action_ref(&w.engine().registry, InventoryVerb::Move).ok_or("action")?;
+        let query = w.engine().legal_action_query(
+            PrincipalId::Object { id: stranger },
+            stranger,
+            PerceivedRef::SelfActor,
+        )?;
+        let offers = w.engine().project_legal_actions(&query)?;
+        check!(
+            offers.projected_for_action(&action).is_none(),
+            "actor with no policy-admitted pairs must receive no inv_move offer"
+        );
+        Ok(())
     }
 }

@@ -202,9 +202,43 @@ fn forget_close(ctx: &mut Ctx<'_>, site: &CanonicalId) {
     }
 }
 
+/// **Clamp a close's `known` rows and drop any single carried mind that can never fit an offer**
+/// (security hardening CRIT-18): applied at `owe_close` and when restoring tombstones in `boot`.
+pub(crate) fn sanitize_close(close: &mut OwedClose) {
+    for row in &mut close.known {
+        row.clamp();
+    }
+    close.minds.retain(|row| {
+        let fits = super::provider::carried_row_fits(row);
+        if !fits {
+            tracing::warn!(
+                unit = row.unit.0,
+                "tacsim: a carried mind exceeds the field offer budget on its own; it is not carried"
+            );
+        }
+        fits
+    });
+}
+
+/// **Drop any single carried mind on a live record that can never fit an offer** (CRIT-18).
+pub(crate) fn sanitize_carried(rows: &mut Vec<super::record::CarriedRow>, site: &CanonicalId) {
+    rows.retain(|row| {
+        let fits = super::provider::carried_row_fits(row);
+        if !fits {
+            tracing::warn!(
+                site = %site,
+                unit = row.unit.0,
+                "tacsim: a live field's carried mind exceeds the field offer budget on its own; it is dropped"
+            );
+        }
+        fits
+    });
+}
+
 /// **A closing tombstone the boot found** (doc 32 §15): its close owed again and the site
 /// closing, so the tick neither re-admits the finished field nor loses what it left.
-pub(crate) fn restore_closing(w: &mut mush_core::World, closing: super::record::FieldClosing) {
+pub(crate) fn restore_closing(w: &mut mush_core::World, mut closing: super::record::FieldClosing) {
+    sanitize_close(&mut closing.close);
     let site = closing.site.clone();
     if let Some(book) = w.module_state_mut::<FieldBook>() {
         book.closing.insert(site.clone());
@@ -251,7 +285,7 @@ pub(crate) fn owe_close(
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.closing.insert(site.clone());
     }
-    let close = OwedClose {
+    let mut close = OwedClose {
         actor,
         ordinal: open.ordinal,
         units,
@@ -260,6 +294,7 @@ pub(crate) fn owe_close(
         minds,
         wrecked,
     };
+    sanitize_close(&mut close);
     // Doc 32 §15 (the review's CF-1): durable in this batch, beside the check-ins, before the
     // K3 write that cannot share its turn.
     let exits: Vec<super::record::OwedExit> = ctx
@@ -291,7 +326,9 @@ pub(crate) fn owe_close(
     submit_owed(ctx);
 }
 
-/// **Submit every owed close** whose actor has nothing in flight.
+/// **Submit every owed close** whose actor has nothing in flight. When a close carries more minds
+/// than fit beside the close payload in one bounded offer (CRIT-18), `op = "carry"` lays minds in
+/// chunks first and `op = "close"` runs once the remainder fits.
 fn submit_owed(ctx: &mut Ctx<'_>) {
     let Some(action) = ctx
         .w
@@ -306,12 +343,57 @@ fn submit_owed(ctx: &mut Ctx<'_>) {
         .map(|owed| owed.0.iter().map(|(s, c)| (s.clone(), c.clone())).collect())
         .unwrap_or_default();
     let now = ctx.w.world_ic_now().at;
-    for (site, close) in owed {
-        if ctx.authoritative_pending(close.actor) {
+    let mut busy = std::collections::BTreeSet::new();
+    for (site, mut close) in owed {
+        // Prune carried minds already laid on their epoch records (or oversized on their own)
+        // before deciding whether another carry chunk is needed.
+        let before_minds = close.minds.len();
+        close.minds.retain(|row| {
+            !super::exit::carried_laid(ctx, row) && super::provider::carried_row_fits(row)
+        });
+        if close.minds.len() != before_minds {
+            if let Some(book) = ctx.w.module_state_mut::<OwedCloses>()
+                && let Some(entry) = book.0.get_mut(&site)
+            {
+                entry.minds.clone_from(&close.minds);
+            }
+            let exits: Vec<super::record::OwedExit> = ctx
+                .w
+                .module_state::<super::exit::OwedExits>()
+                .and_then(|owed| owed.0.get(&site))
+                .map(|units| {
+                    units
+                        .iter()
+                        .map(|(unit, actor)| super::record::OwedExit {
+                            unit: *unit,
+                            actor: *actor,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            super::record::write_closing(
+                ctx,
+                &super::record::FieldClosing {
+                    format: super::record::FIELD_CLOSING_FORMAT,
+                    site: site.clone(),
+                    close: close.clone(),
+                    exits,
+                },
+            );
+        }
+        if busy.contains(&close.actor) || ctx.authoritative_pending(close.actor) {
             continue;
         }
-        let Some(key) = super::provider::field_key(close.actor, &site, "close", close.ordinal, now)
-        else {
+        let carry_chunk = super::provider::close_needs_carry_chunk(ctx.w, &site, &close);
+        let (op, ordinal) = if carry_chunk {
+            (
+                "carry",
+                u32::try_from(close.minds.len()).unwrap_or(u32::MAX),
+            )
+        } else {
+            ("close", close.ordinal)
+        };
+        let Some(key) = super::provider::field_key(close.actor, &site, op, ordinal, now) else {
             continue;
         };
         let saved = ctx.actor;
@@ -320,10 +402,11 @@ fn submit_owed(ctx: &mut Ctx<'_>) {
             action.clone(),
             PerceivedRef::SelfActor,
             Vec::new(),
-            json!({ "site": site.to_string(), "op": "close" }),
+            json!({ "site": site.to_string(), "op": op }),
             key,
         );
         ctx.actor = saved;
+        busy.insert(close.actor);
     }
 }
 

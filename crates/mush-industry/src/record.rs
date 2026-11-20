@@ -2078,6 +2078,19 @@ impl ClaimIndex {
         claims.sort_unstable();
         Self::new(claims)
     }
+
+    /// The post-image with one claim removed (for pruning terminal claims so
+    /// `MAX_CLAIMS_PER_SUBJECT` cannot permanently brick a subject).
+    #[must_use]
+    pub fn without(&self, claim: ClaimId) -> Self {
+        let claims = self
+            .claims
+            .iter()
+            .copied()
+            .filter(|id| *id != claim)
+            .collect();
+        Self { claims }
+    }
 }
 
 /// E7c4 (D2 discharged): per-deposit retention of the durable `industry.applied`

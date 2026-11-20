@@ -264,7 +264,7 @@ pub(crate) fn recall_block(ctx: &Ctx<'_>, e: &Enrolment) -> Option<(RecallBlock,
         return economy_block();
     };
     for good in goods.goods.iter().filter(|g| g.consumable.is_none()) {
-        match crate::port_tick::read_pool(ctx, hold_of(e), &good.id) {
+        match crate::port_tick::read_held(ctx, hold_of(e), &good.id) {
             Ok(0) => {}
             Ok(_) => return Some((RecallBlock::Cargo, named(RECALL_CARGO, e))),
             Err(error) => {
@@ -357,7 +357,7 @@ fn consumables(ctx: &Ctx<'_>, e: &Enrolment) -> (u64, u64) {
         let Some(kind) = good.consumable else {
             continue;
         };
-        let units = crate::port_tick::read_pool(ctx, hold_of(e), &good.id).unwrap_or(0);
+        let units = crate::port_tick::read_held(ctx, hold_of(e), &good.id).unwrap_or(0);
         match kind {
             Consumable::Propellant => tank = tank.saturating_add(units),
             Consumable::Provisions => locker = locker.saturating_add(units),

@@ -2142,3 +2142,75 @@ fn g29_mine_shows_an_orgs_listing_the_actor_posted() {
     assert!(page.contains("Listed as "), "{page}");
     assert!(page.contains("Ares"), "{page}");
 }
+
+/// **CRIT-9 regressions on exact-lot personal listings**:
+/// 1. Another player holding a different vault cannot forge `op="release"` for the seller's lot.
+/// 2. The seller cannot forge `op="release"` on an active, unwithdrawn listing to trigger
+///    `reconcile_lot_holds` and farm a listing-fee refund.
+/// 3. Once a buyer accepts (`sale_in_force == true`), neither direct `op="release"` nor
+///    `+market/withdraw` can release the hold out from under the active paid sale.
+#[test]
+fn crit9_exact_lot_cross_endpoint_active_and_sale_in_force_release_are_refused() {
+    let mut r = rig();
+    let (sal, bea) = (r.sal, r.bea);
+    let lot = LotId(0x901);
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 10, lot);
+    let id = post_lot(&mut r, lot, 700, "", 0x91);
+
+    let action = mush_market::lot_action_ref(&r.tw.engine().registry).expect("lot action");
+    let submit_forged = |actor: ObjId, endpoint: EndpointRef| mush_core::AuthoritativeSubmit {
+        actor,
+        action: action.clone(),
+        subject: mush_core::PerceivedRef::SelfActor,
+        targets: Vec::new(),
+        parameters: serde_json::json!({
+            "op": "release",
+            "listing": id.0,
+            "endpoint": endpoint.vault().0.to_string(),
+            "source": endpoint.vault().0.to_string(),
+            "commodity": "iron",
+            "quantity": 10,
+            "grade": 0,
+            "lot": lot.to_string(),
+        }),
+        key: mush_core::IdempotencyKeyText::parse_canonical("market.lot.crit9").expect("key"),
+    };
+
+    // (1) Cross-endpoint attack: Bea names her own vault + Sal's listing & lot -> refused.
+    let cross = submit_forged(bea.who, bea.vault);
+    assert!(
+        land_submit(&mut r.tw, &cross, 0x92).is_err(),
+        "cross-endpoint exact-lot release must be refused"
+    );
+
+    // (2) Active unwithdrawn listing self-release attack: Sal cannot release while listing stands.
+    let active = submit_forged(sal.who, sal.vault);
+    assert!(
+        land_submit(&mut r.tw, &active, 0x93).is_err(),
+        "seller cannot directly release an active unwithdrawn listing"
+    );
+    // Sweeping past reserve grace leaves the healthy listing standing with no escalation/refund.
+    let start = r.tw.world().now();
+    for step in 1..=5 {
+        at(&mut r.tw, start + step * 61);
+    }
+    assert!(market(&r.tw).listing(id).is_some());
+
+    // (3) Buyer accepts -> sale_in_force is true; both direct release and +market/withdraw refuse.
+    let _contract = buy(&mut r, bea, id, 10);
+    let consume = take(&mut r.tw);
+    assert!(mush_market::sale_in_force(r.tw.world(), id));
+    let during_sale = submit_forged(sal.who, sal.vault);
+    assert!(
+        land_submit(&mut r.tw, &during_sale, 0x94).is_err(),
+        "seller cannot release exact lot while sale_in_force is true"
+    );
+    let withdraw_err = err(&mut r.tw, sal.who, &format!("+market/withdraw {}", id.0));
+    assert!(
+        withdraw_err.contains("cannot be withdrawn"),
+        "{withdraw_err}"
+    );
+    // Buyer's consume leg succeeds and delivers the lot.
+    land_submit(&mut r.tw, &consume, 0x95).expect("consume lands");
+    assert_eq!(lot_at(&mut r.tw, &r.families, lot), Some(bea.vault));
+}

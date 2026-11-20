@@ -57,9 +57,15 @@ pub const FIELD_OUTCOME: &str = "tacsim_field_result";
 pub const FIELD_KEY_PREFIX: &str = "tacsim.field/";
 /// The most bytes an `open`'s rig list may carry (the offer's text bound).
 pub const MAX_LIST_BYTES: usize = mush_core::MAX_PROJECTED_ACTION_TEXT_BYTES;
-/// **The most bytes the offer's carried minds may take** (doc 23 cut D-23-18): half the rules
-/// value's bound, so the rest of the offer always fits. A mind past it is not carried, and logged.
-pub const MAX_CARRIED_BYTES: usize = mush_core::mechanics::MAX_RULES_VALUE_BYTES / 2;
+/// **The most canonical JSON bytes `FieldProvider::project_offer`'s `fixed_parameters` may take**
+/// (security hardening CRIT-18): strictly `<= 48 KiB`, leaving >= 16 KiB headroom below
+/// [`mush_core::MAX_ACTION_PARAMETER_BYTES`] (64 KiB) so `InternalOffer::new` can never fail
+/// globally and lock out `SelfActor` legal actions.
+pub const MAX_OFFER_FIXED_BYTES: usize = 48 * 1024;
+/// **The most bytes the offer's carried minds may take** (doc 23 cut D-23-18; bounded for
+/// CRIT-18): half of [`MAX_OFFER_FIXED_BYTES`] (24 KiB), so carried minds never starve or
+/// overflow the 48 KiB fixed-parameter budget. Extra minds ride `op = "carry"` chunks.
+pub const MAX_CARRIED_BYTES: usize = MAX_OFFER_FIXED_BYTES / 2;
 
 /// **`tacsim_field`**'s provider.
 pub(crate) struct FieldProvider {
@@ -371,7 +377,11 @@ impl FieldProvider {
             .transpose()
             .map_err(|_| invalid("a field write lists the minds it carries"))?
             .unwrap_or_default();
+        let mut seen = BTreeSet::new();
         for row in rows {
+            if !seen.insert(row.unit) {
+                continue;
+            }
             let key = RigKey(row.unit);
             let found = txn
                 .get(&self.excursions, &key)
@@ -411,46 +421,450 @@ fn wreck_claim(record: &mut RigRecord) -> bool {
     true
 }
 
-/// **The minds the host owes their epoch records, by site** (doc 23 cut D-23-18): each live
-/// field's ramp check-ins and each owed close's, under [`MAX_CARRIED_BYTES`].
-fn carried_offer(w: &World) -> Map<String, Value> {
-    let mut rows: Vec<(String, &super::record::CarriedRow)> = Vec::new();
-    if let Some(book) = w.module_state::<super::FieldBook>() {
-        for (site, hosted) in book.running() {
-            rows.extend(
-                hosted
-                    .live
-                    .carried
-                    .iter()
-                    .map(|row| (site.to_string(), row)),
-            );
+/// Whether `value`'s canonical JSON fits within `limit` bytes.
+fn fits_budget(value: &Value, limit: usize) -> bool {
+    mush_core::mechanics::canonical_json_bytes_with_limit(value, limit).is_ok()
+}
+
+/// Canonical JSON byte length of `value`, or `usize::MAX` if it exceeds `limit` or fails to encode.
+fn canonical_len(value: &Value, limit: usize) -> usize {
+    mush_core::mechanics::canonical_json_bytes_with_limit(value, limit)
+        .map_or(usize::MAX, |bytes| bytes.len())
+}
+
+/// Whether a single carried-mind row fits inside [`MAX_CARRIED_BYTES`] on its own.
+#[must_use]
+pub(crate) fn carried_row_fits(row: &super::record::CarriedRow) -> bool {
+    serde_json::to_value(row)
+        .ok()
+        .is_some_and(|value| fits_budget(&value, MAX_CARRIED_BYTES))
+}
+
+/// Serialize one site's close entry with the given `known`, `units`, `remains`, and `wrecked`.
+fn close_entry_value(
+    ordinal: u32,
+    units: &[LeftUnit],
+    known: &[super::known::Learned],
+    remains: &[LeftRemains],
+    wrecked: &[ObjId],
+) -> Value {
+    json!({
+        "ordinal": ordinal,
+        "units": units,
+        "known": known,
+        "remains": remains,
+        "wrecked": wrecked,
+    })
+}
+
+/// Insert `(site, entry)` into `fixed[section]` iff the resulting canonical JSON stays within
+/// [`MAX_OFFER_FIXED_BYTES`]. Reverts on overflow.
+fn try_insert_map_entry(fixed: &mut Value, section: &str, site: &str, entry: Value) -> bool {
+    let prior = fixed
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut(section))
+        .and_then(Value::as_object_mut)
+        .map(|map| map.insert(site.to_owned(), entry));
+    if prior.is_none() {
+        return false;
+    }
+    if fits_budget(fixed, MAX_OFFER_FIXED_BYTES) {
+        return true;
+    }
+    if let Some(map) = fixed
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut(section))
+        .and_then(Value::as_object_mut)
+    {
+        match prior.flatten() {
+            Some(old) => {
+                map.insert(site.to_owned(), old);
+            }
+            None => {
+                map.remove(site);
+            }
         }
     }
-    if let Some(owed) = w.module_state::<super::admit::OwedCloses>() {
-        for (site, close) in &owed.0 {
-            rows.extend(close.minds.iter().map(|row| (site.to_string(), row)));
+    false
+}
+
+/// Fit one site's `OwedClose` into `fixed["closing"]`, degrading `known` (and only as a last
+/// resort `units`/`remains`/`wrecked`) when `allow_degrade` is true (i.e. this is the primary
+/// close in the offer) so even an oversized tombstone can still close without exceeding
+/// [`MAX_OFFER_FIXED_BYTES`].
+fn fit_close_entry(
+    fixed: &mut Value,
+    site: &str,
+    close: &super::admit::OwedClose,
+    allow_degrade: bool,
+) -> bool {
+    let mut known: Vec<super::known::Learned> = close
+        .known
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            row.clamp();
+            row
+        })
+        .collect();
+    let full = close_entry_value(
+        close.ordinal,
+        &close.units,
+        &known,
+        &close.remains,
+        &close.wrecked,
+    );
+    if try_insert_map_entry(fixed, "closing", site, full) {
+        return true;
+    }
+    if !allow_degrade {
+        return false;
+    }
+    // Step 1: drop `eyes` from `known` rows while keeping learned items.
+    for row in &mut known {
+        row.eyes.clear();
+    }
+    let no_eyes = close_entry_value(
+        close.ordinal,
+        &close.units,
+        &known,
+        &close.remains,
+        &close.wrecked,
+    );
+    if try_insert_map_entry(fixed, "closing", site, no_eyes) {
+        tracing::warn!(
+            site,
+            ordinal = close.ordinal,
+            "tacsim: field close offer dropped learned eye cells to stay within 48 KiB"
+        );
+        return true;
+    }
+    // Step 2: binary-search the largest prefix of `known` that fits.
+    let mut lo = 0_usize;
+    let mut hi = known.len();
+    while lo < hi {
+        let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
+        let prefix = known.get(..mid).unwrap_or(&[]);
+        let mut probe = fixed.clone();
+        let candidate = close_entry_value(
+            close.ordinal,
+            &close.units,
+            prefix,
+            &close.remains,
+            &close.wrecked,
+        );
+        if try_insert_map_entry(&mut probe, "closing", site, candidate) {
+            lo = mid;
+        } else {
+            hi = mid.saturating_sub(1);
         }
     }
-    let mut carried = Map::new();
-    let mut bytes = 0_usize;
-    for (site, row) in rows {
+    let prefix = known.get(..lo).unwrap_or(&[]);
+    let trimmed_known = close_entry_value(
+        close.ordinal,
+        &close.units,
+        prefix,
+        &close.remains,
+        &close.wrecked,
+    );
+    if try_insert_map_entry(fixed, "closing", site, trimmed_known) {
+        tracing::warn!(
+            site,
+            ordinal = close.ordinal,
+            kept_known = lo,
+            total_known = known.len(),
+            "tacsim: field close offer trimmed learned rows to stay within 48 KiB"
+        );
+        return true;
+    }
+    // Step 3: last-resort degradation for a corrupt/oversized tombstone — empty non-essential
+    // payload so the site can still demote cleanly instead of wedging globally.
+    let minimal = close_entry_value(close.ordinal, &[], &[], &[], &[]);
+    if try_insert_map_entry(fixed, "closing", site, minimal) {
+        tracing::error!(
+            site,
+            ordinal = close.ordinal,
+            "tacsim: field close offer degraded to minimal demotion to stay within 48 KiB"
+        );
+        return true;
+    }
+    false
+}
+
+/// Append as many `CarriedRow`s for `site` into `fixed["carried"][site]` as fit within both
+/// `carried_bytes <= MAX_CARRIED_BYTES` and `fixed <= MAX_OFFER_FIXED_BYTES`. Returns the count
+/// of rows inserted.
+fn pack_carried_for_site<'a>(
+    fixed: &mut Value,
+    carried_bytes: &mut usize,
+    site: &str,
+    rows: impl IntoIterator<Item = &'a super::record::CarriedRow>,
+) -> usize {
+    let mut packed = 0_usize;
+    for row in rows {
         let Ok(value) = serde_json::to_value(row) else {
             continue;
         };
-        let size = serde_json::to_vec(&value).map_or(usize::MAX, |text| text.len());
-        if bytes.saturating_add(size) > MAX_CARRIED_BYTES {
-            tracing::warn!(site = %site, unit = row.unit.0, size, "tacsim: a carried mind does not fit the field's offer; it is not carried");
+        let size = canonical_len(&value, MAX_CARRIED_BYTES);
+        if carried_bytes.saturating_add(size) > MAX_CARRIED_BYTES {
             continue;
         }
-        bytes = bytes.saturating_add(size);
-        if let Value::Array(list) = carried
-            .entry(site)
+        let mut probe = fixed.clone();
+        let Some(carried_map) = probe
+            .as_object_mut()
+            .and_then(|obj| obj.get_mut("carried"))
+            .and_then(Value::as_object_mut)
+        else {
+            break;
+        };
+        if let Value::Array(list) = carried_map
+            .entry(site.to_owned())
             .or_insert_with(|| Value::Array(Vec::new()))
         {
             list.push(value);
         }
+        if !fits_budget(&probe, MAX_OFFER_FIXED_BYTES) {
+            continue;
+        }
+        *fixed = probe;
+        *carried_bytes = carried_bytes.saturating_add(size);
+        packed = packed.saturating_add(1);
     }
-    carried
+    packed
+}
+
+/// Borrowed state views for [`build_fixed_parameters_with`].
+struct FixedInputs<'a> {
+    exits: Option<&'a super::exit::OwedExits>,
+    rejoins: Option<&'a super::exit::OwedRejoins>,
+    set_downs: Option<&'a super::close::OwedSetDowns>,
+    closes: Option<&'a super::admit::OwedCloses>,
+    book: Option<&'a super::FieldBook>,
+}
+
+/// **Build actor-scoped, strictly bounded `fixed_parameters` (`<= 48 KiB`)** (CRIT-18):
+/// includes ONLY exits, rejoins, set-downs, closes, and carried minds owed by `actor`.
+/// When an owed close's carried minds do not all fit beside its close entry, emits a carry-only
+/// chunk for that site (`carried[site]` populated, `closing[site]` withheld) so `op = "carry"`
+/// lays minds in chunks before `op = "close"` demotes the site.
+fn build_fixed_parameters(w: &World, actor: ObjId) -> (Value, BTreeSet<String>) {
+    build_fixed_parameters_with(
+        w,
+        actor,
+        FixedInputs {
+            exits: w.module_state::<super::exit::OwedExits>(),
+            rejoins: w.module_state::<super::exit::OwedRejoins>(),
+            set_downs: w.module_state::<super::close::OwedSetDowns>(),
+            closes: w.module_state::<super::admit::OwedCloses>(),
+            book: w.module_state::<super::FieldBook>(),
+        },
+    )
+}
+
+fn build_fixed_parameters_with(
+    w: &World,
+    actor: ObjId,
+    inputs: FixedInputs<'_>,
+) -> (Value, BTreeSet<String>) {
+    let now = w.world_ic_now().at;
+    let base = || {
+        json!({
+            "now": now,
+            "closing": {},
+            "exiting": {},
+            "rejoining": {},
+            "setting_down": {},
+            "carried": {},
+        })
+    };
+    let mut fixed = base();
+    let mut priority_sites = BTreeSet::new();
+    {
+        let mut with_sides = fixed.clone();
+        crate::surface::site_record::fix_sides(w, &mut with_sides);
+        if fits_budget(&with_sides, MAX_OFFER_FIXED_BYTES) {
+            fixed = with_sides;
+        }
+    }
+    // 1. Owed exits for `actor` only.
+    let mut exit_sites: Vec<CanonicalId> = Vec::new();
+    if let Some(owed) = inputs.exits {
+        for (site, units) in &owed.0 {
+            let mine: Vec<u32> = units
+                .iter()
+                .filter(|(_, owner)| **owner == actor)
+                .map(|(unit, _)| unit.0)
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            let site_text = site.to_string();
+            if try_insert_map_entry(&mut fixed, "exiting", &site_text, json!(mine)) {
+                priority_sites.insert(site_text);
+                exit_sites.push(site.clone());
+            }
+        }
+    }
+    // 2. Owed rejoins for `actor` only.
+    if let Some(owed) = inputs.rejoins {
+        for (site, units) in &owed.0 {
+            let mine: Vec<u32> = units
+                .iter()
+                .filter(|(_, owner)| **owner == actor)
+                .map(|(unit, _)| unit.0)
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            let site_text = site.to_string();
+            if try_insert_map_entry(&mut fixed, "rejoining", &site_text, json!(mine)) {
+                priority_sites.insert(site_text);
+            }
+        }
+    }
+    // 3. Owed set-downs for `actor` only.
+    if let Some(owed) = inputs.set_downs {
+        for (site, rows) in &owed.0 {
+            let mine: Vec<&LeftUnit> = rows
+                .values()
+                .filter(|(owner, _)| *owner == actor)
+                .map(|(_, row)| row)
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            let site_text = site.to_string();
+            if try_insert_map_entry(&mut fixed, "setting_down", &site_text, json!(mine)) {
+                priority_sites.insert(site_text);
+            }
+        }
+    }
+    // 4. Owed closes for `actor` only, with carried-mind chunking when needed.
+    let mut carried_bytes = 0_usize;
+    let mut carried_sites = BTreeSet::new();
+    let mut closing_count = 0_usize;
+    if let Some(owed) = inputs.closes {
+        for (site, close) in &owed.0 {
+            if close.actor != actor {
+                continue;
+            }
+            let site_text = site.to_string();
+            let allow_degrade = closing_count == 0;
+            let live_carried: &[super::record::CarriedRow] = inputs
+                .book
+                .and_then(|book| book.hosted(site))
+                .map_or(&[], |hosted| hosted.live.carried.as_slice());
+            let total_minds = live_carried.len().saturating_add(close.minds.len());
+            if total_minds == 0 {
+                if fit_close_entry(&mut fixed, &site_text, close, allow_degrade) {
+                    closing_count = closing_count.saturating_add(1);
+                    priority_sites.insert(site_text);
+                }
+                continue;
+            }
+            // Try fitting both `closing[site]` and ALL carried minds for `site` together.
+            let mut together = fixed.clone();
+            let mut together_carried = carried_bytes;
+            let close_ok = fit_close_entry(&mut together, &site_text, close, allow_degrade);
+            let packed_together = if close_ok {
+                pack_carried_for_site(
+                    &mut together,
+                    &mut together_carried,
+                    &site_text,
+                    live_carried.iter().chain(close.minds.iter()),
+                )
+            } else {
+                0
+            };
+            if close_ok && packed_together == total_minds {
+                fixed = together;
+                carried_bytes = together_carried;
+                closing_count = closing_count.saturating_add(1);
+                carried_sites.insert(site_text.clone());
+                priority_sites.insert(site_text);
+                continue;
+            }
+            // Not all carried minds fit beside `closing[site]`: emit a carry-only chunk for this
+            // site (without `closing[site]`) so `op = "carry"` drains minds before `op = "close"`.
+            let packed_chunk = pack_carried_for_site(
+                &mut fixed,
+                &mut carried_bytes,
+                &site_text,
+                live_carried.iter().chain(close.minds.iter()),
+            );
+            if packed_chunk > 0 {
+                carried_sites.insert(site_text.clone());
+                priority_sites.insert(site_text);
+            } else if close_ok {
+                // No carried mind could fit even alone (e.g., all rows oversized); still close.
+                fixed = together;
+                carried_bytes = together_carried;
+                closing_count = closing_count.saturating_add(1);
+                priority_sites.insert(site_text);
+            }
+        }
+    }
+    // 5. Carried minds for `actor`'s owed exits on live running fields.
+    if let Some(book) = inputs.book {
+        for site in &exit_sites {
+            let site_text = site.to_string();
+            if carried_sites.contains(&site_text) {
+                continue;
+            }
+            let Some(hosted) = book.hosted(site) else {
+                continue;
+            };
+            if hosted.live.carried.is_empty() {
+                continue;
+            }
+            let _ = pack_carried_for_site(
+                &mut fixed,
+                &mut carried_bytes,
+                &site_text,
+                hosted.live.carried.iter(),
+            );
+        }
+    }
+    // Defensive backstop: never return a value exceeding `MAX_OFFER_FIXED_BYTES`.
+    if !fits_budget(&fixed, MAX_OFFER_FIXED_BYTES) {
+        tracing::error!(
+            actor = actor.0,
+            "tacsim: field offer fixed parameters exceeded 48 KiB after packing; degrading to open-only offer"
+        );
+        return (base(), BTreeSet::new());
+    }
+    (fixed, priority_sites)
+}
+
+/// **Whether `close` on `site` must run an `op = "carry"` chunk before `op = "close"`**
+/// (CRIT-18): true iff `build_fixed_parameters` withheld `closing[site]` and packed a non-empty
+/// `carried[site]` chunk instead.
+#[must_use]
+pub(crate) fn close_needs_carry_chunk(
+    w: &World,
+    site: &CanonicalId,
+    close: &super::admit::OwedClose,
+) -> bool {
+    if close.minds.is_empty() {
+        return false;
+    }
+    let (fixed, _) = build_fixed_parameters(w, close.actor);
+    fixed_needs_carry_chunk(&fixed, site)
+}
+
+fn fixed_needs_carry_chunk(fixed: &Value, site: &CanonicalId) -> bool {
+    let site_text = site.as_str();
+    let has_close = fixed
+        .get("closing")
+        .and_then(Value::as_object)
+        .is_some_and(|map| map.contains_key(site_text));
+    let has_carried = fixed
+        .get("carried")
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(site_text))
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty());
+    !has_close && has_carried
 }
 
 impl ActionProvider for FieldProvider {
@@ -464,8 +878,15 @@ impl ActionProvider for FieldProvider {
         parameters
             .get("op")
             .and_then(Value::as_str)
-            .filter(|op| matches!(*op, "open" | "close" | "exit" | "rejoin" | "set_down"))
-            .ok_or_else(|| invalid("a field write opens, closes, exits, rejoins or sets down"))?;
+            .filter(|op| {
+                matches!(
+                    *op,
+                    "open" | "close" | "exit" | "rejoin" | "set_down" | "carry"
+                )
+            })
+            .ok_or_else(|| {
+                invalid("a field write opens, closes, exits, rejoins, sets down or carries minds")
+            })?;
         Ok(())
     }
 
@@ -485,118 +906,77 @@ impl ActionProvider for FieldProvider {
         {
             return Ok(None);
         }
-        let sites: Vec<String> = crate::surface::chart::lane_sites(w)
+        let all_sites: Vec<String> = crate::surface::chart::lane_sites(w)
             .iter()
             .map(|site| site.entry.to_string())
             .collect();
-        if sites.is_empty() {
+        if all_sites.is_empty() {
             return Ok(None);
         }
-        // The host's owed closes, fixed into the invocation: only these may be closed, and only
-        // with these units.
-        let closing: Map<String, Value> = w
-            .module_state::<super::admit::OwedCloses>()
-            .map(|owed| {
-                owed.0
-                    .iter()
-                    .map(|(site, close)| {
-                        (
-                            site.to_string(),
-                            json!({ "ordinal": close.ordinal, "units": close.units, "known": close.known, "remains": close.remains, "wrecked": close.wrecked }),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        // Doc 32 cut CF.5: the host's owed exits, fixed the same way: only these units may be
-        // written out of a field at the ramp.
-        let exiting: Map<String, Value> = w
-            .module_state::<super::exit::OwedExits>()
-            .map(|owed| {
-                owed.0
-                    .iter()
-                    .map(|(site, units)| {
-                        let units: Vec<u32> = units.keys().map(|unit| unit.0).collect();
-                        (site.to_string(), json!(units))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        // Doc 40 (the ramp exit's boarding window; the 38b review's F-15): the exits the host
-        // owes the record struck, a hull back in the field once its carrier was lost.
-        let rejoining: Map<String, Value> = w
-            .module_state::<super::exit::OwedRejoins>()
-            .map(|owed| {
-                owed.0
-                    .iter()
-                    .map(|(site, units)| {
-                        let units: Vec<u32> = units.keys().map(|unit| unit.0).collect();
-                        (site.to_string(), json!(units))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        // Doc 41's RS.9a follow-up: the set-downs the host owes, fixed the same way: only these
-        // carriers may be indexed where they were set down, and only with these rows.
-        let setting_down: Map<String, Value> = w
-            .module_state::<super::close::OwedSetDowns>()
-            .map(|owed| {
-                owed.0
-                    .iter()
-                    .map(|(site, rows)| {
-                        let rows: Vec<&LeftUnit> = rows.values().map(|(_, row)| row).collect();
-                        (site.to_string(), json!(rows))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let carried = carried_offer(w);
+        let (fixed, priority_sites) = build_fixed_parameters(w, query.actor());
+        // Bound choice list to `MAX_PROJECTED_ACTION_CHOICES` (prioritizing active owed sites)
+        // so schema construction never fails globally.
+        let mut sites: Vec<String> = Vec::new();
+        for site in &all_sites {
+            if priority_sites.contains(site)
+                && sites.len() < mush_core::MAX_PROJECTED_ACTION_CHOICES
+            {
+                sites.push(site.clone());
+            }
+        }
+        for site in all_sites {
+            if sites.len() >= mush_core::MAX_PROJECTED_ACTION_CHOICES {
+                break;
+            }
+            if !priority_sites.contains(&site) {
+                sites.push(site);
+            }
+        }
         let integer =
             |minimum: i64, maximum: i64| ProjectedParameterKind::Integer { minimum, maximum };
         let text = ProjectedParameterKind::Text {
             maximum_bytes: MAX_LIST_BYTES,
         };
-        let parameters = vec![
-            crate::surface::act::parameter(
-                "site",
-                true,
-                ProjectedParameterKind::Choice { choices: sites },
-            )?,
-            crate::surface::act::parameter(
-                "op",
-                true,
-                ProjectedParameterKind::Choice {
-                    choices: vec![
-                        "open".to_owned(),
-                        "close".to_owned(),
-                        "exit".to_owned(),
-                        "rejoin".to_owned(),
-                        "set_down".to_owned(),
-                    ],
-                },
-            )?,
-            crate::surface::act::parameter(
-                "by",
-                false,
-                ProjectedParameterKind::Choice {
-                    choices: vec!["mark".to_owned(), "fire".to_owned()],
-                },
-            )?,
-            crate::surface::act::parameter("from", false, integer(1, i64::from(u32::MAX)))?,
-            crate::surface::act::parameter("at", false, integer(1, i64::from(u32::MAX)))?,
-            crate::surface::act::parameter("rigs", false, text)?,
-            crate::surface::act::parameter("unit", false, integer(1, i64::from(u32::MAX)))?,
-        ];
-        let mut fixed = json!({
-            "now": w.world_ic_now().at,
-            "closing": closing,
-            "exiting": exiting,
-            "rejoining": rejoining,
-            "setting_down": setting_down,
-            "carried": carried,
-        });
-        crate::surface::site_record::fix_sides(w, &mut fixed);
-        crate::surface::act::offer_draft(
+        let Ok(parameters) = (|| -> Result<Vec<mush_core::ProjectedParameter>, ActionError> {
+            Ok(vec![
+                crate::surface::act::parameter(
+                    "site",
+                    true,
+                    ProjectedParameterKind::Choice { choices: sites },
+                )?,
+                crate::surface::act::parameter(
+                    "op",
+                    true,
+                    ProjectedParameterKind::Choice {
+                        choices: vec![
+                            "open".to_owned(),
+                            "close".to_owned(),
+                            "exit".to_owned(),
+                            "rejoin".to_owned(),
+                            "set_down".to_owned(),
+                            "carry".to_owned(),
+                        ],
+                    },
+                )?,
+                crate::surface::act::parameter(
+                    "by",
+                    false,
+                    ProjectedParameterKind::Choice {
+                        choices: vec!["mark".to_owned(), "fire".to_owned()],
+                    },
+                )?,
+                crate::surface::act::parameter("from", false, integer(1, i64::from(u32::MAX)))?,
+                crate::surface::act::parameter("at", false, integer(1, i64::from(u32::MAX)))?,
+                crate::surface::act::parameter("rigs", false, text)?,
+                crate::surface::act::parameter("unit", false, integer(1, i64::from(u32::MAX)))?,
+            ])
+        })() else {
+            tracing::error!(
+                "tacsim: field offer parameter schema failed to build; degrading gracefully"
+            );
+            return Ok(None);
+        };
+        match crate::surface::act::offer_draft(
             action,
             engine,
             fixed,
@@ -606,8 +986,13 @@ impl ActionProvider for FieldProvider {
                 "Open, close or leave a field",
                 "The IC field host: promote a site by a leader's mark or a fire order, record a unit's exit at its carrier's ramp, or demote it.",
             ),
-        )
-        .map(Some)
+        ) {
+            Ok(draft) => Ok(Some(draft)),
+            Err(error) => {
+                tracing::error!(%error, "tacsim: field offer draft failed; degrading gracefully to avoid SelfActor lockout");
+                Ok(None)
+            }
+        }
     }
 
     /// Doc 36 cut GC.3: the close takes its preparation context, through which a close-destroyed
@@ -631,6 +1016,35 @@ impl ActionProvider for FieldProvider {
             .get("op")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("a field write opens or closes"))?;
+        if op == "carry" {
+            let has_rows = parameters
+                .get("carried")
+                .and_then(|carried| carried.get(key.0.as_str()))
+                .and_then(Value::as_array)
+                .is_some_and(|rows| !rows.is_empty());
+            if !has_rows {
+                return Err(rejected(
+                    "only the field host carries minds to their epoch records",
+                ));
+            }
+            self.lay_minds(txn, parameters, &key)?;
+            let outcome = RulesValue::new(
+                self.outcome.clone(),
+                json!({
+                    "actor": invocation.actor().0,
+                    "site": key.key_text(),
+                    "said": "carried minds laid on their epoch records",
+                }),
+            )
+            .map_err(|_| {
+                port_error(
+                    ActionErrorCode::BoundsExceeded,
+                    "the field's outcome exceeds canonical bounds",
+                )
+            })?;
+            return Ok(AuthoritativeActionOutput::new(outcome)
+                .with_eligible_witnesses(vec![invocation.principal().clone()]));
+        }
         let found = txn
             .get(&self.sites, &key)
             .map_err(|_| integrity("the site records are unavailable"))?
@@ -914,5 +1328,188 @@ mod tests {
             "a launch on the ramp finishes into the field"
         );
         assert!(handoff_pending(&launching, &cid("ahuna_port")));
+    }
+
+    /// **CRIT-18**: `Learned::clamp` caps `eyes` at `MAX_LEARNED_EYES` and `items` at
+    /// `MAX_KNOWN_ITEMS` so a large battle cannot produce unbounded eye lists.
+    #[test]
+    fn crit18_learned_clamp_caps_eyes_and_items() {
+        let mut row = super::super::known::Learned {
+            principal: ObjId(7),
+            items: (0..100)
+                .map(|i| {
+                    crate::surface::site_record::KnownItem(
+                        crate::surface::site_record::KnownWhat::Wreck,
+                        i,
+                        0,
+                    )
+                })
+                .collect(),
+            eyes: (0..500).map(|i| (i / 2, i % 17)).collect(),
+        };
+        row.clamp();
+        assert_eq!(
+            row.items.len(),
+            crate::surface::site_record::MAX_KNOWN_ITEMS
+        );
+        assert_eq!(row.eyes.len(), super::super::known::MAX_LEARNED_EYES);
+    }
+
+    /// **CRIT-18**: `build_fixed_parameters` scopes owed closes/carried minds to the owning actor,
+    /// keeps canonical JSON strictly `<= 48 KiB`, chunks carried minds via `close_needs_carry_chunk`,
+    /// and degrades oversized `known` payloads cleanly without overflowing 48 KiB.
+    #[test]
+    fn crit18_offer_is_actor_scoped_bounded_and_chunks_carried_minds() {
+        let w = World::new_minimal();
+        let site = cid("ahuna_port");
+        let owner = ObjId(10);
+        let bystander = ObjId(99);
+
+        // Build 400 `Learned` rows (well over 64 KiB if emitted verbatim) plus 12 carried minds
+        // totaling > 36 KiB.
+        let huge_known: Vec<super::super::known::Learned> = (1..=400_u32)
+            .map(|p| super::super::known::Learned {
+                principal: ObjId(p),
+                items: (0..20)
+                    .map(|i| {
+                        crate::surface::site_record::KnownItem(
+                            crate::surface::site_record::KnownWhat::Casualty,
+                            i,
+                            i64::from(p),
+                        )
+                    })
+                    .collect(),
+                eyes: (0..120).map(|i| (i, i64::from(p))).collect(),
+            })
+            .collect();
+        let mem_payload = format!("\"{}\"", "a".repeat(3_500)).into_bytes();
+        let many_minds: Vec<super::super::record::CarriedRow> = (1..=12_u32)
+            .map(|u| super::super::record::CarriedRow {
+                unit: ObjId(100 + u),
+                epoch: crate::arena::mind::SortieId::Packed(u64::from(u)),
+                mind: crate::arena::mind::CarriedMind {
+                    seal_digest: [7; 32],
+                    think_seq: u64::from(u),
+                    memory: mem_payload.clone(),
+                    dropped: None,
+                },
+            })
+            .collect();
+        let close = super::super::admit::OwedClose {
+            actor: owner,
+            ordinal: 3,
+            units: Vec::new(),
+            known: huge_known,
+            remains: Vec::new(),
+            minds: many_minds,
+            wrecked: Vec::new(),
+        };
+        let mut closes = super::super::admit::OwedCloses::default();
+        closes.0.insert(site.clone(), close);
+
+        let build = |actor: ObjId, closes: &super::super::admit::OwedCloses| {
+            build_fixed_parameters_with(
+                &w,
+                actor,
+                FixedInputs {
+                    exits: None,
+                    rejoins: None,
+                    set_downs: None,
+                    closes: Some(closes),
+                    book: None,
+                },
+            )
+        };
+
+        // 1. Bystander sees empty closing/carried and tiny canonical JSON (no global lockout).
+        let (bystander_fixed, _) = build(bystander, &closes);
+        let bystander_bytes = mush_core::mechanics::canonical_json_bytes_with_limit(
+            &bystander_fixed,
+            MAX_OFFER_FIXED_BYTES,
+        )
+        .expect("bystander fits 48 KiB");
+        assert!(
+            bystander_bytes.len() < 1024,
+            "bystander offer should be tiny"
+        );
+        assert!(
+            bystander_fixed["closing"]
+                .as_object()
+                .expect("closing")
+                .is_empty()
+        );
+        assert!(
+            bystander_fixed["carried"]
+                .as_object()
+                .expect("carried")
+                .is_empty()
+        );
+
+        // 2. Owner with > 24 KiB of carried minds gets a carry-only chunk strictly <= 48 KiB.
+        let (owner_carry, _) = build(owner, &closes);
+        assert!(fixed_needs_carry_chunk(&owner_carry, &site));
+        let carry_bytes = mush_core::mechanics::canonical_json_bytes_with_limit(
+            &owner_carry,
+            MAX_OFFER_FIXED_BYTES,
+        )
+        .expect("carry chunk fits 48 KiB");
+        assert!(carry_bytes.len() <= MAX_OFFER_FIXED_BYTES);
+        assert!(
+            !owner_carry["closing"]
+                .as_object()
+                .expect("closing")
+                .contains_key("ahuna_port")
+        );
+        let carried_chunk = owner_carry["carried"]["ahuna_port"]
+            .as_array()
+            .expect("carried chunk");
+        assert!(!carried_chunk.is_empty() && carried_chunk.len() < 12);
+
+        // 3. Once carried minds are drained, the close offer degrades `known` cleanly to stay
+        // strictly <= 48 KiB while still closing the site.
+        closes.0.get_mut(&site).expect("site").minds.clear();
+        let (owner_close, _) = build(owner, &closes);
+        assert!(!fixed_needs_carry_chunk(&owner_close, &site));
+        let close_bytes = mush_core::mechanics::canonical_json_bytes_with_limit(
+            &owner_close,
+            MAX_OFFER_FIXED_BYTES,
+        )
+        .expect("degraded close fits 48 KiB");
+        assert!(close_bytes.len() <= MAX_OFFER_FIXED_BYTES);
+        assert_eq!(owner_close["closing"]["ahuna_port"]["ordinal"], 3);
+    }
+
+    /// **CRIT-18**: `sanitize_close` clamps restored tombstones and drops single oversized minds
+    /// so a restart can never wedge `project_legal_actions`.
+    #[test]
+    fn crit18_sanitize_close_clamps_eyes_and_drops_oversized_mind() {
+        let mut close = super::super::admit::OwedClose {
+            actor: ObjId(10),
+            ordinal: 1,
+            units: Vec::new(),
+            known: vec![super::super::known::Learned {
+                principal: ObjId(1),
+                items: Vec::new(),
+                eyes: (0..300).map(|i| (i, 0)).collect(),
+            }],
+            remains: Vec::new(),
+            minds: vec![super::super::record::CarriedRow {
+                unit: ObjId(77),
+                epoch: crate::arena::mind::SortieId::Packed(1),
+                mind: crate::arena::mind::CarriedMind {
+                    seal_digest: [1; 32],
+                    think_seq: 1,
+                    memory: format!("\"{}\"", "z".repeat(MAX_CARRIED_BYTES + 1024)).into_bytes(),
+                    dropped: None,
+                },
+            }],
+            wrecked: Vec::new(),
+        };
+        super::super::admit::sanitize_close(&mut close);
+        assert_eq!(
+            close.known[0].eyes.len(),
+            super::super::known::MAX_LEARNED_EYES
+        );
+        assert!(close.minds.is_empty(), "single oversized mind is dropped");
     }
 }

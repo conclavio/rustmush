@@ -104,6 +104,10 @@ pub struct CampaignStore {
     recovery_queue: crate::recovery::RecoveryQueue,
     recovery_apps: BTreeMap<u32, crate::recovery::RecoveryApplication>,
     recovery_grants: BTreeMap<u32, crate::recovery::RecoveryGrant>,
+    /// Wreck object IDs that have already waived a recovery cooldown (bounded by
+    /// [`crate::recovery::MAX_COMPENSATED_WRECKS`]), persisted in `campaign_meta`
+    /// and hydrated from both `campaign_meta` and loaded grants.
+    compensated_wrecks: BTreeSet<u32>,
     /// The recovery arm's own rotation cursor — the raw applicant id it resumes
     /// **past**, so a queue longer than one fire's budget is worked round-robin and
     /// nobody at the back is starved by the front.
@@ -155,6 +159,9 @@ struct Meta {
     /// **E7r1 R3** — the recovery arm's rotation cursor.
     #[serde(default)]
     recovery_cursor: u32,
+    /// Wreck object IDs already compensated by a recovery grant.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    compensated_wrecks: Vec<u32>,
 }
 
 impl CampaignStore {
@@ -378,21 +385,56 @@ impl CampaignStore {
         doomed.into_iter().map(mush_core::ObjId).collect()
     }
 
-    /// **The recovery grant ring** (B7), the same shape over **ended** grants: a live
-    /// loaner is a live claim on a hull and is never evicted.
-    pub(crate) fn prune_recovery_grants(&mut self) -> Vec<mush_core::ObjId> {
-        let doomed: Vec<u32> = self
+    /// **The recovery grant ring** (B7), over **ended** grants whose cooldown is
+    /// no longer active at `now`: live loaners AND ended grants with an active
+    /// cooldown are never evicted. Only expired or waived ended grants past
+    /// [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] are evicted, oldest
+    /// `ended_at` first.
+    pub(crate) fn prune_recovery_grants(
+        &mut self,
+        now: i64,
+        cooldown_secs: i64,
+        mut is_voided: impl FnMut(mush_core::ObjId) -> bool,
+    ) -> Vec<mush_core::ObjId> {
+        let mut evictable: Vec<(i64, u32)> = self
             .recovery_grants
             .iter()
-            .filter(|(_, grant)| !grant.is_live())
-            .map(|(id, _)| *id)
-            .rev()
+            .filter_map(|(id, grant)| {
+                let ended = grant.ended_at()?;
+                if grant.cooldown_active(now, cooldown_secs, is_voided(mush_core::ObjId(*id))) {
+                    return None;
+                }
+                Some((ended, *id))
+            })
+            .collect();
+        evictable.sort_by(|a, b| b.cmp(a));
+        let doomed: Vec<u32> = evictable
+            .into_iter()
             .skip(crate::recovery::MAX_RETAINED_RECOVERY_RECORDS)
+            .map(|(_, id)| id)
             .collect();
         for id in &doomed {
             self.recovery_grants.remove(id);
         }
         doomed.into_iter().map(mush_core::ObjId).collect()
+    }
+
+    /// Whether `wreck` has already been compensated by a prior recovery grant.
+    #[must_use]
+    pub fn is_wreck_compensated(&self, wreck: mush_core::ObjId) -> bool {
+        self.compensated_wrecks.contains(&wreck.0)
+    }
+
+    /// Record a wreck as compensated, capping retention at
+    /// [`crate::recovery::MAX_COMPENSATED_WRECKS`].
+    pub(crate) fn record_compensated_wreck(&mut self, wreck: mush_core::ObjId) {
+        if wreck.0 == 0 {
+            return;
+        }
+        self.compensated_wrecks.insert(wreck.0);
+        while self.compensated_wrecks.len() > crate::recovery::MAX_COMPENSATED_WRECKS {
+            let _ = self.compensated_wrecks.pop_first();
+        }
     }
 
     pub(crate) fn install_muster(&mut self, report: MusterReport) {
@@ -408,6 +450,7 @@ impl CampaignStore {
             cursor: self.cursor,
             muster_cycle: self.muster_cycle,
             recovery_cursor: self.recovery_cursor,
+            compensated_wrecks: self.compensated_wrecks.iter().copied().collect(),
         })
         .unwrap_or(serde_json::Value::Null)
     }
@@ -552,15 +595,34 @@ pub(crate) fn put_recovery_application(
     }
 }
 
-/// Install one grant and queue its document, **evicting the oldest ENDED grants past
-/// [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] in the same bundle** (B7).
+/// Install one grant and queue its document, **evicting the oldest expired ENDED
+/// grants past [`crate::recovery::MAX_RETAINED_RECOVERY_RECORDS`] in the same
+/// bundle** (B7). Active cooldowns and live grants are never evicted.
 pub(crate) fn put_recovery_grant(ctx: &mut Ctx<'_>, grant: crate::recovery::RecoveryGrant) {
     let key = crate::recovery::recovery_grant_key(grant.applicant());
     let value = serde_json::to_value(&grant).unwrap_or(serde_json::Value::Null);
+    let now = ctx.w.world_ic_now().at;
+    let cooldown_secs = crate::recovery::policy(ctx).cooldown_secs;
+    let voided: BTreeSet<u32> = ctx
+        .w
+        .module_state::<CampaignStore>()
+        .map(|store| {
+            store
+                .recovery_grants
+                .keys()
+                .copied()
+                .chain(std::iter::once(grant.applicant().0))
+                .filter(|id| mush_sim::relay::cover_voided(ctx.w, mush_core::ObjId(*id)))
+                .collect()
+        })
+        .unwrap_or_default();
     let evicted = match ctx.w.module_state_mut::<CampaignStore>() {
         Some(store) => {
+            if let Some(wreck) = grant.compensated_wreck() {
+                store.record_compensated_wreck(wreck);
+            }
             store.recovery_grants.insert(grant.applicant().0, grant);
-            store.prune_recovery_grants()
+            store.prune_recovery_grants(now, cooldown_secs, |id| voided.contains(&id.0))
         }
         None => Vec::new(),
     };
@@ -774,6 +836,9 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.cursor = meta.cursor;
                     store.muster_cycle = meta.muster_cycle;
                     store.recovery_cursor = meta.recovery_cursor;
+                    for wreck in meta.compensated_wrecks {
+                        store.record_compensated_wreck(mush_core::ObjId(wreck));
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(%key, %error, "campaign: the meta document was ignored");
@@ -862,6 +927,9 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
         } else if key.starts_with("recovery_grant:") {
             match serde_json::from_value::<crate::recovery::RecoveryGrant>(value) {
                 Ok(grant) if crate::recovery::recovery_grant_key(grant.applicant()) == key => {
+                    if let Some(wreck) = grant.compensated_wreck() {
+                        store.record_compensated_wreck(wreck);
+                    }
                     store.recovery_grants.insert(grant.applicant().0, grant);
                 }
                 Ok(_) => store.hold(
@@ -904,14 +972,12 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
     // only closed applications and ended grants past the ring are left on disk, and
     // the count is **paged into the log** rather than dropped silently.
     let dropped_apps = store.prune_recovery_apps().len();
-    let dropped_grants = store.prune_recovery_grants().len();
-    if dropped_apps > 0 || dropped_grants > 0 {
+    if dropped_apps > 0 {
         tracing::warn!(
             dropped_apps,
-            dropped_grants,
             retained = crate::recovery::MAX_RETAINED_RECOVERY_RECORDS,
-            "campaign: the recovery books were over their retention ring; the oldest CLOSED \
-             applications and ENDED grants were left on disk and not hydrated"
+            "campaign: the recovery application book was over its retention ring; the oldest \
+             CLOSED applications were left on disk and not hydrated"
         );
     }
     store

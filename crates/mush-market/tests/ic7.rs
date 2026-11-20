@@ -1939,13 +1939,11 @@ fn ic7_the_paid_legs_project_only_paid_contracts() {
     let listing = r.listing.expect("listed");
     let (sam, _sam_account, sam_hold) = buyer(&mut r.tw, "Sam", r.faucet);
 
-    // (a) An endpoint and no paid quote: reserve and release only, no `contract`.
-    let offer = lot_offer(&r.tw, sam).expect("an endpoint holder is offered the lot action");
-    assert_eq!(
-        choices(&offer, "op"),
-        Some(vec!["reserve".to_owned(), "release".to_owned()])
+    // (a) An endpoint with no eligible listing leg and no paid quote gets no offer (CRIT-9).
+    assert!(
+        lot_offer(&r.tw, sam).is_none(),
+        "an endpoint holder with no eligible reserve, release, or paid leg receives no offer"
     );
-    assert!(choices(&offer, "contract").is_none());
 
     // (b) The consume hole, closed: a live hold-backed listing, and a stranger naming it
     // directly cannot even resolve the op.
@@ -1978,7 +1976,10 @@ fn ic7_the_paid_legs_project_only_paid_contracts() {
         }),
     );
     let refusal = land_submit(&mut r.tw, &theft, 0xc2).expect_err("no such op is offered");
-    assert!(refusal.starts_with("resolve:"), "{refusal}");
+    assert!(
+        refusal == "that action is not currently offered" || refusal.starts_with("resolve:"),
+        "{refusal}"
+    );
     assert_eq!(
         pool(&mut r.tw, &r.families, r.depot),
         (50, 40),
@@ -2042,14 +2043,7 @@ fn ic7_the_paid_legs_project_only_paid_contracts() {
     assert_eq!(leg.parameters["contract"], json!(cs.0.to_string()));
     assert_eq!(leg.key.as_str(), format!("market.lot.consume.{:x}", cs.0));
     let sam_offer = lot_offer(&r.tw, sam).expect("offered");
-    assert_eq!(
-        choices(&sam_offer, "op"),
-        Some(vec![
-            "reserve".to_owned(),
-            "consume".to_owned(),
-            "release".to_owned()
-        ])
-    );
+    assert_eq!(choices(&sam_offer, "op"), Some(vec!["consume".to_owned()]));
     // (f) The consume cross-check (L12, reviewer T1): Sam's OWN paid consume contract,
     // carrying a SECOND hold-backed listing's terms, resolves (consume is offered, the
     // contract is his) and is refused in the prepare by the field-for-field match. Without
@@ -2299,12 +2293,10 @@ fn ic7_no_draw_is_offered_or_restaged_after_its_cutoff() {
         .and_then(|q| q.lot.as_ref().map(|l| l.accepted_at))
         .expect("the terms");
     r.tw.set_now(accepted_at + DRAW_WINDOW_SECS - DRAW_SETTLE_MARGIN_SECS + 1);
-    let offer = lot_offer(&r.tw, r.pat).expect("still offered reserve/release");
     assert!(
-        choices(&offer, "contract").is_none(),
-        "no draw entry past the cutoff"
+        lot_offer(&r.tw, r.pat).is_none(),
+        "no draw entry past the cutoff and no eligible reserve/release"
     );
-    assert!(choices(&offer, "op").is_some_and(|ops| !ops.contains(&"draw".to_owned())));
     let late = err(&mut r.tw, r.pat, &format!("+market/accept {}", q.0));
     assert!(late.contains(DRAW_TOO_LATE), "{late}");
     assert!(r.tw.engine_mut().take_authoritative_submit().is_none());
@@ -3028,4 +3020,168 @@ fn g27_goods_no_provider_delivers_are_refused_at_accept() {
     assert!(refused.contains("cannot be delivered"), "{refused}");
     assert_eq!(posted(&r.tw, r.pat_account), FUNDS, "nothing was charged");
     IRON_REPRESENTATION.with(|rep| rep.set("lot"));
+}
+
+/// **CRIT-9 regressions on pooled hold-backed listings**:
+/// 1. Direct `op="release"` on an active, unwithdrawn pooled listing is refused (even by its
+///    endpoint holder).
+/// 2. Direct `op="reserve"` for a non-existent or forged listing is refused.
+/// 3. Direct `op="release"` AND withdrawal while `sale_in_force` is true are refused, preserving
+///    the hold for the buyer's paid `consume`.
+/// 4. `boot::reconcile_lot_holds` checks `ReservationState::Held` (not merely `reservations.is_some`),
+///    so a live pooled listing whose reservation was released out-of-band is withdrawn instead of
+///    remaining a phantom listing.
+#[test]
+fn crit9_pooled_listing_release_reserve_and_reconcile_hardening() {
+    let mut r = rig();
+    // Publish a pooled hold-backed listing on r.depot.
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GOOD} price=700 qty=10 endpoint={}",
+            r.vendor.0,
+            r.depot.vault().0
+        ),
+    );
+    land(&mut r.tw, 0xd1).expect("the reserve lands");
+    let held_listing = market_of(&r.tw)
+        .lot_listings()
+        .map(|l| l.id)
+        .next()
+        .expect("the pooled hold-backed listing");
+    assert_eq!(pool(&mut r.tw, &r.families, r.depot), (50, 40));
+
+    // (1) Forged `op="release"` on active unwithdrawn listing is refused even by GOD.
+    let active_release = forged(
+        &r.tw,
+        GOD,
+        json!({
+            "op": "release",
+            "listing": held_listing.0,
+            "endpoint": r.depot.vault().0.to_string(),
+            "source": r.depot.vault().0.to_string(),
+            "commodity": "iron",
+            "quantity": 10,
+            "grade": 0,
+        }),
+    );
+    assert!(
+        land_submit(&mut r.tw, &active_release, 0xd2).is_err(),
+        "active unwithdrawn listing cannot be released directly"
+    );
+    assert_eq!(pool(&mut r.tw, &r.families, r.depot), (50, 40));
+
+    // (2) Forged `op="reserve"` for a non-existent listing is refused.
+    let forged_reserve = forged(
+        &r.tw,
+        GOD,
+        json!({
+            "op": "reserve",
+            "listing": 99_999,
+            "endpoint": r.depot.vault().0.to_string(),
+            "source": r.depot.vault().0.to_string(),
+            "commodity": "iron",
+            "quantity": 10,
+            "grade": 0,
+        }),
+    );
+    assert!(
+        land_submit(&mut r.tw, &forged_reserve, 0xd3).is_err(),
+        "forged reserve for non-existent listing must be refused"
+    );
+
+    // (3) Buyer accepts -> sale_in_force is true; both direct release and withdraw must refuse.
+    let (sam, _sam_account, sam_hold) = buyer(&mut r.tw, "Sam", r.faucet);
+    let q = quote(&mut r.tw, sam, held_listing, 10);
+    ok(
+        &mut r.tw,
+        sam,
+        &format!("+market/accept {}={}", q.0, sam_hold.vault().0),
+    );
+    let consume_leg = take(&mut r.tw);
+    assert!(mush_market::sale_in_force(r.tw.world(), held_listing));
+    let sale_release = forged(
+        &r.tw,
+        GOD,
+        json!({
+            "op": "release",
+            "listing": held_listing.0,
+            "endpoint": r.depot.vault().0.to_string(),
+            "source": r.depot.vault().0.to_string(),
+            "commodity": "iron",
+            "quantity": 10,
+            "grade": 0,
+        }),
+    );
+    assert!(
+        land_submit(&mut r.tw, &sale_release, 0xd4).is_err(),
+        "release during active sale_in_force must be refused"
+    );
+    let withdraw_refused = err(
+        &mut r.tw,
+        GOD,
+        &format!("@market/vendor withdraw {}", held_listing.0),
+    );
+    assert!(
+        withdraw_refused.contains("cannot be withdrawn"),
+        "{withdraw_refused}"
+    );
+    // Buyer's consume leg still lands cleanly!
+    land_submit(&mut r.tw, &consume_leg, 0xd5).expect("buyer consume lands");
+    assert_eq!(live_lots(&mut r.tw, &r.families, sam_hold), 1);
+
+    // (4) `reconcile_lot_holds` detects a released pooled reservation (where the `reservations`
+    // index still exists, but the book entry is `Released` rather than `Held`) and withdraws the
+    // phantom listing.
+    let yard = org_vault(&mut r.tw, r.root_scope, "Crit9Yard");
+    seed_rooted_pool(&mut r.tw, &r.families, yard, 30, LotId(0xd9));
+    ok(
+        &mut r.tw,
+        GOD,
+        &format!(
+            "@market/vendor stock #{}={GOOD} price=700 qty=10 endpoint={}",
+            r.vendor.0,
+            yard.vault().0
+        ),
+    );
+    land(&mut r.tw, 0xd6).expect("yard reserve lands");
+    let phantom = market_of(&r.tw)
+        .lot_listings()
+        .map(|l| l.id)
+        .max()
+        .expect("yard listing");
+    let iron = mush_core::CanonicalId::new("iron").expect("iron");
+    let res_id = mush_market::listing_reservation(phantom, yard, &iron).expect("res id");
+    // Release the pooled reservation directly at the inventory layer while leaving the listing active.
+    {
+        let families = r.families.clone();
+        let mut txn =
+            r.tw.engine_mut()
+                .action_transaction(&families.books)
+                .expect("txn");
+        let rec = families
+            .reservation(&mut txn, yard, &iron, res_id)
+            .expect("read")
+            .expect("held");
+        families
+            .release(&mut txn, yard, &iron, res_id, rec.revision())
+            .expect("release");
+        let (_, install) = txn.prepare().expect("prep").into_parts();
+        r.tw.engine_mut()
+            .install_prepared_action(install)
+            .expect("install");
+    }
+    // Wait past RESERVE_GRACE_SWEEPS; reconcile_lot_holds must withdraw the phantom listing.
+    let start = r.tw.world().now();
+    for step in 1..=6 {
+        at(&mut r.tw, start + step * 61);
+        if market_of(&r.tw).listing(phantom).is_none() {
+            break;
+        }
+    }
+    assert!(
+        market_of(&r.tw).listing(phantom).is_none(),
+        "reconcile_lot_holds must withdraw a pooled listing whose reservation is no longer Held"
+    );
 }

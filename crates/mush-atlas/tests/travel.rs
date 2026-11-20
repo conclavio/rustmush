@@ -1200,3 +1200,172 @@ fn k4_a_disconnect_leaves_the_traveler_where_it_is() {
     let _ = tick_at(&mut tw, T0 + 400);
     assert_eq!(loc(&tw, alice), Some(transit_room(&tw)), "and stays there");
 }
+
+/// CRIT-17: a passenger aboard a moving service vehicle MUST NOT be able to
+/// `+stakeout` (teleporting off the moving vehicle to a road patch) or list
+/// checkpoints while the vehicle is under way.
+#[test]
+fn crit17_moving_vehicle_passenger_cannot_stakeout() {
+    let mut tw = lot();
+    let bus = room(&tw, "Studio Tour Bus");
+    let stop = room(&tw, "Bus Stop (OOC)");
+    let rider = player(&mut tw, "Rider", stop);
+    let _ = run(&mut tw, rider, "board");
+    assert_eq!(loc(&tw, rider), Some(bus));
+
+    // Advance until the bus departs and is UnderWay.
+    let mut departed = false;
+    for t in (T0 + 1)..=(T0 + 200) {
+        let _ = tick_at(&mut tw, t);
+        if journey_of(&tw, bus).is_some_and(|j| j.state == JourneyState::UnderWay) {
+            departed = true;
+            break;
+        }
+    }
+    assert!(departed, "the bus departed");
+
+    let list = run(&mut tw, rider, "+stakeout");
+    assert!(
+        list.contains("under way") || list.contains("No road"),
+        "moving vehicle passenger must not be offered stakeout checkpoints: {list}"
+    );
+    let attempt = run(&mut tw, rider, "+stakeout Water Tower");
+    assert!(
+        attempt.contains("under way"),
+        "moving vehicle passenger must be refused +stakeout: {attempt}"
+    );
+    assert_eq!(
+        loc(&tw, rider),
+        Some(bus),
+        "rider stayed aboard the moving bus"
+    );
+    assert!(
+        !atlas(&tw).travel.watches.contains_key(&rider),
+        "no watch was registered"
+    );
+}
+
+#[derive(Clone, Default)]
+struct TravelVetoState {
+    blocked_actor: std::sync::Arc<std::sync::Mutex<Option<ObjId>>>,
+    blocked_dest: std::sync::Arc<std::sync::Mutex<Option<ObjId>>>,
+}
+
+impl mush_core::module::EventHook for TravelVetoState {
+    fn move_attempt(
+        &self,
+        _ctx: &mush_core::module::HookReadContext<'_>,
+        actor: ObjId,
+        _exit: Option<ObjId>,
+        dest: ObjId,
+    ) -> Result<(), mush_proto::RichText> {
+        if *self.blocked_actor.lock().expect("lock") == Some(actor) {
+            return Err(mush_proto::RichText::plain("You are held fast."));
+        }
+        if *self.blocked_dest.lock().expect("lock") == Some(dest) {
+            return Err(mush_proto::RichText::plain("That destination is warded."));
+        }
+        Ok(())
+    }
+}
+
+struct TravelVetoModule(TravelVetoState);
+
+impl GameModule for TravelVetoModule {
+    fn name(&self) -> &'static str {
+        "travel_veto"
+    }
+
+    fn register(
+        &mut self,
+        reg: &mut mush_core::module::Registrar<'_>,
+    ) -> Result<(), mush_core::module::ModError> {
+        reg.hook(
+            mush_core::module::HookPoint::MoveAttempt,
+            std::sync::Arc::new(self.0.clone()),
+        );
+        Ok(())
+    }
+}
+
+/// CRIT-17: `+travel` departure/arrival and `+stakeout` / `+stakeout/end` MUST
+/// consult `MoveAttempt` hooks rather than calling raw `World::move_to`.
+#[test]
+fn crit17_travel_and_stakeout_relocations_obey_move_attempt_hooks() {
+    let veto = TravelVetoState::default();
+    let mut mods = modules(vec![region_pack(), west(), east(), hollow()]);
+    mods.insert(0, Box::new(TravelVetoModule(veto.clone())));
+    let mut tw = TestWorld::with_modules(mods);
+    tw.set_now(T0);
+    let _ = tw.fire_due(T0 * 1000);
+
+    let west_gate = room(&tw, "West Gate");
+    let east_gate = room(&tw, "East Gate");
+    let alice = player(&mut tw, "Alice", west_gate);
+
+    // 1. Frozen/vetoed actor cannot escape via +stakeout or +travel.
+    *veto.blocked_actor.lock().expect("lock") = Some(alice);
+    let out = run(&mut tw, alice, "+stakeout First Milestone");
+    assert!(
+        out.contains("held fast"),
+        "stakeout blocked by MoveAttempt: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+    assert!(!atlas(&tw).travel.watches.contains_key(&alice));
+
+    let out = run(&mut tw, alice, "+travel East End");
+    assert!(
+        out.contains("held fast"),
+        "travel depart blocked by MoveAttempt: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+    assert!(journey_of(&tw, alice).is_none());
+
+    // 2. Unfreeze actor, start stakeout, then freeze at patch -> +stakeout/end blocked.
+    *veto.blocked_actor.lock().expect("lock") = None;
+    let _ = run(&mut tw, alice, "+stakeout First Milestone");
+    let patch = loc(&tw, alice).expect("in patch");
+    assert_ne!(patch, west_gate);
+    *veto.blocked_actor.lock().expect("lock") = Some(alice);
+    let out = run(&mut tw, alice, "+stakeout/end");
+    assert!(
+        out.contains("held fast"),
+        "stakeout/end blocked by MoveAttempt: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(patch), "watcher stayed in patch");
+    assert!(
+        atlas(&tw).travel.watches.contains_key(&alice),
+        "watch preserved when return move is vetoed"
+    );
+
+    // Unfreeze and cleanly end watch.
+    *veto.blocked_actor.lock().expect("lock") = None;
+    let _ = run(&mut tw, alice, "+stakeout/end");
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+
+    // 3. Destination warded BEFORE departure blocks +travel immediately.
+    *veto.blocked_dest.lock().expect("lock") = Some(east_gate);
+    let out = run(&mut tw, alice, "+travel East End");
+    assert!(
+        out.contains("warded"),
+        "warded destination blocks +travel departure: {out}"
+    );
+    assert_eq!(loc(&tw, alice), Some(west_gate));
+    assert!(journey_of(&tw, alice).is_none());
+
+    // 4. Destination warded WHILE EN ROUTE aborts arrival instead of bypassing hook.
+    *veto.blocked_dest.lock().expect("lock") = None;
+    let _ = run(&mut tw, alice, "+travel East End");
+    assert!(journey_of(&tw, alice).is_some(), "departed normally");
+    *veto.blocked_dest.lock().expect("lock") = Some(east_gate);
+    let _ = tick_at(&mut tw, T0 + 400);
+    assert_ne!(
+        loc(&tw, alice),
+        Some(east_gate),
+        "arrival into newly-warded room must be blocked by MoveAttempt hook"
+    );
+    assert!(
+        journey_of(&tw, alice).is_none(),
+        "aborted cleanly when arrival was vetoed"
+    );
+}

@@ -867,15 +867,15 @@ fn e7r1_r1_a_submission_naming_no_hold_is_refused_by_the_provider() {
         Some(0),
         "the command never submits a nameless order"
     );
-    // …and once the order has left `Draft` the command places nothing more, so a
-    // re-submission carries `hold: 0` — which is exactly the shape a forged
-    // direct-offer submission has, and exactly what the provider refuses.
+    // …and once the order has left `Draft`, HIGH-36 refuses `@wo/submit` up
+    // front (byte-identically to `WO_REFUSED`) without placing a hold or
+    // staging a submission.
     set_state(&mut tw, &families, id, WorkOrderState::Ready);
-    ok(&mut tw, GOD, &format!("@wo/submit {id}"));
-    let staged = tw.engine_mut().take_authoritative_submit().expect("staged");
-    assert_eq!(
-        staged.parameters.get("hold").and_then(|v| v.as_u64()),
-        Some(0)
+    let refusal = err(&mut tw, GOD, &format!("@wo/submit {id}"));
+    assert_eq!(refusal, "You cannot do that with that work order.");
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "non-Draft @wo/submit must not stage a submission"
     );
 
     // The provider's own arm, pinned at the source so deleting it fails here rather

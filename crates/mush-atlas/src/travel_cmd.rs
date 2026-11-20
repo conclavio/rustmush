@@ -492,7 +492,11 @@ fn watchable(ctx: &Ctx<'_>, here: ObjId) -> Result<Vec<(RecordKey, String, Strin
     let mut out: Vec<(RecordKey, String, String)> = Vec::new();
     let conns: Vec<&crate::record::ConnectionRec> =
         if let Some(c) = vehicle_connection(st, ctx.w, here) {
-            vec![c]
+            if travel::aboard_moving_vehicle(st, ctx.w, here) {
+                Vec::new()
+            } else {
+                vec![c]
+            }
         } else if let Some(nb) = st.records.neighborhood_of_room(here) {
             st.records
                 .connections_in(&nb.region)
@@ -549,12 +553,13 @@ fn cmd_stakeout(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         say(ctx, vec!["You give up the watch.".to_string()]);
         return Ok(());
     }
-    if state(ctx)?.travel.journey_of(actor).is_some() {
+    let here = here_of(ctx, actor)?;
+    let st = state(ctx)?;
+    if st.travel.journey_of(actor).is_some() || travel::aboard_moving_vehicle(st, ctx.w, here) {
         return Err(CmdError::msg(
             "You are under way; you cannot watch a road from the road.",
         ));
     }
-    let here = here_of(ctx, actor)?;
     let raw = ctx.args.raw().trim().to_string();
     let choices = watchable(ctx, here)?;
     if raw.is_empty() {

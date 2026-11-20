@@ -134,7 +134,7 @@ impl ActionProvider for Provider {
         }
         let Some(intent) = self
             .writer
-            .service_offer(&engine.world, q.actor())
+            .service_offer_in_engine(engine, q.actor())
             .map_err(|_| self.refusal.clone())?
         else {
             return Ok(None);

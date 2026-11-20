@@ -530,6 +530,7 @@ impl GameModule for InventoryModule {
             &families,
             self.salvage.as_ref(),
             self.capacity.as_ref(),
+            self.move_policy.as_ref(),
         )?;
 
         reg.state(InventoryStore::default());

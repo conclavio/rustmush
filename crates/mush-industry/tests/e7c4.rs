@@ -1651,9 +1651,11 @@ fn ws02_s4_the_per_requester_cap_is_read_off_the_index_not_the_family() {
         !has_draft_offer(&mut world, GOD),
         "at the per-requester cap there is no offer at all"
     );
-    // And it really is the INDEX the projection reads, not a walk of the family:
-    // empty the index while every one of those orders is still live and open, and
-    // the offer comes back.
+    // CRIT-14: clearing ONLY the RAM index no longer bypasses the durable
+    // per-requester index (`families.requester_orders`); clearing BOTH indices
+    // while every one of those 16 orders remains open in `families.work_orders`
+    // restores the offer, proving projection uses O(1) index lookups and never
+    // scans `families.work_orders`.
     {
         let store = world
             .engine_mut()
@@ -1666,9 +1668,22 @@ fn ws02_s4_the_per_requester_cap_is_read_off_the_index_not_the_family() {
         assert_eq!(store.open_requesters(), 0);
     }
     assert!(
+        !has_draft_offer(&mut world, GOD),
+        "durable requester_orders index still enforces the cap even if the RAM mirror is cleared"
+    );
+    {
+        let token = mush_economy::principal_token(&PrincipalId::Object(GOD));
+        let engine = world.engine_mut();
+        apply(engine, &families, |txn| {
+            txn.remove(&families.requester_orders, &token)?;
+            Ok(())
+        })
+        .expect("clear durable requester_orders index");
+    }
+    assert!(
         has_draft_offer(&mut world, GOD),
-        "the family still holds 16 open orders; the projection consulted the RAM \
-         index, which is the whole point of the move"
+        "the family still holds 16 open orders; the projection consulted the \
+         indices rather than scanning `work_orders`"
     );
 }
 

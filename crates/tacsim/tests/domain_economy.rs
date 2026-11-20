@@ -153,6 +153,8 @@ mod quarry;
 mod reset;
 #[path = "domain_economy/sale.rs"]
 mod sale;
+#[path = "domain_economy/security_t1b_port.rs"]
+mod security_t1b_port;
 #[path = "domain_economy/sites.rs"]
 mod sites;
 #[path = "domain_economy/stations.rs"]

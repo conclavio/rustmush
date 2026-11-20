@@ -124,6 +124,21 @@ pub struct IndustryFamilies {
     /// remain the durable replay guards, so the ring may retire an old marker the
     /// delivery path will never read again.
     pub wo_marker_ring: StateFamilyHandle<ObjId, crate::record::MarkerRing>,
+    /// `industry.requester_orders` (CRIT-14): durable per-requester index of
+    /// non-terminal work orders, keyed by `principal_token(requester)`,
+    /// maintained atomically by `open_work_order` and `put_work_order`.
+    pub requester_orders: StateFamilyHandle<SmolStr, crate::workorder::RequesterOrders>,
+    /// `industry.wo_terminal_ring` (CRIT-14): bounded FIFO ring of terminal
+    /// work orders (bucket 0 = unfunded draft cancels; bucket 1 = funded/settled
+    /// terminal orders) so `industry.work_orders` never overflows the 4,096 scan
+    /// budget.
+    pub wo_terminal_ring: StateFamilyHandle<u8, crate::workorder::TerminalWorkOrderRing>,
+    /// `industry.slot_expiry_schedule` (HIGH-33): one-shot durable schedules
+    /// that fire `WoReclaim` when a facility slot reservation deadline elapses.
+    pub slot_expiry_schedules: StateFamilyHandle<mush_core::ScheduleId, mush_core::DurableSchedule>,
+    /// `industry.slot_expiry_job` (HIGH-33): sidecar job records for
+    /// [`Self::slot_expiry_schedules`].
+    pub slot_expiry_jobs: StateFamilyHandle<mush_core::ScheduleId, crate::workorder::SlotExpiryJob>,
     /// `industry.tenure` — one [`TenureRecord`] per **block place** (doc 20
     /// cut SM.6, §9.2–§9.4, D-20-12), shared by the place's ≤ 4
     /// `Deposit`-subject claims: its epoch, what opened it, and the cooling
@@ -355,7 +370,8 @@ impl IndustryFamilies {
         Ok(txn.get(&self.claims, &id)?.cloned())
     }
 
-    /// File one claim.
+    /// File one claim without time-based terminal pruning (for callers without a
+    /// clock). Prefer [`Self::file_claim_at`] when filing in live play.
     ///
     /// # Errors
     /// [`IndustryError::ClaimExists`] on a duplicate id,
@@ -366,13 +382,69 @@ impl IndustryFamilies {
         txn: &mut ActionTxn<'_>,
         claim: ClaimRecord,
     ) -> Result<(), IndustryError> {
+        self.file_claim_inner(txn, claim, None)
+    }
+
+    /// File one claim at `now`, pruning terminal claims (`Seized`, or non-lapsed
+    /// past-term claims) from the subject's `claim_index` and `claims` when the
+    /// index is at [`crate::MAX_CLAIMS_PER_SUBJECT`] (HIGH-34). `Suspended` and
+    /// `Lapsed` claims are preserved so disciplinary holds and take-over records
+    /// stay intact.
+    ///
+    /// # Errors
+    /// [`IndustryError::ClaimExists`] on a duplicate id,
+    /// [`IndustryError::Record`] when the subject already has
+    /// [`crate::MAX_CLAIMS_PER_SUBJECT`] live non-terminal claims.
+    pub fn file_claim_at(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        claim: ClaimRecord,
+        now: &ClockStamp,
+    ) -> Result<(), IndustryError> {
+        self.file_claim_inner(txn, claim, Some(now))
+    }
+
+    fn file_claim_inner(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        claim: ClaimRecord,
+        now: Option<&ClockStamp>,
+    ) -> Result<(), IndustryError> {
         if txn.get(&self.claims, &claim.id())?.is_some() {
             return Err(IndustryError::ClaimExists);
         }
         let token = claim_subject_token(claim.subject());
-        let index = txn.get(&self.claim_index, &token)?.cloned();
-        let next = index.clone().unwrap_or_default().with(claim.id())?;
-        if index.is_some() {
+        let existing = txn.get(&self.claim_index, &token)?.cloned();
+        let mut current = existing.clone().unwrap_or_default();
+        if current.len() >= crate::record::MAX_CLAIMS_PER_SUBJECT {
+            let mut prunable: Vec<ClaimId> = Vec::new();
+            for existing_id in current.claims().to_vec() {
+                match txn.get(&self.claims, &existing_id)? {
+                    None => prunable.push(existing_id),
+                    Some(rec) => {
+                        let seized = matches!(
+                            rec.contest_state(),
+                            crate::record::ContestState::Seized { .. }
+                        );
+                        let expired = now.is_some_and(|stamp| {
+                            !rec.is_lapsed()
+                                && rec.term().checked_cmp(stamp) == Ok(std::cmp::Ordering::Less)
+                        });
+                        if seized || expired {
+                            prunable.push(existing_id);
+                        }
+                    }
+                }
+            }
+            for old_id in prunable {
+                current = current.without(old_id);
+                if txn.get(&self.claims, &old_id)?.is_some() {
+                    txn.remove(&self.claims, &old_id)?;
+                }
+            }
+        }
+        let next = current.with(claim.id())?;
+        if existing.is_some() {
             txn.replace(&self.claim_index, &token, next)?;
         } else {
             txn.insert(&self.claim_index, &token, next)?;
@@ -989,7 +1061,30 @@ impl IndustryFamilies {
         };
         let resource = crate::facility::facility_resource(object)?;
         let id = ReservationId::derive(holder, &resource).map_err(|_| IndustryError::Identity)?;
-        let book = retire_terminal_capacity(book, scalar, id)?;
+        let mut book = retire_terminal_capacity(book, scalar, id)?;
+        // HIGH-33: if no slot is currently free, opportunistically expire elapsed
+        // `Held` records in the book so an abandoned reservation past its deadline
+        // cannot permanently brick the facility. When slots are available, no extra
+        // work or writes occur.
+        if book.checked_available(scalar)? == 0 {
+            let elapsed: Vec<(ReservationId, u64)> = book
+                .records()
+                .iter()
+                .filter(|record| {
+                    record.state() == ReservationState::Held
+                        && record.expires().checked_cmp(now) != Ok(std::cmp::Ordering::Greater)
+                        && record.expires().checked_cmp(now).is_ok()
+                })
+                .map(|record| (record.id(), record.revision()))
+                .collect();
+            for (rid, rrev) in elapsed {
+                if let Ok(next_book) = book.checked_expire(book.revision(), scalar, rid, rrev, now)
+                {
+                    book = next_book;
+                }
+            }
+            book = retire_terminal_capacity(book, scalar, id)?;
+        }
         let record = ReservationRecord::held(
             id,
             resource,
@@ -1080,6 +1175,57 @@ impl IndustryFamilies {
         }))
     }
 
+    /// First elapsed `Held` slot reservation at `object` as of `now` (HIGH-33).
+    ///
+    /// # Errors
+    /// [`IndustryError`] on a half pair or an unreadable family.
+    pub fn first_elapsed_slot_reservation(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        now: &ClockStamp,
+    ) -> Result<Option<ReservationRecord>, IndustryError> {
+        let (_, pair) = self.load_capacity_pair(txn, object)?;
+        Ok(pair.and_then(|(_, book)| {
+            book.records()
+                .iter()
+                .find(|record| {
+                    record.state() == ReservationState::Held
+                        && matches!(
+                            record.expires().checked_cmp(now),
+                            Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                        )
+                })
+                .cloned()
+        }))
+    }
+
+    /// Tear down one slot-expiry schedule and its job sidecar (HIGH-33).
+    /// When `keep_schedule_cursor` is true (scheduler-driven run), only the job
+    /// sidecar is removed so the kernel's own completed-cursor write is not
+    /// double-mutated.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on a family read/remove failure.
+    pub fn tear_down_slot_expiry(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        schedule_id: mush_core::ScheduleId,
+        keep_schedule_cursor: bool,
+    ) -> Result<(), IndustryError> {
+        if txn.get(&self.slot_expiry_jobs, &schedule_id)?.is_some() {
+            txn.remove(&self.slot_expiry_jobs, &schedule_id)?;
+        }
+        if !keep_schedule_cursor
+            && txn
+                .get(&self.slot_expiry_schedules, &schedule_id)?
+                .is_some()
+        {
+            txn.remove(&self.slot_expiry_schedules, &schedule_id)?;
+        }
+        Ok(())
+    }
+
     // ---- E7c4 B3: work orders ----
 
     /// One work order, if it exists.
@@ -1094,7 +1240,24 @@ impl IndustryFamilies {
         Ok(txn.get(&self.work_orders, &id)?.cloned())
     }
 
-    /// Insert one fresh work order (a draft).
+    /// Number of non-terminal work orders recorded for `requester` via the
+    /// durable per-requester index (`industry_requester_orders`, CRIT-14).
+    ///
+    /// # Errors
+    /// [`IndustryError::State`] if the family is unreadable.
+    pub fn requester_open_count(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        requester: &PrincipalId,
+    ) -> Result<usize, IndustryError> {
+        let token = mush_economy::principal_token(requester);
+        Ok(txn
+            .get(&self.requester_orders, &token)?
+            .map_or(0, crate::workorder::RequesterOrders::len))
+    }
+
+    /// Insert one fresh work order (a draft) and update the durable per-requester
+    /// open-order index atomically (CRIT-14).
     ///
     /// # Errors
     /// [`IndustryError::WorkOrderExists`] on a duplicate id.
@@ -1106,7 +1269,71 @@ impl IndustryFamilies {
         if txn.get(&self.work_orders, &order.id())?.is_some() {
             return Err(IndustryError::WorkOrderExists);
         }
+        if !order.state().is_terminal() {
+            let token = mush_economy::principal_token(order.requester());
+            let existed = txn.get(&self.requester_orders, &token)?.is_some();
+            let current = txn
+                .get(&self.requester_orders, &token)?
+                .cloned()
+                .unwrap_or_else(crate::workorder::RequesterOrders::empty);
+            let next = current.with(order.id())?;
+            if existed {
+                txn.replace(&self.requester_orders, &token, next)?;
+            } else {
+                txn.insert(&self.requester_orders, &token, next)?;
+            }
+        }
         txn.insert(&self.work_orders, &order.id(), order)?;
+        Ok(())
+    }
+
+    /// Remove one already-terminal work order from `industry.work_orders` (the
+    /// single removal site for `industry.work_orders`, CRIT-14).
+    fn prune_work_order(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        id: crate::workorder::WorkOrderId,
+    ) -> Result<bool, IndustryError> {
+        let Some(existing) = txn.get(&self.work_orders, &id)? else {
+            return Ok(false);
+        };
+        if !existing.state().is_terminal() {
+            return Ok(false);
+        }
+        txn.remove(&self.work_orders, &id)?;
+        Ok(true)
+    }
+
+    /// Prune server-verified settled terminal work orders from bucket 1 of
+    /// `industry_wo_terminal_ring` and `industry.work_orders` (for actions like
+    /// `WoDraft` that do not themselves push onto the terminal ring).
+    ///
+    /// # Errors
+    /// [`IndustryError::State`] if a family read/write fails.
+    pub fn prune_terminal_work_orders(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        prunable: &[crate::workorder::WorkOrderId],
+    ) -> Result<(), IndustryError> {
+        if prunable.is_empty() {
+            return Ok(());
+        }
+        let bucket = crate::workorder::TERMINAL_RING_SETTLED_ORDERS;
+        let existed = txn.get(&self.wo_terminal_ring, &bucket)?.is_some();
+        let mut ring = txn
+            .get(&self.wo_terminal_ring, &bucket)?
+            .cloned()
+            .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
+        let mut changed = false;
+        for &old_id in prunable {
+            if self.prune_work_order(txn, old_id)? {
+                ring = ring.without(old_id);
+                changed = true;
+            }
+        }
+        if changed && existed {
+            txn.replace(&self.wo_terminal_ring, &bucket, ring)?;
+        }
         Ok(())
     }
 
@@ -1121,13 +1348,104 @@ impl IndustryFamilies {
         expected_revision: u64,
         order: crate::workorder::WorkOrder,
     ) -> Result<(), IndustryError> {
+        self.put_work_order_pruning(txn, expected_revision, order, &[])
+    }
+
+    /// Replace one work order under a checked revision, updating the durable
+    /// per-requester index and bounded terminal work-order rings atomically
+    /// (CRIT-14). Draft cancellations past [`crate::workorder::MAX_RETAINED_TERMINAL_DRAFT_CANCELS`]
+    /// are pruned immediately; settled funded terminal IDs passed in `prunable`
+    /// are pruned in the same transaction without double-mutating any key.
+    ///
+    /// # Errors
+    /// [`IndustryError::NoWorkOrder`] on a missing order,
+    /// [`IndustryError::StaleRevision`] on a mismatch.
+    pub fn put_work_order_pruning(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        expected_revision: u64,
+        order: crate::workorder::WorkOrder,
+        prunable: &[crate::workorder::WorkOrderId],
+    ) -> Result<(), IndustryError> {
         let live = self
             .work_order(txn, order.id())?
             .ok_or(IndustryError::NoWorkOrder)?;
         if live.revision() != expected_revision {
             return Err(IndustryError::StaleRevision);
         }
-        txn.replace(&self.work_orders, &order.id(), order)?;
+        let going_terminal = !live.state().is_terminal() && order.state().is_terminal();
+        let is_unfunded_draft_cancel =
+            going_terminal && live.holds().is_empty() && !live.state().holds_resources();
+        let order_id = order.id();
+        let requester_token = mush_economy::principal_token(live.requester());
+        txn.replace(&self.work_orders, &order_id, order)?;
+        if going_terminal {
+            if let Some(current) = txn.get(&self.requester_orders, &requester_token)?.cloned() {
+                let next = current.without(order_id);
+                if next.is_empty() {
+                    txn.remove(&self.requester_orders, &requester_token)?;
+                } else {
+                    txn.replace(&self.requester_orders, &requester_token, next)?;
+                }
+            }
+            if is_unfunded_draft_cancel {
+                let bucket = crate::workorder::TERMINAL_RING_DRAFT_CANCELS;
+                let existed = txn.get(&self.wo_terminal_ring, &bucket)?.is_some();
+                let ring = txn
+                    .get(&self.wo_terminal_ring, &bucket)?
+                    .cloned()
+                    .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
+                let (next_ring, evicted) = ring.push(
+                    order_id,
+                    crate::workorder::MAX_RETAINED_TERMINAL_DRAFT_CANCELS,
+                );
+                if let Some(old_id) = evicted
+                    && old_id != order_id
+                {
+                    let _ = self.prune_work_order(txn, old_id)?;
+                }
+                if existed {
+                    txn.replace(&self.wo_terminal_ring, &bucket, next_ring)?;
+                } else {
+                    txn.insert(&self.wo_terminal_ring, &bucket, next_ring)?;
+                }
+                // Also prune any settled funded orders supplied by projection.
+                let filtered: Vec<_> = prunable
+                    .iter()
+                    .copied()
+                    .filter(|id| *id != order_id)
+                    .collect();
+                self.prune_terminal_work_orders(txn, &filtered)?;
+            } else {
+                let bucket = crate::workorder::TERMINAL_RING_SETTLED_ORDERS;
+                let existed = txn.get(&self.wo_terminal_ring, &bucket)?.is_some();
+                let mut ring = txn
+                    .get(&self.wo_terminal_ring, &bucket)?
+                    .cloned()
+                    .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
+                for &old_id in prunable {
+                    if old_id != order_id && self.prune_work_order(txn, old_id)? {
+                        ring = ring.without(old_id);
+                    }
+                }
+                let (next_ring, _evicted) = ring.push(
+                    order_id,
+                    crate::workorder::MAX_RETAINED_TERMINAL_WORK_ORDERS,
+                );
+                if existed {
+                    txn.replace(&self.wo_terminal_ring, &bucket, next_ring)?;
+                } else {
+                    txn.insert(&self.wo_terminal_ring, &bucket, next_ring)?;
+                }
+            }
+        } else {
+            let filtered: Vec<_> = prunable
+                .iter()
+                .copied()
+                .filter(|id| *id != order_id)
+                .collect();
+            self.prune_terminal_work_orders(txn, &filtered)?;
+        }
         Ok(())
     }
 

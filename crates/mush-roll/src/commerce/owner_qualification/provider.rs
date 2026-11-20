@@ -17,6 +17,42 @@ use mush_core::{ActionTxn, ModError, PrepareCtx, Registrar, RulesValue};
 use serde::Deserialize;
 use serde_json::json;
 
+const MAX_QUALIFICATIONS_PER_OWNER_LICENCE: u64 = 64;
+
+fn check_qualification_growth(
+    operation: &QualificationOperation,
+    old_operation: Option<&QualificationOperation>,
+    binding: &OwnerParentBinding,
+    term: &OwnerTerm,
+) -> Result<(), PublicationError> {
+    if operation.ordinal > MAX_QUALIFICATIONS_PER_OWNER_LICENCE {
+        return Err(PublicationError::Capacity);
+    }
+    let observed_now =
+        crate::commerce::WorldIcSeconds::from_stamp(&operation.observed_ic).map_err(invalid)?;
+    let child_lapsed = observed_now >= term.window().grace_end();
+    if let Some(old) = old_operation {
+        let old_lapsed = crate::commerce::WorldIcSeconds::from_stamp(&old.observed_ic)
+            .map_err(invalid)?
+            >= term.window().grace_end();
+        if old.selected_parent == operation.selected_parent && old_lapsed == child_lapsed {
+            return Err(PublicationError::Invalid);
+        }
+    } else if operation.charter_ownership.is_none()
+        && !child_lapsed
+        && operation.selected_parent.licence == binding.parent.licence
+        && operation.selected_parent.term == binding.parent.term
+        && operation.selected_parent.window == binding.parent.window
+        && operation.selected_parent.filed == binding.parent.parent.filed
+        && operation.selected_parent.revision == binding.parent.parent.revision
+        && operation.selected_parent.holder_basis.as_ref()
+            == binding.parent.holder_capture.as_ref().map(|c| &c.basis)
+    {
+        return Err(PublicationError::Invalid);
+    }
+    Ok(())
+}
+
 fn invalid<T>(_: T) -> PublicationError {
     PublicationError::Invalid
 }
@@ -272,6 +308,7 @@ impl Provider {
         };
         operation.matches_birth(&binding, &filed, &term, &birth)?;
         operation.follows(old_operation.as_ref())?;
+        check_qualification_growth(&operation, old_operation.as_ref(), &binding, &term)?;
         let next_head = operation.head();
         let request = Qualification {
             source_owner: binding.parent.owner,
@@ -439,4 +476,152 @@ pub(crate) fn register(
             .map_err(error)?,
         },
     )
+}
+
+#[cfg(test)]
+mod high19_tests {
+    use super::*;
+    use crate::commerce::{
+        CharterId, FiledRevisionId, LicenceId, LineId, RevisionIdentity, TermGeneration,
+        TermWindow, WorldIcSeconds, dependent_owner::DependentParent, filed::ParentContent,
+        paid::PaidForm,
+    };
+    use mush_core::{ClockRef, ClockStamp, CommitToken, DefinitionDigest};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn sample_window(start: i64, end: i64) -> TestResult<TermWindow> {
+        Ok(TermWindow::new(
+            WorldIcSeconds(start),
+            WorldIcSeconds(start),
+            WorldIcSeconds(end),
+            WorldIcSeconds(end),
+        )?)
+    }
+
+    #[test]
+    fn high19_owner_qualification_rejects_noop_and_caps_ordinal() -> TestResult {
+        use crate::commerce::bootstrap_tests::{manifest_descriptor, reference};
+        let manifest = reference("tacsim", manifest_descriptor());
+        let action = protocol::action(&manifest)?;
+        let digest = DefinitionDigest::from_bytes([7; 32]);
+        let rev = |c: u32, m: u64| -> TestResult<RevisionIdentity> {
+            Ok(serde_json::from_value(json!({
+                "format": 1,
+                "revision": {"key": {"character": c, "mind": m, "number": 1}, "digest": digest},
+                "source": digest
+            }))?)
+        };
+        let parent_win = sample_window(100, 10_000)?;
+        let child_win = sample_window(100, 1_000)?;
+        let parent_rev = rev(1, 1)?;
+        let child_rev = rev(2, 1)?;
+        let parent_content = ParentContent {
+            filed: FiledRevisionId::new(10)?,
+            revision: parent_rev,
+        };
+        let binding = OwnerParentBinding {
+            format: 1,
+            licence: LicenceId::new(20)?,
+            term: TermGeneration::new(1)?,
+            charter: CharterId::new(2)?,
+            filed: FiledRevisionId::new(20)?,
+            parent: DependentParent {
+                owner: ObjId(2),
+                parent: parent_content,
+                charter: CharterId::new(1)?,
+                line: LineId::new(1)?,
+                licence: LicenceId::new(10)?,
+                term: TermGeneration::new(1)?,
+                window: parent_win,
+                term_seconds: 9_900,
+                grace_seconds: 0,
+                holder_capture: None,
+            },
+            operation: CommitToken::from_bytes([1; 16]),
+        };
+        let term = OwnerTerm {
+            format: 1,
+            licence: LicenceId::new(20)?,
+            generation: TermGeneration::new(1)?,
+            window: child_win,
+            revision: crate::commerce::records::RevisionPolicy::Pin {
+                filed: FiledRevisionId::new(20)?,
+                revision: child_rev,
+            },
+            operation: CommitToken::from_bytes([1; 16]),
+            parent: Some(binding.parent.clone()),
+            attestation: None,
+        };
+        let make_op = |ordinal: u64, licence: u64, at: i64| -> TestResult<QualificationOperation> {
+            Ok(QualificationOperation {
+                format: 1,
+                charter_ownership: None,
+                operation: CommitToken::from_bytes([u8::try_from(ordinal + 10)?; 16]),
+                action: action.clone(),
+                manifest: manifest.clone(),
+                owner: ObjId(2),
+                owner_licence: LicenceId::new(20)?,
+                owner_term: TermGeneration::new(1)?,
+                charter: CharterId::new(2)?,
+                line: LineId::new(2)?,
+                filed: FiledRevisionId::new(20)?,
+                child_revision: child_rev,
+                birth_operation: CommitToken::from_bytes([1; 16]),
+                title_revision: 1,
+                source_parent: parent_content,
+                parent_charter: CharterId::new(1)?,
+                parent_line: LineId::new(1)?,
+                selected_parent: SelectedParent {
+                    licence: LicenceId::new(licence)?,
+                    term: TermGeneration::new(1)?,
+                    filed: FiledRevisionId::new(10)?,
+                    revision: parent_rev,
+                    window: parent_win,
+                    form: PaidForm::OpenResale {},
+                    operation: CommitToken::from_bytes([2; 16]),
+                    terminal: CommitToken::from_bytes([3; 16]),
+                    holder_basis: None,
+                },
+                ordinal,
+                previous: (ordinal > 1)
+                    .then(|| CommitToken::from_bytes([u8::try_from(ordinal + 9).unwrap_or(9); 16])),
+                observed_ic: ClockStamp {
+                    clock: ClockRef::WorldIc { generation: 1 },
+                    at,
+                },
+            })
+        };
+        // 1. No-op against initial birth binding while child is active -> refused.
+        let noop_initial = make_op(1, 10, 200)?;
+        check_eq!(
+            check_qualification_growth(&noop_initial, None, &binding, &term),
+            Err(PublicationError::Invalid)
+        );
+        // 2. Replacing with a distinct parent licence -> allowed.
+        let first = make_op(1, 11, 200)?;
+        check!(check_qualification_growth(&first, None, &binding, &term).is_ok());
+        // 3. Repeating the identical selected_parent while still active -> refused.
+        let noop_repeat = make_op(2, 11, 250)?;
+        check_eq!(
+            check_qualification_growth(&noop_repeat, Some(&first), &binding, &term),
+            Err(PublicationError::Invalid)
+        );
+        // 4. Single metadata replacement after child lapses (active -> lapsed) -> allowed;
+        //    repeating again while already lapsed -> refused.
+        let lapsed_once = make_op(2, 11, 1_000)?;
+        check!(check_qualification_growth(&lapsed_once, Some(&first), &binding, &term).is_ok());
+        let lapsed_repeat = make_op(3, 11, 1_100)?;
+        check_eq!(
+            check_qualification_growth(&lapsed_repeat, Some(&lapsed_once), &binding, &term),
+            Err(PublicationError::Invalid)
+        );
+        // 5. Exceeding MAX_QUALIFICATIONS_PER_OWNER_LICENCE -> refused with Capacity.
+        let over_cap = make_op(MAX_QUALIFICATIONS_PER_OWNER_LICENCE + 1, 12, 200)?;
+        check_eq!(
+            check_qualification_growth(&over_cap, Some(&first), &binding, &term),
+            Err(PublicationError::Capacity)
+        );
+        Ok(())
+    }
 }

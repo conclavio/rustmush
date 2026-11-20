@@ -2028,6 +2028,7 @@ mod board {
                 presence: mush_market::Presence::Here,
             },
         )?;
+        let _allow = crate::port::works::allow_escrow_buy(ctx.actor, into.vault().0);
         mush_market::accept_at(ctx, quote, Some(into), mush_market::Presence::Here).map(|_| ())
     }
 
