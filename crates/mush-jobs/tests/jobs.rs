@@ -1407,3 +1407,57 @@ fn d5_a_request_is_announced_on_the_staff_relay_sink() {
             .any(|t| t.contains("Request filed as job"))
     );
 }
+
+#[test]
+fn note_rejects_oversized_or_unsafe_categories_without_queuing_persist_ops() {
+    let mut env = setup();
+
+    // Attack vector: > 4096-byte category previously generated a ModuleOp whose
+    // key exceeded MAX_MODULE_KEY_BYTES and triggered StoreError::Invalid ->
+    // permanent WorldMode::IntegrityFrozen.
+    let huge = "a".repeat(5000);
+    let out = run(env.nick, &mut env, &format!("+note me/{huge}=boom"));
+    assert!(
+        has_text(&out, "Note category is too long"),
+        "{:?}",
+        sys_texts(&out)
+    );
+    assert!(
+        env.engine.take_module_ops().is_empty(),
+        "oversized +note category must queue zero persist ops"
+    );
+    assert!(get_note(&env.engine.world, env.nick, &huge).is_none());
+
+    // One byte over MAX_NOTE_CATEGORY_BYTES is refused.
+    let over = "b".repeat(mush_jobs::MAX_NOTE_CATEGORY_BYTES + 1);
+    let out = run(env.nick, &mut env, &format!("+note me/{over}=nope"));
+    assert!(
+        has_text(&out, "Note category is too long"),
+        "{:?}",
+        sys_texts(&out)
+    );
+    assert!(env.engine.take_module_ops().is_empty());
+
+    // Unsafe characters (separators, wildcards, whitespace, control chars) are refused.
+    for bad in ["a:b", "a/b", "a*b", "my note", "cat\x1b[31m", "bad?cat"] {
+        let out = run(env.nick, &mut env, &format!("+note me/{bad}=nope"));
+        assert!(
+            has_text(&out, "Note category may contain only"),
+            "{bad:?}: {:?}",
+            sys_texts(&out)
+        );
+        assert!(
+            env.engine.take_module_ops().is_empty(),
+            "{bad:?} must queue zero persist ops"
+        );
+    }
+
+    // Valid category at exactly MAX_NOTE_CATEGORY_BYTES with `-`, `_`, `.` succeeds.
+    let mut at_limit = "plot_v1.2-".to_string();
+    at_limit.push_str(&"z".repeat(mush_jobs::MAX_NOTE_CATEGORY_BYTES - at_limit.len()));
+    assert_eq!(at_limit.len(), mush_jobs::MAX_NOTE_CATEGORY_BYTES);
+    let out = run(env.nick, &mut env, &format!("+note me/{at_limit}=ok"));
+    assert!(has_text(&out, "set on Nick."), "{:?}", sys_texts(&out));
+    assert_eq!(env.engine.take_module_ops().len(), 1);
+    assert!(get_note(&env.engine.world, env.nick, &at_limit).is_some());
+}

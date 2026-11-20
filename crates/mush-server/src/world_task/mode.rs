@@ -520,6 +520,7 @@ pub(super) fn classify_world_msg(msg: &WorldMsg) -> IngressClass {
         | WorldMsg::InInputContext { .. }
         | WorldMsg::ConnectionReady { .. }
         | WorldMsg::LegalActions { .. }
+        | WorldMsg::RecheckStaffRole { .. }
         | WorldMsg::StaffBarrier { .. } => IngressClass::WorldRead,
         WorldMsg::Barrier { .. } => IngressClass::OrderingBarrier,
     }
@@ -595,6 +596,7 @@ pub(super) fn waits_in_defer_queue(msg: &WorldMsg) -> bool {
             | WorldMsg::InInputContext { .. }
             | WorldMsg::ConnectionReady { .. }
             | WorldMsg::LegalActions { .. }
+            | WorldMsg::RecheckStaffRole { .. }
             | WorldMsg::StaffBarrier { .. }
     )
 }
@@ -761,6 +763,7 @@ pub(super) fn admit_outage_countdown_msg(world: &World, msg: &WorldMsg) -> Admis
         | WorldMsg::StaffBarrier { .. }
         | WorldMsg::Barrier { .. }
         | WorldMsg::RecheckPrivilege { .. }
+        | WorldMsg::RecheckStaffRole { .. }
         | WorldMsg::RelaySpeak { .. } => Admission::Allow,
         WorldMsg::Inbound(Inbound::Respond { .. } | Inbound::Invoke { .. } | Inbound::Apply(_))
         | WorldMsg::CreatePlayer { .. }
@@ -994,7 +997,7 @@ pub(super) fn refuse_world_msg(
             };
             let _ = reply.send(Err(error));
         }
-        WorldMsg::RecheckPrivilege { reply, .. } => {
+        WorldMsg::RecheckPrivilege { reply, .. } | WorldMsg::RecheckStaffRole { reply, .. } => {
             let error = if reason == RefusalReason::CommitPending {
                 WorldReadError::Busy
             } else {

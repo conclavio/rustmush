@@ -279,6 +279,7 @@ todo = "warn"
 
 [profile.release]
 lto = "thin"
+overflow-checks = true
 
 # Debug and test builds carry line tables only (file and line in every
 # backtrace), not the full type and variable records. Measured 2026-10-18 on

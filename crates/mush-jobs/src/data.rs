@@ -28,6 +28,9 @@ pub const REQ_QUEUE: &str = "REQ";
 pub const MAX_JOB_TITLE_BYTES: usize = 512;
 /// Maximum UTF-8 bytes in one job comment.
 pub const MAX_JOB_COMMENT_BYTES: usize = 16 * 1024;
+/// Maximum UTF-8 bytes in a note category name (well under
+/// [`mush_core::MAX_MODULE_KEY_BYTES`] even with the `note:{id}:` prefix).
+pub const MAX_NOTE_CATEGORY_BYTES: usize = 64;
 /// Hard persisted comment cap, including terminal staff audit comments.
 pub const MAX_JOB_COMMENTS: usize = 256;
 /// Ordinary comment cap. The remainder is reserved for terminal staff actions.
@@ -290,6 +293,30 @@ pub fn meta_value(next_id: u64) -> serde_json::Value {
 #[must_use]
 pub fn canon_category(category: &str) -> SmolStr {
     SmolStr::new(category.trim().to_lowercase())
+}
+
+/// Canonicalize and validate a player-supplied note category: non-empty,
+/// bounded by [`MAX_NOTE_CATEGORY_BYTES`], and restricted to safe ASCII key
+/// characters (`a-z`, `0-9`, `-`, `_`, `.`).
+pub(crate) fn validate_note_category(category: &str) -> Result<SmolStr, String> {
+    let cat = canon_category(category);
+    if cat.is_empty() {
+        return Err("Which category?".to_string());
+    }
+    if cat.len() > MAX_NOTE_CATEGORY_BYTES {
+        return Err(format!(
+            "Note category is too long (maximum {MAX_NOTE_CATEGORY_BYTES} characters)."
+        ));
+    }
+    if !cat
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(
+            "Note category may contain only letters, digits, '-', '_', and '.'.".to_string(),
+        );
+    }
+    Ok(cat)
 }
 
 /// A compact "how long ago" for MUSH output (`42s`, `5m`, `3h`, `2d`).
