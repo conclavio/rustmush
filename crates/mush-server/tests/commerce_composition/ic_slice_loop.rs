@@ -2314,10 +2314,22 @@ async fn ic12_part_two_the_queue_runs_the_return() {
             "{key} is order 3's sale, not a re-run"
         );
     }
+    // Doc 39 cut IN.5: Kasei's clerk re-posts the metals bid under a new listing id on an IC
+    // day's turn, which may fall between the sale and the read of `metals_bid` above (it follows
+    // the boot's wall-clock second). The sale's own listing, the one read before the restart and
+    // the one standing now are all the metals bid.
+    let sold_into = sales_of(&rig.tw, wren)
+        .iter()
+        .find(|q| q.contract.is_some_and(|c| c.0 == contract))
+        .map(|q| q.listing)
+        .expect("the first sale's quote");
+    let bid_now =
+        port_map(&rig.tw, "stickney_port").vendors[&cid("kasei")].bids[&cid("metals")].listing;
+    let metals_bids: BTreeSet<ListingId> = [sold_into, metals_bid, ListingId(bid_now)].into();
     assert_eq!(
         sales_of(&rig.tw, wren)
             .iter()
-            .filter(|q| q.listing == metals_bid)
+            .filter(|q| metals_bids.contains(&q.listing))
             .count(),
         1,
         "no second sale into the metals bid"
