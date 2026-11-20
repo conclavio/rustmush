@@ -508,7 +508,13 @@ fn queues_share_wait_limit_release_it_and_roll_back_failed_handlers() -> TestRes
     command(&mut engine, GOD, "@enqueue excess");
     command(&mut engine, GOD, "@ordinary");
     assert_eq!(engine.sched.len(), 100);
-    fire(&mut engine);
+    // Bounded per-actor WaitCmd slices (CORE-M2) drain losslessly across ticks.
+    let mut passes = 0usize;
+    while let Some(due) = engine.sched.next_due() {
+        engine.fire_due(due.max(100_010), &mut Outbox::new(), &mut Effects::new());
+        passes += 1;
+        assert!(passes <= 64, "queue must drain in bounded steps");
+    }
     assert!(engine.sched.is_empty());
     assert_eq!(shared.calls.lock().map_err(|_| "calls")?.len(), 100);
     command(&mut engine, GOD, "@enqueue fail");

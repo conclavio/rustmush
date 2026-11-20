@@ -56,17 +56,18 @@ pub use crate::hardware::bay::{INTACT_GRADE, WORN_GRADE};
 pub use jobs::{BayJob, BayQuote, CARRIER_TIME_FACTOR, FacilityClass, QuotedJob};
 pub use record::{
     BAY_PREFIX, BAY_SCHEMA, Bale, BaleDraw, BayHull, BayHullState, BayOrder, BerthRow, ClaimLot,
-    KG_PER_T, MAX_CLAIM_LOTS, MAX_ORDER_JOBS, OrderStatus, Right, SHOP_BALE_PREFIX, ShopBale,
-    VacatedLot, bay_key, bay_key_owner, shop_bale_key,
+    FeeContractTerms, KG_PER_T, MAX_CLAIM_LOTS, MAX_ORDER_JOBS, OrderStatus, Right,
+    SHOP_BALE_PREFIX, ShopBale, VacatedLot, bay_key, bay_key_owner, shop_bale_key,
 };
 
 use std::collections::BTreeMap;
 
 use mush_core::{CanonicalId, Ctx, EventHook, HookReadContext, ObjId, World};
 use mush_economy::{
-    AcceptOutcome, AccountId, Amount, ConsiderationSpec, ContractId, ContractRoles, ContractSpec,
-    EconomicClock, EconomicDeadline, EconomicVisibility, EconomyStore, EvidenceKind, Expiry,
-    OutcomeTerms, PayoutShare, Share, TypedCondition, VaultId,
+    AcceptOutcome, AccountId, Amount, ConsentSurface, Consideration, ConsiderationSpec, ContractId,
+    ContractRoles, ContractSpec, ContractState, ContractTerms, EconomicClock, EconomicDeadline,
+    EconomicVisibility, EconomyStore, EvidenceKind, Expiry, OutcomeTerms, PayoutShare, Share,
+    TypedCondition, VaultId,
 };
 use mush_inventory::LotId;
 use mush_inventory::record::EndpointRef;
@@ -1079,17 +1080,17 @@ fn hold_carries(ctx: &Ctx<'_>, vault: VaultId, goods: &[GoodUnits]) -> Result<()
 
 // ---- the order --------------------------------------------------------------------------
 
-fn fee_spec(
+fn fee_spec_with_deadline(
     payer: AccountId,
     operator: OrgId,
     operator_account: AccountId,
     requester: ObjId,
     fee: Amount,
-    now: i64,
+    deadline_at: i64,
 ) -> ContractSpec {
     let deadline = EconomicDeadline {
         clock: EconomicClock::RealUtc,
-        at: now.saturating_add(FEE_WINDOW_SECS),
+        at: deadline_at,
     };
     let me = PrincipalId::Object(requester);
     ContractSpec {
@@ -1125,6 +1126,52 @@ fn fee_spec(
         },
         deterministic: true,
         deliverables: Vec::new(),
+    }
+}
+
+/// Reconstruct the exact `ConsentSurface` `offer_contract` builds from [`fee_spec_with_deadline`]
+/// (security hardening CRIT-19, matching `port::passenger::economy::expected_consent`).
+fn expected_fee_consent(
+    payer: AccountId,
+    operator: OrgId,
+    operator_account: AccountId,
+    requester: ObjId,
+    fee: Amount,
+    deadline_at: i64,
+) -> ConsentSurface {
+    let spec = fee_spec_with_deadline(
+        payer,
+        operator,
+        operator_account,
+        requester,
+        fee,
+        deadline_at,
+    );
+    ConsentSurface {
+        fact_consent: None,
+        managed: None,
+        parties: vec![
+            PrincipalId::Object(requester),
+            PrincipalId::Organization(operator),
+        ],
+        terms: ContractTerms {
+            consideration: vec![Consideration {
+                from: PrincipalId::Object(requester),
+                account: payer,
+                amount: fee,
+            }],
+            deliverables: spec.deliverables,
+            split: Vec::new(),
+            remainder_to: spec.remainder_to,
+            on_expiry: spec.on_expiry,
+            outcomes: spec.outcomes,
+        },
+        conditions: spec.conditions,
+        deadline: spec.deadline,
+        visibility: spec.visibility,
+        scope: spec.scope,
+        adjudicator: spec.adjudicator,
+        evidence: spec.evidence,
     }
 }
 
@@ -1524,8 +1571,8 @@ fn take(
         .ok_or(NO_HULL)?;
     // Doc 41 cut RS.2 (Q-41-7, expensive to reverse): away from port nobody is paid — no fee
     // contract is filed and the order's fee is nil; the time (2x) is the price.
-    let (fee_minor, contract) = match facility.operator {
-        None => (0, None),
+    let (fee_minor, contract, fee_terms) = match facility.operator {
+        None => (0, None, None),
         Some((operator, operator_account)) => {
             let fee_minor =
                 i64::try_from(BayQuote::fee_minor(&picked)).map_err(|_| "Fee too large.")?;
@@ -1533,13 +1580,14 @@ fn take(
                 .map(|a| a.id)
                 .ok_or("You hold no credit account to pay from.")?;
             let now = ctx.w.now();
-            let spec = fee_spec(
+            let deadline_real_s = now.saturating_add(FEE_WINDOW_SECS);
+            let spec = fee_spec_with_deadline(
                 payer,
                 operator,
                 operator_account,
                 ctx.actor,
                 Amount::from_minor(fee_minor),
-                now,
+                deadline_real_s,
             );
             let contract = mush_economy::offer_contract(ctx, spec).map_err(|e| {
                 tracing::error!(%e, hull = hull.0, "tacsim: +bay/order: the fee contract was not offered");
@@ -1557,7 +1605,16 @@ fn take(
                     ));
                 }
             }
-            (fee_minor, Some(contract.0))
+            (
+                fee_minor,
+                Some(contract.0),
+                Some(FeeContractTerms {
+                    payer: payer.0,
+                    operator: operator.0,
+                    operator_account: operator_account.0,
+                    deadline_real_s,
+                }),
+            )
         }
     };
     let started = ctx.w.world_ic_now().at;
@@ -1586,6 +1643,7 @@ fn take(
         closed_ic: None,
         note: None,
         paused: None,
+        fee_terms,
     };
     record.order = Some(order.clone());
     // Doc 39 cut IN.2 (Q-39-27's "reserved"): an order that fits a part from a lot holds that
@@ -1873,6 +1931,12 @@ fn finish(ctx: &mut Ctx<'_>, hull: ObjId) {
         close_cancelled(ctx, record, note);
         return;
     }
+    // Security hardening CRIT-19: verify the exact fee contract ConsentSurface before owing any
+    // goods draw or letting the operator sign at completion.
+    if order.contract.is_some() && verified_fee_payee(ctx.w, &order).is_none() {
+        close_cancelled(ctx, record, "the fee contract is no longer valid");
+        return;
+    }
     let fit = order.jobs.iter().find_map(|j| match &j.job {
         BayJob::Replace { lot: Some(lot), .. } => Some(*lot),
         _ => None,
@@ -2034,8 +2098,11 @@ fn complete(ctx: &mut Ctx<'_>, hull: ObjId) {
         }
     };
     // Doc 41 cut RS.2 (Q-41-7): an order away from port filed no fee and pays nobody.
+    // Security hardening CRIT-19: re-verify exact ConsentSurface equality, amendments == 0,
+    // consent_intact(), empty deliverables, exact fee/payout, and deadline immediately before
+    // signing as Organization(operator).
     let paid = order.contract.is_none_or(|contract| {
-        payee(ctx.w, contract).is_some_and(|operator| {
+        verified_fee_payee(ctx.w, &order).is_some_and(|operator| {
             matches!(
                 mush_economy::accept_contract_as(
                     ctx,
@@ -2311,20 +2378,106 @@ fn settle(ctx: &mut Ctx<'_>, hull: ObjId) {
     }
 }
 
-/// **The operator org a fee contract pays** (doc 41 cut RS.2): the one organization party
-/// [`fee_spec`] bound when the order was taken — read off the contract, so an order taken in a
-/// docked carrier's bay is paid to that port's operator wherever she has sailed since.
-fn payee(w: &World, contract: u64) -> Option<OrgId> {
-    w.module_state::<EconomyStore>()?
-        .snapshot()
-        .contract(ContractId(contract))?
-        .consent
-        .parties
-        .iter()
-        .find_map(|party| match party {
-            PrincipalId::Organization(org) => Some(*org),
-            _ => None,
-        })
+/// **Verify a bay order's fee contract before the facility operator signs it** (doc 41 cut RS.2;
+/// security hardening CRIT-19): asserts `Offered`, `pending.is_none()`, `issuer == requester`,
+/// `name == FEE_NAME`, `amendments == 0`, `consent_intact()`, requester's acceptance on the
+/// current consent hash, exact reconstructed [`ConsentSurface`] equality (empty deliverables,
+/// exact fee and payout to the operator's account, expected deadline and expiry), and held escrow
+/// covering `fee_minor`. Returns the verified operator [`OrgId`] or `None` on any tampering.
+fn verified_fee_payee(w: &World, order: &BayOrder) -> Option<OrgId> {
+    let economy = w.module_state::<EconomyStore>()?;
+    verified_fee_payee_in_snapshot(economy.snapshot(), order)
+}
+
+fn verified_fee_payee_in_snapshot(
+    snapshot: &mush_economy::EconomySnapshot,
+    order: &BayOrder,
+) -> Option<OrgId> {
+    let contract_id = order.contract?;
+    let contract = snapshot.contract(ContractId(contract_id))?;
+    let requester = PrincipalId::Object(order.requester);
+    if contract.state != ContractState::Offered
+        || contract.pending.is_some()
+        || contract.issuer != requester
+        || contract.name.as_str() != FEE_NAME
+        || contract.amendments != 0
+        || !contract.consent_intact()
+        || !contract.accepted_by(&requester)
+    {
+        return None;
+    }
+    let (payer, operator, operator_account, deadline_at) = match order.fee_terms {
+        Some(terms) => (
+            AccountId(terms.payer),
+            OrgId(terms.operator),
+            AccountId(terms.operator_account),
+            terms.deadline_real_s,
+        ),
+        None => {
+            // Legacy pre-upgrade order without `fee_terms`: derive from the immutable unamended
+            // contract only after proving account ownership matches requester & operator org.
+            let payer = match contract.consent.terms.consideration.as_slice() {
+                [row] if row.from == requester => row.account,
+                _ => return None,
+            };
+            if !snapshot
+                .account(payer)
+                .is_some_and(|account| account.owner == requester)
+            {
+                return None;
+            }
+            let operator = match contract.consent.parties.as_slice() {
+                [first, PrincipalId::Organization(org)] if *first == requester => *org,
+                _ => return None,
+            };
+            let operator_account = match contract.consent.terms.outcomes.as_slice() {
+                [outcome] => match outcome.payouts.as_slice() {
+                    [payout] => payout.to,
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            if !snapshot
+                .account(operator_account)
+                .is_some_and(|account| account.owner == PrincipalId::Organization(operator))
+            {
+                return None;
+            }
+            (
+                payer,
+                operator,
+                operator_account,
+                contract.created_at.saturating_add(FEE_WINDOW_SECS),
+            )
+        }
+    };
+    let expected = expected_fee_consent(
+        payer,
+        operator,
+        operator_account,
+        order.requester,
+        Amount::from_minor(order.fee_minor),
+        deadline_at,
+    );
+    if contract.consent != expected {
+        return None;
+    }
+    if order.fee_minor > 0 {
+        let expected_purpose = mush_economy::HoldPurpose::Escrow {
+            contract: ContractId(contract_id),
+        };
+        let held = contract.escrow.iter().try_fold(0_i64, |sum, hold_id| {
+            let hold = snapshot.hold(*hold_id)?;
+            if hold.account != payer || !hold.status.is_held() || hold.purpose != expected_purpose {
+                return None;
+            }
+            sum.checked_add(hold.amount.minor())
+        })?;
+        if held != order.fee_minor {
+            return None;
+        }
+    }
+    Some(operator)
 }
 
 /// **The bay's arm of the `tacsim.port` fire**: every owed inventory act is settled, then every
@@ -2900,5 +3053,192 @@ mod tests {
         assert!(!permits(Right::Salvor, Act::Strip));
         assert!(!permits(Right::Salvor, Act::Scrap));
         assert!(!permits(Right::Salvor, Act::Refit));
+    }
+
+    /// **CRIT-19**: `verified_fee_payee` verifies exact reconstructed `ConsentSurface` equality,
+    /// `amendments == 0`, `consent_intact()`, empty deliverables, exact fee/payout, expected
+    /// deadline/expiry, and held escrow before the operator signs a bay order fee contract.
+    #[test]
+    fn crit19_verified_fee_payee_rejects_any_contract_tampering() {
+        use mush_economy::{
+            Acceptance, Deliverable, EconomicContract, Hold, HoldId, HoldPurpose, HoldStatus,
+            IdempotencyKey, consent_hash,
+        };
+        use mush_org::OrgId;
+
+        let requester = ObjId(11);
+        let payer = AccountId(101);
+        let operator = OrgId(22);
+        let operator_account = AccountId(202);
+        let fee_minor = 50_000_i64;
+        let now = 10_000_i64;
+        let deadline_real_s = now + FEE_WINDOW_SECS;
+        let contract_id = ContractId(77);
+        let hold_id = HoldId(5);
+
+        let make_order = || BayOrder {
+            seq: 1,
+            requester,
+            right: Right::Title,
+            facility: ObjId(30),
+            class: FacilityClass::Workshop,
+            jobs: Vec::new(),
+            fee_minor,
+            contract: Some(contract_id.0),
+            munitions_vault: None,
+            part_vault: None,
+            goods: Vec::new(),
+            store_goods: Vec::new(),
+            store_vault: None,
+            draw_act: None,
+            bale_after: None,
+            unit_revision: 1,
+            started_ic: 100,
+            due_ic: 200,
+            status: OrderStatus::Open,
+            closed_ic: None,
+            note: None,
+            paused: None,
+            fee_terms: Some(FeeContractTerms {
+                payer: payer.0,
+                operator: operator.0,
+                operator_account: operator_account.0,
+                deadline_real_s,
+            }),
+        };
+
+        let make_contract = || {
+            let issuer = PrincipalId::Object(requester);
+            let consent = expected_fee_consent(
+                payer,
+                operator,
+                operator_account,
+                requester,
+                Amount::from_minor(fee_minor),
+                deadline_real_s,
+            );
+            let hash = consent_hash(&issuer, &consent);
+            EconomicContract {
+                id: contract_id,
+                issuer: issuer.clone(),
+                name: SmolStr::new_static(FEE_NAME),
+                consent_hash: hash,
+                consent,
+                acceptances: vec![Acceptance {
+                    party: issuer,
+                    consent_hash: hash,
+                    at: now,
+                }],
+                satisfied: vec![None],
+                escrow: vec![hold_id],
+                state: ContractState::Offered,
+                settle_attempts: 0,
+                created_at: now,
+                amendments: 0,
+                generation_started_at: now,
+                disputed_at: None,
+                canon_published: None,
+                roster_locked: true,
+                deposits: Vec::new(),
+                agreements: Vec::new(),
+                pending: None,
+                roles: ContractRoles::default(),
+                real_deadline_extension_secs: 0,
+                paused_real_remaining_secs: None,
+                revision: 1,
+            }
+        };
+
+        let snap_with = |c: EconomicContract, hold_amount: i64| {
+            let mut snap = mush_economy::EconomySnapshot::default();
+            snap.put_contract(c);
+            snap.put_hold(Hold {
+                id: hold_id,
+                account: payer,
+                amount: Amount::from_minor(hold_amount),
+                beneficiary: None,
+                purpose: HoldPurpose::Escrow {
+                    contract: contract_id,
+                },
+                placed_by: PrincipalId::Object(requester),
+                holder: IdempotencyKey::new("test", "escrow-hold"),
+                expires: None,
+                status: HoldStatus::Held,
+                last_journal_seq: 1,
+                revision: 1,
+            });
+            snap
+        };
+
+        let order = make_order();
+        // Unamended exact contract passes.
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(make_contract(), fee_minor), &order),
+            Some(operator)
+        );
+
+        // 1. Amended contract (`amendments > 0`) is rejected even with matching surface.
+        let mut amended = make_contract();
+        amended.amendments = 1;
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(amended, fee_minor), &order),
+            None
+        );
+
+        // 2. Broken `consent_hash` (`!consent_intact()`) is rejected.
+        let mut bad_hash = make_contract();
+        bad_hash.consent_hash = [0xAA; 32];
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(bad_hash, fee_minor), &order),
+            None
+        );
+
+        // 3. Added operator deliverable (arbitrary org signing exploit!) is rejected.
+        let mut with_deliverable = make_contract();
+        with_deliverable
+            .consent
+            .terms
+            .deliverables
+            .push(Deliverable::TitleTransfer {
+                object: ObjId(999),
+                from: PrincipalId::Organization(operator),
+                to: PrincipalId::Object(requester),
+            });
+        with_deliverable.consent_hash =
+            consent_hash(&with_deliverable.issuer, &with_deliverable.consent);
+        with_deliverable.acceptances[0].consent_hash = with_deliverable.consent_hash;
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(with_deliverable, fee_minor), &order),
+            None
+        );
+
+        // 4. Redirected payout account is rejected.
+        let mut bad_payout = make_contract();
+        bad_payout.consent.terms.outcomes[0].payouts[0].to = payer;
+        bad_payout.consent_hash = consent_hash(&bad_payout.issuer, &bad_payout.consent);
+        bad_payout.acceptances[0].consent_hash = bad_payout.consent_hash;
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(bad_payout, fee_minor), &order),
+            None
+        );
+
+        // 5. Shifted deadline is rejected.
+        let mut bad_deadline = make_contract();
+        bad_deadline.consent.deadline = Some(EconomicDeadline {
+            clock: EconomicClock::RealUtc,
+            at: deadline_real_s + 1,
+        });
+        bad_deadline.consent_hash = consent_hash(&bad_deadline.issuer, &bad_deadline.consent);
+        bad_deadline.acceptances[0].consent_hash = bad_deadline.consent_hash;
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(bad_deadline, fee_minor), &order),
+            None
+        );
+
+        // 6. Short escrow is rejected.
+        assert_eq!(
+            verified_fee_payee_in_snapshot(&snap_with(make_contract(), fee_minor - 1), &order),
+            None
+        );
     }
 }

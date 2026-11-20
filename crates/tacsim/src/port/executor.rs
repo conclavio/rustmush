@@ -58,7 +58,7 @@ use crate::port::ship::{Berth, HullView, berth_of, hull_view};
 use crate::port::voyage::PassageOptions;
 use crate::port::voyage::{NO_ROUTE, OVERLOADED, narrate_hull, tonnes_one_decimal};
 use crate::port::when::{plan_instant, resolve_due};
-use crate::port_tick::{Fire, PortTickState, Step, SwapRefused, gone, notify, read_pool};
+use crate::port_tick::{Fire, PortTickState, Step, SwapRefused, gone, notify, read_held};
 use crate::sky::Sky;
 use crate::store::{TacsimStore, put_orders, put_voyage};
 
@@ -2890,7 +2890,7 @@ fn decide(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: ObjId, pilot: ObjI
             let Some(vault) = crate::port::ship::hold_vault(w, &view) else {
                 return Plan::Refused;
             };
-            let Ok(aboard) = read_pool(ctx, mush_inventory::record::EndpointRef(vault), &good)
+            let Ok(aboard) = read_held(ctx, mush_inventory::record::EndpointRef(vault), &good)
             else {
                 return Plan::Idle;
             };

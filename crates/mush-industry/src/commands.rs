@@ -534,6 +534,100 @@ fn cmd_claim(
         }
         let holder = crate::provider::parse_principal(parts[1].trim())
             .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
+        // HIGH-34: validate every claim parameter, subject existence, deposit
+        // jurisdiction, exclusivity conflict, and subject claim cap BEFORE
+        // minting a world `Thing` and an E4 title so invalid or unauthorized
+        // `@claim/file` attempts cannot create orphan objects or titles.
+        let subject = if let Some(rest) = lhs.strip_prefix("place:") {
+            let place_id: u32 = rest
+                .trim()
+                .parse()
+                .map_err(|_| CmdError::msg(NO_SUCH_CLAIM))?;
+            ClaimSubject::Place {
+                place: ObjId(place_id),
+            }
+        } else {
+            let deposit_id = OreDepositId::parse(lhs.strip_prefix("deposit:").unwrap_or(&lhs))
+                .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
+            let Some(deposit) = deposit_by_id(ctx, families, deposit_id) else {
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            };
+            if ctx
+                .w
+                .module_state::<IndustryStore>()
+                .is_some_and(|store| store.quarantine(deposit_id).is_some())
+            {
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            }
+            if !staff
+                && let Some(jurisdiction) = deposit.jurisdiction()
+                && &issuer != jurisdiction
+            {
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            }
+            ClaimSubject::Deposit {
+                deposit: deposit_id,
+            }
+        };
+        let exclusivity_str = parts[2].trim();
+        let exclusivity = match exclusivity_str {
+            "exclusive" => crate::record::Exclusivity::Exclusive,
+            "shared" => crate::record::Exclusivity::Shared,
+            _ => return Err(CmdError::msg(NO_SUCH_CLAIM)),
+        };
+        let priority: u32 = parts[3]
+            .trim()
+            .parse()
+            .ok()
+            .filter(|value| *value <= crate::record::MAX_CLAIM_PRIORITY)
+            .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
+        let term_secs: i64 = parts[4]
+            .trim()
+            .parse()
+            .map_err(|_| CmdError::msg(NO_SUCH_CLAIM))?;
+        let transferability_str = parts[5].trim();
+        if !matches!(transferability_str, "transferable" | "bound") {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
+        if action_ref(ctx.reg, IndustryVerb::ClaimFile).is_none() {
+            return Err(CmdError::msg("Industry is not available on this server."));
+        }
+        let now = ctx.w.world_ic_now();
+        let subject_key = crate::families::claim_subject_token(subject);
+        if let Ok(Some(index)) = ctx.action_state(&families.claim_index, &subject_key) {
+            let existing: Vec<crate::ClaimRecord> = index
+                .claims()
+                .iter()
+                .filter_map(|claim_id| claim_by_id(ctx, families, *claim_id))
+                .collect();
+            for claim in &existing {
+                if claim.issuer() == &issuer
+                    && claim.contest_state().authorizes()
+                    && (exclusivity == crate::record::Exclusivity::Exclusive
+                        || claim.exclusivity() == crate::record::Exclusivity::Exclusive)
+                    && (claim.is_lapsed()
+                        || !matches!(
+                            claim.term().checked_cmp(&now),
+                            Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                        ))
+                {
+                    return Err(CmdError::msg(NO_SUCH_CLAIM));
+                }
+            }
+            if index.claims().len() >= crate::record::MAX_CLAIMS_PER_SUBJECT {
+                let has_prunable = existing.iter().any(|claim| {
+                    matches!(claim.contest_state(), ContestState::Seized { .. })
+                        || (!claim.is_lapsed()
+                            && matches!(
+                                claim.term().checked_cmp(&now),
+                                Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                            ))
+                });
+                if !has_prunable {
+                    return Err(CmdError::msg(NO_SUCH_CLAIM));
+                }
+            }
+        }
         // The claim's **titled world object**: created and titled here, on E4's
         // own journaled path, before the record half is submitted. Cut 3
         // defines no second title record and no second transfer path.
@@ -548,7 +642,7 @@ fn cmd_claim(
         let issued = mush_economy::issue_title(
             ctx,
             object,
-            holder,
+            holder.clone(),
             None,
             crate::module::industry_title_issuer(),
             Some(CatalogRef {
@@ -571,8 +665,7 @@ fn cmd_claim(
         // `ProjectedParameterSchema::validate` before the provider ever ran, so
         // no filing could land. `term_field` rebuilds the stamp against the
         // offer's own fixed `now`, whose generation is this same tick's.
-        let term_secs: i64 = parts[4].trim().parse().unwrap_or(0);
-        let term = ctx.w.world_ic_now().at.saturating_add(term_secs);
+        let term = now.at.saturating_add(term_secs);
         let parameters = json!({
             "subject": lhs,
             // The **canonical** token, not the raw text: the projection's
@@ -580,12 +673,12 @@ fn cmd_claim(
             // keyboard has to reach `resolve_legal_action` as `org:7` or the
             // player's own offer refuses their own submission.
             "issuer": mush_economy::principal_token(&issuer).as_str(),
-            "holder": parts[1].trim(),
+            "holder": mush_economy::principal_token(&holder).as_str(),
             "object": object.0,
-            "exclusivity": parts[2].trim(),
-            "priority": parts[3].trim().parse::<u64>().unwrap_or(u64::MAX),
+            "exclusivity": exclusivity_str,
+            "priority": u64::from(priority),
             "term": term,
-            "transferability": parts[5].trim(),
+            "transferability": transferability_str,
         });
         return submit(ctx, IndustryVerb::ClaimFile, parameters, "claim.file");
     }
@@ -601,9 +694,39 @@ fn cmd_claim(
         let Some(to) = crate::provider::parse_principal(&rhs) else {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         };
+        // HIGH-37: pre-check transferability, claim standing, actor authority,
+        // live unencumbered E4 asset, and provider availability BEFORE posting
+        // `TransferTitle` so a refused transfer never splits E4 title ownership
+        // from claim tenure.
+        if claim.transferability() != crate::record::Transferability::Transferable
+            || claim.is_lapsed()
+            || !claim.contest_state().authorizes()
+            || to == *claim.holder()
+            || (!staff && !mush_economy::acts_for(ctx.w, ctx.actor, claim.holder()))
+        {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
+        let asset_ok = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|store| store.snapshot().asset(claim.object()))
+            .is_some_and(|asset| {
+                !asset.frozen
+                    && matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
+                    && asset.encumbrances.is_empty()
+                    && (staff || asset.title_owner == *claim.holder())
+            });
+        if !asset_ok {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
+        if action_ref(ctx.reg, IndustryVerb::ClaimMove).is_none() {
+            return Err(CmdError::msg("Industry is not available on this server."));
+        }
         // E4's own rule, reused verbatim: `AssetOp::TransferTitle` refuses with
         // `Encumbered` while ANY encumbrance stands, so a **pledged** claim
         // cannot be transferred and cut 3 writes no second check for it.
+        // HIGH-37: include `claim.revision()` in the idempotency key so valid
+        // multi-hop transfers (A -> B -> A) do not collide with the first key.
         let plan = mush_economy::EconomyPlan {
             asset_ops: vec![mush_economy::AssetOp::TransferTitle {
                 object: claim.object(),
@@ -611,7 +734,10 @@ fn cmd_claim(
                 to_scope: None,
             }],
             ..mush_economy::EconomyPlan::new(
-                mush_economy::IdempotencyKey::new("industry.claim.transfer", format!("{id}")),
+                mush_economy::IdempotencyKey::new(
+                    "industry.claim.transfer",
+                    format!("{id}/{}", claim.revision()),
+                ),
                 actor_principal(ctx.actor),
                 mush_economy::EconomicCause::Internal {
                     kind: SmolStr::new_static("industry.claim.transfer"),
@@ -629,7 +755,7 @@ fn cmd_claim(
         }
         let parameters = json!({
             "claim": lhs,
-            "holder": rhs,
+            "holder": mush_economy::principal_token(&to).as_str(),
             "revision": claim.revision(),
         });
         return submit(ctx, IndustryVerb::ClaimMove, parameters, "claim.transfer");
@@ -1303,133 +1429,101 @@ fn cmd_wo(
     }
     if ctx.switches.has("submit") {
         let order_arg = ctx.args.lhs().trim().to_owned();
-        let mut placed: Option<(WorkOrderId, mush_economy::HoldId)> = None;
+        // HIGH-36: verify the work order exists, belongs to `ctx.actor`, and is
+        // in `Draft` state BEFORE checking facility/drift or placing a budget
+        // hold (`money::place`), so a third party cannot freeze a victim's
+        // funds by calling `@wo/submit <victim_order>`.
+        let Some(order) = wo_by_id(ctx, families, &order_arg) else {
+            return Err(CmdError::msg(crate::provider::WO_REFUSED));
+        };
+        if order.requester() != &PrincipalId::Object(ctx.actor)
+            || *order.state() != WorkOrderState::Draft
+        {
+            return Err(CmdError::msg(crate::provider::WO_REFUSED));
+        }
         // B4: revalidate the pinned recipe digest and the facility revisions
         // against the live world before submitting — a drift makes the draft
         // stale and refuses (fail-closed). The reservations themselves happen in
         // the provider's atomic bundle.
-        if let Some(order) = wo_by_id(ctx, families, &order_arg) {
-            // C2/D2: re-check facility authorization at submit — the drafter's
-            // authority may have lapsed since draft (`acts_for` is re-evaluated),
-            // and the direct-offer path never ran the draft command's gate.
-            let facility_rec = ctx
-                .w
-                .module_state::<IndustryStore>()
-                .and_then(|store| store.facility(order.facility()).cloned());
-            let authorized = facility_rec
-                .as_ref()
-                .is_some_and(|facility| crate::store::may_order(ctx.w, ctx.actor, facility));
-            if !authorized {
-                return Err(CmdError::msg(NO_SUCH_FACILITY));
-            }
-            if ctx
-                .w
-                .module_state::<IndustryStore>()
-                .is_some_and(|store| store.is_facility_quarantined(order.facility()))
-            {
-                return Err(CmdError::msg("That facility is unavailable."));
-            }
-            let facility_ok = facility_rec.is_some_and(|facility| {
-                facility.capacity_revision() == order.capacity_revision()
-                    && facility.policy_revision() == order.policy_revision()
-            });
-            if !facility_ok {
-                return Err(CmdError::msg(
-                    "that work order is stale — its facility changed; redraft it.",
-                ));
-            }
-            let digest_ok = recipes.is_some_and(|authority| {
-                authority.digest_of(ctx.w, order.recipe()) == Some(order.recipe().digest())
-            });
-            if !digest_ok {
-                return Err(CmdError::msg(
-                    "that work order's recipe has drifted; redraft it.",
-                ));
-            }
-            // ---- WS02-S5b: the drift the digest check cannot see ----
-            //
-            // Both re-checks above compare the DIGEST, and `wo_deliver` mints
-            // `order.pinned().outputs()`. A draft whose pack was republished with
-            // lines its digest does not cover — and a draft written before
-            // WS02-S5 bound the pin to the offer's books — carries an honest
-            // digest beside lines the authority never published, so it passes
-            // every check on this path and mints off the pin. The comparison
-            // needs the authority AND the record together, which is `reconcile`'s
-            // walk: it marks such drafts (loudly, one line each) and this is where
-            // the mark bites. The refusal is the byte-identical `WO_REFUSED` a
-            // forged pin gets at the prepare, so a forgery and an uncovered
-            // republication read the same to the player; the operator's log line
-            // is where they are told apart, and `@wo/cancel` is the exit.
-            if ctx
-                .w
-                .module_state::<IndustryStore>()
-                .is_some_and(|store| store.drift_cancelled(order.id()).is_some())
-            {
-                return Err(CmdError::msg(crate::provider::WO_REFUSED));
-            }
-            // ---- E7r1: R1 — the budget hold, placed BEFORE the submit ----
-            //
-            // A `prepare_authoritative` provider has no `&World`, `Ctx` or `Outbox`
-            // and cannot place a hold, so the money leg is the command's (cut 4
-            // deviation (a); `bond.rs`'s whole opening argument). It is placed
-            // **first** because a hold placed after the submit cannot refuse an
-            // unfunded order: this way the engine's own `InsufficientAvailable`
-            // (invariant 26) refuses before anything at all is reserved, and the
-            // order stays `Draft`. `mush_economy::post` is the economy's own
-            // carve-out lane, not a second `Ctx::submit_authoritative`, so `@wo`'s
-            // declared class does not move.
-            //
-            // Every early return **after** this point compensates with a release;
-            // the sweep arm on `SWEEP_TAG` is the backstop for the ones a refused
-            // submission causes, which the command never sees.
-            if *order.state() == WorkOrderState::Draft {
-                match crate::money::live_hold(ctx, order.id()) {
-                    // A retype after a refused submission: the reservation stands,
-                    // and `industry.wo.hold/{order}` would answer `AlreadyPosted`
-                    // anyway. Reuse it rather than posting again.
-                    Some(hold) => placed = Some((order.id(), hold.id)),
-                    None => match crate::money::place(ctx, &order) {
-                        Ok(hold) => placed = Some((order.id(), hold)),
-                        Err(error) => {
-                            if crate::store::is_staff(ctx.w, ctx.actor) {
-                                ctx.out.info(
-                                    ctx.actor,
-                                    format!("[staff] the budget was refused: {error}"),
-                                );
-                            }
-                            // D8/C4 (independent verify fold; owner decision F2(a)):
-                            // three different things used to be one sentence, and the
-                            // sentence blamed the player's wallet for all of them. A
-                            // doc-13 **transient** is a wait (W2's own wording, W-D1's
-                            // `Unknown` verdict); a spent placement key with no live
-                            // hold is a finished attempt and names `@wo/cancel`; only
-                            // a genuine engine refusal is about the money.
-                            return Err(CmdError::msg(match &error {
-                                e if e.is_transient() => crate::money::LEDGER_BUSY,
-                                crate::money::HoldError::NoHold => crate::money::SPENT_ATTEMPT,
-                                _ => {
-                                    "That account cannot fund that work order, so it stays drafted."
-                                }
-                            }));
-                        }
-                    },
-                }
-            }
+        // C2/D2: re-check facility authorization at submit — the drafter's
+        // authority may have lapsed since draft (`acts_for` is re-evaluated),
+        // and the direct-offer path never ran the draft command's gate.
+        let facility_rec = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(order.facility()).cloned());
+        let authorized = facility_rec
+            .as_ref()
+            .is_some_and(|facility| crate::store::may_order(ctx.w, ctx.actor, facility));
+        if !authorized {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
         }
-        let hold_param = placed.map_or(0, |(_, hold)| hold.0);
+        if ctx
+            .w
+            .module_state::<IndustryStore>()
+            .is_some_and(|store| store.is_facility_quarantined(order.facility()))
+        {
+            return Err(CmdError::msg("That facility is unavailable."));
+        }
+        let facility_ok = facility_rec.is_some_and(|facility| {
+            facility.capacity_revision() == order.capacity_revision()
+                && facility.policy_revision() == order.policy_revision()
+        });
+        if !facility_ok {
+            return Err(CmdError::msg(
+                "that work order is stale — its facility changed; redraft it.",
+            ));
+        }
+        let digest_ok = recipes.is_some_and(|authority| {
+            authority.digest_of(ctx.w, order.recipe()) == Some(order.recipe().digest())
+        });
+        if !digest_ok {
+            return Err(CmdError::msg(
+                "that work order's recipe has drifted; redraft it.",
+            ));
+        }
+        if ctx
+            .w
+            .module_state::<IndustryStore>()
+            .is_some_and(|store| store.drift_cancelled(order.id()).is_some())
+        {
+            return Err(CmdError::msg(crate::provider::WO_REFUSED));
+        }
+        let placed: (WorkOrderId, mush_economy::HoldId) =
+            match crate::money::live_hold(ctx, order.id()) {
+                // A retype after a refused submission: the reservation stands,
+                // and `industry.wo.hold/{order}` would answer `AlreadyPosted`
+                // anyway. Reuse it rather than posting again.
+                Some(hold) => (order.id(), hold.id),
+                None => match crate::money::place(ctx, &order) {
+                    Ok(hold) => (order.id(), hold),
+                    Err(error) => {
+                        if crate::store::is_staff(ctx.w, ctx.actor) {
+                            ctx.out.info(
+                                ctx.actor,
+                                format!("[staff] the budget was refused: {error}"),
+                            );
+                        }
+                        return Err(CmdError::msg(match &error {
+                            e if e.is_transient() => crate::money::LEDGER_BUSY,
+                            crate::money::HoldError::NoHold => crate::money::SPENT_ATTEMPT,
+                            _ => "That account cannot fund that work order, so it stays drafted.",
+                        }));
+                    }
+                },
+            };
         let outcome = submit(
             ctx,
             IndustryVerb::WoSubmit,
-            json!({ "order": order_arg, "hold": hold_param }),
+            json!({ "order": order_arg, "hold": placed.1.0 }),
             "wo.submit",
         );
         // The compensating release: `submit` is the only fallible call left after
         // the place, and an `Err` from it means nothing at all was staged.
         if outcome.is_err()
-            && let Some((id, _)) = placed
-            && let Some(hold) = crate::money::live_hold(ctx, id)
+            && let Some(hold) = crate::money::live_hold(ctx, placed.0)
         {
-            let _ = crate::money::release(ctx, id, &hold);
+            let _ = crate::money::release(ctx, placed.0, &hold);
         }
         return outcome;
     }
@@ -1488,6 +1582,29 @@ fn cmd_wo(
             IndustryVerb::WoRestamp,
             json!({ "order": order, "policy": policy }),
             "wo.restamp",
+        );
+    }
+    if ctx.switches.has("reclaim") {
+        // HIGH-33: operator manual reclaim of an elapsed facility slot hold.
+        let raw = ctx.args.lhs().trim().trim_start_matches('#');
+        let Ok(facility_num) = raw.parse::<u32>() else {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        };
+        let facility = ObjId(facility_num);
+        let staff = crate::store::is_staff(ctx.w, ctx.actor);
+        let allowed = ctx
+            .w
+            .module_state::<IndustryStore>()
+            .and_then(|store| store.facility(facility))
+            .is_some_and(|rec| staff || mush_economy::acts_for(ctx.w, ctx.actor, rec.owner()));
+        if !allowed {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        }
+        return submit(
+            ctx,
+            IndustryVerb::WoReclaim,
+            json!({ "facility": facility.0 }),
+            "wo.reclaim",
         );
     }
     if ctx.switches.has("quote") {
@@ -1734,35 +1851,40 @@ pub fn draft(
     submit(ctx, IndustryVerb::WoDraft, params, "wo.draft")
 }
 
-/// Count one requester's non-terminal work orders, bounded on records visited
-/// (D-LBK-5), and stopping as soon as the cap is reached (C2/D2 m2). Never a
-/// completeness claim: a truncated walk simply under-counts, which fails closed
-/// for the cap (it refuses sooner, never later).
+/// Count one requester's non-terminal work orders via point lookups over the
+/// durable per-requester index (`requester_orders`) merged with
+/// `IndustryStore::open_order_ids`, failing closed to
+/// [`MAX_WORK_ORDERS_PER_REQUESTER`] when the store reports a truncated boot
+/// scan or typed state is unreadable (CRIT-14).
 fn active_work_orders(ctx: &Ctx<'_>, families: &IndustryFamilies, actor: ObjId) -> usize {
+    let store = ctx.w.module_state::<IndustryStore>();
+    if store.is_some_and(IndustryStore::orders_truncated) {
+        return MAX_WORK_ORDERS_PER_REQUESTER;
+    }
     let principal = PrincipalId::Object(actor);
-    let mut cursor: Option<String> = None;
-    let mut pages = 0;
+    let token = mush_economy::principal_token(&principal);
+    let mut ids: BTreeSet<WorkOrderId> = BTreeSet::new();
+    match ctx.action_state(&families.requester_orders, &token) {
+        Ok(Some(idx)) => ids.extend(idx.orders().iter().copied()),
+        Ok(None) => {}
+        Err(_) => return MAX_WORK_ORDERS_PER_REQUESTER,
+    }
+    if let Some(store) = store {
+        ids.extend(store.open_order_ids(&principal));
+    }
     let mut count = 0;
-    loop {
-        if pages >= MAX_LIST_PAGES || count >= MAX_WORK_ORDERS_PER_REQUESTER {
+    for id in ids {
+        if count >= MAX_WORK_ORDERS_PER_REQUESTER {
             break;
         }
-        pages += 1;
-        let Ok(page) =
-            ctx.scan_action_state(&families.work_orders, cursor.as_deref(), INDUSTRY_PAGE)
-        else {
-            break;
-        };
-        let next = page.next_after().map(ToString::to_string);
-        for entry in page.entries() {
-            let order = entry.value();
-            if order.requester() == &principal && !order.state().is_terminal() {
-                count += 1;
+        match ctx.action_state(&families.work_orders, &id) {
+            Ok(Some(order)) => {
+                if order.requester() == &principal && !order.state().is_terminal() {
+                    count += 1;
+                }
             }
-        }
-        match next {
-            Some(next) => cursor = Some(next),
-            None => break,
+            Ok(None) => {}
+            Err(_) => return MAX_WORK_ORDERS_PER_REQUESTER,
         }
     }
     count
@@ -1861,11 +1983,12 @@ pub fn register(
                 "cancel".into(),
                 "deliver".into(),
                 "restamp".into(),
+                "reclaim".into(),
                 "quote".into(),
                 "show".into(),
                 "list".into(),
             ],
-            help: "@wo/draft|set|submit|cancel|deliver|restamp|quote|show|list   draft, quote, run and read work orders at a facility.".into(),
+            help: "@wo/draft|set|submit|cancel|deliver|restamp|reclaim|quote|show|list   draft, quote, run, reclaim and read work orders at a facility.".into(),
             shape: ArgShape::EqPair,
             ..CommandSpec::default()
         },

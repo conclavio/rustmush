@@ -12,9 +12,9 @@ use std::sync::Arc;
 use mush_core::output::display_name;
 use mush_core::request::{RequestCompletion, RequestOutcome};
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role,
-    StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key, perm,
-    read_cold_range,
+    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ModuleWrite, ObjId, ObjKind, Powers,
+    Registrar, Role, StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key,
+    perm, read_cold_range,
 };
 use mush_proto::{RequestKind, RequestOption, RespondChoice, RichText};
 use smol_str::SmolStr;
@@ -22,9 +22,10 @@ use smol_str::SmolStr;
 use crate::data::{
     CONSENT_DEADLINE_S, CONSENT_END, CONSENT_NUDGE, CONSENT_OUTCOME, CONSENT_REWIND, ConsentVote,
     DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_NUDGE_MINUTES,
-    MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS, PauseReason, PendingArchiveRead, SceneEvent,
-    SceneEventKind, SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState,
-    persist_meta, persist_scene,
+    MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS, MAX_RETAINED_CLOSED_SCENES, PauseReason,
+    PendingArchiveRead, SCENE_IDLE_TIMEOUT_SECS, SceneEvent, SceneEventKind, SceneMode,
+    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, persist_meta, persist_scene,
+    push_op, scene_key,
 };
 
 /// Record one lifecycle event into `s`'s log (stamped with the current wall
@@ -96,11 +97,38 @@ fn your_turn_notice(ctx: &mut Ctx<'_>, s: &SceneRecord) {
     );
 }
 
-/// A one-line turn summary: round, whose turn, and the scene-local IC time.
+fn is_dark(w: &World, who: ObjId) -> bool {
+    w.get(who).is_some_and(|o| o.flags.contains(Flags::DARK))
+}
+
+fn public_name(w: &World, who: ObjId) -> String {
+    if is_dark(w, who) {
+        "Someone".to_string()
+    } else {
+        display_name(w, who)
+    }
+}
+
+/// A one-line turn summary safe for room-wide broadcasts (masks `Flags::DARK`
+/// actors as `"Someone"` so hidden presence is never leaked to the room).
 fn turn_line(w: &World, s: &SceneRecord) -> String {
     match s.current_actor() {
-        Some(a) => format!("Round {} — it is {}'s turn.", s.round, display_name(w, a)),
+        Some(a) => format!("Round {} — it is {}'s turn.", s.round, public_name(w, a)),
         None => format!("Round {} — no participants.", s.round),
+    }
+}
+
+/// Prune excess closed scenes past [`MAX_RETAINED_CLOSED_SCENES`] and emit KV
+/// deletions for each evicted record.
+fn prune_closed_scenes(ctx: &mut Ctx<'_>) {
+    let evicted = state(ctx).prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES);
+    for uid in evicted {
+        push_op(
+            ctx.out,
+            ModuleWrite::Del {
+                key: scene_key(uid),
+            },
+        );
     }
 }
 
@@ -129,6 +157,8 @@ fn cmd_timestop(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         timestop_nudge(ctx)
     } else if ctx.switches.has("release") {
         timestop_release(ctx)
+    } else if ctx.switches.has("leave") {
+        timestop_leave(ctx)
     } else if ctx.switches.has("end") {
         timestop_end(ctx)
     } else {
@@ -149,20 +179,30 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.w.in_exclusive_scene(actor) {
         return Err(CmdError::msg("You are already in a scene."));
     }
+    let now = ctx.w.now();
+    if !is_staff(ctx.w, actor)
+        && let Err(wait) = state(ctx).check_creation_limit(actor, now)
+    {
+        return Err(CmdError::msg(format!(
+            "You have started too many scenes recently; wait {wait}s before starting another."
+        )));
+    }
 
-    // Participants: connected players present, then NPCs present, in dbref
-    // order (the turn order). Everyone here is frozen for the duration. An
-    // object already frozen by another scene is skipped defensively (physics
-    // makes this impossible today — you can't be in two rooms — but it keeps
-    // the one-exclusive-scene-per-object invariant a property of the code).
+    // Participants: connected visible players present, then visible NPCs
+    // present, in dbref order (the turn order). Everyone captured is frozen
+    // for the duration (non-facilitator participants may self-release with
+    // `+timestop/leave`). `Flags::DARK` bystanders and `Flags::DARK` NPCs are
+    // excluded so starting a timestop never scoops up or reveals hidden staff
+    // or concealed actors; an already-frozen object is skipped defensively.
     let mut participants: Vec<ObjId> = ctx
         .w
         .contents_of(room)
         .iter()
         .copied()
         .filter(|&o| {
-            ctx.w.get(o).is_some_and(|x| x.kind == ObjKind::Player)
-                && ctx.w.is_connected(o)
+            ctx.w.get(o).is_some_and(|x| {
+                x.kind == ObjKind::Player && (o == actor || !x.flags.contains(Flags::DARK))
+            }) && ctx.w.is_connected(o)
                 && !ctx.w.in_exclusive_scene(o)
         })
         .collect();
@@ -172,14 +212,16 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .iter()
         .copied()
         .filter(|&o| {
-            ctx.w.get(o).is_some_and(|x| x.kind == ObjKind::Npc) && !ctx.w.in_exclusive_scene(o)
+            ctx.w
+                .get(o)
+                .is_some_and(|x| x.kind == ObjKind::Npc && !x.flags.contains(Flags::DARK))
+                && !ctx.w.in_exclusive_scene(o)
         })
         .collect();
     participants.sort_by_key(|o| o.0);
     npcs.sort_by_key(|o| o.0);
     participants.extend(npcs);
 
-    let now = ctx.w.now();
     let ic_now = ctx.w.world_ic_now();
     let room_name = display_name(ctx.w, room);
     let rec = {
@@ -218,6 +260,8 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             nudged: None,
         };
         st.scenes.insert(id, rec.clone());
+        st.record_creation(actor, now);
+        st.note_activity(id, now);
         rec
     };
     // Freeze every member in the core index.
@@ -240,7 +284,9 @@ fn timestop_start(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let order: Vec<String> = rec
         .participants
         .iter()
-        .map(|&p| display_name(ctx.w, p))
+        .copied()
+        .filter(|&p| !is_dark(ctx.w, p))
+        .map(|p| display_name(ctx.w, p))
         .collect();
     announce(
         ctx,
@@ -319,17 +365,20 @@ fn advance_scene_turn(ctx: &mut Ctx<'_>, scene: SceneUid) -> Result<(), String> 
     let now = ctx.w.now();
     let (anchor, updated) = {
         let st = state(ctx);
-        let rec = st
+        let out = st
             .scenes
-            .get_mut(&scene)
-            .ok_or_else(|| "That scene no longer exists.".to_string())?;
-        if rec.status != SceneStatus::Active {
-            return Err("The scene is not active.".to_string());
-        }
-        rec.advance_turn().map_err(|error| error.to_string())?;
-        rec.turn_started_at = now;
-        rec.nudged = None;
-        (rec.anchor, rec.clone())
+            .update_scene(scene, |rec| {
+                if rec.status != SceneStatus::Active {
+                    return Err("The scene is not active.".to_string());
+                }
+                rec.advance_turn().map_err(|error| error.to_string())?;
+                rec.turn_started_at = now;
+                rec.nudged = None;
+                Ok((rec.anchor, rec.clone()))
+            })
+            .ok_or_else(|| "That scene no longer exists.".to_string())??;
+        st.note_activity(scene, now);
+        out
     };
     persist_scene(ctx.out, &updated);
     announce(ctx, anchor, turn_line(ctx.w, &updated));
@@ -369,12 +418,18 @@ fn timestop_rewind(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now = ctx.w.now();
     let (anchor, updated) = {
         let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.rewind_turn()
-            .ok_or_else(|| CmdError::msg("There is no earlier turn to go back to."))?;
-        rec.turn_started_at = now;
-        rec.nudged = None;
-        (rec.anchor, rec.clone())
+        let out = st
+            .scenes
+            .update_scene(s.id, |rec| -> Result<_, CmdError> {
+                rec.rewind_turn()
+                    .ok_or_else(|| CmdError::msg("There is no earlier turn to go back to."))?;
+                rec.turn_started_at = now;
+                rec.nudged = None;
+                Ok((rec.anchor, rec.clone()))
+            })
+            .expect("resolved above")?;
+        st.note_activity(s.id, now);
+        out
     };
     persist_scene(ctx.out, &updated);
     announce(
@@ -435,12 +490,15 @@ fn timestop_nudge(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now = ctx.w.now();
     let updated = {
         let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.invalidate_nudge();
-        rec.nudge_after_s = after;
-        rec.turn_started_at = now;
-        rec.nudged = None;
-        rec.clone()
+        st.scenes
+            .update_scene(s.id, |rec| {
+                rec.invalidate_nudge();
+                rec.nudge_after_s = after;
+                rec.turn_started_at = now;
+                rec.nudged = None;
+                rec.clone()
+            })
+            .expect("resolved above")
     };
     persist_scene(ctx.out, &updated);
     match after {
@@ -620,12 +678,8 @@ fn record_consent(
     round: u32,
 ) {
     let now = ctx.w.now();
-    let updated = {
-        let st = state(ctx);
-        let Some(live) = st.scenes.get_mut(&rec.id) else {
-            return;
-        };
-        live.consent.push(ConsentVote {
+    let Some(updated) = state(ctx).scenes.update_scene(rec.id, |live| {
+        live.record_consent(ConsentVote {
             about: SmolStr::new(about),
             participant,
             choice: SmolStr::new(choice),
@@ -633,6 +687,8 @@ fn record_consent(
             at: now,
         });
         live.clone()
+    }) else {
+        return;
     };
     persist_scene(ctx.out, &updated);
     log_event(
@@ -666,15 +722,93 @@ fn record_consent(
     crate::panel::publish(ctx, &updated);
 }
 
-/// The `Coarse` nudge tick (D6): for every active scene with a nudge interval,
-/// once the current actor has had the turn that long, ask them — once per
-/// turn — to pass or hold. Only players are asked (an NPC's turn is the NPC
-/// module's, H2b).
+/// Close one idle exclusive scene automatically so a public room cannot stay
+/// frozen indefinitely if a facilitator goes AFK or abandons the freeze.
+fn auto_end_idle_scene(ctx: &mut Ctx<'_>, id: SceneUid, now: i64) {
+    let Some((anchor, members, mut updated)) = state(ctx)
+        .scenes
+        .update_scene(id, |rec| {
+            if !rec.exclusive || !rec.status.holds_members() {
+                return None;
+            }
+            rec.status = SceneStatus::Closed;
+            rec.pause_reason = None;
+            rec.ended_at = Some(now);
+            let members: Vec<ObjId> = rec.members().collect();
+            Some((rec.anchor, members, rec.clone()))
+        })
+        .flatten()
+    else {
+        return;
+    };
+    state(ctx).last_activity.remove(&id);
+    for obj in members {
+        ctx.w.clear_exclusive_scene_member(obj);
+    }
+    log_event(
+        ctx,
+        &updated,
+        SceneEventKind::Ended,
+        None,
+        serde_json::json!({ "reason": "idle_timeout" }),
+    );
+    let log_chunks = state_ref(ctx).events.open_chunk(&updated.id.to_string());
+    updated.log_chunks = Some(log_chunks);
+    state(ctx).scenes.update_scene(updated.id, |rec| {
+        rec.log_chunks = Some(log_chunks);
+    });
+    persist_scene(ctx.out, &updated);
+    announce(
+        ctx,
+        anchor,
+        format!(
+            "Time resumes — the timestop (scene #{}) ended automatically after being idle.",
+            updated.id
+        ),
+    );
+    crate::emit_scene_concluded(ctx, &updated);
+    crate::panel::publish(ctx, &updated);
+    crate::fire_ended(ctx, &updated);
+    prune_closed_scenes(ctx);
+}
+
+/// The `Coarse` nudge tick (D6): scans active scenes only via the active-only
+/// index, auto-releasing any idle exclusive timestop past
+/// [`SCENE_IDLE_TIMEOUT_SECS`], and for every remaining active scene with a
+/// nudge interval, asks an idle current player actor — once per turn — to pass
+/// or hold. Only players are asked (an NPC's turn is the NPC module's, H2b).
 pub(crate) fn nudge_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
+    // A scene created while the world clock was uninitialized (`<= 0`, e.g. in
+    // a harness before `world_task` syncs wall time to Unix epoch) must be
+    // re-anchored on the first real-clock tick instead of closing immediately
+    // as decades-idle.
+    const REAL_EPOCH_FLOOR: i64 = 1_000_000_000;
     let now = ctx.w.now();
+    let mut reanchor: Vec<SceneUid> = Vec::new();
+    let mut idle: Vec<SceneUid> = Vec::new();
+    {
+        let st = state_ref(ctx);
+        for rec in st.scenes.active_records().filter(|rec| rec.exclusive) {
+            let last = st.last_activity_at(rec);
+            if last <= 0 && now >= REAL_EPOCH_FLOOR {
+                reanchor.push(rec.id);
+            } else if now.saturating_sub(last) >= SCENE_IDLE_TIMEOUT_SECS {
+                idle.push(rec.id);
+            }
+        }
+    }
+    if !reanchor.is_empty() {
+        let st = state(ctx);
+        for id in reanchor {
+            st.note_activity(id, now);
+        }
+    }
+    for id in idle {
+        auto_end_idle_scene(ctx, id, now);
+    }
     let due: Vec<SceneRecord> = state_ref(ctx)
         .scenes
-        .values()
+        .active_records()
         .filter(|rec| rec.status == SceneStatus::Active && rec.turn_visit < u64::MAX)
         .filter(|rec| {
             rec.nudge_after_s
@@ -691,13 +825,11 @@ pub(crate) fn nudge_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core
         let Some(actor) = rec.current_actor() else {
             continue;
         };
-        let updated = {
-            let st = state(ctx);
-            let Some(live) = st.scenes.get_mut(&rec.id) else {
-                continue;
-            };
+        let Some(updated) = state(ctx).scenes.update_scene(rec.id, |live| {
             live.nudged = Some((rec.round, rec.turn_index));
             live.clone()
+        }) else {
+            continue;
         };
         persist_scene(ctx.out, &updated);
         let minutes = updated.nudge_after_s.unwrap_or_default() / 60;
@@ -729,12 +861,19 @@ fn timestop_pause(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if s.status == SceneStatus::Paused {
         return Err(CmdError::msg("The scene is already paused."));
     }
+    let now = ctx.w.now();
     let (anchor, updated) = {
         let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.status = SceneStatus::Paused;
-        rec.pause_reason = Some(PauseReason::Facilitator);
-        (rec.anchor, rec.clone())
+        let out = st
+            .scenes
+            .update_scene(s.id, |rec| {
+                rec.status = SceneStatus::Paused;
+                rec.pause_reason = Some(PauseReason::Facilitator);
+                (rec.anchor, rec.clone())
+            })
+            .expect("resolved above");
+        st.note_activity(s.id, now);
+        out
     };
     persist_scene(ctx.out, &updated);
     announce(
@@ -761,13 +900,19 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now = ctx.w.now();
     let (anchor, updated) = {
         let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.invalidate_nudge();
-        rec.status = SceneStatus::Active;
-        rec.pause_reason = None;
-        rec.turn_started_at = now;
-        rec.nudged = None;
-        (rec.anchor, rec.clone())
+        let out = st
+            .scenes
+            .update_scene(s.id, |rec| {
+                rec.invalidate_nudge();
+                rec.status = SceneStatus::Active;
+                rec.pause_reason = None;
+                rec.turn_started_at = now;
+                rec.nudged = None;
+                (rec.anchor, rec.clone())
+            })
+            .expect("resolved above");
+        st.note_activity(s.id, now);
+        out
     };
     persist_scene(ctx.out, &updated);
     announce(
@@ -791,57 +936,115 @@ fn timestop_resume(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// `+timestop/release <participant>` — the facilitator (or staff) surgically
-/// releases one participant from the freeze, without ending the scene. This is
-/// the sanctioned extraction path: a frozen non-staff player cannot be
-/// `@teleport`ed out (the move gate holds the moved object), so release is how
-/// you free someone stuck in a scene. Releasing the last participant ends it;
-/// the facilitator releases *themselves* via `+timestop/end`.
-fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let s = driver_scene(ctx)?;
-    let arg = ctx.args.raw().trim().to_string();
-    if arg.is_empty() {
-        return Err(CmdError::msg("Usage: +timestop/release <participant>"));
-    }
-    let who = mush_core::match_object(ctx.w, ctx.actor, &arg)?;
-    if who == s.facilitator {
-        return Err(CmdError::msg(
-            "The facilitator ends the scene with +timestop/end, not /release.",
-        ));
-    }
-    // The facilitator always remains a participant (they cannot release
-    // themselves — that is `/end`), so a release can never empty the scene:
-    // there is no close path here.
-    let (anchor, updated, found) = {
-        let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        let found = rec.remove_member(who);
-        (rec.anchor, rec.clone(), found)
-    };
+/// Remove `who` from scene `id`, clear their exclusive freeze bit, persist,
+/// log, and notify without leaking `Flags::DARK` presence.
+fn release_member(
+    ctx: &mut Ctx<'_>,
+    id: SceneUid,
+    who: ObjId,
+    self_release: bool,
+) -> Result<(), CmdError> {
+    let (anchor, updated, found) = state(ctx)
+        .scenes
+        .update_scene(id, |rec| {
+            let found = rec.remove_member(who);
+            (rec.anchor, rec.clone(), found)
+        })
+        .ok_or_else(|| CmdError::msg("That scene no longer exists."))?;
     if !found {
         return Err(CmdError::msg("They are not in this scene."));
     }
     ctx.w.clear_exclusive_scene_member(who);
     persist_scene(ctx.out, &updated);
-    let name = display_name(ctx.w, who);
-    announce(
-        ctx,
-        anchor,
-        format!(
-            "{name} is released from the timestop (scene #{}).",
-            updated.id
-        ),
-    );
+    if is_dark(ctx.w, who) {
+        ctx.out.sys_to_actor(
+            who,
+            "scene",
+            format!(
+                "You are released from the timestop (scene #{}).",
+                updated.id
+            ),
+        );
+        if ctx.actor != who {
+            to_actor(
+                ctx,
+                format!(
+                    "{} is released from the timestop (scene #{}).",
+                    display_name(ctx.w, who),
+                    updated.id
+                ),
+            );
+        }
+    } else {
+        let name = display_name(ctx.w, who);
+        let msg = if self_release {
+            format!("{name} leaves the timestop (scene #{}).", updated.id)
+        } else {
+            format!(
+                "{name} is released from the timestop (scene #{}).",
+                updated.id
+            )
+        };
+        announce(ctx, anchor, msg);
+    }
     log_event(
         ctx,
         &updated,
         SceneEventKind::Released,
         Some(who),
-        serde_json::json!({}),
+        serde_json::json!({ "self_release": self_release }),
     );
     crate::panel::publish(ctx, &updated);
     crate::panel::publish_none(ctx, who);
     Ok(())
+}
+
+/// `+timestop/leave` — self-release for any non-facilitator participant or
+/// observer caught in a timestop, preventing non-consensual public room traps.
+fn timestop_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let s = state_ref(ctx)
+        .active_scene_of(actor)
+        .cloned()
+        .ok_or_else(|| CmdError::msg("You are not in a scene."))?;
+    if s.facilitator == actor {
+        return Err(CmdError::msg(
+            "The facilitator ends the scene with +timestop/end, not /leave.",
+        ));
+    }
+    release_member(ctx, s.id, actor, true)
+}
+
+/// `+timestop/release [<participant>]` — the facilitator (or staff) surgically
+/// releases one participant from the freeze, without ending the scene. Any
+/// non-facilitator participant may also release themselves with
+/// `+timestop/release`, `+timestop/release me`, or `+timestop/release <self>`
+/// (same as `+timestop/leave`). The facilitator releases *themselves* via
+/// `+timestop/end`.
+fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    let actor = ctx.actor;
+    let arg = ctx.args.raw().trim().to_string();
+    if let Some(s) = state_ref(ctx).active_scene_of(actor).cloned()
+        && s.facilitator != actor
+    {
+        let targeting_self = arg.is_empty()
+            || arg.eq_ignore_ascii_case("me")
+            || mush_core::match_object(ctx.w, actor, &arg).ok() == Some(actor);
+        if targeting_self {
+            return release_member(ctx, s.id, actor, true);
+        }
+    }
+    let s = driver_scene(ctx)?;
+    if arg.is_empty() {
+        return Err(CmdError::msg("Usage: +timestop/release <participant>"));
+    }
+    let who = mush_core::match_object(ctx.w, actor, &arg)?;
+    if who == s.facilitator {
+        return Err(CmdError::msg(
+            "The facilitator ends the scene with +timestop/end, not /release.",
+        ));
+    }
+    release_member(ctx, s.id, who, false)
 }
 
 fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -849,12 +1052,18 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let now = ctx.w.now();
     let (anchor, members, mut updated) = {
         let st = state(ctx);
-        let rec = st.scenes.get_mut(&s.id).expect("resolved above");
-        rec.status = SceneStatus::Closed;
-        rec.pause_reason = None;
-        rec.ended_at = Some(now);
-        let members: Vec<ObjId> = rec.members().collect();
-        (rec.anchor, members, rec.clone())
+        let out = st
+            .scenes
+            .update_scene(s.id, |rec| {
+                rec.status = SceneStatus::Closed;
+                rec.pause_reason = None;
+                rec.ended_at = Some(now);
+                let members: Vec<ObjId> = rec.members().collect();
+                (rec.anchor, members, rec.clone())
+            })
+            .expect("resolved above");
+        st.last_activity.remove(&s.id);
+        out
     };
     // Release the freeze atomically.
     for obj in members {
@@ -874,9 +1083,9 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     let log_chunks = state_ref(ctx).events.open_chunk(&updated.id.to_string());
     updated.log_chunks = Some(log_chunks);
-    if let Some(rec) = state(ctx).scenes.get_mut(&updated.id) {
+    state(ctx).scenes.update_scene(updated.id, |rec| {
         rec.log_chunks = Some(log_chunks);
-    }
+    });
     persist_scene(ctx.out, &updated);
     announce(
         ctx,
@@ -896,6 +1105,7 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             updated.id
         )
     });
+    prune_closed_scenes(ctx);
     Ok(())
 }
 
@@ -908,16 +1118,17 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// persist the record only when the bound moved (H1, D-H-2).
 fn restamp_log_chunks(ctx: &mut Ctx<'_>, id: SceneUid) {
     let open = state_ref(ctx).events.open_chunk(&id.to_string());
-    let changed = {
-        let st = state(ctx);
-        match st.scenes.get_mut(&id) {
-            Some(rec) if rec.log_chunks.is_some() && rec.log_chunks != Some(open) => {
+    let changed = state(ctx)
+        .scenes
+        .update_scene(id, |rec| {
+            if rec.log_chunks.is_some() && rec.log_chunks != Some(open) {
                 rec.log_chunks = Some(open);
                 Some(rec.clone())
+            } else {
+                None
             }
-            _ => None,
-        }
-    };
+        })
+        .flatten();
     if let Some(rec) = changed {
         persist_scene(ctx.out, &rec);
     }
@@ -1888,6 +2099,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                 "rewind".into(),
                 "nudge".into(),
                 "release".into(),
+                "leave".into(),
                 "end".into(),
             ],
             help: "+timestop  --  Freeze the current room into an exclusive, turn-based scene: \
@@ -1912,8 +2124,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    participant to agree or disagree (15 minutes to answer; silence abstains). \
                    Nothing waits on the answers — they are the record, shown in +timestop/who and \
                    the log.\n\
-                   +timestop/release <who>  --  (facilitator/staff) Release one participant from \
-                   the freeze without ending the scene (the way to free a stuck player).\n\
+                   +timestop/leave  --  Release yourself from a timestop you did not start.\n\
+                   +timestop/release [<who>]  --  (facilitator/staff) Release one participant from \
+                   the freeze without ending the scene, or release yourself if you are not the \
+                   facilitator.\n\
                    +timestop/end   --  End the scene and release everyone.\n\
                    Staff (Royalty+) can drive or end a scene by standing in its room. A scene \
                    has a durable id and survives a server restart, rehydrating paused until a \

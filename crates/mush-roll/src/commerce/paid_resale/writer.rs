@@ -638,6 +638,25 @@ impl RegisteredPaidResaleWriter {
         }
         Ok(Some(PaidResaleServiceOffer { intent }))
     }
+    pub fn service_offer_in_engine(
+        &self,
+        engine: &mush_core::Engine,
+        actor: mush_core::ObjId,
+    ) -> Result<Option<PaidResaleServiceOffer>, PublicationError> {
+        let r = self.registration()?;
+        r.ready.check()?;
+        let Some(intent) = r.runtime.projected() else {
+            return Ok(None);
+        };
+        if intent.action != self.action || intent.actor != actor {
+            return Ok(None);
+        }
+        if r.runtime.require(&intent).is_err() || intent.fresh_engine(engine, &r.families).is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(PaidResaleServiceOffer { intent }))
+    }
     pub fn check_service_invocation(
         &self,
         inv: &mush_core::action::ActionInvocation,

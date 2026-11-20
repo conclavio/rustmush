@@ -1732,8 +1732,6 @@ mod tests {
             "faction",
             "scenes",
             "sim",
-            // S1: the atlas, right after the placement graph S2's journeys read.
-            "atlas",
             "tactics",
             "propagation",
             "economy",
@@ -1743,6 +1741,10 @@ mod tests {
             "mail",
             "jobs",
             "housing",
+            // CRIT-17: the atlas composes after every deny-only `MoveAttempt`
+            // hook (`scenes`, `sim`, `tactics`, `industry`, `housing`) and
+            // before `weather`.
+            "atlas",
             "weather",
             "party",
             // Roll opens readiness before Market's final renewal recovery audit.
@@ -2469,7 +2471,6 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
-                "atlas",
                 "tactics",
                 // E7 cut 7: the propagation layer, immediately after
                 // `mush-tactics`. Its boot reads no tactics state, but its
@@ -2494,6 +2495,7 @@ mod tests {
                 "mail",
                 "jobs",
                 "housing",
+                "atlas",
                 "weather",
                 "party",
                 "roll",
@@ -2535,7 +2537,6 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
-                "atlas",
                 "tactics",
                 "propagation",
                 "economy",
@@ -2549,6 +2550,7 @@ mod tests {
                 "mail",
                 "jobs",
                 "housing",
+                "atlas",
                 "weather",
                 "party",
                 "roll",
@@ -2699,7 +2701,6 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
-                "atlas",
                 "tactics",
                 "propagation",
                 "economy",
@@ -2715,6 +2716,7 @@ mod tests {
                 "mail",
                 "jobs",
                 "housing",
+                "atlas",
                 "weather",
                 "party",
                 "roll",
@@ -2854,7 +2856,6 @@ mod tests {
                 "faction",
                 "scenes",
                 "sim",
-                "atlas",
                 "tactics",
                 "propagation",
                 "economy",
@@ -2870,6 +2871,7 @@ mod tests {
                 "mail",
                 "jobs",
                 "housing",
+                "atlas",
                 "weather",
                 "party",
                 "roll",

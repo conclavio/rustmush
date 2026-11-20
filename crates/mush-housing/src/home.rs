@@ -92,6 +92,24 @@ pub fn to_unhome_on_end(
     out
 }
 
+/// Resolve a raw `Obj.home` target to its effective room for inside-property checks:
+/// if `home` is directly `anchor` or in `property_rooms` (even if destroyed/`GOING`),
+/// keep `home`; otherwise walk transitively via `enclosing` so an `Obj.home` pointed
+/// at a container or object standing inside the property still resolves inside it.
+#[must_use]
+pub fn effective_home_room(
+    home: ObjId,
+    enclosing: impl Fn(ObjId) -> Option<ObjId>,
+    anchor: ObjId,
+    property_rooms: &BTreeSet<ObjId>,
+) -> ObjId {
+    if home == anchor || property_rooms.contains(&home) {
+        home
+    } else {
+        enclosing(home).unwrap_or(home)
+    }
+}
+
 /// Every candidate whose `Obj.home` resolves inside the property — the general form of
 /// [`to_unhome_on_end`]'s second half, and it treats `anchor` as inside for the same
 /// reason.

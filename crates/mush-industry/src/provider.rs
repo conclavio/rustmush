@@ -93,6 +93,9 @@ pub const ACTION_WO_RESTAMP: &str = "industry_wo_restamp";
 /// Doc 20 cut SM.10 (§9, D-20-12): one tenure act a composed
 /// [`TenureAuthority`](crate::seams::TenureAuthority) vouches for.
 pub const ACTION_CLAIM_TENURE: &str = "industry_claim_tenure";
+/// HIGH-33: reclaim an elapsed facility slot reservation (scheduled expiry or
+/// authorized facility operator `@wo/reclaim`).
+pub const ACTION_WO_RECLAIM: &str = "industry_wo_reclaim";
 /// The one durable outcome schema all actions reference.
 pub const OUTCOME_ID: &str = "industry_result";
 
@@ -163,12 +166,15 @@ pub enum IndustryVerb {
     /// [`TenureAuthority`](crate::seams::TenureAuthority) vouches for as a
     /// server-authored row (SM.6's `SystemOpener` pattern). Appended last.
     ClaimTenure,
+    /// HIGH-33: reclaim an elapsed facility slot reservation via `expire_slot`
+    /// (driven by the `slot_expiry` schedule source or operator `@wo/reclaim`).
+    WoReclaim,
 }
 
 impl IndustryVerb {
     /// Every verb, in registration order.
     #[must_use]
-    pub const fn all() -> [Self; 15] {
+    pub const fn all() -> [Self; 16] {
         [
             Self::DepositOpen,
             Self::DepositAccess,
@@ -185,6 +191,7 @@ impl IndustryVerb {
             Self::WoCancel,
             Self::WoRestamp,
             Self::ClaimTenure,
+            Self::WoReclaim,
         ]
     }
 
@@ -205,6 +212,7 @@ impl IndustryVerb {
             Self::WoCancel => ACTION_WO_CANCEL,
             Self::WoRestamp => ACTION_WO_RESTAMP,
             Self::ClaimTenure => ACTION_CLAIM_TENURE,
+            Self::WoReclaim => ACTION_WO_RECLAIM,
         }
     }
 
@@ -216,7 +224,8 @@ impl IndustryVerb {
             | Self::WoAdvance
             | Self::WoDeliver
             | Self::WoCancel
-            | Self::WoRestamp => "industry.workorder",
+            | Self::WoRestamp
+            | Self::WoReclaim => "industry.workorder",
             _ => "industry.deposit",
         }
     }
@@ -238,6 +247,7 @@ impl IndustryVerb {
             Self::WoCancel => "wo-cancel",
             Self::WoRestamp => "wo-restamp",
             Self::ClaimTenure => "claim-tenure",
+            Self::WoReclaim => "wo-reclaim",
         }
     }
 
@@ -281,6 +291,10 @@ impl IndustryVerb {
             Self::WoRestamp => (
                 "Restamp a work order",
                 "Re-anchor an interrupted order under a campaign policy.",
+            ),
+            Self::WoReclaim => (
+                "Reclaim an expired facility slot",
+                "Expire an elapsed slot reservation and release abandoned order resources.",
             ),
         }
     }
@@ -341,6 +355,18 @@ fn error(code: ActionErrorCode, message: impl Into<String>) -> ActionError {
 /// created (R1, independent verify fold).
 fn production_schedule_id(order: WorkOrderId) -> Result<ScheduleId, ActionError> {
     let local = CanonicalId::new(format!("production.{:016x}", order.0))
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+    ScheduleId::derive(&crate::record::owner(), &local)
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))
+}
+
+/// Deterministic `ScheduleId` for one facility slot's expiry schedule (HIGH-33).
+fn slot_expiry_schedule_id(
+    facility: ObjId,
+    reservation: ReservationId,
+) -> Result<ScheduleId, ActionError> {
+    let hex: String = reservation.0.to_hex().chars().take(24).collect();
+    let local = CanonicalId::new(format!("slot.{}.{hex}", facility.0))
         .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
     ScheduleId::derive(&crate::record::owner(), &local)
         .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))
@@ -408,6 +434,33 @@ pub const WO_RECIPES: &str = "wo_recipes";
 /// Whether [`WO_RECIPES`] left something out — the flag an operator reads when a
 /// recipe that exists cannot be drafted.
 pub const WO_RECIPES_TRUNCATED: &str = "wo_recipes_truncated";
+/// CRIT-15: actor the `WoSubmit` offer was projected to.
+pub const WO_SUBMIT_BY: &str = "wo_submit_by";
+/// CRIT-15: server-authored map `order_id -> verified_live_hold_id` for eligible drafts.
+pub const WO_SUBMIT_HOLDS: &str = "wo_submit_holds";
+/// CRIT-14: actor the `WoDeliver` offer was projected to.
+pub const WO_DELIVER_BY: &str = "wo_deliver_by";
+/// CRIT-14: server-authored allowlist of funded open order IDs eligible to deliver.
+pub const WO_DELIVERABLE: &str = "wo_deliverable";
+/// CRIT-14: server-authored list of settled terminal order IDs eligible to prune.
+pub const WO_PRUNABLE: &str = "wo_prunable";
+/// HIGH-33: actor the manual `WoReclaim` offer was projected to.
+pub const WO_RECLAIM_BY: &str = "wo_reclaim_by";
+/// HIGH-33: whether the `WoReclaim` actor was staff.
+pub const WO_RECLAIM_STAFF: &str = "wo_reclaim_staff";
+/// HIGH-33: facility object IDs the non-staff actor may reclaim elapsed slots at.
+pub const WO_RECLAIM_FACILITIES: &str = "wo_reclaim_facilities";
+/// HIGH-35: actor the `ExtractStop` offer was projected to.
+pub const EXTRACT_STOP_BY: &str = "extract_stop_by";
+/// HIGH-35: whether the `ExtractStop` actor was staff.
+pub const EXTRACT_STOP_STAFF: &str = "extract_stop_staff";
+/// HIGH-35: deposit IDs whose running extraction runs this actor may stop.
+pub const EXTRACT_STOP_DEPOSITS: &str = "extract_stop_deposits";
+/// HIGH-37: actor the `ClaimMove` offer was projected to.
+pub const CLAIM_MOVE_BY: &str = "claim_move_by";
+/// HIGH-37: server-authored map `claim_id -> expected_title_owner_token` for
+/// transferable, non-lapsed, unencumbered claims this actor may move.
+pub const CLAIM_MOVE_ALLOWED: &str = "claim_move_allowed";
 
 /// The one line every work-order refusal a viewer may not distinguish renders.
 pub(crate) const WO_REFUSED: &str = "You cannot do that with that work order.";
@@ -728,12 +781,29 @@ fn integer(id: &str, min: i64, max: i64) -> Result<mush_core::ProjectedParameter
     )
 }
 
-/// Every ore body this actor may work right now, bounded and sorted.
-///
-/// Bounded on records **visited** (D-LBK-5) and total: an unreadable family
-/// answers an empty list, which projects **no offer at all** rather than an
-/// offer nobody can honour — and a viewer with no authorized body sees exactly
-/// what a viewer whose licence lapsed sees, which is nothing.
+/// Point-lookup every claim recorded in `claim_index` for `subject` (HIGH-34).
+/// Never hits a global 256-claim scan cutoff.
+fn claims_over_state(
+    state: &mush_core::ActionStateStore,
+    families: &IndustryFamilies,
+    subject: ClaimSubject,
+) -> Vec<ClaimRecord> {
+    let token = crate::families::claim_subject_token(subject);
+    let Ok(Some(index)) = state.get(&families.claim_index, &token) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(index.len());
+    for id in index.claims() {
+        if let Ok(Some(claim)) = state.get(&families.claims, id) {
+            out.push(claim.clone());
+        }
+    }
+    out
+}
+
+/// Every ore body `actor` (acting as `operator`) may currently extract from,
+/// resolved via per-deposit `claim_index` point lookups (HIGH-34) so global
+/// claim volume never truncates a deposit's own claims at 256 rows.
 #[must_use]
 pub fn authorized_deposits(
     engine: &Engine,
@@ -743,36 +813,10 @@ pub fn authorized_deposits(
 ) -> Vec<OreDepositId> {
     let world = &engine.world;
     let state = engine.action_state();
+    let now = world.world_ic_now();
     let licence = world
         .module_state::<crate::store::IndustryStore>()
         .and_then(|store| store.licence().cloned());
-    let now = world.world_ic_now();
-    let mut claims: Vec<ClaimRecord> = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut pages = 0;
-    loop {
-        if pages >= crate::record::MAX_LIST_PAGES {
-            break;
-        }
-        pages += 1;
-        let Ok(page) = state.scan_family(
-            &families.claims,
-            cursor.as_deref(),
-            crate::record::INDUSTRY_PAGE,
-        ) else {
-            return Vec::new();
-        };
-        for entry in page.entries() {
-            if claims.len() >= crate::record::MAX_LIST_ROWS * 4 {
-                break;
-            }
-            claims.push(entry.value().clone());
-        }
-        match page.next_after().map(ToString::to_string) {
-            Some(next) => cursor = Some(next),
-            None => break,
-        }
-    }
 
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
@@ -822,16 +866,20 @@ pub fn authorized_deposits(
                 .flatten()
                 .and_then(|scalar| u64::try_from(scalar.current()).ok())
                 .unwrap_or(0);
-            let mine: Vec<ClaimRecord> = claims
-                .iter()
-                .filter(|claim| {
-                    claim.subject()
-                        == ClaimSubject::Deposit {
-                            deposit: deposit.id(),
-                        }
-                })
-                .cloned()
-                .collect();
+            let mut mine = claims_over_state(
+                state,
+                families,
+                ClaimSubject::Deposit {
+                    deposit: deposit.id(),
+                },
+            );
+            mine.extend(claims_over_state(
+                state,
+                families,
+                ClaimSubject::Place {
+                    place: deposit.place(),
+                },
+            ));
             if crate::licence::extraction_authorized(
                 world,
                 actor,
@@ -857,15 +905,20 @@ pub fn authorized_deposits(
     out
 }
 
-/// Every claim, bounded on records **visited** (D-LBK-5). An unreadable family
-/// answers an empty list, which projects no offer at all.
-fn scan_all_claims(engine: &Engine, families: &IndustryFamilies) -> Vec<ClaimRecord> {
+/// Filter claims across the paged `claims` family (up to `MAX_LIST_PAGES`),
+/// capping matched results at `MAX_DEPOSIT_CHOICES` without a premature 256-row
+/// total-claim cutoff (HIGH-34).
+fn filter_claims<T>(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    mut f: impl FnMut(&ClaimRecord) -> Option<T>,
+) -> Vec<T> {
     let state = engine.action_state();
-    let mut claims: Vec<ClaimRecord> = Vec::new();
+    let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
-        if pages >= crate::record::MAX_LIST_PAGES {
+        if pages >= crate::record::MAX_LIST_PAGES || out.len() >= MAX_DEPOSIT_CHOICES {
             break;
         }
         pages += 1;
@@ -877,17 +930,19 @@ fn scan_all_claims(engine: &Engine, families: &IndustryFamilies) -> Vec<ClaimRec
             return Vec::new();
         };
         for entry in page.entries() {
-            if claims.len() >= crate::record::MAX_LIST_ROWS * 4 {
+            if out.len() >= MAX_DEPOSIT_CHOICES {
                 break;
             }
-            claims.push(entry.value().clone());
+            if let Some(item) = f(entry.value()) {
+                out.push(item);
+            }
         }
         match page.next_after().map(ToString::to_string) {
             Some(next) => cursor = Some(next),
             None => break,
         }
     }
-    claims
+    out
 }
 
 /// The claims a non-staff actor may move the **contest state** of: those whose
@@ -900,11 +955,9 @@ pub fn administrable_claims(
     families: &IndustryFamilies,
     actor: ObjId,
 ) -> Vec<ClaimId> {
-    let mut out: Vec<ClaimId> = scan_all_claims(engine, families)
-        .into_iter()
-        .filter(|claim| mush_economy::acts_for(&engine.world, actor, claim.issuer()))
-        .map(|claim| claim.id())
-        .collect();
+    let mut out = filter_claims(engine, families, |claim| {
+        mush_economy::acts_for(&engine.world, actor, claim.issuer()).then_some(claim.id())
+    });
     out.sort_unstable();
     out.dedup();
     out.truncate(MAX_DEPOSIT_CHOICES);
@@ -915,13 +968,7 @@ pub fn administrable_claims(
 /// a `Deposit` whose recorded [`OreDeposit::jurisdiction`] `actor` `acts_for`,
 /// whoever issued it — so an issuer may move the contest state of a foreign
 /// claim at its own sites, and nowhere else. A deposit with no jurisdiction
-/// never matches. Bounded like [`administrable_claims`]: the claims come from
-/// the same bounded walk, each deposit by one point lookup through
-/// `engine.action_state()`; sorted, deduped, capped at
-/// [`MAX_DEPOSIT_CHOICES`]. The default
-/// [`ActsForJurisdiction`](crate::seams::ActsForJurisdiction) answers this; a
-/// composed [`JurisdictionAuthority`](crate::seams::JurisdictionAuthority) may
-/// call it to extend rather than replace the row.
+/// never matches.
 #[must_use]
 pub fn jurisdiction_claims(
     engine: &Engine,
@@ -930,10 +977,9 @@ pub fn jurisdiction_claims(
 ) -> Vec<ClaimId> {
     let state = engine.action_state();
     let mut verdicts: BTreeMap<OreDepositId, bool> = BTreeMap::new();
-    let mut out: Vec<ClaimId> = Vec::new();
-    for claim in scan_all_claims(engine, families) {
+    let mut out = filter_claims(engine, families, |claim| {
         let ClaimSubject::Deposit { deposit } = claim.subject() else {
-            continue;
+            return None;
         };
         let reaches = match verdicts.get(&deposit) {
             Some(verdict) => *verdict,
@@ -948,10 +994,8 @@ pub fn jurisdiction_claims(
                 verdict
             }
         };
-        if reaches {
-            out.push(claim.id());
-        }
-    }
+        reaches.then_some(claim.id())
+    });
     out.sort_unstable();
     out.dedup();
     out.truncate(MAX_DEPOSIT_CHOICES);
@@ -1090,42 +1134,208 @@ fn authorize_claim_file(
     if vouched { Ok(()) } else { Err(unauthorized()) }
 }
 
-/// **This actor's orders that are holding production resources with no live budget
-/// hold** (independent verify fold, D4) — the delivery offer's server-authored
-/// refusal list, rendered as decimal strings so it compares against the same
-/// `order` text the submission carries.
-///
-/// It runs where a world exists and the submitter does not: inside `project_offer`.
-/// `scan_all_claims`' bounded-page shape, filtered to the requester so one player's
-/// projection never walks another's book, and truncated at
-/// [`crate::money::MAX_UNFUNDED_CHOICES`].
+/// CRIT-14: point-lookup all open (non-terminal) work orders for `actor` via
+/// the durable `requester_orders` index merged with `IndustryStore::open_order_ids`.
+/// Fails closed (`Err(())`) when the store reports a truncated work-order scan
+/// or typed state is unreadable.
+fn open_orders_for(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+) -> Result<Vec<WorkOrder>, ()> {
+    let store = engine.world.module_state::<crate::store::IndustryStore>();
+    if store.is_some_and(crate::store::IndustryStore::orders_truncated) {
+        return Err(());
+    }
+    let requester = PrincipalId::Object(actor);
+    let token = mush_economy::principal_token(&requester);
+    let state = engine.action_state();
+    let mut ids: std::collections::BTreeSet<WorkOrderId> = std::collections::BTreeSet::new();
+    match state.get(&families.requester_orders, &token) {
+        Ok(Some(idx)) => ids.extend(idx.orders().iter().copied()),
+        Ok(None) => {}
+        Err(_) => return Err(()),
+    }
+    if let Some(store) = store {
+        ids.extend(store.open_order_ids(&requester));
+    }
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        match state.get(&families.work_orders, &id) {
+            Ok(Some(order)) => {
+                if order.requester() == &requester && !order.state().is_terminal() {
+                    out.push(order.clone());
+                }
+            }
+            Ok(None) => {}
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(out)
+}
+
+/// CRIT-14: settled terminal work orders beyond the recent retention floor (64)
+/// in `wo_terminal_ring[1]` whose economy budget hold has already cleared.
+fn prunable_terminal_work_orders(engine: &Engine, families: &IndustryFamilies) -> Vec<String> {
+    const KEEP_RECENT_FUNDED: usize = 64;
+    const MAX_PRUNE_PER_COMMIT: usize = 16;
+    let state = engine.action_state();
+    let Ok(Some(ring)) = state.get(
+        &families.wo_terminal_ring,
+        &crate::workorder::TERMINAL_RING_SETTLED_ORDERS,
+    ) else {
+        return Vec::new();
+    };
+    let overflow = ring.len().saturating_sub(KEEP_RECENT_FUNDED);
+    if overflow == 0 {
+        return Vec::new();
+    }
+    ring.orders()
+        .iter()
+        .take(overflow)
+        .filter(|id| crate::money::live_hold_in(&engine.world, **id).is_none())
+        .take(MAX_PRUNE_PER_COMMIT)
+        .map(|id| id.0.to_string())
+        .collect()
+}
+
+/// Parse server-authored `WO_PRUNABLE` terminal work order IDs.
+fn prunable_ids_field(parameters: &serde_json::Map<String, Value>) -> Vec<WorkOrderId> {
+    parameters
+        .get(WO_PRUNABLE)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .filter_map(WorkOrderId::parse)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// CRIT-14: point-lookup `actor`'s open orders that are missing a live budget
+/// hold (replaces the truncated 32-entry global scan denylist).
 #[must_use]
 fn unfunded_orders(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -> Vec<String> {
-    let requester = PrincipalId::Object(actor);
+    let Ok(orders) = open_orders_for(engine, families, actor) else {
+        return Vec::new();
+    };
+    orders
+        .into_iter()
+        .filter(|order| crate::money::budget_missing_in(&engine.world, order))
+        .map(|order| order.id().0.to_string())
+        .collect()
+}
+
+/// CRIT-14: server-authored allowlist of open `Running | AwaitingDelivery`
+/// orders belonging to `actor` whose budget hold is live (fail-closed on
+/// truncated scans or unreadable state).
+fn deliverable_orders(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+) -> Result<Vec<String>, ()> {
+    let orders = open_orders_for(engine, families, actor)?;
+    Ok(orders
+        .into_iter()
+        .filter(|order| {
+            matches!(
+                order.state(),
+                WorkOrderState::Running | WorkOrderState::AwaitingDelivery
+            ) && !crate::money::budget_missing_in(&engine.world, order)
+        })
+        .map(|order| order.id().to_string())
+        .collect())
+}
+
+/// CRIT-15: server-authored map `order_id -> verified_live_hold_id` for `actor`'s
+/// `Draft` work orders that pass ALL `@wo/submit` guards (requester, `Draft`,
+/// live facility + `may_order` + `!is_facility_quarantined` + matching revisions,
+/// non-drifted recipe digest AND pinned lines, and a live economy budget hold
+/// matching `order.budget_account()` and `order_price`).
+fn eligible_submit_holds(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    recipes: Option<&dyn crate::workorder::RecipeAuthority>,
+    actor: ObjId,
+) -> Result<serde_json::Map<String, Value>, ()> {
+    let orders = open_orders_for(engine, families, actor)?;
+    let Some(store) = engine.world.module_state::<crate::store::IndustryStore>() else {
+        return Err(());
+    };
+    let mut map = serde_json::Map::new();
+    for order in orders {
+        if *order.state() != WorkOrderState::Draft {
+            continue;
+        }
+        let Some(facility) = store.facility(order.facility()) else {
+            continue;
+        };
+        if !crate::store::may_order(&engine.world, actor, facility)
+            || store.is_facility_quarantined(order.facility())
+            || facility.capacity_revision() != order.capacity_revision()
+            || facility.policy_revision() != order.policy_revision()
+            || store.drift_cancelled(order.id()).is_some()
+        {
+            continue;
+        }
+        let recipe_ok = recipes.is_some_and(|authority| {
+            authority
+                .resolve(
+                    &engine.world,
+                    order.recipe().pack(),
+                    order.recipe().version(),
+                    order.recipe().id(),
+                )
+                .is_some_and(|(published, pinned)| {
+                    published.digest() == order.recipe().digest() && pinned == *order.pinned()
+                })
+        });
+        if !recipe_ok {
+            continue;
+        }
+        let expected_amount = crate::money::order_price(&engine.world, &order);
+        let Some(hold) = crate::money::live_hold_in(&engine.world, order.id()) else {
+            continue;
+        };
+        if hold.id.0 == 0
+            || hold.account != order.budget_account()
+            || hold.amount != expected_amount
+        {
+            continue;
+        }
+        map.insert(order.id().to_string(), json!(hold.id.0));
+    }
+    Ok(map)
+}
+
+/// HIGH-35: deposits with a live `Running` extraction run that `actor` `acts_for`.
+fn stoppable_runs(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -> Vec<OreDepositId> {
     let state = engine.action_state();
-    let mut out: Vec<String> = Vec::new();
+    let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
-        if pages >= crate::record::MAX_LIST_PAGES || out.len() >= crate::money::MAX_UNFUNDED_CHOICES
-        {
+        if pages >= crate::record::MAX_LIST_PAGES || out.len() >= MAX_DEPOSIT_CHOICES {
             break;
         }
         pages += 1;
         let Ok(page) = state.scan_family(
-            &families.work_orders,
+            &families.runs,
             cursor.as_deref(),
             crate::record::INDUSTRY_PAGE,
         ) else {
-            return out;
+            return Vec::new();
         };
         for entry in page.entries() {
-            let order = entry.value();
-            if order.requester() == &requester
-                && crate::money::budget_missing_in(&engine.world, order)
-                && out.len() < crate::money::MAX_UNFUNDED_CHOICES
+            if out.len() >= MAX_DEPOSIT_CHOICES {
+                break;
+            }
+            let run = entry.value();
+            if run.state() == RunState::Running
+                && mush_economy::acts_for(&engine.world, actor, run.operator())
             {
-                out.push(order.id().0.to_string());
+                out.push(run.deposit());
             }
         }
         match page.next_after().map(ToString::to_string) {
@@ -1133,27 +1343,98 @@ fn unfunded_orders(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -
             None => break,
         }
     }
-    out
-}
-
-/// The transferable claims a non-staff actor may move the **holder** of: those
-/// it holds or `acts_for` the holder of (E7c3 verify fold C4). The authority
-/// half stays E4's `AssetOp::TransferTitle`, posted by the command; this gate
-/// keeps the record-half offer from being open to every actor.
-#[must_use]
-pub fn movable_claims(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -> Vec<ClaimId> {
-    let mut out: Vec<ClaimId> = scan_all_claims(engine, families)
-        .into_iter()
-        .filter(|claim| {
-            claim.transferability() == Transferability::Transferable
-                && mush_economy::acts_for(&engine.world, actor, claim.holder())
-        })
-        .map(|claim| claim.id())
-        .collect();
     out.sort_unstable();
     out.dedup();
     out.truncate(MAX_DEPOSIT_CHOICES);
     out
+}
+
+/// HIGH-33: facilities `actor` (staff or owner via `acts_for`) may reclaim an
+/// elapsed `Held` slot reservation at.
+fn reclaimable_facilities(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+    staff: bool,
+) -> Vec<ObjId> {
+    let Some(store) = engine.world.module_state::<crate::store::IndustryStore>() else {
+        return Vec::new();
+    };
+    let state = engine.action_state();
+    let now = engine.world.world_ic_now();
+    let mut out = Vec::new();
+    for facility in store.facilities() {
+        if out.len() >= MAX_DEPOSIT_CHOICES {
+            break;
+        }
+        if !staff && !mush_economy::acts_for(&engine.world, actor, facility.owner()) {
+            continue;
+        }
+        let Ok(key) = crate::facility::facility_capacity_key(facility.object()) else {
+            continue;
+        };
+        let Ok(Some(book)) = state.get(&families.facility_books, &key) else {
+            continue;
+        };
+        let has_elapsed = book.records().iter().any(|rec| {
+            rec.state() == mush_core::ReservationState::Held
+                && matches!(
+                    rec.expires().checked_cmp(&now),
+                    Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                )
+        });
+        if has_elapsed {
+            out.push(facility.object());
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// HIGH-37: claims eligible for `ClaimMove` — `Transferable`, non-lapsed,
+/// authorizing contest state, `staff || acts_for(claim.holder())`, and backed by
+/// a live, unencumbered, non-frozen E4 titled asset — mapped to the live E4
+/// `asset.title_owner` token so `mv()` cannot split claim tenure from title.
+fn movable_claims_map(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+    staff: bool,
+) -> BTreeMap<ClaimId, String> {
+    let econ = engine.world.module_state::<mush_economy::EconomyStore>();
+    let items = filter_claims(engine, families, |claim| {
+        if claim.transferability() != Transferability::Transferable
+            || claim.is_lapsed()
+            || !claim.contest_state().authorizes()
+        {
+            return None;
+        }
+        if !staff && !mush_economy::acts_for(&engine.world, actor, claim.holder()) {
+            return None;
+        }
+        let asset = econ.and_then(|store| store.snapshot().asset(claim.object()))?;
+        if asset.frozen
+            || !matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
+            || !asset.encumbrances.is_empty()
+        {
+            return None;
+        }
+        Some((
+            claim.id(),
+            mush_economy::principal_token(&asset.title_owner).to_string(),
+        ))
+    });
+    items.into_iter().collect()
+}
+
+/// The transferable, unencumbered claims a non-staff actor may move the **holder**
+/// of: those it holds or `acts_for` the holder of (E7c3 verify fold C4; HIGH-37).
+#[must_use]
+pub fn movable_claims(engine: &Engine, families: &IndustryFamilies, actor: ObjId) -> Vec<ClaimId> {
+    movable_claims_map(engine, families, actor, false)
+        .into_keys()
+        .collect()
 }
 
 // ---- WS02-S4: the work-order draft offer's server-authored books ------------
@@ -1613,6 +1894,13 @@ impl ActionProvider for IndustryProvider {
         let mut contest_claims: Option<Vec<String>> = None;
         // Doc 20 cut SM.10: the one server-authored tenure act (§9).
         let mut tenure_act: Option<crate::seams::TenureAct> = None;
+        // CRIT-15 / CRIT-14 / HIGH-33 / HIGH-35 / HIGH-37 server-authored bindings.
+        let mut claim_move_allowed: Option<serde_json::Map<String, Value>> = None;
+        let mut extract_stop_deposits: Option<Vec<String>> = None;
+        let mut wo_submit_holds: Option<serde_json::Map<String, Value>> = None;
+        let mut wo_deliverable: Option<Vec<String>> = None;
+        let mut wo_reclaim_facilities: Option<Vec<u32>> = None;
+        let mut wo_prunable: Option<Vec<String>> = None;
         match self.verb {
             IndustryVerb::ClaimTenure => {
                 // Doc 20 §9, D-20-12 (cut SM.10): every actor — staff included,
@@ -1726,27 +2014,30 @@ impl ActionProvider for IndustryProvider {
                 parameters.push(text("transferability", 16)?);
             }
             IndustryVerb::ClaimMove => {
-                // E7c3 verify fold C4: the record half of a transfer is gated
-                // here — a non-staff actor is offered a `Choice` only over the
-                // transferable claims it holds, so the offer cannot be selected
-                // by a non-holder to rewrite `record.holder` and split tenure
-                // from title. The authority half stays E4's `TransferTitle`,
-                // which the command posts first. Staff may name any claim by id.
+                // E7c3 verify fold C4 + HIGH-37: pre-check Transferable, non-lapsed,
+                // authorizing contest state, holder/staff authority, AND live
+                // unencumbered E4 asset, binding each claim ID to its live E4
+                // `asset.title_owner` token so `mv()` cannot split tenure from title.
+                let allowed_map = movable_claims_map(engine, &self.families, actor, staff);
+                if allowed_map.is_empty() {
+                    return Ok(None);
+                }
+                let mut fixed_map = serde_json::Map::new();
+                for (cid, owner_token) in &allowed_map {
+                    fixed_map.insert(cid.to_string(), json!(owner_token));
+                }
                 if staff {
                     parameters.push(text("claim", 32)?);
                 } else {
-                    let claims = movable_claims(engine, &self.families, actor);
-                    if claims.is_empty() {
-                        return Ok(None);
-                    }
                     parameters.push(parameter(
                         "claim",
                         true,
                         mush_core::ProjectedParameterKind::Choice {
-                            choices: claims.iter().map(ToString::to_string).collect(),
+                            choices: allowed_map.keys().map(ToString::to_string).collect(),
                         },
                     )?);
                 }
+                claim_move_allowed = Some(fixed_map);
                 parameters.push(text("holder", 64)?);
                 parameters.push(integer("revision", 1, i64::MAX)?);
             }
@@ -1862,61 +2153,50 @@ impl ActionProvider for IndustryProvider {
                 }
             }
             IndustryVerb::ExtractStop => {
-                parameters.push(text("deposit", 32)?);
+                // HIGH-35: gate `ExtractStop` on staff OR live `Running` runs
+                // whose `operator()` this actor `acts_for`.
+                if staff {
+                    parameters.push(text("deposit", 32)?);
+                    extract_stop_deposits = Some(Vec::new());
+                } else {
+                    let runs = stoppable_runs(engine, &self.families, actor);
+                    if runs.is_empty() {
+                        return Ok(None);
+                    }
+                    let choices: Vec<String> = runs.iter().map(ToString::to_string).collect();
+                    parameters.push(parameter(
+                        "deposit",
+                        true,
+                        mush_core::ProjectedParameterKind::Choice {
+                            choices: choices.clone(),
+                        },
+                    )?);
+                    extract_stop_deposits = Some(choices);
+                }
             }
             IndustryVerb::WoDraft => {
-                // ---- The facility gate, layer 2: the offer itself (WS02-S4) ----
-                //
-                // The cheap path FIRST, and it is not a style preference:
-                // `project_legal_actions` runs this on every projection pass,
-                // including every authoritative command submission and every
-                // decision capture. An actor with no facility to draft at gets
-                // **no offer at all** and no book is ever built for them.
-                //
-                // `facility` stays an integer: a `Choice` must be a string, and
-                // the command stages an integer, so making it a choice would
-                // refuse every `@wo/draft` on the parameter schema.
                 let facilities = draftable_facilities(engine, actor, staff);
                 if facilities.is_empty() {
                     return Ok(None);
                 }
-                // C2/D2 (m2): the per-requester cap, read off the RAM index the
-                // store maintains on open/terminate rather than walked here —
-                // the command's own bounded scan stays the authority, this is
-                // the projection-cheap read of the same number.
-                let open = engine
-                    .world
-                    .module_state::<crate::store::IndustryStore>()
-                    .map_or(0, |store| {
-                        store.open_work_orders(&PrincipalId::Object(actor))
-                    });
-                if open >= crate::workorder::MAX_WORK_ORDERS_PER_REQUESTER {
+                // CRIT-14: fail closed if work-order scan truncated, and count
+                // open orders via point lookup (`open_orders_for`).
+                let Ok(open_orders) = open_orders_for(engine, &self.families, actor) else {
+                    return Ok(None);
+                };
+                if open_orders.len() >= crate::workorder::MAX_WORK_ORDERS_PER_REQUESTER {
                     return Ok(None);
                 }
                 let (revision, catalog) = self.catalog_book(&engine.world);
                 let books = wo_offer_books(engine, actor, &facilities, &catalog);
                 if books.recipes.is_empty() {
-                    // Nothing this actor's facilities can run: no offer, for the
-                    // same fog reason an unauthorized facility gets none.
                     return Ok(None);
                 }
                 if books.truncated {
                     self.warn_truncated(revision, actor, books.recipes.len());
                 }
                 wo_books = Some(books);
-                // The draft command (world available) resolves the recipe from the
-                // authority, then submits these as parameters; the provider
-                // re-derives every pinned number from the books above and writes
-                // the Draft work order. `pinned` carries the resolved lines as a
-                // JSON blob, which the provider hashes against the book's.
-                //
-                // WS02-S5: `facility_slots`, `capacity_revision`,
-                // `policy_revision` and `digest` are **not** declared here any
-                // more. `ProjectedParameterSchema::validate` refuses a supplied
-                // key the projection does not name, so their absence is itself the
-                // fence: a submission that so much as mentions `capacity_revision`
-                // is refused before the provider runs, and `wo_draft` reads all
-                // four out of `wo_facilities`/`wo_recipes` instead.
+                wo_prunable = Some(prunable_terminal_work_orders(engine, &self.families));
                 parameters.push(integer("facility", 0, i64::from(u32::MAX))?);
                 parameters.push(text("pack", 64)?);
                 parameters.push(integer("version", 1, i64::from(u32::MAX))?);
@@ -1932,39 +2212,54 @@ impl ActionProvider for IndustryProvider {
                 parameters.push(text("beneficiary", 64)?);
                 parameters.push(text("pinned", 4096)?);
             }
-            IndustryVerb::WoSubmit
-            | IndustryVerb::WoDeliver
-            | IndustryVerb::WoCancel
-            | IndustryVerb::WoRestamp => {
+            IndustryVerb::WoSubmit => {
+                // CRIT-15: bind every eligible draft order server-side to its
+                // verified live `HoldId`, authz, quarantine, facility revisions,
+                // and non-drifted recipe digest + pinned lines.
+                let Ok(holds) =
+                    eligible_submit_holds(engine, &self.families, self.recipes.as_deref(), actor)
+                else {
+                    return Ok(None);
+                };
+                if holds.is_empty() {
+                    return Ok(None);
+                }
+                wo_submit_holds = Some(holds);
+                parameters.push(text("order", 32)?);
+                parameters.push(integer("hold", 0, i64::MAX)?);
+            }
+            IndustryVerb::WoDeliver => {
+                // CRIT-14: server-authored allowlist of funded open orders via
+                // point lookups (fails closed on truncation; replaces 32-entry denylist).
+                let Ok(allowed) = deliverable_orders(engine, &self.families, actor) else {
+                    return Ok(None);
+                };
+                if allowed.is_empty() {
+                    return Ok(None);
+                }
+                wo_deliverable = Some(allowed);
+                wo_prunable = Some(prunable_terminal_work_orders(engine, &self.families));
+                parameters.push(text("order", 32)?);
+            }
+            IndustryVerb::WoCancel | IndustryVerb::WoRestamp => {
+                if self.verb == IndustryVerb::WoCancel {
+                    wo_prunable = Some(prunable_terminal_work_orders(engine, &self.families));
+                }
                 parameters.push(text("order", 32)?);
                 if self.verb == IndustryVerb::WoRestamp {
                     parameters.push(text("policy", 64)?);
                 }
-                // ---- E7r1 fold Z2: the SUBMIT ingress declares the hold ----
-                //
-                // Found by the fold's own grounding, not on the verify's list, and it
-                // is why B15's "unusable by construction" is only half the story: a
-                // command's submission takes the SAME route as a direct offer
-                // (`Ctx::submit_authoritative` -> `command_offer_submission` ->
-                // `resolve_legal_action`), and `ProjectedParameterSchema::validate`
-                // refuses a supplied key the projection does not declare. `@wo/submit`
-                // stages `{"order":…, "hold":…}` against a projection that declared
-                // only `order`, so on a real server EVERY `@wo/submit` was refused
-                // `InvalidParameters` before it reached the provider — R1's whole
-                // money leg was unreachable outside the tests, which stage the
-                // submission and never resolve it.
-                //
-                // Declaring it makes the verb work. It does NOT make the offer route
-                // a free-production hole, because the id is not the authority:
-                // `money::live_hold` finds the reservation **by purpose**, so a forged
-                // id records a `HoldId` that no hold answers to, `money::budget_missing`
-                // is then true for that order for ever, `wo_deliver` refuses it
-                // through `money::UNFUNDED_ORDERS` below, and the sweep pages it. The
-                // prepare's `hold != 0` check stays exactly what it always was — a
-                // shape assertion — and now says so.
-                if self.verb == IndustryVerb::WoSubmit {
-                    parameters.push(integer("hold", 0, i64::MAX)?);
+            }
+            IndustryVerb::WoReclaim => {
+                // HIGH-33: operator manual reclaim of elapsed facility slot
+                // reservations (staff or facility owner via `acts_for`).
+                let facilities = reclaimable_facilities(engine, &self.families, actor, staff);
+                if facilities.is_empty() {
+                    return Ok(None);
                 }
+                wo_reclaim_facilities = Some(facilities.into_iter().map(|id| id.0).collect());
+                wo_prunable = Some(prunable_terminal_work_orders(engine, &self.families));
+                parameters.push(integer("facility", 0, i64::from(u32::MAX))?);
             }
             IndustryVerb::WoAdvance => {
                 // The production advance is **not** player-offered: it enters only
@@ -2082,17 +2377,50 @@ impl ActionProvider for IndustryProvider {
             && let Some(map) = fixed.as_object_mut()
         {
             map.insert(WO_DRAFTER.to_owned(), json!(actor.0));
-            // WS02-S5: diagnostic, not a gate. It records that this book was
-            // built with staff reach (every facility, not just the drafter's);
-            // `wo_draft_authority` no longer shortcuts on it, because there is
-            // nothing left to shortcut past — the numbers it used to wave
-            // through are read out of the books themselves now.
             map.insert(WO_DRAFT_STAFF.to_owned(), json!(staff));
             map.insert(WO_FACILITIES.to_owned(), Value::Object(books.facilities));
             map.insert(WO_ENDPOINTS.to_owned(), json!(books.endpoints));
             map.insert(WO_ACCOUNTS.to_owned(), json!(books.accounts));
             map.insert(WO_RECIPES.to_owned(), Value::Object(books.recipes));
             map.insert(WO_RECIPES_TRUNCATED.to_owned(), json!(books.truncated));
+        }
+        if let Some(allowed) = claim_move_allowed
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(CLAIM_MOVE_BY.to_owned(), json!(actor.0));
+            map.insert(CLAIM_MOVE_ALLOWED.to_owned(), Value::Object(allowed));
+        }
+        if let Some(deposits) = extract_stop_deposits
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(EXTRACT_STOP_BY.to_owned(), json!(actor.0));
+            map.insert(EXTRACT_STOP_STAFF.to_owned(), json!(staff));
+            map.insert(EXTRACT_STOP_DEPOSITS.to_owned(), json!(deposits));
+        }
+        if let Some(holds) = wo_submit_holds
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(WO_SUBMIT_BY.to_owned(), json!(actor.0));
+            map.insert(WO_SUBMIT_HOLDS.to_owned(), Value::Object(holds));
+        }
+        if let Some(allowed) = wo_deliverable
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(WO_DELIVER_BY.to_owned(), json!(actor.0));
+            map.insert(WO_DELIVERABLE.to_owned(), json!(allowed));
+        }
+        if let Some(facilities) = wo_reclaim_facilities
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(WO_RECLAIM_BY.to_owned(), json!(actor.0));
+            map.insert(WO_RECLAIM_STAFF.to_owned(), json!(staff));
+            map.insert(WO_RECLAIM_FACILITIES.to_owned(), json!(facilities));
+        }
+        if let Some(prunable) = wo_prunable
+            && !prunable.is_empty()
+            && let Some(map) = fixed.as_object_mut()
+        {
+            map.insert(WO_PRUNABLE.to_owned(), json!(prunable));
         }
         Ok(Some(mush_core::ProviderOfferDraft {
             // The IC stamp rides the offer's FIXED parameters, so preparation
@@ -2185,13 +2513,13 @@ impl ActionProvider for IndustryProvider {
             IndustryVerb::DepositOpen => self.open(txn, invocation, &parameters, &mut data)?,
             IndustryVerb::DepositAccess => self.access(txn, &parameters, &mut data)?,
             IndustryVerb::ClaimFile => self.file(txn, invocation, &parameters, &now, &mut data)?,
-            IndustryVerb::ClaimMove => self.mv(txn, &parameters, &mut data)?,
+            IndustryVerb::ClaimMove => self.mv(txn, &parameters, actor, &mut data)?,
             IndustryVerb::ClaimContest => self.contest(txn, &parameters, &now, actor, &mut data)?,
             IndustryVerb::ExtractStart => self.start(txn, &parameters, actor, &mut data)?,
             IndustryVerb::ExtractCycle => {
                 self.cycle(txn, invocation, &parameters, &now, actor, &mut data)?
             }
-            IndustryVerb::ExtractStop => self.stop(txn, &parameters, &mut data)?,
+            IndustryVerb::ExtractStop => self.stop(txn, &parameters, actor, &mut data)?,
             IndustryVerb::WoDraft => {
                 self.wo_draft(txn, invocation, &parameters, actor, &mut data)?
             }
@@ -2204,6 +2532,9 @@ impl ActionProvider for IndustryProvider {
             IndustryVerb::WoRestamp => self.wo_restamp(txn, &parameters, &now, actor, &mut data)?,
             IndustryVerb::ClaimTenure => {
                 self.tenure(txn, invocation, &parameters, &now, &mut data)?
+            }
+            IndustryVerb::WoReclaim => {
+                self.wo_reclaim(txn, invocation, &parameters, &now, actor, &mut data)?
             }
         };
         data.insert("summary".to_owned(), json!(summary));
@@ -2364,6 +2695,7 @@ impl IndustryProvider {
         subject: ClaimSubject,
         issuer: &PrincipalId,
         exclusivity: Exclusivity,
+        now: &ClockStamp,
     ) -> Result<ExclusiveConflict, ActionError> {
         for existing in self
             .families
@@ -2375,11 +2707,16 @@ impl IndustryProvider {
                 && (exclusivity == Exclusivity::Exclusive
                     || existing.exclusivity() == Exclusivity::Exclusive)
             {
-                return Ok(if existing.is_lapsed() {
-                    ExclusiveConflict::Lapsed
-                } else {
-                    ExclusiveConflict::Live
-                });
+                if existing.is_lapsed() {
+                    return Ok(ExclusiveConflict::Lapsed);
+                }
+                if matches!(
+                    existing.term().checked_cmp(now),
+                    Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                ) {
+                    continue;
+                }
+                return Ok(ExclusiveConflict::Live);
             }
         }
         Ok(ExclusiveConflict::Clear)
@@ -2562,6 +2899,7 @@ impl IndustryProvider {
                         ClaimSubject::Deposit { deposit: *id },
                         issuer,
                         Exclusivity::Exclusive,
+                        now,
                     )? {
                         ExclusiveConflict::Clear => {}
                         ExclusiveConflict::Live => {
@@ -2853,6 +3191,30 @@ impl IndustryProvider {
         let subject = subject_field(parameters)?;
         let issuer = principal_field(parameters, "issuer")?;
         authorize_claim_file(invocation, parameters, &issuer)?;
+        let is_staff_file = parameters
+            .get(CLAIM_FILE_STAFF)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // HIGH-34: when filing over a Deposit, require the deposit to exist and
+        // enforce `issuer == deposit.jurisdiction()` for non-staff filers so a
+        // player-created org can never file foreign tenure over a jurisdiction-
+        // governed deposit (or occupy its `MAX_CLAIMS_PER_SUBJECT` slots).
+        if let ClaimSubject::Deposit {
+            deposit: deposit_id,
+        } = subject
+        {
+            let deposit = self
+                .families
+                .deposit(txn, deposit_id)
+                .map_err(|source| refuse(&source))?
+                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, REFUSED))?;
+            if !is_staff_file
+                && let Some(jurisdiction) = deposit.jurisdiction()
+                && &issuer != jurisdiction
+            {
+                return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+            }
+        }
         let holder = principal_field(parameters, "holder")?;
         let object = obj_field(parameters, "object")?;
         let exclusivity = match text_field(parameters, "exclusivity")?.as_str() {
@@ -2889,7 +3251,7 @@ impl IndustryProvider {
         let term = term_field(parameters, now)?;
         let id = derive_claim_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
 
-        match self.exclusive_conflict(txn, subject, &issuer, exclusivity)? {
+        match self.exclusive_conflict(txn, subject, &issuer, exclusivity, now)? {
             ExclusiveConflict::Clear => {}
             ExclusiveConflict::Lapsed => {
                 return Err(error(
@@ -2917,29 +3279,48 @@ impl IndustryProvider {
         )
         .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
         self.families
-            .file_claim(txn, claim)
+            .file_claim_at(txn, claim, now)
             .map_err(|source| refuse(&source))?;
         data.insert("claim".to_owned(), json!(id.to_string()));
         data.insert("object".to_owned(), json!(object.0));
         Ok(format!("Filed {id}."))
     }
 
-    /// B4 — the record half of a transfer.
+    /// B4 — the record half of a transfer (hardened by HIGH-37).
     ///
-    /// The **authority** half is E4's `AssetOp::TransferTitle` on the claim's
-    /// titled object, which the command handler posts first and which refuses
-    /// with `EconomyError::Encumbered` while **any** encumbrance stands. That is
-    /// why a pledged claim cannot be transferred *by E4's rule, not by a second
-    /// one*: this arm never runs.
+    /// Verifies the server-authored `CLAIM_MOVE_BY` and `CLAIM_MOVE_ALLOWED`
+    /// bindings (Transferable, non-lapsed, authorizing, unencumbered live E4
+    /// asset) and requires the submitted `holder` to match the live E4
+    /// `asset.title_owner` so a direct offer submission cannot split tenure
+    /// from title or bypass encumbrances.
     fn mv(
         &self,
         txn: &mut ActionTxn<'_>,
         parameters: &serde_json::Map<String, Value>,
+        actor: ObjId,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
+        let unauthorized = || error(ActionErrorCode::Unauthorized, REFUSED);
+        let by = parameters
+            .get(CLAIM_MOVE_BY)
+            .and_then(Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId);
+        if by != Some(actor) {
+            return Err(unauthorized());
+        }
         let id = claim_field(parameters, "claim")?;
         let holder = principal_field(parameters, "holder")?;
         let revision = revision_field(parameters)?;
+        let expected_owner = parameters
+            .get(CLAIM_MOVE_ALLOWED)
+            .and_then(Value::as_object)
+            .and_then(|allowed| allowed.get(&id.to_string()))
+            .and_then(Value::as_str)
+            .ok_or_else(unauthorized)?;
+        if mush_economy::principal_token(&holder).as_str() != expected_owner {
+            return Err(unauthorized());
+        }
         let live = self
             .families
             .claim(txn, id)
@@ -2950,6 +3331,9 @@ impl IndustryProvider {
                 ActionErrorCode::ProviderRejected,
                 "that tenure is personal to its holder",
             ));
+        }
+        if live.is_lapsed() || !live.contest_state().authorizes() {
+            return Err(error(ActionErrorCode::ProviderRejected, REFUSED));
         }
         let next = live
             .with_holder(holder)
@@ -3218,14 +3602,42 @@ impl IndustryProvider {
         ))
     }
 
-    /// B6 — stop a run. The record stays.
+    /// B6 — stop a run (gated by HIGH-35 on `acts_for(run.operator())` or staff).
     fn stop(
         &self,
         txn: &mut ActionTxn<'_>,
         parameters: &serde_json::Map<String, Value>,
+        actor: ObjId,
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
+        let unauthorized = || error(ActionErrorCode::Unauthorized, REFUSED);
+        let by = parameters
+            .get(EXTRACT_STOP_BY)
+            .and_then(Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ObjId);
+        if by != Some(actor) {
+            return Err(unauthorized());
+        }
         let deposit = deposit_field(parameters, "deposit")?;
+        let is_staff_stop = parameters
+            .get(EXTRACT_STOP_STAFF)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !is_staff_stop {
+            let token = deposit.to_string();
+            let listed = parameters
+                .get(EXTRACT_STOP_DEPOSITS)
+                .and_then(Value::as_array)
+                .is_some_and(|list| {
+                    list.iter()
+                        .filter_map(Value::as_str)
+                        .any(|allowed| allowed == token.as_str())
+                });
+            if !listed {
+                return Err(unauthorized());
+            }
+        }
         let run = self
             .families
             .run(txn, deposit)
@@ -3382,6 +3794,17 @@ impl IndustryProvider {
             EconomicVisibility::Parties,
         )
         .map_err(|source| error(ActionErrorCode::InvalidRequest, source.to_string()))?;
+        let open_count = self
+            .families
+            .requester_open_count(txn, &PrincipalId::Object(actor))
+            .map_err(|source| refuse(&source))?;
+        if open_count >= crate::workorder::MAX_WORK_ORDERS_PER_REQUESTER {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        let prunable = prunable_ids_field(parameters);
+        self.families
+            .prune_terminal_work_orders(txn, &prunable)
+            .map_err(|source| refuse(&source))?;
         self.families
             .open_work_order(txn, order)
             .map_err(|source| refuse(&source))?;
@@ -3411,33 +3834,28 @@ impl IndustryProvider {
         if *order.state() != WorkOrderState::Draft {
             return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
         }
-        // ---- E7r1: R1 — the money leg is not optional ----
-        //
-        // The submit command places the hold through `mush_economy::post` before it
-        // submits, and passes the placed `HoldId` here. A prepare has no world and
-        // cannot check that the id is live — the authority on that is
-        // `money::live_hold`, found by purpose, which the sweep arm and `@wo/deliver`
-        // both read. This check is therefore a **shape assertion**, not the ingress
-        // guard, and the fold says so rather than leaving the old sentence
-        // (*"that is what keeps the direct-offer ingress from acquiring resources for
-        // free"*) to be believed (independent verify fold, B15).
-        //
-        // What actually closes the offer route is the **parameter schema**:
-        // `ProjectedParameterSchema::validate` refuses any supplied parameter a
-        // projection does not declare, and `IndustryVerb::WoSubmit`'s projection
-        // declares only `order` — so an offer-route submission can never carry
-        // `hold` at all, always reads 0 here, and always refuses. The corollary,
-        // which nothing recorded: `WoSubmit`'s offer projection is **unusable by
-        // construction**, and an `OfferRouteTable` entry naming it offers an action
-        // that can only ever refuse. If the ingress is ever opened, either project
-        // `hold` and bind it to the purpose in a guard that HAS a world, or have the
-        // command carry the **purpose** rather than the id. `WoDeliver`'s own single
-        // `order` parameter WAS enough to invoke it, which is why the delivery arm
-        // grew `money::UNFUNDED_ORDERS` in the same fold.
-        //
-        // The refusal is `WO_REFUSED`, byte-identical to an unknown order.
+        // CRIT-15: bind every submitted order server-side to the verified live
+        // `HoldId`, facility authz, quarantine, revision match, and non-drifted
+        // recipe digest + pinned lines projected into fixed `WO_SUBMIT_HOLDS`.
+        let by = parameters
+            .get(WO_SUBMIT_BY)
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .map(ObjId);
+        if by != Some(actor) {
+            return Err(error(ActionErrorCode::Unauthorized, WO_REFUSED));
+        }
+        let expected_hold = parameters
+            .get(WO_SUBMIT_HOLDS)
+            .and_then(Value::as_object)
+            .and_then(|holds| holds.get(&id.to_string()))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
         let hold = u64_field(parameters, "hold", u64::MAX).unwrap_or(0);
         if hold == 0 {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
+        if hold != expected_hold {
             return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
         }
         let holder = wo_holder(id).map_err(|source| refuse(&source))?;
@@ -3491,6 +3909,23 @@ impl IndustryProvider {
             )
             .map_err(|source| refuse(&source))?;
         reservations.push(capacity);
+        // HIGH-33: arm a one-shot durable slot-expiry schedule at the slot
+        // reservation's deadline so an abandoned order's slot and resources are
+        // reclaimed automatically via `expire_slot`.
+        if let Some(slot_rec) = self
+            .families
+            .slot_reservation(txn, order.facility(), capacity)
+            .map_err(|source| refuse(&source))?
+        {
+            self.open_slot_expiry_schedule(
+                txn,
+                order.facility(),
+                capacity,
+                Some(id),
+                actor,
+                slot_rec.expires().clone(),
+            )?;
+        }
 
         let production = self.open_schedule(txn, &order, now, actor, total_units)?;
         // The placed hold, denormalized onto the record. It is an INDEX, never the
@@ -3590,6 +4025,59 @@ impl IndustryProvider {
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))
     }
 
+    /// HIGH-33: arm a one-shot durable schedule that fires `WoReclaim` when a
+    /// facility slot reservation's deadline elapses.
+    fn open_slot_expiry_schedule(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        facility: ObjId,
+        reservation: ReservationId,
+        order: Option<WorkOrderId>,
+        actor: ObjId,
+        expires: ClockStamp,
+    ) -> Result<(), ActionError> {
+        let sid = slot_expiry_schedule_id(facility, reservation)?;
+        let prior = txn
+            .get(&self.families.slot_expiry_schedules, &sid)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+            .cloned();
+        let generation = prior
+            .as_ref()
+            .map_or(1, |p| p.generation().saturating_add(1));
+        let next_ordinal = prior.as_ref().map_or(0, DurableSchedule::next_ordinal);
+        let schedule = DurableSchedule::new(DurableScheduleDraft {
+            id: sid,
+            owner: crate::record::owner(),
+            clock: expires.clock.clone(),
+            next_due: expires,
+            cadence: None,
+            generation,
+            next_ordinal,
+            restart: ScheduleRestartPolicy::Resume,
+            catch_up_order: ScheduleCatchUpOrder::OldestFirst,
+            max_catch_up: 1,
+        })
+        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        if prior.is_some() {
+            txn.replace(&self.families.slot_expiry_schedules, &sid, schedule)
+        } else {
+            txn.insert(&self.families.slot_expiry_schedules, &sid, schedule)
+        }
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        let job = crate::workorder::SlotExpiryJob::new(sid, facility, reservation, order, actor);
+        if txn
+            .get(&self.families.slot_expiry_jobs, &sid)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+            .is_some()
+        {
+            txn.replace(&self.families.slot_expiry_jobs, &sid, job)
+        } else {
+            txn.insert(&self.families.slot_expiry_jobs, &sid, job)
+        }
+        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        Ok(())
+    }
+
     /// B6 — one scheduled production occurrence's progress. Driven only by an
     /// occurrence (the schedule adapter), never by observation. When production
     /// completes, the order moves to `AwaitingDelivery`.
@@ -3653,24 +4141,29 @@ impl IndustryProvider {
         data: &mut BTreeMap<String, Value>,
     ) -> Result<String, ActionError> {
         let id = work_order_field(parameters, "order")?;
-        // ---- E7r1 fold: D4 — the money attestation on the DELIVERY ingress ----
-        //
-        // `wo_deliver` is a prepare: no `&World`, no `Ctx`, no `EconomyStore`, so it
-        // cannot read a hold. Before the fold its whole money story was that nobody
-        // had thought about it — `IndustryVerb::WoDeliver`'s offer projection declares
-        // exactly `order`, which is all this function needs, so an offer-route
-        // invocation consumed every material reservation and materialised the output
-        // lot with no money check at all: production for free on precisely the ingress
-        // R1 guarded on the submit side.
-        //
-        // A *supplied* parameter cannot close it: a command's submission and a direct
-        // offer submission take the same route through `resolve_legal_action`, so an
-        // attestation the command sets is one a hand-built submission sets too. The
-        // gate is therefore `project_offer`'s **fixed** parameter
-        // `money::UNFUNDED_ORDERS`, authored server-side where a world exists and
-        // protected by `merge_parameters`, which refuses a submitted key colliding
-        // with a fixed one. The refusal is `WO_REFUSED`, byte-identical to an unknown
-        // order, so it discloses nothing a stranger did not already type.
+        // CRIT-14: fail-closed server-authored allowlist `WO_DELIVERABLE`
+        // (point lookups over the requester's open orders; replaces the
+        // truncated 32-entry denylist).
+        let deliver_by = parameters
+            .get(WO_DELIVER_BY)
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .map(ObjId);
+        if deliver_by != Some(actor) {
+            return Err(error(ActionErrorCode::Unauthorized, WO_REFUSED));
+        }
+        let id_str = id.to_string();
+        let allowed = parameters
+            .get(WO_DELIVERABLE)
+            .and_then(Value::as_array)
+            .is_some_and(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .any(|named| named == id_str.as_str())
+            });
+        if !allowed {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
         if parameters
             .get(crate::money::UNFUNDED_ORDERS)
             .and_then(Value::as_array)
@@ -3836,11 +4329,19 @@ impl IndustryProvider {
         self.families
             .tear_down_production(txn, production_schedule_id(id)?)
             .map_err(|source| refuse(&source))?;
+        self.families
+            .tear_down_slot_expiry(
+                txn,
+                slot_expiry_schedule_id(order.facility(), cap_id)?,
+                false,
+            )
+            .map_err(|source| refuse(&source))?;
         let next = order
             .with_state(WorkOrderState::Completed { commit })
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        let prunable = prunable_ids_field(parameters);
         self.families
-            .put_work_order(txn, order.revision(), next)
+            .put_work_order_pruning(txn, order.revision(), next, &prunable)
             .map_err(|source| refuse(&source))?;
         data.insert("order".to_owned(), json!(id.to_string()));
         Ok(format!("Delivered {id}."))
@@ -3924,6 +4425,13 @@ impl IndustryProvider {
                     .release_slot(txn, order.facility(), cap_id, record.revision())
                     .map_err(|source| refuse(&source))?;
             }
+            self.families
+                .tear_down_slot_expiry(
+                    txn,
+                    slot_expiry_schedule_id(order.facility(), cap_id)?,
+                    false,
+                )
+                .map_err(|source| refuse(&source))?;
         }
         // R1: cancelling from any non-terminal state ends the production schedule
         // and its job in the same bundle, so no post-cancel tick raises
@@ -3934,8 +4442,9 @@ impl IndustryProvider {
         let next = order
             .with_state(WorkOrderState::Cancelled)
             .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        let prunable = prunable_ids_field(parameters);
         self.families
-            .put_work_order(txn, order.revision(), next)
+            .put_work_order_pruning(txn, order.revision(), next, &prunable)
             .map_err(|source| refuse(&source))?;
         data.insert("order".to_owned(), json!(id.to_string()));
         Ok(format!("Canceled {id}."))
@@ -4119,6 +4628,147 @@ impl IndustryProvider {
             .map_err(|source| refuse(&source))?;
         data.insert("order".to_owned(), json!(id.to_string()));
         Ok(format!("Restamped {id} to the current generation."))
+    }
+
+    /// HIGH-33: reclaim one elapsed facility slot reservation via `expire_slot`,
+    /// tearing down its expiry schedule and, if it belongs to a non-terminal work
+    /// order, releasing the order's material reservations, tearing down its
+    /// production schedule, and transitioning the order to `Failed` so the money
+    /// sweep releases its budget hold.
+    fn wo_reclaim(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        invocation: &ActionInvocation,
+        parameters: &serde_json::Map<String, Value>,
+        now: &ClockStamp,
+        actor: ObjId,
+        data: &mut BTreeMap<String, Value>,
+    ) -> Result<String, ActionError> {
+        let is_scheduler = matches!(
+            invocation.principal(),
+            CorePrincipalId::Scoped { owner, class, .. }
+                if *owner == crate::record::owner() && class.as_str() == "scheduler"
+        );
+        let facility = obj_field(parameters, "facility")?;
+        let (slot_rec, order_id) = if is_scheduler {
+            let hex = text_field(parameters, "reservation")?;
+            let hash = CanonicalHash::from_hex(&hex)
+                .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
+            let reservation = ReservationId(hash);
+            let slot_rec = self
+                .families
+                .slot_reservation(txn, facility, reservation)
+                .map_err(|source| refuse(&source))?
+                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+            if slot_rec.state() != mush_core::ReservationState::Held {
+                return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+            }
+            self.families
+                .expire_slot(txn, facility, reservation, slot_rec.revision(), now)
+                .map_err(|source| refuse(&source))?;
+            self.families
+                .tear_down_slot_expiry(txn, slot_expiry_schedule_id(facility, reservation)?, true)
+                .map_err(|source| refuse(&source))?;
+            let order_id = parameters
+                .get("order")
+                .and_then(Value::as_str)
+                .and_then(WorkOrderId::parse)
+                .or_else(|| crate::workorder::parse_wo_holder(slot_rec.holder()));
+            (slot_rec, order_id)
+        } else {
+            let by = parameters
+                .get(WO_RECLAIM_BY)
+                .and_then(Value::as_u64)
+                .and_then(|id| u32::try_from(id).ok())
+                .map(ObjId);
+            let staff = parameters
+                .get(WO_RECLAIM_STAFF)
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let allowed = parameters
+                .get(WO_RECLAIM_FACILITIES)
+                .and_then(Value::as_array)
+                .is_some_and(|list| {
+                    list.iter()
+                        .any(|entry| entry.as_u64() == Some(u64::from(facility.0)))
+                });
+            if by != Some(actor) || (!staff && !allowed) {
+                return Err(error(ActionErrorCode::Unauthorized, WO_REFUSED));
+            }
+            let slot_rec = self
+                .families
+                .first_elapsed_slot_reservation(txn, facility, now)
+                .map_err(|source| refuse(&source))?
+                .ok_or_else(|| {
+                    error(
+                        ActionErrorCode::ProviderRejected,
+                        "no elapsed slot reservation to reclaim",
+                    )
+                })?;
+            let reservation = slot_rec.id();
+            self.families
+                .expire_slot(txn, facility, reservation, slot_rec.revision(), now)
+                .map_err(|source| refuse(&source))?;
+            self.families
+                .tear_down_slot_expiry(txn, slot_expiry_schedule_id(facility, reservation)?, false)
+                .map_err(|source| refuse(&source))?;
+            let order_id = crate::workorder::parse_wo_holder(slot_rec.holder());
+            (slot_rec, order_id)
+        };
+        let prunable = prunable_ids_field(parameters);
+        if let Some(id) = order_id
+            && let Some(order) = self
+                .families
+                .work_order(txn, id)
+                .map_err(|source| refuse(&source))?
+            && !order.state().is_terminal()
+        {
+            let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+            if !order.pinned().inputs().is_empty()
+                && let Some(source) = order.material_source()
+            {
+                for line in order.pinned().inputs() {
+                    let resource = mush_inventory::pool_resource(source, line.commodity())
+                        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+                    let rid = ReservationId::derive(&holder, &resource)
+                        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+                    let Some(record) = self
+                        .families
+                        .inventory
+                        .reservation(txn, source, line.commodity(), rid)
+                        .map_err(|error| refuse(&IndustryError::Inventory(error)))?
+                    else {
+                        continue;
+                    };
+                    if record.state() == mush_core::ReservationState::Held {
+                        self.families
+                            .inventory
+                            .release(txn, source, line.commodity(), rid, record.revision())
+                            .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
+                    }
+                }
+            }
+            self.families
+                .tear_down_production(txn, production_schedule_id(id)?)
+                .map_err(|source| refuse(&source))?;
+            let next = order
+                .with_state(WorkOrderState::Failed)
+                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+            self.families
+                .put_work_order_pruning(txn, order.revision(), next, &prunable)
+                .map_err(|source| refuse(&source))?;
+            data.insert("order".to_owned(), json!(id.to_string()));
+        } else if !prunable.is_empty() {
+            self.families
+                .prune_terminal_work_orders(txn, &prunable)
+                .map_err(|source| refuse(&source))?;
+        }
+        data.insert("facility".to_owned(), json!(facility.0));
+        data.insert("reservation".to_owned(), json!(slot_rec.id().0.to_hex()));
+        Ok(format!(
+            "Reclaimed elapsed slot at facility #{}.",
+            facility.0
+        ))
     }
 
     fn require_requester(&self, order: &WorkOrder, actor: ObjId) -> Result<(), ActionError> {
@@ -4463,10 +5113,14 @@ pub(crate) fn register_with_core_origins(
         exact_validator(&action_shapes),
     )?;
     let mut advance_action: Option<DefinitionRef> = None;
+    let mut reclaim_action: Option<DefinitionRef> = None;
     for (verb, descriptor) in verbs.into_iter().zip(descriptors) {
         let action = reg.definition(descriptor)?;
         if verb == IndustryVerb::WoAdvance {
             advance_action = Some(action.clone());
+        }
+        if verb == IndustryVerb::WoReclaim {
+            reclaim_action = Some(action.clone());
         }
         reg.action_provider(
             action.clone(),
@@ -4486,9 +5140,6 @@ pub(crate) fn register_with_core_origins(
     }
 
     // ---- E7c4: B5 — the production schedule source, on `handoff.rs`'s shape ----
-    // D-E7-16's "cut 8 gets the first production schedule source" is corrected:
-    // the tree already has one (`mush-sim/src/handoff.rs`), which this copies as
-    // the pattern. One source per family, under `mush-industry`'s own `OwnerId`.
     let advance_action = advance_action
         .ok_or_else(|| ModError::msg("industry: the production advance action is unregistered"))?;
     reg.schedule_source(
@@ -4502,7 +5153,129 @@ pub(crate) fn register_with_core_origins(
             recipes,
         },
     )?;
+    // ---- HIGH-33: the slot-expiry schedule source ----
+    let reclaim_action = reclaim_action
+        .ok_or_else(|| ModError::msg("industry: the slot reclaim action is unregistered"))?;
+    reg.schedule_source(
+        CanonicalId::new("slot_expiry").map_err(|error| ModError::msg(error.to_string()))?,
+        reclaim_action,
+        families.slot_expiry_schedules.clone(),
+        SlotExpiryScheduleAdapter {
+            schedules: families.slot_expiry_schedules.clone(),
+            jobs: families.slot_expiry_jobs.clone(),
+            facility_books: families.facility_books.clone(),
+        },
+    )?;
     Ok(())
+}
+
+/// HIGH-33: schedule adapter for one-shot facility slot expiry. Re-derives the
+/// candidate from stored state, verifies the slot reservation is still `Held`
+/// and elapsed, and emits a `WoReclaim` draft invoking `expire_slot`.
+#[derive(Clone)]
+struct SlotExpiryScheduleAdapter {
+    schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
+    jobs: StateFamilyHandle<ScheduleId, crate::workorder::SlotExpiryJob>,
+    facility_books: StateFamilyHandle<mush_core::ReservationBookId, mush_core::ReservationBook>,
+}
+
+impl ScheduleActionAdapter for SlotExpiryScheduleAdapter {
+    fn completes(&self, _advance: &ScheduleAdvance, _engine: &Engine) -> bool {
+        true
+    }
+
+    fn plan(
+        &self,
+        action: &DefinitionRef,
+        advance: &ScheduleAdvance,
+        engine: &Engine,
+    ) -> Result<ScheduleActionDraft, ActionError> {
+        let current = engine
+            .action_state()
+            .get(&self.schedules, &advance.schedule())
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "slot expiry schedule is unavailable",
+                )
+            })?;
+        let candidate_is_current = current.is_some_and(|schedule| {
+            matches!(
+                schedule.plan_due(schedule.revision(), advance.observed_at(), advance.cause()),
+                Ok(ScheduleEvaluation::Advance(planned)) if planned.as_ref() == advance
+            )
+        });
+        if !candidate_is_current {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "slot expiry schedule candidate is no longer current",
+            ));
+        }
+        let job = engine
+            .action_state()
+            .get(&self.jobs, &advance.schedule())
+            .map_err(|_| error(ActionErrorCode::Integrity, "slot expiry job is unavailable"))?
+            .ok_or_else(|| {
+                error(
+                    ActionErrorCode::Stale,
+                    "slot expiry schedule outlived its job",
+                )
+            })?;
+        let key = crate::facility::facility_capacity_key(job.facility())
+            .map_err(|_| error(ActionErrorCode::Stale, "invalid facility capacity key"))?;
+        let book = engine
+            .action_state()
+            .get(&self.facility_books, &key)
+            .map_err(|_| error(ActionErrorCode::Integrity, "facility book is unavailable"))?;
+        let still_held = book.is_some_and(|book| {
+            book.records().iter().any(|rec| {
+                rec.id() == job.reservation() && rec.state() == mush_core::ReservationState::Held
+            })
+        });
+        if !still_held {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "slot reservation is no longer held",
+            ));
+        }
+        let definitions = engine.registry.definitions().ok_or_else(|| {
+            error(
+                ActionErrorCode::Integrity,
+                "definition registry is unavailable",
+            )
+        })?;
+        let mut guards = engine
+            .registry
+            .server_guard_set_builder(RevisionSet::default())
+            .map_err(|_| error(ActionErrorCode::Integrity, "guard registry is unavailable"))?;
+        guards
+            .add_definition(action.clone(), definitions)
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "definition guard is unavailable",
+                )
+            })?;
+        let mut params = json!({
+            "facility": job.facility().0,
+            "reservation": job.reservation().0.to_hex(),
+            "now": advance.observed_at(),
+        });
+        if let Some(order_id) = job.order()
+            && let Some(map) = params.as_object_mut()
+        {
+            map.insert("order".to_owned(), json!(order_id.to_string()));
+        }
+        Ok(ScheduleActionDraft {
+            actor: job.actor(),
+            subject: PerceivedRef::SelfActor,
+            targets: Vec::new(),
+            parameters: params,
+            guards: guards
+                .finish()
+                .map_err(|_| error(ActionErrorCode::Integrity, "slot expiry guards are invalid"))?,
+        })
+    }
 }
 
 /// The production schedule's adapter (the `HandoffScheduleAdapter` shape): `plan`

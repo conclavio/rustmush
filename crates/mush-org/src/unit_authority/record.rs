@@ -8,8 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CapabilityId, GrantId, OrgId, OrgScopeId, PrincipalId, RoleId, ScopeSelector};
 
-/// A registry deliberately retains revoked identities rather than reusing them.
+/// Global upper bound on retained rows in the unit-grant registry.
 pub const MAX_UNIT_GRANTS: usize = 1024;
+/// Maximum live (non-terminal) unit grants held concurrently by any single grantor.
+pub const MAX_ACTIVE_GRANTS_PER_GRANTOR: usize = 64;
+/// Maximum live (non-terminal) finite-scope unit grants referencing any single unit.
+pub const MAX_ACTIVE_GRANTS_PER_UNIT: usize = 32;
 /// Finite scopes and wildcard exceptions are bounded on write and decode.
 pub const MAX_UNIT_SCOPE_ITEMS: usize = 256;
 /// Maximum number of unit-grant rows in a live proof, including organization loans.

@@ -1849,29 +1849,32 @@ fn vf_c2_a_second_start_does_not_redirect_a_co_tenants_run() {
 
 #[test]
 fn vf_c4_claim_move_is_not_offered_to_a_non_holder() {
-    let (mut world, families) = boot();
+    let (mut world, families) = boot_filing();
     install_offer_keys(&mut world);
     let alice = world.spawn_player("alice"); // holder
     let bob = world.spawn_player("bob"); // non-holder
-    let rec = ClaimRecord::new(
-        mush_industry::ClaimId(0xC4),
-        ClaimSubject::Place { place: ObjId(7) },
-        PrincipalId::Object(alice),
-        PrincipalId::Object(alice),
-        ObjId(9004),
-        Exclusivity::Shared,
-        1,
-        later(100_000),
-        Transferability::Transferable,
-    )
-    .unwrap();
-    {
-        let e = world.engine_mut();
-        apply(e, &families, |txn| families.file_claim(txn, rec.clone())).unwrap();
-    }
+    // File a real transferable claim for Alice (with a live, unencumbered E4
+    // title on its claim object, as HIGH-37 requires for ClaimMove).
+    world.exec_ok(
+        GOD,
+        &format!(
+            "@claim/file place:7=org:999/obj:{}/shared/1/100000/transferable",
+            alice.0
+        ),
+    );
+    land(&mut world, 0xC4).expect("claim files cleanly");
+    let claim_id = {
+        let engine = world.engine_mut();
+        read(engine, &families, |txn| {
+            families
+                .claims_over(txn, ClaimSubject::Place { place: ObjId(7) })
+                .unwrap()[0]
+                .id()
+        })
+    };
     assert!(
         mush_industry::provider::movable_claims(world.engine(), &families, alice)
-            .contains(&rec.id()),
+            .contains(&claim_id),
         "the holder may move the record half"
     );
     assert!(

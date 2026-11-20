@@ -1165,6 +1165,7 @@ fn e7c9_x5_a_covert_resolution_is_secret_canon_and_a_public_one_is_not() {
         attacker,
         &format!("@op/terms {}/visibility=covert", covert.0),
     );
+    ok(&mut tw, attacker, &format!("@op/activate {}", covert.0));
     ok(
         &mut tw,
         attacker,
@@ -1186,6 +1187,7 @@ fn e7c9_x5_a_covert_resolution_is_secret_canon_and_a_public_one_is_not() {
         attacker,
         &format!("@op/terms {}/visibility=public", public.0),
     );
+    ok(&mut tw, attacker, &format!("@op/activate {}", public.0));
     ok(
         &mut tw,
         attacker,
@@ -1823,6 +1825,7 @@ fn e7c9_p6_force_retirement_releases_every_unit_for_another_operation() {
         Some(first),
         "the index did not see the join"
     );
+    ok(&mut tw, attacker, &format!("@op/activate {}", first.0));
     ok(
         &mut tw,
         attacker,
@@ -3139,10 +3142,12 @@ fn vf_d1b_ordinary_canon_traffic_after_the_resolution_still_reaches_resolved() {
         attacker,
         &format!("@op/terms {}/stake.front=7:orbit", id.0),
     );
+    ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
     ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
     // Staff traffic: thirty further operations, each resolving into canon.
     for _ in 0..30 {
         let other = declare(&mut tw, GOD, 0);
+        ok(&mut tw, GOD, &format!("@op/activate {}", other.0));
         ok(&mut tw, GOD, &format!("@op/resolve {}=success", other.0));
     }
     fire_n(&mut tw, 40);
@@ -3807,6 +3812,7 @@ fn vf_b8a_one_player_past_the_per_issuer_cap_is_refused_while_a_second_player_ma
     ok(&mut tw, other, "@op/declare mine");
     ok(&mut tw, GOD, "@op/declare staff are not counted");
     // …and a terminal operation frees the slot, which cut 9's global cap never did.
+    ok(&mut tw, hog, &format!("@op/activate {}", ids[0].0));
     ok(&mut tw, hog, &format!("@op/resolve {}=success", ids[0].0));
     fire_n(&mut tw, 10);
     assert_eq!(state_of(&tw, ids[0]), OperationState::Resolved);
@@ -3987,4 +3993,125 @@ fn vf_c3d_a_held_operations_bond_gets_a_staff_campaign_side_release() {
         err(&mut tw, attacker, &format!("@op/resolve {}=abort", id.0)),
         NO_SUCH_OPERATION
     );
+}
+
+// ===========================================================================
+// Tier 1C security hardening — HIGH-30
+// ===========================================================================
+
+/// **HIGH-30a.** Resolving straight from `Declared` (skipping `@op/activate`
+/// and defender notice/bond lock) is refused for `success`, `failure`, and
+/// `forfeit`, while staff `=abort` still works on `Declared` operations.
+#[test]
+fn high30_resolving_from_declared_is_refused_while_staff_abort_still_works() {
+    let mut tw = boot();
+    let attacker = tw.spawn_player("Attacker");
+    money(&mut tw, &[(attacker, 1_000)]);
+    let id = declare(&mut tw, attacker, 50);
+
+    for (actor, outcome) in [
+        (attacker, "success"),
+        (attacker, "failure"),
+        (GOD, "forfeit"),
+    ] {
+        let refusal = err(&mut tw, actor, &format!("@op/resolve {}={outcome}", id.0));
+        assert!(
+            refusal.contains("not been activated"),
+            "expected activation refusal for {outcome}, got: {refusal}"
+        );
+        assert_eq!(state_of(&tw, id), OperationState::Declared);
+    }
+
+    // Staff abort from Declared still succeeds and drains cleanly to Aborted.
+    ok(&mut tw, GOD, &format!("@op/resolve {}=abort", id.0));
+    fire_n(&mut tw, 8);
+    assert_eq!(state_of(&tw, id), OperationState::Aborted);
+
+    // Once activated, normal resolution succeeds.
+    let live = declare(&mut tw, attacker, 50);
+    ok(&mut tw, attacker, &format!("@op/activate {}", live.0));
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@op/resolve {}=success", live.0),
+    );
+    fire_n(&mut tw, 8);
+    assert_eq!(state_of(&tw, live), OperationState::Resolved);
+}
+
+/// **HIGH-30b.** Terminal operations are pruned cleanly so the global
+/// `MAX_OPERATIONS = 512` cap cannot be permanently exhausted across restarts,
+/// operation IDs remain monotonic, and non-staff issuers are bounded by the
+/// sliding declaration-window rate limit even when resolving each op.
+#[test]
+fn high30_terminal_pruning_prevents_global_exhaustion_and_enforces_declaration_rate_limit() {
+    let mut tw = boot();
+    let mut kv = Kv::new();
+    // Drive > MAX_OPERATIONS complete staff operation lifecycles.
+    let total = mush_campaign::MAX_OPERATIONS + 20;
+    let mut last_id = OperationId(0);
+    for batch in 0..total.div_ceil(16) {
+        let start = batch * 16;
+        let end = (start + 16).min(total);
+        for _ in start..end {
+            let id = declare(&mut tw, GOD, 0);
+            ok(&mut tw, GOD, &format!("@op/activate {}", id.0));
+            ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
+            last_id = id;
+        }
+        fire_n(&mut tw, 12);
+        fold_into(&mut tw, &mut kv);
+    }
+    assert!(
+        usize::try_from(last_id.0).unwrap_or(0) >= total,
+        "allocator stopped before {total}: {last_id:?}"
+    );
+    let retained_ops = camp(&tw).operations().count();
+    assert!(
+        retained_ops <= mush_campaign::MAX_RETAINED_TERMINAL_OPERATIONS,
+        "expected terminal pruning <= {}, found {retained_ops}",
+        mush_campaign::MAX_RETAINED_TERMINAL_OPERATIONS
+    );
+    let persisted_ops = kv
+        .get("campaign")
+        .map(|entries| entries.iter().filter(|(k, _)| k.starts_with("op:")).count())
+        .unwrap_or(0);
+    assert!(
+        persisted_ops <= mush_campaign::MAX_RETAINED_TERMINAL_OPERATIONS,
+        "persisted op:* keys were not deleted on prune: {persisted_ops}"
+    );
+
+    // Reboot preserves monotonicity: the next minted ID is strictly greater than last_id.
+    reboot(&mut tw, &kv);
+    let post_reboot = declare(&mut tw, GOD, 0);
+    assert!(
+        post_reboot.0 > last_id.0,
+        "pruning reused an operation id: {post_reboot:?} <= {last_id:?}"
+    );
+
+    // Non-staff declaration window cap: resolving each batch frees the live slots
+    // (staying below MAX_OPERATIONS_PER_ISSUER), yet declaring past
+    // MAX_DECLARATIONS_PER_ISSUER_WINDOW within one hour is refused.
+    let spammer = tw.spawn_player("Spammer");
+    let mut declared_count = 0usize;
+    while declared_count < mush_campaign::MAX_DECLARATIONS_PER_ISSUER_WINDOW {
+        let batch = (mush_campaign::MAX_DECLARATIONS_PER_ISSUER_WINDOW - declared_count).min(16);
+        for _ in 0..batch {
+            let id = declare(&mut tw, spammer, 0);
+            ok(&mut tw, spammer, &format!("@op/activate {}", id.0));
+            ok(&mut tw, spammer, &format!("@op/resolve {}=success", id.0));
+        }
+        fire_n(&mut tw, 12);
+        declared_count += batch;
+    }
+    let capped = err(&mut tw, spammer, "@op/declare one over hourly cap");
+    assert!(
+        capped.contains("per hour"),
+        "expected hourly declaration rate limit refusal, got: {capped}"
+    );
+
+    // Advancing past DECLARATION_WINDOW_SECS re-opens the window.
+    let later = tw.world().now() + mush_campaign::DECLARATION_WINDOW_SECS + 1;
+    tw.set_now(later);
+    ok(&mut tw, spammer, "@op/declare after window");
 }

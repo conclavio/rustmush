@@ -232,9 +232,11 @@ fn site_pack(rec: &RequestRec, name: &str, version: u32) -> Pack {
         mush_atlas::geom::metres(bbox.min.x),
         mush_atlas::geom::metres(bbox.min.y),
     );
+    // `PolygonCm::bbox()` is max-exclusive (+1 cm); subtract 1 cm to match
+    // `rec.footprint`'s actual upper corner so the room stays inside the site.
     let (x1, y1) = (
-        mush_atlas::geom::metres(bbox.max.x),
-        mush_atlas::geom::metres(bbox.max.y),
+        mush_atlas::geom::metres(bbox.max.x - 1),
+        mush_atlas::geom::metres(bbox.max.y - 1),
     );
     signed(json!({
         "manifest": { "id": rec.pack_id().as_str(), "version": version, "kind": "site", "digest": "",
@@ -698,4 +700,216 @@ fn requests_and_standing_survive_a_reboot() {
             .applied(&a.pack_id())
             .is_some_and(mush_content::Applied::is_retired)
     );
+}
+
+/// HIGH-39: `hydrate::activate` re-validates `rec.footprint` and full
+/// `player_build` rules before touching the world via `apply_pack`.
+#[test]
+fn high39_activate_revalidates_footprint_and_player_build_rules() {
+    let mut tw = town();
+    let rae = tw.spawn_player("Rae");
+    let rec = ask(&mut tw, rae, Some(square(100.0, 100.0, 20.0)))
+        .expect("park")
+        .record()
+        .clone();
+
+    // 1. Pack whose room/site escapes `rec.footprint` is refused.
+    let oversized = signed(json!({
+        "manifest": { "id": rec.pack_id().as_str(), "version": 1, "kind": "site", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 },
+                                   { "id": "neighborhood.block", "version": 1 }] },
+        "entries": {
+            "site.plot": { "kind": "site", "def": { "name": "Too Big", "site_kind": rec.kind,
+                "footprint": [[100, 100], [150, 100], [150, 150], [100, 150]] } },
+            "room.plot": { "kind": "room", "def": { "name": "Too Big", "surface": "ground",
+                "site": "site.plot", "footprint": { "rect": [[100, 100], [150, 150]] },
+                "desc": "Sprawls past its lot." } },
+            "exit.green_plot": { "kind": "exit", "def": { "from": "neighborhood.block.room.green",
+                "to": "room.plot", "names": ["Big <B>;big", "Green <G>;g"],
+                "portal": { "distance_m": 40 } } }
+        }
+    }));
+    let err = activate(&mut tw, rae, &rec.id, &oversized).expect_err("oversized must fail");
+    assert!(
+        err.contains("leaves the reserved request footprint"),
+        "{err}"
+    );
+
+    // 2. Pack carrying prohibited player_build features (Limbo exit, staff flag) is refused.
+    let bad_limbo = signed(json!({
+        "manifest": { "id": rec.pack_id().as_str(), "version": 1, "kind": "site", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 },
+                                   { "id": "neighborhood.block", "version": 1 }] },
+        "entries": {
+            "site.plot": { "kind": "site", "def": { "name": "Sneaky", "site_kind": rec.kind,
+                "footprint": rec.footprint } },
+            "room.plot": { "kind": "room", "def": { "name": "Sneaky", "surface": "ground",
+                "site": "site.plot", "footprint": { "rect": [[100, 100], [120, 120]] },
+                "desc": "A room with staff flags.", "flags": ["safe"] } },
+            "exit.green_plot": { "kind": "exit", "def": { "from": "neighborhood.block.room.green",
+                "to": "room.plot", "names": ["Sneaky <S>;s", "Green <G>;g"],
+                "portal": { "distance_m": 40 } } },
+            "exit.limbo_plot": { "kind": "exit", "def": { "from": "limbo",
+                "to": "room.plot", "names": ["Backdoor <B>;b", "Limbo <L>;l"] } }
+        }
+    }));
+    let err = activate(&mut tw, rae, &rec.id, &bad_limbo).expect_err("bad player_build must fail");
+    assert!(
+        err.contains("player-build validation")
+            && (err.contains("policy.limbo") || err.contains("policy.flag")),
+        "{err}"
+    );
+    assert!(
+        site_named(&tw, "Sneaky").is_none(),
+        "refused pack must leave no sites in the world"
+    );
+
+    // 3. Valid pack still activates cleanly.
+    let valid = site_pack(&rec, "Rae's Valid Park", 1);
+    activate(&mut tw, rae, &rec.id, &valid).expect("valid pack activates");
+    assert!(site_named(&tw, "Rae's Valid Park").is_some());
+}
+
+/// STRAG-M9 (atlas): withdrawn requests are pruned past
+/// `MAX_RETAINED_TERMINAL_REQUESTS` (on live withdraw and at boot), and
+/// non-staff players face sliding-window request/withdrawal rate limits and
+/// withdrawal cooldowns across restarts.
+#[test]
+fn strag_m9_hydration_request_pruning_and_player_rate_limits() {
+    let mut tw = town();
+    // 1. Staff request+withdraw churn beyond MAX_RETAINED_TERMINAL_REQUESTS stays bounded.
+    let total = mush_atlas::MAX_RETAINED_TERMINAL_REQUESTS + 20;
+    for i in 0..total {
+        let x = 100.0 + ((i % 4) as f64) * 22.0;
+        let y = 100.0 + (((i / 4) % 4) as f64) * 22.0;
+        let req = ask_kind(
+            &mut tw,
+            GOD,
+            &format!("site.kind_{i}"),
+            Some(square(x, y, 20.0)),
+        )
+        .expect("staff ask")
+        .record()
+        .clone();
+        let id = req.id.clone();
+        with_ctx(&mut tw, GOD, move |ctx| {
+            hydrate::withdraw(ctx, &id, GOD, "testing prune")
+        })
+        .expect("staff withdraw");
+    }
+    assert!(
+        atlas(&tw).hydration.requests.len() <= mush_atlas::MAX_RETAINED_TERMINAL_REQUESTS,
+        "terminal requests should prune to <= {}, got {}",
+        mush_atlas::MAX_RETAINED_TERMINAL_REQUESTS,
+        atlas(&tw).hydration.requests.len()
+    );
+
+    // 2. Boot hydration with > MAX_REQUESTS withdrawn docs + 1 open doc keeps the open doc
+    //    and drops excess withdrawn docs for disk deletion.
+    let mut synthetic_kv: Vec<(SmolStr, serde_json::Value)> = Vec::new();
+    let sample = atlas(&tw)
+        .hydration
+        .requests
+        .values()
+        .next()
+        .expect("sample")
+        .clone();
+    for i in 0..(mush_atlas::MAX_REQUESTS + 10) {
+        let mut r = sample.clone();
+        r.id = format!("withdrawn-{i:05}");
+        r.updated = i64::try_from(i).unwrap_or(0);
+        r.status = RequestStatus::Withdrawn {
+            reason: "churn".to_string(),
+        };
+        synthetic_kv.push((
+            hydrate::request_key(&r.id),
+            serde_json::to_value(&r).expect("json"),
+        ));
+    }
+    let mut open_rec = sample.clone();
+    open_rec.id = "zzz-live-request".to_string();
+    open_rec.status = RequestStatus::Generating;
+    synthetic_kv.push((
+        hydrate::request_key(&open_rec.id),
+        serde_json::to_value(&open_rec).expect("json"),
+    ));
+    let (hydrated, dropped) = hydrate::hydrate(&synthetic_kv);
+    assert!(
+        hydrated.requests.contains_key("zzz-live-request"),
+        "open request must survive > MAX_REQUESTS withdrawn records at boot"
+    );
+    assert_eq!(
+        hydrated.requests.len(),
+        mush_atlas::MAX_RETAINED_TERMINAL_REQUESTS + 1
+    );
+    assert_eq!(
+        dropped.len(),
+        mush_atlas::MAX_REQUESTS + 10 - mush_atlas::MAX_RETAINED_TERMINAL_REQUESTS
+    );
+
+    // 3. Non-staff player withdrawal cooldown + withdrawal cap + hourly request cap.
+    let spammer = tw.spawn_player("Spammer");
+    for i in 0..2 {
+        let req = ask_kind(
+            &mut tw,
+            spammer,
+            &format!("site.s{i}"),
+            Some(square(100.0, 100.0, 20.0)),
+        )
+        .expect("ask")
+        .record()
+        .clone();
+        let id = req.id.clone();
+        with_ctx(&mut tw, spammer, move |ctx| {
+            hydrate::withdraw(ctx, &id, spammer, "nope")
+        })
+        .expect("withdraw");
+    }
+    // After 2 withdrawals at t=0, immediate 3rd request hits WITHDRAW_COOLDOWN_SECS.
+    let cooled = ask_kind(
+        &mut tw,
+        spammer,
+        "site.s2",
+        Some(square(100.0, 100.0, 20.0)),
+    )
+    .expect_err("withdrawal cooldown must fire");
+    assert!(cooled.contains("after withdrawing"), "{cooled}");
+
+    // Advance past cooldown for withdrawals 3 and 4 -> 5th withdrawal inside 1h is refused.
+    let mut now = tw.world().now();
+    for i in 2..mush_atlas::MAX_WITHDRAWS_PER_PLAYER_WINDOW {
+        now += mush_atlas::WITHDRAW_COOLDOWN_SECS + 1;
+        tw.set_now(now);
+        let req = ask_kind(
+            &mut tw,
+            spammer,
+            &format!("site.s{i}"),
+            Some(square(100.0, 100.0, 20.0)),
+        )
+        .expect("ask after cooldown")
+        .record()
+        .clone();
+        let id = req.id.clone();
+        with_ctx(&mut tw, spammer, move |ctx| {
+            hydrate::withdraw(ctx, &id, spammer, "nope")
+        })
+        .expect("withdraw");
+    }
+    now += mush_atlas::WITHDRAW_COOLDOWN_SECS + 1;
+    tw.set_now(now);
+    let extra = ask_kind(
+        &mut tw,
+        spammer,
+        "site.extra",
+        Some(square(100.0, 100.0, 20.0)),
+    )
+    .expect("ask")
+    .record()
+    .clone();
+    let extra_id = extra.id.clone();
+    let wd_cap = with_ctx(&mut tw, spammer, move |ctx| {
+        hydrate::withdraw(ctx, &extra_id, spammer, "too many")
+    })
+    .expect_err("withdrawal hourly cap must fire");
+    assert!(wd_cap.contains("withdrawn"), "{wd_cap}");
 }

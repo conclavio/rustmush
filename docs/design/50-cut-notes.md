@@ -537,11 +537,140 @@ must land after OP.1's.
 
 ## KC.3
 
-Not built.
+The duty line on `+ship/plan`, the filing and the job board, and the reason clause; the first
+acceptance story, which also measures the long way round (Q-50-8, Q-50-9, with Q-50-55). Stacked
+on KC.2. No lane bump.
+
+**Survey.**
+- **`+ship/plan`** is `port/voyage.rs`'s `plan_block`, one block per destination, ending at the
+  ETA and the window line.
+- **The filing's reply** is `undock_as`'s `CLEARANCE_FILED`, and KC.2 already pins the terms on
+  the `PendingVoyage`.
+- **The haul board** is `+market/jobs haul`. Its rows come from `services::haul::services`, with
+  the `subject` rendered by mush-market's `JOB_LINE`. A haul carries its origin and destination
+  venues, its good and its quantity, but no route.
+- **A route crosses the picket** when one of its legs is interdicted and ends at the picket's
+  host.
+- **Q-50-9's IC date** is the `since_ic` KC.0a stores.
+- **No shared 120-column constant** exists; tests assert widths line by line.
+
+**Built** (`tacsim::space::duty`).
+- `duty_on_value(w, value_major, row) -> Option<i64>`: the duty arithmetic on a value, for cargo
+  not yet aboard. `quote_duty` now uses it.
+- `route_crosses_picket(w, route) -> bool`.
+- `reason_clause(w, &PlaceTerms) -> Option<String>` gives `Republic hold since March 1, 2350`:
+  the de facto holder's name and the IC date its hold began.
+- `estimate_line(ctx, hull, route, &terms, pinned)` gives
+  `Kirkwood duty ~200.00cr on 10000 cr of cargo (Republic hold since …).`, with `, pinned at
+  filing` when `pinned`.
+  - `+ship/plan` shows it under the live terms, on a route that crosses the picket.
+  - The filing shows it under the terms it pinned.
+- `haul_clause(w, origin, destination, value_major)` adds ` (Kirkwood duty ~50 cr)` to a haul
+  row's subject when the origin port routes to the destination through the picket, under the
+  live terms. The value is the good's catalog baseline × quantity.
+- The picket's charge (`duty_line`, now taking the hull) ends with the same clause: `… is paid
+  (Republic hold since …).` and `… (see +debts; Republic hold since …).`
+- `+territory` and `+chronicle` already show the same hold and date (KC.0a, KC.1).
+
+**Tests.**
+- `tests/domain_world/voyage.rs`,
+  `kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why`: one Dray-P with 50 t of
+  metals, on one run.
+  - Under the Co-op, `+ship/plan` shows no duty.
+  - After the flip, `+ship/plan` shows the 200 cr estimate with the reason.
+  - `+ship/undock` shows the pinned estimate with the reason.
+  - The picket's charge carries the same clause.
+  - Every duty line fits in 120 columns.
+- `tests/domain_economy/ex6_haul.rs`, `kc3_the_job_board_shows_the_duty_a_hauler_will_meet`: a
+  6 t metals haul to Stickney shows no duty under the Co-op, and `(Kirkwood duty ~50 cr)` (the
+  floor) after the flip, within 120 columns.
+- `tests/domain_world/moon_ports.rs`,
+  `kc3_the_long_way_round_costs_time_the_direct_run_pays_the_duty` (pure planner, laden 100 t,
+  one soul, full throttle, at the epoch):
+  - Direct Ceres to Stickney: 1,448,368 s (16.8 IC days), 47 t.
+  - The long way by Luna and Deimos: 2,516,632 s (29.1 IC days), 82 t.
+  - The detour's extra 35 t is 1,400 cr at Ceres' 40 cr a tonne. The duty on 100 t of metals
+    is 400 cr, so the direct run stays worth taking for ordinary cargo at the provisional 2%.
+- Mutation-checked on conclav.dev; each failed its story and was undone by a reverse edit:
+  - the plan's line dropped;
+  - the reason clause's date dropped;
+  - the filing's line dropped;
+  - the board's clause dropped.
+- Green on conclav.dev: clippy `-D warnings` on tacsim, and every tacsim binary. Locally:
+  rustdoc in both modes and the contract guards.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- **The reason clause names the holder and the date, not the region** (`Republic hold since
+  March 1, 2350`); the line says Kirkwood. Every line fits in 120 columns that way.
+- **The board's duty is the major-credit ceiling** of the duty on the catalog value, under the
+  live terms. A hauler who files later pins the terms of that day.
+- **A haul shows the duty when any of its origin port's routes to the destination crosses the
+  picket**, whichever route the hauler later flies.
+- **The plan's estimate reads what is aboard now**; an empty hold shows no line.
+
+**Not built.**
+- The Co-op's share by control (KC.4).
+- A duty line on a queued departure's filing. It files through the executor, which writes no
+  reply.
 
 ## KC.4
 
-Not built.
+The Co-op's enrollment share by control (Q-50-7). Stacked on KC.3. **A lane bump: lane v48 and
+relay v39**, from KC.2's v47.
+
+**Survey.**
+- The share was one number, the lane programme's `share_permille` (250). It is frozen on the
+  enrollment at `+coop/enroll` (`EnrolPlan.share_permille`) and read by the proceeds at every
+  sale.
+- Two lines of copy said "a quarter": the registrar's line (`REGISTRAR_LINE`, shown by `+coop`)
+  and the `+coop` help (`COOP_HELP`).
+- `+coop`'s terms line printed the programme's permille. `docs/help/coop.md` describes the share
+  in the same words.
+
+**Built.**
+- A terms row gains `coop_share_permille: Option<u16>`, checked at 1,000 at most. Lane v48 sets
+  300 on the Republic's Kirkwood row.
+- `port::coop::signing_share_permille(w, programme_share) -> u32` gives the share a new
+  enrollment signs at: the Kirkwood approach's live terms row's `coop_share_permille` when the
+  holder's row sets one, else the programme's. `+coop/enroll` freezes it on the enrollment.
+  Standing enrollments keep what they signed at; the proceeds still read the enrollment.
+- **The copy:**
+  - `REGISTRAR_LINE` is a template (`{share}`), filled by `registrar_line(permille)` with
+    `share_words` ("a quarter" at 250, "three tenths" at 300, "half" at 500, else the permille).
+  - `+coop`'s terms line prints the signing share.
+  - `COOP_HELP` and `docs/help/coop.md` say the share is a quarter, or more while a holder of the
+    Kirkwood approach sets it so, fixed at signing.
+- **Lane v48:**
+  - the Republic row's `coop_share_permille: 300`;
+  - relay v39, re-signed to require it;
+  - `lane_chain::strip_coop_share` as the chain's new head, with
+    `kc4_strip_coop_share_rebuilds_the_published_v47` holding KC.2's digest;
+  - no venue word or other client-pinned list moved, so the SSH and web pins are unchanged.
+
+**Tests.**
+- `tests/domain_economy/coop.rs`,
+  `kc4_new_enrollments_sign_at_the_holders_share_and_standing_ones_keep_theirs`:
+  - under the Co-op's hold, `+coop` offers a quarter and 250‰, and the first captain signs at 250;
+  - after the flip, `+coop` offers three tenths and 300‰, and the second captain signs at 300;
+  - the first captain's enrollment keeps 250.
+- `ic6_enrol_once…` reads the registrar line through `registrar_line(250)`.
+- Mutation-checked on conclav.dev; each failed the story and was undone by a reverse edit:
+  - the signing share ignoring the row;
+  - "three tenths" spelled as a quarter.
+- Lane pins moved to v48 and relay v39: `lane.rs`, `cost_lane.rs`, `sites.rs`, `drones.rs`,
+  `mill.rs`, `stations.rs`, `boot_parity.rs`, `relay_registry.rs`.
+- Green on conclav.dev: clippy `-D warnings` on tacsim, every tacsim binary, mush-server
+  `split_boundary` and `commerce_composition`, and mush-bot's `coop_sentences` (the registrar
+  line's last sentence, which the bot mirrors, is unchanged). Locally: rustdoc in both modes, the
+  contract guards and the help lint.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- The share is read from the Kirkwood approach's terms (the region the flip changes), whichever
+  port the Co-op signs at.
+- Shares with no word of their own print as permille in the registrar's line.
+
+**Not built.**
+- Nothing of Q-50-7 is left. The Co-op's other terms (stake, buyout) are unchanged by control.
 
 ## LW.1
 
@@ -1223,7 +1352,106 @@ port.
 
 ## OP.2
 
-Not built.
+The scheduled tick as a typed cause, the Concession Review and Hold the Concession, and the hull's
+flag (Q-50-20, Q-50-61; Q-50-51; doc 11 §6). Stacked on OP.1. **No lane bump.**
+
+**Survey.** At OP.1's head:
+- Neither Isidis front existed: no code or content named the Concession Review or Hold the
+  Concession.
+- The scheduled tick was a cause deferred since M25. No front moved on IC time.
+- No hull carried a flag.
+- KC.1's `open_faction_front` / `FrontSpec` and KC.0a's `advance_clock_by_cause` are the public
+  seams, so mush-faction needs no change.
+- A clock keeps the cause ids that moved it (`Clock::causes`, at most 64), persisted with the
+  clock.
+- A front records no opening time, and canon can be read back only from its open tail
+  (`records_for_source`).
+- The picket's seizure ruling lands in `space::picket::record_customs_seizure`, whose canon line
+  already carries the cause id `space.picket.seize/<hull>/<IC second>`.
+- A Co-op pool hull is titled at boot to the Co-op Trust, an org tagged `freeport`
+  (`port::hull`); the title is on the economy's asset record (`house_sweep::title_of`).
+
+**Built** (`crates/tacsim/src/concession.rs`).
+- **Both fronts at world start.** `seed_isidis_fronts` runs from the regions applier after
+  Customs Assertion, when the lane has the `isidis` row. It is idempotent.
+  - **The Concession Review**, on the Republic's board:
+    - clock "Assembly votes & seized Freeport haulers", six segments;
+    - it opens at one, and the seeding month's Assembly vote takes it to **two of six** in the same
+      apply;
+    - no control flip: the fill is the Republic's decision, which the declaring arm acts on
+      (OP.5), and the flip is the operation's;
+    - consequence `CONCESSION_REVIEW_CONSEQUENCE`.
+  - **Hold the Concession**, on the Freeport's board:
+    - clock "Reinforcements, stockpiles & haulers through the pickets", six segments, opening at
+      **two**;
+    - no flip, and nothing moves it yet.
+- **The scheduled tick, a typed cause:** `tacsim.assembly`, coarse, every 60 s.
+  - Each fire, `assembly_votes` moves the Review once for each whole IC month (`IC_MONTH_S`,
+    30 IC days) since its anchor that the clock has not counted.
+  - Each vote goes through `advance_clock_by_cause`, cause id `assembly.vote/<IC month index>`.
+  - The anchor is the seeding month's vote, the least `assembly.vote/` cause on the clock. The
+    clock's persisted cause list is the memory, so the tick keeps no state of its own.
+  - A restart, a missed fire or a paused world moves it neither more nor less; a missed month
+    catches up on the next fire.
+  - It stops at the fill.
+- **A seized Freeport-flagged hauler:** `record_flagged_seizure(ctx, hull, source)`, called by
+  `record_customs_seizure` after Customs Assertion's line, with the same `source` as cause id.
+  - A hull whose flag is the Freeport's moves the Review one segment, a retry none.
+  - Any other hull moves nothing.
+  - The picket's change is one `let` and one call.
+- **The flag (Q-50-61):** `hull_flag(w, hull)` is the polity of the organization that holds the
+  hull's title, from the lane's org table (`polity_of_org`). A personally titled or untitled
+  hull flies none.
+
+**Tests.**
+- **The story** is `domain_world::polities::op2_the_concession_review_moves_by_the_assembly_and_by_a_flagged_seizure`,
+  on a fresh production world first booted at IC month 5, so a count from month zero cannot pass
+  for one from the seeding month.
+  - Both fronts are on their boards at 2 of 6 with no flip, both on `+clocks`, and the anchor is
+    the seeding month's vote.
+  - The same month votes nothing. A month later the tick votes once, and a second read that
+    month votes nothing.
+  - A Co-op pool hull flies the Freeport's flag; an untitled object flies none.
+  - A seizure on the pool hull moves the Review. A retried cause, an unflagged hull and a hull
+    titled to Stickney Yards (Republic-flagged) do not.
+  - Two more months fill it: the consequence is recorded and the front resolves. Hold stays at
+    2, and nothing moves the Review after.
+- **Mutations**, each caught by the story, each restored from a saved copy and compared byte for
+  byte:
+  - no seeding vote (caught at "two of six");
+  - the tick counting from month zero, not the anchor (caught at the first month's count);
+  - any flag moving the Review (caught at the Republic-flagged hull);
+  - the tick unregistered (caught at "the monthly vote, on the tick").
+- **Run on conclav.dev, green:**
+  - all of tacsim (4,990 tests; the one failure in that run was this story's own `+clocks`
+    line, since fixed, and the story and polities binary pass);
+  - mush-server `split_boundary` (227) and mush-contract-tests (208);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim and mush-server, all targets;
+  - rustdoc `-D warnings` in both modes.
+
+**Divergences.**
+- **The Review opens at one and votes to two at seeding.** The seed's own vote is the anchor the
+  monthly tick counts from. Doc 11's world-start vote ("late 2349 the Assembly votes to review")
+  is that vote.
+- **A month is 30 IC days** on the world's IC clock, counted from the seeding month. A kept world
+  that takes the lane late is anchored where it takes it.
+- **Neither front flips control.** Doc 11 has the Review's fill declare an operation (OP.5),
+  whose resolution flips administration (Q-50-28); Hold's consequence is a statement.
+- **Hold the Concession has no cause in this unit.** Its doc 11 causes are the stockpile at
+  threshold (OP.4), Meridiani reinforcements (Meridiani is no lane organization) and a hauler
+  that runs the pickets, which with Q-50-25's losses is OP.3's to wire.
+- **The flag reads the title only.** A Co-op charter leaves the title with the Co-op Trust, so
+  "or its charter" adds nothing for any hull the game makes today.
+- **Only a seizure ruling moves the Review**, not a fine or a run (Q-50-20 as corrected).
+- **The code is its own module** (`tacsim::concession`), one line in the regions applier and one
+  in the picket, to keep clear of KC.2's polity and picket edits.
+
+**Not built.**
+- What moves Hold the Concession (OP.3, OP.4).
+- The declaring arm that acts on the Review's fill (OP.5).
+- A hull flying for a side by a live job (Q-50-61's second half, for OP.3 and OP.6).
+- Any player-facing line naming a hull's flag.
 
 ## OP.3
 

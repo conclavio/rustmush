@@ -401,3 +401,175 @@ fn kc1_picket_incidents_fill_customs_assertion_and_the_republic_takes_kirkwood()
         "{chronicle}"
     );
 }
+
+/// A fresh production world first booted at IC month `month` (the test clock runs IC at the
+/// real second), so a count from month zero would not pass for a count from the seeding month.
+fn booted_at_month(month: i64) -> TestWorld {
+    let (world, registry) = mush_testkit::boot_world();
+    let mut engine = mush_core::Engine::with_modules(world, registry, support::production_roster())
+        .expect("the roster registers");
+    engine.set_now(month * tacsim::concession::IC_MONTH_S + 3_600);
+    let mut out = mush_core::Outbox::new();
+    let mut fx = mush_core::Effects::new();
+    engine
+        .modules_loaded(std::collections::HashMap::new(), &mut out, &mut fx)
+        .expect("the world boots");
+    TestWorld::from_engine(engine)
+}
+
+/// Sweep the world one IC month (and a minute) ahead and fire what is due.
+fn a_month_later(tw: &mut TestWorld) {
+    let rate = i64::from(tw.world().world_timeline().current().rate.max(1));
+    let real = (tacsim::concession::IC_MONTH_S + 60 * rate) / rate;
+    let t = tw.world().now() + real;
+    tw.set_now(t);
+    let _ = tw.fire_due(t.saturating_mul(1_000));
+}
+
+/// **Doc 50 cut OP.2 acceptance: the Isidis fronts and their typed causes** (Q-50-20, Q-50-61;
+/// doc 11 §6). On a fresh production world:
+/// - the Concession Review stands on the Republic's board and Hold the Concession on the
+///   Freeport's, each at two of six, with no flip of their own, both on `+clocks`;
+/// - the Assembly's monthly tick moves the Review once an IC month, never twice for one month;
+/// - a Co-op pool hull flies the Freeport's flag and an untitled object none;
+/// - a seizure ruling on the Freeport-flagged hull moves the Review once for its cause, and one on
+///   any other hull moves nothing;
+/// - the Review fills on the engine's path, records its consequence and resolves its front, while
+///   Hold the Concession stays where it opened.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn op2_the_concession_review_moves_by_the_assembly_and_by_a_flagged_seizure() {
+    use tacsim::concession::{
+        ASSEMBLY_CAUSE, CONCESSION_REVIEW_CONSEQUENCE, CONCESSION_REVIEW_TITLE,
+        HOLD_THE_CONCESSION_TITLE, assembly_votes, hold_clock, hull_flag, ic_month,
+        record_flagged_seizure, review_clock,
+    };
+
+    let mut tw = booted_at_month(5);
+    let republic = named(&tw, "Republic");
+    let freeport = named(&tw, "Freeport");
+    let review = review_clock(tw.world()).expect("the Concession Review is seeded");
+    let hold = hold_clock(tw.world()).expect("Hold the Concession is seeded");
+    let fronts = |tw: &TestWorld| {
+        tw.world()
+            .module_state::<mush_faction::SimState>()
+            .expect("fronts")
+            .clone()
+    };
+    let sim = fronts(&tw);
+    assert_eq!(sim.fronts[&review.front].faction, republic);
+    assert_eq!(sim.fronts[&review.front].title, CONCESSION_REVIEW_TITLE);
+    assert_eq!(sim.fronts[&hold.front].faction, freeport);
+    assert_eq!(sim.fronts[&hold.front].title, HOLD_THE_CONCESSION_TITLE);
+    assert_eq!((review.filled, review.segments), (2, 6), "two of six");
+    assert_eq!((hold.filled, hold.segments), (2, 6), "two of six");
+    assert_eq!(
+        review.on_complete_control, None,
+        "the operation flips, not the clock"
+    );
+    assert_eq!(hold.on_complete_control, None);
+    let start = ic_month(tw.world().world_ic_now().at);
+    assert!(start >= 5, "booted at month {start}");
+    assert_eq!(
+        review.causes,
+        vec![smol_str::SmolStr::new(format!("{ASSEMBLY_CAUSE}{start}"))],
+        "the seeding month's vote is the anchor"
+    );
+    let player = tw.spawn_player("Hauler");
+    let clocks = seen(&mut tw, player, "+clocks");
+    for line in [
+        "Assembly votes & seized Freeport haulers [2/6] — Republic",
+        "Reinforcements, stockpiles & haulers through the pickets [2/6] — Freeport",
+    ] {
+        assert!(clocks.contains(line), "{line:?} missing from: {clocks}");
+    }
+
+    let filled = |tw: &TestWorld, clock: &mush_faction::Clock| fronts(tw).clocks[&clock.id].filled;
+    // The same month again moves nothing.
+    assert_eq!(support::with_ctx(&mut tw, assembly_votes), 0);
+    assert_eq!(filled(&tw, &review), 2);
+    // A month later the Assembly's tick votes once; a second read in that month votes no more.
+    a_month_later(&mut tw);
+    assert_eq!(filled(&tw, &review), 3, "the monthly vote, on the tick");
+    assert_eq!(support::with_ctx(&mut tw, assembly_votes), 0);
+    assert_eq!(filled(&tw, &review), 3);
+
+    // The flag (Q-50-61): a Co-op pool hull is titled to a Freeport organization.
+    let pool_hull = tw
+        .world()
+        .module_state::<TacsimStore>()
+        .expect("the store")
+        .port_maps()
+        .find(|map| map.entry.as_str() == "ceres_port")
+        .and_then(|map| map.hulls.first().map(|row| mush_core::ObjId(row.hull)))
+        .expect("a Co-op pool hull");
+    assert_eq!(hull_flag(tw.world(), pool_hull), Some(freeport));
+    assert_eq!(hull_flag(tw.world(), player), None, "untitled: no flag");
+
+    // A seizure ruling on it moves the Review once for its cause.
+    let cause = format!("space.picket.seize/{}/77", pool_hull.0);
+    assert!(support::with_ctx(&mut tw, |ctx| record_flagged_seizure(
+        ctx, pool_hull, &cause
+    )));
+    assert_eq!(filled(&tw, &review), 4);
+    assert!(!support::with_ctx(&mut tw, |ctx| record_flagged_seizure(
+        ctx, pool_hull, &cause
+    )));
+    assert_eq!(filled(&tw, &review), 4, "a cause counts once");
+    assert!(!support::with_ctx(&mut tw, |ctx| record_flagged_seizure(
+        ctx,
+        player,
+        "space.picket.seize/9/78"
+    )));
+    assert_eq!(filled(&tw, &review), 4, "an unflagged hull moves nothing");
+    // A hull titled to a Republic organization flies the Republic's flag and moves nothing.
+    let cutter = tw.spawn_player("Cutter");
+    let yards = lane_orgs(&tw)["stickney_yards"];
+    support::with_ctx(&mut tw, |ctx| {
+        mush_economy::issue_title(
+            ctx,
+            cutter,
+            mush_org::PrincipalId::Organization(yards),
+            None,
+            mush_org::SystemPrincipalId::new("tacsim.registry").expect("the issuer"),
+            None,
+        )
+    })
+    .expect("the title issues");
+    assert_eq!(hull_flag(tw.world(), cutter), Some(republic));
+    let cause = format!("space.picket.seize/{}/79", cutter.0);
+    assert!(!support::with_ctx(&mut tw, |ctx| record_flagged_seizure(
+        ctx, cutter, &cause
+    )));
+    assert_eq!(
+        filled(&tw, &review),
+        4,
+        "a Republic-flagged hull moves nothing"
+    );
+
+    // Two more months fill it: the consequence on the engine's one path.
+    a_month_later(&mut tw);
+    assert_eq!(filled(&tw, &review), 5);
+    a_month_later(&mut tw);
+    let sim = fronts(&tw);
+    assert!(sim.clocks[&review.id].completed, "the Review fills");
+    assert!(sim.fronts[&review.front].resolved, "its front resolves");
+    assert_eq!(
+        sim.clocks[&hold.id].filled, 2,
+        "Hold the Concession is not moved"
+    );
+    let canon = tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .expect("canon")
+        .recent();
+    assert!(
+        canon
+            .iter()
+            .any(|e| e.summary.contains(CONCESSION_REVIEW_CONSEQUENCE)),
+        "the consequence is recorded"
+    );
+    // After the fill, nothing moves it.
+    a_month_later(&mut tw);
+    assert_eq!(support::with_ctx(&mut tw, assembly_votes), 0);
+}

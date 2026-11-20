@@ -191,7 +191,7 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
         .iter()
         .filter(|good| good.consumable != Some(Consumable::Propellant))
     {
-        match crate::port_tick::read_pool(ctx, hold, &good.id) {
+        match crate::port_tick::read_held(ctx, hold, &good.id) {
             Ok(0) => {}
             Ok(_) => return Err(refused(REFIT_HOLD)),
             Err(error) => {

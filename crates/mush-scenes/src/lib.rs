@@ -67,12 +67,13 @@ use smol_str::SmolStr;
 
 pub use data::{
     ArrivalFloorRefusal, CONSENT_DEADLINE_S, CONSENT_END, CONSENT_NUDGE, CONSENT_OUTCOME,
-    CONSENT_REWIND, ConsentVote, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_NUDGE_MINUTES,
-    MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS,
-    MAX_PENDING_STORE_READS_PER_ACTOR, NS, NUDGE_TICK_S, PauseReason, PendingArchiveRead,
-    SceneAdvanceError, SceneEvent, SceneEventKind, SceneHookFn, SceneHooks, SceneMode,
-    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, SealerGateSlot,
-    persist_scene_record, scene_key,
+    CONSENT_REWIND, ConsentVote, KIND_TIMESTOP, MAX_CONSENT_VOTES, MAX_IC_FLOOR_LEAD_SECS,
+    MAX_NUDGE_MINUTES, MAX_OUTCOME_NAME_BYTES, MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS,
+    MAX_PENDING_STORE_READS_PER_ACTOR, MAX_RETAINED_CLOSED_SCENES, MAX_SCENES_PER_PLAYER_WINDOW,
+    NS, NUDGE_TICK_S, PauseReason, PendingArchiveRead, SCENE_CREATE_WINDOW_SECS,
+    SCENE_IDLE_TIMEOUT_SECS, SceneAdvanceError, SceneEvent, SceneEventKind, SceneHookFn,
+    SceneHooks, SceneMap, SceneMode, SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState,
+    SealerGateSlot, persist_scene_record, scene_key,
 };
 
 /// The canon kind a **sealed scene outcome** is recorded under (E6b, 08f §4.1).
@@ -355,7 +356,10 @@ impl EventHook for TimestopMoveGate {
             );
         Err(RichText::tag(
             "error",
-            format!("You are caught in {scene_note}; you cannot leave until it ends."),
+            format!(
+                "You are caught in {scene_note}; you cannot leave until it ends \
+                 (use +timestop/leave to release yourself)."
+            ),
         ))
     }
 }
@@ -377,14 +381,14 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     };
     let obj = *obj;
 
-    // 1. Snapshot the scenes holding the destroyed object (immutable read; no
-    //    state borrow is held past this).
+    // 1. Snapshot the active scenes holding the destroyed object via the
+    //    active-only member index (immutable read; no state borrow held past this).
     let affected: Vec<SceneRecord> = match ctx.w.module_state::<ScenesState>() {
         Some(st) => st
             .scenes
-            .values()
-            .filter(|s| s.status.holds_members() && s.members().any(|m| m == obj))
-            .cloned()
+            .active_ids_for_member(obj)
+            .into_iter()
+            .filter_map(|id| st.scenes.get(&id).cloned())
             .collect(),
         None => return,
     };
@@ -449,14 +453,26 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
                 record,
                 release_all,
             } => {
-                if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
+                let evicted = if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
                     st.scenes.insert(record.id, record.clone());
-                }
+                    st.last_activity.remove(&record.id);
+                    st.prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES)
+                } else {
+                    Vec::new()
+                };
                 for m in release_all {
                     ctx.w.clear_exclusive_scene_member(m);
                 }
                 ctx.w.clear_exclusive_scene_member(obj);
                 persist_scene(ctx.out, &record);
+                for uid in evicted {
+                    data::push_op(
+                        ctx.out,
+                        mush_core::ModuleWrite::Del {
+                            key: scene_key(uid),
+                        },
+                    );
+                }
                 announce_scene(
                     ctx,
                     record.anchor,
@@ -753,8 +769,12 @@ fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let Some(s) = active_scene_at(ctx.w, *room) else {
         return;
     };
+    let now = ctx.w.now();
+    if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
+        st.note_activity(s.id, now);
+    }
     let detail = serde_json::json!({ "narr": narr_label(*kind), "text": text });
-    let event = SceneEvent::new(&s, ctx.w.now(), SceneEventKind::Said, Some(*who), detail);
+    let event = SceneEvent::new(&s, now, SceneEventKind::Said, Some(*who), detail);
     record_scene_event(ctx, s.id, event);
 }
 
@@ -865,8 +885,12 @@ fn on_rolled(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let Some(s) = active_scene_at(ctx.w, *room) else {
         return;
     };
+    let now = ctx.w.now();
+    if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
+        st.note_activity(s.id, now);
+    }
     let detail = serde_json::json!({ "summary": summary });
-    let event = SceneEvent::new(&s, ctx.w.now(), SceneEventKind::Rolled, Some(*who), detail);
+    let event = SceneEvent::new(&s, now, SceneEventKind::Rolled, Some(*who), detail);
     record_scene_event(ctx, s.id, event);
 }
 
@@ -1011,19 +1035,22 @@ fn load_boot(
         .module_state::<ScenesState>()
         .map(|st| st.sealer_gate.clone())
         .unwrap_or_default();
-    let st = ScenesState {
+    let mut st = ScenesState {
         // Pending archive reads are transient: a boot starts with none.
         pending_reads: Default::default(),
         sealer_gate,
-        scenes,
+        scenes: SceneMap::from_records(scenes),
         next_scene_uid,
         events,
+        creation_history: Default::default(),
+        last_activity: Default::default(),
     };
+    let evicted = st.prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES);
     // Re-persist any scene we paused for the restart, and re-publish every held
     // member to the core exclusive-scene index so the room stays frozen.
     let changed: Vec<SceneRecord> = st
         .scenes
-        .values()
+        .active_records()
         .filter(|s| s.pause_reason == Some(PauseReason::ServerRestart))
         .cloned()
         .collect();
@@ -1037,6 +1064,14 @@ fn load_boot(
     }
     for s in &changed {
         persist_scene(ctx.out, s);
+    }
+    for uid in evicted {
+        data::push_op(
+            ctx.out,
+            mush_core::ModuleWrite::Del {
+                key: scene_key(uid),
+            },
+        );
     }
     Ok(())
 }

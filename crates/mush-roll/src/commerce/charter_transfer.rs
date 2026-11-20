@@ -44,6 +44,7 @@ pub(crate) struct TransferRoots {
     commit: CommitToken,
     old: Vec<RequiredRoot>,
     added: RequiredRoot,
+    pruned: Vec<crate::ReferenceKey>,
     fence: TransferFence,
 }
 impl TransferRoots {
@@ -55,6 +56,9 @@ impl TransferRoots {
     }
     pub(crate) fn added(&self) -> &RequiredRoot {
         &self.added
+    }
+    pub(crate) fn pruned(&self) -> &[crate::ReferenceKey] {
+        &self.pruned
     }
     pub(crate) fn fence(&self) -> &TransferFence {
         &self.fence

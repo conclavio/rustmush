@@ -16,6 +16,8 @@
 //! `mush_atlas::hydrate::activate`, pending review.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use mush_atlas::hydrate::{self, ProposeRequest, ProposeScope, ProposeSource, Requested};
 use mush_atlas::place::PlaceRef;
@@ -34,6 +36,93 @@ pub const PROPOSAL_PREFIX: &str = "proposal:";
 pub const PROPOSAL_META_KEY: &str = "proposal_meta";
 /// The most proposals the world keeps.
 pub const MAX_PROPOSALS: usize = 1024;
+/// The most terminal (`Withdrawn` / `Applied`) proposals retained before the
+/// oldest terminal entries are pruned from RAM and disk (STRAG-M9).
+pub const MAX_RETAINED_TERMINAL_PROPOSALS: usize = 64;
+/// Maximum new non-staff proposals one author may create within
+/// [`PROPOSAL_WINDOW_SECS`] (STRAG-M9).
+pub const MAX_PROPOSALS_PER_PLAYER_WINDOW: usize = 8;
+/// Maximum non-staff withdrawals one author may perform within
+/// [`PROPOSAL_WINDOW_SECS`] (STRAG-M9).
+pub const MAX_WITHDRAWS_PER_PLAYER_WINDOW: usize = 4;
+/// Sliding window, in real seconds, for player proposal and withdrawal rate limits (STRAG-M9).
+pub const PROPOSAL_WINDOW_SECS: i64 = 3_600;
+/// Cooldown, in real seconds, enforced after repeated player withdrawals before
+/// creating another proposal (STRAG-M9).
+pub const PROPOSAL_WITHDRAW_COOLDOWN_SECS: i64 = 60;
+/// Upper bound on distinct authors tracked in persisted rate-limit history.
+const MAX_TRACKED_AUTHORS: usize = 512;
+/// Upper bound on live/pending process-local LLM run cancellation tokens.
+const MAX_CANCEL_TOKENS: usize = 4_096;
+
+static NEXT_RUN_TOKEN: AtomicU64 = AtomicU64::new(1);
+static CANCEL_TOKENS: OnceLock<Mutex<BTreeMap<u64, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn cancel_registry() -> &'static Mutex<BTreeMap<u64, Arc<AtomicBool>>> {
+    CANCEL_TOKENS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+pub(crate) fn register_run_token() -> u64 {
+    let token = NEXT_RUN_TOKEN.fetch_add(1, Ordering::Relaxed).max(1);
+    let mut map = match cancel_registry().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if map.len() >= MAX_CANCEL_TOKENS {
+        let stale: Vec<u64> = map
+            .iter()
+            .filter(|(_, flag)| flag.load(Ordering::Acquire))
+            .map(|(k, _)| *k)
+            .take(MAX_CANCEL_TOKENS / 2)
+            .collect();
+        for k in stale {
+            map.remove(&k);
+        }
+        while map.len() >= MAX_CANCEL_TOKENS {
+            let Some(oldest) = map.keys().next().copied() else {
+                break;
+            };
+            map.remove(&oldest);
+        }
+    }
+    map.insert(token, Arc::new(AtomicBool::new(false)));
+    token
+}
+
+pub(crate) fn cancel_run_token(token: u64) {
+    if token == 0 {
+        return;
+    }
+    let map = match cancel_registry().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if let Some(flag) = map.get(&token) {
+        flag.store(true, Ordering::Release);
+    }
+}
+
+pub(crate) fn lookup_run_token(token: u64) -> Option<Arc<AtomicBool>> {
+    if token == 0 {
+        return None;
+    }
+    let map = match cancel_registry().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    map.get(&token).map(Arc::clone)
+}
+
+pub(crate) fn finish_run_token(token: u64) {
+    if token == 0 {
+        return;
+    }
+    let mut map = match cancel_registry().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    map.remove(&token);
+}
 /// The most questions a proposal carries.
 pub const MAX_QUESTIONS: usize = 32;
 /// The most feedback lines a proposal carries.
@@ -316,6 +405,9 @@ pub struct PlanSnapshot {
     /// Spent on this proposal before the run, USD.
     #[serde(default)]
     pub spent_usd: f64,
+    /// Process-local cancellation token for this off-loop LLM run (STRAG-M9).
+    #[serde(default)]
+    pub run_token: u64,
 }
 
 /// How a run ended.
@@ -376,38 +468,104 @@ pub struct PlanOutcome {
 // Boot
 // ---------------------------------------------------------------------------
 
-/// Rebuild the proposals and the id counter from the persisted documents.
-#[must_use]
-pub fn hydrate_boot(
-    kv: &[(SmolStr, serde_json::Value)],
-) -> (BTreeMap<u64, ProposalRec>, u64, Vec<SmolStr>) {
+/// Prune excess terminal (`Withdrawn` / `Applied`) proposals from `proposals`
+/// down to at most `max_retained`, evicting `Withdrawn` before `Applied` and
+/// oldest `updated` first. Returns the pruned proposal ids.
+fn prune_terminal_map(proposals: &mut BTreeMap<u64, ProposalRec>, max_retained: usize) -> Vec<u64> {
+    let mut prunable: Vec<(u8, i64, u64)> = proposals
+        .values()
+        .filter_map(|r| {
+            let priority = match r.status {
+                ProposalStatus::Withdrawn => 0,
+                ProposalStatus::Applied { .. } => 1,
+                _ => return None,
+            };
+            Some((priority, r.updated, r.id))
+        })
+        .collect();
+    if prunable.len() <= max_retained {
+        return Vec::new();
+    }
+    prunable.sort_unstable();
+    let excess = prunable.len().saturating_sub(max_retained);
+    let mut evicted = Vec::with_capacity(excess);
+    for (_, _, id) in prunable.into_iter().take(excess) {
+        if proposals.remove(&id).is_some() {
+            evicted.push(id);
+        }
+    }
+    evicted
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ProposalMetaDoc {
+    #[serde(default = "default_next_proposal")]
+    next: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    proposal_history: BTreeMap<u32, Vec<i64>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    withdraw_history: BTreeMap<u32, Vec<i64>>,
+}
+
+fn default_next_proposal() -> u64 {
+    1
+}
+
+/// Boot result carrying hydrated proposals, id allocator, persisted rate-limit
+/// history, and dropped/pruned keys to delete on disk.
+pub(crate) struct BootProposals {
+    pub proposals: BTreeMap<u64, ProposalRec>,
+    pub next_proposal: u64,
+    pub proposal_history: BTreeMap<ObjId, Vec<i64>>,
+    pub withdraw_history: BTreeMap<ObjId, Vec<i64>>,
+    pub dropped: Vec<SmolStr>,
+}
+
+/// Rebuild the proposals, id counter, and rate-limit history from the persisted
+/// documents, pruning excess terminal proposals so withdrawn/applied records
+/// cannot permanently exhaust [`MAX_PROPOSALS`] across restarts (STRAG-M9).
+pub(crate) fn hydrate_boot_full(kv: &[(SmolStr, serde_json::Value)]) -> BootProposals {
     let mut proposals = BTreeMap::new();
     let mut next = 1_u64;
+    let mut proposal_history: BTreeMap<ObjId, Vec<i64>> = BTreeMap::new();
+    let mut withdraw_history: BTreeMap<ObjId, Vec<i64>> = BTreeMap::new();
     let mut dropped = Vec::new();
     for (key, value) in kv {
         if key.as_str() == PROPOSAL_META_KEY {
-            next = value
-                .get("next")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(1)
-                .max(1);
+            if let Ok(meta) = serde_json::from_value::<ProposalMetaDoc>(value.clone()) {
+                next = next.max(meta.next.max(1));
+                for (id, times) in meta.proposal_history.into_iter().take(MAX_TRACKED_AUTHORS) {
+                    proposal_history.insert(ObjId(id), times);
+                }
+                for (id, times) in meta.withdraw_history.into_iter().take(MAX_TRACKED_AUTHORS) {
+                    withdraw_history.insert(ObjId(id), times);
+                }
+            } else {
+                next = next.max(
+                    value
+                        .get("next")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1)
+                        .max(1),
+                );
+            }
         } else if let Some(rest) = key.strip_prefix(PROPOSAL_PREFIX) {
             match serde_json::from_value::<ProposalRec>(value.clone()) {
-                Ok(rec) if rec.id.to_string() == rest && proposals.len() < MAX_PROPOSALS => {
+                Ok(mut rec) if rec.id.to_string() == rest => {
                     // A run in flight at the restart is lost: it re-enters as a
                     // status the author can steer from.
-                    let mut rec = rec;
                     if rec.status == ProposalStatus::Planning {
                         rec.status = ProposalStatus::Failed {
                             message: "the server restarted during the run".to_string(),
                             retryable: true,
                         };
                     }
+                    // Advance `next` BEFORE pruning so pruned ids are never reused.
                     next = next.max(rec.id.saturating_add(1));
                     proposals.insert(rec.id, rec);
                 }
                 Ok(_) => {
-                    tracing::warn!(%key, "worldgen: a proposal's key disagrees with its id, or the book is full; dropped");
+                    tracing::warn!(%key, "worldgen: a proposal's key disagrees with its id; dropped");
                     dropped.push(key.clone());
                 }
                 Err(error) => {
@@ -417,7 +575,50 @@ pub fn hydrate_boot(
             }
         }
     }
-    (proposals, next, dropped)
+    for id in prune_terminal_map(&mut proposals, MAX_RETAINED_TERMINAL_PROPOSALS) {
+        dropped.push(proposal_key(id));
+    }
+    if proposals.len() > MAX_PROPOSALS {
+        for id in prune_terminal_map(&mut proposals, 0) {
+            dropped.push(proposal_key(id));
+        }
+    }
+    if proposals.len() > MAX_PROPOSALS {
+        let mut overflow: Vec<(u8, i64, u64)> = proposals
+            .values()
+            .map(|r| {
+                let rank = if r.status.open() { 1 } else { 0 };
+                (rank, r.updated, r.id)
+            })
+            .collect();
+        overflow.sort_unstable();
+        let excess = proposals.len().saturating_sub(MAX_PROPOSALS);
+        for (_, _, id) in overflow.into_iter().take(excess) {
+            if proposals.remove(&id).is_some() {
+                tracing::warn!(
+                    id,
+                    "worldgen: proposal book exceeded MAX_PROPOSALS at boot; oldest dropped"
+                );
+                dropped.push(proposal_key(id));
+            }
+        }
+    }
+    BootProposals {
+        proposals,
+        next_proposal: next,
+        proposal_history,
+        withdraw_history,
+        dropped,
+    }
+}
+
+/// Rebuild the proposals and the id counter from the persisted documents.
+#[must_use]
+pub fn hydrate_boot(
+    kv: &[(SmolStr, serde_json::Value)],
+) -> (BTreeMap<u64, ProposalRec>, u64, Vec<SmolStr>) {
+    let boot = hydrate_boot_full(kv);
+    (boot.proposals, boot.next_proposal, boot.dropped)
 }
 
 // ---------------------------------------------------------------------------
@@ -455,14 +656,110 @@ pub fn persist(ctx: &mut Ctx<'_>, rec: &ProposalRec) {
     }
 }
 
-fn persist_meta(ctx: &mut Ctx<'_>, next: u64) {
-    ctx.persist(ModuleOp {
-        ns: SmolStr::new_static(NS),
-        op: ModuleWrite::JsonSet {
-            key: SmolStr::new_static(PROPOSAL_META_KEY),
-            value: serde_json::json!({ "next": next }),
-        },
-    });
+fn persist_meta(ctx: &mut Ctx<'_>) {
+    let Ok(st) = state(ctx) else {
+        return;
+    };
+    let meta = ProposalMetaDoc {
+        next: st.next_proposal,
+        proposal_history: st
+            .proposal_history
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| (k.0, v.clone()))
+            .collect(),
+        withdraw_history: st
+            .withdraw_history
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(k, v)| (k.0, v.clone()))
+            .collect(),
+    };
+    if let Ok(value) = serde_json::to_value(&meta) {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::JsonSet {
+                key: SmolStr::new_static(PROPOSAL_META_KEY),
+                value,
+            },
+        });
+    }
+}
+
+fn del_proposal_keys(ctx: &mut Ctx<'_>, ids: &[u64]) {
+    for &id in ids {
+        ctx.persist(ModuleOp {
+            ns: SmolStr::new_static(NS),
+            op: ModuleWrite::Del {
+                key: proposal_key(id),
+            },
+        });
+    }
+}
+
+fn prune_proposals(ctx: &mut Ctx<'_>, max_retained: usize) {
+    let evicted = state_mut(ctx)
+        .map(|st| prune_terminal_map(&mut st.proposals, max_retained))
+        .unwrap_or_default();
+    del_proposal_keys(ctx, &evicted);
+}
+
+fn recent_times(history: &[i64], now: i64, window: i64) -> Vec<i64> {
+    let cutoff = now.saturating_sub(window);
+    history
+        .iter()
+        .copied()
+        .filter(|&t| t > cutoff && t <= now)
+        .collect()
+}
+
+fn check_create_rate(st: &WorldgenState, author: ObjId, now: i64) -> Result<(), String> {
+    if let Some(hist) = st.proposal_history.get(&author) {
+        let recent = recent_times(hist, now, PROPOSAL_WINDOW_SECS);
+        if recent.len() >= MAX_PROPOSALS_PER_PLAYER_WINDOW {
+            return Err(format!(
+                "You have started {} proposals in the last hour (limit {MAX_PROPOSALS_PER_PLAYER_WINDOW}). Wait before starting another.",
+                recent.len()
+            ));
+        }
+    }
+    if let Some(wd) = st.withdraw_history.get(&author) {
+        let recent_wd = recent_times(wd, now, PROPOSAL_WINDOW_SECS);
+        if recent_wd.len() >= 2
+            && let Some(&last_wd) = recent_wd.iter().max()
+        {
+            let elapsed = now.saturating_sub(last_wd);
+            if elapsed < PROPOSAL_WITHDRAW_COOLDOWN_SECS {
+                let wait = PROPOSAL_WITHDRAW_COOLDOWN_SECS.saturating_sub(elapsed);
+                return Err(format!(
+                    "Please wait {wait}s after withdrawing before starting another proposal."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn record_author_time(map: &mut BTreeMap<ObjId, Vec<i64>>, author: ObjId, now: i64, cap: usize) {
+    let mut recent = map
+        .get(&author)
+        .map(|v| recent_times(v, now, PROPOSAL_WINDOW_SECS))
+        .unwrap_or_default();
+    recent.push(now);
+    let max_len = cap.saturating_mul(2);
+    if recent.len() > max_len {
+        let drop_n = recent.len().saturating_sub(max_len);
+        recent.drain(0..drop_n);
+    }
+    if map.len() >= MAX_TRACKED_AUTHORS && !map.contains_key(&author) {
+        map.retain(|_, v| !recent_times(v, now, PROPOSAL_WINDOW_SECS).is_empty());
+        if map.len() >= MAX_TRACKED_AUTHORS
+            && let Some(oldest) = map.keys().next().copied()
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(author, recent);
 }
 
 /// Make a proposal record (status `Planning`, nothing run yet).
@@ -478,7 +775,20 @@ pub fn create(
     source: ProposalSource,
 ) -> Result<ProposalRec, String> {
     let now = ctx.w.now();
-    let (rec, next) = {
+    let is_staff = staff || mush_atlas::is_staff(ctx.w, author);
+    if !is_staff {
+        let st = state(ctx)?;
+        check_create_rate(st, author, now)?;
+    }
+    // STRAG-M9: prune terminal proposals before enforcing MAX_PROPOSALS so
+    // withdrawn/applied proposals cannot permanently exhaust the proposal book.
+    if state(ctx)?.proposals.len() >= MAX_PROPOSALS {
+        prune_proposals(ctx, MAX_RETAINED_TERMINAL_PROPOSALS);
+        if state(ctx)?.proposals.len() >= MAX_PROPOSALS {
+            prune_proposals(ctx, 0);
+        }
+    }
+    let rec = {
         let st = state_mut(ctx)?;
         if st.proposals.len() >= MAX_PROPOSALS {
             return Err("The proposal book is full; ask staff to clear old ones.".to_string());
@@ -504,9 +814,17 @@ pub fn create(
             updated: now,
         };
         st.proposals.insert(id, rec.clone());
-        (rec, st.next_proposal)
+        if !is_staff {
+            record_author_time(
+                &mut st.proposal_history,
+                author,
+                now,
+                MAX_PROPOSALS_PER_PLAYER_WINDOW,
+            );
+        }
+        rec
     };
-    persist_meta(ctx, next);
+    persist_meta(ctx);
     persist(ctx, &rec);
     Ok(rec)
 }
@@ -769,11 +1087,14 @@ pub fn snapshot_for(ctx: &Ctx<'_>, rec: &ProposalRec) -> Result<PlanSnapshot, St
         theme: theme_for(ctx.w, &rec.scope),
         limits,
         spent_usd: rec.cost_usd,
+        run_token: 0,
     })
 }
 
-/// Start (or restart) a run: bump the revision, capture the snapshot, defer the
-/// call. Refused when the proposal has spent its cap or is not open.
+/// Start (or restart) a run: bump the revision, register a cancellation token
+/// (cancelling any superseded in-flight run for this proposal), capture the
+/// snapshot, and defer the call. Refused when the proposal has spent its cap or
+/// is not open.
 ///
 /// # Errors
 ///
@@ -794,7 +1115,14 @@ pub fn start_run(ctx: &mut Ctx<'_>, id: u64) -> Result<ProposalRec, String> {
         r.revision = r.revision.saturating_add(1);
         r.status = ProposalStatus::Planning;
     })?;
-    let snap = snapshot_for(ctx, &rec)?;
+    let mut snap = snapshot_for(ctx, &rec)?;
+    let run_token = register_run_token();
+    if let Ok(st) = state_mut(ctx)
+        && let Some(prev) = st.active_plan_runs.insert(id, run_token)
+    {
+        cancel_run_token(prev);
+    }
+    snap.run_token = run_token;
     let payload = serde_json::to_string(&WorldgenReq::Plan(Box::new(snap)))
         .map_err(|e| format!("Could not prepare the planning request: {e}"))?;
     let correlation = ctx.w.next_correlation_id();
@@ -825,6 +1153,9 @@ pub fn on_outcome(ctx: &mut Ctx<'_>, outcome: PlanOutcome) {
             "worldgen: a stale planning outcome was dropped"
         );
         return;
+    }
+    if let Ok(st) = state_mut(ctx) {
+        st.active_plan_runs.remove(&rec.id);
     }
     if !rec.status.open() {
         return;
@@ -1001,11 +1332,48 @@ pub fn withdraw(ctx: &mut Ctx<'_>, id: u64, actor: ObjId) -> Result<String, Stri
     if !rec.status.open() {
         return Err(format!("Proposal {id} is {}.", rec.status.label()));
     }
-    update(ctx, id, |r| r.status = ProposalStatus::Withdrawn)?;
+    let now = ctx.w.now();
+    let is_staff = mush_atlas::is_staff(ctx.w, actor);
+    if !is_staff && rec.author == actor {
+        let st = state(ctx)?;
+        if let Some(wd) = st.withdraw_history.get(&actor) {
+            let recent_wd = recent_times(wd, now, PROPOSAL_WINDOW_SECS);
+            if recent_wd.len() >= MAX_WITHDRAWS_PER_PLAYER_WINDOW {
+                return Err(format!(
+                    "You have withdrawn {} proposals in the last hour (limit {MAX_WITHDRAWS_PER_PLAYER_WINDOW}). Wait before withdrawing another, or ask staff.",
+                    recent_wd.len()
+                ));
+            }
+        }
+    }
+    // STRAG-M9: bump revision and signal the cancellation token so any in-flight
+    // or queued off-loop LLM planning job stops immediately without spending more
+    // rounds or budget.
+    update(ctx, id, |r| {
+        r.revision = r.revision.saturating_add(1);
+        r.status = ProposalStatus::Withdrawn;
+    })?;
+    if let Ok(st) = state_mut(ctx) {
+        if let Some(token) = st.active_plan_runs.remove(&id) {
+            cancel_run_token(token);
+        }
+        if !is_staff && rec.author == actor {
+            record_author_time(
+                &mut st.withdraw_history,
+                actor,
+                now,
+                MAX_WITHDRAWS_PER_PLAYER_WINDOW,
+            );
+        }
+    }
+    if !is_staff && rec.author == actor {
+        persist_meta(ctx);
+    }
     if let Some(request) = rec.request_id() {
         // The request's slot goes with it, when it is not already built.
         let _ = hydrate::withdraw(ctx, request, actor, "proposal withdrawn");
     }
+    prune_proposals(ctx, MAX_RETAINED_TERMINAL_PROPOSALS);
     Ok(format!("Proposal {id} withdrawn."))
 }
 
@@ -1114,6 +1482,12 @@ pub fn go(ctx: &mut Ctx<'_>, id: u64, actor: ObjId) -> Result<String, String> {
             version,
         };
     })?;
+    if let Ok(st) = state_mut(ctx)
+        && let Some(token) = st.active_plan_runs.remove(&id)
+    {
+        cancel_run_token(token);
+    }
+    prune_proposals(ctx, MAX_RETAINED_TERMINAL_PROPOSALS);
     Ok(line)
 }
 

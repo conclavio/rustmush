@@ -21,8 +21,9 @@ use smol_str::SmolStr;
 
 use crate::api::{JobsApi, OpenJob, add_comment, job_doc, note_doc, open_job, queue_spec};
 use crate::data::{
-    Approval, Job, JobComment, JobStatus, JobsState, NS, Note, REQ_QUEUE, fmt_ago, note_key,
-    validate_note_category, validate_terminal_comment,
+    Approval, JOBS_LIST_PAGE_SIZE, Job, JobComment, JobStatus, JobsState, MAX_NOTES_PER_OBJECT,
+    MAX_OPEN_REQUESTS_PER_PLAYER, NS, Note, REQ_QUEUE, fmt_ago, note_key, validate_note_category,
+    validate_note_text, validate_terminal_comment,
 };
 
 /// Minimum role treated as "staff" for character notes.
@@ -47,8 +48,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         CommandSpec {
             name: "+jobs".into(),
             shape: ArgShape::Raw,
-            help: "+jobs [<queue>] -- list jobs you can see, optionally in one queue. \
-                   Staff see every job in queues their role can work; everyone always \
+            help: "+jobs [<queue>] [<page>] -- list jobs you can see (paginated), optionally in \
+                   one queue. Staff see every job in queues their role can work; everyone always \
                    sees jobs they opened or are assigned to."
                 .into(),
             ..CommandSpec::default()
@@ -244,6 +245,18 @@ fn cmd_request(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if title.is_empty() || text.is_empty() {
         return Err(CmdError::msg("Usage: +request <title>=<text>"));
     }
+    if !works_queue(ctx.w, ctx.reg, ctx.actor, REQ_QUEUE) {
+        let open = ctx
+            .w
+            .module_state::<JobsState>()
+            .map_or(0, |st| st.open_request_count(ctx.actor));
+        if open >= MAX_OPEN_REQUESTS_PER_PLAYER {
+            return Err(CmdError::msg(format!(
+                "You already have {open} open requests (the cap is \
+                 {MAX_OPEN_REQUESTS_PER_PLAYER}). Wait for staff to resolve some first."
+            )));
+        }
+    }
     let id = open_job(
         ctx,
         OpenJob {
@@ -284,23 +297,83 @@ fn cmd_request(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+fn parse_page_token(tok: &str) -> Result<Option<usize>, CmdError> {
+    let raw = tok
+        .strip_prefix("page=")
+        .or_else(|| tok.strip_prefix("PAGE="));
+    if let Some(num) = raw {
+        let page = num
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| CmdError::msg("Page number must be a positive integer."))?;
+        return Ok(Some(page));
+    }
+    if tok.chars().all(|c| c.is_ascii_digit()) && !tok.is_empty() {
+        let page = tok
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| CmdError::msg("Page number must be a positive integer."))?;
+        return Ok(Some(page));
+    }
+    Ok(None)
+}
+
 fn cmd_jobs(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let filter = ctx.args.raw().trim().to_string();
-    let filter = if filter.is_empty() {
-        None
-    } else {
-        let q = queue_spec(ctx.reg, &filter)
-            .ok_or_else(|| CmdError::msg(format!("No such job queue: {filter}.")))?;
-        Some(q.name.clone())
-    };
+    let raw = ctx.args.raw().trim().to_string();
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    if tokens.len() > 2 {
+        return Err(CmdError::msg("Usage: +jobs [<queue>] [<page>]"));
+    }
+    let mut filter: Option<SmolStr> = None;
+    let mut page: usize = 1;
+    let mut page_set = false;
+    for tok in tokens {
+        if filter.is_none()
+            && !page_set
+            && let Some(q) = queue_spec(ctx.reg, tok)
+        {
+            filter = Some(q.name.clone());
+            continue;
+        }
+        if !page_set && let Some(p) = parse_page_token(tok)? {
+            page = p;
+            page_set = true;
+            continue;
+        }
+        if filter.is_none() {
+            return Err(CmdError::msg(format!("No such job queue: {tok}.")));
+        }
+        return Err(CmdError::msg("Usage: +jobs [<queue>] [<page>]"));
+    }
     let Some(st) = ctx.w.module_state::<JobsState>() else {
         return Err(CmdError::msg("The jobs module is not loaded."));
     };
-    let rows: Vec<String> = st
+    let visible: Vec<&Job> = st
         .jobs
         .values()
         .filter(|j| filter.as_ref().is_none_or(|f| j.queue == *f))
         .filter(|j| may_view_job(ctx.w, ctx.reg, ctx.actor, j))
+        .collect();
+    let total = visible.len();
+    if total == 0 {
+        ctx.out.info(ctx.actor, "No jobs to show.");
+        return Ok(());
+    }
+    let total_pages = total.div_ceil(JOBS_LIST_PAGE_SIZE);
+    if page > total_pages {
+        ctx.out.info(
+            ctx.actor,
+            format!("No jobs on page {page} (pages 1-{total_pages}, {total} total)."),
+        );
+        return Ok(());
+    }
+    let start = page.saturating_sub(1).saturating_mul(JOBS_LIST_PAGE_SIZE);
+    let rows: Vec<String> = visible
+        .into_iter()
+        .skip(start)
+        .take(JOBS_LIST_PAGE_SIZE)
         .map(|j| {
             let assignee = j
                 .assignee
@@ -316,10 +389,7 @@ fn cmd_jobs(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )
         })
         .collect();
-    if rows.is_empty() {
-        ctx.out.info(ctx.actor, "No jobs to show.");
-        return Ok(());
-    }
+    let shown = rows.len();
     ctx.out.info(
         ctx.actor,
         format!(
@@ -329,6 +399,19 @@ fn cmd_jobs(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     for row in rows {
         ctx.out.info(ctx.actor, row);
+    }
+    if total > JOBS_LIST_PAGE_SIZE || page > 1 {
+        let end = start.saturating_add(shown);
+        let queue_prefix = filter
+            .as_ref()
+            .map_or_else(String::new, |q| format!("{q} "));
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Showing {}-{end} of {total} jobs (page {page}/{total_pages}). Use +jobs {queue_prefix}<page> for more.",
+                start + 1
+            ),
+        );
     }
     Ok(())
 }
@@ -813,6 +896,14 @@ fn note_write(
             format!("Note '{cat}' on {} deleted.", display_name(ctx.w, who)),
         );
         return Ok(());
+    }
+    validate_note_text(&text).map_err(CmdError::msg)?;
+    let is_new = !st.notes.contains_key(&(who, cat.clone()));
+    if is_new && st.note_count(who) >= MAX_NOTES_PER_OBJECT {
+        return Err(CmdError::msg(format!(
+            "{} already has the maximum of {MAX_NOTES_PER_OBJECT} notes.",
+            display_name(ctx.w, who)
+        )));
     }
     let note = Note {
         owner: who,

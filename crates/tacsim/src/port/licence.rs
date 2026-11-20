@@ -99,7 +99,7 @@ pub const LICENCE_SETTLE_WINDOW_SECS: i64 = 3_600;
 /// An IC day, seconds.
 const IC_DAY: i64 = 86_400;
 /// The name of the pilot's entitlement account and of the fee contract.
-const LICENCE_NAME: &str = "Freeport prospecting license";
+pub(crate) const LICENCE_NAME: &str = "Freeport prospecting license";
 
 /// `+licence`'s help.
 pub const LICENCE_HELP: &str = "+license  --  The Freeport Registry's prospecting license: it \

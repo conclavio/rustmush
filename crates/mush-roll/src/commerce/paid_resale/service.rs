@@ -39,14 +39,17 @@ pub(super) struct Intent {
     pub(super) key: IdempotencyKeyText,
 }
 impl Intent {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         row: &PaidResaleRecord,
         revision: RevisionIdentity,
         actor: ObjId,
         reason: Reason,
         claims: Option<ResaleClaimObservation>,
-        world: &World,
+        ctx: &impl CommerceRead,
+        f: &CommerceFamilies,
     ) -> Result<Self, PublicationError> {
+        let world = ctx.world();
         let action = super::protocol::action(if reason.settles() { 3 } else { 4 })?;
         let before = row.reference()?;
         let observed = world.world_ic_now();
@@ -63,7 +66,7 @@ impl Intent {
             observed_utc: world.now(),
             key: IdempotencyKeyText::parse_canonical(key.to_hex()).map_err(bad)?,
         };
-        value.fresh(world)?;
+        value.fresh_read(ctx, f)?;
         Ok(value)
     }
     pub(super) fn parameters(&self) -> serde_json::Value {
@@ -83,6 +86,54 @@ impl Intent {
         })
     }
     pub(super) fn fresh(&self, w: &World) -> Result<(), PublicationError> {
+        self.fresh_parties(w).map(|_| ())
+    }
+    pub(super) fn fresh_read(
+        &self,
+        ctx: &impl CommerceRead,
+        f: &CommerceFamilies,
+    ) -> Result<(), PublicationError> {
+        let (seller, buyer) = self.fresh_parties(ctx.world())?;
+        if crate::commerce::registry_inspection::principal::any_party_barred_read(
+            ctx,
+            f,
+            &[seller, buyer],
+        )? {
+            return Err(PublicationError::Unavailable);
+        }
+        Ok(())
+    }
+    pub(super) fn fresh_guard(
+        &self,
+        ctx: &mush_core::action::AuthorityGuardContext<'_>,
+        f: &CommerceFamilies,
+    ) -> Result<(), PublicationError> {
+        let (seller, buyer) = self.fresh_parties(ctx.world())?;
+        if crate::commerce::registry_inspection::principal::any_party_barred_guard(
+            ctx,
+            f,
+            &[seller, buyer],
+        )? {
+            return Err(PublicationError::Unavailable);
+        }
+        Ok(())
+    }
+    pub(super) fn fresh_engine(
+        &self,
+        engine: &mush_core::Engine,
+        f: &CommerceFamilies,
+    ) -> Result<(), PublicationError> {
+        let (seller, buyer) = self.fresh_parties(&engine.world)?;
+        if crate::commerce::registry_inspection::principal::any_party_barred_engine(
+            engine,
+            f,
+            &[seller, buyer],
+        )? {
+            return Err(PublicationError::Unavailable);
+        }
+        Ok(())
+    }
+    fn fresh_parties(&self, w: &World) -> Result<(ObjId, ObjId), PublicationError> {
         let now = w.world_ic_now();
         if !live(w, self.actor)
             || now.clock != self.observed.clock
@@ -155,7 +206,7 @@ impl Intent {
                 && (now.clock != c.accepted_at_ic.clock || same) => {}
             _ => return Err(PublicationError::Unavailable),
         }
-        Ok(())
+        Ok((c.terms.seller, c.terms.buyer))
     }
 }
 
@@ -229,6 +280,16 @@ fn discover(
         .map_err(bad)?
         .ok_or(PublicationError::Missing)?;
     head.matches(row)?;
+    let c = row.economic().consent();
+    // Skip barred parties cleanly without wedging `state.pending` so unbarred
+    // peer escrows continue settling until the bar expires or compound revoke runs.
+    if crate::commerce::registry_inspection::principal::any_party_barred_read(
+        ctx,
+        f,
+        &[c.terms.seller, c.terms.buyer],
+    )? {
+        return Ok(None);
+    }
     let pointer = ctx
         .get(&f.paid_licences, &row.binding().licence().key())
         .map_err(bad)?
@@ -273,14 +334,23 @@ fn discover(
                     term_digest: row.binding().native_basis()?.term.digest,
                 },
                 None,
-                w,
+                ctx,
+                f,
             )
             .map(Some);
         }
     }
-    let c = row.economic().consent();
     if now.clock != c.accepted_at_ic.clock {
-        return Intent::new(row, birth.revision, actor, Reason::ClockChanged {}, None, w).map(Some);
+        return Intent::new(
+            row,
+            birth.revision,
+            actor,
+            Reason::ClockChanged {},
+            None,
+            ctx,
+            f,
+        )
+        .map(Some);
     }
     if now.at < c.accepted_at_ic.at {
         return Err(PublicationError::Unavailable);
@@ -297,7 +367,7 @@ fn discover(
         PaidResaleAvailability::Current => None,
     };
     if let Some(reason) = reason {
-        return Intent::new(row, birth.revision, actor, reason, None, w).map(Some);
+        return Intent::new(row, birth.revision, actor, reason, None, ctx, f).map(Some);
     }
     let claims = w
         .module_state::<crate::RollStore>()
@@ -321,7 +391,7 @@ fn discover(
     } else {
         return Ok(None);
     };
-    Intent::new(row, birth.revision, actor, reason, Some(claims), w).map(Some)
+    Intent::new(row, birth.revision, actor, reason, Some(claims), ctx, f).map(Some)
 }
 
 #[derive(Clone)]
@@ -351,7 +421,7 @@ pub(crate) fn guard_current(
     };
     Ok(s.ready.check().is_ok()
         && s.runtime.projected().is_some_and(|i| {
-            i.guard().ok().as_ref() == Some(guard) && i.fresh(ctx.world()).is_ok()
+            i.guard().ok().as_ref() == Some(guard) && i.fresh_guard(ctx, &s.families).is_ok()
         }))
 }
 fn installed(
@@ -375,6 +445,14 @@ fn installed(
         Ok(true)
     }
 }
+fn should_clear_pending(
+    disposition: mush_core::submission_observation::SubmissionDisposition,
+    still_fresh: bool,
+) -> bool {
+    disposition == mush_core::submission_observation::SubmissionDisposition::NoIntent
+        || !still_fresh
+}
+
 fn tick(ctx: &mut mush_core::Ctx<'_>, service: &Service) -> Result<(), PublicationError> {
     service.ready.check()?;
     if !live(ctx.w, service.actor) {
@@ -384,18 +462,23 @@ fn tick(ctx: &mut mush_core::Ctx<'_>, service: &Service) -> Result<(), Publicati
     if let Some(p) = state.pending.as_mut() {
         if installed(ctx, service, &p.intent)? {
             state.pending = None;
-        } else if p
+        } else if let Some(disposition) = p
             .observation
             .as_mut()
-            .is_some_and(|o| o.take_terminal().is_some())
+            .and_then(mush_core::submission_observation::SubmissionObservation::take_terminal)
         {
             // Only the observation's definitive NotDispatched/NoIntent result
             // reaches here. Unknown retains both the original intent and key.
+            // On `NoIntent` (e.g. a party barred between discover and prepare),
+            // clear `state.pending` so peer escrows are never HoL-blocked.
             p.observation = None;
-            if p.intent.fresh(ctx.w).is_err() {
+            if should_clear_pending(
+                disposition,
+                p.intent.fresh_read(ctx, &service.families).is_ok(),
+            ) {
                 state.pending = None;
             }
-        } else if p.observation.is_none() && p.intent.fresh(ctx.w).is_err() {
+        } else if p.observation.is_none() && p.intent.fresh_read(ctx, &service.families).is_err() {
             state.pending = None;
         }
     }
@@ -464,7 +547,10 @@ fn drive(ctx: &mut mush_core::Ctx<'_>, s: &Service) -> Result<(), mush_core::Cmd
     if p.observation.is_some() || ctx.authoritative_pending(s.actor) {
         return Ok(());
     }
-    p.intent.fresh(ctx.w).map_err(|_| unavailable())?;
+    if p.intent.fresh_read(ctx, &s.families).is_err() {
+        state.pending = None;
+        return Err(unavailable());
+    }
     p.observation = Some(ctx.submit_authoritative_observed(
         p.intent.action.clone(),
         PerceivedRef::SelfActor,
@@ -516,4 +602,187 @@ pub(super) fn register(
             },
         ),
     )
+}
+
+#[cfg(test)]
+mod high20_tests {
+    use super::*;
+    use crate::commerce::records::Record;
+    use crate::commerce::registry_inspection::principal::{
+        RevokedPrincipal, any_party_barred_engine, any_party_barred_read,
+    };
+    use mush_core::submission_observation::{
+        SubmissionDisposition, SubmissionDispositionReader, SubmissionObservation,
+        SubmissionRuntime, SubmissionRuntimeState,
+    };
+    use mush_core::{
+        ArgShape, AuthoritativeSubmit, CommandSpec, Ctx, GameModule, ModError, Registrar,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct ProbeReader(Arc<AtomicBool>);
+    impl SubmissionDispositionReader for ProbeReader {
+        fn no_intent(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+    struct ProbeRuntime(Arc<AtomicBool>);
+    impl SubmissionRuntime for ProbeRuntime {
+        fn observe(&self, _: &AuthoritativeSubmit) -> SubmissionRuntimeState {
+            SubmissionRuntimeState::new(Arc::new(ProbeReader(self.0.clone())), Box::new(()))
+        }
+    }
+
+    struct ProbeMod {
+        families: Arc<Mutex<Option<CommerceFamilies>>>,
+        read_barred: Arc<Mutex<Vec<bool>>>,
+        obs_slot: Arc<Mutex<Option<SubmissionObservation>>>,
+    }
+    impl GameModule for ProbeMod {
+        fn name(&self) -> &'static str {
+            crate::NS
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let f = CommerceFamilies::register(reg)?;
+            *self.families.lock().map_err(|_| ModError::msg("lock"))? = Some(f.clone());
+            let out = self.read_barred.clone();
+            let obs_slot = self.obs_slot.clone();
+            let f_cmd = f;
+            reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+            reg.command(
+                CommandSpec {
+                    name: "@probe_pr_high20".into(),
+                    shape: ArgShape::Raw,
+                    help: "test probe".into(),
+                    ..Default::default()
+                },
+                Arc::new(move |ctx: &mut Ctx<'_>| {
+                    let barred = any_party_barred_read(ctx, &f_cmd, &[ObjId(10), ObjId(11)])
+                        .map_err(|_| unavailable())?;
+                    let peer_barred = any_party_barred_read(ctx, &f_cmd, &[ObjId(12), ObjId(13)])
+                        .map_err(|_| unavailable())?;
+                    out.lock()
+                        .map_err(|_| unavailable())?
+                        .extend([barred, peer_barred]);
+                    if ctx.args.raw() == "submit" {
+                        let action =
+                            super::super::protocol::action(3).map_err(|_| unavailable())?;
+                        let key = IdempotencyKeyText::parse_canonical("high20_pr_probe")
+                            .map_err(|_| unavailable())?;
+                        let obs = ctx.submit_authoritative_observed(
+                            action,
+                            PerceivedRef::SelfActor,
+                            vec![],
+                            serde_json::json!({}),
+                            key,
+                        )?;
+                        *obs_slot.lock().map_err(|_| unavailable())? = Some(obs);
+                    }
+                    Ok(())
+                }),
+            )?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn high20_paid_resale_skips_barred_party_and_clears_pending_on_no_intent() -> TestResult {
+        let families = Arc::new(Mutex::new(None));
+        let read_barred = Arc::new(Mutex::new(Vec::new()));
+        let obs_slot = Arc::new(Mutex::new(None));
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(ProbeMod {
+            families: families.clone(),
+            read_barred: read_barred.clone(),
+            obs_slot: obs_slot.clone(),
+        })]);
+        let no_intent_flag = Arc::new(AtomicBool::new(true));
+        tw.engine_mut()
+            .set_submission_runtime(Arc::new(ProbeRuntime(no_intent_flag)))?;
+        let f = families
+            .lock()
+            .map_err(|_| "lock")?
+            .clone()
+            .ok_or("families")?;
+        tw.world_mut().set_game_clock(mush_core::GameClock {
+            ic_ratio: 1,
+            epoch_offset: 0,
+        });
+        tw.world_mut().set_now(500);
+
+        let seller = ObjId(10);
+        let buyer = ObjId(11);
+        let peer_seller = ObjId(12);
+        let peer_buyer = ObjId(13);
+        let bar = RevokedPrincipal {
+            format: 1,
+            principal: mush_org::PrincipalId::Object(buyer),
+            from_ic: 100,
+            until_ic: 1_000,
+            inspection: CommitToken::from_bytes([1; 16]),
+            hull: ObjId(20),
+            seq: 1,
+            operation: CommitToken::from_bytes([2; 16]),
+            operator: ObjId(1),
+        };
+        {
+            let mut txn = tw.engine_mut().action_transaction(&f.revoked_principals)?;
+            txn.insert(&f.revoked_principals, &bar.key(), bar)?;
+            let (_, install) = txn.prepare()?.into_parts();
+            tw.engine_mut().install_prepared_action(install)?;
+        }
+
+        // 1. Both engine-level and Ctx/CommerceRead-level bar checks detect barred buyer
+        //    at now=500 while leaving peer escrows unbarred.
+        check!(any_party_barred_engine(tw.engine(), &f, &[seller, buyer])?);
+        check!(!any_party_barred_engine(
+            tw.engine(),
+            &f,
+            &[peer_seller, peer_buyer]
+        )?);
+        let _ = tw.run(mush_core::GOD, "@probe_pr_high20 submit");
+        check_eq!(
+            *read_barred.lock().map_err(|_| "lock")?,
+            vec![true, false],
+            "CommerceRead must detect barred buyer while peer parties stay unbarred"
+        );
+
+        // 2. Drive the observed submission into `SubmissionDisposition::NoIntent` and
+        //    verify `should_clear_pending` clears `state.pending` unconditionally.
+        let driven = tw
+            .engine_mut()
+            .take_observed_authoritative_submit()
+            .ok_or("driven submission")?;
+        let mut obs = obs_slot
+            .lock()
+            .map_err(|_| "lock")?
+            .take()
+            .ok_or("observation")?;
+        let disposition = obs.take_terminal().ok_or("NoIntent disposition")?;
+        check_eq!(disposition, SubmissionDisposition::NoIntent);
+        check!(should_clear_pending(disposition, true));
+        check!(should_clear_pending(disposition, false));
+        drop(driven);
+
+        // 3. Undriven attempt (`NotDispatched`) retains a still-fresh intent for retry,
+        //    and clears an intent that became barred/stale.
+        check!(!should_clear_pending(
+            SubmissionDisposition::NotDispatched,
+            true
+        ));
+        check!(should_clear_pending(
+            SubmissionDisposition::NotDispatched,
+            false
+        ));
+
+        // 4. Once the bar expires (now=1000 == until_ic), both engine and CommerceRead
+        //    checks clear cleanly so the resale can resume normal settlement.
+        tw.world_mut().set_now(1_000);
+        check!(!any_party_barred_engine(tw.engine(), &f, &[seller, buyer])?);
+        read_barred.lock().map_err(|_| "lock")?.clear();
+        let _ = tw.run(mush_core::GOD, "@probe_pr_high20");
+        check_eq!(*read_barred.lock().map_err(|_| "lock")?, vec![false, false]);
+        Ok(())
+    }
 }

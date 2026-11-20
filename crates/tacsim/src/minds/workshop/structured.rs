@@ -1078,8 +1078,17 @@ mod tests {
                 .module_state::<mush_roll::RollStore>()
                 .unwrap()
                 .revision(GOD, identity)
-                .is_ok(),
-            "last-fifty history survives removal and production prune"
+                .is_err(),
+            "HIGH-19: unreferenced unnamed revisions are reclaimed on removal without UnnamedHistory bloat"
+        );
+        assert!(
+            engine
+                .world
+                .module_state::<mush_roll::RollStore>()
+                .unwrap()
+                .reference_keys(mush_roll::NS, mush_roll::ReferenceKind::UnnamedHistory)
+                .is_empty(),
+            "HIGH-19: original removal must not leave permanent UnnamedHistory roots"
         );
         for limit in [0, 129, u16::MAX] {
             assert!(matches!(

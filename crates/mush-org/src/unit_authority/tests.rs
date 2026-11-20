@@ -974,3 +974,139 @@ fn conditional_owner_loan_and_its_child_require_the_current_exact_lease() {
         "economic eligibility never replaces the owner's current delegation"
     );
 }
+
+#[test]
+fn crit11_dead_unrelated_and_flooded_grants_never_starve_valid_grant_or_direct_org() {
+    let mut orgs = orgs();
+    orgs.put_grant(org_grant(1, CAP, true));
+    let mut facts = facts();
+    org_owned(&mut facts, UNIT, 11);
+    let mut grants = BTreeMap::new();
+    // Flood 200 revoked, 200 expired, and 200 wrong-unit grants targeted at PILOT
+    // before PILOT's real grant at ID 601.
+    for idx in 1..=200u64 {
+        let mut g = loan(idx, PILOT);
+        g.status = UnitGrantStatus::Revoked;
+        grants.insert(g.id, g);
+    }
+    for idx in 201..=400u64 {
+        let mut g = loan(idx, PILOT);
+        g.valid_from = Some(1);
+        g.valid_until = Some(5); // expired at now = 10
+        grants.insert(g.id, g);
+    }
+    for idx in 401..=600u64 {
+        let mut g = loan(idx, PILOT);
+        g.scope = finite(OTHER);
+        grants.insert(g.id, g);
+    }
+    let valid = wildcard(601, PILOT);
+    grants.insert(valid.id, valid);
+    assert!(
+        allowed(&orgs, &grants, &facts, &request(PILOT, UNIT)),
+        "pre-filtering dead/expired/wrong-unit grants must preserve visit budget for live grant"
+    );
+
+    // Even if 160 active, in-window, scope-matching grants targeted at OWNER
+    // have broken parents (exhausting the grant-walk visit budget), OWNER's
+    // direct org authority over org-owned UNIT must still succeed on its own
+    // independent budget!
+    let mut flood = BTreeMap::new();
+    for idx in 1..=160u64 {
+        let mut g = loan(idx, OWNER);
+        g.grantor = LENDER;
+        // Active, in-window, matches UNIT, but parent personal title is stale
+        // (UNIT is org-owned), so each walk charges a visit and fails with Stale.
+        g.scope = finite(UNIT);
+        flood.insert(g.id, g);
+    }
+    assert!(
+        allowed(&orgs, &flood, &facts, &request(OWNER, UNIT)),
+        "direct_org must run independently so third-party grant floods never cause Deny(Capacity)"
+    );
+}
+
+#[test]
+fn crit12_per_grantor_per_unit_caps_and_deduplication_are_enforced() {
+    let orgs = orgs();
+    let mut facts = facts();
+    // Register extra units owned by OWNER and extra actors so we can test quotas.
+    for id in 500..600u32 {
+        facts.people.insert(ObjId(id));
+        facts.assets.insert(
+            ObjId(id),
+            UnitAssetFacts {
+                unit: ObjId(id),
+                owner: PrincipalId::Object(OWNER),
+                lineage: lineage(1),
+                scope: None,
+                active: true,
+            },
+        );
+    }
+    // 1. Deduplication: identical active grant with covered window is refused,
+    // while extending valid_until is allowed.
+    let mut first = loan(1, PILOT);
+    first.valid_until = Some(100);
+    let mut grants = book([first.clone()]);
+    let mut dup = loan(2, PILOT);
+    dup.valid_until = Some(100);
+    assert_eq!(
+        validate_unit_grant(&orgs, &grants, &facts, &NoPredicates, &dup, 10),
+        Err(UnitGrantError::Malformed("duplicate active unit grant"))
+    );
+    let mut extended = loan(2, PILOT);
+    extended.valid_until = Some(200);
+    assert!(validate_unit_grant(&orgs, &grants, &facts, &NoPredicates, &extended, 10).is_ok());
+
+    // 2. Per-unit cap (MAX_ACTIVE_GRANTS_PER_UNIT): distinct grantees on UNIT.
+    grants.clear();
+    for i in 0..MAX_ACTIVE_GRANTS_PER_UNIT {
+        let id = u64::try_from(i).expect("idx") + 1;
+        let grantee = ObjId(500 + u32::try_from(i).expect("idx"));
+        let g = loan(id, grantee);
+        validate_unit_grant(&orgs, &grants, &facts, &NoPredicates, &g, 10)
+            .expect("within per-unit cap");
+        grants.insert(g.id, g);
+    }
+    let over_unit = loan(
+        u64::try_from(MAX_ACTIVE_GRANTS_PER_UNIT).expect("cap") + 1,
+        ObjId(599),
+    );
+    assert_eq!(
+        validate_unit_grant(&orgs, &grants, &facts, &NoPredicates, &over_unit, 10),
+        Err(UnitGrantError::Capacity)
+    );
+
+    // 3. Per-grantor cap (MAX_ACTIVE_GRANTS_PER_GRANTOR): distinct units owned by OWNER.
+    grants.clear();
+    for i in 0..MAX_ACTIVE_GRANTS_PER_GRANTOR {
+        let id = u64::try_from(i).expect("idx") + 1;
+        let unit = ObjId(500 + u32::try_from(i).expect("idx"));
+        let mut g = loan(id, PILOT);
+        g.scope = finite(unit);
+        g.parent = UnitGrantParent::PersonalTitle {
+            unit,
+            owner: OWNER,
+            lineage: lineage(1),
+        };
+        validate_unit_grant(&orgs, &grants, &facts, &NoPredicates, &g, 10)
+            .expect("within per-grantor cap");
+        grants.insert(g.id, g);
+    }
+    let over_grantor_unit = ObjId(590);
+    let mut over_grantor = loan(
+        u64::try_from(MAX_ACTIVE_GRANTS_PER_GRANTOR).expect("cap") + 1,
+        PILOT,
+    );
+    over_grantor.scope = finite(over_grantor_unit);
+    over_grantor.parent = UnitGrantParent::PersonalTitle {
+        unit: over_grantor_unit,
+        owner: OWNER,
+        lineage: lineage(1),
+    };
+    assert_eq!(
+        validate_unit_grant(&orgs, &grants, &facts, &NoPredicates, &over_grantor, 10),
+        Err(UnitGrantError::Capacity)
+    );
+}

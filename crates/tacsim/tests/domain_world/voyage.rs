@@ -17288,3 +17288,102 @@ fn op1_a_hull_flies_stickney_to_isidis_and_back() {
     let back = ticket(&mut rig.tw, hull, 3).expect("ticket 3");
     assert_eq!(back.plan.legs.len(), 1, "one leg home");
 }
+
+// ----------------------------------------------------------------------
+// Doc 50 cut KC.3: the duty line and the reason clause (Q-50-8, Q-50-9).
+// ----------------------------------------------------------------------
+
+/// The lines of `text` that name the Kirkwood duty.
+fn duty_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|l| l.contains("Kirkwood duty"))
+        .collect()
+}
+
+/// **Doc 50 cut KC.3: the same run before and after the flip** (Q-50-8, Q-50-9; the first
+/// acceptance story). A Dray-P with 50 t of lawful `metals` (10,000 cr at catalog) plans and
+/// files Ceres to Stickney:
+/// - under the Co-op's hold, `+ship/plan` shows no duty;
+/// - with the Republic holding the Kirkwood approach, `+ship/plan` estimates 200 cr and names who
+///   holds the approach and since when, within 120 columns;
+/// - the filing shows the duty it pinned, with the same reason;
+/// - at the picket the charge carries the same clause.
+#[test]
+fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "SameRun", 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, vault, "propellant", 75, LotId(2_621));
+    seed_pool(&mut rig, vault, "provisions", 25, LotId(2_622));
+    seed_pool(&mut rig, vault, "metals", 50, LotId(2_623));
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+
+    let before = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    assert!(before.contains("Plan for Stickney Yards"), "{before}");
+    assert!(
+        duty_lines(&before).is_empty(),
+        "no duty under the Co-op: {before}"
+    );
+
+    republic_holds_kirkwood(&mut rig.tw);
+    let held = tacsim::polity::control_at(rig.tw.world(), &cid("kirkwood_depot"))
+        .and_then(|c| c.de_facto_since_ic)
+        .expect("the Republic's hold");
+    let d = mush_core::clock::CivilDate::from_ic_seconds(held);
+    let reason = format!(
+        "Republic hold since {} {}, {}",
+        d.month_name(),
+        d.day,
+        d.year
+    );
+
+    let after = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    let lines = duty_lines(&after);
+    assert_eq!(
+        lines,
+        vec![format!("Kirkwood duty ~200.00cr on 10000 cr of cargo ({reason}).").as_str()],
+        "{after}"
+    );
+    assert!(lines.iter().all(|l| l.chars().count() <= 120), "{lines:?}");
+
+    let (filed, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    let lines = duty_lines(&filed);
+    assert_eq!(
+        lines,
+        vec![
+            format!("Kirkwood duty ~200.00cr on 10000 cr of cargo, pinned at filing ({reason}).")
+                .as_str()
+        ],
+        "{filed}"
+    );
+    assert!(lines.iter().all(|l| l.chars().count() <= 120), "{lines:?}");
+    let pending = voyage(&rig.tw, hull)
+        .and_then(|v| v.pending)
+        .expect("a filed passage");
+    land_all(&mut rig, &queued);
+    let _ = fire_quietly(&mut rig);
+    let leg1_due = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, leg1_due);
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let next_r = rig.tw.world().now() + 1;
+        rig.tw.set_now(next_r);
+        let _ = rig.tw.fire_due(next_r * 1_000);
+    }
+    let _ = run(&mut rig.tw, pilot, "+helm/thrust 0");
+    let brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains(&format!(
+            "A transit duty of 200.00cr on cargo valued at 10000 cr is paid ({reason})."
+        )),
+        "{ruled}"
+    );
+}

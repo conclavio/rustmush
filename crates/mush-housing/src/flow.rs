@@ -188,26 +188,35 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
     else {
         return;
     };
-    let rooms = live_rooms(ctx.w, &p);
-    let resolve_home = |o: ObjId| ctx.w.get(o).and_then(|x| x.home);
+    let live = live_rooms(ctx.w, &p);
+    let all_rooms = &p.rooms;
+    let resolve_home = |o: ObjId| {
+        let h = ctx.w.get(o).and_then(|x| x.home)?;
+        Some(crate::effective_home_room(
+            h,
+            |target| crate::module::enclosing_room(ctx.w, target),
+            p.anchor,
+            all_rooms,
+        ))
+    };
     // The tenancy's own roster and guest list…
-    let mut clear: BTreeSet<ObjId> = crate::to_unhome_on_end(t, resolve_home, p.anchor, &rooms);
+    let mut clear: BTreeSet<ObjId> = crate::to_unhome_on_end(t, resolve_home, p.anchor, all_rooms);
     // …plus everything homed inside it, which is how a departing tenant's belongings
     // leave with them instead of staying as somebody else's furniture. Two halves,
     // because "homed here" and "standing here" are different questions (H5):
     //
     // - the property's contents walked **transitively**, so a lamp in a pocket in the
     //   spare room is found;
-    // - a bounded pass over everything whose `Obj.home` resolves inside, **wherever
-    //   it is standing**, because an item its owner carried out of the house is still
-    //   pointed at the house.
-    let mut candidates: Vec<ObjId> = contents_deep(ctx.w, &rooms, p.anchor);
-    candidates.extend(homed_inside_anywhere(ctx.w, p.anchor, &rooms));
+    // - a bounded pass over everything whose `Obj.home` resolves inside (directly OR
+    //   transitively via an enclosed container/object), **wherever it is standing**,
+    //   because an item its owner carried out of the house is still pointed inside.
+    let mut candidates: Vec<ObjId> = contents_deep(ctx.w, &live, p.anchor);
+    candidates.extend(homed_inside_anywhere(ctx.w, p.anchor, all_rooms));
     clear.extend(crate::homed_inside(
         candidates,
         resolve_home,
         p.anchor,
-        &rooms,
+        all_rooms,
     ));
     for who in &clear {
         if let Err(error) = ctx.w.set_home(*who, None) {
@@ -282,11 +291,15 @@ fn contents_deep(w: &World, rooms: &BTreeSet<ObjId>, anchor: ObjId) -> Vec<ObjId
     out
 }
 
-/// Every object whose `Obj.home` resolves inside the property, wherever it is
-/// standing (H5) — bounded by [`END_SWEEP_MAX`].
+/// Every object whose `Obj.home` resolves inside the property (directly or via an
+/// object transitively enclosed inside the property), wherever it is standing (H5) —
+/// bounded by [`END_SWEEP_MAX`].
 fn homed_inside_anywhere(w: &World, anchor: ObjId, rooms: &BTreeSet<ObjId>) -> Vec<ObjId> {
     w.iter()
-        .filter(|o| matches!(o.home, Some(h) if h == anchor || rooms.contains(&h)))
+        .filter(|o| {
+            o.home
+                .is_some_and(|h| crate::module::is_inside_property(w, h, anchor, rooms))
+        })
         .map(|o| o.id)
         .take(END_SWEEP_MAX)
         .collect()

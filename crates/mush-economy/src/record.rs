@@ -378,6 +378,11 @@ pub enum EconomicCause {
 /// `ordinal`), which this is not. The serde field shape is **byte-identical** —
 /// `provider`/`kind`/`id`/`revision` — so every stored journal entry still
 /// deserializes, and [`CausalRef`] survives as an alias for one release.
+/// Maximum UTF-8 bytes in [`ExternalRef::provider`] and [`ExternalRef::kind`].
+pub const MAX_EXTERNAL_REF_FIELD_BYTES: usize = 64;
+/// Maximum UTF-8 bytes in [`ExternalRef::id`].
+pub const MAX_EXTERNAL_REF_ID_BYTES: usize = 128;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ExternalRef {
     /// The provider name (`"scene"`, `"canon"`, `"sim"`, `"jobs"`).

@@ -714,6 +714,8 @@ fn register_providers(
     // Doc 17h cut M8h: the `tacsim.house_attestation` tick and its RAM slot, unconditionally
     // (no agent, no visit).
     crate::house_attestation::register(reg)?;
+    // Doc 50 cut OP.2: the Assembly's monthly vote on the Concession Review.
+    crate::concession::register(reg)?;
     reg.state(PortHandles {
         relay_fabricate,
         families: port_families,

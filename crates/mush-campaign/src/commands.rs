@@ -42,7 +42,7 @@ use crate::render::{
     self, Lens, NO_SUCH_FORMATION, NO_SUCH_OPERATION, Verbosity, is_staff, visible_operation,
 };
 use crate::settle;
-use crate::store::{CampaignStore, persist_meta, put_formation, put_operation};
+use crate::store::{CampaignStore, del_keys, persist_meta, put_formation, put_operation};
 use crate::terms::operation_consent_hash;
 
 /// The `force.*` capability vocabulary this crate asks `mush-org` about. Every id
@@ -122,7 +122,7 @@ fn may_activate(ctx: &Ctx<'_>, doc: &OperationDoc) -> bool {
 
 /// **Who may move the roster**: staff or the issuer. A unit's own commander reaches
 /// the roster through [`may_commit_unit`] instead, which is the C6 half.
-fn may_roster(ctx: &Ctx<'_>, doc: &OperationDoc) -> bool {
+pub(crate) fn may_roster(ctx: &Ctx<'_>, doc: &OperationDoc) -> bool {
     may_amend(ctx, doc)
 }
 
@@ -351,7 +351,10 @@ fn op_declare(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // and starved the tick's rotation besides. The cap is per-issuer and counts only
     // operations that are still going somewhere.
     let mine = actor_principal(ctx.actor);
-    if !is_staff(ctx.w, ctx.actor) {
+    let issuer_key = crate::store::principal_tag(&mine);
+    let now_real = ctx.w.now();
+    let staff = is_staff(ctx.w, ctx.actor);
+    if !staff {
         let live = ctx
             .w
             .module_state::<CampaignStore>()
@@ -363,12 +366,22 @@ fn op_declare(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 crate::store::MAX_OPERATIONS_PER_ISSUER
             )));
         }
+        if let Some(store) = ctx.w.module_state_mut::<CampaignStore>()
+            && let Err(recent) = store.check_declaration_rate(&issuer_key, now_real)
+        {
+            return Err(CmdError::msg(format!(
+                "You have declared {recent} operations recently, which is the limit of {} per \
+                 hour. Wait before declaring another.",
+                crate::store::MAX_DECLARATIONS_PER_ISSUER_WINDOW
+            )));
+        }
     }
-    let Some(id) = ctx
-        .w
-        .module_state_mut::<CampaignStore>()
-        .and_then(CampaignStore::mint_operation)
-    else {
+    let (id, evicted) = ctx.w.module_state_mut::<CampaignStore>().map_or(
+        (None, Vec::new()),
+        CampaignStore::mint_operation_with_pruning,
+    );
+    del_keys(ctx, evicted);
+    let Some(id) = id else {
         return Err(CmdError::msg(
             "This server is carrying as many operations as it can hold.",
         ));
@@ -412,6 +425,9 @@ fn op_declare(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             runtime: OperationRuntime::declared(id),
         },
     );
+    if !staff && let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+        store.record_declaration(issuer_key, now_real);
+    }
     persist_meta(ctx);
     ctx.out.info(
         ctx.actor,
@@ -1138,6 +1154,13 @@ fn op_resolve(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if doc.runtime.state.is_terminal() {
         return Err(CmdError::msg("That operation is already resolved."));
+    }
+    if !settle::outcome_abandons(&outcome) && matches!(doc.runtime.state, OperationState::Declared)
+    {
+        return Err(CmdError::msg(
+            "That operation has not been activated yet; activate it with `@op/activate` before \
+             resolving.",
+        ));
     }
     // **The one path past the intactness gate**, and it is staff's — now in the
     // authority as well as in the branch selection (C7), and reachable from

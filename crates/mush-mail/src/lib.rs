@@ -52,9 +52,10 @@ pub mod query;
 pub mod transit;
 
 pub use data::{
-    ARCHIVE, DEFAULT_QUOTA, INBOX, MAX_FOLDER_NAME, MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES,
-    MAX_MAIL_RECIPIENTS, MAX_MAIL_SUBJECT_BYTES, MAX_USER_FOLDERS, MailMsg, MailState, MailStatus,
-    Mailbox, MailboxEntry, NS, SENT, TRASH,
+    ARCHIVE, DEFAULT_QUOTA, INBOX, MAIL_LIST_PAGE_SIZE, MAIL_QUERY_MAX_LIMIT, MAX_FOLDER_NAME,
+    MAX_MAIL_BODY_BYTES, MAX_MAIL_BODY_LINES, MAX_MAIL_RECIPIENTS, MAX_MAIL_SUBJECT_BYTES,
+    MAX_TRASH_ENTRIES, MAX_USER_FOLDERS, MailMsg, MailState, MailStatus, Mailbox, MailboxEntry, NS,
+    SENT, TRASH,
 };
 pub use date::{format_date, format_datetime};
 pub use query::ListQuery;
@@ -116,6 +117,7 @@ impl GameModule for MailModule {
             CommandSpec {
                 name: "@mail".into(),
                 switches: vec![
+                    "list".into(),
                     "send".into(),
                     "quick".into(),
                     "reply".into(),
@@ -131,7 +133,8 @@ impl GameModule for MailModule {
                     "urgent".into(),
                 ],
                 shape: ArgShape::EqPair,
-                help: "@mail [<n>]  --  List the current folder, or read message <n>. \
+                help: "@mail [<n>]  --  List the current folder (paginated; use @mail/list \
+                       [<page>] for more pages), or read message <n>. \
                        /send <players>=<subject> composes (\"--\" alone sends, \"~p\" \
                        previews, \"~q\" aborts); /quick <players>=<subject>/<body> is the \
                        one-shot form; add /urgent to flag either. /reply <n> and \

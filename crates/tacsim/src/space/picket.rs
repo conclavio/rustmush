@@ -1574,6 +1574,7 @@ pub fn record_customs_seizure(
     let board = crate::polity::customs_board(ctx.w)?;
     let saved_actor = ctx.actor;
     ctx.actor = pilot;
+    let source = format!("space.picket.seize/{}/{}", hull.0, ctx.w.world_ic_now().at);
     let front_id = mush_faction::record_customs_assertion(
         ctx,
         board,
@@ -1588,7 +1589,7 @@ pub fn record_customs_seizure(
             entities: vec![pilot, hull],
             scope: mush_canon::CanonScope::Public,
             ic_time: ctx.w.world_ic_now().at,
-            source: format!("space.picket.seize/{}/{}", hull.0, ctx.w.world_ic_now().at),
+            source: source.clone(),
             detail: json!({
                 "hull": hull.0,
                 "pilot": pilot.0,
@@ -1597,6 +1598,8 @@ pub fn record_customs_seizure(
         },
     )
     .ok();
+    // Doc 50 cut OP.2 (Q-50-20): a Freeport-flagged hauler seized moves the Concession Review.
+    let _ = crate::concession::record_flagged_seizure(ctx, hull, &source);
     ctx.actor = saved_actor;
     ctx.out.pin_deferred();
     front_id

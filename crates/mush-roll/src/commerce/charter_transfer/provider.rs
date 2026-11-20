@@ -32,6 +32,77 @@ struct AcceptWire {
     offer: CommitToken,
     payer: String,
 }
+const MAX_ACTIVE_OFFERS_PER_CHARTER: usize = 8;
+const MAX_ACTIVE_OFFERS_PER_SELLER: usize = 32;
+const MAX_OFFER_PRUNE_BATCH: usize = 32;
+
+fn scan_and_prune_offers(
+    txn: &mut ActionTxn<'_>,
+    f: &CommerceFamilies,
+    anchors: &[(CommitToken, crate::ReferenceKey)],
+    charter: CharterId,
+    ownership: &CharterOwnershipRef,
+    seller: ObjId,
+    now: i64,
+) -> Result<Vec<(String, crate::ReferenceKey)>, PublicationError> {
+    let mut pruned = Vec::new();
+    let mut charter_active = 0usize;
+    let mut seller_active = 0usize;
+    for (offer_commit, root_key) in anchors {
+        let offer_key = offer_commit.to_hex();
+        let Some(existing) = txn
+            .get(&f.charter_transfer_offers, &offer_key)
+            .map_err(bad)?
+            .cloned()
+        else {
+            continue;
+        };
+        // Accepted offers remain immutable history referenced by `charter_transfers`.
+        let accepted = existing
+            .ownership
+            .generation
+            .checked_add(1)
+            .map(|next_generation| {
+                txn.get(
+                    &f.charter_transfers,
+                    &CharterTransfer::key_for(existing.charter, next_generation),
+                )
+            })
+            .transpose()
+            .map_err(bad)?
+            .flatten()
+            .is_some_and(|tx| tx.offer == existing.operation);
+        if accepted {
+            continue;
+        }
+        let superseded = if existing.charter == charter {
+            existing.ownership != *ownership
+        } else {
+            txn.get(&f.charter_ownership, &existing.charter.key())
+                .map_err(bad)?
+                .is_some_and(|head| head.current != existing.ownership)
+        };
+        if now >= existing.expires_at_utc || superseded {
+            if pruned.len() < MAX_OFFER_PRUNE_BATCH {
+                pruned.push((offer_key, root_key.clone()));
+            }
+            continue;
+        }
+        if existing.charter == charter {
+            charter_active += 1;
+        }
+        if existing.seller == seller {
+            seller_active += 1;
+        }
+    }
+    if charter_active >= MAX_ACTIVE_OFFERS_PER_CHARTER
+        || seller_active >= MAX_ACTIVE_OFFERS_PER_SELLER
+    {
+        return Err(PublicationError::Capacity);
+    }
+    Ok(pruned)
+}
+
 fn decimal<T: std::str::FromStr + ToString>(s: &str) -> Result<T, PublicationError> {
     let n = s.parse::<T>().map_err(bad)?;
     if n.to_string() != s {
@@ -202,6 +273,7 @@ impl Provider {
     ) -> Result<AuthoritativeActionOutput, PublicationError> {
         self.parse(inv)?;
         let commit = ctx.commit_token();
+        let mut pruned_offers: Vec<(String, crate::ReferenceKey)> = Vec::new();
         let (offer, ownership, fence, transfer) = if !self.accept {
             let w: OfferWire = serde_json::from_value(inv.parameters().clone()).map_err(bad)?;
             let charter = CharterId::new(decimal(&w.charter)?).map_err(bad)?;
@@ -218,6 +290,19 @@ impl Provider {
             }
             let world = ctx.world().map_err(bad)?;
             let (birth, filed, ownership) = self.basis(txn, world, charter, inv.actor())?;
+            let roll = world
+                .module_state::<crate::RollStore>()
+                .ok_or(PublicationError::Unavailable)?;
+            let anchors = roll.charter_transfer_offer_anchors();
+            pruned_offers = scan_and_prune_offers(
+                txn,
+                &self.f,
+                &anchors,
+                charter,
+                &ownership,
+                inv.actor(),
+                world.now(),
+            )?;
             if ownership.generation > 1 {
                 // Current ownership was proved above against the native receipt.
                 // Do not publish a new offer before that immutable acquisition;
@@ -378,6 +463,7 @@ impl Provider {
                 commit,
                 old,
                 added,
+                pruned: pruned_offers.iter().map(|(_, root)| root.clone()).collect(),
                 fence,
             })),
         )
@@ -409,6 +495,10 @@ impl Provider {
                 return Err(PublicationError::Mismatch);
             }
         } else {
+            for (stale_key, _) in &pruned_offers {
+                txn.remove(&self.f.charter_transfer_offers, stale_key)
+                    .map_err(bad)?;
+            }
             txn.insert(&self.f.charter_transfer_offers, &offer.key(), offer.clone())
                 .map_err(bad)?;
             if txn
@@ -564,4 +654,122 @@ pub(crate) fn register(
         )?;
     }
     Ok(readiness)
+}
+
+#[cfg(test)]
+mod high19_tests {
+    use super::*;
+    use crate::commerce::families::CommerceFamilies;
+    use mush_core::{DefinitionDigest, Engine, GameModule, Registry, World};
+    use std::sync::{Arc, Mutex};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct FamiliesMod(Arc<Mutex<Option<CommerceFamilies>>>);
+    impl GameModule for FamiliesMod {
+        fn name(&self) -> &'static str {
+            crate::NS
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let f = CommerceFamilies::register(reg)?;
+            *self.0.lock().map_err(|_| ModError::msg("lock"))? = Some(f);
+            Ok(())
+        }
+    }
+
+    fn make_offer(
+        seed: u8,
+        charter: u32,
+        seller: u32,
+        expires_at_utc: i64,
+    ) -> TestResult<CharterOffer> {
+        let d = DefinitionDigest::from_bytes([seed; 32]);
+        Ok(serde_json::from_value(json!({
+            "format": 1,
+            "operation": CommitToken::from_bytes([seed; 16]),
+            "action": protocol::offer_action()?,
+            "charter": charter.to_string(),
+            "birth": CommitToken::from_bytes([200; 16]),
+            "ownership": {"generation": 1, "operation": CommitToken::from_bytes([200; 16]), "digest": d},
+            "seller": seller,
+            "buyer": seller + 100,
+            "seller_account": 10,
+            "instrument": "cr",
+            "price": 100,
+            "title_revision": 1,
+            "line": "1",
+            "filed": "1",
+            "revision": {
+                "format": 1,
+                "revision": {"key": {"character": seller, "mind": 1, "number": 1}, "digest": d},
+                "source": d
+            },
+            "offered_at_ic": {"clock": {"kind": "world_ic", "generation": 1}, "at": 100},
+            "offered_at_utc": 100,
+            "expires_at_utc": expires_at_utc
+        }))?)
+    }
+
+    #[test]
+    fn high19_charter_transfer_prunes_expired_and_caps_active_offers() -> TestResult {
+        let slot = Arc::new(Mutex::new(None));
+        let mut engine = Engine::with_modules(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(FamiliesMod(slot.clone()))],
+        )?;
+        let f = slot.lock().map_err(|_| "lock")?.clone().ok_or("families")?;
+        let charter = CharterId::new(7)?;
+        let ownership = CharterOwnershipRef {
+            generation: 1,
+            operation: CommitToken::from_bytes([200; 16]),
+            digest: DefinitionDigest::from_bytes([1; 32]),
+        };
+        let mut anchors = Vec::new();
+        // Insert 3 expired offers + MAX_ACTIVE_OFFERS_PER_CHARTER live offers.
+        {
+            let mut txn = engine.action_transaction(&f.charter_transfer_offers)?;
+            for i in 1..=3u8 {
+                let mut o = make_offer(i, 7, 10, 500)?;
+                o.ownership = ownership.clone();
+                let root = history::offer_root(&o)?.anchor.key();
+                anchors.push((o.operation, root));
+                txn.insert(&f.charter_transfer_offers, &o.key(), o)?;
+            }
+            for i in 0..MAX_ACTIVE_OFFERS_PER_CHARTER {
+                let seed = u8::try_from(i + 10)?;
+                let mut o = make_offer(seed, 7, 10, 5_000)?;
+                o.ownership = ownership.clone();
+                let root = history::offer_root(&o)?.anchor.key();
+                anchors.push((o.operation, root));
+                txn.insert(&f.charter_transfer_offers, &o.key(), o)?;
+            }
+            let (_, install) = txn.prepare()?.into_parts();
+            engine.install_prepared_action(install)?;
+        }
+        // At now = 1000: the 3 expired offers do not count, but 8 live offers hit
+        // MAX_ACTIVE_OFFERS_PER_CHARTER -> Capacity error.
+        {
+            let mut txn = engine.action_transaction(&f.charter_transfer_offers)?;
+            let err =
+                scan_and_prune_offers(&mut txn, &f, &anchors, charter, &ownership, ObjId(10), 1000);
+            check_eq!(err, Err(PublicationError::Capacity));
+        }
+        // Once time advances to 5000, all 11 unaccepted offers are expired and
+        // returned for atomic pruning, allowing a fresh offer!
+        {
+            let mut txn = engine.action_transaction(&f.charter_transfer_offers)?;
+            let pruned = scan_and_prune_offers(
+                &mut txn,
+                &f,
+                &anchors,
+                charter,
+                &ownership,
+                ObjId(10),
+                5_000,
+            )?;
+            check_eq!(pruned.len(), 3 + MAX_ACTIVE_OFFERS_PER_CHARTER);
+        }
+        Ok(())
+    }
 }

@@ -237,8 +237,6 @@ fn expected_roster() -> Vec<&'static str> {
         "faction",
         "scenes",
         "sim",
-        // S1: the atlas, right after the placement graph it will read (S2).
-        "atlas",
         "tactics",
         "propagation",
         "economy",
@@ -248,6 +246,9 @@ fn expected_roster() -> Vec<&'static str> {
         "mail",
         "jobs",
         "housing",
+        // CRIT-17: the atlas composes after every deny-only `MoveAttempt` hook
+        // (`scenes`, `sim`, `tactics`, `industry`, `housing`) and before `weather`.
+        "atlas",
         "weather",
         "party",
         // Roll's final audit opens the readiness required by Market's recovery.
@@ -277,14 +278,15 @@ fn expected_panels() -> Vec<&'static str> {
         "commands.list",
         "comsys",
         "scenes",
-        // S1/S4: the atlas composes after `mush-sim` (which advertises no feed)
-        // and before `mush-tactics`, and the map frame is the feed it publishes.
-        "atlas.map",
         "tactics.unit",
         "tactics.vitals",
         "tactics.contacts",
         "relay.board",
         "mail",
+        // S1/S4 + CRIT-17: the atlas composes after `mush-housing` (after every
+        // deny-only `MoveAttempt` hook) and before `mush-weather`, and the map
+        // frame is the feed it publishes.
+        "atlas.map",
         "weather",
         "worldgen.draft",
         "llm.dashboard",
@@ -934,7 +936,7 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     // Doc 47 unit CO.10: relay v25, lane v34; doc 48 unit PL.1: relay v26, lane v35.
     // Doc 48 unit PL.2: relay v27, lane v36; doc 48 unit PL.3: relay v28, lane v37.
     // Doc 48 unit EX.3: relay v29, lane v38.
-    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(38));
+    assert_eq!(after.get("tacsim.relay.luna_ceres").map(|l| l.0), Some(39));
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
