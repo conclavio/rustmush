@@ -56,6 +56,22 @@ pub fn seizing_authority(w: &World) -> Option<SeizingAuthority> {
     })
 }
 
+/// **A port's governing authority as a seizing authority** (doc 50 unit LW.3): the port's
+/// `authority` organization at `entry`, which takes a reporting buyer's goods (Q-50-67).
+#[must_use]
+pub fn port_authority(w: &World, entry: &CanonicalId) -> Option<SeizingAuthority> {
+    let (_, def, map) = crate::port::market::ports(w)
+        .into_iter()
+        .find(|(id, _, _)| id == entry)?;
+    let row = map?.orgs.get(def.authority.as_ref()?)?;
+    Some(SeizingAuthority {
+        org: OrgId(row.org),
+        entry: entry.clone(),
+        venue: MarketId::new(def.venue.as_str())?,
+        account: row.account.map(AccountId),
+    })
+}
+
 /// **The authority's vault**, made (with its market vendor) on first use. An authority that is a
 /// vendor already takes seized goods into its storefront.
 ///

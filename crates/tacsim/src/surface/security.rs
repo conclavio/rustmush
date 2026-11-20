@@ -75,14 +75,42 @@ pub const FINED_OWED: &str = "The {authority} fines you {amount} at {port} for {
 pub const QUARANTINED: &str = "The {name} is held at {port}: a fine of {amount} stands against \
      her master; it lifts when it is paid.";
 
-/// **The fine for `kind`**, major credits (Q-41-25).
+/// **The fine for a salvage `kind`**, major credits (Q-41-25); `None` for an offense fined by
+/// the tonne (`fine_of`).
 #[must_use]
-pub const fn fine_major(kind: OffenseKind) -> u64 {
+pub const fn fine_major(kind: OffenseKind) -> Option<u64> {
     match kind {
-        OffenseKind::SalvagePickup => FINE_PICKUP_MAJOR,
-        OffenseKind::SalvageScrap => FINE_SCRAP_MAJOR,
-        OffenseKind::SalvageRecovery => FINE_RECOVERY_MAJOR,
+        OffenseKind::SalvagePickup => Some(FINE_PICKUP_MAJOR),
+        OffenseKind::SalvageScrap => Some(FINE_SCRAP_MAJOR),
+        OffenseKind::SalvageRecovery => Some(FINE_RECOVERY_MAJOR),
+        OffenseKind::UnlicensedPossession
+        | OffenseKind::RestrictedSale
+        | OffenseKind::RestrictedPurchase => None,
     }
+}
+
+/// **The share of a collected fine a reporter is paid** (Q-50-43), per mille (provisional 20%).
+pub const REPORT_REWARD_PERMILLE: i64 = 200;
+
+/// **One offense's fine, major credits** (doc 50 unit LW.3): a salvage kind's fixed fine; a
+/// restricted good's by the tonne, from the port's terms row (`TermsRow::fine`), else the picket's
+/// scale (500 cr a tonne begun, never under 1,000; provisional).
+fn fine_of(w: &World, row: &ProvenOffense, entry: &CanonicalId) -> Option<u64> {
+    if let Some(major) = fine_major(row.kind) {
+        return Some(major);
+    }
+    let units = row.units()?.max(1);
+    let scale = crate::polity::terms_at(w, entry)
+        .and_then(|t| t.row)
+        .and_then(|r| r.fine)
+        .map_or(
+            (
+                u64::try_from(crate::space::picket::CUSTOMS_FINE_MAJOR_PER_TONNE).unwrap_or(500),
+                u64::try_from(crate::space::picket::CUSTOMS_FINE_MIN_MAJOR).unwrap_or(1_000),
+            ),
+            |f| (f.per_t_major, f.floor_major),
+        );
+    Some(units.saturating_mul(scale.0).max(scale.1))
 }
 
 /// **The polity that proves a salvage offense** (Q-50-38): the Freeport Registry keeps the lane's
@@ -128,6 +156,7 @@ pub(crate) fn prove(
         proof,
         proven_ic: ctx.w.world_ic_now().at,
         debt: None,
+        payout: None,
     };
     record_offense(ctx, key, offense, settled)
 }
@@ -275,15 +304,32 @@ pub fn on_docked(ctx: &mut Ctx<'_>, carrier: ObjId, entry: &CanonicalId, port: &
         return;
     };
     let name = crate::port::coop::name_of(ctx.w, carrier);
-    fine_offender(ctx, &key, carrier, entry, (&name, port));
+    let to = told(ctx.w, key.offender, carrier);
+    fine_offender(ctx, &key, to, entry, (&name, port));
 }
 
-/// The fines and the reinstatements on one record (`on_docked`).
+/// **Fine an offense as soon as it is proven** (doc 50 unit LW.3; Q-50-68's offender fined when
+/// proven): every unfined offense on `key`, at the port `entry` (its authority is the payee),
+/// `to` told.
+pub(crate) fn fine_now(
+    ctx: &mut Ctx<'_>,
+    key: &OffenseKey,
+    entry: &CanonicalId,
+    to: Option<ObjId>,
+) {
+    let port = port_at(ctx.w, entry).map_or_else(
+        || entry.to_string(),
+        |(def, _)| crate::port::coop::port_name(def),
+    );
+    fine_offender(ctx, key, to, entry, ("your ship", &port));
+}
+
+/// The fines and the reinstatements on one record (`on_docked`, [`fine_now`]).
 #[allow(clippy::too_many_lines)] // the reinstatements, then each row's fine, in order
 fn fine_offender(
     ctx: &mut Ctx<'_>,
     key: &OffenseKey,
-    carrier: ObjId,
+    to: Option<ObjId>,
     entry: &CanonicalId,
     (name, port): (&str, &str),
 ) {
@@ -314,16 +360,15 @@ fn fine_offender(
         return;
     };
     let account = account_of(ctx.w, key.offender);
-    let to = told(ctx.w, key.offender, carrier);
     let mut changed = false;
     for i in 0..record.rows.len() {
         if record.rows[i].debt.is_some() {
             continue;
         }
         let kind = record.rows[i].kind;
-        let Some(minor) =
-            crate::port::apply::minor_of(fine_major(kind), crate::port::apply::credit_scale(ctx.w))
-        else {
+        let Some(minor) = fine_of(ctx.w, &record.rows[i], entry).and_then(|major| {
+            crate::port::apply::minor_of(major, crate::port::apply::credit_scale(ctx.w))
+        }) else {
             continue;
         };
         let Some(account) = account else {
@@ -374,6 +419,124 @@ fn fine_offender(
     }
     ctx.actor = saved;
     ctx.out.pin_deferred();
+}
+
+/// **Pay the reporters whose fines were collected** (doc 50 unit LW.3; Q-50-43, Q-50-67; the
+/// port tick): for each proven offense with an unpaid [`crate::offense::Payout`] whose fine is
+/// settled, the reporter is paid the price they paid (a reporting buyer) and
+/// [`REPORT_REWARD_PERMILLE`] of the fine, both out of the fine and never more than it, from the
+/// account the fine was paid to. The offender is never told who.
+pub(crate) fn pay_reporters(ctx: &mut Ctx<'_>) {
+    let records: Vec<crate::offense::OffenseRecord> = ctx
+        .w
+        .module_state::<TacsimStore>()
+        .map(|store| {
+            store
+                .offenses
+                .values()
+                .filter_map(|slot| match slot {
+                    crate::offense::OffenseSlot::Present(r) => Some((**r).clone()),
+                    crate::offense::OffenseSlot::Unreadable => None,
+                })
+                .filter(|r| {
+                    r.rows
+                        .iter()
+                        .any(|row| row.payout.as_ref().is_some_and(|p| !p.paid))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for mut record in records {
+        let mut changed = false;
+        for row in &mut record.rows {
+            let (Some(id), Some(payout)) = (row.debt, row.payout.as_mut()) else {
+                continue;
+            };
+            if payout.paid {
+                continue;
+            }
+            let Some(fine) = ctx
+                .w
+                .module_state::<mush_economy::EconomyStore>()
+                .and_then(|e| e.snapshot().obligation(ObligationId(id)).cloned())
+                .filter(|o| matches!(o.status, ObligationStatus::Satisfied))
+            else {
+                continue;
+            };
+            let gross = fine.amount.minor();
+            let owed = payout
+                .repay_minor
+                .max(0)
+                .saturating_add(gross.saturating_mul(REPORT_REWARD_PERMILLE) / 1_000)
+                .min(gross);
+            let Some(to) = crate::port::credit::own_account(ctx.w, payout.to).map(|a| a.id) else {
+                continue;
+            };
+            if owed > 0 && pay_from(ctx, fine.credit_account, to, owed, id).is_err() {
+                continue;
+            }
+            payout.paid = true;
+            changed = true;
+            let line = REPORT_PAID
+                .replace("{amount}", &crate::port::coop::money_minor(ctx, owed))
+                .replace("{what}", row.kind.what());
+            ctx.out.sys_to_actor(payout.to, "tacsim.security", line);
+        }
+        if changed {
+            crate::offense::put_receipts(ctx, &record);
+        }
+    }
+}
+
+/// A reporter's payout: `{amount}`, `{what}`.
+pub const REPORT_PAID: &str =
+    "The fine for {what} you reported has been collected; you are paid {amount}.";
+
+/// One payment from the account a fine was paid to (an organization's) to a reporter, posted as
+/// that organization for itself.
+fn pay_from(
+    ctx: &mut Ctx<'_>,
+    from: AccountId,
+    to: AccountId,
+    minor: i64,
+    debt: u64,
+) -> Result<(), String> {
+    let owner = ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| e.snapshot().account(from).map(|a| a.owner.clone()))
+        .ok_or("the fine's account does not read")?;
+    let debit = Amount::from_minor(minor)
+        .checked_neg()
+        .ok_or("an amount overflows")?;
+    let plan = mush_economy::EconomyPlan {
+        description: format!("A reporter's share of fine #{debt}"),
+        ..mush_economy::EconomyPlan::new(
+            mush_economy::IdempotencyKey::new("tacsim.law.payout", debt.to_string()),
+            owner,
+            mush_economy::EconomicCause::Internal {
+                kind: smol_str::SmolStr::new_static("tacsim.law.payout"),
+                id: debt,
+            },
+            vec![
+                mush_economy::RequestedLine {
+                    account: from,
+                    delta: debit,
+                    memo: smol_str::SmolStr::new_static("tacsim.law.payout"),
+                },
+                mush_economy::RequestedLine {
+                    account: to,
+                    delta: Amount::from_minor(minor),
+                    memo: smol_str::SmolStr::new_static("tacsim.law.payout"),
+                },
+            ],
+        )
+    };
+    match mush_economy::post(ctx, &plan) {
+        Ok(mush_economy::PostOutcome::Posted(_)) => Ok(()),
+        Ok(other) => Err(format!("{other:?}")),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// **`+salvage/report <site>[=<who>|#<hull>] registry`** (Q-41-24): a witness reports the

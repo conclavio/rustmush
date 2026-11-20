@@ -593,6 +593,9 @@ Not built.
     trader may quote the public ask.
   - Mutation-checked, each failing the story: the law never restricting; the papers asking the
     license alone; the papers asking the claim alone; the market asking a private offer too.
+- **Stories that trade strategic ore on the Ceres board now hold the papers**
+  (`support::licence::hold_the_papers`): `in11_matter`'s purchase and `plumbing::sm5`'s sale.
+  `coop`'s two port-trade frame stories pick a live ask other than strategic ore.
 - Re-run beside it:
   - `mush-market` lib;
   - `domain_economy` `ex1b_venue::`, `held_lots_48e::`, `ex4_charges::` and `lw2_offense_record::`;
@@ -715,7 +718,105 @@ Not built.
 
 ## LW.3
 
-Not built.
+**Survey** (at `05ca38005`, #724's head, with #718's LW.5 merged in for the authority's vault):
+- **Inspections.** No port inspection existed. The picket's is the only authority inspection.
+  CR's `port::ship::hold_reading` reads lots and the pool. KC.2's terms row carries
+  `audit_permille`, which Ceres leaves unset.
+- **Standing.** `mush_faction::public_standing(w, faction, who)` answers a band, from hostile to
+  trusted. No staff verb sets one.
+- **The market's settlement ear.** It tells the proceeds policy a sale settled
+  (`trade::settled_sale`) only for a sale into a bid, or for an ask that carries a Co-op cut. A
+  private lot ask with neither was never told, and nothing recorded a private sale's papers.
+- **Port security.** It fined at docking only (LW.2), with fixed salvage fines (`fine_major`).
+
+**Built:**
+1. **The port audit (`crate::port::audit`).**
+   - On the port tick, each hull newly seen docked (an `AuditBook` of hull, port and first-seen
+     IC) at a port whose holder's terms restrict a good rolls once: `roll_permille`, a keyed hash
+     of the hull, the port and the docking.
+   - The chance is by the band of her answerer's standing with the holder (`chance_permille`,
+     Q-50-69): trusted 0, friendly 125‰, neutral 250‰, unfriendly 500‰, hostile always.
+   - The audit reads the hold for each restricted good. Held without the paper (the papers test
+     of LW.1), it records `OffenseKind::UnlicensedPossession` (`Evidence::Audit`, `Proof::Audit`)
+     under the holder against the answerer, and fines it at once.
+   - Staff may audit a docked hull now with `+law/audit #<hull>`.
+2. **Fines by the tonne and fined when proven.**
+   - `security::fine_major` now covers the salvage kinds only. `fine_of` fines the new kinds by
+     the tonne: from the terms row's `fine`, else the picket's scale (500 cr a tonne, at least
+     1,000, provisional).
+   - `security::fine_now(ctx, key, entry, told)` fines a record at once (Q-50-68's offender fined
+     when proven). `on_docked` shares its path.
+3. **The receipt (`crate::port::law_report`, Q-50-66).**
+   - mush-market gains `ProceedsPolicy::private_sale` and `PrivateSale`, told once per settled
+     sale on a hidden listing.
+   - For a good the venue's law restricts, each character party gets a `SaleReceipt` in
+     `tacsim:sale_receipts:{party}` (16 kept). It records the seller, the buyer, the venue, the
+     good, the units, the price, the IC time, the polity, and each party's papers at that moment.
+   - `+law` lists your own receipts.
+4. **The report (`+law/report <quote> go`, Q-50-35, Q-50-67).**
+   - A party brings a receipt no more than one IC day old against the other party, who lacked
+     the papers.
+   - A reporting buyer's goods go to the port authority's vault (LW.5's
+     `seized::ensure_vault`, through the new `seized::port_authority`). They move in the report's
+     own action, `tacsim_law_report`, which relocates the lot (or seizes a pooled sale's units)
+     and writes the `tacsim.law_report` row together. A buyer who no longer holds the goods is
+     refused.
+   - On the port tick the landed row becomes `RestrictedSale` (or `RestrictedPurchase`, for a
+     reporting seller) against the other party. It is proven by the reporter, fined at once, and
+     carries a `Payout`.
+5. **The payout (`security::pay_reporters`, Q-50-43, Q-50-67).**
+   - Once the fine is `Satisfied`, the reporter is paid the price a reporting buyer paid, plus
+     `REPORT_REWARD_PERMILLE` (200, provisional) of the fine. It comes from the account the fine
+     was paid to, never exceeds the fine, and is paid once.
+   - The offender is never told who reported.
+
+**Tests:**
+- `domain_economy` `lw3_law_audit::lw3_an_audit_finds_strategic_ore_held_without_the_papers`:
+  - Staff audit a licensed prospector holding 6 t of strategic ore with no claim. The audit
+    records the possession under the Freeport and fines 3,000 cr, paid.
+  - Holding a claim as well, the next audit finds nothing.
+- `lw3_a_buyer_reports_a_private_sale_hands_over_the_lot_and_is_repaid`:
+  - A private sale of 2 t at 300 cr writes a receipt for each party, recording that the seller
+    lacked the papers.
+  - The buyer's report moves the lot into the Registry's vault.
+  - The seller is fined the 1,000 cr floor, paid at once.
+  - The buyer is paid 600 cr back plus 200 cr, and a second report is refused.
+- Mutation-checked, each failing a story: the audit ignoring papers; the report not handing the
+  goods over; the payout never paid; the receipt recording the seller as holding the papers.
+- `tacsim` lib `audit::tests`: the bands' chances, and a keyed roll that is fixed by the docking
+  and moves with it.
+- **LW.5's story now gives its trader the papers** (`voyage::lw5_…`): with LW.1 merged, the Ceres
+  board sells seized strategic ore only to a holder of them. Whichever of #718 and #724 reaches
+  main second needs that line.
+- Re-run beside them:
+  - `lw1_restricted_goods::`, `lw2_offense_record::` and `port_security_rs7::` (fines through
+    the refactored path);
+  - the market stories, `in11_matter::`, `plumbing::sm5_` and `coop::port_trade_`;
+  - `domain_world` `voyage::lw5_`, `cr_`, `sfr26c` and `sfr6_`.
+
+**Divergences:**
+- **The audit's chance ignores the row's `audit_permille`.** Q-50-69's band table is the chance.
+  KC.2 carries the field, which Ceres leaves unset, and reading it would need a lane row.
+- **The docking is the IC second the tick first sees the hull docked**, kept in RAM. A restart
+  sees each docked hull afresh and rolls her again.
+- **Staff can order an audit** (`+law/audit`). Doc 50 does not name such a verb; the story pins
+  an audit with it.
+- **A reported or audited offense is fined at once**, not at the offender's next docking.
+  Q-50-68 says an offender with no hull is fined when proven; this does it for every offender of
+  these kinds.
+- **An organization has no standing band**, so its hull is audited at the neutral chance.
+- **The reporting buyer's goods go to the venue port's authority**, the same vault LW.5 makes for
+  a seizure there.
+
+**Not built:**
+- `+record` and `+debts` showing receipts and fines, and the standing loss: LW.4.
+- **A witness who is not a party** (Q-50-35's withdrawn "present at the venue"): not built, as
+  ruled.
+- **A private bid's sale** (a pooled `Deliver`) writes receipts too, and a reporting bidder's
+  units are taken from their pool into the vault (`seize` with a destination). No story covers
+  that path; the story's sale is a private lot ask.
+- **The audit's goods stay aboard.** Q-50-65 makes possession an offense with a fine, not a
+  seizure.
 
 ## LW.4
 

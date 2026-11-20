@@ -119,6 +119,8 @@ mod lane;
 mod lw1_restricted_goods;
 #[path = "domain_economy/lw2_offense_record.rs"]
 mod lw2_offense_record;
+#[path = "domain_economy/lw3_law_audit.rs"]
+mod lw3_law_audit;
 #[path = "domain_economy/mill.rs"]
 mod mill;
 #[path = "domain_economy/mining.rs"]

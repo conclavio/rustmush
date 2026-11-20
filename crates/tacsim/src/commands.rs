@@ -489,6 +489,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         crate::services::haul::haul_spec(),
         Arc::new(crate::services::haul::haul_cmd),
     )?;
+    // Doc 50 unit LW.3: the receipts of private sales, the report, and staff's audit.
+    reg.command(
+        crate::port::law_report::law_spec(),
+        Arc::new(crate::port::law_report::law_cmd),
+    )?;
     reg.command(
         crate::services::escort::escort_spec(),
         Arc::new(crate::services::escort::escort_cmd),

@@ -103,14 +103,20 @@ pub fn papers_clear(w: &World, actor: ObjId, now_ic: i64) -> bool {
         })
 }
 
+/// **The lane port entry of `venue`**.
+#[must_use]
+pub fn port_entry_of(w: &World, venue: &MarketId) -> Option<CanonicalId> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(_, def, _)| def.venue.as_str() == venue.as_str())
+        .map(|(entry, _, _)| entry)
+}
+
 /// **The paper that lifts `commodity`'s restriction at `venue`**, when the venue's de facto
 /// holder restricts it: the restricted row of its terms (KC.2). `None` where it is free.
 #[must_use]
 pub fn restriction_at(w: &World, venue: &MarketId, commodity: &CanonicalId) -> Option<CanonicalId> {
-    let entry = crate::port::market::ports(w)
-        .into_iter()
-        .find(|(_, def, _)| def.venue.as_str() == venue.as_str())
-        .map(|(entry, _, _)| entry)?;
+    let entry = port_entry_of(w, venue)?;
     crate::polity::terms_at(w, &entry)?
         .row?
         .restricted
