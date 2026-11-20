@@ -49,9 +49,10 @@ use crate::contract::{
     ContractError, ContractRoles, ContractState, ContractTerms, DRAFT_TTL_SECS, Deliverable,
     DepositRecord, EconomicContract, EvidenceKind, Expiry, MAX_AGREEMENTS, MAX_AMENDMENTS,
     MAX_CONDITIONS, MAX_CONTRACT_NAME_BYTES, MAX_DELIVERABLES, MAX_DEPOSITS,
-    MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_OUTCOME_NAME_BYTES,
-    MAX_OUTCOMES, MAX_PARTIES, MAX_RETAINED_CANCELLED_DRAFTS,
-    MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER, MAX_SETTLE_ATTEMPTS, MAX_SHARES, ObligationTemplate,
+    MAX_LIVE_CONTRACTS_PER_PARTY, MAX_OPEN_CONTRACTS_PER_ISSUER, MAX_ORG_PARTIES_PER_CONTRACT,
+    MAX_OUTCOME_NAME_BYTES, MAX_OUTCOMES, MAX_PARTIES, MAX_RETAINED_CANCELLED_DRAFTS,
+    MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER, MAX_SETTLE_ATTEMPTS, MAX_SHARES,
+    MAX_UNACCEPTED_CONTRACTS_PER_EXTERNAL_ORG, MAX_UNCONSENTED_ORG_PARTIES, ObligationTemplate,
     OutcomeTerms, PERMILLE, PartyAgreement, PayoutShare, PendingKind, PendingTerminal, Readiness,
     Resolution, Share, TypedCondition, activate_key, check_offerable, consent_hash, forfeit_plan,
     prepare_settlement, principal_key, qualifying_escrow, readiness, refund_plan,
@@ -690,6 +691,123 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 // ---- the consent-surface builders -----------------------------------------
 
+/// Bound unconsented organization fan-out on non-staff contracts.
+///
+/// Every organization party on a contract can fan out `ContractChanged`
+/// notices to up to [`crate::notice::MAX_NOTICE_HOLDERS`] officers. Without a
+/// cap, a non-staff actor could name up to `MAX_PARTIES - 1` arbitrary
+/// organizations on a single contract (or open `MAX_OPEN_CONTRACTS_PER_ISSUER`
+/// separate unaccepted contracts against one organization) to trigger hundreds
+/// of unconsented officer notices.
+///
+/// Staff remain unrestricted up to [`MAX_PARTIES`]. For non-staff actors:
+/// - At most [`MAX_ORG_PARTIES_PER_CONTRACT`] total organization parties per
+///   contract (permitting an org-to-org deal between the actor's own org and
+///   one counterparty org).
+/// - At most [`MAX_UNCONSENTED_ORG_PARTIES`] organization party that the actor
+///   does not act for (and that has not already accepted the contract).
+/// - At most [`MAX_UNACCEPTED_CONTRACTS_PER_EXTERNAL_ORG`] open, unaccepted
+///   contracts by the same issuer or author naming any single external
+///   organization they do not act for.
+fn check_org_party_caps(
+    ctx: &Ctx<'_>,
+    c: &EconomicContract,
+    adding: Option<&PrincipalId>,
+) -> Result<(), CmdError> {
+    if is_admin(ctx.w, ctx.actor) {
+        return Ok(());
+    }
+    let me = PrincipalId::Object(ctx.actor);
+    let auth = api::WorldAuth { w: ctx.w };
+    let mut org_parties: Vec<&PrincipalId> = c
+        .consent
+        .parties
+        .iter()
+        .filter(|p| matches!(p, PrincipalId::Organization(_)))
+        .collect();
+    if let Some(p) = adding
+        && matches!(p, PrincipalId::Organization(_))
+        && !org_parties
+            .iter()
+            .any(|existing| principal_key(existing) == principal_key(p))
+    {
+        org_parties.push(p);
+    }
+    if org_parties.len() > MAX_ORG_PARTIES_PER_CONTRACT {
+        return Err(CmdError::msg(format!(
+            "A contract may name at most {MAX_ORG_PARTIES_PER_CONTRACT} organizations as parties."
+        )));
+    }
+    let stands_for_org = |p: &PrincipalId| {
+        if auth.acts_for(&me, p) {
+            return true;
+        }
+        let PrincipalId::Organization(org) = p else {
+            return false;
+        };
+        let Some(org_store) = ctx.w.module_state::<mush_org::OrgStore>() else {
+            return false;
+        };
+        let Some(root) = org_store.state().org(*org).map(|o| o.root_scope) else {
+            return false;
+        };
+        api::scope_coherent(ctx.w, Some(root), p)
+            && (api::holds_capability(ctx.w, ctx.actor, "contract.accept", root)
+                || api::holds_capability(ctx.w, ctx.actor, "contract.draft", root))
+    };
+    let is_unconsented = |p: &PrincipalId| {
+        !stands_for_org(p)
+            && !c
+                .acceptances
+                .iter()
+                .any(|a| principal_key(&a.party) == principal_key(p))
+    };
+    let unconsented: Vec<&PrincipalId> = org_parties
+        .into_iter()
+        .filter(|p| is_unconsented(p))
+        .collect();
+    if unconsented.len() > MAX_UNCONSENTED_ORG_PARTIES {
+        return Err(CmdError::msg(format!(
+            "A contract may name at most {MAX_UNCONSENTED_ORG_PARTIES} organization you do not act for."
+        )));
+    }
+    if unconsented.is_empty() {
+        return Ok(());
+    }
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return Ok(());
+    };
+    let snap = store.snapshot();
+    for org_party in unconsented {
+        let target_key = principal_key(org_party);
+        let existing = snap
+            .contracts()
+            .filter(|x| x.id != c.id && !x.state.is_terminal())
+            .filter(|x| {
+                principal_key(&x.issuer) == principal_key(&c.issuer)
+                    || x.roles.author.as_ref() == Some(&me)
+            })
+            .filter(|x| {
+                x.consent
+                    .parties
+                    .iter()
+                    .any(|p| principal_key(p) == target_key)
+                    && !x
+                        .acceptances
+                        .iter()
+                        .any(|a| principal_key(&a.party) == target_key)
+            })
+            .count();
+        if existing >= MAX_UNACCEPTED_CONTRACTS_PER_EXTERNAL_ORG {
+            return Err(CmdError::msg(format!(
+                "You already have {MAX_UNACCEPTED_CONTRACTS_PER_EXTERNAL_ORG} unaccepted open \
+                 contracts naming that organization."
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn build_party(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @contract/party <id>=<principal>";
     let mut c = editable(ctx, ctx.args.lhs())?;
@@ -716,6 +834,7 @@ fn build_party(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "A contract may name at most {MAX_PARTIES} parties."
         )));
     }
+    check_org_party_caps(ctx, &c, Some(&who))?;
     c.consent.parties.push(who.clone());
     let rendered = render_principal(ctx, &who);
     let id = save_open(ctx, c)?;
@@ -881,11 +1000,13 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         "deposit" => {
             let object = asset_target(ctx, words.next().unwrap_or(""))?;
             // The same draft-time viewability gate `/condition deposit` runs (A2).
-            let vault = words
-                .next()
-                .and_then(parse_vault_id)
-                .filter(|v| may_view_vault(ctx.w, ctx.actor, *v))
-                .ok_or_else(|| CmdError::msg("No such vault."))?;
+            let Some(vault) = words.next().and_then(parse_vault_id) else {
+                return Err(CmdError::msg("No such vault."));
+            };
+            if !may_view_vault(ctx.w, ctx.actor, vault) {
+                crate::commands::note_refusal(ctx, true);
+                return Err(CmdError::msg("No such vault."));
+            }
             Deliverable::DepositInto { object, vault }
         }
         "collateral" => {
@@ -948,6 +1069,16 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 let Some(acct) = store.snapshot().account(a) else {
                     return false;
                 };
+                // Only active personal (`Object`) accounts of a named party are
+                // accepted without view standing. Organization compartments and
+                // inactive/closed accounts require `may_view_account`, preventing
+                // an outsider from naming an organization on a throwaway draft to
+                // enumerate hidden treasury/compartment or closed account IDs.
+                if acct.status != AccountStatus::Active
+                    || !matches!(acct.owner, PrincipalId::Object(_))
+                {
+                    return false;
+                }
                 c.consent
                     .parties
                     .iter()
@@ -963,6 +1094,7 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 )
             };
             if !known(ctx, debit) || !known(ctx, credit) {
+                crate::commands::note_refusal(ctx, true);
                 return Err(CmdError::msg("No such account."));
             }
             let (debtor, creditor) = {
@@ -1680,6 +1812,7 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if c.state != ContractState::Draft {
         return Err(CmdError::msg(format!("Contract #{} is not a draft.", c.id)));
     }
+    check_org_party_caps(ctx, &c, None)?;
     // The satisfaction vector is parallel to the conditions, always.
     c.satisfied.resize(c.consent.conditions.len(), None);
     if let Err(e) = check_offer(ctx, &c) {

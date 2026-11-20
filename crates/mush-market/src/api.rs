@@ -807,6 +807,18 @@ pub fn list_goods(ctx: &mut Ctx<'_>, spec: ListingSpec) -> Result<ListingId, Mar
             "That is not a quantity this market sells.",
         ));
     }
+    // Exact-lot listings sell whole (`quantity` cannot be reduced by the buyer),
+    // so refuse any price * quantity that cannot fit in `i64` at listing time.
+    if spec.source.exact_lot().is_some()
+        && i64::try_from(spec.quantity)
+            .ok()
+            .and_then(|q| spec.price.minor().checked_mul(q))
+            .is_none()
+    {
+        return Err(MarketError::bad(
+            "That quantity and price exceed the market's limit.",
+        ));
+    }
     // An `Asset` listing conveys exactly one **named, titled** object, because that
     // is what `Deliverable::TitleTransfer` moves. Every other representation conveys
     // no object at all.

@@ -1309,6 +1309,17 @@ impl DrawReceipt {
 }
 
 impl Quote {
+    /// What the whole quote costs — checked unit price times quantity.
+    ///
+    /// Returns `None` if `price <= 0`, `quantity == 0`, or the product overflows `i64`.
+    #[must_use]
+    pub fn checked_total(&self) -> Option<Amount> {
+        if self.price.minor() <= 0 || self.quantity == 0 {
+            return None;
+        }
+        let qty = i64::try_from(self.quantity).ok()?;
+        self.price.minor().checked_mul(qty).map(Amount::from_minor)
+    }
     /// What the whole quote costs — unit price times quantity, saturating.
     #[must_use]
     pub fn total(&self) -> Amount {
@@ -1636,10 +1647,20 @@ impl MarketSource {
         if self.halted {
             return Some("halted");
         }
-        if self.volume_used.minor().saturating_add(total.minor()) > self.volume_budget.minor() {
+        if self
+            .volume_used
+            .minor()
+            .checked_add(total.minor())
+            .is_none_or(|next| next > self.volume_budget.minor())
+        {
             return Some("volume");
         }
-        if self.loss_used.minor().saturating_add(loss.minor().max(0)) > self.loss_budget.minor() {
+        if self
+            .loss_used
+            .minor()
+            .checked_add(loss.minor().max(0))
+            .is_none_or(|next| next > self.loss_budget.minor())
+        {
             return Some("loss");
         }
         None

@@ -1156,4 +1156,7 @@ fn source_revalidation_after_custody_refuses_every_filing_image_and_fail_stops()
 #[path = "sale_reader/tests.rs"]
 mod sale_reads;
 
+#[path = "charter_pending_lock_tests.rs"]
+mod charter_pending_locks;
+
 use mush_testkit::fixtures::boxed_engine as boxed_test_engine;

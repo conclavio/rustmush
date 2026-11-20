@@ -47,6 +47,12 @@ impl Provider {
         file.validate()?;
         initial.validate()?;
         status.validate()?;
+        super::super::charter_pending::current::require_clear_in_txn(
+            txn,
+            world,
+            &self.families,
+            initial.charter,
+        )?;
         if initial.requester != actor
             || initial.revision.revision().key.character != actor
             || initial.economic.house.is_some()

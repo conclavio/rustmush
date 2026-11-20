@@ -1737,6 +1737,7 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let opts = parse_opts(&rhs);
     match verb.as_str() {
         "create" => {
+            require_staff(ctx)?;
             let Some(org) = target
                 .first()
                 .and_then(|s| parse_u64(s))
@@ -1746,7 +1747,6 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     "Usage: @market/vendor create <org>=<vault> [name=] [market=] [buy=]",
                 ));
             };
-            require_staff(ctx)?;
             let Some(vault) = rhs
                 .split_whitespace()
                 .next()
@@ -1889,9 +1889,16 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .get("qty")
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(1);
-            let object = opts
-                .get("object")
-                .and_then(|s| mush_core::match_object(ctx.w, ctx.actor, s).ok());
+            let object = if let Some(s) = opts.get("object") {
+                if !staff {
+                    // Non-staff actors may only stock lot-represented goods;
+                    // never run `match_object` on arbitrary object refs here.
+                    return Err(CmdError::msg("Only an asset listing names an object."));
+                }
+                mush_core::match_object(ctx.w, ctx.actor, s).ok()
+            } else {
+                None
+            };
             let vault = ctx
                 .w
                 .module_state::<MarketStore>()
@@ -1929,13 +1936,25 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                         )));
                     }
                     // Doc 39 cut IN.2: `lot=<id>` sells that one lot itself, at its own
-                    // commodity, grade and quantity.
-                    let exact = match opts.get("lot") {
+                    // commodity, grade and quantity. Parse syntax first, then gate on
+                    // `mush_inventory::may_take` BEFORE reading `f.lots`, so a vendor
+                    // officer cannot probe lot IDs/commodities/quantities in vaults they
+                    // have no standing to withdraw from.
+                    let requested_lot = match opts.get("lot") {
                         None => None,
                         Some(raw) => {
                             let Some(id) = mush_inventory::LotId::parse(raw) else {
                                 return Err(CmdError::msg("That is not a lot id."));
                             };
+                            Some(id)
+                        }
+                    };
+                    if !mush_inventory::may_take(ctx.w, ctx.actor, endpoint) {
+                        return Err(refuse(ctx, NO_SUCH_LISTING));
+                    }
+                    let exact = match requested_lot {
+                        None => None,
+                        Some(id) => {
                             let found = crate::module::lot_supply(ctx.w).and_then(|f| {
                                 ctx.action_state(&f.lots, &id).ok().flatten().cloned()
                             });
@@ -2064,7 +2083,9 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             let Some(l) = visible else {
                 return Err(refuse(ctx, NO_SUCH_LISTING));
             };
-            if !may_stock_for(ctx, l.vendor) {
+            if !api::is_staff(ctx.w, ctx.actor)
+                && (l.is_personal() || !may_stock_for(ctx, l.vendor))
+            {
                 return Err(refuse(ctx, NO_SUCH_LISTING));
             }
             match crate::api::withdraw_listing(ctx, listing) {

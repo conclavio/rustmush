@@ -54,6 +54,18 @@ pub(crate) use settlement::prepare_settlement;
 
 /// Maximum parties on one contract (§9).
 pub const MAX_PARTIES: usize = 16;
+/// Maximum organization parties a non-staff contract may name. Permits an
+/// org-to-org contract (the actor's own organization plus one external
+/// counterparty organization) while preventing unconsented multi-org officer
+/// notification fan-out (`MAX_PARTIES * MAX_NOTICE_HOLDERS`).
+pub const MAX_ORG_PARTIES_PER_CONTRACT: usize = 2;
+/// Maximum unconsented organization parties (organizations the actor does not
+/// act for) a non-staff contract may name.
+pub const MAX_UNCONSENTED_ORG_PARTIES: usize = 1;
+/// Maximum open, unaccepted contracts (drafts or offers not yet accepted by the
+/// target organization) one non-staff issuer or author may hold naming the same
+/// organization they do not act for.
+pub const MAX_UNACCEPTED_CONTRACTS_PER_EXTERNAL_ORG: usize = 2;
 /// Maximum conditions on one contract (§9).
 pub const MAX_CONDITIONS: usize = 16;
 /// Maximum deliverables on one contract (§9).
