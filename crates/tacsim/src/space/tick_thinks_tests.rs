@@ -35,6 +35,9 @@ fn carrier_entry(hull: ObjId, party: PartyId) -> BubbleCarrierEntry {
         approaching_derelict: false,
         holding_for_salvage: false,
         holding_for_salvage_until_wall_s: None,
+        op_foes: Vec::new(),
+        apart_since_wall_s: None,
+        broken_off: false,
     }
 }
 
