@@ -1081,3 +1081,57 @@ fn vf_d6_a_members_view_names_no_contract_id() {
     let theirs = ok(&mut tw, GOD, &format!("+party {}", c.id));
     assert!(theirs.contains("4242"), "staff lost the handle: {theirs}");
 }
+
+#[test]
+fn disbanded_parties_are_bounded_in_ram_and_persisted_kv() {
+    let mut tw = boot();
+    let mut st = Persisted::default();
+    tw.set_now(1_000);
+    let ann = tw.spawn_player("Ann");
+
+    // Keep one live party alongside the churn so we prove live records are never evicted.
+    ok(&mut tw, ann, "+party/create Keeper");
+    let keeper = PartyId(0);
+
+    let churn = mush_party::MAX_RETAINED_DISBANDED_PARTIES + 20;
+    for n in 0..churn {
+        ok(&mut tw, ann, &format!("+party/create Temp{n}"));
+        let id = PartyId((n + 1) as u64);
+        ok(&mut tw, ann, &format!("+party/disband {id}"));
+    }
+    st.sync(&mut tw);
+
+    let total_terminal = store(&tw).parties().filter(|p| p.is_terminal()).count();
+    assert_eq!(
+        total_terminal,
+        mush_party::MAX_RETAINED_DISBANDED_PARTIES,
+        "terminal party retention must stay bounded"
+    );
+    assert!(
+        store(&tw).party(keeper).is_some(),
+        "live party must never be evicted"
+    );
+    // Oldest disbanded party (PartyId(1)) was pruned; newest remains for recent audit visibility.
+    assert!(store(&tw).party(PartyId(1)).is_none());
+    let newest = PartyId(churn as u64);
+    assert!(store(&tw).party(newest).is_some());
+    assert!(ok(&mut tw, ann, &format!("+party {newest}")).contains("disbanded"));
+
+    // Persisted KV matches RAM and preserves the allocator floor across reboot.
+    let kv = st.kv();
+    let persisted_parties = kv.iter().filter(|(k, _)| k.starts_with("party:")).count();
+    assert_eq!(
+        persisted_parties,
+        mush_party::MAX_RETAINED_DISBANDED_PARTIES + 1
+    );
+    reboot(&mut tw, kv);
+    assert_eq!(
+        store(&tw).meta_doc(),
+        serde_json::json!({ "next_party_id": (churn + 1) as u64 })
+    );
+    assert_eq!(store(&tw).live_count(), 1);
+    assert_eq!(
+        store(&tw).parties().filter(|p| p.is_terminal()).count(),
+        mush_party::MAX_RETAINED_DISBANDED_PARTIES
+    );
+}

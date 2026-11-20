@@ -35,6 +35,11 @@ pub fn parse(expr: &str) -> Result<DiceExpr, DiceParseError> {
             expr.len()
         )));
     }
+    if expr.chars().any(char::is_control) {
+        return Err(DiceParseError::new(
+            "expression must not contain newlines or control characters",
+        ));
+    }
     delimited(multispace0, additive, multispace0)
         .parse(expr)
         .map_err(|e| DiceParseError::new(e.to_string()))

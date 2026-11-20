@@ -1290,13 +1290,28 @@ fn force_attach(ctx: &mut Ctx<'_>, attach: bool) -> Result<(), CmdError> {
         if parent == child {
             return Err(CmdError::msg("A formation cannot be its own parent."));
         }
-        if ctx
+        let Some(parent_node) = ctx
             .w
             .module_state::<CampaignStore>()
-            .and_then(|s| s.formation(parent))
-            .is_none()
-        {
+            .and_then(|s| s.formation(parent).cloned())
+            .filter(|p| authorized(ctx, capability, p.scope))
+        else {
             return Err(CmdError::msg(NO_SUCH_FORMATION));
+        };
+        let same_org = ctx
+            .w
+            .module_state::<mush_org::OrgStore>()
+            .is_some_and(|orgs| {
+                let st = orgs.state();
+                match (st.scope(node.scope), st.scope(parent_node.scope)) {
+                    (Some(c), Some(p)) => c.org == p.org,
+                    _ => false,
+                }
+            });
+        if !same_org {
+            return Err(CmdError::msg(
+                "A formation can only attach to a parent in the same organization.",
+            ));
         }
         // B6: measure the CHILD'S OWN SUBTREE too. Cut 9 measured only the
         // parent's ancestor chain, so grafting a 3-deep chain's root under a 3-deep

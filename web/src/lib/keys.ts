@@ -166,6 +166,31 @@ function bareIntent(
   return null;
 }
 
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Build the safe `goto <exit>` command for a room exit name, or `null` when
+ * the name is empty or contains C0/DEL/C1 control characters (such as CR/LF).
+ * Prefixing `goto ` guarantees a hostile room builder's exit name (e.g.
+ * `@destroy me`, `QUIT`, `"hi`, or a channel alias) can only traverse a real
+ * exit and never dispatch an arbitrary command.
+ */
+export function exitCommand(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0 || hasControlChar(trimmed)) {
+    return null;
+  }
+  return `goto ${trimmed}`;
+}
+
 /**
  * The one-letter exit keys a room offers (D-I-19): every exit whose name or
  * an alias is exactly one ASCII letter binds that letter (lower-cased),
@@ -178,6 +203,9 @@ export function exitKeys(view: RoomView | null): Map<string, string> {
     return keys;
   }
   for (const exit of view.exits) {
+    if (exitCommand(exit.name) === null) {
+      continue;
+    }
     for (const cand of [exit.name, ...exit.aliases]) {
       const t = cand.trim();
       if (t.length !== 1 || !/^[a-zA-Z]$/.test(t)) {

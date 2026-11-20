@@ -1420,3 +1420,54 @@ fn nudge_policy_and_pause_resume_invalidate_an_outstanding_pass() {
         assert!(votes(&r).is_empty());
     }
 }
+
+#[test]
+fn timestop_log_anonymizes_other_participants_consent_votes() {
+    let mut r = rig();
+    // Add a third player participant (Cara) so Ann and Cara both vote.
+    let cara = r
+        .engine
+        .world
+        .create(ObjKind::Player, "Cara", GOD, Some(r.bar))
+        .unwrap();
+    r.engine.world.set_connected(cara, true);
+    r.engine.world.set_live_conns(cara, 1);
+
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/next");
+    let out = run(&mut r.engine, r.nick, "+timestop/rewind");
+    let asked = requests(&out);
+    assert_eq!(asked.len(), 2, "Ann and Cara are both asked: {asked:?}");
+
+    let ann_req = asked.iter().find(|(who, _, _)| *who == r.ann).unwrap().1;
+    let cara_req = asked.iter().find(|(who, _, _)| *who == cara).unwrap().1;
+    respond(&mut r.engine, r.ann, ann_req, RespondChoice::Confirm(false));
+    respond(&mut r.engine, cara, cara_req, RespondChoice::Confirm(true));
+
+    // Cara (ordinary participant) must NOT learn that Ann disagreed.
+    let cara_log = texts(&run(&mut r.engine, cara, "+timestop/log"));
+    assert!(
+        cara_log.contains("A participant on rewind: disagree."),
+        "other voter must be anonymized: {cara_log}"
+    );
+    assert!(
+        !cara_log.contains("Ann on rewind"),
+        "Ann's identity must not leak in Cara's log: {cara_log}"
+    );
+    assert!(
+        cara_log.contains("Cara on rewind: agree."),
+        "voter still sees their own vote: {cara_log}"
+    );
+
+    // Facilitator (Nick) and staff (GOD, standing in bar) still see full attribution.
+    let nick_log = texts(&run(&mut r.engine, r.nick, "+timestop/log"));
+    assert!(nick_log.contains("Ann on rewind: disagree."), "{nick_log}");
+    assert!(nick_log.contains("Cara on rewind: agree."), "{nick_log}");
+
+    r.engine.world.move_to(GOD, r.bar).unwrap();
+    let staff_log = texts(&run(&mut r.engine, GOD, "+timestop/log"));
+    assert!(
+        staff_log.contains("Ann on rewind: disagree."),
+        "{staff_log}"
+    );
+}

@@ -28,6 +28,25 @@ pub const DEFAULT_HEIGHT: u16 = 24;
 pub const MAX_WIDTH: u16 = 400;
 /// Upper bound on accepted SSH terminal rows; see [`MAX_WIDTH`].
 pub const MAX_HEIGHT: u16 = 200;
+/// Upper bound on stored `TERM` string length from SSH `pty-req`, bytes.
+pub const MAX_TERM_BYTES: usize = 128;
+/// Upper bound on stored SSH environment variable values (`COLORTERM`, `LANG`,
+/// `LC_ALL`) from `env-req`, bytes.
+pub const MAX_ENV_VALUE_BYTES: usize = 128;
+
+/// Truncate an untrusted SSH `TERM` or environment value to at most
+/// `max_bytes` bytes on a valid UTF-8 character boundary.
+#[must_use]
+pub(crate) fn cap_env_str(raw: &str, max_bytes: usize) -> String {
+    if raw.len() <= max_bytes {
+        return raw.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    raw[..end].to_owned()
+}
 
 /// Clamp an SSH PTY dimension (`col_width` or `row_height`) to `1..=max`,
 /// preserving `0` ("unspecified", which [`detect_caps`] maps to
@@ -192,5 +211,21 @@ mod tests {
 
         let clamped = detect_caps(Some("xterm"), None, None, None, u16::MAX, u16::MAX);
         assert_eq!((clamped.width, clamped.height), (MAX_WIDTH, MAX_HEIGHT));
+    }
+
+    #[test]
+    fn cap_env_str_truncates_utf8_safely_at_bound() {
+        assert_eq!(
+            cap_env_str("xterm-256color", MAX_TERM_BYTES),
+            "xterm-256color"
+        );
+        let huge = "a".repeat(10_000);
+        let capped = cap_env_str(&huge, MAX_TERM_BYTES);
+        assert_eq!(capped.len(), MAX_TERM_BYTES);
+
+        // Multi-byte UTF-8 boundary: 'é' is 2 bytes; capping at 5 bytes keeps 2 chars (4 bytes).
+        let utf8 = "éééé";
+        assert_eq!(cap_env_str(utf8, 5), "éé");
+        assert_eq!(cap_env_str(utf8, 0), "");
     }
 }

@@ -902,7 +902,9 @@ impl EconomyError {
     pub fn concerns_named_subjects(&self) -> bool {
         matches!(
             self,
-            EconomyError::Unauthorized | EconomyError::ScopeOwnerMismatch
+            EconomyError::Unauthorized
+                | EconomyError::ScopeOwnerMismatch
+                | EconomyError::NotBalanced(_)
         )
     }
 }

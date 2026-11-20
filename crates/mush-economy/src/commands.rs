@@ -39,11 +39,13 @@ use crate::obligation::{
     GracePolicy, Obligation, ObligationCause, ObligationEvent, ObligationStatus, SuspendReason,
     SuspensionKey,
 };
-use crate::plan::{AssetOp, CustodyOp, EconomyPlan, HoldOp, NamedResource, RequestedLine};
+use crate::plan::{
+    AssetOp, CustodyOp, EconomyError, EconomyPlan, HoldOp, NamedResource, RequestedLine,
+};
 use crate::record::{
-    Account, AccountStatus, Approval, ApprovalRule, ApprovalStatus, ApprovalWindow, CreditPolicy,
-    CustodyRef, Decision, EconomicCause, Encumbrance, HoldEffectKind, HoldPurpose, HoldStatus,
-    IdempotencyKey, InstrumentDef, InstrumentDisplay, InstrumentKind, InstrumentStatus,
+    Account, AccountStatus, Approval, ApprovalRule, ApprovalStatus, ApprovalWindow, AssetLifecycle,
+    CreditPolicy, CustodyRef, Decision, EconomicCause, Encumbrance, HoldEffectKind, HoldPurpose,
+    HoldStatus, IdempotencyKey, InstrumentDef, InstrumentDisplay, InstrumentKind, InstrumentStatus,
     NegativePolicy, SymbolPosition, Vault, VaultStatus, Verdict,
 };
 
@@ -2443,95 +2445,226 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if from == to {
         return Err(CmdError::msg("An account cannot pay itself."));
     }
-    // §4.4: a non-staff payer may name an account they OWN, or a SCOPED (org) one —
-    // and only those two. The engine then decides the scoped case live, against the
-    // org's capability + limit + compartment status.
-    //
-    // This is deliberately not "let the engine decide everything": a `System`
-    // faucet is neither owned nor scoped, so it never reaches the engine from here,
-    // and `WorldAuth::authorize` refuses it a second time even if some other caller
-    // does reach it (A6 — two locks, because minting is the one irreversible act).
-    let staff = is_admin(ctx.w, ctx.actor);
-    if !staff {
-        let source = ctx
-            .w
-            .module_state::<EconomyStore>()
-            .and_then(|s| s.snapshot().account(from).cloned());
-        let eligible = source
-            .as_ref()
-            .is_some_and(|a| a.owner == PrincipalId::Object(ctx.actor) || a.scope.is_some());
-        if !eligible {
-            return Err(account_refusal(
-                ctx,
-                from,
-                "You may only pay from your own account or an organization account you hold authority on.",
-            ));
-        }
-    }
-
-    // The optional title/custody legs — resolved BEFORE `post` (§4.2 step 6).
-    let mut asset_ops: Vec<AssetOp> = Vec::new();
-    let mut custody_ops: Vec<CustodyOp> = Vec::new();
-    let mut asset_object: Option<ObjId> = None;
-    if let Some(spec) = opts.get("asset") {
-        let object = asset_target(ctx, spec)?;
-        asset_object = Some(object);
-        let (payer, recipient, to_scope, title_owner) = {
-            let store = ctx
-                .w
-                .module_state::<EconomyStore>()
-                .ok_or_else(|| CmdError::msg("No economy."))?;
-            let snap = store.snapshot();
-            let payer = snap.account(from).map(|a| a.owner.clone());
-            let dest = snap
-                .account(to)
-                .ok_or_else(|| CmdError::msg("No such account."))?;
-            let title_owner = snap.asset(object).map(|a| a.title_owner.clone());
-            (payer, dest.owner.clone(), dest.scope, title_owner)
-        };
-        let Some(title_owner) = title_owner else {
-            return Err(asset_refusal(ctx, object, "No such asset."));
-        };
-        if !staff && payer.as_ref() != Some(&title_owner) {
-            return Err(asset_refusal(
-                ctx,
-                object,
-                "That is a two-party exchange: the payer and the title holder are different \
-                 principals, and an E3 plan carries one authority. Counterparty consent is E4.",
-            ));
-        }
-        asset_ops.push(AssetOp::TransferTitle {
-            object,
-            to: recipient,
-            to_scope,
-        });
-        match (opts.get("to_vault"), opts.get("from_vault")) {
-            (Some(_), Some(_)) => {
-                return Err(CmdError::msg(
-                    "Use at most one of to_vault= and from_vault=.",
-                ));
-            }
-            (Some(v), None) => {
-                let vault = parse_vault_id(v).ok_or_else(|| CmdError::msg("No such vault."))?;
-                custody_ops.push(CustodyOp::Deposit { object, vault });
-            }
-            (None, Some(v)) => {
-                let vault = parse_vault_id(v).ok_or_else(|| CmdError::msg("No such vault."))?;
-                custody_ops.push(CustodyOp::Withdraw {
-                    object,
-                    vault,
-                    to: ctx.actor,
-                });
-            }
-            (None, None) => {}
-        }
-    } else if opts.contains_key("to_vault") || opts.contains_key("from_vault") {
+    if !opts.contains_key("asset")
+        && (opts.contains_key("to_vault") || opts.contains_key("from_vault"))
+    {
         return Err(CmdError::msg("A vault leg needs asset=<obj>."));
     }
-
+    if opts.contains_key("to_vault") && opts.contains_key("from_vault") {
+        return Err(CmdError::msg(
+            "Use at most one of to_vault= and from_vault=.",
+        ));
+    }
     let neg = amount
         .checked_neg()
         .ok_or_else(|| CmdError::msg("Amount out of range."))?;
+    // §4.4: a non-staff payer may name an account they OWN, or a SCOPED (org) one
+    // they may view or debit — and only those two. Gating scoped accounts on live
+    // view/debit authority here prevents probing whether an arbitrary account ID
+    // belongs to an organization by pairing it with `asset=`.
+    //
+    // A `System` faucet is neither owned nor scoped, so it never reaches the
+    // engine from here, and `WorldAuth::authorize` refuses it a second time even
+    // if some other caller does reach it (A6 — two locks).
+    let staff = is_admin(ctx.w, ctx.actor);
+    let source = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().account(from).cloned());
+    if !staff {
+        let auth = api::WorldAuth { w: ctx.w };
+        let eligible = source.as_ref().is_some_and(|a| {
+            a.owner == PrincipalId::Object(ctx.actor)
+                || (a.scope.is_some()
+                    && (may_view_account(ctx.w, ctx.actor, from)
+                        || auth.authorize(&PrincipalId::Object(ctx.actor), a, neg)))
+        });
+        if !eligible {
+            return Err(refuse_named(
+                ctx,
+                NamedResource::Account(from),
+                [],
+                "You may only pay from your own account or an organization account you hold authority on."
+                    .to_string(),
+            ));
+        }
+    }
+
+    // Validate caller-side asset/vault legs BEFORE looking up `to`, so probing a
+    // destination account with a bogus/unauthorized asset or vault cannot
+    // distinguish missing vs. existing destination accounts.
+    let mut asset_ops: Vec<AssetOp> = Vec::new();
+    let mut custody_ops: Vec<CustodyOp> = Vec::new();
+    let mut asset_object: Option<ObjId> = None;
+    let mut pending_custody: Option<(VaultId, CustodyOp)> = None;
+    if let Some(spec) = opts.get("asset") {
+        let parsed_vault = match (opts.get("to_vault"), opts.get("from_vault")) {
+            (Some(v), None) => Some((
+                true,
+                parse_vault_id(v).ok_or_else(|| CmdError::msg("No such vault."))?,
+            )),
+            (None, Some(v)) => Some((
+                false,
+                parse_vault_id(v).ok_or_else(|| CmdError::msg("No such vault."))?,
+            )),
+            _ => None,
+        };
+        let object = asset_target(ctx, spec)?;
+        asset_object = Some(object);
+        let asset_rec = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?
+            .snapshot()
+            .asset(object)
+            .cloned();
+        let Some(asset_rec) = asset_rec else {
+            return Err(refuse_named(
+                ctx,
+                NamedResource::Asset(object),
+                [],
+                "No such asset.".to_string(),
+            ));
+        };
+        if !staff && source.as_ref().map(|a| &a.owner) != Some(&asset_rec.title_owner) {
+            return Err(refuse_named(
+                ctx,
+                NamedResource::Asset(object),
+                [],
+                "That is a two-party exchange: the payer and the title holder are different \
+                 principals, and an E3 plan carries one authority. Counterparty consent is E4."
+                    .to_string(),
+            ));
+        }
+        if asset_rec.frozen {
+            return Err(refuse(
+                ctx,
+                NamedResource::Asset(object),
+                &[],
+                &EconomyError::AssetFrozen(object),
+            ));
+        }
+        if !matches!(
+            asset_rec.lifecycle,
+            AssetLifecycle::Active | AssetLifecycle::Abandoned
+        ) {
+            return Err(refuse(
+                ctx,
+                NamedResource::Asset(object),
+                &[],
+                &EconomyError::AssetNotActive(object),
+            ));
+        }
+        if !asset_rec.encumbrances.is_empty() {
+            return Err(refuse(
+                ctx,
+                NamedResource::Asset(object),
+                &[],
+                &EconomyError::Encumbered(object),
+            ));
+        }
+        if let Some((is_deposit, vault)) = parsed_vault {
+            let op = if is_deposit {
+                CustodyOp::Deposit { object, vault }
+            } else {
+                CustodyOp::Withdraw {
+                    object,
+                    vault,
+                    to: ctx.actor,
+                }
+            };
+            if !staff {
+                let vault_rec = ctx
+                    .w
+                    .module_state::<EconomyStore>()
+                    .and_then(|s| s.snapshot().vault(vault).cloned());
+                let auth = api::WorldAuth { w: ctx.w };
+                let allowed = vault_rec.as_ref().is_some_and(|v| {
+                    may_view_vault(ctx.w, ctx.actor, vault)
+                        || auth.authorize_vault(&PrincipalId::Object(ctx.actor), v, &op)
+                });
+                if !allowed {
+                    return Err(refuse_named(
+                        ctx,
+                        NamedResource::Vault(vault),
+                        [],
+                        "Unauthorized.".to_string(),
+                    ));
+                }
+            }
+            pending_custody = Some((vault, op));
+        }
+    }
+
+    // Check source-account status and solvency BEFORE looking up `to` or calling
+    // `api::post`, so an empty or over-held source account cannot probe whether
+    // arbitrary destination IDs exist via "No such account." vs. credit/available
+    // errors.
+    if let Some(a) = &source {
+        if a.status != AccountStatus::Active {
+            return Err(refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::InactiveAccount(from),
+            ));
+        }
+        let new_posted = a.posted_balance.checked_add(neg).ok_or_else(|| {
+            refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::Overflow,
+            )
+        })?;
+        if !a.credit.permits(new_posted) {
+            return Err(refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::CreditViolation(from),
+            ));
+        }
+        let available = new_posted.checked_sub(a.held_amount).ok_or_else(|| {
+            refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::Overflow,
+            )
+        })?;
+        if !a.credit.permits(available) {
+            return Err(refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::InsufficientAvailable(from),
+            ));
+        }
+    }
+
+    if let Some(object) = asset_object {
+        let dest = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or_else(|| CmdError::msg("No economy."))?
+            .snapshot()
+            .account(to)
+            .cloned();
+        let Some(dest) = dest else {
+            note_refusal(ctx, true);
+            return Err(CmdError::msg("No such account."));
+        };
+        asset_ops.push(AssetOp::TransferTitle {
+            object,
+            to: dest.owner,
+            to_scope: dest.scope,
+        });
+        if let Some((_, op)) = pending_custody {
+            custody_ops.push(op);
+        }
+    }
+
     let mut plan = EconomyPlan::new(
         cmd_key(ctx),
         PrincipalId::Object(ctx.actor),
@@ -4486,7 +4619,7 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if amount.is_zero() || amount.is_negative() {
         return Err(CmdError::msg("A capture amount must be positive."));
     }
-    let from = {
+    let hold = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
@@ -4494,10 +4627,34 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         store
             .snapshot()
             .hold(id)
+            .cloned()
             .ok_or_else(|| CmdError::msg("No such hold."))?
-            .account
     };
+    // Check hold-side invariants BEFORE inspecting `to` or `from == to`, so a
+    // beneficiary cannot probe hidden destination accounts (or brute-force a
+    // masked source account) with a released/expired hold or oversized capture.
+    if hold.status != HoldStatus::Held {
+        return Err(refuse(
+            ctx,
+            NamedResource::Hold(id),
+            &[],
+            &EconomyError::HoldNotHeld(id),
+        ));
+    }
+    if amount > hold.amount {
+        return Err(refuse(
+            ctx,
+            NamedResource::Hold(id),
+            &[],
+            &EconomyError::CaptureExceedsHold(id),
+        ));
+    }
+    let from = hold.account;
     if from == to {
+        if !may_view_account(ctx.w, ctx.actor, from) {
+            note_refusal(ctx, true);
+            return Err(CmdError::msg("No such account."));
+        }
         return Err(CmdError::msg("An account cannot pay itself."));
     }
     let neg = amount
@@ -4539,21 +4696,27 @@ fn hold_capture(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// "unauthorized" with the sentence that tells the payer what to do instead, for
 /// somebody who can already see the reservation. A viewer who cannot see it never
 /// reaches this.
-fn refuse_escrow(ctx: &Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> {
-    let contract = ctx
+fn refuse_escrow(ctx: &mut Ctx<'_>, id: HoldId, verb: &str) -> Result<(), CmdError> {
+    let hold = ctx
         .w
         .module_state::<EconomyStore>()
-        .and_then(|s| s.snapshot().hold(id).cloned())
-        .and_then(|h| match h.purpose {
-            HoldPurpose::Escrow { contract } => Some(contract),
-            HoldPurpose::Reservation { .. } | HoldPurpose::Manual { .. } => None,
-        });
-    match contract {
-        None => Ok(()),
-        Some(c) => Err(CmdError::msg(format!(
-            "Hold #{id} is contract #{c}'s escrow: it is {verb} by that contract's own settlement              or refund and by nothing else. See @contract/show #{c}."
-        ))),
+        .and_then(|s| s.snapshot().hold(id).cloned());
+    let Some(h) = hold else {
+        return Ok(());
+    };
+    let HoldPurpose::Escrow { contract } = h.purpose else {
+        return Ok(());
+    };
+    if escrow_contract_hidden(ctx, &h) {
+        note_refusal(ctx, true);
+        return Err(CmdError::msg(format!(
+            "Hold #{id} cannot be {verb} by hand."
+        )));
     }
+    Err(CmdError::msg(format!(
+        "Hold #{id} is contract #{contract}'s escrow: it is {verb} by that contract's own settlement \
+         or refund and by nothing else. See @contract/show #{contract}."
+    )))
 }
 
 /// An **engine-owned reservation** is the engine's, and only the engine's (E7 cut 9

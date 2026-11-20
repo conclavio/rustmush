@@ -1188,7 +1188,15 @@ fn property_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(|s| {
             s.properties()
                 .filter(|p| may_view_property(ctx.w, ctx.actor, p))
-                .filter(|p| filter.as_ref().is_none_or(|f| p.landlord == *f))
+                .filter(|p| {
+                    filter.as_ref().is_none_or(|f| {
+                        // A1 + A3: a guest's reduced view hides the landlord, so
+                        // `landlord=` must not match properties the actor may only
+                        // see as a guest (otherwise probing `landlord=org:...`
+                        // reveals who owns the property they were invited to).
+                        !guest_only_property(ctx.w, ctx.actor, p) && p.landlord == *f
+                    })
+                })
                 .map(|p| {
                     // A1: a guest's row is their own standing, never the books.
                     if guest_only_property(ctx.w, ctx.actor, p) {
@@ -1714,10 +1722,12 @@ fn review_lines_for_tenancy(w: &World, tenancy: TenancyId) -> Vec<String> {
 
 fn tenancy_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (_, opts) = parse_opts(ctx.args.raw(), &["property"]);
-    let filter = opts
-        .get("property")
-        .and_then(|s| parse_id(s))
-        .map(PropertyId);
+    // Mirror A3: a malformed or non-matching `property=` filter never widens to
+    // an unfiltered list and never distinguishes nonexistent from unauthorized.
+    let filter = match opts.get("property") {
+        None => None,
+        Some(s) => Some(parse_id(s).map(PropertyId).ok_or_else(hidden_tenancy)?),
+    };
     let rows: Vec<String> = ctx
         .w
         .module_state::<HousingStore>()
@@ -1746,6 +1756,9 @@ fn tenancy_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .collect()
         })
         .unwrap_or_default();
+    if filter.is_some() && rows.is_empty() {
+        return Err(hidden_tenancy());
+    }
     emit_list(ctx, rows, "No tenancies.");
     Ok(())
 }
@@ -2059,6 +2072,45 @@ fn drop_home_here(ctx: &mut Ctx<'_>, who: ObjId, t: &Tenancy) {
     }
 }
 
+/// Whether `who` is the rent debtor (or owns the debited rent account) on an
+/// exact-mode tenancy's lease obligation or pending lease contract.
+fn is_rent_payer(w: &World, t: &Tenancy, who: ObjId) -> bool {
+    let Funding::Exact {
+        contract,
+        obligation,
+    } = &t.funding
+    else {
+        return false;
+    };
+    let Some(econ) = w.module_state::<mush_economy::EconomyStore>() else {
+        return false;
+    };
+    let snap = econ.snapshot();
+    let me = PrincipalId::Object(who);
+    if *obligation != crate::econ::PENDING_OBLIGATION
+        && let Some(ob) = snap.obligation(*obligation)
+        && (ob.debtor == me
+            || snap
+                .account(ob.debit_account)
+                .is_some_and(|a| a.owner == me))
+    {
+        return true;
+    }
+    if let Some(c) = snap.contract(*contract) {
+        for d in &c.consent.terms.deliverables {
+            if let mush_economy::Deliverable::Obligation { template } = d
+                && (template.debtor == me
+                    || snap
+                        .account(template.debit_account)
+                        .is_some_and(|a| a.owner == me))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// `+home/leave [<tenancy>]` — the tenant's own move-out (D-E5-11's clearing half).
 fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let me = ctx.actor;
@@ -2066,10 +2118,13 @@ fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let t = my_tenancy(ctx, Some(&named), "You have no home to leave.")?;
     let now = crate::module::cadence_now(ctx.w, t.cadence).unwrap_or(0);
     let before = t.status.kind();
-    // A co-tenant leaving a shared lease is a roster change, not an ending: the
-    // library refuses to remove the last tenant precisely so that "everybody left"
-    // still goes through an explicit resolution.
-    if t.tenants.len() > 1 {
+    let paying_co_tenant = t.tenants.len() > 1 && is_rent_payer(ctx.w, &t, me);
+    // A non-paying co-tenant leaving a shared lease is a roster change, not an
+    // ending. If the departing co-tenant IS the rent payer on an exact lease,
+    // dropping them from the roster alone would leave their account billed
+    // permanently for a home they no longer hold; instead, end the tenancy and
+    // cancel the lease through the standard `TenantLeft` resolution.
+    if t.tenants.len() > 1 && !paying_co_tenant {
         let next = t
             .remove_tenant(me, now)
             .map_err(|e| CmdError::msg(e.to_string()))?;
@@ -2091,14 +2146,29 @@ fn home_leave(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let next = crate::resolve(&t, Resolution::TenantLeft, now)
         .map_err(|e| CmdError::msg(e.to_string()))?;
     crate::flow::close_pending_job(ctx, &t, false);
+    if paying_co_tenant {
+        let who = crate::module::render_actor(ctx.w, me);
+        let msg = format!(
+            "HOME: {who} moved out and ended the lease behind tenancy #{}. Your home there is closed.",
+            t.id
+        );
+        for other in t.tenants.iter().copied().filter(|id| *id != me) {
+            ctx.out.sys_to_actor(other, crate::NS, msg.clone());
+        }
+    }
     crate::flow::commit(ctx, before, next);
-    info(
-        ctx,
+    let msg = if paying_co_tenant {
+        format!(
+            "You have moved out. Because you paid the lease's rent, tenancy #{} and its lease are ended and your home is cleared.",
+            t.id
+        )
+    } else {
         format!(
             "You have moved out. Tenancy #{} is ended and your home is cleared.",
             t.id
-        ),
-    );
+        )
+    };
+    info(ctx, msg);
     ctx.gate_on_durable_ack();
     Ok(())
 }

@@ -83,6 +83,12 @@ pub const MAX_PARTIES_PER_LEADER: usize = 4;
 /// ended-tenancy precedent), and nothing periodic ever looks at one again.
 pub const MAX_PARTIES: usize = 4096;
 
+/// Maximum terminal (`Disbanded`) parties retained in RAM and persisted KV storage
+/// for recent audit visibility. Once exceeded, the oldest disbanded records are
+/// evicted (never lowering the allocator high-water mark), so repeated create +
+/// disband cycles cannot grow memory or disk without bound.
+pub const MAX_RETAINED_DISBANDED_PARTIES: usize = 256;
+
 // ---------------------------------------------------------------------------
 // Records
 // ---------------------------------------------------------------------------

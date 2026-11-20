@@ -383,12 +383,21 @@ export class TacsimPortStore {
     const now = Date.now();
     if (ev.actor && plain.trim().length > 0) {
       const next: Record<string, { text: string; expiresAt: number }> = {};
+      const setOwn = (key: string, value: { text: string; expiresAt: number }): void => {
+        Object.defineProperty(next, key, {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      };
       for (const [k, v] of Object.entries(this.actorSpeech)) {
-        if (v.expiresAt > now) next[k] = v;
+        if (v.expiresAt > now) setOwn(k, v);
       }
       const exp = now + 8_500;
-      next[ev.actor.id] = { text: plain.trim(), expiresAt: exp };
-      next[ev.actor.name.toLowerCase()] = { text: plain.trim(), expiresAt: exp };
+      const entry = { text: plain.trim(), expiresAt: exp };
+      setOwn(ev.actor.id, entry);
+      setOwn(ev.actor.name.toLowerCase(), entry);
       this.actorSpeech = next;
     }
     if (this.activeModal !== null && plain.trim().length > 0) {

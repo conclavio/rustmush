@@ -1639,3 +1639,164 @@ fn high37_claim_transfer_bound_encumbered_revision_key_and_atomic_coordination()
         "Bound claim whose E4 asset.title_owner != claim.holder() must NOT authorize extraction"
     );
 }
+
+#[test]
+fn t2a_direct_claim_contest_cannot_seize_pledged_or_contest_disputed_claims() {
+    let (mut tw, families, _) = boot_full();
+    let place = tw
+        .world_mut()
+        .create(ObjKind::Room, "ContestedBelt", GOD, None)
+        .expect("place");
+    let alice = tw.spawn_player("Alice");
+    let registrar = tw.spawn_player("Registrar");
+    let challenger = tw.spawn_player("Challenger");
+
+    ok(&mut tw, GOD, "@org/create Crown");
+    let crown_org = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org")
+        .state()
+        .orgs()
+        .find(|o| o.name == "Crown")
+        .expect("Crown")
+        .id;
+    let crown_root = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org")
+        .state()
+        .org(crown_org)
+        .expect("Crown")
+        .root_scope;
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=Crown economy.account.post scope={}",
+            registrar.0, crown_root.0
+        ),
+    );
+
+    // 1. Pledged claim: direct `ClaimContest` with state="seized" (both by non-staff
+    // issuer registrar AND by staff GOD, with or without `holder`) must be refused.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@claim/file place:{}=org:{}/obj:{}/shared/1/100000/transferable",
+            place.0, crown_org.0, alice.0
+        ),
+    );
+    let pledged_out = land(&mut tw, 3801).expect("pledged claim files");
+    let pledged_id = ClaimId::parse(pledged_out["claim"].as_str().expect("id")).expect("claim id");
+    ok(&mut tw, GOD, &format!("@claim/pledge {pledged_id}=99"));
+
+    let contest_action =
+        action_ref(&tw.engine().registry, IndustryVerb::ClaimContest).expect("claim contest");
+    let non_staff_seize = submit_direct(
+        &mut tw,
+        registrar,
+        contest_action.clone(),
+        json!({
+            "claim": pledged_id.to_string(),
+            "state": "seized",
+            "revision": 1,
+        }),
+        3802,
+    );
+    assert!(
+        non_staff_seize.is_err(),
+        "direct ClaimContest seizure on pledged claim by issuer must refuse: {non_staff_seize:?}"
+    );
+    let staff_seize = submit_direct(
+        &mut tw,
+        GOD,
+        contest_action.clone(),
+        json!({
+            "claim": pledged_id.to_string(),
+            "state": "seized",
+            "revision": 1,
+            "holder": format!("obj:{}", challenger.0),
+        }),
+        3803,
+    );
+    assert!(
+        staff_seize.is_err(),
+        "direct ClaimContest staff seizure with holder on pledged claim must refuse: {staff_seize:?}"
+    );
+    let pledged_live = read(tw.engine_mut(), &families, |txn| {
+        families.claim(txn, pledged_id).unwrap().unwrap()
+    });
+    assert_eq!(pledged_live.contest_state(), &ContestState::Uncontested);
+    assert_eq!(pledged_live.holder(), &PrincipalId::Object(alice));
+
+    // Suspending a pledged claim is still permitted (it preserves collateral).
+    submit_direct(
+        &mut tw,
+        registrar,
+        contest_action.clone(),
+        json!({
+            "claim": pledged_id.to_string(),
+            "state": "suspended",
+            "revision": 1,
+        }),
+        3804,
+    )
+    .expect("suspending a pledged claim remains permitted");
+
+    // 2. Disputed claim: direct `ClaimContest` with state="contested" must refuse;
+    // state="suspended" remains allowed.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@claim/file place:{}=org:{}/obj:{}/shared/1/100000/transferable",
+            place.0, crown_org.0, alice.0
+        ),
+    );
+    let disputed_out = land(&mut tw, 3805).expect("disputed claim files");
+    let disputed_id =
+        ClaimId::parse(disputed_out["claim"].as_str().expect("id")).expect("claim id");
+    let disputed_obj =
+        ObjId(u32::try_from(disputed_out["object"].as_u64().expect("obj")).expect("u32"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/stolen #{}=public disputed title", disputed_obj.0),
+    );
+
+    let direct_contest = submit_direct(
+        &mut tw,
+        registrar,
+        contest_action.clone(),
+        json!({
+            "claim": disputed_id.to_string(),
+            "state": "contested",
+            "revision": 1,
+            "contract": 0,
+        }),
+        3806,
+    );
+    assert!(
+        direct_contest.is_err(),
+        "direct ClaimContest state=contested on disputed claim must refuse: {direct_contest:?}"
+    );
+    let disputed_live = read(tw.engine_mut(), &families, |txn| {
+        families.claim(txn, disputed_id).unwrap().unwrap()
+    });
+    assert_eq!(disputed_live.contest_state(), &ContestState::Uncontested);
+
+    submit_direct(
+        &mut tw,
+        registrar,
+        contest_action,
+        json!({
+            "claim": disputed_id.to_string(),
+            "state": "suspended",
+            "revision": 1,
+        }),
+        3807,
+    )
+    .expect("suspending a disputed claim remains permitted");
+}

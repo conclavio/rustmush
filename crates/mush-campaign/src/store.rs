@@ -145,6 +145,9 @@ pub struct CampaignStore {
     /// **past**, so a queue longer than one fire's budget is worked round-robin and
     /// nobody at the back is starved by the front.
     pub(crate) recovery_cursor: u32,
+    /// In-RAM rotation cursor for `recoverycmd::expire_unaccepted`, so a
+    /// transiently stuck `end_lease` cannot starve expiry of later unaccepted offers.
+    pub(crate) expire_cursor: u32,
     held: Vec<HeldDoc>,
     /// How many refused documents did not fit in `held` (E7 cut 9 fold, B14). Past
     /// [`MAX_HELD_DOCUMENTS`] the 65th was dropped from the list with no counter and

@@ -138,6 +138,35 @@ pub(crate) fn visible_rooms(
         .collect()
 }
 
+/// Whether `viewer` may see `subject` (standing in `room`) on the map.
+///
+/// Enforces `Flags::GOING`, `Flags::DARK` (visible only to self, staff, or
+/// holders of `Powers::SEE_HIDDEN`), and room visibility (`Access::Restricted`).
+pub(crate) fn actor_visible_to(
+    w: &World,
+    viewer: ObjId,
+    subject: ObjId,
+    room: Option<ObjId>,
+    visible: &BTreeSet<ObjId>,
+) -> bool {
+    if subject == viewer {
+        return true;
+    }
+    let Some(o) = w.get(subject) else {
+        return false;
+    };
+    if o.flags.contains(mush_core::Flags::GOING) {
+        return false;
+    }
+    if o.flags.contains(mush_core::Flags::DARK)
+        && !is_staff(w, viewer)
+        && !mush_core::perm::has_power(w, viewer, mush_core::Powers::SEE_HIDDEN)
+    {
+        return false;
+    }
+    room.is_none_or(|r| visible.contains(&r))
+}
+
 /// The units `viewer` sees on `surface`: everyone placed there whose room the
 /// viewer may see, the viewer first.
 ///
@@ -172,12 +201,7 @@ fn units_for(
         let Some(o) = w.get(obj) else {
             continue;
         };
-        if o.flags.contains(mush_core::Flags::GOING) {
-            continue;
-        }
-        let room = o.location;
-        let seen = obj == viewer || room.is_none_or(|r| visible.contains(&r));
-        if !seen {
+        if !actor_visible_to(w, viewer, obj, o.location, visible) {
             continue;
         }
         let is_you = obj == viewer;
@@ -396,6 +420,51 @@ pub fn publish_keyframes(ctx: &mut Ctx<'_>, domain: DomainId) {
     };
     for viewer in who {
         send_keyframe(ctx, viewer, domain);
+    }
+}
+
+/// A delta to everyone on `domain`'s window caused by `subject` acting in
+/// `subject_room`: each viewer receives `note` ONLY when `subject` is visible
+/// to them at `subject_room` (filtering out `Flags::DARK` actors and moves
+/// inside `Access::Restricted` rooms they cannot see).
+pub fn publish_actor_delta(
+    ctx: &mut Ctx<'_>,
+    domain: DomainId,
+    subject: ObjId,
+    subject_room: Option<ObjId>,
+    note: &str,
+) {
+    let Some(feed) = feed(ctx) else {
+        return;
+    };
+    let who = {
+        let Some(st) = ctx.state::<AtlasState>() else {
+            return;
+        };
+        let Some(entry) = st.windows.open.get(&domain.0) else {
+            return;
+        };
+        audience(ctx.w, entry, domain)
+    };
+    for viewer in who {
+        let delta = ctx.state::<AtlasState>().and_then(|st| {
+            let entry = st.windows.open.get(&domain.0)?;
+            let visible = visible_rooms(ctx.w, st, entry, viewer);
+            let show_note = !note.is_empty()
+                && actor_visible_to(ctx.w, viewer, subject, subject_room, &visible);
+            delta_for(
+                ctx.w,
+                st,
+                viewer,
+                domain,
+                show_note.then(|| note.to_string()),
+            )
+        });
+        if let Some(delta) = delta
+            && let Ok(data) = serde_json::to_value(&delta)
+        {
+            feed.delta_to(ctx, Audience::Actor(viewer), data);
+        }
     }
 }
 

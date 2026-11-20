@@ -2377,3 +2377,68 @@ fn z4_a_closed_channels_notices_and_loud_count_ignore_its_see_lock() {
         sys_texts(&out)
     );
 }
+
+#[test]
+fn recall_is_capped_and_ooc_speech_enforces_length_and_rate_limits() {
+    let (mut engine, nick, _) = setup();
+    run(&mut engine, GOD, "@channel/set Public=cap=500");
+
+    // Oversized OOC channel speech is refused without advancing seq or recording history.
+    let huge = "a".repeat(mush_comsys::MAX_OOC_TEXT_BYTES + 1);
+    let out = run(&mut engine, nick, &format!("pub {huge}"));
+    assert!(
+        sys_texts(&out).iter().any(|t| t.contains("too long")),
+        "oversized OOC line must be refused: {:?}",
+        sys_texts(&out)
+    );
+    assert!(chan_events(&out).is_empty());
+    let public = state(&engine).channel_by_name(DEFAULT_CHANNEL).unwrap().id;
+    assert_eq!(state(&engine).channels.get(&public).unwrap().seq, 0);
+
+    // Rate limit caps non-staff OOC bursts within the rolling window, and recovers after it.
+    for i in 0..mush_comsys::OOC_RATE_MAX_PER_WINDOW {
+        let out = run(&mut engine, nick, &format!("pub burst {i}"));
+        assert!(
+            !chan_events(&out).is_empty(),
+            "message {i} within burst budget must succeed"
+        );
+    }
+    let throttled = run(&mut engine, nick, "pub one too many");
+    assert!(
+        chan_events(&throttled).is_empty(),
+        "message over burst limit must be blocked"
+    );
+    assert!(
+        sys_texts(&throttled)
+            .iter()
+            .any(|t| t.contains("too quickly")),
+        "got: {:?}",
+        sys_texts(&throttled)
+    );
+    // Advancing past the rolling window lets Nick speak again.
+    let later = engine.world.now() + mush_comsys::OOC_RATE_WINDOW_SECS + 1;
+    engine.world.set_now(later);
+    let recovered = run(&mut engine, nick, "pub recovered");
+    assert!(!chan_events(&recovered).is_empty());
+
+    // Fill the ring past MAX_RECALL (as GOD, who is exempt from non-staff burst throttling).
+    let total = mush_comsys::MAX_RECALL + 25;
+    for i in 0..total {
+        let out = run(&mut engine, GOD, &format!("pub line {i}"));
+        assert!(!chan_events(&out).is_empty());
+    }
+    let out = run(&mut engine, nick, "@channel/recall pub=999999");
+    let texts = sys_texts(&out);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains(&format!("last {} messages", mush_comsys::MAX_RECALL))),
+        "recall must cap at MAX_RECALL: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains(&format!("line {}", total - 1)))
+    );
+    assert!(!texts.iter().any(|t| t.contains("line 0")));
+}

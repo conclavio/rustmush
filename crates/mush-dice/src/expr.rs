@@ -255,7 +255,7 @@ fn roll_group(
         n = *budget;
         *capped = true;
     }
-    *budget -= n;
+    *budget = budget.saturating_sub(n);
 
     let start = dice.len();
     let recorded_sides = sides.min(u32::from(u16::MAX)) as u16;
@@ -274,7 +274,9 @@ fn roll_group(
 /// Mark which dice in `group` are kept per `keep`, and return their value sum.
 fn apply_keep(group: &mut [DieRecord], keep: Option<Keep>) -> i64 {
     let Some(keep) = keep else {
-        return group.iter().map(|d| i64::from(d.value)).sum();
+        return group
+            .iter()
+            .fold(0i64, |acc, d| acc.saturating_add(i64::from(d.value)));
     };
     let (want, highest) = match keep {
         Keep::Highest(n) => (n as usize, true),
@@ -294,7 +296,7 @@ fn apply_keep(group: &mut [DieRecord], keep: Option<Keep>) -> i64 {
     let mut sum = 0i64;
     for &i in order.iter().take(keep_count) {
         group[i].kept = true;
-        sum += i64::from(group[i].value);
+        sum = sum.saturating_add(i64::from(group[i].value));
     }
     sum
 }

@@ -414,11 +414,14 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
     if !asset_admitted(ctx, &listing) {
         return Err(MarketError::bad(STALE_QUOTE));
     }
-    let unit = price_for(&listing, ctx.w.module_state::<MarketStore>());
-    let total = Amount::from_minor(
-        unit.minor()
-            .saturating_mul(i64::try_from(quantity).unwrap_or(i64::MAX)),
-    );
+    let Some(unit) = checked_price_for(&listing, ctx.w.module_state::<MarketStore>()) else {
+        return Err(MarketError::bad(STALE_QUOTE));
+    };
+    let Some(total) = checked_total_for(unit, quantity) else {
+        return Err(MarketError::bad(
+            "That quantity and price exceed the market's limit.",
+        ));
+    };
     // ---- B8: every budget, before the quote is issued ---------------------
     let mut observed_source: Option<u64> = None;
     if let Supply::Market { source } = listing.source {
@@ -432,7 +435,9 @@ pub fn quote(ctx: &mut Ctx<'_>, req: &QuoteRequest) -> Result<QuoteId, MarketErr
         let now = ctx.w.now();
         let maker = maker.rolled(now);
         observed_source = Some(maker.revision);
-        let loss = booked_loss(&entry, unit, quantity);
+        let Some(loss) = checked_booked_loss(&entry, unit, quantity) else {
+            return Err(MarketError::bad(maker_refusal("loss")));
+        };
         if let Some(why) = maker.refuses(total, loss) {
             return Err(MarketError::bad(maker_refusal(why)));
         }
@@ -590,20 +595,36 @@ fn maker_refusal(which: &str) -> String {
     STALE_QUOTE.to_string()
 }
 
-/// What a sale of `quantity` at `unit` books against a maker's **loss** budget.
+/// Checked total cost (`unit * quantity`), returning `None` on non-positive
+/// unit price, zero quantity, or `i64` overflow.
+pub(crate) fn checked_total_for(unit: Amount, quantity: u64) -> Option<Amount> {
+    if unit.minor() <= 0 || quantity == 0 {
+        return None;
+    }
+    let qty = i64::try_from(quantity).ok()?;
+    unit.minor().checked_mul(qty).map(Amount::from_minor)
+}
+
+/// What a sale of `quantity` at `unit` books against a maker's **loss** budget,
+/// using checked arithmetic so large quantities never silently saturate below
+/// the real loss.
 ///
 /// A maker selling *above* the catalogue's reference price books no loss; a maker
 /// selling below books the difference, and its loss budget is what stops it selling the
 /// world cheaply. The one place the arithmetic lives, so the spend leg and the quote's
 /// own check cannot compute it two ways (independent verify fold, M5).
-fn booked_loss(entry: &crate::record::CatalogEntry, unit: Amount, quantity: u64) -> Amount {
+fn checked_booked_loss(
+    entry: &crate::record::CatalogEntry,
+    unit: Amount,
+    quantity: u64,
+) -> Option<Amount> {
     let baseline = entry.baseline.unwrap_or(Amount::ZERO).minor();
-    Amount::from_minor(
-        baseline
-            .saturating_sub(unit.minor())
-            .max(0)
-            .saturating_mul(i64::try_from(quantity).unwrap_or(i64::MAX)),
-    )
+    let diff = baseline.checked_sub(unit.minor())?;
+    if diff <= 0 {
+        return Some(Amount::ZERO);
+    }
+    let qty = i64::try_from(quantity).ok()?;
+    diff.checked_mul(qty).map(Amount::from_minor)
 }
 
 /// Whether the maker's own cash account can still back a purchase at all.
@@ -621,6 +642,25 @@ fn can_cover_inventory(ctx: &Ctx<'_>, maker: &crate::record::MarketSource) -> bo
         .unwrap_or(false)
 }
 
+/// Checked listing unit price, scaling in `i128` before dividing by `1_000` so
+/// large prices never silently collapse via `i64` saturation. Returns `None`
+/// when `l.price <= 0` or the spread-adjusted price overflows `i64`.
+pub(crate) fn checked_price_for(l: &Listing, store: Option<&MarketStore>) -> Option<Amount> {
+    if l.price.minor() <= 0 {
+        return None;
+    }
+    let Supply::Market { source } = l.source else {
+        return Some(l.price);
+    };
+    let Some(spread) = store.and_then(|s| s.source(source)).map(|s| s.spread) else {
+        return Some(l.price);
+    };
+    let factor = 1_000_i128.checked_add(i128::from(spread))?;
+    let scaled = i128::from(l.price.minor()).checked_mul(factor)? / 1_000;
+    let minor = i64::try_from(scaled).ok()?;
+    Some(Amount::from_minor(minor.max(1)))
+}
+
 /// A listing's unit price — **the one price every surface reads** (independent verify
 /// fold, D4).
 ///
@@ -633,18 +673,19 @@ fn can_cover_inventory(ctx: &Ctx<'_>, maker: &crate::record::MarketSource) -> bo
 /// deal actually executed at — the safe projection publishing a band that need not
 /// contain its own last trade.
 pub(crate) fn price_for(l: &Listing, store: Option<&MarketStore>) -> Amount {
+    if let Some(exact) = checked_price_for(l, store) {
+        return exact;
+    }
     let Supply::Market { source } = l.source else {
         return l.price;
     };
     let Some(spread) = store.and_then(|s| s.source(source)).map(|s| s.spread) else {
         return l.price;
     };
-    let moved = l
-        .price
-        .minor()
-        .saturating_mul(1_000i64.saturating_add(spread))
-        / 1_000;
-    Amount::from_minor(moved.max(1))
+    let factor = 1_000_i128 + i128::from(spread);
+    let scaled = (i128::from(l.price.minor()) * factor) / 1_000;
+    let clamped = scaled.clamp(1, i128::from(i64::MAX));
+    Amount::from_minor(i64::try_from(clamped).unwrap_or(i64::MAX))
 }
 
 /// **Take a quote up**: draft, offer, place the buyer's escrow, and let the vendor
@@ -813,14 +854,19 @@ pub fn accept_at(
     // passed, and all charged: both budgets were exceeded without limit, because
     // `is_current` consults only `halted`. The value is the very one `charge_budgets`
     // computes a few lines below, so the check costs nothing and cannot disagree.
-    let booked = booked_loss(&entry, q.price, q.quantity);
+    let Some(total) = q.checked_total() else {
+        return Err(MarketError::bad(STALE_QUOTE));
+    };
+    let Some(booked) = checked_booked_loss(&entry, q.price, q.quantity) else {
+        return Err(MarketError::bad(STALE_QUOTE));
+    };
     if let Supply::Market { source } = listing.source {
         let now = ctx.w.now();
         let refused = ctx
             .w
             .module_state::<MarketStore>()
             .and_then(|s| s.source(source).cloned())
-            .map_or(Some("gone"), |m| m.rolled(now).refuses(q.total(), booked));
+            .map_or(Some("gone"), |m| m.rolled(now).refuses(total, booked));
         if let Some(why) = refused {
             tracing::debug!(
                 budget = why,
@@ -923,12 +969,13 @@ pub fn accept_at(
     } else {
         vec![PayoutShare {
             to: payee,
-            share: Share::Exact(q.total()),
+            share: Share::Exact(total),
         }]
     };
     let spec = purchase_spec(
         &q,
         &listing,
+        total,
         payouts,
         representation,
         buyer_account,
@@ -1329,7 +1376,9 @@ fn charge_budgets(ctx: &mut Ctx<'_>, q: &Quote, sign: i64) {
     else {
         return;
     };
-    let total = q.total().minor();
+    let Some(total) = q.checked_total().map(Amount::minor) else {
+        return;
+    };
     let loss = q.booked_loss.minor().max(0);
     let now = ctx.w.now();
     let rolled = maker.rolled(now);
@@ -1393,16 +1442,17 @@ fn restore_quantity(ctx: &mut Ctx<'_>, q: &Quote) {
 /// One outcome row, exact payouts summing to the escrowed total (D-E6-6, answer 7),
 /// and a deterministic condition set so nobody's word settles a shop purchase — the
 /// journal's own state does.
+#[allow(clippy::too_many_arguments)]
 fn purchase_spec(
     q: &Quote,
     listing: &Listing,
+    total: Amount,
     payouts: Vec<PayoutShare>,
     representation: Representation,
     buyer_account: mush_economy::AccountId,
     now: i64,
     draw: Option<(QuoteId, i64)>,
 ) -> ContractSpec {
-    let total = q.total();
     // Doc 48 cut EX.2 (Q-48-7): an asset sold for itself, now, is the one asset sale every
     // venue writes.
     if let (None, Representation::Asset, Some(object)) = (draw, representation, listing.object)
@@ -1819,13 +1869,12 @@ pub fn sell(
             "That has no reference price, so no vendor can put a price on it.",
         ));
     };
-    let offer = Amount::from_minor(
-        (baseline
-            .minor()
-            .saturating_mul(i64::from(vendor.buy_permille))
-            / 1_000)
-            .max(0),
-    );
+    let scaled = i128::from(baseline.minor())
+        .checked_mul(i128::from(vendor.buy_permille))
+        .map(|n| n / 1_000)
+        .and_then(|n| i64::try_from(n).ok())
+        .ok_or_else(|| MarketError::bad("That vendor cannot price that item."))?;
+    let offer = Amount::from_minor(scaled);
     if offer.minor() <= 0 {
         return Err(MarketError::bad("That vendor is not buying that."));
     }
@@ -2850,14 +2899,23 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     else {
         return Err(MarketError::bad(UNSETTLEABLE));
     };
-    let fee_total = fee_rows
+    let Some(fee_total) = fee_rows
         .iter()
-        .fold(0_i64, |sum, (_, a)| sum.saturating_add(a.minor()));
-    let cut_total = proceeds
+        .try_fold(0_i64, |sum, (_, a)| sum.checked_add(a.minor()))
+    else {
+        return Err(MarketError::bad(UNSETTLEABLE));
+    };
+    let Some(cut_total) = proceeds
         .cuts
         .iter()
-        .fold(fee_total, |sum, c| sum.saturating_add(c.amount.minor()));
-    let net = Amount::from_minor(gross.minor().saturating_sub(cut_total));
+        .try_fold(fee_total, |sum, c| sum.checked_add(c.amount.minor()))
+    else {
+        return Err(MarketError::bad(UNSETTLEABLE));
+    };
+    let Some(net_minor) = gross.minor().checked_sub(cut_total).filter(|n| *n >= 0) else {
+        return Err(MarketError::bad(UNSETTLEABLE));
+    };
+    let net = Amount::from_minor(net_minor);
     // 15. The quote id, the window and cutoff, and the marker id.
     let Some(quote) = ctx
         .w
@@ -3876,5 +3934,149 @@ mod tests {
             "fits i64, overflows the product"
         );
         assert_eq!(gross_of(20, price), Some(Amount::from_minor(56_000)));
+    }
+
+    #[test]
+    fn t2a_maker_spread_scales_in_i128_and_refuses_overflow() {
+        let mut store = MarketStore::default();
+        let market = crate::ids::MarketId::new("default").unwrap();
+        let source_id = crate::ids::MarketSourceId(1);
+        store.sources.insert(
+            source_id,
+            crate::record::MarketSource {
+                id: source_id,
+                principal: mush_org::OrgId(1),
+                market: market.clone(),
+                cash: mush_economy::AccountId(1),
+                inventory: mush_economy::VaultId(1),
+                spread: 100, // +10% (factor = 1100 / 1000)
+                volume_budget: Amount::from_minor(i64::MAX),
+                loss_budget: Amount::from_minor(i64::MAX),
+                window: 86_400,
+                volume_used: Amount::ZERO,
+                loss_used: Amount::ZERO,
+                window_started: 0,
+                halted: false,
+                revision: 1,
+            },
+        );
+        let make_listing = |minor: i64| Listing {
+            id: ListingId(1),
+            seller: PrincipalId::Organization(mush_org::OrgId(1)),
+            vendor: crate::ids::VendorId(1),
+            market: market.clone(),
+            catalog: mush_economy::CatalogRef {
+                ruleset: "test".into(),
+                code: "x".into(),
+            },
+            definition_version: 1,
+            source: Supply::Market { source: source_id },
+            object: None,
+            price: Amount::from_minor(minor),
+            quantity: 10,
+            visibility: crate::record::MarketVisibility::Public,
+            expires: EconomicDeadline {
+                clock: EconomicClock::RealUtc,
+                at: 100_000,
+            },
+            revision: 1,
+            draw: Some(false),
+            account: None,
+            private_to: None,
+            escrow: None,
+        };
+
+        // Previously `i64::saturating_mul(1100) / 1000` collapsed i64::MAX / 2 to i64::MAX / 1000 (~0.2% of value).
+        let big = i64::MAX / 2;
+        let expected = i64::try_from((i128::from(big) * 1_100) / 1_000).unwrap();
+        let l_big = make_listing(big);
+        assert_eq!(
+            checked_price_for(&l_big, Some(&store)),
+            Some(Amount::from_minor(expected))
+        );
+        assert_eq!(
+            price_for(&l_big, Some(&store)),
+            Amount::from_minor(expected)
+        );
+
+        // When the spread-adjusted price truly exceeds i64::MAX, checked_price_for refuses
+        // (`None`) while display `price_for` clamps to i64::MAX rather than collapsing.
+        let l_max = make_listing(i64::MAX);
+        assert_eq!(checked_price_for(&l_max, Some(&store)), None);
+        assert_eq!(
+            price_for(&l_max, Some(&store)),
+            Amount::from_minor(i64::MAX)
+        );
+    }
+
+    #[test]
+    fn t2a_checked_total_booked_loss_and_maker_budget_refuse_overflow() {
+        assert_eq!(
+            checked_total_for(Amount::from_minor(i64::MAX / 2), 3),
+            None,
+            "price * qty overflow must return None"
+        );
+        assert_eq!(checked_total_for(Amount::from_minor(1_000), u64::MAX), None);
+        assert_eq!(
+            checked_total_for(Amount::from_minor(1_000), 5),
+            Some(Amount::from_minor(5_000))
+        );
+
+        let entry = crate::record::CatalogEntry {
+            catalog: mush_economy::CatalogRef {
+                ruleset: "test".into(),
+                code: "x".into(),
+            },
+            pack: "test".into(),
+            definition_version: 1,
+            name: "X".into(),
+            baseline: Some(Amount::from_minor(i64::MAX)),
+            legality: crate::record::Legality::Legal,
+            availability: crate::record::AvailabilityRule::None,
+            representation: Representation::Instrument,
+            rules_ref: None,
+            stackable: true,
+            tags: std::collections::BTreeSet::new(),
+        };
+        assert_eq!(
+            checked_booked_loss(&entry, Amount::from_minor(1), 2),
+            None,
+            "loss overflow must return None"
+        );
+        assert_eq!(
+            checked_booked_loss(&entry, Amount::from_minor(i64::MAX), 5),
+            Some(Amount::ZERO)
+        );
+
+        // Even with i64::MAX budgets, overflowing `volume_used + total` or `loss_used + loss`
+        // must refuse rather than silently saturating at i64::MAX <= i64::MAX.
+        let maker = crate::record::MarketSource {
+            id: crate::ids::MarketSourceId(1),
+            principal: mush_org::OrgId(1),
+            market: crate::ids::MarketId::new("default").unwrap(),
+            cash: mush_economy::AccountId(1),
+            inventory: mush_economy::VaultId(1),
+            spread: 0,
+            volume_budget: Amount::from_minor(i64::MAX),
+            loss_budget: Amount::from_minor(i64::MAX),
+            window: 86_400,
+            volume_used: Amount::from_minor(i64::MAX - 5),
+            loss_used: Amount::from_minor(i64::MAX - 5),
+            window_started: 0,
+            halted: false,
+            revision: 1,
+        };
+        assert_eq!(
+            maker.refuses(Amount::from_minor(10), Amount::ZERO),
+            Some("volume")
+        );
+        assert_eq!(
+            maker.refuses(Amount::ZERO, Amount::from_minor(10)),
+            Some("loss")
+        );
+        assert_eq!(
+            maker.refuses(Amount::from_minor(5), Amount::from_minor(5)),
+            None
+        );
     }
 }

@@ -1619,3 +1619,56 @@ fn high26_jobs_listing_is_paginated() {
     let out = run(env.wanda, &mut env, "+jobs 5");
     assert!(has_text(&out, "No jobs on page 5"), "{:?}", sys_texts(&out));
 }
+
+#[test]
+fn note_hides_non_self_targets_staff_only_deletes_and_staff_only_quota() {
+    let mut env = setup();
+
+    // 1. Non-staff probing another character, a room dbref, or a nonexistent name
+    // must get the exact same refusal ("Permission denied.") with no existence oracle.
+    let other_char = sys_texts(&run(env.bob, &mut env, "+note Nick"));
+    let room_ref = sys_texts(&run(env.bob, &mut env, "+note #0"));
+    let missing = sys_texts(&run(env.bob, &mut env, "+note NobodyHere"));
+    assert_eq!(other_char, vec!["Permission denied."]);
+    assert_eq!(other_char, room_ref);
+    assert_eq!(other_char, missing);
+
+    let approve_other = sys_texts(&run(env.bob, &mut env, "+note/approve Nick/x"));
+    let approve_missing = sys_texts(&run(env.bob, &mut env, "+note/approve Nobody/x"));
+    assert_eq!(approve_other, vec!["Permission denied."]);
+    assert_eq!(approve_other, approve_missing);
+
+    // 2. Empty-text delete on a hidden staff-only note must return "No such note.",
+    // identical to deleting an absent category, and must NOT delete the staff note.
+    run(
+        env.rita,
+        &mut env,
+        "+note/staff Nick/watch=Hidden staff watch.",
+    );
+    let del_staff = sys_texts(&run(env.nick, &mut env, "+note me/watch="));
+    let del_absent = sys_texts(&run(env.nick, &mut env, "+note me/nonexistent="));
+    assert_eq!(del_staff, vec!["No such note."]);
+    assert_eq!(del_staff, del_absent);
+    assert!(
+        get_note(&env.engine.world, env.nick, "watch").is_some(),
+        "hidden staff-only note must survive player delete probe"
+    );
+
+    // 3. Hidden staff-only notes must not consume a player's visible note quota
+    // (nor let a player count staff-only notes by filling their own 64 slots).
+    for i in 0..mush_jobs::MAX_NOTES_PER_OBJECT {
+        let out = run(env.nick, &mut env, &format!("+note me/p{i}=visible {i}"));
+        assert!(
+            has_text(&out, &format!("Note 'p{i}' set on Nick.")),
+            "player slot {i} blocked by hidden staff-only note: {:?}",
+            sys_texts(&out)
+        );
+    }
+    // Staff can still add another staff-only note even when player slots are full.
+    let out = run(
+        env.rita,
+        &mut env,
+        "+note/staff Nick/watch2=Second hidden note.",
+    );
+    assert!(has_text(&out, "Note 'watch2' set on Nick."));
+}

@@ -43,9 +43,16 @@ pub fn ansi_len(s: &str) -> usize {
     n
 }
 
+/// Longest active SGR escape sequence that [`wrap_indent`] will reopen across
+/// wrapped lines. Any legitimate SGR emitted by `mush-ansi` (all modifiers +
+/// 24-bit fg/bg) is under 50 bytes; capping here prevents quadratic byte
+/// amplification from crafted oversized CSI sequences.
+const MAX_REOPEN_SGR_BYTES: usize = 64;
+
 /// Track the SGR style left active after scanning `tok`.
 ///
-/// `None` means reset/plain. Only whole `ESC [ ... m` sequences update the
+/// `None` means reset/plain (or an oversized SGR that must not be repeated
+/// across wrapped lines). Only whole `ESC [ ... m` sequences update the
 /// state; the renderer always emits complete self-describing sequences, so
 /// the last non-reset SGR *is* the active style.
 fn update_active_sgr(active: &mut Option<String>, tok: &str) {
@@ -63,7 +70,7 @@ fn update_active_sgr(active: &mut Option<String>, tok: &str) {
                 i += 1;
                 if fin == b'm' {
                     let seq = &tok[start..i];
-                    if seq == "\x1b[m" || seq == RESET {
+                    if seq == "\x1b[m" || seq == RESET || seq.len() > MAX_REOPEN_SGR_BYTES {
                         *active = None;
                     } else {
                         *active = Some(seq.to_string());
@@ -106,15 +113,18 @@ pub const MIN_HANG_BODY: usize = 8;
 /// labelled room fact wraps under its label).
 ///
 /// The indent is dropped (treated as `0`) when it would leave fewer than
-/// [`MIN_HANG_BODY`] columns, and never applies at `width == 0`. The pad is
-/// inserted *before* a reopened style, so the indent itself is never
-/// coloured, and each line stays style-self-contained as in [`wrap`].
+/// [`MIN_HANG_BODY`] columns or exceed half of `width`, and never applies at
+/// `width == 0`. The pad is inserted *before* a reopened style, so the indent
+/// itself is never coloured. Styles are closed and reopened across breaks only
+/// when `width >= MIN_HANG_BODY` and the active SGR is bounded relative to
+/// `width`, keeping worst-case output linear even at `width == 1`.
 #[must_use]
 pub fn wrap_indent(s: &str, width: usize, indent: usize) -> Vec<String> {
     if width == 0 {
         return vec![s.to_string()];
     }
-    let indent = if indent + MIN_HANG_BODY > width {
+    let indent = if indent.saturating_add(MIN_HANG_BODY) > width || indent.saturating_mul(2) > width
+    {
         0
     } else {
         indent
@@ -129,13 +139,18 @@ pub fn wrap_indent(s: &str, width: usize, indent: usize) -> Vec<String> {
 
     for tok in s.split(' ') {
         let tok_vis = ansi_len(tok);
-        if !first_in_line && cur_vis + 1 + tok_vis > width {
-            if active.is_some() {
+        if !first_in_line && cur_vis.saturating_add(1).saturating_add(tok_vis) > width {
+            let reopen = active.as_deref().filter(|sgr| {
+                width >= MIN_HANG_BODY
+                    && sgr.len() <= MAX_REOPEN_SGR_BYTES
+                    && sgr.len() <= width.saturating_mul(3)
+            });
+            if reopen.is_some() {
                 cur.push_str(RESET);
             }
             lines.push(std::mem::take(&mut cur));
             cur.push_str(&pad);
-            if let Some(sgr) = &active {
+            if let Some(sgr) = reopen {
                 cur.push_str(sgr);
             }
             cur_vis = indent;
@@ -256,5 +271,47 @@ mod tests {
         let lines = wrap(s, 9);
         assert_eq!(lines[0], "\x1b[31mred\x1b[0m plain");
         assert_eq!(lines[1], "plain");
+    }
+
+    #[test]
+    fn wrap_indent_stays_linear_at_width_one_extreme_indent_and_huge_sgr() {
+        // Width 1 with full TrueColor fg+bg+attr SGR previously expanded ~25x.
+        let tc = "\x1b[1;2;3;4;7;38;2;255;255;255;48;2;255;255;255m";
+        let body = "a ".repeat(1_000);
+        let styled = format!("{tc}{body}{RESET}");
+        let lines = wrap_indent(&styled, 1, 0);
+        let out_bytes: usize = lines.iter().map(String::len).sum();
+        assert!(
+            out_bytes <= styled.len(),
+            "width=1 styled wrap must stay linear, got {out_bytes} bytes from {} bytes",
+            styled.len()
+        );
+
+        // Extreme indent near width - MIN_HANG_BODY previously expanded ~49x.
+        let plain = "word ".repeat(200);
+        let wide_indent = wrap_indent(&plain, 400, 392);
+        let indent_bytes: usize = wide_indent.iter().map(String::len).sum();
+        assert!(
+            indent_bytes <= plain.len() * 2,
+            "extreme indent must be dropped, got {indent_bytes} bytes from {} bytes",
+            plain.len()
+        );
+
+        // usize::MAX indent must not overflow.
+        assert_eq!(
+            wrap_indent("alpha beta gamma", 10, usize::MAX),
+            wrap("alpha beta gamma", 10)
+        );
+
+        // Crafted multi-kilobyte SGR must not cause quadratic amplification.
+        let giant_sgr = format!("\x1b[{}m", "1;".repeat(2_000));
+        let hostile = format!("{giant_sgr}{}", "word ".repeat(400));
+        let wrapped = wrap_indent(&hostile, 80, 0);
+        let hostile_out: usize = wrapped.iter().map(String::len).sum();
+        assert!(
+            hostile_out <= hostile.len() * 2,
+            "oversized SGR must not repeat per line: {hostile_out} vs {}",
+            hostile.len()
+        );
     }
 }

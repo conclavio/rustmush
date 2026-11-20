@@ -621,6 +621,10 @@ pub struct DiscordBridge<A: AuthBackend + 'static> {
     char_accounts: Mutex<CharAccountCache>,
     /// Bounds concurrent linkdead `auto_follow` tasks (STRAG-M10).
     auto_follow_sem: Arc<Semaphore>,
+    /// Bounds concurrent outbound `relay_out` tasks spawned by [`BridgeRelay`].
+    relay_out_sem: Arc<Semaphore>,
+    /// Bounds concurrent non-`Revoke` control tasks spawned by [`BridgeControl`].
+    control_sem: Arc<Semaphore>,
     /// The Discord channel staff-facing lines go to (D5, `[discord]
     /// .staff_channel_id`); `0` drops them.
     staff_channel_id: u64,
@@ -650,6 +654,10 @@ const MAX_CHAR_ACCOUNT_CACHE: usize = 4_096;
 const CHAR_ACCOUNT_SCAN_COOLDOWN: Duration = Duration::from_secs(30);
 /// Maximum concurrent linkdead `auto_follow` attaches in flight (STRAG-M10).
 const MAX_CONCURRENT_AUTO_FOLLOW: usize = 32;
+/// Maximum concurrent outbound `relay_out` tasks spawned by [`BridgeRelay`].
+const MAX_CONCURRENT_RELAY_OUT: usize = 64;
+/// Maximum concurrent non-`Revoke` Discord control tasks spawned by [`BridgeControl`].
+const MAX_CONCURRENT_CONTROLS: usize = 32;
 
 /// Sliding-window limiter admission with bounded map cardinality (STRAG-M10):
 /// prunes expired entries before admitting a new key and fails closed if the
@@ -784,6 +792,8 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             follow_limiter: Mutex::new(HashMap::new()),
             char_accounts: Mutex::new(CharAccountCache::default()),
             auto_follow_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_AUTO_FOLLOW)),
+            relay_out_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY_OUT)),
+            control_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_CONTROLS)),
             staff_channel_id: config.staff_channel_id,
         }
     }
@@ -1684,14 +1694,24 @@ impl<A: AuthBackend + 'static> DiscordControl for BridgeControl<A> {
         };
         let actor = char_key_obj(CharKey(char));
         if op == DiscordControlOp::Revoke {
-            let conn = bridge.invalidate_character(actor);
-            rt.spawn(async move {
-                if let Some(conn) = conn {
+            // Revocation is security-critical: never shed a live follow's quit,
+            // and skip spawning when the character had no active follow.
+            if let Some(conn) = bridge.invalidate_character(actor) {
+                rt.spawn(async move {
                     bridge.core.quit(conn).await;
-                }
-            });
+                });
+            }
         } else {
+            let Ok(permit) = Arc::clone(&bridge.control_sem).try_acquire_owned() else {
+                tracing::warn!(
+                    character = char,
+                    ?op,
+                    "discord control concurrency limit reached; shedding control"
+                );
+                return;
+            };
             rt.spawn(async move {
+                let _permit = permit;
                 bridge.apply_control(actor, op).await;
             });
         }
@@ -1845,11 +1865,28 @@ impl<A: AuthBackend + 'static> RelaySink for BridgeRelay<A> {
         let Some(bridge) = self.0.upgrade() else {
             return;
         };
+        if channel == STAFF_RELAY_SINK {
+            if bridge.staff_channel_id == 0 {
+                tracing::debug!("staff relay line with no staff channel; dropped");
+                return;
+            }
+        } else if bridge.relay.outbound(channel).is_none() {
+            tracing::debug!(channel, "relay line for an unmapped channel dropped");
+            return;
+        }
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let Ok(permit) = Arc::clone(&bridge.relay_out_sem).try_acquire_owned() else {
+            tracing::warn!(
+                channel,
+                "discord relay_out concurrency limit reached; dropping outbound line"
+            );
             return;
         };
         let channel = channel.to_string();
         rt.spawn(async move {
+            let _permit = permit;
             bridge.relay_out(&channel, &event).await;
         });
     }
@@ -4251,5 +4288,72 @@ mod tests {
             );
             assert!(content.ends_with('…'));
         }
+    }
+
+    #[tokio::test]
+    async fn bridge_relay_and_control_bound_spawn_concurrency_without_starving_revoke() {
+        let r = rig_with(relay_config()).await;
+        let relay = BridgeRelay(Arc::downgrade(&r.bridge));
+        let control = BridgeControl(Arc::downgrade(&r.bridge));
+
+        // Exhaust all relay_out permits: excess outbound lines are shed cleanly.
+        let held_relay = r
+            .bridge
+            .relay_out_sem
+            .acquire_many(MAX_CONCURRENT_RELAY_OUT as u32)
+            .await
+            .expect("acquire relay_out permits");
+        let line = Arc::new(channel_line("Public", NarrativeKind::Say, "shed me"));
+        relay.relay("Public", Arc::clone(&line));
+        tokio::task::yield_now().await;
+        assert!(
+            r.api.calls().is_empty(),
+            "outbound relay must be shed while relay_out_sem is exhausted"
+        );
+        drop(held_relay);
+
+        // Once permits are free, normal outbound relay resumes (and unmapped channels
+        // never spawn or invoke Discord API).
+        relay.relay("Unmapped", Arc::clone(&line));
+        relay.relay("Public", Arc::clone(&line));
+        let delivered = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if !r.api.calls().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            delivered.is_ok(),
+            "relay_out should resume once permits free"
+        );
+        assert_eq!(r.api.calls().len(), 1);
+
+        // Attach a live follow, then exhaust all non-Revoke control permits:
+        // Follow/Quiet controls are shed, but Revoke still invalidates and quits!
+        linked(&r.store, "Nick", USER, |_| {}).await;
+        assert!(matches!(
+            r.bridge.follow(USER, Some("Nicky")).await,
+            FollowOutcome::Following { .. }
+        ));
+        assert!(r.bridge.following(USER).is_some());
+
+        let held_controls = r
+            .bridge
+            .control_sem
+            .acquire_many(MAX_CONCURRENT_CONTROLS as u32)
+            .await
+            .expect("acquire control permits");
+        control.control(u64::from(NICKY.0), DiscordControlOp::Quiet(true));
+        tokio::task::yield_now().await;
+        // Revoke must bypass control_sem and immediately tear down the live follow.
+        control.control(u64::from(NICKY.0), DiscordControlOp::Revoke);
+        assert!(
+            r.bridge.following(USER).is_none(),
+            "Revoke must invalidate live follow even while control_sem is saturated"
+        );
+        drop(held_controls);
     }
 }

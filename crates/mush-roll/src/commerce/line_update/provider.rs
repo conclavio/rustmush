@@ -165,6 +165,12 @@ impl UpdateProvider {
             term.generation,
             None,
         )?;
+        super::super::charter_pending::current::require_clear_in_txn(
+            txn,
+            ctx.world().map_err(bad)?,
+            &self.families,
+            line.charter,
+        )?;
         let ownership = super::super::charter_transfer::history::current_in_txn(
             txn,
             ctx.world().map_err(bad)?,

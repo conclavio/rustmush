@@ -7,6 +7,7 @@
 // Everything here is a pure function over wire types so the vitest suite
 // covers it without a DOM.
 
+import { exitCommand } from "./keys";
 import type {
   Color,
   NarrativeKind,
@@ -312,15 +313,26 @@ export interface ChannelLineInput {
   text: RichText;
 }
 
+const SAFE_HEX_COLOR_RE = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
+
+/**
+ * Validate a CSS hex color string strictly (`#RGB` or `#RRGGBB`) before
+ * interpolating it into any inline `style` attribute.
+ */
+export function safeColorHex(hex: string | null | undefined): string | null {
+  return typeof hex === "string" && SAFE_HEX_COLOR_RE.test(hex) ? hex : null;
+}
+
 /**
  * `[Public] Title Name: text` — the classic channel render. `colorHex`
  * (comsys.state's `color.web_hex`) tints the `[channel]` prefix.
  */
 export function channelLine(msg: ChannelLineInput, colorHex?: string | null): RLine {
+  const safeHex = safeColorHex(colorHex);
   const prefix: RSpan = {
     text: `[${msg.channel}]`,
     cls: "tag-channel",
-    css: colorHex && /^#[0-9a-f]{3,8}$/i.test(colorHex) ? `color: ${colorHex}` : "",
+    css: safeHex ? `color: ${safeHex}` : "",
     cmd: null,
   };
   const rich = renderRich(msg.text);
@@ -365,7 +377,7 @@ export function roomLines(view: RoomView): RLine[] {
       if (i > 0) {
         line.push(mk("  "));
       }
-      line.push(mk(exit.name, "exit", exit.name));
+      line.push(mk(exit.name, "exit", exitCommand(exit.name) ?? undefined));
     });
     lines.push(line);
   }

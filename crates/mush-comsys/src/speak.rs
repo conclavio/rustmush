@@ -17,16 +17,70 @@
 //! have their [`crate::data::Membership::last_read`] cursor advanced (and mirrored),
 //! which is what makes the login unread notice honest.
 
+use std::collections::{BTreeMap, VecDeque};
+
 use mush_core::lock::MAX_LOCK_DEPTH;
 use mush_core::output::obj_ref;
 use mush_core::{
     AliasOutcome, AliasStage, Audience, Ctx, ModuleWrite, ObjId, Outbox, RelayRefusal,
-    RelaySpeaker, World, eval_lock, is_ignoring,
+    RelaySpeaker, Role, World, eval_lock, is_ignoring, perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
 
 use crate::data::{ChanMsg, ChannelId, ComsysState, chan_key, hist_key, member_key, push_op};
+
+/// Hard UTF-8 byte cap on one OOC channel message.
+pub const MAX_OOC_TEXT_BYTES: usize = 4_096;
+
+/// Rolling window (seconds) for per-actor OOC channel speech rate limiting.
+pub const OOC_RATE_WINDOW_SECS: i64 = 10;
+
+/// Maximum OOC channel messages a non-staff actor may send within
+/// [`OOC_RATE_WINDOW_SECS`].
+pub const OOC_RATE_MAX_PER_WINDOW: usize = 20;
+
+/// Maximum distinct actors retained in the transient OOC rate table before
+/// stale entries are swept.
+const MAX_RATE_TRACKED_ACTORS: usize = 4_096;
+
+/// Transient in-RAM rolling-window rate limiter for OOC channel speech.
+///
+/// Stored in its own module state slot so [`ComsysState`] keeps its persisted
+/// shape and equality semantics.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OocSpeakRate {
+    by_actor: BTreeMap<ObjId, VecDeque<i64>>,
+}
+
+impl OocSpeakRate {
+    /// Record an OOC channel utterance for `actor` at `now` (Unix seconds),
+    /// returning `false` when the actor has exhausted the rolling window.
+    pub(crate) fn check_and_record(&mut self, actor: ObjId, now: i64) -> bool {
+        let cutoff = now.saturating_sub(OOC_RATE_WINDOW_SECS);
+        if self.by_actor.len() >= MAX_RATE_TRACKED_ACTORS && !self.by_actor.contains_key(&actor) {
+            self.by_actor
+                .retain(|_, q| q.back().is_some_and(|&ts| ts > cutoff));
+            if self.by_actor.len() >= MAX_RATE_TRACKED_ACTORS {
+                let _ = self.by_actor.pop_first();
+            }
+        }
+        let bucket = self.by_actor.entry(actor).or_default();
+        while bucket.front().is_some_and(|&ts| ts <= cutoff) {
+            let _ = bucket.pop_front();
+        }
+        if bucket.len() >= OOC_RATE_MAX_PER_WINDOW {
+            return false;
+        }
+        bucket.push_back(now);
+        true
+    }
+
+    /// Drop any rate-limit state for a destroyed actor.
+    pub(crate) fn remove_actor(&mut self, actor: ObjId) {
+        self.by_actor.remove(&actor);
+    }
+}
 
 /// The comsys alias stage (registered via `Registrar::alias_stage`).
 pub struct ComsysAliases;
@@ -166,6 +220,30 @@ pub(crate) fn channel_speak(
             out.error(actor, error);
         }
         return;
+    }
+
+    // OOC length and per-actor frequency bounds: cap payload size for everyone
+    // so a single line cannot bloat the recall ring, and throttle non-staff
+    // speakers so spam bursts cannot flood channels or evict history.
+    if text.len() > MAX_OOC_TEXT_BYTES {
+        out.error(
+            actor,
+            format!("Channel message is too long (maximum {MAX_OOC_TEXT_BYTES} bytes)."),
+        );
+        return;
+    }
+    if !perm::has_role(w, actor, Role::Royalty) {
+        let now = w.now();
+        let allowed = w
+            .module_state_mut::<OocSpeakRate>()
+            .is_none_or(|rate| rate.check_and_record(actor, now));
+        if !allowed {
+            out.error(
+                actor,
+                "You are sending channel messages too quickly. Please wait a moment.",
+            );
+            return;
+        }
     }
 
     // Phase 1: bump seq, snapshot what delivery needs, then release the
