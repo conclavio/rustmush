@@ -254,7 +254,13 @@ pub(crate) const fn takes_share(status: EnrolmentStatus) -> bool {
 /// Whether the sale's source is an enrolled hold, and if so the enrolment's frozen
 /// permille. `Err` for a live charter with dark books or another pilot.
 fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefusal> {
-    enrolled_at(w, sale.source, sale.seller)
+    let seller = match sale.seller {
+        PrincipalId::Object(who) => Some(*who),
+        // Doc 50b item 8: an organization's listing reaches the policy too. No organization is
+        // a charter's pilot, so one selling out of a chartered hold is refused as another's.
+        _ => None,
+    };
+    enrolled_at(w, sale.source, seller)
 }
 
 /// Whether `source` is an enrolled hold, and if so the enrolment's frozen permille; `Err` for
@@ -262,7 +268,7 @@ fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefu
 fn enrolled_at(
     w: &World,
     source: EndpointRef,
-    seller: ObjId,
+    seller: Option<ObjId>,
 ) -> Result<Option<u32>, ProceedsRefusal> {
     let Some(view) = governed_hold(w, source) else {
         return Ok(None);
@@ -284,7 +290,7 @@ fn enrolled_at(
     let Some(enrolment) = enrolment else {
         return Err(refuse(SALE_BOOKS_DARK.to_owned()));
     };
-    if enrolment.pilot != seller {
+    if Some(enrolment.pilot) != seller {
         return Err(refuse(SALE_NOT_PILOT.replace("{name}", &name_of(w, hull))));
     }
     Ok(Some(enrolment.share_permille))

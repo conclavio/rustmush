@@ -337,8 +337,11 @@ pub const MAX_PROCEEDS_MEMO_BYTES: usize = 24;
 /// passed when the policy is asked.
 #[derive(Clone, Debug)]
 pub struct SaleTerms<'a> {
-    /// The seller — the player who typed the sale (or IC11's executor's principal).
-    pub seller: ObjId,
+    /// The seller — the player who typed the sale (or IC11's executor's principal), or a lot
+    /// ask's seller principal: a person, or an organization listing with `as=` (doc 50b item 8:
+    /// every seller's sale is the policy's to answer, so a venue's duty falls on an
+    /// organization's listing too).
+    pub seller: &'a PrincipalId,
     /// The endpoint the goods leave from.
     pub source: mush_inventory::EndpointRef,
     /// The bidding house (the bid listing's seller).

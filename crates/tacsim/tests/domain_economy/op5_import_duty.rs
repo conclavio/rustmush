@@ -9,9 +9,14 @@
 //!   the goods' catalog value comes out of the proceeds, paid to Republic Customs, and the sale's
 //!   line names the duty with its reason.
 //!
-//! **What is a fixture.** The propellant seeded in her hold at Isidis for each sale, the stores
-//! for her two hops, and the Republic's de facto hold on the Concession through staff's
-//! `@faction/control`, as the operation's resolution writes it.
+//! Doc 50b item 8: **an organization's listing pays it too.** An officer lists a lot of
+//! propellant from her locker at Isidis for her organization (`as=`); under the Republic the
+//! buyer's purchase pays Republic Customs the duty out of the organization's proceeds.
+//!
+//! **What is a fixture.** The propellant seeded in her hold (or her locker) at Isidis for each
+//! sale, the stores for her two hops, the organization and its account (staff's `@org`), the
+//! buyer's credit (`@econ/mint`), and the Republic's de facto hold on the Concession through
+//! staff's `@faction/control`, as the operation's resolution writes it.
 
 use mush_core::{GOD, ObjId, World};
 use mush_economy::{AccountId, EconomyStore};
@@ -19,7 +24,8 @@ use mush_inventory::LotId;
 
 use crate::driving_rig::{
     Rig, advance_to, board, cid, drain, file_and_launch, hold_vault_of, land_all, land_quietly,
-    load, port_map, prospector, run, seed_pool, station_room, stocked, sweep, teleport,
+    load, pilot, port_map, prospector, run, seed_lot, seed_pool, station_room, stocked, sweep,
+    teleport,
 };
 
 const QTY: u64 = 10;
@@ -154,5 +160,125 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
         balance(rig.tw.world(), own_account(&rig, pilot)) - before.0,
         free_net - duty,
         "it comes out of her proceeds: the same sale pays her the duty less"
+    );
+}
+
+/// A player at the Isidis market with a credit account and an open locker there: the player and
+/// the locker's vault.
+fn at_isidis(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, mush_economy::VaultId) {
+    let player = pilot(rig, who, seed);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", player.0),
+    );
+    let market = station_room(&rig.tw, "isidis_port", "room.i03_market");
+    teleport(&mut rig.tw, player, market);
+    let opened = run(&mut rig.tw, player, "+locker/open");
+    let venue = mush_market::MarketId::new("isidis").expect("venue");
+    let locker = tacsim::port::locker::locker_of(rig.tw.world(), player, &venue)
+        .map(|l| mush_economy::VaultId(l.vault))
+        .unwrap_or_else(|| panic!("a locker at Isidis: {opened}"));
+    (player, locker)
+}
+
+/// **Doc 50b item 8: an organization's listing pays the import duty** (Q-50-59: "into a bid or
+/// from a listing"). Under the Republic an officer lists 10 t of propellant from her own locker at
+/// Isidis for her organization (`+market/post … as=`), and a buyer takes it up: Republic Customs
+/// is paid 5% of the catalog value, out of the organization's proceeds. Before the fix the market
+/// asked the proceeds policy only of a person's listing, and the sale went duty-free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op5_an_organizations_listing_pays_the_import_duty() {
+    let mut rig = stocked();
+    let price = 6_000_i64;
+    let gross = i64::try_from(QTY).expect("fits") * price;
+    let duty = i64::try_from(QTY).expect("fits") * 40 * 100 * 50 / 1_000;
+    let held = run(
+        &mut rig.tw,
+        GOD,
+        "@faction/control Isidis Concession=Republic/defacto",
+    );
+    assert!(!held.contains("Usage"), "{held}");
+    let (officer, locker) = at_isidis(&mut rig, "Officer", 92);
+    for line in [
+        "@org/create Lark".to_owned(),
+        format!("@org/grant #{}=Lark economy.account.post", officer.0),
+        format!("@account/open org:Lark={}", tacsim::CREDIT),
+    ] {
+        let out = run(&mut rig.tw, GOD, &line);
+        assert!(!out.contains("Permission denied"), "{line}: {out}");
+    }
+    seed_lot(&mut rig, locker, "propellant", QTY, LotId(0x0f59));
+    let listed = run(
+        &mut rig.tw,
+        officer,
+        &format!("+market/post {} price={price} as=Lark", LotId(0x0f59)),
+    );
+    assert!(listed.contains("Listed for sale as #"), "{listed}");
+    let id: u64 = listed
+        .split("Listed for sale as #")
+        .nth(1)
+        .and_then(|rest| {
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|n| n.parse().ok())
+        })
+        .unwrap_or_else(|| panic!("a listing id: {listed}"));
+    let lark = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|m| m.listing(mush_market::ListingId(id)).cloned())
+        .map(|l| {
+            assert!(
+                matches!(l.seller, mush_org::PrincipalId::Organization(_)),
+                "listed for the organization: {l:?}"
+            );
+            l.account.expect("the organization's account")
+        })
+        .expect("the organization's listing");
+
+    let (buyer, into) = at_isidis(&mut rig, "Buyer", 93);
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let wallet = own_account(&rig, buyer);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} 10000000", wallet.0),
+    );
+    let before = (
+        balance(rig.tw.world(), lark),
+        balance(rig.tw.world(), customs(&rig)),
+    );
+    let quoted = run(&mut rig.tw, buyer, &format!("+market/quote {id}"));
+    let quote = quoted
+        .split("Quote #")
+        .nth(1)
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or_else(|| panic!("a quote: {quoted}"))
+        .to_owned();
+    let accepted = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/accept {quote} to={}", into.0),
+    );
+    assert!(!accepted.contains("cannot"), "{accepted}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    for _ in 0..6 {
+        sweep(&mut rig.tw, 31);
+    }
+    crate::in10_pools::settle(&mut rig, 3);
+    assert_eq!(
+        balance(rig.tw.world(), customs(&rig)) - before.1,
+        duty,
+        "Republic Customs is paid the duty on the organization's sale: {accepted}"
+    );
+    let paid = balance(rig.tw.world(), lark) - before.0;
+    assert!(
+        paid > 0 && paid <= gross - duty,
+        "the duty comes out of the organization's proceeds: {paid} of {gross}"
     );
 }

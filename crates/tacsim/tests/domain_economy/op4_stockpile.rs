@@ -9,7 +9,8 @@
 //!   level. At the threshold the close probe is met and Hold the Concession moves once that month;
 //!   the arm posts nothing more while the farm stands there.
 //! - **An untaken haul** is carried by Ceres' hauling house after seven IC days, in a real hull,
-//!   by the Kirkwood route, and delivered into the tank farm.
+//!   by the Kirkwood route, and delivered into the tank farm. Doc 50b item 1: she sails home to
+//!   Ceres on the stores she filled for the leg back, and carries a second haul.
 //! - **A house hull at the picket** pays the transit duty from the house's own account.
 //!
 //! **What is a fixture.** Propellant seeded into the tank farm's vault, a stand-in for the
@@ -256,7 +257,8 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
 
 /// **Doc 50 cut OP.4: an untaken haul is carried by the hauling house** (Q-50-24): seven IC days
 /// after the arm posts it, Ceres' house takes it in VCC-01, flies it by Stickney to Isidis and
-/// delivers it into the tank farm; the contract settles.
+/// delivers it into the tank farm; the contract settles. Then (doc 50b item 1) she sails home by
+/// Stickney to Ceres and takes another of the arm's hauls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
     let mut rig = opened();
@@ -324,6 +326,56 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
         ),
         "delivered, not lapsed: {:?}",
         contract_state(&rig, job.contract)
+    );
+
+    // Doc 50b item 1: Isidis sells her no stores, and nothing is bid there that she carries. She
+    // filled for the leg home before she left Stickney, so she sails back by Stickney to Ceres,
+    // where the trip ends, and carries another of the arm's hauls.
+    let delivered_at = whereabouts.len();
+    let mut second = None;
+    for _ in 0..(40 * 12) {
+        ahead(&mut rig, 2 * 3_600);
+        let here = match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
+            tacsim::port::ship::Berth::Docked { def, .. } => format!("docked at {}", def.venue),
+            tacsim::port::ship::Berth::UnderWay => "under way".to_owned(),
+            tacsim::port::ship::Berth::Elsewhere => "elsewhere".to_owned(),
+        };
+        if whereabouts.last().is_none_or(|last| !last.ends_with(&here)) {
+            whereabouts.push(format!(
+                "IC day {}: {here}",
+                ic_now(&rig.tw).div_euclid(DAY)
+            ));
+        }
+        if let Some(next) = haul::hauls(rig.tw.world()).into_iter().find(|j| {
+            stockpile::is_arm_haul(rig.tw.world(), j.contract)
+                && j.contract != job.contract
+                && j.hull.map(|h| h.0) == Some(hull.0)
+        }) {
+            second = Some(next);
+            break;
+        }
+    }
+    let home = &whereabouts[delivered_at..];
+    let second = second.unwrap_or_else(|| {
+        panic!(
+            "she never carried a second haul: {whereabouts:?}
+{:?}
+{}",
+            vcc01(&rig),
+            plan_log(&rig, hull)
+        )
+    });
+    assert!(
+        home.iter().any(|w| w.ends_with("docked at stickney"))
+            && home.iter().any(|w| w.ends_with("docked at ceres")),
+        "home by Stickney to Ceres: {whereabouts:?}"
+    );
+    let row = vcc01(&rig);
+    assert!(row.trips >= 1, "the first trip ended: {row:?}");
+    assert_eq!(
+        row.trip.as_ref().and_then(|t| t.haul),
+        Some(second.contract),
+        "the second haul is her trip in hand: {row:?}"
     );
 }
 

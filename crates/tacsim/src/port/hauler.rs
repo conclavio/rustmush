@@ -387,15 +387,55 @@ fn stores_priced(
         .max(1)
         .min(tank);
     let stores = u64::from(days).saturating_add(1);
-    let price = |good: &CanonicalId| {
-        crate::port::executor::ask_at(ctx.w, def, map, good)
-            .map(|ask| ask.price.minor())
-            .ok_or_else(|| format!("no {good} ask here"))
-    };
-    let fuel_minor = price(&propellant)?.saturating_mul(i64::try_from(fuel).unwrap_or(i64::MAX));
-    let stores_minor =
-        price(&provisions)?.saturating_mul(i64::try_from(stores).unwrap_or(i64::MAX));
+    let fuel_minor = stores_price(ctx, hull, (def, map), &propellant, fuel)?;
+    let stores_minor = stores_price(ctx, hull, (def, map), &provisions, stores)?;
     Ok((fuel_minor.saturating_add(stores_minor), days))
+}
+
+/// **What `need` units of a ship's store cost her here**, minor units: at this port's ask; or,
+/// where no house here sells it (Isidis, doc 50b item 1), out of what is aboard, valued at the
+/// lowest ask the lane posts for it, since she buys it back there. Why it is none: no ask here
+/// while she lacks it, or none anywhere.
+fn stores_price(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    (def, map): (&PortDef, &PortMap),
+    good: &CanonicalId,
+    need: u64,
+) -> Result<i64, String> {
+    let units = i64::try_from(need).unwrap_or(i64::MAX);
+    if let Some(ask) = crate::port::executor::ask_at(ctx.w, def, map, good) {
+        return Ok(ask.price.minor().saturating_mul(units));
+    }
+    if def.authors_ask(good) {
+        // A house here sells it, out of stock for now: look again later.
+        return Err(format!("no {good} ask here"));
+    }
+    let aboard = aboard(ctx, hull, good);
+    if aboard < need {
+        return Err(format!(
+            "no {good} ask here, and {aboard} aboard of the {need} the passage needs"
+        ));
+    }
+    ports_by_venue(ctx.w)
+        .iter()
+        .filter_map(|(d, m)| crate::port::executor::ask_at(ctx.w, d, m, good))
+        .map(|ask| ask.price.minor())
+        .min()
+        .map(|price| price.saturating_mul(units))
+        .ok_or_else(|| format!("no {good} ask on the lane"))
+}
+
+/// **How much of `good` is aboard her**, every compartment; `0` when it cannot be read.
+fn aboard(ctx: &Ctx<'_>, hull: ObjId, good: &CanonicalId) -> u64 {
+    crate::port::ship::hull_view(ctx.w, hull)
+        .and_then(|view| crate::port::ship::readings_of(ctx, &view).ok())
+        .map_or(0, |readings| {
+            readings
+                .iter()
+                .filter_map(|(_, _, contents)| contents.get(good))
+                .sum()
+        })
 }
 
 /// The best trip carrying one of `hauler`'s goods from this port to one port away, if one pays.
@@ -1037,56 +1077,39 @@ fn carry(
             let Ok(to) = CanonicalId::new(job.destination.as_str()) else {
                 return;
             };
-            let Some(next) = next_hop(ctx.w, here_def, &to) else {
-                let mut note = format!("haul {contract}: no route toward {to}");
-                note.truncate(MAX_NOTE);
-                row.note = Some(note);
-                return;
-            };
-            let stores = stores_minor(ctx, hull, (here_def, here_map), &next).unwrap_or(0);
-            let want = i64::try_from(
-                u64::try_from(stores)
-                    .unwrap_or(0)
-                    .saturating_mul(FUND_PERMILLE)
-                    / 1_000,
-            )
-            .unwrap_or(i64::MAX);
-            let short = want.saturating_sub(available(ctx.w, purse));
-            if short > 0
-                && (short > available(ctx.w, house_account)
-                    || !pay(
-                        ctx,
-                        format!("{}/{}/haul-hop/{next}", row.mark, trip.n),
-                        (house_account, purse),
-                        short,
-                        format!("{} funds hauler {} for a hop", hauler.org, row.mark),
-                    ))
-            {
-                return;
-            }
-            let choice = Choice {
-                good: None,
-                to: next,
-                units: 0,
-                ask_major: 0,
-                bid_major: 0,
-                stores_minor: stores,
-                profit_minor: 0,
-                carried: true,
-            };
             let goods = ctx.w.module_state::<TacsimStore>().and_then(|s| s.goods());
             let held_fuel = goods
                 .and_then(|g| crate::port::burn::consumable_good(g, Consumable::Propellant))
                 .filter(|propellant| propellant == &job.good)
                 .map_or(0, |_| job.quantity);
-            if let Some(doc) = plan(ctx, hull, helm, &choice, held_fuel)
-                && let Err(error) = crate::store::put_orders(ctx, &doc)
-            {
-                tracing::warn!(
-                    mark = %row.mark, %error,
-                    "tacsim: a carried haul's hop could not be planned"
-                );
+            hop_toward(
+                ctx,
+                hauler,
+                (hull, helm),
+                (purse, house_account),
+                (here_def, here_map),
+                (&to, "haul-hop", held_fuel),
+                row,
+            );
+        }
+        // Doc 50b item 1: the haul ended away from the port she took it at (delivered at Isidis,
+        // where nothing is bid that she carries): she sails back there hop by hop, where the arm
+        // posts its hauls, before the trip ends. A hop whose plan held ends it where she lies.
+        _ if here_def.venue != trip.from
+            && !state.is_some_and(|doc| doc.author == helm && plan_end(doc) == Some(true)) =>
+        {
+            if running {
+                return;
             }
+            hop_toward(
+                ctx,
+                hauler,
+                (hull, helm),
+                (purse, house_account),
+                (here_def, here_map),
+                (&trip.from, "haul-home", 0),
+                row,
+            );
         }
         // Delivered, lapsed, lost, withdrawn or gone: the trip ends, and what it earned goes home.
         _ => {
@@ -1102,6 +1125,69 @@ fn carry(
                 format!("{} hauler {} pays its haul home", hauler.org, row.mark),
             );
         }
+    }
+}
+
+/// **A carried trip's next hop toward `to`** (doc 50 cut OP.4, doc 50b item 1): the purse funded
+/// for the hop's stores under a ledger key of `leg` and the hop's port, then the plan (the fill,
+/// `held_fuel` more reaction mass, and the departure). A port with no route on toward `to` notes
+/// it for staff.
+fn hop_toward(
+    ctx: &mut Ctx<'_>,
+    hauler: &HaulerDef,
+    (hull, helm): (ObjId, ObjId),
+    (purse, house_account): (AccountId, AccountId),
+    (here_def, here_map): (&PortDef, &PortMap),
+    (to, leg, held_fuel): (&CanonicalId, &str, u64),
+    row: &mut HaulerRow,
+) {
+    let Some(n) = row.trip.as_ref().map(|trip| trip.n) else {
+        return;
+    };
+    let Some(next) = next_hop(ctx.w, here_def, to) else {
+        let mut note = format!("trip {n}: no route toward {to}");
+        note.truncate(MAX_NOTE);
+        row.note = Some(note);
+        return;
+    };
+    let stores = stores_minor(ctx, hull, (here_def, here_map), &next).unwrap_or(0);
+    let want = i64::try_from(
+        u64::try_from(stores)
+            .unwrap_or(0)
+            .saturating_mul(FUND_PERMILLE)
+            / 1_000,
+    )
+    .unwrap_or(i64::MAX);
+    let short = want.saturating_sub(available(ctx.w, purse));
+    if short > 0
+        && (short > available(ctx.w, house_account)
+            || !pay(
+                ctx,
+                format!("{}/{n}/{leg}/{next}", row.mark),
+                (house_account, purse),
+                short,
+                format!("{} funds hauler {} for a hop", hauler.org, row.mark),
+            ))
+    {
+        return;
+    }
+    let choice = Choice {
+        good: None,
+        to: next,
+        units: 0,
+        ask_major: 0,
+        bid_major: 0,
+        stores_minor: stores,
+        profit_minor: 0,
+        carried: true,
+    };
+    if let Some(doc) = plan(ctx, hull, helm, &choice, held_fuel)
+        && let Err(error) = crate::store::put_orders(ctx, &doc)
+    {
+        tracing::warn!(
+            mark = %row.mark, %error,
+            "tacsim: a carried trip's hop could not be planned"
+        );
     }
 }
 
@@ -1493,10 +1579,17 @@ fn step(
     let Some(choice) = choose(ctx, hauler, hull, (&here_def, &here_map), taken) else {
         // A look that priced no passage (a port still stocking its asks) is tried again; one
         // that priced them and found nothing paying waits for the next IC day.
+        // Doc 50b item 1: a port that sells her no stores never will, so its look waits a day too.
         let priced = here_def
             .routes
             .keys()
-            .any(|to| stores_minor(ctx, hull, (&here_def, &here_map), to).is_some());
+            .any(|to| stores_minor(ctx, hull, (&here_def, &here_map), to).is_some())
+            || ctx
+                .w
+                .module_state::<TacsimStore>()
+                .and_then(TacsimStore::goods)
+                .and_then(|g| crate::port::burn::consumable_good(g, Consumable::Propellant))
+                .is_some_and(|propellant| !here_def.authors_ask(&propellant));
         if priced {
             row.idle_day = Some(today);
         }

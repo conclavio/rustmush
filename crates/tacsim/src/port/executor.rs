@@ -1107,10 +1107,17 @@ pub(crate) fn next_depart_targets(
     // `SITE_TANK_SHORT`, `SITE_STORES_SHORT`), so a `fill` before one is sized for the passage
     // out and the leg home: the home reserve over the payload left after the passage out, its
     // mass carried out as extra payload, to a fixed point (the reserve aboard raises the burn
-    // out).
+    // out). Doc 50b item 1: so does a departure for a port that sells no reaction mass or no
+    // provisions (Isidis), where she could not fill for the leg home. Only the fill is sized so;
+    // the departure itself is not refused for it, as one for a site is.
     let home_routes = crate::port::market::ports(w)
         .into_iter()
-        .find(|(_, site, _)| &site.venue == to && site.site.is_some())
+        .find(|(_, site, _)| {
+            &site.venue == to
+                && (site.site.is_some()
+                    || !site.authors_ask(&stores.propellant)
+                    || !site.authors_ask(&stores.provisions))
+        })
         .and_then(|(_, site, _)| site.routes.get(&def.venue).cloned());
     if let Some(home_routes) = home_routes.filter(|routes| !routes.is_empty()) {
         let fail = |e: CoreError| TargetError::Fill(FillError::Core(e), port.clone());
@@ -1770,7 +1777,7 @@ fn sale_net(
         .proceeds(
             w,
             &mush_market::SaleTerms {
-                seller: orders.author,
+                seller: &mush_org::PrincipalId::Object(orders.author),
                 source: mush_inventory::record::EndpointRef(vault),
                 house: &listing.seller,
                 market: &venue,
