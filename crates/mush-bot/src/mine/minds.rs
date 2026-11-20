@@ -735,6 +735,13 @@ pub mod crew {
     pub const BOARD_SUBJECT: &str = " for hire (";
     /// `tacsim::detachment::crew::wages::BOARD_TAKE`'s head. Partial: read the name after it.
     pub const BOARD_TAKE: &str = "page ";
+    /// `tacsim::detachment::crew::wages::HIRE_NO_ACCOUNT`.
+    pub const HIRE_NO_ACCOUNT: &str =
+        "Open an active credit account before hiring crew at this port.";
+    /// `tacsim::detachment::crew::wages::HIRE_DELINQUENT`.
+    pub const HIRE_DELINQUENT: &str = "Settle your delinquent obligations before hiring crew.";
+    /// `tacsim::detachment::crew::wages::HIRE_UNPAID_WAGES`.
+    pub const HIRE_UNPAID_WAGES: &str = "Settle your unpaid crew wages before hiring again.";
 }
 
 /// **A discharge at a port** (doc 48 cut EX.7b): `+sortie/discharge`
@@ -846,6 +853,10 @@ pub mod haul {
     pub const NO_REFERENCE: &str = "That good has no reference price, so its value cannot be dec";
     /// `tacsim::services::haul::POST_FAILED`.
     pub const POST_FAILED: &str = "The haul could not be posted:";
+    /// `tacsim::services::haul::TOO_MANY_OPEN`.
+    pub const TOO_MANY_OPEN: &str = "open hauls; finish or withdraw one first.";
+    /// `tacsim::services::haul::BOARD_FULL`.
+    pub const BOARD_FULL: &str = "The haul board is full right now; try again later.";
     /// `tacsim::services::haul::NO_SUCH_JOB`.
     pub const NO_SUCH_JOB: &str = "; +market/jobs haul lists them.";
     /// `tacsim::services::haul::OWN_JOB`.
@@ -924,6 +935,10 @@ pub mod escort {
     pub const ALREADY: &str = "An escort of her is open already (";
     /// `tacsim::services::escort::POST_FAILED`.
     pub const POST_FAILED: &str = "The escort could not be posted:";
+    /// `tacsim::services::escort::TOO_MANY_OPEN`.
+    pub const TOO_MANY_OPEN: &str = "open escorts; finish or withdraw one first.";
+    /// `tacsim::services::escort::BOARD_FULL`.
+    pub const BOARD_FULL: &str = "The escort board is full right now; try again later.";
     /// `tacsim::services::escort::NO_SUCH_JOB`.
     pub const NO_SUCH_JOB: &str = "; +market/jobs escort lists them.";
     /// `tacsim::services::escort::OWN_JOB`.
@@ -1195,6 +1210,9 @@ mod tests {
             LIST_AT_PORT,
             BOARD_SUBJECT,
             BOARD_TAKE,
+            HIRE_NO_ACCOUNT,
+            HIRE_DELINQUENT,
+            HIRE_UNPAID_WAGES,
         )
     }
     const DISCHARGE_RS: &str = include_str!("../../../tacsim/src/detachment/crew/discharge.rs");
@@ -1424,6 +1442,8 @@ mod tests {
             OVER_CAP,
             NO_REFERENCE,
             POST_FAILED,
+            TOO_MANY_OPEN,
+            BOARD_FULL,
             NO_SUCH_JOB,
             OWN_JOB,
             NOT_DOCKED,
@@ -1479,6 +1499,8 @@ mod tests {
             NO_VENUE,
             ALREADY,
             POST_FAILED,
+            TOO_MANY_OPEN,
+            BOARD_FULL,
             NO_SUCH_JOB,
             OWN_JOB,
             SAME_HULL,

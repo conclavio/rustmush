@@ -673,9 +673,12 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         }
     }
     let mut held = String::new();
+    let mut held_unclassified = false;
     for _ in 0..RETRY_BUDGET {
         let seen = ada.ask_whole("CONTACTS").await;
         if let Some(id) = designator_of(&seen) {
+            held_unclassified =
+                designator_classed(&seen, "unknown").as_deref() == Some(id.as_str());
             held = id;
             break;
         }
@@ -698,9 +701,26 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         seen
     };
     assert!(
-        locked.contains(&held) && locked.contains("% to hit"),
-        "the lock and its percentage crossed the boundary: {locked}"
+        locked.contains("Locked on"),
+        "the lock never crossed the boundary: {locked}"
     );
+    if held_unclassified {
+        // HIGH-62: while the contact is still provisional (`X<n>`), the lock
+        // line crosses the boundary as `Locked on <held>.` without `% to hit`,
+        // so target silhouette and eye height never leak before classification.
+        let prefix = format!("Locked on {held}");
+        let expected = format!("Locked on {held}.");
+        for line in locked
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(&prefix))
+        {
+            assert_eq!(
+                line, expected,
+                "unclassified lock must withhold hit percentage across the boundary: {locked}"
+            );
+        }
+    }
 
     // **16b cut Q.2**: the name the row reads once it has been told apart, which
     // is not `held` — `held` was scraped at the first detection and is the
@@ -725,6 +745,39 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     assert!(
         !classified.is_empty(),
         "the contact never crossed the boundary as a classified row: first={held:?}, classified={classified:?}"
+    );
+    if held_unclassified {
+        let prefix = format!("Locked on {held}");
+        let expected = format!("Locked on {held}.");
+        for line in strip_ansi(&ada.seen)
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with(&prefix))
+        {
+            assert_eq!(
+                line, expected,
+                "unclassified lock line ever carried hit percentage: {line}"
+            );
+        }
+    }
+    // HIGH-62: once classified, the held lock exposes its hit percentage across
+    // the boundary.
+    let classified_lock = {
+        let mut seen = String::new();
+        let needle = format!("Locked on {classified}");
+        for _ in 0..RETRY_BUDGET {
+            seen = ada.ask_whole("WEAPONSTATUS").await;
+            if seen.contains(&needle) && seen.contains("% to hit") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        seen
+    };
+    assert!(
+        classified_lock.contains(&format!("Locked on {classified}"))
+            && classified_lock.contains("% to hit"),
+        "the classified lock and its percentage crossed the boundary: {classified_lock}"
     );
 
     // ---- the fight -----------------------------------------------------
