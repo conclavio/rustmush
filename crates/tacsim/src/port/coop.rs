@@ -56,8 +56,9 @@ pub const COOP_VERB: &str = "+coop";
 /// `+coop`'s help (doc 18 §4.1).
 pub const COOP_HELP: &str = "+coop  --  The Belt Carriers' Cooperative's First Captain \
      program. The Co-op stakes a new captain a Dray on a working charter and twenty-five \
-     thousand in working cash, takes a quarter of trading margin over its reference prices until \
-     the hull is bought out, and stakes each pilot only once. A Dray that goes a real week (168 IC \
+     thousand in working cash, takes a share of trading margin over its reference prices, fixed at \
+     signing (a quarter; more while a holder of the Kirkwood approach sets it so), until the hull \
+     is bought out, and stakes each pilot only once. A Dray that goes a real week (168 IC \
      days at the live 24:1 clock) without a departure goes back to the Co-op; a pilot whose charter \
      ended so, or by +coop/release, may +coop/enroll again for the next free Dray, with no second \
      stake. A charter staff revoke is not renewed. +coop reads the terms and how many Drays are \
@@ -89,12 +90,43 @@ pub const MAX_HULL_NAME_BYTES: usize = 32;
 /// The longest name, mark or laid-up name an enrolment document may carry.
 const MAX_ENROLMENT_TEXT_BYTES: usize = 120;
 
-/// **The registrar's line** — doc 18 §4.1's fiction line, verbatim.
+/// **The registrar's line**: doc 18 §4.1's fiction line, with the share a template since doc
+/// 50 cut KC.4 (Q-50-7): `{share}` is the share a new enrollment signs at, in words
+/// ([`registrar_line`]).
 pub const REGISTRAR_LINE: &str = "The Co-op stakes new captains: a Co-op Dray on a working \
-     charter, twenty-five thousand in working cash, and a quarter of your trading margin to the \
+     charter, twenty-five thousand in working cash, and {share} of your trading margin to the \
      Co-op until you buy the hull out at the price on your papers. Sell under the Co-op's \
      reference price and the Co-op takes nothing. Go a real week without a departure and the Co-op \
      takes its Dray back; you may charter another, with no second stake.";
+
+/// **A share in words** (doc 50 cut KC.4): `a quarter` for 250‰, `three tenths` for 300‰,
+/// `half` for 500‰, else the permille itself.
+#[must_use]
+pub fn share_words(permille: u32) -> String {
+    match permille {
+        250 => "a quarter".to_owned(),
+        300 => "three tenths".to_owned(),
+        500 => "half".to_owned(),
+        p => format!("{p}‰"),
+    }
+}
+
+/// **The registrar's line at a share** ([`REGISTRAR_LINE`] filled).
+#[must_use]
+pub fn registrar_line(permille: u32) -> String {
+    REGISTRAR_LINE.replace("{share}", &share_words(permille))
+}
+
+/// **The share a new enrollment signs at now** (doc 50 cut KC.4, Q-50-7): the Kirkwood
+/// approach's holder's `coop_share_permille` when its terms row sets one, else the programme's
+/// own share. Frozen on the enrollment at signing.
+#[must_use]
+pub fn signing_share_permille(w: &World, programme_share: u32) -> u32 {
+    crate::space::duty::live_terms(w)
+        .and_then(|terms| terms.row)
+        .and_then(|row| row.coop_share_permille)
+        .map_or(programme_share, u32::from)
+}
 
 /// The Co-op desk officer who countersigns (18a §4; doc 18 §2 step 4).
 pub const COUNTERSIGN: &str = "Ilse Oduya-Brandt";
@@ -1197,17 +1229,17 @@ pub(crate) fn terms_lines(ctx: &Ctx<'_>) -> Result<Vec<String>, CmdError> {
             return Err(CmdError::msg(NOT_OPEN_HERE));
         };
         let programme = port.programme;
+        let share = signing_share_permille(ctx.w, programme.share_permille);
         let stake = money_major(ctx, programme.stake_major);
         let buyout = money_major(ctx, programme.buyout_major);
         let new_dray = money_major(ctx, NEW_DRAY_MAJOR);
         let free = free_hulls(ctx.w, &port).len();
         let mut lines = vec![
-            format!("The registrar says, \"{REGISTRAR_LINE}\""),
+            format!("The registrar says, \"{}\"", registrar_line(share)),
             format!(
-                "Terms: a {stake} stake; {}‰ of trading margin over the Co-op's reference \
+                "Terms: a {stake} stake; {share}‰ of trading margin over the Co-op's reference \
                  prices; buyout {buyout}, fixed at signing (a new Dray from the Yard is \
                  {new_dray}); {TERMS_ONE_AT_A_TIME}",
-                programme.share_permille
             ),
             format!("Drays free: {free} of {}.", programme.pool),
         ];
@@ -1612,7 +1644,7 @@ fn plan_enrolment(ctx: &Ctx<'_>) -> Result<EnrolPlan, String> {
         name,
         stake_minor,
         buyout_minor,
-        share_permille: programme.share_permille,
+        share_permille: signing_share_permille(w, programme.share_permille),
         programme: programme.id.clone(),
         pack: port.pack.clone(),
         entry: port.entry.clone(),

@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 47,
+    "version": 48,
     "kind": "campaign_seed",
-    "digest": "4b67bcaef90858c36bc95ac28f0bc30facf90509d3c57c5063a2dee9d65f4334",
+    "digest": "117842fb4e4d12016639fe88180d59b39e646759eff185b04862f1e46b9fcde6",
     "requires": []
   },
   "entries": {
@@ -3360,7 +3360,7 @@
             ],
             "terms": {
               "republic": { "payee": "republic_customs", "transit_duty_permille": 20,
-                            "transit_floor_major": 50 }
+                            "transit_floor_major": 50, "coop_share_permille": 300 }
             } },
           { "id": "ceres", "name": "Ceres station", "places": [ "ceres_freeport", "ceres_port" ],
             "holds": [
