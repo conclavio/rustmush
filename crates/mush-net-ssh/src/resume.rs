@@ -71,7 +71,7 @@ impl Ticket {
         Ok(Self(bytes))
     }
     fn digest(&self) -> [u8; 32] {
-        Sha256::digest(*self.0).into()
+        Sha256::digest(self.0.as_slice()).into()
     }
     fn parse(encoded: &str) -> Option<Self> {
         if encoded.len() != 43 {
@@ -198,7 +198,7 @@ pub fn encode_reply(reply: &Reply) -> io::Result<Vec<u8>> {
     let secret = reply
         .ticket
         .as_ref()
-        .map(|t| Zeroizing::new(URL_SAFE_NO_PAD.encode(*t.0)));
+        .map(|t| Zeroizing::new(URL_SAFE_NO_PAD.encode(t.0.as_slice())));
     let wire = Wire {
         v: 1,
         status: reply.status,
