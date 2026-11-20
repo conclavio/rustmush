@@ -179,7 +179,7 @@ fn live_obligations(w: &World) -> BTreeMap<String, Obligation> {
 }
 
 /// The hulls a berth fee may apply to: every programme hull and every registered one.
-fn hulls(w: &World) -> Vec<ObjId> {
+pub(crate) fn hulls(w: &World) -> Vec<ObjId> {
     let mut out: Vec<ObjId> = crate::port::coop::programme_ports(w)
         .iter()
         .flat_map(|port| port.map.hulls.iter().map(|row| ObjId(row.hull)))

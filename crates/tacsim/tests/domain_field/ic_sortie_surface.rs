@@ -2247,6 +2247,16 @@ fn m8d_the_registry_fines_the_holder_the_inspection_recorded() {
                 .map(|a| a.owner.clone())
         });
     assert_eq!(debit, Some(mush_org::PrincipalId::Object(pilot)));
+    // Doc 50 unit LW.4 (Q-50-40): `+debts` lists the Registry mind's fine.
+    let events = rig.tw.run(pilot, "+debts");
+    let listed = rig.tw.seen_by(&events, pilot).join(
+        "
+",
+    );
+    assert!(
+        listed.contains(&format!("+debts/pay {}", o.id.0)),
+        "{listed}"
+    );
     no_refused_writes(&rig.tw);
 }
 

@@ -416,6 +416,30 @@ pub struct SettledSale<'a> {
     pub basis: mush_economy::Amount,
 }
 
+/// **A private sale of a lot, settled** (doc 50 unit LW.3; Q-50-66): what the policy's
+/// `private_sale` hook is told, once, as the sale's contract settles.
+#[derive(Clone, Debug)]
+pub struct PrivateSale<'a> {
+    /// The sale's quote.
+    pub quote: crate::QuoteId,
+    /// The seller (the listing's).
+    pub seller: &'a PrincipalId,
+    /// The buyer.
+    pub buyer: &'a PrincipalId,
+    /// The venue.
+    pub market: &'a crate::MarketId,
+    /// The commodity.
+    pub commodity: &'a mush_core::CanonicalId,
+    /// How much.
+    pub quantity: u64,
+    /// The price per unit.
+    pub price: mush_economy::Amount,
+    /// Where the goods went (the buyer's endpoint).
+    pub destination: mush_inventory::EndpointRef,
+    /// The exact lot handed over, for a hold-backed sale.
+    pub lot: Option<mush_inventory::LotId>,
+}
+
 /// Doc 18 §4.1 "The share" (D-18-24), game-neutral: who besides the seller is paid out
 /// of a sale into a standing bid, and the sale's line (cut IC10), installed with
 /// [`MarketModule::with_proceeds_policy`]. **Unwired is: no cuts, the market's own
@@ -433,6 +457,10 @@ pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
     /// One sale into a bid settled: called exactly once per sale, from the market's
     /// settlement ear after its own idempotency check. Default: nothing.
     fn settled(&self, _ctx: &mut Ctx<'_>, _sale: &SettledSale<'_>) {}
+    /// **A private sale of a lot settled** (doc 50 unit LW.3; Q-50-66): called exactly once per
+    /// settled sale on a private listing, from the same ear as [`Self::settled`]. Default:
+    /// nothing.
+    fn private_sale(&self, _ctx: &mut Ctx<'_>, _sale: &PrivateSale<'_>) {}
     /// **May `seller` post a personal ask from `source`?** (doc 48 cut EX.1b): asked once at
     /// posting, after the venue gate, reading `w` only. Default: yes, so a composition whose
     /// policy does not answer is unchanged.

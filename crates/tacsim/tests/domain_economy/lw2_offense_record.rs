@@ -187,6 +187,7 @@ async fn lw2_an_offense_binds_only_where_its_polity_holds_and_the_house_answers_
         proof: Proof::Vacated,
         proven_ic: rig.tw.world().world_ic_now().at,
         debt: None,
+        payout: None,
     });
     let mut rig = reboot_seeding(
         rig,

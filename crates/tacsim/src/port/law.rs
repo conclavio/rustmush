@@ -103,14 +103,20 @@ pub fn papers_clear(w: &World, actor: ObjId, now_ic: i64) -> bool {
         })
 }
 
+/// **The lane port entry of `venue`**.
+#[must_use]
+pub fn port_entry_of(w: &World, venue: &MarketId) -> Option<CanonicalId> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(_, def, _)| def.venue.as_str() == venue.as_str())
+        .map(|(entry, _, _)| entry)
+}
+
 /// **The paper that lifts `commodity`'s restriction at `venue`**, when the venue's de facto
 /// holder restricts it: the restricted row of its terms (KC.2). `None` where it is free.
 #[must_use]
 pub fn restriction_at(w: &World, venue: &MarketId, commodity: &CanonicalId) -> Option<CanonicalId> {
-    let entry = crate::port::market::ports(w)
-        .into_iter()
-        .find(|(_, def, _)| def.venue.as_str() == venue.as_str())
-        .map(|(entry, _, _)| entry)?;
+    let entry = port_entry_of(w, venue)?;
     crate::polity::terms_at(w, &entry)?
         .row?
         .restricted
@@ -135,6 +141,17 @@ pub fn may_trade(
     let Some(paper) = restriction_at(w, venue, commodity) else {
         return Ok(());
     };
+    // Doc 50 unit LW.4 (Q-50-39): an actor under the venue holder's restriction is refused a
+    // restricted good, papers or none.
+    if let PrincipalId::Object(actor) = trader
+        && let Some(polity) =
+            port_entry_of(w, venue).and_then(|entry| crate::offense::jurisdiction_at(w, &entry))
+        && crate::port::record::restricted(w, *actor, polity)
+    {
+        return Err(ProceedsRefusal {
+            line: crate::port::record::board_refusal(w, polity),
+        });
+    }
     let now = w.world_ic_now().at;
     let clear = match trader {
         PrincipalId::Object(actor) => {

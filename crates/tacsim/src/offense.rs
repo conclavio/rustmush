@@ -104,6 +104,15 @@ pub enum OffenseKind {
     SalvageScrap,
     /// An unlawful recovery (doc 41 cut RS.7).
     SalvageRecovery,
+    /// **Holding a restricted good without its paper** in a docked hold where the port's law
+    /// restricts it, found by a port audit (doc 50 unit LW.3; Q-50-65, Q-50-36).
+    UnlicensedPossession,
+    /// **Selling a restricted good privately without its paper**, proven by the buyer's report
+    /// of their receipt (doc 50 unit LW.3; Q-50-66, Q-50-67).
+    RestrictedSale,
+    /// **Buying a restricted good privately without its paper**, proven by the seller's report
+    /// of their receipt (doc 50 unit LW.3; Q-50-66).
+    RestrictedPurchase,
 }
 
 impl OffenseKind {
@@ -126,6 +135,9 @@ impl OffenseKind {
             Self::SalvagePickup => "an unlawful pickup",
             Self::SalvageScrap => "unlawful scrapping",
             Self::SalvageRecovery => "an unlawful recovery",
+            Self::UnlicensedPossession => "holding a restricted good without its papers",
+            Self::RestrictedSale => "selling a restricted good without its papers",
+            Self::RestrictedPurchase => "buying a restricted good without its papers",
         }
     }
 }
@@ -141,6 +153,8 @@ pub enum Proof {
         /// The witness.
         by: ObjId,
     },
+    /// An authority's own inspection found it: a port audit (doc 50 unit LW.3; Q-50-35).
+    Audit,
 }
 
 /// **Where the evidence is.** The domains keep their own: a row names it, and copies what the
@@ -155,6 +169,47 @@ pub enum Evidence {
         /// The act, as the site logged it.
         act: UnlawfulAct,
     },
+    /// **A port audit's finding** (doc 50 unit LW.3): what the docked hold held.
+    Audit {
+        /// The hull audited.
+        hull: ObjId,
+        /// The port's lane entry.
+        entry: CanonicalId,
+        /// The restricted good.
+        good: CanonicalId,
+        /// How many units the hold held of it.
+        units: u64,
+        /// When, IC.
+        at_ic: i64,
+    },
+    /// **A party's receipt of a private sale** (doc 50 unit LW.3; Q-50-66), as it was reported.
+    Receipt {
+        /// The sale's quote, `QuoteId.0`.
+        quote: u64,
+        /// The venue.
+        venue: CanonicalId,
+        /// The good.
+        good: CanonicalId,
+        /// How many units were sold.
+        units: u64,
+        /// When it settled, IC.
+        at_ic: i64,
+    },
+}
+
+/// **What is owed to a reporter once the fine is collected** (doc 50 unit LW.3; Q-50-43,
+/// Q-50-67): the price a reporting buyer paid, and the reward, both out of the fine and never more
+/// than it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Payout {
+    /// The reporter.
+    pub to: ObjId,
+    /// The price the reporting buyer paid back, minor units (0 for a reporting seller).
+    pub repay_minor: i64,
+    /// Whether it has been paid.
+    #[serde(default)]
+    pub paid: bool,
 }
 
 /// **One proven offense.**
@@ -173,6 +228,9 @@ pub struct ProvenOffense {
     /// charged twice. Settled when the debt is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debt: Option<u64>,
+    /// **What the reporter is owed from the collected fine** (doc 50 unit LW.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout: Option<Payout>,
 }
 
 impl ProvenOffense {
@@ -181,6 +239,17 @@ impl ProvenOffense {
     pub fn site_act(&self) -> Option<(&CanonicalId, &UnlawfulAct)> {
         match &self.evidence {
             Evidence::Site { site, act } => Some((site, act)),
+            Evidence::Audit { .. } | Evidence::Receipt { .. } => None,
+        }
+    }
+
+    /// The units of a good the offense is about (an audit's or a sale's), for a fine by the
+    /// tonne; `None` for a salvage act.
+    #[must_use]
+    pub fn units(&self) -> Option<u64> {
+        match &self.evidence {
+            Evidence::Site { .. } => None,
+            Evidence::Audit { units, .. } | Evidence::Receipt { units, .. } => Some(*units),
         }
     }
 
@@ -196,6 +265,24 @@ impl ProvenOffense {
                         && x.subject == y.subject
                         && x.at_ic == y.at_ic
                 }
+                (
+                    Evidence::Audit {
+                        hull: h1,
+                        entry: e1,
+                        good: g1,
+                        at_ic: t1,
+                        ..
+                    },
+                    Evidence::Audit {
+                        hull: h2,
+                        entry: e2,
+                        good: g2,
+                        at_ic: t2,
+                        ..
+                    },
+                ) => h1 == h2 && e1 == e2 && g1 == g2 && t1 == t2,
+                (Evidence::Receipt { quote: a, .. }, Evidence::Receipt { quote: b, .. }) => a == b,
+                _ => false,
             }
     }
 }
@@ -361,10 +448,24 @@ pub fn record_offense(
             return false;
         }
     }
+    // Doc 50 unit LW.4 (Q-50-40): an official notice at once when a matter opens.
+    if let Offender::Character(who) = key.offender {
+        let line = OFFENSE_NOTICE
+            .replace(
+                "{polity}",
+                &crate::port::record::polity_name(ctx.w, key.polity),
+            )
+            .replace("{what}", offense.kind.what());
+        ctx.out.sys_to_actor(who, "tacsim.law", line);
+    }
     record.rows.push(offense);
     crate::store::put_offense(ctx, &record);
     true
 }
+
+/// **The official notice of a newly proven offense** (doc 50 unit LW.4, Q-50-40): `{polity}`,
+/// `{what}`. It never names who reported.
+pub const OFFENSE_NOTICE: &str = "Official notice: {polity} has recorded an offense against you: {what}. +record shows it, its      fine and what it costs you.";
 
 /// **Rewrite a record whose rows' receipts changed** (a fine opened on a row): the prover's
 /// own follow-up, never a new offense.
@@ -451,6 +552,7 @@ mod tests {
             proof: Proof::Vacated,
             proven_ic: 11,
             debt: None,
+            payout: None,
         };
         let mut record = OffenseRecord::new(key);
         record.rows.push(row(7));

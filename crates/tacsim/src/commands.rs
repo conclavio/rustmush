@@ -233,6 +233,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         },
         Arc::new(crate::port::claims::registry_cmd),
     )?;
+    // ---- Doc 50 unit LW.4 (Q-50-40, Q-50-70): `+record`, a pure read ----
+    //
+    // In the same ReadOnly bracket: the actor's own offense records, their fines' obligations,
+    // standing, receipts and impounds; no document, no post, no submission.
+    reg.command(
+        crate::port::record::record_spec(),
+        Arc::new(crate::port::record::record_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC6 (§4.1, §4.2; D-18-23, D-18-34): `+coop` and `+ship` ----
     //
@@ -488,6 +496,11 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.command(
         crate::services::haul::haul_spec(),
         Arc::new(crate::services::haul::haul_cmd),
+    )?;
+    // Doc 50 unit LW.3: the receipts of private sales, the report, and staff's audit.
+    reg.command(
+        crate::port::law_report::law_spec(),
+        Arc::new(crate::port::law_report::law_cmd),
     )?;
     reg.command(
         crate::services::escort::escort_spec(),

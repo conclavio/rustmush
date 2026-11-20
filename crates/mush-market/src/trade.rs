@@ -3496,6 +3496,25 @@ pub(crate) fn awaits_receipt_read(q: &Quote) -> bool {
 /// ask whose quote froze a share (doc 48e, exchange G5: the Co-op's chartered asks). A no-op
 /// for every other quote, and with no policy wired.
 pub(crate) fn settled_sale(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
+    // Doc 50 unit LW.3 (Q-50-66): a private sale of a lot is told to the policy on its own.
+    if q.visibility == crate::record::MarketVisibility::Hidden
+        && let (Some(lot), Some(policy)) = (q.lot.as_ref(), crate::module::proceeds_policy(ctx.w))
+    {
+        policy.private_sale(
+            ctx,
+            &crate::module::PrivateSale {
+                quote: q.id,
+                seller: &q.seller,
+                buyer: &q.buyer,
+                market: &q.market,
+                commodity: &lot.commodity.0,
+                quantity: q.quantity,
+                price: q.price,
+                destination: lot.destination.0,
+                lot: lot.lot,
+            },
+        );
+    }
     let Some(lot) = q
         .lot
         .as_ref()
