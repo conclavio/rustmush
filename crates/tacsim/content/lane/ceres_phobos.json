@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 49,
+    "version": 50,
     "kind": "campaign_seed",
-    "digest": "3a9a5f7fe312de69d9e448a36d4cd3f9d8bbc5b7d0c47d8cfa52a24b8819c32f",
+    "digest": "c9bcd33c242141950bd558ca5554a4dade10660e1219ecf7725171fffe8823d6",
     "requires": []
   },
   "entries": {
@@ -3391,7 +3391,12 @@
               { "kind": "de_facto", "holder": { "polity": "freeport" } },
               { "kind": "economic", "holder": { "org": "occator" } },
               { "kind": "economic", "holder": { "org": "ceres_clearing" } }
-            ] }
+            ],
+            "terms": {
+              "republic": { "payee": "republic_customs", "import_duty_permille": 50,
+                            "import_goods": [ "metal_ore", "ice_ore", "carbon_ore", "strategic_ore", "volatiles", "propellant" ],
+                            "note": "Doc 50 cut OP.5 (Q-50-29, Q-50-59): the import duty under the Republic. 50 permille of catalog value is a provisional economy default; the goods are the Belt's exports." }
+            } }
         ]
       }
     }

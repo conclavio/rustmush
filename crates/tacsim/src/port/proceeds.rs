@@ -309,71 +309,105 @@ pub(crate) fn is_chartered_hold(w: &World, endpoint: EndpointRef) -> bool {
         .is_some_and(|e| e.vault == endpoint.vault().0 && takes_share(e.status))
 }
 
-impl ProceedsPolicy for CoopProceeds {
-    fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
-        let Some(house) = house_of(w, sale) else {
-            // Doc 48 cut EX.4 (Q-48-56, doc 48b G-7): a person's ask, bought by a person, is no
-            // house's: the share still runs on a chartered hold, with the market's own line. A
-            // venue no port authors, or a hold no charter encloses: no cuts.
-            let Some(permille) = enrolled(w, sale)? else {
-                return Ok(Proceeds::default());
-            };
-            let label = w
-                .module_state::<TacsimStore>()
-                .and_then(TacsimStore::goods)
-                .map_or_else(
-                    || sale.commodity.to_string(),
-                    |g| label_of(g, sale.commodity),
-                );
-            let (cuts, basis, memo, _) = share_cuts(w, sale, permille, &label)?;
-            return Ok(Proceeds {
-                cuts,
-                basis,
-                line: None,
-                memo,
-            });
-        };
-        let goods = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
-        let (label, unit) = goods.map_or_else(
-            || (sale.commodity.to_string(), String::new()),
-            |g| (label_of(g, sale.commodity), unit_of(g, sale.commodity)),
-        );
-        let vendor = house.def.vendors.iter().find(|v| v.org == house.org);
-        let bid = vendor.and_then(|v| v.bids.iter().find(|b| &b.good == sale.commodity));
-        let house_label = house_name(house.def, &house.org, bid);
-        let signatory = house
-            .map
-            .vendors
-            .get(&house.org)
-            .map_or_else(String::new, |row| name_of(w, ObjId(row.signatory)));
-        let qty = group_thousands(sale.quantity);
-        let fill = |template: &str| {
-            template
-                .replace("{qty}", &qty)
-                .replace("{unit}", &unit)
-                .replace("{label}", &label)
-                .replace("{house}", &house_label)
-                .replace("{price}", &money(w, sale.price))
-                .replace("{gross}", &money(w, sale.gross))
-                .replace("{signatory}", &signatory)
-        };
+/// **The Co-op's answer for a sale** ([`CoopProceeds`]'s, before the import duty): its share on
+/// an enrolled hold, and the house's sale line.
+fn coop_proceeds(w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
+    let Some(house) = house_of(w, sale) else {
+        // Doc 48 cut EX.4 (Q-48-56, doc 48b G-7): a person's ask, bought by a person, is no
+        // house's: the share still runs on a chartered hold, with the market's own line. A
+        // venue no port authors, or a hold no charter encloses: no cuts.
         let Some(permille) = enrolled(w, sale)? else {
-            return Ok(Proceeds {
-                line: Some(fill(SALE_LINE_NO_SHARE)),
-                ..Proceeds::default()
-            });
+            return Ok(Proceeds::default());
         };
-        let (cuts, basis, memo, share) = share_cuts(w, sale, permille, &label)?;
-        let net = Amount::from_minor(sale.gross.minor().saturating_sub(share.minor()));
-        let line = fill(SALE_LINE)
-            .replace("{share}", &money(w, share))
-            .replace("{net}", &money(w, net));
-        Ok(Proceeds {
+        let label = w
+            .module_state::<TacsimStore>()
+            .and_then(TacsimStore::goods)
+            .map_or_else(
+                || sale.commodity.to_string(),
+                |g| label_of(g, sale.commodity),
+            );
+        let (cuts, basis, memo, _) = share_cuts(w, sale, permille, &label)?;
+        return Ok(Proceeds {
             cuts,
             basis,
-            line: Some(line),
+            line: None,
             memo,
-        })
+        });
+    };
+    let goods = w.module_state::<TacsimStore>().and_then(TacsimStore::goods);
+    let (label, unit) = goods.map_or_else(
+        || (sale.commodity.to_string(), String::new()),
+        |g| (label_of(g, sale.commodity), unit_of(g, sale.commodity)),
+    );
+    let vendor = house.def.vendors.iter().find(|v| v.org == house.org);
+    let bid = vendor.and_then(|v| v.bids.iter().find(|b| &b.good == sale.commodity));
+    let house_label = house_name(house.def, &house.org, bid);
+    let signatory = house
+        .map
+        .vendors
+        .get(&house.org)
+        .map_or_else(String::new, |row| name_of(w, ObjId(row.signatory)));
+    let qty = group_thousands(sale.quantity);
+    let fill = |template: &str| {
+        template
+            .replace("{qty}", &qty)
+            .replace("{unit}", &unit)
+            .replace("{label}", &label)
+            .replace("{house}", &house_label)
+            .replace("{price}", &money(w, sale.price))
+            .replace("{gross}", &money(w, sale.gross))
+            .replace("{signatory}", &signatory)
+    };
+    let Some(permille) = enrolled(w, sale)? else {
+        return Ok(Proceeds {
+            line: Some(fill(SALE_LINE_NO_SHARE)),
+            ..Proceeds::default()
+        });
+    };
+    let (cuts, basis, memo, share) = share_cuts(w, sale, permille, &label)?;
+    let net = Amount::from_minor(sale.gross.minor().saturating_sub(share.minor()));
+    let line = fill(SALE_LINE)
+        .replace("{share}", &money(w, share))
+        .replace("{net}", &money(w, net));
+    Ok(Proceeds {
+        cuts,
+        basis,
+        line: Some(line),
+        memo,
+    })
+}
+
+impl ProceedsPolicy for CoopProceeds {
+    /// The Co-op's share and the house's line (`coop_proceeds`), and (doc 50 cut OP.5,
+    /// Q-50-59) the import duty the venue's holder levies on the good
+    /// ([`crate::port::import_duty`]), out of the seller's proceeds, its clause on the line.
+    fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
+        let mut proceeds = coop_proceeds(w, sale)?;
+        if let Some(mut duty) = crate::port::import_duty::import_duty(w, sale) {
+            // The cuts never come to more than the sale: the duty takes at most what the share
+            // leaves of it.
+            let taken: i64 = proceeds.cuts.iter().map(|c| c.amount.minor()).sum();
+            let left = sale.gross.minor().saturating_sub(taken);
+            if left <= 0 {
+                return Ok(proceeds);
+            }
+            duty.amount = Amount::from_minor(duty.amount.minor().min(left));
+            proceeds.cuts.push(duty.cut());
+            if let Some(line) = proceeds.line.as_mut() {
+                // What she receives is the sale less every cut, the duty among them.
+                let before = money(w, Amount::from_minor(left));
+                let after = money(
+                    w,
+                    Amount::from_minor(left.saturating_sub(duty.amount.minor())),
+                );
+                *line = line.replace(
+                    &format!("you receive {before}"),
+                    &format!("you receive {after}"),
+                );
+                line.push_str(&duty.clause);
+            }
+        }
+        Ok(proceeds)
     }
 
     /// **Charter cargo is listed by its pilot** (doc 48e, exchange G6; 48d H-05): the share on a

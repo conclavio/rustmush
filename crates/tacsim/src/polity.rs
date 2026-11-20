@@ -109,6 +109,10 @@ pub struct TermsRow {
     /// frozen at their signing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coop_share_permille: Option<u16>,
+    /// **Doc 50 cut OP.5**: the row's own note, for its reader (a provisional figure named as
+    /// such). Read by nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A restricted good and the paper that lifts it.

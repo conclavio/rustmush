@@ -209,8 +209,8 @@ impl VenueGate for TestGate {
 enum Mode {
     /// One cut of 250‰ of the margin over `REFERENCE` to the payee (none at 0).
     Share,
-    /// Two cuts — one payee too many.
-    TwoCuts,
+    /// One cut past [`mush_market::MAX_PROCEEDS_CUTS`] — one payee too many.
+    TooManyCuts,
     /// One cut over the whole sale.
     OverGross,
     /// One cut to an account in another instrument.
@@ -251,7 +251,9 @@ impl ProceedsPolicy for TestProceeds {
         let cuts = match cfg.mode {
             Mode::Share if share > 0 => vec![cut(cfg.payee, share)],
             Mode::Share => Vec::new(),
-            Mode::TwoCuts => vec![cut(cfg.payee, 1), cut(cfg.payee, 1)],
+            Mode::TooManyCuts => (0..=mush_market::MAX_PROCEEDS_CUTS)
+                .map(|_| cut(cfg.payee, 1))
+                .collect(),
             Mode::OverGross => vec![cut(cfg.payee, sale.gross.minor() + 1)],
             Mode::OtherInstrument => vec![cut(cfg.other, 1)],
             Mode::Refuse => {
@@ -1139,12 +1141,13 @@ fn ic10_a_sale_into_a_bid_settles_only_after_the_marker() {
 
 // ---- 2: the split ----------------------------------------------------------------
 
-/// **The proceeds split is exact and one payee only**: two cuts, cuts over the gross and
+/// **The proceeds split is exact and its payees bounded**: a cut past the bound (doc 50 cut OP.5:
+/// two, the Co-op's share and an import duty), cuts over the gross and
 /// a payee in another instrument are each refused `UNSETTLEABLE` before any contract.
 #[test]
 fn ic10_the_proceeds_split_is_exact_and_one_payee_only() {
     let mut r = rig();
-    for mode in [Mode::TwoCuts, Mode::OverGross, Mode::OtherInstrument] {
+    for mode in [Mode::TooManyCuts, Mode::OverGross, Mode::OtherInstrument] {
         r.policy.lock().expect("policy").mode = mode;
         let line = format!("+market/sell {}=20", r.bid);
         refused!(r, r.pat, line, mush_market::UNSETTLEABLE);
