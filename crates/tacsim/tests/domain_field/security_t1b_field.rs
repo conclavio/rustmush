@@ -178,7 +178,7 @@ fn crit18_composed_project_legal_actions_never_locks_out_on_oversized_field_clos
         .and_then(|h| h.field.clone())
         .expect("field action handle");
 
-    let resolve_field_params = |rig: &Rig, actor: ObjId, op: &str, token_byte: u8| {
+    let try_resolve_field_params = |rig: &Rig, actor: ObjId, op: &str, token_byte: u8| {
         let query = rig
             .tw
             .engine()
@@ -220,17 +220,26 @@ fn crit18_composed_project_legal_actions_never_locks_out_on_oversized_field_clos
             viewer_scope: query.viewer_scope(),
             now: None,
         };
-        let resolved = rig
-            .tw
+        rig.tw
             .engine()
             .resolve_legal_action(&offers, execution, submission)
-            .expect("resolve_legal_action succeeds under 64 KiB bound");
-        let (_, resolved, _) = resolved.into_authoritative_parts();
-        resolved.invocation().parameters().clone()
+            .map(|resolved| {
+                let (_, resolved, _) = resolved.into_authoritative_parts();
+                resolved.invocation().parameters().clone()
+            })
+    };
+    let resolve_field_params = |rig: &Rig, actor: ObjId, op: &str, token_byte: u8| {
+        try_resolve_field_params(rig, actor, op, token_byte)
+            .expect("resolve_legal_action succeeds under 64 KiB bound")
     };
 
-    // 1. Bystander gets a tiny offer with empty closing/carried.
-    let bystander_params = resolve_field_params(&rig, bystander, "open", 1);
+    // 1. Bystander has no remote open authority (HIGH-57) and gets a tiny offer with empty
+    // closing/carried (CRIT-18).
+    assert!(
+        try_resolve_field_params(&rig, bystander, "open", 10).is_err(),
+        "remote bystander with no site presence must not be offered op=open"
+    );
+    let bystander_params = resolve_field_params(&rig, bystander, "close", 1);
     let bystander_bytes =
         mush_core::mechanics::canonical_json_bytes_with_limit(&bystander_params, 48 * 1024)
             .expect("bystander parameters <= 48 KiB");

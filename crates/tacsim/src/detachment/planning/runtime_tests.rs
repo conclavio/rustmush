@@ -241,3 +241,117 @@ fn invitation_codec_refuses_omitted_unknown_and_duplicate_entries() -> TestResul
     check!(serde_json::from_value::<InvitationIndex>(bad).is_err());
     Ok(())
 }
+
+#[test]
+fn high68_rejects_nonexistent_and_non_player_ids_and_clears_empty_invitations() -> TestResult {
+    struct EnabledTacsim;
+    impl mush_core::GameModule for EnabledTacsim {
+        fn name(&self) -> &'static str {
+            crate::NS
+        }
+        fn register(&mut self, reg: &mut mush_core::Registrar<'_>) -> Result<(), ModError> {
+            let mut store = crate::TacsimStore::default();
+            store.cfg.enabled = true;
+            reg.state(store);
+            Ok(())
+        }
+    }
+    let mut world = Engine::with_modules(
+        World::new_minimal(),
+        mush_core::Registry::new(),
+        vec![Box::new(EnabledTacsim)],
+    )?
+    .world;
+    world.set_now(1_000);
+    let organizer = world.create(
+        mush_core::ObjKind::Player,
+        "Organizer",
+        mush_core::GOD,
+        None,
+    )?;
+    let invitee = world.create(mush_core::ObjKind::Player, "Invitee", mush_core::GOD, None)?;
+    let thing = world.create(mush_core::ObjKind::Thing, "Crate", organizer, None)?;
+    let going = world.create(mush_core::ObjKind::Player, "Departed", mush_core::GOD, None)?;
+    world
+        .get_mut(going)
+        .ok_or("going player")?
+        .flags
+        .insert(Flags::GOING);
+    let book = PlanningBook::new(organizer)?;
+    for bogus in [ObjId(999_999), thing, going] {
+        let intent = PendingIntent {
+            at: 1_000,
+            before_revision: book.revision,
+            operation: Operation {
+                organizer,
+                change: PlanningOperation::CreateDraft { plan: plan(bogus)? },
+            },
+        };
+        check!(
+            evaluate(&world, &book, organizer, &intent).is_err(),
+            "bogus player {bogus:?} must be rejected in CreateDraft"
+        );
+        let preset_intent = PendingIntent {
+            at: 1_000,
+            before_revision: book.revision,
+            operation: Operation {
+                organizer,
+                change: PlanningOperation::CreatePreset {
+                    name: "Bogus".into(),
+                    plan: plan(bogus)?,
+                },
+            },
+        };
+        check!(
+            evaluate(&world, &book, organizer, &preset_intent).is_err(),
+            "bogus player {bogus:?} must be rejected in CreatePreset"
+        );
+    }
+    let valid_intent = PendingIntent {
+        at: 1_000,
+        before_revision: book.revision,
+        operation: Operation {
+            organizer,
+            change: PlanningOperation::CreateDraft {
+                plan: plan(invitee)?,
+            },
+        },
+    };
+    let (created, _) = evaluate(&world, &book, organizer, &valid_intent)?;
+    let edit_bogus = PendingIntent {
+        at: 1_000,
+        before_revision: created.book.revision,
+        operation: Operation {
+            organizer,
+            change: PlanningOperation::EditDraft {
+                id: created.affected,
+                expected_revision: 1,
+                plan: plan(ObjId(888_888))?,
+            },
+        },
+    };
+    check!(
+        evaluate(&world, &created.book, organizer, &edit_bogus).is_err(),
+        "bogus player must be rejected in EditDraft"
+    );
+    let created_indices = invitation_changes(&book, &created.book, created.affected, |_| Ok(None))?;
+    let initial = created_indices
+        .first()
+        .ok_or("initial invitation")?
+        .after
+        .clone();
+    let discarded = created.book.apply(
+        organizer,
+        &PlanningOperation::DiscardDraft {
+            id: created.affected,
+            expected_revision: 1,
+        },
+    )?;
+    let removed = invitation_changes(&created.book, &discarded.book, discarded.affected, |_| {
+        Ok(Some(initial.clone()))
+    })?;
+    let cleared = removed.first().ok_or("cleared invitation")?;
+    check!(cleared.before.is_some());
+    check!(cleared.after.drafts.is_empty());
+    Ok(())
+}

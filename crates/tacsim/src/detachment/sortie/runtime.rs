@@ -16,6 +16,10 @@ const HEADS: &str = "tacsim.detachment_unit_heads";
 const FLIGHTS: &str = "tacsim.detachment_flights";
 const INDEX: &str = "tacsim.detachment_flight_index";
 const REVISION: &str = "detachment_flight_input";
+const MAX_RETAINED_ENDED_OPS: usize = 4;
+const MAX_PRUNE_OPS_PER_TXN: usize = 2;
+const MAX_PRUNED_OP_FLIGHTS_PER_TXN: usize = 8;
+const PRUNE_OP_SCAN_LIMIT: usize = 32;
 pub(super) type BlackBoxHandle =
     participant::ParticipantHandle<crate::surface::black_box::BlackBoxParticipant>;
 
@@ -426,34 +430,181 @@ struct Provider {
     outcome: DefinitionRef,
     black_box: Option<BlackBoxHandle>,
 }
-fn chosen(i: &ActionInvocation) -> Result<(Intent, CanonicalHash), ActionError> {
+fn operation_prunable_flights(
+    read: &mut impl Read,
+    handles: &SortieHandles,
+    op: &OperationRecord,
+    touched: &std::collections::BTreeSet<FlightKey>,
+) -> Result<Option<Vec<FlightKey>>, String> {
+    if op.ended.is_none() {
+        return Ok(None);
+    }
+    let mut removable = Vec::new();
+    for key in &op.flights {
+        if touched.contains(key) {
+            return Ok(None);
+        }
+        if read
+            .get(&handles.heads, &key.unit)?
+            .is_some_and(|head| head.flight == *key)
+        {
+            return Ok(None);
+        }
+        if read
+            .get(
+                &handles.ports.excursions,
+                &crate::surface::excursion::RigKey(key.unit),
+            )?
+            .and_then(|record| record.field_crew.as_deref().map(|crew| crew.flight))
+            == Some(*key)
+        {
+            return Ok(None);
+        }
+        if let Some(flight) = read.get(&handles.flights, key)? {
+            if flight.phase.open() {
+                return Ok(None);
+            }
+            removable.push(*key);
+        }
+    }
+    Ok(Some(removable))
+}
+fn prunable_ended_operations(
+    engine: &Engine,
+    handles: &SortieHandles,
+    actor: ObjId,
+    exclude: OperationId,
+    touched: &std::collections::BTreeSet<FlightKey>,
+) -> Result<Vec<OperationId>, ActionError> {
+    let prefix = format!("{}-", actor.0);
+    let page = engine
+        .action_state()
+        .scan_family(&handles.operations, Some(&prefix), PRUNE_OP_SCAN_LIMIT)
+        .map_err(error)?;
+    let mut candidates = Vec::new();
+    for entry in page.entries() {
+        if !entry.encoded_key().starts_with(&prefix) {
+            break;
+        }
+        let op = entry.value();
+        if op.id.organizer != actor || op.id == exclude {
+            continue;
+        }
+        if operation_prunable_flights(&mut &*engine, handles, op, touched)
+            .map_err(error)?
+            .is_some()
+        {
+            candidates.push((op.began.at, op.id));
+        }
+    }
+    if candidates.len() <= MAX_RETAINED_ENDED_OPS {
+        return Ok(Vec::new());
+    }
+    candidates.sort();
+    let count = (candidates.len() - MAX_RETAINED_ENDED_OPS).min(MAX_PRUNE_OPS_PER_TXN);
+    Ok(candidates
+        .into_iter()
+        .take(count)
+        .map(|(_, id)| id)
+        .collect())
+}
+fn prune_ended_operations(
+    txn: &mut ActionTxn<'_>,
+    handles: &SortieHandles,
+    actor: ObjId,
+    exclude: OperationId,
+    touched: &std::collections::BTreeSet<FlightKey>,
+    prune_ops: &[OperationId],
+) -> Result<(), ActionError> {
+    let mut remaining_flight_deletes = MAX_PRUNED_OP_FLIGHTS_PER_TXN;
+    let mut removed_flights = std::collections::BTreeSet::new();
+    for &op_id in prune_ops {
+        if op_id.organizer != actor || op_id == exclude {
+            continue;
+        }
+        let Some(op) = txn
+            .get(&handles.operations, &op_id)
+            .map_err(error)?
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(removable) =
+            operation_prunable_flights(&mut &mut *txn, handles, &op, touched).map_err(error)?
+        else {
+            continue;
+        };
+        let removable: Vec<FlightKey> = removable
+            .into_iter()
+            .filter(|key| !removed_flights.contains(key))
+            .collect();
+        if removable.len() <= remaining_flight_deletes {
+            for key in removable {
+                txn.remove(&handles.flights, &key).map_err(error)?;
+                removed_flights.insert(key);
+                remaining_flight_deletes -= 1;
+            }
+            txn.remove(&handles.operations, &op_id).map_err(error)?;
+        } else if remaining_flight_deletes > 0 {
+            for key in removable.into_iter().take(remaining_flight_deletes) {
+                txn.remove(&handles.flights, &key).map_err(error)?;
+                removed_flights.insert(key);
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+fn chosen(i: &ActionInvocation) -> Result<(Intent, CanonicalHash, Vec<OperationId>), ActionError> {
+    let Some(params) = i.parameters().as_object() else {
+        return Err(error("Invalid flight selection."));
+    };
+    let valid_shape = params.len() == 3 || (params.len() == 4 && params.contains_key("prune_ops"));
     if i.principal() != &(PrincipalId::Object { id: i.actor() })
         || i.subject() != &PerceivedRef::SelfActor
         || !i.targets().is_empty()
-        || i.parameters().as_object().is_none_or(|p| p.len() != 3)
+        || !valid_shape
     {
         return Err(error("Invalid flight selection."));
     }
     let intent: Intent = serde_json::from_value(
-        i.parameters()
+        params
             .get("intent")
             .cloned()
             .ok_or_else(|| error("Missing intent."))?,
     )
     .map_err(error)?;
-    if i.parameters().get("request").and_then(Value::as_str)
+    if params.get("request").and_then(Value::as_str)
         != Some(digest(i.actor(), &intent)?.to_hex().as_str())
     {
         return Err(error("Flight request changed."));
     }
     let facts: CanonicalHash = serde_json::from_value(
-        i.parameters()
+        params
             .get("facts")
             .cloned()
             .ok_or_else(|| error("Missing facts."))?,
     )
     .map_err(error)?;
-    Ok((intent, facts))
+    let prune_ops = if let Some(prune_val) = params.get("prune_ops") {
+        let ids: Vec<OperationId> = serde_json::from_value(prune_val.clone()).map_err(error)?;
+        if ids.is_empty()
+            || ids.len() > MAX_PRUNE_OPS_PER_TXN
+            || ids.iter().any(|id| id.organizer != i.actor())
+            || ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != ids.len()
+        {
+            return Err(error("Invalid operation pruning selection."));
+        }
+        ids
+    } else {
+        Vec::new()
+    };
+    Ok((intent, facts, prune_ops))
 }
 pub(crate) fn availability_key(unit: ObjId) -> Result<RevisionKey, ActionError> {
     Ok(RevisionKey {
@@ -546,6 +697,22 @@ impl ActionProvider for Provider {
         ) else {
             return Ok(None);
         };
+        let prune_ops = if matches!(intent.command, Command::Launch { .. } | Command::End { .. }) {
+            prunable_ended_operations(
+                engine,
+                &self.handles,
+                q.actor(),
+                snapshot.operation(),
+                &snapshot.touched_flights(),
+            )?
+        } else {
+            Vec::new()
+        };
+        let fixed_params = if prune_ops.is_empty() {
+            json!({"intent":intent,"facts":snapshot.hash})
+        } else {
+            json!({"intent":intent,"facts":snapshot.hash,"prune_ops":prune_ops})
+        };
         let revisions = RevisionSet::from_stamps([RevisionStamp {
             key: coordinate(q.actor())?,
             generation: snapshot.generation(),
@@ -554,7 +721,7 @@ impl ActionProvider for Provider {
         crate::surface::act::offer_draft_with_revisions(
             action,
             engine,
-            json!({"intent":intent,"facts":snapshot.hash}),
+            fixed_params,
             vec![ProjectedParameter {
                 id: CanonicalId::new("request").map_err(error)?,
                 required: true,
@@ -573,7 +740,7 @@ impl ActionProvider for Provider {
         &self,
         r: &ResolvedActionInvocation,
     ) -> Result<Vec<RevisionKey>, ActionError> {
-        let (intent, _) = chosen(r.invocation())?;
+        let (intent, _, _) = chosen(r.invocation())?;
         // The fixed units/operators are re-read from this regenerated selection.
         // Core checks the real owner guards through final take.
         prepare::authority_keys(&intent, r.invocation().actor())
@@ -583,7 +750,7 @@ impl ActionProvider for Provider {
         r: &ResolvedActionInvocation,
         engine: &Engine,
     ) -> Result<Vec<AuthorityWitnessRequest>, ActionError> {
-        let (intent, _) = chosen(r.invocation())?;
+        let (intent, _, _) = chosen(r.invocation())?;
         if let Command::Recover { unit, .. } = &intent.command {
             let (_, flight) =
                 prepare::current(&mut &*engine, &self.handles, *unit).map_err(error)?;
@@ -630,7 +797,7 @@ impl ActionProvider for Provider {
         txn: &mut ActionTxn<'_>,
         ctx: &mut PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
-        let (intent, expected) = chosen(r.invocation())?;
+        let (intent, expected, prune_ops) = chosen(r.invocation())?;
         if let Command::Message(request) = &intent.command {
             super::field_orders::verify(ctx, txn, &self.handles, r.invocation().actor(), request)?;
         }
@@ -648,7 +815,21 @@ impl ActionProvider for Provider {
         if snapshot.hash != expected {
             return Err(error("Flight facts changed; inspect and retry."));
         }
+        let op_id = snapshot.operation();
+        let touched = snapshot.touched_flights();
         let output = snapshot.apply(txn, ctx, &self.handles, self.black_box.as_ref())?;
+        if !prune_ops.is_empty()
+            && matches!(intent.command, Command::Launch { .. } | Command::End { .. })
+        {
+            prune_ended_operations(
+                txn,
+                &self.handles,
+                r.invocation().actor(),
+                op_id,
+                &touched,
+                &prune_ops,
+            )?;
+        }
         let result = RulesValue::new(self.outcome.clone(), output).map_err(error)?;
         Ok(AuthoritativeActionOutput::new(result)
             .with_eligible_witnesses(vec![r.invocation().principal().clone()]))

@@ -41,8 +41,8 @@ use mush_sim::{DomainId, SpatialState};
 
 use crate::context::{PropagationContext, domain_of_place, resolve_delivery, resolve_detection};
 use crate::record::{
-    DispatchKind, ENVELOPE_TTL_SECS, Envelope, EnvelopeState, MAX_ENVELOPE_HOPS, PropagationStore,
-    Sighting,
+    DispatchKind, Envelope, EnvelopeState, MAX_ENVELOPE_HOPS, PropagationStore, Sighting,
+    envelope_ttl_secs,
 };
 
 /// Envelopes visited in one delivery pass (D-LBK-5).
@@ -93,7 +93,7 @@ pub const CLOCK_GENERATION_REASON: &str = "clock_generation";
 /// **deletes**, beside the post-images it writes (fold D7 / B1).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Reaped {
-    /// Terminal envelopes past [`ENVELOPE_TTL_SECS`].
+    /// Terminal envelopes past their retention TTL ([`envelope_ttl_secs`]).
     pub envelopes: Vec<u64>,
     /// Provenance rows whose contact has left the ledger.
     pub provenance: Vec<mush_core::ContactId>,
@@ -307,12 +307,13 @@ pub fn delivery_pass_with_metric(
         if envelope.state().is_terminal() {
             continue;
         }
+        let ttl = envelope_ttl_secs(envelope.kind());
         let next = if matches!(envelope.state(), EnvelopeState::Delivered)
-            && (envelope.dispatch_ref().is_some() || envelope.age(now) < ENVELOPE_TTL_SECS)
+            && (envelope.dispatch_ref().is_some() || envelope.age(now) < ttl)
         {
             // Arrival is a one-time transition, not repeated every delivery fire.
             None
-        } else if envelope.age(now) < ENVELOPE_TTL_SECS
+        } else if envelope.age(now) < ttl
             && (envelope.dispatch_ref().is_some() || !is_gone(world, envelope.recipient()))
             && (router.is_some() || envelope.transit().is_some())
         {
@@ -374,6 +375,20 @@ fn in_domain(state: &SpatialState, world: &World, domain: Option<DomainId>, obj:
 /// ever been issued `+order` refused for every actor for ever, with no verb that
 /// pruned. Each kind is capped per fire, and each drop is named in the report so
 /// the caller emits a `ModuleWrite::Del` beside its post-images.
+/// Whether `envelope` is finished and past its retention TTL at `now`, ready for [`reap`] to
+/// drop (HIGH-67). Shared with [`crate::admission::check`] so already-reapable expired history
+/// does not block a principal's live envelope quota.
+#[must_use]
+pub(crate) fn is_reapable(envelope: &Envelope, now: &ClockStamp) -> bool {
+    let ttl = envelope_ttl_secs(envelope.kind());
+    (envelope.state().is_terminal() && envelope.dispatch_ref().is_none()
+        || matches!(
+            envelope.kind(),
+            DispatchKind::Detachment | DispatchKind::DetachmentReply
+        ) && (envelope.state().is_terminal() || envelope.state() == EnvelopeState::Delivered))
+        && envelope.checked_age(now).is_none_or(|age| age >= ttl)
+}
+
 fn reap(
     store: &mut PropagationStore,
     ledger: &ContactLedgerState,
@@ -386,17 +401,7 @@ fn reap(
     // An incomparable stamp cannot reach TTL, so finished records reap anyway.
     let dead: Vec<u64> = store
         .envelopes()
-        .filter(|envelope| {
-            (envelope.state().is_terminal() && envelope.dispatch_ref().is_none()
-                || matches!(
-                    envelope.kind(),
-                    DispatchKind::Detachment | DispatchKind::DetachmentReply
-                ) && (envelope.state().is_terminal()
-                    || envelope.state() == EnvelopeState::Delivered))
-                && envelope
-                    .checked_age(now)
-                    .is_none_or(|age| age >= ENVELOPE_TTL_SECS)
-        })
+        .filter(|envelope| is_reapable(envelope, now))
         .map(Envelope::id)
         .take(MAX_REAP_PER_PASS)
         .collect();
@@ -478,7 +483,7 @@ fn step_envelope(
     now: &ClockStamp,
     report: &mut DeliveryReport,
 ) -> Option<Envelope> {
-    if envelope.age(now) >= ENVELOPE_TTL_SECS {
+    if envelope.age(now) >= envelope_ttl_secs(envelope.kind()) {
         report.expired.push(envelope.id());
         return Some(envelope.in_state(EnvelopeState::Expired, now.clone()));
     }

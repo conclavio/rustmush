@@ -623,6 +623,9 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         shooter,
         target,
     } = &open.by
+        && live.units.iter().any(|row| {
+            row.unit == *shooter && row.pilot.as_ref().is_some_and(|(p, _)| *p == *pilot)
+        })
         && let Some((_, pose)) = mush_sim::pose_of(ctx.w, *target)
     {
         let (x, y) = crate::surface::excursion::site_cell(pose.x_cm, pose.y_cm);
@@ -1000,11 +1003,15 @@ fn custody(
             .map(|row| row.party)
     };
     let mut marks = Vec::new();
-    if let PromotedBy::Mark { by, of, .. } = by
-        && let (Some(by), Some(of)) = (party_of(*by), party_of(*of))
-        && by != of
+    if let PromotedBy::Mark { leader, by, of } = by
+        && let (Some(by_party), Some(of_party)) = (party_of(*by), party_of(*of))
+        && by_party != of_party
+        && parties
+            .iter()
+            .find(|party| party.party == by_party)
+            .is_some_and(|party| party.leader == Some(*leader))
     {
-        marks.push((by, of, Mark::Hostile));
+        marks.push((by_party, of_party, Mark::Hostile));
     }
     // The standing Hostile marks (doc 40 cut FR.1): a fixture raider's on every other party (doc
     // 32 cut CF.6, Q-CF-44) and each declared Hostile, from the parties' own rows.

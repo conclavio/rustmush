@@ -93,10 +93,11 @@ pub use pass::{
 pub use policy::PropagationSensorPolicy;
 pub use record::{
     ALLOCATOR_KEY, ContactProvenance, ENVELOPE_TTL_DAYS, ENVELOPE_TTL_SECS, Envelope,
-    EnvelopeState, FalseCause, HopRef, MAX_ENVELOPE_HOPS, MAX_ENVELOPE_PAYLOAD_BYTES,
-    MAX_ENVELOPES, MAX_HELD_DOCUMENTS, MAX_PHANTOM_ID_BYTES, MAX_PHANTOMS, MAX_PROVENANCE,
-    MAX_SIGHTINGS, PHANTOM_CLASS, Phantom, PropagationStore, Provenance, RecordError, Sighting,
-    envelope_key, owner, phantom_key, provenance_key, sighting_key,
+    EnvelopeState, FIELD_ENVELOPE_TTL_SECS, FalseCause, HopRef, MAX_ENVELOPE_HOPS,
+    MAX_ENVELOPE_PAYLOAD_BYTES, MAX_ENVELOPES, MAX_HELD_DOCUMENTS, MAX_PHANTOM_ID_BYTES,
+    MAX_PHANTOMS, MAX_PROVENANCE, MAX_SIGHTINGS, PHANTOM_CLASS, Phantom, PropagationStore,
+    Provenance, RecordError, Sighting, envelope_key, envelope_ttl_secs, owner, phantom_key,
+    provenance_key, sighting_key,
 };
 
 /// The module id and persistence namespace.

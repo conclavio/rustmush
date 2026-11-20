@@ -71,6 +71,8 @@ async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
         )?;
     }
     let mut world = TestWorld::from_engine(engine);
+    ensure_credit_account(&mut world, employer)?;
+    ensure_credit_account(&mut world, competitor)?;
     persist_legacy(&mut world, store).await?;
     Ok(Rig {
         world,
@@ -80,6 +82,32 @@ async fn fixture(store: &InMemoryStore) -> TestResult<Rig> {
         room,
         away,
     })
+}
+fn has_active_credit_account(world: &TestWorld, who: ObjId) -> bool {
+    world
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|econ| {
+            econ.snapshot()
+                .accounts_of(&mush_org::PrincipalId::Object(who))
+                .any(|a| {
+                    a.instrument.as_str() == "tacsim.credit"
+                        && a.status == mush_economy::AccountStatus::Active
+                })
+        })
+}
+fn ensure_credit_account(world: &mut TestWorld, who: ObjId) -> TestResult {
+    if !has_active_credit_account(world, who) {
+        let reply = text(
+            world,
+            GOD,
+            &format!("@account/open #{}=tacsim.credit", who.0),
+        );
+        if !has_active_credit_account(world, who) {
+            return Err(format!("failed to open credit account for #{}: {reply}", who.0).into());
+        }
+    }
+    Ok(())
 }
 fn contract(rig: &Rig) -> TestResult<Option<CrewContract>> {
     let handles = rig

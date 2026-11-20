@@ -226,6 +226,24 @@ fn live_actor(world: &World, actor: ObjId) -> bool {
         .get(actor)
         .is_some_and(|o| o.kind.is_actor() && !o.flags.contains(Flags::GOING))
 }
+fn live_player(world: &World, id: ObjId) -> bool {
+    world
+        .get(id)
+        .is_some_and(|o| o.kind == mush_core::ObjKind::Player && !o.flags.contains(Flags::GOING))
+}
+fn validate_plan_players(
+    world: &World,
+    plan: &mush_tactics::detachment::planning::Plan,
+) -> Result<(), String> {
+    for slot in &plan.slots {
+        if let PlannedController::Player { character } = slot.controller
+            && !live_player(world, character)
+        {
+            return Err("detachment assignment requires a live player character".into());
+        }
+    }
+    Ok(())
+}
 fn ready_draft<'a>(book: &'a PlanningBook, operation: &PlanningOperation) -> Option<&'a Draft> {
     match operation {
         PlanningOperation::Declare {
@@ -253,10 +271,22 @@ fn evaluate(
     {
         return Err("detachment plan input changed".into());
     }
+    // HIGH-68: reject non-existent, non-player, or GOING IDs before they can
+    // allocate `InvitationIndex` rows in `ActionStateStore`.
+    match &input.operation.change {
+        PlanningOperation::CreatePreset { plan, .. }
+        | PlanningOperation::UpdatePreset { plan, .. }
+        | PlanningOperation::CreateDraft { plan }
+        | PlanningOperation::EditDraft { plan, .. } => validate_plan_players(world, plan)?,
+        PlanningOperation::LoadPreset { id, .. } => {
+            if let Some(preset) = book.presets.get(id) {
+                validate_plan_players(world, &preset.plan)?;
+            }
+        }
+        _ => {}
+    }
     if matches!(&input.operation.change, PlanningOperation::Declare { .. })
-        && world
-            .get(actor)
-            .is_none_or(|actor| actor.kind != mush_core::ObjKind::Player)
+        && !live_player(world, actor)
     {
         return Err("detachment consent requires an actual player character".into());
     }
@@ -275,6 +305,12 @@ fn evaluate(
     let change = book
         .apply(actor, &input.operation.change)
         .map_err(|e| e.to_string())?;
+    let old_players = players(book.drafts.get(&change.affected));
+    for character in players(change.book.drafts.get(&change.affected)) {
+        if !old_players.contains(&character) && !live_player(world, character) {
+            return Err("detachment assignment requires a live player character".into());
+        }
+    }
     Ok((change, ready))
 }
 fn players(draft: Option<&Draft>) -> BTreeSet<ObjId> {
@@ -691,12 +727,19 @@ impl ActionProvider for Provider {
         }
         .map_err(|_| error("detachment book write refused"))?;
         for index in indices {
-            if index.before.is_some() {
+            if index.after.drafts.is_empty() {
+                // HIGH-68: remove empty invitation indices rather than leaving empty rows behind.
+                if index.before.is_some() {
+                    txn.remove(&self.families.invitations, &index.actor)
+                        .map_err(|_| error("invitation remove refused"))?;
+                }
+            } else if index.before.is_some() {
                 txn.replace(&self.families.invitations, &index.actor, index.after)
+                    .map_err(|_| error("invitation write refused"))?;
             } else {
                 txn.insert(&self.families.invitations, &index.actor, index.after)
+                    .map_err(|_| error("invitation write refused"))?;
             }
-            .map_err(|_| error("invitation write refused"))?;
         }
         let outcome = RulesValue::new(
             self.outcome.clone(),

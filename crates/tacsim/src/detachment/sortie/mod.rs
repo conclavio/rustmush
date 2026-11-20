@@ -16,7 +16,7 @@ pub(crate) mod work;
 
 pub(crate) use commands::{
     SWITCHES, command, field_carrier, field_flight, field_ramp, handles, id as operation_id,
-    recover_after_exit,
+    recover_after_exit, verify_field_recover,
 };
 pub use field::mission_binding;
 pub(crate) use field_commands::{field_order, field_response};
