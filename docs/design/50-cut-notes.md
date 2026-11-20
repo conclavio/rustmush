@@ -1702,7 +1702,7 @@ v48 with the lead's word.
   - no heave-to by rule; the duty from the purse (the duty story);
   - no helm as captain (both).
 - **On conclav.dev, green:**
-  - all of tacsim (5,042 tests);
+  - all of tacsim (5,072 tests, on main merged in);
   - mush-server `split_boundary` and `commerce_composition` (320), mush-contract-tests (208),
     mush-composition (6) and the bot's library (579);
   - `cargo fmt --all --check`;
