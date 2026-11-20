@@ -341,7 +341,99 @@ Not built.
 
 ## LW.2
 
-Not built.
+**Survey** (at `f668f082a`, #713's head):
+- **Port security's record** was `tacsim:security:{actor}` (`surface/security.rs`), one per
+  character, rows copied from a site's evidence log at the proof (a vacated `recovery` contest,
+  `claim.rs:3258`, or `+salvage/report … registry`). Nothing else wrote or read it, beside the
+  rs7 story.
+- **`SECURITY_VENUES = ["ceres", "stickney"]`** gated only the fine at docking (`on_docked`,
+  called from `composition/sim_routes.rs` for a port, never a site). The fine went to the Freeport
+  Registry's account at both ports.
+- **The quarantine** (`quarantine_line`, `port/voyage.rs` `prepare_departure`) had no venue test.
+  A past-due fine held every hull its debtor helms or holds title to, at every berth, a site's pad
+  included (A-10c).
+- **Who answered** was the helm holder plus a character title holder. For an organization's hull
+  docked with nothing filed, `helm_holder` is `None` and the title holder is an organization, so
+  nobody answered (A-10b).
+- **KC.0's read:** `polity::control_at(w, place)` takes a lane port entry id (`ceres_port`,
+  `stickney_port`). Sites are in no region. `polity_of_org` maps the Freeport Registry to the
+  Freeport.
+- **Each port's `authority`:** Ceres is `freeport_registry`, Stickney is `stickney_yards`.
+
+**Built:**
+1. **The record (`crate::offense`).**
+   - The key is actor by polity: `OffenseKey { offender: Offender, polity: FactionId }`, stored as
+     `tacsim:offense:{c<obj>|o<org>|a<account hash>}:{polity}`.
+   - The actor is `Offender::Character(ObjId)`, `Organization(OrgId)` or
+     `Account(mush_core::AccountId)` (Q-50-68).
+   - The kinds are a closed list, `OffenseKind`: `SalvagePickup`, `SalvageScrap` and
+     `SalvageRecovery` today.
+   - Evidence stays where it is, and each row names it: `Evidence::Site { site, act }` copies the
+     ring row. `Proof` moved here.
+   - A row is `ProvenOffense { kind, evidence, proof, proven_ic, debt }`. The record is
+     `OffenseRecord { schema, key, rows ≤ 64 }`, loaded at boot. An unreadable record claims its
+     key and proves or fines nothing.
+2. **The API LW.3, LW.4 and LW.5 build on:**
+   - Writing: `record_offense(ctx, key, offense, settled)` is the one function every prover
+     calls. It dedupes, and a full record drops its oldest settled row.
+   - Reading: `record_of(w, &key)` and `records_against(w, offender)`.
+   - Where an offense binds: `jurisdiction_at(w, place)`, the place's de facto holder, and
+     `binds_at(w, polity, place)`.
+   - Who answers: `answerer_for_hull(w, hull)` is the organization for an organization's hull,
+     else the helm holder.
+   - Receipts: `put_receipts` (crate-only) rewrites a record whose fine receipts changed.
+   - The polity that proves a salvage offense: `surface::security::proving_polity(w)`.
+3. **Port security on the record.**
+   - `prove` writes `Offender::Character(act.actor)` under `proving_polity`. That is the
+     Freeport Registry's polity, the Freeport.
+   - `on_docked(ctx, hull, entry, port)` fines the record of (the hull's answerer, the port's de
+     facto holder). The fine goes to the port's governing authority's account.
+   - `quarantine_line(ctx, hull, entry, (name, port))` and `holds_at(w, hull, entry)` hold the
+     hull that docked, only at a port its polity holds.
+   - `SECURITY_VENUES`, `answers_at` and the old `SecurityRecord` are gone. Pre-launch, so there
+     is no migration of `tacsim:security:` documents.
+4. **An organization's hull answers through its organization.** Its fine is drawn on the
+   organization's account (`port::berth::org_account`, now `pub(crate)`).
+5. **The fine's lines** name the authority (`The {authority} fines you …`). The owed line says
+   the fine holds her "at this polity's ports".
+
+**Tests:**
+- `tacsim` lib `offense::tests`: the key is actor by polity, and a document key parses back. The
+  record's kinds and its one-actor rule are checked.
+- `domain_economy` `lw2_offense_record::lw2_an_offense_binds_only_where_its_polity_holds_and_the_house_answers_for_its_hull`:
+  - A House's Dray carries a Freeport offense against the House, seeded as a stored record the
+    boot reads.
+  - Docked at Stickney, the Republic's port, nothing is fined.
+  - Docked at Ceres, the House is fined 5,000 cr to the Freeport Registry, and the receipt is on
+    the House's record.
+  - The grace runs out while she is at Stickney, and she lifts from there.
+  - Home at Ceres, she is held. Staff hand Ceres station to the Republic de facto, and she may
+    lift.
+  - Mutation-checked: an offense binding wherever its polity proved it; an organization's hull
+    answered by its pilot; the quarantine ignoring the port. Each fails the story.
+- `port_security_rs7::` (both sites) is moved onto the record: O's Freeport record, its kinds and
+  its receipts, `holds_at` at Ceres.
+
+**Divergences:**
+- **The proving polity is the Freeport Registry's polity**, not the de facto holder of the place
+  of the act. Sites are in no region, and the Registry is the one adjudicating. If Ceres changes
+  hands, a Freeport proof binds nowhere until the Freeport holds a port again.
+- **An organization's fine is levied with staff authority.** At a docking, no character acts for
+  the organization, and the economy lets only an authorized actor open a debt on an organization's
+  account. A character's fine is still opened and paid as that character.
+- **A member's own offense is not fined when they dock an organization's hull.** The hull answers
+  through the organization only, as Q-50-68 words it. The member answers when they dock a hull
+  they command.
+- **A fine with no authority account at the port waits** (logged). Every lane port with a
+  jurisdiction authors one today.
+
+**Not built:**
+- **No path writes an organization's or an account's offense yet.** No salvage verb takes
+  `as=<org>`, so the story seeds one. The license bar on the account is LW.4.
+- **An offender with no hull is not fined when proven** (Q-50-68's last line). Port security
+  still fines at a docking only; immediate fines belong with LW.4's penalties.
+- **No lane bump.**
+- Fine sizes, the standing loss, the trading restriction, `+record` and `+debts`: LW.4.
 
 ## LW.3
 
