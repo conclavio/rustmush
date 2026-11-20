@@ -4613,7 +4613,7 @@ fn step_bubble(
         },
     ));
     if active.approaching_derelict || active.carriers.values().any(|c| c.approaching_derelict) {
-        step_derelict_approach_in_bubble(active);
+        step_derelict_approach_in_bubble(active, dt_wall_ms);
     }
     // The host's rules are settled on the step just taken, and the minds' next thinks
     // are collected on the state it leaves and handed to the pool. Nothing moves the
@@ -5330,60 +5330,218 @@ fn step_interdictor_picket(
     emitted
 }
 
-fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble) {
-    let approaching_ship_id = active
-        .carriers
-        .values()
-        .find(|c| c.approaching_derelict)
-        .map_or_else(|| active.carrier_ship_id.clone(), |c| c.ship_id.clone());
-    let derelict_pos_vel = active
-        .bubble
-        .ships
-        .values()
-        .find(|s| {
-            s.id != approaching_ship_id && matches!(s.status, HullStatus::DisabledDerelict { .. })
-        })
-        .map(|s| (s.pos_m, s.vel_mmps));
-    let Some((d_pos, d_vel)) = derelict_pos_vel else {
-        active.approaching_derelict = false;
-        for c in active.carriers.values_mut() {
-            c.approaching_derelict = false;
-        }
+fn step_derelict_approach_in_bubble(active: &mut ActiveInterdictionBubble, dt_wall_ms: u32) {
+    // Pause derelict approach closing while any ordnance is still in flight in the bubble.
+    if !active.bubble.torpedoes.is_empty() || !active.bubble.railgun_slugs.is_empty() {
         return;
-    };
-    let Some(carrier) = active.bubble.ships.get_mut(&approaching_ship_id) else {
-        active.approaching_derelict = false;
-        return;
-    };
-    carrier.thrust_mps2 = [0, 0, 0];
-    carrier.thrust_mmps2 = [0, 0, 0];
-    let dist_m = super::picket::distance_3d_m(carrier.pos_m, d_pos);
-    let step_m = 6_000_i64;
-    if dist_m <= 250 {
-        carrier.pos_m = [d_pos[0] - 120, d_pos[1], d_pos[2]];
-        carrier.vel_mmps = [d_vel[0] + 2_000, d_vel[1], d_vel[2]];
-        active.approaching_derelict = false;
-        for c in active.carriers.values_mut() {
-            c.approaching_derelict = false;
+    }
+
+    let targets: Vec<(Option<ObjId>, String, PartyId)> = if active.carriers.is_empty() {
+        if active.approaching_derelict {
+            vec![(None, active.carrier_ship_id.clone(), CARRIER_PARTY)]
+        } else {
+            Vec::new()
         }
     } else {
-        let new_dist = (dist_m - step_m).max(120);
-        let dx = i128::from(carrier.pos_m[0]) - i128::from(d_pos[0]);
-        let dy = i128::from(carrier.pos_m[1]) - i128::from(d_pos[1]);
-        let dz = i128::from(carrier.pos_m[2]) - i128::from(d_pos[2]);
-        let d = i128::from(dist_m.max(1));
-        carrier.pos_m = [
-            d_pos[0] + ((dx * i128::from(new_dist)) / d) as i64,
-            d_pos[1] + ((dy * i128::from(new_dist)) / d) as i64,
-            d_pos[2] + ((dz * i128::from(new_dist)) / d) as i64,
+        active
+            .carriers
+            .values()
+            .filter(|c| c.approaching_derelict)
+            .map(|c| (Some(c.hull), c.ship_id.clone(), c.party))
+            .collect()
+    };
+
+    let step_ms = i64::from(dt_wall_ms.max(1));
+    let mut single_done = false;
+    let mut finished_hulls: Vec<ObjId> = Vec::new();
+
+    for (carrier_hull, ship_id, party) in targets {
+        let has_hostile = active.bubble.ships.iter().any(|(sid, s)| {
+            sid != &ship_id
+                && s.status == HullStatus::Operational
+                && active.bubble.party_relation(s.party, party) == Relation::Hostile
+        });
+        if has_hostile {
+            // Pause derelict approach closing while any operational hostile is in the bubble
+            // without teleporting or clobbering manual helm thrust.
+            continue;
+        }
+
+        let Some(carrier_pos) = active.bubble.ships.get(&ship_id).map(|s| s.pos_m) else {
+            if let Some(chull) = carrier_hull {
+                finished_hulls.push(chull);
+            } else {
+                single_done = true;
+            }
+            continue;
+        };
+
+        // Pick the nearest disabled derelict to this carrier.
+        let derelict_pos_vel = active
+            .bubble
+            .ships
+            .values()
+            .filter(|s| s.id != ship_id && matches!(s.status, HullStatus::DisabledDerelict { .. }))
+            .min_by_key(|s| super::picket::distance_3d_m(carrier_pos, s.pos_m))
+            .map(|s| (s.pos_m, s.vel_mmps));
+
+        let Some((d_pos, d_vel)) = derelict_pos_vel else {
+            if let Some(chull) = carrier_hull {
+                finished_hulls.push(chull);
+            } else {
+                single_done = true;
+            }
+            continue;
+        };
+
+        let Some(carrier) = active.bubble.ships.get_mut(&ship_id) else {
+            if let Some(chull) = carrier_hull {
+                finished_hulls.push(chull);
+            } else {
+                single_done = true;
+            }
+            continue;
+        };
+
+        carrier.thrust_mps2 = [0, 0, 0];
+        carrier.thrust_mmps2 = [0, 0, 0];
+
+        if carrier.status != HullStatus::Operational
+            || carrier.docking_hold
+            || carrier.crew_linkdead
+            || carrier.propellant_kg == 0
+            || carrier.delta_v_mps <= 0
+        {
+            if let Some(chull) = carrier_hull {
+                finished_hulls.push(chull);
+            } else {
+                single_done = true;
+            }
+            continue;
+        }
+
+        let base_max_mmps2 = if carrier.max_accel_mmps2 > 0 {
+            carrier.max_accel_mmps2
+        } else {
+            carrier.max_accel_mps2.saturating_mul(1_000).max(1)
+        };
+        let eff_accel_mmps2 = if carrier
+            .crits
+            .contains(&super::bubble::SubsystemCrit::DriveDegraded)
+        {
+            (base_max_mmps2 / 2).max(1)
+        } else {
+            base_max_mmps2
+        };
+
+        // Integrate velocity convergence toward the derelict's rendezvous velocity,
+        // bounded by effective drive acceleration and available delta-v.
+        let target_vel = [d_vel[0].saturating_add(2_000), d_vel[1], d_vel[2]];
+        let dv_vec = [
+            target_vel[0].saturating_sub(carrier.vel_mmps[0]),
+            target_vel[1].saturating_sub(carrier.vel_mmps[1]),
+            target_vel[2].saturating_sub(carrier.vel_mmps[2]),
         ];
-        carrier.vel_mmps = [d_vel[0] + 2_000, d_vel[1], d_vel[2]];
-        if new_dist <= 250 {
-            active.approaching_derelict = false;
-            for c in active.carriers.values_mut() {
-                c.approaching_derelict = false;
+        let dv_mag_mmps = super::weapons::isqrt_i128(
+            i128::from(dv_vec[0]).pow(2)
+                + i128::from(dv_vec[1]).pow(2)
+                + i128::from(dv_vec[2]).pow(2),
+        ) as i64;
+        let avail_dv_mmps = carrier.delta_v_mps.saturating_mul(1_000);
+        let max_dv_step_mmps =
+            ((i128::from(eff_accel_mmps2) * 15 * i128::from(step_ms)) / 1_000).max(500) as i64;
+        let dv_applied_mmps = dv_mag_mmps.min(max_dv_step_mmps).min(avail_dv_mmps);
+        if dv_applied_mmps > 0 && dv_mag_mmps > 0 {
+            if dv_applied_mmps >= dv_mag_mmps {
+                carrier.vel_mmps = target_vel;
+            } else {
+                let num = i128::from(dv_applied_mmps);
+                let den = i128::from(dv_mag_mmps);
+                carrier.vel_mmps = [
+                    carrier.vel_mmps[0]
+                        .saturating_add(((i128::from(dv_vec[0]) * num) / den) as i64),
+                    carrier.vel_mmps[1]
+                        .saturating_add(((i128::from(dv_vec[1]) * num) / den) as i64),
+                    carrier.vel_mmps[2]
+                        .saturating_add(((i128::from(dv_vec[2]) * num) / den) as i64),
+                ];
             }
         }
+
+        // Integrate range closure scaled by drive authority (DriveDegraded halves closure rate).
+        let dist_m = super::picket::distance_3d_m(carrier.pos_m, d_pos);
+        let step_m = ((i128::from(eff_accel_mmps2) * 6_000 * i128::from(step_ms)) / (645 * 1_000))
+            .clamp(500, 12_000) as i64;
+        let (new_dist, closing_dv_mmps) = if dist_m <= 250 {
+            if dist_m > 120 {
+                carrier.pos_m = [d_pos[0].saturating_sub(120), d_pos[1], d_pos[2]];
+            }
+            (super::picket::distance_3d_m(carrier.pos_m, d_pos), 0_i64)
+        } else {
+            let next_d = (dist_m - step_m).max(120);
+            let dx = i128::from(carrier.pos_m[0]) - i128::from(d_pos[0]);
+            let dy = i128::from(carrier.pos_m[1]) - i128::from(d_pos[1]);
+            let dz = i128::from(carrier.pos_m[2]) - i128::from(d_pos[2]);
+            let d = i128::from(dist_m.max(1));
+            carrier.pos_m = [
+                d_pos[0].saturating_add(((dx * i128::from(next_d)) / d) as i64),
+                d_pos[1].saturating_add(((dy * i128::from(next_d)) / d) as i64),
+                d_pos[2].saturating_add(((dz * i128::from(next_d)) / d) as i64),
+            ];
+            (next_d, 1_000_i64)
+        };
+
+        // Debit propellant for all velocity-matching and closing delta-v spent this tick.
+        let total_dv_mmps = carrier
+            .dv_rem_mmps
+            .saturating_add(dv_applied_mmps)
+            .saturating_add(closing_dv_mmps);
+        let dv_spent_mps = (total_dv_mmps / 1_000).max(0);
+        carrier.dv_rem_mmps = total_dv_mmps % 1_000;
+        if dv_spent_mps > 0 {
+            carrier.delta_v_mps = (carrier.delta_v_mps - dv_spent_mps).max(0);
+            let law = crate::definitions::logistics::DriveLaw::Flip {
+                accel_mg: carrier.rated_accel_mg,
+                exhaust_kms: carrier.exhaust_kms.max(1),
+            };
+            let dry_kg = u64::from(carrier.dry_mass_t).saturating_mul(1_000);
+            let payload_kg = carrier
+                .non_prop_payload_kg
+                .saturating_add(u64::from(carrier.propellant_kg));
+            let dv_u32 = u32::try_from(dv_spent_mps).unwrap_or(1).max(1);
+            let fuel_burned =
+                crate::port::passage::burn_kg_for_law_dv(&law, dry_kg, payload_kg, dv_u32)
+                    .unwrap_or(1)
+                    .max(1);
+            carrier.propellant_kg = carrier
+                .propellant_kg
+                .saturating_sub(u32::try_from(fuel_burned).unwrap_or(u32::MAX));
+        }
+
+        let rel_speed_after = super::picket::relative_speed_3d_mmps(carrier.vel_mmps, d_vel);
+        let arrived =
+            new_dist <= 250 && rel_speed_after <= super::docking::MAX_DOCKING_INIT_REL_SPEED_MMPS;
+        let out_of_fuel = carrier.propellant_kg == 0 || carrier.delta_v_mps <= 0;
+        if arrived || out_of_fuel {
+            if let Some(chull) = carrier_hull {
+                finished_hulls.push(chull);
+            } else {
+                single_done = true;
+            }
+        }
+    }
+
+    if active.carriers.is_empty() {
+        if single_done {
+            active.approaching_derelict = false;
+        }
+    } else {
+        for chull in finished_hulls {
+            if let Some(entry) = active.carriers.get_mut(&chull) {
+                entry.approaching_derelict = false;
+            }
+        }
+        active.approaching_derelict = active.carriers.values().any(|c| c.approaching_derelict);
     }
 }
 
@@ -7031,6 +7189,193 @@ mod interdictor_tests {
                 .derelicts
                 .contains_key(&derelict_hull),
             "existing derelict record must not be wiped when checking reuse"
+        );
+    }
+
+    #[test]
+    fn derelict_approach_gates_hostiles_and_ordnance_debits_fuel_and_steps_carriers_independently()
+    {
+        use crate::space::{BELT_RAIDER_PARTY, SubsystemCrit, bubble, view, weapons};
+
+        let mut bubble = LocalSpaceBubble::new("b.m8", "d.8", "M8 Derelict", 1_000);
+        let mut c1 = SpaceShipState::new_dray(
+            "hull.10",
+            "Salt Moth",
+            CARRIER_PARTY,
+            [0, 0, 0],
+            [50_000, 0, 0],
+        );
+        c1.propellant_kg = 40_000;
+        c1.delta_v_mps = 4_000;
+        c1.thrust_mmps2 = [500, 0, 0];
+        let mut c2 = SpaceShipState::new_dray(
+            "hull.20",
+            "Escort Hawk",
+            bubble::admitted_party(5),
+            [-12_000, 0, 0],
+            [0, 0, 0],
+        );
+        c2.propellant_kg = 40_000;
+        c2.delta_v_mps = 4_000;
+        c2.crits.push(SubsystemCrit::DriveDegraded);
+        let mut derelict = SpaceShipState::new_corvette(
+            "raider",
+            "Disabled Raider",
+            BELT_RAIDER_PARTY,
+            [12_000, 0, 0],
+            [0, 0, 0],
+        );
+        derelict.status = HullStatus::DisabledDerelict {
+            epoch_open: true,
+            life_support_remaining_s: 3_600,
+        };
+        bubble.insert_ship(c1);
+        bubble.insert_ship(c2);
+        bubble.insert_ship(derelict);
+
+        let mut carriers = BTreeMap::new();
+        carriers.insert(
+            ObjId(10),
+            BubbleCarrierEntry {
+                hull: ObjId(10),
+                ship_id: "hull.10".to_owned(),
+                party: CARRIER_PARTY,
+                leg_cursor: 1,
+                departed_at_ic_s: 1_000,
+                approaching_derelict: true,
+                holding_for_salvage: true,
+                holding_for_salvage_until_wall_s: None,
+                last_synced_propellant_kg: 40_000,
+            },
+        );
+        carriers.insert(
+            ObjId(20),
+            BubbleCarrierEntry {
+                hull: ObjId(20),
+                ship_id: "hull.20".to_owned(),
+                party: bubble::admitted_party(5),
+                leg_cursor: 1,
+                departed_at_ic_s: 1_000,
+                approaching_derelict: true,
+                holding_for_salvage: true,
+                holding_for_salvage_until_wall_s: None,
+                last_synced_propellant_kg: 40_000,
+            },
+        );
+        let mut active = ActiveInterdictionBubble {
+            domain: mush_sim::DomainId(8),
+            hull: ObjId(10),
+            carrier_ship_id: "hull.10".to_owned(),
+            interdictor_hull: ObjId(99),
+            interdictor_ship_id: "raider".to_owned(),
+            leg_cursor: 1,
+            opened_ic_s: 1_000,
+            last_stepped_wall_s: 1,
+            steps: 0,
+            approaching_derelict: true,
+            holding_for_salvage: true,
+            last_synced_propellant_kg: 40_000,
+            cleared: false,
+            bubble: bubble.clone(),
+            tape: BubbleInputTape::new(&bubble),
+            snapshots: Vec::new(),
+            picket: None,
+            interdictor_seal: None,
+            interdictor_memory: Vec::new(),
+            interdictor_think_seq: 0,
+            interdictor_contacts: view::ContactBook::default(),
+            thinks_owed: None,
+            carriers,
+            ship_hulls: BTreeMap::new(),
+            stood_down: std::collections::BTreeSet::new(),
+        };
+
+        // 1. Ordnance in flight pauses approach stepping (no teleport while missiles fly).
+        active.bubble.torpedoes.push(weapons::InFlightTorpedo {
+            id: 1,
+            shooter_id: "raider".to_owned(),
+            target_id: "hull.10".to_owned(),
+            pos_m: [6_000, 0, 0],
+            pos_rem_um: [0, 0, 0],
+            vel_mmps: [-1_000, 0, 0],
+            accel_mps2: 20,
+            remaining_dv_mmps: 5_000,
+            warhead_damage: 10,
+            integrity: 100,
+            tti_s: 5,
+            flight_elapsed_ms: 0,
+            max_flight_ms: weapons::DEFAULT_TORPEDO_MAX_FLIGHT_MS,
+            dv_exhausted_emitted: false,
+        });
+        step_derelict_approach_in_bubble(&mut active, 1_000);
+        assert_eq!(active.bubble.ships["hull.10"].pos_m, [0, 0, 0]);
+        assert_eq!(active.bubble.ships["hull.20"].pos_m, [-12_000, 0, 0]);
+        active.bubble.torpedoes.clear();
+
+        // 2. Single tick steps BOTH carriers independently; DriveDegraded carrier closes half as fast;
+        //    high-speed carrier does NOT instantaneously match velocity and spends real propellant.
+        let prop1_before = active.bubble.ships["hull.10"].propellant_kg;
+        let dv1_before = active.bubble.ships["hull.10"].delta_v_mps;
+        step_derelict_approach_in_bubble(&mut active, 1_000);
+        let c1_after = &active.bubble.ships["hull.10"];
+        let c2_after = &active.bubble.ships["hull.20"];
+        assert_eq!(c1_after.thrust_mmps2, [0, 0, 0]);
+        assert!(c1_after.pos_m[0] > 0 && c1_after.pos_m[0] <= 6_000);
+        assert!(
+            c2_after.pos_m[0] > -12_000 && c2_after.pos_m[0] <= -9_000,
+            "second carrier must also step independently at DriveDegraded half-rate: {:?}",
+            c2_after.pos_m
+        );
+        assert!(
+            c1_after.vel_mmps[0] > 30_000 && c1_after.vel_mmps[0] < 50_000,
+            "velocity match must integrate gradually rather than instant teleport: {:?}",
+            c1_after.vel_mmps
+        );
+        assert!(c1_after.propellant_kg < prop1_before);
+        assert!(c1_after.delta_v_mps < dv1_before);
+
+        // 3. When carrier 1 arrives, carrier 2 stays approaching until it reaches the derelict too.
+        for _ in 0..5 {
+            step_derelict_approach_in_bubble(&mut active, 1_000);
+        }
+        assert!(!active.carriers[&ObjId(10)].approaching_derelict);
+        assert!(
+            active.carriers[&ObjId(20)].approaching_derelict,
+            "carrier 1 arriving must not clear carrier 2's approach"
+        );
+        assert!(active.approaching_derelict);
+
+        // 4. An operational hostile entering pauses remaining approach with zero position/velocity
+        //    change until neutralized, then resumes cleanly once the hostile is disabled.
+        let hostile = SpaceShipState::new_corvette(
+            "hostile",
+            "Ambush Corvette",
+            BELT_RAIDER_PARTY,
+            [20_000, 0, 0],
+            [0, 0, 0],
+        );
+        active.bubble.insert_ship(hostile);
+        active.bubble.set_party_relation(
+            bubble::admitted_party(5),
+            BELT_RAIDER_PARTY,
+            Some(crate::arena::party::Mark::Hostile),
+        );
+        let pos2_before = active.bubble.ships["hull.20"].pos_m;
+        let vel2_before = active.bubble.ships["hull.20"].vel_mmps;
+        step_derelict_approach_in_bubble(&mut active, 1_000);
+        assert_eq!(active.bubble.ships["hull.20"].pos_m, pos2_before);
+        assert_eq!(active.bubble.ships["hull.20"].vel_mmps, vel2_before);
+        assert!(active.carriers[&ObjId(20)].approaching_derelict);
+        if let Some(h) = active.bubble.ships.get_mut("hostile") {
+            h.status = HullStatus::DisabledDerelict {
+                epoch_open: true,
+                life_support_remaining_s: 3_600,
+            };
+        }
+        step_derelict_approach_in_bubble(&mut active, 1_000);
+        assert!(
+            active.bubble.ships["hull.20"].pos_m[0] > pos2_before[0],
+            "approach should resume cleanly once hostile is disabled"
         );
     }
 }

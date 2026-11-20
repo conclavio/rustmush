@@ -1514,6 +1514,18 @@ impl Engine {
         query: &crate::offer::LegalActionQuery,
     ) -> Result<crate::offer::ProjectedLegalActionSink, crate::offer::LegalActionProjectionError>
     {
+        if crate::cmd::check_command_gates(
+            &self.registry,
+            &self.world,
+            query.actor(),
+            "@legal_action",
+        )
+        .is_err()
+        {
+            return Ok(crate::offer::ProjectedLegalActionSink::new(
+                query.viewer_scope(),
+            ));
+        }
         let keys = self
             .offer_keys
             .as_ref()
@@ -1816,6 +1828,12 @@ impl Engine {
         const BOOTSTRAP_SELF_PROJECTION_GENERATION: u64 = 1;
         const BOOTSTRAP_STAFF_PROJECTION_GENERATION: u64 = 1;
 
+        if crate::cmd::check_command_gates(&self.registry, &self.world, actor, "@legal_action")
+            .is_err()
+        {
+            return Err(crate::offer::LegalActionSubjectError::Invalid);
+        }
+
         let (truth_subject, projection_generation, witness) = match &subject {
             crate::action::PerceivedRef::SelfActor => (
                 crate::action::SubjectKey::Object { id: actor },
@@ -1942,6 +1960,18 @@ impl Engine {
         submission: crate::offer::OfferSubmission,
     ) -> Result<crate::offer::ResolvedAuthoritativeOffer, crate::offer::LegalActionResolutionError>
     {
+        if crate::cmd::check_command_gates(
+            &self.registry,
+            &self.world,
+            execution.actor,
+            "@legal_action",
+        )
+        .is_err()
+        {
+            return Err(crate::offer::LegalActionResolutionError::Resolve(
+                crate::offer::OfferResolveError::Unavailable,
+            ));
+        }
         let keys = self
             .offer_keys
             .as_ref()
@@ -4817,6 +4847,15 @@ impl Engine {
         }
         let result = if request.validate().is_err() {
             request.invalid()
+        } else if crate::cmd::check_command_gates(
+            &self.registry,
+            &self.world,
+            actor,
+            &format!("@invoke {}", request.service()),
+        )
+        .is_err()
+        {
+            request.unavailable()
         } else if let Some((owner, handler)) = self.registry.invoke_handler(request.service()) {
             let owner = owner.clone();
             let ingress =
@@ -4869,6 +4908,21 @@ impl Engine {
     ) {
         if self.world.get(actor).is_none() {
             tracing::warn!(%actor, name, "Query for missing actor dropped");
+            return;
+        }
+        if let Err(reason) = crate::cmd::check_command_gates(
+            &self.registry,
+            &self.world,
+            actor,
+            &format!("@query {name}"),
+        ) {
+            out.best_effort_to_conn(
+                conn,
+                OutputEvent::Reply {
+                    id,
+                    event: Box::new(OutputEvent::Sys(RichText::tag("error", reason))),
+                },
+            );
             return;
         }
         let event = match self.registry.query_handler(name) {
@@ -9146,5 +9200,146 @@ mod typed_invoke_tests {
             &mut Effects::new(),
         );
         assert_ne!(engine.world.connection_binding(42), before);
+    }
+
+    #[test]
+    fn command_gates_apply_to_invoke_query_and_legal_actions() {
+        struct Gate(ObjId);
+        impl crate::CommandGate for Gate {
+            fn check(
+                &self,
+                _w: &World,
+                _reg: &Registry,
+                actor: ObjId,
+                verb: &str,
+                line: &str,
+            ) -> Result<(), String> {
+                if actor == self.0 && line != "@query allowed.feed" && verb != "look" {
+                    return Err("onboarding required".into());
+                }
+                Ok(())
+            }
+        }
+        struct EchoQuery;
+        impl crate::QueryHandler for EchoQuery {
+            fn query(
+                &self,
+                _w: &World,
+                _actor: ObjId,
+                _params: &serde_json::Value,
+            ) -> Result<OutputEvent, mush_proto::RichText> {
+                Ok(OutputEvent::Sys(mush_proto::RichText::plain("ok")))
+            }
+        }
+
+        let mut world = World::new_minimal();
+        let gated_actor = world
+            .create(
+                crate::ObjKind::Player,
+                "Newbie",
+                crate::GOD,
+                Some(crate::LIMBO),
+            )
+            .expect("newbie");
+        let mut registry = Registry::new();
+        let invoke_calls = Arc::new(AtomicUsize::new(0));
+        registry.add_command_gate(Arc::new(Gate(gated_actor)));
+        {
+            let mut r = crate::module::Registrar::new(&mut registry, "test");
+            r.invoke_handler("mind", Arc::new(Handler(invoke_calls.clone())))
+                .expect("mind");
+            r.query_handler("allowed.feed", Arc::new(EchoQuery))
+                .expect("allowed");
+            r.query_handler("blocked.feed", Arc::new(EchoQuery))
+                .expect("blocked");
+        }
+        let mut engine = Engine::new(world, registry);
+        engine.step(
+            Inbound::ConnUp {
+                conn: 9,
+                actor: gated_actor,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+
+        // Gated invoke is refused without running the handler.
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Invoke {
+                conn: 9,
+                actor: gated_actor,
+                id: 1,
+                request: mush_proto::InvokeRequest::Mind(mush_proto::MindRequest::List {}),
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        assert_eq!(invoke_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            out.events(),
+            [(
+                crate::Audience::Conn(9),
+                OutputEvent::InvokeResult { id: 1, .. }
+            )]
+        ));
+
+        // Blocked query returns Reply(Sys(error)), allowed query succeeds.
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Query {
+                conn: 9,
+                actor: gated_actor,
+                id: 2,
+                name: "blocked.feed".into(),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        assert!(matches!(
+            out.events(),
+            [(crate::Audience::Conn(9), OutputEvent::Reply { id: 2, event })]
+                if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text().contains("onboarding required"))
+        ));
+
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Query {
+                conn: 9,
+                actor: gated_actor,
+                id: 3,
+                name: "allowed.feed".into(),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        assert!(matches!(
+            out.events(),
+            [(crate::Audience::Conn(9), OutputEvent::Reply { id: 3, event })]
+                if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text() == "ok")
+        ));
+
+        // Legal action query & projection are blocked for the gated actor, open for GOD.
+        assert!(matches!(
+            engine.legal_action_query(
+                crate::action::PrincipalId::Object { id: gated_actor },
+                gated_actor,
+                crate::action::PerceivedRef::SelfActor,
+            ),
+            Err(crate::offer::LegalActionSubjectError::Invalid)
+        ));
+        assert!(
+            engine
+                .legal_action_query(
+                    crate::action::PrincipalId::Object { id: crate::GOD },
+                    crate::GOD,
+                    crate::action::PerceivedRef::SelfActor,
+                )
+                .is_ok()
+        );
     }
 }

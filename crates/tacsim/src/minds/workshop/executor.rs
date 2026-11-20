@@ -18,7 +18,7 @@ use mush_roll::commerce::authored_access::{AuthoredDraftAccess, AuthoredJobKind}
 pub(crate) const WORKERS: usize = 2;
 pub(crate) const MAX_JOBS: usize = 8;
 const MAX_SESSIONS: usize = 4096;
-const RESULT_TTL: Duration = Duration::from_secs(120);
+pub(super) const RESULT_TTL: Duration = Duration::from_secs(120);
 
 /// Current authenticated character and account plus an ephemeral session lease.
 /// The constructor is available only to the world command adapter.
@@ -504,6 +504,50 @@ impl WorkshopExecutor {
                 matches!(entry.status, Status::Done(_)).then_some((entry.principal.actor, *id))
             })
             .collect()
+    }
+
+    /// Reap expired executor slots and return all job ids still tracked by the
+    /// executor (queued, running, or awaiting result consumption).
+    pub(super) fn tracked_ids(&self) -> std::collections::BTreeSet<JobId> {
+        let Ok(mut state) = self.shared.state.lock() else {
+            return std::collections::BTreeSet::new();
+        };
+        reap(&mut state);
+        state.jobs.keys().copied().collect()
+    }
+
+    /// Reap expired executor slots and return whether `id` is still tracked for
+    /// `principal`.
+    pub(super) fn is_tracked(&self, principal: Principal, id: JobId) -> bool {
+        let Ok(mut state) = self.shared.state.lock() else {
+            return false;
+        };
+        reap(&mut state);
+        state
+            .jobs
+            .get(&id)
+            .is_some_and(|entry| entry.principal == principal)
+    }
+
+    /// Test helper: backdate a tracked job's `started` timestamp past
+    /// [`RESULT_TTL`] and trigger reaping to exercise stale-slot cleanup.
+    #[cfg(test)]
+    pub(super) fn expire_job_for_test(&self, number: u64) -> bool {
+        let Ok(mut state) = self.shared.state.lock() else {
+            return false;
+        };
+        let expired = Instant::now()
+            .checked_sub(RESULT_TTL + Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+        let mut hit = false;
+        for (id, entry) in &mut state.jobs {
+            if id.number() == number {
+                entry.started = expired;
+                hit = true;
+            }
+        }
+        reap(&mut state);
+        hit
     }
 
     /// Cancellation is scoped to the exact authenticated worker session.

@@ -482,6 +482,66 @@ async fn diagnostics(f: &PurchaseFixture, saved: &Durable, expire: bool) -> Test
     tasks.shutdown(Duration::from_secs(5)).await;
     result
 }
+async fn reaped_executor_jobs_never_pin_authored_slots(
+    f: &PurchaseFixture,
+    saved: &Durable,
+) -> TestResult {
+    let mut world = Rig::personal(f, Compose::FORKS).boot(saved)?;
+    let tasks = world.tasks.clone();
+    let result = async {
+        // 1. Reap in executor -> poll_authored prunes the orphaned entry and emits unavailable.
+        let job_poll = submit(&mut world, false, true)?;
+        ready(&world, job_poll).await?;
+        assert!(jobs::retained(&world.engine.world, job_poll));
+        assert!(jobs::expire_in_executor(&world.engine.world, job_poll));
+        let events = poll_once(&mut world)?;
+        assert!(
+            !jobs::retained(&world.engine.world, job_poll),
+            "poll_authored must prune entries reaped past RESULT_TTL in executor"
+        );
+        match terminal(&events)? {
+            MindResponse::Error { message, .. } => {
+                assert_eq!(message, "Authoring completion is no longer available.");
+            }
+            other => return Err(format!("expected unavailable after reap, got {other:?}").into()),
+        }
+
+        // 2. Reap in executor -> explicit cancel (RollError::Missing) still prunes authored entry.
+        let job_cancel = submit(&mut world, false, true)?;
+        ready(&world, job_cancel).await?;
+        assert!(jobs::retained(&world.engine.world, job_cancel));
+        assert!(jobs::expire_in_executor(&world.engine.world, job_cancel));
+        let cancel_resp = invoke(
+            &mut world,
+            BUYER_CONN,
+            REQUEST + 7,
+            MindRequest::Cancel { job: job_cancel },
+        )?;
+        assert!(
+            matches!(cancel_resp, MindResponse::Error { .. }),
+            "cancel on already-reaped job should report missing: {cancel_resp:?}"
+        );
+        assert!(
+            !jobs::retained(&world.engine.world, job_cancel),
+            "cancel must remove authored entry even on RollError::Missing"
+        );
+
+        // 3. Reap in executor -> subsequent submit prunes dead entries before enforcing MAX_JOBS.
+        let job_submit = submit(&mut world, false, true)?;
+        ready(&world, job_submit).await?;
+        assert!(jobs::expire_in_executor(&world.engine.world, job_submit));
+        let fresh = submit(&mut world, false, true)?;
+        assert!(
+            !jobs::retained(&world.engine.world, job_submit),
+            "submit_authored must prune expired/reaped entries before counting against MAX_JOBS"
+        );
+        let _ = drain(&mut world, fresh).await?;
+        Ok(())
+    }
+    .await;
+    tasks.shutdown(Duration::from_secs(5)).await;
+    result
+}
 pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     story_phase("jobs.success", || success(f, saved))?.await?;
     for mode in [
@@ -496,5 +556,9 @@ pub(super) async fn exercise(f: &PurchaseFixture, saved: &Durable) -> TestResult
     }
     story_phase("jobs.issuer", || issuer_independent(f, saved))?.await?;
     story_phase("jobs.diagnostics", || diagnostics(f, saved, false))?.await?;
-    story_phase("jobs.diagnostics_expired", || diagnostics(f, saved, true))?.await
+    story_phase("jobs.diagnostics_expired", || diagnostics(f, saved, true))?.await?;
+    story_phase("jobs.reaped_cleanup", || {
+        reaped_executor_jobs_never_pin_authored_slots(f, saved)
+    })?
+    .await
 }
