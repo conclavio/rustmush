@@ -35,10 +35,12 @@ pub struct State {
     pub lines: Vec<String>,
     pub widths: Vec<u16>,
     pub conns: Vec<NewConn>,
+    pub disconnected: Vec<u64>,
 }
 
 #[derive(Default)]
 pub struct Hooks {
+    pub leases: mush_net_ssh::resume::Registry,
     pub blocked: bool,
     pub state: Mutex<State>,
 }
@@ -166,7 +168,60 @@ impl SshHooks for Hooks {
         self.st().lines.push(line);
         Box::pin(async {})
     }
-    fn disconnected(&self, _: u64) -> BoxFuture<'_, ()> {
+    fn cockpit_issue<'a>(
+        &'a self,
+        id: u64,
+        pane: &'a str,
+        account: &'a str,
+        character: u64,
+    ) -> BoxFuture<'a, Result<(mush_net_ssh::resume::Ticket, u32), mush_net_ssh::resume::Failure>>
+    {
+        Box::pin(async move {
+            self.leases.issue(
+                id,
+                pane,
+                account,
+                character,
+                mush_session::SessId(19),
+                Duration::from_secs(60),
+            )
+        })
+    }
+    fn cockpit_redeem<'a>(
+        &'a self,
+        conn: NewConn,
+        pane: &'a str,
+        account: &'a str,
+        selected: Option<u64>,
+        ticket: &'a mush_net_ssh::resume::Ticket,
+    ) -> BoxFuture<'a, Result<mush_net_ssh::resume::Redeemed, mush_net_ssh::resume::Failure>> {
+        Box::pin(async move {
+            let claim = self
+                .leases
+                .reserve(conn.id, pane, account, selected, ticket)?;
+            let character = claim.character();
+            let view = claim.view();
+            let (ticket, grace) = claim.commit()?;
+            self.st().conns.push(conn);
+            Ok((character, ticket, grace, view))
+        })
+    }
+    fn cockpit_view(
+        &self,
+        id: u64,
+        account: &str,
+        pane: &str,
+        view: mush_net_ssh::resume::ViewPrefs,
+    ) {
+        self.leases.update_view(id, account, pane, view);
+    }
+    fn cockpit_close(&self, id: u64) {
+        self.leases.detach(id, false);
+    }
+    fn disconnected(&self, id: u64) -> BoxFuture<'_, ()> {
+        self.leases.detach(id, true);
+        self.st().disconnected.push(id);
+
         Box::pin(async {})
     }
     fn is_ip_blocked(&self, _: IpAddr) -> bool {
@@ -302,6 +357,42 @@ listed = false
         }
     }
 
+    pub async fn direct_listener(&self) -> SocketAddr {
+        let cfg = mush_net_ssh::SshConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            host_key_path: self.dir.join("instance_host"),
+            banner: "rustmush test banner".into(),
+            auth_deadline: mush_net_ssh::DEFAULT_AUTH_DEADLINE,
+        };
+        let bound =
+            mush_net_ssh::SshServer::bind(cfg, Arc::clone(&self.hooks) as Arc<dyn SshHooks>)
+                .await
+                .unwrap();
+        let addr = bound.local_addr();
+        tokio::spawn(bound.run());
+        addr
+    }
+    pub async fn droppable_client(
+        &self,
+        addr: SocketAddr,
+    ) -> (client::Handle<Cli>, std::net::TcpStream) {
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .unwrap()
+            .into_std()
+            .unwrap();
+        let cut = stream.try_clone().unwrap();
+        let client = client::connect_stream(
+            Arc::new(client::Config::default()),
+            tokio::net::TcpStream::from_std(stream).unwrap(),
+            Cli {
+                banners: self.banners.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        (client, cut)
+    }
     pub async fn try_client(&self) -> Result<client::Handle<Cli>, String> {
         let cfg = Arc::new(client::Config::default());
         let cli = Cli {

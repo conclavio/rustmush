@@ -221,6 +221,26 @@ impl State {
         }
     }
 }
+/// Presentation choices owned by the player. Capabilities and geometry are
+/// always taken from the newly connected terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewPrefs {
+    pub tui: bool,
+    pub sounds: bool,
+    pub encoder: mush_pixel::caps::EncoderChoice,
+}
+/// Character ID, rotated ticket, grace in seconds, and saved presentation.
+pub type Redeemed = (u64, Ticket, u32, ViewPrefs);
+
+impl Default for ViewPrefs {
+    fn default() -> Self {
+        Self {
+            tui: false,
+            sounds: true,
+            encoder: Default::default(),
+        }
+    }
+}
 struct Lease {
     digest: [u8; 32],
     previous: Option<PreviousTicket>,
@@ -229,6 +249,21 @@ struct Lease {
     conn: u64,
     grace_seconds: u32,
     state: State,
+    view: ViewPrefs,
+}
+
+impl Lease {
+    fn cancel_candidate(&mut self, conn: u64) {
+        if let State::Reserved {
+            conn: candidate,
+            deadline,
+            ..
+        } = self.state
+            && candidate == conn
+        {
+            self.state = State::Detached(deadline);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -299,15 +334,28 @@ impl Registry {
                 conn,
                 grace_seconds,
                 state: State::Attached,
+                view: ViewPrefs::default(),
             },
         );
         Ok((ticket, grace_seconds))
     }
-    /// Revoke an active owner when its transport closed after the session was
-    /// already removed. A late callback cannot disturb a detached or reserved pane.
+    /// Ignore late input from a connection that has lost or transferred its lease.
+    pub fn update_view(&self, conn: u64, account: &str, pane: &str, view: ViewPrefs) {
+        if let Some(lease) = self.lock().get_mut(&PaneKey::new(account, pane))
+            && lease.conn == conn
+            && matches!(lease.state, State::Attached)
+        {
+            lease.view = view;
+        }
+    }
+
+    /// Revoke an active owner or cancel its own unfinished admission. A late
+    /// close from the old owner leaves a parked or newly reserved lease intact.
     pub fn close_attached(&self, conn: u64) {
-        self.lock()
-            .retain(|_, lease| lease.conn != conn || !matches!(lease.state, State::Attached));
+        self.lock().retain(|_, lease| {
+            lease.cancel_candidate(conn);
+            lease.conn != conn || !matches!(lease.state, State::Attached)
+        });
     }
     /// An orderly quit or revocation ends a ticket. An unexpected detach starts its grace clock.
     pub fn detach(&self, conn: u64, lost: bool) {
@@ -316,15 +364,7 @@ impl Registry {
             if lease.state.is_expired(now) {
                 return false;
             }
-            if let State::Reserved {
-                conn: candidate,
-                deadline,
-                ..
-            } = lease.state
-                && candidate == conn
-            {
-                lease.state = State::Detached(deadline);
-            }
+            lease.cancel_candidate(conn);
             if lease.conn != conn {
                 return true;
             }
@@ -393,6 +433,7 @@ impl Registry {
             session: lease.session,
             character: lease.character,
             previous_conn: lease.conn,
+            view: lease.view,
             replacement,
             previous: PreviousTicket {
                 digest,
@@ -442,6 +483,7 @@ fn checked_lease<'a>(
 
 /// No registry lock is held while the gateway checks its session and world admission.
 pub struct Claim {
+    view: ViewPrefs,
     registry: Registry,
     key: PaneKey,
     conn: u64,
@@ -452,6 +494,9 @@ pub struct Claim {
     previous: PreviousTicket,
 }
 impl Claim {
+    pub fn view(&self) -> ViewPrefs {
+        self.view
+    }
     pub fn session(&self) -> SessId {
         self.session
     }
@@ -514,6 +559,38 @@ impl Drop for Claim {
 mod tests {
     use super::*;
     const PANE: &str = "00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn only_attached_owner_can_change_the_view() {
+        let registry = Registry::default();
+        let (ticket, _) = registry
+            .issue(7, PANE, "pilot", 3, SessId(8), MAX_GRACE)
+            .unwrap();
+        let saved = ViewPrefs {
+            tui: true,
+            sounds: false,
+            encoder: mush_pixel::caps::EncoderChoice::Off,
+        };
+        registry.update_view(7, "pilot", PANE, saved);
+        registry.update_view(8, "pilot", PANE, ViewPrefs::default());
+        registry.update_view(7, "other", PANE, ViewPrefs::default());
+        registry.detach(7, true);
+        registry.update_view(7, "pilot", PANE, ViewPrefs::default());
+        let claim = registry
+            .reserve(8, PANE, "pilot", Some(3), &ticket)
+            .unwrap();
+        assert_eq!(claim.view(), saved);
+        let (ticket, _) = claim.commit().unwrap();
+        registry.update_view(7, "pilot", PANE, ViewPrefs::default());
+        registry.detach(8, true);
+        assert_eq!(
+            registry
+                .reserve(9, PANE, "pilot", None, &ticket)
+                .unwrap()
+                .view(),
+            saved
+        );
+    }
 
     #[test]
     fn reserve_requires_an_authenticated_owner_a_matching_character_and_a_detached_pane() {
@@ -700,6 +777,11 @@ mod tests {
             .expect("issue");
         registry.detach(1, true);
         registry.close_attached(1);
+        let abandoned = registry
+            .reserve(3, PANE, "pilot", None, &ticket)
+            .expect("candidate awaiting its world binding");
+        registry.close_attached(3);
+        assert!(abandoned.commit().is_err());
         let claim = registry
             .reserve(2, PANE, "pilot", None, &ticket)
             .expect("detached owner survived old close");

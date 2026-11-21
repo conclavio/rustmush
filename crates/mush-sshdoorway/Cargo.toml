@@ -32,6 +32,8 @@ getrandom.workspace = true
 # The end-to-end tests run a real instance-side trusted ingress in process.
 mush-net-ssh.workspace = true
 mush-proto.workspace = true
+mush-session.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

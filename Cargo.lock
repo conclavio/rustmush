@@ -2630,6 +2630,7 @@ name = "mush-net-ssh"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "futures",
  "getrandom 0.4.3",
  "mush-ansi",
@@ -2941,9 +2942,11 @@ dependencies = [
  "mush-drain",
  "mush-net-ssh",
  "mush-proto",
+ "mush-session",
  "mush-sshdoorway-proto",
  "russh",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "toml",

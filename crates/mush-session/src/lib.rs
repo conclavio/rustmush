@@ -125,7 +125,7 @@ pub use conn::{ConnId, ConnectionHandle, Sink};
 pub use flood::{FloodBucket, FloodVerdict};
 pub use manager::{
     AttachOutcome, CharKey, DetachOutcome, DetachReason, EnvelopeClock, ExpiredSession,
-    LinkdeadHook, NarrativeBacklog, RETAIN_LATEST, ReplayError, SendReport, SendToConn, SessId,
-    SessionConfig, SessionManager, SessionMeta, system_unix_ms,
+    LinkdeadHook, NarrativeBacklog, RETAIN_LATEST, ReplayError, ResumeRefusal, ResumeWindow,
+    SendReport, SendToConn, SessId, SessionConfig, SessionManager, SessionMeta, system_unix_ms,
 };
 pub use sanitize::sanitize_line;

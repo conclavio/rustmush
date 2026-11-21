@@ -11,6 +11,7 @@ authors = ["Nicholas York"]
 # Version pins verified Aug 2026 at design time; each crate re-verifies when its
 # milestone lands (entries here are inert until a member references them).
 [workspace.dependencies]
+bytes = "1.9"
 # core plumbing
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

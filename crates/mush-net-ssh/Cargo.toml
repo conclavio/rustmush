@@ -16,6 +16,7 @@ mush-proto.workspace = true
 # Doc 29: the sshdoorway preamble read on the trusted ingress before SSH.
 mush-sshdoorway-proto.workspace = true
 russh.workspace = true
+bytes.workspace = true
 # Doc 21 cut G.11: the asset pack over `sftp`, its files checked against the
 # manifest's SHA-256 at boot.
 russh-sftp.workspace = true
