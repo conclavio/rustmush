@@ -6,7 +6,7 @@
 //!   propellant from Occator's vault at Ceres into the tank farm's at Isidis, and an escort for it,
 //!   once an IC day while the farm is short of its threshold plus the arm's reserve, at most two
 //!   open at once.
-//! - **The farm drains** a tonne an IC day (lane v53's `consume` row; 20 t at v49), and the port
+//! - **The farm drains** 2 t an IC day (lane v54's `consume` row; 1 t at v53, 20 t at v49), and the port
 //!   tick reads its level. At the threshold the close probe is met and Hold the Concession moves
 //!   once that month; the arm posts nothing more once the farm stands past its reserve.
 //! - **An untaken haul** is carried by Ceres' hauling house after seven IC days, in a real hull,
@@ -230,7 +230,7 @@ async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
 }
 
 /// **Doc 50 cut OP.4: the farm drains, and at its threshold Hold the Concession moves**
-/// (Q-50-21, Q-50-60; doc 50 cut OP.8's retune): a tonne an IC day is used up; a fresh world's
+/// (Q-50-21, Q-50-60; doc 50 cut OP.8's retune): 2 t an IC day are used up; a fresh world's
 /// farm stands over its threshold, so its first reading meets the close probe and moves Hold once
 /// that month, its line the chronicle's, and another reading that month moves it no further; the
 /// arm posts while the farm is short of its threshold plus its reserve, and nothing once seeded
@@ -261,7 +261,7 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
     ahead(&mut rig, DAY);
     ahead(&mut rig, 600);
     let after = hold_pool(&mut rig.tw, vault, stockpile::STOCKPILE_GOOD);
-    assert_eq!(start - after, 1, "a day's use of propellant at the farm");
+    assert_eq!(start - after, 2, "a day's use of propellant at the farm");
 
     // Seeded past the threshold and the reserve, the arm posts nothing more.
     seed_pool(

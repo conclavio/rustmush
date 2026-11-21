@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v53 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v54 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,33 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut OP.8's second Ceres hull (lane v54): VCC-03 taken out** of Ceres' hauling
+/// house, and the tank farm's drain back at v53's tonne an IC day (its faucet 50), so a strip chain
+/// rebuilds a lane before v54 (idempotent). The chain's head.
+pub fn strip_second_hull(doc: &mut Value) {
+    set_farm_drain(doc, 1, 50);
+    if let Some(hulls) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("ceres_port"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("hauler"))
+        .and_then(|h| h.get_mut("hulls"))
+        .and_then(Value::as_array_mut)
+    {
+        hulls.retain(|h| h.get("mark").and_then(Value::as_str) != Some("VCC-03"));
+    }
+}
+
 /// **Doc 50 cut OP.8's retune (lane v53): the tank farm's drain back at v52's**: 20 t of
 /// propellant an IC day, its export faucet 1,000, so a strip chain rebuilds a lane before v53
-/// (idempotent). The chain's head.
+/// (idempotent); lane v54's [`strip_second_hull`] first.
 pub fn strip_farm_drain(doc: &mut Value) {
+    strip_second_hull(doc);
+    set_farm_drain(doc, 20, 1000);
+}
+
+/// The tank farm's `consume` row at `per_ic_day` units and its faucet at `export_major`.
+fn set_farm_drain(doc: &mut Value, per_ic_day: u64, export_major: u64) {
     let Some(vendors) = doc
         .get_mut("entries")
         .and_then(|e| e.get_mut("isidis_port"))
@@ -64,8 +87,8 @@ pub fn strip_farm_drain(doc: &mut Value) {
         }
         if let Some(rows) = vendor.get_mut("consume").and_then(Value::as_array_mut) {
             for row in rows {
-                row["per_ic_day"] = 20.into();
-                row["export_major_per_ic_day"] = 1000.into();
+                row["per_ic_day"] = per_ic_day.into();
+                row["export_major_per_ic_day"] = export_major.into();
             }
         }
     }

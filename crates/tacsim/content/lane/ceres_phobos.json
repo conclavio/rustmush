@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 53,
+    "version": 54,
     "kind": "campaign_seed",
-    "digest": "24b611e5bfe38d68ee1a95eb5da608efd2cf26f2852171f53956e33c083f02f3",
+    "digest": "beb80901461134b9a995631908ea54948073ecc33d46edc32fa52b0f68fdff09",
     "requires": []
   },
   "entries": {
@@ -2915,7 +2915,7 @@
                   "cost": { "capital_major": 5000000, "lifetime_years": 30, "upkeep_permille": 20,
                             "staff": 8, "wage_major": 150, "margin_permille": 250 } },
         "hauler": { "org": "vesta_carriers", "design": "tacsim.unit.dray",
-                    "hulls": [ { "mark": "VCC-01", "home": "ceres_port" }, { "mark": "VCC-02", "home": "luna_port" } ],
+                    "hulls": [ { "mark": "VCC-01", "home": "ceres_port" }, { "mark": "VCC-02", "home": "luna_port" }, { "mark": "VCC-03", "home": "ceres_port" } ],
                     "goods": ["volatiles", "carbon_feedstock", "structural_alloys", "instrument_boards"],
                     "lot": 40, "margin_permille": 100, "float_major": 2000 }
       }
@@ -3167,7 +3167,7 @@
             "agent": "isidis_port.clerk", "signatory": "neighborhood.isidis_concession.npc.achterberg",
             "stock": [ { "good": "propellant", "qty": 3000, "grade": 50, "issue": 1 } ],
             "bids":  [ { "good": "propellant", "price_major": 50, "intake": 2000, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 40, "cap": 2000 } } ],
-            "consume": [ { "good": "propellant", "per_ic_day": 1, "export_major_per_ic_day": 50 } ] }
+            "consume": [ { "good": "propellant", "per_ic_day": 2, "export_major_per_ic_day": 100 } ] }
         ],
         "routes": { "stickney": [ "isidis_stickney" ] }
       }

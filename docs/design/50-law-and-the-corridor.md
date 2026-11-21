@@ -966,6 +966,29 @@ the five.
   - **The arm's budget covers it.** A post is 1,000 cr against a month's cap of 20,000, and the
     arm posts at most once an IC day with two open, about two posts a month on these runs. It
     posted to the end of both runs, from Occator's own treasury, with no new money.
+- **The figures, retuned again for a second Ceres hull (owner, 2026-11-21: "add a second ceres
+  hull"; lane v54). Provisional.** VCC-03 joins Ceres' hauling house.
+
+  | Figure | Retune (v53) | Second hull (v54) |
+  |---|---|---|
+  | Threshold | 2,960 t | 2,905 t |
+  | Starting stock | 3,000 t | 3,000 t (unchanged) |
+  | Drain | 1 t an IC day | 2 t an IC day (its export faucet 100 cr) |
+  | One haul | 30 t | 30 t (unchanged) |
+  | Arm's reserve over the threshold | two hauls (60 t) | five hauls (150 t) |
+  | Arm's hauls open at once | 2 | 3 |
+
+  - **Why.** Two hulls at Ceres land about 1.7 t a day, so a tonne a day could no longer win. At
+    2 t the house still falls short.
+  - **Measured on the empty run:** the farm reads 2,890 t at the close, 15 t short, and the
+    Republic wins. With one player haul more it reads 2,922 t, 17 t over, and the Freeport holds.
+  - **The third open haul is the player's.** The house's two hulls take two, so one is left for a
+    player.
+  - **The reserve must clear the start stock.** It now stands 95 t over the threshold, so a
+    two-haul reserve would have stopped the arm posting at the start.
+  - **A Ceres hull now waits while the arm is posting, not only for a haul on the board.** A
+    player who took the only posted haul on day 0 sent both house hulls off on trades, and the
+    house missed a month. Her haul then added nothing.
 
 **Q-50-22 — The budget, and who spends it.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the Freeport side's money is its backing organization's treasury (Occator,

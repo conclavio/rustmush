@@ -8,8 +8,8 @@
 //!   arm's first haul for Occator (`+haul/accept`), flies it by the direct run, heaves to at the
 //!   Kirkwood picket and submits (`+helm/thrust`, `+helm/submit`), carries on to Stickney and
 //!   Isidis and delivers it into the tank farm (`+haul/deliver`). Beside her, Ceres' house
-//!   carries the hauls nobody takes; hers is one the house's one hull at Ceres leaves on the
-//!   board.
+//!   carries the hauls nobody takes; hers is the third the arm keeps open beside the house's
+//!   two hulls at Ceres.
 //! - **The world runs on.** The Assembly's votes fill the Concession Review; the Republic
 //!   declares and the hauler, who has a hull on the lane, is told; the campaign reads the farm at
 //!   the window's close, at its threshold, and settles for the Freeport; the hauler is told.
