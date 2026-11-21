@@ -286,7 +286,7 @@ where
                     // Not counted as a failure, exactly like a key miss on the
                     // public port's signed-key callback: the player proved they
                     // hold the key, it is just not registered here.
-                    AuthResult::BadCreds => {
+                    AuthResult::BadCreds | AuthResult::Busy => {
                         proto::write_msg(stream, &IngressMsg::BadCreds).await?;
                     }
                     AuthResult::Banned => {
@@ -549,6 +549,7 @@ mod tests {
             &'a self,
             _: &'a str,
             _: &'a str,
+            _: IpAddr,
         ) -> BoxFuture<'a, Result<(), CreateErr>> {
             Box::pin(async { Err(CreateErr::Weak) })
         }

@@ -37,7 +37,10 @@ pub mod screen;
 pub mod sheet;
 pub mod sound;
 
-pub use app::{InputResult, Mode, StickyMode, TuiApp, TuiManifest};
+pub use app::{
+    InputResult, MAX_TUI_BURST_OPS, MAX_TUI_BURST_SUBMIT_BYTES, Mode, StickyMode, TuiApp,
+    TuiManifest, exit_command,
+};
 use backend::{ENTER_ALT_SCREEN, LEAVE_ALT_SCREEN, SshBackend};
 
 use mush_pixel::caps::Encoder;

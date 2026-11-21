@@ -57,7 +57,7 @@ pub use crate::bridge_common::{AuthResult, CharSummary, ConnectErr, LineOutcome}
 
 use mush_config::ipguard::IpGuard;
 
-use crate::accounts::{AuthBackend, AuthOutcome, CreateErr};
+use crate::accounts::{AuthBackend, AuthCheckOutcome, AuthOutcome, CreateErr};
 use crate::bridge_common::GameBridge;
 
 /// A freshly authenticated connection, handed over by the transport.
@@ -487,15 +487,27 @@ mod net {
 
     use super::*;
 
+    fn map_create_err(err: CreateErr) -> net_ssh::CreateErr {
+        match err {
+            CreateErr::AccountExists | CreateErr::CharacterNameTaken => net_ssh::CreateErr::Taken,
+            CreateErr::BadPassword => net_ssh::CreateErr::Weak,
+            other => net_ssh::CreateErr::BadName(other.to_string()),
+        }
+    }
+
     /// Adapt the bridge to the transport's dyn-compatible hooks trait.
     ///
-    /// The trait carries no peer address on `auth_account`/`create_account`;
-    /// IP gating on the real path rides [`SshBridge::is_ip_blocked`], which
-    /// the transport checks before every auth attempt — SSH-level *and*
-    /// in-band welcome-screen `connect`/`create` — plus the per-connection
-    /// pre-auth flood bucket inside `mush-net-ssh`. The per-IP concurrency
-    /// cap rides `connection_opened`/`connection_closed`, called by the
-    /// transport at accept/drop.
+    /// `create_account` carries the peer address and delegates to per-IP
+    /// [`GameBridge::create_account`] (with `exempt_nets` skipping only the
+    /// per-network registration throttle so local bot/load harnesses continue
+    /// to work, never sitebans or tempbans); `auth_account` uses
+    /// [`AuthBackend::verify_checked`] so Argon2id saturation surfaces as
+    /// [`net_ssh::AuthResult::Busy`] without penalizing the peer IP; IP gating
+    /// on auth rides [`SshBridge::is_ip_blocked`], checked by the transport
+    /// before every SSH-level and in-band welcome attempt, plus the
+    /// per-connection pre-auth flood bucket inside `mush-net-ssh`. The per-IP
+    /// concurrency cap rides `connection_opened`/`connection_closed` and
+    /// `admit_connection`/`release_connection` at accept/drop.
     impl<A: AuthBackend + 'static> net_ssh::SshHooks for SshBridge<A> {
         fn auth_account<'a>(
             &'a self,
@@ -503,8 +515,8 @@ mod net {
             password: &'a str,
         ) -> BoxFuture<'a, net_ssh::AuthResult> {
             Box::pin(async move {
-                match self.core.accounts.verify(account, password).await {
-                    AuthOutcome::Ok {
+                match self.core.accounts.verify_checked(account, password).await {
+                    AuthCheckOutcome::Ok {
                         account,
                         characters,
                     } => net_ssh::AuthResult::Ok {
@@ -517,7 +529,8 @@ mod net {
                             })
                             .collect(),
                     },
-                    AuthOutcome::BadCredentials => net_ssh::AuthResult::BadCreds,
+                    AuthCheckOutcome::BadCredentials => net_ssh::AuthResult::BadCreds,
+                    AuthCheckOutcome::Busy => net_ssh::AuthResult::Busy,
                 }
             })
         }
@@ -551,27 +564,30 @@ mod net {
             &'a self,
             account: &'a str,
             password: &'a str,
+            addr: IpAddr,
         ) -> BoxFuture<'a, Result<(), net_ssh::CreateErr>> {
             Box::pin(async move {
-                if !self.core.guard.check_unattributed_register() {
-                    return Err(net_ssh::CreateErr::BadName(
-                        CreateErr::RateLimited.to_string(),
-                    ));
-                }
                 // The account's first character shares the account's name
                 // (as typed); more arrive via the select screen's newchar.
-                match self.core.accounts.create(account, password, account).await {
-                    Ok(_) => Ok(()),
-                    Err(CreateErr::AccountExists | CreateErr::CharacterNameTaken) => {
-                        Err(net_ssh::CreateErr::Taken)
+                if self.core.guard.is_exempt(addr) {
+                    if self.core.guard.is_blocked(addr) {
+                        return Err(net_ssh::CreateErr::BadName(
+                            "your address is blocked".to_string(),
+                        ));
                     }
-                    Err(CreateErr::BadPassword) => Err(net_ssh::CreateErr::Weak),
-                    Err(err @ CreateErr::World(_)) => {
-                        self.core.guard.refund_unattributed_register();
-                        Err(net_ssh::CreateErr::BadName(err.to_string()))
-                    }
-                    Err(other) => Err(net_ssh::CreateErr::BadName(other.to_string())),
+                    return self
+                        .core
+                        .accounts
+                        .create(account, password, account)
+                        .await
+                        .map(|_| ())
+                        .map_err(map_create_err);
                 }
+                self.core
+                    .create_account(account, password, account, addr)
+                    .await
+                    .map(|_| ())
+                    .map_err(map_create_err)
             })
         }
 
@@ -1006,11 +1022,20 @@ mod exec_tests {
 
     struct OnePilot {
         owns_character: AtomicBool,
+        busy: AtomicBool,
     }
 
     impl AuthBackend for OnePilot {
         async fn verify(&self, _account: &str, _password: &str) -> AuthOutcome {
             AuthOutcome::BadCredentials
+        }
+
+        async fn verify_checked(&self, _account: &str, _password: &str) -> AuthCheckOutcome {
+            if self.busy.load(Ordering::SeqCst) {
+                AuthCheckOutcome::Busy
+            } else {
+                AuthCheckOutcome::BadCredentials
+            }
         }
 
         async fn characters(&self, _account: &str) -> Vec<crate::accounts::CharSummary> {
@@ -1094,6 +1119,7 @@ mod exec_tests {
         let bridge = SshBridge::new(
             Arc::new(OnePilot {
                 owns_character: AtomicBool::new(true),
+                busy: AtomicBool::new(false),
             }),
             Arc::clone(&sessions),
             Recording(Arc::clone(&seen)),
@@ -1505,27 +1531,106 @@ mod exec_tests {
     }
 
     #[tokio::test]
-    async fn ssh_hooks_create_account_is_rate_limited() {
+    async fn ssh_hooks_create_account_rate_limits_per_ip_without_cross_user_poisoning() {
         use mush_net_ssh::SshHooks;
 
         let (bridge, _sessions, _seen) = rig(true);
-        // First MAX_REGISTERS_PER_WINDOW calls reach the backend (StubAuth rejects
-        // with NoSuchAccount); the next call is throttled before the backend.
+        let peer_a: IpAddr = "203.0.113.10".parse().unwrap();
+        let peer_b: IpAddr = "203.0.113.11".parse().unwrap();
+        let v6_net_a1: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let v6_net_a2: IpAddr = "2001:db8:1:2::99".parse().unwrap();
+        let v6_net_b: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+
+        // First MAX_REGISTERS_PER_WINDOW calls from peer_a reach the backend;
+        // the next call from peer_a is throttled before the backend.
         for i in 0..mush_config::ipguard::MAX_REGISTERS_PER_WINDOW {
-            let err = SshHooks::create_account(&bridge, &format!("acct{i}"), "secret123")
+            let err = SshHooks::create_account(&bridge, &format!("acct{i}"), "secret123", peer_a)
                 .await
                 .unwrap_err();
             assert!(
                 !format!("{err:?}").contains("too many requests"),
-                "call {i} should not be rate-limited yet: {err:?}"
+                "call {i} from peer_a should not be rate-limited yet: {err:?}"
             );
         }
-        let limited = SshHooks::create_account(&bridge, "acct_over", "secret123")
+        let limited_a = SshHooks::create_account(&bridge, "acct_over", "secret123", peer_a)
             .await
             .unwrap_err();
         assert!(
-            matches!(limited, mush_net_ssh::CreateErr::BadName(ref msg) if msg.contains("too many requests")),
-            "expected rate-limit error, got {limited:?}"
+            matches!(limited_a, mush_net_ssh::CreateErr::BadName(ref msg) if msg.contains("too many requests")),
+            "expected rate-limit error for peer_a, got {limited_a:?}"
+        );
+
+        // Exhausting peer_a's quota MUST NOT throttle an unrelated public peer_b (EXT-P2-1).
+        let peer_b_err = SshHooks::create_account(&bridge, "other_user", "secret123", peer_b)
+            .await
+            .unwrap_err();
+        assert!(
+            !format!("{peer_b_err:?}").contains("too many requests"),
+            "peer_b must have its own registration bucket: {peer_b_err:?}"
+        );
+
+        // IPv6 peers in the same /64 share one bucket while another /64 is isolated.
+        for i in 0..mush_config::ipguard::MAX_REGISTERS_PER_WINDOW {
+            let err = SshHooks::create_account(&bridge, &format!("v6_{i}"), "secret123", v6_net_a1)
+                .await
+                .unwrap_err();
+            assert!(
+                !format!("{err:?}").contains("too many requests"),
+                "v6 call {i} should not be rate-limited yet: {err:?}"
+            );
+        }
+        let limited_v6 = SshHooks::create_account(&bridge, "v6_over", "secret123", v6_net_a2)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(limited_v6, mush_net_ssh::CreateErr::BadName(ref msg) if msg.contains("too many requests")),
+            "same IPv6 /64 must share registration quota: {limited_v6:?}"
+        );
+        let isolated_v6 = SshHooks::create_account(&bridge, "v6_other", "secret123", v6_net_b)
+            .await
+            .unwrap_err();
+        assert!(
+            !format!("{isolated_v6:?}").contains("too many requests"),
+            "distinct IPv6 /64 must not be throttled: {isolated_v6:?}"
+        );
+
+        // Exempt loopback peers skip the per-IP registration rate throttle
+        // (preserving local bot/load harnesses), unless explicitly blocked.
+        for i in 0..(mush_config::ipguard::MAX_REGISTERS_PER_WINDOW + 2) {
+            let err = SshHooks::create_account(&bridge, &format!("lo_{i}"), "secret123", loopback)
+                .await
+                .unwrap_err();
+            assert!(
+                !format!("{err:?}").contains("too many requests"),
+                "exempt loopback call {i} should not be rate-limited: {err:?}"
+            );
+        }
+        for _ in 0..mush_config::ipguard::IpGuardConfig::default().max_failures {
+            bridge.auth_failed(loopback);
+        }
+        let blocked_lo = SshHooks::create_account(&bridge, "lo_blocked", "secret123", loopback)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(blocked_lo, mush_net_ssh::CreateErr::BadName(ref msg) if msg.contains("blocked")),
+            "blocked exempt IP must still be refused: {blocked_lo:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ssh_hooks_auth_account_maps_argon2_saturation_to_busy() {
+        use mush_net_ssh::SshHooks;
+
+        let (bridge, _sessions, _seen) = rig(true);
+        assert_eq!(
+            SshHooks::auth_account(&bridge, "pilot", "wrong").await,
+            mush_net_ssh::AuthResult::BadCreds
+        );
+        bridge.core.accounts.busy.store(true, Ordering::SeqCst);
+        assert_eq!(
+            SshHooks::auth_account(&bridge, "pilot", "wrong").await,
+            mush_net_ssh::AuthResult::Busy
         );
     }
 }
