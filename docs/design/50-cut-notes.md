@@ -1779,7 +1779,9 @@ brief):
   - A sale into the bid past the month's cap, or past what Occator's account holds, is refused
     (`FARM_BUDGET_SPENT`).
   - Each settled sale is kept once under its quote (`FreeportArm::fills`), counted in the month's
-    spend beside the posts, and paid back to the farm from Occator on the port tick.
+    spend beside the posts, and paid back to the farm from Occator on the port tick. The market's
+    `SettledSale` now names the house (the quote's buyer), since the bid's listing may no longer
+    stand when the policy is told.
   - A sale quoted but not yet settled is not counted, so two sales at once can overshoot the cap
     by one sale. The figures stay provisional.
   - The story (`op5_occator_funds_the_tank_farms_bid`) shows the refusal while Occator's account
