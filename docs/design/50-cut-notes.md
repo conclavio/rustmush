@@ -134,6 +134,14 @@ the haul; the 35 km breach records the pilot, not the hull, and writes a ruling.
 - Still not built: a lot larger than what is left to take is skipped (no lot is split), and a
   held lot is still not taken.
 
+**Fixes from doc 50b, the rest** (PR "50b customs P2").
+- **The picket's run incident names its officer.** The canon incident names the officer who
+  flew the run as `pilot`, as the standing loss does, and the principal who answers for the
+  hull as its own field, `liable`, named among the entities when it is someone else.
+- **Seized lots are offered.** `seized::offer_lots` lists each unheld lot of the good in the
+  authority's vault as an exact-lot ask of its whole quantity at the seized price; the pool's
+  ask never sold a lot.
+
 ## KC.0a
 
 The faction engine that the Kirkwood chain and the Isidis operation stand on (Q-50-50, Q-50-51,
@@ -331,6 +339,10 @@ branch**; the next lane bump (KC.2, KC.4 or OP.1) starts from v45.
   `FactionId`; it did not fall out of this unit (KC.1).
 - No polity has a backing organization or a treasury (KC.2, Q-50-14).
 - No compiled caller reads `control_at` yet (KC.2 on).
+
+**Fixes from doc 50b** (PR "50b customs P2").
+- **One regions block a pack.** The decode refuses a second block, which every read would have
+  ignored. Story: `kc0b_a_second_regions_block_is_refused`.
 
 ## KC.1
 
@@ -575,6 +587,21 @@ must land after OP.1's.
   - A passage that arrives during an outage leaves no journey to read, and is not assessed.
   - An absent hull's ruling lines name the "Kirkwood picket" where a corvette would be named.
 
+**Fixes from doc 50b, the rest** (PR "50b customs P2").
+- **A duty past its grace binds (Q-50-54).** An owed duty writes an offense row
+  (`OffenseKind::UnpaidDuty`, `Evidence::Duty`) of the payee's polity against whoever answers
+  for the hull, carrying the duty's debt. The departure hold reads it as a fine, and the trade
+  restriction counts it only once the debt is past its grace. Story:
+  `kc2b_a_past_due_duty_holds_the_hull_and_restricts_trade`.
+- **The seizing authority follows the terms payee (Q-50-14, Q-50-44).**
+  `seized::seizing_authority_for` routes a seizure through the payee of the hull's terms row,
+  at the lane port that lists it, else the Registry. Story:
+  `kc2b_after_the_flip_a_seized_lot_goes_to_the_customs_office_and_is_offered`.
+- **A hauling house's fine is the house's (Q-50-56).** The contraband fine is checked and paid
+  from `house_account_of_helm`, as the duty is.
+- **Lane content, not built here:** the customs office's org row gains `"roles": ["acceptor"]`
+  in OP.7b's v51, without which a fine after the flip cannot be accepted by its payee.
+
 ## KC.3
 
 The duty line on `+ship/plan`, the filing and the job board, and the reason clause; the first
@@ -652,6 +679,17 @@ on KC.2. No lane bump.
 - The Co-op's share by control (KC.4).
 - A duty line on a queued departure's filing. It files through the executor, which writes no
   reply.
+
+**Fixes from doc 50b** (PR "50b customs P2").
+- **The board walks the haul (Q-50-8).** `haul_clause` reads the fewest hops of listed routes
+  between the two venues, port to port, so a Ceres to Isidis haul, flown by Stickney, carries the
+  duty clause. Story: `kc3b_the_boards_duty_walks_a_haul_port_to_port`.
+- **A queued order names the duty.** The queued-order projection adds the estimate under the
+  live terms, and the order's filing tells the pilot the estimate under the terms it pinned.
+- **The acceptance story (Q-50-47).** `kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why`
+  gains a second account that files the same run before the flip: no duty line, the Co-op's
+  terms pinned, and the flip leaves them so.
+- **Divergence (the owner's ruling of 2026-11-20):** the story stays at 3,600:1, not 24:1.
 
 ## KC.4
 

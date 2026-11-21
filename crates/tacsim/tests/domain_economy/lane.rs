@@ -2263,3 +2263,14 @@ fn sm10_a_paper_naming_no_row_or_the_sites_own_issuer_is_refused() {
         assert!(got.contains(want), "want {want:?}, got {got:?}");
     }
 }
+
+/// **Doc 50b: a pack carries one regions block** (KC.0's validation). Every read takes the first
+/// block it finds, so a second one would be silently ignored; the decode refuses it instead.
+#[test]
+fn kc0b_a_second_regions_block_is_refused() {
+    let got = decoded_variant(|doc| {
+        let block = doc["entries"]["regions"].clone();
+        doc["entries"]["regions_again"] = block;
+    });
+    assert!(got.contains("a pack carries one regions block"), "{got}");
+}

@@ -1651,6 +1651,21 @@ pub(crate) fn plan_queue(
                             plan.burn_t,
                             plan.crew_days
                         ));
+                        // Doc 50b (Q-50-8): the duty the queued departure will meet, under the
+                        // terms as they stand now and what is aboard now.
+                        if let Some(estimate) =
+                            crate::space::duty::live_terms(w).and_then(|terms| {
+                                crate::space::duty::estimate_line(
+                                    ctx,
+                                    view.hull(),
+                                    &plan.route,
+                                    &terms,
+                                    false,
+                                )
+                            })
+                        {
+                            lines.push(format!("    {estimate}"));
+                        }
                     }
                     Err(PlanError::Overloaded {
                         payload_kg,
@@ -2562,6 +2577,11 @@ pub(crate) fn order_step(
         Plan::Depart { filing, pre, reach } => {
             let filing = *filing;
             let seq = filing.seq;
+            // Doc 50b (Q-50-8): the filing's notice names the duty under the terms it pinned.
+            let estimate = filing.voyage.pending.as_ref().and_then(|pending| {
+                let terms = pending.terms.as_ref()?;
+                crate::space::duty::estimate_line(ctx, hull, &pending.plan.route, terms, true)
+            });
             let called = fire.as_principal(ctx, hull, pilot, |ctx| {
                 put_voyage(ctx, &filing.voyage);
                 ctx.submit_authoritative(
@@ -2574,6 +2594,10 @@ pub(crate) fn order_step(
             });
             match called {
                 Ok(()) => {
+                    if let Some(estimate) = estimate {
+                        crate::port::voyage::narrate_hull(ctx, hull, &estimate);
+                        ctx.out.sys_to_actor(pilot, "tacsim.voyage", estimate);
+                    }
                     let mut doc = *pre;
                     if let Some(record) = doc.inflight.as_mut() {
                         record.refs.ticket = Some(TicketId { hull, seq }.key_text());

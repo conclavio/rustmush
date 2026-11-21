@@ -535,9 +535,14 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 
 /// An enrolled pilot (`Salt Moth`), standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
+    chartered_as(rig, who, seed, "Salt Moth")
+}
+
+/// [`chartered`], her hull named `ship`.
+fn chartered_as(rig: &mut Rig, who: &str, seed: i64, ship: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
-    assert!(out.contains("now the Salt Moth"), "{out}");
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {ship}"));
+    assert!(out.contains(&format!("now the {ship}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
         .hulls
@@ -17330,6 +17335,111 @@ fn kc2b_a_restart_across_the_picket_leg_still_charges_the_duty_once() {
     assert_eq!(picket_status(&rig.tw, hull), None, "no picket holds her");
 }
 
+/// **Doc 50b: a duty past its grace holds the hull and restricts trade** (Q-50-54). Under the
+/// Republic's hold a pilot with no credit is cleared at the picket and owes the duty. Within its
+/// 28 IC days of grace it binds nothing; once past it, the Republic holds her hull at its ports
+/// and restricts her trade, as an unpaid fine does, and `+record` names it.
+#[test]
+fn kc2b_a_past_due_duty_holds_the_hull_and_restricts_trade() {
+    let (mut rig, pilot, hull, _vault) =
+        hove_to_at_the_picket_with("Overdue", 0, |rig, pilot, vault| {
+            seed_pool(rig, vault, "metals", 50, LotId(0x50b4));
+            republic_holds_kirkwood(&mut rig.tw);
+            kc2b_leave_credit(rig, pilot, 0);
+        });
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(ruled.contains("is owed, due in 28 IC days"), "{ruled}");
+    let republic = tacsim::polity::polity(rig.tw.world(), "republic").expect("the Republic");
+    let stickney = cid("stickney_port");
+    assert!(
+        !tacsim::port::record::restricted(rig.tw.world(), pilot, republic)
+            && !tacsim::surface::security::holds_at(rig.tw.world(), hull, &stickney),
+        "within its grace the duty binds nothing"
+    );
+    let due = ic_now(&rig.tw) + tacsim::surface::retrieval::DEBT_GRACE_IC_DAYS * 86_400;
+    for step in 0..3 {
+        let _ = to_ic(&mut rig, due + 3_600 * (step + 1));
+    }
+    assert!(
+        tacsim::port::record::restricted(rig.tw.world(), pilot, republic),
+        "past its grace the duty restricts her trade"
+    );
+    assert!(
+        tacsim::surface::security::holds_at(rig.tw.world(), hull, &stickney),
+        "and holds her hull at the Republic's port"
+    );
+    let record = run(&mut rig.tw, pilot, "+record");
+    assert!(record.contains("a transit duty owed"), "{record}");
+}
+
+/// **Doc 50b: after the flip a seizure goes to the customs office, and its lot is offered**
+/// (Q-50-14, Q-50-44). Under the Republic's hold an indigent pilot's 51 t of unlicensed
+/// `strategic_ore`, one exact lot, is seized. Before the fix the Registry took it whoever held the
+/// approach, and a lot was never offered. Now it goes to the Republic Customs Office's vault, and
+/// the office offers the lot as an exact-lot ask.
+#[test]
+fn kc2b_after_the_flip_a_seized_lot_goes_to_the_customs_office_and_is_offered() {
+    use tacsim::space::PicketInspectionStatus;
+    const LOT: LotId = LotId(0x50b5);
+    let (mut rig, pilot, hull, _vault) =
+        hove_to_at_the_picket_with("SeizedAfter", 0, |rig, _, vault| {
+            seed_lot(rig, vault, "strategic_ore", 51, LOT);
+            republic_holds_kirkwood(&mut rig.tw);
+        });
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure),
+        "{ruled}"
+    );
+    let (office, _) = tacsim::polity::lane_org_account(rig.tw.world(), &cid("republic_customs"))
+        .expect("the customs office");
+    let office_vault = market(&rig.tw)
+        .vendor_of_org(office)
+        .map(|vendor| vendor.vault)
+        .expect("the customs office is a vendor once it has seized");
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    assert_eq!(
+        typed(&mut rig.tw, &families.lots, &LOT).map(|lot| lot.endpoint()),
+        Some(EndpointRef(office_vault)),
+        "the lot is the customs office's"
+    );
+    assert!(
+        market(&rig.tw)
+            .lot_listings()
+            .any(|listing| listing.source.exact_lot() == Some(LOT)),
+        "and it is offered as an exact-lot ask"
+    );
+}
+
+/// **Doc 50b: the job board's duty follows the haul port to port** (Q-50-8). A haul from Ceres to
+/// Isidis flies by Stickney, through the picket, so under the Republic's hold it carries the duty
+/// clause though Ceres lays no route to Isidis. Stickney to Ceres crosses nothing.
+#[test]
+fn kc3b_the_boards_duty_walks_a_haul_port_to_port() {
+    let mut rig = stocked();
+    republic_holds_kirkwood(&mut rig.tw);
+    let w = rig.tw.world();
+    assert_eq!(
+        tacsim::space::duty::haul_clause(w, "ceres", "isidis", 10_000),
+        " (Kirkwood duty ~200 cr)"
+    );
+    assert_eq!(
+        tacsim::space::duty::haul_clause(w, "ceres", "stickney", 10_000),
+        " (Kirkwood duty ~200 cr)"
+    );
+    assert_eq!(
+        tacsim::space::duty::haul_clause(w, "stickney", "ceres", 10_000),
+        ""
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Doc 50 cut OP.1: the Isidis Concession
 // ---------------------------------------------------------------------------
@@ -17567,7 +17677,12 @@ fn duty_lines(text: &str) -> Vec<&str> {
 ///   holds the approach and since when, within 120 columns;
 /// - the filing shows the duty it pinned, with the same reason;
 /// - at the picket the charge carries the same clause.
+///
+/// Doc 50b (Q-50-47): a second account files the same run before the flip, and its filing names
+/// no duty and pins the Co-op's terms, which the flip leaves as they were. The story stays at
+/// 3,600:1 (the owner's ruling of 2026-11-20, recorded as a divergence).
 #[test]
+#[allow(clippy::too_many_lines)] // two accounts' filings, then one run through the picket
 fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "SameRun", 1);
@@ -17590,7 +17705,42 @@ fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
         "no duty under the Co-op: {before}"
     );
 
+    // The second account files the same run before the flip.
+    let (early, early_row) = chartered_as(&mut rig, "EarlyRun", 2, "Grey Heron");
+    let early_hull = ObjId(early_row.hull);
+    let early_vault = hold_vault(&rig.tw, &early_row);
+    teleport(&mut rig.tw, early, desk);
+    let refit = run(&mut rig.tw, early, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, early_vault, "propellant", 75, LotId(2_631));
+    seed_pool(&mut rig, early_vault, "provisions", 25, LotId(2_632));
+    seed_pool(&mut rig, early_vault, "metals", 50, LotId(2_633));
+    board(&mut rig, early);
+    let (early_filed, _) = undock(&mut rig, early, "+ship/undock stickney");
+    assert!(
+        early_filed.contains("Clearance filed for "),
+        "{early_filed}"
+    );
+    assert!(
+        duty_lines(&early_filed).is_empty(),
+        "filed under the Co-op, no duty: {early_filed}"
+    );
+    let pinned = voyage(&rig.tw, early_hull)
+        .and_then(|v| v.pending)
+        .and_then(|p| p.terms);
+    assert!(
+        pinned.as_ref().is_some_and(|t| t.row.is_none()),
+        "the Co-op's terms are pinned: {pinned:?}"
+    );
+
     republic_holds_kirkwood(&mut rig.tw);
+    assert_eq!(
+        voyage(&rig.tw, early_hull)
+            .and_then(|v| v.pending)
+            .and_then(|p| p.terms),
+        pinned,
+        "the flip leaves the earlier filing's terms as they were"
+    );
     let held = tacsim::polity::control_at(rig.tw.world(), &cid("kirkwood_depot"))
         .and_then(|c| c.de_facto_since_ic)
         .expect("the Republic's hold");
