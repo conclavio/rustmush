@@ -233,11 +233,18 @@ pub fn refuse_fill(
         return None;
     }
     let month = crate::concession::ic_month(w.world_ic_now().at);
-    let within = arm(w).is_none_or(|doc| doc.within_cap(month, gross));
-    let funded = org_of(w, ARM_ENTRY, ARM_ORG)
+    let occator = org_of(w, ARM_ENTRY, ARM_ORG)
         .and_then(|occator| org_account(w, occator))
-        .is_some_and(|account| available(w, account) >= gross);
-    (!within || !funded).then_some(FARM_BUDGET_SPENT)
+        .map(|account| available(w, account));
+    fill_refused(arm(w), month, gross, occator).then_some(FARM_BUDGET_SPENT)
+}
+
+/// **Whether Occator cannot fund a fill of `gross` in IC month `month`** (doc 50b item 8): past
+/// the arm's month's cap, or past what Occator's account holds (`None`: no account).
+fn fill_refused(doc: Option<&FreeportArm>, month: i64, gross: i64, occator: Option<i64>) -> bool {
+    let within = doc.is_none_or(|doc| doc.within_cap(month, gross));
+    let funded = occator.is_some_and(|held| held >= gross);
+    !within || !funded
 }
 
 /// **A sale into the tank farm's bid settled** (doc 50b item 8): its fill, kept once under its
@@ -656,7 +663,7 @@ fn grant(ctx: &mut Ctx<'_>, org: OrgId, agent: ObjId) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARM_MONTHLY_CAP_CR, ArmPost, FreeportArm};
+    use super::{ARM_MONTHLY_CAP_CR, ArmFill, ArmPost, FreeportArm, fill_refused};
 
     fn post(month: i64, spent_minor: i64) -> ArmPost {
         ArmPost {
@@ -679,5 +686,38 @@ mod tests {
         assert!(arm.within_cap(3, 100_000), "exactly at the cap fits");
         assert!(!arm.within_cap(3, 100_001), "past it does not");
         assert!(arm.within_cap(4, cap), "a new month starts afresh");
+    }
+
+    /// **Doc 50b item 8: the tank farm's fills share the cap with the posts** (Q-50-22): a fill
+    /// counts in its month, and a fill past the cap, or past what Occator holds, is refused.
+    #[test]
+    fn op4_the_farms_fills_count_in_the_arms_cap() {
+        let cap = ARM_MONTHLY_CAP_CR * 100;
+        let mut arm = FreeportArm::default();
+        arm.posts.push(post(3, cap - 300_000));
+        arm.fills.push(ArmFill {
+            quote: 1,
+            month: 3,
+            spent_minor: 200_000,
+            paid: true,
+        });
+        assert_eq!(arm.spent_in(3), cap - 100_000, "the fill is in the month");
+        assert!(
+            !fill_refused(Some(&arm), 3, 100_000, Some(cap)),
+            "at the cap fits"
+        );
+        assert!(
+            fill_refused(Some(&arm), 3, 100_001, Some(cap)),
+            "past the cap is refused"
+        );
+        assert!(
+            fill_refused(Some(&arm), 4, 100_000, Some(99_999)),
+            "past Occator's money"
+        );
+        assert!(fill_refused(Some(&arm), 4, 1, None), "no account, no fill");
+        assert!(
+            !fill_refused(None, 4, 100_000, Some(100_000)),
+            "no arm yet: the money decides"
+        );
     }
 }

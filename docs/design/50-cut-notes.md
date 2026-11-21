@@ -1782,6 +1782,9 @@ brief):
     spend beside the posts, and paid back to the farm from Occator on the port tick.
   - A sale quoted but not yet settled is not counted, so two sales at once can overshoot the cap
     by one sale. The figures stay provisional.
+  - The story (`op5_occator_funds_the_tank_farms_bid`) shows the refusal while Occator's account
+    is empty and a funded sale counted and paid back; the cap's arithmetic, the fills beside the
+    posts, is `stockpile`'s unit test.
 
 ## OP.5
 
@@ -1909,9 +1912,10 @@ brief):
   while settling: nothing is written then, and an abort that follows takes nothing.
 - **Item 5, the quote omitted the duty (P2; Q-50-59).** `ProceedsPolicy::venue_cuts`, empty by
   default, names each cut a venue takes from any sale of a good there, with its reason.
-  `+market/quote` shows each: on a bid, "Out of it you pay …"; on an ask, "Out of it the seller
-  pays …". The Co-op's share hangs on the hold the goods leave, which a quote does not know, so
-  it stays the sale line's to show.
+  `+market/quote` on a lot ask shows each ("Out of it the seller pays …"). A bid is sold into and
+  never quoted; a house bid's sale line already names the duty and its reason (OP.5). The Co-op's
+  share hangs on the hold the goods leave, which a quote does not know, so it stays the sale
+  line's to show.
 - **Item 6, the shares counter (P3).** The enrollment's `shares_minor` folds only the Trust's
   share, never the duty.
 

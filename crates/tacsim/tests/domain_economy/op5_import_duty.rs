@@ -64,12 +64,6 @@ fn hop(rig: &mut Rig, pilot: ObjId, hull: ObjId, to: &str) {
     crate::in10_pools::settle(rig, 3);
 }
 
-/// The tank farm's propellant bid.
-fn farm_bid(rig: &Rig) -> u64 {
-    port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids[&cid("propellant")]
-        .listing
-}
-
 /// Sell [`QTY`] t of propellant from her hold into the tank farm's bid; the sale's line.
 fn sell(rig: &mut Rig, pilot: ObjId, hold: mush_economy::VaultId, lot: u64) -> String {
     seed_pool(rig, hold, "propellant", QTY, LotId(lot));
@@ -125,9 +119,6 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
         balance(rig.tw.world(), own_account(&rig, pilot)),
         balance(rig.tw.world(), customs(&rig)),
     );
-    let bid = farm_bid(&rig);
-    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {bid}={QTY}"));
-    assert!(!quoted.contains("Out of it"), "nothing levied: {quoted}");
     let counted = shares(&rig, pilot);
     let line = sell(&mut rig, pilot, hold, 0x0f55);
     let share = shares(&rig, pilot) - counted;
@@ -156,15 +147,6 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
     let before = (
         balance(rig.tw.world(), own_account(&rig, pilot)),
         balance(rig.tw.world(), customs(&rig)),
-    );
-    let bid = farm_bid(&rig);
-    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {bid}={QTY}"));
-    assert!(
-        quoted.contains(&format!(
-            "Out of it you pay import duty {:.2}cr",
-            f64::from(i32::try_from(duty).expect("fits")) / 100.0
-        )) && quoted.contains("5% of the catalog value"),
-        "doc 50b item 5: the bid's quote shows the duty and why: {quoted}"
     );
     let counted = shares(&rig, pilot);
     let line = sell(&mut rig, pilot, hold, 0x0f57);
@@ -282,6 +264,9 @@ async fn op5_an_organizations_listing_pays_the_import_duty() {
         &format!("+market/post {} price={price} as=Lark", LotId(0x0f59)),
     );
     assert!(listed.contains("Listed for sale as #"), "{listed}");
+    // The listing's hold on the lot is staged; it lands.
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
     let id: u64 = listed
         .split("Listed for sale as #")
         .nth(1)
@@ -349,5 +334,117 @@ async fn op5_an_organizations_listing_pays_the_import_duty() {
     assert!(
         paid > 0 && paid <= gross - duty,
         "the duty comes out of the organization's proceeds: {paid} of {gross}"
+    );
+}
+
+/// The lane organization's credit account, by its port and id.
+fn lane_account(rig: &Rig, entry: &str, org: &str) -> AccountId {
+    port_map(&rig.tw, entry).orgs[&cid(org)]
+        .account
+        .map(AccountId)
+        .expect("an account")
+}
+
+/// **Doc 50b item 8: Occator funds the tank farm's bid** (Q-50-22). The tank farm's standing bid
+/// spent the farm's own money, outside the Freeport arm's monthly cap. A pilot flies to Isidis
+/// and sells propellant from her hold into the bid:
+/// - while Occator's account cannot cover the sale, it is refused and nothing is sold;
+/// - with Occator funded, it sells: the sale is the arm's, counted once in the month's spend, and
+///   on the next fires Occator pays the farm back what it paid.
+///
+/// The cap's own arithmetic, the fills beside the posts, is `stockpile`'s unit test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op5_occator_funds_the_tank_farms_bid() {
+    let mut rig = stocked();
+    let occator = lane_account(&rig, "ceres_port", "occator");
+    let farm = lane_account(&rig, "isidis_port", "isidis_tank_farm");
+    let (pilot, row) = prospector(&mut rig, "Seller", 95, "Tern");
+    let hull = ObjId(row.hull);
+    let hold = hold_vault_of(&rig.tw, &row);
+    load(&mut rig, &row, 60, 40, 0x0f61);
+    board(&mut rig, pilot);
+    hop(&mut rig, pilot, hull, "stickney");
+    load(&mut rig, &row, 20, 4, 0x0f63);
+    hop(&mut rig, pilot, hull, "isidis");
+    let ashore = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(!ashore.contains("Usage"), "{ashore}");
+    let market = station_room(&rig.tw, "isidis_port", "room.i03_market");
+    teleport(&mut rig.tw, pilot, market);
+    let bid = port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids
+        [&cid("propellant")]
+        .listing;
+
+    // Occator's account emptied: the farm takes nothing.
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let all = balance(rig.tw.world(), occator);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay {}={treasury} {all}", occator.0),
+    );
+    seed_pool(&mut rig, hold, "propellant", QTY, LotId(0x0f65));
+    let refused = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}={QTY} from={}", hold.0),
+    );
+    assert!(
+        refused.contains(tacsim::stockpile::FARM_BUDGET_SPENT),
+        "Occator cannot fund it: {refused}"
+    );
+    assert!(!refused.contains("Sold "), "{refused}");
+
+    // Occator funded again: the sale goes through, and Occator pays for it.
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} {all}", occator.0),
+    );
+    let before = (
+        balance(rig.tw.world(), occator),
+        balance(rig.tw.world(), farm),
+    );
+    let sold = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}={QTY} from={}", hold.0),
+    );
+    assert!(sold.contains("Sold "), "{sold}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    for _ in 0..6 {
+        sweep(&mut rig.tw, 31);
+    }
+    crate::in10_pools::settle(&mut rig, 3);
+    for _ in 0..3 {
+        sweep(&mut rig.tw, 31);
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued);
+    }
+    let gross = i64::try_from(QTY).expect("fits") * 50 * 100;
+    let doc = tacsim::stockpile::arm(rig.tw.world())
+        .cloned()
+        .expect("the arm's record");
+    assert_eq!(doc.fills.len(), 1, "one fill, counted once: {doc:?}");
+    let fill = &doc.fills[0];
+    assert_eq!(fill.spent_minor, gross, "{fill:?}");
+    assert!(fill.paid, "Occator paid it back: {fill:?}");
+    assert_eq!(
+        doc.spent_in(fill.month),
+        gross,
+        "the fill is in the month's spend"
+    );
+    assert_eq!(
+        before.0 - balance(rig.tw.world(), occator),
+        gross,
+        "Occator paid for the fill"
+    );
+    assert!(
+        balance(rig.tw.world(), farm) >= before.1,
+        "the farm spends none of its own: {} against {}",
+        balance(rig.tw.world(), farm),
+        before.1
     );
 }

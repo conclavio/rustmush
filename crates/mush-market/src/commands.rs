@@ -760,8 +760,8 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// **The venue's cuts on a quote** (doc 50b item 5; Q-50-59): each cut the venue's law takes out
-/// of the seller's proceeds ([`crate::module::ProceedsPolicy::venue_cuts`]), with its reason.
-/// On a bid the one quoting is the seller; on an ask it is the listing's seller. Empty when
+/// of the seller's proceeds ([`crate::module::ProceedsPolicy::venue_cuts`]), with its reason, on
+/// a lot ask (a bid is sold into, never quoted; a house's sale line names its cuts). Empty when
 /// the venue takes none.
 fn venue_cut_lines(
     ctx: &Ctx<'_>,
@@ -775,20 +775,18 @@ fn venue_cut_lines(
     else {
         return String::new();
     };
-    let (commodity, payer) = match &listing.source {
-        Supply::Wanted { commodity, .. } => (&commodity.0, "you pay"),
-        Supply::Lot { commodity, .. } => (&commodity.0, "the seller pays"),
-        _ => return String::new(),
+    let Supply::Lot { commodity, .. } = &listing.source else {
+        return String::new();
     };
     let Some(policy) = crate::module::proceeds_policy(ctx.w) else {
         return String::new();
     };
     policy
-        .venue_cuts(ctx.w, &listing.market, commodity, q.quantity, q.total())
+        .venue_cuts(ctx.w, &listing.market, &commodity.0, q.quantity, q.total())
         .into_iter()
         .map(|cut| {
             format!(
-                " Out of it {payer} {} of {} ({}).",
+                " Out of it the seller pays {} of {} ({}).",
                 cut.label,
                 money(ctx.w, instrument, cut.amount),
                 cut.reason
