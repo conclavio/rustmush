@@ -91,8 +91,8 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 50 cut KC.4: v48, the Republic row's Co-op share (was `4b67bcae…` at v47).
 /// Doc 50 cut OP.4: v49, the tank farm's drain and its bid's refresh (was `117842fb…` at v48).
 /// Doc 50 cut OP.5: v50, the Isidis import duty under the Republic (was `3a9a5f7f…` at v49).
-/// Doc 50 cut OP.7b: v51, the Republic Customs store at Stickney and its capital (was `c9bcd33c…` at v50).
-const LANE_DIGEST: &str = "363b4e4425c099821c497ae38061649f67f777d9b2f6643fa38b9e12513a022a";
+/// Doc 50 cut OP.7b: v51, the Republic Customs store at Stickney, its capital and its acceptor role (was `c9bcd33c…` at v50).
+const LANE_DIGEST: &str = "137c914476449eeb21b4ec7bdf902a806073c70f45e5b7ac6507ad46689ff9d6";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
