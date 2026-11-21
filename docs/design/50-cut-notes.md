@@ -2347,4 +2347,134 @@ which waits for a contract of its own.
 
 ## OP.8
 
-Not built.
+The empty run and the second acceptance story (Q-50-47, as corrected and as amended on
+2026-11-20), and an audit of the other two. On main after the doc 50b fixes (#743 to #749). **No
+lane bump.**
+
+**Survey.**
+- **No test ran the operation on the real frame.** TacSim has no campaign edge:
+  `composition_edges` refuses even a dev-dependency that names `mush-composition`. So OP.5's and
+  OP.7's stories seat a fake frame, and staff fill the Review in OP.7's newcomer story. The real
+  frame is composed in mush-composition and mush-server only.
+- **What doc 50a said blocked the empty run**: a resolution between organizations advanced no
+  clock, and no NPC hull answered the picket. KC.0a and OP.5 write control directly, OP.4 and
+  EX.10 put a house hull on the direct run under her house's mind, and doc 50b item 1 sends a
+  hull that delivered at Isidis back home.
+
+**Built.**
+- **`mush-composition/tests/op8_campaign.rs`**, a new test binary. It composes TacSim's own test
+  roster by path (`driving`'s rig and `tests/support`, as mush-server's `commerce_composition`
+  takes `vertex.rs`). It seats the campaign beside it as `server_modules_with` does:
+  `CampaignLink`, with TacSim's close probe, the composition's defender notice and the formation
+  authority.
+  - `driving_rig::EXTRA_MODULES`, a once-set list of extra modules. Only this binary sets it;
+    TacSim's own binaries never do, and their roster is unchanged.
+  - The rig runs at the production 24:1. It reopens the Freeport arm and Ceres' hauling house,
+    which the stock rig lays up and a production world has open. It steps six IC hours at a
+    time, and a picket's bubble a wall second at a time until it closes.
+- **Found and fixed: the house never came home for the arm's work.** On the first empty run, both
+  Ceres hulls set out on trades on day 1, one to Luna and one onward to Deimos. From day 19 one lay
+  idle at Stickney, where no trade paid, and she never went back to Ceres. The arm's hauls are
+  taken only at Ceres, so each lapsed at its 28-day acceptance window and was posted again. No
+  NPC hull ever carried one, and the farm drained to nothing by day 150.
+  - **`hauler::called_home`**, with **`stockpile::awaiting`** (Q-50-24). A hull lying idle away
+    from her home port, while an arm's haul is on the board there (posted, untaken and inside its
+    window, however young), sails home empty one hop at a time, before she looks for a trade.
+    Each hop is a trip of its own and ends where she docks.
+  - `hop_toward` now answers whether it wrote the hop's plan.
+  - After the fix, VCC-01 carries four of the arm's hauls into the farm. She meets the Kirkwood
+    picket on days 53, 88, 123 and 157, heaves to under her house's mind and is cleared each time.
+- **`+record` shows the standing lost** (Q-50-42, and the third story's "the standing loss stays
+  and shows on `+record`"). Under `STANDING_LOST`, it lists each polity that proved an offense
+  against the actor and the actor's standing with it, while that standing is below zero, paid or
+  not. Before, standing showed only while it alone kept a restriction in force, so a paid
+  smuggler at −5 saw nothing. `RECORD_HELP` says so.
+- **LW.3's private sale** is lifted into `lw3_law_audit::sell_privately`, shared with the third
+  story.
+
+**Tests.**
+- **`op8_campaign::empty_run::op8_with_nobody_connected_the_review_fills_and_the_operation_resolves`**
+  (about 175 s). No player is connected, and nobody types a line after the rig's setup.
+  - The Assembly's votes move the Review on days 30, 60, 90 and 120, and every cause is an
+    `assembly.vote/…`.
+  - On day 120 the arm declares through the campaign's frame. The operation goes from notice to
+    its window on day 148 and is settled on day 176.
+  - The house takes and delivers the arm's hauls, and clears the picket.
+  - The Republic wins: it holds Isidis de facto, and Isidis's terms row levies the import duty.
+- **`op8_campaign::newcomer::op8_a_player_who_never_joined_reads_who_won_from_the_terms`**
+  (about 180 s), with two accounts on production verbs.
+  - The hauler takes the arm's first haul (`+haul/accept`). She flies the direct run, heaves to at
+    Kirkwood and submits (`+helm/thrust`, `+helm/submit`), and is cleared. She carries on by
+    Stickney to Isidis and delivers into the tank farm (`+haul/deliver`).
+  - She logs off. The Review fills on the votes, the campaign settles, and her queue holds the
+    lane's notices of the declaration and of who won.
+  - The newcomer is made only after the operation, with no notice queued. At Isidis, `+operation`
+    reads "Decided: the Republic won", "Isidis now: the Republic administers the Concession", and
+    the import duty a sale there pays.
+- **`domain_economy::lw4_record::op8_a_reported_smuggler_who_cannot_pay_is_restricted_until_paid_and_keeps_the_loss`**,
+  the third story, at Ceres with two accounts.
+  - A prospector with no claim sells a trader 2 t of strategic ore privately, then spends
+    everything. The trader reports the sale and hands the lot over.
+  - The smuggler is fined the 1,000 cr floor at once and cannot pay. They are told at once, are
+    5 standing down, and are under the Freeport's restriction. The trader is not paid yet.
+  - `+record` shows how the sale was proven (never by whom), the fine and its grace, what lifts
+    the restriction, and the standing lost. The board refuses the smuggler's strategic ore.
+  - Paid through `+debts/pay`, the restriction lifts and the trader is paid 600 cr back plus
+    200 cr. The standing stays at −5 and still shows on `+record`, and the board buys from the
+    smuggler again.
+
+**The audit (Q-50-47's three stories).**
+- **First, KC.3's `kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why`: meets the
+  ruling as amended.** Two accounts (`chartered` and `chartered_as`, each mapped to its own
+  gateway account). The second files the run before the flip: no duty line, and the Co-op's
+  terms are pinned and left so by the flip. The first plans under the Co-op, then plans and files
+  after the flip with the duty and its reason, and the picket charges it. It runs at 3,600:1, as
+  the owner's amendment allows. The flip is a fixture (`republic_holds_kirkwood`, one control
+  write), which the ruling does not forbid.
+- **Second: OP.7's newcomer story was not it.** Staff filled the Review and a fake frame decided
+  it. The new `newcomer` story above is.
+- **Third: missing as one story before this cut.** `lw3_a_buyer_reports_a_private_sale_…` had
+  the report, with the fine paid at once. `lw4_an_unpaid_fine_restricts_until_it_is_paid` had the
+  unpaid fine, the restriction and the payment, from a staff audit rather than a report. Neither
+  showed the standing on `+record` after payment, because the page did not show it. The new
+  `lw4_record::op8_…` story and the `+record` line above close that.
+
+**What it found that this cut does not fix.**
+- **Hold the Concession cannot move in the empty run, nor can the Freeport hold**, at the
+  provisional figures. The farm starts at 3,000 t against a 4,000 t threshold and drains 20 t an
+  IC day, so it is empty from day 150. The house's hauls are 20 t each, about one a month. So
+  only the Review moves, though Q-50-47 says both fronts do. The defenders need some 1,000 t over
+  the starting stock, plus 20 t a day, landed by the close. The second story's single player haul
+  does not change that. The figures are Q-50-21's, Q-50-22's and Q-50-60's, all provisional, and
+  the owner's to tune.
+- **A house hull at home still trades.** She can set out on a trade before an arm's haul there
+  is seven days old, and is called home only once she lies idle somewhere else. On the empty run,
+  both of the first two hauls lapsed this way.
+
+**Divergences** (the smallest choice where doc 50 is silent).
+- **The two stories live in mush-composition, not TacSim**, because only there are the campaign
+  and the lane composed together.
+- **They run at 24:1**, the production rate, not the 3,600:1 the owner's amendment allows.
+- **The rig's setup is staff's**: the arm and Ceres' house opened, and the rate set. The hauler's
+  propellant and stores are seeded at each port (`load`), as OP.3's story does, standing in for
+  buying them. The newcomer arrives at Isidis by teleport.
+- **The second story has no escort.** Its two accounts are the hauler and the newcomer, and the
+  arm's escort for the haul is left untaken. An escort's hull would meet the picket beside the
+  hauler's, which no rig drives yet.
+- **Called home comes before a trade**, even one that pays where she lies.
+- **The standing line lists only polities that proved an offense**, and only a standing below
+  zero.
+
+**Mutations.** Each was applied to a fresh clone of the cut and caught by its story:
+- a hull never called home: the empty run, at "the house took an arm's haul";
+- no standing line on `+record`: the smuggler story, at the standing heading;
+- the Republic's control write skipped: the second story, at "Isidis now: the Republic
+  administers the Concession".
+
+**On conclav.dev, green:**
+- all of tacsim, mush-composition and mush-contract-tests, the help lint, census, panic budget
+  and state-slot owners among them. That is 5,380 tests. The smuggler story's first run failed
+  at its last step, because the claim it seeds had not been seen by a fire; it was fixed and re-run.
+- mush-server's `split_boundary` and `commerce_composition` (320);
+- `cargo fmt --all --check`; clippy `-D warnings` on tacsim and mush-composition, all targets;
+  rustdoc `-D warnings` on tacsim in both modes.

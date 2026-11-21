@@ -71,6 +71,20 @@ pub(crate) fn cid(word: &str) -> CanonicalId {
 // The rig (excursions.rs's, booted keyed)
 // ---------------------------------------------------------------------------
 
+/// **Modules a test binary composes beside the roster** (doc 50 cut OP.8): set once, before the
+/// binary's first boot, by a binary outside TacSim. mush-composition's OP.8 stories seat the
+/// campaign with its operation frame this way, as the composition root does. TacSim's own
+/// binaries never set it, and their roster is unchanged.
+pub(crate) static EXTRA_MODULES: std::sync::OnceLock<ExtraModules> = std::sync::OnceLock::new();
+
+/// What [`EXTRA_MODULES`] holds: the modules to compose.
+pub(crate) type ExtraModules = fn() -> Vec<Box<dyn mush_core::GameModule>>;
+
+/// [`EXTRA_MODULES`]' modules, if a binary set them.
+fn extra_modules() -> Vec<Box<dyn mush_core::GameModule>> {
+    EXTRA_MODULES.get().map(|extra| extra()).unwrap_or_default()
+}
+
 /// The composition: `commerce.rs`'s bare roster (no sheet, the test world's layer, the
 /// shipped game content).
 #[derive(Clone, Default)]
@@ -106,6 +120,7 @@ impl Roster {
             &game,
         );
         mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        mods.extend(extra_modules());
         mods.push(comp::tacsim_test_world_module_wired(cfg, true, inventory));
         mods.push(comp::content_module_with(true, true).expect("the content module composes"));
         mods
@@ -133,6 +148,7 @@ impl Roster {
         )
         .expect("the commerce roster composes");
         mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        mods.extend(extra_modules());
         let layer = tacsim::TacsimRuleset::with_game_content(self.0, true)
             .with_inventory(inventory)
             .with_unit_authority()
