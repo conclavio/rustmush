@@ -77,6 +77,14 @@ pub const NOT_YOUR_CHARTER: &str =
 /// **Doc 48 cut EX.1b**: a locker loads only at its own venue, and only its owner's (`{port}`).
 pub const LOCKER_ELSEWHERE: &str =
     "That locker is not yours at {port}, so it cannot load here. Nothing was charged.";
+/// A scrap vault trades or unloads only at its own port, for its owner (`{port}`, P2-TSW-2).
+pub const SCRAP_ELSEWHERE: &str =
+    "That scrap vault is not yours at {port}, so it cannot trade here. Nothing was charged.";
+/// A facility's stores vault belongs only to the facility's own port (`{port}`, P2-TSW-2).
+pub const STORES_ELSEWHERE: &str = "Those facility stores do not belong to {port}, so they cannot be used here. Nothing was charged.";
+/// A container-backed vault does not belong to `{port}` (P2-TSW-2).
+pub const CONTAINER_ELSEWHERE: &str =
+    "That vault is not at {port}, so it cannot be used here. Nothing was charged.";
 /// **Doc 48 cut EX.1b** (Q-48-49, doc 48b G-6): a venue no port authors trades only where it
 /// stands, and the asker is not there (`{venue}`).
 pub const NOT_AT_VENUE: &str =
@@ -175,14 +183,25 @@ fn refusal(line: String) -> VenueRefusal {
 
 /// **The hull checks** both presences make on a governed hold (lead ruling L10): the
 /// hull is the actor's (its title or live charter, cut IC13's `helm_of`), and it is docked at the port whose venue this
-/// is.
+/// is, not cleared to sail, and not listed for sale (P2-TSW-3).
 fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
     // Doc 47 cut CO.9: a House's pilot flies her; only its officer trades her hold. Doc 48 cut
     // EX.1b: any hull whose hold they may trade, not only their first.
     if !trade_hulls(w, actor).contains(&hull) {
         return Err(refusal(NOT_YOUR_CHARTER.to_owned()));
     }
-    let port = port_name(def);
+    hull_ready_at(w, Some(def.venue.as_str()), &port_name(def), hull)
+}
+
+/// **Whether `hull` is eligible to load/unload cargo at `port_venue`** (P2-TSW-3): sailing papers
+/// readable, no pending clearance, not listed for sale, and docked at `port_venue` (or refused
+/// with her real location when `port_venue` is `None`, i.e., a non-port venue — EXT-P2-10).
+fn hull_ready_at(
+    w: &World,
+    port_venue: Option<&str>,
+    place: &str,
+    hull: ObjId,
+) -> Result<(), VenueRefusal> {
     let name = name_of(w, hull);
     // Doc 18 cut IC9 (lead ruling L13): nothing may load into a hold whose passage is
     // filed — since cut IC14 (row 23) in its own words, `HOLD_CLEARED`; and (row 11)
@@ -191,23 +210,20 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
         return Err(refusal(
             HOLD_PAPERS_DARK
                 .replace("{name}", &name)
-                .replace("{port}", &port),
+                .replace("{port}", place),
         ));
     }
     if crate::port::voyage::pending_of(w, hull).is_some() {
         return Err(refusal(
             HOLD_CLEARED
                 .replace("{name}", &name)
-                .replace("{port}", &port),
+                .replace("{port}", place),
         ));
     }
-    hull_here(w, def, hull)
-}
-
-/// **Whether `hull` lies at `def`'s port** (doc 48e, exchange G11: factored out of
-/// [`hull_admits`]): docked there, or the refusal saying where she is.
-fn hull_here(w: &World, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
-    hull_here_at(w, Some(def.venue.as_str()), &port_name(def), hull)
+    if mush_market::asset_on_sale(w, hull) {
+        return Err(refusal(MOVE_HULL_ON_SALE.replace("{name}", &name)));
+    }
+    hull_here_at(w, port_venue, place, hull)
 }
 
 /// **Whether `hull` is docked at `port_venue`** (or always refused with her real location when
@@ -301,6 +317,187 @@ fn placed_admit(
     Ok(())
 }
 
+/// Walk `obj`'s location chain (bounded, cycle-safe) to its enclosing [`mush_core::ObjKind::Room`].
+fn enclosing_room(w: &World, start: ObjId) -> Option<ObjId> {
+    let mut cur = start;
+    let mut seen = BTreeSet::new();
+    for _ in 0..16 {
+        if !seen.insert(cur) {
+            return None;
+        }
+        let obj = w.get(cur)?;
+        if obj.kind == mush_core::ObjKind::Room {
+            return Some(cur);
+        }
+        cur = obj.location?;
+    }
+    None
+}
+
+/// The port venue that owns `room`, covering public port rooms, staff spines, authored facility
+/// rooms (`refinery`, `works`, `yard`, `workshop`, `medical`), and neighborhood `RoomGeo`.
+fn room_port_venue(w: &World, room: ObjId) -> Option<String> {
+    let geo_pack = w
+        .module_state::<mush_atlas::AtlasState>()
+        .and_then(|atlas| atlas.records.roomgeo.get(&room))
+        .map(|geo| geo.neighborhood.pack.as_str());
+    for (entry, def, _) in ports(w) {
+        if port_rooms(w, def).contains(&room) {
+            return Some(def.venue.as_str().to_owned());
+        }
+        if let Some(spine) = def
+            .rooms
+            .iter()
+            .find(|(role, _)| role.as_str() == "spine")
+            .and_then(|(_, r)| room_key(&def.area, r.as_str()).ok())
+            .and_then(|k| room_by_key(w, &k))
+            && spine == room
+        {
+            return Some(def.venue.as_str().to_owned());
+        }
+        for block in ["refinery", "works", "yard"] {
+            if crate::port::plant::block_room(w, &entry, def, block)
+                .ok()
+                .flatten()
+                == Some(room)
+            {
+                return Some(def.venue.as_str().to_owned());
+            }
+        }
+        if crate::port::workshop::room(w, &entry, def).ok().flatten() == Some(room)
+            || crate::port::medical::room(w, &entry, def).ok().flatten() == Some(room)
+        {
+            return Some(def.venue.as_str().to_owned());
+        }
+        if geo_pack == Some(def.area.as_str()) {
+            return Some(def.venue.as_str().to_owned());
+        }
+    }
+    None
+}
+
+/// The facility object backed by `vault` when `vault` is a facility's stores vault.
+fn facility_of_vault(w: &World, vault: mush_economy::VaultId) -> Option<ObjId> {
+    let record = w.module_state::<EconomyStore>()?.snapshot().vault(vault)?;
+    let CustodyRef::Container(obj) = record.backing else {
+        return None;
+    };
+    w.module_state::<mush_industry::IndustryStore>()?
+        .facility(obj)
+        .map(|_| obj)
+}
+
+/// The port venue where `facility_obj` resides, if any.
+fn facility_venue(w: &World, facility_obj: ObjId) -> Option<String> {
+    enclosing_room(w, facility_obj).and_then(|room| room_port_venue(w, room))
+}
+
+/// The port venue bound to a vendor storefront, seized-goods authority vault, or surface site
+/// vault, if `vault` is one.
+fn vendor_or_site_vault_venue(w: &World, vault: mush_economy::VaultId) -> Option<String> {
+    for (_, def, map) in ports(w) {
+        let Some(map) = map else {
+            continue;
+        };
+        if map.vendors.values().any(|row| row.vault == vault.0) {
+            return Some(def.venue.as_str().to_owned());
+        }
+        if map.site.as_ref().is_some_and(|site| {
+            site.spoil_vault == Some(vault.0) || site.vaults.values().any(|&v| v == vault.0)
+        }) {
+            return Some(def.venue.as_str().to_owned());
+        }
+    }
+    w.module_state::<mush_market::MarketStore>()?
+        .vendors()
+        .find(|v| v.vault == vault)
+        .map(|v| v.market.as_str().to_owned())
+}
+
+/// **Fail-closed venue locality for every `CustodyRef::Container` vault** (P2-TSW-2, EXT-P2-10):
+/// enforced identically in [`PortVenueGate::admit`] (`actor = Some`) and
+/// [`PortVenueGate::receives_at`] (`actor = None`), and transitively in [`PortMovePolicy`].
+fn check_container_vault(
+    w: &World,
+    actor: Option<ObjId>,
+    venue: &MarketId,
+    endpoint: EndpointRef,
+    place: &str,
+) -> Result<(), VenueRefusal> {
+    let vault = endpoint.vault();
+    if crate::port::works::is_works_escrow(w, vault) {
+        let allowed = match actor {
+            Some(who) => crate::port::works::escrow_buy_allowed(w, who, venue, vault),
+            None => crate::port::works::escrow_buy_allowed_at_venue(w, venue, vault),
+        };
+        if !allowed {
+            return Err(refusal(MOVE_WORKS_ESCROW.to_owned()));
+        }
+        return Ok(());
+    }
+    if crate::port::bay_work::scrap::is_scrap_vault(w, vault) {
+        let Some(who) = actor else {
+            return Err(refusal(MOVE_INTO_SCRAP.to_owned()));
+        };
+        if crate::port::bay_work::scrap::scrap_vault_owner(w, vault, venue.as_str()) != Some(who) {
+            return Err(refusal(SCRAP_ELSEWHERE.replace("{port}", place)));
+        }
+        return Ok(());
+    }
+    if crate::port::locker::is_locker(w, endpoint) {
+        let allowed = match actor {
+            Some(who) => crate::port::locker::locker_of(w, who, venue)
+                .is_some_and(|locker| locker.vault == vault.0),
+            None => w.module_state::<TacsimStore>().is_some_and(|store| {
+                store
+                    .lockers
+                    .values()
+                    .any(|l| l.vault == vault.0 && l.venue.as_str() == venue.as_str())
+            }),
+        };
+        if !allowed {
+            return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", place)));
+        }
+        return Ok(());
+    }
+    let Some(record) = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().vault(vault))
+    else {
+        return Ok(());
+    };
+    let CustodyRef::Container(container) = record.backing else {
+        return Ok(());
+    };
+    if w.module_state::<mush_industry::IndustryStore>()
+        .is_some_and(|store| store.facility(container).is_some())
+    {
+        if facility_venue(w, container).as_deref() != Some(venue.as_str()) {
+            return Err(refusal(STORES_ELSEWHERE.replace("{port}", place)));
+        }
+        if mush_market::asset_on_sale(w, container) {
+            return Err(refusal(
+                MOVE_FACILITY_ON_SALE.replace("{name}", &name_of(w, container)),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(bound_venue) = vendor_or_site_vault_venue(w, vault) {
+        if bound_venue.as_str() != venue.as_str() {
+            return Err(refusal(CONTAINER_ELSEWHERE.replace("{port}", place)));
+        }
+        return Ok(());
+    }
+    let at_venue = enclosing_room(w, container).is_some_and(|room| {
+        room_port_venue(w, room).as_deref() == Some(venue.as_str())
+            || venue_room(w, venue) == Some(room)
+    });
+    if !at_venue {
+        return Err(refusal(CONTAINER_ELSEWHERE.replace("{port}", place)));
+    }
+    Ok(())
+}
+
 // ---- the venue gate ------------------------------------------------------------
 
 /// **The port presence gate** (doc 18 §4.3 "Presence", D-18-12; lead rulings L10,
@@ -390,21 +587,12 @@ impl VenueGate for PortVenueGate {
                 placed_admit(w, actor, venue, presence)?;
             }
         }
-        // EXT-P2-10: enforce works-escrow, locker, and governed-hold rules for placed non-port
-        // venues as well as port venues.
-        if let Some(endpoint) = endpoint
-            && crate::port::works::is_works_escrow(w, endpoint.vault())
-            && !crate::port::works::escrow_buy_allowed(w, actor, venue, endpoint.vault())
-        {
-            return Err(refusal(MOVE_WORKS_ESCROW.to_owned()));
-        }
+        // P2-TSW-2 / EXT-P2-10: enforce fail-closed locality for every container-backed vault
+        // (works escrows, scrap vaults, lockers, facility stores, storefronts, and any other
+        // container vault) on both port and placed non-port venues.
         let place_name = port.map_or_else(|| venue.as_str().to_owned(), port_name);
-        if let Some(endpoint) = endpoint
-            && crate::port::locker::is_locker(w, endpoint)
-            && crate::port::locker::locker_of(w, actor, venue)
-                .is_none_or(|locker| locker.vault != endpoint.vault().0)
-        {
-            return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", &place_name)));
+        if let Some(endpoint) = endpoint {
+            check_container_vault(w, Some(actor), venue, endpoint, &place_name)?;
         }
         match (endpoint, presence) {
             (Some(endpoint), _) => match governed_hold(w, endpoint) {
@@ -414,10 +602,11 @@ impl VenueGate for PortVenueGate {
                         if !trade_hulls(w, actor).contains(&view.hull()) {
                             return Err(refusal(NOT_YOUR_CHARTER.to_owned()));
                         }
-                        hull_here_at(w, None, venue.as_str(), view.hull())
+                        hull_ready_at(w, None, venue.as_str(), view.hull())
                     }
                 },
-                // An ungoverned endpoint is the market's own rules' to judge.
+                // An ungoverned endpoint that passed container locality is the market's own rules'
+                // to judge.
                 None => Ok(()),
             },
             (None, Presence::Ship(hull)) => match port {
@@ -428,44 +617,25 @@ impl VenueGate for PortVenueGate {
         }
     }
 
-    /// Doc 48e (exchange G11; 48d H-01): a governed hold takes delivery only while her hull is
-    /// docked at the venue's port (Q-48-6, local delivery), so a sale into a personal bid never
-    /// lands in a hold that has sailed, berths elsewhere, or targets a non-port venue (EXT-P2-10).
-    /// Doc 48e (exchange G15; 48d H-06): a scrap vault takes only what the yard scraps, so no
-    /// purchase or bid delivers into one; a locker delivers only at its own venue.
+    /// Doc 48e (exchange G11; 48d H-01; P2-TSW-2; P2-TSW-3): a governed hold takes delivery only
+    /// while her hull is docked at the venue's port, not cleared to sail, not papers-dark, and not
+    /// listed for sale; every container-backed vault (works escrows, scrap vaults, lockers,
+    /// facility stores, storefronts, and any other container) enforces fail-closed venue locality.
     fn receives_at(
         &self,
         w: &World,
         venue: &MarketId,
         endpoint: EndpointRef,
     ) -> Result<(), VenueRefusal> {
-        if crate::port::works::is_works_escrow(w, endpoint.vault())
-            && !crate::port::works::escrow_buy_allowed_at_venue(w, venue, endpoint.vault())
-        {
-            return Err(refusal(MOVE_WORKS_ESCROW.to_owned()));
-        }
-        if crate::port::bay_work::scrap::is_scrap_vault(w, endpoint.vault()) {
-            return Err(refusal(MOVE_INTO_SCRAP.to_owned()));
-        }
-        if crate::port::locker::is_locker(w, endpoint) {
-            let at_this_venue = w.module_state::<TacsimStore>().is_some_and(|store| {
-                store
-                    .lockers
-                    .values()
-                    .any(|l| l.vault == endpoint.vault().0 && l.venue.as_str() == venue.as_str())
-            });
-            if !at_this_venue {
-                let place = port_of_venue(w, venue)
-                    .map_or_else(|| venue.as_str().to_owned(), |(def, _)| port_name(def));
-                return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", &place)));
-            }
-        }
+        let port = port_of_venue(w, venue).map(|(def, _)| def);
+        let place = port.map_or_else(|| venue.as_str().to_owned(), port_name);
+        check_container_vault(w, None, venue, endpoint, &place)?;
         let Some(view) = governed_hold(w, endpoint) else {
             return Ok(());
         };
-        match port_of_venue(w, venue) {
-            Some((def, _)) => hull_here(w, def, view.hull()),
-            None => hull_here_at(w, None, venue.as_str(), view.hull()),
+        match port {
+            Some(def) => hull_ready_at(w, Some(def.venue.as_str()), &place, view.hull()),
+            None => hull_ready_at(w, None, venue.as_str(), view.hull()),
         }
     }
 
@@ -688,6 +858,9 @@ pub const MOVE_NOT_AT_VENUE: &str =
 pub const MOVE_CHARTER_CARGO: &str = "Cargo in {name}'s chartered hold is sold from there, so the Co-op's share is paid; it stays aboard.";
 /// `@inv/move` into a hold whose hull is for sale: `{name}`.
 pub const MOVE_HULL_ON_SALE: &str = "{name} is for sale, so nothing goes into her hold.";
+/// `@inv/move` or market delivery into a facility's stores while the facility is for sale:
+/// `{name}` (P2-TSW-2).
+pub const MOVE_FACILITY_ON_SALE: &str = "{name} is for sale, so nothing goes into its stores.";
 /// `@inv/move` into a scrap vault.
 pub const MOVE_INTO_SCRAP: &str = "A scrap vault takes only what the yard scraps.";
 /// `@inv/move` or direct market access touching a works/yard escrow vault (CRIT-20).
@@ -747,6 +920,11 @@ impl mush_inventory::MovePolicy for PortMovePolicy {
             return Err(
                 MOVE_HULL_ON_SALE.replace("{name}", &crate::port::coop::name_of(w, view.hull()))
             );
+        }
+        if let Some(facility) = facility_of_vault(w, to.vault())
+            && mush_market::asset_on_sale(w, facility)
+        {
+            return Err(MOVE_FACILITY_ON_SALE.replace("{name}", &name_of(w, facility)));
         }
         if crate::port::bay_work::scrap::is_scrap_vault(w, to.vault()) {
             return Err(MOVE_INTO_SCRAP.to_owned());

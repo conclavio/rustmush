@@ -907,6 +907,18 @@ pub fn accept_at(
         )?),
         None => None,
     };
+    // P2-MOD-30 (Doc 50 unit LW.1): re-check the venue's trade law at acceptance, so a buyer who
+    // became restricted or lost papers after taking a quote (up to 30d remote TTL) cannot still
+    // execute a public purchase of a restricted good.
+    if let Ok(commodity) = mush_core::CanonicalId::new(listing.catalog.code.as_str()) {
+        crate::module::law_of_trade(
+            ctx.w,
+            &q.buyer,
+            &listing.market,
+            &commodity,
+            listing.private_to.is_some(),
+        )?;
+    }
     // Doc 18 cut IC7: a Draw's cutoff, computed before any money moves so an
     // unrepresentable instant refuses rather than taking the money for a deal whose
     // window cannot be written (checked arithmetic, real seconds).
@@ -2606,6 +2618,15 @@ pub fn bid_take(
     let held = held_as_taken(ctx, actor, source, &commodity, &takes)?;
     // The house's fundable units (step 10's funds, read as a count): a vendor's
     // available balance, or a personal bid's escrow (doc 48 cut EX.1a).
+    if matches!(bidder, BidBuyer::Personal) {
+        if !crate::seller::bidder_holds_vault(ctx.w, &listing.seller, vault) {
+            return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
+        }
+        if let Some(gate) = gate.as_ref() {
+            gate.receives_at(ctx.w, &listing.market, mush_inventory::EndpointRef(vault))
+                .map_err(|r| MarketError::bad(r.line))?;
+        }
+    }
     let price = listing.price.minor();
     let funds = match &bidder {
         BidBuyer::House(vendor) => available_of(ctx, vendor.account),
@@ -2767,7 +2788,9 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
             }
         }
         BidBuyer::Personal => {
-            if !crate::seller::bid_funds(ctx.w, &listing, quantity) {
+            if !crate::seller::bid_funds(ctx.w, &listing, quantity)
+                || !crate::seller::bidder_holds_vault(ctx.w, &listing.seller, vault)
+            {
                 return Err(MarketError::bad(crate::seller::BIDDER_NOT_BUYING));
             }
             // Doc 48e (exchange G11; 48d H-01): the bid's destination takes delivery here and

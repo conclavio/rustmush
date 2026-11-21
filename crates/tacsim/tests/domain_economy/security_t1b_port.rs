@@ -618,3 +618,960 @@ fn ext_p2_10_non_port_venue_receives_at_rejects_hold_escrow_and_foreign_locker()
             .is_ok()
     );
 }
+
+/// **P2-TSW-2**: Scrap vaults and facility stores vaults enforce fail-closed venue locality in
+/// `PortVenueGate::admit`, `PortVenueGate::receives_at`, and `PortMovePolicy::admit` (while
+/// preserving local scrap withdrawal and local idle facility stores use, and blocking moves or
+/// deliveries into facility stores while `asset_on_sale`).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw_2_container_vaults_enforce_cross_port_and_on_sale_locality() {
+    use mush_market::{MarketId, Presence, VenueGate};
+
+    let mut rig = stocked();
+    let (captain, _row) = owner_of_her(&mut rig, "VaultLocal", 101, "Copper Fin");
+    mint_minor(&mut rig, captain, 100_000_000);
+
+    let ceres_locker = open_locker_at(&mut rig, captain, CERES, "room.c07_exchange", "ceres");
+    let stickney_locker =
+        open_locker_at(&mut rig, captain, STICKNEY, "room.p08_exchange", "stickney");
+
+    // Create a Ceres scrap vault for `captain` with 4 t alloys + 1 alloys lot.
+    let scrap_crate = rig
+        .tw
+        .world_mut()
+        .create(
+            mush_core::ObjKind::Thing,
+            "scrap at ceres",
+            captain,
+            Some(mush_core::LIMBO),
+        )
+        .expect("scrap crate");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@vault/create scrap at ceres=container:#{} owner=#{}",
+            scrap_crate.0, captain.0
+        ),
+    );
+    let ceres_scrap = tacsim::port::bay_work::scrap::scrap_vault(rig.tw.world(), captain, "ceres")
+        .expect("ceres scrap vault");
+    seed_pool(&mut rig, ceres_scrap, ALLOYS, 4, LotId(99_501));
+    let scrap_lot = LotId(99_502);
+    seed_lot(&mut rig, ceres_scrap, ALLOYS, 1, scrap_lot);
+
+    // 1. Local scrap withdrawal at Ceres succeeds; moving INTO scrap at Ceres fails.
+    let ceres_exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, captain, ceres_exchange);
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!("@inv/move {}/{ALLOYS}:1={}", ceres_scrap.0, ceres_locker.0),
+    );
+    assert!(
+        !queued.is_empty(),
+        "local scrap withdrawal must work: {out}"
+    );
+    land_all(&mut rig, &queued);
+    assert_eq!(hold_pool(&mut rig.tw, ceres_locker, ALLOYS), 1);
+
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!("@inv/move {}/{ALLOYS}:1={}", ceres_locker.0, ceres_scrap.0),
+    );
+    assert!(queued.is_empty(), "move into scrap must fail: {out}");
+    assert!(
+        out.contains(tacsim::port::market::MOVE_INTO_SCRAP),
+        "expected MOVE_INTO_SCRAP, got: {out}"
+    );
+
+    // 2. Cross-port access to Ceres scrap vault from Stickney fails closed in `@inv/move` and
+    // `+market/post`.
+    let stickney_exchange = station_room(&rig.tw, STICKNEY, "room.p08_exchange");
+    teleport(&mut rig.tw, captain, stickney_exchange);
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!(
+            "@inv/move {}/{ALLOYS}:1={}",
+            ceres_scrap.0, stickney_locker.0
+        ),
+    );
+    assert!(queued.is_empty(), "cross-port scrap move must fail: {out}");
+    assert!(
+        out.contains(&tacsim::port::market::SCRAP_ELSEWHERE.replace("{port}", "Stickney Yards")),
+        "expected SCRAP_ELSEWHERE, got: {out}"
+    );
+    assert_eq!(hold_pool(&mut rig.tw, stickney_locker, ALLOYS), 0);
+
+    let post_out = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/post {scrap_lot} price=50000"),
+    );
+    assert!(
+        post_out
+            .contains(&tacsim::port::market::SCRAP_ELSEWHERE.replace("{port}", "Stickney Yards")),
+        "cross-port post from scrap vault must fail: {post_out}"
+    );
+
+    // 3. Facility stores vault: give `captain` title and stores of Stickney's yard (`p12_observation`).
+    let yard = station_room(&rig.tw, STICKNEY, "room.p12_observation");
+    let yards_org = mush_org::OrgId(port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")].org);
+    let root = port_map(&rig.tw, STICKNEY).orgs[&cid("stickney_yards")].root_scope;
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@vault/create YardStores=container:#{} owner=org:{} scope={root}",
+            yard.0, yards_org.0
+        ),
+    );
+    let yard_stores =
+        tacsim::port::facility_sale::stores_of(rig.tw.world(), yard).expect("stickney yard stores");
+    let transferred = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@asset/transfer #{}=#{}", yard.0, captain.0),
+    );
+    assert!(!transferred.contains("Usage"), "{transferred}");
+    {
+        let engine = rig.tw.engine_mut();
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(tacsim::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        tacsim::port::facility_sale::on_sold(
+            &mut ctx,
+            yard,
+            &PrincipalId::Organization(yards_org),
+            &PrincipalId::Object(captain),
+        );
+    }
+    seed_pool(&mut rig, stickney_locker, METALS, 2, LotId(99_503));
+
+    // Local move into and out of Stickney yard stores at Stickney succeeds when not on sale.
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!(
+            "@inv/move {}/{METALS}:2={}",
+            stickney_locker.0, yard_stores.0
+        ),
+    );
+    assert!(!queued.is_empty(), "local move into yard stores: {out}");
+    land_all(&mut rig, &queued);
+    assert_eq!(hold_pool(&mut rig.tw, yard_stores, METALS), 2);
+
+    // Cross-port move & market access to Stickney yard stores from Ceres MUST fail with STORES_ELSEWHERE!
+    teleport(&mut rig.tw, captain, ceres_exchange);
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!("@inv/move {}/{METALS}:1={}", yard_stores.0, ceres_locker.0),
+    );
+    assert!(
+        queued.is_empty(),
+        "cross-port move out of yard stores: {out}"
+    );
+    assert!(
+        out.contains(&tacsim::port::market::STORES_ELSEWHERE.replace("{port}", "Ceres Freeport")),
+        "expected STORES_ELSEWHERE, got: {out}"
+    );
+    assert_eq!(hold_pool(&mut rig.tw, ceres_locker, METALS), 0);
+
+    let ceres_ask = {
+        let exch = port_map(&rig.tw, CERES).vendors[&cid("freeport_exchange")].vault;
+        market(&rig)
+            .lot_listing_of(EndpointRef(VaultId(exch)), &cid(METALS))
+            .expect("Ceres metals ask")
+    };
+    let quoted = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/quote {ceres_ask}=1"),
+    );
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let qid = market(&rig)
+        .quotes_of_buyer(&PrincipalId::Object(captain))
+        .map(|q| q.id)
+        .max()
+        .expect("quote");
+    let accepted = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/accept {qid}={}", yard_stores.0),
+    );
+    assert!(
+        accepted
+            .contains(&tacsim::port::market::STORES_ELSEWHERE.replace("{port}", "Ceres Freeport")),
+        "cross-port accept into foreign facility stores must fail: {accepted}"
+    );
+
+    let bid_out = run(
+        &mut rig.tw,
+        captain,
+        &format!(
+            "+market/bid tacsim:{METALS} qty=1 price=1000 into={}",
+            yard_stores.0
+        ),
+    );
+    assert!(
+        bid_out
+            .contains(&tacsim::port::market::STORES_ELSEWHERE.replace("{port}", "Ceres Freeport")),
+        "cross-port bid into foreign facility stores must fail: {bid_out}"
+    );
+
+    // Also verify `PortVenueGate::receives_at` rejects both scrap and foreign facility stores
+    // at Ceres and at non-port `launch.counter`.
+    let gate = tacsim::port::market::PortVenueGate;
+    let ceres_id = MarketId::new("ceres").expect("ceres");
+    let stickney_id = MarketId::new("stickney").expect("stickney");
+    let launch_id = MarketId::new("launch.counter").expect("launch");
+    assert!(
+        gate.receives_at(rig.tw.world(), &ceres_id, EndpointRef(yard_stores))
+            .is_err()
+    );
+    assert!(
+        gate.receives_at(rig.tw.world(), &launch_id, EndpointRef(yard_stores))
+            .is_err()
+    );
+    assert!(
+        gate.receives_at(rig.tw.world(), &launch_id, EndpointRef(ceres_scrap))
+            .is_err()
+    );
+    assert!(
+        gate.admit(
+            rig.tw.world(),
+            captain,
+            &ceres_id,
+            Some(EndpointRef(yard_stores)),
+            Presence::Here
+        )
+        .is_err()
+    );
+
+    // 4. Empty the Stickney yard stores at Stickney, list the yard for sale, and verify
+    // `@inv/move` and `receives_at` refuse moving/delivering goods into its stores while on sale!
+    teleport(&mut rig.tw, captain, stickney_exchange);
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!(
+            "@inv/move {}/{METALS}:2={}",
+            yard_stores.0, stickney_locker.0
+        ),
+    );
+    assert!(!queued.is_empty(), "empty yard stores at Stickney: {out}");
+    land_all(&mut rig, &queued);
+    assert_eq!(hold_pool(&mut rig.tw, yard_stores, METALS), 0);
+
+    let listed = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/post #{} price=1000000", yard.0),
+    );
+    assert!(listed.contains("up for sale as #"), "{listed}");
+    assert!(mush_market::asset_on_sale(rig.tw.world(), yard));
+
+    let yard_name = rig
+        .tw
+        .world()
+        .get(yard)
+        .map(|o| o.name.to_string())
+        .expect("yard name");
+    let expected_on_sale =
+        tacsim::port::market::MOVE_FACILITY_ON_SALE.replace("{name}", &yard_name);
+
+    let (out, queued) = command(
+        &mut rig,
+        captain,
+        &format!(
+            "@inv/move {}/{METALS}:1={}",
+            stickney_locker.0, yard_stores.0
+        ),
+    );
+    assert!(
+        queued.is_empty(),
+        "move into on-sale facility stores: {out}"
+    );
+    assert!(
+        out.contains(&expected_on_sale),
+        "expected MOVE_FACILITY_ON_SALE, got: {out}"
+    );
+
+    let err = gate
+        .receives_at(rig.tw.world(), &stickney_id, EndpointRef(yard_stores))
+        .expect_err("receives_at into on-sale facility stores must fail");
+    assert_eq!(err.line, expected_on_sale);
+}
+
+/// **P2-TSW-3**: `PortVenueGate::receives_at` and `hull_admits` reject governed holds that are
+/// cleared-to-sail (`pending_of`) or listed-for-sale (`asset_on_sale`), `in_flight_for` blocks
+/// listing a hull while an open `Supply::Wanted` bid targets its hold, and `sell_into_bid`
+/// re-verifies live bidder vault control so post-transfer cargo injection is blocked.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw_3_governed_hold_blocks_cleared_on_sale_and_post_transfer_bid_injection() {
+    use mush_market::{MarketId, Presence, VenueGate};
+
+    let mut rig = stocked();
+    let (captain, row) = owner_of_her(&mut rig, "BidGuard", 102, "Swift Tern");
+    let hull = ObjId(row.hull);
+    let hold = hold_vault_of(&rig.tw, &row);
+    mint_minor(&mut rig, captain, 100_000_000);
+
+    let ceres_id = MarketId::new("ceres").expect("ceres");
+    let gate = tacsim::port::market::PortVenueGate;
+    let ceres_exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, captain, ceres_exchange);
+
+    // 1. Listed-for-sale (`asset_on_sale`) blocks both `hull_admits` (`+market/accept` into hold)
+    // and `PortVenueGate::receives_at` with `MOVE_HULL_ON_SALE`.
+    let listing_id = crate::hull_resale_ex2::list(&mut rig, captain, hull);
+    assert!(mush_market::asset_on_sale(rig.tw.world(), hull));
+    let expected_on_sale = tacsim::port::market::MOVE_HULL_ON_SALE.replace("{name}", "Swift Tern");
+
+    let recv_err = gate
+        .receives_at(rig.tw.world(), &ceres_id, EndpointRef(hold))
+        .expect_err("receives_at must reject on-sale hull hold");
+    assert_eq!(recv_err.line, expected_on_sale);
+
+    let admit_err = gate
+        .admit(
+            rig.tw.world(),
+            captain,
+            &ceres_id,
+            Some(EndpointRef(hold)),
+            Presence::Here,
+        )
+        .expect_err("admit must reject on-sale hull hold");
+    assert_eq!(admit_err.line, expected_on_sale);
+
+    // `+market/accept` targeting the listed hull's hold fails before any contract is created.
+    let ceres_metals = {
+        let exch = port_map(&rig.tw, CERES).vendors[&cid("freeport_exchange")].vault;
+        market(&rig)
+            .lot_listing_of(EndpointRef(VaultId(exch)), &cid(METALS))
+            .expect("Ceres metals ask")
+    };
+    let quoted = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/quote {ceres_metals}=1"),
+    );
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let qid = market(&rig)
+        .quotes_of_buyer(&PrincipalId::Object(captain))
+        .map(|q| q.id)
+        .max()
+        .expect("quote");
+    let accepted = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/accept {qid}={}", hold.0),
+    );
+    assert!(
+        accepted.contains(&expected_on_sale),
+        "accept into listed hull hold must fail: {accepted}"
+    );
+
+    // Withdraw the hull listing so we can test open-bid and cleared-to-sail checks.
+    let withdrawn = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/withdraw {}", listing_id.0),
+    );
+    assert!(
+        !mush_market::asset_on_sale(rig.tw.world(), hull),
+        "hull listing withdrawn: {withdrawn}"
+    );
+
+    // 2. Open indivisible-part `Supply::Wanted` bid into `hold` blocks `+market/post #<hull>` via
+    // `in_flight_for`, and if `hold` is later re-homed to Buyer B, `sell_into_bid` refuses!
+    let sensor = "tacsim.part.sensor.visual_mk1";
+    let bid_out = run(
+        &mut rig.tw,
+        captain,
+        &format!(
+            "+market/bid tacsim:{sensor} qty=1 price=50000 into={}",
+            hold.0
+        ),
+    );
+    assert!(bid_out.contains("Bid #"), "{bid_out}");
+    let bid_id = bid_out
+        .split("Bid #")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .expect("bid id");
+
+    let list_blocked = run(
+        &mut rig.tw,
+        captain,
+        &format!("+market/post #{} price=6000000", hull.0),
+    );
+    assert!(
+        !list_blocked.contains("up for sale as #"),
+        "open bid targeting hull hold must block listing hull: {list_blocked}"
+    );
+
+    // Prepare a seller with a clean sensor part ready to sell into `bid_id`.
+    let (seller, seller_row) = owner_of_her(&mut rig, "PartSeller", 103, "Iron Wren");
+    let seller_hold = hold_vault_of(&rig.tw, &seller_row);
+    let sensor_lot = LotId(99_601);
+    seed_part(
+        &mut rig,
+        seller_hold,
+        sensor,
+        sensor_lot,
+        ComponentCondition::Intact,
+        ProvenanceLegalityStatus::CleanTitle,
+    );
+    teleport(&mut rig.tw, seller, ceres_exchange);
+
+    // 3. File `+ship/undock stickney` (cleared to sail) on a second hull and verify `receives_at`
+    // refuses with `HOLD_CLEARED`.
+    let (sailor, sailor_row) = owner_of_her(&mut rig, "ClearedShip", 104, "Wind Dart");
+    let sailor_hull = ObjId(sailor_row.hull);
+    let sailor_hold = hold_vault_of(&rig.tw, &sailor_row);
+    seed_hold(&mut rig, &sailor_row, "propellant", 80, 99_602);
+    seed_hold(&mut rig, &sailor_row, "provisions", 100, 99_603);
+    let ceres_gallery = station_room(&rig.tw, CERES, "room.c01_berth_gallery");
+    teleport(&mut rig.tw, sailor, ceres_gallery);
+    board(&mut rig, sailor);
+    let undock = run(&mut rig.tw, sailor, "+ship/undock stickney");
+    let _ = drain(&mut rig.tw);
+    assert!(
+        tacsim::port::voyage::pending_of(rig.tw.world(), sailor_hull).is_some(),
+        "hull must have a pending clearance: {undock}"
+    );
+    let cleared_err = gate
+        .receives_at(rig.tw.world(), &ceres_id, EndpointRef(sailor_hold))
+        .expect_err("receives_at must reject cleared-to-sail hull hold");
+    assert_eq!(
+        cleared_err.line,
+        tacsim::port::market::HOLD_CLEARED
+            .replace("{name}", "Wind Dart")
+            .replace("{port}", "Ceres Freeport")
+    );
+
+    // 4. Re-home `captain`'s `hold` to a new owner `buyer_b` (simulating `+hull/sell` / `+coop/release`):
+    // `PartSeller` trying to fill `bid_id` MUST be refused with `BIDDER_NOT_BUYING`!
+    let buyer_b = pilot(&mut rig, "NewHullOwner", 105);
+    {
+        let engine = rig.tw.engine_mut();
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(tacsim::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(mush_economy::rehome_vault(
+            &mut ctx,
+            hold,
+            PrincipalId::Object(buyer_b),
+            None,
+            smol_str::SmolStr::new("Swift Tern hold"),
+        ));
+    }
+    let (sold, queued) = command(
+        &mut rig,
+        seller,
+        &format!("+market/sell {bid_id}=1 from={}", seller_hold.0),
+    );
+    assert!(
+        queued.is_empty(),
+        "must not deliver into re-homed hold: {sold}"
+    );
+    assert!(
+        sold.contains(mush_market::seller::BIDDER_NOT_BUYING),
+        "expected BIDDER_NOT_BUYING, got: {sold}"
+    );
+}
+
+/// **P2-MOD-30**: `trade::accept_at` re-checks `ProceedsPolicy::may_trade` so a buyer who took a
+/// public quote on a restricted good (`strategic_ore` at Ceres) while holding valid papers cannot
+/// accept that quote after incurring a Freeport trade restriction.
+#[test]
+fn p2_mod_30_accept_rechecks_trade_law_when_buyer_becomes_restricted() {
+    let mut rig = stocked();
+    let (seller, seller_row) = prospector(&mut rig, "LawSeller", 106, "Red Gull");
+    let seller_hold = hold_vault_of(&rig.tw, &seller_row);
+    let ore_lot = LotId(99_701);
+    seed_lot(&mut rig, seller_hold, "strategic_ore", 2, ore_lot);
+    mint_minor(&mut rig, seller, 10_000_000);
+    crate::lw3_law_audit::seed_strategic_claim(&mut rig, seller);
+    let _ = fire(&mut rig);
+
+    let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, seller, exchange);
+    let posted = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/post {ore_lot} price=30000"),
+    );
+    assert!(posted.contains("Listed for sale as #"), "{posted}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let listing_id = market(&rig)
+        .live_listings()
+        .find(|l| l.source.exact_lot() == Some(ore_lot))
+        .map(|l| l.id)
+        .expect("public strategic_ore listing");
+
+    // Buyer starts licensed + holding a distinct strategic claim (rock #1), opens a locker, and
+    // takes a remote quote.
+    let (buyer, buyer_row) = prospector(&mut rig, "LawBuyer", 107, "Blue Finch");
+    let buyer_hull = ObjId(buyer_row.hull);
+    let buyer_hold = hold_vault_of(&rig.tw, &buyer_row);
+    let (buyer_cluster, buyer_letter) = tacsim::space::mining::all_orbital_clusters(rig.tw.world())
+        .into_iter()
+        .flat_map(|cluster| {
+            cluster
+                .rocks
+                .iter()
+                .filter(|rock| {
+                    rock.spectral
+                        .families()
+                        .contains(&tacsim::surface::OreFamily::StrategicElements)
+                })
+                .map(|rock| (cluster.id.clone(), rock.letter))
+                .collect::<Vec<_>>()
+        })
+        .nth(1)
+        .expect("second strategic rock");
+    let port_handles = rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .cloned()
+        .expect("port handles");
+    let seed_buyer_claim = |rig: &mut Rig, active: bool| {
+        let now = rig.tw.world().world_ic_now().at;
+        let mut tenure =
+            tacsim::surface::claims::BlockTenure::new(buyer_cluster.clone(), buyer_letter, buyer);
+        if active {
+            tenure.claim = Some(tacsim::surface::claims::BlockClaim {
+                holder: PrincipalId::Object(buyer),
+                account: rig
+                    .tw
+                    .world()
+                    .module_state::<mush_sim::AccountOracle>()
+                    .and_then(|oracle| oracle.account_of(buyer)),
+                epoch: 1,
+                opened_ic: None,
+                registered_ic: now,
+                term_start_ic: now,
+                term_end_ic: now + 365 * 86_400,
+                worked_at_term_start: 0,
+                discovered_ic: None,
+                declared: None,
+                fee: None,
+                refund: None,
+                lapsed_ic: None,
+            });
+        }
+        crate::driving_rig::reseed_typed(
+            rig,
+            &port_handles.families.claims,
+            &tacsim::surface::claims::BlockKey {
+                site: buyer_cluster.clone(),
+                letter: buyer_letter,
+            },
+            tenure,
+        );
+    };
+    seed_buyer_claim(&mut rig, true);
+    let _ = fire(&mut rig);
+    let buyer_locker = open_locker_at(&mut rig, buyer, CERES, "room.c07_exchange", "ceres");
+    let quoted = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/quote {listing_id}=2 remote"),
+    );
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote_id = market(&rig)
+        .quotes_of_buyer(&PrincipalId::Object(buyer))
+        .map(|q| q.id)
+        .max()
+        .expect("quote");
+
+    // 1. Remove `buyer`'s strategic claim so `buyer` loses papers while holding the open quote,
+    // and verify `+market/accept` refuses on missing papers before creating any contract.
+    seed_buyer_claim(&mut rig, false);
+    let _ = fire(&mut rig);
+    let (no_papers, queued) = command(
+        &mut rig,
+        buyer,
+        &format!("+market/accept {quote_id}={}", buyer_locker.0),
+    );
+    assert!(
+        queued.is_empty(),
+        "must not stage without papers: {no_papers}"
+    );
+    assert!(
+        no_papers.contains("registered claim on a strategic rock"),
+        "expected missing-papers refusal at accept_at, got: {no_papers}"
+    );
+    assert!(
+        market(&rig)
+            .quote(quote_id)
+            .is_some_and(|q| q.contract.is_none()),
+        "no contract created when papers lapsed"
+    );
+
+    // 2. Drain `buyer`'s account, audit unlicensed strategic ore via real `+law/audit` to impose
+    // a Freeport unpaid-fine restriction, then restore both papers + funds: `accept_at` must STILL
+    // refuse because `buyer` is trade-restricted under Freeport!
+    let treasury = port_map(&rig.tw, CERES).treasury.expect("treasury");
+    let buyer_acct = tacsim::port::credit::own_account(rig.tw.world(), buyer)
+        .expect("buyer account")
+        .id;
+    let avail = crate::lw3_law_audit::credit(&rig, buyer);
+    if avail > 0 {
+        let _ = run(
+            &mut rig.tw,
+            GOD,
+            &format!("@econ/pay #{}=#{treasury} {avail}", buyer_acct.0),
+        );
+    }
+    seed_pool(&mut rig, buyer_hold, "strategic_ore", 6, LotId(99_702));
+    let audited = run(&mut rig.tw, GOD, &format!("+law/audit #{}", buyer_hull.0));
+    assert!(audited.contains("recorded and fined"), "{audited}");
+    let freeport = tacsim::polity::polity(rig.tw.world(), "freeport").expect("freeport");
+    assert!(
+        tacsim::port::record::restricted(rig.tw.world(), buyer, freeport),
+        "buyer must now be trade-restricted under Freeport"
+    );
+    // Restore strategic claim and funds so ONLY the Freeport trade restriction blocks accept.
+    seed_buyer_claim(&mut rig, true);
+    let _ = fire(&mut rig);
+    mint_minor(&mut rig, buyer, 5_000_000);
+
+    let (accepted, queued) = command(
+        &mut rig,
+        buyer,
+        &format!("+market/accept {quote_id}={}", buyer_locker.0),
+    );
+    assert!(queued.is_empty(), "must not stage draw/consume: {accepted}");
+    assert!(
+        accepted.contains("does not let you trade restricted goods"),
+        "expected trade restriction refusal at accept_at, got: {accepted}"
+    );
+    assert!(
+        market(&rig)
+            .quote(quote_id)
+            .is_some_and(|q| q.contract.is_none()),
+        "no contract created when trade law refuses at accept"
+    );
+}
+
+/// **P2-TSW-9**: `+law/report` requires the reporter to stand at `r.venue`, requires a reporting
+/// buyer to still control `VaultId(r.destination)` while the vault/hull is docked and not cleared
+/// at `r.venue`, and guards projected offers with a `RevisionValidator` against TOCTOU transfers.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw_9_law_report_requires_presence_live_vault_control_and_docked_hull() {
+    let mut rig = stocked();
+    let (seller, seller_row) = prospector(&mut rig, "PrivSmuggler", 108, "Grey Skua");
+    let seller_hold = hold_vault_of(&rig.tw, &seller_row);
+    let ore_lot = LotId(99_801);
+    seed_lot(&mut rig, seller_hold, "strategic_ore", 2, ore_lot);
+    mint_minor(&mut rig, seller, 10_000_000);
+
+    let (buyer, buyer_row) = prospector(&mut rig, "PrivBuyer", 109, "Salt Kite");
+    let buyer_hull = ObjId(buyer_row.hull);
+    let buyer_hold = hold_vault_of(&rig.tw, &buyer_row);
+    mint_minor(&mut rig, buyer, 10_000_000);
+
+    // Private sale from unlicensed `seller` directly into `buyer`'s hull hold at Ceres.
+    let ceres_exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
+    teleport(&mut rig.tw, seller, ceres_exchange);
+    teleport(&mut rig.tw, buyer, ceres_exchange);
+
+    let offered = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/post {ore_lot} price=30000 to=PrivBuyer"),
+    );
+    assert!(offered.contains("Listed for sale as #"), "{offered}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let listing_id = market(&rig)
+        .live_listings()
+        .find(|l| l.source.exact_lot() == Some(ore_lot))
+        .map(|l| l.id)
+        .expect("private listing");
+
+    let quoted = run(&mut rig.tw, buyer, &format!("+market/quote {listing_id}=2"));
+    assert!(quoted.contains("Quote #"), "{quoted}");
+    let quote = market(&rig)
+        .quotes_of_buyer(&PrincipalId::Object(buyer))
+        .map(|q| q.id.0)
+        .max()
+        .expect("quote");
+    let accepted = run(
+        &mut rig.tw,
+        buyer,
+        &format!("+market/accept {quote}={}", buyer_hold.0),
+    );
+    let queued = drain(&mut rig.tw);
+    assert!(!queued.is_empty(), "{accepted}");
+    land_all(&mut rig, &queued);
+    for _ in 0..3 {
+        crate::driving_rig::sweep(&mut rig.tw, 60);
+        settle(&mut rig, 1);
+    }
+
+    let receipt = tacsim::port::law_report::receipts_of(rig.tw.world(), buyer)
+        .and_then(|b| b.receipts.into_iter().find(|r| r.quote == quote))
+        .expect("buyer receipt");
+    assert_eq!(receipt.destination, buyer_hold.0);
+    assert!(!receipt.seller_papers);
+
+    // 1. Remote reporter standing at Stickney is refused with `REPORT_NOT_HERE`.
+    let stickney_exchange = station_room(&rig.tw, STICKNEY, "room.p08_exchange");
+    teleport(&mut rig.tw, buyer, stickney_exchange);
+    let (out, queued) = command(&mut rig, buyer, &format!("+law/report {quote} go"));
+    assert!(queued.is_empty(), "remote report must not queue: {out}");
+    assert!(
+        out.contains(tacsim::port::law_report::REPORT_NOT_HERE),
+        "expected REPORT_NOT_HERE, got: {out}"
+    );
+
+    // 2. Cleared-to-sail hull at Ceres refuses `+law/report` with `HOLD_CLEARED`.
+    seed_hold(&mut rig, &buyer_row, "propellant", 80, 99_802);
+    seed_hold(&mut rig, &buyer_row, "provisions", 100, 99_803);
+    let ceres_gallery = station_room(&rig.tw, CERES, "room.c01_berth_gallery");
+    teleport(&mut rig.tw, buyer, ceres_gallery);
+    board(&mut rig, buyer);
+    let undock = run(&mut rig.tw, buyer, "+ship/undock stickney");
+    let burn_queued = drain(&mut rig.tw);
+    assert!(
+        tacsim::port::voyage::pending_of(rig.tw.world(), buyer_hull).is_some(),
+        "clearance filed: {undock}"
+    );
+    land_all(&mut rig, &burn_queued);
+    let unplaced = run(&mut rig.tw, GOD, &format!("@spatial/unplace #{}", buyer.0));
+    assert!(unplaced.contains("Unplaced"), "{unplaced}");
+    teleport(&mut rig.tw, buyer, ceres_exchange);
+    let (out, queued) = command(&mut rig, buyer, &format!("+law/report {quote} go"));
+    assert!(
+        queued.is_empty(),
+        "cleared hull report must not queue: {out}"
+    );
+    assert!(
+        out.contains(
+            &tacsim::port::market::HOLD_CLEARED
+                .replace("{name}", "Salt Kite")
+                .replace("{port}", "Ceres Freeport")
+        ),
+        "expected HOLD_CLEARED, got: {out}"
+    );
+
+    // 3. Under-way hull refuses `+law/report` (no remote in-flight teleportation!) and refuses
+    // `PortVenueGate::receives_at` with `HOLD_UNDER_WAY`.
+    let airlock = buyer_row.rooms[&cid("airlock")];
+    let placed = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@spatial/place/interior #{}=#{airlock},berths", buyer.0),
+    );
+    assert!(!placed.contains("Usage"), "{placed}");
+    let (_, queued) = fire(&mut rig);
+    land_quietly(&mut rig, &queued);
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), buyer_hull),
+            tacsim::port::ship::Berth::UnderWay
+        ),
+        "Salt Kite must be under way"
+    );
+    let (out, queued) = command(&mut rig, buyer, &format!("+law/report {quote} go"));
+    assert!(queued.is_empty(), "under-way report must not queue: {out}");
+    assert!(
+        out.contains(tacsim::port::law_report::REPORT_NOT_HERE),
+        "expected REPORT_NOT_HERE while under way, got: {out}"
+    );
+    let ceres_id = mush_market::MarketId::new("ceres").expect("ceres");
+    let under_way_err = mush_market::VenueGate::receives_at(
+        &tacsim::port::market::PortVenueGate,
+        rig.tw.world(),
+        &ceres_id,
+        EndpointRef(buyer_hold),
+    )
+    .expect_err("under-way hull hold must refuse receives_at");
+    assert_eq!(
+        under_way_err.line,
+        tacsim::port::market::HOLD_UNDER_WAY
+            .replace("{name}", "Salt Kite")
+            .replace("{port}", "Ceres Freeport")
+    );
+
+    // 4. Post-projection TOCTOU revision guard + cross-owner refusal on a fresh docked sale.
+    let ore_lot2 = LotId(99_811);
+    seed_lot(&mut rig, seller_hold, "strategic_ore", 2, ore_lot2);
+    let (buyer2, buyer2_row) = prospector(&mut rig, "PrivBuyer2", 110, "Sea Wren");
+    let buyer2_hold = hold_vault_of(&rig.tw, &buyer2_row);
+    mint_minor(&mut rig, buyer2, 10_000_000);
+    teleport(&mut rig.tw, seller, ceres_exchange);
+    teleport(&mut rig.tw, buyer2, ceres_exchange);
+    let offered2 = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/post {ore_lot2} price=30000 to=PrivBuyer2"),
+    );
+    assert!(offered2.contains("Listed for sale as #"), "{offered2}");
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    let listing2 = market(&rig)
+        .live_listings()
+        .find(|l| l.source.exact_lot() == Some(ore_lot2))
+        .map(|l| l.id)
+        .expect("second private listing");
+    let quoted2 = run(&mut rig.tw, buyer2, &format!("+market/quote {listing2}=2"));
+    assert!(quoted2.contains("Quote #"), "{quoted2}");
+    let quote2 = market(&rig)
+        .quotes_of_buyer(&PrincipalId::Object(buyer2))
+        .map(|q| q.id.0)
+        .max()
+        .expect("second quote");
+    let accepted2 = run(
+        &mut rig.tw,
+        buyer2,
+        &format!("+market/accept {quote2}={}", buyer2_hold.0),
+    );
+    let queued = drain(&mut rig.tw);
+    assert!(!queued.is_empty(), "{accepted2}");
+    land_all(&mut rig, &queued);
+    for _ in 0..3 {
+        crate::driving_rig::sweep(&mut rig.tw, 60);
+        settle(&mut rig, 1);
+    }
+
+    // Queue `+law/report` while buyer2 still controls `buyer2_hold`, and project its offer +
+    // revision guards before transferring the hold to `victim`.
+    let (out, queued) = command(&mut rig, buyer2, &format!("+law/report {quote2} go"));
+    assert_eq!(queued.len(), 1, "valid docked report queues: {out}");
+    let guards = {
+        let engine = rig.tw.engine();
+        let query = engine
+            .legal_action_query(
+                mush_core::PrincipalId::Object { id: buyer2 },
+                buyer2,
+                mush_core::PerceivedRef::SelfActor,
+            )
+            .expect("query");
+        let offers = engine.project_legal_actions(&query).expect("offers");
+        let projected = offers
+            .projected_for_action(&queued[0].action)
+            .expect("law_report offer must project while buyer2 owns docked hold");
+        let token = [0x5au8; 16];
+        let submission = mush_core::OfferSubmission {
+            offer: projected.offer(),
+            subject: projected.subject().clone(),
+            targets: Vec::new(),
+            parameters: queued[0].parameters.clone(),
+        };
+        let execution = mush_core::OfferExecutionContext {
+            request: mush_core::RequestUid::from_bytes(token),
+            principal: mush_core::PrincipalId::Object { id: buyer2 },
+            actor: buyer2,
+            idempotency: mush_core::ScopedIdempotencyKey::new(
+                mush_core::IdempotencyScope {
+                    principal: mush_core::PrincipalId::Object { id: buyer2 },
+                    owner: queued[0].action.key().owner.clone(),
+                    namespace: cid(queued[0].action.key().id.as_str()),
+                },
+                1,
+                mush_core::IdempotencyKey::Request(mush_core::RequestUid::from_bytes(token)),
+            ),
+            viewer_scope: query.viewer_scope(),
+            now: None,
+        };
+        let resolved = engine
+            .resolve_legal_action(&offers, execution, submission)
+            .expect("resolve offer");
+        let (_, _, guards) = resolved.into_authoritative_parts();
+        assert!(
+            engine
+                .revalidate_guards(&guards)
+                .is_ok_and(|res| res.is_current()),
+            "guards must be current before re-home"
+        );
+        guards
+    };
+
+    let victim = pilot(&mut rig, "InnocentBuyer", 111);
+    {
+        let engine = rig.tw.engine_mut();
+        let mut outbox = mush_core::Outbox::new();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut outbox,
+            reg: &engine.registry,
+            module: Some(tacsim::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(mush_economy::rehome_vault(
+            &mut ctx,
+            buyer2_hold,
+            PrincipalId::Object(victim),
+            None,
+            smol_str::SmolStr::new("Sea Wren hold"),
+        ));
+    }
+
+    // 4a. Pre-projected offer guards are immediately invalidated by `LawReportValidator`.
+    assert!(
+        !rig.tw
+            .engine()
+            .revalidate_guards(&guards)
+            .is_ok_and(|res| res.is_current()),
+        "revision validator must invalidate pre-projected report offer after vault re-home"
+    );
+
+    // 4b. Attempting to land the queued report after vault re-home must NOT seize the lot.
+    land_quietly(&mut rig, &queued);
+    let families = rig
+        .tw
+        .world()
+        .module_state::<mush_inventory::InventoryHandles>()
+        .expect("inventory")
+        .0
+        .clone();
+    assert_eq!(
+        typed(&mut rig.tw, &families.lots, &ore_lot2).map(|l| l.endpoint()),
+        Some(EndpointRef(buyer2_hold)),
+        "victim's hold must NOT be seized after re-home TOCTOU"
+    );
+
+    // 4c. Direct `+law/report` after transfer/re-home refuses upfront with `REPORT_NO_GOODS`.
+    let (out, queued) = command(&mut rig, buyer2, &format!("+law/report {quote2} go"));
+    assert!(
+        queued.is_empty(),
+        "cross-owner report must not queue: {out}"
+    );
+    assert!(
+        out.contains(tacsim::port::law_report::REPORT_NO_GOODS),
+        "expected REPORT_NO_GOODS, got: {out}"
+    );
+}

@@ -743,6 +743,9 @@ pub fn scrap_vault(w: &World, holder: ObjId, venue: &str) -> Option<mush_economy
 #[must_use]
 pub fn scrap_vault_owner(w: &World, vault: mush_economy::VaultId, venue: &str) -> Option<ObjId> {
     let v = w.module_state::<EconomyStore>()?.snapshot().vault(vault)?;
+    if v.status != mush_economy::VaultStatus::Active {
+        return None;
+    }
     match &v.owner {
         PrincipalId::Object(owner) if v.name.as_str() == scrap_vault_name(venue) => Some(*owner),
         _ => None,
