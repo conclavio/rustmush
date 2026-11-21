@@ -786,7 +786,7 @@ fn venue_cut_lines(
         .into_iter()
         .map(|cut| {
             format!(
-                " Out of it the seller pays {} of {} ({}).",
+                " Out of it the seller pays {} {} ({}).",
                 cut.label,
                 money(ctx.w, instrument, cut.amount),
                 cut.reason

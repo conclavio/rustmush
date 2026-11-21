@@ -485,12 +485,7 @@ impl ProceedsPolicy for CoopProceeds {
         let house = ctx
             .w
             .module_state::<mush_market::MarketStore>()
-            .and_then(|m| m.quote(sale.quote))
-            .and_then(|q| {
-                ctx.w
-                    .module_state::<mush_market::MarketStore>()?
-                    .listing(q.listing)
-            })
+            .and_then(|m| m.listing(sale.listing))
             .map(|listing| listing.seller.clone());
         if let Some(house) = house {
             crate::stockpile::on_fill(
