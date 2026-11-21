@@ -113,6 +113,10 @@ pub enum OffenseKind {
     /// **Buying a restricted good privately without its paper**, proven by the seller's report
     /// of their receipt (doc 50 unit LW.3; Q-50-66).
     RestrictedPurchase,
+    /// **A transit duty owed and not paid** (doc 50b; Q-50-54): written when the picket's duty
+    /// stands as a debt, carrying that debt. It holds a hull and restricts trade only once the
+    /// debt is past its grace.
+    UnpaidDuty,
 }
 
 impl OffenseKind {
@@ -138,6 +142,7 @@ impl OffenseKind {
             Self::UnlicensedPossession => "holding a restricted good without its papers",
             Self::RestrictedSale => "selling a restricted good without its papers",
             Self::RestrictedPurchase => "buying a restricted good without its papers",
+            Self::UnpaidDuty => "a transit duty owed",
         }
     }
 }
@@ -195,6 +200,16 @@ pub enum Evidence {
         /// When it settled, IC.
         at_ic: i64,
     },
+    /// **A crossing of the picket whose transit duty is owed** (doc 50b): the hull, the journey
+    /// cursor of the leg she crossed, and when it was assessed.
+    Duty {
+        /// The hull assessed.
+        hull: ObjId,
+        /// The journey cursor of the crossed Kirkwood leg.
+        cursor: u32,
+        /// When, IC.
+        at_ic: i64,
+    },
 }
 
 /// **What is owed to a reporter once the fine is collected** (doc 50 unit LW.3; Q-50-43,
@@ -239,7 +254,7 @@ impl ProvenOffense {
     pub fn site_act(&self) -> Option<(&CanonicalId, &UnlawfulAct)> {
         match &self.evidence {
             Evidence::Site { site, act } => Some((site, act)),
-            Evidence::Audit { .. } | Evidence::Receipt { .. } => None,
+            Evidence::Audit { .. } | Evidence::Receipt { .. } | Evidence::Duty { .. } => None,
         }
     }
 
@@ -248,7 +263,7 @@ impl ProvenOffense {
     #[must_use]
     pub fn units(&self) -> Option<u64> {
         match &self.evidence {
-            Evidence::Site { .. } => None,
+            Evidence::Site { .. } | Evidence::Duty { .. } => None,
             Evidence::Audit { units, .. } | Evidence::Receipt { units, .. } => Some(*units),
         }
     }
@@ -282,6 +297,18 @@ impl ProvenOffense {
                     },
                 ) => h1 == h2 && e1 == e2 && g1 == g2 && t1 == t2,
                 (Evidence::Receipt { quote: a, .. }, Evidence::Receipt { quote: b, .. }) => a == b,
+                (
+                    Evidence::Duty {
+                        hull: h1,
+                        cursor: c1,
+                        at_ic: t1,
+                    },
+                    Evidence::Duty {
+                        hull: h2,
+                        cursor: c2,
+                        at_ic: t2,
+                    },
+                ) => h1 == h2 && c1 == c2 && t1 == t2,
                 _ => false,
             }
     }

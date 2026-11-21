@@ -761,7 +761,8 @@ pub(crate) fn file_breach(ctx: &mut Ctx<'_>, hull: ObjId) {
         return;
     }
     let principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, hull);
-    let front_id = super::picket::record_ran_the_picket_incident(ctx, principal, hull).map(|f| f.0);
+    let front_id =
+        super::picket::record_ran_the_picket_incident(ctx, principal, principal, hull).map(|f| f.0);
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
         && let Some(active) = book.active_for_hull_mut(hull)
         && let Some(picket) = active.picket.as_mut()
@@ -814,7 +815,7 @@ pub(crate) fn file_ruling_as(
     // Doc 50 unit LW.5 (Q-50-44): a seizure's goods go to the enforcing authority's vault,
     // made here on first use, outside the ruling's transaction.
     let into = match &finding {
-        CustomsFinding::Seized { .. } => seized_into(ctx),
+        CustomsFinding::Seized { .. } => seized_into(ctx, hull),
         _ => None,
     };
     let pending = {
@@ -855,8 +856,8 @@ pub(crate) fn file_ruling_as(
 
 /// **The enforcing authority's vault for a seizure** (doc 50 unit LW.5), made on first use;
 /// `None`, logged, when there is no authority or its vault will not form.
-fn seized_into(ctx: &mut Ctx<'_>) -> Option<u64> {
-    let Some(authority) = crate::port::seized::seizing_authority(ctx.w) else {
+fn seized_into(ctx: &mut Ctx<'_>, hull: ObjId) -> Option<u64> {
+    let Some(authority) = crate::port::seized::seizing_authority_for(ctx.w, hull) else {
         tracing::error!("tacsim: a seizure has no enforcing authority; its goods leave the world");
         return None;
     };
@@ -889,7 +890,7 @@ fn seizable(ctx: &Ctx<'_>, vault: u64) -> (Vec<u64>, Vec<LotId>) {
         MAX_SEIZED_ROWS,
     )
     .into_iter()
-    .map(|(id, _)| id)
+    .map(|(id, _, _)| id)
     .collect();
     (hauls, lots)
 }
@@ -1178,7 +1179,7 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
             // Doc 50 unit LW.5 (Q-50-44): the authority offers what it took at its port.
             if let (Some(vault), Some(authority), Ok(ore)) = (
                 pending.into,
-                crate::port::seized::seizing_authority(ctx.w),
+                crate::port::seized::seizing_authority_for(ctx.w, hull),
                 CanonicalId::new("strategic_ore"),
             ) {
                 crate::port::seized::offer(
@@ -1187,6 +1188,13 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
                     mush_economy::VaultId(vault),
                     &ore,
                     u64::from(seize_t),
+                );
+                // Doc 50b: the lots it took are offered too, each as an exact-lot ask.
+                crate::port::seized::offer_lots(
+                    ctx,
+                    &authority,
+                    mush_economy::VaultId(vault),
+                    &ore,
                 );
             }
             set_verdict(
@@ -1222,9 +1230,13 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
                     "ran the picket",
                 );
             }
-            let front_raw =
-                super::picket::record_ran_the_picket_incident(ctx, ruling.principal, hull)
-                    .map(|f| f.0);
+            let front_raw = super::picket::record_ran_the_picket_incident(
+                ctx,
+                ruling.actor,
+                ruling.principal,
+                hull,
+            )
+            .map(|f| f.0);
             set_verdict(
                 ctx,
                 hull,

@@ -1296,20 +1296,50 @@ pub fn next_space_mine_work_row(
     Some((draw.receipt.clone(), value))
 }
 
-/// Read the total tonnes of ore of every family in `hull`'s hold, through the one cargo reading
+/// Read the tonnes `hull`'s ore hold is filled with, through the one cargo reading
 /// ([`crate::port::ship::hold_reading`], doc 50 unit CR): ore held as a lot fills the hold as
-/// pooled ore does.
+/// pooled ore does. **Doc 50b** (doc 50 §7's cargo reading): every good a compartment that takes
+/// ore also takes counts, by its mass a unit, so bulk trade goods beside the ore leave less room
+/// for it. The total rounds up to the next tonne.
 #[must_use]
 pub fn hull_hold_used_tonnes(ctx: &Ctx<'_>, hull: ObjId) -> u64 {
-    let mut total = 0_u64;
-    for family in OreFamily::ALL {
-        if let Ok(good) = CanonicalId::new(ore_good(family))
-            && let Ok(qty) = crate::port::ship::hold_reading(ctx, hull, &good)
-        {
-            total = total.saturating_add(qty);
+    let Some(goods) = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(crate::store::TacsimStore::goods)
+    else {
+        return 0;
+    };
+    let Some(ore_tag) = CanonicalId::new(ore_good(OreFamily::Metals))
+        .ok()
+        .and_then(|ore| goods.good(&ore))
+        .map(|g| g.stowage.clone())
+    else {
+        return 0;
+    };
+    // Every stowage tag the hull's ore compartments take (a Dray-P's hold takes ore and bulk).
+    let Some(view) = crate::port::ship::hull_view(ctx.w, hull) else {
+        return 0;
+    };
+    let mut tags: std::collections::BTreeSet<CanonicalId> = crate::port::ship::compartments(&view)
+        .into_iter()
+        .filter(|(_, comp)| comp.accepts.contains(&ore_tag))
+        .flat_map(|(_, comp)| comp.accepts.into_iter())
+        .collect();
+    tags.insert(ore_tag);
+    let mass = CanonicalId::new(crate::definitions::logistics::MASS_KG).ok();
+    let mut kg = 0_u64;
+    for good in goods.goods.iter().filter(|g| tags.contains(&g.stowage)) {
+        let per_unit = mass
+            .as_ref()
+            .and_then(|m| good.measures.get(m))
+            .copied()
+            .unwrap_or(1_000);
+        if let Ok(qty) = crate::port::ship::hold_reading(ctx, hull, &good.id) {
+            kg = kg.saturating_add(qty.saturating_mul(per_unit));
         }
     }
-    total
+    kg.div_ceil(1_000)
 }
 
 /// Read the remaining `OreDeposit` pool tonnes in `rock_vault` for `family`.

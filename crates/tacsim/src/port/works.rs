@@ -1961,7 +1961,8 @@ pub(crate) fn lots_in(ctx: &Ctx<'_>, endpoint: EndpointRef) -> Vec<(LotId, Canon
     escrow_lots(ctx, endpoint)
 }
 
-/// **The unheld lots of `good` in an endpoint**, at most `max` (doc 50b): the same bounded walk
+/// **The unheld lots of `good` in an endpoint**, with each one's quantity and grade, at most
+/// `max` (doc 50b): the same bounded walk
 /// as [`lots_in`], filtered by good and by hold inside the walk, so lots of other goods, or held
 /// ones, never crowd out the ones asked for.
 pub(crate) fn unheld_lots_of(
@@ -1969,7 +1970,7 @@ pub(crate) fn unheld_lots_of(
     endpoint: EndpointRef,
     good: &CanonicalId,
     max: usize,
-) -> Vec<(LotId, u64)> {
+) -> Vec<(LotId, u64, u8)> {
     let Some((_, inventory)) = handles(ctx.w) else {
         return Vec::new();
     };
@@ -1986,7 +1987,7 @@ pub(crate) fn unheld_lots_of(
                 && lot.commodity() == good
                 && matches!(ctx.action_state(&inventory.lot_holds, &lot.id()), Ok(None))
             {
-                out.push((lot.id(), lot.quantity()));
+                out.push((lot.id(), lot.quantity(), lot.grade().get()));
             }
         }
         if out.len() >= max {

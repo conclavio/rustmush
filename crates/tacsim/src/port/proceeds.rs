@@ -254,7 +254,13 @@ pub(crate) const fn takes_share(status: EnrolmentStatus) -> bool {
 /// Whether the sale's source is an enrolled hold, and if so the enrolment's frozen
 /// permille. `Err` for a live charter with dark books or another pilot.
 fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefusal> {
-    enrolled_at(w, sale.source, sale.seller)
+    let seller = match sale.seller {
+        PrincipalId::Object(who) => Some(*who),
+        // Doc 50b item 8: an organization's listing reaches the policy too. No organization is
+        // a charter's pilot, so one selling out of a chartered hold is refused as another's.
+        _ => None,
+    };
+    enrolled_at(w, sale.source, seller)
 }
 
 /// Whether `source` is an enrolled hold, and if so the enrolment's frozen permille; `Err` for
@@ -262,7 +268,7 @@ fn enrolled(w: &World, sale: &SaleTerms<'_>) -> Result<Option<u32>, ProceedsRefu
 fn enrolled_at(
     w: &World,
     source: EndpointRef,
-    seller: ObjId,
+    seller: Option<ObjId>,
 ) -> Result<Option<u32>, ProceedsRefusal> {
     let Some(view) = governed_hold(w, source) else {
         return Ok(None);
@@ -284,7 +290,7 @@ fn enrolled_at(
     let Some(enrolment) = enrolment else {
         return Err(refuse(SALE_BOOKS_DARK.to_owned()));
     };
-    if enrolment.pilot != seller {
+    if Some(enrolment.pilot) != seller {
         return Err(refuse(SALE_NOT_PILOT.replace("{name}", &name_of(w, hull))));
     }
     Ok(Some(enrolment.share_permille))
@@ -382,6 +388,12 @@ impl ProceedsPolicy for CoopProceeds {
     /// Q-50-59) the import duty the venue's holder levies on the good
     /// ([`crate::port::import_duty`]), out of the seller's proceeds, its clause on the line.
     fn proceeds(&self, w: &World, sale: &SaleTerms<'_>) -> Result<Proceeds, ProceedsRefusal> {
+        // Doc 50b item 8 (Q-50-22): Occator funds the tank farm's bid, inside its month's cap.
+        if let Some(line) =
+            crate::stockpile::refuse_fill(w, sale.house, sale.commodity, sale.gross.minor())
+        {
+            return Err(refuse(line.to_owned()));
+        }
         let mut proceeds = coop_proceeds(w, sale)?;
         if let Some(mut duty) = crate::port::import_duty::import_duty(w, sale) {
             // The cuts never come to more than the sale: the duty takes at most what the share
@@ -428,6 +440,28 @@ impl ProceedsPolicy for CoopProceeds {
         Err(refuse(CHARTER_ASK_AS_ORG.replace("{name}", &name)))
     }
 
+    /// **The import duty, shown on the quote** (doc 50b item 5; Q-50-59): the cut the venue's
+    /// holder takes out of any sale of the good there ([`crate::port::import_duty::import_duty_at`]),
+    /// with its reason. The Co-op's share hangs on the hold the goods leave, which a quote does
+    /// not know, so it is the sale's line's to show.
+    fn venue_cuts(
+        &self,
+        w: &World,
+        market: &mush_market::MarketId,
+        commodity: &CanonicalId,
+        quantity: u64,
+        gross: Amount,
+    ) -> Vec<mush_market::VenueCut> {
+        crate::port::import_duty::import_duty_at(w, market, commodity, quantity, gross)
+            .map(|duty| mush_market::VenueCut {
+                label: SmolStr::new_static(crate::port::import_duty::DUTY_LABEL),
+                amount: duty.amount,
+                reason: duty.reason,
+            })
+            .into_iter()
+            .collect()
+    }
+
     /// **The law of the venue for the good** (doc 50 unit LW.1; Q-50-33, Q-50-34, Q-50-65):
     /// [`crate::port::law::may_trade`].
     fn may_trade(
@@ -447,6 +481,14 @@ impl ProceedsPolicy for CoopProceeds {
     }
 
     fn settled(&self, ctx: &mut Ctx<'_>, sale: &SettledSale<'_>) {
+        // Doc 50b item 8: a fill of the tank farm's bid is Occator's, counted in its month.
+        crate::stockpile::on_fill(
+            ctx,
+            sale.quote.0,
+            sale.house,
+            sale.commodity,
+            sale.gross.minor(),
+        );
         let PrincipalId::Object(pilot) = sale.seller else {
             return;
         };
@@ -473,9 +515,13 @@ impl ProceedsPolicy for CoopProceeds {
             );
             return;
         }
+        // Doc 50b item 6: only the Trust's share is the Co-op's. The import duty, paid to the
+        // venue's holder out of the same proceeds, is never counted as a share.
+        let trust = programme_port(ctx.w).and_then(|port| port.trust_account());
         let shares = sale
             .cuts
             .iter()
+            .filter(|cut| cut.label == SHARE_LABEL && Some(cut.to) == trust)
             .try_fold(0_i64, |sum, cut| sum.checked_add(cut.amount.minor()));
         let folded = shares.and_then(|shares| {
             Some((
