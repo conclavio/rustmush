@@ -55,7 +55,7 @@ pub mod interface;
 // payload-bearing jobs only.
 mod facts;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mush_core::module::{WorldEvent, WorldEventKind};
@@ -66,19 +66,19 @@ use mush_core::{
 
 pub use api::{
     JobsApi, OpenJob, PayloadHandlerFn, PlainJobError, StatusObserverFn, add_comment,
-    deny_plain_job, get_job, get_note, open_job, register_payload_handler,
-    register_status_observer, resolve_plain_job,
+    deny_plain_job, get_job, get_note, get_public_note, get_staff_note, open_job,
+    register_payload_handler, register_status_observer, resolve_plain_job,
 };
 pub use commands::NOTES_STAFF;
 pub use data::{
     Approval, JOBS_LIST_PAGE_SIZE, Job, JobComment, JobPayload, JobStatus, MAX_JOB_COMMENT_BYTES,
     MAX_JOB_COMMENTS, MAX_JOB_TITLE_BYTES, MAX_NOTE_CATEGORY_BYTES, MAX_NOTE_TEXT_BYTES,
     MAX_NOTES_PER_OBJECT, MAX_OPEN_REQUESTS_PER_PLAYER, MAX_ORDINARY_JOB_COMMENTS, META_KEY, NS,
-    Note, REQ_QUEUE, fmt_ago, job_key, meta_value, note_key,
+    Note, REQ_QUEUE, fmt_ago, job_key, meta_value, note_key, staff_note_key,
 };
 pub use facts::JobsFactProvider;
 
-use data::{JobsState, validate_job, validate_note_text};
+use data::{JobsState, note_storage_key, validate_job, validate_note_text};
 
 /// `ObjDestroyed` observer: a destroyed character's notes are removed and
 /// their persisted documents deleted. Jobs they opened stay — the ticket
@@ -88,27 +88,37 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         return;
     };
     let owner = *obj;
-    let removed: Vec<smol_str::SmolStr> = {
+    let removed_keys: BTreeSet<smol_str::SmolStr> = {
         let Some(st) = ctx.state_mut::<JobsState>() else {
             return;
         };
-        let cats: Vec<smol_str::SmolStr> = st
+        let keys_to_remove: Vec<(bool, smol_str::SmolStr)> = st
             .notes
             .keys()
+            .filter(|(o, _, _)| *o == owner)
+            .map(|(_, staff_only, c)| (*staff_only, c.clone()))
+            .collect();
+        let mut del_keys = BTreeSet::new();
+        for (staff_only, c) in &keys_to_remove {
+            st.notes.remove(&(owner, *staff_only, c.clone()));
+            del_keys.insert(note_storage_key(owner, *staff_only, c));
+        }
+        let legacy_cats: Vec<smol_str::SmolStr> = st
+            .legacy_staff_notes
+            .iter()
             .filter(|(o, _)| *o == owner)
             .map(|(_, c)| c.clone())
             .collect();
-        for c in &cats {
-            st.notes.remove(&(owner, c.clone()));
+        for c in legacy_cats {
+            st.legacy_staff_notes.remove(&(owner, c.clone()));
+            del_keys.insert(note_key(owner, &c));
         }
-        cats
+        del_keys
     };
-    for cat in removed {
+    for key in removed_keys {
         ctx.persist(ModuleOp {
             ns: NS.into(),
-            op: ModuleWrite::Del {
-                key: note_key(owner, &cat),
-            },
+            op: ModuleWrite::Del { key },
         });
     }
 }
@@ -163,6 +173,8 @@ impl GameModule for JobsModule {
     ) -> Result<(), ModError> {
         let mut jobs = BTreeMap::new();
         let mut notes = BTreeMap::new();
+        let mut seen_staff_keys = BTreeSet::new();
+        let mut legacy_staff_notes = BTreeSet::new();
         let mut next_id: u64 = 0;
         for (key, value) in boot.kv {
             if key.as_str() == META_KEY {
@@ -195,10 +207,40 @@ impl GameModule for JobsModule {
                         tracing::error!(%key, error = %e, "jobs: unparseable job doc quarantined (skipped, left in store)");
                     }
                 }
+            } else if key.starts_with("staff_note:") {
+                match serde_json::from_value::<Note>(value) {
+                    Ok(note) => {
+                        if !note.staff_only {
+                            tracing::error!(
+                                %key,
+                                "jobs: non-staff note stored under staff_note: prefix quarantined (skipped, left in store)"
+                            );
+                        } else if staff_note_key(note.owner, &note.category).len()
+                            > mush_core::MAX_MODULE_KEY_BYTES
+                        {
+                            tracing::error!(
+                                %key,
+                                "jobs: oversized staff note key quarantined (skipped, left in store)"
+                            );
+                        } else if let Err(detail) = validate_note_text(&note.text) {
+                            tracing::error!(
+                                %key,
+                                %detail,
+                                "jobs: oversized staff note doc quarantined (skipped, left in store)"
+                            );
+                        } else {
+                            seen_staff_keys.insert((note.owner, note.category.clone()));
+                            notes.insert((note.owner, true, note.category.clone()), note);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(%key, error = %e, "jobs: unparseable staff note doc quarantined (skipped, left in store)");
+                    }
+                }
             } else if key.starts_with("note:") {
                 match serde_json::from_value::<Note>(value) {
                     Ok(note) => {
-                        if note_key(note.owner, &note.category).len()
+                        if note_storage_key(note.owner, note.staff_only, &note.category).len()
                             > mush_core::MAX_MODULE_KEY_BYTES
                         {
                             tracing::error!(
@@ -211,8 +253,17 @@ impl GameModule for JobsModule {
                                 %detail,
                                 "jobs: oversized note doc quarantined (skipped, left in store)"
                             );
+                        } else if note.staff_only {
+                            // Backward-compatible migration (EXT-P3-1): legacy
+                            // staff-only notes persisted under `note:` load into
+                            // the staff partition, preferring any newer
+                            // `staff_note:` document if both exist.
+                            legacy_staff_notes.insert((note.owner, note.category.clone()));
+                            if !seen_staff_keys.contains(&(note.owner, note.category.clone())) {
+                                notes.insert((note.owner, true, note.category.clone()), note);
+                            }
                         } else {
-                            notes.insert((note.owner, note.category.clone()), note);
+                            notes.insert((note.owner, false, note.category.clone()), note);
                         }
                     }
                     Err(e) => {
@@ -228,6 +279,7 @@ impl GameModule for JobsModule {
             .ok_or_else(|| ModError::msg("jobs: state slot missing"))?;
         st.jobs = jobs;
         st.notes = notes;
+        st.legacy_staff_notes = legacy_staff_notes;
         st.next_id = next_id;
         Ok(())
     }

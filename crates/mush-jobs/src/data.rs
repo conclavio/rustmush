@@ -1,12 +1,13 @@
 //! Job and note data shapes, the in-RAM state slot, and persistence keys.
 //!
 //! Everything here is plain data with serde round-tripping: the persisted
-//! documents at `job:{id}`, `note:{char}:{category}`, and `meta` are the
+//! documents at `job:{id}`, `note:{char}:{category}`,
+//! `staff_note:{char}:{category}`, and `meta` are the
 //! serde_json form of these structs, written through [`mush_core::ModuleOp`]
 //! and read back at boot via
 //! [`GameModule::on_world_loaded`](mush_core::GameModule::on_world_loaded).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use mush_core::ObjId;
@@ -201,8 +202,13 @@ pub(crate) struct JobsState {
     pub jobs: BTreeMap<u64, Job>,
     /// The next id to allocate (0 means "never allocated": ids start at 1).
     pub next_id: u64,
-    /// All notes by `(character, category)`.
-    pub notes: BTreeMap<(ObjId, SmolStr), Note>,
+    /// All notes partitioned by `(character, staff_only, category)` so private
+    /// moderator notes and player-visible notes never share a namespace or
+    /// create a category-existence oracle (EXT-P3-1).
+    pub notes: BTreeMap<(ObjId, bool, SmolStr), Note>,
+    /// Staff-only notes loaded at boot from legacy `note:{owner}:{category}`
+    /// keys that still need legacy-key migration/cleanup on overwrite or delete.
+    pub legacy_staff_notes: BTreeSet<(ObjId, SmolStr)>,
 }
 
 impl JobsState {
@@ -232,9 +238,8 @@ impl JobsState {
     #[must_use]
     pub fn note_count_by_visibility(&self, owner: ObjId, staff_only: bool) -> usize {
         self.notes
-            .range((owner, SmolStr::default())..)
-            .take_while(|((o, _), _)| *o == owner)
-            .filter(|(_, n)| n.staff_only == staff_only)
+            .range((owner, staff_only, SmolStr::default())..)
+            .take_while(|((o, s, _), _)| *o == owner && *s == staff_only)
             .count()
     }
 }
@@ -317,10 +322,26 @@ pub fn job_key(id: u64) -> SmolStr {
     SmolStr::new(format!("job:{id}"))
 }
 
-/// The persistence key of a note document. `category` is stored lowercased.
+/// The persistence key of a player-visible note document. `category` is stored lowercased.
 #[must_use]
 pub fn note_key(owner: ObjId, category: &str) -> SmolStr {
     SmolStr::new(format!("note:{}:{}", owner.0, category))
+}
+
+/// The persistence key of a staff-only note document. `category` is stored lowercased.
+#[must_use]
+pub fn staff_note_key(owner: ObjId, category: &str) -> SmolStr {
+    SmolStr::new(format!("staff_note:{}:{}", owner.0, category))
+}
+
+/// The persistence key for a note in the given visibility partition.
+#[must_use]
+pub(crate) fn note_storage_key(owner: ObjId, staff_only: bool, category: &str) -> SmolStr {
+    if staff_only {
+        staff_note_key(owner, category)
+    } else {
+        note_key(owner, category)
+    }
 }
 
 /// The metadata document body.
@@ -414,6 +435,10 @@ mod tests {
         assert_eq!(
             note_key(ObjId(5), "background").as_str(),
             "note:5:background"
+        );
+        assert_eq!(
+            staff_note_key(ObjId(5), "watch").as_str(),
+            "staff_note:5:watch"
         );
         assert_eq!(canon_category("  BackGround "), "background");
         assert_eq!(meta_value(3), serde_json::json!({"next_id": 3}));

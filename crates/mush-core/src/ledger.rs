@@ -795,6 +795,18 @@ impl Ledger {
         self.logs.get(log_id).map_or(0, |t| t.open_chunk)
     }
 
+    /// Evict one log's in-memory open tail from RAM without deleting any
+    /// persisted chunk documents on disk.
+    ///
+    /// Returns `true` if a resident tail was present for `log_id` and removed.
+    /// Callers should only invoke this for logs that will receive no further
+    /// appends (such as a pruned closed scene): after eviction,
+    /// [`open_entries`](Self::open_entries) is empty and
+    /// [`next_seq`](Self::next_seq) / [`open_chunk`](Self::open_chunk) report `0`.
+    pub fn evict_log(&mut self, log_id: &str) -> bool {
+        self.logs.remove(log_id).is_some()
+    }
+
     /// Inspect `docs` under this ledger's chunk target (the open-tail rule),
     /// so one inspection serves the caller's contiguity decision, the restore
     /// ([`Ledger::restore_from_history`]) and its own typed pass over the chunks
@@ -3355,5 +3367,44 @@ mod tests {
         assert_eq!(seqs, vec![2, 3, 4, 5]);
         assert!(recent_sealed(&docs, "s", 0).is_empty());
         assert!(recent_sealed(&docs, "other", 2).is_empty());
+    }
+
+    #[test]
+    fn evict_log_drops_only_target_resident_tail_without_touching_peers() {
+        let mut led = Ledger::new();
+        let p1 = led
+            .prepare_append("scene_a", serde_json::json!({"ev": 1}))
+            .unwrap();
+        let (_seq1, write1) = led.apply_prepared(p1).unwrap();
+        let p2 = led
+            .prepare_append("scene_b", serde_json::json!({"ev": 2}))
+            .unwrap();
+        let _ = led.apply_prepared(p2).unwrap();
+
+        assert_eq!(led.open_entries("scene_a").len(), 1);
+        assert_eq!(led.next_seq("scene_a"), 1);
+        assert!(led.resident_within_bounds(2, usize::MAX));
+        assert!(!led.resident_within_bounds(1, usize::MAX));
+
+        assert!(led.evict_log("scene_a"));
+        assert!(!led.evict_log("scene_a"), "second eviction reports absent");
+        assert!(!led.evict_log("never_existed"));
+
+        assert!(led.open_entries("scene_a").is_empty());
+        assert_eq!(led.next_seq("scene_a"), 0);
+        assert_eq!(led.open_chunk("scene_a"), 0);
+        assert!(
+            led.resident_within_bounds(1, usize::MAX),
+            "evicting frees the resident log slot"
+        );
+        // Peer log is unaffected.
+        assert_eq!(led.open_entries("scene_b").len(), 1);
+        assert_eq!(led.next_seq("scene_b"), 1);
+        // The persisted chunk write emitted before eviction remains valid history.
+        let ModuleWrite::JsonSet { key, value } = write1 else {
+            panic!("expected JsonSet write");
+        };
+        let docs = as_docs(&[(key, value)]);
+        assert!(inspect_ledger(&docs, None).is_clean());
     }
 }

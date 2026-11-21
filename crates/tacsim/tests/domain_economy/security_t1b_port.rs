@@ -548,3 +548,73 @@ fn high53_works_collect_rejects_multi_good_hold_capacity_overflow() {
         "order remains open with goods still in escrow"
     );
 }
+
+/// **EXT-P2-10**: `PortVenueGate::receives_at` refuses delivery into a governed hull hold, a
+/// works escrow vault, or a foreign port locker when the target venue is a non-port venue.
+#[test]
+fn ext_p2_10_non_port_venue_receives_at_rejects_hold_escrow_and_foreign_locker() {
+    use mush_market::{MarketId, VenueGate};
+
+    let mut rig = stocked();
+    let (captain, row) = owner_of_her(&mut rig, "PlacedGate", 97, "Dark Gull");
+    let hold = hold_vault_of(&rig.tw, &row);
+    mint_minor(&mut rig, captain, 100_000_000);
+
+    let ceres_locker = open_locker_at(&mut rig, captain, CERES, "room.c07_exchange", "ceres");
+    let ceres_gallery = station_room(&rig.tw, CERES, "room.c01_berth_gallery");
+    teleport(&mut rig.tw, captain, ceres_gallery);
+    board(&mut rig, captain);
+    sail(
+        &mut rig,
+        captain,
+        &row,
+        "+ship/undock stickney",
+        STICKNEY,
+        99_003,
+    );
+    ashore(&mut rig, captain);
+    let yard_room = station_room(&rig.tw, STICKNEY, "room.p11_service");
+    teleport(&mut rig.tw, captain, yard_room);
+    let order = booked(&run(&mut rig.tw, captain, "+yard/order tv_escort"));
+    let _ = pump(&mut rig);
+    settle(&mut rig, 2);
+    let escrow = VaultId(order);
+
+    let non_port = MarketId::new("launch.counter").expect("non-port venue");
+    let gate = tacsim::port::market::PortVenueGate;
+    let w = rig.tw.world();
+
+    // 1. Governed hold docked at Stickney cannot receive delivery at a non-port venue.
+    let hold_err = gate
+        .receives_at(w, &non_port, EndpointRef(hold))
+        .expect_err("governed hold must be refused on non-port venue");
+    assert!(
+        hold_err.line.contains("Dark Gull") && hold_err.line.contains("launch.counter"),
+        "expected HOLD_ELSEWHERE naming hull and venue, got: {}",
+        hold_err.line
+    );
+
+    // 2. Works escrow cannot receive delivery at a non-port venue.
+    let escrow_err = gate
+        .receives_at(w, &non_port, EndpointRef(escrow))
+        .expect_err("works escrow must be refused on non-port venue");
+    assert_eq!(escrow_err.line, tacsim::port::market::MOVE_WORKS_ESCROW);
+
+    // 3. Foreign port locker cannot receive delivery at a non-port venue.
+    let locker_err = gate
+        .receives_at(w, &non_port, EndpointRef(ceres_locker))
+        .expect_err("foreign locker must be refused on non-port venue");
+    assert_eq!(
+        locker_err.line,
+        tacsim::port::market::LOCKER_ELSEWHERE.replace("{port}", "launch.counter")
+    );
+
+    // 4. Same governed hold and Ceres locker still behave properly at their own ports.
+    let stickney = MarketId::new("stickney").expect("stickney");
+    let ceres = MarketId::new("ceres").expect("ceres");
+    assert!(gate.receives_at(w, &stickney, EndpointRef(hold)).is_ok());
+    assert!(
+        gate.receives_at(w, &ceres, EndpointRef(ceres_locker))
+            .is_ok()
+    );
+}

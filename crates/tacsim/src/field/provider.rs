@@ -34,7 +34,7 @@
 //! `OpenSortie.mind` in the write's own bundle, while that record's epoch is still the one the
 //! mind flew on.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mush_core::{
     ActionError, ActionErrorCode, ActionInvocation, ActionProvider, ActionTxn,
@@ -306,24 +306,326 @@ fn validate_open_authority(
     validate_open_authority_with_seat(party_rows, seated_unit, by)
 }
 
-fn build_open_auth(
+/// Pre-filtered candidate sites for [`pack_open_auth`].
+struct OpenAuthCandidates {
+    /// Candidate indices into `openable`, ordered with actor's seated site(s) first.
+    ordered: Vec<usize>,
+    /// Indices where `actor` is currently seated in a ground unit.
+    seated_sites: BTreeSet<usize>,
+    /// Lowest-id unit on each seated site where `actor` holds the first occupied station.
+    seated_unit_by_site: BTreeMap<usize, ObjId>,
+}
+
+/// Pre-filter `openable` sites to those where `actor` is actually seated or leads/owns a relevant
+/// unit BEFORE invoking [`super::parties::ground_parties_in_engine`] (EXT-P2-12).
+fn find_open_auth_candidates(
+    engine: &mush_core::Engine,
+    excursions: &StateFamilyHandle<RigKey, RigRecord>,
+    actor: ObjId,
+    actor_is_npc: bool,
+    openable: &[(&CanonicalId, &[ObjId])],
+    domain_to_indices: &BTreeMap<mush_sim::DomainId, Vec<usize>>,
+    entry_to_idx: &BTreeMap<&CanonicalId, usize>,
+) -> Result<OpenAuthCandidates, ActionError> {
+    let w = &engine.world;
+    let state = engine.action_state();
+    let spatial = w.module_state::<mush_sim::SpatialState>();
+
+    let mut seated_sites: BTreeSet<usize> = BTreeSet::new();
+    let mut seated_unit_by_site: BTreeMap<usize, ObjId> = BTreeMap::new();
+    let mut candidate_sites: BTreeSet<usize> = BTreeSet::new();
+
+    // (1) Units where `actor` holds the first occupied station (`parties::seated`).
+    // `SpatialState.assignments` is keyed by `ObjId` in ascending order, so the first match on
+    // a site is also the lowest unit id, matching a linear scan over `ground`.
+    if let Some(spatial) = spatial {
+        for (&unit, host) in &spatial.assignments {
+            if host
+                .seats
+                .iter()
+                .next()
+                .is_some_and(|(_, seat)| seat.actor == actor)
+                && let mush_sim::SpatialParent::Direct { domain, .. } = spatial.parent_of(unit)
+                && let Some(indices) = domain_to_indices.get(&domain)
+            {
+                for &idx in indices {
+                    if openable[idx].1.binary_search(&unit).is_ok() {
+                        seated_sites.insert(idx);
+                        seated_unit_by_site.entry(idx).or_insert(unit);
+                        candidate_sites.insert(idx);
+                    }
+                }
+            }
+        }
+    }
+
+    // (2) Open DT flights on an openable site whose operation's current leader is `actor`.
+    if let (Some(handles), Some(spatial)) = (
+        w.module_state::<crate::detachment::sortie::SortieHandles>(),
+        spatial,
+    ) && let Ok(Some(index)) = state.get(&handles.index, &())
+    {
+        let mut op_leaders: BTreeMap<crate::detachment::sortie::OperationId, Option<ObjId>> =
+            BTreeMap::new();
+        for &unit in &index.units {
+            let mush_sim::SpatialParent::Direct { domain, .. } = spatial.parent_of(unit) else {
+                continue;
+            };
+            let Some(indices) = domain_to_indices.get(&domain) else {
+                continue;
+            };
+            if indices.iter().all(|idx| candidate_sites.contains(idx)) {
+                continue;
+            }
+            let Some(head) = state
+                .get(&handles.heads, &unit)
+                .map_err(|_| integrity("the flight heads are unavailable"))?
+            else {
+                continue;
+            };
+            let Some(flight) = state
+                .get(&handles.flights, &head.flight)
+                .map_err(|_| integrity("the flight records are unavailable"))?
+            else {
+                continue;
+            };
+            if !flight.phase.open() {
+                continue;
+            }
+            let Some(&idx) = entry_to_idx.get(&flight.site) else {
+                continue;
+            };
+            if candidate_sites.contains(&idx) || openable[idx].1.binary_search(&unit).is_err() {
+                continue;
+            }
+            let leader = if let Some(&cached) = op_leaders.get(&flight.operation) {
+                cached
+            } else {
+                let resolved = state
+                    .get(&handles.operations, &flight.operation)
+                    .map_err(|_| integrity("the operation records are unavailable"))?
+                    .and_then(super::parties::roster_leader);
+                op_leaders.insert(flight.operation, resolved);
+                resolved
+            };
+            if leader == Some(actor) {
+                candidate_sites.insert(idx);
+            }
+        }
+    }
+
+    // (3) Programme/yard/owned carriers standing on an openable site commanded by `actor`.
+    let mut ground_carriers: BTreeSet<ObjId> = BTreeSet::new();
+    if let (Some(store), Some(spatial)) = (w.module_state::<crate::TacsimStore>(), spatial) {
+        let mut visit_hull = |hull: ObjId| {
+            if ground_carriers.contains(&hull) {
+                return;
+            }
+            let mush_sim::SpatialParent::Direct { domain, .. } = spatial.parent_of(hull) else {
+                return;
+            };
+            let Some(indices) = domain_to_indices.get(&domain) else {
+                return;
+            };
+            if !super::carrier::is_carrier(w, hull) {
+                return;
+            }
+            ground_carriers.insert(hull);
+            if crate::port::coop::helm_holder(w, hull) == Some(actor) {
+                for &idx in indices {
+                    if openable[idx].1.binary_search(&hull).is_ok() {
+                        candidate_sites.insert(idx);
+                    }
+                }
+            }
+        };
+        for map in store.port_maps() {
+            for row in &map.hulls {
+                visit_hull(ObjId(row.hull));
+            }
+            if let Some(yard) = map.site.as_ref().and_then(|s| s.yard.as_ref()) {
+                for row in &yard.hulls {
+                    visit_hull(ObjId(row.hull));
+                }
+            }
+        }
+        for hull in crate::port::owned::ships(w) {
+            visit_hull(hull);
+        }
+    }
+
+    // (4) Fixture raider leaders (only NPCs can lead fixture raiders).
+    if actor_is_npc {
+        for (idx, (_, ground)) in openable.iter().enumerate() {
+            if candidate_sites.contains(&idx) {
+                continue;
+            }
+            if ground
+                .iter()
+                .any(|&unit| super::raiders::leader_of(w, unit) == Some(actor))
+            {
+                candidate_sites.insert(idx);
+            }
+        }
+    }
+
+    // (5) Unseated rigs on an openable site whose open excursion operator is `actor`.
+    if candidate_sites.len() < openable.len() {
+        const EXCURSION_FAST_SCAN: usize = 128;
+        match state.scan_family(excursions, None, EXCURSION_FAST_SCAN) {
+            Ok(page) if page.next_after().is_none() => {
+                if let Some(spatial) = spatial {
+                    for entry in page.entries() {
+                        let rec = entry.value();
+                        if rec.excursion.as_ref().is_none_or(|ex| ex.operator != actor) {
+                            continue;
+                        }
+                        if let mush_sim::SpatialParent::Direct { domain, .. } =
+                            spatial.parent_of(rec.tv)
+                            && let Some(indices) = domain_to_indices.get(&domain)
+                        {
+                            for &idx in indices {
+                                if openable[idx].1.binary_search(&rec.tv).is_ok() {
+                                    candidate_sites.insert(idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                for (idx, (_, ground)) in openable.iter().enumerate() {
+                    if candidate_sites.contains(&idx) {
+                        continue;
+                    }
+                    for &unit in *ground {
+                        if ground_carriers.contains(&unit)
+                            || super::parties::seated(w, unit).is_some()
+                            || super::raiders::leader_of(w, unit).is_some()
+                        {
+                            continue;
+                        }
+                        let rec = state
+                            .get(excursions, &RigKey(unit))
+                            .map_err(|_| integrity("the rig records are unavailable"))?;
+                        if rec.is_some_and(|r| {
+                            r.excursion.as_ref().is_some_and(|ex| ex.operator == actor)
+                        }) {
+                            candidate_sites.insert(idx);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Prioritize the actor's currently seated site(s) first, then remaining candidates in
+    // deterministic `lane_sites` order.
+    let mut ordered = Vec::with_capacity(candidate_sites.len());
+    for &idx in &seated_sites {
+        ordered.push(idx);
+    }
+    for &idx in &candidate_sites {
+        if !seated_sites.contains(&idx) {
+            ordered.push(idx);
+        }
+    }
+    Ok(OpenAuthCandidates {
+        ordered,
+        seated_sites,
+        seated_unit_by_site,
+    })
+}
+
+/// Incremental per-site packing of `open_auth` entries into `fixed["open_auth"]` via
+/// [`try_insert_map_entry`] so canonical JSON stays strictly `<= MAX_OFFER_FIXED_BYTES` without
+/// dropping `"open"` for eligible sites on overflow (EXT-P2-12).
+#[cfg(test)]
+fn pack_open_auth_entries(
+    fixed: &mut Value,
+    priority_sites: &mut BTreeSet<String>,
+    entries: impl IntoIterator<Item = (String, OpenSiteAuth)>,
+) -> usize {
+    let added_empty = ensure_open_auth_section(fixed);
+    let mut packed = 0_usize;
+    for (site, auth) in entries {
+        if canonical_len(fixed, MAX_OFFER_FIXED_BYTES).saturating_add(64) > MAX_OFFER_FIXED_BYTES {
+            break;
+        }
+        let Ok(value) = serde_json::to_value(auth) else {
+            continue;
+        };
+        if try_insert_map_entry(fixed, "open_auth", &site, value) {
+            priority_sites.insert(site);
+            packed = packed.saturating_add(1);
+        }
+    }
+    if packed == 0
+        && added_empty
+        && let Some(obj) = fixed.as_object_mut()
+    {
+        obj.remove("open_auth");
+    }
+    packed
+}
+
+/// Ensure `fixed["open_auth"]` is a JSON object; returns true if this call inserted an empty map.
+fn ensure_open_auth_section(fixed: &mut Value) -> bool {
+    fixed
+        .as_object_mut()
+        .is_some_and(|obj| match obj.get("open_auth") {
+            Some(Value::Object(_)) => false,
+            _ => {
+                obj.insert("open_auth".to_owned(), Value::Object(Map::new()));
+                true
+            }
+        })
+}
+
+/// **Resolve and incrementally pack `open_auth` for sites where `actor` can promote a field**
+/// (EXT-P2-12): single-pass ground & site indexing, pre-filtering to sites where `actor` is
+/// seated or leads/owns a unit before resolving parties, and incremental packing via
+/// [`try_insert_map_entry`] prioritizing the actor's currently seated site(s) first.
+///
+/// Returns `(offer_open, seated_site_names)`.
+fn pack_open_auth(
     engine: &mush_core::Engine,
     sites: &StateFamilyHandle<SiteKey, SiteRecord>,
     excursions: &StateFamilyHandle<RigKey, RigRecord>,
+    lane_sites: &[crate::surface::chart::LaneSite],
     actor: ObjId,
-) -> Result<Map<String, Value>, ActionError> {
+    fixed: &mut Value,
+    priority_sites: &mut BTreeSet<String>,
+) -> Result<(bool, BTreeSet<String>), ActionError> {
     let w = &engine.world;
-    if w.get(actor)
-        .is_none_or(|o| !o.kind.is_actor() || o.flags.contains(mush_core::Flags::GOING))
+    let Some(actor_obj) = w.get(actor) else {
+        return Ok((false, BTreeSet::new()));
+    };
+    if !actor_obj.kind.is_actor()
+        || actor_obj.flags.contains(mush_core::Flags::GOING)
         || crate::field::crew::refusal(w, actor, crate::field::crew::Gate::Operate).is_some()
     {
-        return Ok(Map::new());
+        return Ok((false, BTreeSet::new()));
     }
-    let all_rigs = crate::surface::act::world_rigs(w);
-    let mut out = Map::new();
-    for site in crate::surface::chart::lane_sites(w) {
-        let already_open = engine
-            .action_state()
+    let by_domain = super::parties::ground_by_domain(w);
+    if by_domain.is_empty() {
+        return Ok((false, BTreeSet::new()));
+    }
+    let domains = super::parties::site_domains(w);
+    let state = engine.action_state();
+
+    let mut openable: Vec<(&CanonicalId, &[ObjId])> = Vec::new();
+    let mut domain_to_indices: BTreeMap<mush_sim::DomainId, Vec<usize>> = BTreeMap::new();
+    let mut entry_to_idx: BTreeMap<&CanonicalId, usize> = BTreeMap::new();
+    for site in lane_sites {
+        let Some(&domain) = domains.get(&site.entry) else {
+            continue;
+        };
+        let Some(ground) = by_domain.get(&domain).filter(|units| !units.is_empty()) else {
+            continue;
+        };
+        let already_open = state
             .get(sites, &SiteKey(site.entry.clone()))
             .ok()
             .flatten()
@@ -331,47 +633,86 @@ fn build_open_auth(
         if already_open {
             continue;
         }
-        let Some(domain) = super::parties::site_domain(w, &site.entry) else {
-            continue;
-        };
-        let ground = super::parties::on_ground(w, domain);
-        if ground.is_empty() {
-            continue;
+        let idx = openable.len();
+        domain_to_indices.entry(domain).or_default().push(idx);
+        entry_to_idx.insert(&site.entry, idx);
+        openable.push((&site.entry, ground.as_slice()));
+    }
+    if openable.is_empty() {
+        return Ok((false, BTreeSet::new()));
+    }
+
+    let candidates = find_open_auth_candidates(
+        engine,
+        excursions,
+        actor,
+        actor_obj.kind == mush_core::ObjKind::Npc,
+        &openable,
+        &domain_to_indices,
+        &entry_to_idx,
+    )?;
+    if candidates.ordered.is_empty() {
+        return Ok((false, BTreeSet::new()));
+    }
+
+    let added_empty = ensure_open_auth_section(fixed);
+    let mut rigs_by_site: Option<BTreeMap<CanonicalId, Vec<ObjId>>> = None;
+    let mut packed = 0_usize;
+    let mut seated_site_names = BTreeSet::new();
+    for idx in candidates.ordered {
+        if canonical_len(fixed, MAX_OFFER_FIXED_BYTES).saturating_add(64) > MAX_OFFER_FIXED_BYTES {
+            break;
         }
-        let parties =
-            super::parties::ground_parties_in_engine(engine, excursions, &site.entry, &ground)?;
-        let seated = ground
-            .iter()
-            .copied()
-            .find(|&unit| super::parties::seated(w, unit).is_some_and(|(who, _)| who == actor));
+        let (entry, ground) = openable[idx];
+        let parties = super::parties::ground_parties_in_engine(engine, excursions, entry, ground)?;
+        let seated = candidates.seated_unit_by_site.get(&idx).copied();
         let leads_here = parties.iter().any(|row| row.leader == Some(actor));
         if !leads_here && seated.is_none() {
             continue;
         }
-        let rigs: Vec<ObjId> = all_rigs
-            .iter()
-            .copied()
-            .filter(|&tv| {
-                engine
-                    .action_state()
-                    .get(excursions, &RigKey(tv))
-                    .ok()
-                    .flatten()
-                    .is_some_and(|rec| {
-                        rec.act.as_ref().is_some_and(|a| a.site == site.entry)
-                            || rec.run.as_ref().is_some_and(|r| r.site == site.entry)
-                    })
-            })
-            .collect();
-        if let Ok(value) = serde_json::to_value(OpenSiteAuth {
+        let rigs_index = rigs_by_site.get_or_insert_with(|| {
+            let mut index: BTreeMap<CanonicalId, Vec<ObjId>> = BTreeMap::new();
+            for tv in crate::surface::act::world_rigs(w) {
+                let Some(rec) = state.get(excursions, &RigKey(tv)).ok().flatten() else {
+                    continue;
+                };
+                let act_site = rec.act.as_ref().map(|a| &a.site);
+                let run_site = rec.run.as_ref().map(|r| &r.site);
+                if let Some(s) = act_site {
+                    index.entry(s.clone()).or_default().push(tv);
+                }
+                if let Some(s) = run_site
+                    && Some(s) != act_site
+                {
+                    index.entry(s.clone()).or_default().push(tv);
+                }
+            }
+            index
+        });
+        let rigs = rigs_index.get(entry).cloned().unwrap_or_default();
+        let Ok(value) = serde_json::to_value(OpenSiteAuth {
             parties,
             seated,
             rigs,
-        }) {
-            out.insert(site.entry.to_string(), value);
+        }) else {
+            continue;
+        };
+        let site_text = entry.to_string();
+        if try_insert_map_entry(fixed, "open_auth", &site_text, value) {
+            if candidates.seated_sites.contains(&idx) {
+                seated_site_names.insert(site_text.clone());
+            }
+            priority_sites.insert(site_text);
+            packed = packed.saturating_add(1);
         }
     }
-    Ok(out)
+    if packed == 0
+        && added_empty
+        && let Some(obj) = fixed.as_object_mut()
+    {
+        obj.remove("open_auth");
+    }
+    Ok((packed > 0, seated_site_names))
 }
 
 impl FieldProvider {
@@ -1096,39 +1437,37 @@ impl ActionProvider for FieldProvider {
         {
             return Ok(None);
         }
-        let all_sites: Vec<String> = crate::surface::chart::lane_sites(w)
+        let lane_sites = crate::surface::chart::lane_sites(w);
+        if lane_sites.is_empty() {
+            return Ok(None);
+        }
+        let all_sites: Vec<String> = lane_sites
             .iter()
             .map(|site| site.entry.to_string())
             .collect();
-        if all_sites.is_empty() {
-            return Ok(None);
-        }
         let (mut fixed, mut priority_sites) = build_fixed_parameters(w, query.actor());
-        let open_auth = build_open_auth(engine, &self.sites, &self.excursions, query.actor())?;
-        let mut offer_open = false;
-        if !open_auth.is_empty() {
-            let mut candidate = fixed.clone();
-            if let Some(obj) = candidate.as_object_mut() {
-                obj.insert("open_auth".to_owned(), Value::Object(open_auth.clone()));
-            }
-            if mush_core::mechanics::canonical_json_bytes_with_limit(
-                &candidate,
-                MAX_OFFER_FIXED_BYTES,
-            )
-            .is_ok()
-            {
-                for site in open_auth.keys() {
-                    priority_sites.insert(site.clone());
-                }
-                fixed = candidate;
-                offer_open = true;
-            }
-        }
-        // Bound choice list to `MAX_PROJECTED_ACTION_CHOICES` (prioritizing active owed sites)
-        // so schema construction never fails globally.
+        let (offer_open, seated_sites) = pack_open_auth(
+            engine,
+            &self.sites,
+            &self.excursions,
+            &lane_sites,
+            query.actor(),
+            &mut fixed,
+            &mut priority_sites,
+        )?;
+        // Bound choice list to `MAX_PROJECTED_ACTION_CHOICES` (prioritizing the actor's currently
+        // seated site(s), then other active owed/eligible sites) so schema construction never
+        // fails globally.
         let mut sites: Vec<String> = Vec::new();
         for site in &all_sites {
-            if priority_sites.contains(site)
+            if seated_sites.contains(site) && sites.len() < mush_core::MAX_PROJECTED_ACTION_CHOICES
+            {
+                sites.push(site.clone());
+            }
+        }
+        for site in &all_sites {
+            if !seated_sites.contains(site)
+                && priority_sites.contains(site)
                 && sites.len() < mush_core::MAX_PROJECTED_ACTION_CHOICES
             {
                 sites.push(site.clone());
@@ -1874,5 +2213,295 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// **EXT-P2-12**: `pack_open_auth_entries` packs sites incrementally via
+    /// `try_insert_map_entry` (prioritizing the actor's seated site first) so an oversized world
+    /// stays strictly `<= 48 KiB` without dropping `"open"` for eligible sites.
+    #[test]
+    fn ext_p2_12_open_auth_packs_incrementally_and_prioritizes_seated_site() {
+        use super::super::parties::GroundParty;
+        use super::super::record::PartyKey;
+
+        let actor = ObjId(10);
+        let seated_hull = ObjId(999);
+        let make_auth = |base_unit: u32, seated: Option<ObjId>| OpenSiteAuth {
+            parties: (0..40_u32)
+                .map(|i| GroundParty {
+                    unit: ObjId(base_unit + i),
+                    key: PartyKey::Unit {
+                        unit: ObjId(base_unit + i),
+                    },
+                    leader: Some(if i == 0 { actor } else { ObjId(500 + i) }),
+                })
+                .collect(),
+            seated,
+            rigs: Vec::new(),
+        };
+
+        // 25 sites × 40 ground units each is well over 48 KiB monolithically.
+        let mut ordered_entries: Vec<(String, OpenSiteAuth)> = Vec::new();
+        ordered_entries.push((
+            "z_seated_site".to_owned(),
+            make_auth(10_000, Some(seated_hull)),
+        ));
+        for s in 0..24_u32 {
+            ordered_entries.push((format!("a_site_{s:02}"), make_auth(20_000 + s * 100, None)));
+        }
+
+        // Confirm monolithic serialization would overflow 48 KiB (the pre-fix bug).
+        let monolithic: Map<String, Value> = ordered_entries
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::to_value(v).expect("json")))
+            .collect();
+        assert!(
+            !fits_budget(&Value::Object(monolithic), MAX_OFFER_FIXED_BYTES),
+            "test fixture must exceed 48 KiB monolithically"
+        );
+
+        let mut fixed = json!({
+            "now": 1000,
+            "closing": {},
+            "exiting": {},
+            "rejoining": {},
+            "setting_down": {},
+            "carried": {},
+        });
+        let mut priority_sites = BTreeSet::new();
+        let packed = pack_open_auth_entries(&mut fixed, &mut priority_sites, ordered_entries);
+
+        assert!(packed > 0 && packed < 25, "packed subset: {packed}");
+        assert!(fits_budget(&fixed, MAX_OFFER_FIXED_BYTES));
+        let auth_map = fixed
+            .get("open_auth")
+            .and_then(Value::as_object)
+            .expect("open_auth map present");
+        assert_eq!(auth_map.len(), packed);
+        assert!(
+            auth_map.contains_key("z_seated_site"),
+            "actor's seated site must be retained first"
+        );
+        assert!(priority_sites.contains("z_seated_site"));
+
+        // Empty packing leaves no dangling `"open_auth"` section.
+        let mut empty_fixed = json!({ "now": 1000 });
+        let mut empty_priority = BTreeSet::new();
+        let packed_empty = pack_open_auth_entries(&mut empty_fixed, &mut empty_priority, []);
+        assert_eq!(packed_empty, 0);
+        assert!(empty_fixed.get("open_auth").is_none());
+    }
+
+    /// **EXT-P2-12**: `find_open_auth_candidates` pre-filters to sites where the actor is
+    /// actually seated or leads/operates a unit, ordering the seated site first and skipping
+    /// unrelated sites completely.
+    #[test]
+    fn ext_p2_12_prefilter_skips_unrelated_sites_and_prioritizes_seated_site() {
+        use crate::surface::excursion::{Excursion, ExcursionId};
+
+        struct FixtureModule {
+            spatial: Option<mush_sim::SpatialState>,
+            excursions: Option<StateFamilyHandle<RigKey, RigRecord>>,
+        }
+        impl mush_core::GameModule for FixtureModule {
+            fn name(&self) -> &'static str {
+                "tacsim"
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                if let Some(spatial) = self.spatial.take() {
+                    reg.state(spatial);
+                }
+                let handle = reg.state_family::<RigKey, RigRecord, _, _, _, _>(
+                    crate::port::families::family_descriptor(
+                        "tacsim.excursion",
+                        "tacsim.rig_key.v1",
+                        "tacsim.excursion",
+                    )?,
+                    |k: &RigKey| Ok(k.0.0.to_string()),
+                    |val: &serde_json::Value| {
+                        serde_json::from_value(val.clone()).map_err(|e| e.to_string())
+                    },
+                    |v: &RigRecord| v.check().map_err(|e| format!("{e:?}")),
+                    |v: &RigRecord| serde_json::to_value(v).map_err(|e| e.to_string()),
+                )?;
+                self.excursions = Some(handle);
+                Ok(())
+            }
+        }
+
+        let actor = ObjId(10);
+        let other = ObjId(20);
+        let bystander = ObjId(30);
+
+        let d_alpha = mush_sim::DomainId(1);
+        let d_beta = mush_sim::DomainId(2);
+        let d_gamma = mush_sim::DomainId(3);
+        let d_zeta = mush_sim::DomainId(4);
+
+        let u_alpha = ObjId(101);
+        let u_beta_rig = ObjId(102);
+        let u_gamma_other = ObjId(103);
+        let u_zeta_seated = ObjId(104);
+
+        let rules = crate::arena::test_support::rules();
+        let place_direct = |spatial: &mut mush_sim::SpatialState, obj: ObjId, domain| {
+            spatial.placements.insert(
+                obj,
+                mush_sim::data::PlacementRecord {
+                    object: obj,
+                    parent: mush_sim::SpatialParent::Direct {
+                        domain,
+                        pose: mush_sim::data::Pose::at(0, 0, 0, rules.clone()),
+                    },
+                    unplaced: None,
+                    revision: 1,
+                },
+            );
+        };
+
+        let mut spatial = mush_sim::SpatialState::default();
+        place_direct(&mut spatial, u_alpha, d_alpha);
+        place_direct(&mut spatial, u_beta_rig, d_beta);
+        place_direct(&mut spatial, u_gamma_other, d_gamma);
+        place_direct(&mut spatial, u_zeta_seated, d_zeta);
+        let seat = |host: ObjId, who: ObjId| mush_sim::data::HostAssignments {
+            host,
+            seats: [(
+                mush_sim::data::StationId::new("cockpit").expect("station"),
+                mush_sim::data::StationAssignment {
+                    actor: who,
+                    assigned_at: 0,
+                    granted: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        spatial
+            .assignments
+            .insert(u_gamma_other, seat(u_gamma_other, other));
+        spatial
+            .assignments
+            .insert(u_zeta_seated, seat(u_zeta_seated, actor));
+
+        let mut world = World::new_minimal();
+        let _ = world.create(mush_core::ObjKind::Player, "Actor", mush_core::GOD, None);
+        let fixture = FixtureModule {
+            spatial: Some(spatial),
+            excursions: None,
+        };
+        let excursions_slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        struct CaptureModule {
+            inner: FixtureModule,
+            slot: std::sync::Arc<std::sync::Mutex<Option<StateFamilyHandle<RigKey, RigRecord>>>>,
+        }
+        impl mush_core::GameModule for CaptureModule {
+            fn name(&self) -> &'static str {
+                self.inner.name()
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                self.inner.register(reg)?;
+                if let Ok(mut guard) = self.slot.lock() {
+                    *guard = self.inner.excursions.clone();
+                }
+                Ok(())
+            }
+        }
+        let mut engine = mush_core::Engine::with_modules(
+            world,
+            mush_core::Registry::new(),
+            vec![Box::new(CaptureModule {
+                inner: fixture,
+                slot: std::sync::Arc::clone(&excursions_slot),
+            })],
+        )
+        .expect("engine");
+        let excursions = excursions_slot
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("excursions handle");
+
+        // Record `u_beta_rig` as an open excursion operated by `actor` on `beta_site`.
+        let mut rig_rec = RigRecord::fresh_unread(u_beta_rig);
+        rig_rec.excursion = Some(Excursion {
+            id: ExcursionId {
+                tv: u_beta_rig,
+                launch_ic: 10,
+            },
+            operator: actor,
+            hull: ObjId(500),
+            slot: 1,
+            site: cid("beta_site"),
+        });
+        let prepared = {
+            let mut txn = engine.action_transaction(&excursions).expect("txn");
+            txn.insert(&excursions, &RigKey(u_beta_rig), rig_rec)
+                .expect("insert");
+            txn.prepare().expect("prepare")
+        };
+        let (_, install) = prepared.into_parts();
+        engine.install_prepared_action(install).expect("install");
+
+        let s_alpha = cid("alpha_site");
+        let s_beta = cid("beta_site");
+        let s_gamma = cid("gamma_site");
+        let s_zeta = cid("zeta_site");
+        let g_alpha = [u_alpha];
+        let g_beta = [u_beta_rig];
+        let g_gamma = [u_gamma_other];
+        let g_zeta = [u_zeta_seated];
+        let openable: Vec<(&CanonicalId, &[ObjId])> = vec![
+            (&s_alpha, &g_alpha),
+            (&s_beta, &g_beta),
+            (&s_gamma, &g_gamma),
+            (&s_zeta, &g_zeta),
+        ];
+        let domain_to_indices: BTreeMap<mush_sim::DomainId, Vec<usize>> = [
+            (d_alpha, vec![0]),
+            (d_beta, vec![1]),
+            (d_gamma, vec![2]),
+            (d_zeta, vec![3]),
+        ]
+        .into_iter()
+        .collect();
+        let entry_to_idx: BTreeMap<&CanonicalId, usize> =
+            [(&s_alpha, 0), (&s_beta, 1), (&s_gamma, 2), (&s_zeta, 3)]
+                .into_iter()
+                .collect();
+
+        // Bystander matches zero sites.
+        let none = find_open_auth_candidates(
+            &engine,
+            &excursions,
+            bystander,
+            false,
+            &openable,
+            &domain_to_indices,
+            &entry_to_idx,
+        )
+        .expect("bystander candidates");
+        assert!(none.ordered.is_empty());
+
+        // Actor matches ONLY seated site (3, prioritized first) and operated rig site (1),
+        // skipping unrelated sites 0 and 2.
+        let got = find_open_auth_candidates(
+            &engine,
+            &excursions,
+            actor,
+            false,
+            &openable,
+            &domain_to_indices,
+            &entry_to_idx,
+        )
+        .expect("actor candidates");
+        assert_eq!(got.ordered, vec![3, 1]);
+        assert!(got.seated_sites.contains(&3));
+        assert_eq!(got.seated_unit_by_site.get(&3), Some(&u_zeta_seated));
     }
 }

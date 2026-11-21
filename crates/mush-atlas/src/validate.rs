@@ -3043,13 +3043,56 @@ struct NeighborhoodShape {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Whether every point of `inner`'s ring lies inside or on `outer`.
+/// Whether `inner`'s ring lies completely inside or on `outer` (full polygon-in-polygon
+/// containment, handling concave outer boundaries).
+///
+/// Four exact integer checks (no floating-point rounding):
+/// 1. Every vertex of `inner` lies inside or on `outer`.
+/// 2. No edge of `inner` properly crosses any edge of `outer`.
+/// 3. Splitting each edge of `inner` at any `outer` vertex touching it, the exact
+///    half-centimetre midpoint of every sub-segment lies inside or on `outer` (catching
+///    chords spanning concave notches and collinear runs past reflex corners).
+/// 4. No vertex of `outer` lies strictly inside `inner` (catching holes/inclusions where
+///    `outer` or a pinched notch sits inside `inner`).
 pub(crate) fn inside(outer: &PolygonCm, inner: &Shape) -> bool {
-    inner
-        .ring()
+    let ring = inner.ring();
+    if !ring.points().iter().all(|p| point_in_or_on(outer, *p)) {
+        return false;
+    }
+    let mut splits: Vec<PointCm> = Vec::new();
+    for (a, b) in ring.edges() {
+        for (c, d) in outer.edges() {
+            if segments_properly_cross(a, b, c, d) {
+                return false;
+            }
+        }
+        splits.clear();
+        splits.push(a);
+        splits.push(b);
+        for &v in outer.points() {
+            if point_on_segment(a, b, v) {
+                splits.push(v);
+            }
+        }
+        splits.sort_unstable_by_key(|p| {
+            (i128::from(p.x) - i128::from(a.x)).abs() + (i128::from(p.y) - i128::from(a.y)).abs()
+        });
+        splits.dedup();
+        for pair in splits.windows(2) {
+            let [p, q] = pair else {
+                continue;
+            };
+            let x2 = i128::from(p.x) + i128::from(q.x);
+            let y2 = i128::from(p.y) + i128::from(q.y);
+            if !point_in_or_on_doubled(outer, x2, y2) {
+                return false;
+            }
+        }
+    }
+    !outer
         .points()
         .iter()
-        .all(|p| point_in_or_on(outer, *p))
+        .any(|&v| ring.contains(v) && !on_boundary(&ring, v))
 }
 
 pub(crate) fn point_in_or_on(poly: &PolygonCm, p: PointCm) -> bool {
@@ -3058,15 +3101,68 @@ pub(crate) fn point_in_or_on(poly: &PolygonCm, p: PointCm) -> bool {
 
 /// Whether `p` lies on an edge of `poly`.
 fn on_boundary(poly: &PolygonCm, p: PointCm) -> bool {
-    poly.edges().any(|(a, b)| {
-        let cross = i128::from(b.x - a.x) * i128::from(p.y - a.y)
-            - i128::from(b.y - a.y) * i128::from(p.x - a.x);
-        cross == 0
-            && p.x >= a.x.min(b.x)
-            && p.x <= a.x.max(b.x)
-            && p.y >= a.y.min(b.y)
-            && p.y <= a.y.max(b.y)
-    })
+    poly.edges().any(|(a, b)| point_on_segment(a, b, p))
+}
+
+/// Signed cross product `(b - a) × (c - a)` in exact 128-bit integer arithmetic.
+fn cross_i128(a: PointCm, b: PointCm, c: PointCm) -> i128 {
+    (i128::from(b.x) - i128::from(a.x)) * (i128::from(c.y) - i128::from(a.y))
+        - (i128::from(b.y) - i128::from(a.y)) * (i128::from(c.x) - i128::from(a.x))
+}
+
+/// Whether `p` lies on the closed segment `[a, b]`.
+fn point_on_segment(a: PointCm, b: PointCm, p: PointCm) -> bool {
+    cross_i128(a, b, p) == 0
+        && p.x >= a.x.min(b.x)
+        && p.x <= a.x.max(b.x)
+        && p.y >= a.y.min(b.y)
+        && p.y <= a.y.max(b.y)
+}
+
+/// Whether two non-zero integers have strictly opposite signs.
+fn opposite_signs(x: i128, y: i128) -> bool {
+    (x > 0 && y < 0) || (x < 0 && y > 0)
+}
+
+/// Whether open segments `(a, b)` and `(c, d)` intersect at a single interior point.
+fn segments_properly_cross(a: PointCm, b: PointCm, c: PointCm, d: PointCm) -> bool {
+    opposite_signs(cross_i128(a, b, c), cross_i128(a, b, d))
+        && opposite_signs(cross_i128(c, d, a), cross_i128(c, d, b))
+}
+
+/// Exact point-in-or-on test at half-centimetre resolution: `(x2, y2)` represents
+/// `(x2 / 2, y2 / 2)` centimetres, tested against `poly` scaled by 2.
+fn point_in_or_on_doubled(poly: &PolygonCm, x2: i128, y2: i128) -> bool {
+    let mut inside = false;
+    for (a, b) in poly.edges() {
+        let ax = i128::from(a.x) * 2;
+        let ay = i128::from(a.y) * 2;
+        let bx = i128::from(b.x) * 2;
+        let by = i128::from(b.y) * 2;
+        let cross = (bx - ax) * (y2 - ay) - (by - ay) * (x2 - ax);
+        if cross == 0
+            && x2 >= ax.min(bx)
+            && x2 <= ax.max(bx)
+            && y2 >= ay.min(by)
+            && y2 <= ay.max(by)
+        {
+            return true;
+        }
+        if (ay > y2) != (by > y2) {
+            let dy = by - ay;
+            let num = (y2 - ay) * (bx - ax);
+            let lhs = x2 - ax;
+            let crosses = if dy > 0 {
+                lhs * dy < num
+            } else {
+                lhs * dy > num
+            };
+            if crosses {
+                inside = !inside;
+            }
+        }
+    }
+    inside
 }
 
 /// Lower-case, whitespace-collapsed text for the secret search.
@@ -3131,5 +3227,159 @@ fn collect_strings(value: &serde_json::Value, path: &str, out: &mut dyn FnMut(St
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod containment_tests {
+    use super::*;
+    use crate::geom::Point2;
+
+    fn poly(pts: &[(f64, f64)]) -> PolygonCm {
+        Polygon2(pts.iter().map(|&(x, y)| Point2(x, y)).collect())
+            .to_cm()
+            .expect("valid polygon")
+    }
+
+    fn poly_cm(pts: &[(i64, i64)]) -> PolygonCm {
+        PolygonCm::from_points(pts.iter().map(|&(x, y)| PointCm { x, y }).collect())
+            .expect("valid cm polygon")
+    }
+
+    /// L-shaped concave outer polygon covering `[0,10]x[0,4] U [0,4]x[4,10]`,
+    /// leaving `[4,10]x[4,10]` as an exterior concave notch.
+    fn l_shape() -> PolygonCm {
+        poly(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 10.0),
+            (0.0, 10.0),
+        ])
+    }
+
+    /// U-shaped concave outer polygon covering `[0,10]x[0,10]` minus the mouth
+    /// `(3,7) x (3,10]`.
+    fn u_shape() -> PolygonCm {
+        poly(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (7.0, 10.0),
+            (7.0, 3.0),
+            (3.0, 3.0),
+            (3.0, 10.0),
+            (0.0, 10.0),
+        ])
+    }
+
+    #[test]
+    fn ext_p2_15_rejects_chords_and_crossings_across_concave_l_and_u_shapes() {
+        let l = l_shape();
+        // Diagonal chord across L-notch whose vertices are all strictly inside `l`.
+        let spanning_tri = poly(&[(1.0, 1.0), (9.0, 1.0), (1.0, 9.0)]);
+        assert!(!inside(&l, &Shape::Polygon(spanning_tri)));
+
+        // Boundary-vertex chord from (4,10) to (10,4): all vertices on `l`, NO proper edge
+        // crossings, yet the chord midpoint (7,7) lies in the exterior concave notch!
+        let notch_chord = poly(&[(0.0, 0.0), (10.0, 4.0), (4.0, 10.0)]);
+        assert!(!inside(&l, &Shape::Polygon(notch_chord)));
+
+        // Collinear extension past reflex corner (4,4) along y=4 from x=0 to x=10,
+        // wait: (0,4)-(10,4) is inside `l`; instead take (4,0)-(4,10) or a rectangle
+        // [0,10]x[0,10] where top edge crosses outside — tested on U-shape below!
+        let u = u_shape();
+        // Bounding box of U-shape: all 4 vertices are vertices of `u`, ZERO proper edge
+        // crossings, yet top edge spans the open mouth (3,10)-(7,10) AND outer vertices
+        // (3,3), (7,3) lie strictly inside!
+        let u_bbox = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        assert!(!inside(&u, &Shape::Polygon(u_bbox)));
+
+        // Bridge strictly connecting the two arms of the U across the mouth:
+        // vertices (1,8), (2,8), (8,8), (9,8)? Make a quad across the top mouth:
+        let mouth_bridge = poly(&[(3.0, 10.0), (7.0, 10.0), (7.0, 3.0), (3.0, 3.0)]);
+        assert!(!inside(&u, &Shape::Polygon(mouth_bridge)));
+
+        // Horizontal bar whose vertices sit inside the two arms of the U, crossing the mouth.
+        let arm_bar = poly(&[(1.0, 5.0), (9.0, 5.0), (9.0, 7.0), (1.0, 7.0)]);
+        assert!(!inside(&u, &Shape::Polygon(arm_bar)));
+    }
+
+    #[test]
+    fn ext_p2_15_accepts_valid_interior_and_boundary_touching_polygons_in_concave_outer() {
+        let l = l_shape();
+        // Strictly interior rectangle in the horizontal arm.
+        let inner_arm = poly(&[(1.0, 1.0), (9.0, 1.0), (9.0, 3.0), (1.0, 3.0)]);
+        assert!(inside(&l, &Shape::Polygon(inner_arm)));
+
+        // Boundary-touching rectangle sharing outer edges and touching reflex vertex (4,4).
+        let touch_reflex = poly(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+        assert!(inside(&l, &Shape::Polygon(touch_reflex)));
+
+        // Valid concave inner L-shape strictly inside outer L-shape.
+        let inner_l = poly(&[
+            (0.5, 0.5),
+            (9.5, 0.5),
+            (9.5, 3.5),
+            (3.5, 3.5),
+            (3.5, 9.5),
+            (0.5, 9.5),
+        ]);
+        assert!(inside(&l, &Shape::Polygon(inner_l)));
+
+        // Identical concave polygon (every edge shared with outer).
+        assert!(inside(&l, &Shape::Polygon(l.clone())));
+
+        // Boundary-grazing inner triangle that touches reflex vertex (4,4) from the inside.
+        let grazing = poly(&[(0.0, 0.0), (8.0, 0.0), (4.0, 4.0), (0.0, 8.0)]);
+        assert!(inside(&l, &Shape::Polygon(grazing)));
+
+        let u = u_shape();
+        // Valid U-shaped building filling the left arm and bottom bar of `u`.
+        let valid_u_sub = poly(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 3.0),
+            (3.0, 3.0),
+            (3.0, 10.0),
+            (0.0, 10.0),
+        ]);
+        assert!(inside(&u, &Shape::Polygon(valid_u_sub)));
+    }
+
+    #[test]
+    fn ext_p2_15_rejects_one_cm_concave_notch_and_pinched_hole_inclusion() {
+        // 1-cm-wide notch between (1,2) and (2,2) so midpoint is at half-centimetre (1.5, 2.0):
+        // integer midpoint rounding would falsely land on (1,2) on the boundary!
+        let tiny_u = poly_cm(&[
+            (0, 0),
+            (3, 0),
+            (3, 2),
+            (2, 2),
+            (2, 1),
+            (1, 1),
+            (1, 2),
+            (0, 2),
+        ]);
+        let tiny_bbox = poly_cm(&[(0, 0), (3, 0), (3, 2), (0, 2)]);
+        assert!(!inside(&tiny_u, &Shape::Polygon(tiny_bbox)));
+
+        // Pinched keyhole polygon: outer boundary is [0,10]x[0,10] with a triangular hole
+        // pinched to a single vertex (5,0) on the bottom edge. `full_box` matches every
+        // outer edge with no crossing and every edge midpoint on boundary, so ONLY Step 4
+        // (outer vertex strictly inside inner) catches that (4,5) and (6,5) are enclosed!
+        let keyhole = poly(&[
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (4.0, 5.0),
+            (6.0, 5.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+        ]);
+        let full_box = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        assert!(!inside(&keyhole, &Shape::Polygon(full_box)));
     }
 }

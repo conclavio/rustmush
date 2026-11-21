@@ -1356,7 +1356,7 @@ impl StoreReadCompletion for ScenesArchiveRead {
             let lines: Vec<String> = events
                 .iter()
                 .filter(|(_, ev)| staff || ev.actor == Some(actor) || ev.witnesses.contains(&actor))
-                .filter_map(|(_, ev)| recap_line(ctx, ev))
+                .filter_map(|(_, ev)| recap_line(ctx, &s, actor, staff, ev))
                 .collect();
             to_actor(
                 ctx,
@@ -1375,12 +1375,9 @@ impl StoreReadCompletion for ScenesArchiveRead {
             let privileged = actor == s.facilitator || staff;
             let lines: Vec<String> = events
                 .iter()
-                .map(|(seq, ev)| {
-                    format!(
-                        "  {:>3}. {}",
-                        seq,
-                        render_event(ctx.w, actor, privileged, ev)
-                    )
+                .filter_map(|(seq, ev)| {
+                    render_event(ctx.w, &s, actor, staff, privileged, ev)
+                        .map(|rendered| format!("  {:>3}. {rendered}", seq))
                 })
                 .collect();
             to_actor(
@@ -1405,16 +1402,56 @@ impl StoreReadCompletion for ScenesArchiveRead {
 // +scene  (read-only)  +  +timestop/log  +  +recap
 // ----------------------------------------------------------------------
 
-/// Render one recorded [`SceneEvent`] to a one-line summary for `viewer`.
+/// Whether `ev` is a `Joined`/`Left` event for a `Flags::DARK` non-member
+/// visitor that must be concealed from non-staff viewers (EXT-P2-13).
+///
+/// New moves by `Flags::DARK` non-members are skipped at recording time in
+/// `on_moved`; this read-side guard also hides legacy persisted entries across
+/// `+timestop/log`, `+timestop/log/archive`, `+recap`, and `+recap/archive`.
+fn is_hidden_dark_visitor_event(
+    w: &World,
+    scene: &SceneRecord,
+    viewer: ObjId,
+    staff: bool,
+    ev: &SceneEvent,
+) -> bool {
+    if staff {
+        return false;
+    }
+    if !matches!(ev.kind, SceneEventKind::Joined | SceneEventKind::Left) {
+        return false;
+    }
+    let Some(actor) = ev.actor else {
+        return false;
+    };
+    if actor == viewer {
+        return false;
+    }
+    is_dark(w, actor) && !scene.members().any(|m| m == actor)
+}
+
+/// Render one recorded [`SceneEvent`] to a one-line summary for `viewer`, or
+/// `None` if the event must be hidden from this viewer.
 ///
 /// Consent votes are attributed only when `privileged` (facilitator or staff)
 /// or when the event is the viewer's own vote, matching [`consent_lines`] so
 /// `+timestop/log` and `+timestop/log/archive` cannot deanonymize another
-/// participant's consent choice.
-fn render_event(w: &World, viewer: ObjId, privileged: bool, ev: &SceneEvent) -> String {
+/// participant's consent choice. Legacy `Joined`/`Left` events for currently
+/// `Flags::DARK` non-member visitors are omitted for non-staff viewers.
+fn render_event(
+    w: &World,
+    scene: &SceneRecord,
+    viewer: ObjId,
+    staff: bool,
+    privileged: bool,
+    ev: &SceneEvent,
+) -> Option<String> {
+    if is_hidden_dark_visitor_event(w, scene, viewer, staff, ev) {
+        return None;
+    }
     let who = ev.actor.map_or_else(String::new, |a| display_name(w, a));
     let s = |k: &str| ev.detail.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    match ev.kind {
+    let line = match ev.kind {
         SceneEventKind::Started => "The scene began.".to_string(),
         SceneEventKind::TurnAdvanced => {
             let round = ev
@@ -1446,7 +1483,8 @@ fn render_event(w: &World, viewer: ObjId, privileged: bool, ev: &SceneEvent) -> 
             format!("{label} on {}: {}.", s("about"), s("choice"))
         }
         SceneEventKind::Rewound => format!("{who} rewound the turn (round {}).", s("round")),
-    }
+    };
+    Some(line)
 }
 
 /// `+timestop/log` — the recent (RAM-resident tail) events of the scene you are
@@ -1474,32 +1512,29 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         to_actor(ctx, msg);
         return Ok(());
     }
-    let privileged = ctx.actor == s.facilitator || is_staff(ctx.w, ctx.actor);
+    let staff = is_staff(ctx.w, ctx.actor);
+    let privileged = ctx.actor == s.facilitator || staff;
     let viewer = ctx.actor;
     let entries = state_ref(ctx).events.open_entries(&log_id).to_vec();
+    let archived = total.saturating_sub(entries.len() as u64);
     let lines: Vec<String> = entries
         .iter()
         .filter_map(|e| {
             serde_json::from_value::<SceneEvent>(e.value.clone())
                 .ok()
-                .map(|ev| {
-                    format!(
-                        "  {:>3}. {}",
-                        e.seq,
-                        render_event(ctx.w, viewer, privileged, &ev)
-                    )
-                })
+                .and_then(|ev| render_event(ctx.w, &s, viewer, staff, privileged, &ev))
+                .map(|rendered| format!("  {:>3}. {rendered}", e.seq))
         })
         .collect();
-    let omitted = total.saturating_sub(lines.len() as u64);
-    let header = if omitted > 0 {
+    let header = if archived > 0 {
+        let visible_total = archived.saturating_add(lines.len() as u64);
         format!(
             "Scene #{} — showing {} of {} events ({} earlier are in the archive: \
              +timestop/log/archive):",
             s.id,
             lines.len(),
-            total,
-            omitted
+            visible_total,
+            archived
         )
     } else {
         format!("Scene #{} — {} event(s):", s.id, lines.len())
@@ -1512,8 +1547,18 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 }
 
 /// Render one witnessed [`SceneEvent`] as a line of narrative prose, or `None`
-/// to omit purely structural events from the recap.
-fn recap_line(ctx: &Ctx<'_>, ev: &SceneEvent) -> Option<String> {
+/// to omit purely structural events (or concealed DARK visitor moves) from the
+/// recap.
+fn recap_line(
+    ctx: &Ctx<'_>,
+    scene: &SceneRecord,
+    viewer: ObjId,
+    staff: bool,
+    ev: &SceneEvent,
+) -> Option<String> {
+    if is_hidden_dark_visitor_event(ctx.w, scene, viewer, staff, ev) {
+        return None;
+    }
     let who = ev
         .actor
         .map_or_else(String::new, |a| display_name(ctx.w, a));
@@ -1593,7 +1638,7 @@ fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // Personal recap: only what this viewer perceived (all events, for
         // staff). The witness set was frozen when each event was recorded.
         .filter(|ev| staff || ev.actor == Some(actor) || ev.witnesses.contains(&actor))
-        .filter_map(|ev| recap_line(ctx, &ev))
+        .filter_map(|ev| recap_line(ctx, &s, actor, staff, &ev))
         .collect();
     to_actor(
         ctx,

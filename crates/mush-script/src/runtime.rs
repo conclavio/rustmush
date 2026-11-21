@@ -54,8 +54,8 @@ use mush_core::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
 use mush_core::matchit::{MatchErr, is_nearby, match_object_visible};
 use mush_core::module::{HookPoint, HookReg, perceives_via};
 use mush_core::{
-    Attr, AttrFlags, AttrValue, Deferred, Flags, ObjId, ObjKind, Outbox, Powers, Registry, Role,
-    ScheduledKind, World, match_object, obj_ref, perm,
+    Attr, AttrFlags, AttrValue, Deferred, Flags, Obj, ObjId, ObjKind, Outbox, Powers, Registry,
+    Role, ScheduledKind, World, match_object, obj_ref, perm,
 };
 use mush_core::{DetachedTypedState, TypedStateLens};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
@@ -222,15 +222,15 @@ pub(crate) struct Frame {
 pub(crate) enum Payload {
     /// `script:command:*` — `cmd` verb and `arg` remainder.
     Command {
-        /// The matched verb.
-        cmd: String,
-        /// The argument text after the verb.
-        arg: String,
+        /// The matched verb (shared zero-copy across listeners).
+        cmd: Arc<str>,
+        /// The argument text after the verb (shared zero-copy across listeners).
+        arg: Arc<str>,
     },
     /// `script:hear:*` — the spoken `text` and its `speaker`.
     Hear {
-        /// The spoken text.
-        text: String,
+        /// The spoken text (shared zero-copy across listeners).
+        text: Arc<str>,
         /// The speaker.
         speaker: ObjId,
     },
@@ -436,21 +436,50 @@ fn owner_may_script(w: &World, owner: ObjId) -> bool {
     perm::has_role(w, owner, Role::Builder)
 }
 
+/// Resolve the executing authority for a `script:*` attribute on `obj`
+/// (EXT-P1-1).
+///
+/// Both `obj.owner` and `attr.owner` must hold at least [`Role::Builder`], and
+/// `attr.owner` must currently control `obj` (so revoking zone delegation or
+/// transferring ownership immediately disables foreign scripts). Execution
+/// authority is bound to `attr.owner` — never elevating a lower-role or peer
+/// author to `obj.owner`'s role, powers, or unrelated objects. Only when
+/// `attr.owner` is `Wizard`+ and strictly outranks `obj.owner` (e.g. staff
+/// editing or `@chown`ing a builder's object) is authority capped down to
+/// `obj.owner`, because `Wizard`+ strictly dominates every script-reachable
+/// permission of a lower role.
+fn effective_script_owner(w: &World, obj: &Obj, attr: &Attr) -> Option<ObjId> {
+    let obj_owner = obj.owner;
+    let attr_owner = attr.owner;
+    if !owner_may_script(w, obj_owner) || !owner_may_script(w, attr_owner) {
+        return None;
+    }
+    if !perm::controls(w, attr_owner, obj.id) {
+        return None;
+    }
+    let obj_role = perm::role_of(w, obj_owner);
+    let attr_role = perm::role_of(w, attr_owner);
+    if attr_role >= Role::Wizard && obj_role < attr_role {
+        Some(obj_owner)
+    } else {
+        Some(attr_owner)
+    }
+}
+
 /// Run one trigger's script, then handle any error (strikes / HALTED).
 fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
-    // Fetch engine + AST + owner and set the frame; skip HALTED/errored/gone
-    // or any object whose owner is below Role::Builder.
+    // Fetch engine + AST + effective script authority and set the frame; skip
+    // HALTED/errored/gone objects or any script whose author/owner is
+    // unauthorized.
     let prepared = SESSION.with(|s| {
         let mut b = s.borrow_mut();
         let sess = b.as_mut()?;
         let obj = sess.world.get(trigger.self_obj)?;
-        if obj.flags.contains(Flags::HALTED)
-            || obj.flags.contains(Flags::GOING)
-            || !owner_may_script(&sess.world, obj.owner)
-        {
+        if obj.flags.contains(Flags::HALTED) || obj.flags.contains(Flags::GOING) {
             return None;
         }
-        let owner = obj.owner;
+        let attr = obj.attrs.get(trigger.script_key.as_str())?;
+        let owner = effective_script_owner(&sess.world, obj, attr)?;
         let st = sess.world.module_state::<ScriptState>()?;
         let ast = Arc::clone(
             st.cache
@@ -539,11 +568,11 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
 fn inject_scope(scope: &mut Scope<'_>, payload: &Payload) {
     match payload {
         Payload::Command { cmd, arg } => {
-            scope.push_constant("cmd", cmd.clone());
-            scope.push_constant("arg", arg.clone());
+            scope.push_constant("cmd", ImmutableString::from(cmd.as_ref()));
+            scope.push_constant("arg", ImmutableString::from(arg.as_ref()));
         }
         Payload::Hear { text, speaker } => {
-            scope.push_constant("text", text.clone());
+            scope.push_constant("text", ImmutableString::from(text.as_ref()));
             scope.push_constant("speaker", *speaker);
         }
         Payload::Enter { mover } | Payload::Leave { mover } => {
@@ -611,7 +640,12 @@ fn handle_error(trigger: &Trigger, err: &EvalAltResult, tripped: bool, cfg: Scri
         let mut b = s.borrow_mut();
         let Some(sess) = b.as_mut() else { return };
         let obj = trigger.self_obj;
-        let owner = sess.world.get(obj).map_or(obj, |o| o.owner);
+        let owner = sess.world.get(obj).map_or(obj, |o| {
+            o.attrs
+                .get(trigger.script_key.as_str())
+                .and_then(|a| effective_script_owner(&sess.world, o, a))
+                .unwrap_or(o.owner)
+        });
         sess.out.error_on_commit(
             owner,
             format!(
@@ -1398,6 +1432,11 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
                 }
             }
         }
+        // Executable `script:*` attributes cannot be written or mutated on
+        // objects owned by a higher-role principal (EXT-P1-1).
+        if perm::is_script_attr(attr) && !perm::can_write_script_attr(&sess.world, owner, obj) {
+            return Err(err("Permission denied."));
+        }
         // Replicate the two overwrite guards `@set` enforces (building.rs), so
         // a script cannot do through `mush::set_attr` what its owner could not
         // do by hand: a `WIZARD_ONLY` attr resists a non-Wizard, and a `LOCKED`
@@ -1426,11 +1465,7 @@ fn set_attr_impl(obj: ObjId, attr: &str, val: &str) -> Result<(), Box<EvalAltRes
         }
         // HIGH-18: cap per-object `script:*` attribute count so one object
         // cannot accumulate unbounded ASTs or compilation work.
-        let folded_script_key = if attr.len() >= 7
-            && attr
-                .get(..7)
-                .is_some_and(|p| p.eq_ignore_ascii_case("script:"))
-        {
+        let folded_script_key = if perm::is_script_attr(attr) {
             let max_scripts = sess
                 .world
                 .module_state::<ScriptState>()
@@ -1549,8 +1584,8 @@ fn emit_impl(target: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
         let next_depth = depth.saturating_add(1);
         let space = remaining_queue_space(sess);
         if next_depth <= max_depth && space > 0 {
-            let hears = collect_hear_triggers(&sess.world, room, self_obj, text, next_depth);
-            sess.queue.extend(hears.into_iter().take(space));
+            let hears = collect_hear_triggers(&sess.world, room, self_obj, text, next_depth, space);
+            sess.queue.extend(hears);
         }
         Ok(())
     })
@@ -1635,15 +1670,23 @@ fn move_impl(obj: ObjId, dest: ObjId) -> Result<(), Box<EvalAltResult>> {
                 let space = remaining_queue_space(sess);
                 if space > 0 {
                     let mut leave = Vec::new();
-                    collect_move_triggers(&mut leave, &sess.world, from, obj, false, next_depth);
-                    sess.queue.extend(leave.into_iter().take(space));
+                    collect_move_triggers(
+                        &mut leave,
+                        &sess.world,
+                        from,
+                        obj,
+                        false,
+                        next_depth,
+                        space,
+                    );
+                    sess.queue.extend(leave);
                 }
             }
             let space = remaining_queue_space(sess);
             if space > 0 {
                 let mut enter = Vec::new();
-                collect_move_triggers(&mut enter, &sess.world, dest, obj, true, next_depth);
-                sess.queue.extend(enter.into_iter().take(space));
+                collect_move_triggers(&mut enter, &sess.world, dest, obj, true, next_depth, space);
+                sess.queue.extend(enter);
             }
         }
         Ok(())
@@ -1775,55 +1818,111 @@ fn roll(expr: &str, seed: &mut u64) -> Option<i64> {
 // Trigger collection + compilation (used by the module's observers)
 // ----------------------------------------------------------------------
 
+/// Maximum triggers an originating world event may collect into a fresh
+/// cascade queue, bounded by both `max_queue_len` and `max_total_invocations`
+/// (EXT-P2-8).
+pub(crate) fn initial_trigger_cap(w: &World) -> usize {
+    let cfg = w
+        .module_state::<ScriptState>()
+        .map_or_else(ScriptConfig::default, |st| st.cfg);
+    cfg.max_queue_len.min(cfg.max_total_invocations as usize)
+}
+
 /// Whether `obj` has a runnable (compiled, non-errored, not HALTED/GONE,
-/// builder-owned) script under the folded `key`.
+/// authorized) script under the folded `key`.
 pub(crate) fn has_runnable(w: &World, obj: ObjId, key: &str) -> bool {
+    let Some(st) = w.module_state::<ScriptState>() else {
+        return false;
+    };
+    has_runnable_with_state(w, st, obj, key)
+}
+
+fn has_runnable_with_state(w: &World, st: &ScriptState, obj: ObjId, key: &str) -> bool {
+    let Some(os) = st.cache.get(&obj) else {
+        return false;
+    };
+    if !os.scripts.contains_key(key) {
+        return false;
+    }
     let Some(o) = w.get(obj) else {
         return false;
     };
-    if o.flags.contains(Flags::HALTED)
-        || o.flags.contains(Flags::GOING)
-        || !owner_may_script(w, o.owner)
-    {
+    if o.flags.contains(Flags::HALTED) || o.flags.contains(Flags::GOING) {
         return false;
     }
-    w.module_state::<ScriptState>()
-        .and_then(|st| st.cache.get(&obj))
-        .is_some_and(|os| os.scripts.contains_key(key))
+    o.attrs
+        .get(key)
+        .is_some_and(|a| effective_script_owner(w, o, a).is_some())
 }
 
-/// The objects an object-command / hear search scans: a room and its
-/// contents (a room is checked itself, then everything inside it).
-fn room_scope(w: &World, room: ObjId) -> Vec<ObjId> {
-    let mut v = vec![room];
-    v.extend(w.contents_of(room).iter().copied());
-    v
+/// The objects a hear / move / command search scans: a room and its contents
+/// (the room itself first, then its contents), yielded lazily without cloning
+/// the room's contents vec (EXT-P2-8).
+fn room_scope(w: &World, room: ObjId) -> impl Iterator<Item = ObjId> + '_ {
+    std::iter::once(room).chain(w.contents_of(room).iter().copied())
 }
 
 /// Hearers in `room` (room + contents, minus the speaker) with a runnable
-/// `script:hear[:*]`.
+/// `script:hear[:*]`, stopping immediately at `limit` triggers and sharing
+/// `text` via one `Arc<str>` across all collected triggers (EXT-P2-8).
 pub(crate) fn collect_hear_triggers(
     w: &World,
     room: ObjId,
     speaker: ObjId,
     text: &str,
     depth: u32,
+    limit: usize,
 ) -> Vec<Trigger> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let Some(st) = w.module_state::<ScriptState>() else {
+        return Vec::new();
+    };
+    if st.cache.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
+    let mut shared_text: Option<Arc<str>> = None;
     for cand in room_scope(w, room) {
+        if out.len() >= limit {
+            break;
+        }
         if cand == speaker {
             continue;
         }
-        for key in runnable_keys(w, cand, |k| {
-            k == "script:hear" || k.starts_with("script:hear:")
-        }) {
+        let Some(os) = st.cache.get(&cand) else {
+            continue;
+        };
+        let Some(o) = w.get(cand) else {
+            continue;
+        };
+        if o.flags.contains(Flags::HALTED) || o.flags.contains(Flags::GOING) {
+            continue;
+        }
+        for key in os.scripts.keys() {
+            if out.len() >= limit {
+                break;
+            }
+            let k = key.as_str();
+            if k != "script:hear" && !k.starts_with("script:hear:") {
+                continue;
+            }
+            if !o
+                .attrs
+                .get(k)
+                .is_some_and(|a| effective_script_owner(w, o, a).is_some())
+            {
+                continue;
+            }
+            let text_arc = Arc::clone(shared_text.get_or_insert_with(|| Arc::from(text)));
             out.push(Trigger {
                 self_obj: cand,
                 caller: speaker,
-                script_key: key,
+                script_key: key.clone(),
                 depth,
                 payload: Payload::Hear {
-                    text: text.to_string(),
+                    text: text_arc,
                     speaker,
                 },
             });
@@ -1832,7 +1931,8 @@ pub(crate) fn collect_hear_triggers(
     out
 }
 
-/// Enter/leave reactors in `room` (room + contents, minus the mover).
+/// Enter/leave reactors in `room` (room + contents, minus the mover),
+/// appending at most `limit` triggers (EXT-P2-8).
 pub(crate) fn collect_move_triggers(
     out: &mut Vec<Trigger>,
     w: &World,
@@ -1840,17 +1940,31 @@ pub(crate) fn collect_move_triggers(
     mover: ObjId,
     entering: bool,
     depth: u32,
+    limit: usize,
 ) {
+    if limit == 0 {
+        return;
+    }
+    let Some(st) = w.module_state::<ScriptState>() else {
+        return;
+    };
+    if st.cache.is_empty() {
+        return;
+    }
     let key = if entering {
         "script:enter"
     } else {
         "script:leave"
     };
+    let target_len = out.len().saturating_add(limit);
     for cand in room_scope(w, room) {
+        if out.len() >= target_len {
+            break;
+        }
         if cand == mover {
             continue;
         }
-        if has_runnable(w, cand, key) {
+        if has_runnable_with_state(w, st, cand, key) {
             out.push(Trigger {
                 self_obj: cand,
                 caller: mover,
@@ -1867,57 +1981,55 @@ pub(crate) fn collect_move_triggers(
 }
 
 /// Objects answering `verb` with a runnable `script:command:<verb>` in the
-/// classic scope: the actor, their inventory, their room, and its contents.
+/// classic scope: the actor, their inventory, their room, and its contents,
+/// stopping immediately at `limit` triggers and sharing `verb`/`arg` via
+/// `Arc<str>` (EXT-P2-8).
 pub(crate) fn collect_command_triggers(
     w: &World,
     actor: ObjId,
     verb: &str,
     arg: &str,
+    limit: usize,
 ) -> Vec<Trigger> {
-    let key = SmolStr::new(format!("script:command:{}", verb.to_lowercase()));
-    let mut scope = vec![actor];
-    scope.extend(w.contents_of(actor).iter().copied());
-    if let Some(loc) = w.get(actor).and_then(|o| o.location) {
-        scope.push(loc);
-        scope.extend(w.contents_of(loc).iter().copied());
+    if limit == 0 {
+        return Vec::new();
     }
+    let Some(st) = w.module_state::<ScriptState>() else {
+        return Vec::new();
+    };
+    if st.cache.is_empty() {
+        return Vec::new();
+    }
+    let key = SmolStr::new(format!("script:command:{}", verb.to_lowercase()));
+    let loc = w.get(actor).and_then(|o| o.location);
+    let scope = std::iter::once(actor)
+        .chain(w.contents_of(actor).iter().copied())
+        .chain(loc.into_iter().flat_map(|r| room_scope(w, r)));
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
+    let mut shared_cmd: Option<Arc<str>> = None;
+    let mut shared_arg: Option<Arc<str>> = None;
     for cand in scope {
+        if out.len() >= limit {
+            break;
+        }
+        if !has_runnable_with_state(w, st, cand, &key) {
+            continue;
+        }
         if !seen.insert(cand) {
             continue;
         }
-        if has_runnable(w, cand, &key) {
-            out.push(Trigger {
-                self_obj: cand,
-                caller: actor,
-                script_key: key.clone(),
-                depth: 0,
-                payload: Payload::Command {
-                    cmd: verb.to_string(),
-                    arg: arg.to_string(),
-                },
-            });
-        }
+        let cmd = Arc::clone(shared_cmd.get_or_insert_with(|| Arc::from(verb)));
+        let arg = Arc::clone(shared_arg.get_or_insert_with(|| Arc::from(arg)));
+        out.push(Trigger {
+            self_obj: cand,
+            caller: actor,
+            script_key: key.clone(),
+            depth: 0,
+            payload: Payload::Command { cmd, arg },
+        });
     }
     out
-}
-
-/// The runnable script keys on `obj` matching `pred`.
-fn runnable_keys(w: &World, obj: ObjId, pred: impl Fn(&str) -> bool) -> Vec<SmolStr> {
-    let Some(o) = w.get(obj) else {
-        return Vec::new();
-    };
-    if o.flags.contains(Flags::HALTED)
-        || o.flags.contains(Flags::GOING)
-        || !owner_may_script(w, o.owner)
-    {
-        return Vec::new();
-    }
-    w.module_state::<ScriptState>()
-        .and_then(|st| st.cache.get(&obj))
-        .map(|os| os.scripts.keys().filter(|k| pred(k)).cloned().collect())
-        .unwrap_or_default()
 }
 
 /// Flush all coalesced `script:*` attribute edits recorded during the just-ended
@@ -1957,8 +2069,7 @@ fn recompile_script_attrs(
     let Some(o) = w.get(obj) else {
         return;
     };
-    let owner = o.owner;
-    if !owner_may_script(w, owner) {
+    if !owner_may_script(w, o.owner) {
         if let Some(st) = w.module_state_mut::<ScriptState>() {
             st.cache.remove(&obj);
             st.strikes.remove(&obj);
@@ -1967,31 +2078,55 @@ fn recompile_script_attrs(
     }
     enum Update {
         Remove,
-        Compiled(Arc<AST>),
-        Error(String),
+        Compiled { ast: Arc<AST>, notify: ObjId },
+        Error { notify: ObjId, msg: String },
     }
     let mut updates: Vec<(SmolStr, Update)> = Vec::with_capacity(keys.len());
     let mut compiled_n = 0u64;
     for key in keys {
         match o.attrs.get(&key) {
             None => updates.push((key, Update::Remove)),
-            Some(a) => match a.as_text() {
-                None => updates.push((key, Update::Error("script attribute must be text".into()))),
-                Some(src) => {
-                    compiled_n = compiled_n.saturating_add(1);
-                    match engine.compile(src) {
-                        Ok(ast) => match guards::validate_source(src) {
-                            Ok(()) => updates.push((key, Update::Compiled(Arc::new(ast)))),
-                            Err(msg) => updates.push((key, Update::Error(msg))),
+            Some(a) => {
+                let Some(notify) = effective_script_owner(w, o, a) else {
+                    updates.push((key, Update::Remove));
+                    continue;
+                };
+                match a.as_text() {
+                    None => updates.push((
+                        key,
+                        Update::Error {
+                            notify,
+                            msg: "script attribute must be text".into(),
                         },
-                        Err(e) => updates.push((key, Update::Error(e.to_string()))),
+                    )),
+                    Some(src) => {
+                        compiled_n = compiled_n.saturating_add(1);
+                        match engine.compile(src) {
+                            Ok(ast) => match guards::validate_source(src) {
+                                Ok(()) => updates.push((
+                                    key,
+                                    Update::Compiled {
+                                        ast: Arc::new(ast),
+                                        notify,
+                                    },
+                                )),
+                                Err(msg) => updates.push((key, Update::Error { notify, msg })),
+                            },
+                            Err(e) => updates.push((
+                                key,
+                                Update::Error {
+                                    notify,
+                                    msg: e.to_string(),
+                                },
+                            )),
+                        }
                     }
                 }
-            },
+            }
         }
     }
 
-    let mut errors: Vec<(SmolStr, String)> = Vec::new();
+    let mut errors: Vec<(ObjId, SmolStr, String)> = Vec::new();
     if let Some(st) = w.module_state_mut::<ScriptState>() {
         st.compile_count = st.compile_count.saturating_add(compiled_n);
         for (key, upd) in updates {
@@ -2004,10 +2139,11 @@ fn recompile_script_attrs(
                         }
                     }
                 }
-                Update::Compiled(ast) => {
+                Update::Compiled { ast, notify } => {
                     let os = st.cache.entry(obj).or_default();
                     if !os.scripts.contains_key(&key) && os.scripts.len() >= max_scripts {
                         errors.push((
+                            notify,
                             key,
                             format!("object exceeded maximum of {max_scripts} scripts"),
                         ));
@@ -2015,14 +2151,14 @@ fn recompile_script_attrs(
                         os.scripts.insert(key, ast);
                     }
                 }
-                Update::Error(msg) => {
+                Update::Error { notify, msg } => {
                     if let Some(os) = st.cache.get_mut(&obj) {
                         os.scripts.remove(&key);
                         if os.scripts.is_empty() {
                             st.cache.remove(&obj);
                         }
                     }
-                    errors.push((key, msg));
+                    errors.push((notify, key, msg));
                 }
             }
         }
@@ -2030,19 +2166,19 @@ fn recompile_script_attrs(
             st.strikes.remove(&obj);
         }
     }
-    for (key, msg) in errors {
+    for (notify, key, msg) in errors {
         out.error_on_commit(
-            owner,
+            notify,
             format!("Script {key} on {obj} failed to compile: {msg}"),
         );
     }
 }
 
-/// (Re)compile every `script:*` attribute on `obj`, cache the results, clear
-/// its strikes, and notify the owner of any compile errors. Removes the
-/// cache entry when the object has no scripts or its owner is below
-/// `Role::Builder` (CRIT-5 defense-in-depth). Enforces `max_scripts_per_object`
-/// (HIGH-18).
+/// (Re)compile every authorized `script:*` attribute on `obj`, cache the
+/// results, clear its strikes, and notify the effective owner of any compile
+/// errors. Removes the cache entry when the object has no authorized scripts
+/// or its owner is below `Role::Builder` (CRIT-5 + EXT-P1-1 defense-in-depth).
+/// Enforces `max_scripts_per_object` (HIGH-18).
 pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
     let Some((engine, max_scripts)) = w
         .module_state::<ScriptState>()
@@ -2053,18 +2189,24 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
     let Some(o) = w.get(obj) else {
         return;
     };
-    let owner = o.owner;
-    if !owner_may_script(w, owner) {
+    if !owner_may_script(w, o.owner) {
         if let Some(st) = w.module_state_mut::<ScriptState>() {
             st.cache.remove(&obj);
             st.strikes.remove(&obj);
         }
         return;
     }
-    let sources: Vec<(SmolStr, Option<String>)> = o
+    let sources: Vec<(SmolStr, ObjId, Option<String>)> = o
         .attrs
         .iter_namespace("script")
-        .map(|(k, a)| (SmolStr::new(k.folded()), a.as_text().map(str::to_string)))
+        .filter_map(|(k, a)| {
+            let notify = effective_script_owner(w, o, a)?;
+            Some((
+                SmolStr::new(k.folded()),
+                notify,
+                a.as_text().map(str::to_string),
+            ))
+        })
         .collect();
 
     if sources.is_empty() {
@@ -2076,18 +2218,19 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
     }
 
     let mut compiled: HashMap<SmolStr, Arc<AST>> = HashMap::new();
-    let mut errors: Vec<(SmolStr, String)> = Vec::new();
+    let mut errors: Vec<(ObjId, SmolStr, String)> = Vec::new();
     let mut compiled_n = 0u64;
-    for (key, text) in sources {
+    for (key, notify, text) in sources {
         if compiled.len() >= max_scripts {
             errors.push((
+                notify,
                 key,
                 format!("object exceeded maximum of {max_scripts} scripts"),
             ));
             continue;
         }
         match text {
-            None => errors.push((key, "script attribute must be text".to_string())),
+            None => errors.push((notify, key, "script attribute must be text".to_string())),
             Some(src) => {
                 compiled_n = compiled_n.saturating_add(1);
                 match engine.compile(&src) {
@@ -2095,9 +2238,9 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
                         Ok(()) => {
                             compiled.insert(key, Arc::new(ast));
                         }
-                        Err(msg) => errors.push((key, msg)),
+                        Err(msg) => errors.push((notify, key, msg)),
                     },
-                    Err(e) => errors.push((key, e.to_string())),
+                    Err(e) => errors.push((notify, key, e.to_string())),
                 }
             }
         }
@@ -2112,9 +2255,9 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
         }
         st.strikes.remove(&obj);
     }
-    for (key, msg) in errors {
+    for (notify, key, msg) in errors {
         out.error_on_commit(
-            owner,
+            notify,
             format!("Script {key} on {obj} failed to compile: {msg}"),
         );
     }
@@ -2130,5 +2273,121 @@ pub(crate) fn snapshot_registry(w: &mut World, reg: &Registry) {
         st.owned_namespaces = namespaces;
         st.move_hooks = move_hooks;
         st.perceive_hooks = perceive_hooks;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::{GOD, LIMBO};
+
+    fn world_with_script_state(cfg: ScriptConfig) -> (World, ObjId) {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(nick, Flags::BUILDER, true).unwrap();
+        let engine = mush_core::engine::Engine::with_modules(
+            w,
+            Registry::new(),
+            vec![Box::new(crate::ScriptModule::with_config(cfg))],
+        )
+        .unwrap();
+        (engine.world, nick)
+    }
+
+    fn attach_script(w: &mut World, obj: ObjId, owner: ObjId, key: &str) {
+        w.set_attr(obj, key, Attr::text("let x = 1;", owner))
+            .unwrap();
+        let mut out = Outbox::new();
+        recompile_script_attr(w, &mut out, obj, key);
+    }
+
+    #[test]
+    fn collect_hear_triggers_respects_limit_and_shares_text_arc() {
+        let (mut w, nick) = world_with_script_state(ScriptConfig::default());
+        for i in 0..100 {
+            let ear = w
+                .create(ObjKind::Thing, &format!("ear{i}"), nick, Some(LIMBO))
+                .unwrap();
+            attach_script(&mut w, ear, nick, "script:hear:a");
+            attach_script(&mut w, ear, nick, "script:hear:b");
+        }
+
+        // Limit 0 collects nothing.
+        assert!(collect_hear_triggers(&w, LIMBO, nick, "hello", 0, 0).is_empty());
+
+        // Strict cap stops collection at exactly `limit` (not 200).
+        let triggers = collect_hear_triggers(&w, LIMBO, nick, "shared payload", 0, 7);
+        assert_eq!(triggers.len(), 7);
+
+        // Every collected trigger shares the exact same `Arc<str>` allocation.
+        let first = match &triggers[0].payload {
+            Payload::Hear { text, .. } => text,
+            _ => panic!("expected Hear payload"),
+        };
+        assert_eq!(first.as_ref(), "shared payload");
+        for t in &triggers[1..] {
+            match &t.payload {
+                Payload::Hear { text, .. } => assert!(Arc::ptr_eq(first, text)),
+                _ => panic!("expected Hear payload"),
+            }
+        }
+    }
+
+    #[test]
+    fn collect_move_triggers_respects_limit() {
+        let (mut w, nick) = world_with_script_state(ScriptConfig::default());
+        for i in 0..80 {
+            let watcher = w
+                .create(ObjKind::Thing, &format!("watch{i}"), nick, Some(LIMBO))
+                .unwrap();
+            attach_script(&mut w, watcher, nick, "script:enter");
+        }
+
+        let mut out = Vec::new();
+        collect_move_triggers(&mut out, &w, LIMBO, nick, true, 0, 0);
+        assert!(out.is_empty());
+
+        collect_move_triggers(&mut out, &w, LIMBO, nick, true, 0, 5);
+        assert_eq!(out.len(), 5);
+
+        // Subsequent append with remaining budget of 3 caps total at 8.
+        collect_move_triggers(&mut out, &w, LIMBO, nick, true, 0, 3);
+        assert_eq!(out.len(), 8);
+    }
+
+    #[test]
+    fn collect_command_triggers_respects_limit_dedupes_and_shares_arcs() {
+        let (mut w, nick) = world_with_script_state(ScriptConfig::default());
+        attach_script(&mut w, nick, nick, "script:command:ping");
+        for i in 0..50 {
+            let gadget = w
+                .create(ObjKind::Thing, &format!("g{i}"), nick, Some(LIMBO))
+                .unwrap();
+            attach_script(&mut w, gadget, nick, "script:command:ping");
+        }
+
+        assert!(collect_command_triggers(&w, nick, "ping", "arg", 0).is_empty());
+
+        let triggers = collect_command_triggers(&w, nick, "ping", "some args", 6);
+        assert_eq!(triggers.len(), 6);
+        // `nick` appears both as actor and in LIMBO contents; must appear once.
+        let nick_count = triggers.iter().filter(|t| t.self_obj == nick).count();
+        assert_eq!(nick_count, 1);
+
+        let (first_cmd, first_arg) = match &triggers[0].payload {
+            Payload::Command { cmd, arg } => (cmd, arg),
+            _ => panic!("expected Command payload"),
+        };
+        assert_eq!(first_cmd.as_ref(), "ping");
+        assert_eq!(first_arg.as_ref(), "some args");
+        for t in &triggers[1..] {
+            match &t.payload {
+                Payload::Command { cmd, arg } => {
+                    assert!(Arc::ptr_eq(first_cmd, cmd));
+                    assert!(Arc::ptr_eq(first_arg, arg));
+                }
+                _ => panic!("expected Command payload"),
+            }
+        }
     }
 }

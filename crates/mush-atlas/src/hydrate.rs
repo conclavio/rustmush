@@ -761,7 +761,7 @@ pub fn request(
                 .map_err(|e| format!("The footprint: {e}"))?,
         );
         let nb_poly = nb.footprint.to_cm().map_err(|e| e.to_string())?;
-        if !shape.ring().points().iter().all(|p| nb_poly.contains(*p)) {
+        if !crate::validate::inside(&nb_poly, &shape) {
             return Err(format!("That footprint leaves {}.", nb.name));
         }
         let id = derive_id(who, &nb.key.pack, &kind, &footprint)?;

@@ -913,3 +913,113 @@ fn strag_m9_hydration_request_pruning_and_player_rate_limits() {
     .expect_err("withdrawal hourly cap must fire");
     assert!(wd_cap.contains("withdrawn"), "{wd_cap}");
 }
+
+#[test]
+fn ext_p2_15_concave_neighborhood_and_reservation_reject_spanning_buildings() {
+    // 1. Concave L-shaped neighborhood: [0,200]x[0,80] U [0,80]x[80,200].
+    let l_block = signed(json!({
+        "manifest": { "id": "neighborhood.block", "version": 1, "kind": "neighborhood", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 }] },
+        "entries": {
+            "neighborhood": { "kind": "neighborhood", "def": {
+                "region": "region.town", "locality": "locality.town", "name": "L Block",
+                "setting": "suburban",
+                "footprint": [[0, 0], [200, 0], [200, 80], [80, 80], [80, 200], [0, 200]],
+                "room_budget": { "target": 3, "maximum": 12 },
+                "hydration": { "enabled": true, "max_player_sites": 4 } } },
+            "room.green": { "kind": "room", "def": { "name": "The Green", "surface": "ground",
+                "footprint": { "rect": [[10, 10], [50, 50]] }, "desc": "A wide green." } },
+            "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
+                "names": ["Out <O>;o;out", "Limbo <L>;limbo"] } }
+        }
+    }));
+
+    let mut tw = TestWorld::with_modules(modules(l_block));
+    let alice = tw.spawn_player("Alice");
+
+    // A triangle whose vertices all sit inside L Block, but whose hypotenuse spans the exterior
+    // notch (80..200, 80..200): must be rejected at request time (`hydrate.rs:764`)!
+    let spanning_nb = Polygon2(vec![
+        mush_atlas::Point2(60.0, 60.0),
+        mush_atlas::Point2(180.0, 60.0),
+        mush_atlas::Point2(60.0, 180.0),
+    ]);
+    let err = ask_kind(&mut tw, alice, "site.park", Some(spanning_nb))
+        .expect_err("spanning footprint must not pass concave neighborhood containment");
+    assert!(err.contains("leaves L Block"), "{err}");
+
+    // 2. Valid U-shaped reservation strictly inside the horizontal arm [80,190]x[10,70].
+    let u_reservation = Polygon2(vec![
+        mush_atlas::Point2(90.0, 10.0),
+        mush_atlas::Point2(190.0, 10.0),
+        mush_atlas::Point2(190.0, 70.0),
+        mush_atlas::Point2(160.0, 70.0),
+        mush_atlas::Point2(160.0, 30.0),
+        mush_atlas::Point2(120.0, 30.0),
+        mush_atlas::Point2(120.0, 70.0),
+        mush_atlas::Point2(90.0, 70.0),
+    ]);
+    let rec = ask_kind(&mut tw, alice, "site.park", Some(u_reservation.clone()))
+        .expect("valid concave U reservation inside L Block succeeds")
+        .record()
+        .clone();
+
+    // A hydration pack whose site footprint uses the U's bounding box (all 4 vertices on the
+    // reservation boundary, bridging across the open mouth [120,160]x[30,70]) must be rejected!
+    let bad_pack = signed(json!({
+        "manifest": { "id": rec.pack_id().as_str(), "version": 1, "kind": "site", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 },
+                                   { "id": "neighborhood.block", "version": 1 }] },
+        "entries": {
+            "site.plot": { "kind": "site", "def": {
+                "name": "Spanning Park", "site_kind": rec.kind,
+                "footprint": [[90, 10], [190, 10], [190, 70], [90, 70]] } },
+            "room.lawn": { "kind": "room", "def": {
+                "name": "Lawn", "surface": "ground", "site": "site.plot",
+                "footprint": { "rect": [[95, 15], [115, 65]] }, "desc": "Grass." } },
+            "exit.walk": { "kind": "exit", "def": { "from": "neighborhood.block.room.green",
+                "to": "room.lawn", "names": ["Park <P>;park", "Green <G>;green"],
+                "portal": { "distance_m": 40 } } }
+        }
+    }));
+    let req_id = rec.id.clone();
+    let bad_res = with_ctx(&mut tw, GOD, move |ctx| {
+        hydrate::activate(ctx, &req_id, &bad_pack)
+    });
+    assert!(
+        bad_res.is_err(),
+        "building spanning concave reservation mouth must be rejected"
+    );
+    let bad_err = bad_res.unwrap_err();
+    assert!(
+        bad_err.contains("leaves the reserved request footprint"),
+        "{bad_err}"
+    );
+
+    // A hydration pack whose site footprint stays within the U-shaped reservation (sharing
+    // boundary walls!) succeeds!
+    let good_pack = signed(json!({
+        "manifest": { "id": rec.pack_id().as_str(), "version": 1, "kind": "site", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 },
+                                   { "id": "neighborhood.block", "version": 1 }] },
+        "entries": {
+            "site.plot": { "kind": "site", "def": {
+                "name": "Courtyard Park", "site_kind": rec.kind,
+                "footprint": [[90, 10], [190, 10], [190, 70], [160, 70], [160, 30], [120, 30], [120, 70], [90, 70]] } },
+            "room.lawn": { "kind": "room", "def": {
+                "name": "West Wing", "surface": "ground", "site": "site.plot",
+                "footprint": { "rect": [[90, 10], [120, 70]] }, "desc": "A courtyard wing." } },
+            "exit.walk": { "kind": "exit", "def": { "from": "neighborhood.block.room.green",
+                "to": "room.lawn", "names": ["Park <P>;park", "Green <G>;green"],
+                "portal": { "distance_m": 40 } } }
+        }
+    }));
+    let req_id2 = rec.id.clone();
+    let good_res = with_ctx(&mut tw, GOD, move |ctx| {
+        hydrate::activate(ctx, &req_id2, &good_pack)
+    });
+    assert!(
+        good_res.is_ok(),
+        "valid boundary-touching site inside concave reservation must succeed: {good_res:?}"
+    );
+}

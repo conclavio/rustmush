@@ -190,3 +190,83 @@ fn witnesses_are_unbounded_on_the_observer_path() {
     });
     assert_eq!(planned(&state)[0].event().witnesses.len(), 257);
 }
+
+#[test]
+fn ext_p2_13_dark_non_member_moves_are_skipped_while_dark_members_stay_recorded() {
+    let state = state();
+    // ObjId(99) is not a member of either scene: DARK skips both Joined and Left.
+    assert!(events_for_move(&state, ObjId(99), true, Some(ObjId(10)), ObjId(11), 1234).is_empty());
+
+    // ObjId(20) is a member of scene 1 (room 10) but NOT scene 2 (room 11):
+    // DARK skips Joined on scene 2, while preserving Left on scene 1.
+    let member_move = events_for_move(&state, ObjId(20), true, Some(ObjId(10)), ObjId(11), 1234);
+    assert_eq!(member_move.len(), 1);
+    assert_eq!(member_move[0].scene(), SceneUid(1));
+    assert_eq!(member_move[0].event().kind, SceneEventKind::Left);
+
+    // End-to-end through the real `on_moved` observer with Flags::DARK set on a non-member.
+    let mut world = mush_testkit::TestWorld::with_modules(vec![Box::new(ScenesModule::new())]);
+    let room_a = world
+        .world_mut()
+        .create(ObjKind::Room, "RoomA", GOD, None)
+        .expect("room_a");
+    let room_b = world
+        .world_mut()
+        .create(ObjKind::Room, "RoomB", GOD, None)
+        .expect("room_b");
+    let visitor = world
+        .world_mut()
+        .create(ObjKind::Player, "DarkStaff", GOD, Some(room_a))
+        .expect("visitor");
+    world
+        .world_mut()
+        .get_mut(visitor)
+        .expect("visitor obj")
+        .flags
+        .insert(mush_core::Flags::DARK);
+    let active_scene = scene(1, room_b);
+    world
+        .world_mut()
+        .module_state_mut::<ScenesState>()
+        .expect("scene state")
+        .scenes
+        .insert(SceneUid(1), active_scene);
+    world.take_module_ops();
+
+    world
+        .world_mut()
+        .move_to(visitor, room_b)
+        .expect("enter room_b");
+    world.engine_mut().emit_world_event(
+        &WorldEvent::Moved {
+            who: visitor,
+            from: Some(room_a),
+            to: room_b,
+        },
+        &mut Outbox::default(),
+        &mut Effects::default(),
+    );
+    world
+        .world_mut()
+        .move_to(visitor, room_a)
+        .expect("leave room_b");
+    world.engine_mut().emit_world_event(
+        &WorldEvent::Moved {
+            who: visitor,
+            from: Some(room_b),
+            to: room_a,
+        },
+        &mut Outbox::default(),
+        &mut Effects::default(),
+    );
+
+    let st = world
+        .world()
+        .module_state::<ScenesState>()
+        .expect("scene state");
+    assert!(
+        st.events.open_entries("1").is_empty(),
+        "DARK non-member arrival and departure must not be logged"
+    );
+    assert!(world.take_module_ops().is_empty());
+}

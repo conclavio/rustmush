@@ -509,8 +509,8 @@ fn listing_legs(
             engine,
             families,
             *id,
-            held.endpoint,
-            &held.commodity,
+            held.endpoint.0,
+            &held.commodity.0,
             held.lot,
         ) {
             continue;
@@ -519,7 +519,7 @@ fn listing_legs(
             id.0.to_string(),
             json!({
                 "endpoint": held.endpoint.vault().0,
-                "commodity": held.commodity.as_str(),
+                "commodity": held.commodity.0.as_str(),
                 "lot": held.lot.map(|l| l.to_string()),
             }),
         );
@@ -2089,6 +2089,57 @@ pub(crate) fn hold_standing(
     })
 }
 
+/// The standing of a withdrawn hold-backed listing's inventory hold (EXT-P2-9).
+///
+/// Mirrors [`hold_standing`] for a deleted listing tracked in
+/// `MarketStore::withdrawn_holds`: returns [`HoldStanding::Gone`] ONLY when the
+/// inventory family was read cleanly and confirms the hold is no longer held.
+/// Any refusal or missing lot supply returns [`HoldStanding::Unreadable`] (fail
+/// closed, so release authorization is never pruned prematurely).
+#[must_use]
+pub(crate) fn withdrawn_hold_standing(
+    ctx: &mush_core::Ctx<'_>,
+    id: ListingId,
+    held: &crate::record::WithdrawnHold,
+) -> HoldStanding {
+    let Some(families) = crate::module::lot_supply(ctx.w) else {
+        return HoldStanding::Unreadable;
+    };
+    if let Some(lot) = held.lot {
+        return match ctx.action_state(&families.lot_holds, &lot) {
+            Ok(Some(hold))
+                if hold.holder() == listing_holder_text(id)
+                    && hold.endpoint() == held.endpoint.0 =>
+            {
+                HoldStanding::Live
+            }
+            Ok(_) => HoldStanding::Gone,
+            Err(_) => HoldStanding::Unreadable,
+        };
+    }
+    let (Ok(reservation), Ok(key)) = (
+        listing_reservation(id, held.endpoint.0, &held.commodity.0),
+        mush_inventory::pool_key(held.endpoint.0, &held.commodity.0),
+    ) else {
+        return HoldStanding::Unreadable;
+    };
+    let book = match ctx.action_state(&families.books, &key) {
+        Ok(Some(book)) => book,
+        Ok(None) => return HoldStanding::Gone,
+        Err(_) => return HoldStanding::Unreadable,
+    };
+    let Some(record) = book.records().iter().find(|r| r.id() == reservation) else {
+        return HoldStanding::Gone;
+    };
+    if !matches!(record.state(), mush_core::ReservationState::Held) {
+        return HoldStanding::Gone;
+    }
+    match ctx.w.world_ic_now().checked_cmp(record.expires()) {
+        Ok(std::cmp::Ordering::Less) => HoldStanding::Live,
+        Ok(_) | Err(_) => HoldStanding::Lapsed,
+    }
+}
+
 // ---- doc 18 cut IC7: the pool reads the command layer makes -----------------
 
 /// **One pool's balance, read where money moves** (doc 18 cut IC7): `Ok(0)` when the
@@ -2280,9 +2331,10 @@ pub fn release_lapsed_hold(
         .module_state::<crate::store::MarketStore>()
         .and_then(|s| s.listing(id).cloned())
     else {
-        return Err(crate::api::MarketError::NoStanding(
-            crate::api::NO_SUCH_LISTING,
-        ));
+        // EXT-P2-9: if the listing was already withdrawn and its release authorization is
+        // still durably pending (e.g. after a crash/reboot before `LotOp::Release` landed),
+        // let the endpoint's custodian re-stage the release through this path as well.
+        return crate::api::retry_withdrawn_release(ctx, id);
     };
     // Doc 18 cut IC14 row 15: custody FIRST, from any supply, so a non-holder hears the
     // one byte-identical `NO_SUCH_LISTING` for every listing — whether it is

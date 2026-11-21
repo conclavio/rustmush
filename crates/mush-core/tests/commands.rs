@@ -2519,3 +2519,77 @@ fn core_m4_examine_gates_distant_and_dark_objects_for_non_controllers() {
     let out = g.run(ann, &format!("examine #{}", dark_thing.0));
     assert_error_contains(&out, ann, "is owned by God(#1).");
 }
+
+#[test]
+fn ext_p1_1_delegated_builder_cannot_set_script_on_higher_role_or_escalate_via_chown() {
+    let mut g = Game::new();
+    let ann = g.ann; // Builder below
+    g.w.set_flag(ann, Flags::BUILDER, true).unwrap();
+    let royalty =
+        g.w.create(ObjKind::Player, "Roy", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(royalty, Flags::ROYALTY, true).unwrap();
+
+    let zmo = g.w.create(ObjKind::Thing, "ZMO", GOD, Some(LIMBO)).unwrap();
+    g.w.set_flag(zmo, Flags::ZONE_MASTER, true).unwrap();
+    g.w.get_mut(zmo)
+        .unwrap()
+        .locks
+        .insert(mush_core::LockType::Zone, mush_core::LockExpr::Is(ann));
+
+    let god_relic =
+        g.w.create(ObjKind::Thing, "relic", GOD, Some(LIMBO))
+            .unwrap();
+    let roy_relic =
+        g.w.create(ObjKind::Thing, "crown", royalty, Some(LIMBO))
+            .unwrap();
+    g.w.set_zone(god_relic, Some(zmo)).unwrap();
+    g.w.set_zone(roy_relic, Some(zmo)).unwrap();
+
+    // 1. ZMO delegation never lets a Builder touch a GOD-owned object at all,
+    //    and blocks `script:*` writes even on a ZMO-delegated Royalty object
+    //    (where plain attribute writes remain allowed).
+    let out = g.run(ann, "@set relic/script:use=1+1");
+    assert_error_contains(&out, ann, "Permission denied.");
+    assert!(g.w.attr(god_relic, "script:use").is_none());
+
+    let out = g.run(ann, "@set crown/note=ok");
+    assert_error_contains(&out, ann, "note - Set.");
+    let out = g.run(ann, "@set crown/script:use=1+1");
+    assert_error_contains(&out, ann, "Permission denied.");
+    assert!(g.w.attr(roy_relic, "script:use").is_none());
+
+    // 2. `@chown` refuses lower-role CHOWN_ANY holders from transferring
+    //    objects to or from a higher-role principal.
+    let ann_gadget =
+        g.w.create(ObjKind::Thing, "gadget", ann, Some(LIMBO))
+            .unwrap();
+    g.w.set_attr(ann_gadget, "script:use", Attr::text("1+1", ann))
+        .unwrap();
+    g.w.get_mut(ann).unwrap().powers = Powers::CHOWN_ANY;
+
+    let out = g.run(ann, "@chown gadget=God");
+    assert_error_contains(&out, ann, "Permission denied.");
+    assert_eq!(g.w.get(ann_gadget).unwrap().owner, ann);
+
+    let out = g.run(ann, "@chown relic=Ann");
+    assert_error_contains(&out, ann, "Permission denied.");
+    assert_eq!(g.w.get(god_relic).unwrap().owner, GOD);
+
+    // 3. When God chowns an object carrying `script:*`, the object is
+    //    automatically HALTED and the stored attribute keeps its original author.
+    assert!(!g.w.get(ann_gadget).unwrap().flags.contains(Flags::HALTED));
+    let out = g.run(GOD, "@chown gadget=God");
+    assert_error_contains(&out, GOD, "halted");
+    assert_eq!(g.w.get(ann_gadget).unwrap().owner, GOD);
+    assert!(g.w.get(ann_gadget).unwrap().flags.contains(Flags::HALTED));
+    assert_eq!(
+        g.w.get(ann_gadget)
+            .unwrap()
+            .attrs
+            .get("script:use")
+            .unwrap()
+            .owner,
+        ann
+    );
+}

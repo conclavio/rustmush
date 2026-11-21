@@ -1455,6 +1455,20 @@ fn withdraw(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             info(ctx, line.replace("{listing}", &id.0.to_string()));
             Ok(())
         }
+        Err(crate::api::MarketError::NoStanding(_)) => {
+            // EXT-P2-9: if a prior withdrawal's `LotOp::Release` has not landed yet
+            // (e.g. across a crash/reboot), let the custodian re-stage it cleanly.
+            match crate::api::retry_withdrawn_release(ctx, id) {
+                Ok(()) => {
+                    info(
+                        ctx,
+                        crate::seller::WITHDRAWN.replace("{listing}", &id.0.to_string()),
+                    );
+                    Ok(())
+                }
+                Err(e) => Err(refuse_market(ctx, &e)),
+            }
+        }
         Err(e) => Err(refuse_market(ctx, &e)),
     }
 }
@@ -2119,7 +2133,19 @@ fn admin_vendor(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .and_then(|s| s.listing(listing).cloned())
                 .filter(|l| may_view_listing(ctx.w, ctx.actor, l));
             let Some(l) = visible else {
-                return Err(refuse(ctx, NO_SUCH_LISTING));
+                return match crate::api::retry_withdrawn_release(ctx, listing) {
+                    Ok(()) => {
+                        info(
+                            ctx,
+                            format!(
+                                "Listing #{listing} withdrawn. Any inventory it held is released \
+                                 back to its endpoint."
+                            ),
+                        );
+                        Ok(())
+                    }
+                    Err(e) => Err(refuse_market(ctx, &e)),
+                };
             };
             if !api::is_staff(ctx.w, ctx.actor)
                 && (l.is_personal() || !may_stock_for(ctx, l.vendor))

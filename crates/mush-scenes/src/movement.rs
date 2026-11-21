@@ -30,6 +30,23 @@ impl PlannedSceneEvent {
 }
 
 /// The events a move from `from` to `to` appends, destination entry first.
+///
+/// Concealed (`Flags::DARK`) actors who are not members of a scene are skipped
+/// for that scene so passive movement never leaks hidden visitors (such as DARK
+/// staff) into scene transcripts (EXT-P2-13). Scene members keep their existing
+/// recording behavior.
+pub(crate) fn events_for_move(
+    state: &ScenesState,
+    actor: ObjId,
+    actor_dark: bool,
+    from: Option<ObjId>,
+    to: ObjId,
+    at: i64,
+) -> Vec<PlannedSceneEvent> {
+    materialize(select(state, actor, actor_dark, from, to), actor, at)
+}
+
+#[cfg(test)]
 pub(crate) fn legacy_events(
     state: &ScenesState,
     actor: ObjId,
@@ -37,11 +54,13 @@ pub(crate) fn legacy_events(
     to: ObjId,
     at: i64,
 ) -> Vec<PlannedSceneEvent> {
-    materialize(select(state, from, to), actor, at)
+    events_for_move(state, actor, false, from, to, at)
 }
 
 fn select(
     state: &ScenesState,
+    actor: ObjId,
+    actor_dark: bool,
     from: Option<ObjId>,
     to: ObjId,
 ) -> [Option<(&SceneRecord, SceneEventKind)>; 2] {
@@ -54,6 +73,7 @@ fn select(
         state
             .active_scene_at(room)
             .filter(|scene| scene.status == SceneStatus::Active)
+            .filter(|scene| !actor_dark || scene.members().any(|m| m == actor))
     };
     [
         active(to).map(|scene| (scene, SceneEventKind::Joined)),

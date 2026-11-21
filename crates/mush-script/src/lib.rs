@@ -66,7 +66,7 @@ use smol_str::SmolStr;
 pub use runtime::{MIN_TIMER_DELAY_SECS, ScriptConfig, ScriptState};
 use runtime::{
     Trigger, collect_command_triggers, collect_hear_triggers, collect_move_triggers, drive,
-    has_runnable, recompile_object, recompile_script_attr, snapshot_registry,
+    has_runnable, initial_trigger_cap, recompile_object, recompile_script_attr, snapshot_registry,
 };
 
 /// The mush-script game module. Hand one to `Engine::with_modules`.
@@ -225,7 +225,8 @@ fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     else {
         return;
     };
-    let triggers = collect_hear_triggers(ctx.w, *room, *who, text, 0);
+    let limit = initial_trigger_cap(ctx.w);
+    let triggers = collect_hear_triggers(ctx.w, *room, *who, text, 0, limit);
     run(ctx, triggers);
 }
 
@@ -234,11 +235,13 @@ fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::Moved { who, from, to } = ev else {
         return;
     };
+    let limit = initial_trigger_cap(ctx.w);
     let mut triggers = Vec::new();
     if let Some(from) = from {
-        collect_move_triggers(&mut triggers, ctx.w, *from, *who, false, 0);
+        collect_move_triggers(&mut triggers, ctx.w, *from, *who, false, 0, limit);
     }
-    collect_move_triggers(&mut triggers, ctx.w, *to, *who, true, 0);
+    let remaining = limit.saturating_sub(triggers.len());
+    collect_move_triggers(&mut triggers, ctx.w, *to, *who, true, 0, remaining);
     run(ctx, triggers);
 }
 
@@ -255,7 +258,8 @@ impl CommandFallback for ScriptCommands {
         if verb.is_empty() {
             return false;
         }
-        let triggers = collect_command_triggers(w, actor, verb, arg);
+        let limit = initial_trigger_cap(w);
+        let triggers = collect_command_triggers(w, actor, verb, arg, limit);
         if triggers.is_empty() {
             return false;
         }

@@ -1465,6 +1465,10 @@ pub fn start(
         })?;
     }
 
+    // Draw the live match's CSPRNG seed once so the preflight check and live
+    // match record share the same opening seed.
+    let seed = seed_for(match_id, ctx.w.now());
+
     // Same immutable opening and recovery reserve before any checkout marker,
     // record, revision-root publication or task spawn.
     crate::arena::Arena::new_with_minds(
@@ -1473,7 +1477,7 @@ pub fn start(
             units: custody_units.clone(),
             pilots: pilots.clone(),
             resolution: arena_def::resolution_for(&catalog),
-            seed: seed_for(match_id, ctx.w.now()),
+            seed,
             mode,
             host: crate::arena::FieldHost::all_hostile(),
         },
@@ -1504,7 +1508,6 @@ pub fn start(
     // caller that already has a record - cut K - is refused unless that record
     // is in `Boarding`.
     let now_ms = ctx.w.now().saturating_mul(1_000);
-    let seed = seed_for(match_id, ctx.w.now());
     // 16b cut N.2: the same grouping `Arena::new` derives, from the same
     // triples and the same `[tacsim.arena].squad_size` (16b cut Z.1) — a
     // side's machine units (reflex or, since 17b cut L.2, mind:
@@ -1865,18 +1868,53 @@ fn seated_pilots(ctx: &Ctx<'_>, unit: ObjId) -> Vec<(ObjId, SmolStr)> {
         .unwrap_or_default()
 }
 
-/// A salt that makes two matches with the same id and the same world second —
-/// two servers in one process, which is every integration test in the tree —
-/// draw from different streams.
+/// Monotonic salt used ONLY by [`fallback_seed`] if the OS CSPRNG returns an error.
 static SEED_SALT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The match seed: the id, the world's second and a process-local salt, folded.
+/// Last-resort deterministic mixer used only if the OS CSPRNG returns an error.
+const fn fallback_seed(match_id: MatchId, world_now: i64, salt: u64) -> u64 {
+    match_id
+        .0
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .rotate_left(17)
+        ^ world_now
+            .cast_unsigned()
+            .wrapping_mul(0xBF58_476D_1CE4_E5B9)
+        ^ salt.wrapping_mul(0x94D0_49BB_1331_11EB).rotate_left(31)
+}
+
+/// Draw a live arena seed from `draw`, falling back cleanly (without panicking)
+/// to [`fallback_seed`] only if the OS entropy source errors, and mapping `0 -> 1`.
+fn seed_with_draw(
+    match_id: MatchId,
+    world_now: i64,
+    draw: impl FnOnce() -> Result<u64, ()>,
+) -> u64 {
+    let raw = match draw() {
+        Ok(entropy) => entropy,
+        Err(()) => {
+            let salt = SEED_SALT
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .wrapping_add(0x2545_F491_4F6C_DD1D);
+            tracing::warn!(
+                match_id = match_id.0,
+                "tacsim: OS CSPRNG unavailable for live arena seed; using mixed fallback"
+            );
+            fallback_seed(match_id, world_now, salt)
+        }
+    };
+    if raw == 0 { 1 } else { raw }
+}
+
+/// The match seed: 64 bits drawn from the OS CSPRNG (EXT-P2-11), with a
+/// non-panicking fallback if the OS entropy source returns an error.
 ///
 /// Doc 16 §3.1 derives every draw from `(match_seed, label)`, so what a seed owes
 /// is that a *replay* of one match's ledger re-derives that match's draws — which
-/// it does, because the seed is recorded on the match. It does **not** owe
-/// reproducibility from the id, and pretending it did would mean two servers
-/// started in the same second shared a stream.
+/// it does, because the seed is recorded on the match (`MatchRecord::seed`) and
+/// deterministic replays/trials pass a fixed seed (`FieldConfig::seed`). It does
+/// **not** owe reproducibility from the id, and live arenas must use unpredictable
+/// entropy so an observer cannot brute-force the seed from a `ContactId`.
 ///
 /// Never zero: the arena's fault-injection hooks are armed **by seed** and a seed
 /// of `0` disarms them, so a match with seed `0` would be a match no fault could
@@ -1884,16 +1922,10 @@ static SEED_SALT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// reason.
 #[must_use]
 pub fn seed_for(match_id: MatchId, world_now: i64) -> u64 {
-    let salt = SEED_SALT
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        .wrapping_add(0x2545_F491_4F6C_DD1D);
-    let mixed = match_id
-        .0
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .rotate_left(17)
-        ^ (world_now as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
-        ^ salt.wrapping_mul(0x94D0_49BB_1331_11EB).rotate_left(31);
-    if mixed == 0 { 1 } else { mixed }
+    use rand::TryRngCore as _;
+    seed_with_draw(match_id, world_now, || {
+        rand::rngs::OsRng.try_next_u64().map_err(|_| ())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2570,6 +2602,45 @@ mod tests {
         assert_ne!(seed_for(MatchId(1), 100), seed_for(MatchId(2), 100));
         // The same id in the same second, twice: two servers in one process.
         assert_ne!(seed_for(MatchId(1), 100), seed_for(MatchId(1), 100));
+    }
+
+    /// **EXT-P2-11**: live arena seeds draw from the OS CSPRNG (never matching the legacy
+    /// sequential salt formula), map `0 -> 1`, and fall back without panicking on OS RNG error.
+    #[test]
+    fn ext_p2_11_seed_uses_os_entropy_and_handles_zero_and_fallback() {
+        // Explicit entropy pass-through and zero remapping.
+        assert_eq!(seed_with_draw(MatchId(1), 100, || Ok(0)), 1);
+        assert_eq!(
+            seed_with_draw(MatchId(1), 100, || Ok(0xDEAD_BEEF_CAFE_BABE)),
+            0xDEAD_BEEF_CAFE_BABE
+        );
+
+        // Fallback on OS RNG error never panics, never returns 0, and varies across draws.
+        let fb1 = seed_with_draw(MatchId(1), 100, || Err(()));
+        let fb2 = seed_with_draw(MatchId(1), 100, || Err(()));
+        assert_ne!(fb1, 0);
+        assert_ne!(fb2, 0);
+        assert_ne!(fb1, fb2);
+
+        // Live seeds for identical inputs are non-zero, pairwise distinct, and outside the
+        // legacy predictable `(match_id, world_now, small salt)` table.
+        let legacy: std::collections::BTreeSet<u64> = (0_u64..1_024)
+            .map(|n| {
+                let salt = n.wrapping_add(0x2545_F491_4F6C_DD1D);
+                let mixed = fallback_seed(MatchId(1), 100, salt);
+                if mixed == 0 { 1 } else { mixed }
+            })
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..64 {
+            let s = seed_for(MatchId(1), 100);
+            assert_ne!(s, 0);
+            assert!(
+                !legacy.contains(&s),
+                "live seed {s:#x} matched legacy predictable salt table"
+            );
+            assert!(seen.insert(s), "duplicate CSPRNG seed {s:#x}");
+        }
     }
 
     /// **16b cut X.6**: a z-only difference is not a move. The arena sets a

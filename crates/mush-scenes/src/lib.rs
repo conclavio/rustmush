@@ -901,10 +901,14 @@ fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::Moved { who, from, to } = ev else {
         return;
     };
+    let actor_dark = ctx
+        .w
+        .get(*who)
+        .is_some_and(|o| o.flags.contains(mush_core::Flags::DARK));
     let events = ctx
         .w
         .module_state::<ScenesState>()
-        .map(|state| movement::legacy_events(state, *who, *from, *to, ctx.w.now()))
+        .map(|state| movement::events_for_move(state, *who, actor_dark, *from, *to, ctx.w.now()))
         .unwrap_or_default();
     for planned in events {
         let (scene, event) = planned.into_parts();

@@ -2214,3 +2214,127 @@ fn crit9_exact_lot_cross_endpoint_active_and_sale_in_force_release_are_refused()
     land_submit(&mut r.tw, &consume, 0x95).expect("consume lands");
     assert_eq!(lot_at(&mut r.tw, &r.families, lot), Some(bea.vault));
 }
+
+/// **EXT-P2-9 regression**: withdrawing an exact-lot listing durably persists its release
+/// authorization so neither a crash/reboot before `LotOp::Release` lands nor >10 sweeps of
+/// delayed release can strand the seller's exact lot; once the hold releases and reads
+/// `Gone`, the sweep prunes the durable record from both RAM and KV.
+#[test]
+fn ext_p2_9_withdrawn_exact_lot_survives_reboot_and_delayed_release_without_stranding() {
+    let mut r = rig();
+    let (sal, bea) = (r.sal, r.bea);
+    let lot = LotId(0x9a0);
+    mint_lot(&mut r.tw, &r.families, sal.vault, "iron", 10, lot);
+    let id = post_lot(&mut r, lot, 700, "", 0xa1);
+    assert!(
+        r.tw.engine()
+            .action_state()
+            .get(&r.families.lot_holds, &lot)
+            .expect("read hold")
+            .is_some(),
+        "exact lot is held after posting"
+    );
+
+    // Sal withdraws the listing, persisting `market:withdrawn:{id}` and deleting
+    // `market:listing:{id}`, and staging `LotOp::Release`.
+    let withdrawn = ok(&mut r.tw, sal.who, &format!("+market/withdraw {}", id.0));
+    assert!(
+        withdrawn.contains("its goods are yours to use again"),
+        "{withdrawn}"
+    );
+    let staged_release = take(&mut r.tw);
+    assert!(market(&r.tw).listing(id).is_none());
+    assert!(market(&r.tw).withdrawn_hold(id).is_some());
+
+    // Simulate crash BEFORE `staged_release` lands: fold persisted module ops and reboot.
+    let ops = r.tw.take_module_ops();
+    let boot = mush_testkit::fold_module_ops(ops);
+    let wkey = mush_market::withdrawn_hold_key(id);
+    assert!(
+        boot.get(mush_market::NS)
+            .is_some_and(|d| d.kv.iter().any(|(k, _)| k == &wkey)),
+        "market:withdrawn:{id} must be durably persisted in KV"
+    );
+    r.tw.modules_loaded(boot);
+
+    // After reboot, the listing is still gone, the hold is still live on the exact lot,
+    // AND the release authorization was rehydrated from KV!
+    assert!(market(&r.tw).listing(id).is_none());
+    assert!(
+        market(&r.tw).withdrawn_hold(id).is_some(),
+        "pending withdrawn hold must rehydrate across reboot"
+    );
+    assert!(
+        r.tw.engine()
+            .action_state()
+            .get(&r.families.lot_holds, &lot)
+            .expect("read hold")
+            .is_some(),
+        "exact lot hold still stands before release lands"
+    );
+
+    // Advance past > HOLD_RECHECK_SWEEPS (15 sweeps) with the release still delayed:
+    // the durable release authorization must NOT be prematurely pruned while the hold lives!
+    let mut now = r.tw.world().now();
+    for _ in 0..(mush_market::HOLD_RECHECK_SWEEPS + 5) {
+        now += 61;
+        at(&mut r.tw, now);
+    }
+    assert!(
+        market(&r.tw).withdrawn_hold(id).is_some(),
+        "live withdrawn hold must not be pruned after >10 sweeps"
+    );
+
+    // A stranger still receives existence-hiding NO_SUCH_LISTING on retry.
+    let stranger_retry = err(&mut r.tw, bea.who, &format!("+market/withdraw {}", id.0));
+    assert!(
+        stranger_retry.contains(mush_market::NO_SUCH_LISTING),
+        "{stranger_retry}"
+    );
+
+    // Both landing the original delayed release submission OR re-issuing `+market/withdraw`
+    // succeeds; verify retry staging via `+market/withdraw` and landing it frees the lot!
+    let retried = ok(&mut r.tw, sal.who, &format!("+market/withdraw {}", id.0));
+    assert!(
+        retried.contains("its goods are yours to use again"),
+        "{retried}"
+    );
+    let retry_submit = take(&mut r.tw);
+    assert_eq!(
+        retry_submit.parameters["op"],
+        staged_release.parameters["op"]
+    );
+    land_submit(&mut r.tw, &retry_submit, 0xa2)
+        .expect("delayed exact-lot release must succeed after reboot and >10 sweeps");
+
+    assert!(
+        r.tw.engine()
+            .action_state()
+            .get(&r.families.lot_holds, &lot)
+            .expect("read hold")
+            .is_none(),
+        "exact lot hold is now released"
+    );
+
+    // The seller can immediately re-list the exact lot (never stranded!).
+    let relisted = post_lot(&mut r, lot, 750, "", 0xa3);
+    assert_ne!(relisted, id);
+
+    // On the next sweep after observing HoldStanding::Gone, the durable `market:withdrawn:{id}`
+    // record is pruned from BOTH RAM and KV.
+    let _ = r.tw.take_module_ops();
+    now += 61;
+    at(&mut r.tw, now);
+    assert!(
+        market(&r.tw).withdrawn_hold(id).is_none(),
+        "withdrawn hold pruned from RAM once observed Gone"
+    );
+    let prune_ops = r.tw.take_module_ops();
+    assert!(
+        prune_ops.iter().any(|op| {
+            op.ns == mush_market::NS
+                && matches!(&op.op, mush_core::ModuleWrite::Del { key } if key == &wkey)
+        }),
+        "sweep must emit KV Del for market:withdrawn:{id} once Gone: {prune_ops:?}"
+    );
+}

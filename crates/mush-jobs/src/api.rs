@@ -269,11 +269,31 @@ pub fn add_comment(ctx: &mut Ctx<'_>, id: u64, who: ObjId, text: &str) -> Result
 }
 
 /// Read one note by character and category (case-insensitive category).
+///
+/// Prefers the player-visible partition when both a public and a staff-only
+/// note exist under the same category; use [`get_public_note`] or
+/// [`get_staff_note`] to inspect a specific partition unambiguously.
 #[must_use]
 pub fn get_note<'w>(w: &'w World, owner: ObjId, category: &str) -> Option<&'w Note> {
-    w.module_state::<JobsState>()?
-        .notes
-        .get(&(owner, canon_category(category)))
+    let st = w.module_state::<JobsState>()?;
+    let cat = canon_category(category);
+    st.notes
+        .get(&(owner, false, cat.clone()))
+        .or_else(|| st.notes.get(&(owner, true, cat)))
+}
+
+/// Read one player-visible note by character and category (case-insensitive).
+#[must_use]
+pub fn get_public_note<'w>(w: &'w World, owner: ObjId, category: &str) -> Option<&'w Note> {
+    let st = w.module_state::<JobsState>()?;
+    st.notes.get(&(owner, false, canon_category(category)))
+}
+
+/// Read one staff-only note by character and category (case-insensitive).
+#[must_use]
+pub fn get_staff_note<'w>(w: &'w World, owner: ObjId, category: &str) -> Option<&'w Note> {
+    let st = w.module_state::<JobsState>()?;
+    st.notes.get(&(owner, true, canon_category(category)))
 }
 
 /// The registered queue spec for `name` (case-insensitive), if any.

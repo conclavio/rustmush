@@ -2229,3 +2229,46 @@ pub struct Service {
 /// The most services one venue's board shows (doc 48 cut EX.5): a page, and the bound on a
 /// host's answer.
 pub const MAX_SERVICES_SHOWN: usize = 32;
+
+/// `market:withdrawn:{id}` — a withdrawn hold-backed listing's durable release
+/// authorization (EXT-P2-9).
+///
+/// Persisted when `api::withdraw_listing` deletes a hold-backed listing before its
+/// `LotOp::Release` authoritative action lands, so a crash/reboot or delayed release
+/// refusal can never strand an exact-lot `LotHold` (which has no expiry) or a pooled
+/// reservation. Pruned from RAM and KV only once the sweep observes `HoldStanding::Gone`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "WithdrawnHoldWire")]
+pub struct WithdrawnHold {
+    /// The withdrawn listing's id (must agree with `market:withdrawn:{id}` on load).
+    pub listing: ListingId,
+    /// The inventory endpoint holding the reservation or exact lot.
+    pub endpoint: LotEndpoint,
+    /// The commodity of the held stock.
+    pub commodity: LotCommodity,
+    /// The exact lot held, or `None` for a pooled hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot: Option<mush_inventory::LotId>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct WithdrawnHoldWire {
+    listing: ListingId,
+    endpoint: LotEndpoint,
+    commodity: LotCommodity,
+    #[serde(default)]
+    lot: Option<mush_inventory::LotId>,
+}
+
+impl TryFrom<WithdrawnHoldWire> for WithdrawnHold {
+    type Error = RecordError;
+
+    fn try_from(w: WithdrawnHoldWire) -> Result<WithdrawnHold, RecordError> {
+        Ok(WithdrawnHold {
+            listing: w.listing,
+            endpoint: w.endpoint,
+            commodity: w.commodity,
+            lot: w.lot,
+        })
+    }
+}

@@ -207,25 +207,35 @@ fn hull_admits(w: &World, actor: ObjId, def: &PortDef, hull: ObjId) -> Result<()
 /// **Whether `hull` lies at `def`'s port** (doc 48e, exchange G11: factored out of
 /// [`hull_admits`]): docked there, or the refusal saying where she is.
 fn hull_here(w: &World, def: &PortDef, hull: ObjId) -> Result<(), VenueRefusal> {
-    let port = port_name(def);
+    hull_here_at(w, Some(def.venue.as_str()), &port_name(def), hull)
+}
+
+/// **Whether `hull` is docked at `port_venue`** (or always refused with her real location when
+/// `port_venue` is `None`, i.e., a non-port venue — EXT-P2-10).
+fn hull_here_at(
+    w: &World,
+    port_venue: Option<&str>,
+    place: &str,
+    hull: ObjId,
+) -> Result<(), VenueRefusal> {
     let name = name_of(w, hull);
     match berth_of(w, hull) {
-        Berth::Docked { def: there, .. } if there.venue == def.venue => Ok(()),
+        Berth::Docked { def: there, .. } if port_venue == Some(there.venue.as_str()) => Ok(()),
         Berth::Docked { def: there, .. } => Err(refusal(
             HOLD_ELSEWHERE
                 .replace("{name}", &name)
                 .replace("{other}", &port_name(there))
-                .replace("{port}", &port),
+                .replace("{port}", place),
         )),
         Berth::UnderWay => Err(refusal(
             HOLD_UNDER_WAY
                 .replace("{name}", &name)
-                .replace("{port}", &port),
+                .replace("{port}", place),
         )),
         Berth::Elsewhere => Err(refusal(
             HOLD_NOT_HERE
                 .replace("{name}", &name)
-                .replace("{port}", &port),
+                .replace("{port}", place),
         )),
     }
 }
@@ -349,58 +359,80 @@ impl VenueGate for PortVenueGate {
         endpoint: Option<EndpointRef>,
         presence: Presence,
     ) -> Result<(), VenueRefusal> {
-        let Some((def, _)) = port_of_venue(w, venue) else {
-            // Doc 48 cut EX.1b (Q-48-49, doc 48b G-6): a venue no port authors no longer fails
-            // open. It trades only where the game places it, under the asker's own presence.
-            return placed_admit(w, actor, venue, presence);
-        };
-        if presence == Presence::Here {
-            let here = w
-                .get(actor)
-                .and_then(|o| o.location)
-                .and_then(|room| self.venue_of_room(w, room));
-            // Doc 48 cut EX.3 (the lead's ruling): a scrap vault's owner sells from it at its
-            // venue wherever they stand, offline included.
-            let scrap_owner = endpoint.is_some_and(|endpoint| {
-                crate::port::bay_work::scrap::scrap_vault_owner(
-                    w,
-                    endpoint.vault(),
-                    def.venue.as_str(),
-                ) == Some(actor)
-            });
-            if here.as_ref() != Some(venue) && !agent_admitted(w, actor, def) && !scrap_owner {
-                return Err(refusal(NOT_IN_PORT.replace("{port}", &port_name(def))));
+        let port = port_of_venue(w, venue).map(|(def, _)| def);
+        match port {
+            Some(def) => {
+                if presence == Presence::Here {
+                    let here = w
+                        .get(actor)
+                        .and_then(|o| o.location)
+                        .and_then(|room| self.venue_of_room(w, room));
+                    // Doc 48 cut EX.3 (the lead's ruling): a scrap vault's owner sells from it at
+                    // its venue wherever they stand, offline included.
+                    let scrap_owner = endpoint.is_some_and(|endpoint| {
+                        crate::port::bay_work::scrap::scrap_vault_owner(
+                            w,
+                            endpoint.vault(),
+                            def.venue.as_str(),
+                        ) == Some(actor)
+                    });
+                    if here.as_ref() != Some(venue)
+                        && !agent_admitted(w, actor, def)
+                        && !scrap_owner
+                    {
+                        return Err(refusal(NOT_IN_PORT.replace("{port}", &port_name(def))));
+                    }
+                }
+            }
+            None => {
+                // Doc 48 cut EX.1b (Q-48-49, doc 48b G-6): a venue no port authors no longer fails
+                // open. It trades only where the game places it, under the asker's own presence.
+                placed_admit(w, actor, venue, presence)?;
             }
         }
+        // EXT-P2-10: enforce works-escrow, locker, and governed-hold rules for placed non-port
+        // venues as well as port venues.
         if let Some(endpoint) = endpoint
             && crate::port::works::is_works_escrow(w, endpoint.vault())
             && !crate::port::works::escrow_buy_allowed(w, actor, venue, endpoint.vault())
         {
             return Err(refusal(MOVE_WORKS_ESCROW.to_owned()));
         }
+        let place_name = port.map_or_else(|| venue.as_str().to_owned(), port_name);
         if let Some(endpoint) = endpoint
             && crate::port::locker::is_locker(w, endpoint)
             && crate::port::locker::locker_of(w, actor, venue)
                 .is_none_or(|locker| locker.vault != endpoint.vault().0)
         {
-            return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", &port_name(def))));
+            return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", &place_name)));
         }
         match (endpoint, presence) {
             (Some(endpoint), _) => match governed_hold(w, endpoint) {
-                Some(view) => hull_admits(w, actor, def, view.hull()),
+                Some(view) => match port {
+                    Some(def) => hull_admits(w, actor, def, view.hull()),
+                    None => {
+                        if !trade_hulls(w, actor).contains(&view.hull()) {
+                            return Err(refusal(NOT_YOUR_CHARTER.to_owned()));
+                        }
+                        hull_here_at(w, None, venue.as_str(), view.hull())
+                    }
+                },
                 // An ungoverned endpoint is the market's own rules' to judge.
                 None => Ok(()),
             },
-            (None, Presence::Ship(hull)) => hull_admits(w, actor, def, hull),
+            (None, Presence::Ship(hull)) => match port {
+                Some(def) => hull_admits(w, actor, def, hull),
+                None => Err(refusal(NOT_AT_VENUE.replace("{venue}", venue.as_str()))),
+            },
             (None, Presence::Here) => Ok(()),
         }
     }
 
     /// Doc 48e (exchange G11; 48d H-01): a governed hold takes delivery only while her hull is
     /// docked at the venue's port (Q-48-6, local delivery), so a sale into a personal bid never
-    /// lands in a hold that has sailed or berths elsewhere. Doc 48e (exchange G15; 48d H-06): a
-    /// scrap vault takes only what the yard scraps, so no purchase or bid delivers into one. A
-    /// locker or another vault is the market's own rules' to judge.
+    /// lands in a hold that has sailed, berths elsewhere, or targets a non-port venue (EXT-P2-10).
+    /// Doc 48e (exchange G15; 48d H-06): a scrap vault takes only what the yard scraps, so no
+    /// purchase or bid delivers into one; a locker delivers only at its own venue.
     fn receives_at(
         &self,
         w: &World,
@@ -415,13 +447,26 @@ impl VenueGate for PortVenueGate {
         if crate::port::bay_work::scrap::is_scrap_vault(w, endpoint.vault()) {
             return Err(refusal(MOVE_INTO_SCRAP.to_owned()));
         }
+        if crate::port::locker::is_locker(w, endpoint) {
+            let at_this_venue = w.module_state::<TacsimStore>().is_some_and(|store| {
+                store
+                    .lockers
+                    .values()
+                    .any(|l| l.vault == endpoint.vault().0 && l.venue.as_str() == venue.as_str())
+            });
+            if !at_this_venue {
+                let place = port_of_venue(w, venue)
+                    .map_or_else(|| venue.as_str().to_owned(), |(def, _)| port_name(def));
+                return Err(refusal(LOCKER_ELSEWHERE.replace("{port}", &place)));
+            }
+        }
         let Some(view) = governed_hold(w, endpoint) else {
             return Ok(());
         };
-        let Some((def, _)) = port_of_venue(w, venue) else {
-            return Ok(());
-        };
-        hull_here(w, def, view.hull())
+        match port_of_venue(w, venue) {
+            Some((def, _)) => hull_here(w, def, view.hull()),
+            None => hull_here_at(w, None, venue.as_str(), view.hull()),
+        }
     }
 
     fn governed(&self, w: &World, endpoint: EndpointRef) -> bool {
