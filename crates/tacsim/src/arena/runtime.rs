@@ -232,6 +232,18 @@ impl Arena {
         );
     }
 
+    /// Whether `unit`'s carried rule lease has an expiry interval that no longer
+    /// matches its live core's think cadence (for example after core repair or unjam).
+    pub(crate) fn lease_period_mismatches_live_core(&self, unit: ObjId) -> bool {
+        let live_period_ms = self.mind_profile(unit).think_ms;
+        self.profiles
+            .get(&unit)
+            .and_then(|runtime| runtime.lease.sample())
+            .is_some_and(|sample| {
+                sample.lands_ms.checked_add(live_period_ms) != Some(sample.expires_ms)
+            })
+    }
+
     /// Accept all sampled gates atomically after the pending token and all station
     /// epochs have passed. A missing sample deliberately clears the previous one.
     pub(crate) fn land_rule_sample(
@@ -242,6 +254,10 @@ impl Arena {
         period_ms: i64,
     ) -> Result<(), SchemaError> {
         self.invalidate_rule_sample(unit);
+        let live_period_ms = self.mind_profile(unit).think_ms;
+        if sample.is_some() && period_ms != live_period_ms {
+            return Err(invalid("sample period differs from live core cadence"));
+        }
         let runtime = self
             .profiles
             .get_mut(&unit)
@@ -251,7 +267,7 @@ impl Arena {
             &runtime.program,
             runtime.generation,
             t_ms,
-            t_ms.saturating_add(period_ms),
+            t_ms.saturating_add(live_period_ms),
         )?;
         if let Some(sample) = runtime.lease.sample() {
             self.due.schedule(

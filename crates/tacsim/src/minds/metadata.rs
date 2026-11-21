@@ -4,10 +4,16 @@
 //! declaration, never a licence or authority grant. One isolated, disposable
 //! engine can evaluate `card()` using only bounded pure data operations.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
 use mush_mind::rhai::{
-    Array, Dynamic, Engine, INT, ImmutableString, Map, Module, ParseErrorType, Scope,
+    Array, Dynamic, Engine, EvalAltResult, ImmutableString, Map, Module, ParseErrorType, Position,
+    Scope,
     module_resolvers::DummyModuleResolver,
-    packages::{ArithmeticPackage, BasicArrayPackage, BasicMapPackage, LogicPackage, Package},
+    packages::{ArithmeticPackage, LogicPackage, Package},
 };
 use mush_roll::{Envelope, RollError};
 use serde_json::Value;
@@ -15,6 +21,8 @@ use serde_json::Value;
 const MAX_METADATA_OPS: u64 = 2_000;
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_METADATA_NODES: usize = 4_096;
+const MAX_METADATA_DEPTH: usize = mush_mind::MAX_CONTAINER_DEPTH;
+const MAX_METADATA_ERR_BYTES: usize = 256;
 
 /// Validate optional `const MIND` and `fn card()` against the exact saved envelope.
 /// No library name, world state, station function or live engine is accessible.
@@ -50,7 +58,11 @@ pub(crate) fn validate_retained_registry(
 /// Retained archival validity keeps the original two-argument entry point,
 /// without installing the current station API or granting executability.
 pub(super) fn require_retained_think(source: &str) -> Result<(), RollError> {
-    let ast = metadata_engine()
+    if source.len() > mush_roll::MAX_SOURCE_BYTES || source.contains('\0') {
+        return Err(invalid("source", "maximum 32 KiB; NUL is forbidden"));
+    }
+    let (engine, _) = metadata_engine();
+    let ast = engine
         .compile(source)
         .map_err(|error| invalid("source", error.to_string()))?;
     if !ast
@@ -66,7 +78,7 @@ fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), R
     if source.len() > mush_roll::MAX_SOURCE_BYTES || source.contains('\0') {
         return Err(invalid("source", "maximum 32 KiB; NUL is forbidden"));
     }
-    let engine = metadata_engine();
+    let (engine, limit_tripped) = metadata_engine();
     let mut ast = engine
         .compile(source)
         .map_err(|error| invalid("source", error.to_string()))?;
@@ -86,6 +98,7 @@ fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), R
     if declared {
         let mut declarations = ast
             .iter_literal_variables(true, true)
+            .map(|(name, is_const, value)| (name, is_const, SafeDynamic(value)))
             .filter(|(name, _, _)| *name == "MIND");
         let Some((_, true, value)) = declarations.next() else {
             return Err(invalid("MIND", "expected a literal const MIND map"));
@@ -93,7 +106,7 @@ fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), R
         if declarations.next().is_some() {
             return Err(invalid("MIND", "declare the header exactly once"));
         }
-        check_manifest(&bounded_json(value)?, envelope, api)?;
+        check_manifest(&bounded_json(&value.0)?, envelope, api)?;
     }
 
     let card_functions = ast
@@ -105,14 +118,24 @@ fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), R
         if card_functions.as_slice() != [0] {
             return Err(invalid("card", "expected exactly one fn card()"));
         }
-        let mut scope: Scope<'_> = ast.iter_literal_variables(true, false).collect();
+        let mut scope = SafeScope(Scope::new());
+        for (name, _, value) in ast.iter_literal_variables(true, false) {
+            scope.0.push_constant_dynamic(name, value);
+        }
         // call_fn normally evaluates AST statements first. Removing them is
         // essential: `while true {}` or a top-level station call must not run.
+        // Strip every script function other than `fn card()` so metadata cannot
+        // invoke helper functions or bind `this` via method-call syntax.
         ast.clear_statements();
-        let schema: Dynamic = engine
-            .call_fn(&mut scope, &ast, "card", ())
-            .map_err(|error| invalid("card", error.to_string()))?;
-        if bounded_json(schema)? != envelope.schema {
+        ast.retain_functions(|_, _, name, params| name == "card" && params == 0);
+        let schema = match engine.call_fn::<Dynamic>(&mut scope.0, &ast, "card", ()) {
+            Ok(value) => SafeDynamic(value),
+            Err(error) => return Err(invalid("card", sanitize_eval_error(error))),
+        };
+        if limit_tripped.load(Ordering::Relaxed) {
+            return Err(invalid("card", "metadata container limit exceeded"));
+        }
+        if bounded_json(&schema.0)? != envelope.schema {
             return Err(invalid(
                 "card",
                 "schema differs from the draft envelope; update the draft schema before saving",
@@ -122,13 +145,15 @@ fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), R
     Ok(())
 }
 
-fn metadata_engine() -> Engine {
+fn metadata_engine() -> (Engine, Arc<AtomicBool>) {
     let mut engine = Engine::new_raw();
-    // No LanguageCore/Time package: neither sleep nor clocks are registered.
+    // Only pure scalar arithmetic and logic packages are registered.
+    // No LanguageCore/Time package (no sleep/clocks) and no BasicArrayPackage or
+    // BasicMapPackage (blocking Array::pad unchecked resize wraparound,
+    // deprecated string-name callback methods, and recursive container helpers;
+    // array/map literals and indexing remain native Rhai syntax).
     engine.register_global_module(ArithmeticPackage::new().as_shared_module());
     engine.register_global_module(LogicPackage::new().as_shared_module());
-    engine.register_global_module(BasicArrayPackage::new().as_shared_module());
-    engine.register_global_module(BasicMapPackage::new().as_shared_module());
     // Compile unrelated think bodies containing stock:: helpers, but do not
     // expose their implementations to metadata execution.
     engine.register_static_module("stock", Module::new().into());
@@ -146,18 +171,149 @@ fn metadata_engine() -> Engine {
     engine.set_strict_variables(true);
     engine.set_fail_on_invalid_map_property(true);
     engine.set_allow_anonymous_fn(false);
+    engine.set_fast_operators(false);
     engine.set_max_operations(MAX_METADATA_OPS);
-    engine.set_max_call_levels(4);
-    engine.set_max_expr_depths(48, 24);
+    engine.set_max_call_levels(1);
+    engine.set_max_expr_depths(24, 24);
     engine.set_max_variables(64);
     engine.set_max_functions(32);
     engine.set_max_modules(0);
     engine.set_max_map_size(256);
     engine.set_max_array_size(256);
     engine.set_max_string_size(8 * 1024);
+    let ops_spent = Arc::new(AtomicU64::new(0));
+    let limit_tripped = Arc::new(AtomicBool::new(false));
+    let progress_ops = Arc::clone(&ops_spent);
+    let progress_limit = Arc::clone(&limit_tripped);
+    engine.on_progress(move |_ops| {
+        if progress_limit.load(Ordering::Relaxed) {
+            return Some(Dynamic::from("limit"));
+        }
+        if progress_ops.fetch_add(1, Ordering::Relaxed) >= MAX_METADATA_OPS {
+            Some(Dynamic::from("ops"))
+        } else {
+            None
+        }
+    });
+    let var_limit = Arc::clone(&limit_tripped);
+    #[allow(deprecated)]
+    engine.on_var(move |name, _index, ctx| {
+        if let Some(val) = ctx.scope().get(name)
+            && (val.is_array() || val.is_map())
+            && let Err(err) = check_depth(val, MAX_METADATA_DEPTH)
+        {
+            var_limit.store(true, Ordering::Relaxed);
+            return Err(err);
+        }
+        Ok(None)
+    });
     engine.on_print(|_| {});
     engine.on_debug(|_, _, _| {});
-    engine
+    (engine, limit_tripped)
+}
+
+struct SafeDynamic(Dynamic);
+
+impl Drop for SafeDynamic {
+    fn drop(&mut self) {
+        drop_dynamic_iteratively(std::mem::take(&mut self.0));
+    }
+}
+
+struct SafeScope<'a>(Scope<'a>);
+
+impl Drop for SafeScope<'_> {
+    fn drop(&mut self) {
+        for (_, value, _) in std::mem::take(&mut self.0) {
+            drop_dynamic_iteratively(value);
+        }
+    }
+}
+
+fn drop_dynamic_iteratively(value: Dynamic) {
+    if !value.is_array() && !value.is_map() {
+        return;
+    }
+    let mut stack = vec![value];
+    while let Some(current) = stack.pop() {
+        if current.is_array() {
+            if let Some(array) = current.try_cast::<Array>() {
+                for item in array {
+                    if item.is_array() || item.is_map() {
+                        stack.push(item);
+                    }
+                }
+            }
+        } else if current.is_map()
+            && let Some(map) = current.try_cast::<Map>()
+        {
+            for (_, item) in map {
+                if item.is_array() || item.is_map() {
+                    stack.push(item);
+                }
+            }
+        }
+    }
+}
+
+fn check_depth(value: &Dynamic, max_depth: usize) -> Result<(), Box<EvalAltResult>> {
+    if let Some(array) = value.read_lock::<Array>() {
+        if max_depth == 0 {
+            return Err(Box::new(EvalAltResult::ErrorDataTooLarge(
+                "Container nesting depth".to_owned(),
+                Position::NONE,
+            )));
+        }
+        for item in array.iter() {
+            check_depth(item, max_depth - 1)?;
+        }
+    } else if let Some(map) = value.read_lock::<Map>() {
+        if max_depth == 0 {
+            return Err(Box::new(EvalAltResult::ErrorDataTooLarge(
+                "Container nesting depth".to_owned(),
+                Position::NONE,
+            )));
+        }
+        for item in map.values() {
+            check_depth(item, max_depth - 1)?;
+        }
+    }
+    Ok(())
+}
+
+fn sanitize_eval_error(mut error: Box<EvalAltResult>) -> String {
+    let mut runtime_payload = false;
+    let mut current = &mut *error;
+    loop {
+        match current {
+            EvalAltResult::ErrorRuntime(payload, _) => {
+                drop_dynamic_iteratively(std::mem::take(payload));
+                runtime_payload = true;
+                break;
+            }
+            EvalAltResult::ErrorTerminated(payload, _) | EvalAltResult::Return(payload, _) => {
+                drop_dynamic_iteratively(std::mem::take(payload));
+                break;
+            }
+            EvalAltResult::ErrorInFunctionCall(_, _, inner, _)
+            | EvalAltResult::ErrorInModule(_, inner, _) => {
+                current = &mut **inner;
+            }
+            _ => break,
+        }
+    }
+    if runtime_payload {
+        return "card evaluation raised a runtime error".to_owned();
+    }
+    let mut text = error.to_string();
+    if text.len() > MAX_METADATA_ERR_BYTES {
+        let mut cut = MAX_METADATA_ERR_BYTES;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+    }
+    text
 }
 
 fn check_manifest(value: &Value, envelope: &Envelope, api: u32) -> Result<(), RollError> {
@@ -196,7 +352,7 @@ fn check_manifest(value: &Value, envelope: &Envelope, api: u32) -> Result<(), Ro
     Ok(())
 }
 
-fn bounded_json(value: Dynamic) -> Result<Value, RollError> {
+fn bounded_json(value: &Dynamic) -> Result<Value, RollError> {
     let mut remaining = MAX_METADATA_NODES;
     let value = json_value(value, 0, &mut remaining)?;
     let encoded =
@@ -207,30 +363,33 @@ fn bounded_json(value: Dynamic) -> Result<Value, RollError> {
     Ok(value)
 }
 
-fn json_value(value: Dynamic, depth: usize, remaining: &mut usize) -> Result<Value, RollError> {
-    if depth > 16 || *remaining == 0 {
-        return Err(invalid("metadata", "maximum depth 16 and 4096 values"));
+fn json_value(value: &Dynamic, depth: usize, remaining: &mut usize) -> Result<Value, RollError> {
+    if *remaining == 0 {
+        return Err(invalid("metadata", "maximum depth 8 and 4096 values"));
     }
     *remaining -= 1;
     if value.is_unit() {
         Ok(Value::Null)
-    } else if value.is::<bool>() {
-        Ok(Value::Bool(value.cast::<bool>()))
-    } else if value.is::<INT>() {
-        Ok(Value::from(value.cast::<INT>()))
-    } else if value.is::<ImmutableString>() {
-        Ok(Value::String(value.cast::<ImmutableString>().to_string()))
-    } else if value.is::<Array>() {
-        value
-            .cast::<Array>()
-            .into_iter()
+    } else if let Ok(flag) = value.as_bool() {
+        Ok(Value::Bool(flag))
+    } else if let Ok(int) = value.as_int() {
+        Ok(Value::from(int))
+    } else if let Some(text) = value.read_lock::<ImmutableString>() {
+        Ok(Value::String(text.to_string()))
+    } else if let Some(array) = value.read_lock::<Array>() {
+        if depth >= MAX_METADATA_DEPTH {
+            return Err(invalid("metadata", "maximum depth 8 and 4096 values"));
+        }
+        array
+            .iter()
             .map(|item| json_value(item, depth + 1, remaining))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array)
-    } else if value.is::<Map>() {
-        value
-            .cast::<Map>()
-            .into_iter()
+    } else if let Some(map) = value.read_lock::<Map>() {
+        if depth >= MAX_METADATA_DEPTH {
+            return Err(invalid("metadata", "maximum depth 8 and 4096 values"));
+        }
+        map.iter()
             .map(|(key, item)| {
                 json_value(item, depth + 1, remaining).map(|value| (key.to_string(), value))
             })
@@ -319,5 +478,81 @@ mod tests {
             let source = format!("fn card() {{ {body} }} fn think(v,c) {{}}");
             assert!(validate(&source, &envelope()).is_err(), "{body}");
         }
+    }
+
+    #[test]
+    fn p2_tsc_1_card_blocks_array_pad_string_callbacks_and_deep_nesting() {
+        let cases = [
+            // CRIT-6: Array::pad unchecked resize wraparound.
+            "fn card() { let a = [1, 2]; a.pad(9223372036854775807, [1, 2]); #{sections: []} } fn think(v,c) {}",
+            // HIGH-16: deprecated string-name callback methods bypassing Fn/budget guards.
+            "fn f(x) { let i = 0; while i < 500 { i += 1; } x } fn card() { let a = [1, 2, 3, 4]; a.map(\"f\"); #{sections: []} } fn think(v,c) {}",
+            "fn f(x) { true } fn card() { let a = [1, 2, 3]; a.filter(\"f\"); #{sections: []} } fn think(v,c) {}",
+            "fn f(a, b) { a + b } fn card() { let a = [1, 2, 3]; a.reduce(\"f\"); #{sections: []} } fn think(v,c) {}",
+            "fn cmp(a, b) { let i = 0; while i < 500 { i += 1; } 0 } fn card() { let a = [3, 2, 1]; a.sort(\"cmp\"); #{sections: []} } fn think(v,c) {}",
+            "fn cmp(a, b) { true } fn card() { let a = [1, 1, 2]; a.dedup(\"cmp\"); #{sections: []} } fn think(v,c) {}",
+            "fn f(x) { true } fn card() { let a = [1, 2]; a.drain(\"f\"); #{sections: []} } fn think(v,c) {}",
+            "fn f(x) { true } fn card() { let a = [1, 2]; a.retain(\"f\"); #{sections: []} } fn think(v,c) {}",
+            // CRIT-7: alternating Array/Map nesting via while loop, straight-line, fast-op +=, or method `this`.
+            "fn card() { let x = #{}; let i = 0; while i < 250 { i += 1; x = #{a: [x]}; } x } fn think(v,c) {}",
+            "fn card() { let x = #{}; x = [#{a: x}]; x = [#{a: x}]; x = [#{a: x}]; x = [#{a: x}]; x = [#{a: x}]; x } fn think(v,c) {}",
+            "fn card() { let a = []; let i = 0; while i < 50 { i += 1; let b = []; b += a; a = b; } a } fn think(v,c) {}",
+            "fn wrap() { let i = 0; while i < 250 { i += 1; this = #{a: [this]}; } } fn card() { let x = #{}; x.wrap(); x } fn think(v,c) {}",
+            "fn card() { if this != () { let i = 0; while i < 250 { i += 1; this = #{a: [this]}; } return; } let x = #{}; x.card(); x } fn think(v,c) {}",
+            // CRIT-7: static container literals past MAX_METADATA_DEPTH (8) and past expr depth (24).
+            "fn card() { [[[[[[[[[1]]]]]]]]] } fn think(v,c) {}",
+            "fn card() { [[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]] } fn think(v,c) {}",
+            // Trying to catch depth/ops failure inside card() must not recover.
+            "fn card() { try { let x = #{}; let i = 0; while i < 20 { i += 1; x = #{a: [x]}; } } catch (e) {} #{sections: []} } fn think(v,c) {}",
+            "fn card() { try { while true {} } catch (e) {} #{sections: []} } fn think(v,c) {}",
+            // Deep literal constant referenced from card().
+            "const DEEP = [[[[[[[[[1]]]]]]]]]; fn card() { let x = DEEP; #{sections: []} } fn think(v,c) {}",
+            // ErrorRuntime container payload dropped iteratively and formatted safely.
+            "fn card() { let x = [[[[[[[[1]]]]]]]]; throw x; } fn think(v,c) {}",
+        ];
+        let env = envelope();
+        for source in cases {
+            let err = validate(source, &env).expect_err(source);
+            assert!(
+                matches!(err, RollError::Invalid { .. }),
+                "expected RollError::Invalid for {source}: {err:?}"
+            );
+            assert!(
+                validate_retained_registry(source, &env).is_err(),
+                "retained registry validation must also refuse: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn p2_tsc_1_valid_full_depth_card_schema_still_passes() {
+        let mut env = envelope();
+        env.schema = json!({
+            "sections": [
+                {
+                    "id": "fire",
+                    "label": "Fire",
+                    "station": "fire",
+                    "fields": [
+                        {
+                            "id": "mode",
+                            "label": "Mode",
+                            "widget": {
+                                "kind": "choice",
+                                "choices": ["alpha", "bravo"],
+                                "default": "alpha",
+                                "help": "Select fire posture"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+        let source = format!(
+            "{} fn card() {{ let widget = #{{ kind: \"choice\", choices: [\"alpha\", \"bravo\"], \"default\": \"alpha\", help: \"Select fire posture\" }}; let field = #{{ id: \"mode\", label: \"Mode\", widget: widget }}; #{{ sections: [ #{{ id: \"fire\", label: \"Fire\", station: \"fire\", fields: [field] }} ] }} }} fn think(v, c) {{}}",
+            header()
+        );
+        let result = validate(&source, &env);
+        assert!(result.is_ok(), "{result:?}");
     }
 }

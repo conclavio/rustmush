@@ -2865,14 +2865,22 @@ impl Arena {
         // the complete sample. Ordinary intents still carry independent channel
         // epochs: a stale helm answer must not suppress a current Fire/Sensors
         // intent or silently discard the mind's otherwise valid memory landing.
-        if Channel::ALL
-            .iter()
-            .any(|channel| self.epochs.current(unit, *channel) != answer.epoch(*channel))
+        // Likewise, if the hull's live core class or cadence changed while this
+        // think was in flight (e.g. DegradeCore, DestroyCore, or part effects),
+        // the frozen sample's expiry belongs to the old cadence and must be
+        // cleared rather than persisted onto the live runtime lease.
+        let live_class = self.mind_class(unit);
+        let live_period_ms = self.classes.row(live_class).think_ms;
+        if answer.profile_class != live_class
+            || answer.period_ms != live_period_ms
+            || Channel::ALL
+                .iter()
+                .any(|channel| self.epochs.current(unit, *channel) != answer.epoch(*channel))
         {
             answer.rule_sample = None;
         }
         if self
-            .land_rule_sample(unit, answer.rule_sample.take(), t_ms, answer.period_ms)
+            .land_rule_sample(unit, answer.rule_sample.take(), t_ms, live_period_ms)
             .is_err()
         {
             self.traces.mark_fault(unit, think_seq, "rules");
