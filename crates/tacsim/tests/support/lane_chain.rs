@@ -46,8 +46,8 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
 ];
 
 /// **Doc 50 cut OP.7b (lane v51): the Republic Customs store taken out**: the customs office's
-/// vendor row at Stickney, and its capital back at 10,000, so a strip chain rebuilds a lane
-/// before v51 (idempotent). The chain's head.
+/// vendor row at Stickney, its capital back at 10,000 and its acceptor role off, so a strip chain
+/// rebuilds a lane before v51 (idempotent). The chain's head.
 pub fn strip_customs_store(doc: &mut Value) {
     let Some(port) = doc
         .get_mut("entries")
@@ -65,6 +65,9 @@ pub fn strip_customs_store(doc: &mut Value) {
             .filter(|o| o.get("id").and_then(Value::as_str) == Some("republic_customs"))
         {
             org["capital_major"] = 10_000.into();
+            if let Some(org) = org.as_object_mut() {
+                org.remove("roles");
+            }
         }
     }
 }

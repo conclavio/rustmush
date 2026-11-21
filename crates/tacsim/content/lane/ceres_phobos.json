@@ -3,7 +3,7 @@
     "id": "tacsim.lane.ceres_phobos",
     "version": 51,
     "kind": "campaign_seed",
-    "digest": "363b4e4425c099821c497ae38061649f67f777d9b2f6643fa38b9e12513a022a",
+    "digest": "137c914476449eeb21b4ec7bdf902a806073c70f45e5b7ac6507ad46689ff9d6",
     "requires": []
   },
   "entries": {
@@ -2943,7 +2943,7 @@
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic", "roles": [ "acceptor" ] },
           { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ], "roles": [ "acceptor" ] },
           { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] },
-          { "id": "republic_customs", "name": "Republic Customs Office", "capital_major": 20000, "faction": "republic" }
+          { "id": "republic_customs", "name": "Republic Customs Office", "capital_major": 20000, "faction": "republic", "roles": [ "acceptor" ] }
         ],
         "vendors": [
           { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
