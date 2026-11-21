@@ -108,20 +108,19 @@ impl CarrierHooks for TacsimCarrierHooks {
             // crosses the first boundary as soon as it departs. Sim raises the interception into
             // whatever domain is there, at any lateness, so a lateness gate here only decided
             // whether the first hull ever to reach the waypoint met it.
+            // P2-TSW-7: any connected player in any walkable ship interior room (including `crew`)
+            // counts as active crew aboard so stepping into the Crew Compartment never evades
+            // Belt Raider or Kirkwood picket interdiction bubbles.
             let active_bridge_crew =
                 crate::port::ship::hull_view(ctx.w, hull).is_some_and(|view| {
-                    let crew_room = mush_core::CanonicalId::new("crew")
-                        .ok()
-                        .and_then(|id| view.room(&id));
                     view.row.rooms.values().any(|&room_u32| {
                         let room = mush_core::ObjId(room_u32);
-                        Some(room) != crew_room
-                            && ctx.w.contents_of(room).iter().any(|&obj| {
-                                ctx.w
-                                    .get(obj)
-                                    .is_some_and(|o| o.kind == mush_core::ObjKind::Player)
-                                    && ctx.w.is_connected(obj)
-                            })
+                        ctx.w.contents_of(room).iter().any(|&obj| {
+                            ctx.w
+                                .get(obj)
+                                .is_some_and(|o| o.kind == mush_core::ObjKind::Player)
+                                && ctx.w.is_connected(obj)
+                        })
                     })
                 });
             // A hull whose crew are away is flown too: her link-loss record stands from the

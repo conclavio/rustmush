@@ -1039,8 +1039,28 @@ fn ic9_undock_flies_the_lane_and_docks_at_stickney() {
         "{look}"
     );
 
+    // P2-TSW-7: a connected pilot standing in the Crew Compartment still meets the Kirkwood
+    // picket (no room-based evasion). Clear customs and let leg 2 resume to Stickney.
+    assert!(
+        picket_status(&rig.tw, hull).is_some(),
+        "connected pilot in Crew Compartment still opens Kirkwood picket"
+    );
+    let _ = picket_until_the_raider_is_down(&mut rig, pilot, hull, false);
+    for _ in 0..20 {
+        if matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ) {
+            break;
+        }
+        let (_, submits) = one_second(&mut rig, pilot);
+        land_quietly(&mut rig, &submits);
+    }
+
     // The docking.
-    let arrival = t.plan.depart_ic + 1_600_362;
+    let arrival = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("resumed arrival instant");
     let events = to_ic(&mut rig, arrival - 3_600);
     assert!(!said(&rig.tw, &events, pilot).contains("docks at"));
     let events = to_ic(&mut rig, arrival);
@@ -17801,4 +17821,577 @@ fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
         )),
         "{ruled}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2 Tier 1B security regressions (P2-TSW-3, 5, 6, 7, 11)
+// ---------------------------------------------------------------------------
+
+/// **P2-TSW-5**: an organization-owned commissioned hull with unpaid past-due transit duty
+/// levies the debt against the organization's own account (matching `OffenseKey.offender`),
+/// quarantines the hull at the polity's ports once past grace, restricts trade, and shows on
+/// `+record`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw5_org_hull_unpaid_duty_quarantines_and_restricts_and_shows_in_record() {
+    use mush_org::PrincipalId;
+    use tacsim::offense::{Offender, OffenseKey, OffenseKind};
+    use tacsim::port::commission::Step;
+
+    let mut rig = stocked();
+    for line in [
+        "@org/create MeridianiDuty".to_owned(),
+        format!("@account/open org:MeridianiDuty={}", tacsim::CREDIT),
+        "@tacsim/port seed ceres_port dray MER-TSW5=org:MeridianiDuty".to_owned(),
+    ] {
+        let out = run(&mut rig.tw, GOD, &line);
+        assert!(!out.contains("Permission denied"), "{line}: {out}");
+    }
+    let org = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org store")
+        .state()
+        .orgs()
+        .find(|o| o.name.as_str() == "MeridianiDuty")
+        .expect("org")
+        .id;
+    for _ in 0..30 {
+        let _ = fire_quietly(&mut rig);
+        if tacsim::port::commission::commissions(rig.tw.world())
+            .into_iter()
+            .any(|c| c.mark == "MER-TSW5" && c.step == Step::Done)
+        {
+            break;
+        }
+    }
+    let comm = tacsim::port::commission::commissions(rig.tw.world())
+        .into_iter()
+        .find(|c| c.mark == "MER-TSW5" && c.step == Step::Done)
+        .expect("seeded org hull");
+    let dray = comm.object().expect("org dray");
+    let hold = VaultId(comm.hold.expect("org dray hold"));
+
+    let flyer = pilot(&mut rig, "OrgDutyPilot", 91);
+    let granted = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@org/grant #{}=MeridianiDuty unit.deploy", flyer.0),
+    );
+    assert!(granted.contains("Granted "), "{granted}");
+    assert_eq!(
+        tacsim::offense::answerer_for_hull(rig.tw.world(), dray),
+        Some(Offender::Organization(org))
+    );
+
+    // Fund the pilot personally (to verify the org's 0-credit account is charged, not the pilot's).
+    let opened = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}={}", flyer.0, tacsim::CREDIT),
+    );
+    assert!(!opened.contains("Permission denied"), "{opened}");
+    let flyer_acct = tacsim::port::credit::own_account(rig.tw.world(), flyer)
+        .expect("pilot account")
+        .id;
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint #{} 500000", flyer_acct.0),
+    );
+    let pilot_before = credit_of(&rig.tw, flyer);
+
+    seed_pool(&mut rig, hold, "propellant", 75, LotId(0x7051));
+    seed_pool(&mut rig, hold, "provisions", 30, LotId(0x7052));
+    seed_pool(&mut rig, hold, "metals", 50, LotId(0x7053));
+    republic_holds_kirkwood(&mut rig.tw);
+    set_rate(&mut rig.tw, 3_600);
+
+    let gallery = station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
+    teleport(&mut rig.tw, flyer, gallery);
+    let boarded = run(&mut rig.tw, flyer, "+ship/board");
+    assert!(
+        boarded.contains("You cycle the lock into the "),
+        "{boarded}"
+    );
+
+    let pending = undock_and_burn(&mut rig, flyer, dray);
+    let _ = fire_quietly(&mut rig);
+    let leg1_due = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, leg1_due);
+    let _ = run(&mut rig.tw, flyer, "+helm/thrust 600 -1000 0 0");
+    for _ in 0..6 {
+        let (_, submits) = one_second(&mut rig, flyer);
+        land_quietly(&mut rig, &submits);
+    }
+    let _ = run(&mut rig.tw, flyer, "+helm/thrust 0");
+    let brake = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &brake);
+
+    let ruled = customs_ruling(&mut rig, flyer, "+helm/submit");
+    assert!(
+        ruled.contains("is owed, due in 28 IC days"),
+        "org account has 0 cr so duty must stand owed: {ruled}"
+    );
+    assert_eq!(
+        credit_of(&rig.tw, flyer),
+        pilot_before,
+        "pilot's personal account was not debited for org hull duty"
+    );
+
+    let republic = tacsim::polity::polity(rig.tw.world(), "republic").expect("the Republic");
+    let stickney = cid("stickney_port");
+    let org_debts = mush_economy::debts_of(
+        rig.tw.world(),
+        &PrincipalId::Organization(org),
+        &[tacsim::surface::retrieval::DEBT_NAMESPACE],
+    );
+    assert_eq!(
+        org_debts.len(),
+        1,
+        "duty debt debtor must be Organization(org): {org_debts:?}"
+    );
+    let org_rec = tacsim::offense::record_of(
+        rig.tw.world(),
+        &OffenseKey {
+            offender: Offender::Organization(org),
+            polity: republic,
+        },
+    )
+    .expect("org offense record");
+    assert!(
+        org_rec
+            .rows
+            .iter()
+            .any(|r| r.kind == OffenseKind::UnpaidDuty && r.debt == Some(org_debts[0].id.0)),
+        "org OffenseRecord carries the matching duty obligation id: {org_rec:?}"
+    );
+
+    // Within grace: neither quarantined nor restricted.
+    assert!(!tacsim::surface::security::holds_at(
+        rig.tw.world(),
+        dray,
+        &stickney
+    ));
+    assert!(!tacsim::port::record::org_restricted(
+        rig.tw.world(),
+        org,
+        republic
+    ));
+    assert!(!tacsim::port::record::restricted(
+        rig.tw.world(),
+        flyer,
+        republic
+    ));
+
+    // Past 28-IC-day grace: org hull is quarantined at Republic ports, org & operator restricted,
+    // and `+record` surfaces the unpaid duty.
+    let due = ic_now(&rig.tw) + tacsim::surface::retrieval::DEBT_GRACE_IC_DAYS * 86_400;
+    for step in 0..3 {
+        let _ = to_ic(&mut rig, due + 3_600 * (step + 1));
+    }
+    assert!(
+        tacsim::surface::security::holds_at(rig.tw.world(), dray, &stickney),
+        "org hull must be quarantined at Republic ports once transit duty is past due"
+    );
+    assert!(
+        tacsim::port::record::org_restricted(rig.tw.world(), org, republic),
+        "org must be restricted once transit duty is past due"
+    );
+    assert!(
+        tacsim::port::record::restricted(rig.tw.world(), flyer, republic),
+        "operator of org hull must be restricted while org transit duty is past due"
+    );
+    let page = run(&mut rig.tw, flyer, "+record");
+    assert!(
+        page.contains("a transit duty owed") && page.contains("Restrictions in force:"),
+        "+record must display the org's unpaid duty and restriction: {page}"
+    );
+}
+
+/// **P2-TSW-6**: departing a Ceres surface extraction site (`commons_port` at `freeport_commons`,
+/// audit-exempt with only a non-interdicted route back to `ceres`), executing `+helm/decouple`,
+/// and engaging `+helm/autopilot stickney|isidis|deimos` must STILL owe the interdicted Kirkwood
+/// picket leg (while returning to `ceres` or routing via `luna` remains clean).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw6_site_hop_from_commons_port_still_owes_kirkwood_picket_leg() {
+    let fly_site_decouple = |name: &str, seed: i64, dest: &str| {
+        let mut rig = stocked();
+        let (pilot, row) = chartered(&mut rig, name, seed);
+        let hull = ObjId(row.hull);
+        let vault = hold_vault(&rig.tw, &row);
+        seed_pool(
+            &mut rig,
+            vault,
+            "propellant",
+            80,
+            LotId(0x7060 + seed as u64),
+        );
+        seed_pool(
+            &mut rig,
+            vault,
+            "provisions",
+            40,
+            LotId(0x7070 + seed as u64),
+        );
+        set_rate(&mut rig.tw, 3_600);
+        board(&mut rig, pilot);
+
+        // Hop Ceres -> freeport_commons (`commons_port`) and land on its pad.
+        let (filed, queued) = undock(&mut rig, pilot, "+ship/undock commons");
+        assert!(filed.contains("Clearance filed for "), "{filed}");
+        land_all(&mut rig, &queued);
+        let t1 = ticket(&mut rig.tw, hull, 1).expect("ticket 1");
+        let _ = fire_quietly(&mut rig);
+        for step in 0..20 {
+            let _ = to_ic(&mut rig, t1.plan.depart_ic + t1.plan.total_s + step * 3_600);
+            if matches!(
+                tacsim::port::ship::berth_of(rig.tw.world(), hull),
+                tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "commons_port"
+            ) {
+                break;
+            }
+        }
+        assert!(
+            matches!(
+                tacsim::port::ship::berth_of(rig.tw.world(), hull),
+                tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == "commons_port"
+            ),
+            "hull must be docked at commons_port: {:?}, journey: {:?}",
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            journey(&rig.tw, hull)
+        );
+
+        // Lift from commons_port toward ceres (`departed.from = commons_port`) at 1:1 rate
+        // so the short hop is genuinely in transit when we decouple, then engage autopilot.
+        set_rate(&mut rig.tw, 1);
+        let (filed2, queued2) = undock(&mut rig, pilot, "+ship/lift ceres");
+        assert!(filed2.contains("Clearance filed for "), "{filed2}");
+        land_all(&mut rig, &queued2);
+        for _ in 0..5 {
+            let _ = fire_quietly(&mut rig);
+            if journey(&rig.tw, hull).is_some_and(|j| j.state().is_under_way()) {
+                break;
+            }
+        }
+        assert!(
+            journey(&rig.tw, hull).is_some_and(|j| j.state().is_under_way()),
+            "lift from commons_port must be under way: journey={:?}, voyage={:?}, berth={:?}",
+            journey(&rig.tw, hull),
+            voyage(&rig.tw, hull),
+            tacsim::port::ship::berth_of(rig.tw.world(), hull)
+        );
+        let dec = run(&mut rig.tw, pilot, "+helm/decouple");
+        assert!(dec.contains("Decoupled from corridor leg"), "{dec}");
+        let auto = run(&mut rig.tw, pilot, &format!("+helm/autopilot {dest}"));
+        assert!(auto.contains("Autopilot engaged for"), "{dest}: {auto}");
+        let burn = drain_space_and_industry(&mut rig.tw);
+        land_quietly(&mut rig, &burn);
+        journey(&rig.tw, hull).expect("recoupled journey")
+    };
+
+    for (idx, dest) in ["stickney", "isidis", "deimos"].into_iter().enumerate() {
+        let recoupled = fly_site_decouple(&format!("SiteHop{idx}"), 10 + idx as i64, dest);
+        assert!(
+            recoupled.route().legs().len() == 2 && recoupled.route().legs()[0].is_interdicted(),
+            "site-hop from commons_port to {dest} must owe the interdicted Kirkwood leg: {:?}",
+            recoupled.route().legs()
+        );
+    }
+
+    for (idx, clean_dest) in ["ceres", "luna"].into_iter().enumerate() {
+        let recoupled = fly_site_decouple(&format!("SiteClean{idx}"), 20 + idx as i64, clean_dest);
+        assert!(
+            !recoupled
+                .route()
+                .legs()
+                .iter()
+                .any(|leg| leg.is_interdicted()),
+            "site-hop from commons_port to {clean_dest} must remain un-interdicted: {:?}",
+            recoupled.route().legs()
+        );
+    }
+}
+
+/// **P2-TSW-7 (Part A)**: stepping into the walkable `crew` (`Crew Compartment`) room while
+/// connected must NOT bypass the Kirkwood picket / interdiction bubble.
+#[test]
+fn p2_tsw7_stepping_into_crew_room_does_not_bypass_kirkwood_picket() {
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 53, 19);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    seed_pool(&mut rig, vault, "strategic_ore", 2, LotId(0x7071));
+
+    // Walk into Crew Compartment while still connected.
+    let _ = run(&mut rig.tw, pilot, "in");
+    let _ = run(&mut rig.tw, pilot, "crew");
+    assert_eq!(location(&rig.tw, pilot), Some(room_of(&row, "crew")));
+    assert!(rig.tw.world().is_connected(pilot));
+
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    let boundary = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    let _ = to_ic(&mut rig, boundary);
+
+    assert!(
+        picket_status(&rig.tw, hull).is_some(),
+        "connected pilot in Crew Compartment must trigger the Kirkwood picket bubble"
+    );
+    assert!(
+        matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Promoted { .. })
+        ),
+        "journey must pause in Promoted state inside the picket bubble"
+    );
+}
+
+/// **P2-TSW-7 (Part B)**: absent-pilot contraband crossings fail closed both when funds are
+/// drained before `CustomsFinding::Fined` collects and when an unattended `CustomsFinding::Seized`
+/// ruling lapses after `CUSTOMS_MAX_ATTEMPTS`.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw7_absent_contraband_fine_drain_and_lapsed_seizure_fail_closed() {
+    use tacsim::offense::{Offender, OffenseKey, OffenseKind};
+
+    // Subcase A: pilot has funds when `assess_absent` files `Fined`, then drains account before
+    // the ruling applies -> must fail closed (seize ore or record unpaid offense, never clear).
+    let (mut rig, pilot, hull, leg1_due) = kc2b_away_on_the_leg("DrainAway", |rig, _, vault| {
+        seed_pool(rig, vault, "strategic_ore", 2, LotId(0x7072));
+    });
+    let vault = {
+        let view = tacsim::port::ship::hull_view(rig.tw.world(), hull).expect("hull view");
+        tacsim::port::ship::hold_vault(rig.tw.world(), &view).expect("hold vault")
+    };
+    // Cross Kirkwood absent so `assess_absent` files `CustomsFinding::Fined`.
+    let _ = to_ic(&mut rig, leg1_due + 10);
+    // Drain all credits from pilot right before `apply_landed` settles the fine!
+    kc2b_leave_credit(&mut rig, pilot, 0);
+    for step in 1..=6 {
+        let _ = to_ic(&mut rig, leg1_due + 10 + step * 3_600);
+    }
+    let ore_left = pool(&mut rig.tw, vault, "strategic_ore");
+    let freeport = tacsim::polity::polity(rig.tw.world(), "freeport").expect("the Freeport");
+    let has_offense = tacsim::offense::record_of(
+        rig.tw.world(),
+        &OffenseKey {
+            offender: Offender::Character(pilot),
+            polity: freeport,
+        },
+    )
+    .is_some_and(|r| {
+        r.rows
+            .iter()
+            .any(|row| row.kind == OffenseKind::UnlicensedPossession)
+    });
+    assert!(
+        ore_left == 0 || has_offense,
+        "draining funds before unattended fine collection must either seize the ore (left={ore_left}) or record an unpaid contraband offense (has_offense={has_offense})"
+    );
+
+    // Subcase B: indigent away pilot -> `assess_absent` files unattended `Seized`, and every
+    // authoritative submission is dropped until `CUSTOMS_MAX_ATTEMPTS` lapses -> must fail closed
+    // by recording an unpaid `UnlicensedPossession` offense & debt restricting the pilot.
+    let (mut rig, pilot, hull, leg1_due) =
+        kc2b_away_on_the_leg("LapseAway", |rig, pilot, vault| {
+            seed_pool(rig, vault, "strategic_ore", 2, LotId(0x7073));
+            kc2b_leave_credit(rig, pilot, 0);
+        });
+    // Cross Kirkwood, dropping authoritative submissions instead of landing them so the unattended
+    // seizure lapses after `CUSTOMS_MAX_ATTEMPTS`.
+    let rate = i64::from(world_rate(&rig.tw).max(1));
+    let ahead = (leg1_due + 10 - ic_now(&rig.tw)).max(0);
+    let t0 = rig.tw.world().now() + (ahead + rate - 1) / rate;
+    rig.tw.set_now(t0);
+    let _ = rig.tw.fire_due(t0 * 1_000);
+    let _ = drain_space_and_industry(&mut rig.tw); // drop initial submission
+
+    let max_ticks = u32::from(tacsim::space::CUSTOMS_RETRY_AFTER_TICKS)
+        * (u32::from(tacsim::space::CUSTOMS_MAX_ATTEMPTS) + 3);
+    for _ in 0..max_ticks {
+        let next = rig.tw.world().now() + 1;
+        rig.tw.set_now(next);
+        let _ = rig.tw.fire_due(next * 1_000);
+        let _ = drain_space_and_industry(&mut rig.tw); // drop all retries so ruling lapses
+        if filed_rulings(&rig.tw, hull).is_empty() {
+            break;
+        }
+    }
+    assert!(
+        filed_rulings(&rig.tw, hull).is_empty(),
+        "unattended seizure ruling should have lapsed"
+    );
+    let freeport = tacsim::polity::polity(rig.tw.world(), "freeport").expect("the Freeport");
+    let rec = tacsim::offense::record_of(
+        rig.tw.world(),
+        &OffenseKey {
+            offender: Offender::Character(pilot),
+            polity: freeport,
+        },
+    )
+    .expect("lapsed unattended seizure must record a proven contraband offense");
+    assert!(
+        rec.rows
+            .iter()
+            .any(|r| r.kind == OffenseKind::UnlicensedPossession && r.debt.is_some()),
+        "lapsed unattended seizure must record UnlicensedPossession with a fine debt: {rec:?}"
+    );
+    assert!(
+        tacsim::port::record::restricted(rig.tw.world(), pilot, freeport),
+        "pilot must be trade-restricted after lapsed unattended seizure"
+    );
+}
+
+/// **P2-TSW-11**: economy-throttle `+ship/undock stickney throttle=250` followed immediately by
+/// `+helm/decouple` and `+helm/autopilot stickney` must NOT inflate `prepaid_unflown_t` to 1000‰
+/// thrust, must NOT teleport 15% forward at `elapsed_s == 0`, and `+helm/autopilot <body` must
+/// NOT waive expedition provisions beyond what was actually paid.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn p2_tsw11_economy_throttle_decouple_autopilot_does_not_inflate_prepaid_or_waive_provisions() {
+    // Subcase A: throttle=250 burn -> immediate decouple -> autopilot stickney.
+    let (mut rig, pilot, row) = aboard_with_load(3_600, 80, 60);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+
+    // Measure full 1000‰ burn for comparison.
+    let full_plan = run(&mut rig.tw, pilot, "+ship/plan stickney");
+    let full_burn_t = tonnes_after(&full_plan, "Burn");
+
+    let (filed, queued) = undock(&mut rig, pilot, "+ship/undock stickney throttle=250");
+    assert!(
+        filed.contains("Clearance filed for Stickney Yards"),
+        "{filed}"
+    );
+    land_all(&mut rig, &queued);
+    let t = ticket(&mut rig.tw, hull, 1).expect("economy ticket");
+    let econ_burn_t = t.plan.burn_t;
+    assert!(
+        econ_burn_t * 2 < full_burn_t + 10,
+        "throttle=250 burns much less than 1000‰: econ={econ_burn_t} t, full={full_burn_t} t"
+    );
+
+    let _ = fire_quietly(&mut rig);
+    let tank_after_undock = pool(&mut rig.tw, vault, "propellant");
+    let dec = run(&mut rig.tw, pilot, "+helm/decouple");
+    assert!(dec.contains("Decoupled from corridor leg"), "{dec}");
+
+    let flight = rig
+        .tw
+        .world()
+        .module_state::<tacsim::space::SpaceBubbleBook>()
+        .expect("SpaceBubbleBook")
+        .free_flights[&hull]
+        .clone();
+    assert!(
+        flight.prepaid_unflown_t <= econ_burn_t,
+        "prepaid_unflown_t ({}) must NEVER exceed actual paid economy burn ({econ_burn_t} t; full={full_burn_t} t)",
+        flight.prepaid_unflown_t
+    );
+    assert!(
+        flight.prepaid_unflown_t < full_burn_t,
+        "prepaid_unflown_t ({}) must strictly be below full 1000‰ burn ({full_burn_t} t)",
+        flight.prepaid_unflown_t
+    );
+
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot stickney");
+    assert!(
+        auto.contains("Autopilot engaged for Stickney Yards"),
+        "{auto}"
+    );
+    let autopilot_burn_t = tonnes_after(&auto, "burn");
+    let extra_burns = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &extra_burns);
+    let tank_after_auto = pool(&mut rig.tw, vault, "propellant");
+    let extra_charged_t = tank_after_undock.saturating_sub(tank_after_auto);
+    let expected_extra_t = autopilot_burn_t.saturating_sub(econ_burn_t);
+    assert!(
+        expected_extra_t > 0 && extra_charged_t >= expected_extra_t,
+        "autopilot must charge the unpaid full-thrust difference (autopilot={autopilot_burn_t} t, prepaid={econ_burn_t} t, expected_extra={expected_extra_t} t, actual_extra={extra_charged_t} t): {auto}"
+    );
+
+    // Subcase B: short-corridor provisions cannot be leveraged to waive Neptune expedition rations.
+    let mut rig_exp = stocked_with(Roster::default());
+    let (pilot_exp, row_exp) = chartered(&mut rig_exp, "NoFreeRations", 92);
+    let hull_exp = ObjId(row_exp.hull);
+    let desk_exp = station_room(&rig_exp.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig_exp.tw, pilot_exp, desk_exp);
+    let _ = run(&mut rig_exp.tw, pilot_exp, "+coop/refit prospector");
+    // Load 80 t propellant (plenty) and only 30 crew-days (enough for Stickney 19, leaving 11 —
+    // far short of Neptune's 100+ crew-days!).
+    load(&mut rig_exp, &row_exp, 80, 30);
+    set_rate(&mut rig_exp.tw, 3_600);
+    board(&mut rig_exp, pilot_exp);
+    let _ = undock_and_burn(&mut rig_exp, pilot_exp, hull_exp);
+    let _ = fire_quietly(&mut rig_exp);
+    let dec_exp = run(&mut rig_exp.tw, pilot_exp, "+helm/decouple");
+    assert!(dec_exp.contains("Decoupled from corridor leg"), "{dec_exp}");
+
+    let neptune = run(&mut rig_exp.tw, pilot_exp, "+helm/autopilot neptune");
+    assert!(
+        neptune.contains("Insufficient provisions for expedition to neptune"),
+        "celestial-body autopilot must NOT waive extra expedition provisions: {neptune}"
+    );
+}
+
+/// **P2-TSW-3 (`port/voyage.rs` half)**: an open, non-lapsed `Supply::Wanted` personal bid
+/// targeting a hull's hold must be reported by `goods_pending_aboard` and block `+ship/undock`
+/// with `LISTING_HOLDS` until withdrawn or lapsed.
+#[test]
+fn p2_tsw3_open_supply_wanted_bid_targeting_hull_hold_blocks_undock() {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, "Bidder", 93);
+    let hold = hold_vault(&rig.tw, &row);
+    load(&mut rig, &row, 55, 25);
+    let acct = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+        .expect("account")
+        .id;
+    let _ = run(&mut rig.tw, GOD, &format!("@econ/mint #{} 500000", acct.0));
+
+    // Post an open personal `Supply::Wanted` bid for an indivisible part targeting the hull's hold.
+    let exchange = c07(&rig.tw);
+    teleport(&mut rig.tw, pilot, exchange);
+    let bid_out = run(
+        &mut rig.tw,
+        pilot,
+        &format!(
+            "+market/bid tacsim:tacsim.part.weapon.cannon_105 qty=1 price=100 into={}",
+            hold.0
+        ),
+    );
+    assert!(
+        bid_out.contains("Listing #") || bid_out.contains("Bid #"),
+        "personal bid into hold must post cleanly: {bid_out}"
+    );
+
+    // Find the posted Supply::Wanted listing id.
+    let bid_id = market(&rig.tw)
+        .live_listings()
+        .find(|l| matches!(l.source, mush_market::Supply::Wanted { vault, .. } if vault == hold))
+        .expect("open Supply::Wanted bid targeting hold")
+        .id;
+
+    // Board and attempt to undock: must be refused because the open bid targets the hull's hold!
+    board(&mut rig, pilot);
+    let (refused, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        refused.contains(&format!("listing #{bid_id}")) && refused.contains("withdraw it"),
+        "open Supply::Wanted bid targeting hold must refuse undock: {refused}"
+    );
+    assert!(queued.is_empty(), "nothing burned while bid is open");
+
+    // Withdraw the bid and verify undock now succeeds cleanly.
+    let _ = run(&mut rig.tw, pilot, "+ship/leave");
+    teleport(&mut rig.tw, pilot, exchange);
+    let withdrawn = run(&mut rig.tw, pilot, &format!("+market/withdraw {bid_id}"));
+    assert!(withdrawn.contains("Withdrew bid"), "{withdrawn}");
+    board(&mut rig, pilot);
+    let (cleared, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    assert!(
+        cleared.contains("Clearance filed for Stickney Yards"),
+        "after withdrawing bid, undock succeeds: {cleared}"
+    );
+    assert_eq!(queued.len(), 1);
 }

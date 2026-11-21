@@ -93,26 +93,81 @@ fn unpaid(w: &World, row: &ProvenOffense) -> bool {
     })
 }
 
-/// **Why `who` is under `polity`'s restriction**, if they are (Q-50-39): standing at or below
-/// [`RESTRICTED_AT_OR_BELOW`], or an unpaid fine on their record there.
+/// Organizations whose commissioned hulls `who` commands or operates (excluding staff fiat), so
+/// past-due duties and fines on an organization's hull bind and appear on its operator's record
+/// (`P2-TSW-5`).
+fn governed_orgs(w: &World, who: ObjId) -> Vec<mush_org::OrgId> {
+    let mut orgs = Vec::new();
+    let staff = crate::commands::is_staff(w, who);
+    if let Some(economy) = w.module_state::<mush_economy::EconomyStore>() {
+        for hull in crate::port::owned::ships(w) {
+            let Some(asset) = economy.snapshot().asset(hull) else {
+                continue;
+            };
+            let mush_org::PrincipalId::Organization(org) = asset.title_owner else {
+                continue;
+            };
+            let operates = if staff {
+                crate::port::owned::org_flyer(w, hull) == Some(who)
+                    || mush_economy::principal_holders(w, &mush_org::PrincipalId::Organization(org))
+                        .contains(&who)
+            } else {
+                crate::port::owned::may_take_out(w, hull, who)
+                    || crate::port::owned::org_flyer(w, hull) == Some(who)
+            };
+            if operates {
+                orgs.push(org);
+            }
+        }
+    }
+    orgs.sort();
+    orgs.dedup();
+    orgs
+}
+
+/// Unpaid fine / past-due duty obligation ids on `offender`'s record under `polity`.
+fn unpaid_fines_for(w: &World, offender: Offender, polity: FactionId) -> Vec<u64> {
+    crate::offense::record_of(w, &crate::offense::OffenseKey { offender, polity })
+        .map(|r| {
+            r.rows
+                .iter()
+                .filter(|row| unpaid(w, row))
+                .filter_map(|row| row.debt)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **Why `org` is under `polity`'s restriction**, if it is (`P2-TSW-5`): an unpaid fine or
+/// past-due transit duty on the organization's record there.
+#[must_use]
+pub fn org_restriction(w: &World, org: mush_org::OrgId, polity: FactionId) -> Option<Restriction> {
+    let unpaid_fines = unpaid_fines_for(w, Offender::Organization(org), polity);
+    (!unpaid_fines.is_empty()).then_some(Restriction {
+        polity,
+        standing: 0,
+        unpaid_fines,
+    })
+}
+
+/// **Whether `org` is restricted by `polity`** ([`org_restriction`]).
+#[must_use]
+pub fn org_restricted(w: &World, org: mush_org::OrgId, polity: FactionId) -> bool {
+    org_restriction(w, org, polity).is_some()
+}
+
+/// **Why `who` is under `polity`'s restriction**, if they are (Q-50-39, `P2-TSW-5`): standing at
+/// or below [`RESTRICTED_AT_OR_BELOW`], an unpaid fine on their record there, or an unpaid fine /
+/// past-due duty on an organization whose commissioned hull they operate.
 #[must_use]
 pub fn restriction(w: &World, who: ObjId, polity: FactionId) -> Option<Restriction> {
     let standing = score(w, polity, who);
-    let unpaid_fines: Vec<u64> = crate::offense::record_of(
-        w,
-        &crate::offense::OffenseKey {
-            offender: Offender::Character(who),
-            polity,
-        },
-    )
-    .map(|r| {
-        r.rows
-            .iter()
-            .filter(|row| unpaid(w, row))
-            .filter_map(|row| row.debt)
-            .collect()
-    })
-    .unwrap_or_default();
+    let mut unpaid_fines = unpaid_fines_for(w, Offender::Character(who), polity);
+    for org in governed_orgs(w, who) {
+        unpaid_fines.extend(unpaid_fines_for(w, Offender::Organization(org), polity));
+    }
+    unpaid_fines.sort_unstable();
+    unpaid_fines.dedup();
     (standing <= RESTRICTED_AT_OR_BELOW || !unpaid_fines.is_empty()).then_some(Restriction {
         polity,
         standing,
@@ -303,7 +358,14 @@ fn fine_line(ctx: &Ctx<'_>, row: &ProvenOffense) -> String {
 #[must_use]
 pub fn record_page(ctx: &Ctx<'_>, who: ObjId) -> String {
     let w: &World = ctx.w;
-    let records: Vec<OffenseRecord> = crate::offense::records_against(w, Offender::Character(who));
+    let mut records: Vec<OffenseRecord> =
+        crate::offense::records_against(w, Offender::Character(who));
+    for org in governed_orgs(w, who) {
+        records.extend(crate::offense::records_against(
+            w,
+            Offender::Organization(org),
+        ));
+    }
     let mut out = vec!["Your record:".to_owned()];
     let rows: usize = records.iter().map(|r| r.rows.len()).sum();
     if rows == 0 {

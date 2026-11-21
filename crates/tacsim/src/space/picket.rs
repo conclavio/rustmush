@@ -1478,7 +1478,7 @@ pub fn customs_fine_payable(w: &World, pilot: ObjId, fine_minor: i64) -> Result<
 
 /// **The account a customs fine is paid from** (doc 50b; Q-50-56): a hauling house's helm pays
 /// from the house's own account, as the transit duty does, else the principal's own.
-fn fine_account(w: &World, pilot: ObjId) -> Option<AccountId> {
+pub(crate) fn fine_account(w: &World, pilot: ObjId) -> Option<AccountId> {
     crate::port::hauler::house_account_of_helm(w, pilot)
         .or_else(|| crate::port::credit::own_account(w, pilot).map(|credit| credit.id))
 }

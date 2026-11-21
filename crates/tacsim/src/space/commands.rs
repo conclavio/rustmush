@@ -2868,12 +2868,15 @@ fn decouple_carrier_into_free_flight(
             [p1.x, p1.y, p1.z],
             [i64::from(vx1), i64::from(vy1), i64::from(vz1)],
         )
+    } else if elapsed_s == 0 {
+        // P2-TSW-11: at zero elapsed time, keep the ship at the departure body with its orbital
+        // velocity rather than jumping 15% down the leg while granting 100% prepaid credit.
+        (
+            [p0.x, p0.y, p0.z],
+            [i64::from(vx0), i64::from(vy0), i64::from(vz0)],
+        )
     } else {
-        let frac = if elapsed_s == 0 {
-            0.15
-        } else {
-            ((elapsed_s as f64) / (leg_s as f64)).clamp(0.05, 0.95)
-        };
+        let frac = ((elapsed_s as f64) / (leg_s as f64)).clamp(0.0, 0.95);
         let p = [
             p0.x + (((p1.x - p0.x) as f64) * frac).round() as i64,
             p0.y + (((p1.y - p0.y) as f64) * frac).round() as i64,
@@ -2897,23 +2900,51 @@ fn decouple_carrier_into_free_flight(
         .map_or(leg_s, |arr| arr.saturating_sub(journey.departed().at))
         .max(1);
     let total_elapsed_s = now.at.saturating_sub(journey.departed().at).max(0);
-    let route_burn_t = live_hull_basis_and_propellant_kg(ctx, hull)
-        .ok()
-        .and_then(|(basis, _)| {
-            crate::port::passage::plan_passage(
-                &sky,
-                pack,
-                journey.route().id(),
-                &basis.spec.drive,
-                basis.spec.dry_kg,
-                basis.payload,
-                basis.occupants,
-                journey.departed().at,
-            )
-            .ok()
-            .map(|p| p.burn_t)
+    // P2-TSW-11: prorate strictly against the actual paid burn persisted on `voyage.departed`
+    // (respecting economy throttle), never inflating an economy-throttle burn to 1000‰.
+    let persisted_burn_t = ctx
+        .w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| match store.voyage_state(hull) {
+            crate::port::voyage::VoyageState::Present(v) => {
+                v.departed.as_ref().and_then(|d| d.burn_t)
+            }
+            crate::port::voyage::VoyageState::Absent
+            | crate::port::voyage::VoyageState::Unreadable => None,
+        });
+    let unlanded_t = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.propellant_ledger(hull))
+        .map_or(0, |ledger| ledger.unlanded_burn_t);
+    let route_burn_t = persisted_burn_t
+        .unwrap_or_else(|| {
+            // Conservative fallback for pre-fix voyages lacking persisted `burn_t`: plan at
+            // minimum throttle rather than 1000‰ so prepaid credit can never exceed paid burn.
+            live_hull_basis_and_propellant_kg(ctx, hull)
+                .ok()
+                .and_then(|(basis, _)| {
+                    let min_drive = basis
+                        .spec
+                        .drive
+                        .clone()
+                        .at_throttle(crate::port::passage::MIN_THROTTLE_PERMILLE);
+                    crate::port::passage::plan_passage(
+                        &sky,
+                        pack,
+                        journey.route().id(),
+                        &min_drive,
+                        basis.spec.dry_kg,
+                        basis.payload,
+                        basis.occupants,
+                        journey.departed().at,
+                    )
+                    .ok()
+                    .map(|p| p.burn_t)
+                })
+                .unwrap_or_else(|| journey.route().propellant().max(1))
         })
-        .unwrap_or_else(|| journey.route().propellant().max(1));
+        .saturating_sub(unlanded_t);
     let prepaid_unflown_t = if keep_prepaid {
         prorated_prepaid_unflown_t(route_burn_t, total_journey_s, total_elapsed_s)
     } else {
@@ -2972,6 +3003,55 @@ fn prorated_prepaid_unflown_t(
     u64::try_from(credit)
         .unwrap_or(route_burn_t)
         .min(route_burn_t)
+}
+
+/// Prorate the unflown crew-days already paid on `hull`'s departed passage proportionally to
+/// `prepaid_unflown_t` against `dep.burn_t` (`P2-TSW-11`). Returns `0` whenever
+/// `prepaid_unflown_t == 0` or no paid `crew_days`/`burn_t` were persisted.
+fn prepaid_unflown_crew_days(w: &World, hull: ObjId, prepaid_unflown_t: u64) -> u32 {
+    if prepaid_unflown_t == 0 {
+        return 0;
+    }
+    let Some((paid_burn_t, paid_crew_days)) = w
+        .module_state::<crate::store::TacsimStore>()
+        .and_then(|store| match store.voyage_state(hull) {
+            crate::port::voyage::VoyageState::Present(v) => {
+                let dep = v.departed.as_ref()?;
+                Some((dep.burn_t?, dep.crew_days?))
+            }
+            crate::port::voyage::VoyageState::Absent
+            | crate::port::voyage::VoyageState::Unreadable => None,
+        })
+    else {
+        return 0;
+    };
+    if paid_burn_t == 0 || paid_crew_days == 0 {
+        return 0;
+    }
+    let credit = u128::from(paid_crew_days).saturating_mul(u128::from(prepaid_unflown_t))
+        / u128::from(paid_burn_t);
+    u32::try_from(credit)
+        .unwrap_or(paid_crew_days)
+        .min(paid_crew_days)
+}
+
+/// Update `voyage.departed`'s persisted burn and crew-days after a free-flight autopilot
+/// engagement (`P2-TSW-11`) so any subsequent decouple or engagement reflects the new passage.
+fn update_departed_burn(ctx: &mut Ctx<'_>, hull: ObjId, burn_t: u64, crew_days: u32) {
+    if let Some(mut voyage) =
+        ctx.w
+            .module_state::<crate::store::TacsimStore>()
+            .and_then(|s| match s.voyage_state(hull) {
+                crate::port::voyage::VoyageState::Present(v) => Some(v.clone()),
+                crate::port::voyage::VoyageState::Absent
+                | crate::port::voyage::VoyageState::Unreadable => None,
+            })
+        && let Some(dep) = &mut voyage.departed
+    {
+        dep.burn_t = Some(burn_t);
+        dep.crew_days = Some(crew_days);
+        crate::store::put_voyage(ctx, &voyage);
+    }
 }
 
 struct EngagedFreeFlightBurn {
@@ -3533,6 +3613,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .record_passage_burn_t(basis.tank, burn_t);
         }
         let _ = submit_passage_burn(ctx, hull, basis.vault.0, burn_t, plan.crew_days)?;
+        update_departed_burn(ctx, hull, plan.burn_t, plan.crew_days);
 
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -3657,11 +3738,10 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             }
         }
         let burn_t = plan.burn_t.saturating_sub(prepaid_unflown_t);
-        let crew_days = if burn_t == 0 && prepaid_unflown_t > 0 {
-            0
-        } else {
-            plan.crew_days
-        };
+        // P2-TSW-11: only credit crew-days actually paid on the unflown passage (scaled by the
+        // remaining prepaid burn ratio), never waiving extra expedition provisions.
+        let prepaid_crew_days = prepaid_unflown_crew_days(ctx.w, hull, prepaid_unflown_t);
+        let crew_days = plan.crew_days.saturating_sub(prepaid_crew_days);
         if live_tank_t < burn_t {
             return Err(CmdError::msg(format!(
                 "Insufficient propellant for expedition to {}: requires {burn_t} t, tank holds {live_tank_t} t.",
@@ -3699,6 +3779,7 @@ fn helm_autopilot(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .record_passage_burn_t(basis.tank, burn_t);
         }
         let _ = submit_passage_burn(ctx, hull, basis.vault.0, burn_t, crew_days)?;
+        update_departed_burn(ctx, hull, plan.burn_t, plan.crew_days);
 
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -3786,9 +3867,13 @@ fn owed_interdicted_leg(
     }) {
         return None;
     }
-    let (def, _) = crate::port::voyage::lane_ports(w)
-        .into_iter()
+    let ports = crate::port::voyage::lane_ports(w);
+    let (def, _) = ports
+        .iter()
         .find(|(_, map)| map.is_some_and(|map| map.entry == from))?;
+    if def.venue == *dest_venue {
+        return None;
+    }
     let first_interdicted = |ids: &[mush_core::CanonicalId]| {
         ids.iter()
             .filter_map(|id| store.route_in_world(w, id))
@@ -3800,36 +3885,72 @@ fn owed_interdicted_leg(
                     .find(|leg| leg.is_interdicted() && leg.to() != dest_host)
             })
     };
-    match def.routes.get(dest_venue) {
-        Some(ids) => first_interdicted(ids),
-        // Doc 50 cut KC.2 (Q-50-55): a destination the port of departure lays no route to (Ceres
-        // to Deimos, the free-flight shortcut) flies none of the lane's lawful legs, so it owes
-        // the picket's leg: the first interdicted leg of a route out of that port.
-        //
-        // Doc 50b: only a destination past the approach owes it. The port's own venue (a Ceres
-        // halo's return home) never does, and a destination owes the leg of a route out of the
-        // port only when a lane route with no interdicted leg joins it to that route's far end
-        // (Deimos and Isidis to Stickney, not Titan).
-        None if def.venue == *dest_venue => None,
-        None => {
-            let ports = crate::port::voyage::lane_ports(w);
-            let clean = |from: &mush_core::CanonicalId, to: &mush_core::CanonicalId| {
-                ports
-                    .iter()
-                    .find(|(port, _)| port.venue == *from)
-                    .and_then(|(port, _)| port.routes.get(to))
-                    .is_some_and(|ids| {
-                        ids.iter()
-                            .filter_map(|id| store.route_in_world(w, id))
-                            .any(|route| !route.legs().iter().any(|leg| leg.is_interdicted()))
-                    })
-            };
-            def.routes
+    if let Some(ids) = def.routes.get(dest_venue) {
+        return first_interdicted(ids);
+    }
+    let clean = |from_v: &mush_core::CanonicalId, to_v: &mush_core::CanonicalId| {
+        ports
+            .iter()
+            .find(|(port, _)| port.venue == *from_v)
+            .and_then(|(port, _)| port.routes.get(to_v))
+            .is_some_and(|ids| {
+                ids.iter()
+                    .filter_map(|id| store.route_in_world(w, id))
+                    .any(|route| !route.legs().iter().any(|leg| leg.is_interdicted()))
+            })
+    };
+    // Doc 50 cut KC.2 (Q-50-55): a destination the port of departure lays no route to (Ceres to
+    // Deimos, the free-flight shortcut) owes the picket's leg whenever a clean lane route joins
+    // that destination to the far end of an interdicted route out of the port (Deimos and Isidis
+    // to Stickney, not Titan).
+    let owed_from_port = |origin: &crate::port::def::PortDef| -> Option<mush_sim::LegDef> {
+        if origin.venue == *dest_venue {
+            return None;
+        }
+        match origin.routes.get(dest_venue) {
+            Some(ids) => first_interdicted(ids),
+            None => origin
+                .routes
                 .iter()
                 .filter(|(far, _)| clean(dest_venue, far) || clean(far, dest_venue))
-                .find_map(|(_, ids)| first_interdicted(ids))
+                .find_map(|(_, ids)| first_interdicted(ids)),
+        }
+    };
+    if let Some(leg) = owed_from_port(def) {
+        return Some(leg);
+    }
+    // P2-TSW-6: departing a surface extraction site (e.g. `commons_port` at `freeport_commons`,
+    // whose direct routes only return to its parent port `ceres`) and decoupling to fly to
+    // `stickney`, `isidis`, or `deimos` must resolve the interdicted corridor crossing from the
+    // site's parent hub port(s) reached via clean site-to-hub routes.
+    if def.site.is_some() {
+        let mut visited = std::collections::BTreeSet::new();
+        visited.insert(def.venue.clone());
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(*def);
+        while let Some(site_def) = queue.pop_front() {
+            for (neighbor_venue, ids) in &site_def.routes {
+                let is_clean = ids
+                    .iter()
+                    .filter_map(|id| store.route_in_world(w, id))
+                    .any(|route| !route.legs().iter().any(|leg| leg.is_interdicted()));
+                if !is_clean || !visited.insert(neighbor_venue.clone()) {
+                    continue;
+                }
+                let Some((neighbor_def, _)) =
+                    ports.iter().find(|(port, _)| port.venue == *neighbor_venue)
+                else {
+                    continue;
+                };
+                if neighbor_def.site.is_some() {
+                    queue.push_back(*neighbor_def);
+                } else if let Some(leg) = owed_from_port(neighbor_def) {
+                    return Some(leg);
+                }
+            }
         }
     }
+    None
 }
 
 /// Recouple `hull`, in free flight or at an orbital cluster, onto a carrier journey to `port`:
@@ -4047,6 +4168,12 @@ pub(crate) fn engage_port_autopilot(
             dep.depart_ic = now.at;
             // Doc 50 cut KC.2 (Q-50-10): an engagement from free flight pins the terms too.
             dep.terms = crate::space::duty::live_terms(ctx.w);
+            dep.burn_t = Some(
+                prepaid_unflown_t
+                    .min(plan.burn_t)
+                    .saturating_add(charge_burn_t),
+            );
+            dep.crew_days = Some(plan.crew_days);
         }
         crate::store::put_voyage(ctx, &voyage);
     }

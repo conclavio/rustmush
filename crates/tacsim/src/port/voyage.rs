@@ -158,6 +158,17 @@ pub struct Departed {
     /// engaged from free flight): the picket reads these, not the live ones. Skipped when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terms: Option<crate::polity::PlaceTerms>,
+    /// **Actual propellant burned for the current passage, tonnes** (`P2-TSW-11`): recorded from
+    /// `ticket.plan.burn_t` at launch (and updated on recouple from free flight), so
+    /// `+helm/decouple` prorates strictly against what was actually paid rather than recomputing
+    /// at 1000‰ throttle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burn_t: Option<u64>,
+    /// **Actual provisions burned for the current passage, crew-days** (`P2-TSW-11`): recorded
+    /// from `ticket.plan.crew_days` at launch (and updated on recouple), so celestial-body
+    /// autopilot only credits crew-days actually paid for the unflown passage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crew_days: Option<u32>,
 }
 
 /// **What a hull bound for a site will arrive with** (doc 20 cut SM.2; Q-20-7): the
@@ -1036,14 +1047,33 @@ pub(crate) fn goods_pending_aboard(w: &World, hold: EndpointRef) -> Option<Pendi
             return Some(Pending::Quote(quote.id));
         }
     }
-    market
-        .lot_listings()
-        .find_map(|listing| match market.lot_matter(listing) {
-            Some(LotMatter::Hold { endpoint, .. }) if endpoint.vault() == hold.vault() => {
-                Some(Pending::Listing(listing.id))
-            }
-            Some(LotMatter::Hold { .. } | LotMatter::Draw { .. }) | None => None,
-        })
+    if let Some(pending) =
+        market
+            .lot_listings()
+            .find_map(|listing| match market.lot_matter(listing) {
+                Some(LotMatter::Hold { endpoint, .. }) if endpoint.vault() == hold.vault() => {
+                    Some(Pending::Listing(listing.id))
+                }
+                Some(LotMatter::Hold { .. } | LotMatter::Draw { .. }) | None => None,
+            })
+    {
+        return Some(pending);
+    }
+    // P2-TSW-3: an open, non-lapsed `Supply::Wanted` bid targeting this hold (e.g. an
+    // indivisible part bid) holds the hull too, so a hull cannot clear-to-sail and burn
+    // propellant for lighter mass while an open bid can still deliver into it.
+    let now = w.now();
+    market.live_listings().find_map(|listing| {
+        let mush_market::Supply::Wanted { vault, .. } = listing.source else {
+            return None;
+        };
+        if vault != hold.vault() || listing.quantity == 0 {
+            return None;
+        }
+        let lapsed = matches!(listing.expires.clock, mush_economy::EconomicClock::RealUtc)
+            && now >= listing.expires.at;
+        (!lapsed).then_some(Pending::Listing(listing.id))
+    })
 }
 
 // ---- planning --------------------------------------------------------------------
@@ -3975,6 +4005,8 @@ fn departed_of(
         to_venue: pending.to_venue.clone(),
         from,
         terms: pending.terms.clone(),
+        burn_t: Some(pending.plan.burn_t),
+        crew_days: Some(pending.plan.crew_days),
     })
 }
 
@@ -4813,6 +4845,8 @@ mod tests {
                 to_venue: CanonicalId::new("stickney").unwrap(),
                 from: CanonicalId::new("ceres_port").unwrap(),
                 terms: None,
+                burn_t: None,
+                crew_days: None,
             }),
         };
         flown.check().unwrap();

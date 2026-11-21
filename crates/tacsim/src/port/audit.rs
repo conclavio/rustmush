@@ -182,7 +182,7 @@ pub(crate) fn audit(
             payout: None,
         };
         out.recorded |=
-            crate::offense::record_offense(ctx, key, offense, |_, row| row.debt.is_some());
+            crate::offense::record_offense(ctx, key, offense, crate::offense::is_settled);
     }
     if out.recorded {
         let told = match offender {

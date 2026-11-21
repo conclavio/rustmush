@@ -294,7 +294,7 @@ pub(crate) fn prove(
             .and_then(|rec| {
                 rec.rows
                     .iter()
-                    .find(|row| settled(ctx.w, row))
+                    .find(|row| crate::offense::is_settled(ctx.w, row))
                     .and_then(ProvenOffense::site_act)
                     .map(|(old_site, old_act)| (old_site.clone(), old_act.clone()))
             });
@@ -309,7 +309,7 @@ pub(crate) fn prove(
         debt: None,
         payout: None,
     };
-    let added = record_offense(ctx, key, offense, settled);
+    let added = record_offense(ctx, key, offense, crate::offense::is_settled);
     if added {
         if let Some((old_site, old_act)) = evicting_site_act {
             remember_proven(ctx, &old_site, &old_act);
@@ -326,25 +326,6 @@ fn debt_status(w: &World, id: u64) -> Option<ObligationStatus> {
         .snapshot()
         .obligation(ObligationId(id))
         .map(|o| o.status.clone())
-}
-
-/// Whether a fined row's debt is still owed.
-fn owed(w: &World, row: &ProvenOffense) -> bool {
-    row.debt.is_some_and(|id| {
-        matches!(
-            debt_status(w, id),
-            Some(
-                ObligationStatus::Active
-                    | ObligationStatus::Grace { .. }
-                    | ObligationStatus::Delinquent
-            )
-        )
-    })
-}
-
-/// Whether a row is settled: fined, and its debt no longer owed.
-fn settled(w: &World, row: &ProvenOffense) -> bool {
-    row.debt.is_some() && !owed(w, row)
 }
 
 /// **The lane port at `entry`**: its definition and map.
@@ -430,11 +411,56 @@ fn binding_key(w: &World, carrier: ObjId, entry: &CanonicalId) -> Option<Offense
     })
 }
 
+/// **The total past-due minor units holding `carrier` at `entry`** (`P2-TSW-5`): reads the hull's
+/// answerer record under the port's de facto holder, plus (when the hull answers through an
+/// organization whose duty fell back onto its pilot's personal account) any past-due `UnpaidDuty`
+/// on that pilot's record naming `carrier`.
+fn quarantine_total(w: &World, carrier: ObjId, entry: &CanonicalId) -> i64 {
+    let Some(key) = binding_key(w, carrier, entry) else {
+        return 0;
+    };
+    let mut total = owed_minor(w, &key);
+    if matches!(key.offender, Offender::Organization(_))
+        && let Some(pilot) = crate::port::coop::helm_holder(w, carrier)
+            .or_else(|| crate::port::owned::org_flyer(w, carrier))
+    {
+        let pilot_key = OffenseKey {
+            offender: Offender::Character(pilot),
+            polity: key.polity,
+        };
+        if let Some(record) = crate::offense::record_of(w, &pilot_key) {
+            let ids: Vec<u64> = record
+                .rows
+                .iter()
+                .filter(|row| {
+                    row.kind == OffenseKind::UnpaidDuty
+                        && matches!(row.evidence, Evidence::Duty { hull, .. } if hull == carrier)
+                        && row.debt.is_some_and(|id| {
+                            w.module_state::<mush_economy::EconomyStore>()
+                                .and_then(|e| e.snapshot().obligation(ObligationId(id)).cloned())
+                                .is_some_and(|o| crate::surface::retrieval::past_due(&o))
+                        })
+                })
+                .filter_map(|row| row.debt)
+                .collect();
+            if !ids.is_empty() {
+                let extra =
+                    mush_economy::debts_of(w, &PrincipalId::Object(pilot), &[DEBT_NAMESPACE])
+                        .iter()
+                        .filter(|o| ids.contains(&o.id.0))
+                        .fold(0_i64, |sum, o| sum.saturating_add(o.amount.minor()));
+                total = total.saturating_add(extra);
+            }
+        }
+    }
+    total
+}
+
 /// **Whether port security holds `carrier` at `entry`** (`DepartRefusalKind::Quarantined`): a
 /// fine of the port's holder against her answerer, past its 28-IC-day grace unpaid.
 #[must_use]
 pub fn holds_at(w: &World, carrier: ObjId, entry: &CanonicalId) -> bool {
-    binding_key(w, carrier, entry).is_some_and(|key| owed_minor(w, &key) > 0)
+    quarantine_total(w, carrier, entry) > 0
 }
 
 /// **The quarantine's line for `carrier` docked at `entry`** (`DepartRefusalKind::Quarantined`):
@@ -446,7 +472,7 @@ pub(crate) fn quarantine_line(
     entry: &CanonicalId,
     (name, port): (&str, &str),
 ) -> Option<String> {
-    let total = binding_key(ctx.w, carrier, entry).map_or(0, |key| owed_minor(ctx.w, &key));
+    let total = quarantine_total(ctx.w, carrier, entry);
     (total > 0).then(|| {
         QUARANTINED
             .replace("{name}", name)
