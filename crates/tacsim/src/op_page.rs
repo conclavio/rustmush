@@ -49,6 +49,17 @@ pub const RESOLVED_NOTICE: &str =
     "Official notice: the Isidis operation is decided: {result} +operation shows it.";
 /// The most past operations the record keeps.
 pub const MAX_PAST: usize = 16;
+/// **The Republic's bid** (Q-50-27): where it is posted, the port entry.
+pub const BID_ENTRY: &str = "stickney_port";
+/// What it buys: the stockpile's good, so every tonne sold to the Republic is one not landed
+/// at Isidis.
+pub const BID_GOOD: &str = crate::stockpile::STOCKPILE_GOOD;
+/// What it pays, whole credits a tonne (provisional): over the tank farm's 50 at Isidis, and
+/// under Kasei's 60 ask at Stickney, so nobody buys at Stickney to sell back to it there.
+pub const BID_CR: i64 = 56;
+/// How much it takes, tonnes (provisional): 11,200 cr at [`BID_CR`], inside what the customs
+/// office holds beside its bond.
+pub const BID_T: u64 = 200;
 
 /// A side's name: the Republic or the Freeport.
 fn side_name(tag: &str) -> String {
@@ -335,7 +346,8 @@ pub fn page(ctx: &Ctx<'_>) -> String {
     ));
     if live(w).is_some() {
         out.push("Work for it:".to_owned());
-        let work = work_lines(ctx);
+        let mut work = work_lines(ctx);
+        work.extend(bid_line(ctx));
         if work.is_empty() {
             out.push("  No job is posted for it now.".to_owned());
         } else {
@@ -468,6 +480,76 @@ pub(crate) fn tell_resolved(ctx: &mut Ctx<'_>, outcome: &str) {
     for who in lane_audience(ctx.w) {
         crate::port_tick::notify(ctx, who, &line);
     }
+}
+
+/// The customs office's vendor and storefront vault at Stickney (lane v51's row).
+fn customs_vendor(w: &World) -> Option<(mush_market::VendorId, mush_economy::VaultId)> {
+    let org = CanonicalId::new(crate::isidis_op::DECLARER_ORG).ok()?;
+    crate::port::market::ports(w)
+        .into_iter()
+        .find(|(entry, _, _)| entry.as_str() == BID_ENTRY)
+        .and_then(|(_, _, map)| {
+            let row = map?.vendors.get(&org)?;
+            Some((
+                mush_market::VendorId(row.vendor?),
+                mush_economy::VaultId(row.vault),
+            ))
+        })
+}
+
+/// **Post the Republic's bid** (Q-50-27) at the declaration: [`BID_T`] t of [`BID_GOOD`] at
+/// [`BID_CR`], into the customs office's storefront at Stickney. The listing, or `None` when the
+/// lane has no such vendor or the market refuses (logged).
+pub(crate) fn post_republic_bid(ctx: &mut Ctx<'_>) -> Option<u64> {
+    let (vendor, vault) = customs_vendor(ctx.w)?;
+    let good = CanonicalId::new(BID_GOOD).ok()?;
+    let scale = 10_i64.pow(u32::from(crate::port::apply::credit_scale(ctx.w)));
+    let spec = mush_market::WantedSpec {
+        vendor,
+        catalog: crate::port::vendor::catalog_of(&good),
+        price: mush_economy::Amount::from_minor(BID_CR.saturating_mul(scale)),
+        remaining: BID_T,
+        vault,
+        min_grade: 0,
+        ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+    };
+    match mush_market::post_wanted(ctx, spec) {
+        Ok(listing) => Some(listing.0),
+        Err(error) => {
+            tracing::warn!(?error, "tacsim: the Republic's bid could not be posted");
+            None
+        }
+    }
+}
+
+/// **Withdraw the Republic's bid** at the resolution. A listing already gone is nothing to do.
+pub(crate) fn withdraw_republic_bid(ctx: &mut Ctx<'_>, listing: u64) {
+    let id = mush_market::ListingId(listing);
+    let live = ctx
+        .w
+        .module_state::<mush_market::MarketStore>()
+        .is_some_and(|s| s.listing(id).is_some());
+    if live && let Err(error) = mush_market::withdraw_listing(ctx, id) {
+        tracing::warn!(?error, "tacsim: the Republic's bid could not be withdrawn");
+    }
+}
+
+/// The Republic's bid, while it stands: its line on the page.
+fn bid_line(ctx: &Ctx<'_>) -> Option<String> {
+    let listing = crate::isidis_op::record(ctx.w)?.bid?;
+    let l = ctx
+        .w
+        .module_state::<mush_market::MarketStore>()?
+        .listing(mush_market::ListingId(listing))?
+        .clone();
+    Some(format!(
+        "  The Republic's bid: Republic Customs Office buys up to {} t of {} at {} a tonne at \
+         {}. Sell into it there: +market/sell {listing}=<qty>",
+        l.quantity,
+        CanonicalId::new(BID_GOOD).map_or_else(|_| BID_GOOD.to_owned(), |g| good_label(ctx.w, &g)),
+        crate::port::coop::money_minor(ctx, l.price.minor()),
+        crate::services::venue_name(ctx.w, "stickney")
+    ))
 }
 
 /// **Push a finished operation onto the record's past** (at most [`MAX_PAST`], oldest dropped).

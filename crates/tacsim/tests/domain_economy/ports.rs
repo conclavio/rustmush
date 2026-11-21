@@ -631,8 +631,8 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_746_100_000,
-        "17,461,000.00cr: the Isidis Concession's 350,000 (doc 50 cut OP.1), 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_747_100_000,
+        "17,471,000.00cr: the Republic Customs Office's 10,000 more (doc 50 cut OP.7b), the Isidis Concession's 350,000 (doc 50 cut OP.1), 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
          SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000, \
          Freeport Works' 1,000,000 (doc 39 cut IN.5), Stickney Yards' 50,000 raise (IN.7's, in \
@@ -2040,9 +2040,10 @@ fn ic3_the_readiness_report_lists_every_binding_and_flags_the_rate() {
     // and its seven munitions processes. Doc 48 unit PL.5 (lane v39): Kasei's strategic-ore ask
     // and Stickney Yards' instrument-board ask. Doc 48 unit PL.8 (lane v41): Occator's thirteen
     // part bids and Stickney Yards' twelve more (its light plant's was there). Doc 48e lane L4
-    // (lane v44): Titan's ice bid and ice mill.
+    // (lane v44): Titan's ice bid and ice mill. Doc 50 cut OP.7b (lane v51): the Republic Customs
+    // Office's vendor line at Stickney.
     assert_eq!(
-        commerce_lines, 119,
+        commerce_lines, 120,
         "the shipped lane's vendor, ask, bid and mill lines at the five ports"
     );
     let total = want.len();
@@ -2324,7 +2325,7 @@ fn ic3_port_entries_refuse_what_the_applier_cannot_bind() {
         (
             "one stock clerk in two ports",
             Box::new(|doc| {
-                for n in 0..3 {
+                for n in 0..4 {
                     doc["entries"]["stickney_port"]["def"]["vendors"][n]["agent"] =
                         json!("ceres_port.clerk");
                 }

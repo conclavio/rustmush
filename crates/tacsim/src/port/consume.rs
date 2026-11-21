@@ -1013,6 +1013,7 @@ mod tests {
                     export_major_per_ic_day: 0,
                 },
             ],
+            note: None,
         };
         let provisions = cid("provisions");
         assert_eq!(drawn(&vendor, &provisions, 1_000, Some(990), 0), 10);
