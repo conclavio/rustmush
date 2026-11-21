@@ -2364,6 +2364,9 @@ fn sm10_two_live_claims_an_account() {
 #[test]
 fn sm10_a_heard_sounding_inside_the_epoch_takes_the_claim() {
     let mut rig = world_on(None);
+    // Doc 50 cut OP.8: Ceres' house hull now waits at home for the Freeport arm's haul, and her
+    // burns are no part of this story; the house and the arm are laid up.
+    support::lay_up_haulers(&mut rig.tw);
     let (a, _, ta) = on_ahuna(&mut rig, "Ada", "AdaAcct", "Salt Moth");
     let (b, _, tb) = on_ahuna(&mut rig, "Bryn", "BrynAcct", "Grey Heron");
     launched(&mut rig, a, ta);

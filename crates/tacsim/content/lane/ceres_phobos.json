@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 52,
+    "version": 53,
     "kind": "campaign_seed",
-    "digest": "4cc4a8235b8996663cc78d8d1e2d8e98fb6b6632857bb263e484b22efa6fdeff",
+    "digest": "24b611e5bfe38d68ee1a95eb5da608efd2cf26f2852171f53956e33c083f02f3",
     "requires": []
   },
   "entries": {
@@ -3167,7 +3167,7 @@
             "agent": "isidis_port.clerk", "signatory": "neighborhood.isidis_concession.npc.achterberg",
             "stock": [ { "good": "propellant", "qty": 3000, "grade": 50, "issue": 1 } ],
             "bids":  [ { "good": "propellant", "price_major": 50, "intake": 2000, "boards": ["receiving", "exchange"], "refresh": { "per_ic_day": 40, "cap": 2000 } } ],
-            "consume": [ { "good": "propellant", "per_ic_day": 20, "export_major_per_ic_day": 1000 } ] }
+            "consume": [ { "good": "propellant", "per_ic_day": 1, "export_major_per_ic_day": 50 } ] }
         ],
         "routes": { "stickney": [ "isidis_stickney" ] }
       }

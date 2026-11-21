@@ -4,10 +4,11 @@
 //!
 //! - **The arm posts** for Occator, through the players' verbs, as its own agent: a haul of
 //!   propellant from Occator's vault at Ceres into the tank farm's at Isidis, and an escort for it,
-//!   once an IC day while the farm is short, at most two open at once.
-//! - **The farm drains** 20 t an IC day (lane v49's `consume` row), and the port tick reads its
-//!   level. At the threshold the close probe is met and Hold the Concession moves once that month;
-//!   the arm posts nothing more while the farm stands there.
+//!   once an IC day while the farm is short of its threshold plus the arm's reserve, at most two
+//!   open at once.
+//! - **The farm drains** a tonne an IC day (lane v53's `consume` row; 20 t at v49), and the port
+//!   tick reads its level. At the threshold the close probe is met and Hold the Concession moves
+//!   once that month; the arm posts nothing more once the farm stands past its reserve.
 //! - **An untaken haul** is carried by Ceres' hauling house after seven IC days, in a real hull,
 //!   by the Kirkwood route, and delivered into the tank farm. Doc 50b item 1: she sails home to
 //!   Ceres on the stores she filled for the leg back, and carries a second haul.
@@ -121,6 +122,29 @@ fn ahead(rig: &mut Rig, secs: i64) {
     fires(rig, 3);
 }
 
+/// **Step the IC clock `secs` on, then a picket's bubble a wall second at a time** until it closes
+/// (at most half an hour), as production steps it, then a few fires landed. Doc 50 cut OP.8's
+/// retune: a 30 t haul brakes slower than a 20 t one, and an hour's jump alone left her leg
+/// paused at the picket.
+fn ahead_through_bubbles(rig: &mut Rig, secs: i64) {
+    let now = ic_now(&rig.tw);
+    let _ = to_ic(rig, now + secs);
+    for _ in 0..1_800 {
+        let open = rig
+            .tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .is_some_and(|book| !book.by_domain.is_empty());
+        if !open {
+            break;
+        }
+        sweep(&mut rig.tw, 1);
+        let queued = drain(&mut rig.tw);
+        land_quietly(rig, &queued);
+    }
+    fires(rig, 3);
+}
+
 /// The stock rig with the Freeport arm opened again (`@tacsim/port arm on`): the stock rig lays
 /// it up, as it does the hauling house.
 fn opened() -> Rig {
@@ -154,7 +178,10 @@ async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
     let first = until_posts(&mut rig, 1);
     assert!(first.agent.is_some() && first.grant.is_some(), "{first:?}");
     let level = first.level.expect("the farm's level is read");
-    assert!(level < stockpile::STOCKPILE_THRESHOLD_T, "{level}");
+    assert!(
+        level < stockpile::STOCKPILE_THRESHOLD_T + stockpile::ARM_RESERVE_T,
+        "{level}"
+    );
     assert_eq!(
         tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, 1),
         None,
@@ -203,21 +230,40 @@ async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
 }
 
 /// **Doc 50 cut OP.4: the farm drains, and at its threshold Hold the Concession moves**
-/// (Q-50-21, Q-50-60): 20 t an IC day are used up; seeded past its threshold, the next reading
-/// meets the close probe and moves Hold once that month, its line the chronicle's; the arm posts
-/// nothing while the farm stands there.
+/// (Q-50-21, Q-50-60; doc 50 cut OP.8's retune): a tonne an IC day is used up; a fresh world's
+/// farm stands over its threshold, so its first reading meets the close probe and moves Hold once
+/// that month, its line the chronicle's, and another reading that month moves it no further; the
+/// arm posts while the farm is short of its threshold plus its reserve, and nothing once seeded
+/// past both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
     let mut rig = opened();
     let vault = farm_vault(&rig);
     let _ = until_posts(&mut rig, 1);
+    let level = arm(&rig).level.expect("a reading");
+    assert!(
+        (stockpile::STOCKPILE_THRESHOLD_T
+            ..stockpile::STOCKPILE_THRESHOLD_T + stockpile::ARM_RESERVE_T)
+            .contains(&level),
+        "a fresh farm stands at its threshold, inside the arm's reserve: {level}"
+    );
+    let moved = hold_clock(&rig);
+    let month = tacsim::concession::ic_month(ic_now(&rig.tw));
+    assert!(
+        moved
+            .causes
+            .iter()
+            .any(|c| c == &format!("{}{month}", stockpile::THRESHOLD_CAUSE)),
+        "Hold the Concession moves on the first reading: {:?}",
+        moved.causes
+    );
     let start = hold_pool(&mut rig.tw, vault, stockpile::STOCKPILE_GOOD);
     ahead(&mut rig, DAY);
     ahead(&mut rig, 600);
     let after = hold_pool(&mut rig.tw, vault, stockpile::STOCKPILE_GOOD);
-    assert_eq!(start - after, 20, "a day's use of propellant at the farm");
+    assert_eq!(start - after, 1, "a day's use of propellant at the farm");
 
-    let before = hold_clock(&rig);
+    // Seeded past the threshold and the reserve, the arm posts nothing more.
     seed_pool(
         &mut rig,
         vault,
@@ -225,34 +271,23 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
         stockpile::STOCKPILE_THRESHOLD_T,
         LotId(9_961),
     );
+    fires(&mut rig, 3);
     let posts = arm(&rig).posts.len();
     ahead(&mut rig, DAY);
     ahead(&mut rig, 600);
     let level = arm(&rig).level.expect("a reading");
-    assert!(level >= stockpile::STOCKPILE_THRESHOLD_T, "{level}");
-    let moved = hold_clock(&rig);
-    assert_eq!(
-        moved.filled,
-        before.filled + 1,
-        "Hold the Concession moves: {moved:?}"
-    );
-    let month = tacsim::concession::ic_month(ic_now(&rig.tw));
     assert!(
-        moved
-            .causes
-            .iter()
-            .any(|c| c == &format!("{}{month}", stockpile::THRESHOLD_CAUSE)),
-        "{:?}",
-        moved.causes
+        level >= stockpile::STOCKPILE_THRESHOLD_T + stockpile::ARM_RESERVE_T,
+        "{level}"
     );
-    // Another reading the same month moves it no further, and the arm posts nothing.
-    ahead(&mut rig, DAY);
-    ahead(&mut rig, 600);
-    assert_eq!(hold_clock(&rig).filled, moved.filled, "once a month");
+    // Another reading the same month moves Hold no further, and the arm posts nothing.
+    if tacsim::concession::ic_month(ic_now(&rig.tw)) == month {
+        assert_eq!(hold_clock(&rig).filled, moved.filled, "once a month");
+    }
     assert_eq!(
         arm(&rig).posts.len(),
         posts,
-        "nothing posted at the threshold"
+        "nothing posted past the threshold and the reserve"
     );
 }
 
@@ -296,7 +331,7 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
     let hull = ObjId(row.hull.expect("a hull"));
     let mut whereabouts: Vec<String> = Vec::new();
     for _ in 0..(30 * 24) {
-        ahead(&mut rig, 3_600);
+        ahead_through_bubbles(&mut rig, 3_600);
         let here = match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
             tacsim::port::ship::Berth::Docked { def, .. } => format!("docked at {}", def.venue),
             tacsim::port::ship::Berth::UnderWay => "under way".to_owned(),
@@ -335,7 +370,7 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
     let delivered_at = whereabouts.len();
     let mut second = None;
     for _ in 0..(40 * 12) {
-        ahead(&mut rig, 2 * 3_600);
+        ahead_through_bubbles(&mut rig, 2 * 3_600);
         let here = match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
             tacsim::port::ship::Berth::Docked { def, .. } => format!("docked at {}", def.venue),
             tacsim::port::ship::Berth::UnderWay => "under way".to_owned(),
@@ -385,7 +420,9 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
 /// on her cargo comes out of the house's own account, not her helm's purse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_a_house_hull_pays_the_kirkwood_duty_from_the_house() {
-    let mut rig = opened();
+    // The arm stays laid up: a house hull at home waits for the arm's haul (doc 50 cut OP.8),
+    // and this story is a trade's cargo.
+    let mut rig = stocked();
     // The Republic holds the approach, as Customs Assertion's fill makes it (KC.1): its terms row
     // levies the duty.
     let held = run(
@@ -526,6 +563,17 @@ impl OperationFrame for ClosingFrame {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_the_close_probe_reads_the_farm_at_the_close() {
     let mut rig = stocked();
+    // A fresh farm stands over its threshold (doc 50 cut OP.8's retune): a day at a time, the
+    // drain takes it under.
+    for _ in 0..90 {
+        if arm(&rig)
+            .level
+            .is_some_and(|l| l < stockpile::STOCKPILE_THRESHOLD_T)
+        {
+            break;
+        }
+        ahead(&mut rig, DAY);
+    }
     let frame = Arc::new(ClosingFrame::default());
     *frame.close.lock().expect("lock") = i64::MAX;
     let seated: Arc<dyn OperationFrame> = frame.clone();

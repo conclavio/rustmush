@@ -10,6 +10,12 @@
 //!   player takes, through the Kirkwood picket, which her house's mind answers;
 //! - the campaign settles who won, and the arm writes it into control and the import duty.
 //!
+//! **The contest** (doc 50 cut OP.8's retune, the figures provisional): the farm starts 40 t over
+//! its threshold and drains a tonne an IC day; the house's 30 t hauls hold it there and move Hold
+//! the Concession in months the start stock alone would not; in the window the picket takes the
+//! house's haul as the Freeport's, and the farm reads short at the close. The Republic wins,
+//! narrowly. `newcomer` is the same run with one player haul more, and the Freeport holds.
+//!
 //! **What is a fixture.** The rig's setup alone: the stock rig's world, the Freeport arm and Ceres'
 //! house opened again (the stock rig lays them up; a production world has both open) and the rate
 //! set to 24:1.
@@ -43,7 +49,12 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
     let start = ic_now(&rig.tw);
     let review0 = review_clock(w).expect("the Review");
     let hold0 = hold_clock(w).expect("Hold the Concession");
-    assert_eq!((review0.filled, hold0.filled), (2, 2), "both fronts at two");
+    assert_eq!(review0.filled, 2, "the Review at two");
+    // The farm is stocked over its threshold, so the first reading may already have moved Hold.
+    assert!(
+        hold0.filled <= 3,
+        "Hold at two, or three on the first reading: {hold0:?}"
+    );
 
     let mut timeline: Vec<String> = Vec::new();
     let mut phases: Vec<OperationPhase> = Vec::new();
@@ -135,6 +146,25 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
     }
     let outcome = s.outcome.expect("an outcome");
 
+    // Hold the Concession moved on the farm at its threshold, in a month when the start stock
+    // alone would have stood under it: the house's hauls held it there.
+    let hold = hold_clock(w).expect("Hold the Concession");
+    // A tonne an IC day: the first reading's margin over the threshold is its days.
+    let first = levels.first().map_or(0, |(_, level)| *level);
+    let margin_days =
+        i64::try_from(first.saturating_sub(stockpile::STOCKPILE_THRESHOLD_T)).expect("days");
+    let start_stock_lasts = tacsim::concession::ic_month(start + margin_days * DAY);
+    let held_by_house = hold.causes.iter().any(|cause| {
+        cause
+            .strip_prefix(stockpile::THRESHOLD_CAUSE)
+            .and_then(|m| m.parse::<i64>().ok())
+            .is_some_and(|month| month > start_stock_lasts)
+    });
+    assert!(
+        held_by_house,
+        "Hold moved after the start stock ran short: {hold:?}\n{report}"
+    );
+
     // The house carried the arm's hauls, and her house's mind answered the picket.
     assert!(!taken.is_empty(), "the house took an arm's haul: {report}");
     assert!(
@@ -151,17 +181,22 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
     let freeport = tacsim::polity::polity(w, "freeport").expect("the Freeport");
     let control = tacsim::polity::control_at(w, &cid("isidis_port")).expect("Isidis");
     let terms = tacsim::polity::terms_at(w, &cid("isidis_port")).expect("Isidis's terms");
-    match outcome {
-        OperationOutcome::DeclarerSucceeded => {
-            assert_eq!(record.outcome.as_deref(), Some("republic"));
-            assert_eq!(control.de_facto, Some(republic), "{report}");
-            let row = terms.row.as_ref().expect("the Republic's terms row");
-            assert!(row.import_duty_permille > 0, "the import duty: {row:?}");
-        }
-        OperationOutcome::DeclarerFailed => {
-            assert_eq!(record.outcome.as_deref(), Some("freeport"));
-            assert_eq!(control.de_facto, Some(freeport), "{report}");
-        }
-        other => panic!("neither side won: {other:?}\n{report}"),
-    }
+    // With nobody playing, the Republic wins: the farm reads short of its threshold at the close.
+    let close = stockpile::arm(w)
+        .and_then(|a| a.close_read)
+        .expect("the farm read at the close");
+    assert!(
+        close.level < stockpile::STOCKPILE_THRESHOLD_T,
+        "short at the close: {close:?}\n{report}"
+    );
+    assert_eq!(
+        outcome,
+        OperationOutcome::DeclarerSucceeded,
+        "the Republic wins: {report}"
+    );
+    assert_eq!(record.outcome.as_deref(), Some("republic"));
+    assert_eq!(control.de_facto, Some(republic), "{report}");
+    assert_ne!(control.de_facto, Some(freeport));
+    let row = terms.row.as_ref().expect("the Republic's terms row");
+    assert!(row.import_duty_permille > 0, "the import duty: {row:?}");
 }

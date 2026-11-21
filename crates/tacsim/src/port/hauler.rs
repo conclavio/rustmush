@@ -1186,10 +1186,22 @@ fn hop_toward(
     true
 }
 
+/// **Waiting at home for the Freeport arm's work** (doc 50 cut OP.8; Q-50-24): a hull docked at
+/// her home port while an arm's haul is on the board there ([`crate::stockpile::awaiting`]) sets
+/// out on no trade, so she is there to carry it when its days are up.
+fn waits_home(ctx: &Ctx<'_>, here_def: &PortDef, home: &CanonicalId) -> bool {
+    let at_home = ports_by_venue(ctx.w)
+        .into_iter()
+        .any(|(def, map)| &map.entry == home && def.venue == here_def.venue);
+    at_home
+        && crate::stockpile::awaiting(ctx.w, here_def.venue.as_str(), ctx.w.world_ic_now().at)
+            .is_some()
+}
+
 /// **Called home for the Freeport arm's work** (doc 50 cut OP.8; Q-50-24): a hull lying idle
 /// away from her home port, with an arm's haul on the board there ([`crate::stockpile::awaiting`]),
-/// sets out for home empty, one hop at a time, before she looks for a trade. Each hop is a trip of
-/// its own that ends where it docks. Answers whether she set out.
+/// sets out for home with whatever is aboard, one hop at a time, before she sells or trades. Each
+/// hop is a trip of its own that ends where it docks. Answers whether she set out.
 fn called_home(
     ctx: &mut Ctx<'_>,
     hauler: &HaulerDef,
@@ -1607,6 +1619,20 @@ fn step(
     if row.idle_day == Some(today) {
         return;
     }
+    // Doc 50 cut OP.8 (Q-50-24): away from home with the arm's work on the board there, she sails
+    // home for it, with anything still aboard, before she sells or trades here: a hold nobody
+    // here buys would otherwise keep her at the counter every day.
+    if called_home(
+        ctx,
+        hauler,
+        (hull, helm),
+        (purse, house_account),
+        (&here_def, &here_map),
+        home,
+        row,
+    ) {
+        return;
+    }
     // 5. Anything still aboard is sold here first, once an IC day.
     if row.sold_day != Some(today)
         && let Some(doc) = sell_what_is_aboard(ctx, hauler, hull, helm)
@@ -1627,17 +1653,11 @@ fn step(
         }
         return;
     }
-    // Doc 50 cut OP.8 (Q-50-24): away from home with the arm's work on the board there, she
-    // sails home for it before she trades.
-    if called_home(
-        ctx,
-        hauler,
-        (hull, helm),
-        (purse, house_account),
-        (&here_def, &here_map),
-        home,
-        row,
-    ) {
+    // Doc 50 cut OP.8 (Q-50-24): at home with the arm's work on the board, she waits for it
+    // rather than set out on a trade.
+    if waits_home(ctx, &here_def, home) {
+        row.idle_day = Some(today);
+        row.note = Some("waiting at home for the Freeport arm's haul".to_owned());
         return;
     }
     // 6. A trip, when one pays.

@@ -1,17 +1,21 @@
 //! **Doc 50 cut OP.8: the second acceptance story** (Q-50-47: "a player who never joined arrives
 //! at Isidis after the operation, and reads who won from the terms"), on the production command
-//! paths with two accounts, and no staff hand in the outcome.
+//! paths with two accounts, and no staff hand in the outcome. **Players decide it** (OP.8's
+//! retune): it is the empty run with one player haul more, and that haul keeps the farm at its
+//! threshold through the close, so the Freeport holds where the empty run's Republic won.
 //!
 //! - **The hauler** (the first account), a Co-op pilot with a Dray-P at Ceres, takes the Freeport
 //!   arm's first haul for Occator (`+haul/accept`), flies it by the direct run, heaves to at the
 //!   Kirkwood picket and submits (`+helm/thrust`, `+helm/submit`), carries on to Stickney and
 //!   Isidis and delivers it into the tank farm (`+haul/deliver`). Beside her, Ceres' house
-//!   carries the hauls nobody takes.
+//!   carries the hauls nobody takes; hers is one the house's one hull at Ceres leaves on the
+//!   board.
 //! - **The world runs on.** The Assembly's votes fill the Concession Review; the Republic
 //!   declares and the hauler, who has a hull on the lane, is told; the campaign reads the farm at
-//!   the window's close and settles; the hauler is told who won.
+//!   the window's close, at its threshold, and settles for the Freeport; the hauler is told.
 //! - **The newcomer** (the second account) is made only after the operation, arrives at Isidis,
-//!   and reads on `+operation` who won and what it puts on a sale there.
+//!   and reads on `+operation` that the Freeport held, and that a sale there pays no import
+//!   duty.
 //!
 //! **What is a fixture.** The rig's setup (as the empty run's), the hauler's propellant and stores
 //! aboard at each port (a stand-in for buying them), and the newcomer's arrival at Isidis by
@@ -160,6 +164,26 @@ async fn op8_a_player_who_never_joined_reads_who_won_from_the_terms() {
     let s = status(w).expect("the operation");
     assert_eq!(s.phase, OperationPhase::Settled, "{phases:?}");
     let outcome = s.outcome.expect("decided");
+    // The hauler's haul kept the farm at its threshold through the close: the Freeport holds.
+    let close = stockpile::arm(w)
+        .and_then(|a| a.close_read)
+        .expect("the farm read at the close");
+    assert!(
+        close.level >= stockpile::STOCKPILE_THRESHOLD_T,
+        "at its threshold at the close: {close:?}"
+    );
+    assert_eq!(
+        outcome,
+        OperationOutcome::DeclarerFailed,
+        "the Freeport holds"
+    );
+    let freeport = tacsim::polity::polity(w, "freeport").expect("the Freeport");
+    let control = tacsim::polity::control_at(w, &crate::rig::cid("isidis_port")).expect("Isidis");
+    assert_eq!(
+        control.de_facto,
+        Some(freeport),
+        "the Freeport holds Isidis"
+    );
     // The hauler, with a hull on the lane, has the lane's notices of the declaration and of who
     // won queued for her login.
     let queued = pending_notices(rig.tw.world(), hauler);
@@ -181,20 +205,11 @@ async fn op8_a_player_who_never_joined_reads_who_won_from_the_terms() {
         "the newcomer never joined, and was told nothing"
     );
     let page = run(&mut rig.tw, newcomer, OPERATION_VERB);
-    let wants: &[&str] = match outcome {
-        OperationOutcome::DeclarerSucceeded => &[
-            "Decided: the Republic won",
-            "Isidis now: the Republic administers the Concession",
-            "import duty",
-        ],
-        OperationOutcome::DeclarerFailed => &[
-            "Decided: the Freeport held the Concession",
-            "Isidis now: the Freeport administers the Concession",
-            "cargo sold at Isidis pays no import duty",
-        ],
-        other => panic!("neither side won: {other:?}"),
-    };
-    for want in wants {
+    for want in [
+        "Decided: the Freeport held the Concession",
+        "Isidis now: the Freeport administers the Concession",
+        "cargo sold at Isidis pays no import duty",
+    ] {
         assert!(page.contains(want), "{want:?} in {page}");
     }
 }

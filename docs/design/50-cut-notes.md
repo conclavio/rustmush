@@ -2447,10 +2447,10 @@ lane bump.**
   only the Review moves, though Q-50-47 says both fronts do. The defenders need some 1,000 t over
   the starting stock, plus 20 t a day, landed by the close. The second story's single player haul
   does not change that. The figures are Q-50-21's, Q-50-22's and Q-50-60's, all provisional, and
-  the owner's to tune.
+  the owner's to tune. **Retuned below** (OP.8's retune).
 - **A house hull at home still trades.** She can set out on a trade before an arm's haul there
   is seven days old, and is called home only once she lies idle somewhere else. On the empty run,
-  both of the first two hauls lapsed this way.
+  both of the first two hauls lapsed this way. **Fixed in OP.8's retune** (`waits_home`).
 
 **Divergences** (the smallest choice where doc 50 is silent).
 - **The two stories live in mush-composition, not TacSim**, because only there are the campaign
@@ -2479,3 +2479,123 @@ lane bump.**
 - mush-server's `split_boundary` and `commerce_composition` (320);
 - `cargo fmt --all --check`; clippy `-D warnings` on tacsim and mush-composition, all targets;
   rustdoc `-D warnings` on tacsim in both modes.
+
+### OP.8's retune: the Isidis figures (lane v53, relay v44)
+
+The owner on 2026-11-21, of this cut's finding that neither front could move: "Yes, retune them".
+#752 had merged, so the retune is its own PR, from main. **A lane bump: lane v53 and relay v44.**
+
+**The targets** (the lead's brief):
+1. the empty run moves both fronts;
+2. with no players the Republic wins, narrowly;
+3. players decide it;
+4. the arm's budget covers the hauls, with no new money.
+
+**Measured first** (probes on conclav.dev, four variants a batch, in parallel):
+- **The house has one hull for the arm.** VCC-01 is Ceres-based; VCC-02's home is Luna, so she
+  is never called to Ceres.
+- **VCC-01's round trip is about 35 IC days**: she takes a haul at Ceres, delivers it at Isidis
+  about 18 days later, and is home 17 days after that.
+- **Haul size:** a 30 t haul flies the direct run. At 40 t and 60 t she takes the haul and never
+  sails, so 30 t is the most her tankage allows.
+- **So the house lands about 0.86 t an IC day.** The drain is whole tonnes, so 1 t a day is the
+  least that can still beat the house.
+- **In the window the picket takes the house's haul as the Freeport's** (OP.6's operation foes),
+  and her unescorted hull is lost, around day 147 to 152.
+
+**The figures** (all provisional; before → after):
+- **The threshold** (Q-50-21): 4,000 → 2,960 t. The starting stock stays 3,000 t.
+- **The drain** (Q-50-60, lane): 20 → 1 t an IC day. Its export faucet drops from 1,000 to 50 cr,
+  in step with what is used.
+- **One haul** (Q-50-22): 20 → 30 t.
+- **The arm's reserve** (new): the arm posts while the farm is under its threshold plus two hauls
+  (60 t), where before it stopped at the threshold.
+- **Unchanged:** the fees (600 and 400 cr), the monthly cap (20,000 cr), the two open hauls and
+  the 7-day fallback (Q-50-24). A 2-day fallback was measured and moved the close by nothing.
+
+**Why these** (on the measured runs):
+- **The start stock must be over the threshold.** With the house slower than the drain, the start
+  is the farm's highest point, so a threshold above it could never be reached. The start stock
+  alone would fall under the threshold by day 40.
+- **The house holds the farm at its threshold** month after month, and Hold the Concession moves
+  on those months (target 1).
+- **The close reads 2,945 t on the empty run**, 15 t short, and the Republic wins (target 2).
+- **With one player haul more it reads 2,977 t**, 17 t over, and the Freeport holds (target 3).
+  The threshold sits between the two, half a haul from each.
+- **The reserve is why a player's haul counts.** Without it, a delivery that put the farm at its
+  threshold paused the arm's posts and cost the house a trip, which cancelled the haul.
+- **The budget** (target 4): the arm posts at most once a day with two open, about two a month at
+  1,000 cr each, against the 20,000 cr cap. It posted to the end of both runs from Occator's
+  treasury.
+
+**The small gap, fixed: a house hull at home waits for the arm's work** (`hauler::waits_home`).
+- Docked at her home port while an arm's haul is on the board there, she sets out on no trade
+  (idle for the day, with a note saying why). On the first run VCC-01 left on a trade on day 1;
+  now she takes the arm's first haul on day 7.
+- **Called home now runs before the daily sale of what is aboard.** Before, a hull away from home
+  with a hold nobody there bought tried to sell every day, and never reached the call home. She
+  now carries it home.
+
+**Tests changed.**
+- **`empty_run`** now asserts:
+  - the Republic wins, the farm short of its threshold at the close;
+  - Hold the Concession moved on a threshold month after the start stock alone would have run
+    short;
+  - the Review starts at two and Hold at two or three, since a fresh farm's first reading meets
+    the threshold.
+- **`newcomer` is target 3's story.** Her one haul is additive: the house's one Ceres hull leaves
+  the second open haul on the board. The story asserts the farm at its threshold at the close,
+  that the Freeport holds Isidis, and that the newcomer reads the Freeport's terms: "the Freeport
+  held the Concession", and no import duty. This divergence was chosen over a second full story
+  (180 s); the empty run is the story without her.
+- **`op4_stockpile`:**
+  - a fresh farm stands inside the arm's reserve;
+  - the drain is 1 t;
+  - the first reading moves Hold;
+  - seeded past the threshold and the reserve, the arm posts nothing;
+  - the close-probe story first draws the farm under its threshold, a day at a time.
+- **The lane bump's pins** (v53, relay v44, both digests), and `lane_chain::strip_farm_drain` at
+  the strip chain's head, with `lane::op8_strip_farm_drain_rebuilds_the_published_v52`.
+- **`op4_stockpile`, two more.** The untaken-haul story steps a picket's bubble a wall second
+  at a time, as production does (`ahead_through_bubbles`). A 30 t haul brakes more slowly than a
+  20 t one, so an hour's jump left her leg paused at Kirkwood past the haul's due time. The
+  Kirkwood duty story keeps the arm laid up, since a house hull at home now waits for the arm's
+  haul and that story is a trade's cargo.
+- **Three more pins:**
+  - `op7_operation` reads the threshold (2,960 t) and Hold's count off the clock;
+  - `ex0_matter_sinks` counts the farm's whole days at a tonne;
+  - `voyage::cr_burning_past_the_picket_…` lands only the pilot's own customs ruling.
+- **`claims::sm10_a_heard_sounding_…` lays up the house and the arm.** Both stories' rigs leave
+  them open. Since `waits_home`, VCC-01 takes the arm's haul and meets the picket, or burns, in
+  their scenes. A bisect on conclav.dev put both failures on `waits_home` alone, and both pass on
+  main.
+
+**Mutations** (each applied, its story run, then restored by re-applying the original text):
+- **the arm's reserve at 0:** the newcomer story fails at "the arm posts a haul". A fresh farm
+  stands over its threshold, so with no reserve the arm never posts at all.
+- **no threshold news:** the empty run fails at "Hold moved after the start stock ran short".
+
+**On conclav.dev:**
+- **The full gate** ran all of tacsim, mush-composition and mush-contract-tests (5,381 tests), with
+  6 failures. They are the four stories and pins above, and the two `waits_home` scenes. The
+  failing ones and every `claims::sm10_` story then passed on the fixed patch.
+- **Also green:** mush-server's `split_boundary` and `commerce_composition`; `cargo fmt --all
+  --check`; clippy `-D warnings` on tacsim and mush-composition (all targets) and mush-server
+  (tests); rustdoc `-D warnings` on tacsim in both modes.
+- **Both OP.8 stories pass** with their outcomes asserted, about 3 minutes each.
+
+**Divergences.**
+- **The start stock is over the threshold**, against OP.4's "a fresh world starts short". Target 1
+  is read as "the house's traffic holds the farm at its threshold"; above, it could never be
+  reached.
+- **Hold the Concession fills on the empty run.** Every month before the window has a reading at
+  the threshold after a delivery, so the clock goes from two to six. Its consequence line is
+  news; nothing reads its completion.
+- **The arm posts past its threshold**, up to a reserve of two hauls.
+- **The contest is about one haul wide.** A future change to the house's timing or the picket can
+  move the close by a haul either way; both stories assert their outcome, so it will show.
+
+**Not done.**
+- Another Ceres hull for the house, which would widen the contest. It is a lane change to EX.10's
+  roster, the owner's call.
+- No escort on either story.

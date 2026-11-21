@@ -112,12 +112,15 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
     let (told, _) = prospector(&mut rig, "Told", 93, "Grey Moth");
     *frame.told.lock().expect("lock") = vec![told];
 
-    // Before: nothing declared, the Review short, the Freeport holding a duty-free Isidis.
+    // Before: nothing declared, the Review short, the Freeport holding a duty-free Isidis. A
+    // fresh farm stands at its threshold (doc 50 cut OP.8's retune), so Hold may be one up.
     let page = run(&mut rig.tw, newcomer, OPERATION_VERB);
+    let hold = tacsim::concession::hold_clock(rig.tw.world()).expect("Hold the Concession");
+    let hold_line = format!("Hold the Concession (the Freeport): {} of 6.", hold.filled);
     for want in [
         "No operation is declared at Isidis",
         "The Concession Review (the Republic): 2 of 6.",
-        "Hold the Concession (the Freeport): 2 of 6.",
+        hold_line.as_str(),
         "Isidis now: the Freeport administers the Concession",
         "cargo sold at Isidis pays no import duty",
     ] {
@@ -187,7 +190,7 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
          duty.",
         "Notice runs: the window opens",
         "real hours",
-        "the Freeport holds if Occator's tank farm at Isidis stands at 4000 t",
+        "the Freeport holds if Occator's tank farm at Isidis stands at 2960 t",
         "It holds ",
         "The Concession Review (the Republic): 6 of 6, filled.",
         "Work for it:",

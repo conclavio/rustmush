@@ -933,6 +933,39 @@ the five.
 - **Confirmed (owner ruling, 2026-11-20, doc 50b):** the Hold the Concession clock advances once
   an IC month while the farm stands at its threshold, as OP.4 built it, even with no new delivery.
   The verdict at the window's close still reads the level itself, at the close.
+- **The figures, retuned (owner, 2026-11-21: "Yes, retune them"; doc 50 cut OP.8, lane v53).
+  Provisional:** take the defaults and tune later.
+
+  | Figure | Before | After |
+  |---|---|---|
+  | Threshold (Q-50-21) | 4,000 t | 2,960 t |
+  | Starting stock | 3,000 t | 3,000 t (unchanged) |
+  | Drain (Q-50-60) | 20 t an IC day | 1 t an IC day (its export faucet 50 cr, was 1,000) |
+  | One haul (Q-50-22) | 20 t | 30 t |
+  | Arm posts while the farm is under | the threshold | the threshold plus two hauls (60 t) |
+  | Fee, escort fee, monthly cap, open hauls | 600 cr, 400 cr, 20,000 cr, 2 | unchanged |
+  | Fallback (Q-50-24) | 7 IC days | 7 IC days (unchanged) |
+
+  - **Why.** At the old figures neither front could move: 1,000 t short at the start, against
+    20 t a day, and the house brought about 20 t a month.
+  - **The house's carrying is fixed by the lane.** Ceres' house has one hull based at Ceres
+    (VCC-01; VCC-02's home is Luna). A Dray takes a 30 t haul through the direct run, but not a
+    40 t one. Her round trip is about 35 IC days, so the house lands about 0.86 t a day. The
+    drain is whole tonnes, so 1 t a day is the least that can still beat the house.
+  - **So the start stock is over the threshold.** With the house slower than the drain, the start
+    is the farm's highest point, so a threshold above it could never be reached. The house's
+    hauls hold the farm at its threshold month after month, where the start stock alone runs
+    under it by day 40. Hold the Concession moves on those months.
+  - **The window decides it.** In the window the picket treats the arm's carriers as the
+    Freeport's (OP.6), and the house's unescorted hull is lost. Measured on the empty run, the
+    farm reads 2,945 t at the close, 15 t short, and the Republic wins. With one player haul
+    more it reads 2,977 t, 17 t over, and the Freeport holds.
+  - **Why the reserve.** The arm stopped posting at the threshold. A player's delivery then
+    paused the arm's posts and cost the house a trip, so it changed nothing. Posting on to 60 t
+    over the threshold makes a player's haul count in full.
+  - **The arm's budget covers it.** A post is 1,000 cr against a month's cap of 20,000, and the
+    arm posts at most once an IC day with two open, about two posts a month on these runs. It
+    posted to the end of both runs, from Occator's own treasury, with no new money.
 
 **Q-50-22 — The budget, and who spends it.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the Freeport side's money is its backing organization's treasury (Occator,

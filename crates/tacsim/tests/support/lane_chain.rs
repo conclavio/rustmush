@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v52 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v53 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,9 +45,37 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut OP.8's retune (lane v53): the tank farm's drain back at v52's**: 20 t of
+/// propellant an IC day, its export faucet 1,000, so a strip chain rebuilds a lane before v53
+/// (idempotent). The chain's head.
+pub fn strip_farm_drain(doc: &mut Value) {
+    let Some(vendors) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("isidis_port"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("vendors"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for vendor in vendors {
+        if vendor.get("org").and_then(Value::as_str) != Some("isidis_tank_farm") {
+            continue;
+        }
+        if let Some(rows) = vendor.get_mut("consume").and_then(Value::as_array_mut) {
+            for row in rows {
+                row["per_ic_day"] = 20.into();
+                row["export_major_per_ic_day"] = 1000.into();
+            }
+        }
+    }
+}
+
 /// **Doc 50b item 9 (lane v52): Meridiani taken out**: Meridiani Security Group's organization
-/// row at Isidis, so a strip chain rebuilds a lane before v52 (idempotent). The chain's head.
+/// row at Isidis, so a strip chain rebuilds a lane before v52 (idempotent); lane v53's
+/// [`strip_farm_drain`] first.
 pub fn strip_meridiani(doc: &mut Value) {
+    strip_farm_drain(doc);
     if let Some(orgs) = doc
         .get_mut("entries")
         .and_then(|e| e.get_mut("isidis_port"))
