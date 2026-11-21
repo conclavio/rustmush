@@ -1961,6 +1961,45 @@ pub(crate) fn lots_in(ctx: &Ctx<'_>, endpoint: EndpointRef) -> Vec<(LotId, Canon
     escrow_lots(ctx, endpoint)
 }
 
+/// **The unheld lots of `good` in an endpoint**, at most `max` (doc 50b): the same bounded walk
+/// as [`lots_in`], filtered by good and by hold inside the walk, so lots of other goods, or held
+/// ones, never crowd out the ones asked for.
+pub(crate) fn unheld_lots_of(
+    ctx: &Ctx<'_>,
+    endpoint: EndpointRef,
+    good: &CanonicalId,
+    max: usize,
+) -> Vec<(LotId, u64)> {
+    let Some((_, inventory)) = handles(ctx.w) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_LOT_PAGES {
+        let Ok(page) = ctx.scan_action_state(&inventory.lots, cursor.as_deref(), LOT_PAGE) else {
+            break;
+        };
+        for entry in page.entries() {
+            let lot = entry.value();
+            if out.len() < max
+                && lot.endpoint() == endpoint
+                && lot.commodity() == good
+                && matches!(ctx.action_state(&inventory.lot_holds, &lot.id()), Ok(None))
+            {
+                out.push((lot.id(), lot.quantity()));
+            }
+        }
+        if out.len() >= max {
+            break;
+        }
+        match page.next_after() {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+    }
+    out
+}
+
 /// **A house order's supply** (doc 39 cut IN.10): `goods` and `lots` from `from` into contract
 /// `id`'s escrow, owed as `by` — the `+yard/deliver` move with the source the arm bought from.
 ///

@@ -2368,8 +2368,9 @@ fn sm5_occators_capital_rises_by_a_tranche_on_a_kept_world() {
         .filter(|o| {
             ![
                 5_000_000, 10_000_000, 80_000_000, 20_000_000, 45_000_000, 40_000_000,
-                // Doc 50 cut KC.2 (lane v46): the Republic Customs Office's 10,000 base.
-                1_000_000,
+                // Doc 50 cut KC.2 (lane v46): the Republic Customs Office's base, 20,000 since doc 50
+                // cut OP.7b (lane v51).
+                2_000_000,
             ]
             .contains(&o.amount.minor())
         })
