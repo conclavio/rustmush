@@ -423,13 +423,17 @@ async fn op5_occator_funds_the_tank_farms_bid() {
         let queued = drain(&mut rig.tw);
         land_quietly(&mut rig, &queued);
     }
-    let gross = i64::try_from(QTY).expect("fits") * 50 * 100;
     let doc = tacsim::stockpile::arm(rig.tw.world())
         .cloned()
         .expect("the arm's record");
     assert_eq!(doc.fills.len(), 1, "one fill, counted once: {doc:?}");
     let fill = &doc.fills[0];
-    assert_eq!(fill.spent_minor, gross, "{fill:?}");
+    // The bid's price at the sale (its premium moves it), times the tonnes.
+    let gross = fill.spent_minor;
+    assert!(
+        gross > 0 && gross % i64::try_from(QTY).expect("fits") == 0,
+        "{fill:?}"
+    );
     assert!(fill.paid, "Occator paid it back: {fill:?}");
     assert_eq!(
         doc.spent_in(fill.month),

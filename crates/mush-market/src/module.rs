@@ -399,9 +399,9 @@ pub struct ProceedsRefusal {
 pub struct SettledSale<'a> {
     /// The sale's quote.
     pub quote: crate::QuoteId,
-    /// The bid sold into (doc 50b item 8: its house is the listing's seller; the quote is
-    /// gone by the time the policy is told).
-    pub listing: crate::ListingId,
+    /// The house whose bid was sold into (the quote's buyer; doc 50b item 8). The bid's
+    /// listing may no longer stand by the time the policy is told.
+    pub house: &'a PrincipalId,
     /// Its contract.
     pub contract: ContractId,
     /// The seller (the quote's seller principal).

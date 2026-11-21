@@ -482,20 +482,13 @@ impl ProceedsPolicy for CoopProceeds {
 
     fn settled(&self, ctx: &mut Ctx<'_>, sale: &SettledSale<'_>) {
         // Doc 50b item 8: a fill of the tank farm's bid is Occator's, counted in its month.
-        let house = ctx
-            .w
-            .module_state::<mush_market::MarketStore>()
-            .and_then(|m| m.listing(sale.listing))
-            .map(|listing| listing.seller.clone());
-        if let Some(house) = house {
-            crate::stockpile::on_fill(
-                ctx,
-                sale.quote.0,
-                &house,
-                sale.commodity,
-                sale.gross.minor(),
-            );
-        }
+        crate::stockpile::on_fill(
+            ctx,
+            sale.quote.0,
+            sale.house,
+            sale.commodity,
+            sale.gross.minor(),
+        );
         let PrincipalId::Object(pilot) = sale.seller else {
             return;
         };

@@ -3598,7 +3598,7 @@ pub(crate) fn settled_sale(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
         ctx,
         &crate::module::SettledSale {
             quote: q.id,
-            listing: q.listing,
+            house: &q.buyer,
             contract,
             seller: &q.seller,
             source: lot.source.0,
