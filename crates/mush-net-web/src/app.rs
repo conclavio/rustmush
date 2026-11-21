@@ -288,11 +288,11 @@ pub async fn serve(hooks: Arc<dyn WebHooks>, config: WebConfig) -> std::io::Resu
 /// Binds `config.listen` and serves until `shutdown` resolves (graceful:
 /// in-flight requests finish; WS tasks notice their sockets closing).
 ///
-/// With `config.tls` set, terminates TLS natively via `axum-server` +
-/// rustls (requires the `tls` cargo feature; ring provider — no C
-/// toolchain). Without it, plain HTTP — the recommended prod setup keeps a
-/// reverse proxy (Caddy/nginx) in front and `trusted_proxies` pointed at
-/// it.
+/// With `config.tls` set, terminates TLS natively via rustls (requires the
+/// `tls` cargo feature; ring provider — no C toolchain) and serves HTTP/1.1
+/// directly with the same connection cap and header timeout as plain HTTP.
+/// Without it, plain HTTP — the recommended prod setup keeps a reverse proxy
+/// (Caddy/nginx) in front and `trusted_proxies` pointed at it.
 pub async fn serve_with_shutdown(
     hooks: Arc<dyn WebHooks>,
     config: WebConfig,
@@ -305,9 +305,7 @@ pub async fn serve_with_shutdown(
 /// listen address once the listener is up (mirrors the SSH listener's
 /// ready-channel pattern). A caller that binds `127.0.0.1:0` reads the
 /// OS-assigned port back through it; the split gateway uses this to hand its
-/// integration tests the real web address. For the (rare, prod-only) native-TLS
-/// path the socket is bound inside `axum-server`, so `bound` is signalled with
-/// the configured `config.listen` before serving begins.
+/// integration tests the real web address.
 pub async fn serve_with_shutdown_bound(
     hooks: Arc<dyn WebHooks>,
     config: WebConfig,
@@ -323,8 +321,8 @@ pub async fn serve_with_shutdown_bound(
 /// `mush_drain::listen::bind_std`, with `SO_REUSEPORT`, so two generations
 /// share the port while one drains, and the recipe lives in one place.
 /// `config.listen` is not consulted; the listener is put in non-blocking
-/// mode here. With `[web.tls]` the listener is handed to `axum-server`
-/// (`from_tcp_rustls`), so TLS and plain HTTP take the same socket.
+/// mode here, and both plain HTTP and `[web.tls]` serve directly on the same
+/// socket.
 pub async fn serve_with_shutdown_bound_on(
     hooks: Arc<dyn WebHooks>,
     config: WebConfig,
@@ -364,9 +362,6 @@ pub async fn serve_with_shutdown_bound_on(
             serve_http(listener, app, conn_sem, header_timeout, shutdown).await
         }
         Some(tls_config) => {
-            if let Some(tx) = bound {
-                let _ = tx.send(actual);
-            }
             serve_tls(
                 listener,
                 actual,
@@ -374,6 +369,7 @@ pub async fn serve_with_shutdown_bound_on(
                 app,
                 conn_sem,
                 header_timeout,
+                bound,
                 shutdown,
             )
             .await
@@ -384,23 +380,17 @@ pub async fn serve_with_shutdown_bound_on(
 }
 
 /// Wraps a stream so the global TCP connection semaphore permit lives for the
-/// entire lifetime of the connection (including after WebSocket upgrades), and
-/// optionally enforces a deadline until the first byte arrives (closing
-/// `hyper-util`'s `auto::Builder` `ReadVersion` stall under TLS).
+/// entire lifetime of the connection (including after WebSocket upgrades).
 struct PermitStream<S> {
     inner: S,
     _permit: OwnedSemaphorePermit,
-    first_byte_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl<S> PermitStream<S> {
-    fn new(inner: S, permit: OwnedSemaphorePermit, first_byte_timeout: Option<Duration>) -> Self {
+    fn new(inner: S, permit: OwnedSemaphorePermit) -> Self {
         Self {
             inner,
             _permit: permit,
-            first_byte_deadline: first_byte_timeout
-                .filter(|d| !d.is_zero())
-                .map(|d| Box::pin(tokio::time::sleep(d))),
         }
     }
 }
@@ -411,29 +401,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for PermitStream<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let before = buf.filled().len();
-        match Pin::new(&mut this.inner).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
-                if buf.filled().len() > before {
-                    this.first_byte_deadline = None;
-                }
-                Poll::Ready(Ok(()))
-            }
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-            Poll::Pending => {
-                if let Some(deadline) = this.first_byte_deadline.as_mut()
-                    && deadline.as_mut().poll(cx).is_ready()
-                {
-                    this.first_byte_deadline = None;
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "http header read timed out",
-                    )));
-                }
-                Poll::Pending
-            }
-        }
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
     }
 }
 
@@ -467,6 +435,41 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PermitStream<S> {
     }
 }
 
+fn http1_builder(header_timeout: Duration) -> hyper::server::conn::http1::Builder {
+    let mut http1 = hyper::server::conn::http1::Builder::new();
+    http1.timer(TokioTimer::new());
+    http1.keep_alive(true);
+    if !header_timeout.is_zero() {
+        http1.header_read_timeout(header_timeout);
+    }
+    http1
+}
+
+async fn serve_http1_conn<S>(
+    stream: PermitStream<S>,
+    remote_addr: SocketAddr,
+    app: Router,
+    http1: hyper::server::conn::http1::Builder,
+    mut conn_shutdown: tokio::sync::watch::Receiver<bool>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
+    let service = TowerToHyperService::new(app.layer(Extension(ConnectInfo(remote_addr))));
+    let mut conn = std::pin::pin!(http1.serve_connection(io, service).with_upgrades());
+    tokio::select! {
+        res = conn.as_mut() => {
+            if let Err(err) = res {
+                tracing::debug!(peer = %remote_addr, error = %err, "http connection closed");
+            }
+        }
+        _ = conn_shutdown.changed() => {
+            conn.as_mut().graceful_shutdown();
+            let _ = tokio::time::timeout(Duration::from_secs(10), conn).await;
+        }
+    }
+}
+
 async fn serve_http(
     listener: tokio::net::TcpListener,
     app: Router,
@@ -474,12 +477,7 @@ async fn serve_http(
     header_timeout: Duration,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
-    let mut http1 = hyper::server::conn::http1::Builder::new();
-    http1.timer(TokioTimer::new());
-    if !header_timeout.is_zero() {
-        http1.header_read_timeout(header_timeout);
-    }
-
+    let http1 = http1_builder(header_timeout);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown = std::pin::pin!(shutdown);
     let mut tasks = tokio::task::JoinSet::new();
@@ -507,23 +505,17 @@ async fn serve_http(
         };
         let _ = stream.set_nodelay(true);
         let http1 = http1.clone();
-        let service =
-            TowerToHyperService::new(app.clone().layer(Extension(ConnectInfo(remote_addr))));
-        let mut conn_shutdown = shutdown_rx.clone();
+        let app = app.clone();
+        let conn_shutdown = shutdown_rx.clone();
         tasks.spawn(async move {
-            let io = TokioIo::new(PermitStream::new(stream, permit, None));
-            let mut conn = std::pin::pin!(http1.serve_connection(io, service).with_upgrades());
-            tokio::select! {
-                res = conn.as_mut() => {
-                    if let Err(err) = res {
-                        tracing::debug!(peer = %remote_addr, error = %err, "http connection closed");
-                    }
-                }
-                _ = conn_shutdown.changed() => {
-                    conn.as_mut().graceful_shutdown();
-                    let _ = tokio::time::timeout(Duration::from_secs(10), conn).await;
-                }
-            }
+            serve_http1_conn(
+                PermitStream::new(stream, permit),
+                remote_addr,
+                app,
+                http1,
+                conn_shutdown,
+            )
+            .await;
         });
     }
 
@@ -537,56 +529,7 @@ async fn serve_http(
 }
 
 #[cfg(feature = "tls")]
-#[derive(Clone)]
-struct BoundedAcceptor<A> {
-    inner: A,
-    sem: Arc<Semaphore>,
-    header_timeout: Duration,
-}
-
-#[cfg(feature = "tls")]
-impl<A, S> axum_server::accept::Accept<tokio::net::TcpStream, S> for BoundedAcceptor<A>
-where
-    A: axum_server::accept::Accept<tokio::net::TcpStream, S> + Clone + Send + Sync + 'static,
-    A::Future: Send,
-    A::Stream: AsyncRead + AsyncWrite + Unpin + Send,
-    A::Service: Send,
-    S: Send + 'static,
-{
-    type Stream = PermitStream<A::Stream>;
-    type Service = A::Service;
-    type Future = Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Service)>> + Send>>;
-
-    fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
-        let inner = self.inner.clone();
-        let sem = Arc::clone(&self.sem);
-        let header_timeout = self.header_timeout;
-        Box::pin(async move {
-            let permit = sem.try_acquire_owned().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "global connection limit reached",
-                )
-            })?;
-            let accepted = if header_timeout.is_zero() {
-                inner.accept(stream, service).await
-            } else {
-                match tokio::time::timeout(header_timeout, inner.accept(stream, service)).await {
-                    Ok(res) => res,
-                    Err(_) => Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "tls handshake timed out",
-                    )),
-                }
-            };
-            let (tls_stream, svc) = accepted?;
-            let first_byte = (!header_timeout.is_zero()).then_some(header_timeout);
-            Ok((PermitStream::new(tls_stream, permit, first_byte), svc))
-        })
-    }
-}
-
-#[cfg(feature = "tls")]
+#[allow(clippy::too_many_arguments)]
 async fn serve_tls(
     listener: std::net::TcpListener,
     listen: SocketAddr,
@@ -594,43 +537,103 @@ async fn serve_tls(
     app: Router,
     conn_sem: Arc<Semaphore>,
     header_timeout: Duration,
+    bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    use axum_server::accept::Accept as _;
+
     // rustls needs a process-level crypto provider. Ring keeps the
     // workspace free of C-toolchain babysitting (aws-lc-sys wants
     // CMake/NASM); ignore the error if something already installed one.
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let rustls_config =
-        axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
-    let handle = axum_server::Handle::new();
-    {
-        let handle = handle.clone();
-        tokio::spawn(async move {
-            shutdown.await;
-            handle.graceful_shutdown(Some(Duration::from_secs(10)));
+    let loaded = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
+    // Enforce HTTP/1.1-only ALPN and feed decrypted streams directly into
+    // `hyper::server::conn::http1::Builder` (never `auto::Builder` / HTTP/2):
+    // `header_read_timeout` arms immediately on the first read after TLS
+    // handshake, and any HTTP/2 preface bytes are rejected/timed out instead
+    // of holding connection permits indefinitely (EXT-P1-4).
+    let mut server_config = (*loaded.get_inner()).clone();
+    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(server_config));
+    let handshake_timeout = if header_timeout.is_zero() {
+        Duration::from_secs(24 * 60 * 60)
+    } else {
+        header_timeout
+    };
+    let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls_config)
+        .handshake_timeout(handshake_timeout);
+
+    let listener = tokio::net::TcpListener::from_std(listener)?;
+    tracing::info!(%listen, "web server listening (https)");
+    if let Some(tx) = bound {
+        let _ = tx.send(listen);
+    }
+
+    let http1 = http1_builder(header_timeout);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut shutdown = std::pin::pin!(shutdown);
+    let mut tasks = tokio::task::JoinSet::new();
+
+    loop {
+        while tasks.try_join_next().is_some() {}
+
+        let accepted = tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            res = listener.accept() => res,
+        };
+        let (stream, remote_addr) = match accepted {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::warn!(error = %err, "https accept error");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
+        };
+        let Ok(permit) = Arc::clone(&conn_sem).try_acquire_owned() else {
+            tracing::warn!(peer = %remote_addr, "web connection cap reached; dropping socket");
+            drop(stream);
+            continue;
+        };
+        let _ = stream.set_nodelay(true);
+        let acceptor = acceptor.clone();
+        let http1 = http1.clone();
+        let app = app.clone();
+        let mut conn_shutdown = shutdown_rx.clone();
+        tasks.spawn(async move {
+            let tls_stream = tokio::select! {
+                biased;
+                _ = conn_shutdown.changed() => return,
+                res = acceptor.accept(stream, ()) => match res {
+                    Ok((tls_stream, ())) => tls_stream,
+                    Err(err) => {
+                        tracing::debug!(peer = %remote_addr, error = %err, "tls handshake failed");
+                        return;
+                    }
+                },
+            };
+            serve_http1_conn(
+                PermitStream::new(tls_stream, permit),
+                remote_addr,
+                app,
+                http1,
+                conn_shutdown,
+            )
+            .await;
         });
     }
-    tracing::info!(%listen, "web server listening (https)");
-    let mut server = axum_server::from_tcp_rustls(listener, rustls_config)?;
-    {
-        let mut http1 = server.http_builder().http1();
-        http1.timer(TokioTimer::new());
-        if !header_timeout.is_zero() {
-            http1.header_read_timeout(header_timeout);
-        }
-    }
-    server
-        .map(move |inner| BoundedAcceptor {
-            inner,
-            sem: conn_sem,
-            header_timeout,
-        })
-        .handle(handle)
-        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-        .await
+
+    drop(listener);
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(10), async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
+    Ok(())
 }
 
 #[cfg(not(feature = "tls"))]
+#[allow(clippy::too_many_arguments)]
 async fn serve_tls(
     _listener: std::net::TcpListener,
     _listen: SocketAddr,
@@ -638,6 +641,7 @@ async fn serve_tls(
     _app: Router,
     _conn_sem: Arc<Semaphore>,
     _header_timeout: Duration,
+    _bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     _shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     Err(std::io::Error::other(

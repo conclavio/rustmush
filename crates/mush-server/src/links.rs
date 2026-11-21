@@ -360,6 +360,23 @@ impl LinkRegistry {
         sinks.len()
     }
 
+    /// Queue `msg` on every open link except `exclude`. Returns how many took
+    /// it. Used to fan out cross-generation notifications (e.g.
+    /// `RevokeWebToken`) from the originating gateway to peer generations.
+    pub fn broadcast_except(&self, exclude: LinkId, msg: &ToGateway) -> usize {
+        let sinks: Vec<LinkSink> = self
+            .table()
+            .links
+            .iter()
+            .filter(|&(&id, _)| id != exclude)
+            .map(|(_, e)| e.sink.clone())
+            .collect();
+        for sink in &sinks {
+            sink.send(msg.clone());
+        }
+        sinks.len()
+    }
+
     /// Forget every link without detaching anything: the shutdown tail. Each
     /// link's outbox sender drops with its entry, so every writer sees its
     /// channel close once the world's sink is gone too, sends `Bye`, and ends.
@@ -616,6 +633,12 @@ mod tests {
         assert_eq!(reg.broadcast(&exempt(2)), 2);
         assert!(ra.try_recv().is_ok());
         assert!(rb.try_recv().is_ok());
+        assert_eq!(reg.broadcast_except(a.id(), &exempt(4)), 1);
+        assert!(ra.try_recv().is_err(), "sender link a is excluded");
+        assert!(
+            rb.try_recv().is_ok(),
+            "peer link b receives broadcast_except"
+        );
         assert!(reg.send_to_link(b.id(), exempt(3)));
         assert!(rb.try_recv().is_ok());
         assert!(ra.try_recv().is_err());

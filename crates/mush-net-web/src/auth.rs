@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::hooks::{CharSummary, LoginErr, LoginOk, RegisterErr};
+use crate::hooks::{CharSummary, LoginErr, LoginOk, LogoutErr, RegisterErr};
 use crate::ip::client_ip;
 
 /// Hard upper bound on login account name bytes before touching auth hooks.
@@ -134,7 +134,8 @@ pub(crate) async fn register(
 }
 
 /// `POST /api/auth/logout` with `Authorization: Bearer <token>` — revokes
-/// the token. 204 even for unknown tokens (idempotent).
+/// the token. 204 even for unknown tokens (idempotent); 503 if durable token
+/// deletion in the store failed so callers know to retry.
 pub(crate) async fn logout(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -147,8 +148,13 @@ pub(crate) async fn logout(
     let Some(token) = bearer_token(&headers) else {
         return err_json(StatusCode::BAD_REQUEST, "missing bearer token");
     };
-    state.hooks.logout(token).await;
-    StatusCode::NO_CONTENT.into_response()
+    match state.hooks.logout(token).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(LogoutErr::Unavailable) => err_json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "logout temporarily unavailable; please retry",
+        ),
+    }
 }
 
 /// Extracts the token from `Authorization: Bearer <token>`.

@@ -286,6 +286,11 @@ pub fn every_to_server() -> Vec<ToServer> {
         },
         ToServer::Control(CoreControl::Shutdown),
         ToServer::Control(CoreControl::Dump),
+        // Version 15 (EXT-P1-3): cross-generation web bearer-token revocation.
+        ToServer::RevokeWebToken {
+            token_hash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                .to_string(),
+        },
     ]
 }
 
@@ -510,6 +515,11 @@ pub fn every_to_gateway() -> Vec<ToGateway> {
             loop_lag_ms: 19,
             store_ok: false,
             integrity_ok: true,
+        },
+        // Version 15 (EXT-P1-3): cross-generation web bearer-token revocation.
+        ToGateway::RevokeWebToken {
+            token_hash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                .to_string(),
         },
         ToGateway::Bye,
     ]

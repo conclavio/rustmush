@@ -813,14 +813,21 @@ struct SitebanMirror {
     /// Reporting a drop needs the CURRENT boundary: a detach the server never
     /// hears about would leave it announcing a player who is gone.
     boundary: BoundaryHandle,
+    /// Shared lifecycle ledger so a gap-time web-token eviction releases its
+    /// slot even while the server boundary is down.
+    lifecycle: Arc<Mutex<LifecycleCustody>>,
+    /// Gateway-side control hooks (used to reconcile live web tokens against
+    /// the shared store on periodic refresh and post-gap reconnect).
+    controls: Arc<controls::GatewayControls>,
     interval: Duration,
 }
 
 impl SitebanMirror {
-    /// Re-seed the mirror from the store and enforce it against live
-    /// connections. Returns the number of connections dropped. A store read
-    /// failure leaves the previous mirror in place — a transient Redis blip
-    /// must never un-ban the site.
+    /// Re-seed the mirror from the store, enforce it against live
+    /// connections, and reconcile live web tokens against the shared store.
+    /// Returns the number of connections dropped. A store read failure leaves
+    /// the previous mirror (and live web sessions) in place — a transient
+    /// Redis blip must never un-ban the site or drop valid sessions.
     async fn refresh(&self) -> usize {
         // Lifts are store commands, not removals from `ban:*`. Read them even
         // when siteban refresh fails; each guard consumes every ID only once.
@@ -837,20 +844,90 @@ impl SitebanMirror {
             }
             Err(error) => tracing::warn!(%error, "tempban lift refresh failed"),
         }
-        let bans = match self.store.get_bans().await {
-            Ok(bans) => bans,
+        let mut dropped = 0usize;
+        match self.store.get_bans().await {
+            Ok(bans) => {
+                // `load_sitebans` replaces the mirror wholesale and drops entries that
+                // have already expired, so this one call covers set, clear and expiry.
+                self.guard.load_sitebans(
+                    bans.into_iter()
+                        .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
+                );
+                dropped += self.drop_banned_connections();
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "siteban refresh failed; keeping the current mirror");
-                return 0;
             }
-        };
-        // `load_sitebans` replaces the mirror wholesale and drops entries that
-        // have already expired, so this one call covers set, clear and expiry.
-        self.guard.load_sitebans(
-            bans.into_iter()
-                .filter_map(|b| b.ip.parse().ok().map(|ip| (ip, b.until_unix))),
-        );
-        self.drop_banned_connections()
+        }
+        dropped += self.reconcile_web_tokens().await;
+        dropped
+    }
+
+    /// Reconcile live web connections' bearer tokens against the shared store
+    /// (EXT-P1-3): catches tokens revoked on another gateway generation during
+    /// a server restart gap (when IPC broadcast could not cross) as well as
+    /// tokens that expired or were deleted by `@newpassword` during a gap.
+    async fn reconcile_web_tokens(&self) -> usize {
+        let hashes = self.controls.live_web_token_hashes();
+        if hashes.is_empty() {
+            return 0;
+        }
+        let mut dropped = 0usize;
+        for hash in hashes {
+            match self.store.token_get(&hash).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    let doomed = self.controls.revoke_web_token(&hash);
+                    if doomed.is_empty() {
+                        continue;
+                    }
+                    let notice = Arc::new(OutputEvent::Disconnect {
+                        reason: RichText::tag("system", "You have logged out."),
+                    });
+                    let to_server_tx = self.boundary.current().map(|c| c.tx.clone());
+                    for conn in doomed {
+                        let conn_id = mush_session::ConnId(conn);
+                        let _ = self.sessions.send_to_conn(conn_id, Arc::clone(&notice));
+                        if let Some(tx) = &to_server_tx {
+                            detach_one_conn(&self.sessions, tx, conn, DetachCause::Booted);
+                        } else {
+                            let actor = self
+                                .sessions
+                                .session_of_conn(conn_id)
+                                .and_then(|s| self.sessions.character_of(s))
+                                .map(char_key_obj);
+                            if self
+                                .sessions
+                                .detach(conn_id, DetachReason::Booted)
+                                .is_some()
+                                && let Some(actor) = actor
+                            {
+                                locked(&self.lifecycle, "lifecycle custody").observe_conn_down(
+                                    conn,
+                                    actor,
+                                    DisconnectKind::Boot,
+                                );
+                            }
+                        }
+                        dropped += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "web token reconciliation read failed; keeping live connections"
+                    );
+                    break;
+                }
+            }
+        }
+        if dropped > 0 {
+            tracing::info!(
+                dropped,
+                "web token reconciliation ejected revoked connections"
+            );
+        }
+        dropped
     }
 
     /// Close every live connection whose peer address the mirror now blocks
@@ -1368,6 +1445,7 @@ async fn gateway_reader(
     sessions: Arc<SessionManager>,
     manifest: ManifestCache,
     input_custody: Arc<Mutex<InputCustody>>,
+    controls: Arc<controls::GatewayControls>,
     metrics: Arc<Metrics>,
 ) {
     metrics.set_world_loop_iteration(0);
@@ -1521,6 +1599,9 @@ async fn gateway_reader(
                 cause,
             } => {
                 close_web_sessions(&sessions, &to_server_tx, chars, notice.as_ref(), cause);
+            }
+            ToGateway::RevokeWebToken { token_hash } => {
+                revoke_web_token_conns(&sessions, &to_server_tx, &controls, &token_hash);
             }
             ToGateway::Hello {
                 proto,
@@ -1685,6 +1766,31 @@ fn close_web_sessions(
             // producer uses `Booted`, keep the wire cause authoritative here.
             detach_one_conn(sessions, to_server_tx, conn.0, cause);
         }
+    }
+}
+
+/// Cross-generation single-token logout (`ToGateway::RevokeWebToken`,
+/// EXT-P1-3): record the token hash as revoked on this gateway's web bridge
+/// (fencing any in-flight attach/resume) and boot every live web connection
+/// authenticated by that exact token hash, leaving other tokens and SSH
+/// connections untouched.
+fn revoke_web_token_conns(
+    sessions: &Arc<SessionManager>,
+    to_server_tx: &ToServerTx,
+    controls: &controls::GatewayControls,
+    token_hash: &str,
+) {
+    let doomed = controls.revoke_web_token(token_hash);
+    if doomed.is_empty() {
+        return;
+    }
+    let notice = Arc::new(OutputEvent::Disconnect {
+        reason: RichText::tag("system", "You have logged out."),
+    });
+    for conn in doomed {
+        tracing::info!(conn, "cross-generation logout boots live web connection");
+        let _ = sessions.send_to_conn(mush_session::ConnId(conn), Arc::clone(&notice));
+        detach_one_conn(sessions, to_server_tx, conn, DetachCause::Booted);
     }
 }
 
@@ -1923,6 +2029,7 @@ async fn connect_and_wire(
         Arc::clone(sessions),
         Arc::clone(manifest),
         Arc::clone(&env.input_custody),
+        Arc::clone(&env.controls),
         Arc::clone(&env.tuning.metrics),
     ));
     Ok(WiredBoundary {
@@ -2510,6 +2617,8 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         guard: Arc::clone(&guard),
         sessions: Arc::clone(&sessions),
         boundary: boundary.clone(),
+        lifecycle: Arc::clone(&env.lifecycle),
+        controls: Arc::clone(&controls),
         interval: opts.siteban_refresh.unwrap_or(SITEBAN_REFRESH),
     };
     siteban_mirror.refresh().await;
@@ -2616,7 +2725,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                 // the generations share it; the transport serves it pre-bound.
                 match listen::bind_std(web_config.listen) {
                     Ok(web_socket) => {
-                        let web_bridge: Arc<dyn WebHooks> = Arc::new(
+                        let web_bridge_concrete = Arc::new(
                             WebBridge::with_link(
                                 Arc::clone(&accounts),
                                 Arc::clone(&sessions),
@@ -2629,6 +2738,10 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
                             .with_conn_id_bit(conn_id_bit)
                             .with_drain(Arc::clone(&drain)),
                         );
+                        let revoker: Arc<dyn controls::WebTokenRevoker> =
+                            web_bridge_concrete.clone();
+                        controls.set_web_tokens(revoker);
+                        let web_bridge: Arc<dyn WebHooks> = web_bridge_concrete;
                         let web_ready = opts.web_ready;
                         let stop = Arc::clone(&web_stop);
                         Some(tokio::spawn(async move {
@@ -3071,6 +3184,8 @@ mod tests {
             // No boundary: a refresh during a restart gap still updates the
             // mirror, it just cannot report a detach to a server that is gone.
             boundary: BoundaryHandle::default(),
+            lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            controls: Arc::new(controls::GatewayControls::default()),
             interval: SITEBAN_REFRESH,
         };
 
@@ -3103,6 +3218,8 @@ mod tests {
             guard: Arc::clone(&guard),
             sessions: Arc::new(SessionManager::new()),
             boundary: BoundaryHandle::default(),
+            lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            controls: Arc::new(controls::GatewayControls::default()),
             interval: SITEBAN_REFRESH,
         };
         let other = SitebanMirror {
@@ -3174,6 +3291,8 @@ mod tests {
             guard,
             sessions: Arc::clone(&sessions),
             boundary,
+            lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            controls: Arc::new(controls::GatewayControls::default()),
             interval: SITEBAN_REFRESH,
         };
 
@@ -3197,6 +3316,155 @@ mod tests {
 
         // Idempotent: the second pass has nothing left to eject.
         assert_eq!(mirror.refresh().await, 0);
+    }
+
+    /// EXT-P1-3(b): periodic / post-gap `SitebanMirror::refresh` reconciles
+    /// live web tokens against the shared store, ejecting connections whose
+    /// tokens disappeared (e.g. logged out on another generation during a
+    /// server restart gap) both with an active boundary (`ConnDown(Boot)`) and
+    /// during a restart gap (local detach + lifecycle custody release), while
+    /// leaving connections with valid tokens untouched.
+    #[tokio::test]
+    async fn siteban_refresh_reconciles_revoked_web_tokens_live_and_during_gap() {
+        struct StubRevoker {
+            conns: Mutex<HashMap<u64, String>>,
+        }
+        impl controls::WebTokenRevoker for StubRevoker {
+            fn revoke_token_hash(&self, token_hash: &str) -> Vec<u64> {
+                let mut map = self.conns.lock().unwrap();
+                let doomed: Vec<u64> = map
+                    .iter()
+                    .filter(|&(_, h)| h == token_hash)
+                    .map(|(&c, _)| c)
+                    .collect();
+                for c in &doomed {
+                    map.remove(c);
+                }
+                doomed
+            }
+            fn live_token_hashes(&self) -> Vec<String> {
+                let map = self.conns.lock().unwrap();
+                let mut seen = HashSet::new();
+                map.values()
+                    .filter(|h| seen.insert((*h).clone()))
+                    .cloned()
+                    .collect()
+            }
+        }
+
+        let sessions = Arc::new(SessionManager::new());
+        let (tx_revoked_live, mut rx_revoked_live) = mpsc::channel::<Arc<Envelope>>(8);
+        let (tx_revoked_gap, mut rx_revoked_gap) = mpsc::channel::<Arc<Envelope>>(8);
+        let (tx_valid, _rx_valid) = mpsc::channel::<Arc<Envelope>>(8);
+        sessions.attach(
+            ConnectionHandle::new_structured(ConnId(11), addr(1), ansi_caps(true), tx_revoked_live),
+            CharKey(101),
+            "a".to_string(),
+        );
+        sessions.attach(
+            ConnectionHandle::new_structured(ConnId(12), addr(2), ansi_caps(true), tx_revoked_gap),
+            CharKey(102),
+            "b".to_string(),
+        );
+        sessions.attach(
+            ConnectionHandle::new_structured(ConnId(13), addr(3), ansi_caps(true), tx_valid),
+            CharKey(103),
+            "c".to_string(),
+        );
+
+        let store: Arc<dyn ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+        let now = mush_config::unix_now_s();
+        let h_live = crate::web_bridge::token_hash("revoked-while-connected");
+        let h_gap = crate::web_bridge::token_hash("revoked-during-gap");
+        let h_valid = crate::web_bridge::token_hash("still-valid");
+        for hash in [&h_gap, &h_valid] {
+            store
+                .token_put(
+                    hash.clone(),
+                    mush_store::TokenRecord {
+                        account: "acct".to_string(),
+                        created: now,
+                        expires: now + 3600,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        // `h_live` is already absent from the shared store.
+
+        let mut initial_conns = HashMap::new();
+        initial_conns.insert(11, h_live);
+        initial_conns.insert(12, h_gap.clone());
+        initial_conns.insert(13, h_valid);
+        let controls = Arc::new(controls::GatewayControls::default());
+        controls.set_web_tokens(Arc::new(StubRevoker {
+            conns: Mutex::new(initial_conns),
+        }));
+
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (tx, _metrics, lifecycle) = test_tx(raw_tx, usize::MAX, 0);
+        // Register conn 12 in lifecycle custody so we can verify gap-time
+        // eviction releases its slot cleanly.
+        lifecycle.lock().unwrap().connections.insert(
+            12,
+            ConnectionCustody {
+                actor: ObjId(102),
+                phase: LifecyclePhase::Live,
+                restore_linkdead_on_cancel: false,
+            },
+        );
+        let boundary = BoundaryHandle::default();
+        boundary.connect(Arc::new(BoundaryConn {
+            tx,
+            pending: SocketGatewayLink::pending_table(),
+        }));
+
+        let mirror = SitebanMirror {
+            store: Arc::clone(&store),
+            guard: Arc::new(IpGuard::new()),
+            sessions: Arc::clone(&sessions),
+            boundary: boundary.clone(),
+            lifecycle: Arc::clone(&lifecycle),
+            controls,
+            interval: SITEBAN_REFRESH,
+        };
+
+        // Pass 1 (connected boundary): conn 11's token is absent -> evicted
+        // with Disconnect + ConnDown(Boot). Conns 12 & 13 stay live.
+        assert_eq!(mirror.refresh().await, 1);
+        assert!(sessions.conn_handle(ConnId(11)).is_none());
+        assert!(sessions.conn_handle(ConnId(12)).is_some());
+        assert!(sessions.conn_handle(ConnId(13)).is_some());
+        assert!(matches!(
+            rx_revoked_live.try_recv().unwrap().event,
+            OutputEvent::Disconnect { .. }
+        ));
+        match raw_rx.try_recv() {
+            Ok(ToServer::Inbound(WireInbound::ConnDown {
+                conn: 11,
+                reason: DisconnectKind::Boot,
+                ..
+            })) => {}
+            other => panic!("expected ConnDown(Boot) for conn 11, got {other:?}"),
+        }
+
+        // Pass 2 (restart gap): enter gap and delete `h_gap` in the shared
+        // store -> conn 12 is evicted locally, gets Disconnect, and its
+        // lifecycle custody slot is released. Conn 13 stays live.
+        boundary.enter_gap();
+        store.token_del(&h_gap).await.unwrap();
+        assert_eq!(mirror.refresh().await, 1);
+        assert!(sessions.conn_handle(ConnId(12)).is_none());
+        assert!(sessions.conn_handle(ConnId(13)).is_some());
+        assert!(matches!(
+            rx_revoked_gap.try_recv().unwrap().event,
+            OutputEvent::Disconnect { .. }
+        ));
+        assert_eq!(
+            lifecycle.lock().unwrap().obligations(),
+            0,
+            "gap-time eviction must release lifecycle custody slot"
+        );
     }
 
     /// `CloseWebSessions` resolution (D4): only the **structured** (web)
@@ -4259,6 +4527,7 @@ mod tests {
             sessions,
             Arc::new(Mutex::new(HelloManifest::default())),
             Arc::clone(&custody),
+            Arc::new(controls::GatewayControls::default()),
             Arc::clone(&_metrics),
         ));
 
@@ -4342,6 +4611,7 @@ mod tests {
             Arc::clone(&link.sessions),
             Arc::new(Mutex::new(HelloManifest::default())),
             Arc::clone(&link.input_custody),
+            Arc::new(controls::GatewayControls::default()),
             Arc::clone(&link.metrics),
         ));
         mush_ipc::write_frame(

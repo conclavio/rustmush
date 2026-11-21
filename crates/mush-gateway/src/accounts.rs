@@ -259,27 +259,7 @@ impl Accounts {
     /// try — and so is a Busy that outlives the budget, so each caller's own
     /// mapping of the answers is unchanged.
     async fn request_past_commit(&self, req: ServiceReq) -> Option<ServiceResp> {
-        let deadline = Instant::now() + COMMIT_RETRY_TIMEOUT;
-        let mut answer = self.link.request(req.clone()).await;
-        let mut attempts = 1;
-        while matches!(answer, Some(ServiceResp::Busy)) && attempts < COMMIT_RETRY_ATTEMPTS {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            tokio::time::sleep(COMMIT_RETRY_DELAY.min(remaining)).await;
-            answer = self.link.request(req.clone()).await;
-            attempts += 1;
-        }
-        if matches!(answer, Some(ServiceResp::Busy)) {
-            tracing::warn!(
-                request = ?req,
-                attempts,
-                "the world stayed mid-commit across the whole retry budget; the request is \
-                 refused as busy"
-            );
-        }
-        answer
+        request_past_commit_on(&*self.link, req).await
     }
 
     /// Advisory name check with transport failures kept distinct from the
@@ -319,104 +299,158 @@ impl Accounts {
         }
     }
 
-    /// The shared tail of both creation flows: Player via the world task
-    /// (ack-gated), then the atomic link.
-    ///
-    /// **16b cut F.4**: `account_id` is the account's immutable id, and it rides
-    /// on the request. The server inserts `character -> account` into its live
-    /// account oracle in the turn that creates the Player — before this
-    /// function's own `link_character` writes the store document the next boot
-    /// will re-derive the map from — so a character created after boot can use
-    /// an account-scoped surface straight away. `None` only when the id could
-    /// not be resolved at all; the character is then unmapped and fails closed.
-    async fn create_and_link(
+    /// Run `create_and_link_on` in a detached Tokio task so an HTTP request
+    /// timeout or client disconnect cannot abort the flow between
+    /// `CreatePlayer` and `link_character` / `UnlinkPlayer` rollback
+    /// (EXT-P2-5).
+    async fn create_and_link_detached(
         &self,
         account: &str,
         account_id: Option<mush_core::AccountId>,
         char_name: &str,
     ) -> Result<CharSummary, CreateErr> {
-        if account_id.is_none() {
-            tracing::error!(
-                account,
-                char_name,
-                "creating a character for an account with no resolvable id; it will be unmapped \
-                 until the next boot re-derives the account map"
-            );
-        }
-        let id = match self
-            .request_past_commit(ServiceReq::CreatePlayer {
-                name: char_name.to_string(),
-                account: account_id,
-            })
-            .await
-        {
-            Some(ServiceResp::CreatePlayer(Ok(id))) => id,
-            Some(ServiceResp::CreatePlayer(Err(CreatePlayerError::NameTaken))) => {
-                // The pre-check raced another create. The account (possibly
-                // freshly reserved, possibly character-less) stays — the
-                // store cannot delete accounts yet. Loud log, clear error.
-                tracing::error!(
-                    account,
-                    char_name,
-                    "character name taken after pre-check; account left without this character"
-                );
-                return Err(CreateErr::CharacterNameTaken);
-            }
-            Some(ServiceResp::CreatePlayer(Err(e))) => return Err(CreateErr::World(e.to_string())),
-            Some(ServiceResp::Busy) => {
-                return Err(CreateErr::World(
-                    "the game server is busy; please try again shortly".to_string(),
-                ));
-            }
-            Some(ServiceResp::Unavailable) => {
-                return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string()));
-            }
-            // The world is gone or answered unexpectedly: same failure the
-            // direct `WorldGone` path reported.
-            _ => return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string())),
-        };
-        match self.store.link_character(account, id, char_name).await {
-            Ok(()) => Ok(CharSummary {
-                id,
-                name: char_name.to_string(),
-            }),
-            Err(e) => {
-                // The Player exists but the account does not list it —
-                // recoverable by staff, never silent.
-                tracing::error!(account, %id, char_name, error = %e, "linking character failed");
-                // **16b cut F.4**: and the live oracle has to give the mapping
-                // back. The server inserted `character -> account` in the create
-                // turn against the document this write was going to make; with
-                // the document missing, a RAM mapping that outlived it would
-                // have the two halves disagree in the permissive direction until
-                // the next boot re-derives the map.
-                self.forget_character(account, id, char_name).await;
-                Err(CreateErr::Io(e.to_string()))
+        let store = Arc::clone(&self.store);
+        let link = Arc::clone(&self.link);
+        let account = account.to_string();
+        let char_name = char_name.to_string();
+        let handle = tokio::spawn(async move {
+            create_and_link_on(&*store, &*link, &account, account_id, &char_name).await
+        });
+        match handle.await {
+            Ok(result) => result,
+            Err(err) => {
+                tracing::error!(error = %err, "character creation commit task failed");
+                Err(CreateErr::Io(
+                    "character creation did not complete".to_string(),
+                ))
             }
         }
     }
+}
 
-    /// Take a character back out of the server's live account oracle (16b cut
-    /// F.4), after the account document it was inserted against could not be
-    /// written. Best-effort and loud: a refusal leaves the mapping standing
-    /// until the next boot, and an operator is told which character it is.
-    async fn forget_character(&self, account: &str, id: ObjId, char_name: &str) {
-        match self
-            .link
-            .request(ServiceReq::UnlinkPlayer { character: id })
-            .await
-        {
-            Some(ServiceResp::UnlinkPlayer(_)) => {}
-            other => tracing::error!(
-                account,
-                %id,
-                char_name,
-                answer = ?other,
-                "the account oracle did not give the unlinked character back; it stays mapped in \
-                 the running server until the next boot re-derives the map from the account \
-                 documents"
-            ),
+async fn request_past_commit_on(link: &dyn GatewayLink, req: ServiceReq) -> Option<ServiceResp> {
+    let deadline = Instant::now() + COMMIT_RETRY_TIMEOUT;
+    let mut answer = link.request(req.clone()).await;
+    let mut attempts = 1;
+    while matches!(answer, Some(ServiceResp::Busy)) && attempts < COMMIT_RETRY_ATTEMPTS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
         }
+        tokio::time::sleep(COMMIT_RETRY_DELAY.min(remaining)).await;
+        answer = link.request(req.clone()).await;
+        attempts += 1;
+    }
+    if matches!(answer, Some(ServiceResp::Busy)) {
+        tracing::warn!(
+            request = ?req,
+            attempts,
+            "the world stayed mid-commit across the whole retry budget; the request is \
+             refused as busy"
+        );
+    }
+    answer
+}
+
+/// The shared tail of both creation flows: Player via the world task
+/// (ack-gated), then the atomic link.
+///
+/// **16b cut F.4**: `account_id` is the account's immutable id, and it rides
+/// on the request. The server inserts `character -> account` into its live
+/// account oracle in the turn that creates the Player — before this
+/// function's own `link_character` writes the store document the next boot
+/// will re-derive the map from — so a character created after boot can use
+/// an account-scoped surface straight away. `None` only when the id could
+/// not be resolved at all; the character is then unmapped and fails closed.
+async fn create_and_link_on(
+    store: &dyn ObjectStore,
+    link: &dyn GatewayLink,
+    account: &str,
+    account_id: Option<mush_core::AccountId>,
+    char_name: &str,
+) -> Result<CharSummary, CreateErr> {
+    if account_id.is_none() {
+        tracing::error!(
+            account,
+            char_name,
+            "creating a character for an account with no resolvable id; it will be unmapped \
+             until the next boot re-derives the account map"
+        );
+    }
+    let id = match request_past_commit_on(
+        link,
+        ServiceReq::CreatePlayer {
+            name: char_name.to_string(),
+            account: account_id,
+        },
+    )
+    .await
+    {
+        Some(ServiceResp::CreatePlayer(Ok(id))) => id,
+        Some(ServiceResp::CreatePlayer(Err(CreatePlayerError::NameTaken))) => {
+            // The pre-check raced another create. The account (possibly
+            // freshly reserved, possibly character-less) stays — the
+            // store cannot delete accounts yet. Loud log, clear error.
+            tracing::error!(
+                account,
+                char_name,
+                "character name taken after pre-check; account left without this character"
+            );
+            return Err(CreateErr::CharacterNameTaken);
+        }
+        Some(ServiceResp::CreatePlayer(Err(e))) => return Err(CreateErr::World(e.to_string())),
+        Some(ServiceResp::Busy) => {
+            return Err(CreateErr::World(
+                "the game server is busy; please try again shortly".to_string(),
+            ));
+        }
+        Some(ServiceResp::Unavailable) => {
+            return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string()));
+        }
+        // The world is gone or answered unexpectedly: same failure the
+        // direct `WorldGone` path reported.
+        _ => return Err(CreateErr::World(CreatePlayerError::WorldGone.to_string())),
+    };
+    match store.link_character(account, id, char_name).await {
+        Ok(()) => Ok(CharSummary {
+            id,
+            name: char_name.to_string(),
+        }),
+        Err(e) => {
+            // The Player exists but the account does not list it —
+            // recoverable by staff, never silent.
+            tracing::error!(account, %id, char_name, error = %e, "linking character failed");
+            // **16b cut F.4**: and the live oracle has to give the mapping
+            // back. The server inserted `character -> account` in the create
+            // turn against the document this write was going to make; with
+            // the document missing, a RAM mapping that outlived it would
+            // have the two halves disagree in the permissive direction until
+            // the next boot re-derives the map.
+            forget_character_on(link, account, id, char_name).await;
+            Err(CreateErr::Io(e.to_string()))
+        }
+    }
+}
+
+/// Take a character back out of the server's live account oracle (16b cut
+/// F.4), after the account document it was inserted against could not be
+/// written. Best-effort and loud: a refusal leaves the mapping standing
+/// until the next boot, and an operator is told which character it is.
+async fn forget_character_on(link: &dyn GatewayLink, account: &str, id: ObjId, char_name: &str) {
+    match link
+        .request(ServiceReq::UnlinkPlayer { character: id })
+        .await
+    {
+        Some(ServiceResp::UnlinkPlayer(_)) => {}
+        other => tracing::error!(
+            account,
+            %id,
+            char_name,
+            answer = ?other,
+            "the account oracle did not give the unlinked character back; it stays mapped in \
+             the running server until the next boot re-derives the map from the account \
+             documents"
+        ),
     }
 }
 
@@ -545,12 +579,38 @@ impl AuthBackend for Accounts {
             ssh_keys: Vec::new(),
             discord: None,
         };
-        match self.store.create_account(rec).await {
-            Ok(()) => {}
-            Err(StoreError::AccountExists) => return Err(CreateErr::AccountExists),
-            Err(e) => return Err(CreateErr::Io(e.to_string())),
+        // EXT-P2-5: execute the durable commit/link/rollback critical section
+        // inside a detached task so an HTTP request timeout or client
+        // disconnect dropping this future never abandons an unlinked account
+        // or an orphaned Player holding the name.
+        let store = Arc::clone(&self.store);
+        let link = Arc::clone(&self.link);
+        let account_owned = account.to_string();
+        let char_name_owned = char_name.to_string();
+        let commit_task = tokio::spawn(async move {
+            match store.create_account(rec).await {
+                Ok(()) => {}
+                Err(StoreError::AccountExists) => return Err(CreateErr::AccountExists),
+                Err(e) => return Err(CreateErr::Io(e.to_string())),
+            }
+            create_and_link_on(
+                &*store,
+                &*link,
+                &account_owned,
+                account_id,
+                &char_name_owned,
+            )
+            .await
+        });
+        match commit_task.await {
+            Ok(result) => result,
+            Err(err) => {
+                tracing::error!(error = %err, "account registration commit task failed");
+                Err(CreateErr::Io(
+                    "account registration did not complete".to_string(),
+                ))
+            }
         }
-        self.create_and_link(account, account_id, char_name).await
     }
 
     async fn create_character(
@@ -570,7 +630,7 @@ impl AuthBackend for Accounts {
             return Err(CreateErr::CharacterLimit);
         }
         self.require_name_free(char_name).await?;
-        self.create_and_link(account, account_id_of(&rec), char_name)
+        self.create_and_link_detached(account, account_id_of(&rec), char_name)
             .await
     }
 }
@@ -854,5 +914,174 @@ mod pubkey_tests {
             accounts.verify_checked("nick", &"p".repeat(129)).await,
             AuthCheckOutcome::Busy
         );
+    }
+
+    /// Link that pauses `CreatePlayer` behind a barrier so tests can drop the
+    /// caller future mid-registration and prove the detached commit/link/rollback
+    /// critical section still finishes cleanly (EXT-P2-5).
+    struct PausingCreateLink {
+        created_id: ObjId,
+        create_entered: Arc<tokio::sync::Notify>,
+        release_create: Arc<tokio::sync::Notify>,
+        unlink_done: Arc<tokio::sync::Notify>,
+        unlinked: std::sync::Mutex<Vec<ObjId>>,
+    }
+
+    impl PausingCreateLink {
+        fn new(created_id: ObjId) -> Arc<Self> {
+            Arc::new(Self {
+                created_id,
+                create_entered: Arc::new(tokio::sync::Notify::new()),
+                release_create: Arc::new(tokio::sync::Notify::new()),
+                unlink_done: Arc::new(tokio::sync::Notify::new()),
+                unlinked: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl GatewayLink for PausingCreateLink {
+        fn to_server(&self, _msg: ToServer) -> BoxFuture<'_, bool> {
+            Box::pin(async { false })
+        }
+
+        fn request(&self, req: ServiceReq) -> BoxFuture<'_, Option<ServiceResp>> {
+            match req {
+                ServiceReq::NameFree { .. } => {
+                    Box::pin(async { Some(ServiceResp::NameFree(true)) })
+                }
+                ServiceReq::CreatePlayer { .. } => {
+                    let entered = Arc::clone(&self.create_entered);
+                    let release = Arc::clone(&self.release_create);
+                    let id = self.created_id;
+                    Box::pin(async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        Some(ServiceResp::CreatePlayer(Ok(id)))
+                    })
+                }
+                ServiceReq::UnlinkPlayer { character } => {
+                    self.unlinked.lock().unwrap().push(character);
+                    self.unlink_done.notify_one();
+                    Box::pin(async { Some(ServiceResp::UnlinkPlayer(true)) })
+                }
+                _ => Box::pin(async { None }),
+            }
+        }
+    }
+
+    /// EXT-P2-5: dropping an in-flight `Accounts::create` future (e.g. HTTP
+    /// request timeout or client disconnect) after `store.create_account` has
+    /// committed must NOT cancel `CreatePlayer` + `link_character` mid-flight.
+    #[tokio::test]
+    async fn cancelled_create_future_still_completes_player_creation_and_link() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let link = PausingCreateLink::new(ObjId(77));
+        let link_dyn: Arc<dyn GatewayLink> = link.clone();
+        let accounts = Accounts::with_link(Arc::clone(&store), link_dyn, 3);
+
+        // Drive `create` until `store.create_account` has committed and
+        // `CreatePlayer` is in flight, then cancel the caller future.
+        let mut create_fut = Box::pin(accounts.create("alice", "hunter42", "Alice"));
+        tokio::select! {
+            res = &mut create_fut => panic!("create unexpectedly finished before release: {res:?}"),
+            () = link.create_entered.notified() => {}
+        }
+        drop(create_fut);
+
+        // Account already committed before cancellation; release `CreatePlayer`
+        // and confirm the detached task still links the new character.
+        assert!(store.get_account("alice").await.unwrap().is_some());
+        link.release_create.notify_one();
+
+        let linked = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(rec) = store.get_account("alice").await.unwrap()
+                    && !rec.characters.is_empty()
+                {
+                    return rec;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("detached registration task must finish linking character");
+        assert_eq!(linked.characters.len(), 1);
+        assert_eq!(linked.characters[0].id, ObjId(77));
+        assert_eq!(linked.characters[0].name, "Alice");
+        assert!(link.unlinked.lock().unwrap().is_empty());
+    }
+
+    /// EXT-P2-5: if the caller drops `Accounts::create` while `CreatePlayer` is
+    /// in flight and the subsequent `link_character` fails, the detached task
+    /// must still run `UnlinkPlayer` rollback so the live oracle stays in sync.
+    #[tokio::test]
+    async fn cancelled_create_future_still_runs_unlink_rollback_when_link_fails() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let link = PausingCreateLink::new(ObjId(88));
+        let link_dyn: Arc<dyn GatewayLink> = link.clone();
+        let accounts = Accounts::with_link(Arc::clone(&store), link_dyn, 3);
+
+        let mut create_fut = Box::pin(accounts.create("bob", "hunter42", "Bob"));
+        tokio::select! {
+            res = &mut create_fut => panic!("create unexpectedly finished before release: {res:?}"),
+            () = link.create_entered.notified() => {}
+        }
+        drop(create_fut);
+
+        // Close the store so `link_character` fails after `CreatePlayer`
+        // succeeds, forcing the detached rollback branch.
+        store.close().await.unwrap();
+        link.release_create.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(5), link.unlink_done.notified())
+            .await
+            .expect("detached registration task must still issue UnlinkPlayer on link failure");
+        assert_eq!(*link.unlinked.lock().unwrap(), vec![ObjId(88)]);
+    }
+
+    /// EXT-P2-5: dropping an in-flight `Accounts::create_character` future must
+    /// also let the detached `CreatePlayer` + `link_character` finish cleanly.
+    #[tokio::test]
+    async fn cancelled_create_character_future_still_completes_link() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        store
+            .create_account(AccountRec {
+                id: None,
+                name: "carol".into(),
+                argon2_hash: "x".into(),
+                created: unix_now_s(),
+                characters: Vec::new(),
+                ssh_keys: Vec::new(),
+                discord: None,
+            })
+            .await
+            .unwrap();
+        let link = PausingCreateLink::new(ObjId(99));
+        let link_dyn: Arc<dyn GatewayLink> = link.clone();
+        let accounts = Accounts::with_link(Arc::clone(&store), link_dyn, 3);
+
+        let mut create_fut = Box::pin(accounts.create_character("carol", "CarolAlt"));
+        tokio::select! {
+            res = &mut create_fut => panic!("create_character finished before release: {res:?}"),
+            () = link.create_entered.notified() => {}
+        }
+        drop(create_fut);
+
+        link.release_create.notify_one();
+        let linked = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(rec) = store.get_account("carol").await.unwrap()
+                    && !rec.characters.is_empty()
+                {
+                    return rec;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("detached create_character task must finish linking");
+        assert_eq!(linked.characters.len(), 1);
+        assert_eq!(linked.characters[0].id, ObjId(99));
+        assert_eq!(linked.characters[0].name, "CarolAlt");
     }
 }

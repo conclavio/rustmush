@@ -177,3 +177,181 @@ async fn serve_tls_refuses_a_certificate_path_that_is_not_there() {
         "the PEM loader reports the missing file: {err}"
     );
 }
+
+#[derive(Debug)]
+struct NoVerify;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Complete a real TLS handshake offering both `h2` and `http/1.1` ALPN, write
+/// `payload` as decrypted application bytes, and wait for the server to close
+/// the TLS stream. Returns the negotiated ALPN protocol (if any).
+async fn tls_send_and_await_close(addr: SocketAddr, payload: &'static [u8]) -> Option<Vec<u8>> {
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::task::spawn_blocking(move || {
+            use std::io::{Read as _, Write as _};
+
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let mut client_cfg = rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerify))
+                .with_no_client_auth();
+            client_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+            let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+            let conn = rustls::ClientConnection::new(Arc::new(client_cfg), server_name).unwrap();
+            let tcp = std::net::TcpStream::connect(addr).unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            tcp.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+
+            // Drive TLS handshake to completion before inspecting ALPN or writing payload.
+            while tls.conn.is_handshaking() {
+                tls.conn.complete_io(&mut tls.sock).unwrap();
+            }
+            let alpn = tls.conn.alpn_protocol().map(<[u8]>::to_vec);
+
+            if !payload.is_empty() {
+                tls.write_all(payload).unwrap();
+                tls.flush().unwrap();
+            }
+
+            // Drain until EOF or connection error (server closing after rejection/timeout).
+            let mut buf = [0u8; 256];
+            loop {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            alpn
+        }),
+    )
+    .await
+    .expect("TLS probe must close promptly instead of wedging permits")
+    .expect("blocking TLS probe task panicked")
+}
+
+/// EXT-P1-4 regression: native TLS must enforce `http/1.1` only (never `h2`
+/// ALPN or `auto::Builder` `ReadVersion`) so stalled TLS handshakes, 0-byte
+/// post-TLS peers, 1-byte `"P"` H2-preface stalls, and full 24-byte
+/// `H2_PREFACE` probes all close promptly and release `max_connections` permits.
+#[tokio::test]
+async fn serve_tls_closes_stalled_handshakes_and_h2_preface_probes_and_releases_permits() {
+    use tokio::io::AsyncReadExt as _;
+
+    let dir = TempDir::new("tls-permits");
+    let tls = self_signed(&dir);
+    let listen = free_local_port().await;
+
+    let config = WebConfig {
+        listen,
+        tls: Some(tls),
+        max_connections: 1,
+        header_read_timeout_ms: 200,
+        ..test_config()
+    };
+    let hooks = Arc::new(MockWebHooks::new());
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        mush_net_web::serve_with_shutdown_bound(hooks, config, Some(bound_tx), async move {
+            let _ = stop_rx.await;
+        })
+        .await
+    });
+
+    let addr = bound_rx.await.expect("TLS listener signalled bound");
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .pool_max_idle_per_host(0)
+        .build()
+        .expect("reqwest client");
+    let url = format!("https://{addr}/healthz");
+
+    let assert_permit_free = || async {
+        let resp = tokio::time::timeout(Duration::from_secs(3), client.get(&url).send())
+            .await
+            .expect("permit must be released for subsequent HTTPS request")
+            .expect("subsequent HTTPS request succeeds");
+        assert_eq!(resp.status(), 503);
+    };
+
+    // 1. Stalled raw TCP connect (0 TLS handshake bytes) times out and frees the single permit.
+    let mut stalled = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut buf = [0u8; 16];
+    let res = tokio::time::timeout(Duration::from_secs(2), stalled.read(&mut buf))
+        .await
+        .expect("stalled TLS handshake must close promptly");
+    assert!(
+        matches!(res, Ok(0) | Err(_)),
+        "expected EOF/reset on stalled TLS handshake, got {res:?}"
+    );
+    drop(stalled);
+    assert_permit_free().await;
+
+    // 2. Completed TLS handshake + 0 decrypted bytes times out via http1 header_read_timeout.
+    let alpn = tls_send_and_await_close(addr, b"").await;
+    assert_eq!(
+        alpn.as_deref(),
+        Some(b"http/1.1".as_slice()),
+        "TLS server must negotiate http/1.1 only, never h2"
+    );
+    assert_permit_free().await;
+
+    // 3. Completed TLS handshake + 1 byte `P` (H2_PREFACE prefix) used to clear
+    //    `PermitStream::first_byte_deadline` and wedge `auto::Builder`'s
+    //    `ReadVersion` forever; direct http1 times it out promptly.
+    let alpn = tls_send_and_await_close(addr, b"P").await;
+    assert_eq!(alpn.as_deref(), Some(b"http/1.1".as_slice()));
+    assert_permit_free().await;
+
+    // 4. Completed TLS handshake + full 24-byte HTTP/2 preface must be rejected
+    //    by HTTP/1 rather than entering HTTP/2 with no timeouts.
+    let alpn = tls_send_and_await_close(addr, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").await;
+    assert_eq!(alpn.as_deref(), Some(b"http/1.1".as_slice()));
+    assert_permit_free().await;
+
+    let _ = stop_tx.send(());
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("TLS server stops on shutdown")
+        .expect("server task did not panic")
+        .expect("TLS server exits cleanly");
+}
