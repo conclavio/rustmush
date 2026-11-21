@@ -836,8 +836,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
             .orgs()
             .count();
         assert_eq!(
-            orgs, 29,
-            "(doc 50 cut KC.2: and the Republic Customs Office, one more) the twenty-eight institutions: the Isidis Concession's two (doc 50 cut OP.1), the corridor's nine, the moons' eleven (doc 19 cut \
+            orgs, 30,
+            "(doc 50b item 9: and Meridiani Security Group, one more) (doc 50 cut KC.2: and the Republic Customs Office, one more) the twenty-eight institutions: the Isidis Concession's two (doc 50 cut OP.1), the corridor's nine, the moons' eleven (doc 19 cut \
              A.8), the Freeport Registry (doc 20 cut SM.2), the Pallas Syndicate (doc 20 cut \
              SM.10), Freeport Works (doc 39 cut IN.5) and the Vesta Carrying Company (doc 48 unit \
              EX.10), plus the Malapert Exchange (doc 15 cut R1) and Concord relief command (R9b)"
