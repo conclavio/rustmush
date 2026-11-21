@@ -184,8 +184,8 @@ pub use record::{
     MAX_LISTINGS_PER_VENDOR, MAX_OPEN_QUOTES_PER_BUYER, MAX_PACK_BYTES, MAX_PROCEEDS_CUTS,
     MAX_PROCEEDS_LABEL_BYTES, MAX_QUANTITY, MAX_QUOTES, MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS,
     MarketSource, MarketVisibility, NO_VENDOR, ObservedRevisions, PaidKind, PaidLot, ProceedsCut,
-    Quote, RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, check_entry,
-    declared_hash,
+    Quote, RecordError, Representation, Settlement, Supply, Vendor, VendorStatus, WithdrawnHold,
+    check_entry, declared_hash,
 };
 // Doc 48 cut EX.4: the fee seam.
 pub use fees::{VenueFeeAccounts, VenueFees};
@@ -210,6 +210,7 @@ pub use seller::{
 pub use store::{
     MARKET_PAGE, MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MAX_TRADES_PER_PAIR, META_KEY, MarketStore,
     NS, catalog_key, listing_key, load, owner, quote_key, source_key, vendor_key,
+    withdrawn_hold_key,
 };
 // Doc 48 cut EX.2: the one asset sale.
 pub use trade::{

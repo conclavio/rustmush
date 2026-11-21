@@ -22,8 +22,8 @@ use smol_str::SmolStr;
 use crate::api::{JobsApi, OpenJob, add_comment, job_doc, note_doc, open_job, queue_spec};
 use crate::data::{
     Approval, JOBS_LIST_PAGE_SIZE, Job, JobComment, JobStatus, JobsState, MAX_NOTES_PER_OBJECT,
-    MAX_OPEN_REQUESTS_PER_PLAYER, NS, Note, REQ_QUEUE, fmt_ago, note_key, validate_note_category,
-    validate_note_text, validate_terminal_comment,
+    MAX_OPEN_REQUESTS_PER_PLAYER, NS, Note, REQ_QUEUE, fmt_ago, note_key, note_storage_key,
+    staff_note_key, validate_note_category, validate_note_text, validate_terminal_comment,
 };
 
 /// Minimum role treated as "staff" for character notes.
@@ -834,26 +834,47 @@ fn note_approve(
         return Err(CmdError::msg("+note/approve takes no text."));
     }
     let (by, at) = (ctx.actor, ctx.w.now());
-    let st = ctx
-        .w
-        .module_state_mut::<JobsState>()
-        .ok_or_else(|| CmdError::msg("The jobs module is not loaded."))?;
-    let note = st
-        .notes
-        .get_mut(&(who, cat.clone()))
-        .ok_or_else(|| CmdError::msg("No such note."))?;
-    if note.approved.is_some() {
-        return Err(CmdError::msg("That note is already approved."));
-    }
-    note.approved = Some(Approval { by, at });
-    let doc = note_doc(note);
+    let (doc, is_staff_only, cleanup_legacy) = {
+        let st = ctx
+            .w
+            .module_state_mut::<JobsState>()
+            .ok_or_else(|| CmdError::msg("The jobs module is not loaded."))?;
+        let is_staff_only = if st.notes.contains_key(&(who, false, cat.clone())) {
+            false
+        } else if st.notes.contains_key(&(who, true, cat.clone())) {
+            true
+        } else {
+            return Err(CmdError::msg("No such note."));
+        };
+        let note = st
+            .notes
+            .get_mut(&(who, is_staff_only, cat.clone()))
+            .ok_or_else(|| CmdError::msg("No such note."))?;
+        if note.approved.is_some() {
+            return Err(CmdError::msg("That note is already approved."));
+        }
+        note.approved = Some(Approval { by, at });
+        let doc = note_doc(note);
+        let cleanup_legacy = is_staff_only
+            && st.legacy_staff_notes.remove(&(who, cat.clone()))
+            && !st.notes.contains_key(&(who, false, cat.clone()));
+        (doc, is_staff_only, cleanup_legacy)
+    };
     ctx.persist(ModuleOp {
         ns: NS.into(),
         op: ModuleWrite::JsonSet {
-            key: note_key(who, &cat),
+            key: note_storage_key(who, is_staff_only, &cat),
             value: doc,
         },
     });
+    if cleanup_legacy {
+        ctx.persist(ModuleOp {
+            ns: NS.into(),
+            op: ModuleWrite::Del {
+                key: note_key(who, &cat),
+            },
+        });
+    }
     ctx.out.info(
         ctx.actor,
         format!("Note '{cat}' on {} approved.", display_name(ctx.w, who)),
@@ -881,105 +902,188 @@ fn note_write(
     flag: StaffFlag,
 ) -> Result<(), CmdError> {
     let staff = is_notes_staff(ctx.w, ctx.actor);
-    let existing_staff_only = ctx
-        .w
-        .module_state::<JobsState>()
-        .and_then(|st| st.notes.get(&(who, cat.clone())))
-        .is_some_and(|n| n.staff_only);
     if !staff && (flag != StaffFlag::Keep || who != ctx.actor) {
         return Err(CmdError::msg("Permission denied."));
     }
-    if !staff && existing_staff_only {
-        // On deletion (`+note me/<cat>=`), return the same "No such note."
-        // as an absent category so a player cannot probe for hidden staff-only
-        // note categories via empty-text deletes.
-        if text.is_empty() {
-            return Err(CmdError::msg("No such note."));
-        }
-        return Err(CmdError::msg("Permission denied."));
-    }
     let author = ctx.actor;
-    let st = ctx
-        .w
-        .module_state_mut::<JobsState>()
-        .ok_or_else(|| CmdError::msg("The jobs module is not loaded."))?;
-    if text.is_empty() {
-        // Deletion: `+note <char>/<category>=`.
-        if st.notes.remove(&(who, cat.clone())).is_none() {
-            return Err(CmdError::msg("No such note."));
-        }
-        ctx.persist(ModuleOp {
-            ns: NS.into(),
-            op: ModuleWrite::Del {
-                key: note_key(who, &cat),
-            },
-        });
-        ctx.out.info(
-            ctx.actor,
-            format!("Note '{cat}' on {} deleted.", display_name(ctx.w, who)),
-        );
-        return Ok(());
-    }
-    validate_note_text(&text).map_err(CmdError::msg)?;
-    let target_staff_only = match flag {
-        StaffFlag::Keep => existing_staff_only,
-        StaffFlag::Set => true,
-        StaffFlag::Clear => false,
-    };
-    let is_new = !st.notes.contains_key(&(who, cat.clone()));
-    if (is_new || existing_staff_only != target_staff_only)
-        && st.note_count_by_visibility(who, target_staff_only) >= MAX_NOTES_PER_OBJECT
+    let target_name = display_name(ctx.w, who);
+    let mut ops: Vec<ModuleWrite> = Vec::new();
+    let deleted = text.is_empty();
     {
-        return Err(CmdError::msg(format!(
-            "{} already has the maximum of {MAX_NOTES_PER_OBJECT} notes.",
-            display_name(ctx.w, who)
-        )));
+        let st = ctx
+            .w
+            .module_state_mut::<JobsState>()
+            .ok_or_else(|| CmdError::msg("The jobs module is not loaded."))?;
+        let has_public = st.notes.contains_key(&(who, false, cat.clone()));
+        let has_staff = st.notes.contains_key(&(who, true, cat.clone()));
+
+        if deleted {
+            // Deletion: `+note <char>/<category>=` (or `/staff` / `/public` for staff).
+            // Non-staff operates strictly on the public partition so private
+            // moderator notes can neither be deleted nor inferred (EXT-P3-1).
+            let target_staff_only = if !staff {
+                false
+            } else {
+                match flag {
+                    StaffFlag::Set => true,
+                    StaffFlag::Clear => false,
+                    StaffFlag::Keep => match (has_public, has_staff) {
+                        (true, true) => {
+                            return Err(CmdError::msg(format!(
+                                "Both a public and a staff-only '{cat}' note exist on \
+                                 {target_name}; use +note/public or +note/staff."
+                            )));
+                        }
+                        (false, true) => true,
+                        (true, false) => false,
+                        (false, false) => return Err(CmdError::msg("No such note.")),
+                    },
+                }
+            };
+            if st
+                .notes
+                .remove(&(who, target_staff_only, cat.clone()))
+                .is_none()
+            {
+                return Err(CmdError::msg("No such note."));
+            }
+            ops.push(ModuleWrite::Del {
+                key: note_storage_key(who, target_staff_only, &cat),
+            });
+            if target_staff_only
+                && st.legacy_staff_notes.remove(&(who, cat.clone()))
+                && !st.notes.contains_key(&(who, false, cat.clone()))
+            {
+                ops.push(ModuleWrite::Del {
+                    key: note_key(who, &cat),
+                });
+            }
+        } else {
+            validate_note_text(&text).map_err(CmdError::msg)?;
+            let target_staff_only = if !staff {
+                false
+            } else {
+                match flag {
+                    StaffFlag::Set => true,
+                    StaffFlag::Clear => false,
+                    StaffFlag::Keep => match (has_public, has_staff) {
+                        (true, true) => {
+                            return Err(CmdError::msg(format!(
+                                "Both a public and a staff-only '{cat}' note exist on \
+                                 {target_name}; use +note/public or +note/staff."
+                            )));
+                        }
+                        (false, true) => true,
+                        (true, false) | (false, false) => false,
+                    },
+                }
+            };
+            let is_new = !st
+                .notes
+                .contains_key(&(who, target_staff_only, cat.clone()));
+            if is_new && st.note_count_by_visibility(who, target_staff_only) >= MAX_NOTES_PER_OBJECT
+            {
+                return Err(CmdError::msg(format!(
+                    "{target_name} already has the maximum of {MAX_NOTES_PER_OBJECT} notes."
+                )));
+            }
+            // If a legacy staff-only note still resides at `note:{who}:{cat}`
+            // and a public note is being written to that same category (without
+            // `/public` clearing it), migrate the staff note to `staff_note:`
+            // before overwriting `note:{who}:{cat}` so it is never lost.
+            if !target_staff_only
+                && flag != StaffFlag::Clear
+                && st.legacy_staff_notes.remove(&(who, cat.clone()))
+                && let Some(staff_note) = st.notes.get(&(who, true, cat.clone()))
+            {
+                ops.push(ModuleWrite::JsonSet {
+                    key: staff_note_key(who, &cat),
+                    value: note_doc(staff_note),
+                });
+            }
+            let note = Note {
+                owner: who,
+                category: cat.clone(),
+                text,
+                author,
+                staff_only: target_staff_only,
+                approved: None,
+            };
+            let doc = note_doc(&note);
+            st.notes.insert((who, target_staff_only, cat.clone()), note);
+            ops.push(ModuleWrite::JsonSet {
+                key: note_storage_key(who, target_staff_only, &cat),
+                value: doc,
+            });
+            if flag == StaffFlag::Clear {
+                if st.notes.remove(&(who, true, cat.clone())).is_some() {
+                    ops.push(ModuleWrite::Del {
+                        key: staff_note_key(who, &cat),
+                    });
+                }
+                st.legacy_staff_notes.remove(&(who, cat.clone()));
+            } else if target_staff_only
+                && st.legacy_staff_notes.remove(&(who, cat.clone()))
+                && !st.notes.contains_key(&(who, false, cat.clone()))
+            {
+                ops.push(ModuleWrite::Del {
+                    key: note_key(who, &cat),
+                });
+            }
+        }
     }
-    let note = Note {
-        owner: who,
-        category: cat.clone(),
-        text,
-        author,
-        staff_only: target_staff_only,
-        approved: None,
-    };
-    let doc = note_doc(&note);
-    st.notes.insert((who, cat.clone()), note);
-    ctx.persist(ModuleOp {
-        ns: NS.into(),
-        op: ModuleWrite::JsonSet {
-            key: note_key(who, &cat),
-            value: doc,
-        },
-    });
-    ctx.out.info(
-        ctx.actor,
-        format!("Note '{cat}' set on {}.", display_name(ctx.w, who)),
-    );
+    for op in ops {
+        ctx.persist(ModuleOp { ns: NS.into(), op });
+    }
+    if deleted {
+        ctx.out
+            .info(ctx.actor, format!("Note '{cat}' on {target_name} deleted."));
+    } else {
+        ctx.out
+            .info(ctx.actor, format!("Note '{cat}' set on {target_name}."));
+    }
     Ok(())
 }
 
 fn note_read(ctx: &mut Ctx<'_>, who: ObjId, cat: &SmolStr) -> Result<(), CmdError> {
-    let note = ctx
+    let staff = is_notes_staff(ctx.w, ctx.actor);
+    let visible: Vec<Note> = ctx
         .w
         .module_state::<JobsState>()
-        .and_then(|st| st.notes.get(&(who, cat.clone())))
-        .filter(|n| may_see_note(ctx.w, ctx.actor, n))
-        .cloned()
-        .ok_or_else(|| CmdError::msg("No such note."))?;
-    ctx.out.info(
-        ctx.actor,
-        format!(
-            "Note '{cat}' on {} (by {}{}{}):",
-            display_name(ctx.w, who),
-            display_name(ctx.w, note.author),
-            if note.staff_only { ", staff-only" } else { "" },
-            note.approved.as_ref().map_or_else(String::new, |a| {
-                format!(", approved by {}", display_name(ctx.w, a.by))
-            })
-        ),
-    );
-    ctx.out.info(ctx.actor, note.text);
+        .map(|st| {
+            let mut out = Vec::new();
+            if let Some(n) = st.notes.get(&(who, false, cat.clone()))
+                && may_see_note(ctx.w, ctx.actor, n)
+            {
+                out.push(n.clone());
+            }
+            if staff
+                && let Some(n) = st.notes.get(&(who, true, cat.clone()))
+                && may_see_note(ctx.w, ctx.actor, n)
+            {
+                out.push(n.clone());
+            }
+            out
+        })
+        .unwrap_or_default();
+    if visible.is_empty() {
+        return Err(CmdError::msg("No such note."));
+    }
+    for note in visible {
+        ctx.out.info(
+            ctx.actor,
+            format!(
+                "Note '{cat}' on {} (by {}{}{}):",
+                display_name(ctx.w, who),
+                display_name(ctx.w, note.author),
+                if note.staff_only { ", staff-only" } else { "" },
+                note.approved.as_ref().map_or_else(String::new, |a| {
+                    format!(", approved by {}", display_name(ctx.w, a.by))
+                })
+            ),
+        );
+        ctx.out.info(ctx.actor, note.text);
+    }
     Ok(())
 }
 
@@ -1021,11 +1125,12 @@ fn note_rows(w: &World, viewer: ObjId, who: ObjId) -> Vec<String> {
     let Some(st) = w.module_state::<JobsState>() else {
         return Vec::new();
     };
-    st.notes
-        .range((who, SmolStr::default())..)
-        .take_while(|((owner, _), _)| *owner == who)
+    let mut rows: Vec<(&SmolStr, bool, String)> = st
+        .notes
+        .range((who, false, SmolStr::default())..)
+        .take_while(|((owner, _, _), _)| *owner == who)
         .filter(|(_, n)| may_see_note(w, viewer, n))
-        .map(|((_, cat), n)| {
+        .map(|((_, staff_only, cat), n)| {
             let mut markers = String::new();
             if n.staff_only {
                 markers.push_str(" [staff-only]");
@@ -1035,7 +1140,13 @@ fn note_rows(w: &World, viewer: ObjId, who: ObjId) -> Vec<String> {
             } else {
                 markers.push_str(" [unapproved]");
             }
-            format!("  {cat:<16}{markers}  {}", n.text)
+            (
+                cat,
+                *staff_only,
+                format!("  {cat:<16}{markers}  {}", n.text),
+            )
         })
-        .collect()
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0).then_with(|| a.1.cmp(&b.1)));
+    rows.into_iter().map(|(_, _, line)| line).collect()
 }

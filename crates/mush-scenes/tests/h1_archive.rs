@@ -610,3 +610,261 @@ fn h1_a_seal_after_the_close_keeps_the_archive_bound_exact() {
         .expect("the record was persisted");
     assert_eq!(last["log_chunks"], serde_json::json!(after_seal));
 }
+
+#[test]
+fn ext_p2_13_dark_visitors_are_omitted_live_and_hidden_in_legacy_logs_and_archives() {
+    let mut r = rig();
+    let bar = r.engine.world.get(r.nick).unwrap().location.unwrap();
+    let lobby = r
+        .engine
+        .world
+        .create(ObjKind::Room, "Lobby", GOD, None)
+        .unwrap();
+    let ghost = r
+        .engine
+        .world
+        .create(ObjKind::Player, "GhostMod", GOD, Some(lobby))
+        .unwrap();
+    r.engine
+        .world
+        .get_mut(ghost)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::DARK | mush_core::Flags::WIZARD);
+    let spy = r
+        .engine
+        .world
+        .create(ObjKind::Player, "ShadowMod", GOD, Some(lobby))
+        .unwrap();
+    r.engine
+        .world
+        .get_mut(spy)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::WIZARD);
+    let bystander = r
+        .engine
+        .world
+        .create(ObjKind::Player, "VisibleGuest", GOD, Some(lobby))
+        .unwrap();
+
+    // Nick starts a timestop with Ann; Nick is the non-staff facilitator, Ann is participant.
+    run(&mut r.engine, r.nick, "+timestop");
+
+    // 1. Live move: already-DARK non-member staff visits and leaves -> NOT recorded at all.
+    r.engine.world.move_to(ghost, bar).unwrap();
+    r.engine.emit_world_event(
+        &mush_core::WorldEvent::Moved {
+            who: ghost,
+            from: Some(lobby),
+            to: bar,
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+    r.engine.world.move_to(ghost, lobby).unwrap();
+    r.engine.emit_world_event(
+        &mush_core::WorldEvent::Moved {
+            who: ghost,
+            from: Some(bar),
+            to: lobby,
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+
+    // Visible non-DARK bystander enters -> still recorded.
+    r.engine.world.move_to(bystander, bar).unwrap();
+    r.engine.emit_world_event(
+        &mush_core::WorldEvent::Moved {
+            who: bystander,
+            from: Some(lobby),
+            to: bar,
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+
+    for viewer in [r.nick, r.ann] {
+        let (log_out, _) = run(&mut r.engine, viewer, "+timestop/log");
+        let log_txt = texts(&log_out);
+        assert!(
+            !log_txt.contains("GhostMod"),
+            "live DARK visitor must not appear in +timestop/log: {log_txt}"
+        );
+        assert!(
+            log_txt.contains("VisibleGuest arrives."),
+            "visible visitor still appears: {log_txt}"
+        );
+        let (recap_out, _) = run(&mut r.engine, viewer, "+recap");
+        let recap_txt = texts(&recap_out);
+        assert!(
+            !recap_txt.contains("GhostMod"),
+            "live DARK visitor must not appear in +recap: {recap_txt}"
+        );
+        assert!(recap_txt.contains("VisibleGuest arrives."), "{recap_txt}");
+    }
+
+    // 2. Legacy persisted events: record real Joined/Left entries for `spy` while visible,
+    //    then flag `spy` as `Flags::DARK` (equivalent to legacy pre-fix persisted rows whose
+    //    actor is currently DARK and not a scene member), and verify read-side filtering on
+    //    all four views (+timestop/log, +recap, +timestop/log/archive, +recap/archive).
+    r.engine.world.move_to(spy, bar).unwrap();
+    r.engine.emit_world_event(
+        &mush_core::WorldEvent::Moved {
+            who: spy,
+            from: Some(lobby),
+            to: bar,
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+    r.engine.world.move_to(spy, lobby).unwrap();
+    r.engine.emit_world_event(
+        &mush_core::WorldEvent::Moved {
+            who: spy,
+            from: Some(bar),
+            to: lobby,
+        },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+    r.engine
+        .world
+        .get_mut(spy)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::DARK);
+
+    // Non-staff participant AND non-staff facilitator must not see ShadowMod OR a bogus
+    // "earlier are in the archive" count leak!
+    for viewer in [r.nick, r.ann] {
+        let (log_out, _) = run(&mut r.engine, viewer, "+timestop/log");
+        let log_txt = texts(&log_out);
+        assert!(
+            !log_txt.contains("ShadowMod") && !log_txt.contains("GhostMod"),
+            "legacy DARK visitor must be hidden in +timestop/log: {log_txt}"
+        );
+        assert!(
+            !log_txt.contains("earlier are in the archive"),
+            "filtered legacy DARK visitor must not leak via archive omission count: {log_txt}"
+        );
+        let (recap_out, _) = run(&mut r.engine, viewer, "+recap");
+        let recap_txt = texts(&recap_out);
+        assert!(
+            !recap_txt.contains("ShadowMod") && !recap_txt.contains("GhostMod"),
+            "legacy DARK visitor must be hidden in +recap: {recap_txt}"
+        );
+    }
+    // Staff (GOD) standing in the room still sees the legacy ShadowMod events (and never
+    // GhostMod, which was never recorded).
+    r.engine.world.move_to(GOD, bar).unwrap();
+    let (staff_log, _) = run(&mut r.engine, GOD, "+timestop/log");
+    assert!(
+        texts(&staff_log).contains("ShadowMod arrives.")
+            && texts(&staff_log).contains("ShadowMod leaves.")
+            && !texts(&staff_log).contains("GhostMod"),
+        "staff sees legacy events in +timestop/log: {}",
+        texts(&staff_log)
+    );
+    let (staff_recap, _) = run(&mut r.engine, GOD, "+recap");
+    assert!(
+        texts(&staff_recap).contains("ShadowMod arrives.")
+            && texts(&staff_recap).contains("ShadowMod departs.")
+            && !texts(&staff_recap).contains("GhostMod"),
+        "staff sees legacy events in +recap: {}",
+        texts(&staff_recap)
+    );
+
+    // 3. Archive views (+timestop/log/archive and +recap/archive) with legacy DARK events.
+    run(&mut r.engine, r.nick, "+timestop/end");
+    let store = store_from(r.engine.take_module_ops());
+    let mut booted = reboot(&store);
+    // Recreate lobby, ghost, spy, bystander in the rebooted world with matching ObjIds.
+    let booted_nick = booted.world.resolve_player("Nick").unwrap();
+    let booted_ann = booted.world.resolve_player("Ann").unwrap();
+    let booted_lobby = booted
+        .world
+        .create(ObjKind::Room, "Lobby", GOD, None)
+        .unwrap();
+    let booted_ghost = booted
+        .world
+        .create(ObjKind::Player, "GhostMod", GOD, Some(booted_lobby))
+        .unwrap();
+    assert_eq!(booted_ghost, ghost);
+    booted
+        .world
+        .get_mut(booted_ghost)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::DARK | mush_core::Flags::WIZARD);
+    let booted_spy = booted
+        .world
+        .create(ObjKind::Player, "ShadowMod", GOD, Some(booted_lobby))
+        .unwrap();
+    assert_eq!(booted_spy, spy);
+    booted
+        .world
+        .get_mut(booted_spy)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::DARK | mush_core::Flags::WIZARD);
+    let booted_bystander = booted
+        .world
+        .create(ObjKind::Player, "VisibleGuest", GOD, Some(booted_lobby))
+        .unwrap();
+    assert_eq!(booted_bystander, bystander);
+
+    // Non-staff facilitator (Nick) and participant (Ann): both archive views hide ShadowMod.
+    for viewer in [booted_nick, booted_ann] {
+        let (_, fx) = run(&mut booted, viewer, "+timestop/log/archive");
+        let (_, _, corr, keys) = the_read(&fx);
+        let out = complete(&mut booted, viewer, corr, perform(&store, &keys));
+        let txt = texts(&out);
+        assert!(
+            !txt.contains("ShadowMod") && !txt.contains("GhostMod"),
+            "legacy DARK visitor must be hidden in +timestop/log/archive: {txt}"
+        );
+        assert!(
+            txt.contains("VisibleGuest arrives."),
+            "visible visitor still shown in +timestop/log/archive: {txt}"
+        );
+
+        let (_, fx) = run(&mut booted, viewer, "+recap/archive");
+        let (_, _, corr, keys) = the_read(&fx);
+        let out = complete(&mut booted, viewer, corr, perform(&store, &keys));
+        let txt = texts(&out);
+        assert!(
+            !txt.contains("ShadowMod") && !txt.contains("GhostMod"),
+            "legacy DARK visitor must be hidden in +recap/archive: {txt}"
+        );
+        assert!(
+            txt.contains("VisibleGuest arrives."),
+            "visible visitor still shown in +recap/archive: {txt}"
+        );
+    }
+
+    // Staff sees ShadowMod in both archive views.
+    booted
+        .world
+        .get_mut(booted_ann)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::WIZARD);
+    let (_, fx) = run(&mut booted, booted_ann, "+timestop/log/archive");
+    let (_, _, corr, keys) = the_read(&fx);
+    let out = complete(&mut booted, booted_ann, corr, perform(&store, &keys));
+    assert!(
+        texts(&out).contains("ShadowMod arrives.") && texts(&out).contains("ShadowMod leaves."),
+        "staff sees legacy events in +timestop/log/archive: {}",
+        texts(&out)
+    );
+    let (_, fx) = run(&mut booted, booted_ann, "+recap/archive");
+    let (_, _, corr, keys) = the_read(&fx);
+    let out = complete(&mut booted, booted_ann, corr, perform(&store, &keys));
+    assert!(
+        texts(&out).contains("ShadowMod arrives.") && texts(&out).contains("ShadowMod departs."),
+        "staff sees legacy events in +recap/archive: {}",
+        texts(&out)
+    );
+}

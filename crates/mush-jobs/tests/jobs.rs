@@ -17,8 +17,9 @@ use mush_core::{
 };
 use mush_jobs::{
     Job, JobPayload, JobStatus, JobsModule, MAX_JOB_COMMENT_BYTES, MAX_JOB_TITLE_BYTES,
-    MAX_ORDINARY_JOB_COMMENTS, OpenJob, PlainJobError, deny_plain_job, get_job, get_note, open_job,
-    register_payload_handler, resolve_plain_job,
+    MAX_ORDINARY_JOB_COMMENTS, OpenJob, PlainJobError, deny_plain_job, get_job, get_note,
+    get_public_note, get_staff_note, note_key, open_job, register_payload_handler,
+    resolve_plain_job, staff_note_key,
 };
 use mush_proto::OutputEvent;
 use serde_json::json;
@@ -820,9 +821,29 @@ fn notes_crud_and_staff_only_hiding() {
     assert!(has_text(&out, "background") && !has_text(&out, "watch"));
     let out = run(env.nick, &mut env, "+note me/watch");
     assert!(has_text(&out, "No such note."));
-    // The character cannot clobber a staff-only note either.
-    let out = run(env.nick, &mut env, "+note me/watch=clobber");
-    assert!(has_text(&out, "Permission denied."));
+    // EXT-P3-1: the character sets their own public 'watch' note independently
+    // without discovering or clobbering the hidden staff-only 'watch' note.
+    let out = run(env.nick, &mut env, "+note me/watch=pocket watch");
+    assert!(has_text(&out, "Note 'watch' set on Nick."));
+    assert_eq!(
+        get_staff_note(&env.engine.world, env.nick, "watch")
+            .unwrap()
+            .text,
+        "Keep an eye on him."
+    );
+    assert_eq!(
+        get_public_note(&env.engine.world, env.nick, "watch")
+            .unwrap()
+            .text,
+        "pocket watch"
+    );
+    let out = run(env.nick, &mut env, "+note me/watch=");
+    assert!(has_text(&out, "Note 'watch' on Nick deleted."));
+    assert!(get_public_note(&env.engine.world, env.nick, "watch").is_none());
+    assert!(
+        get_staff_note(&env.engine.world, env.nick, "watch").is_some(),
+        "deleting player's public note must leave staff-only note intact"
+    );
 
     // Other players cannot list someone else's notes; staff sees all.
     let out = run(env.bob, &mut env, "+note Nick");
@@ -1671,4 +1692,222 @@ fn note_hides_non_self_targets_staff_only_deletes_and_staff_only_quota() {
         "+note/staff Nick/watch2=Second hidden note.",
     );
     assert!(has_text(&out, "Note 'watch2' set on Nick."));
+}
+
+#[test]
+fn ext_p3_1_partitioned_notes_prevent_category_oracle_and_migrate_legacy_staff_keys() {
+    // 1. Fresh world: player writes/reads/deletes the exact same category as a
+    //    staff-only note with byte-identical responses to an unoccupied category.
+    let mut env = setup();
+    let mut store = FakeKv::default();
+    run_p(
+        env.rita,
+        &mut env,
+        &mut store,
+        "+note/staff Nick/watchlist=Suspected of smuggling.",
+    );
+    assert!(store.0.contains_key(&staff_note_key(env.nick, "watchlist")));
+    assert!(!store.0.contains_key(&note_key(env.nick, "watchlist")));
+
+    let set_occupied = sys_texts(&run_p(
+        env.nick,
+        &mut env,
+        &mut store,
+        "+note me/watchlist=My favorite shows.",
+    ));
+    let set_free = sys_texts(&run_p(
+        env.nick,
+        &mut env,
+        &mut store,
+        "+note me/playlist=My favorite songs.",
+    ));
+    assert_eq!(set_occupied, vec!["Note 'watchlist' set on Nick."]);
+    assert_eq!(set_free, vec!["Note 'playlist' set on Nick."]);
+
+    // Player reads only their own public note; staff reads both.
+    let nick_read = sys_texts(&run(env.nick, &mut env, "+note me/watchlist"));
+    assert!(
+        nick_read.iter().any(|s| s.contains("My favorite shows."))
+            && !nick_read.iter().any(|s| s.contains("smuggling")),
+        "{nick_read:?}"
+    );
+    let rita_read = sys_texts(&run(env.rita, &mut env, "+note Nick/watchlist"));
+    assert!(
+        rita_read.iter().any(|s| s.contains("My favorite shows."))
+            && rita_read
+                .iter()
+                .any(|s| s.contains("Suspected of smuggling.")),
+        "{rita_read:?}"
+    );
+    // Ambiguous plain staff write/delete asks staff to specify /public or /staff.
+    let ambig = sys_texts(&run(env.rita, &mut env, "+note Nick/watchlist=ambiguous"));
+    assert!(
+        ambig
+            .iter()
+            .any(|s| s.contains("use +note/public or +note/staff")),
+        "{ambig:?}"
+    );
+    let ambig_del = sys_texts(&run(env.rita, &mut env, "+note Nick/watchlist="));
+    assert!(
+        ambig_del
+            .iter()
+            .any(|s| s.contains("use +note/public or +note/staff")),
+        "{ambig_del:?}"
+    );
+
+    // Reboot: BOTH notes survive in separate KV keys.
+    let mut env2 = setup_with(store.boot());
+    assert_eq!(
+        get_public_note(&env2.engine.world, env2.nick, "watchlist")
+            .unwrap()
+            .text,
+        "My favorite shows."
+    );
+    assert_eq!(
+        get_staff_note(&env2.engine.world, env2.nick, "watchlist")
+            .unwrap()
+            .text,
+        "Suspected of smuggling."
+    );
+
+    // Player deletes their public note; staff-only note survives untouched.
+    let del_occ = sys_texts(&run_p(
+        env2.nick,
+        &mut env2,
+        &mut store,
+        "+note me/watchlist=",
+    ));
+    assert_eq!(del_occ, vec!["Note 'watchlist' on Nick deleted."]);
+    assert!(get_public_note(&env2.engine.world, env2.nick, "watchlist").is_none());
+    assert_eq!(
+        get_staff_note(&env2.engine.world, env2.nick, "watchlist")
+            .unwrap()
+            .text,
+        "Suspected of smuggling."
+    );
+
+    // 2. Backward-compatible boot migration of legacy `note:<owner>:<cat>` docs
+    //    carrying `staff_only: true`.
+    let legacy_doc = |owner: ObjId, cat: &str, text: &str| {
+        json!({
+            "owner": owner.0,
+            "category": cat,
+            "text": text,
+            "author": env.rita.0,
+            "staff_only": true,
+            "approved": null
+        })
+    };
+    let mut legacy_store = FakeKv::default();
+    legacy_store.0.insert(
+        note_key(env.nick, "alpha"),
+        legacy_doc(env.nick, "alpha", "Legacy secret A"),
+    );
+    legacy_store.0.insert(
+        note_key(env.nick, "beta"),
+        legacy_doc(env.nick, "beta", "Legacy secret B"),
+    );
+    legacy_store.0.insert(
+        note_key(env.nick, "gamma"),
+        legacy_doc(env.nick, "gamma", "Legacy secret C"),
+    );
+
+    let mut migrated = setup_with(legacy_store.boot());
+    // All three legacy staff-only notes boot into the staff partition, hidden from Nick.
+    for cat in ["alpha", "beta", "gamma"] {
+        assert!(get_public_note(&migrated.engine.world, migrated.nick, cat).is_none());
+        assert!(get_staff_note(&migrated.engine.world, migrated.nick, cat).is_some());
+        assert_eq!(
+            sys_texts(&run(
+                migrated.nick,
+                &mut migrated,
+                &format!("+note me/{cat}")
+            )),
+            vec!["No such note."]
+        );
+    }
+
+    // (a) Player creates public note on legacy category `alpha`: legacy staff note is
+    //     migrated to `staff_note:` BEFORE `note:` is overwritten, so BOTH survive reboot!
+    let out = sys_texts(&run_p(
+        migrated.nick,
+        &mut migrated,
+        &mut legacy_store,
+        "+note me/alpha=Player alpha",
+    ));
+    assert_eq!(out, vec!["Note 'alpha' set on Nick."]);
+    assert!(
+        legacy_store
+            .0
+            .contains_key(&staff_note_key(migrated.nick, "alpha"))
+    );
+    assert!(
+        legacy_store
+            .0
+            .contains_key(&note_key(migrated.nick, "alpha"))
+    );
+
+    // (b) Staff overwrites legacy staff note `beta`: writes `staff_note:` AND deletes
+    //     legacy `note:` key.
+    let out = sys_texts(&run_p(
+        migrated.rita,
+        &mut migrated,
+        &mut legacy_store,
+        "+note/staff Nick/beta=Updated secret B",
+    ));
+    assert_eq!(out, vec!["Note 'beta' set on Nick."]);
+    assert!(
+        legacy_store
+            .0
+            .contains_key(&staff_note_key(migrated.nick, "beta"))
+    );
+    assert!(
+        !legacy_store
+            .0
+            .contains_key(&note_key(migrated.nick, "beta")),
+        "legacy note: key must be cleaned up on staff overwrite"
+    );
+
+    // (c) Staff deletes legacy staff note `gamma`: deletes legacy `note:` key too.
+    let out = sys_texts(&run_p(
+        migrated.rita,
+        &mut migrated,
+        &mut legacy_store,
+        "+note/staff Nick/gamma=",
+    ));
+    assert_eq!(out, vec!["Note 'gamma' on Nick deleted."]);
+    assert!(
+        !legacy_store
+            .0
+            .contains_key(&staff_note_key(migrated.nick, "gamma"))
+    );
+    assert!(
+        !legacy_store
+            .0
+            .contains_key(&note_key(migrated.nick, "gamma")),
+        "legacy note: key must be cleaned up on staff delete"
+    );
+
+    // Reboot after migration and verify every partition persisted accurately.
+    let after = setup_with(legacy_store.boot());
+    assert_eq!(
+        get_public_note(&after.engine.world, after.nick, "alpha")
+            .unwrap()
+            .text,
+        "Player alpha"
+    );
+    assert_eq!(
+        get_staff_note(&after.engine.world, after.nick, "alpha")
+            .unwrap()
+            .text,
+        "Legacy secret A"
+    );
+    assert!(get_public_note(&after.engine.world, after.nick, "beta").is_none());
+    assert_eq!(
+        get_staff_note(&after.engine.world, after.nick, "beta")
+            .unwrap()
+            .text,
+        "Updated secret B"
+    );
+    assert!(get_note(&after.engine.world, after.nick, "gamma").is_none());
 }

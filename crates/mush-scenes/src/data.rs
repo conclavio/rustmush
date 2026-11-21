@@ -1288,6 +1288,7 @@ impl ScenesState {
         for id in &victims {
             self.scenes.remove(id);
             self.last_activity.remove(id);
+            self.events.evict_log(&id.to_string());
         }
         victims
     }
@@ -1642,6 +1643,53 @@ mod tests {
         assert!(st.scenes.get(&live_id).is_some());
         assert!(st.scenes.get(&SceneUid(0)).is_none());
         assert!(st.scenes.get(&SceneUid(10)).is_some());
+    }
+
+    #[test]
+    fn ext_p2_14_prune_closed_scenes_evicts_ledger_tails_for_evicted_scenes() {
+        let mut st = ScenesState::default();
+        let total_closed = MAX_RETAINED_CLOSED_SCENES + 5;
+        for _ in 0..total_closed {
+            let id = st.alloc_uid();
+            let mut c = scene(vec![2]);
+            c.id = id;
+            c.status = SceneStatus::Closed;
+            st.scenes.insert(id, c);
+            let prepared = st
+                .events
+                .prepare_append(&id.to_string(), serde_json::json!({"kind": "started"}))
+                .expect("prepare");
+            let _ = st.events.apply_prepared(prepared).expect("apply");
+        }
+        let live_id = st.alloc_uid();
+        let mut live = scene(vec![3]);
+        live.id = live_id;
+        live.status = SceneStatus::Active;
+        st.scenes.insert(live_id, live);
+        let prepared = st
+            .events
+            .prepare_append(&live_id.to_string(), serde_json::json!({"kind": "started"}))
+            .expect("prepare");
+        let _ = st.events.apply_prepared(prepared).expect("apply");
+
+        let evicted = st.prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES);
+        assert_eq!(evicted.len(), 5);
+        for id in &evicted {
+            assert!(
+                st.events.open_entries(&id.to_string()).is_empty(),
+                "evicted scene {id} must not leave a resident log tail"
+            );
+            assert_eq!(st.events.next_seq(&id.to_string()), 0);
+        }
+        // Retained closed scenes and live scenes still have their log tails resident.
+        let retained_id = SceneUid(5);
+        assert_eq!(st.events.open_entries(&retained_id.to_string()).len(), 1);
+        assert_eq!(st.events.open_entries(&live_id.to_string()).len(), 1);
+        assert!(
+            st.events
+                .resident_within_bounds(MAX_RETAINED_CLOSED_SCENES + 1, usize::MAX),
+            "resident ledger tails bounded by retained closed + active scenes"
+        );
     }
 
     #[test]

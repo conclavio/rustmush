@@ -30,7 +30,7 @@ use crate::ids::{ListingId, MarketId, MarketSourceId, QuoteId, VendorId};
 use crate::record::{
     CatalogEntry, Listing, LotMatter, MAX_CATALOG_ENTRIES, MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR,
     MAX_QUOTES, MAX_SOURCES, MAX_TRADE_ROWS, MAX_VENDORS, MarketSource, Quote, Representation,
-    Supply, Vendor,
+    Supply, Vendor, WithdrawnHold,
 };
 
 /// The module namespace.
@@ -95,6 +95,12 @@ pub fn vendor_key(id: VendorId) -> SmolStr {
 #[must_use]
 pub fn source_key(id: MarketSourceId) -> SmolStr {
     SmolStr::new(format!("market:source:{}", id.0))
+}
+/// `market:withdrawn:{id}` — a withdrawn hold-backed listing's durable release
+/// authorization (EXT-P2-9).
+#[must_use]
+pub fn withdrawn_hold_key(id: ListingId) -> SmolStr {
+    SmolStr::new(format!("market:withdrawn:{}", id.0))
 }
 
 /// The in-RAM market slot — the single runtime source of truth.
@@ -185,9 +191,18 @@ pub struct MarketStore {
     /// strands the hold when it lands). RAM only: after a reboot the map is empty and a
     /// listing a crash left unheld is withdrawn as before. Pruned by the arm past the grace.
     pub(crate) reserve_staged: BTreeMap<ListingId, u64>,
-    /// CRIT-9: lot listings deleted by `api::withdraw_listing` whose release leg is authorized
-    /// to land. RAM only, bounded by `MAX_LISTINGS` and pruned by `boot::sweep`.
+    /// CRIT-9 + EXT-P2-9: lot listings deleted by `api::withdraw_listing` whose release leg is
+    /// authorized to land. Persisted durably under `market:withdrawn:{id}`, rehydrated at boot,
+    /// bounded by `MAX_LISTINGS`, and pruned by `boot::sweep` ONLY once `withdrawn_hold_standing`
+    /// observes `HoldStanding::Gone`.
     pub(crate) withdrawn_holds: BTreeMap<ListingId, WithdrawnHold>,
+    /// EXT-P2-9: the sweep number each kept `withdrawn_holds` entry's standing was last read on.
+    /// RAM only; retained each sweep to `withdrawn_holds`.
+    pub(crate) withdrawn_checked: BTreeMap<ListingId, u64>,
+    /// EXT-P2-9: the sweep number a release was last staged for each `withdrawn_holds` entry,
+    /// lifting the backoff window so a landed release is pruned on the next sweep. RAM only;
+    /// retained each sweep to `withdrawn_holds`.
+    pub(crate) withdrawn_release_staged: BTreeMap<ListingId, u64>,
     /// Doc 18 cut IC14 row 16: the market sweeps run this boot (RAM only).
     pub(crate) sweeps: u64,
     /// Doc 18 cut IC14 row 16: how many `hold_standing` reads the sweep made this boot
@@ -198,16 +213,19 @@ pub struct MarketStore {
     pub(crate) lot_reconcile_cursor: Option<crate::ids::ListingId>,
 }
 
-/// One withdrawn lot listing's hold coordinates, retained until its release leg lands or sweeps out.
-#[derive(Clone, Debug)]
-pub(crate) struct WithdrawnHold {
-    pub(crate) endpoint: mush_inventory::EndpointRef,
-    pub(crate) commodity: mush_core::CanonicalId,
-    pub(crate) lot: Option<mush_inventory::LotId>,
-    pub(crate) at_sweep: u64,
-}
-
 impl MarketStore {
+    /// One pending withdrawn hold-backed listing release authorization, if still retained.
+    #[must_use]
+    pub fn withdrawn_hold(&self, id: ListingId) -> Option<&WithdrawnHold> {
+        self.withdrawn_holds.get(&id)
+    }
+
+    /// How many withdrawn hold-backed listings are currently awaiting durable release
+    /// confirmation.
+    #[must_use]
+    pub fn withdrawn_hold_count(&self) -> usize {
+        self.withdrawn_holds.len()
+    }
     /// How many times the sweep read a kept lapsed hold-backed listing's standing this
     /// boot (doc 18 cut IC14 row 16): at most once per [`crate::HOLD_RECHECK_SWEEPS`]
     /// sweeps per listing.
@@ -937,6 +955,45 @@ pub(crate) fn del_listing(ctx: &mut Ctx<'_>, id: ListingId) {
     );
 }
 
+/// Durably record a withdrawn hold-backed listing's release authorization (EXT-P2-9):
+/// into RAM and queued to `market:withdrawn:{id}` so a crash/reboot or transient
+/// release refusal cannot strand the seller's inventory hold.
+pub(crate) fn put_withdrawn_hold(ctx: &mut Ctx<'_>, hold: WithdrawnHold) {
+    let id = hold.listing;
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        let at_sweep = store.sweeps;
+        store.withdrawn_holds.insert(id, hold.clone());
+        store.withdrawn_release_staged.insert(id, at_sweep);
+    }
+    let Ok(value) = serde_json::to_value(&hold) else {
+        tracing::error!(listing = id.0, "market: a withdrawn hold did not serialize");
+        return;
+    };
+    push_op(
+        ctx.out,
+        ModuleWrite::JsonSet {
+            key: withdrawn_hold_key(id),
+            value,
+        },
+    );
+}
+
+/// Forget a withdrawn hold-backed listing's release authorization once its hold is
+/// observed `Gone`: out of RAM, out of backoff maps, and out of KV.
+pub(crate) fn del_withdrawn_hold(ctx: &mut Ctx<'_>, id: ListingId) {
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        store.withdrawn_holds.remove(&id);
+        store.withdrawn_checked.remove(&id);
+        store.withdrawn_release_staged.remove(&id);
+    }
+    push_op(
+        ctx.out,
+        ModuleWrite::Del {
+            key: withdrawn_hold_key(id),
+        },
+    );
+}
+
 /// Forget a quote — a lapsed offer, or a trade tape row the window rolled past.
 pub(crate) fn del_quote(ctx: &mut Ctx<'_>, id: QuoteId) {
     if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
@@ -1067,6 +1124,26 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)]) -> MarketStore {
                     true
                 },
             );
+        } else if let Some(rest) = key.strip_prefix("market:withdrawn:") {
+            // Claim the listing id floor so a withdrawn hold's listing id can never be
+            // re-minted while its inventory hold is still pending release (R8 + EXT-P2-9).
+            claim(&mut seen[0], rest);
+            load_one(
+                &mut store,
+                key,
+                rest,
+                value,
+                "withdrawn hold",
+                MAX_LISTINGS,
+                |s| s.withdrawn_holds.len(),
+                |s, id, r: WithdrawnHold| {
+                    if r.listing != ListingId(id) {
+                        return false;
+                    }
+                    s.withdrawn_holds.insert(ListingId(id), r);
+                    true
+                },
+            );
         } else if key.starts_with("market:history:") {
             crate::history::load_series(&mut store, key, value);
         } else if key == META_KEY {
@@ -1080,6 +1157,7 @@ pub fn load(kv: &[(SmolStr, serde_json::Value)]) -> MarketStore {
     store.next_listing = store
         .next_listing
         .max(floor(store.listings.keys().map(|i| i.0)))
+        .max(floor(store.withdrawn_holds.keys().map(|i| i.0)))
         .max(seen[0]);
     store.next_quote = store
         .next_quote
@@ -1547,5 +1625,38 @@ mod tests {
         );
         assert_eq!(store.listings_of_vendor(crate::record::NO_VENDOR), 0);
         assert!(store.indexes_agree());
+    }
+
+    #[test]
+    fn ext_p2_9_withdrawn_holds_load_claims_id_floor_and_rejects_mismatch() {
+        let good = serde_json::json!({
+            "listing": 17,
+            "endpoint": 3,
+            "commodity": "iron",
+            "lot": 99
+        });
+        let mismatched = serde_json::json!({
+            "listing": 42,
+            "endpoint": 3,
+            "commodity": "iron"
+        });
+        let kv = vec![
+            (SmolStr::new("market:withdrawn:17"), good),
+            (SmolStr::new("market:withdrawn:25"), mismatched),
+            (
+                SmolStr::new("market:withdrawn:30"),
+                serde_json::json!({ "broken": true }),
+            ),
+        ];
+        let store = load(&kv);
+        assert_eq!(store.withdrawn_hold_count(), 1);
+        let held = store.withdrawn_hold(ListingId(17)).expect("loaded");
+        assert_eq!(held.endpoint.vault(), mush_economy::VaultId(3));
+        assert_eq!(held.commodity.0.as_str(), "iron");
+        assert_eq!(held.lot, Some(mush_inventory::LotId(99)));
+        assert!(store.withdrawn_hold(ListingId(25)).is_none());
+        assert!(store.withdrawn_hold(ListingId(30)).is_none());
+        // Even corrupt/mismatched keys claim the listing id floor so ids never collide.
+        assert_eq!(store.next_listing, 31);
     }
 }

@@ -35,8 +35,8 @@ use mush_core::Ctx;
 use mush_economy::{ContractState, EconomyStore};
 
 use crate::ids::{ListingId, QuoteId};
-use crate::record::Quote;
-use crate::store::{MarketStore, del_listing, del_quote};
+use crate::record::{Quote, WithdrawnHold};
+use crate::store::{MarketStore, del_listing, del_quote, del_withdrawn_hold};
 
 /// The most quotes one boot reconcile examines.
 ///
@@ -570,9 +570,6 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
         }
         store.hold_checked.retain(|id, _| held_now.contains(id));
         store.release_staged.retain(|id, _| held_now.contains(id));
-        store
-            .withdrawn_holds
-            .retain(|_, h| sweep_no.saturating_sub(h.at_sweep) < HOLD_RECHECK_SWEEPS);
     }
     let quotes: Vec<QuoteId> = {
         let Some(store) = ctx.w.module_state::<MarketStore>() else {
@@ -596,7 +593,73 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
             .take(left)
             .collect()
     };
-    let swept = listings.len().saturating_add(quotes.len());
+    // EXT-P2-9: prune durable `withdrawn_holds` entries ONLY once `withdrawn_hold_standing`
+    // observes `HoldStanding::Gone`, matching IC8 lapsed-listing durability. Live, Lapsed,
+    // and Unreadable holds are always kept (with `HOLD_RECHECK_SWEEPS` backoff once past
+    // the freshly-staged window) so an exact lot's hold is never stranded across reboots or
+    // delayed releases.
+    let withdrawn_candidates: Vec<(ListingId, WithdrawnHold)> = ctx
+        .w
+        .module_state::<MarketStore>()
+        .map(|s| {
+            s.withdrawn_holds
+                .iter()
+                .filter(|(id, _)| !s.listings.contains_key(id))
+                .map(|(id, h)| (*id, h.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let withdrawn_budget = budget
+        .saturating_sub(listings.len())
+        .saturating_sub(quotes.len());
+    let mut withdrawn_read_now: Vec<ListingId> = Vec::new();
+    let mut pruned_withdrawn: Vec<ListingId> = Vec::new();
+    for (id, held) in withdrawn_candidates {
+        if pruned_withdrawn.len() >= withdrawn_budget {
+            break;
+        }
+        let last = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.withdrawn_checked.get(&id).copied());
+        let releasing = ctx
+            .w
+            .module_state::<MarketStore>()
+            .and_then(|s| s.withdrawn_release_staged.get(&id).copied())
+            .is_some_and(|at| sweep_no.saturating_sub(at) <= HOLD_RECHECK_SWEEPS);
+        if budget != usize::MAX
+            && !releasing
+            && last.is_some_and(|at| sweep_no.saturating_sub(at) < HOLD_RECHECK_SWEEPS)
+        {
+            continue;
+        }
+        withdrawn_read_now.push(id);
+        let standing = crate::lot::withdrawn_hold_standing(ctx, id, &held);
+        if standing == crate::lot::HoldStanding::Gone {
+            pruned_withdrawn.push(id);
+        } else {
+            tracing::debug!(
+                listing = id.0,
+                ?standing,
+                "market: a withdrawn hold-backed listing's release auth is kept until its hold is gone"
+            );
+        }
+    }
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        for id in withdrawn_read_now {
+            store.withdrawn_checked.insert(id, sweep_no);
+        }
+        store
+            .withdrawn_checked
+            .retain(|id, _| store.withdrawn_holds.contains_key(id));
+        store
+            .withdrawn_release_staged
+            .retain(|id, _| store.withdrawn_holds.contains_key(id));
+    }
+    let swept = listings
+        .len()
+        .saturating_add(quotes.len())
+        .saturating_add(pruned_withdrawn.len());
     for id in listings {
         tracing::debug!(listing = id.0, "market: a lapsed listing was withdrawn");
         del_listing(ctx, id);
@@ -604,6 +667,13 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     for id in quotes {
         tracing::debug!(quote = id.0, "market: a closed quote was forgotten");
         del_quote(ctx, id);
+    }
+    for id in pruned_withdrawn {
+        tracing::debug!(
+            listing = id.0,
+            "market: a withdrawn listing's hold is gone; forgetting its release authorization"
+        );
+        del_withdrawn_hold(ctx, id);
     }
     swept
 }

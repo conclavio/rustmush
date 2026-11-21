@@ -18,13 +18,14 @@ use smol_str::SmolStr;
 
 use crate::ids::{ListingId, MarketId, MarketSourceId, VendorId};
 use crate::record::{
-    CatalogEntry, Legality, Listing, MAX_CATALOG_ENTRIES_PER_PACK, MAX_LISTINGS,
-    MAX_LISTINGS_PER_VENDOR, MAX_SOURCES, MAX_VENDORS, MarketSource, MarketVisibility,
-    Representation, Supply, Vendor, VendorStatus, check_entry,
+    CatalogEntry, Legality, Listing, LotCommodity, LotEndpoint, MAX_CATALOG_ENTRIES_PER_PACK,
+    MAX_LISTINGS, MAX_LISTINGS_PER_VENDOR, MAX_SOURCES, MAX_VENDORS, MarketSource,
+    MarketVisibility, Representation, Supply, Vendor, VendorStatus, WithdrawnHold, check_entry,
 };
 use crate::store::{
-    MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MarketStore, del_entry, del_listing, is_live_object,
-    persist_meta, put_entry, put_listing, put_source, put_vendor,
+    MARKET_PAGE_MAX, MARKET_PAGE_VISIT, MarketStore, del_entry, del_listing, del_withdrawn_hold,
+    is_live_object, persist_meta, put_entry, put_listing, put_source, put_vendor,
+    put_withdrawn_hold,
 };
 
 /// The one refusal a listing the actor may not use ever gets — identical for
@@ -1080,6 +1081,56 @@ fn titleable(ctx: &Ctx<'_>, object: ObjId, vendor: &Vendor) -> bool {
     obj.location == Some(ctx.actor) || (backing.is_some() && obj.location == backing)
 }
 
+/// Retry staging `LotOp::Release` for an already-withdrawn hold-backed listing whose
+/// durable release authorization is still standing (EXT-P2-9).
+///
+/// Existence-hiding: actors who cannot take from the hold's endpoint, absent ids, and
+/// withdrawn holds whose inventory hold is already observed `Gone` all receive
+/// [`NO_SUCH_LISTING`].
+pub(crate) fn retry_withdrawn_release(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketError> {
+    let Some(held) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.withdrawn_hold(id).cloned())
+    else {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    };
+    if !mush_inventory::may_take(ctx.w, ctx.actor, held.endpoint.0) {
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    if crate::lot::sale_in_force(ctx.w, id) {
+        return Err(MarketError::bad(
+            "That listing's stock is sold and on its way; it cannot be withdrawn.",
+        ));
+    }
+    if crate::lot::withdrawn_hold_standing(ctx, id, &held) == crate::lot::HoldStanding::Gone {
+        del_withdrawn_hold(ctx, id);
+        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+    }
+    let leg = crate::lot::LotLeg {
+        op: crate::lot::LotOp::Release,
+        listing: id,
+        endpoint: held.endpoint.0,
+        source: held.endpoint.0,
+        commodity: held.commodity.0,
+        quantity: 1,
+        grade: 0,
+        destination: None,
+        contract: None,
+        lot: held.lot,
+    };
+    if !crate::lot::stage(ctx, &leg) {
+        return Err(MarketError::bad(
+            "This server cannot move lot stock right now, so nothing was released.",
+        ));
+    }
+    if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
+        let at_sweep = store.sweeps;
+        store.withdrawn_release_staged.insert(id, at_sweep);
+    }
+    Ok(())
+}
+
 /// Take a listing down.
 ///
 /// # Errors
@@ -1091,20 +1142,19 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
         .module_state::<MarketStore>()
         .and_then(|s| s.listing(id).cloned())
     else {
-        return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+        return retry_withdrawn_release(ctx, id);
     };
     if listing.source.lot().is_some() && crate::lot::sale_in_force(ctx.w, id) {
         return Err(MarketError::bad(
             "That listing's stock is sold and on its way; it cannot be withdrawn.",
         ));
     }
-    // ---- E7r2: P1 — a withdrawn lot listing gives its hold back ----
+    // ---- E7r2: P1 + EXT-P2-9 — a withdrawn lot listing durably authorizes its release ----
     //
-    // The document delete and the release are one command's work and the release is
-    // its ONE authoritative submission. The document goes first so a crash in between
-    // leaves a hold with no listing, which the sweep's own arm pages about — the
-    // opposite order would leave a listing with no hold, which is the shape a buyer
-    // can pay for.
+    // The durable `market:withdrawn:{id}` release authorization is persisted alongside the
+    // listing delete before `LotOp::Release` is staged, so a crash/reboot or delayed
+    // release refusal can never strand an exact-lot `LotHold` (which has no expiry) or
+    // pooled hold. It is pruned ONLY after `boot::sweep` observes `HoldStanding::Gone`.
     let leg = listing
         .source
         .lot()
@@ -1120,25 +1170,54 @@ pub fn withdraw_listing(ctx: &mut Ctx<'_>, id: ListingId) -> Result<(), MarketEr
             contract: None,
             lot: listing.source.exact_lot(),
         });
+    if let Some(leg) = &leg {
+        // Keep RAM & KV bounded at `MAX_LISTINGS` without ever evicting a live hold:
+        // if full, prune any entries already confirmed `Gone`; if still full, refuse
+        // before deleting the listing so nothing can be stranded.
+        let at_cap = ctx.w.module_state::<MarketStore>().is_some_and(|s| {
+            s.withdrawn_holds.len() >= MAX_LISTINGS && !s.withdrawn_holds.contains_key(&id)
+        });
+        if at_cap {
+            let candidates: Vec<(ListingId, WithdrawnHold)> = ctx
+                .w
+                .module_state::<MarketStore>()
+                .map(|s| {
+                    s.withdrawn_holds
+                        .iter()
+                        .map(|(k, v)| (*k, v.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (cand_id, cand_hold) in candidates {
+                if crate::lot::withdrawn_hold_standing(ctx, cand_id, &cand_hold)
+                    == crate::lot::HoldStanding::Gone
+                {
+                    del_withdrawn_hold(ctx, cand_id);
+                }
+            }
+            let still_full = ctx.w.module_state::<MarketStore>().is_some_and(|s| {
+                s.withdrawn_holds.len() >= MAX_LISTINGS && !s.withdrawn_holds.contains_key(&id)
+            });
+            if still_full {
+                return Err(MarketError::bad(
+                    "Too many stock releases are already pending; try again shortly.",
+                ));
+            }
+        }
+        put_withdrawn_hold(
+            ctx,
+            WithdrawnHold {
+                listing: id,
+                endpoint: LotEndpoint(leg.endpoint),
+                commodity: LotCommodity(leg.commodity.clone()),
+                lot: leg.lot,
+            },
+        );
+    }
     // A Draw (doc 18 cut IC7) and a standing bid (cut IC8) hold no reservation, so
     // deleting the document is the whole withdrawal and nothing is staged.
     del_listing(ctx, id);
     if let Some(leg) = leg {
-        if let Some(store) = ctx.w.module_state_mut::<MarketStore>() {
-            let at_sweep = store.sweeps;
-            if store.withdrawn_holds.len() >= MAX_LISTINGS {
-                store.withdrawn_holds.pop_first();
-            }
-            store.withdrawn_holds.insert(
-                id,
-                crate::store::WithdrawnHold {
-                    endpoint: leg.endpoint,
-                    commodity: leg.commodity.clone(),
-                    lot: leg.lot,
-                    at_sweep,
-                },
-            );
-        }
         crate::lot::stage(ctx, &leg);
     }
     // Doc 48 cut EX.1a: a personal bid gives back what its escrow still holds.
