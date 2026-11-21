@@ -392,7 +392,17 @@ impl TransportState {
 }
 
 pub fn registry(world: &World) -> Option<&RelayRegistry> {
-    world.module_state::<RelayStore>()?.registry()
+    if let Some(reg) = world
+        .module_state::<RelayStore>()
+        .and_then(RelayStore::registry)
+    {
+        return Some(reg);
+    }
+    #[cfg(test)]
+    if let Some(reg) = world.module_state::<RelayRegistry>() {
+        return Some(reg);
+    }
+    None
 }
 
 pub fn enabled(world: &World) -> bool {
@@ -1655,5 +1665,609 @@ mod tests {
         );
         assert_eq!(state.available(&pair, 10, 8, 8), 0);
         assert_eq!(state.available(&pair, 11, 8, 8), 8);
+    }
+
+    #[test]
+    fn p2_core_9_multi_hop_org_representation_enforces_revocation_sanctions_restrictions_and_billing()
+     {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use mush_core::GOD;
+
+        use crate::billing::{
+            Book as BillingBook, Phase as BillingPhase, Subscription, Tariff as BillingTariff, View,
+        };
+        use crate::commerce::{Market, Tariff as CommerceTariff};
+        use crate::service::{
+            Class, Config as ServiceConfig, Evidence, Integration, Principal, Receipt, Restriction,
+            ServiceState, State as ServiceStateStore,
+        };
+
+        const ORG_ID: u64 = 77;
+        const OP_HOP1: u64 = 1;
+        const OP_HOP2: u64 = 2;
+        const REP: mush_core::RelayRepresentation = mush_core::RelayRepresentation {
+            organization: ORG_ID,
+            scope: 1,
+        };
+
+        #[derive(Debug)]
+        struct FixedMetric {
+            origin: ObjId,
+            a: ObjId,
+            c: ObjId,
+            dest: ObjId,
+        }
+        impl Metric for FixedMetric {
+            fn between(&self, _: &World, from: ObjId, to: ObjId) -> Measurement {
+                if (from == self.origin && to == self.a) || (from == self.c && to == self.dest) {
+                    Measurement::Known {
+                        seconds: 0,
+                        basis: "test.local".into(),
+                    }
+                } else {
+                    Measurement::Unknown
+                }
+            }
+        }
+        #[derive(Debug)]
+        struct FixedMetricProvider {
+            origin: ObjId,
+            a: ObjId,
+            c: ObjId,
+            dest: ObjId,
+        }
+        impl MetricProvider for FixedMetricProvider {
+            fn snapshot(&self, _: &World, _: &ClockStamp) -> Box<dyn Metric> {
+                Box::new(FixedMetric {
+                    origin: self.origin,
+                    a: self.a,
+                    c: self.c,
+                    dest: self.dest,
+                })
+            }
+        }
+
+        #[derive(Debug)]
+        struct MultiHopIntegration {
+            issuer: ObjId,
+            rep_valid: Arc<AtomicBool>,
+            sanction_op2: Arc<AtomicBool>,
+            billing_arrears: Arc<AtomicBool>,
+        }
+
+        impl Integration for MultiHopIntegration {
+            fn representation(
+                &self,
+                _w: &World,
+                actor: ObjId,
+                organization: u64,
+            ) -> Option<mush_core::RelayRepresentation> {
+                (actor == self.issuer
+                    && organization == ORG_ID
+                    && self.rep_valid.load(Ordering::Relaxed))
+                .then_some(REP)
+            }
+            fn seed(&self) -> Result<ServiceConfig, String> {
+                Ok(ServiceConfig {
+                    version: 1,
+                    bytes_per_unit: 128,
+                    short_message_bytes: 1024,
+                    burst_units: 8,
+                    standard_delay_s: 0,
+                    deferred_min_s: 0,
+                    window_period_s: 86400,
+                    window_start_s: 0,
+                    window_duration_s: 3600,
+                    aging_s: 300,
+                })
+            }
+            fn operator(&self, _w: &World, pair: &CanonicalId) -> Option<u64> {
+                match pair.as_str() {
+                    "ab" => Some(OP_HOP1),
+                    "bc" => Some(OP_HOP2),
+                    _ => None,
+                }
+            }
+            fn principals(&self, _w: &World, endpoint: ObjId) -> Vec<Principal> {
+                vec![Principal::Object(endpoint)]
+            }
+            fn valid_principal(&self, _w: &World, _p: &Principal) -> bool {
+                true
+            }
+            fn sanction(
+                &self,
+                _w: &World,
+                operator: u64,
+                principals: &[Principal],
+            ) -> Option<String> {
+                if operator == OP_HOP2
+                    && self.sanction_op2.load(Ordering::Relaxed)
+                    && principals.contains(&Principal::Organization(ORG_ID))
+                {
+                    Some("org sanctioned at hop 2".into())
+                } else {
+                    None
+                }
+            }
+            fn subscription(&self, _w: &World, _s: &Subscription) -> Result<View, String> {
+                let arrears = self.billing_arrears.load(Ordering::Relaxed);
+                Ok(View {
+                    paid: !arrears,
+                    missed: if arrears { 2 } else { 0 },
+                    cured: 0,
+                    terminal: false,
+                    paused: false,
+                })
+            }
+            fn visible(&self, _w: &World, _actor: ObjId, _r: &Receipt) -> bool {
+                true
+            }
+            fn authorized(
+                &self,
+                _w: &World,
+                _actor: ObjId,
+                _pair: &CanonicalId,
+                _action: &str,
+            ) -> bool {
+                false
+            }
+            fn discover(&self, _ctx: &mut mush_core::Ctx<'_>, _e: &Evidence) -> Result<(), String> {
+                Ok(())
+            }
+            fn publish(&self, _ctx: &mut mush_core::Ctx<'_>, _e: &Evidence) -> Result<u64, String> {
+                Ok(0)
+            }
+        }
+
+        struct TestRelayModule(RelayRegistry);
+        impl mush_core::GameModule for TestRelayModule {
+            fn name(&self) -> &'static str {
+                "test_relay_registry"
+            }
+
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                reg.state(self.0.clone());
+                Ok(())
+            }
+        }
+
+        let sync_store = |world: &mut World, store: &PropagationStore| {
+            *world
+                .module_state_mut::<PropagationStore>()
+                .expect("PropagationStore registered") = store.clone();
+        };
+
+        // Helper: build a world where A --(ab, op=1)--> B --(bc, op=2)--> C is
+        // the only live route, advance hop 1 (`ab`), and inspect whether hop 2
+        // (`bc`) enforces org representation rules.
+        let setup_after_hop1 = |bc_private_for_org: bool,
+                                op2_restriction: Option<ServiceState>,
+                                install_billing: bool| {
+            let mut world = World::new_minimal();
+            let room_a = world.create(ObjKind::Room, "RoomA", GOD, None).unwrap();
+            let room_b = world.create(ObjKind::Room, "RoomB", GOD, None).unwrap();
+            let room_c = world.create(ObjKind::Room, "RoomC", GOD, None).unwrap();
+            let issuer = world
+                .create(ObjKind::Player, "Issuer", GOD, Some(room_a))
+                .unwrap();
+            let recipient = world
+                .create(ObjKind::Player, "Recipient", GOD, Some(room_c))
+                .unwrap();
+
+            let operator = serde_json::from_value(serde_json::json!(0)).unwrap();
+            let mut nodes = BTreeMap::new();
+            let mut node_objs = BTreeMap::new();
+            for (name, place) in [("a", room_a), ("b", room_b), ("c", room_c)] {
+                let obj = world
+                    .create(ObjKind::Thing, &format!("node_{name}"), GOD, Some(place))
+                    .unwrap();
+                node_objs.insert(name, obj);
+                nodes.insert(
+                    cid(name),
+                    RelayNode {
+                        object: obj,
+                        place,
+                        label: name.into(),
+                        operator,
+                        coverage: vec![place],
+                    },
+                );
+            }
+            let mut pairs = BTreeMap::new();
+            for (id, left, right, policy) in [
+                ("ab", "a", "b", ClassPolicy::Exchange),
+                (
+                    "bc",
+                    "b",
+                    "c",
+                    if bc_private_for_org {
+                        ClassPolicy::Private
+                    } else {
+                        ClassPolicy::Exchange
+                    },
+                ),
+            ] {
+                let h0 = world
+                    .create(
+                        ObjKind::Thing,
+                        &format!("{id}_{left}"),
+                        GOD,
+                        Some(node_objs[left]),
+                    )
+                    .unwrap();
+                let h1 = world
+                    .create(
+                        ObjKind::Thing,
+                        &format!("{id}_{right}"),
+                        GOD,
+                        Some(node_objs[right]),
+                    )
+                    .unwrap();
+                pairs.insert(
+                    cid(id),
+                    RelayPair {
+                        capacity_units_per_ic_second: 8,
+                        class_policy: policy,
+                        halves: [
+                            RelayHalf {
+                                id: cid(&format!("{id}.{left}")),
+                                object: h0,
+                                node: cid(left),
+                                enabled: true,
+                                powered: true,
+                                staffed: true,
+                                destroyed: false,
+                                damaged: false,
+                            },
+                            RelayHalf {
+                                id: cid(&format!("{id}.{right}")),
+                                object: h1,
+                                node: cid(right),
+                                enabled: true,
+                                powered: true,
+                                staffed: true,
+                                destroyed: false,
+                                damaged: false,
+                            },
+                        ],
+                    },
+                );
+            }
+            let reg = RelayRegistry {
+                version: 1,
+                revision: 1,
+                source_pack: cid("test.relay"),
+                source_entry: cid("network"),
+                operator,
+                nodes,
+                pairs,
+                losses: BTreeMap::new(),
+                structural_version: 0,
+            };
+            reg.validate().unwrap();
+
+            let rep_valid = Arc::new(AtomicBool::new(true));
+            let sanction_op2 = Arc::new(AtomicBool::new(false));
+            let billing_arrears = Arc::new(AtomicBool::new(false));
+            let api = Arc::new(MultiHopIntegration {
+                issuer,
+                rep_valid: Arc::clone(&rep_valid),
+                sanction_op2: Arc::clone(&sanction_op2),
+                billing_arrears: Arc::clone(&billing_arrears),
+            });
+
+            let mut svc = ServiceStateStore::new(api.seed().unwrap());
+            if bc_private_for_org {
+                svc.access.grants.push(crate::access::Grant {
+                    pair: cid("bc"),
+                    principal: Principal::Organization(ORG_ID),
+                    rights: BTreeSet::from([
+                        crate::access::Right::Discover,
+                        crate::access::Right::Use,
+                    ]),
+                });
+                svc.access.grants.push(crate::access::Grant {
+                    pair: cid("bc"),
+                    principal: Principal::Object(recipient),
+                    rights: BTreeSet::from([
+                        crate::access::Right::Discover,
+                        crate::access::Right::Use,
+                    ]),
+                });
+            }
+            if let Some(state) = op2_restriction {
+                svc.restrict(Restriction {
+                    operator: OP_HOP2,
+                    principal: Principal::Organization(ORG_ID),
+                    source: cid("op2.policy"),
+                    state,
+                    reason: "org restricted on op2".into(),
+                    actor: GOD,
+                    at: 0,
+                })
+                .unwrap();
+            }
+            if install_billing {
+                svc.commerce = Some(Market {
+                    operator: OP_HOP2,
+                    payee: 1,
+                    tariff: CommerceTariff {
+                        version: 1,
+                        standard_minor: 100,
+                        priority_minor: 200,
+                        quote_secs: 600,
+                        reservation_secs: 3600,
+                    },
+                    legacy_before: 0,
+                    capital_transaction: Some(1),
+                    next: 1,
+                    purchases: Default::default(),
+                });
+                let mut billing = BillingBook {
+                    tariff: BillingTariff {
+                        version: 1,
+                        period_secs: 3600,
+                        standard_minor: 100,
+                        priority_minor: 200,
+                        sovereign_minor: 300,
+                        quote_secs: 600,
+                    },
+                    next: 2,
+                    cursor: 0,
+                    subscriptions: Default::default(),
+                    treaties: Default::default(),
+                };
+                billing.subscriptions.insert(
+                    1,
+                    Subscription {
+                        id: 1,
+                        issuer,
+                        principal: Principal::Organization(ORG_ID),
+                        payer: 1,
+                        class: Class::Priority,
+                        amount_minor: 200,
+                        quoted_at: 0,
+                        quote_until: 600,
+                        until_ic: None,
+                        phase: BillingPhase::Active,
+                        obligation: Some(1),
+                        observed: None,
+                    },
+                );
+                svc.billing = Some(billing);
+            }
+
+            let mut store = PropagationStore::default();
+            store.transport.service = Some(svc);
+
+            let metric_provider = Arc::new(FixedMetricProvider {
+                origin: room_a,
+                a: room_a,
+                c: room_c,
+                dest: room_c,
+            });
+            let engine = mush_core::Engine::with_modules(
+                world,
+                mush_core::Registry::new(),
+                vec![
+                    Box::new(
+                        crate::PropagationModule::new()
+                            .with_metric(metric_provider.clone())
+                            .with_service(api),
+                    ),
+                    Box::new(TestRelayModule(reg)),
+                ],
+            )
+            .expect("propagation test modules compose");
+            let mut world = engine.world;
+            sync_store(&mut world, &store);
+
+            let spatial = SpatialState::default();
+            let env = Envelope::issue(1, issuer, recipient, "hold".into(), 1, clock(0))
+                .unwrap()
+                .with_representation(Some(REP));
+
+            let metric = metric_provider.snapshot(&world, &clock(0));
+            let route = plan_as(
+                &world,
+                &spatial,
+                metric.as_ref(),
+                room_a,
+                room_c,
+                &clock(0),
+                0,
+                1,
+                Some((issuer, recipient)),
+                env.representation(),
+            )
+            .0
+            .expect("route plans through ab -> bc");
+            let mut cur = env.with_transit(route);
+            store.put_envelope(cur.clone()).unwrap();
+            sync_store(&mut world, &store);
+
+            // Advance through hop 1 (`ab`).
+            for tick in [0, 1, 2, 3, 4] {
+                let mut runner = Pass::new(&world, &spatial, &store, &clock(tick), None).unwrap();
+                if let Some(next) = runner.step(&mut store, &cur, &clock(tick)) {
+                    cur = next;
+                    store.put_envelope(cur.clone()).unwrap();
+                }
+                sync_store(&mut world, &store);
+                if cur.path().len() == 1 {
+                    break;
+                }
+            }
+            assert_eq!(cur.path().len(), 1, "hop 1 must complete");
+            assert_eq!(
+                cur.representation(),
+                Some(REP),
+                "representation must survive hop 1"
+            );
+            (
+                world,
+                spatial,
+                store,
+                cur,
+                issuer,
+                recipient,
+                rep_valid,
+                sanction_op2,
+                billing_arrears,
+            )
+        };
+
+        // 1. Healthy 2-hop org-private relay preserves org authority and
+        //    records `representation` on BOTH hop receipts.
+        {
+            let (mut world, spatial, mut store, mut cur, _, _, _, _, _) =
+                setup_after_hop1(true, None, false);
+            for tick in [5, 6, 7] {
+                let mut runner = Pass::new(&world, &spatial, &store, &clock(tick), None).unwrap();
+                if let Some(next) = runner.step(&mut store, &cur, &clock(tick)) {
+                    cur = next;
+                    store.put_envelope(cur.clone()).unwrap();
+                }
+                sync_store(&mut world, &store);
+                if cur.path().len() == 2 {
+                    break;
+                }
+            }
+            assert_eq!(
+                cur.path().len(),
+                2,
+                "hop 2 over org-private link must succeed"
+            );
+            assert_eq!(cur.representation(), Some(REP));
+            let receipts = &store.transport.service.as_ref().unwrap().receipts;
+            assert_eq!(receipts.len(), 2);
+            assert_eq!(receipts[0].representation, Some(REP));
+            assert_eq!(receipts[1].representation, Some(REP));
+        }
+
+        // 2. Mid-flight `relay.speak` revocation after hop 1 blocks hop 2.
+        {
+            let (world, spatial, mut store, cur, issuer, recipient, rep_valid, _, _) =
+                setup_after_hop1(false, None, false);
+            rep_valid.store(false, Ordering::Relaxed);
+            assert!(!crate::service::allowed_as(
+                &world,
+                &cid("bc"),
+                (issuer, recipient),
+                cur.representation(),
+            ));
+            let mut runner = Pass::new(&world, &spatial, &store, &clock(10), None).unwrap();
+            assert!(
+                runner.step(&mut store, &cur, &clock(10)).is_none(),
+                "revoked relay.speak must block hop 2"
+            );
+        }
+
+        // 3. Org-level sanction on hop 2 operator blocks hop 2.
+        {
+            let (world, spatial, mut store, cur, issuer, recipient, _, sanction_op2, _) =
+                setup_after_hop1(false, None, false);
+            sanction_op2.store(true, Ordering::Relaxed);
+            assert!(!crate::service::allowed_as(
+                &world,
+                &cid("bc"),
+                (issuer, recipient),
+                cur.representation(),
+            ));
+            let mut runner = Pass::new(&world, &spatial, &store, &clock(10), None).unwrap();
+            assert!(
+                runner.step(&mut store, &cur, &clock(10)).is_none(),
+                "org sanction on hop 2 operator must block hop 2"
+            );
+        }
+
+        // 4. Org-level suspension on hop 2 operator blocks hop 2.
+        {
+            let (mut world, spatial, mut store, cur, issuer, recipient, _, _, _) =
+                setup_after_hop1(false, None, false);
+            store
+                .transport
+                .service
+                .as_mut()
+                .unwrap()
+                .restrict(Restriction {
+                    operator: OP_HOP2,
+                    principal: Principal::Organization(ORG_ID),
+                    source: cid("op2.suspend"),
+                    state: ServiceState::Suspended,
+                    reason: "org suspended".into(),
+                    actor: GOD,
+                    at: 5,
+                })
+                .unwrap();
+            sync_store(&mut world, &store);
+            assert!(!crate::service::allowed_as(
+                &world,
+                &cid("bc"),
+                (issuer, recipient),
+                cur.representation(),
+            ));
+            let mut runner = Pass::new(&world, &spatial, &store, &clock(10), None).unwrap();
+            assert!(
+                runner.step(&mut store, &cur, &clock(10)).is_none(),
+                "org suspension on hop 2 operator must block hop 2"
+            );
+        }
+
+        // 5. Org-level throttle on hop 2 operator demotes and flags hop 2.
+        {
+            let (mut world, spatial, mut store, mut cur, _, _, _, _, _) =
+                setup_after_hop1(false, Some(ServiceState::Throttled), false);
+            for tick in [5, 6, 7] {
+                let mut runner = Pass::new(&world, &spatial, &store, &clock(tick), None).unwrap();
+                if let Some(next) = runner.step(&mut store, &cur, &clock(tick)) {
+                    cur = next;
+                    store.put_envelope(cur.clone()).unwrap();
+                }
+                sync_store(&mut world, &store);
+                if cur.path().len() == 2 {
+                    break;
+                }
+            }
+            assert_eq!(cur.path().len(), 2);
+            let receipts = &store.transport.service.as_ref().unwrap().receipts;
+            assert_eq!(receipts.len(), 2);
+            assert!(!receipts[0].ticket.throttled);
+            assert!(
+                receipts[1].ticket.throttled,
+                "org throttle on hop 2 must apply to hop 2 ticket"
+            );
+            assert_eq!(receipts[1].representation, Some(REP));
+        }
+
+        // 6. Org-level billing arrears on hop 2 operator blocks hop 2.
+        {
+            let (world, spatial, mut store, cur, issuer, recipient, _, _, billing_arrears) =
+                setup_after_hop1(false, None, true);
+            billing_arrears.store(true, Ordering::Relaxed);
+            let svc = store.transport.service.as_ref().unwrap();
+            assert_eq!(
+                crate::service::status_as(
+                    svc,
+                    &world,
+                    &cid("bc"),
+                    (issuer, recipient),
+                    cur.representation(),
+                ),
+                ServiceState::Suspended,
+                "org billing arrears must suspend hop 2"
+            );
+            let mut runner = Pass::new(&world, &spatial, &store, &clock(10), None).unwrap();
+            assert!(
+                runner.step(&mut store, &cur, &clock(10)).is_none(),
+                "org billing arrears must block hop 2 advance"
+            );
+        }
     }
 }

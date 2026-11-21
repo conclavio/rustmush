@@ -19,7 +19,7 @@ use mush_core::ObjId;
 use tokio::sync::Semaphore;
 
 use crate::audit::{AuditRecord, AuditSink, Outcome, now_unix, prompt_sha256, summarize};
-use crate::budget::{BudgetLedger, ScopeLimits};
+use crate::budget::{BudgetLedger, BudgetReservation, ScopeLimits, sanitize_cost_usd};
 use crate::config::{
     BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, LlmConfig, ProviderKind, RetryConfig,
     RouteConfig, resolve_key,
@@ -27,6 +27,7 @@ use crate::config::{
 use crate::provider::{LlmError, LlmProvider, ProviderId};
 use crate::types::{
     ChatMessage, CompletionRequest, CompletionResponse, ContentBlock, LlmStream, Role, StreamEvent,
+    Usage,
 };
 
 /// NPC importance tier — selects the dialogue route + budget defaults (M8).
@@ -302,6 +303,9 @@ impl CircuitBreaker {
 /// The LLM service.
 pub struct LlmService {
     providers: HashMap<ProviderId, Arc<dyn LlmProvider>>,
+    /// Optional per-provider `(input_usd_per_mtok, output_usd_per_mtok)` pricing
+    /// used to estimate worst-case USD spend for atomic pre-call reservation.
+    provider_pricing: HashMap<ProviderId, (f64, f64)>,
     routes: HashMap<String, RouteConfig>,
     budgets: BudgetConfig,
     ledger: Arc<BudgetLedger>,
@@ -341,6 +345,7 @@ impl LlmService {
     /// their env vars. A provider whose key is unset is skipped (routes to it
     /// then fail fast with a clear error); this never logs a key.
     pub fn from_config(cfg: &LlmConfig) -> Result<LlmService, ServiceError> {
+        validate_budget_config(&cfg.budgets)?;
         let mut b = LlmService::builder()
             .global_enabled(cfg.enabled)
             .budgets(cfg.budgets.clone())
@@ -353,7 +358,15 @@ impl LlmService {
         }
 
         for (id, pcfg) in &cfg.providers {
+            validate_provider_pricing(id, pcfg.price_input_per_mtok, pcfg.price_output_per_mtok)?;
             let pid = ProviderId::from(id.as_str());
+            if pcfg.price_input_per_mtok.is_some() || pcfg.price_output_per_mtok.is_some() {
+                b = b.provider_pricing(
+                    pid.clone(),
+                    pcfg.price_input_per_mtok.unwrap_or(0.0),
+                    pcfg.price_output_per_mtok.unwrap_or(0.0),
+                );
+            }
             let key = pcfg.api_key_env.as_deref().and_then(resolve_key);
             match pcfg.kind {
                 ProviderKind::Anthropic => {
@@ -516,10 +529,12 @@ impl LlmService {
         eff.reasoning = route.reasoning_config();
         let timeout = route.timeout();
 
-        // 3. Budget pre-check (estimated input + max_tokens).
+        // 3. Fast-fail budget pre-check before queuing behind semaphore permits.
         let limits = self.scope_limits(&ctx, route_key);
-        let estimate = estimate_input_tokens(&eff) + u64::from(eff.max_tokens);
-        if let Err(scope) = self.ledger.pre_check(&limits, estimate) {
+        let est_input = estimate_input_tokens(&eff);
+        let estimate = est_input.saturating_add(u64::from(eff.max_tokens));
+        let est_cost = self.estimate_cost_usd(&provider_id, est_input, u64::from(eff.max_tokens));
+        if let Err(scope) = self.ledger.pre_check_with_cost(&limits, estimate, est_cost) {
             self.write_audit(
                 &ctx,
                 provider_id.as_str(),
@@ -565,11 +580,43 @@ impl LlmService {
             lim.until_ready().await;
         }
 
+        // 5b. Post-semaphore / post-QPS re-check of kill switch + atomic budget
+        // reservation (closes both queued-call kill-switch bypass and
+        // concurrent TOCTOU budget overspend).
+        if ctx.parked || self.kill.is_disabled(route_key, ctx.npc) {
+            self.write_audit(
+                &ctx,
+                provider_id.as_str(),
+                &model,
+                &eff,
+                Outcome::Disabled,
+                None,
+                start,
+            );
+            return Err(LlmError::Disabled);
+        }
+        let reservation = match self.ledger.reserve(limits, estimate, est_cost) {
+            Ok(reservation) => reservation,
+            Err(scope) => {
+                self.write_audit(
+                    &ctx,
+                    provider_id.as_str(),
+                    &model,
+                    &eff,
+                    Outcome::Budget,
+                    None,
+                    start,
+                );
+                return Err(LlmError::BudgetExceeded { scope });
+            }
+        };
+
         // 6. Circuit breaker + retry.
         let breaker = self.breakers.get(&provider_id);
         if let Some(b) = breaker
             && b.is_open()
         {
+            drop(reservation);
             self.write_audit(
                 &ctx,
                 provider_id.as_str(),
@@ -593,10 +640,29 @@ impl LlmService {
             }
         }
 
-        // 7. Settle + audit.
+        // 7. Validate usage + settle + audit.
         match result {
             Ok(resp) => {
-                self.ledger.settle(&limits, &resp.usage);
+                if let Err(e) = validate_response_usage(&resp.usage) {
+                    // Meter tokens even when rejecting a malformed cost_usd so
+                    // an adversarial provider cannot obtain free tokens or
+                    // poison cost ceilings with NaN/negative values.
+                    reservation.settle(&Usage {
+                        cost_usd: None,
+                        ..resp.usage
+                    });
+                    self.write_audit(
+                        &ctx,
+                        provider_id.as_str(),
+                        &model,
+                        &eff,
+                        Outcome::Error,
+                        None,
+                        start,
+                    );
+                    return Err(e);
+                }
+                reservation.settle(&resp.usage);
                 self.write_audit(
                     &ctx,
                     provider_id.as_str(),
@@ -609,6 +675,7 @@ impl LlmService {
                 Ok(resp)
             }
             Err(e) => {
+                drop(reservation);
                 let outcome = if matches!(e, LlmError::Refused { .. }) {
                     Outcome::Refused
                 } else {
@@ -686,8 +753,10 @@ impl LlmService {
         let timeout = route.timeout();
 
         let limits = self.scope_limits(&ctx, route_key);
-        let estimate = estimate_input_tokens(&eff) + u64::from(eff.max_tokens);
-        if let Err(scope) = self.ledger.pre_check(&limits, estimate) {
+        let est_input = estimate_input_tokens(&eff);
+        let estimate = est_input.saturating_add(u64::from(eff.max_tokens));
+        let est_cost = self.estimate_cost_usd(&provider_id, est_input, u64::from(eff.max_tokens));
+        if let Err(scope) = self.ledger.pre_check_with_cost(&limits, estimate, est_cost) {
             self.write_audit(
                 &ctx,
                 provider_id.as_str(),
@@ -728,9 +797,37 @@ impl LlmService {
         if let Some(lim) = self.limiters.get(&provider_id) {
             lim.until_ready().await;
         }
+        if ctx.parked || self.kill.is_disabled(route_key, ctx.npc) {
+            self.write_audit(
+                &ctx,
+                provider_id.as_str(),
+                &model,
+                &eff,
+                Outcome::Disabled,
+                None,
+                start,
+            );
+            return Err(LlmError::Disabled);
+        }
+        let reservation = match self.ledger.reserve(limits, estimate, est_cost) {
+            Ok(reservation) => reservation,
+            Err(scope) => {
+                self.write_audit(
+                    &ctx,
+                    provider_id.as_str(),
+                    &model,
+                    &eff,
+                    Outcome::Budget,
+                    None,
+                    start,
+                );
+                return Err(LlmError::BudgetExceeded { scope });
+            }
+        };
         if let Some(b) = self.breakers.get(&provider_id)
             && b.is_open()
         {
+            drop(reservation);
             self.write_audit(
                 &ctx,
                 provider_id.as_str(),
@@ -747,6 +844,7 @@ impl LlmService {
         let inner = match inner {
             Ok(s) => s,
             Err(e) => {
+                drop(reservation);
                 if let Some(b) = self.breakers.get(&provider_id)
                     && e.is_transport_failure()
                 {
@@ -771,14 +869,13 @@ impl LlmService {
         };
 
         // Wrap the inner stream to settle budget + audit on Done, holding the
-        // permit for the stream's lifetime.
+        // permit and RAII budget reservation for the stream's lifetime.
         let state = SettleState {
             inner,
             permit,
             _admission_permit: admission_permit,
-            ledger: Arc::clone(&self.ledger),
+            reservation: Some(reservation),
             audit: Arc::clone(&self.audit),
-            limits,
             settled: false,
             meta: AuditMeta {
                 feature: route_key.to_string(),
@@ -828,6 +925,20 @@ impl LlmService {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    fn estimate_cost_usd(
+        &self,
+        provider_id: &ProviderId,
+        input_tokens: u64,
+        max_output_tokens: u64,
+    ) -> f64 {
+        let Some(&(pin, pout)) = self.provider_pricing.get(provider_id) else {
+            return 0.0;
+        };
+        let total = pin * (input_tokens as f64) / 1_000_000.0
+            + pout * (max_output_tokens as f64) / 1_000_000.0;
+        sanitize_cost_usd(total).unwrap_or(f64::INFINITY)
     }
 
     fn scope_limits(&self, ctx: &CallCtx, route_key: &str) -> ScopeLimits {
@@ -909,9 +1020,8 @@ struct SettleState {
     inner: LlmStream,
     permit: tokio::sync::OwnedSemaphorePermit,
     _admission_permit: tokio::sync::OwnedSemaphorePermit,
-    ledger: Arc<BudgetLedger>,
+    reservation: Option<BudgetReservation>,
     audit: Arc<AuditSink>,
-    limits: ScopeLimits,
     settled: bool,
     meta: AuditMeta,
 }
@@ -923,8 +1033,35 @@ async fn settle_step(
         Some(Ok(StreamEvent::Done(resp))) => {
             if !state.settled {
                 state.settled = true;
-                state.ledger.settle(&state.limits, &resp.usage);
                 let m = &state.meta;
+                if let Err(e) = validate_response_usage(&resp.usage) {
+                    if let Some(res) = state.reservation.take() {
+                        res.settle(&Usage {
+                            cost_usd: None,
+                            ..resp.usage
+                        });
+                    }
+                    state.audit.record(AuditRecord {
+                        ts: now_unix(),
+                        feature: m.feature.clone(),
+                        provider: m.provider.clone(),
+                        model: m.model.clone(),
+                        actor: m.actor,
+                        npc: m.npc,
+                        prompt_sha256: m.prompt_sha256.clone(),
+                        prompt_summary: m.prompt_summary.clone(),
+                        response_summary: String::new(),
+                        input_tokens: resp.usage.input_tokens,
+                        output_tokens: resp.usage.output_tokens,
+                        cost_usd: None,
+                        latency_ms: m.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                        outcome: Outcome::Error,
+                    });
+                    return Some((Err(e), state));
+                }
+                if let Some(res) = state.reservation.take() {
+                    res.settle(&resp.usage);
+                }
                 state.audit.record(AuditRecord {
                     ts: now_unix(),
                     feature: m.feature.clone(),
@@ -948,6 +1085,7 @@ async fn settle_step(
         Some(Err(e)) => {
             if !state.settled {
                 state.settled = true;
+                drop(state.reservation.take());
                 let m = &state.meta;
                 let outcome = if matches!(e, LlmError::Refused { .. }) {
                     Outcome::Refused
@@ -974,11 +1112,67 @@ async fn settle_step(
             Some((Err(e), state))
         }
         None => {
-            // Stream ended; drop the permit by dropping state.
+            // Stream ended; drop permit and any unsettled reservation.
+            drop(state.reservation.take());
             drop(state.permit);
             None
         }
     }
+}
+
+fn validate_response_usage(usage: &Usage) -> Result<(), LlmError> {
+    if let Some(cost) = usage.cost_usd
+        && sanitize_cost_usd(cost).is_none()
+    {
+        return Err(LlmError::MalformedOutput(
+            "provider returned non-finite or negative cost_usd".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_budget_limit(
+    label: &str,
+    limit: Option<crate::budget::BudgetLimit>,
+) -> Result<(), ServiceError> {
+    if let Some(cost) = limit.and_then(|l| l.cost_usd)
+        && sanitize_cost_usd(cost).is_none()
+    {
+        return Err(ServiceError::Config(format!(
+            "budget {label} cost_usd must be finite and non-negative"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_budget_config(cfg: &BudgetConfig) -> Result<(), ServiceError> {
+    validate_budget_limit("global", cfg.global)?;
+    validate_budget_limit("per_actor_default", cfg.per_actor_default)?;
+    validate_budget_limit("per_npc_default", cfg.per_npc_default)?;
+    for (feature, limit) in &cfg.per_feature {
+        validate_budget_limit(&format!("per_feature.{feature}"), Some(*limit))?;
+    }
+    Ok(())
+}
+
+fn validate_provider_pricing(
+    provider: &str,
+    price_in: Option<f64>,
+    price_out: Option<f64>,
+) -> Result<(), ServiceError> {
+    for (field, val) in [
+        ("price_input_per_mtok", price_in),
+        ("price_output_per_mtok", price_out),
+    ] {
+        if let Some(v) = val
+            && sanitize_cost_usd(v).is_none()
+        {
+            return Err(ServiceError::Config(format!(
+                "provider {provider} {field} must be finite and non-negative"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // -- free helpers ----------------------------------------------------------
@@ -1057,6 +1251,7 @@ fn last_user_text(req: &CompletionRequest) -> String {
 #[derive(Default)]
 pub struct LlmServiceBuilder {
     providers: HashMap<ProviderId, Arc<dyn LlmProvider>>,
+    provider_pricing: HashMap<ProviderId, (f64, f64)>,
     limiter_rpm: HashMap<ProviderId, u32>,
     routes: HashMap<String, RouteConfig>,
     budgets: BudgetConfig,
@@ -1078,6 +1273,20 @@ impl LlmServiceBuilder {
         provider: Arc<dyn LlmProvider>,
     ) -> LlmServiceBuilder {
         self.providers.insert(id.into(), provider);
+        self
+    }
+
+    /// Configure estimated USD per million `(input, output)` tokens for a
+    /// provider so worst-case cost is reserved atomically before dispatch.
+    #[must_use]
+    pub fn provider_pricing(
+        mut self,
+        id: impl Into<ProviderId>,
+        input_per_mtok: f64,
+        output_per_mtok: f64,
+    ) -> LlmServiceBuilder {
+        self.provider_pricing
+            .insert(id.into(), (input_per_mtok, output_per_mtok));
         self
     }
 
@@ -1177,6 +1386,7 @@ impl LlmServiceBuilder {
         };
         LlmService {
             providers: self.providers,
+            provider_pricing: self.provider_pricing,
             routes: self.routes,
             budgets: self.budgets,
             ledger: self.ledger.unwrap_or_else(|| Arc::new(BudgetLedger::new())),

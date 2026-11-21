@@ -337,6 +337,11 @@ pub struct NpcRuntime {
     pub correlation: Option<u64>,
     /// Reference-bearing memory actions must cite this exact captured turn.
     pub(crate) captured_memory: Option<(u64, MemoryReferences)>,
+    /// Authoritative interface-ability asker captured when `fire_dialogue`
+    /// built the turn snapshot: `Some((corr, Some(who)))` authorizes interface
+    /// calls only as `who`; `Some((corr, None))` forbids interface invocation
+    /// on this turn (e.g. `StaffPoke`, ambient, or multi-speaker batches).
+    pub(crate) captured_interface_asker: Option<(u64, Option<ObjId>)>,
     /// The newest correlation this NPC has issued or applied, in flight or
     /// not. The world allocates correlations monotonically, so a completion
     /// at or below this watermark is a replay.
@@ -634,6 +639,7 @@ impl NpcHostState {
         rt.in_flight = true;
         rt.correlation = Some(correlation);
         rt.captured_memory = None;
+        rt.captured_interface_asker = None;
         rt.last_correlation = Some(correlation);
         rt.last_turn_at = Some(now_ms);
         rt.dialogue_since_summary = true;
@@ -660,6 +666,116 @@ impl NpcHostState {
             result: DecisionResult::InFlight,
         });
         batch
+    }
+
+    /// Start a dialogue turn while partitioning coalesced stimuli so
+    /// [`Stimulus::StaffPoke`] never mixes with player/ambient stimuli and
+    /// (when `isolate_speakers` is `true`, e.g. an NPC fronting interfaces)
+    /// distinct speakers never coalesce into one batch. Remaining stimuli stay
+    /// in the mailbox and are picked up once this turn completes.
+    pub fn begin_turn_partitioned(
+        &mut self,
+        npc: ObjId,
+        now_ms: i64,
+        correlation: u64,
+        isolate_speakers: bool,
+    ) -> Vec<Stimulus> {
+        #[derive(Copy, Clone, PartialEq, Eq)]
+        enum BatchPartition {
+            StaffPoke,
+            Direct(ObjId),
+            Ambient,
+            NonPoke,
+        }
+
+        let classify = |stim: &Stimulus| -> BatchPartition {
+            if matches!(stim, Stimulus::StaffPoke { .. }) {
+                return BatchPartition::StaffPoke;
+            }
+            if !isolate_speakers {
+                return BatchPartition::NonPoke;
+            }
+            match stim {
+                Stimulus::SpokenTo { by, .. } => BatchPartition::Direct(*by),
+                _ => BatchPartition::Ambient,
+            }
+        };
+
+        let rt = self.runtime_mut(npc);
+        rt.in_flight = true;
+        rt.correlation = Some(correlation);
+        rt.captured_memory = None;
+        rt.captured_interface_asker = None;
+        rt.last_correlation = Some(correlation);
+        rt.last_turn_at = Some(now_ms);
+        rt.dialogue_since_summary = true;
+        rt.pending_since = None;
+
+        let queued = std::mem::take(&mut rt.mailbox);
+        let target_partition = queued.first().map(classify);
+        let mut batch = Vec::new();
+        let mut remaining = Vec::new();
+        for stim in queued {
+            if Some(classify(&stim)) == target_partition {
+                batch.push(stim);
+            } else {
+                remaining.push(stim);
+            }
+        }
+        rt.mailbox_bytes = remaining.iter().map(stimulus_bytes).sum();
+        rt.mailbox = remaining;
+
+        rt.last_decision = Some(LastDecision {
+            correlation,
+            started_ms: now_ms,
+            woke: batch
+                .iter()
+                .take(LAST_DECISION_WOKE_MAX)
+                .map(|stimulus| (stimulus.kind_name(), stimulus.subject()))
+                .collect(),
+            woke_total: batch.len(),
+            public_facts: 0,
+            recalled: 0,
+            unprompted: !batch.is_empty()
+                && batch
+                    .iter()
+                    .all(|stimulus| matches!(stimulus, Stimulus::AmbientTimer)),
+            result: DecisionResult::InFlight,
+        });
+        batch
+    }
+
+    /// Record the world-authorized interface asker for this in-flight turn.
+    pub(crate) fn capture_interface_asker(
+        &mut self,
+        npc: ObjId,
+        correlation: u64,
+        asker: Option<ObjId>,
+    ) {
+        let Some(rt) = self.runtimes.get_mut(&npc) else {
+            return;
+        };
+        if rt.in_flight && rt.correlation == Some(correlation) {
+            rt.captured_interface_asker = Some((correlation, asker));
+        }
+    }
+
+    /// Read the world-authorized interface asker captured for `correlation`
+    /// before clearing the turn. Returns `None` if no dialogue snapshot
+    /// captured an explicit restriction for this correlation (e.g. direct test
+    /// completion); returns `Some(None)` if this turn explicitly forbids
+    /// interface invocation; returns `Some(Some(id))` if only `id` is
+    /// authorized as the asker.
+    pub(crate) fn interface_asker_for(
+        &self,
+        npc: ObjId,
+        correlation: u64,
+    ) -> Option<Option<ObjId>> {
+        self.runtime(npc)
+            .filter(|rt| rt.in_flight && rt.correlation == Some(correlation))
+            .and_then(|rt| rt.captured_interface_asker)
+            .filter(|(captured, _)| *captured == correlation)
+            .map(|(_, asker)| asker)
     }
 
     /// Record how much the turn `correlation` showed the model (doc 44 cut MW.17). A
@@ -743,6 +859,7 @@ impl NpcHostState {
         rt.in_flight = true;
         rt.correlation = Some(correlation);
         rt.captured_memory = None;
+        rt.captured_interface_asker = None;
         rt.last_correlation = Some(correlation);
         rt.summarize_pending = false;
         rt.dialogue_since_summary = false;
@@ -812,6 +929,7 @@ impl NpcHostState {
             rt.in_flight = false;
             rt.correlation = None;
             rt.captured_memory = None;
+            rt.captured_interface_asker = None;
             if !rt.mailbox.is_empty() && rt.pending_since.is_none() {
                 rt.pending_since = Some(now_ms);
             }

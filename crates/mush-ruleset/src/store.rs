@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use mush_core::{Attr, Ctx, ObjId, World, WorldEvent};
+use mush_core::{Attr, AttrFlags, Ctx, ObjId, World, WorldEvent};
 
 use crate::doc::SheetDoc;
 use crate::schema::{FieldType, SheetSchema};
@@ -196,7 +196,9 @@ impl SheetStore {
                 max: MAX_SHEET_DOC_BYTES,
             }]);
         }
-        w.set_attr(obj, &self.attr_name(), Attr::json(value, by))
+        let mut attr = Attr::json(value, by);
+        attr.flags = AttrFlags::WIZARD_ONLY;
+        w.set_attr(obj, &self.attr_name(), attr)
             .map_err(|e| vec![SheetError::msg(e.to_string())])?;
         Ok(())
     }

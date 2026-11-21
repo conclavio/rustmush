@@ -427,3 +427,53 @@ fn chargen_flow_via_framework() {
     assert_eq!(doc.number("willpower"), Some(5));
     assert_eq!(doc.approved, ApprovalState::Unapproved);
 }
+
+#[test]
+fn p2_core_6_examine_me_and_attr_lock_do_not_expose_staff_only_sheet_fields() {
+    let (mut tw, bob) = world();
+    tw.run(GOD, "@sheet/set Bob/strength=4");
+    tw.run(GOD, "@sheet/set Bob/secret=5");
+
+    // Stored sheet carries WIZARD_ONLY flag at rest.
+    let attr = tw.world().attr(bob, "sheet:toy").expect("sheet stored");
+    assert!(attr.flags.contains(mush_core::AttrFlags::WIZARD_ONLY));
+
+    // Bob's `+sheet` still works normally and strips staff_only fields.
+    let sheet_out = tw.run(bob, "+sheet");
+    assert!(saw(&sheet_out, bob, "Strength"), "{sheet_out:?}");
+    assert!(!saw(&sheet_out, bob, "secret"), "{sheet_out:?}");
+    assert!(!saw(&sheet_out, bob, "5"), "{sheet_out:?}");
+
+    // Bob's `examine me` and `examine/all me` must NOT print raw `sheet:toy`
+    // JSON or leak the staff-only `secret` value.
+    for cmd in ["examine me", "examine/all me"] {
+        let ex_out = tw.run(bob, cmd);
+        assert!(
+            !saw(&ex_out, bob, "sheet:toy") && !saw(&ex_out, bob, "secret"),
+            "{cmd} must hide raw sheet:toy from non-staff: {ex_out:?}"
+        );
+    }
+
+    // Staff (`GOD`) still sees `sheet:toy` in `examine Bob`.
+    let staff_ex = tw.run(GOD, "examine Bob");
+    assert!(
+        saw(&staff_ex, GOD, "sheet:toy") && saw(&staff_ex, GOD, "\"secret\":5"),
+        "staff examine must still show sheet:toy: {staff_ex:?}"
+    );
+
+    // `@lock` `AttrMatch` cannot probe `sheet:toy` even when negated.
+    let pos = mush_core::parse_lock("sheet:toy:*secret*", |_| None).unwrap();
+    let neg = mush_core::parse_lock("!sheet:toy:*secret*", |_| None).unwrap();
+    assert!(!mush_core::eval_lock(
+        tw.world(),
+        &pos,
+        bob,
+        mush_core::lock::MAX_LOCK_DEPTH
+    ));
+    assert!(!mush_core::eval_lock(
+        tw.world(),
+        &neg,
+        bob,
+        mush_core::lock::MAX_LOCK_DEPTH
+    ));
+}

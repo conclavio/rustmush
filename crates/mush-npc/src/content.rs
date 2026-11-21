@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use mush_content::{Appliers, EntryApplier, Pack, PackError, RawEntry};
 use mush_core::{
-    Attr, CanonicalId, Ctx, Flags, GOD, ModuleOp, ModuleWrite, ObjId, ObjKind, World, WorldEvent,
+    Attr, AttrFlags, CanonicalId, Ctx, Flags, GOD, ModuleOp, ModuleWrite, ObjId, ObjKind, World,
+    WorldEvent,
 };
 use serde::Deserialize;
 use smol_str::SmolStr;
@@ -220,8 +221,10 @@ fn write_json(
     value: &impl serde::Serialize,
 ) -> Result<(), String> {
     let value = serde_json::to_value(value).map_err(|e| e.to_string())?;
+    let mut stored = Attr::json(value, GOD);
+    stored.flags = AttrFlags::WIZARD_ONLY;
     ctx.w
-        .set_attr(npc, attr, Attr::json(value, GOD))
+        .set_attr(npc, attr, stored)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
