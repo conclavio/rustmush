@@ -265,6 +265,53 @@ pub fn capture(
     to: &(PrincipalId, mush_economy::AccountId),
 ) -> Result<(), BondError> {
     let (beneficiary, account) = to;
+    // P2-MOD-20: verify destination ownership, distinct account, active status,
+    // instrument match, and hold beneficiary binding right at capture so a legacy
+    // or crafted bond cannot divert a forfeiture back to the issuer's own account.
+    if *account == hold.account {
+        return Err(BondError::Refused(
+            "bond capture destination matches hold account".to_owned(),
+        ));
+    }
+    if let Some(expected) = &hold.beneficiary
+        && expected != beneficiary
+    {
+        return Err(BondError::Refused(
+            "bond capture beneficiary does not match hold beneficiary".to_owned(),
+        ));
+    }
+    {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return Err(BondError::NoEconomy);
+        };
+        let snapshot = store.snapshot();
+        let Some(bond_acct) = snapshot.account(hold.account) else {
+            return Err(BondError::Refused(
+                "bond account no longer exists".to_owned(),
+            ));
+        };
+        let Some(paid) = snapshot.account(*account) else {
+            return Err(BondError::Refused(
+                "forfeit destination account does not exist".to_owned(),
+            ));
+        };
+        if !matches!(paid.status, mush_economy::AccountStatus::Active) {
+            return Err(BondError::Refused(
+                "forfeit destination account is not active".to_owned(),
+            ));
+        }
+        if paid.owner != *beneficiary || !crate::commands::org_principal_active(ctx.w, beneficiary)
+        {
+            return Err(BondError::Refused(
+                "forfeit destination account does not belong to beneficiary".to_owned(),
+            ));
+        }
+        if paid.instrument != bond_acct.instrument {
+            return Err(BondError::Refused(
+                "forfeit destination account instrument differs from bond account".to_owned(),
+            ));
+        }
+    }
     let amount: Amount = hold.amount;
     let debit = amount.checked_neg().ok_or(BondError::NoHold)?;
     let plan = EconomyPlan {

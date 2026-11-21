@@ -75,6 +75,12 @@ impl FactProvider for CampaignFactProvider {
                 // document write AND the commit that pins it" is true of the code as
                 // well as of this header.
                 let root = doc.runtime.root.as_ref().filter(|r| r.canon.is_some())?;
+                // P2-MOD-3: a declarer's failure/concession or staff forfeit commits
+                // `KIND_OPERATION_FAILED` rather than `KIND_OPERATION_RESOLVED`, so
+                // conceding never satisfies a `campaign.operation.resolved` contract fact.
+                if crate::settle::outcome_forfeits(&root.outcome) {
+                    return None;
+                }
                 Some(FactState {
                     satisfied: true,
                     // The campaign layer cannot say which *object* brought a

@@ -113,10 +113,11 @@ pub use generate::{
 pub use mush_atlas::theme::{DescLength, Theme, resolve_theme};
 pub use plan::{PlanLimits, run_plan};
 pub use proposal::{
-    MAX_PROPOSALS, MAX_PROPOSALS_PER_PLAYER_WINDOW, MAX_RETAINED_TERMINAL_PROPOSALS,
-    MAX_WITHDRAWS_PER_PLAYER_WINDOW, PROPOSAL_WINDOW_SECS, PROPOSAL_WITHDRAW_COOLDOWN_SECS,
-    PlanOutcome, PlanSnapshot, PlanStatus, ProposalRec, ProposalScope, ProposalSource,
-    ProposalStatus, Question, proposal_key,
+    MAX_OPEN_PROPOSALS_PER_PLAYER, MAX_PROPOSALS, MAX_PROPOSALS_PER_PLAYER_WINDOW,
+    MAX_RETAINED_TERMINAL_PROPOSALS, MAX_WITHDRAWS_PER_PLAYER_WINDOW, PROPOSAL_WINDOW_SECS,
+    PROPOSAL_WITHDRAW_COOLDOWN_SECS, PlanOutcome, PlanSnapshot, PlanStatus, ProposalRec,
+    ProposalScope, ProposalSource, ProposalStatus, Question, STALE_PLANNING_TTL_SECS,
+    STALE_PROPOSAL_TTL_SECS, proposal_key,
 };
 
 /// The building agent's default per-proposal cost cap, USD (`[worldgen].plan_cost_cap_usd`).

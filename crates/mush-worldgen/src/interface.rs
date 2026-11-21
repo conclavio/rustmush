@@ -30,7 +30,11 @@ impl InterfaceAbilityProvider for BuildInterface {
                     .to_string(),
                 params_schema: json!({
                     "type": "object",
-                    "properties": { "brief": { "type": "string", "description": "what the place is for and what it looks like" } },
+                    "properties": {
+                        "brief": { "type": "string", "description": "what the place is for and what it looks like" },
+                        "kind": { "type": "string", "description": "optional site kind (e.g. park, shop, house; defaults to place)" },
+                        "where": { "type": "string", "description": "optional neighborhood name (defaults to where the asker stands)" }
+                    },
                     "required": ["brief"]
                 }),
                 command: SmolStr::new_static("+build"),
@@ -75,17 +79,64 @@ impl InterfaceAbilityProvider for BuildInterface {
                     .map(str::trim)
                     .filter(|b| !b.is_empty())
                     .ok_or_else(|| InterfaceError::Invalid("a brief".to_string()))?;
-                // The asker's own neighborhood is the scope, else the world.
-                let here = ctx.w.get(call.asker).and_then(|o| o.location);
-                let scope = here
-                    .and_then(|room| {
+                let kind = input
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|k| !k.is_empty());
+                let where_name = input
+                    .get("where")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|w| !w.is_empty());
+                // P2-MOD-28: non-staff players MUST go through `proposal::place`
+                // (`mush_atlas::hydrate::request`) so neighborhood hydration policy,
+                // strike suspension (`cap == 0`), slot caps, footprint availability,
+                // and per-player open-proposal caps are enforced identically to
+                // `+build/place`. Only staff may create direct prose proposals.
+                if !mush_atlas::is_staff(ctx.w, call.asker) {
+                    let line = crate::proposal::place(
+                        ctx,
+                        call.asker,
+                        kind.unwrap_or("place"),
+                        where_name,
+                        brief,
+                    )
+                    .map_err(InterfaceError::Refused)?;
+                    return Ok(InterfaceReply::text(line));
+                }
+                // Staff: the named place or asker's neighborhood is the scope, else the world.
+                let scope = if let Some(name) = where_name {
+                    ctx.state::<AtlasState>()
+                        .and_then(|st| match mush_atlas::find_place(&st.records, name) {
+                            Some(mush_atlas::place::PlaceRef::Neighborhood(key)) => {
+                                Some(ProposeScope::Neighborhood(key))
+                            }
+                            Some(mush_atlas::place::PlaceRef::Region(key)) => {
+                                Some(ProposeScope::Region(key))
+                            }
+                            Some(mush_atlas::place::PlaceRef::Site(key)) => st
+                                .records
+                                .sites
+                                .get(&key)
+                                .and_then(|s| s.neighborhoods.first().cloned())
+                                .map(ProposeScope::Neighborhood),
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            InterfaceError::Refused(format!("No place called {name:?}."))
+                        })?
+                } else {
+                    let here = ctx.w.get(call.asker).and_then(|o| o.location);
+                    here.and_then(|room| {
                         ctx.state::<AtlasState>().and_then(|st| {
                             st.records
                                 .neighborhood_of_room(room)
                                 .map(|nb| nb.key.clone())
                         })
                     })
-                    .map_or(ProposeScope::World, ProposeScope::Neighborhood);
+                    .map_or(ProposeScope::World, ProposeScope::Neighborhood)
+                };
                 let line = crate::proposal::propose_hook(
                     ctx,
                     ProposeRequest {

@@ -162,22 +162,21 @@ fn may_commit_unit(ctx: &Ctx<'_>, unit: UnitRef) -> bool {
         .any(|scope| authorized(ctx, "force.command", scope))
 }
 
-/// **Who may resolve**: staff for every outcome, and the issuer for an outcome that
-/// neither takes a player's money nor abandons the operation.
+/// **Who may resolve**: staff for every outcome, and the issuer **only** to concede
+/// (`failure`).
 ///
-/// `forfeit` and `abort` are **staff's alone**. `forfeit` is the one word that moves a
-/// bond to somebody else whatever the issuer's objective did; `failure` also forfeits
-/// since doc 50 OP.0 (Q-50-57 item 5), and the issuer may still choose it, because it
-/// concedes their own bond to the beneficiary their own terms named; `abort` records an
-/// abandonment, which is the one resolution allowed to drain past a broken consent
-/// surface — §4.0g (viii) said it was staff's and only the *branch selection* was
-/// (C7), so a non-staff caller passing the word still reached `enter_resolving` and
-/// switched the mid-drain intactness re-check off for the whole fan-out.
+/// `success` and `partial` require staff (`Role::Royalty` / `SIM_ADMIN`) or the
+/// automated tick's objective evaluation — a non-staff issuer can never self-declare
+/// victory from `Activated` or `Running`, evade bond forfeiture (`bond.forfeit_to`),
+/// bypass declared automated objectives, or prematurely attest linked contracts
+/// (P2-MOD-3). `failure` forfeits the issuer's bond to any named beneficiary
+/// (doc 50 OP.0, Q-50-57 item 5) and concedes without advancing `campaign.operation.resolved`
+/// fronts or attestations. `forfeit`, `abort`, and `retry` remain staff's alone.
 fn may_resolve(ctx: &Ctx<'_>, doc: &OperationDoc, outcome: &str) -> bool {
     if is_staff(ctx.w, ctx.actor) {
         return true;
     }
-    if outcome.trim() == "forfeit" || settle::outcome_abandons(outcome) {
+    if outcome.trim() != "failure" {
         return false;
     }
     render::acts_for(ctx.w, ctx.actor, &doc.terms.attacker)
@@ -486,29 +485,57 @@ fn op_terms(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// **Resolve a bond's accounts at the edit** (E7 cut 9 fold, C8).
+/// Uniform existence-hiding refusal for non-staff bond account validation (P2-MOD-20).
+const BOND_ACCOUNT_REFUSED: &str = "That bond account cannot be used for this operation.";
+/// Uniform existence-hiding refusal for non-staff forfeit beneficiary validation (P2-MOD-20).
+const FORFEIT_ACCOUNT_REFUSED: &str = "That forfeit account cannot be used for this operation.";
+/// Uniform existence-hiding refusal for non-staff outcome stake validation (P2-MOD-20).
+const OUTCOME_STAKE_REFUSED: &str =
+    "That contract cannot be bound as an outcome stake for this operation.";
+
+/// Whether an organization principal is active in `mush-org` (non-organization
+/// principals are trivially active here).
+pub(crate) fn org_principal_active(w: &mush_core::World, principal: &PrincipalId) -> bool {
+    let PrincipalId::Organization(org_id) = principal else {
+        return true;
+    };
+    w.module_state::<mush_org::OrgStore>().is_some_and(|orgs| {
+        orgs.state()
+            .org(*org_id)
+            .is_some_and(|org| org.status == mush_org::OrgStatus::Active)
+    })
+}
+
+/// **Resolve a bond's accounts at the edit** (E7 cut 9 fold, C8; P2-MOD-20).
 ///
 /// `apply_field` parses `<account>:<minor units>` and `#<obj>:<account>` as bare
 /// `u64`s and stores them; `OperationTerms::check` never looked at them either. The
 /// placement side was saved by the engine (invariants 25/26 refuse a bond on someone
 /// else's account, or an unfunded one) — but the **forfeit** side was validated
 /// nowhere until the capture ran, inside a `Resolving` state that had no exit at all.
-/// A bond whose beneficiary account is nonexistent, closed, or on a different
-/// instrument was an operation that activated normally and could never finish.
+/// A bond whose beneficiary account is nonexistent, closed, wrong-owner, same as the
+/// bond account, or on a different instrument is refused here — with uniform
+/// existence-hiding refusals for non-staff callers.
 fn check_bond_accounts(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdError> {
-    match bond_accounts_refusal(ctx.w, terms, is_staff(ctx.w, ctx.actor)) {
+    let staff = is_staff(ctx.w, ctx.actor);
+    match bond_accounts_refusal(ctx.w, terms, staff, !staff) {
         Some(why) => Err(CmdError::msg(why)),
         None => Ok(()),
     }
 }
 
 /// `check_bond_accounts`' question, shared with the compiled declaration
-/// (`crate::declare`): why `terms`' bond accounts are refused, or `None`. `staff` lifts only
-/// the rule that the bond is on the issuer's own account.
+/// (`crate::declare`): why `terms`' bond accounts are refused, or `None`.
+///
+/// `lift_issuer_owner` lifts only the rule that the bond is on the issuer's own
+/// account (for staff). `hide_existence` collapses nonexistent, inactive,
+/// wrong-owner, same-as-bond, and wrong-instrument refusals into one uniform
+/// message per field so non-staff callers cannot probe `mush-economy` accounts.
 pub(crate) fn bond_accounts_refusal(
     w: &mush_core::World,
     terms: &OperationTerms,
-    staff: bool,
+    lift_issuer_owner: bool,
+    hide_existence: bool,
 ) -> Option<&'static str> {
     let bond = terms.bond.as_ref()?;
     let Some(store) = w.module_state::<mush_economy::EconomyStore>() else {
@@ -516,32 +543,70 @@ pub(crate) fn bond_accounts_refusal(
     };
     let snapshot = store.snapshot();
     let Some(account) = snapshot.account(bond.account) else {
-        return Some("That bond names an account that does not exist.");
+        return Some(if hide_existence {
+            BOND_ACCOUNT_REFUSED
+        } else {
+            "That bond names an account that does not exist."
+        });
     };
     if !matches!(account.status, mush_economy::AccountStatus::Active) {
-        return Some("That bond names an account that is not active.");
+        return Some(if hide_existence {
+            BOND_ACCOUNT_REFUSED
+        } else {
+            "That bond names an account that is not active."
+        });
     }
     // The bond is a reservation on the ISSUER's own account, so the refusal arrives
     // here rather than at `@op/activate`.
-    if account.owner != terms.attacker && !staff {
-        return Some("A bond is a reservation on the issuer's own account.");
+    if account.owner != terms.attacker && !lift_issuer_owner {
+        return Some(if hide_existence {
+            BOND_ACCOUNT_REFUSED
+        } else {
+            "A bond is a reservation on the issuer's own account."
+        });
     }
-    if let Some((_, beneficiary)) = &bond.forfeit_to {
+    if let Some((beneficiary_principal, beneficiary)) = &bond.forfeit_to {
+        if *beneficiary == bond.account {
+            return Some(if hide_existence {
+                FORFEIT_ACCOUNT_REFUSED
+            } else {
+                "A bond cannot forfeit back to its own account."
+            });
+        }
         let Some(paid) = snapshot.account(*beneficiary) else {
-            return Some("That forfeit names an account that does not exist.");
+            return Some(if hide_existence {
+                FORFEIT_ACCOUNT_REFUSED
+            } else {
+                "That forfeit names an account that does not exist."
+            });
         };
         if !matches!(paid.status, mush_economy::AccountStatus::Active) {
-            return Some("That forfeit names an account that is not active.");
+            return Some(if hide_existence {
+                FORFEIT_ACCOUNT_REFUSED
+            } else {
+                "That forfeit names an account that is not active."
+            });
+        }
+        if paid.owner != *beneficiary_principal || !org_principal_active(w, beneficiary_principal) {
+            return Some(if hide_existence {
+                FORFEIT_ACCOUNT_REFUSED
+            } else {
+                "That forfeit account does not belong to the named beneficiary."
+            });
         }
         if paid.instrument != account.instrument {
-            return Some("That forfeit account holds a different instrument from the bond's.");
+            return Some(if hide_existence {
+                FORFEIT_ACCOUNT_REFUSED
+            } else {
+                "That forfeit account holds a different instrument from the bond's."
+            });
         }
     }
     None
 }
 
 /// **A stake may only promise what something can actually settle** (E7 cut 9 fold,
-/// C9 / decision E6(a)).
+/// C9 / decision E6(a); P2-MOD-20).
 ///
 /// `required_consumers` adds `ConsumerId::ContractOutcomes` whenever a
 /// `Consequence::Outcome { contract, row }` is present, and the consumer's arm is one
@@ -549,9 +614,11 @@ pub(crate) fn bond_accounts_refusal(
 /// coupling is `mush_economy::attest::on_canon_recorded`, which fires only for a
 /// contract independently authored with an `AttestorSet::Canon` naming this kind and
 /// this operation's own source. So the stake is validated where it is written: the
-/// named contract must exist and must already carry that attestor set.
+/// named contract must exist and must already carry that attestor set (and non-staff
+/// callers receive a uniform existence-hiding refusal so contracts cannot be probed).
 fn check_outcome_stakes(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), CmdError> {
-    match outcome_stakes_refusal(ctx.w, terms) {
+    let hide_existence = !is_staff(ctx.w, ctx.actor);
+    match outcome_stakes_refusal(ctx.w, terms, hide_existence) {
         Some(why) => Err(CmdError::msg(why)),
         None => Ok(()),
     }
@@ -562,6 +629,7 @@ fn check_outcome_stakes(ctx: &Ctx<'_>, terms: &OperationTerms) -> Result<(), Cmd
 pub(crate) fn outcome_stakes_refusal(
     w: &mush_core::World,
     terms: &OperationTerms,
+    hide_existence: bool,
 ) -> Option<String> {
     let source = SmolStr::new(settle::canon_source(terms.operation));
     for stake in &terms.stakes {
@@ -577,8 +645,18 @@ pub(crate) fn outcome_stakes_refusal(
             .snapshot()
             .contract(mush_economy::ContractId(*contract))
         else {
-            return Some("That stake names a contract that does not exist.".to_owned());
+            return Some(if hide_existence {
+                OUTCOME_STAKE_REFUSED.to_owned()
+            } else {
+                "That stake names a contract that does not exist.".to_owned()
+            });
         };
+        if hide_existence
+            && record.issuer != terms.attacker
+            && !record.consent.parties.contains(&terms.attacker)
+        {
+            return Some(OUTCOME_STAKE_REFUSED.to_owned());
+        }
         let attests = record
             .consent
             .conditions
@@ -596,10 +674,15 @@ pub(crate) fn outcome_stakes_refusal(
                 _ => false,
             });
         if !attests {
-            return Some(format!(
-                "Contract #{contract} carries no `{}` attestor naming `{source}`, so this                  operation's resolution could never settle it.",
-                settle::KIND_OPERATION_RESOLVED
-            ));
+            return Some(if hide_existence {
+                OUTCOME_STAKE_REFUSED.to_owned()
+            } else {
+                format!(
+                    "Contract #{contract} carries no `{}` attestor naming `{source}`, so this \
+                     operation's resolution could never settle it.",
+                    settle::KIND_OPERATION_RESOLVED
+                )
+            });
         }
     }
     None

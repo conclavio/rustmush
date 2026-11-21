@@ -159,10 +159,10 @@ pub fn declare_and_activate(
     };
     terms.consent_hash = operation_consent_hash(&terms);
     terms.check().map_err(DeclareError::Terms)?;
-    if let Some(why) = crate::commands::bond_accounts_refusal(ctx.w, &terms, false) {
+    if let Some(why) = crate::commands::bond_accounts_refusal(ctx.w, &terms, false, false) {
         return Err(DeclareError::Refused(why.to_owned()));
     }
-    if let Some(why) = crate::commands::outcome_stakes_refusal(ctx.w, &terms) {
+    if let Some(why) = crate::commands::outcome_stakes_refusal(ctx.w, &terms, false) {
         return Err(DeclareError::Refused(why));
     }
     // The hold first, and only a placed hold writes the operation: the never-negative argument
