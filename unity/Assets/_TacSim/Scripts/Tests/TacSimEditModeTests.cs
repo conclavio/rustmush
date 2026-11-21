@@ -146,13 +146,13 @@ namespace TacSim.Tests
             // Verify shortest-path BFS from Arrivals -> Registry & Co-op Desk -> Berth Gallery
             var toCoop = ceres.FindExitPath("room.c03_arrivals", "room.c05_registry");
             Assert.AreEqual(1, toCoop.Count);
-            Assert.AreEqual("n", toCoop[0].command);
+            Assert.AreEqual("goto n", toCoop[0].command);
 
             var coopToBerth = ceres.FindExitPath("room.c05_registry", "room.c01_berth_gallery");
             Assert.AreEqual(3, coopToBerth.Count);
-            Assert.AreEqual("s", coopToBerth[0].command);
-            Assert.AreEqual("s", coopToBerth[1].command);
-            Assert.AreEqual("s", coopToBerth[2].command);
+            Assert.AreEqual("goto s", coopToBerth[0].command);
+            Assert.AreEqual("goto s", coopToBerth[1].command);
+            Assert.AreEqual("goto s", coopToBerth[2].command);
 
             var airlockToBridge = dray.FindExitPath("airlock", "bridge");
             Assert.AreEqual(2, airlockToBridge.Count);
@@ -3759,6 +3759,371 @@ namespace TacSim.Tests
                 Assert.IsTrue(currentHandled, "Current epoch failure must be handled");
                 Assert.IsFalse((bool)connectedField.GetValue(ws), "Current epoch failure must set _isConnected = false");
                 Assert.AreEqual(1, drops.Count, "Current epoch failure must enqueue drop for reconnect");
+            }
+        }
+
+        [Test]
+        public void Security_EXT_P1_2_AuthRejectsRemoteHttp_DisablesRedirects_AndProjectSettingsHardened()
+        {
+            // 1. Remote cleartext http:// (and ws:// -> http://) MUST be rejected before POST in release/non-dev mode.
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("http://dev1.conclav.io", "/api/auth/login", allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("http://0.0.0.0:8080", "/api/auth/login", allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("ws://play.conclav.io:8080", "/api/auth/register", allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("ftp://play.conclav.io", "/api/auth/login", allowInsecureNonLoopback: true));
+
+            // LoginAsync / RegisterAsync reject remote HTTP immediately before sending credentials in non-dev CI builds.
+            Assert.ThrowsAsync<System.InvalidOperationException>(async () =>
+                await MushAuthClient.LoginAsync("http://dev1.conclav.io", "pilot", "hunter2"));
+            Assert.ThrowsAsync<System.InvalidOperationException>(async () =>
+                await MushAuthClient.RegisterAsync("http://dev1.conclav.io", "pilot", "hunter2", "Pilot"));
+
+            // HTTPS and loopback HTTP remain allowed.
+            var httpsUri = MushAuthClient.BuildValidatedAuthEndpointUri("https://dev1.conclav.io", "/api/auth/login", allowInsecureNonLoopback: false);
+            Assert.AreEqual("https://dev1.conclav.io/api/auth/login", httpsUri.AbsoluteUri);
+            var loopV4 = MushAuthClient.BuildValidatedAuthEndpointUri("http://127.0.0.1:8080", "/api/auth/login", allowInsecureNonLoopback: false);
+            Assert.AreEqual("http://127.0.0.1:8080/api/auth/login", loopV4.AbsoluteUri);
+            var loopHost = MushAuthClient.BuildValidatedAuthEndpointUri("http://localhost:8080", "/api/auth/login", allowInsecureNonLoopback: false);
+            Assert.AreEqual("http://localhost:8080/api/auth/login", loopHost.AbsoluteUri);
+            var loopV6 = MushAuthClient.BuildValidatedAuthEndpointUri("http://[::1]:8080", "/api/auth/login", allowInsecureNonLoopback: false);
+            Assert.AreEqual("http://[::1]:8080/api/auth/login", loopV6.AbsoluteUri);
+            // Dev-mode opt-in still allows remote HTTP.
+            var devRemote = MushAuthClient.BuildValidatedAuthEndpointUri("http://dev1.conclav.io", "/api/auth/login", allowInsecureNonLoopback: true);
+            Assert.AreEqual("http://dev1.conclav.io/api/auth/login", devRemote.AbsoluteUri);
+
+            // 2. Credential-bearing POST request disables automatic redirects and attaches 64 KiB bounded download handler.
+            using (var req = MushAuthClient.CreateAuthPostRequest(httpsUri, System.Text.Encoding.UTF8.GetBytes("{}"), out BoundedDownloadHandler handler))
+            {
+                Assert.AreEqual(0, req.redirectLimit, "Auth POST requests must set redirectLimit = 0 to block redirect downgrades");
+                Assert.AreEqual(UnityEngine.Networking.UnityWebRequest.kHttpVerbPOST, req.method);
+                Assert.AreSame(handler, req.downloadHandler);
+                Assert.AreEqual(MushAuthClient.MaxAuthResponseBytes, handler.MaxBytes);
+
+                // 3xx redirect status must be rejected cleanly.
+                req.responseCode = 307;
+                req.result = UnityEngine.Networking.UnityWebRequest.Result.Success;
+                Assert.Throws<System.InvalidOperationException>(() =>
+                    MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false));
+
+                // Defense-in-depth: mutated req.url downgrading to cleartext HTTP or shifting host must be rejected.
+                req.responseCode = 200;
+                req.url = "http://dev1.conclav.io/api/auth/login";
+                Assert.Throws<System.InvalidOperationException>(() =>
+                    MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false));
+
+                req.url = "https://evil.example/api/auth/login";
+                Assert.Throws<System.InvalidOperationException>(() =>
+                    MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false));
+
+                // Valid HTTPS 200 JSON response succeeds.
+                req.url = httpsUri.AbsoluteUri;
+                byte[] okBody = System.Text.Encoding.UTF8.GetBytes(@"{""token"":""tok_123"",""account"":""ada"",""characters"":[{""key"":""c1"",""name"":""Ada""}]}");
+                Assert.IsTrue(handler.FeedChunkForTest(okBody, okBody.Length));
+                var session = MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false);
+                Assert.AreEqual("tok_123", session.Token);
+                Assert.AreEqual("ada", session.Account);
+                Assert.AreEqual(1, session.Characters.Count);
+            }
+
+            // 3. ProjectSettings.asset must set insecureHttpOption: 1 (DevelopmentOnly), not 2 (AlwaysAllowed).
+            string projectSettingsPath = System.IO.Path.GetFullPath(
+                System.IO.Path.Combine(System.AppContext.BaseDirectory, "..", "..", "..", "..", "ProjectSettings", "ProjectSettings.asset"));
+            if (!System.IO.File.Exists(projectSettingsPath))
+            {
+                projectSettingsPath = System.IO.Path.GetFullPath(
+                    System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "unity", "ProjectSettings", "ProjectSettings.asset"));
+            }
+            Assert.IsTrue(System.IO.File.Exists(projectSettingsPath), $"Expected ProjectSettings.asset at {projectSettingsPath}");
+            string settingsText = System.IO.File.ReadAllText(projectSettingsPath);
+            StringAssert.Contains("insecureHttpOption: 1", settingsText);
+            StringAssert.DoesNotContain("insecureHttpOption: 2", settingsText);
+        }
+
+        [Test]
+        public void Security_EXT_P2_6_BoundedDownloadHandlerCapsAuthResponsesAt64KiB()
+        {
+            Assert.AreEqual(64 * 1024, MushAuthClient.MaxAuthResponseBytes);
+
+            // 1. Exact 64 KiB across multiple chunks succeeds without overflow.
+            using (var exact = new BoundedDownloadHandler(MushAuthClient.MaxAuthResponseBytes))
+            {
+                byte[] chunk = new byte[8 * 1024];
+                for (int i = 0; i < chunk.Length; i++) chunk[i] = (byte)'a';
+                for (int c = 0; c < 8; c++)
+                    Assert.IsTrue(exact.FeedChunkForTest(chunk, chunk.Length), $"Chunk {c} within 64 KiB limit should succeed");
+                Assert.IsFalse(exact.Overflowed);
+                Assert.AreEqual(64 * 1024, exact.ReceivedBytes);
+                Assert.AreEqual(64 * 1024, exact.data.Length);
+                Assert.AreEqual(64 * 1024, exact.text.Length);
+
+                // One byte past 64 KiB overflows and immediately returns false + clears memory.
+                Assert.IsFalse(exact.FeedChunkForTest(new byte[] { (byte)'!' }, 1));
+                Assert.IsTrue(exact.Overflowed);
+                Assert.AreEqual(0, exact.data.Length);
+                Assert.AreEqual(string.Empty, exact.text);
+            }
+
+            // 2. Oversized Content-Length header triggers immediate overflow and request abort callback.
+            var httpsUri = MushAuthClient.BuildValidatedAuthEndpointUri("https://dev1.conclav.io", "/api/auth/login", allowInsecureNonLoopback: false);
+            using (var req = MushAuthClient.CreateAuthPostRequest(httpsUri, System.Text.Encoding.UTF8.GetBytes("{}"), out BoundedDownloadHandler handler))
+            {
+                handler.FeedContentLengthHeaderForTest((ulong)MushAuthClient.MaxAuthResponseBytes + 1UL);
+                Assert.IsTrue(handler.Overflowed);
+                Assert.IsTrue(req.aborted, "Oversized Content-Length must abort UnityWebRequest immediately");
+                Assert.IsFalse(handler.FeedChunkForTest(new byte[] { (byte)'x' }, 1));
+
+                // Both 200 success and 500 error responses must reject cleanly on overflow.
+                req.responseCode = 200;
+                req.result = UnityEngine.Networking.UnityWebRequest.Result.Success;
+                var ex200 = Assert.Throws<System.InvalidOperationException>(() =>
+                    MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false));
+                StringAssert.Contains("exceeded maximum allowed size", ex200.Message);
+
+                req.responseCode = 500;
+                req.result = UnityEngine.Networking.UnityWebRequest.Result.ProtocolError;
+                var ex500 = Assert.Throws<System.InvalidOperationException>(() =>
+                    MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false));
+                StringAssert.Contains("exceeded maximum allowed size", ex500.Message);
+            }
+
+            // 3. Chunked response without Content-Length that exceeds 64 KiB aborts request and rejects.
+            using (var req = MushAuthClient.CreateAuthPostRequest(httpsUri, System.Text.Encoding.UTF8.GetBytes("{}"), out BoundedDownloadHandler handler))
+            {
+                byte[] chunk = new byte[16 * 1024];
+                for (int c = 0; c < 4; c++)
+                    Assert.IsTrue(handler.FeedChunkForTest(chunk, chunk.Length));
+                Assert.IsFalse(req.aborted);
+                Assert.IsFalse(handler.FeedChunkForTest(new byte[] { (byte)'z' }, 1));
+                Assert.IsTrue(handler.Overflowed);
+                Assert.IsTrue(req.aborted, "Chunked overflow without Content-Length must abort UnityWebRequest");
+            }
+        }
+
+        [Test]
+        public void Security_EXT_P1_6_ExitGotoPrefixing_BayAllowlist_AndSingleHopRoomBoundWalker()
+        {
+            // 1. Safe exit formatting rejects blank/control names and always prefixes authored exits with `goto `.
+            Assert.AreEqual("goto n", TacSimContentLoader.FormatSafeExitCommand("n"));
+            Assert.AreEqual("goto @destroy me", TacSimContentLoader.FormatSafeExitCommand("@destroy me"));
+            Assert.AreEqual("goto QUIT", TacSimContentLoader.FormatSafeExitCommand("QUIT"));
+            Assert.AreEqual("goto +tv/bay in", TacSimContentLoader.FormatSafeExitCommand("+tv/bay in"));
+            Assert.IsNull(TacSimContentLoader.FormatSafeExitCommand(""));
+            Assert.IsNull(TacSimContentLoader.FormatSafeExitCommand("   "));
+            Assert.IsNull(TacSimContentLoader.FormatSafeExitCommand("North\nQUIT"));
+            Assert.IsNull(TacSimContentLoader.FormatSafeExitCommand("North\r\n@boot"));
+            Assert.IsNull(TacSimContentLoader.FormatSafeExitCommand("North\0evil"));
+            Assert.IsNull(TacSimContentLoader.FormatSafeExitCommand("North\u009b2J"));
+
+            // Static ship bay actions are ONLY allowlisted when explicitly flagged isStaticAction=true.
+            Assert.AreEqual("+tv/bay in", TacSimContentLoader.FormatShipTraversalCommand("+tv/bay in", isStaticAction: true));
+            Assert.AreEqual("+tv/bay out", TacSimContentLoader.FormatShipTraversalCommand("+tv/bay out", isStaticAction: true));
+            Assert.AreEqual("goto +tv/bay in", TacSimContentLoader.FormatShipTraversalCommand("+tv/bay in", isStaticAction: false));
+            Assert.IsNull(TacSimContentLoader.FormatShipTraversalCommand("@destroy me", isStaticAction: true));
+
+            // 2. Hostile authored station & ship packs cannot inject bare commands or control characters.
+            var hostileStation = TacSimContentLoader.ParseNeighborhoodJson(@"{
+                ""manifest"": { ""id"": ""neighborhood.hostile"", ""version"": 1, ""kind"": ""neighborhood"" },
+                ""entries"": {
+                    ""room.a"": { ""kind"": ""room"", ""def"": { ""name"": ""A"", ""footprint"": { ""rect"": [[0,0],[10,10]] } } },
+                    ""room.b"": { ""kind"": ""room"", ""def"": { ""name"": ""B"", ""footprint"": { ""rect"": [[10,0],[20,10]] } } },
+                    ""room.c"": { ""kind"": ""room"", ""def"": { ""name"": ""C"", ""footprint"": { ""rect"": [[20,0],[30,10]] } } },
+                    ""room.d"": { ""kind"": ""room"", ""def"": { ""name"": ""D"", ""footprint"": { ""rect"": [[30,0],[40,10]] } } },
+                    ""exit.ab"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.a"", ""to"": ""room.b"", ""names"": [""@destroy me"", ""QUIT""] } },
+                    ""exit.bc"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.b"", ""to"": ""room.c"", ""names"": [""East;e\nQUIT"", ""West;w""] } },
+                    ""exit.bd"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.b"", ""to"": ""room.d"", ""names"": [""   "", """"] } }
+                }
+            }", "neighborhood.hostile");
+            var ab = hostileStation.FindExitPath("room.a", "room.b");
+            Assert.AreEqual(1, ab.Count);
+            Assert.AreEqual("goto @destroy me", ab[0].command);
+            var ba = hostileStation.FindExitPath("room.b", "room.a");
+            Assert.AreEqual(1, ba.Count);
+            Assert.AreEqual("goto QUIT", ba[0].command);
+            Assert.AreEqual(0, hostileStation.FindExitPath("room.b", "room.c").Count);
+            Assert.AreEqual(0, hostileStation.FindExitPath("room.b", "room.d").Count);
+
+            var hostileShip = TacSimContentLoader.ParseShipUnitJson(@"{
+                ""entries"": {
+                    ""tacsim.unit.evil"": {
+                        ""kind"": ""unit"",
+                        ""def"": {
+                            ""label"": ""Evil"",
+                            ""interior"": {
+                                ""rooms"": [
+                                    { ""id"": ""airlock"", ""kind"": ""walkable"", ""name"": ""Airlock"" },
+                                    { ""id"": ""passage"", ""kind"": ""walkable"", ""name"": ""Passage"" },
+                                    { ""id"": ""bridge"", ""kind"": ""walkable"", ""name"": ""Bridge"" }
+                                ],
+                                ""exits"": [
+                                    { ""from"": ""airlock"", ""to"": ""passage"", ""names"": [""Fake Bay;+tv/bay in"", ""Fore;fore""] },
+                                    { ""from"": ""passage"", ""to"": ""bridge"", ""names"": [""Up;u\nQUIT"", ""Down;d""] }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }", "tacsim.unit.evil");
+            var evilShipHop = hostileShip.FindExitPath("airlock", "passage");
+            Assert.AreEqual(1, evilShipHop.Count);
+            Assert.AreEqual("goto +tv/bay in", evilShipHop[0].command);
+            Assert.AreEqual(0, hostileShip.FindExitPath("passage", "bridge").Count);
+
+            // Real Dray-P preserves +tv/bay in / +tv/bay out while prefixing authored interior hops with `goto `.
+            var drayP = TacSimContentLoader.LoadShipTemplate("tacsim.unit.dray_p");
+            var toBay = drayP.FindExitPath("airlock", "bay");
+            Assert.GreaterOrEqual(toBay.Count, 3);
+            for (int i = 0; i < toBay.Count - 1; i++)
+                StringAssert.StartsWith("goto ", toBay[i].command);
+            Assert.AreEqual("+tv/bay in", toBay[toBay.Count - 1].command);
+            var outBay = drayP.FindExitPath("bay", "hold");
+            Assert.AreEqual(1, outBay.Count);
+            Assert.AreEqual("+tv/bay out", outBay[0].command);
+
+            // FindExitToCeresFreeport prefixes matched exits with `goto ` and rejects control-char aliases.
+            var limboHostile = new MushRoomView
+            {
+                Name = "Limbo",
+                Exits = new List<MushExitRef>
+                {
+                    new MushExitRef { Name = "Ceres Freeport", Aliases = new List<string> { "ceres\nQUIT" } },
+                    new MushExitRef { Name = "Ceres Arrivals", Aliases = new List<string> { "@destroy me" } }
+                }
+            };
+            Assert.AreEqual("goto @destroy me", TacSimGameCoordinator.FindExitToCeresFreeport(limboHostile));
+
+            // 3. Direct RoomBoundNavWalker unit checks (1 hop at a time, bound to source room, cancel on mismatch/action).
+            var walker = new RoomBoundNavWalker();
+            var multiHops = new List<(string command, string targetRoom)>
+            {
+                ("goto n", "room.b"),
+                ("goto e", "room.c"),
+                ("goto n", "room.d")
+            };
+            var hop1 = walker.PlanAndDispatchOne(NavWalkerScope.Station, "room.a", multiHops, 10f);
+            Assert.IsTrue(hop1.HasValue);
+            Assert.AreEqual("room.a", hop1.Value.FromRoom);
+            Assert.AreEqual("room.b", hop1.Value.TargetRoom);
+            Assert.AreEqual("goto n", hop1.Value.Command);
+            Assert.AreEqual(2, walker.QueuedCount);
+            Assert.IsFalse(walker.PlanAndDispatchOne(NavWalkerScope.Station, "room.a", multiHops, 10.2f).HasValue);
+
+            var r2 = walker.OnAuthoritativeRoomUpdate(NavWalkerScope.Station, "room.b", 10.5f, allowAdvance: true);
+            Assert.AreEqual("room.b", r2.AcknowledgedTarget);
+            Assert.IsFalse(r2.CanceledOnMismatch);
+            Assert.IsTrue(r2.NextHopToSend.HasValue);
+            Assert.AreEqual("room.b", r2.NextHopToSend.Value.FromRoom);
+            Assert.AreEqual("room.c", r2.NextHopToSend.Value.TargetRoom);
+            Assert.AreEqual("goto e", r2.NextHopToSend.Value.Command);
+            Assert.AreEqual(1, walker.QueuedCount);
+
+            // Mismatch cancels remaining queue.
+            var rMismatch = walker.OnAuthoritativeRoomUpdate(NavWalkerScope.Station, "room.trap", 11.0f, allowAdvance: true);
+            Assert.IsTrue(rMismatch.CanceledOnMismatch);
+            Assert.IsNull(rMismatch.AcknowledgedTarget);
+            Assert.IsFalse(rMismatch.NextHopToSend.HasValue);
+            Assert.AreEqual(0, walker.QueuedCount);
+            Assert.IsFalse(walker.InFlight.HasValue);
+
+            // 4. End-to-end TacSimGameCoordinator FlushPendingRoomMovesBeforeAction sends ONLY ONE hop at a time,
+            //    advances on matching RoomView, and cancels remaining hops on mismatch or explicit command!
+            var rootGo = new UnityEngine.GameObject("ExtP16CoordinatorWalkerTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var stationGo = new UnityEngine.GameObject("Station");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                coord.StationWorld = stationGo.AddComponent<StationWorldController>();
+                var shipGo = new UnityEngine.GameObject("Ship");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo.AddComponent<ShipInteriorController>();
+                var spaceGo = new UnityEngine.GameObject("Space");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SpaceStage = spaceGo.AddComponent<SpaceFlightController>();
+                var surfaceGo = new UnityEngine.GameObject("Surface");
+                surfaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SurfaceStage = surfaceGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                coord.ArenaStage = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                var playerGo = new UnityEngine.GameObject("Player", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                coord.Player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                coord.Player.VisualSpawner = playerGo.AddComponent<TacSim.Character.CharacterVisualSpawner>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                var onFlush = typeof(TacSimGameCoordinator).GetMethod("FlushPendingRoomMovesBeforeAction", flags);
+                var simConnField = typeof(TacSimGameCoordinator).GetField("_simulateConnectedForTests", flags);
+                var awaitingInitField = typeof(TacSimGameCoordinator).GetField("_awaitingInitialRoomSync", flags);
+                simConnField.SetValue(coord, true);
+                awaitingInitField.SetValue(coord, true);
+
+                var dispatched = new List<string>();
+                coord.OnCommandDispatched += dispatched.Add;
+
+                MushRoomView MakeStationRoom(string id, string name, string entry) =>
+                    MushProtocol.ParseRoomView(JsonNode.Parse(
+                        $@"{{""id"":""{id}"",""name"":""{name}"",""ambient"":{{""atlas"":{{""pack"":""neighborhood.ceres_freeport"",""entry"":""{entry}"",""surface"":""station""}}}}}}"));
+
+                UnityEngine.Time.time = 100f;
+                onRoom.Invoke(coord, new object[] { MakeStationRoom("#101", "Visiting Berth Gallery", "room.c01_berth_gallery") });
+
+                // Walk 2 hops north (c01_berth_gallery -> c02_pressure -> c03_arrivals) and call Flush twice before RoomView.
+                coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c03_arrivals"), 0f);
+                UnityEngine.Time.time = 101f;
+                onFlush.Invoke(coord, null);
+                onFlush.Invoke(coord, null);
+                Assert.AreEqual(1, dispatched.Count, "Multi-hop flush must send ONLY ONE hop before RoomView confirmation");
+                Assert.AreEqual("goto n", dispatched[0]);
+
+                // Authoritative RoomView confirming c02_pressure advances ONLY hop 2 (`goto n`).
+                UnityEngine.Time.time = 101.5f;
+                onRoom.Invoke(coord, new object[] { MakeStationRoom("#102", "Pressure Lobby", "room.c02_pressure") });
+                Assert.AreEqual(2, dispatched.Count);
+                Assert.AreEqual("goto n", dispatched[1]);
+
+                // Authoritative RoomView confirming c03_arrivals completes with no extra commands.
+                UnityEngine.Time.time = 102f;
+                onRoom.Invoke(coord, new object[] { MakeStationRoom("#103", "Port Watch Arrivals", "room.c03_arrivals") });
+                Assert.AreEqual(2, dispatched.Count);
+
+                // Mismatch cancellation: walk 2 hops back south, flush hop 1, then receive RoomView STILL in c03_arrivals -> hop 2 canceled!
+                dispatched.Clear();
+                coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c01_berth_gallery"), 180f);
+                UnityEngine.Time.time = 105f;
+                onFlush.Invoke(coord, null);
+                Assert.AreEqual(1, dispatched.Count);
+                Assert.AreEqual("goto s", dispatched[0]);
+                UnityEngine.Time.time = 105.5f;
+                onRoom.Invoke(coord, new object[] { MakeStationRoom("#103", "Port Watch Arrivals", "room.c03_arrivals") });
+                Assert.AreEqual(1, dispatched.Count, "Mismatched RoomView must cancel remaining queued hops");
+
+                // Unrelated explicit command cancels remaining queued hops!
+                dispatched.Clear();
+                coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c01_berth_gallery"), 180f);
+                UnityEngine.Time.time = 110f;
+                onFlush.Invoke(coord, null);
+                Assert.AreEqual(1, dispatched.Count);
+                coord.ExecutePlayerCommand("look");
+                dispatched.Clear();
+                UnityEngine.Time.time = 110.5f;
+                onRoom.Invoke(coord, new object[] { MakeStationRoom("#102", "Pressure Lobby", "room.c02_pressure") });
+                Assert.AreEqual(0, dispatched.Count, "Explicit command must cancel queued multi-hop navigation");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
     }

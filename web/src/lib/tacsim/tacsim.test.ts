@@ -31,11 +31,14 @@ import {
   filterVisibleRoomActors,
   findShipExitPath,
   findStationExitPath,
+  formatShipTraversalCommand,
+  formatStationExitCommand,
   getFloorElevationY,
   normalizePortVenueTarget,
   parseNeighborhoodPack,
   parseShipUnitJson,
   resolveDynamicDockTarget,
+  RoomBoundNavWalker,
   tryFindContainingCompartment,
   tryFindContainingRoomWithHysteresis,
   worldToAtlas2D,
@@ -1972,6 +1975,250 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     });
     expect(Object.getPrototypeOf(store.actorSpeech)).toBe(Object.prototype);
     expect(Object.hasOwn(store.actorSpeech, "__proto__")).toBe(true);
+    stage.dispose();
+  });
+
+  it("EXT-P1-6: prefixes all authored exits with goto, rejects blank/control names, and preserves static +tv/bay actions", () => {
+    // 1. Direct formatter checks
+    expect(formatStationExitCommand("n")).toBe("goto n");
+    expect(formatStationExitCommand("@destroy me")).toBe("goto @destroy me");
+    expect(formatStationExitCommand("QUIT")).toBe("goto QUIT");
+    expect(formatStationExitCommand("+tv/bay in")).toBe("goto +tv/bay in");
+    expect(formatStationExitCommand("")).toBeNull();
+    expect(formatStationExitCommand("   ")).toBeNull();
+    expect(formatStationExitCommand("North\nQUIT")).toBeNull();
+    expect(formatStationExitCommand("North\r\n@boot")).toBeNull();
+    expect(formatStationExitCommand("North\u009b2J")).toBeNull();
+
+    // Ship static actions are ONLY allowlisted when explicitly flagged isStaticAction=true.
+    expect(formatShipTraversalCommand("+tv/bay in", true)).toBe("+tv/bay in");
+    expect(formatShipTraversalCommand("+tv/bay out", true)).toBe("+tv/bay out");
+    expect(formatShipTraversalCommand("+tv/bay in", false)).toBe("goto +tv/bay in");
+    expect(formatShipTraversalCommand("@destroy me", true)).toBeNull();
+
+    // 2. Hostile authored station neighborhood pack
+    const hostileStation = parseNeighborhoodPack(
+      JSON.stringify({
+        manifest: { id: "neighborhood.hostile_test", version: 1, kind: "neighborhood" },
+        entries: {
+          "room.a": { kind: "room", def: { name: "A", footprint: { rect: [[0, 0], [10, 10]] } } },
+          "room.b": { kind: "room", def: { name: "B", footprint: { rect: [[10, 0], [20, 10]] } } },
+          "room.c": { kind: "room", def: { name: "C", footprint: { rect: [[20, 0], [30, 10]] } } },
+          "room.d": { kind: "room", def: { name: "D", footprint: { rect: [[30, 0], [40, 10]] } } },
+          "exit.ab": {
+            kind: "exit",
+            def: { from: "room.a", to: "room.b", names: ["@destroy me", "QUIT"] },
+          },
+          "exit.bc_ctrl": {
+            kind: "exit",
+            def: { from: "room.b", to: "room.c", names: ["East;e\nQUIT", "West;w"] },
+          },
+          "exit.bd_blank": {
+            kind: "exit",
+            def: { from: "room.b", to: "room.d", names: ["   ", ""] },
+          },
+        },
+      }),
+      "neighborhood.hostile_test",
+    );
+    expect(findStationExitPath(hostileStation, "room.a", "room.b")).toEqual([
+      { command: "goto @destroy me", targetRoom: "room.b" },
+    ]);
+    expect(findStationExitPath(hostileStation, "room.b", "room.a")).toEqual([
+      { command: "goto QUIT", targetRoom: "room.a" },
+    ]);
+    // Control-char and blank exits are completely untraversable
+    expect(findStationExitPath(hostileStation, "room.b", "room.c")).toEqual([]);
+    expect(findStationExitPath(hostileStation, "room.b", "room.d")).toEqual([]);
+
+    // 3. Real Ceres Freeport station paths prefix every hop with `goto `
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const ceresPath = findStationExitPath(ceres, "room.c01_berth_gallery", "room.c07_exchange");
+    expect(ceresPath.length).toBeGreaterThanOrEqual(2);
+    for (const step of ceresPath) {
+      expect(step.command.startsWith("goto ")).toBe(true);
+    }
+
+    // 4. Dray-P ship interior: authored hops use `goto `, while static hold <-> bay keeps `+tv/bay in|out`,
+    //    and a maliciously authored `+tv/bay in` inside `interior.exits` is prefixed with `goto `!
+    const drayP = parseShipUnitJson(readRepoContent("units/dray_p.json"), "tacsim.unit.dray_p");
+    const toBay = findShipExitPath(drayP, "airlock", "bay");
+    expect(toBay.length).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < toBay.length - 1; i++) {
+      expect(toBay[i]!.command.startsWith("goto ")).toBe(true);
+    }
+    expect(toBay[toBay.length - 1]).toEqual({ command: "+tv/bay in", targetCompartment: "bay" });
+    expect(findShipExitPath(drayP, "bay", "hold")).toEqual([
+      { command: "+tv/bay out", targetCompartment: "hold" },
+    ]);
+
+    const hostileShip = parseShipUnitJson(
+      JSON.stringify({
+        entries: {
+          "tacsim.unit.evil": {
+            kind: "unit",
+            def: {
+              label: "Evil Hull",
+              interior: {
+                rooms: [
+                  { id: "airlock", kind: "walkable", name: "Airlock" },
+                  { id: "passage", kind: "walkable", name: "Passage" },
+                  { id: "bridge", kind: "walkable", name: "Bridge" },
+                ],
+                exits: [
+                  { from: "airlock", to: "passage", names: ["Fake Bay;+tv/bay in", "Back;fore"] },
+                  { from: "passage", to: "bridge", names: ["Up;u\n@destroy me", "Down;d"] },
+                ],
+              },
+            },
+          },
+        },
+      }),
+      "tacsim.unit.evil",
+    );
+    expect(findShipExitPath(hostileShip, "airlock", "passage")).toEqual([
+      { command: "goto +tv/bay in", targetCompartment: "passage" },
+    ]);
+    expect(findShipExitPath(hostileShip, "passage", "bridge")).toEqual([]);
+  });
+
+  it("EXT-P1-6: RoomBoundNavWalker and Stage3D flushPendingMovesBeforeAction dispatch strictly one room-bound hop at a time", () => {
+    // 1. Direct RoomBoundNavWalker state-machine tests
+    const walker = new RoomBoundNavWalker();
+    const hops = [
+      { command: "goto n", targetRoom: "room.b" },
+      { command: "goto e", targetRoom: "room.c" },
+      { command: "goto n", targetRoom: "room.d" },
+    ];
+    const h1 = walker.planAndDispatchOne("station", "room.a", hops, 1000);
+    expect(h1).toEqual({
+      scope: "station",
+      fromRoom: "room.a",
+      targetRoom: "room.b",
+      command: "goto n",
+    });
+    expect(walker.queuedHops).toEqual([
+      { scope: "station", fromRoom: "room.b", targetRoom: "room.c", command: "goto e" },
+      { scope: "station", fromRoom: "room.c", targetRoom: "room.d", command: "goto n" },
+    ]);
+    // Second plan while hop 1 is still in flight MUST NOT dispatch anything
+    expect(walker.planAndDispatchOne("station", "room.a", hops, 1200)).toBeNull();
+
+    // Matching authoritative update confirms room.b and advances ONLY hop 2 (bound to fromRoom=room.b)
+    const r2 = walker.onAuthoritativeRoomUpdate("station", "room.b", 1300, true);
+    expect(r2.acknowledgedTarget).toBe("room.b");
+    expect(r2.canceledOnMismatch).toBe(false);
+    expect(r2.nextHopToSend).toEqual({
+      scope: "station",
+      fromRoom: "room.b",
+      targetRoom: "room.c",
+      command: "goto e",
+    });
+    expect(walker.queuedCount).toBe(1);
+
+    // Mismatched authoritative update (e.g. exit blocked / redirected to room.trap) cancels remaining queue
+    const rBad = walker.onAuthoritativeRoomUpdate("station", "room.trap", 1500, true);
+    expect(rBad.acknowledgedTarget).toBeNull();
+    expect(rBad.nextHopToSend).toBeNull();
+    expect(rBad.canceledOnMismatch).toBe(true);
+    expect(walker.inFlight).toBeNull();
+    expect(walker.queuedCount).toBe(0);
+
+    // 2. End-to-end Stage3D multi-hop flush: never blasts multiple hops, advances one-by-one on RoomView,
+    //    and cancels remaining hops on mismatch or explicit action.
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const drayP = parseShipUnitJson(readRepoContent("units/dray_p.json"), "tacsim.unit.dray_p");
+    const baseAmbient = decodeTacsimRoomAmbient(null);
+    const sent: string[] = [];
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: (cmd) => sent.push(cmd),
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+    const intern = stage as unknown as {
+      originOffsetX: number;
+      originOffsetZ: number;
+      playerGroup: { position: { set: (x: number, y: number, z: number) => void } };
+    };
+
+    const syncStation = (roomEntry: string, rev: number): void => {
+      stage.syncWorldState({
+        stationPack: ceres,
+        shipTemplate: drayP,
+        isAboardShip: false,
+        serverStationRoomEntry: roomEntry,
+        serverShipCompartment: null,
+        roomRevision: rev,
+        ambient: baseAmbient,
+        visibleActors: [],
+        actorSpeech: {},
+        actorComposing: {},
+        stowageCargoKg: 0,
+        holotankData: null,
+      });
+    };
+
+    // Place server in room.c01_berth_gallery, physically move player 2 hops north into room.c03_arrivals
+    syncStation("room.c01_berth_gallery", 1);
+    const arrivals = ceres.rooms.get("room.c03_arrivals")!;
+    const elev = getFloorElevationY(ceres, arrivals.floorIndex);
+    const arrivalsWorld = atlasToWorldPos(
+      (arrivals.minX + arrivals.maxX) * 0.5,
+      elev,
+      (arrivals.minY + arrivals.maxY) * 0.5,
+      intern.originOffsetX,
+      intern.originOffsetZ,
+    );
+    intern.playerGroup.position.set(arrivalsWorld.x, arrivalsWorld.y, arrivalsWorld.z);
+
+    // Calling flushPendingMovesBeforeAction twice BEFORE confirmation must send ONLY hop 1 (`goto n`)
+    stage.flushPendingMovesBeforeAction(10_000);
+    stage.flushPendingMovesBeforeAction(10_100);
+    expect(sent).toEqual(["goto n"]);
+
+    // Authoritative RoomView confirming room.c02_pressure advances ONLY hop 2 (`goto n`)
+    syncStation("room.c02_pressure", 2);
+    expect(sent).toEqual(["goto n", "goto n"]);
+
+    // Authoritative RoomView confirming room.c03_arrivals completes with no extra commands
+    syncStation("room.c03_arrivals", 3);
+    expect(sent).toEqual(["goto n", "goto n"]);
+
+    // Now test mismatch cancellation: walk 2 hops back south to room.c01_berth_gallery, flush hop 1,
+    // then server sends authoritative RoomView STILL in room.c03_arrivals (blocked exit) -> hop 2 MUST NOT send!
+    sent.length = 0;
+    const gallery = ceres.rooms.get("room.c01_berth_gallery")!;
+    const galleryWorld = atlasToWorldPos(
+      (gallery.minX + gallery.maxX) * 0.5,
+      getFloorElevationY(ceres, gallery.floorIndex),
+      (gallery.minY + gallery.maxY) * 0.5,
+      intern.originOffsetX,
+      intern.originOffsetZ,
+    );
+    intern.playerGroup.position.set(galleryWorld.x, galleryWorld.y, galleryWorld.z);
+    stage.flushPendingMovesBeforeAction(20_000);
+    expect(sent).toEqual(["goto s"]);
+    syncStation("room.c03_arrivals", 4);
+    expect(sent).toEqual(["goto s"]);
+
+    // Now test explicit action cancellation: start a 2-hop flush, then notifyExplicitCommandSent() cancels hop 2
+    sent.length = 0;
+    intern.playerGroup.position.set(galleryWorld.x, galleryWorld.y, galleryWorld.z);
+    stage.flushPendingMovesBeforeAction(30_000);
+    expect(sent).toEqual(["goto s"]);
+    stage.notifyExplicitCommandSent();
+    syncStation("room.c02_pressure", 5);
+    expect(sent).toEqual(["goto s"]);
+
     stage.dispose();
   });
 });
