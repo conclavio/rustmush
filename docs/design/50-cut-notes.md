@@ -1786,6 +1786,48 @@ v48 with the lead's word.
 - **The Belt Raider taking a house hull at the picket** was not exercised by a story here; the
   bubble promotes her, as EX.10 showed.
 
+**Fixes from doc 50b** (the outside review of 2026-11-20; items by its numbering in the lead's
+brief):
+- **Item 1, the stranded house hull (P1).** Isidis sells no stores, so a house hull that delivered
+  there could price no passage home and retried every fire.
+  - A departure for a port whose houses author no ask for reaction mass or for provisions now
+    fills for the leg home too, as one for a site does. Only the fill is sized so: the departure
+    is not refused for it. This applies to a player's fill as well.
+  - The house prices a passage from a port that sells no stores out of what is aboard, valued at
+    the lowest ask the lane posts, and a look there that finds nothing waits a day.
+  - A carried haul that ends away from the port she took it at sails her back there hop by hop
+    before the trip ends, so she can carry the arm's next haul. A hop whose plan holds ends the
+    trip where she lies.
+  - The OP.4 story runs on past the delivery: home by Stickney to Ceres, and a second haul taken.
+- **Item 3, the stale close probe (P2).** The probe answered from the cached reading, which a
+  delivery or a drain since could have changed, and a failed read kept the old answer.
+  - The probe reads only `&World`, and the vault's pools are read through a module's `Ctx`, so the
+    probe cannot read the vault itself. Instead, on the first fire at or after the operation's
+    close, the port tick reads the vault once for that operation (`FreeportArm::close_read`). The
+    probe answers from that reading alone, and is `None` (the verdict waits) until it is taken.
+    A failed read keeps nothing.
+  - A delivery that lands between the close and that first fire counts. One fire at 24:1 is some
+    12 IC minutes.
+- **Item 7, the fuel fill (P2).** The executor's `fill` now counts reaction mass held for a haul
+  aboard as weighing but not burning: the tank's target is the burn over it. The house's buy-back
+  is gone. The same fill serves a player's `+ship/order`.
+  - The held units are read from the hull's hauls of propellant aboard, not from the pool's
+    reservation book, which the planner (a `&World` reader) cannot reach. Nothing else holds a
+    tank's pool today.
+- **Item 8, Q-50-22 (P2).** The tank farm's standing bid spent the farm's own money, outside
+  Occator's cap.
+  - A sale into the bid past the month's cap, or past what Occator's account holds, is refused
+    (`FARM_BUDGET_SPENT`).
+  - Each settled sale is kept once under its quote (`FreeportArm::fills`), counted in the month's
+    spend beside the posts, and paid back to the farm from Occator on the port tick. The market's
+    `SettledSale` now names the house (the quote's buyer), since the bid's listing may no longer
+    stand when the policy is told.
+  - A sale quoted but not yet settled is not counted, so two sales at once can overshoot the cap
+    by one sale. The figures stay provisional.
+  - The story (`op5_occator_funds_the_tank_farms_bid`) shows the refusal while Occator's account
+    is empty and a funded sale counted and paid back; the cap's arithmetic, the fills beside the
+    posts, is `stockpile`'s unit test.
+
 ## OP.5
 
 The declaring arm, the operation frame and the resolution into control and the import duty
@@ -1894,6 +1936,36 @@ The declaring arm, the operation frame and the resolution into control and the i
   an operation.
 - `+operation`, the notices and the Republic's bid (OP.7); legal targets in a bubble and breaking
   off (OP.6).
+
+**Fixes from doc 50b** (the outside review of 2026-11-20; items by its numbering in the lead's
+brief):
+- **Item 2, organization listings paid no import duty (P1).** The market asked the proceeds
+  policy only for a person's lot ask, so an `as=<org>` listing at Isidis sold duty-free.
+  - `SaleTerms::seller` is now the seller principal, a person or an organization. The import duty
+    reads no seller, so it falls on every listing.
+  - The Co-op's share reads the seller only where it needs a person. An organization selling out
+    of a chartered hold is refused as another's, as it is at posting.
+  - The story: under the Republic an officer lists 10 t of propellant from her locker at Isidis
+    for her organization. The buyer's quote shows the duty, and Republic Customs is paid it out
+    of the organization's proceeds.
+- **Item 4, an outcome before it is final (P2).** The declaring arm acted on any outcome the frame
+  showed, and the campaign's frame shows its root's outcome while the operation settles, when it
+  can still be aborted. The arm now acts only in `Settled`. The fake frame can show an outcome
+  while settling: nothing is written then, and an abort that follows takes nothing.
+- **Item 5, the quote omitted the duty (P2; Q-50-59).** `ProceedsPolicy::venue_cuts`, empty by
+  default, names each cut a venue takes from any sale of a good there, with its reason.
+  `+market/quote` on a lot ask shows each ("Out of it the seller pays …"). A bid is sold into and
+  never quoted; a house bid's sale line already names the duty and its reason (OP.5). The Co-op's
+  share hangs on the hold the goods leave, which a quote does not know, so it stays the sale
+  line's to show.
+- **Item 6, the shares counter (P3).** The enrollment's `shares_minor` folds only the Trust's
+  share, never the duty.
+
+**Owner rulings, 2026-11-20.**
+- Hold the Concession keeps advancing once each IC month the farm stands at the threshold, as
+  built.
+- The repeat-cycle guard (the declaring arm keeps the Review clock's id) stays latent, out of
+  scope until the repeat cut.
 
 ## OP.6
 

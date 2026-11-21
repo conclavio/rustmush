@@ -318,14 +318,13 @@ pub fn ask_policy_proceeds(
     quantity: u64,
     price: Amount,
 ) -> Result<Option<crate::module::Proceeds>, MarketError> {
-    let (
-        crate::Supply::Lot {
-            endpoint,
-            commodity,
-            ..
-        },
-        PrincipalId::Object(seller),
-    ) = (&listing.source, &listing.seller)
+    // Doc 50b item 8: every seller principal, an organization's `as=` listing among them; the
+    // policy reads the seller where it needs a person (the Co-op's share on a chartered hold).
+    let crate::Supply::Lot {
+        endpoint,
+        commodity,
+        ..
+    } = &listing.source
     else {
         return Ok(None);
     };
@@ -337,7 +336,7 @@ pub fn ask_policy_proceeds(
     };
     let gross = gross_of(price, quantity)?;
     let terms = crate::module::SaleTerms {
-        seller: *seller,
+        seller: &listing.seller,
         source: endpoint.0,
         house: buyer,
         market: &listing.market,

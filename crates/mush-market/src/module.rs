@@ -337,8 +337,11 @@ pub const MAX_PROCEEDS_MEMO_BYTES: usize = 24;
 /// passed when the policy is asked.
 #[derive(Clone, Debug)]
 pub struct SaleTerms<'a> {
-    /// The seller — the player who typed the sale (or IC11's executor's principal).
-    pub seller: ObjId,
+    /// The seller — the player who typed the sale (or IC11's executor's principal), or a lot
+    /// ask's seller principal: a person, or an organization listing with `as=` (doc 50b item 8:
+    /// every seller's sale is the policy's to answer, so a venue's duty falls on an
+    /// organization's listing too).
+    pub seller: &'a PrincipalId,
     /// The endpoint the goods leave from.
     pub source: mush_inventory::EndpointRef,
     /// The bidding house (the bid listing's seller).
@@ -396,6 +399,9 @@ pub struct ProceedsRefusal {
 pub struct SettledSale<'a> {
     /// The sale's quote.
     pub quote: crate::QuoteId,
+    /// The house whose bid was sold into (the quote's buyer; doc 50b item 8). The bid's
+    /// listing may no longer stand by the time the policy is told.
+    pub house: &'a PrincipalId,
     /// Its contract.
     pub contract: ContractId,
     /// The seller (the quote's seller principal).
@@ -438,6 +444,18 @@ pub struct PrivateSale<'a> {
     pub destination: mush_inventory::EndpointRef,
     /// The exact lot handed over, for a hold-backed sale.
     pub lot: Option<mush_inventory::LotId>,
+}
+
+/// **A cut a venue takes out of every sale of a good there** (doc 50b item 5; Q-50-59), for the
+/// quote to show before anyone accepts: its name, its amount and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VenueCut {
+    /// The cut's name, as the payout row's label.
+    pub label: smol_str::SmolStr,
+    /// How much, out of the seller's proceeds.
+    pub amount: mush_economy::Amount,
+    /// Why it is taken (the rate, and who levies it since when).
+    pub reason: String,
 }
 
 /// Doc 18 §4.1 "The share" (D-18-24), game-neutral: who besides the seller is paid out
@@ -491,6 +509,20 @@ pub trait ProceedsPolicy: Send + Sync + std::fmt::Debug {
         _commodity: &mush_core::CanonicalId,
     ) -> Result<(), ProceedsRefusal> {
         Ok(())
+    }
+
+    /// **The cuts the venue takes out of a sale** of `quantity` of `commodity` at `market` for
+    /// `gross`, whoever sells (doc 50b item 5; Q-50-59: "the quote shows it with its reason"):
+    /// `+market/quote` shows each with its reason. None by default.
+    fn venue_cuts(
+        &self,
+        _w: &mush_core::World,
+        _market: &crate::MarketId,
+        _commodity: &mush_core::CanonicalId,
+        _quantity: u64,
+        _gross: mush_economy::Amount,
+    ) -> Vec<VenueCut> {
+        Vec::new()
     }
 }
 

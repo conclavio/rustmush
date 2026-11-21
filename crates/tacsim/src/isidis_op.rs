@@ -30,7 +30,7 @@ use mush_org::PrincipalId;
 use serde::{Deserialize, Serialize};
 
 use crate::operations::{
-    MetFavors, OperationBond, OperationOutcome, OperationRequest, OperationStatus,
+    MetFavors, OperationBond, OperationOutcome, OperationPhase, OperationRequest, OperationStatus,
 };
 
 /// The record's key.
@@ -203,11 +203,16 @@ fn step(ctx: &mut Ctx<'_>, doc: &mut IsidisOp) {
         }
         return;
     }
-    // 2. Decided: write who won, once.
+    // 2. Decided: write who won, once. Doc 50b item 4: only a settled outcome. While the
+    //    operation is still settling, the campaign can still abort it, so an outcome shown then
+    //    is not yet final.
     if doc.outcome.is_some() {
         return;
     }
-    let Some(outcome) = status(ctx.w).and_then(|s| s.outcome) else {
+    let Some(outcome) = status(ctx.w)
+        .filter(|s| s.phase == OperationPhase::Settled)
+        .and_then(|s| s.outcome)
+    else {
         return;
     };
     let word = match outcome {

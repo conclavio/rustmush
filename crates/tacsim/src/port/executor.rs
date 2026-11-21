@@ -494,6 +494,38 @@ pub fn fill_targets(
     locker: u64,
     occupants: u32,
     allowance_kg: u32,
+    plan: impl FnMut(u64) -> Result<PassagePlan, PlanError>,
+) -> Result<FillTargets, FillError> {
+    fill_targets_holding(
+        goods,
+        readings,
+        cargo,
+        extra_kg,
+        (tank, 0),
+        locker,
+        occupants,
+        allowance_kg,
+        plan,
+    )
+}
+
+/// [`fill_targets`] with `held` of the tank's `tank` units held for a haul aboard (doc 50b item
+/// 7): they weigh, but the burn spends only free units, so the tank's target is the burn over
+/// them, `max(tank, burn + held)`.
+///
+/// # Errors
+///
+/// As [`fill_targets`].
+#[allow(clippy::too_many_arguments)] // fill_targets' signature, the held units beside the tank
+pub(crate) fn fill_targets_holding(
+    goods: &GoodsTable,
+    readings: &[Reading],
+    cargo: &BTreeMap<CanonicalId, u64>,
+    extra_kg: u64,
+    (tank, held): (u64, u64),
+    locker: u64,
+    occupants: u32,
+    allowance_kg: u32,
     mut plan: impl FnMut(u64) -> Result<PassagePlan, PlanError>,
 ) -> Result<FillTargets, FillError> {
     let stores = stores(goods, readings).map_err(FillError::Core)?;
@@ -522,7 +554,7 @@ pub fn fill_targets(
             .ok_or(FillError::Core(CoreError::Overflow))?;
         let planned = plan(payload).map_err(FillError::Plan)?;
         let next = (
-            tank.max(planned.burn_t),
+            tank.max(planned.burn_t.saturating_add(held)),
             locker.max(u64::from(planned.crew_days)),
         );
         if next == (t, p) {
@@ -1088,13 +1120,15 @@ pub(crate) fn next_depart_targets(
         .copied()
         .unwrap_or(0);
     let depart_ic = plan_instant(w, due);
+    // Doc 50b item 7: reaction mass held for a haul aboard weighs but never burns.
+    let held = held_in_tank(w, orders.hull, &stores.propellant).min(tank);
     let fill = |extra_kg: u64| {
-        fill_targets(
+        fill_targets_holding(
             planner.goods,
             readings,
             &cargo,
             extra_kg,
-            tank,
+            (tank, held),
             locker,
             occupants.max(1),
             planner.spec.allowance_kg,
@@ -1107,10 +1141,17 @@ pub(crate) fn next_depart_targets(
     // `SITE_TANK_SHORT`, `SITE_STORES_SHORT`), so a `fill` before one is sized for the passage
     // out and the leg home: the home reserve over the payload left after the passage out, its
     // mass carried out as extra payload, to a fixed point (the reserve aboard raises the burn
-    // out).
+    // out). Doc 50b item 1: so does a departure for a port that sells no reaction mass or no
+    // provisions (Isidis), where she could not fill for the leg home. Only the fill is sized so;
+    // the departure itself is not refused for it, as one for a site is.
     let home_routes = crate::port::market::ports(w)
         .into_iter()
-        .find(|(_, site, _)| &site.venue == to && site.site.is_some())
+        .find(|(_, site, _)| {
+            &site.venue == to
+                && (site.site.is_some()
+                    || !site.authors_ask(&stores.propellant)
+                    || !site.authors_ask(&stores.provisions))
+        })
         .and_then(|(_, site, _)| site.routes.get(&def.venue).cloned());
     if let Some(home_routes) = home_routes.filter(|routes| !routes.is_empty()) {
         let fail = |e: CoreError| TargetError::Fill(FillError::Core(e), port.clone());
@@ -1139,7 +1180,12 @@ pub(crate) fn next_depart_targets(
                 .saturating_add(u64::from(home.crew_days).saturating_mul(mass_v));
             let next = fill(extra.saturating_add(reserve_kg))?;
             let (want_tank, want_locker) = (
-                next.tank.max(next.plan.burn_t.saturating_add(home.burn_t)),
+                next.tank.max(
+                    next.plan
+                        .burn_t
+                        .saturating_add(home.burn_t)
+                        .saturating_add(held),
+                ),
                 next.locker
                     .max(u64::from(next.plan.crew_days).saturating_add(u64::from(home.crew_days))),
             );
@@ -1158,6 +1204,21 @@ pub(crate) fn next_depart_targets(
         to: to.clone(),
         targets,
     }))
+}
+
+/// **Reaction mass `hull` carries held for hauls** (doc 50b item 7): the quantity of every haul
+/// of `propellant` aboard her. It stows in her tank and weighs, but the burn spends only her free
+/// units, so a fill counts it as aboard and never as burnable.
+fn held_in_tank(w: &World, hull: ObjId, propellant: &CanonicalId) -> u64 {
+    crate::services::haul::hauls(w)
+        .into_iter()
+        .filter(|job| {
+            job.hull == Some(hull)
+                && job.stage == crate::services::haul::HaulStage::Aboard
+                && job.good.as_str() == propellant.as_str()
+        })
+        .map(|job| job.quantity)
+        .sum()
 }
 
 /// What is aboard of a consumable, from the readings.
@@ -1770,7 +1831,7 @@ fn sale_net(
         .proceeds(
             w,
             &mush_market::SaleTerms {
-                seller: orders.author,
+                seller: &mush_org::PrincipalId::Object(orders.author),
                 source: mush_inventory::record::EndpointRef(vault),
                 house: &listing.seller,
                 market: &venue,

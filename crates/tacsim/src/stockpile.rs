@@ -3,9 +3,11 @@
 //!
 //! - **The stockpile** (Q-50-21, Q-50-58): what Occator's tank farm at Isidis holds of
 //!   [`STOCKPILE_GOOD`] in its storefront vault, against [`STOCKPILE_THRESHOLD_T`]. The port tick
-//!   reads the level every fire and keeps it on the arm's record ([`FreeportArm::level`]); the
-//!   operation's close probe ([`TANK_FARM_PROBE`], [`close_probe`]) reads that record at the
-//!   window's close, so a level is safe across a restart and nothing reads canon.
+//!   reads the level every fire and keeps it on the arm's record ([`FreeportArm::level`]). Doc
+//!   50b item 3: on the first fire at or after the operation's close it reads the vault once more
+//!   for that operation ([`FreeportArm::close_read`]), and the close probe ([`TANK_FARM_PROBE`],
+//!   [`close_probe`]) answers from that reading alone, waiting until it is taken. A level is safe
+//!   across a restart and nothing reads canon.
 //! - **The threshold is news** (Q-50-21 as corrected): an IC month in which a reading stands at the
 //!   threshold moves Hold the Concession one segment (doc 11 §6: "Occator stockpiles reach
 //!   threshold"), its cause id `stockpile.threshold/<month>`, and the clock's line is the
@@ -34,7 +36,7 @@ use mush_core::{CanonicalId, Ctx, ObjId, World};
 use mush_economy::AccountId;
 use mush_faction::ClockAdvance;
 use mush_inventory::record::EndpointRef;
-use mush_org::OrgId;
+use mush_org::{OrgId, PrincipalId};
 use serde::{Deserialize, Serialize};
 
 use crate::port::stock::IC_DAY;
@@ -105,6 +107,43 @@ pub struct FreeportArm {
     /// Every post, oldest first (at most [`MAX_POSTS`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub posts: Vec<ArmPost>,
+    /// **The reading taken at the operation's close** (doc 50b item 3; Q-50-21: "read once, at
+    /// the window's close"): the first good reading of the vault at or after the close, kept
+    /// for that operation. The close probe answers from it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_read: Option<CloseRead>,
+    /// **The tank farm's standing bid's fills** (doc 50b item 8; Q-50-22): each sale into it,
+    /// counted in its IC month's spend beside the posts, and paid back to the farm from Occator
+    /// (at most [`MAX_POSTS`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fills: Vec<ArmFill>,
+}
+
+/// **One sale into the tank farm's bid** (doc 50b item 8): its ledger row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArmFill {
+    /// The sale's quote, `QuoteId.0`: the fill's key, so a settlement told twice counts once.
+    pub quote: u64,
+    /// The IC month it settled in.
+    pub month: i64,
+    /// What the farm paid for it, minor units.
+    pub spent_minor: i64,
+    /// Whether Occator has paid it back to the farm.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paid: bool,
+}
+
+/// **The tank farm read at an operation's close** (doc 50b item 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseRead {
+    /// The operation whose window closed.
+    pub operation: u64,
+    /// The vault's level, whole tonnes.
+    pub level: u64,
+    /// The IC instant it was read, at or after the close.
+    pub read_ic: i64,
 }
 
 /// **One of the arm's posts**: its ledger row (Q-50-22: the cap is counted from these).
@@ -123,14 +162,23 @@ pub struct ArmPost {
 }
 
 impl FreeportArm {
-    /// What the arm committed in IC month `month`, minor units.
+    /// What the arm committed in IC month `month`, minor units: its posts, and (doc 50b item 8)
+    /// the tank farm's bid's fills.
     #[must_use]
     pub fn spent_in(&self, month: i64) -> i64 {
-        self.posts
+        let posts: i64 = self
+            .posts
             .iter()
             .filter(|p| p.month == month)
             .map(|p| p.spent_minor)
-            .sum()
+            .sum();
+        let fills: i64 = self
+            .fills
+            .iter()
+            .filter(|f| f.month == month)
+            .map(|f| f.spent_minor)
+            .sum();
+        posts.saturating_add(fills)
     }
 
     /// **Whether a post costing `cost_minor` fits month `month`'s cap** (Q-50-22): what the
@@ -147,11 +195,144 @@ pub fn arm(w: &World) -> Option<&FreeportArm> {
     w.module_state::<crate::TacsimStore>()?.freeport_arm()
 }
 
-/// **The close probe** (`CLOSE_PROBES`): whether the tank farm's last reading stands at its
-/// threshold. `None` before any reading.
+/// **The close probe** (`CLOSE_PROBES`): whether the tank farm stood at its threshold when it
+/// was read at `operation`'s close ([`FreeportArm::close_read`]). `None`, so the verdict waits,
+/// until that reading is taken: never the last cached reading (doc 50b item 3), which a delivery
+/// or a drain since may have changed, and never one older than the close.
 #[must_use]
-pub fn close_probe(w: &World, _operation: u64) -> Option<bool> {
-    arm(w)?.level.map(|level| level >= STOCKPILE_THRESHOLD_T)
+pub fn close_probe(w: &World, operation: u64) -> Option<bool> {
+    arm(w)?
+        .close_read
+        .filter(|read| read.operation == operation)
+        .map(|read| read.level >= STOCKPILE_THRESHOLD_T)
+}
+
+/// The line a sale into the tank farm's bid reads once the month's budget is spent (doc 50b
+/// item 8; Q-50-22: "when the cap or the treasury runs out, posting stops").
+pub const FARM_BUDGET_SPENT: &str = "Occator's Isidis budget for this IC month is spent; the tank \
+     farm takes no more until the month turns.";
+
+/// Whether `house` is the tank farm and `commodity` its stockpile's good: a fill of its bid.
+fn is_farm_fill(w: &World, house: &PrincipalId, commodity: &CanonicalId) -> bool {
+    commodity.as_str() == STOCKPILE_GOOD
+        && org_of(w, TANK_FARM_ENTRY, TANK_FARM_ORG)
+            .is_some_and(|farm| house == &PrincipalId::Organization(farm))
+}
+
+/// **Whether a sale of `gross` into the tank farm's bid is refused** (doc 50b item 8; Q-50-22):
+/// Occator funds the bid, so a sale past its month's cap, or past what its account holds, is
+/// refused with [`FARM_BUDGET_SPENT`]. Any other bid, or a world with no arm, is not.
+#[must_use]
+pub fn refuse_fill(
+    w: &World,
+    house: &PrincipalId,
+    commodity: &CanonicalId,
+    gross: i64,
+) -> Option<&'static str> {
+    if !is_farm_fill(w, house, commodity) {
+        return None;
+    }
+    let month = crate::concession::ic_month(w.world_ic_now().at);
+    let occator = org_of(w, ARM_ENTRY, ARM_ORG)
+        .and_then(|occator| org_account(w, occator))
+        .map(|account| available(w, account));
+    fill_refused(arm(w), month, gross, occator).then_some(FARM_BUDGET_SPENT)
+}
+
+/// **Whether Occator cannot fund a fill of `gross` in IC month `month`** (doc 50b item 8): past
+/// the arm's month's cap, or past what Occator's account holds (`None`: no account).
+fn fill_refused(doc: Option<&FreeportArm>, month: i64, gross: i64, occator: Option<i64>) -> bool {
+    let within = doc.is_none_or(|doc| doc.within_cap(month, gross));
+    let funded = occator.is_some_and(|held| held >= gross);
+    !within || !funded
+}
+
+/// **A sale into the tank farm's bid settled** (doc 50b item 8): its fill, kept once under its
+/// quote and counted in this month's spend; the port tick pays it back to the farm from Occator.
+pub(crate) fn on_fill(
+    ctx: &mut Ctx<'_>,
+    quote: u64,
+    house: &PrincipalId,
+    commodity: &CanonicalId,
+    gross: i64,
+) {
+    if gross <= 0 || !is_farm_fill(ctx.w, house, commodity) {
+        return;
+    }
+    let mut doc = arm(ctx.w).cloned().unwrap_or_default();
+    if doc.fills.iter().any(|f| f.quote == quote) {
+        return;
+    }
+    doc.fills.push(ArmFill {
+        quote,
+        month: crate::concession::ic_month(ctx.w.world_ic_now().at),
+        spent_minor: gross,
+        paid: false,
+    });
+    if doc.fills.len() > MAX_POSTS {
+        // The oldest paid fills go first; an unpaid one is kept until it is paid.
+        if let Some(at) = doc.fills.iter().position(|f| f.paid) {
+            doc.fills.remove(at);
+        }
+    }
+    put(ctx, &doc);
+}
+
+/// **Occator pays the tank farm back for its bid's fills** (doc 50b item 8; Q-50-22): each unpaid
+/// fill, from Occator's account to the farm's, keyed by its quote so a retry pays once. One the
+/// account cannot cover waits for the next fire.
+fn fund_fills(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
+    if doc.fills.iter().all(|f| f.paid) {
+        return;
+    }
+    let (Some(from), Some(to)) = (
+        org_account(ctx.w, occator),
+        org_of(ctx.w, TANK_FARM_ENTRY, TANK_FARM_ORG).and_then(|farm| org_account(ctx.w, farm)),
+    ) else {
+        return;
+    };
+    for fill in doc.fills.iter_mut().filter(|f| !f.paid) {
+        if available(ctx.w, from) < fill.spent_minor {
+            return;
+        }
+        fill.paid = crate::port::hauler::pay_in(
+            ctx,
+            ARM_KEY,
+            format!("fill/{}", fill.quote),
+            (from, to),
+            fill.spent_minor,
+            "Occator funds the Isidis tank farm's bid".to_owned(),
+        );
+    }
+}
+
+/// **The vault read at the operation's close** (doc 50b item 3): on the first fire at or after
+/// the window's close of the operation the declaring arm holds, the vault is read once and kept
+/// for it. A failed read keeps nothing, so the next fire tries again and the probe waits.
+fn read_at_close(ctx: &Ctx<'_>, doc: &mut FreeportArm) {
+    let Some(operation) = crate::isidis_op::record(ctx.w).and_then(|r| r.operation) else {
+        return;
+    };
+    if doc
+        .close_read
+        .is_some_and(|read| read.operation == operation)
+    {
+        return;
+    }
+    let Some(status) = crate::isidis_op::status(ctx.w) else {
+        return;
+    };
+    let now = ctx.w.world_ic_now().at;
+    if now < status.window.1 {
+        return;
+    }
+    if let Some(level) = read_level(ctx) {
+        doc.close_read = Some(CloseRead {
+            operation,
+            level,
+            read_ic: now,
+        });
+    }
 }
 
 /// The tank farm's storefront vault, `VaultId.0`.
@@ -276,6 +457,8 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         }
         let _ = threshold_news(ctx, level);
     }
+    read_at_close(ctx, &mut doc);
+    fund_fills(ctx, occator, &mut doc);
     if !doc.laid_up {
         step(ctx, occator, &mut doc);
     }
@@ -480,7 +663,7 @@ fn grant(ctx: &mut Ctx<'_>, org: OrgId, agent: ObjId) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARM_MONTHLY_CAP_CR, ArmPost, FreeportArm};
+    use super::{ARM_MONTHLY_CAP_CR, ArmFill, ArmPost, FreeportArm, fill_refused};
 
     fn post(month: i64, spent_minor: i64) -> ArmPost {
         ArmPost {
@@ -503,5 +686,38 @@ mod tests {
         assert!(arm.within_cap(3, 100_000), "exactly at the cap fits");
         assert!(!arm.within_cap(3, 100_001), "past it does not");
         assert!(arm.within_cap(4, cap), "a new month starts afresh");
+    }
+
+    /// **Doc 50b item 8: the tank farm's fills share the cap with the posts** (Q-50-22): a fill
+    /// counts in its month, and a fill past the cap, or past what Occator holds, is refused.
+    #[test]
+    fn op4_the_farms_fills_count_in_the_arms_cap() {
+        let cap = ARM_MONTHLY_CAP_CR * 100;
+        let mut arm = FreeportArm::default();
+        arm.posts.push(post(3, cap - 300_000));
+        arm.fills.push(ArmFill {
+            quote: 1,
+            month: 3,
+            spent_minor: 200_000,
+            paid: true,
+        });
+        assert_eq!(arm.spent_in(3), cap - 100_000, "the fill is in the month");
+        assert!(
+            !fill_refused(Some(&arm), 3, 100_000, Some(cap)),
+            "at the cap fits"
+        );
+        assert!(
+            fill_refused(Some(&arm), 3, 100_001, Some(cap)),
+            "past the cap is refused"
+        );
+        assert!(
+            fill_refused(Some(&arm), 4, 100_000, Some(99_999)),
+            "past Occator's money"
+        );
+        assert!(fill_refused(Some(&arm), 4, 1, None), "no account, no fill");
+        assert!(
+            !fill_refused(None, 4, 100_000, Some(100_000)),
+            "no arm yet: the money decides"
+        );
     }
 }
