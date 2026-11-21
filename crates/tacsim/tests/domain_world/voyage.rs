@@ -18336,35 +18336,38 @@ fn p2_tsw11_economy_throttle_decouple_autopilot_does_not_inflate_prepaid_or_waiv
     );
 }
 
-/// **P2-TSW-3 (`port/voyage.rs` half)**: an open, non-lapsed `Supply::Wanted` personal bid
-/// targeting a hull's hold must be reported by `goods_pending_aboard` and block `+ship/undock`
-/// with `LISTING_HOLDS` until withdrawn or lapsed.
+/// **Doc 48e G11 + P2-TSW-3**: an open `Supply::Wanted` personal bid targeting a hull's hold
+/// allows `+ship/undock` to clear cleanly (Doc 48e G11), AND `+market/sell` into that bid is
+/// immediately refused with `HOLD_CLEARED` during pending clearance (both before and after the
+/// burn lands, prior to launch) with zero cargo delivered (`PortVenueGate::receives_at` ->
+/// `hull_ready_at`).
 #[test]
-fn p2_tsw3_open_supply_wanted_bid_targeting_hull_hold_blocks_undock() {
+fn p2_tsw3_open_supply_wanted_bid_allows_undock_and_refuses_fill_during_pending_clearance() {
     let mut rig = stocked();
-    let (pilot, row) = chartered(&mut rig, "Bidder", 93);
+    let (bidder, row) = chartered(&mut rig, "Bidder", 93);
+    let hull = ObjId(row.hull);
     let hold = hold_vault(&rig.tw, &row);
     load(&mut rig, &row, 55, 25);
-    let acct = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+    let acct = tacsim::port::credit::own_account(rig.tw.world(), bidder)
         .expect("account")
         .id;
     let _ = run(&mut rig.tw, GOD, &format!("@econ/mint #{} 500000", acct.0));
 
     // Post an open personal `Supply::Wanted` bid for an indivisible part targeting the hull's hold.
     let exchange = c07(&rig.tw);
-    teleport(&mut rig.tw, pilot, exchange);
+    teleport(&mut rig.tw, bidder, exchange);
+    let part = "tacsim.part.weapon.cannon_105";
     let bid_out = run(
         &mut rig.tw,
-        pilot,
-        &format!(
-            "+market/bid tacsim:tacsim.part.weapon.cannon_105 qty=1 price=100 into={}",
-            hold.0
-        ),
+        bidder,
+        &format!("+market/bid tacsim:{part} qty=1 price=100 into={}", hold.0),
     );
     assert!(
         bid_out.contains("Listing #") || bid_out.contains("Bid #"),
         "personal bid into hold must post cleanly: {bid_out}"
     );
+    let bid_queued = drain(&mut rig.tw);
+    land_all(&mut rig, &bid_queued);
 
     // Find the posted Supply::Wanted listing id.
     let bid_id = market(&rig.tw)
@@ -18373,25 +18376,107 @@ fn p2_tsw3_open_supply_wanted_bid_targeting_hull_hold_blocks_undock() {
         .expect("open Supply::Wanted bid targeting hold")
         .id;
 
-    // Board and attempt to undock: must be refused because the open bid targets the hull's hold!
-    board(&mut rig, pilot);
-    let (refused, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
-    assert!(
-        refused.contains(&format!("listing #{bid_id}")) && refused.contains("withdraw it"),
-        "open Supply::Wanted bid targeting hold must refuse undock: {refused}"
+    // Prepare a seller at Ceres with the part in an open locker ready to fill `bid_id`.
+    let seller = pilot(&mut rig, "PartSeller", 94);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", seller.0),
     );
-    assert!(queued.is_empty(), "nothing burned while bid is open");
+    teleport(&mut rig.tw, seller, exchange);
+    let opened = run(&mut rig.tw, seller, "+locker/open");
+    assert!(opened.contains("Your locker at ceres is open."), "{opened}");
+    let ceres = mush_market::MarketId::new("ceres").expect("ceres");
+    let seller_locker = VaultId(
+        tacsim::port::locker::locker_of(rig.tw.world(), seller, &ceres)
+            .expect("seller locker")
+            .vault,
+    );
+    let part_lot = LotId(99_301);
+    seed_lot(&mut rig, seller_locker, part, 1, part_lot);
 
-    // Withdraw the bid and verify undock now succeeds cleanly.
-    let _ = run(&mut rig.tw, pilot, "+ship/leave");
-    teleport(&mut rig.tw, pilot, exchange);
-    let withdrawn = run(&mut rig.tw, pilot, &format!("+market/withdraw {bid_id}"));
-    assert!(withdrawn.contains("Withdrew bid"), "{withdrawn}");
-    board(&mut rig, pilot);
-    let (cleared, queued) = undock(&mut rig, pilot, "+ship/undock stickney");
+    // Doc 48e G11: boarding and filing `+ship/undock stickney` clears cleanly even with the open
+    // `Supply::Wanted` bid targeting the hold.
+    board(&mut rig, bidder);
+    let (cleared, burn_queued) = undock(&mut rig, bidder, "+ship/undock stickney");
     assert!(
         cleared.contains("Clearance filed for Stickney Yards"),
-        "after withdrawing bid, undock succeeds: {cleared}"
+        "Doc 48e G11: open Supply::Wanted bid must allow undock: {cleared}"
     );
-    assert_eq!(queued.len(), 1);
+    assert_eq!(burn_queued.len(), 1, "burn offer queued");
+    assert!(
+        tacsim::port::voyage::pending_of(rig.tw.world(), hull).is_some(),
+        "hull must hold a pending clearance immediately after undock"
+    );
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { .. }
+        ),
+        "hull is still docked in pending clearance before burn/launch"
+    );
+
+    // P2-TSW-3: `+market/sell` into the open bid is IMMEDIATELY refused during pending clearance
+    // (before burn lands and before launch departs), with zero cargo delivered.
+    let expected_cleared = tacsim::port::market::HOLD_CLEARED
+        .replace("{name}", "Salt Moth")
+        .replace("{port}", "Ceres Freeport");
+    let refused_before_burn = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/sell {bid_id}=1 from={}", seller_locker.0),
+    );
+    assert!(
+        refused_before_burn.contains(&expected_cleared),
+        "sell into open bid must be refused during pending clearance before burn: {refused_before_burn}"
+    );
+    assert!(
+        !refused_before_burn.contains("Sold "),
+        "{refused_before_burn}"
+    );
+    assert!(
+        drain(&mut rig.tw).is_empty(),
+        "no delivery submission queued while cleared to sail"
+    );
+
+    // Land the burn (still pending launch before `fire`) and confirm fill remains refused.
+    land_all(&mut rig, &burn_queued);
+    assert!(
+        tacsim::port::voyage::pending_of(rig.tw.world(), hull).is_some(),
+        "hull remains in pending clearance after burn lands and prior to launch"
+    );
+    let refused_after_burn = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/sell {bid_id}=1 from={}", seller_locker.0),
+    );
+    assert!(
+        refused_after_burn.contains(&expected_cleared),
+        "sell into open bid must remain refused after burn prior to launch: {refused_after_burn}"
+    );
+    assert!(
+        !refused_after_burn.contains("Sold "),
+        "{refused_after_burn}"
+    );
+    assert!(
+        drain(&mut rig.tw).is_empty(),
+        "no delivery submission queued after burn"
+    );
+
+    // Zero cargo delivered: exact part lot stayed in seller's locker and hold has none.
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let lot_owner_vault =
+        typed(&mut rig.tw, &families.lots, &part_lot).map(|l| l.endpoint().vault());
+    assert_eq!(
+        lot_owner_vault,
+        Some(seller_locker),
+        "zero cargo delivered: part lot must remain in seller's locker"
+    );
+    assert_eq!(pool(&mut rig.tw, hold, part), 0, "zero cargo in hold");
 }

@@ -1047,33 +1047,14 @@ pub(crate) fn goods_pending_aboard(w: &World, hold: EndpointRef) -> Option<Pendi
             return Some(Pending::Quote(quote.id));
         }
     }
-    if let Some(pending) =
-        market
-            .lot_listings()
-            .find_map(|listing| match market.lot_matter(listing) {
-                Some(LotMatter::Hold { endpoint, .. }) if endpoint.vault() == hold.vault() => {
-                    Some(Pending::Listing(listing.id))
-                }
-                Some(LotMatter::Hold { .. } | LotMatter::Draw { .. }) | None => None,
-            })
-    {
-        return Some(pending);
-    }
-    // P2-TSW-3: an open, non-lapsed `Supply::Wanted` bid targeting this hold (e.g. an
-    // indivisible part bid) holds the hull too, so a hull cannot clear-to-sail and burn
-    // propellant for lighter mass while an open bid can still deliver into it.
-    let now = w.now();
-    market.live_listings().find_map(|listing| {
-        let mush_market::Supply::Wanted { vault, .. } = listing.source else {
-            return None;
-        };
-        if vault != hold.vault() || listing.quantity == 0 {
-            return None;
-        }
-        let lapsed = matches!(listing.expires.clock, mush_economy::EconomicClock::RealUtc)
-            && now >= listing.expires.at;
-        (!lapsed).then_some(Pending::Listing(listing.id))
-    })
+    market
+        .lot_listings()
+        .find_map(|listing| match market.lot_matter(listing) {
+            Some(LotMatter::Hold { endpoint, .. }) if endpoint.vault() == hold.vault() => {
+                Some(Pending::Listing(listing.id))
+            }
+            Some(LotMatter::Hold { .. } | LotMatter::Draw { .. }) | None => None,
+        })
 }
 
 // ---- planning --------------------------------------------------------------------
