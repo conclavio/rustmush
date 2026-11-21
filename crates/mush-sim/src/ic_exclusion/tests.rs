@@ -1295,3 +1295,169 @@ fn s4d_a_port_berth_is_a_hangar_for_a_ship_where_berths_are_admitted() -> Result
     );
     Ok(())
 }
+
+/// **P2-MOD-23**: `hangar_move_admitted` rejects economy vaults, multi-room
+/// spaces, and slot-less non-hangar `MovingObject` spaces; `check_plan` guards
+/// a hangar-held hull's current secondary bay from re-anchoring; and
+/// `forbids_journey` blocks base/hangar holds while still allowing berth ships.
+#[test]
+fn p2_mod_23_hangar_move_tightening_and_secondary_bay_protection() -> Result {
+    let mut f = setup_in(vec![], true, false, Admission::Hangar)?;
+    let _ = install_open(&mut f)?;
+
+    // Build a third-party ship with:
+    // (a) a slot-less stowage room (no compartments),
+    // (b) a multi-room walkable interior, and
+    // (c) a legitimate secondary carrier bay with a `rigs` compartment.
+    let other_ship =
+        f.world
+            .world_mut()
+            .create(ObjKind::Thing, "ThirdPartyShip", GOD, Some(f.bay))?;
+    let stowage = f
+        .world
+        .world_mut()
+        .create(ObjKind::Room, "Stowage", GOD, None)?;
+    let multi_a = f
+        .world
+        .world_mut()
+        .create(ObjKind::Room, "CabinA", GOD, None)?;
+    let multi_b = f
+        .world
+        .world_mut()
+        .create(ObjKind::Room, "CabinB", GOD, None)?;
+    let recovery_bay = f
+        .world
+        .world_mut()
+        .create(ObjKind::Room, "RecoveryBay", GOD, None)?;
+    let slot = crate::SlotId::new("rigs").ok_or("slot id")?;
+    {
+        let st = f
+            .world
+            .world_mut()
+            .module_state_mut::<crate::SpatialState>()
+            .ok_or("spatial")?;
+        st.spaces.insert(
+            stowage,
+            crate::InteriorSpaceRecord {
+                object: stowage,
+                anchor: crate::SpaceAnchor::MovingObject { host: other_ship },
+                compartments: BTreeMap::new(),
+                rooms: BTreeSet::from([stowage]),
+                egresses: BTreeMap::new(),
+            },
+        );
+        st.spaces.insert(
+            multi_a,
+            crate::InteriorSpaceRecord {
+                object: multi_a,
+                anchor: crate::SpaceAnchor::MovingObject { host: other_ship },
+                compartments: BTreeMap::from([(slot.clone(), crate::CapacitySpec::default())]),
+                rooms: BTreeSet::from([multi_a, multi_b]),
+                egresses: BTreeMap::new(),
+            },
+        );
+        st.spaces.insert(
+            recovery_bay,
+            crate::InteriorSpaceRecord {
+                object: recovery_bay,
+                anchor: crate::SpaceAnchor::MovingObject { host: other_ship },
+                compartments: BTreeMap::from([(slot.clone(), crate::CapacitySpec::default())]),
+                rooms: BTreeSet::from([recovery_bay]),
+                egresses: BTreeMap::new(),
+            },
+        );
+        st.derived = crate::graph::rebuild(st);
+    }
+
+    // 1. Slot-less non-hangar MovingObject space (e.g. third-party stowage) is refused.
+    check!(
+        !plan_admits(
+            &f,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: stowage,
+                    slot: None
+                }
+            )
+        )?,
+        "slot-less third-party MovingObject space must be refused"
+    );
+
+    // 2. Multi-room interior is refused even with a compartment slot.
+    check!(
+        !plan_admits(
+            &f,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: multi_a,
+                    slot: Some(slot.clone())
+                }
+            )
+        )?,
+        "multi-room interior must be refused"
+    );
+
+    // 3. Legitimate secondary carrier bay with a declared slot is admitted...
+    check!(
+        plan_admits(
+            &f,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: recovery_bay,
+                    slot: Some(slot.clone())
+                }
+            )
+        )?,
+        "legitimate secondary carrier bay with slot is admitted"
+    );
+
+    // ...and once placed in that secondary bay, `check_plan` refuses re-anchoring it!
+    {
+        let st = f
+            .world
+            .world_mut()
+            .module_state_mut::<crate::SpatialState>()
+            .ok_or("spatial")?;
+        st.placements.insert(
+            f.unit,
+            placed(
+                f.unit,
+                crate::SpatialParent::Interior {
+                    space: recovery_bay,
+                    slot: Some(slot),
+                },
+            ),
+        );
+        st.derived = crate::graph::rebuild(st);
+    }
+    let reanchor_plan = crate::transition::Plan {
+        set_spaces: vec![crate::InteriorSpaceRecord {
+            object: recovery_bay,
+            anchor: crate::SpaceAnchor::Unanchored,
+            compartments: BTreeMap::new(),
+            rooms: BTreeSet::from([recovery_bay]),
+            egresses: BTreeMap::new(),
+        }],
+        ..Default::default()
+    };
+    check!(
+        check_plan(
+            crate::state(f.world.world()).ok_or("spatial")?,
+            f.world.world(),
+            &reanchor_plan,
+        )
+        .is_err(),
+        "re-anchoring the hull's current secondary bay must be refused"
+    );
+
+    // 4. `forbids_journey` refuses hangar-held rig, allows carrier, allows berth ship.
+    check!(forbids_journey(f.world.world(), f.unit).is_some());
+    check!(forbids_journey(f.world.world(), f.carrier).is_none());
+    let mut berth = setup_in(vec![], true, false, Admission::Berth)?;
+    let _ = install_open(&mut berth)?;
+    check!(forbids_journey(berth.world.world(), berth.unit).is_none());
+    Ok(())
+}

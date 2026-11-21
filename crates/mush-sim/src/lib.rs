@@ -59,7 +59,7 @@ pub mod tick;
 pub mod transition;
 pub mod window;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use std::time::Duration;
 
@@ -330,6 +330,31 @@ fn state(w: &World) -> Option<&SpatialState> {
 /// quarantined object moves only through the simulation, or staff recovery.
 /// Player-driven egress is a later cut. Staff are not exempt (design §7.5).
 struct PlacementGate;
+
+/// Single shared `PlacementGate` hook allocation so sanctioned sim transitions
+/// (`InteriorCustodyProvider::move_out` and `egress_cmd`) can bypass ONLY
+/// `PlacementGate` while still enforcing every other `NS` hook (such as
+/// `relay::InstalledGate`) and all external hooks.
+pub(crate) fn placement_gate_hook() -> Arc<dyn EventHook> {
+    static GATE: OnceLock<Arc<dyn EventHook>> = OnceLock::new();
+    Arc::clone(GATE.get_or_init(|| Arc::new(PlacementGate)))
+}
+
+/// Whether `hook` is this module's [`PlacementGate`] registration.
+pub(crate) fn is_placement_gate(hook: &Arc<dyn EventHook>) -> bool {
+    let gate = placement_gate_hook();
+    std::ptr::addr_eq(
+        Arc::as_ptr(hook).cast::<()>(),
+        Arc::as_ptr(&gate).cast::<()>(),
+    )
+}
+
+/// Whether `obj` currently backs an economy custody vault (container or
+/// spatial interior). `false` when `mush-economy` is not composed.
+pub(crate) fn is_vault_backing(w: &World, obj: ObjId) -> bool {
+    w.module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|store| store.snapshot().is_vault_backing(obj))
+}
 
 /// The held and quarantined arms of the gate, which win before every other
 /// (the member arm of [`move_reason`] included).
@@ -1115,16 +1140,16 @@ impl GameModule for SimulationModule {
         reg.behavior(domain_spec())?;
         reg.behavior(interior_spec())?;
         reg.behavior(participant_spec())?;
-        reg.hook(HookPoint::MoveAttempt, Arc::new(PlacementGate));
+        reg.hook(HookPoint::MoveAttempt, placement_gate_hook());
         // E7c10 B6: the tree's FIRST `HookPoint::Disconnected` hook — cut 5's
         // deferred unclean-loss PRODUCTION trigger. A disconnect now returns
         // every focus (proxy seat or ordinary billet) to its declared fallback
         // at a safe boundary, on the same path a clean release uses.
         reg.hook(HookPoint::Disconnected, Arc::new(seat::SeatDisconnectHook));
-        reg.hook(HookPoint::CarryAttempt, Arc::new(PlacementGate));
+        reg.hook(HookPoint::CarryAttempt, placement_gate_hook());
         // 16b cut S.2: doc 16 §3.6's world-side exclusion on the `look` surface —
         // see `PlacementGate::perceives`.
-        reg.hook(HookPoint::Perceive, Arc::new(PlacementGate));
+        reg.hook(HookPoint::Perceive, placement_gate_hook());
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));

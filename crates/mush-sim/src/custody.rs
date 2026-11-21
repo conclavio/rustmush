@@ -29,12 +29,17 @@
 //!   one thing that is not inside it — the destination of a withdrawal — is
 //!   pre-validated here, before the first record changes.
 
+use std::collections::BTreeSet;
+
 use mush_core::output::display_name;
-use mush_core::{Ctx, Flags, HookPoint, ObjId, World};
+use mush_core::{Ctx, Flags, HookPoint, MAX_CONTAINMENT_DEPTH, ObjId, World};
 use mush_economy::{CustodyError, CustodyProvider, CustodyRef};
 
 use crate::data::{MAX_SPATIAL_DEPTH, NS, SpaceAnchor, SpatialParent, SpatialState};
 use crate::transition::{Transition, run};
+
+/// Hard cap on physical descendants inspected when validating a deposit subtree.
+const MAX_DEPOSIT_SUBTREE_SCAN: usize = 1024;
 
 /// The behavior [`Transition::Place`] requires. The provider **attaches
 /// nothing**: making an object a simulation participant is an authoring act
@@ -53,6 +58,91 @@ fn live(w: &World, o: ObjId) -> bool {
     w.get(o).is_some_and(|x| !x.flags.contains(Flags::GOING))
 }
 
+fn is_actor(w: &World, o: ObjId) -> bool {
+    w.get(o).is_some_and(|x| x.kind.is_actor())
+}
+
+/// Whether `obj` is an independent custody or walkable boundary that an
+/// enclosing interior vault must never transitively absorb: another vault's
+/// backing (e.g. a ship stowage hold or rig hopper) or a multi-room interior.
+fn is_nested_boundary(w: &World, st: &SpatialState, obj: ObjId) -> bool {
+    crate::is_vault_backing(w, obj) || crate::is_multi_room(st, obj)
+}
+
+/// Refuse depositing any actor, space, vault backing, carrier with anchored
+/// spaces/dependents, or container holding any of those in its physical subtree.
+fn refuse_nested_deposit(w: &World, st: &SpatialState, obj: ObjId) -> Result<(), CustodyError> {
+    if is_actor(w, obj) {
+        return Err(CustodyError::Refused(format!(
+            "{} is an actor and cannot be deposited into custody.",
+            display_name(w, obj)
+        )));
+    }
+    if st.spaces.contains_key(&obj) || is_nested_boundary(w, st, obj) {
+        return Err(CustodyError::Refused(format!(
+            "{} is a space or vault backing and cannot be deposited into another vault.",
+            display_name(w, obj)
+        )));
+    }
+    if !st.children_of(obj).is_empty() {
+        return Err(CustodyError::Refused(format!(
+            "{} carries spatial dependents and cannot be deposited into custody.",
+            display_name(w, obj)
+        )));
+    }
+    if st
+        .derived
+        .anchored_spaces
+        .get(&obj)
+        .is_some_and(|spaces| !spaces.is_empty())
+    {
+        return Err(CustodyError::Refused(format!(
+            "{} carries anchored interior spaces and cannot be deposited into custody.",
+            display_name(w, obj)
+        )));
+    }
+    // Walk physical containment transitively, failing closed on depth/size/cycles.
+    let mut visited = BTreeSet::from([obj]);
+    let mut frontier: Vec<(ObjId, usize)> = vec![(obj, 0)];
+    let mut scanned = 0usize;
+    while let Some((cur, depth)) = frontier.pop() {
+        for &child in w.contents_of(cur) {
+            scanned = scanned.saturating_add(1);
+            if scanned > MAX_DEPOSIT_SUBTREE_SCAN || depth >= MAX_CONTAINMENT_DEPTH {
+                return Err(CustodyError::Refused(format!(
+                    "{}'s contents are too deep or large to deposit into custody.",
+                    display_name(w, obj)
+                )));
+            }
+            if !visited.insert(child) {
+                return Err(CustodyError::Refused(format!(
+                    "{} has a containment cycle and cannot be deposited.",
+                    display_name(w, obj)
+                )));
+            }
+            if is_actor(w, child)
+                || st.spaces.contains_key(&child)
+                || is_nested_boundary(w, st, child)
+                || !st.children_of(child).is_empty()
+                || st
+                    .derived
+                    .anchored_spaces
+                    .get(&child)
+                    .is_some_and(|spaces| !spaces.is_empty())
+                || st.is_sim_bound(child)
+            {
+                return Err(CustodyError::Refused(format!(
+                    "{} contains {} and cannot be deposited into custody.",
+                    display_name(w, obj),
+                    display_name(w, child)
+                )));
+            }
+            frontier.push((child, depth + 1));
+        }
+    }
+    Ok(())
+}
+
 /// Why the simulation — not an ordinary container — owns `obj`'s motion, if it
 /// does. The same predicate the `PlacementGate` movement veto is built from,
 /// deliberately taken WHOLE: a space/mount/station host is not placed, yet may
@@ -66,34 +156,47 @@ fn claim_reason(w: &World, obj: ObjId) -> Option<String> {
 }
 
 /// Everything `space` holds through INTERIOR placement, transitively through
-/// nested spaces (a bay riding a dropship parked in the hangar), depth-capped
-/// at [`MAX_SPATIAL_DEPTH`].
+/// nested non-boundary spaces, depth-capped at [`MAX_SPATIAL_DEPTH`].
 ///
-/// Attached units are deliberately excluded: a mount is a structural fitting of
-/// its host, not a thing the vault independently holds — `holds` and `contents`
-/// agree on that, so a withdrawal can never name something `contents` never
-/// listed.
-fn interior_contents(st: &SpatialState, space: ObjId) -> Vec<ObjId> {
+/// Attached units, actors (`Player`/`Npc`), nested vault backings, and
+/// multi-room walkable interiors are deliberately excluded: `holds` and
+/// `contents` agree on that, so an enclosing vault can never absorb another
+/// vault's escrow/policy or abduct an actor.
+fn interior_contents(w: &World, st: &SpatialState, space: ObjId) -> Vec<ObjId> {
+    if crate::is_multi_room(st, space) {
+        return Vec::new();
+    }
     let mut out: Vec<ObjId> = Vec::new();
+    let mut out_seen: BTreeSet<ObjId> = BTreeSet::new();
+    let mut visited_spaces: BTreeSet<ObjId> = BTreeSet::from([space]);
     let mut frontier: Vec<ObjId> = vec![space];
     for _ in 0..MAX_SPATIAL_DEPTH {
         let mut next: Vec<ObjId> = Vec::new();
         for s in frontier.drain(..) {
+            if s != space && is_nested_boundary(w, st, s) {
+                continue;
+            }
             for &c in st.children_of(s) {
                 if !matches!(st.parent_of(c), SpatialParent::Interior { space: p, .. } if p == s) {
                     continue;
                 }
-                if out.contains(&c) {
+                if is_actor(w, c) || is_nested_boundary(w, st, c) {
                     continue;
                 }
-                out.push(c);
-                // A space riding `c` nests INSIDE this one: its occupants are
-                // held here too (a container deposited whole is not a
-                // laundering primitive — §4.3).
-                if let Some(riding) = st.derived.anchored_spaces.get(&c) {
-                    next.extend(riding.iter().copied());
+                if out_seen.insert(c) {
+                    out.push(c);
                 }
-                if st.spaces.contains_key(&c) {
+                if let Some(riding) = st.derived.anchored_spaces.get(&c) {
+                    for &nested in riding {
+                        if !is_nested_boundary(w, st, nested) && visited_spaces.insert(nested) {
+                            next.push(nested);
+                        }
+                    }
+                }
+                if st.spaces.contains_key(&c)
+                    && !is_nested_boundary(w, st, c)
+                    && visited_spaces.insert(c)
+                {
                     next.push(c);
                 }
             }
@@ -107,9 +210,12 @@ fn interior_contents(st: &SpatialState, space: ObjId) -> Vec<ObjId> {
 }
 
 /// The inverse walk of [`interior_contents`]: whether `obj`'s interior parent
-/// chain reaches `target`, stepping out of a nested space through its
-/// `MovingObject` anchor. Bounded by [`MAX_SPATIAL_DEPTH`].
-fn interior_holder(st: &SpatialState, obj: ObjId, target: ObjId) -> bool {
+/// chain reaches `target`, stepping out of a nested non-boundary space through
+/// its `MovingObject` anchor. Bounded by [`MAX_SPATIAL_DEPTH`].
+fn interior_holder(w: &World, st: &SpatialState, obj: ObjId, target: ObjId) -> bool {
+    if crate::is_multi_room(st, target) || is_actor(w, obj) || is_nested_boundary(w, st, obj) {
+        return false;
+    }
     let mut cur = obj;
     for _ in 0..MAX_SPATIAL_DEPTH {
         let SpatialParent::Interior { space, .. } = st.parent_of(cur) else {
@@ -118,8 +224,16 @@ fn interior_holder(st: &SpatialState, obj: ObjId, target: ObjId) -> bool {
         if space == target {
             return true;
         }
+        if is_nested_boundary(w, st, space) {
+            return false;
+        }
         match st.spaces.get(&space).map(|s| s.anchor.clone()) {
-            Some(SpaceAnchor::MovingObject { host }) if host != space => cur = host,
+            Some(SpaceAnchor::MovingObject { host }) if host != space => {
+                if is_actor(w, host) || is_nested_boundary(w, st, host) {
+                    return false;
+                }
+                cur = host;
+            }
             _ => return false,
         }
     }
@@ -173,7 +287,7 @@ impl CustodyProvider for InteriorCustodyProvider {
         if !live(w, *space) || !st.spaces.contains_key(space) {
             return Some(Vec::new());
         }
-        Some(interior_contents(st, *space))
+        Some(interior_contents(w, st, *space))
     }
 
     fn holds(&self, w: &World, backing: &CustodyRef, obj: ObjId) -> Option<bool> {
@@ -181,7 +295,7 @@ impl CustodyProvider for InteriorCustodyProvider {
             return None;
         };
         let st = w.module_state::<SpatialState>()?;
-        Some(interior_holder(st, obj, *space))
+        Some(interior_holder(w, st, obj, *space))
     }
 
     /// Place `obj` inside the space, slot-less. The object must ALREADY carry
@@ -195,13 +309,50 @@ impl CustodyProvider for InteriorCustodyProvider {
     fn move_into(
         &self,
         ctx: &mut Ctx<'_>,
-        _actor: ObjId,
+        actor: ObjId,
         obj: ObjId,
         backing: &CustodyRef,
     ) -> Result<(), CustodyError> {
         let CustodyRef::SpatialInterior(space) = backing else {
             return Err(CustodyError::NoProvider);
         };
+        if !live(ctx.w, obj) {
+            return Err(CustodyError::Refused(format!(
+                "#{} is not available to move.",
+                obj.0
+            )));
+        }
+        if !live(ctx.w, *space) {
+            return Err(CustodyError::Refused(format!(
+                "#{} cannot hold anything.",
+                space.0
+            )));
+        }
+        crate::deployed::refuse_if_custodied(ctx.w, obj)
+            .map_err(|e| CustodyError::Refused(e.to_string()))?;
+        {
+            let st = ctx
+                .w
+                .module_state::<SpatialState>()
+                .ok_or(CustodyError::NoProvider)?;
+            if st.is_placed(obj) || st.is_quarantined(obj) || st.held_placement(obj).is_some() {
+                return Err(CustodyError::Refused(format!(
+                    "{} is already bound into the simulation; unplace or recover it before depositing.",
+                    display_name(ctx.w, obj)
+                )));
+            }
+            if ctx
+                .w
+                .module_state::<crate::journey::JourneyBook>()
+                .is_some_and(|jb| jb.under_way(obj))
+            {
+                return Err(CustodyError::Refused(format!(
+                    "{} is under way on a carrier journey and cannot be deposited.",
+                    display_name(ctx.w, obj)
+                )));
+            }
+            refuse_nested_deposit(ctx.w, st, obj)?;
+        }
         let participant = mush_core::BehaviorId::new(PARTICIPANT).expect("static behavior id");
         if !ctx.w.has_behavior(obj, &participant) {
             return Err(CustodyError::Refused(format!(
@@ -210,6 +361,8 @@ impl CustodyProvider for InteriorCustodyProvider {
                 display_name(ctx.w, *space)
             )));
         }
+        ctx.check_carry_attempt(actor, obj, *space)
+            .map_err(|rt| CustodyError::Refused(rt.to_plain_text()))?;
         run(
             ctx,
             &Transition::Place {
@@ -246,14 +399,13 @@ impl CustodyProvider for InteriorCustodyProvider {
     /// happened. Hence: pre-validate, `keep: true`, one move.
     ///
     /// **Deviation from plan §5.1 (deliberate):** the carry-hook chain is
-    /// consulted **minus this module's own hooks**. `PlacementGate` is
-    /// registered on `CarryAttempt` and vetoes *any* move of a placed object —
-    /// it would refuse every withdrawal by construction, since being placed is
-    /// the precondition of withdrawing. Running the chain after the `Unplace`
+    /// consulted **minus `PlacementGate` only**. `PlacementGate` is registered
+    /// on `CarryAttempt` and vetoes *any* move of a placed object — it would
+    /// refuse every withdrawal by construction, since being placed is the
+    /// precondition of withdrawing. Running the chain after the `Unplace`
     /// instead would let a foreign gate refuse too late to be atomic. Skipping
-    /// sim's own veto (and only sim's) keeps both properties: a ruleset's
-    /// no-take rule is still honoured, and the refusal still arrives before the
-    /// first mutation.
+    /// only `PlacementGate` preserves both `relay::InstalledGate` and every
+    /// external `CarryAttempt` hook before the first mutation.
     fn move_out(
         &self,
         ctx: &mut Ctx<'_>,
@@ -272,17 +424,56 @@ impl CustodyProvider for InteriorCustodyProvider {
                 obj.0
             )));
         }
+        if is_actor(ctx.w, obj) {
+            return Err(CustodyError::Refused(format!(
+                "{} is an actor and cannot be withdrawn from custody.",
+                display_name(ctx.w, obj)
+            )));
+        }
         if !live(ctx.w, to) {
             return Err(CustodyError::Refused(format!(
                 "#{} cannot hold anything.",
                 to.0
             )));
         }
+        crate::deployed::refuse_if_custodied(ctx.w, obj)
+            .map_err(|e| CustodyError::Refused(e.to_string()))?;
+        {
+            let st = ctx
+                .w
+                .module_state::<SpatialState>()
+                .ok_or(CustodyError::NoProvider)?;
+            let SpatialParent::Interior {
+                space: direct_space,
+                ..
+            } = st.parent_of(obj)
+            else {
+                return Err(CustodyError::Refused(format!(
+                    "{} is not placed inside an interior space.",
+                    display_name(ctx.w, obj)
+                )));
+            };
+            if direct_space != *space && is_nested_boundary(ctx.w, st, direct_space) {
+                return Err(CustodyError::Refused(format!(
+                    "{} is held inside nested space {} and cannot be withdrawn through {}.",
+                    display_name(ctx.w, obj),
+                    display_name(ctx.w, direct_space),
+                    display_name(ctx.w, *space)
+                )));
+            }
+            if !interior_holder(ctx.w, st, obj, *space) {
+                return Err(CustodyError::Refused(format!(
+                    "{} is not held by {}.",
+                    display_name(ctx.w, obj),
+                    display_name(ctx.w, *space)
+                )));
+            }
+        }
         ctx.w
             .can_move_to(obj, to)
             .map_err(|e| CustodyError::Refused(e.to_string()))?;
         for h in ctx.reg.hooks(HookPoint::CarryAttempt).to_vec() {
-            if h.module == NS {
+            if crate::is_placement_gate(&h.hook) {
                 continue; // our own placement veto — see the doc comment.
             }
             let hook_ctx = ctx.hook_read_context(&h.module);

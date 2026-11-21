@@ -694,3 +694,400 @@ fn ic3_a_passive_domain_opens_with_every_window_open() {
         "a passive domain holds no window"
     );
 }
+
+// ======================================================================
+// Pass 2 security regressions (P2-MOD-4, P2-MOD-5, P2-MOD-23, P2-MOD-24)
+// ======================================================================
+
+/// **P2-MOD-4**: Depositing a ship/carrier with anchored interior spaces (or a
+/// container holding an actor or vault backing) into another `SpatialInterior`
+/// vault is refused, and `interior_contents`/`interior_holder`/`move_out` never
+/// absorb nested vault backings, multi-room interiors, or actors (`Player`/`Npc`).
+#[test]
+fn p2_mod_4_refuses_transitive_vault_nesting_and_actor_abduction() {
+    use mush_economy::{CustodyProvider, CustodyRef};
+
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    hangar_vault(&mut tw, &fx); // Vault #0 backed by fx.hangar (V_A)
+
+    // Create a carrier C with an anchored stowage vault V_B, a multi-room cab,
+    // an item X inside V_B, a Player P and an NPC N inside cab.
+    let carrier = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Carrier", GOD, Some(LIMBO))
+        .unwrap();
+    let stowage = tw
+        .world_mut()
+        .create(ObjKind::Room, "Stowage", GOD, None)
+        .unwrap();
+    let cab = tw
+        .world_mut()
+        .create(ObjKind::Room, "Cab", GOD, None)
+        .unwrap();
+    let cargo = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Escrow Cargo", GOD, Some(LIMBO))
+        .unwrap();
+    let captive_player = tw.spawn_player("VictimPlayer");
+    let captive_npc = tw
+        .world_mut()
+        .create(ObjKind::Npc, "VictimNpc", GOD, Some(LIMBO))
+        .unwrap();
+    bind(&mut tw, carrier, "sim.participant");
+    bind(&mut tw, stowage, "sim.interior");
+    bind(&mut tw, cab, "sim.interior");
+    bind(&mut tw, cargo, "sim.participant");
+    bind(&mut tw, captive_player, "sim.participant");
+    bind(&mut tw, captive_npc, "sim.participant");
+
+    ok(
+        &mut tw,
+        &format!("@spatial/space #{}=moving:#{}", stowage.0, carrier.0),
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/space #{}=moving:#{}", cab.0, carrier.0),
+    );
+    // Vault #1 backed by carrier's stowage (V_B), holding `cargo`.
+    let t = ok(
+        &mut tw,
+        &format!("@vault/create hold=interior:#{}", stowage.0),
+    );
+    assert!(t.contains("Created vault #1"), "{t}");
+    ok(&mut tw, &format!("@vault/deposit #{}=1", cargo.0));
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", captive_player.0, cab.0),
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", captive_npc.0, cab.0),
+    );
+
+    // 1. Depositing carrier C (which carries anchored spaces) into V_A (#0) is refused.
+    let before_txs = journal_len(&tw);
+    let err = refused(&mut tw, &format!("@vault/deposit #{}=0", carrier.0));
+    assert!(
+        err.contains("anchored interior spaces"),
+        "carrier deposit must be refused: {err}"
+    );
+    assert_eq!(journal_len(&tw), before_txs);
+    assert!(!sim(&tw).is_placed(carrier));
+
+    // 2. Depositing a container holding an actor or vault backing physically is refused.
+    let box_with_actor = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Box", GOD, Some(LIMBO))
+        .unwrap();
+    bind(&mut tw, box_with_actor, "sim.participant");
+    let npc_inside = tw
+        .world_mut()
+        .create(ObjKind::Npc, "Stowaway", GOD, Some(box_with_actor))
+        .unwrap();
+    assert_eq!(loc(&tw, npc_inside), Some(box_with_actor));
+    let err = refused(&mut tw, &format!("@vault/deposit #{}=0", box_with_actor.0));
+    assert!(
+        err.contains("contains"),
+        "container holding an actor must be refused: {err}"
+    );
+
+    // 3. Even if staff forcibly places `carrier` inside V_A's space (hangar),
+    // V_A must NEVER claim custody over nested vault V_B's `cargo` or actors in `cab`,
+    // and withdrawing them through V_A must be refused.
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", carrier.0, fx.hangar.0),
+    );
+    let provider = InteriorCustodyProvider;
+    let va_ref = CustodyRef::SpatialInterior(fx.hangar);
+    let va_contents = provider.contents(tw.world(), &va_ref).expect("contents");
+    assert!(
+        !va_contents.contains(&cargo),
+        "V_A must not claim V_B cargo"
+    );
+    assert!(
+        !va_contents.contains(&captive_player),
+        "V_A must not claim Player"
+    );
+    assert!(
+        !va_contents.contains(&captive_npc),
+        "V_A must not claim NPC"
+    );
+    assert_eq!(provider.holds(tw.world(), &va_ref, cargo), Some(false));
+    assert_eq!(
+        provider.holds(tw.world(), &va_ref, captive_player),
+        Some(false)
+    );
+    assert_eq!(
+        provider.holds(tw.world(), &va_ref, captive_npc),
+        Some(false)
+    );
+    refused(&mut tw, &format!("@vault/withdraw #{}=0", cargo.0));
+    refused(&mut tw, &format!("@vault/withdraw #{}=0", captive_player.0));
+    refused(&mut tw, &format!("@vault/withdraw #{}=0", captive_npc.0));
+    assert_eq!(loc(&tw, cargo), Some(stowage));
+    assert_eq!(loc(&tw, captive_player), Some(cab));
+    assert_eq!(loc(&tw, captive_npc), Some(cab));
+
+    // Even direct `move_out` on V_A must refuse actors and nested-vault occupants.
+    {
+        let mut out = Outbox::new();
+        let eng = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut eng.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &eng.registry,
+            module: Some(SmolStr::new("economy")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            provider
+                .move_out(&mut ctx, GOD, captive_player, &va_ref, GOD)
+                .is_err(),
+            "direct move_out must refuse Player"
+        );
+        assert!(
+            provider
+                .move_out(&mut ctx, GOD, captive_npc, &va_ref, GOD)
+                .is_err(),
+            "direct move_out must refuse Npc"
+        );
+        assert!(
+            provider
+                .move_out(&mut ctx, GOD, cargo, &va_ref, GOD)
+                .is_err(),
+            "direct move_out must refuse nested vault cargo"
+        );
+    }
+}
+
+/// **P2-MOD-5**: `InteriorCustodyProvider::move_into` refuses already-placed
+/// objects (another vault, a domain, a mount), quarantined objects, and
+/// under-way carriers — preventing cross-vault theft past `custody_lock`/Frozen.
+#[test]
+fn p2_mod_5_refuses_depositing_already_placed_or_quarantined_objects() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    hangar_vault(&mut tw, &fx); // Vault #0 backed by fx.hangar (V_A)
+
+    let hangar_b = tw
+        .world_mut()
+        .create(ObjKind::Room, "Hangar B", GOD, None)
+        .unwrap();
+    bind(&mut tw, hangar_b, "sim.interior");
+    ok(&mut tw, &format!("@spatial/space #{}=fixed:0", hangar_b.0));
+    let t = ok(
+        &mut tw,
+        &format!("@vault/create bay_b=interior:#{}", hangar_b.0),
+    );
+    assert!(t.contains("Created vault #1"), "{t}");
+
+    // Deposit fx.atlas into Vault #1 (V_B), then stand inside V_B and try to
+    // re-deposit it into remote Vault #0 (V_A) — must be refused.
+    ok(&mut tw, &format!("@vault/deposit #{}=1", fx.atlas.0));
+    tw.world_mut().move_to(GOD, hangar_b).unwrap();
+    let before_txs = journal_len(&tw);
+    let err = refused(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
+    assert!(
+        err.contains("already bound into the simulation"),
+        "already-placed deposit must be refused: {err}"
+    );
+    assert_eq!(journal_len(&tw), before_txs);
+    assert!(
+        matches!(sim(&tw).parent_of(fx.atlas), SpatialParent::Interior { space, .. } if space == hangar_b),
+        "atlas must stay in vault B"
+    );
+
+    // Direct-placed object on a domain cannot be yanked into V_A either.
+    let direct_unit = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Tank", GOD, Some(fx.field))
+        .unwrap();
+    bind(&mut tw, direct_unit, "sim.participant");
+    ok(
+        &mut tw,
+        &format!("@spatial/place/domain #{}=0", direct_unit.0),
+    );
+    tw.world_mut().move_to(GOD, fx.field).unwrap();
+    refused(&mut tw, &format!("@vault/deposit #{}=0", direct_unit.0));
+    assert!(matches!(
+        sim(&tw).parent_of(direct_unit),
+        SpatialParent::Direct { .. }
+    ));
+
+    // Quarantined object cannot be deposited into V_A either.
+    // Reach quarantine through the real space-destruction path (no fiat state write).
+    let temp_bay = tw
+        .world_mut()
+        .create(ObjKind::Room, "TempBay", GOD, None)
+        .unwrap();
+    bind(&mut tw, temp_bay, "sim.interior");
+    ok(&mut tw, &format!("@spatial/space #{}=fixed:0", temp_bay.0));
+    let q_unit = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Quarantined", GOD, Some(LIMBO))
+        .unwrap();
+    bind(&mut tw, q_unit, "sim.participant");
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", q_unit.0, temp_bay.0),
+    );
+    tw.world_mut().destroy(temp_bay).expect("destroy temp bay");
+    {
+        let mut out = Outbox::new();
+        let mut fxx = Effects::new();
+        tw.engine_mut().emit_world_event(
+            &WorldEvent::ObjDestroyed { obj: temp_bay },
+            &mut out,
+            &mut fxx,
+        );
+    }
+    assert!(sim(&tw).is_quarantined(q_unit));
+    let q_loc = loc(&tw, q_unit).unwrap_or(LIMBO);
+    tw.world_mut().move_to(GOD, q_loc).unwrap();
+    refused(&mut tw, &format!("@vault/deposit #{}=0", q_unit.0));
+    assert!(sim(&tw).is_quarantined(q_unit));
+}
+
+/// **P2-MOD-23 (custody)**: `InteriorCustodyProvider::move_into` and `move_out`
+/// refuse arena/field-deployed units.
+#[test]
+fn p2_mod_23_interior_custody_refuses_deployed_units() {
+    let mut tw = boot();
+    let fx = fixture(&mut tw);
+    hangar_vault(&mut tw, &fx);
+
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        fx.atlas,
+        mush_sim::DeployedMark::new(77, "tacsim.arena.proving_ground"),
+    );
+    let err = refused(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
+    assert!(
+        err.contains("deployed in arena match 77"),
+        "deployed deposit must be refused: {err}"
+    );
+    assert!(!sim(&tw).is_placed(fx.atlas));
+
+    mush_sim::deployed::clear(tw.world_mut(), fx.atlas);
+    ok(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
+
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        fx.atlas,
+        mush_sim::DeployedMark::field("site.alpha", 1),
+    );
+    let err = refused(&mut tw, &format!("@vault/withdraw #{}=0", fx.atlas.0));
+    assert!(
+        err.contains("in field 1 on site.alpha"),
+        "deployed withdraw must be refused: {err}"
+    );
+    assert!(sim(&tw).is_placed(fx.atlas));
+}
+
+/// **P2-MOD-24**: `InteriorCustodyProvider::move_into` invokes `CarryAttempt`
+/// hooks (such as `BayHold`/`CargoGate`/`InstalledGate`), and `move_out` skips
+/// ONLY `PlacementGate` so `relay::InstalledGate` and all external hooks still run.
+#[test]
+fn p2_mod_24_interior_custody_enforces_carry_attempt_hooks_and_installed_gate() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct ExternalCarryVeto(Arc<AtomicBool>);
+    impl mush_core::EventHook for ExternalCarryVeto {
+        fn carry_attempt(
+            &self,
+            _ctx: &mush_core::HookReadContext<'_>,
+            _mover: ObjId,
+            _obj: ObjId,
+            _dest: ObjId,
+        ) -> Result<(), mush_proto::RichText> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(mush_proto::RichText::tag(
+                    "error",
+                    "Blocked by external bay hold.",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    struct ExternalGateModule(Arc<AtomicBool>);
+    impl GameModule for ExternalGateModule {
+        fn name(&self) -> &'static str {
+            "ext_gate"
+        }
+        fn register(
+            &mut self,
+            reg: &mut mush_core::Registrar<'_>,
+        ) -> Result<(), mush_core::ModError> {
+            reg.hook(
+                mush_core::HookPoint::CarryAttempt,
+                Arc::new(ExternalCarryVeto(Arc::clone(&self.0))),
+            );
+            Ok(())
+        }
+    }
+
+    let blocked = Arc::new(AtomicBool::new(true));
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(SimulationModule::new()),
+        Box::new(ExternalGateModule(Arc::clone(&blocked))),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![Arc::new(
+            InteriorCustodyProvider,
+        )])),
+    ]);
+    let fx = fixture(&mut tw);
+    hangar_vault(&mut tw, &fx);
+
+    // 1. External CarryAttempt hook vetoes move_into on an unplaced sim.participant.
+    let err = refused(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
+    assert!(
+        err.contains("Blocked by external bay hold."),
+        "move_into must run CarryAttempt hooks: {err}"
+    );
+    assert!(!sim(&tw).is_placed(fx.atlas));
+
+    // Allow deposit, then re-arm external veto and confirm move_out is vetoed.
+    blocked.store(false, Ordering::SeqCst);
+    ok(&mut tw, &format!("@vault/deposit #{}=0", fx.atlas.0));
+    blocked.store(true, Ordering::SeqCst);
+    let err = refused(&mut tw, &format!("@vault/withdraw #{}=0", fx.atlas.0));
+    assert!(
+        err.contains("Blocked by external bay hold."),
+        "move_out must run external CarryAttempt hooks: {err}"
+    );
+    assert!(sim(&tw).is_placed(fx.atlas));
+
+    // 2. Sim's own `relay::InstalledGate` (registered under module `NS = "sim"`)
+    // must STILL veto both deposit AND withdraw (move_out skips ONLY PlacementGate).
+    blocked.store(false, Ordering::SeqCst);
+    let relay_half = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Relay Half", GOD, Some(LIMBO))
+        .unwrap();
+    bind(&mut tw, relay_half, "sim.participant");
+    bind(&mut tw, relay_half, mush_sim::relay::HALF_BEHAVIOR);
+    let err = refused(&mut tw, &format!("@vault/deposit #{}=0", relay_half.0));
+    assert!(
+        err.contains("Installed relay hardware cannot be moved."),
+        "move_into must enforce InstalledGate: {err}"
+    );
+
+    // Even if installed relay hardware is already placed inside the hangar space,
+    // move_out must STILL enforce `relay::InstalledGate` (not skip all `NS` hooks).
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", relay_half.0, fx.hangar.0),
+    );
+    let err = refused(&mut tw, &format!("@vault/withdraw #{}=0", relay_half.0));
+    assert!(
+        err.contains("Installed relay hardware cannot be moved."),
+        "move_out must skip ONLY PlacementGate and enforce InstalledGate: {err}"
+    );
+    assert_eq!(loc(&tw, relay_half), Some(fx.hangar));
+}

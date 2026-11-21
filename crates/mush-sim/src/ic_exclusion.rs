@@ -1356,6 +1356,25 @@ fn hold_forbids_journey(record: &Record, root: ObjId) -> bool {
             && (open.space().is_none_or(|s| root == s.object)
                 || open.host().is_none_or(|h| root == h)))
 }
+/// Whether an active IC exclusion forbids a carrier journey rooted at `root`.
+/// A ship held at a berth may still sail (doc 23 cut S.4d, D-23-25); a hull held
+/// in a fixed base or hangar (and a base's interior or domain host) may not.
+pub(crate) fn forbids_journey(world: &World, root: ObjId) -> Option<String> {
+    let state = world.module_state::<IcExclusions>()?;
+    for operation in state.active.values() {
+        let Some(record) = state.records.get(operation) else {
+            return Some(format!("{root} is held by IC custody."));
+        };
+        if hold_forbids_journey(record, root) {
+            return Some(format!(
+                "{root} is held by IC sortie {}; its custody owner must close it.",
+                record.open.identity.sortie
+            ));
+        }
+    }
+    None
+}
+
 /// **A held hull's move its hangar admits** (doc 23 cut S.4b-2, D-23-15: "moved only by the
 /// epoch's hosts"): a pose on the domain it stands on; from its hangar, the ramp onto the domain
 /// its carrier is landed on (placed `Direct` there, under no journey); a re-parent `Interior` into its own hangar or into a carrier's bay (a
@@ -1397,12 +1416,26 @@ fn hangar_move_admitted(
             }
             _ => false,
         },
-        crate::SpatialParent::Interior { space, .. } => {
-            *space == hangar.space.object
-                || state
-                    .spaces
-                    .get(space)
-                    .is_some_and(|s| matches!(s.anchor, crate::SpaceAnchor::MovingObject { .. }))
+        crate::SpatialParent::Interior { space, slot } => {
+            if crate::is_vault_backing(world, *space) || crate::is_multi_room(state, *space) {
+                return false;
+            }
+            if *space == hangar.space.object {
+                return true;
+            }
+            slot.is_some()
+                && state.spaces.get(space).is_some_and(|s| {
+                    !s.compartments.is_empty()
+                        && matches!(
+                            s.anchor,
+                            crate::SpaceAnchor::MovingObject { host }
+                                if host != unit
+                                    && host != *space
+                                    && !world
+                                        .module_state::<crate::JourneyBook>()
+                                        .is_some_and(|journeys| journeys.under_way(host))
+                        )
+                })
         }
         _ => false,
     }
@@ -1502,10 +1535,14 @@ pub(crate) fn check_plan(
                 .all(|p| hangar_move_admitted(spatial, world, unit, hangar, p));
             let projected_alone =
                 placed.is_empty() && plan.projections.iter().any(|(object, _)| *object == unit);
+            let current_space = match spatial.placements.get(&unit).map(|p| &p.parent) {
+                Some(crate::SpatialParent::Interior { space, .. }) => Some(*space),
+                _ => None,
+            };
             let bay_rewritten = plan
                 .set_spaces
                 .iter()
-                .any(|s| s.object == hangar.space.object);
+                .any(|s| s.object == hangar.space.object || current_space == Some(s.object));
             if !admitted || projected_alone || bay_rewritten {
                 tracing::debug!(
                     target: "ic_claim",

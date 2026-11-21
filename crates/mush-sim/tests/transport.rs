@@ -1072,3 +1072,172 @@ fn exhausted_control_generation_refuses_structural_change_without_mutation() {
         "refusal emitted persistence"
     );
 }
+
+/// **P2-MOD-21**: Player-facing `egress`/`disembark` enforces operator restraint,
+/// custody (`refuse_if_custodied` on actor and host/ancestors), `MoveAttempt`
+/// hooks (`HeldGate`), carrier egress policy, and refuses compartmented bays,
+/// rig cabs (console/billet/nested host), and vault backings.
+#[test]
+fn p2_mod_21_egress_enforces_restraint_custody_hooks_and_blocks_bays_and_cabs() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct TestCarrierHooks {
+        restrain: Arc<AtomicBool>,
+        block_egress: Arc<AtomicBool>,
+    }
+    impl mush_sim::CarrierHooks for TestCarrierHooks {
+        fn restrains_operator(&self, _w: &mush_core::World, _actor: ObjId) -> Option<String> {
+            self.restrain
+                .load(Ordering::SeqCst)
+                .then(|| "You are held captive aboard this vessel.".to_owned())
+        }
+        fn refuse_egress(
+            &self,
+            _w: &mush_core::World,
+            _actor: ObjId,
+            _space: ObjId,
+        ) -> Option<String> {
+            self.block_egress
+                .load(Ordering::SeqCst)
+                .then(|| "Carrier egress lock engaged.".to_owned())
+        }
+    }
+
+    struct HeldMoveHook(Arc<AtomicBool>);
+    impl mush_core::EventHook for HeldMoveHook {
+        fn move_attempt(
+            &self,
+            _ctx: &mush_core::HookReadContext<'_>,
+            _actor: ObjId,
+            _exit: Option<ObjId>,
+            _dest: ObjId,
+        ) -> Result<(), mush_proto::RichText> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(mush_proto::RichText::tag(
+                    "error",
+                    "HeldGate refuses movement.",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    struct HeldGateModule(Arc<AtomicBool>);
+    impl GameModule for HeldGateModule {
+        fn name(&self) -> &'static str {
+            "held_gate"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            reg.hook(
+                mush_core::HookPoint::MoveAttempt,
+                Arc::new(HeldMoveHook(Arc::clone(&self.0))),
+            );
+            Ok(())
+        }
+    }
+
+    let restrain = Arc::new(AtomicBool::new(false));
+    let block_egress = Arc::new(AtomicBool::new(false));
+    let held_move = Arc::new(AtomicBool::new(false));
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            SimulationModule::new().with_carrier_hooks(Arc::new(TestCarrierHooks {
+                restrain: Arc::clone(&restrain),
+                block_egress: Arc::clone(&block_egress),
+            })),
+        ),
+        Box::new(HeldGateModule(Arc::clone(&held_move))),
+        Box::new(ToyUnitModule),
+    ]);
+    let fx = fixture(&mut tw);
+    dropship_setup(&mut tw);
+    let ann = fx.pilot;
+    bind(&mut tw, ann, "sim.participant");
+    ok(&mut tw, &format!("@spatial/place/interior #{}=Bay", ann.0));
+
+    // 1. Operator restraint blocks both `egress` and `disembark`.
+    restrain.store(true, Ordering::SeqCst);
+    for cmd in ["egress", "disembark"] {
+        let out = texts(&tw.run(ann, cmd));
+        assert!(out.contains("held captive"), "{cmd}: {out}");
+        assert_eq!(loc(&tw, ann), Some(fx.bay));
+    }
+    restrain.store(false, Ordering::SeqCst);
+
+    // 2. External MoveAttempt hook (`HeldGate`) blocks egress.
+    held_move.store(true, Ordering::SeqCst);
+    let out = texts(&tw.run(ann, "egress"));
+    assert!(out.contains("HeldGate refuses movement."), "{out}");
+    assert_eq!(loc(&tw, ann), Some(fx.bay));
+    held_move.store(false, Ordering::SeqCst);
+
+    // 3. CarrierHooks::refuse_egress blocks egress.
+    block_egress.store(true, Ordering::SeqCst);
+    let out = texts(&tw.run(ann, "egress"));
+    assert!(out.contains("Carrier egress lock engaged."), "{out}");
+    assert_eq!(loc(&tw, ann), Some(fx.bay));
+    block_egress.store(false, Ordering::SeqCst);
+
+    // 4. Deployed custody on the actor OR on the anchor host blocks egress.
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        fx.carrier,
+        mush_sim::DeployedMark::new(11, "tacsim.arena.test"),
+    );
+    let out = texts(&tw.run(ann, "egress"));
+    assert!(out.contains("deployed in arena match 11"), "{out}");
+    assert_eq!(loc(&tw, ann), Some(fx.bay));
+    mush_sim::deployed::clear(tw.world_mut(), fx.carrier);
+
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        ann,
+        mush_sim::DeployedMark::field("site.x", 2),
+    );
+    let out = texts(&tw.run(ann, "egress"));
+    assert!(out.contains("in field 2 on site.x"), "{out}");
+    assert_eq!(loc(&tw, ann), Some(fx.bay));
+    mush_sim::deployed::clear(tw.world_mut(), ann);
+
+    // 5. A rig cab (nested host inside Bay AND authored console + billet) blocks egress.
+    let cab = tw
+        .world_mut()
+        .create(ObjKind::Room, "Rig Cab", GOD, None)
+        .unwrap();
+    bind(&mut tw, cab, "sim.interior");
+    ok(
+        &mut tw,
+        &format!("@spatial/space #{}=moving:#{}", cab.0, fx.mech.0),
+    );
+    ok(
+        &mut tw,
+        &format!(
+            "@spatial/station #{}=helm,pilot,space:#{}",
+            fx.mech.0, cab.0
+        ),
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/assign #{}=helm,#{}", fx.mech.0, ann.0),
+    );
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", ann.0, cab.0),
+    );
+    let out = texts(&tw.run(ann, "egress"));
+    assert!(
+        out.contains("leave through its boarding verb"),
+        "rig cab egress must be refused: {out}"
+    );
+    assert_eq!(loc(&tw, ann), Some(cab));
+
+    // 6. A carrier bay with a declared compartment (`rigs`) blocks player egress.
+    ok(&mut tw, &format!("@spatial/place/interior #{}=Bay", ann.0));
+    ok(&mut tw, "@spatial/slot Bay=rigs,2");
+    let out = texts(&tw.run(ann, "egress"));
+    assert!(
+        out.contains("leave through its boarding verb"),
+        "compartmented carrier bay egress must be refused: {out}"
+    );
+    assert_eq!(loc(&tw, ann), Some(fx.bay));
+}

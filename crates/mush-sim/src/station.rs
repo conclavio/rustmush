@@ -352,31 +352,59 @@ pub(crate) fn actor_grant_epoch(
 /// The primary `@station` verbs. `handoff`/`release`/`cancel` are the authoritative
 /// ingress; `show` is read-only; `fallback` writes the exempt record.
 pub(crate) fn cmd_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    // Doc 42 cut CR.0 (Q-42-2): a held person takes, gives and arranges no lease; `/show` reads.
-    if !ctx.switches.has("show")
+    enum StationVerb {
+        Release,
+        Handoff,
+        Cancel,
+        Fallback,
+        Show,
+    }
+    let mut selected = None;
+    for (name, verb) in [
+        ("release", StationVerb::Release),
+        ("handoff", StationVerb::Handoff),
+        ("cancel", StationVerb::Cancel),
+        ("fallback", StationVerb::Fallback),
+        ("show", StationVerb::Show),
+    ] {
+        if ctx.switches.has(name) {
+            if selected.is_some() {
+                return Err(CmdError::msg(
+                    "Use only one @station switch at a time (/handoff, /release, /cancel, /fallback, or /show).",
+                ));
+            }
+            selected = Some(verb);
+        }
+    }
+    let verb = match selected {
+        Some(verb) => verb,
+        None if ctx.args.raw().trim().is_empty() => StationVerb::Show,
+        None => {
+            return Err(CmdError::msg(
+                "Usage: @station/handoff <unit>/<station>   @station/release <unit>/<station>   @station/cancel <unit>/<station>\n\
+                 @station/fallback <unit>/<station>=<who>   @station/show [<unit>/<station>]",
+            ));
+        }
+    };
+    // Doc 42 cut CR.0 (Q-42-2, P2-MOD-22): a held person takes, gives and arranges no lease;
+    // only a pure read (`/show` with no mutating switch) bypasses operator restraint.
+    if !matches!(verb, StationVerb::Show)
         && let Some(why) = crate::journey::operator_restraint(ctx.w, ctx.actor)
     {
         return Err(CmdError::msg(why));
     }
-    if ctx.switches.has("release") {
-        if ctx.args.rhs().is_some() {
-            return Err(CmdError::msg(NO_SUCH_STATION));
+    match verb {
+        StationVerb::Release => {
+            if ctx.args.rhs().is_some() {
+                return Err(CmdError::msg(NO_SUCH_STATION));
+            }
+            let (unit, station) = parse_unit_station(ctx, ctx.args.lhs())?;
+            request_control_release(ctx, unit, &station, ctx.actor)
         }
-        let (unit, station) = parse_unit_station(ctx, ctx.args.lhs())?;
-        request_control_release(ctx, unit, &station, ctx.actor)
-    } else if ctx.switches.has("handoff") {
-        station_handoff(ctx, false)
-    } else if ctx.switches.has("cancel") {
-        station_handoff(ctx, true)
-    } else if ctx.switches.has("fallback") {
-        station_fallback(ctx)
-    } else if ctx.switches.has("show") || ctx.args.raw().trim().is_empty() {
-        station_show(ctx)
-    } else {
-        Err(CmdError::msg(
-            "Usage: @station/handoff <unit>/<station>   @station/release <unit>/<station>   @station/cancel <unit>/<station>\n\
-             @station/fallback <unit>/<station>=<who>   @station/show [<unit>/<station>]",
-        ))
+        StationVerb::Handoff => station_handoff(ctx, false),
+        StationVerb::Cancel => station_handoff(ctx, true),
+        StationVerb::Fallback => station_fallback(ctx),
+        StationVerb::Show => station_show(ctx),
     }
 }
 
@@ -392,24 +420,37 @@ pub(crate) fn cmd_station(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// cannot tell an existing station from a missing one.
 fn station_handoff(ctx: &mut Ctx<'_>, cancel: bool) -> Result<(), CmdError> {
     let (unit, station) = parse_unit_station(ctx, ctx.args.lhs())?;
-    // Existence hiding (B1): a station is refused with the SAME `NO_SUCH_STATION`
-    // line to any actor who does not hold that billet — whether the station is
-    // absent OR merely not this actor's seat. `holds_billet` is false in both
-    // cases, so a co-located non-holder can never distinguish an existing station
-    // from a missing one, and cannot enumerate a unit's station complement. Only a
-    // billet-holder (who already knows the seat exists) sees the "+focus" hint.
-    if !holds_billet(ctx, ctx.actor, unit, &station) {
-        return Err(CmdError::msg(NO_SUCH_STATION));
-    }
-    // Focus-gated: the offer is projected only for the actor's focused station
-    // (the billet that proves authority and fixes the one channel). Refuse early
-    // when the actor holds the billet but is not driving that station.
-    if focused_station(ctx, ctx.actor) != Some((unit, station.clone()))
-        && crate::handoff::physical_npc_station(ctx.w, ctx.actor, unit) != Some(station.clone())
-    {
-        return Err(CmdError::msg(format!(
-            "You are not driving `{station}` there; +focus it first."
-        )));
+    let staff_cancel = cancel && is_admin(ctx.w, ctx.actor);
+    if staff_cancel {
+        if st(ctx)
+            .stations
+            .get(&unit)
+            .is_none_or(|hs| !hs.stations.contains_key(&station))
+        {
+            return Err(CmdError::msg(NO_SUCH_STATION));
+        }
+    } else {
+        // Existence hiding (B1): a station is refused with the SAME `NO_SUCH_STATION`
+        // line to any actor who does not hold that billet — whether the station is
+        // absent OR merely not this actor's seat. `holds_billet` is false in both
+        // cases, so a co-located non-holder can never distinguish an existing station
+        // from a missing one, and cannot enumerate a unit's station complement. Only a
+        // billet-holder (who already knows the seat exists) sees the "+focus" hint.
+        if !holds_billet(ctx, ctx.actor, unit, &station) {
+            return Err(CmdError::msg(NO_SUCH_STATION));
+        }
+        // Focus-gated for new handoffs: the offer is projected only for the actor's
+        // focused station (the billet that proves authority and fixes the one
+        // channel). Cancel allows an unfocused billet-holder to withdraw their own
+        // stale/pending handoff (P2-MOD-25).
+        if !cancel
+            && focused_station(ctx, ctx.actor) != Some((unit, station.clone()))
+            && crate::handoff::physical_npc_station(ctx.w, ctx.actor, unit) != Some(station.clone())
+        {
+            return Err(CmdError::msg(format!(
+                "You are not driving `{station}` there; +focus it first."
+            )));
+        }
     }
     let action = if cancel {
         crate::handoff::cancel_action_ref(ctx.reg)
@@ -417,8 +458,15 @@ fn station_handoff(ctx: &mut Ctx<'_>, cancel: bool) -> Result<(), CmdError> {
         crate::handoff::request_action_ref(ctx.reg)
     }
     .ok_or_else(|| CmdError::msg("Station control is not available on this server."))?;
-    let revision = requester_grant_epoch(ctx, unit, station.as_str())
-        .ok_or_else(|| CmdError::msg(NO_SUCH_STATION))?;
+    let revision = if let Some(epoch) = requester_grant_epoch(ctx, unit, station.as_str()) {
+        epoch
+    } else if staff_cancel && mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty)
+    {
+        // Kernel bootstrap staff projection generation for Royalty+ without a billet grant.
+        1
+    } else {
+        return Err(CmdError::msg(NO_SUCH_STATION));
+    };
     submit_station_action(ctx, action, unit, revision, cancel);
     Ok(())
 }
@@ -458,6 +506,9 @@ pub fn request_control_release(
     station: &StationId,
     actor: ObjId,
 ) -> Result<(), CmdError> {
+    if let Some(why) = crate::journey::operator_restraint(ctx.w, actor) {
+        return Err(CmdError::msg(why));
+    }
     if ctx.authoritative_pending(actor)
         || ctx.authoritative_commit_pending()
         || ctx.authoritative_queue_full()

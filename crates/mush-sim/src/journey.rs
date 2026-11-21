@@ -672,10 +672,17 @@ pub trait CarrierHooks: Send + Sync {
     }
 
     /// **Doc 42 cut CR.0 (Q-42-2, Draft 0.3 42-6) — a person a carrier holds.** Asked at the
-    /// head of `@station` and `+focus` (every form but the reads): `Some(why)` refuses
+    /// head of `@station`, `+focus`, `egress`, and `@journey/depart`: `Some(why)` refuses
     /// `actor` with `why`, the game layer's one-line held refusal. World-only, like the rest.
     fn restrains_operator(&self, w: &World, actor: ObjId) -> Option<String> {
         let _ = (w, actor);
+        None
+    }
+
+    /// Asked by player-facing `egress` / `disembark` before leaving an interior
+    /// `space`: `Some(why)` refuses the egress with `why`. World-only, like the rest.
+    fn refuse_egress(&self, w: &World, actor: ObjId, space: ObjId) -> Option<String> {
+        let _ = (w, actor, space);
         None
     }
 }

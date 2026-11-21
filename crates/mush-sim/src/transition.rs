@@ -26,6 +26,10 @@ pub enum SpatialError {
     /// A dedicated IC owner retains this hull until its genuine close event.
     #[error("{0} is held by IC custody")]
     IcCustody(ObjId),
+    /// The unit is deployed in an active arena match or IC field and cannot be
+    /// re-placed or unplaced outside its custody owner.
+    #[error(transparent)]
+    Deployed(#[from] crate::deployed::UnitDeployed),
     /// The object does not exist or is being destroyed.
     #[error("{0} does not exist (or is being destroyed)")]
     NoSuchObject(ObjId),
@@ -627,6 +631,7 @@ pub(crate) fn plan_at(
     match t {
         Transition::Place { obj, parent } => {
             let obj = *obj;
+            crate::deployed::refuse_if_deployed(w, obj)?;
             if st.held_placement(obj).is_some() {
                 return Err(SpatialError::HeldPlacement(obj));
             }
@@ -672,6 +677,9 @@ pub(crate) fn plan_at(
             post.placements.insert(obj, rec.clone());
             post.derived = rebuild(&post);
             projections_for(&post, w, obj, &mut plan.projections)?;
+            for &(projected, _) in &plan.projections {
+                crate::deployed::refuse_if_deployed(w, projected)?;
+            }
             plan.audit = serde_json::json!({
                 "op": "place", "obj": obj.0, "parent": serde_json::to_value(parent).unwrap_or_default(),
                 "previous": prev.map(|p| serde_json::to_value(&p.parent).unwrap_or_default()),
@@ -685,6 +693,7 @@ pub(crate) fn plan_at(
             keep,
         } => {
             let obj = *obj;
+            crate::deployed::refuse_if_deployed(w, obj)?;
             let prev = st
                 .placements
                 .get(&obj)
@@ -993,8 +1002,20 @@ pub fn apply(
     plan: Plan,
 ) -> Result<(), SpatialError> {
     // Public callers may retain a previously checked plan. Recheck dedicated
-    // IC custody before the first audit allocation, projection or state write.
+    // IC custody and arena/field deployment before the first audit allocation,
+    // projection or state write.
     crate::ic_exclusion::check_plan(st, w, &plan)?;
+    if matches!(
+        plan.audit.get("op").and_then(serde_json::Value::as_str),
+        Some("place" | "unplace")
+    ) {
+        for p in &plan.set_placements {
+            crate::deployed::refuse_if_deployed(w, p.object)?;
+        }
+        for &(projected, _) in &plan.projections {
+            crate::deployed::refuse_if_deployed(w, projected)?;
+        }
+    }
     let prepared_audit = if plan.audit.is_null() {
         None
     } else {
