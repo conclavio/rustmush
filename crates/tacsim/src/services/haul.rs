@@ -162,6 +162,8 @@ pub const OWN_JOB: &str = "That haul is your own.";
 pub const NOT_DOCKED: &str = "The goods wait at {origin}, and your hull is not docked there.";
 /// The refusal for a hold with no room.
 pub const NO_ROOM: &str = "Your hold has no room for those goods.";
+/// Told the hauler when her hold has no room for a taken haul's goods at the load (doc 50b): `{job}`.
+pub const TOLD_NO_ROOM: &str = "Haul {job} is called off: your hold has no room for its goods, so they never loaded. The fee goes back to the shipper and your bond back to you.";
 /// The refusal for goods the shipper no longer has.
 pub const GOODS_GONE: &str = "The shipper's goods are no longer there to load.";
 /// The acceptance's preview (`{qty}`, `{good}`, `{port}`, `{fee}`, `{value}`, `{bond}`, `{days}`).
@@ -879,6 +881,21 @@ fn job_word(word: &str) -> Option<u64> {
     word.trim().trim_start_matches('#').parse::<u64>().ok()
 }
 
+/// **Whether `hold` has room for `quantity` of `good`** (doc 50b; doc 50 §7's cargo reading):
+/// the capacity plan over everything the hold holds, pooled or in lots
+/// (`crate::port_tick::read_held`), so goods bought as an exact lot take room too. A hold with no
+/// plan has room; one whose contents will not read has none.
+fn hold_has_room(ctx: &Ctx<'_>, hold: VaultId, good: &CanonicalId, quantity: u64) -> bool {
+    let hold_ep = EndpointRef(hold);
+    let Some(plan) = PortCapacity.plan(ctx.w, hold_ep) else {
+        return true;
+    };
+    let mut read = |g: &CanonicalId| {
+        crate::port_tick::read_held(ctx, hold_ep, g).map_err(|_| mush_market::CapacityReadError)
+    };
+    PortCapacity.check(&plan, good, quantity, &mut read).is_ok()
+}
+
 #[allow(clippy::too_many_lines)] // one ordered refusal list, the join, then the load
 fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let (words, opts) = super::options(rest);
@@ -903,14 +920,8 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
     let hold = crate::port::ship::hull_view(ctx.w, hull)
         .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view))
         .ok_or_else(|| NO_ROOM.to_owned())?;
-    let hold_ep = EndpointRef(hold);
-    if let Some(plan) = PortCapacity.plan(ctx.w, hold_ep) {
-        let mut read = |g: &CanonicalId| {
-            crate::port_tick::read_pool(ctx, hold_ep, g).map_err(|_| mush_market::CapacityReadError)
-        };
-        PortCapacity
-            .check(&plan, &job.good, job.quantity, &mut read)
-            .map_err(|_| NO_ROOM.to_owned())?;
+    if !hold_has_room(ctx, hold, &job.good, job.quantity) {
+        return Err(NO_ROOM.to_owned());
     }
     let held =
         crate::port_tick::read_pool(ctx, EndpointRef(VaultId(job.source)), &job.good).unwrap_or(0);
@@ -1170,7 +1181,19 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
                 job.stage = HaulStage::Aboard;
                 return true;
             }
-            if job.tries >= MAX_LEG_TRIES || state.as_ref().is_none_or(|s| s.is_terminal()) {
+            // Doc 50b (doc 50 §7's cargo reading): the load re-reads the hold's room before each
+            // try, so a hold filled since the haul was taken never takes the goods.
+            let no_room = job.owed.as_ref().is_some_and(|o| {
+                o.kind == LegKind::Load && !hold_has_room(ctx, VaultId(o.to), &o.good, o.quantity)
+            });
+            if no_room
+                || job.tries >= MAX_LEG_TRIES
+                || state.as_ref().is_none_or(|s| s.is_terminal())
+            {
+                if no_room && let Some(pilot) = job.pilot {
+                    let line = TOLD_NO_ROOM.replace("{job}", &job.job());
+                    super::tell(ctx, &PrincipalId::Object(pilot), CHANNEL, &line);
+                }
                 // The goods never loaded: nothing is aboard, so nothing returns. A job still live
                 // is cancelled, the fee back to the shipper and the bond to the hauler.
                 let _ = mush_economy::cancel_job(ctx, ContractId(job.contract));
@@ -1181,6 +1204,15 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
             submit(ctx, job)
         }
         HaulStage::Aboard => {
+            // Doc 50b (OP.3): a delivery the ledger already committed is acknowledged first, so a
+            // hull lost after it docked owes no lost leg the ledger would refuse at that ordinal.
+            if job.owed.as_ref().is_some_and(|o| {
+                o.kind == LegKind::Deliver
+                    && acts >= o.act
+                    && ledger.as_ref().is_some_and(|l| l.last == LegKind::Deliver)
+            }) {
+                return delivered(ctx, job);
+            }
             // Doc 50 cut OP.3 (Q-50-25): her hull wrecked or captured with the goods aboard owes
             // the lost leg, which releases the hold.
             if job.owed.as_ref().is_none_or(|o| o.kind != LegKind::Lost)
@@ -1195,14 +1227,7 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
             }
             if let Some(owed) = job.owed.clone() {
                 if acts >= owed.act && ledger.as_ref().is_some_and(|l| l.last == LegKind::Deliver) {
-                    job.owed = None;
-                    job.tries = 0;
-                    job.stage = HaulStage::Delivered;
-                    let line = TOLD_DELIVERED
-                        .replace("{job}", &job.job())
-                        .replace("{port}", &super::venue_name(ctx.w, &job.destination));
-                    super::tell(ctx, &PrincipalId::Object(job.shipper), CHANNEL, &line);
-                    return true;
+                    return delivered(ctx, job);
                 }
                 if job.tries < MAX_LEG_TRIES && owed.by_ic.is_none_or(|by| now < by) {
                     return submit(ctx, job);
@@ -1236,6 +1261,9 @@ fn step(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
 /// deadline would (the fee back to the shipper and the bond to them, Q-48-42), and closes the
 /// record. A contract that will not lapse here (a frozen economy) still lapses at its deadline.
 fn seized(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
+    if let Some(hull) = job.hull {
+        loss_moves_the_other_side(ctx, hull, job.contract, &job.destination, "seized");
+    }
     let _ = mush_economy::lapse_job(ctx, ContractId(job.contract));
     job.owed = None;
     job.tries = 0;
@@ -1246,6 +1274,78 @@ fn seized(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
         let line = TOLD_HAULER_SEIZED.replace("{job}", &job.job());
         super::tell(ctx, &PrincipalId::Object(pilot), CHANNEL, &line);
     }
+    true
+}
+
+/// The cause-id prefix of a side's loss (Q-50-25, Q-50-51); the contract follows it.
+pub const LOSS_CAUSE: &str = "haul.loss/";
+
+/// **A loss moves the other side's clock** (doc 50b; Q-50-25 as corrected, Q-50-51): when the
+/// hull carrying a haul flies for a side of the operation in its window
+/// (`crate::space::op_sides::side_of`) and its cargo is seized or lost, the other side's front
+/// clock advances one segment by a typed cause keyed by the contract, so a retry counts once. The
+/// Republic's clock is the Concession Review and the Freeport's is Hold the Concession; a clock
+/// already full, or one not seeded, moves no further.
+pub fn loss_moves_the_other_side(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    contract: u64,
+    destination: &str,
+    what: &str,
+) {
+    let Some(status) = crate::space::op_sides::carriers_contested(ctx.w) else {
+        return;
+    };
+    let Some(side) = crate::space::op_sides::side_of(ctx.w, &status, hull) else {
+        return;
+    };
+    let Some((other, _)) = status
+        .sides
+        .iter()
+        .enumerate()
+        .find(|(i, _)| *i != side)
+        .map(|(_, s)| s.clone())
+    else {
+        return;
+    };
+    let clock = match other.as_str() {
+        "republic" => crate::concession::review_clock(ctx.w),
+        "freeport" => crate::concession::hold_clock(ctx.w),
+        _ => None,
+    };
+    let Some(clock) = clock.filter(|c| !c.completed) else {
+        return;
+    };
+    let mine = status.sides.get(side).map_or("", |(tag, _)| tag.as_str());
+    let line = crate::concession::draft(
+        ctx,
+        "op.haul_loss",
+        format!(
+            "A haul for {} was {what} on the way to {}; {} advances.",
+            crate::polity::polity_name(mine),
+            super::venue_name(ctx.w, destination),
+            clock.title
+        ),
+        format!("{LOSS_CAUSE}{contract}"),
+    );
+    if matches!(
+        mush_faction::advance_clock_by_cause(ctx, clock.id, 1, line),
+        Ok(mush_faction::ClockAdvance::Advanced { .. })
+    ) {
+        ctx.out.pin_deferred();
+    }
+}
+
+/// **The delivery is acknowledged**: the leg committed, so the job is delivered and its shipper
+/// told.
+fn delivered(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
+    job.owed = None;
+    job.tries = 0;
+    job.stage = HaulStage::Delivered;
+    let line = TOLD_DELIVERED
+        .replace("{job}", &job.job())
+        .replace("{port}", &super::venue_name(ctx.w, &job.destination));
+    super::tell(ctx, &PrincipalId::Object(job.shipper), CHANNEL, &line);
     true
 }
 
@@ -1281,6 +1381,9 @@ fn owe_lost(ctx: &mut Ctx<'_>, job: &mut HaulJob, now: i64) -> bool {
 /// the goods are part of the wreck; the arm lapses the contract as a seizure does (the fee back to
 /// the shipper and the bond to them) and closes the record.
 fn lost(ctx: &mut Ctx<'_>, job: &mut HaulJob) -> bool {
+    if let Some(hull) = job.hull {
+        loss_moves_the_other_side(ctx, hull, job.contract, &job.destination, "lost");
+    }
     let _ = mush_economy::lapse_job(ctx, ContractId(job.contract));
     job.owed = None;
     job.tries = 0;

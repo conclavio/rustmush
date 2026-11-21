@@ -1581,6 +1581,37 @@ Q-50-63; doc 50a A-8, A-8b). Stacked on OP.2. **No lane bump.**
 - The NPC arm's use of the organization path (OP.4).
 - The untaken haul carried by EX.10's house (Q-50-24, OP.4).
 
+### Fixes from doc 50b
+
+Doc 50b (the outside code review of 2026-11-20) found four defects on OP.3's paths. Fixed together
+with OP.6's two, below; no lane bump.
+- **A haul taken in its escort's own hull** (P2). Acceptance compared the escort's hull with a
+  protected hull still unbound, and binding never looked again, so a hull could escort herself
+  and the record then failed its own check on reload. Now, when the haul is taken in the escort's
+  hull, whichever contract was taken first, the escort is called off through `cancel_job` and
+  both parties are told (`escort::TOLD_SAME_HULL`).
+- **A delivered haul stuck aboard** (P2). The arm looked for a wreck or capture before
+  acknowledging a delivery the ledger had committed, so a hull lost after docking owed a lost leg
+  the ledger refused for ever. The committed delivery is acknowledged first.
+- **Hold capacity** (doc 50 §7's cargo reading). Mining's hold reading
+  (`mining::hull_hold_used_tonnes`) counted the four ores only; it now counts, by mass, every good
+  the ore compartments take, bulk trade goods included, and rounds up. The haul's admission read
+  pools only; it reads what the hold holds (`port_tick::read_held`, `haul::hold_has_room`), and the
+  load re-reads the room before each try, calling the haul off with `haul::TOLD_NO_ROOM` when
+  there is none.
+- **The escort's grace at a test rate** (P3). The proximity test compared departures against
+  `TOGETHER_IC` alone, so at 3,600:1 an escort inside the launch grace failed the passage. Both
+  now read `escort::together_ic`: `TOGETHER_IC`, or the IC seconds `LAUNCH_GRACE_WALL_S` make at
+  the clock rate, whichever is longer. At 24:1 nothing changes.
+- **Tests** (`domain_economy::op3_hauls`): `op50b_a_haul_taken_in_its_escorts_own_hull_calls_the_escort_off`;
+  `op50b_a_delivery_committed_before_the_hull_is_lost_stays_delivered` (two hops to Isidis, the
+  delivery lands, then the hull is wrecked: the contract settles);
+  `op50b_a_full_dray_p_can_neither_mine_more_nor_take_a_haul` (alloys held as a lot fill the hold:
+  the haul refuses her and `+mine/status` reads the ore hold full); and the unit test
+  `escort::op50b_the_together_gap_follows_the_clock_rate`. Mutations, each caught: no self-escort
+  check; the delivery acknowledged after the loss check; the ore reading of ores only; the
+  admission reading pools only; no rate in the gap.
+
 ## OP.4
 
 The stockpile, its drain and the Freeport arm's budget; NPC hulls at the picket (Q-50-21, Q-50-22,
@@ -1918,12 +1949,13 @@ Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-5
   - rustdoc `-D warnings` in both modes.
 
 **Divergences.**
-- **Foes are fixed when a carrier joins.** A carrier already in a bubble when the window opens
-  stays friendly to the others there; the window is 28 IC days, and every passage after it opens
-  meets its foes as foes.
+- **Foes were fixed when a carrier joined.** Replaced by doc 50b's fix (below): the foes are
+  reconciled on every bubble step.
 - **Breaking off frees her only from her operation foes.** Q-50-62 reads "every hostile hull";
   read that way a raider or an interdictor could be escaped by distance, which would change every
   bubble outside the operation. Q-50-26 rules that outside the operation today's rule stands.
+  **Confirmed by the owner (2026-11-20, Q-50-62):** the break-off stays as built, timed from
+  operation hostiles only.
 - **The reach and the time are provisional**: 25,000 m (past the interdiction standoff of
   18,000 m) and 60 s of wall time, so a player at 24:1 is not held by a foe who logged off.
 - **A side's polity is its commanding organization's**: the Republic's customs office is the
@@ -1933,8 +1965,37 @@ Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-5
 
 **Not built.**
 - `+operation`, the notices and the Republic's bid (OP.7).
-- The other side's clock moving when a hull flying for a side is lost (Q-50-25's last half).
+- The other side's clock moving when a hull flying for a side is lost (Q-50-25's last half): built
+  by doc 50b's fixes (below).
 - A line telling a carrier she has broken off; she resumes with the resume's own lines.
+
+### Fixes from doc 50b
+
+Doc 50b's two findings on OP.6's ground, fixed with OP.3's (above).
+- **Operation hostility set once, at join** (P1). The foes were read when a carrier joined a
+  bubble and never again, so two carriers stayed hostile after the window closed or a job ended,
+  and carriers already sharing a bubble when it opened stayed friendly. Every bubble step now
+  reads `op_sides::foes` for each pair of its carriers (`ActiveInterdictionBubble::
+  reconcile_op_foes`, before the break-off is timed): a pair newly qualified turns hostile both
+  ways and names each other; one no longer qualified turns friendly again and drops them; a
+  carrier left with no foes is no longer timed or broken off. Only carrier-to-carrier relations
+  move, so an NPC's hostility stands (Q-50-26).
+- **A side's loss moves the other side's clock** (Q-50-25 as corrected, Q-50-51). When a haul's
+  cargo is seized or lost in a hull flying for a side inside the window
+  (`op_sides::side_of`), the other side's front clock advances one segment by a typed cause,
+  `haul.loss/<contract>`, so a retry counts once (`haul::loss_moves_the_other_side`). The
+  Republic's clock is the Concession Review and the Freeport's is Hold the Concession. The
+  Review's flagged-seizure path is left as it is.
+  - **A divergence:** in the first operation the Review is full once the window opens, so a
+    Freeport-side loss moves nothing; only a Republic-side loss moves Hold.
+- **Tests**: `space::tick::op50b_operation_foes_are_reconciled_each_step` (the window closing and
+  opening; an NPC's hostility left standing) and
+  `domain_world::op6_sides::op50b_a_sides_loss_moves_the_other_sides_clock_once`. Mutations, each
+  caught: the reconcile changing nothing; no loss moving a clock.
+- **On conclav.dev, green**: all of tacsim, mush-server `split_boundary` and
+  `commerce_composition`, mush-contract-tests, mush-composition and the bot's library (its census
+  gains the two new lines); fmt; clippy `-D warnings` on tacsim and mush-server; the M7 pass;
+  rustdoc in both modes.
 
 ## OP.7
 
