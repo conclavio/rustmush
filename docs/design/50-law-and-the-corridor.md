@@ -1009,6 +1009,10 @@ the five.
 - **Alternative:** nothing for the Republic's side in the first operation.
 - **Why:** two buyers for one cargo is a choice a trader can feel with no new job kind: every tonne
   sold to the Republic is one not landed at Isidis. A campaign with one side's work is a quest.
+- **Amended (owner ruling, 2026-11-21):** no Republic supply hulls and no escort jobs for them,
+  for now. The Republic's side of the first operation is the standing bid OP.7b built, and nothing
+  else. Escorts for the Republic's own hulls come back as a question only when the Republic gains
+  supply hauls of its own.
 
 **Q-50-28 — How it is decided.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** at the window's close. If the threshold record exists, the Concession is
