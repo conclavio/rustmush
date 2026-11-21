@@ -51,11 +51,18 @@ pub fn is_onboarding_verb(verb: &str) -> bool {
 
 /// Whether `name` is on the onboarding query allowlist — the read-only client
 /// hydration queries an unapproved, gated character still needs during chargen
-/// (command palette, their own pilot sheet, and joined channel list). Every
-/// live-grid/TacSim/arena/market/world query is refused until approval.
+/// (core `"room"` attach-look and `"who"` list, command palette, their own
+/// pilot sheet, and joined channel list). Every live-grid/TacSim/arena/market
+/// query is refused until approval.
 #[must_use]
 pub fn is_onboarding_query(name: &str) -> bool {
-    const ALLOWED_QUERIES: &[&str] = &["commands.list", "tacsim.sheet", "comsys.state"];
+    const ALLOWED_QUERIES: &[&str] = &[
+        "room",
+        "who",
+        "commands.list",
+        "tacsim.sheet",
+        "comsys.state",
+    ];
     let name = name.to_ascii_lowercase();
     ALLOWED_QUERIES.iter().any(|allowed| *allowed == name)
 }
@@ -287,6 +294,38 @@ mod tests {
     }
 
     #[test]
+    fn the_query_allowlist_carries_chargen_and_core_read_only_queries() {
+        for query in [
+            "room",
+            "who",
+            "commands.list",
+            "tacsim.sheet",
+            "comsys.state",
+        ] {
+            assert!(is_onboarding_query(query), "{query} should be allowed");
+        }
+        assert!(
+            is_onboarding_query("ROOM"),
+            "query check is case-insensitive"
+        );
+        assert!(
+            is_onboarding_query("WHO"),
+            "query check is case-insensitive"
+        );
+        for query in [
+            "tacsim.content",
+            "arena.map",
+            "mind.market",
+            "mind.holdings",
+            "tactics.contacts",
+            "port.trade",
+            "comsys.backlog",
+        ] {
+            assert!(!is_onboarding_query(query), "{query} should be gated");
+        }
+    }
+
+    #[test]
     fn onboarding_gate_blocks_invokes_live_queries_and_legal_actions_until_approved() {
         use mush_core::action::{PerceivedRef, PrincipalId};
         use mush_core::{Effects, Engine, Inbound, Outbox};
@@ -334,8 +373,12 @@ mod tests {
         }
         {
             let mut r = mush_core::Registrar::new(&mut reg, "test");
+            r.query_handler("room", Arc::new(DummyQuery)).expect("room");
+            r.query_handler("who", Arc::new(DummyQuery)).expect("who");
             r.query_handler("tacsim.content", Arc::new(DummyQuery))
                 .expect("tacsim.content");
+            r.query_handler("arena.map", Arc::new(DummyQuery))
+                .expect("arena.map");
             r.query_handler("tacsim.sheet", Arc::new(DummyQuery))
                 .expect("tacsim.sheet");
             r.query_handler("commands.list", Arc::new(DummyQuery))
@@ -387,35 +430,44 @@ mod tests {
             out.events()
         );
 
-        // 2. Pre-onboarding player is blocked from TacSim queries, while chargen queries pass.
-        let mut out = Outbox::new();
-        engine.step(
-            Inbound::Query {
-                conn: 1,
-                actor: nick,
-                id: 11,
-                name: "tacsim.content".into(),
-                args: serde_json::json!({}),
-            },
-            &mut out,
-            &mut Effects::new(),
-        );
-        assert!(
-            matches!(
-                out.events(),
-                [(
-                    _,
-                    OutputEvent::Reply {
-                        id: 11,
-                        event,
-                    }
-                )] if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text().contains("finish creating your character"))
-            ),
-            "expected onboarding refusal for tacsim.content query: {:?}",
-            out.events()
-        );
+        // 2. Pre-onboarding player is blocked from live-grid/TacSim/arena queries,
+        //    while core read-only (`room`, `who`) and chargen hydration queries pass.
+        for blocked in ["tacsim.content", "arena.map"] {
+            let mut out = Outbox::new();
+            engine.step(
+                Inbound::Query {
+                    conn: 1,
+                    actor: nick,
+                    id: 11,
+                    name: blocked.into(),
+                    args: serde_json::json!({}),
+                },
+                &mut out,
+                &mut Effects::new(),
+            );
+            assert!(
+                matches!(
+                    out.events(),
+                    [(
+                        _,
+                        OutputEvent::Reply {
+                            id: 11,
+                            event,
+                        }
+                    )] if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text().contains("finish creating your character"))
+                ),
+                "expected onboarding refusal for `{blocked}` query: {:?}",
+                out.events()
+            );
+        }
 
-        for allowed in ["tacsim.sheet", "commands.list", "comsys.state"] {
+        for allowed in [
+            "room",
+            "who",
+            "tacsim.sheet",
+            "commands.list",
+            "comsys.state",
+        ] {
             let mut out = Outbox::new();
             engine.step(
                 Inbound::Query {
