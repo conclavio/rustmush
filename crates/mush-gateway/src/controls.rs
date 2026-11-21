@@ -25,14 +25,62 @@ pub trait RelaySink: Send + Sync {
     fn relay(&self, channel: &str, event: Arc<OutputEvent>);
 }
 
+/// What the web bridge exposes to the boundary and periodic refresh loop
+/// (EXT-P1-3): cross-generation bearer-token revocation (`ToGateway::
+/// RevokeWebToken`) and store-backed live-token reconciliation (catching
+/// revocations/expiries across a server restart gap).
+pub trait WebTokenRevoker: Send + Sync {
+    /// Record `token_hash` as revoked (blocking in-flight attach/resume) and
+    /// return every live connection id authenticated by that token hash.
+    fn revoke_token_hash(&self, token_hash: &str) -> Vec<u64>;
+
+    /// Snapshot the unique token hashes currently authenticating live web
+    /// connections on this gateway.
+    fn live_token_hashes(&self) -> Vec<String>;
+}
+
 /// The registry the transports consult. Empty until a bridge registers.
 #[derive(Default)]
 pub struct GatewayControls {
     discord: OnceLock<Arc<dyn DiscordControl>>,
     relay: OnceLock<Arc<dyn RelaySink>>,
+    web_tokens: OnceLock<Arc<dyn WebTokenRevoker>>,
 }
 
 impl GatewayControls {
+    /// Register the web token revoker (the web bridge). A second registration
+    /// is ignored and logged.
+    pub fn set_web_tokens(&self, revoker: Arc<dyn WebTokenRevoker>) {
+        if self.web_tokens.set(revoker).is_err() {
+            tracing::warn!("a web token revoker was already registered; keeping the first");
+        }
+    }
+
+    /// Record `token_hash` as revoked on the web bridge and return every live
+    /// web connection id authenticated by it (empty when no web bridge runs).
+    #[must_use]
+    pub fn revoke_web_token(&self, token_hash: &str) -> Vec<u64> {
+        match self.web_tokens.get() {
+            Some(revoker) => revoker.revoke_token_hash(token_hash),
+            None => Vec::new(),
+        }
+    }
+
+    /// Snapshot the unique token hashes currently authenticating live web
+    /// connections (empty when no web bridge runs).
+    #[must_use]
+    pub fn live_web_token_hashes(&self) -> Vec<String> {
+        match self.web_tokens.get() {
+            Some(revoker) => revoker.live_token_hashes(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Whether a web token revoker is registered.
+    #[must_use]
+    pub fn has_web_tokens(&self) -> bool {
+        self.web_tokens.get().is_some()
+    }
     /// Register the relay sink (the Discord bridge). A second registration is
     /// ignored and logged.
     pub fn set_relay(&self, sink: Arc<dyn RelaySink>) {
@@ -85,6 +133,7 @@ impl std::fmt::Debug for GatewayControls {
         f.debug_struct("GatewayControls")
             .field("discord", &self.has_discord())
             .field("relay", &self.has_relay())
+            .field("web_tokens", &self.has_web_tokens())
             .finish()
     }
 }

@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use mush_net_web::{
-    AttachErr, CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk,
-    SessionStart, TokenIdentity, TokenVerdict, WebConfig, WebHooks,
+    AttachErr, CharSummary, LoginErr, LoginOk, LogoutErr, NewWebConn, RegisterErr, ResumeErr,
+    ResumeOk, SessionStart, TokenIdentity, TokenVerdict, WebConfig, WebHooks,
 };
 use mush_proto::{Envelope, OutputEvent, ProjectedCommitToken, Query, RichText};
 use tokio::sync::mpsc;
@@ -44,6 +44,7 @@ pub struct MockState {
     pub conn_id_bit: u64,
     pub login_err: Option<LoginErr>,
     pub login_delay: Option<Duration>,
+    pub logout_err: Option<LogoutErr>,
     pub register_result: Option<Result<LoginOk, RegisterErr>>,
     pub connect_err: Option<AttachErr>,
     pub resume_result: Option<Result<ResumeOk, ResumeErr>>,
@@ -170,9 +171,14 @@ impl WebHooks for MockWebHooks {
         })
     }
 
-    fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, ()> {
+    fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Result<(), LogoutErr>> {
         Box::pin(async move {
-            self.state().logouts.push(token.to_string());
+            let mut st = self.state();
+            st.logouts.push(token.to_string());
+            match st.logout_err {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
         })
     }
 

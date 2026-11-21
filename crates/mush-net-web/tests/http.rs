@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use common::{ACCOUNT, MockWebHooks, PASSWORD, TOKEN, spawn_server, test_config};
-use mush_net_web::{LoginErr, LoginOk, RegisterErr, WebConfig};
+use mush_net_web::{LoginErr, LoginOk, LogoutErr, RegisterErr, WebConfig};
 use serde_json::{Value, json};
 
 fn client() -> reqwest::Client {
@@ -138,6 +138,29 @@ async fn logout_revokes_bearer_token() {
     // Missing header is a 400, not a panic or a 204.
     let resp = client().post(&url).send().await.unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn logout_returns_503_when_durable_token_delete_fails() {
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.state().logout_err = Some(LogoutErr::Unavailable);
+    let addr = spawn_server(hooks.clone(), test_config()).await;
+    let url = format!("http://{addr}/api/auth/logout");
+
+    let resp = client()
+        .post(&url)
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        503,
+        "failed durable token delete must never return 204"
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["error"].is_string(), "error body: {body}");
+    assert_eq!(hooks.state().logouts, vec![TOKEN.to_string()]);
 }
 
 #[tokio::test]

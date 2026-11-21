@@ -54,6 +54,8 @@ struct MockHooks {
     /// test prove which character `account+char` direct-entered.
     connected_chars: Mutex<Vec<(u64, u64)>>,
     auth_failures: AtomicUsize,
+    auth_busy: AtomicBool,
+    create_addrs: Mutex<Vec<IpAddr>>,
     next_char_key: AtomicUsize,
     /// Set to stand in for a persisted siteban on the peer's address (the
     /// guard's other reason for blocking one).
@@ -150,6 +152,9 @@ impl SshHooks for MockHooks {
         password: &'a str,
     ) -> BoxFuture<'a, AuthResult> {
         Box::pin(async move {
+            if self.auth_busy.load(Ordering::SeqCst) {
+                return AuthResult::Busy;
+            }
             let key = account.to_ascii_lowercase();
             let accounts = self.accounts.lock().unwrap();
             match accounts.get(&key) {
@@ -166,8 +171,10 @@ impl SshHooks for MockHooks {
         &'a self,
         account: &'a str,
         password: &'a str,
+        addr: IpAddr,
     ) -> BoxFuture<'a, Result<(), CreateErr>> {
         Box::pin(async move {
+            self.create_addrs.lock().unwrap().push(addr);
             let key = account.to_ascii_lowercase();
             let mut accounts = self.accounts.lock().unwrap();
             if accounts.contains_key(&key) {
@@ -3678,6 +3685,195 @@ async fn tui_data_offloads_queries_without_blocking_and_caps_burst_per_packet() 
         "single-packet TUI burst must be capped to <= 16 queries, got {delta}"
     );
 
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// EXT-P2-2: Argon2id/auth-backend saturation (`AuthResult::Busy`) refuses
+/// politely on BOTH SSH password auth and welcome-screen `connect` WITHOUT
+/// calling `hooks.auth_failed(addr)` (so legitimate players are never IP-banned
+/// during overload).
+#[tokio::test]
+async fn auth_busy_rejects_without_counting_auth_failure() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "alice",
+        "hunter42",
+        vec![CharSummary {
+            key: 11,
+            name: "Alice".to_owned(),
+        }],
+    );
+    hooks.auth_busy.store(true, Ordering::SeqCst);
+    let addr = start_server("ext-p2-2-busy", Arc::clone(&hooks)).await;
+
+    // 1. SSH-level password auth rejects politely with 0 failures counted.
+    let mut handle =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("ssh connect");
+    let res = handle
+        .authenticate_password("alice", "hunter42")
+        .await
+        .expect("password auth");
+    assert!(
+        matches!(
+            res,
+            russh::client::AuthResult::Failure {
+                ref remaining_methods,
+                ..
+            } if !remaining_methods.is_empty()
+        ),
+        "busy SSH password auth must allow retry without permanent block: {res:?}"
+    );
+    assert_eq!(
+        hooks.auth_failures.load(Ordering::SeqCst),
+        0,
+        "AuthResult::Busy must never call hooks.auth_failed"
+    );
+
+    // Once saturation eases, the same connection can retry and authenticate.
+    hooks.auth_busy.store(false, Ordering::SeqCst);
+    let ok = handle
+        .authenticate_password("alice", "hunter42")
+        .await
+        .expect("retry password auth");
+    assert!(ok.success(), "retry after saturation must succeed: {ok:?}");
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+
+    // 2. Welcome-screen `connect`: tells the player the service is busy without
+    // counting an auth failure or dropping the welcome connection.
+    hooks.auth_busy.store(true, Ordering::SeqCst);
+    let mut welcome_handle =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("ssh connect play");
+    let auth = welcome_handle
+        .authenticate_none("play")
+        .await
+        .expect("auth_none play");
+    assert!(auth.success());
+    let mut term = Term {
+        channel: open_shell_on(&welcome_handle).await,
+        seen: String::new(),
+    };
+    term.expect("connect <account> <password>").await;
+    term.send_line("connect alice hunter42").await;
+    term.expect("authentication service is busy").await;
+    assert_eq!(
+        hooks.auth_failures.load(Ordering::SeqCst),
+        0,
+        "welcome connect Busy must never call hooks.auth_failed"
+    );
+
+    // Retrying on the same welcome session once Busy clears succeeds.
+    hooks.auth_busy.store(false, Ordering::SeqCst);
+    term.send_line("connect alice hunter42").await;
+    term.expect("Welcome, alice!").await;
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = welcome_handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// EXT-P2-3: Pipelined multi-line packets on the welcome screen (e.g.
+/// `connect alice hunter42\rsay hello\r`) must never record plaintext
+/// credentials into recall history — pressing ↑ in-game recalls nothing.
+#[tokio::test]
+async fn pipelined_welcome_connect_leaves_empty_recall_history() {
+    let hooks = Arc::new(MockHooks::default());
+    hooks.seed_account(
+        "alice",
+        "supersecretpw",
+        vec![CharSummary {
+            key: 21,
+            name: "Alice".to_owned(),
+        }],
+    );
+    let addr = start_server("ext-p2-3-history", Arc::clone(&hooks)).await;
+
+    let mut handle =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("ssh connect play");
+    let auth = handle
+        .authenticate_none("play")
+        .await
+        .expect("auth_none play");
+    assert!(auth.success());
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("connect <account> <password>").await;
+
+    // Single SSH channel packet containing BOTH `connect` AND a second line.
+    term.send_bytes(b"connect alice supersecretpw\rsay pipelined\r")
+        .await;
+    term.expect("Welcome, alice!").await;
+    term.expect("Nick says, \"pipelined\"").await;
+
+    // Now in-game: pressing Up-arrow + Enter must NOT recall or re-echo
+    // `supersecretpw`, and must NOT submit the credential line to the world.
+    let mark = term.seen.len();
+    term.send_bytes(b"\x1b[A\r").await;
+    term.send_line("say sentinel").await;
+    term.expect_after(mark, "Nick says, \"sentinel\"").await;
+
+    let echoed_after = strip_ansi(&term.seen[mark..]);
+    assert!(
+        !echoed_after.contains("supersecretpw"),
+        "Up-arrow in-game must never recall welcome password: {echoed_after:?}"
+    );
+    let submitted: Vec<String> = hooks
+        .lines
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, l)| l.clone())
+        .collect();
+    assert!(
+        submitted.iter().all(|l| !l.contains("supersecretpw")),
+        "welcome password must never be submitted in-game via recall: {submitted:?}"
+    );
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "")
+        .await;
+}
+
+/// EXT-P2-1: `SshHooks::create_account` receives the peer's IP address.
+#[tokio::test]
+async fn create_account_forwards_peer_ip_address() {
+    let hooks = Arc::new(MockHooks::default());
+    let addr = start_server("ext-p2-1-addr", Arc::clone(&hooks)).await;
+
+    let mut handle =
+        russh::client::connect(Arc::new(russh::client::Config::default()), addr, AcceptAll)
+            .await
+            .expect("ssh connect play");
+    assert!(handle.authenticate_none("play").await.unwrap().success());
+    let mut term = Term {
+        channel: open_shell_on(&handle).await,
+        seen: String::new(),
+    };
+    term.expect("create <account> <password>").await;
+    term.send_line("create newplayer hunter42").await;
+    term.expect("Account created.").await;
+    term.expect("Welcome, newplayer!").await;
+    assert_eq!(
+        *hooks.create_addrs.lock().unwrap(),
+        vec!["127.0.0.1".parse::<IpAddr>().unwrap()]
+    );
+
+    term.send_line("QUIT").await;
+    term.expect_close().await;
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;

@@ -665,8 +665,8 @@ namespace TacSim.World
                 var trig = go.AddComponent<ExitPortalTrigger>();
                 trig.roomA = ex.From;
                 trig.roomB = ex.To;
-                trig.commandAToB = ex.ForwardCommand;
-                trig.commandBToA = ex.ReverseCommand;
+                trig.commandAToB = TacSimContentLoader.FormatShipTraversalCommand(ex.ForwardCommand, ex.IsStaticAction) ?? string.Empty;
+                trig.commandBToA = TacSimContentLoader.FormatShipTraversalCommand(ex.ReverseCommand, ex.IsStaticAction) ?? string.Empty;
                 trig.labelAToB = ex.ForwardLabel;
                 trig.labelBToA = ex.ReverseLabel;
                 trig.axisAToB = axis;

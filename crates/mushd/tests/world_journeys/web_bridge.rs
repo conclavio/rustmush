@@ -304,14 +304,14 @@ async fn logout_revokes_one_token_only() {
         .unwrap()
         .token;
 
-    rig.bridge.logout(&t1).await;
+    rig.bridge.logout(&t1).await.unwrap();
     assert_eq!(rig.bridge.validate_token(&t1).await, TokenVerdict::Refused);
     assert!(matches!(
         rig.bridge.validate_token(&t2).await,
         TokenVerdict::Valid(_)
     ));
     // Idempotent.
-    rig.bridge.logout(&t1).await;
+    rig.bridge.logout(&t1).await.unwrap();
 }
 
 // ---------------------------------------------------------------------------

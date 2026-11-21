@@ -164,6 +164,11 @@ fn is_allowed_client_entry_kind(kind: &str) -> bool {
     )
 }
 
+fn lock_str_is_staff(lock: &str) -> bool {
+    let upper = lock.trim().to_ascii_uppercase();
+    upper == "STAFF" || upper.contains("FLAG^WIZARD") || upper.contains("FLAG^ROYALTY")
+}
+
 fn entry_is_staff_or_hidden(kind: &str, def: Option<&Map<String, Value>>) -> bool {
     // Default-deny: drop secrets, lore, quests, hooks, deposits, facilities, crew_offers,
     // passengers, relay_networks, and any non-allowlisted entry kind.
@@ -179,7 +184,11 @@ fn entry_is_staff_or_hidden(kind: &str, def: Option<&Map<String, Value>>) -> boo
     if def.get("reveal").and_then(Value::as_str) == Some("staff") {
         return true;
     }
-    if def.get("lock").and_then(Value::as_str) == Some("staff") {
+    if def
+        .get("lock")
+        .and_then(Value::as_str)
+        .is_some_and(lock_str_is_staff)
+    {
         return true;
     }
     if def.get("visibility").and_then(Value::as_str) == Some("hidden") {
@@ -368,6 +377,25 @@ fn sanitize_entry_in_place(kind: &str, def: &mut Map<String, Value>) {
                 "surface_mg",
             ];
             def.retain(|k, _| ALLOWED_BODY_KEYS.contains(&k.as_str()));
+        }
+        "exit" => {
+            // Never disclose raw Basic lock expressions (#dbrefs, attribute/flag predicates)
+            // in public client packs (EXT-P2-7): preserve `"staff"` (dropped upstream) and
+            // normalize any other non-empty lock specification to opaque `"locked"`.
+            if let Some(lock_val) = def.get("lock") {
+                match lock_val.as_str() {
+                    Some("staff") => {}
+                    Some(s) if s.trim().is_empty() => {
+                        def.remove("lock");
+                    }
+                    None if lock_val.is_null() || lock_val == &Value::Bool(false) => {
+                        def.remove("lock");
+                    }
+                    _ => {
+                        def.insert("lock".to_owned(), Value::String("locked".to_owned()));
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -708,14 +736,13 @@ fn exit_spec_from_obj(obj: &mush_core::Obj) -> String {
     }
 }
 
-fn exit_lock_label(obj: &mush_core::Obj) -> Option<String> {
+fn exit_lock_label(obj: &mush_core::Obj) -> Option<&'static str> {
     let expr = obj.locks.get(&mush_core::lock::LockType::Basic)?;
     let rendered = expr.to_string();
-    let upper = rendered.to_ascii_uppercase();
-    if upper.contains("FLAG^WIZARD") || upper.contains("FLAG^ROYALTY") {
-        Some("staff".to_owned())
+    if lock_str_is_staff(&rendered) {
+        Some("staff")
     } else {
-        Some(rendered)
+        Some("locked")
     }
 }
 
@@ -963,9 +990,14 @@ fn reconcile_neighborhood_with_live_records(
             || to_cross_restricted
             || forward_obj.is_some_and(|o| o.flags.contains(Flags::DARK))
             || back_obj.is_some_and(|o| o.flags.contains(Flags::DARK));
-        let lock_label = forward_obj
-            .and_then(exit_lock_label)
-            .or_else(|| back_obj.and_then(exit_lock_label));
+        let lock_label = match (
+            forward_obj.and_then(exit_lock_label),
+            back_obj.and_then(exit_lock_label),
+        ) {
+            (Some("staff"), _) | (_, Some("staff")) => Some("staff"),
+            (Some(l), _) | (_, Some(l)) => Some(l),
+            (None, None) => None,
+        };
 
         let mut portal_obj = Map::new();
         portal_obj.insert("mode".to_owned(), json!(portal.mode.label()));
@@ -999,7 +1031,7 @@ fn reconcile_neighborhood_with_live_records(
             }
             def.insert("portal".to_owned(), Value::Object(portal_obj));
             if let Some(lock) = lock_label {
-                def.insert("lock".to_owned(), Value::String(lock));
+                def.insert("lock".to_owned(), Value::String(lock.to_owned()));
             } else if forward_obj.is_some() || back_obj.is_some() {
                 def.remove("lock");
             }
@@ -3463,6 +3495,411 @@ mod tests {
         let b_fresh = q.bundle_for(tw2.world(), player2);
         check!(b_fresh.find("dray").is_some());
         check_eq!(q.bundle_builds.load(Ordering::Relaxed), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ext_p2_7_public_atlas_packs_redact_exit_lock_expressions() -> TestResult {
+        use mush_atlas::record::{
+            Endpoint, Floor, NeighborhoodRec, PortalGeometry, PortalMode, PortalRec, TimePolicy,
+            Visibility,
+        };
+        use mush_atlas::{
+            Access, AtlasState, Footprint, Point2, Point3, Polygon2, RecordKey, Rect2, RoomGeo,
+            RoomKind, StructureRec, SurfaceRef,
+        };
+        use mush_core::CanonicalId;
+
+        // 1. Static pack projection normalizes non-staff lock expressions to `"locked"`,
+        //    drops staff-locked exits, and removes empty/null/false locks.
+        let static_pack = json!({
+            "manifest": { "id": "neighborhood.lock_test", "version": 1, "kind": "neighborhood" },
+            "entries": {
+                "neighborhood": {
+                    "kind": "neighborhood",
+                    "def": { "name": "Lock Test", "region": "region.ceres", "setting": "ic" }
+                },
+                "room.a": {
+                    "kind": "room",
+                    "def": { "name": "Room A", "access": "public", "footprint": { "rect": [[0, 0], [10, 10]] } }
+                },
+                "room.b": {
+                    "kind": "room",
+                    "def": { "name": "Room B", "access": "public", "footprint": { "rect": [[10, 0], [20, 10]] } }
+                },
+                "exit.dbref_lock": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.b",
+                        "names": ["Vault;v", "Lobby;l"],
+                        "lock": "#42&SECRET_BADGE:clearance_alpha",
+                        "portal": { "mode": "door", "visibility": "public" }
+                    }
+                },
+                "exit.staff_literal": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.b",
+                        "names": ["Staff Door;sd"],
+                        "lock": "staff",
+                        "portal": { "mode": "door", "visibility": "public" }
+                    }
+                },
+                "exit.staff_expr": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.b",
+                        "names": ["Wiz Door;wd"],
+                        "lock": "flag^WIZARD|flag^ROYALTY",
+                        "portal": { "mode": "door", "visibility": "public" }
+                    }
+                },
+                "exit.blank_lock": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.b",
+                        "names": ["Open Door;od"],
+                        "lock": "   ",
+                        "portal": { "mode": "door", "visibility": "public" }
+                    }
+                },
+                "exit.null_lock": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.b",
+                        "names": ["Null Lock;nl"],
+                        "lock": null,
+                        "portal": { "mode": "door", "visibility": "public" }
+                    }
+                }
+            }
+        });
+        let projected_static_raw = project_pack_for_client(&static_pack.to_string())
+            .ok_or("static lock projection returned None")?;
+        check!(!projected_static_raw.contains("#42"));
+        check!(!projected_static_raw.contains("SECRET_BADGE"));
+        check!(!projected_static_raw.contains("clearance_alpha"));
+        check!(!projected_static_raw.contains("WIZARD"));
+        check!(!projected_static_raw.contains("ROYALTY"));
+        let projected_static: Value = serde_json::from_str(&projected_static_raw)?;
+        let static_entries = projected_static["entries"]
+            .as_object()
+            .ok_or("missing static entries")?;
+        check_eq!(
+            static_entries["exit.dbref_lock"]["def"]["lock"],
+            json!("locked")
+        );
+        check!(!static_entries.contains_key("exit.staff_literal"));
+        check!(!static_entries.contains_key("exit.staff_expr"));
+        check!(
+            static_entries["exit.blank_lock"]["def"]
+                .get("lock")
+                .is_none()
+        );
+        check!(
+            static_entries["exit.null_lock"]["def"]
+                .get("lock")
+                .is_none()
+        );
+
+        // 2. Live reconciliation of `Records` (without mutating another module's state slot):
+        //    non-staff Basic locks (#dbref, attribute, non-staff flag) become `"locked"`,
+        //    while staff Basic locks (including mixed forward-locked + reverse-staff) drop.
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_atlas::AtlasModule::default()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let secret_holder = tw.spawn_player("SecretKeyholder");
+
+        let w = tw.world_mut();
+        let r_a = w.create(ObjKind::Room, "Public Hall", ObjId(1), None)?;
+        let r_b = w.create(ObjKind::Room, "Locked Annex", ObjId(1), None)?;
+
+        let e_dbref = w.create(ObjKind::Exit, "Annex <E>", ObjId(1), Some(r_a))?;
+        w.add_alias(e_dbref, "e")?;
+        w.link_exit(e_dbref, Some(r_b))?;
+        let dbref_expr = mush_core::lock::parse_lock(
+            &format!("#{}&CLEARANCE:OMEGA_SECRET", secret_holder.0),
+            |_| None,
+        )
+        .map_err(|e| format!("parse dbref lock: {e}"))?;
+        if let Some(o) = w.get_mut(e_dbref) {
+            o.locks.insert(mush_core::lock::LockType::Basic, dbref_expr);
+        }
+
+        let e_mixed_fwd = w.create(ObjKind::Exit, "Mixed Fwd <M>", ObjId(1), Some(r_a))?;
+        w.link_exit(e_mixed_fwd, Some(r_b))?;
+        let non_staff_expr = mush_core::lock::parse_lock("flag^CONNECTED", |_| None)
+            .map_err(|e| format!("parse non-staff lock: {e}"))?;
+        if let Some(o) = w.get_mut(e_mixed_fwd) {
+            o.locks
+                .insert(mush_core::lock::LockType::Basic, non_staff_expr);
+        }
+        let e_mixed_back = w.create(ObjKind::Exit, "Mixed Back <MB>", ObjId(1), Some(r_b))?;
+        w.link_exit(e_mixed_back, Some(r_a))?;
+        let staff_expr = mush_core::lock::parse_lock("flag^ROYALTY", |_| None)
+            .map_err(|e| format!("parse royalty lock: {e}"))?;
+        if let Some(o) = w.get_mut(e_mixed_back) {
+            o.locks.insert(mush_core::lock::LockType::Basic, staff_expr);
+        }
+
+        let pack_id = CanonicalId::new("neighborhood.live_lock_audit")?;
+        let nb_key = RecordKey::new(pack_id.clone(), CanonicalId::new("neighborhood")?);
+        let st_key = RecordKey::new(pack_id.clone(), CanonicalId::new("structure.main")?);
+        let mut records = mush_atlas::Records::default();
+        records.neighborhoods.insert(
+            nb_key.clone(),
+            NeighborhoodRec {
+                key: nb_key.clone(),
+                region: RecordKey::new(
+                    CanonicalId::new("region.ceres")?,
+                    CanonicalId::new("region")?,
+                ),
+                locality: RecordKey::new(pack_id.clone(), CanonicalId::new("locality.main")?),
+                name: "Live Lock Audit".to_owned(),
+                setting: "station".to_owned(),
+                representation: mush_atlas::record::Representation::Authored,
+                footprint: Polygon2(vec![
+                    Point2(0.0, 0.0),
+                    Point2(20.0, 0.0),
+                    Point2(20.0, 10.0),
+                    Point2(0.0, 10.0),
+                ]),
+                room_budget: mush_atlas::record::Budget {
+                    target: 10,
+                    maximum: 10,
+                },
+                hydration: mush_atlas::record::HydrationPolicy::default(),
+                zone: None,
+                reviewers: vec![],
+                tiles: vec![],
+                resolution_cm: 100,
+                theme: None,
+                ambience: vec![],
+                revision: 1,
+            },
+        );
+        records.structures.insert(
+            st_key.clone(),
+            StructureRec {
+                key: st_key.clone(),
+                site: RecordKey::new(pack_id.clone(), CanonicalId::new("site.main")?),
+                footprint: Polygon2(vec![
+                    Point2(0.0, 0.0),
+                    Point2(20.0, 0.0),
+                    Point2(20.0, 10.0),
+                    Point2(0.0, 10.0),
+                ]),
+                floors: vec![Floor {
+                    index: 0,
+                    z_offset_m: 0.0,
+                    height_m: 4.5,
+                    name: Some("Main".to_owned()),
+                    tile: None,
+                }],
+                revision: 1,
+            },
+        );
+        for (room_id, entry, rect) in [
+            (r_a, "room.a", ((0.0, 0.0), (10.0, 10.0))),
+            (r_b, "room.b", ((10.0, 0.0), (20.0, 10.0))),
+        ] {
+            records.roomgeo.insert(
+                room_id,
+                RoomGeo {
+                    room: room_id,
+                    key: RecordKey::new(pack_id.clone(), CanonicalId::new(entry)?),
+                    neighborhood: nb_key.clone(),
+                    site: None,
+                    surface: SurfaceRef::Floor {
+                        structure: st_key.clone(),
+                        index: 0,
+                    },
+                    footprint: Footprint::Rect(Rect2(
+                        Point2(rect.0.0, rect.0.1),
+                        Point2(rect.1.0, rect.1.1),
+                    )),
+                    kind: RoomKind::Indoor,
+                    access: Access::Public,
+                    revision: 1,
+                },
+            );
+        }
+        let dbref_portal_key = RecordKey::new(pack_id.clone(), CanonicalId::new("exit.dbref")?);
+        records.portals.insert(
+            dbref_portal_key.clone(),
+            PortalRec {
+                key: dbref_portal_key,
+                exits: vec![e_dbref],
+                from: Endpoint::Room(r_a),
+                to: Endpoint::Room(r_b),
+                geometry: PortalGeometry::Point(Point3(10.0, 5.0, 0.0)),
+                mode: PortalMode::Door,
+                distance_m: 0,
+                dz_m: 0.0,
+                time: TimePolicy::Instant,
+                visibility: Visibility::Public,
+                revision: 1,
+            },
+        );
+        let mixed_portal_key =
+            RecordKey::new(pack_id.clone(), CanonicalId::new("exit.mixed_staff")?);
+        records.portals.insert(
+            mixed_portal_key.clone(),
+            PortalRec {
+                key: mixed_portal_key,
+                exits: vec![e_mixed_fwd, e_mixed_back],
+                from: Endpoint::Room(r_a),
+                to: Endpoint::Room(r_b),
+                geometry: PortalGeometry::Point(Point3(10.0, 8.0, 0.0)),
+                mode: PortalMode::Door,
+                distance_m: 0,
+                dz_m: 0.0,
+                time: TimePolicy::Instant,
+                visibility: Visibility::Public,
+                revision: 1,
+            },
+        );
+
+        let mut live_doc = json!({
+            "manifest": { "id": pack_id.as_str(), "version": 1, "kind": "neighborhood" },
+            "entries": {}
+        });
+        reconcile_neighborhood_with_live_records(
+            &tw.engine().world,
+            &records,
+            &pack_id,
+            &mut live_doc,
+        );
+        let Some(reconciled_raw) = project_pack_value_for_client(live_doc) else {
+            return crate::test_checks::failed("live projection failed");
+        };
+        check!(!reconciled_raw.contains(&format!("#{}", secret_holder.0)));
+        check!(!reconciled_raw.contains("OMEGA_SECRET"));
+        check!(!reconciled_raw.contains("CLEARANCE"));
+        check!(!reconciled_raw.contains("ROYALTY"));
+        let reconciled_doc: Value = serde_json::from_str(&reconciled_raw)?;
+        let reconciled_entries = reconciled_doc["entries"]
+            .as_object()
+            .ok_or("missing reconciled entries")?;
+        check_eq!(
+            reconciled_entries["exit.dbref"]["def"]["lock"],
+            json!("locked")
+        );
+        check!(!reconciled_entries.contains_key("exit.mixed_staff"));
+
+        // 3. End-to-end `ClientContentQuery` (`tacsim.content` `player_cache`) after
+        //    applying a real station neighborhood through `@atlas/pack apply` and
+        //    attaching live Basic locks to its exits.
+        let mut shelf = Vec::new();
+        for (name, bytes) in [STATION_SOURCES[0], STATION_SOURCES[1]] {
+            shelf.push(mush_content::load_pack(bytes).map_err(|e| format!("load {name}: {e}"))?);
+        }
+        let enabled_cfg = crate::config::TacsimConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut appliers = mush_content::Appliers::new();
+        mush_atlas::register_appliers(&mut appliers)
+            .map_err(|e| format!("register atlas appliers: {e}"))?;
+        let mut live_tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_atlas::AtlasModule::new().with_shelf(shelf)),
+            Box::new(mush_content::ContentModule::new().with_appliers(appliers)),
+            Box::new(crate::TacsimRuleset::with_config(enabled_cfg)),
+        ]);
+        for pack_name in [STATION_SOURCES[0].0, STATION_SOURCES[1].0] {
+            let plan_events = live_tw.run(mush_core::GOD, &format!("@atlas/pack plan {pack_name}"));
+            let plan_text = live_tw.seen_by(&plan_events, mush_core::GOD).join("\n");
+            let fp = plan_text
+                .split("@atlas/pack apply ")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .ok_or_else(|| format!("missing apply fingerprint for {pack_name}: {plan_text}"))?
+                .to_owned();
+            let _ = live_tw.run(mush_core::GOD, &format!("@atlas/pack apply {fp}"));
+        }
+        let player = live_tw.spawn_player("LockAuditPilot");
+        let live_holder = live_tw.spawn_player("LiveSecretKeyholder");
+
+        // Pick two public live portals in `neighborhood.ceres_freeport` via read-only AtlasState.
+        let ceres_pack = CanonicalId::new(STATION_SOURCES[1].0)?;
+        let public_portals: Vec<(String, ObjId)> = {
+            let Some(atlas) = live_tw.world().module_state::<AtlasState>() else {
+                return crate::test_checks::failed("AtlasState missing after apply");
+            };
+            atlas
+                .records
+                .portals
+                .values()
+                .filter(|p| {
+                    p.key.pack == ceres_pack
+                        && p.visibility == Visibility::Public
+                        && !p.exits.is_empty()
+                })
+                .filter_map(|p| {
+                    let from_pub = matches!(p.from, Endpoint::Room(r) if atlas.records.roomgeo.get(&r).is_some_and(|g| g.access == Access::Public));
+                    let to_pub = matches!(p.to, Endpoint::Room(r) if atlas.records.roomgeo.get(&r).is_some_and(|g| g.access == Access::Public));
+                    if from_pub && to_pub {
+                        Some((p.key.entry.as_str().to_owned(), p.exits[0]))
+                    } else {
+                        None
+                    }
+                })
+                .take(2)
+                .collect()
+        };
+        check_eq!(public_portals.len(), 2);
+        let (locked_entry_id, locked_exit_id) = &public_portals[0];
+        let (staff_entry_id, staff_exit_id) = &public_portals[1];
+
+        let live_dbref_lock = mush_core::lock::parse_lock(
+            &format!("#{}&LIVE_BADGE:TOP_SECRET", live_holder.0),
+            |_| None,
+        )
+        .map_err(|e| format!("parse live dbref lock: {e}"))?;
+        if let Some(o) = live_tw.world_mut().get_mut(*locked_exit_id) {
+            o.locks
+                .insert(mush_core::lock::LockType::Basic, live_dbref_lock);
+        }
+        let live_staff_lock = mush_core::lock::parse_lock("flag^WIZARD", |_| None)
+            .map_err(|e| format!("parse live staff lock: {e}"))?;
+        if let Some(o) = live_tw.world_mut().get_mut(*staff_exit_id) {
+            o.locks
+                .insert(mush_core::lock::LockType::Basic, live_staff_lock);
+        }
+
+        let q = ClientContentQuery::new();
+        let ev = q
+            .query(
+                live_tw.world(),
+                player,
+                &json!({ "op": "pack", "id": "neighborhood.ceres_freeport" }),
+            )
+            .map_err(|e| format!("content pack query failed: {e}"))?;
+        let OutputEvent::Panel { data, .. } = ev else {
+            return crate::test_checks::failed("expected panel frame");
+        };
+        check_eq!(data["found"], json!(true));
+        let pack_raw = data["json"].as_str().ok_or("missing pack json string")?;
+        check!(!pack_raw.contains(&format!("#{}", live_holder.0)));
+        check!(!pack_raw.contains("LIVE_BADGE"));
+        check!(!pack_raw.contains("TOP_SECRET"));
+        check!(!pack_raw.contains("WIZARD"));
+        let pack_doc: Value = serde_json::from_str(pack_raw)?;
+        let live_entries = pack_doc["entries"]
+            .as_object()
+            .ok_or("missing live entries")?;
+        check_eq!(
+            live_entries[locked_entry_id]["def"]["lock"],
+            json!("locked")
+        );
+        check!(!live_entries.contains_key(staff_entry_id));
 
         Ok(())
     }

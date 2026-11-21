@@ -299,3 +299,144 @@ async fn web_client_serves_through_split_gateway() {
     drop(ws);
     let _ = (server_thread, gateway_thread);
 }
+
+/// Login to an existing account over the gateway's REST surface and mint a
+/// fresh session token.
+async fn login(web: SocketAddr, account: &str, password: &str) -> String {
+    let url = format!("http://{web}/api/auth/login");
+    let resp = post_json(&url, json!({"account": account, "password": password})).await;
+    assert_eq!(resp.status(), 200, "login must succeed across the split");
+    let body: Value = resp.json().await.unwrap();
+    body["token"].as_str().unwrap().to_string()
+}
+
+/// EXT-P1-3(b): two overlapping gateway generations (`Generation::A` and
+/// `Generation::B`) connected to one `mush-server` and sharing one token store.
+/// Logging out `token_1` via **Generation B** must propagate over IPC through
+/// `mush-server` and immediately boot the live WS session authenticated by
+/// `token_1` on **Generation A**, while leaving another live WS session on
+/// Generation A authenticated by `token_2` unaffected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_generation_logout_boots_live_ws_on_peer_generation() {
+    use super::harness::{GatewaySpec, GatewayUnit, ServerUnit};
+    use mush_config::generation::Generation;
+
+    let server_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let server = ServerUnit::new(server_store, || server_config("crossgen-server"));
+    server.start().await;
+
+    let shared_gw_store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    let mut cfg_a = gateway_config("crossgen-gw-a");
+    server.aim(&mut cfg_a);
+    let mut cfg_b = gateway_config("crossgen-gw-b");
+    server.aim(&mut cfg_b);
+
+    let gw_a = GatewayUnit::start_with(
+        cfg_a,
+        Arc::clone(&shared_gw_store),
+        GatewaySpec {
+            generation: Some(Generation::A),
+            web: true,
+            ..GatewaySpec::default()
+        },
+    )
+    .await;
+    let gw_b = GatewayUnit::start_with(
+        cfg_b,
+        Arc::clone(&shared_gw_store),
+        GatewaySpec {
+            generation: Some(Generation::B),
+            web: true,
+            ..GatewaySpec::default()
+        },
+    )
+    .await;
+
+    let web_a = gw_a.web_addr();
+    let web_b = gw_b.web_addr();
+
+    // Mint two distinct bearer tokens for the same account; attach both on
+    // Generation A.
+    let (token1, char_key) = register(web_a, "alice", "hunter42", "Alice").await;
+    let token2 = login(web_a, "alice", "hunter42").await;
+
+    let mut ws1 = connect_ws(web_a, &token1, char_key)
+        .await
+        .expect("ws1 connect on gen A");
+    let _ = expect_hello(&mut ws1).await;
+    let _ = expect_env(&mut ws1, "Connected as Alice (alice)").await;
+    let _ = expect_env(&mut ws1, "Limbo(#0)").await;
+
+    let mut ws2 = connect_ws(web_a, &token2, char_key)
+        .await
+        .expect("ws2 connect on gen A");
+    let _ = expect_hello(&mut ws2).await;
+    let _ = expect_env(&mut ws2, "Connected as Alice (alice)").await;
+    let _ = expect_env(&mut ws2, "Limbo(#0)").await;
+
+    // Logout `token1` via Generation B (the peer generation).
+    let logout_resp = reqwest::Client::new()
+        .post(format!("http://{web_b}/api/auth/logout"))
+        .bearer_auth(&token1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout_resp.status(), 204, "logout on gen B must succeed");
+
+    // `ws1` on Generation A must receive Disconnect and close promptly.
+    let mut saw_disconnect = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let next = tokio::time::timeout_at(deadline, ws1.next())
+            .await
+            .expect("ws1 on gen A must close promptly after logout on gen B");
+        match next {
+            Some(Ok(Message::Text(text))) => {
+                let env: Envelope = serde_json::from_str(text.as_str()).unwrap();
+                if matches!(env.event, OutputEvent::Disconnect { .. }) {
+                    saw_disconnect = true;
+                }
+            }
+            Some(Ok(Message::Close(_))) | None => break,
+            Some(Ok(_)) => {}
+            Some(Err(_)) => break,
+        }
+    }
+    assert!(
+        saw_disconnect,
+        "ws1 on gen A must receive Disconnect before closing"
+    );
+
+    // `ws2` (other bearer token) on Generation A stays alive and playable.
+    send_line(&mut ws2, "say still connected after peer logout").await;
+    let _ = expect_env(
+        &mut ws2,
+        "Alice says, \"still connected after peer logout\"",
+    )
+    .await;
+
+    // And `token1` can no longer reconnect on Generation A or B.
+    let mut stale = connect_ws(web_a, &token1, char_key)
+        .await
+        .expect("stale token upgrades to close 4401");
+    let close_frame = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(msg) = stale.next().await {
+            if let Ok(Message::Close(frame)) = msg {
+                return frame;
+            }
+        }
+        None
+    })
+    .await
+    .expect("stale ws closes promptly");
+    assert_eq!(
+        close_frame.map(|f| u16::from(f.code)),
+        Some(4401),
+        "revoked token must be rejected with 4401"
+    );
+
+    drop(ws2);
+    gw_a.stop().await;
+    gw_b.stop().await;
+    server.stop().await;
+}

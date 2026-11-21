@@ -89,6 +89,16 @@ pub enum RegisterErr {
     RateLimited,
 }
 
+/// Why a logout could not confirm durable token revocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogoutErr {
+    /// The token store could not confirm deletion of the token record (down,
+    /// restarting, or I/O error). Live sessions are still booted best-effort,
+    /// and the HTTP layer answers `503 Service Unavailable` so the caller
+    /// knows revocation must be retried.
+    Unavailable,
+}
+
 /// What a valid token resolves to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenIdentity {
@@ -310,9 +320,11 @@ pub trait WebHooks: Send + Sync {
         ip: IpAddr,
     ) -> BoxFuture<'a, Result<LoginOk, RegisterErr>>;
 
-    /// Revoke a token (deletes the stored hash). Idempotent; unknown tokens
-    /// are a no-op.
-    fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, ()>;
+    /// Revoke a token (deletes the stored hash and boots live connections
+    /// authenticated by it). Idempotent; unknown tokens return `Ok(())`.
+    /// Returns [`LogoutErr::Unavailable`] when durable token deletion fails
+    /// (live connections are still booted best-effort).
+    fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Result<(), LogoutErr>>;
 
     /// Resolve a token to its account, refreshing the sliding TTL. The
     /// implementor must distinguish a refused credential from a store that

@@ -30,6 +30,7 @@ import {
   getPackBoundsCenter2D,
   HOLD_STAIRWELL_XZ,
   resolveCompartmentDef,
+  RoomBoundNavWalker,
   tryFindContainingCompartment,
   tryFindContainingRoomWithHysteresis,
   worldToAtlas2D,
@@ -343,9 +344,27 @@ export class TacsimStage3D {
   private serverShipCompartment: string | null = null;
   private lastSyncedRoomRevision = -1;
   private awaitingInitialRoomSync = true;
-  private pendingMoveTarget: string | null = null;
-  private pendingMoveSentAtMs = -10_000;
+  private readonly navWalker = new RoomBoundNavWalker();
   private nextMoveStepAllowedAtMs = 0;
+
+  private get pendingMoveTarget(): string | null {
+    return this.navWalker.inFlightTarget;
+  }
+
+  private set pendingMoveTarget(target: string | null) {
+    const scope = this.isAboardShip ? "ship" : "station";
+    const fromRoom =
+      (this.isAboardShip ? this.serverShipCompartment : this.serverStationRoomEntry) ?? "";
+    this.navWalker.setExternalInFlightTarget(scope, fromRoom, target, performance.now());
+  }
+
+  private get pendingMoveSentAtMs(): number {
+    return this.navWalker.inFlightSentAtMs;
+  }
+
+  private set pendingMoveSentAtMs(sentAtMs: number) {
+    this.navWalker.setExternalInFlightSentAtMs(sentAtMs);
+  }
 
   // Reusable scratch objects for hot frame-loop math (eliminates per-frame GC allocations)
   private readonly tmpProbeBox = new THREE.Box3();
@@ -512,43 +531,75 @@ export class TacsimStage3D {
   }
 
   notifyExplicitCommandSent(): void {
-    // Clear pending walk latch so a typed exit (`concourse`, `bridge`) teleports the stationary avatar cleanly!
-    this.pendingMoveTarget = null;
-    this.pendingMoveSentAtMs = -10_000;
+    // Cancel any in-flight and queued room hops so an unrelated explicit command
+    // never fires stale queued hops and a typed exit teleports the stationary avatar cleanly.
+    this.navWalker.cancel();
   }
 
-  flushPendingMovesBeforeAction(): void {
+  flushPendingMovesBeforeAction(nowMs = performance.now()): void {
     if (this.awaitingInitialRoomSync) return;
+    this.navWalker.expireIfStale(nowMs);
+
     if (this.isAboardShip && this.activeShipTemplate) {
-      const start = this.pendingMoveTarget ?? this.serverShipCompartment;
+      const serverComp = this.serverShipCompartment;
+      if (!serverComp) return;
       const lp = this.playerGroup.position.clone().sub(this.shipOrigin);
-      const phys = tryFindContainingCompartment(this.activeShipTemplate, lp, start, 0.1);
-      if (start && phys && phys !== start) {
-        const hops = findShipExitPath(this.activeShipTemplate, start, phys);
-        for (const h of hops) this.cb.onSendCommand(h.command);
-        if (hops.length > 0) {
-          this.pendingMoveTarget = phys;
-          this.pendingMoveSentAtMs = performance.now();
-          this.nextMoveStepAllowedAtMs = performance.now() + 600;
+      const startHint = this.navWalker.inFlightTarget ?? serverComp;
+      const phys = tryFindContainingCompartment(this.activeShipTemplate, lp, startHint, 0.1);
+      if (!phys) return;
+
+      if (this.navWalker.hasInFlight(nowMs)) {
+        const inFlightTarget = this.navWalker.inFlightTarget;
+        if (inFlightTarget && phys !== inFlightTarget) {
+          const tail = findShipExitPath(this.activeShipTemplate, inFlightTarget, phys).map((h) => ({
+            command: h.command,
+            targetRoom: h.targetCompartment,
+          }));
+          this.navWalker.replaceQueuedTailWhileInFlight("ship", tail, nowMs);
+        }
+        return;
+      }
+
+      if (phys !== serverComp) {
+        const hops = findShipExitPath(this.activeShipTemplate, serverComp, phys).map((h) => ({
+          command: h.command,
+          targetRoom: h.targetCompartment,
+        }));
+        const first = this.navWalker.planAndDispatchOne("ship", serverComp, hops, nowMs);
+        if (first) {
+          this.nextMoveStepAllowedAtMs = nowMs + 600;
+          this.cb.onSendCommand(first.command);
         }
       }
     } else if (!this.isAboardShip && this.activeStationPack) {
-      const start = this.pendingMoveTarget ?? this.serverStationRoomEntry;
+      const serverRoom = this.serverStationRoomEntry;
+      if (!serverRoom) return;
+      const startHint = this.navWalker.inFlightTarget ?? serverRoom;
       const phys = tryFindContainingRoomWithHysteresis(
         this.activeStationPack,
         this.playerGroup.position,
         this.originOffsetX,
         this.originOffsetZ,
-        start,
+        startHint,
         0.1,
       );
-      if (start && phys && phys !== start) {
-        const hops = findStationExitPath(this.activeStationPack, start, phys);
-        for (const h of hops) this.cb.onSendCommand(h.command);
-        if (hops.length > 0) {
-          this.pendingMoveTarget = phys;
-          this.pendingMoveSentAtMs = performance.now();
-          this.nextMoveStepAllowedAtMs = performance.now() + 600;
+      if (!phys) return;
+
+      if (this.navWalker.hasInFlight(nowMs)) {
+        const inFlightTarget = this.navWalker.inFlightTarget;
+        if (inFlightTarget && phys !== inFlightTarget) {
+          const tail = findStationExitPath(this.activeStationPack, inFlightTarget, phys);
+          this.navWalker.replaceQueuedTailWhileInFlight("station", tail, nowMs);
+        }
+        return;
+      }
+
+      if (phys !== serverRoom) {
+        const hops = findStationExitPath(this.activeStationPack, serverRoom, phys);
+        const first = this.navWalker.planAndDispatchOne("station", serverRoom, hops, nowMs);
+        if (first) {
+          this.nextMoveStepAllowedAtMs = nowMs + 600;
+          this.cb.onSendCommand(first.command);
         }
       }
     }
@@ -645,26 +696,10 @@ export class TacsimStage3D {
 
     if (isAboardShip && serverShipCompartment) {
       const serverCompChanged = serverShipCompartment !== prevServerComp;
-      const moveInFlightElsewhere =
-        !firstSync &&
-        !modeChanged &&
-        !unitChanged &&
-        !serverCompChanged &&
-        this.pendingMoveTarget !== null &&
-        this.pendingMoveTarget !== serverShipCompartment &&
-        nowMs - this.pendingMoveSentAtMs < 3500;
-      const shouldReconcile =
-        (firstSync || modeChanged || unitChanged || shipRebuilt || serverCompChanged || roomEventArrived) &&
-        !moveInFlightElsewhere;
+      const authoritativeEvent = firstSync || modeChanged || unitChanged || serverCompChanged || roomEventArrived;
+      const shouldReconcile = authoritativeEvent || shipRebuilt;
 
       if (shouldReconcile) {
-        const ackTarget = this.pendingMoveTarget;
-        this.awaitingInitialRoomSync = false;
-        this.pendingMoveTarget = null;
-        this.nextMoveStepAllowedAtMs = nowMs + 220;
-        this.serverShipCompartment = serverShipCompartment;
-        this.serverStationRoomEntry = null;
-
         const lp = this.tmpVecA.copy(this.playerGroup.position).sub(this.shipOrigin);
         const physComp = tryFindContainingCompartment(
           shipTemplate,
@@ -672,6 +707,28 @@ export class TacsimStage3D {
           this.activeShipCompartment,
           0.55,
         );
+
+        let ackTarget: string | null = null;
+        let nextHopCmd: string | null = null;
+        if (modeChanged || unitChanged) {
+          this.navWalker.cancel();
+        } else if (authoritativeEvent) {
+          const allowAdvance = !firstSync && physComp !== null && physComp !== serverShipCompartment;
+          const navRes = this.navWalker.onAuthoritativeRoomUpdate(
+            "ship",
+            serverShipCompartment,
+            nowMs,
+            allowAdvance,
+          );
+          ackTarget = navRes.acknowledgedTarget;
+          nextHopCmd = navRes.nextHopToSend?.command ?? null;
+        }
+
+        this.awaitingInitialRoomSync = false;
+        this.nextMoveStepAllowedAtMs = nowMs + 220;
+        this.serverShipCompartment = serverShipCompartment;
+        this.serverStationRoomEntry = null;
+
         const alreadyInComp =
           wasAboard && !firstSync && !unitChanged && physComp === serverShipCompartment;
         const walkedAhead =
@@ -688,6 +745,11 @@ export class TacsimStage3D {
           this.teleportPlayer(this.getShipCompartmentSpawn(serverShipCompartment), spawnYaw);
         }
         this.cb.onPhysicalLocationChanged(this.activeShipCompartment);
+
+        if (nextHopCmd) {
+          this.nextMoveStepAllowedAtMs = nowMs + 350;
+          this.cb.onSendCommand(nextHopCmd);
+        }
       }
       if (this.airlockLeaveWi) {
         this.airlockLeaveWi.title = ambient.docked
@@ -698,26 +760,10 @@ export class TacsimStage3D {
       this.updateHolotank(holotankData);
     } else if (!isAboardShip && serverStationRoomEntry) {
       const serverRoomChanged = serverStationRoomEntry !== prevServerRoom;
-      const moveInFlightElsewhere =
-        !firstSync &&
-        !modeChanged &&
-        !packSwitched &&
-        !serverRoomChanged &&
-        this.pendingMoveTarget !== null &&
-        this.pendingMoveTarget !== serverStationRoomEntry &&
-        nowMs - this.pendingMoveSentAtMs < 3500;
       const shouldReconcile =
-        (firstSync || modeChanged || packSwitched || serverRoomChanged || roomEventArrived) &&
-        !moveInFlightElsewhere;
+        firstSync || modeChanged || packSwitched || serverRoomChanged || roomEventArrived;
 
       if (shouldReconcile) {
-        const ackTarget = this.pendingMoveTarget;
-        this.awaitingInitialRoomSync = false;
-        this.pendingMoveTarget = null;
-        this.nextMoveStepAllowedAtMs = nowMs + 220;
-        this.serverStationRoomEntry = serverStationRoomEntry;
-        this.serverShipCompartment = null;
-
         const physRoom = tryFindContainingRoomWithHysteresis(
           stationPack,
           this.playerGroup.position,
@@ -725,6 +771,28 @@ export class TacsimStage3D {
           this.originOffsetZ,
           this.activeStationRoomEntry,
         );
+
+        let ackTarget: string | null = null;
+        let nextHopCmd: string | null = null;
+        if (modeChanged || packSwitched) {
+          this.navWalker.cancel();
+        } else {
+          const allowAdvance = !firstSync && physRoom !== null && physRoom !== serverStationRoomEntry;
+          const navRes = this.navWalker.onAuthoritativeRoomUpdate(
+            "station",
+            serverStationRoomEntry,
+            nowMs,
+            allowAdvance,
+          );
+          ackTarget = navRes.acknowledgedTarget;
+          nextHopCmd = navRes.nextHopToSend?.command ?? null;
+        }
+
+        this.awaitingInitialRoomSync = false;
+        this.nextMoveStepAllowedAtMs = nowMs + 220;
+        this.serverStationRoomEntry = serverStationRoomEntry;
+        this.serverShipCompartment = null;
+
         const alreadyInRoom =
           !wasAboard && !firstSync && !packSwitched && physRoom === serverStationRoomEntry;
         const walkedAhead =
@@ -742,6 +810,11 @@ export class TacsimStage3D {
           this.teleportPlayer(this.getStationRoomSpawn(serverStationRoomEntry), Math.PI);
         }
         this.cb.onPhysicalLocationChanged(activeRoom);
+
+        if (nextHopCmd) {
+          this.nextMoveStepAllowedAtMs = nowMs + 350;
+          this.cb.onSendCommand(nextHopCmd);
+        }
       }
       this.updateBerthGalleryCradles(
         ambient,
@@ -749,6 +822,8 @@ export class TacsimStage3D {
         berthOwnHullName,
         berthOwnHullDockedHere,
       );
+    } else if (roomEventArrived || modeChanged || packSwitched || unitChanged) {
+      this.navWalker.cancel();
     }
 
     const scopeKey = isAboardShip
@@ -2566,8 +2641,8 @@ export class TacsimStage3D {
 
   private sync3DPositionWithServer(nowMs: number): void {
     if (this.awaitingInitialRoomSync) return;
-    const moveInFlight =
-      this.pendingMoveTarget !== null && nowMs - this.pendingMoveSentAtMs < 3500;
+    this.navWalker.expireIfStale(nowMs);
+    const moveInFlight = this.navWalker.hasInFlight(nowMs);
 
     if (this.isAboardShip && this.activeShipTemplate && this.serverShipCompartment) {
       const lp = this.playerGroup.position.clone().sub(this.shipOrigin);
@@ -2585,11 +2660,11 @@ export class TacsimStage3D {
       if (phys === this.serverShipCompartment || moveInFlight || nowMs < this.nextMoveStepAllowedAtMs) {
         return;
       }
-      const path = findShipExitPath(this.activeShipTemplate, this.serverShipCompartment, phys);
-      const first = path[0];
+      const path = findShipExitPath(this.activeShipTemplate, this.serverShipCompartment, phys).map(
+        (h) => ({ command: h.command, targetRoom: h.targetCompartment }),
+      );
+      const first = this.navWalker.planAndDispatchOne("ship", this.serverShipCompartment, path, nowMs);
       if (first) {
-        this.pendingMoveTarget = first.targetCompartment;
-        this.pendingMoveSentAtMs = nowMs;
         this.nextMoveStepAllowedAtMs = nowMs + 350;
         this.cb.onSendCommand(first.command);
       }
@@ -2610,10 +2685,13 @@ export class TacsimStage3D {
         return;
       }
       const path = findStationExitPath(this.activeStationPack, this.serverStationRoomEntry, phys);
-      const first = path[0];
+      const first = this.navWalker.planAndDispatchOne(
+        "station",
+        this.serverStationRoomEntry,
+        path,
+        nowMs,
+      );
       if (first) {
-        this.pendingMoveTarget = first.targetRoom;
-        this.pendingMoveSentAtMs = nowMs;
         this.nextMoveStepAllowedAtMs = nowMs + 350;
         this.cb.onSendCommand(first.command);
       }

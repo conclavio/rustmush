@@ -1004,28 +1004,32 @@ namespace TacSim.World
             CreateBox(root.transform, "TransitLintel", floorPos + new Vector3(0f, 3.05f, 0f), lintelScale, portalMat, false);
 
             string label = isForward ? ex.ForwardLabel : ex.ReverseLabel;
-            string cmd = isForward ? ex.ForwardCommand : ex.ReverseCommand;
+            string cmd = TacSimContentLoader.FormatSafeExitCommand(isForward ? ex.ForwardCommand : ex.ReverseCommand);
+            string revCmd = TacSimContentLoader.FormatSafeExitCommand(isForward ? ex.ReverseCommand : ex.ForwardCommand);
             float signYaw = onVerticalWall ? (delta.x >= 0f ? 90f : -90f) : (delta.y >= 0f ? 0f : 180f);
             CreateWorldSign(root.transform, $"TRANSIT -> {(label ?? dstRoom.Name).ToUpperInvariant()}", floorPos + new Vector3(0f, 3.45f, 0f), Quaternion.Euler(0f, signYaw, 0f), 1.9f, new Color(0.45f, 0.95f, 1f));
 
             var trig = root.AddComponent<ExitPortalTrigger>();
             trig.roomA = srcRoom.EntryId;
             trig.roomB = dstRoom.EntryId;
-            trig.commandAToB = cmd;
-            trig.commandBToA = isForward ? ex.ReverseCommand : ex.ForwardCommand;
+            trig.commandAToB = cmd ?? string.Empty;
+            trig.commandBToA = revCmd ?? string.Empty;
             trig.labelAToB = label;
             trig.labelBToA = isForward ? ex.ReverseLabel : ex.ForwardLabel;
             trig.axisAToB = new Vector3(delta.x, 0f, delta.y).normalized;
             trig.isLocked = ex.Locked;
             trig.OnPortalCrossed = (p, target, c) => OnPortalCrossed?.Invoke(p, target, c);
 
-            var wi = root.AddComponent<WorldInteractable>();
-            wi.kind = InteractableKind.GenericCommand;
-            wi.promptTitle = $"Transit to {dstRoom.Name}";
-            wi.promptSubtitle = $"Step through transit arch ({cmd})";
-            wi.commandOrKey = cmd;
-            wi.maxInteractDistance = 4.2f;
-            wi.OnInteracted = item => OnInteractableTriggered?.Invoke(item);
+            if (!string.IsNullOrEmpty(cmd))
+            {
+                var wi = root.AddComponent<WorldInteractable>();
+                wi.kind = InteractableKind.GenericCommand;
+                wi.promptTitle = $"Transit to {dstRoom.Name}";
+                wi.promptSubtitle = $"Step through transit arch ({cmd})";
+                wi.commandOrKey = cmd;
+                wi.maxInteractDistance = 4.2f;
+                wi.OnInteracted = item => OnInteractableTriggered?.Invoke(item);
+            }
         }
 
         private void CreatePortalTrigger(Transform parent, AtlasExitDef ex, Vector3 pos, Vector3 boxSize, Vector3 axisAToB, Material frameMat, bool horizontal)
@@ -1041,8 +1045,8 @@ namespace TacSim.World
             var trig = go.AddComponent<ExitPortalTrigger>();
             trig.roomA = ex.FromRoom;
             trig.roomB = ex.ToRoom;
-            trig.commandAToB = ex.ForwardCommand;
-            trig.commandBToA = ex.ReverseCommand;
+            trig.commandAToB = TacSimContentLoader.FormatSafeExitCommand(ex.ForwardCommand) ?? string.Empty;
+            trig.commandBToA = TacSimContentLoader.FormatSafeExitCommand(ex.ReverseCommand) ?? string.Empty;
             trig.labelAToB = ex.ForwardLabel;
             trig.labelBToA = ex.ReverseLabel;
             trig.axisAToB = axisAToB;
