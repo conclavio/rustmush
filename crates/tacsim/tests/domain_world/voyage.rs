@@ -669,11 +669,16 @@ fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64) {
 
 /// Board from C01.
 fn board(rig: &mut Rig, pilot: ObjId) {
+    board_as(rig, pilot, "Salt Moth");
+}
+
+/// [`board`] the hull named `ship`.
+fn board_as(rig: &mut Rig, pilot: ObjId, ship: &str) {
     let gallery = c01(&rig.tw);
     teleport(&mut rig.tw, pilot, gallery);
     let out = run(&mut rig.tw, pilot, "+ship/board");
     assert!(
-        out.contains("You cycle the lock into the Salt Moth."),
+        out.contains(&format!("You cycle the lock into the {ship}.")),
         "{out}"
     );
 }
@@ -17715,7 +17720,7 @@ fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
     seed_pool(&mut rig, early_vault, "propellant", 75, LotId(2_631));
     seed_pool(&mut rig, early_vault, "provisions", 25, LotId(2_632));
     seed_pool(&mut rig, early_vault, "metals", 50, LotId(2_633));
-    board(&mut rig, early);
+    board_as(&mut rig, early, "Grey Heron");
     let (early_filed, _) = undock(&mut rig, early, "+ship/undock stickney");
     assert!(
         early_filed.contains("Clearance filed for "),
