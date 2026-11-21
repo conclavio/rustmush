@@ -89,11 +89,11 @@ fn evaluating_a_200k_deep_not_chain_returns_instead_of_overflowing() {
             eval_lock(&w, &not_chain(TALL + 1), nick, MAX_LOCK_DEPTH),
         )
     });
-    // The walk stops at a fixed level from the root and fails closed there;
-    // the negations stacked above invert that answer once per level, so the
-    // value itself is a parity artifact and means nothing. What it does show
-    // is that the answer no longer depends on how much tree is underneath —
-    // the extra level is never read.
+    // The walk stops at a fixed level from the root and poisons as `None`, so
+    // every enclosing `!` absorbs the poison and fails closed to `false`
+    // regardless of parity or tree depth underneath (EXT-P2-16).
+    assert!(!deep, "an unreadably deep negated lock must fail closed");
+    assert!(!deeper, "an unreadably deep negated lock must fail closed");
     assert_eq!(
         deep, deeper,
         "past the budget the answer must stop depending on the tree below it"

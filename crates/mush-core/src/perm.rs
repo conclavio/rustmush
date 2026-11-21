@@ -6,7 +6,8 @@
 //! > `who` controls `what` iff `who` is Wizard-or-better, **or** `who` is
 //! > `what` itself, **or** `who` (or `who`'s owner) owns `what`, **or**
 //! > `what`'s Zone Master Object has a `Zone` lock that `who` passes
-//! > (delegated zone administration, design doc §2.6).
+//! > (delegated zone administration, design doc §2.6; never grants control
+//! > over Wizard/God-owned objects to lower-role actors).
 //!
 //! Granular Rhost-style [`Powers`] refine the picture: [`has_power`] is
 //! automatically satisfied for Wizard+ so staff never need explicit grants.
@@ -48,7 +49,8 @@ pub fn has_privilege(w: &World, who: ObjId, privilege: Privileges) -> bool {
 }
 
 /// The classic "does `who` control `what`" check: God ∨ Wizard ∨ self ∨
-/// owner ∨ zone delegation (the ZMO's `Zone` lock).
+/// owner ∨ zone delegation (the ZMO's `Zone` lock, which never confers
+/// control over a Wizard/God-owned object to a lower-role actor).
 #[must_use]
 pub fn controls(w: &World, who: ObjId, what: ObjId) -> bool {
     let Some(a) = w.get(who) else { return false };
@@ -64,8 +66,13 @@ pub fn controls(w: &World, who: ObjId, what: ObjId) -> bool {
     if b.owner == who || b.owner == a.owner {
         return true;
     }
-    // Zone delegation: the ZMO's Zone lock grants control over members.
-    if let Some(z) = b.zone
+    // Zone delegation: the ZMO's Zone lock grants control over members, except
+    // that zone delegation never confers control over an object owned by (or
+    // carrying) `Role::Wizard` or `Role::God` unless `who` already holds at
+    // least that role (EXT-P1-1).
+    let target_owner_role = role_of(w, b.owner).max(b.role());
+    if (target_owner_role < Role::Wizard || a.role() >= target_owner_role)
+        && let Some(z) = b.zone
         && let Some(zo) = w.get(z)
         && zo.flags.contains(Flags::ZONE_MASTER)
         && let Some(expr) = zo.locks.get(&LockType::Zone)
@@ -74,6 +81,37 @@ pub fn controls(w: &World, who: ObjId, what: ObjId) -> bool {
         return true;
     }
     false
+}
+
+/// Whether `name` belongs to the executable `script:` attribute namespace
+/// (case-insensitive).
+#[must_use]
+pub fn is_script_attr(name: &str) -> bool {
+    name.split_once(':')
+        .is_some_and(|(ns, _)| ns.eq_ignore_ascii_case("script"))
+}
+
+/// Whether `actor` may write, clear, or flag an executable `script:*`
+/// attribute on `target`.
+///
+/// Requires [`can_modify`] and at least [`Role::Builder`], and refuses
+/// mutating `script:*` on an object owned by (or carrying) a strictly higher
+/// [`Role`] than `actor` — preventing delegated zone controllers or lower-role
+/// staff from planting executable scripts on higher-privilege objects
+/// (EXT-P1-1).
+#[must_use]
+pub fn can_write_script_attr(w: &World, actor: ObjId, target: ObjId) -> bool {
+    if !can_modify(w, actor, target) {
+        return false;
+    }
+    let Some(a) = w.get(actor) else { return false };
+    let Some(t) = w.get(target) else { return false };
+    let actor_role = a.role();
+    if actor_role < Role::Builder {
+        return false;
+    }
+    let target_owner_role = role_of(w, t.owner).max(t.role());
+    actor_role >= target_owner_role
 }
 
 /// Whether `who` may see `what`'s full examine output (attributes, locks).
@@ -175,6 +213,122 @@ mod tests {
         // Without ZONE_MASTER the delegation is void.
         w.set_flag(zmo, Flags::ZONE_MASTER, false).unwrap();
         assert!(!controls(&w, nick, rock));
+    }
+
+    #[test]
+    fn zone_lock_never_delegates_control_over_wizard_or_god_objects() {
+        let (mut w, nick, _bob, _ball, rock) = setup();
+        let builder = w.create(ObjKind::Player, "Bld", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(builder, Flags::BUILDER, true).unwrap();
+        let royalty = w.create(ObjKind::Player, "Roy", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(royalty, Flags::ROYALTY, true).unwrap();
+        let wiz = w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+
+        let zmo = w.create(ObjKind::Thing, "ZMO", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(zmo, Flags::ZONE_MASTER, true).unwrap();
+        w.get_mut(zmo)
+            .unwrap()
+            .locks
+            .insert(LockType::Zone, LockExpr::Const(true));
+
+        let god_thing = w
+            .create(ObjKind::Thing, "god_thing", GOD, Some(LIMBO))
+            .unwrap();
+        let wiz_thing = w
+            .create(ObjKind::Thing, "wiz_thing", wiz, Some(LIMBO))
+            .unwrap();
+        let roy_thing = w
+            .create(ObjKind::Thing, "roy_thing", royalty, Some(LIMBO))
+            .unwrap();
+        for obj in [rock, god_thing, wiz_thing, roy_thing] {
+            w.set_zone(obj, Some(zmo)).unwrap();
+        }
+
+        // Mortal/Builder/Royalty cannot gain control over Wizard- or God-owned
+        // objects through a ZMO Zone lock.
+        for actor in [nick, builder, royalty] {
+            assert!(!controls(&w, actor, god_thing));
+            assert!(!can_modify(&w, actor, god_thing));
+            assert!(!controls(&w, actor, wiz_thing));
+            assert!(!can_modify(&w, actor, wiz_thing));
+            // Non-Wizard members (Bob's rock, Royalty's thing) remain delegable.
+            assert!(controls(&w, actor, rock));
+            assert!(controls(&w, actor, roy_thing));
+        }
+
+        // Staff at Wizard+ still control everything.
+        assert!(controls(&w, wiz, wiz_thing));
+        assert!(controls(&w, GOD, god_thing));
+    }
+
+    #[test]
+    fn can_write_script_attr_blocks_higher_role_targets() {
+        let (mut w, nick, _bob, _ball, rock) = setup();
+        let builder_a = w.create(ObjKind::Player, "BldA", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(builder_a, Flags::BUILDER, true).unwrap();
+        let builder_b = w.create(ObjKind::Player, "BldB", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(builder_b, Flags::BUILDER, true).unwrap();
+        let royalty = w.create(ObjKind::Player, "Roy", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(royalty, Flags::ROYALTY, true).unwrap();
+        let wiz = w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+
+        let zmo = w.create(ObjKind::Thing, "ZMO", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(zmo, Flags::ZONE_MASTER, true).unwrap();
+        w.get_mut(zmo)
+            .unwrap()
+            .locks
+            .insert(LockType::Zone, LockExpr::Const(true));
+
+        let b_thing = w
+            .create(ObjKind::Thing, "b_thing", builder_b, Some(LIMBO))
+            .unwrap();
+        let roy_thing = w
+            .create(ObjKind::Thing, "roy_thing", royalty, Some(LIMBO))
+            .unwrap();
+        let wiz_thing = w
+            .create(ObjKind::Thing, "wiz_thing", wiz, Some(LIMBO))
+            .unwrap();
+        let god_thing = w
+            .create(ObjKind::Thing, "god_thing", GOD, Some(LIMBO))
+            .unwrap();
+        for obj in [rock, b_thing, roy_thing, wiz_thing, god_thing] {
+            w.set_zone(obj, Some(zmo)).unwrap();
+        }
+
+        assert!(is_script_attr("script:use"));
+        assert!(is_script_attr("SCRIPT:command:hi"));
+        assert!(!is_script_attr("desc"));
+        assert!(!is_script_attr("scripted:note"));
+
+        // Plain player can never write script:* anywhere.
+        assert!(!can_write_script_attr(&w, nick, nick));
+        assert!(!can_write_script_attr(&w, nick, rock));
+
+        // Builder may write script:* on equal/lower-role controlled targets,
+        // never on Royalty/Wizard/God objects.
+        assert!(can_write_script_attr(&w, builder_a, builder_a));
+        assert!(can_write_script_attr(&w, builder_a, b_thing));
+        assert!(can_write_script_attr(&w, builder_a, rock));
+        assert!(!can_write_script_attr(&w, builder_a, roy_thing));
+        assert!(!can_write_script_attr(&w, builder_a, wiz_thing));
+        assert!(!can_write_script_attr(&w, builder_a, god_thing));
+
+        // Royalty may script Royalty/Builder targets, not Wizard/God.
+        assert!(can_write_script_attr(&w, royalty, roy_thing));
+        assert!(can_write_script_attr(&w, royalty, b_thing));
+        assert!(!can_write_script_attr(&w, royalty, wiz_thing));
+        assert!(!can_write_script_attr(&w, royalty, god_thing));
+
+        // Wizard may script Wizard/Royalty/Builder targets, not God's.
+        assert!(can_write_script_attr(&w, wiz, wiz_thing));
+        assert!(can_write_script_attr(&w, wiz, roy_thing));
+        assert!(!can_write_script_attr(&w, wiz, god_thing));
+
+        // God may script anything non-GOING.
+        assert!(can_write_script_attr(&w, GOD, god_thing));
+        assert!(can_write_script_attr(&w, GOD, b_thing));
     }
 
     #[test]

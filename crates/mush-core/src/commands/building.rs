@@ -420,6 +420,14 @@ fn set_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "Permission denied.  (The {ns}: attribute namespace is module-owned.)"
             )));
         }
+        // Executable `script:*` attributes cannot be written or mutated on
+        // objects owned by a higher-role principal (EXT-P1-1).
+        if perm::is_script_attr(aname)
+            && ctx.module.as_deref() != Some("script")
+            && !perm::can_write_script_attr(ctx.w, ctx.actor, target)
+        {
+            return Err(perm_denied());
+        }
         let existing = ctx
             .w
             .get(target)
@@ -798,8 +806,53 @@ fn chown_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.w.get(target).is_some_and(|o| o.kind == ObjKind::Player) {
         return Err(CmdError::msg("Players always own themselves."));
     }
+    let Some(old_owner) = ctx.w.get(target).map(|o| o.owner) else {
+        return Err(crate::matchit::MatchErr::NoMatch.into());
+    };
+    let script_attrs: Vec<String> = ctx
+        .w
+        .get(target)
+        .map(|o| {
+            o.attrs
+                .iter_namespace("script")
+                .map(|(k, _)| k.as_str().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    // Prevent lower-role CHOWN_ANY holders from transferring Wizard/God-owned
+    // objects or chowning anything to Wizard/God, and refuse transferring
+    // scripted objects across higher roles than the actor holds (EXT-P1-1).
+    let actor_role = perm::role_of(ctx.w, ctx.actor);
+    let old_owner_role =
+        perm::role_of(ctx.w, old_owner).max(ctx.w.get(target).map_or(Role::Player, |o| o.role()));
+    let new_owner_role = perm::role_of(ctx.w, new_owner);
+    let crosses_staff = (old_owner_role >= Role::Wizard && actor_role < old_owner_role)
+        || (new_owner_role >= Role::Wizard && actor_role < new_owner_role);
+    let crosses_script_role =
+        !script_attrs.is_empty() && (actor_role < old_owner_role || actor_role < new_owner_role);
+    if crosses_staff || crosses_script_role {
+        return Err(perm_denied());
+    }
     ctx.w.chown(target, new_owner)?;
-    ctx.out.info(ctx.actor, "Owner changed.");
+    if old_owner != new_owner && !script_attrs.is_empty() {
+        // Transferring ownership of a scripted object halts it immediately and
+        // signals `AttrSet` so `mush-script` re-checks cached ASTs against the
+        // new owner without ever elevating a lower-role author's scripts.
+        ctx.w.set_flag(target, Flags::HALTED, true)?;
+        for name in script_attrs {
+            ctx.emit_world_event(&WorldEvent::AttrSet {
+                obj: target,
+                name,
+                setter: ctx.actor,
+            });
+        }
+        ctx.out.info(
+            ctx.actor,
+            "Owner changed.  (Object halted because it carries scripts.)",
+        );
+    } else {
+        ctx.out.info(ctx.actor, "Owner changed.");
+    }
     Ok(())
 }
 

@@ -2014,3 +2014,315 @@ fn high18_caps_script_attrs_coalesces_compiles_bounds_outbox_queue_and_min_timer
         );
     }
 }
+
+// ----------------------------------------------------------------------
+// Tier 3B security regressions: EXT-P1-1 & EXT-P2-8
+// ----------------------------------------------------------------------
+
+#[test]
+fn ext_p1_1_delegated_builder_cannot_escalate_to_wizard_or_peer_authority() {
+    use mush_core::{LockExpr, LockType, Powers};
+
+    // 1. ZMO delegation onto a Wizard/God-owned object: Builder cannot write
+    //    `script:*` via `@set` or `mush::set_attr`.
+    let mut f = Fixture::new();
+    let alice = f.builder("Alice");
+    let bob = f.builder("Bob");
+    let wiz = f.player("Wiz");
+    f.engine.world.set_flag(wiz, Flags::WIZARD, true).unwrap();
+    let royalty = f.player("Roy");
+    f.engine
+        .world
+        .set_flag(royalty, Flags::ROYALTY, true)
+        .unwrap();
+
+    let zmo = f.thing("ZMO", GOD, LIMBO);
+    f.engine
+        .world
+        .set_flag(zmo, Flags::ZONE_MASTER, true)
+        .unwrap();
+    f.engine
+        .world
+        .get_mut(zmo)
+        .unwrap()
+        .locks
+        .insert(LockType::Zone, LockExpr::Is(alice));
+
+    let god_box = f.thing("godbox", GOD, LIMBO);
+    let wiz_box = f.thing("wizbox", wiz, LIMBO);
+    let roy_box = f.thing("roybox", royalty, LIMBO);
+    let bob_zoned = f.thing("bobzoned", bob, LIMBO);
+    let bob_private = f.thing("bobpriv", bob, LIMBO);
+    f.engine
+        .world
+        .set_attr(bob_private, "desc", Attr::text("safe", bob))
+        .unwrap();
+    for obj in [god_box, wiz_box, roy_box, bob_zoned] {
+        f.engine.world.set_zone(obj, Some(zmo)).unwrap();
+    }
+
+    // Direct `@set` onto GOD/Wizard/Royalty objects is refused.
+    for target in ["godbox", "wizbox", "roybox"] {
+        let out = f.run(
+            alice,
+            &format!(r#"@set {target}/script:command:pwn=mush::pemit(mush::caller(), "PWN")"#),
+        );
+        assert!(
+            actor_saw(&out, alice, "Permission denied"),
+            "@set script:* on {target} must be denied: {:?}",
+            all_text(&out)
+        );
+    }
+
+    // `mush::set_attr` from Alice's own script onto GOD/Wizard/Royalty objects
+    // is also refused.
+    let alice_wand = f.thing("wand", alice, LIMBO);
+    f.run(
+        alice,
+        &format!(
+            r#"@set {alice_wand}/script:command:plant=mush::set_attr(mush::matchit(arg), "script:command:pwn", "mush::pemit(mush::caller(), \"PWN\")")"#
+        ),
+    );
+    for target in ["godbox", "wizbox", "roybox"] {
+        let out = f.run(alice, &format!("plant {target}"));
+        assert!(
+            actor_saw(&out, alice, "failed"),
+            "mush::set_attr script:* on {target} must fail: {:?}",
+            all_text(&out)
+        );
+    }
+    assert!(f.engine.world.attr(god_box, "script:command:pwn").is_none());
+    assert!(f.engine.world.attr(wiz_box, "script:command:pwn").is_none());
+    assert!(f.engine.world.attr(roy_box, "script:command:pwn").is_none());
+
+    // 2. Horizontal ZMO isolation: Alice CAN script Bob's zoned Builder object,
+    //    but Frame.owner binds to Alice (attr.owner), NEVER Bob (obj.owner):
+    //    - `mush::owner()` is Alice, not Bob;
+    //    - Alice cannot touch Bob's non-zoned `bobpriv`;
+    //    - Alice cannot borrow Bob's `SEE_HIDDEN` power;
+    //    - revoking Alice from the ZMO lock immediately disables the script.
+    f.engine.world.get_mut(bob).unwrap().powers = Powers::SEE_HIDDEN;
+    let dark_secret = f.thing("darksecret", GOD, LIMBO);
+    f.engine
+        .world
+        .set_flag(dark_secret, Flags::DARK, true)
+        .unwrap();
+
+    let out = f.run(
+        alice,
+        &format!(
+            r##"@set {bob_zoned}/script:command:checkowner=let d = "NONE"; try {{ d = mush::name(mush::matchit("#{}")); }} catch {{}} mush::pemit(mush::caller(), "owner=" + to_string(mush::owner()) + " dark=" + d)"##,
+            dark_secret.0
+        ),
+    );
+    assert!(actor_saw(&out, alice, "Set."), "{:?}", all_text(&out));
+    let out = f.run(alice, "checkowner");
+    assert!(
+        actor_saw(&out, alice, &format!("owner={alice} dark=NONE")),
+        "Frame.owner must be attr.owner (Alice), not obj.owner (Bob) or Bob's SEE_HIDDEN: {:?}",
+        all_text(&out)
+    );
+
+    f.run(
+        alice,
+        &format!(
+            r#"@set {bob_zoned}/script:command:steal=mush::set_attr(mush::matchit("bobpriv"), "desc", "stolen")"#
+        ),
+    );
+    let out = f.run(alice, "steal");
+    assert_eq!(
+        f.desc(bob_private),
+        "safe",
+        "Alice's script on Bob's zoned object must not write Bob's unzoned object"
+    );
+    assert!(
+        actor_saw(&out, alice, "failed"),
+        "error must report to Alice: {:?}",
+        all_text(&out)
+    );
+
+    // Revoking ZMO access immediately prevents Alice's script on Bob's object
+    // from running.
+    f.engine
+        .world
+        .get_mut(zmo)
+        .unwrap()
+        .locks
+        .insert(LockType::Zone, LockExpr::Is(bob));
+    let out = f.run(alice, "checkowner");
+    assert!(
+        saw(&out, "Huh?"),
+        "revoking ZMO control must disable foreign script immediately: {:?}",
+        all_text(&out)
+    );
+
+    // 3. Defense-in-depth at boot + execution: even if a Builder's script attr
+    //    is already stored in the DB on a GOD-owned object (simulating legacy
+    //    state), it neither compiles on boot nor runs on any hook.
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let eve_builder = world
+        .create(ObjKind::Player, "EveB", GOD, Some(LIMBO))
+        .unwrap();
+    world.set_flag(eve_builder, Flags::BUILDER, true).unwrap();
+    let victim = world
+        .create(ObjKind::Thing, "victim", GOD, Some(LIMBO))
+        .unwrap();
+    world
+        .set_attr(victim, "desc", Attr::text("untouched", GOD))
+        .unwrap();
+    let staff_obj = world
+        .create(ObjKind::Thing, "staffobj", GOD, Some(LIMBO))
+        .unwrap();
+    world
+        .set_attr(
+            staff_obj,
+            "script:command:escalate",
+            Attr::text(
+                r#"mush::set_attr(mush::matchit("victim"), "desc", "PWNED-AS-GOD")"#,
+                eve_builder,
+            ),
+        )
+        .unwrap();
+    world
+        .set_attr(
+            staff_obj,
+            "script:use",
+            Attr::text(r#"mush::pemit(user, "ESCAPED-USE")"#, eve_builder),
+        )
+        .unwrap();
+    world
+        .set_attr(
+            staff_obj,
+            "script:hear:hi",
+            Attr::text(r#"mush::emit(mush::here(), "ESCAPED-HEAR")"#, eve_builder),
+        )
+        .unwrap();
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    let mut engine =
+        Engine::with_modules(world, registry, vec![Box::new(ScriptModule::new())]).unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .unwrap();
+    let mut step = |actor: ObjId, line: &str| {
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor,
+                line: line.into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        out.take()
+    };
+    assert!(saw(&step(eve_builder, "escalate"), "Huh?"));
+    assert!(actor_saw(
+        &step(eve_builder, "use staffobj"),
+        eve_builder,
+        "You can't use that."
+    ));
+    assert!(!saw(&step(eve_builder, "say hi"), "ESCAPED-HEAR"));
+    assert_eq!(
+        engine
+            .world
+            .attr(victim, "desc")
+            .and_then(|a| a.as_text())
+            .unwrap_or_default(),
+        "untouched"
+    );
+
+    // 4. `@chown` defense-in-depth:
+    //    (a) Chowning Alice's scripted object to GOD halts it, purges cached
+    //        ASTs, and even after `!HALTED` Alice's script still cannot run.
+    let mut f2 = Fixture::new();
+    let alice2 = f2.builder("Alice");
+    let target_box = f2.thing("target", GOD, LIMBO);
+    f2.engine
+        .world
+        .set_attr(target_box, "desc", Attr::text("clean", GOD))
+        .unwrap();
+    let trojan = f2.thing("trojan", alice2, LIMBO);
+    f2.run(
+        alice2,
+        &format!(
+            r#"@set {trojan}/script:command:boom=mush::set_attr(mush::matchit("target"), "desc", "PWNED")"#
+        ),
+    );
+    f2.run(GOD, &format!("@chown {trojan}=God"));
+    assert!(f2.flag(trojan, Flags::HALTED));
+    f2.run(GOD, &format!("@set {trojan}=!HALTED"));
+    let out = f2.run(alice2, "boom");
+    assert!(saw(&out, "Huh?"), "chowned builder script must not run");
+    assert_eq!(f2.desc(target_box), "clean");
+
+    //    (b) Chowning a GOD-scripted object down to Builder caps authority at
+    //        Builder (cannot mutate GOD's target_box even after `!HALTED`).
+    let staff_tool = f2.thing("stafftool", GOD, LIMBO);
+    f2.run(
+        GOD,
+        &format!(
+            r#"@set {staff_tool}/script:command:poke=mush::set_attr(mush::matchit("target"), "desc", "BY-STAFF")"#
+        ),
+    );
+    f2.run(GOD, &format!("@chown {staff_tool}=Alice"));
+    assert!(f2.flag(staff_tool, Flags::HALTED));
+    f2.run(GOD, &format!("@set {staff_tool}=!HALTED"));
+    let out = f2.run(alice2, "poke");
+    assert!(
+        actor_saw(&out, alice2, "failed"),
+        "down-chowned GOD script must run capped at Alice, not GOD: {:?}",
+        all_text(&out)
+    );
+    assert_eq!(f2.desc(target_box), "clean");
+}
+
+#[test]
+fn ext_p2_8_bounded_trigger_collection_caps_hear_move_and_command_fanout() {
+    let cfg = ScriptConfig {
+        max_total_invocations: 6,
+        max_queue_len: 6,
+        ..ScriptConfig::default()
+    };
+    let mut f = Fixture::with_config(cfg);
+    let nick = f.builder("Nick");
+    let annex = f.room("Annex");
+    f.engine
+        .world
+        .create(ObjKind::Exit, "east;e", GOD, Some(LIMBO))
+        .unwrap();
+    let exit = f.engine.world.exits_of(LIMBO)[0];
+    f.engine.world.link_exit(exit, Some(annex)).unwrap();
+
+    // Populate rooms with far more listeners than `max_queue_len` across hear,
+    // move (leave + enter), and command triggers.
+    for i in 0..80 {
+        let ear = f.thing(&format!("ear{i}"), nick, LIMBO);
+        f.seed_script(ear, "script:hear:h", r#"mush::pemit(speaker, "HEARD");"#);
+        f.seed_script(
+            ear,
+            "script:command:chorus",
+            r#"mush::pemit(mush::caller(), "CMD");"#,
+        );
+        f.seed_script(ear, "script:leave", r#"mush::pemit(mover, "LEFT");"#);
+        let greeter = f.thing(&format!("greet{i}"), nick, annex);
+        f.seed_script(greeter, "script:enter", r#"mush::pemit(mover, "ENTERED");"#);
+    }
+
+    let out = f.run(nick, "say hello crowd");
+    assert_eq!(count(&out, "HEARD"), 6, "hear fanout must stop at cap");
+
+    let out = f.run(nick, "chorus everyone");
+    assert_eq!(count(&out, "CMD"), 6, "command fanout must stop at cap");
+
+    let out = f.run(nick, "east");
+    let moved_fires = count(&out, "LEFT") + count(&out, "ENTERED");
+    assert_eq!(
+        moved_fires, 6,
+        "combined leave+enter fanout must stop at cap"
+    );
+}

@@ -190,9 +190,9 @@ const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
 /// Evaluate `expr` against `who`.
 ///
 /// `depth` bounds **indirect** lock chains ([`LockExpr::Indirect`]); each
-/// indirection decrements it and an expression at depth 0 fails closed, so
-/// `@lock`-cycles terminate as `false`. Callers normally pass
-/// [`MAX_LOCK_DEPTH`].
+/// indirection decrements it and an expression at depth 0 — or any active
+/// `@lock`-cycle — poisons the evaluation so even enclosing `!` fails closed
+/// to `false`. Callers normally pass [`MAX_LOCK_DEPTH`].
 ///
 /// Semantics of the leaves:
 /// - `Carry`: the target object is directly in `who`'s contents.
@@ -219,17 +219,21 @@ pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
 }
 
 /// Resource errors propagate through every evaluated operator, including
-/// negation. The existing indirect/structural cutoff remains ordinary false;
-/// it is distinct from a failure to obtain the complete tracked read.
+/// negation. Evaluation-cutoff conditions (unreadable attributes, indirect
+/// cycles, indirect-depth exhaustion, structural-depth exhaustion, and total
+/// step-budget exhaustion) poison evaluation as `Ok(None)` so enclosing
+/// operators — including `!` — fail closed to `false`, while remaining
+/// distinct from a tracked-read `Err`.
 pub(crate) fn eval_lock_with<'w, R: ObjectRead<'w>>(
     read: &mut R,
     expr: &LockExpr,
     who: ObjId,
     depth: u8,
 ) -> Result<bool, R::Error> {
-    // `None` — the key read an attribute it is not allowed to read, or hit
-    // the total evaluation step budget — is not a third answer anyone outside
-    // can see: it lands as "does not pass", failing closed even through `!`.
+    // `None` — the key read an attribute it is not allowed to read, hit a
+    // cycle, or exhausted the indirect/structural/step budget — is not a third
+    // answer anyone outside can see: it lands as "does not pass", failing
+    // closed even through `!`.
     let mut steps = MAX_LOCK_STEPS;
     let mut active: Vec<(ObjId, LockType)> = Vec::new();
     Ok(eval_with(
@@ -274,12 +278,14 @@ fn unreadable(a: &Attr) -> bool {
 /// budgets multiply into the true stack ceiling, which is why the indirect
 /// budget stays small.
 ///
-/// `Some(b)` is the key's answer; `None` means it tried to read an attribute
-/// it may not (`unreadable`). `None` is not `Some(false)`: it **absorbs**
-/// through every operator, including `!`, so a term over a restricted
-/// attribute cannot be negated into a pass, and it does not depend on the
-/// attribute's value, so the refusal is byte-identical whether the value would
-/// have matched the glob or not. That is the whole point — a lock that failed
+/// `Some(b)` is the key's answer; `None` is the fail-closed poison produced
+/// when the key tries to read an attribute it may not (`unreadable`), detects
+/// an indirect cycle, or exhausts its indirect, structural, or step budget.
+/// `None` is not `Some(false)`: it **absorbs** through every operator,
+/// including `!`, so neither a restricted-attribute probe nor a cycle/budget
+/// cutoff can be negated into a pass. For restricted attributes, `None` does
+/// not depend on the attribute's value, so the refusal is byte-identical
+/// whether the value would have matched the glob or not — a lock that failed
 /// for the ordinary reason and a lock that was not allowed to look must be
 /// indistinguishable, or the refusal is itself the leaked bit. The one thing
 /// that does not poison is a branch never taken: `&`/`|` keep their
@@ -315,13 +321,15 @@ fn eval_with<'w, R: ObjectRead<'w>>(
         LockExpr::AttrMatch { name, glob } => eval_attr_with(read, who, name, glob)?,
         LockExpr::Indirect(obj, lt) => {
             if indirect == 0 {
-                return Ok(Some(false));
+                // Indirect-depth budget exhausted: poison so enclosing `!`
+                // cannot invert the refusal into permission (EXT-P2-16).
+                return Ok(None);
             }
             let key = (*obj, *lt);
             if active.contains(&key) {
-                // Active recursion cycle detected: fail closed immediately
-                // without exponential branching.
-                return Ok(Some(false));
+                // Active recursion cycle detected: poison so enclosing `!`
+                // cannot turn a cyclic lock into permission (EXT-P2-16).
+                return Ok(None);
             }
             match read.object(*obj)? {
                 None => Some(false),
@@ -349,13 +357,13 @@ fn eval_with<'w, R: ObjectRead<'w>>(
         }
         LockExpr::Not(e) => {
             if structural == 0 {
-                return Ok(Some(false));
+                return Ok(None);
             }
             eval_with(read, e, who, indirect, structural - 1, steps, active)?.map(|v| !v)
         }
         LockExpr::And(a, b) => {
             if structural == 0 {
-                return Ok(Some(false));
+                return Ok(None);
             }
             match eval_with(read, a, who, indirect, structural - 1, steps, active)? {
                 Some(true) => eval_with(read, b, who, indirect, structural - 1, steps, active)?,
@@ -364,7 +372,7 @@ fn eval_with<'w, R: ObjectRead<'w>>(
         }
         LockExpr::Or(a, b) => {
             if structural == 0 {
-                return Ok(Some(false));
+                return Ok(None);
             }
             match eval_with(read, a, who, indirect, structural - 1, steps, active)? {
                 Some(false) => eval_with(read, b, who, indirect, structural - 1, steps, active)?,
@@ -1874,5 +1882,163 @@ mod tests {
             Box::new(LockExpr::Indirect(door, LockType::Enter)),
         );
         assert!(eval_lock(&w, &expr, nick, MAX_LOCK_DEPTH));
+    }
+
+    #[test]
+    fn negated_cyclic_indirect_lock_fails_closed() {
+        let (mut w, nick, _sword, door) = eval_world();
+
+        // Direct self-cycle wrapped in `!` or `!!` must still fail closed.
+        let self_cycle = LockExpr::Indirect(door, LockType::Basic);
+        let neg_self = LockExpr::Not(Box::new(self_cycle.clone()));
+        let double_neg_self = LockExpr::Not(Box::new(neg_self.clone()));
+        assert!(!eval_lock(&w, &neg_self, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(&w, &double_neg_self, nick, MAX_LOCK_DEPTH));
+
+        // Mutual 2-node cycle A -> B -> A wrapped in `!` (and inside compound
+        // operators under `!`) must fail closed.
+        let a = w.create(ObjKind::Thing, "cyc_a", GOD, Some(LIMBO)).unwrap();
+        let b = w.create(ObjKind::Thing, "cyc_b", GOD, Some(LIMBO)).unwrap();
+        w.get_mut(a)
+            .unwrap()
+            .locks
+            .insert(LockType::Basic, LockExpr::Indirect(b, LockType::Basic));
+        w.get_mut(b)
+            .unwrap()
+            .locks
+            .insert(LockType::Basic, LockExpr::Indirect(a, LockType::Basic));
+
+        let neg_mutual = LockExpr::Not(Box::new(LockExpr::Indirect(a, LockType::Basic)));
+        assert!(!eval_lock(&w, &neg_mutual, nick, MAX_LOCK_DEPTH));
+
+        // Even when the cycle itself is negated inside one of the cycle members
+        // (`A = !@B`, `B = @A`), evaluating `@A` or `!@A` must fail closed.
+        w.get_mut(a).unwrap().locks.insert(
+            LockType::Basic,
+            LockExpr::Not(Box::new(LockExpr::Indirect(b, LockType::Basic))),
+        );
+        assert!(!eval_lock(
+            &w,
+            &LockExpr::Indirect(a, LockType::Basic),
+            nick,
+            MAX_LOCK_DEPTH
+        ));
+        assert!(!eval_lock(&w, &neg_mutual, nick, MAX_LOCK_DEPTH));
+
+        // Negated compound with a cyclic operand also poisons to false.
+        let neg_or = LockExpr::Not(Box::new(LockExpr::Or(
+            Box::new(self_cycle.clone()),
+            Box::new(LockExpr::Const(false)),
+        )));
+        let neg_and = LockExpr::Not(Box::new(LockExpr::And(
+            Box::new(LockExpr::Const(true)),
+            Box::new(self_cycle),
+        )));
+        assert!(!eval_lock(&w, &neg_or, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(&w, &neg_and, nick, MAX_LOCK_DEPTH));
+
+        // Sanity: non-cyclic negated indirect lock still behaves normally.
+        let neg_healthy = LockExpr::Not(Box::new(LockExpr::Indirect(door, LockType::Enter)));
+        assert!(!eval_lock(&w, &neg_healthy, nick, MAX_LOCK_DEPTH));
+        assert!(eval_lock(&w, &neg_healthy, GOD, MAX_LOCK_DEPTH));
+    }
+
+    #[test]
+    fn negated_deep_indirect_lock_fails_closed() {
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        let len = usize::from(MAX_LOCK_DEPTH) + 2;
+        let chain: Vec<ObjId> = (0..len)
+            .map(|i| {
+                w.create(ObjKind::Thing, &format!("hop{i}"), GOD, Some(LIMBO))
+                    .unwrap()
+            })
+            .collect();
+        for pair in chain.windows(2) {
+            let (here, next) = (pair[0], pair[1]);
+            w.get_mut(here)
+                .unwrap()
+                .locks
+                .insert(LockType::Basic, LockExpr::Indirect(next, LockType::Basic));
+        }
+        // Tail evaluates to `false`, so a reachable negated chain WOULD pass,
+        // whereas hitting `indirect == 0` must poison and return `false`.
+        w.get_mut(*chain.last().unwrap())
+            .unwrap()
+            .locks
+            .insert(LockType::Basic, LockExpr::Const(false));
+
+        let deep = LockExpr::Indirect(chain[0], LockType::Basic);
+        let neg_deep = LockExpr::Not(Box::new(deep.clone()));
+        assert!(!eval_lock(&w, &deep, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(&w, &neg_deep, nick, MAX_LOCK_DEPTH));
+
+        // Depth 0 on even a single indirect hop wrapped in `!` fails closed.
+        assert!(!eval_lock(&w, &neg_deep, nick, 0));
+
+        // Sanity: within budget (starting near the tail) `!` inverts `#FALSE` -> `true`.
+        let shallow_neg = LockExpr::Not(Box::new(LockExpr::Indirect(
+            chain[len - 2],
+            LockType::Basic,
+        )));
+        assert!(eval_lock(&w, &shallow_neg, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(&w, &shallow_neg, nick, 1));
+    }
+
+    #[test]
+    fn negated_structural_cutoff_fails_closed() {
+        let (w, nick, _sword, _door) = eval_world();
+
+        // Exercise the `structural == 0` guard directly for `Not`, `And`, and
+        // `Or` beneath outer negations while keeping `steps` ample, verifying
+        // poison (`Ok(None)`) propagates through `!` instead of flipping to true.
+        let cases = [
+            LockExpr::Not(Box::new(LockExpr::Not(Box::new(LockExpr::Const(false))))),
+            LockExpr::Not(Box::new(LockExpr::Not(Box::new(LockExpr::Not(Box::new(
+                LockExpr::Const(false),
+            )))))),
+            LockExpr::Not(Box::new(LockExpr::And(
+                Box::new(LockExpr::Const(true)),
+                Box::new(LockExpr::Const(false)),
+            ))),
+            LockExpr::Not(Box::new(LockExpr::Or(
+                Box::new(LockExpr::Const(false)),
+                Box::new(LockExpr::Const(false)),
+            ))),
+        ];
+        for expr in &cases {
+            let mut read = PlainRead::new(&w);
+            let mut steps = MAX_LOCK_STEPS;
+            let mut active = Vec::new();
+            let res = eval_with(
+                &mut read,
+                expr,
+                nick,
+                MAX_LOCK_DEPTH,
+                1,
+                &mut steps,
+                &mut active,
+            )
+            .unwrap();
+            assert_eq!(
+                res, None,
+                "structural cutoff beneath `!` must poison as None for {expr:?}"
+            );
+        }
+
+        // Deeply nested negated chains (both odd and even depths past budget)
+        // must always fail closed via `eval_lock`.
+        for depth in [2_000usize, 2_001usize] {
+            for base in [LockExpr::Const(false), LockExpr::Const(true)] {
+                let mut e = base;
+                for _ in 0..depth {
+                    e = LockExpr::Not(Box::new(e));
+                }
+                assert!(
+                    !eval_lock(&w, &e, nick, MAX_LOCK_DEPTH),
+                    "deeply nested Not chain (depth {depth}) must fail closed"
+                );
+            }
+        }
     }
 }
