@@ -192,7 +192,10 @@ impl MindWorkshop {
             return;
         }
         let invoke = InvokeRequest::Mind(request.clone());
-        if let Err(error) = invoke.validate() {
+        if let Err(error) = invoke
+            .validate()
+            .and_then(|()| crate::reject_forbidden_invoke_format_chars(&invoke))
+        {
             self.message = format!("Request refused: {error}");
             return;
         }
@@ -829,7 +832,10 @@ impl MindWorkshop {
             return;
         };
         match key {
-            Key::Char(c) if form.line.text().len() + c.len_utf8() <= MAX_FORM_BYTES => {
+            Key::Char(c)
+                if !crate::is_stripped_terminal_char(c)
+                    && form.line.utf8_bytes().saturating_add(c.len_utf8()) <= MAX_FORM_BYTES =>
+            {
                 form.line.insert(c);
             }
             Key::Backspace => {
@@ -1322,33 +1328,35 @@ fn wrap_cells(text: &str, width: usize) -> Vec<String> {
 }
 
 fn form_window(line: &LineBuffer, width: usize, rows: usize) -> String {
-    let chars = line.chars();
+    let total = line.len();
     // At least one complete visible input row. A cursor marker makes a
     // long rule's current edit position visible without mutating the text.
     let budget = width.max(1).saturating_mul(rows.max(1));
     let start = line.cursor().saturating_sub(budget / 2);
-    let end = chars.len().min(start.saturating_add(budget));
+    let end = total.min(start.saturating_add(budget));
     let mut text = if start != 0 {
         "...".into()
     } else {
         String::new()
     };
-    for (i, c) in chars.iter().enumerate().take(end).skip(start) {
+    for (i, c) in line.chars().enumerate().take(end).skip(start) {
         if i == line.cursor() {
             text.push('|');
         }
-        text.push(*c);
+        text.push(c);
     }
     if line.cursor() == end {
         text.push('|');
     }
-    if end != chars.len() {
+    if end != total {
         text.push_str("...");
     }
     text
 }
 fn clean(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).collect()
+    text.chars()
+        .filter(|&c| !crate::is_stripped_terminal_char(c))
+        .collect()
 }
 fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
@@ -2393,5 +2401,23 @@ mod tests {
         let long = "a".repeat(20_000);
         let rows = wrap_cells(&long, 40);
         assert_eq!(rows.len(), 500);
+    }
+
+    #[test]
+    fn bidi_and_line_separators_are_stripped_and_refused_in_workshop() {
+        assert_eq!(
+            clean("Mind\u{202E}\u{2066}\u{2028}\u{2029}\u{061C}\u{200F}A"),
+            "MindA"
+        );
+        let mut state = MindWorkshop {
+            open: true,
+            ..MindWorkshop::default()
+        };
+        state.send(MindRequest::Create {
+            name: "bad\u{202E}name".into(),
+            from: Some("Standard".into()),
+        });
+        assert!(state.take_invokes().is_empty());
+        assert!(state.message.starts_with("Request refused:"));
     }
 }

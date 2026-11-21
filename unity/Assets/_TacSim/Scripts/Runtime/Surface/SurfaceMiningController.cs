@@ -821,7 +821,9 @@ namespace TacSim.Surface
             }
 
             if (readings == null) return;
-            for (int i = 0; i < readings.Count; i++)
+            const int MaxReadingMarkers = 64;
+            int spawned = 0;
+            for (int i = 0; i < readings.Count && spawned < MaxReadingMarkers; i++)
             {
                 var r = readings[i];
                 var cell = r["cell"].AsArray();
@@ -833,6 +835,7 @@ namespace TacSim.Surface
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
                 SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
+                spawned++;
             }
         }
 
@@ -847,7 +850,9 @@ namespace TacSim.Surface
             }
 
             if (others == null) return;
-            for (int i = 0; i < others.Count; i++)
+            const int MaxOtherRigs = 32;
+            int spawned = 0;
+            for (int i = 0; i < others.Count && spawned < MaxOtherRigs; i++)
             {
                 var o = others[i];
                 var c = o["cell"].AsArray();
@@ -860,6 +865,7 @@ namespace TacSim.Surface
                 Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 0f);
                 string tag = o.Bool("sounding", false) ? "OTHER RIG [SOUNDING!]" : "OTHER RIG [o]";
                 TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, _otherRigsRoot, tag, wp, 90f, isEscort: true);
+                spawned++;
             }
         }
 
@@ -905,6 +911,7 @@ namespace TacSim.Surface
             var tmpGo = new GameObject("Txt");
             tmpGo.transform.SetParent(tagGo.transform, false);
             var tmp = tmpGo.AddComponent<TextMeshPro>();
+            tmp.richText = false;
             tmp.text = label.Replace("<", "‹").Replace(">", "›");
             tmp.fontSize = 4.2f;
             tmp.color = color;

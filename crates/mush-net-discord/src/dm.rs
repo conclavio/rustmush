@@ -259,12 +259,16 @@ pub enum Rendered {
     Interactive(Interactive),
 }
 
-/// Escape Discord's inline markdown so player text renders as typed.
+/// Escape Discord's inline markdown (including masked links `[label](url)` and
+/// `#` headings; P2-EDGE-19) so player text renders as typed.
 #[must_use]
 pub fn escape_md(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
-        if matches!(c, '*' | '_' | '~' | '`' | '|' | '>' | '\\') {
+        if matches!(
+            c,
+            '*' | '_' | '~' | '`' | '|' | '>' | '\\' | '[' | ']' | '#'
+        ) {
             out.push('\\');
         }
         out.push(c);
@@ -419,7 +423,7 @@ pub fn render(event: &OutputEvent, state: &FollowState) -> Rendered {
                 actor.id == state.self_id,
                 &text.to_plain_text(),
             );
-            Rendered::Line(escape_md(&format!("[{channel}] {line}")))
+            Rendered::Line(format!("[{}] {}", escape_md(channel), escape_md(&line)))
         }
         OutputEvent::Sys(text) => match first_tag(text) {
             Some("scene" | "discord") => Rendered::Line(escape_md(&text.to_plain_text())),
@@ -1753,5 +1757,13 @@ mod tests {
         assert!(state.take_request_message(1, 8).is_none());
         assert_eq!(state.request(1).unwrap().message_id, 9);
         assert!(state.take_request_message(1, 9).is_some());
+    }
+
+    #[test]
+    fn p2_edge_19_escape_md_neutralizes_masked_links_and_headings() {
+        assert_eq!(
+            escape_md("[click here](https://evil.example) # Heading"),
+            r"\[click here\](https://evil.example) \# Heading"
+        );
     }
 }

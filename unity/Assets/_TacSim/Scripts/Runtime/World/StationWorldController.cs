@@ -45,6 +45,12 @@ namespace TacSim.World
         private WorldInteractable _airlockBoardInteractable;
         private string _builtGeometrySignature;
 
+        public const int MaxViewportMullions = 64;
+        public const int MaxViewingStanchions = 64;
+        public const int MaxWallSlotScanSteps = 512;
+        public const int MaxSpawnedRoomActors = 64;
+        public const int MaxMooredCradleHulls = 16;
+
         // Shift atlas coordinates near Unity origin (0, y, 0) for crisp float precision across any port pack
         private float _originOffsetX = -160f;
         private float _originOffsetZ = -150f;
@@ -314,7 +320,8 @@ namespace TacSim.World
                 CreateBox(root, "ViewportSill", AtlasToUnity(center2d.x, elev + sillH * 0.5f, room.MinY), new Vector3(size2d.x, sillH, 0.34f), sillMat, true);
                 CreateBox(root, "Armourglass_Viewport", AtlasToUnity(center2d.x, elev + sillH + (height - sillH) * 0.5f, room.MinY), new Vector3(size2d.x, height - sillH, 0.08f), glassMat, true);
 
-                int mullionCount = Mathf.Max(2, Mathf.RoundToInt(size2d.x / 8.0f));
+                float safeSpanX = (float.IsNaN(size2d.x) || float.IsInfinity(size2d.x)) ? 8.0f : Mathf.Clamp(size2d.x, 1.0f, TacSimContentLoader.MaxRoomSpanMeters);
+                int mullionCount = Mathf.Clamp(Mathf.RoundToInt(safeSpanX / 8.0f), 2, MaxViewportMullions);
                 for (int m = 0; m <= mullionCount; m++)
                 {
                     float mx = Mathf.Lerp(room.MinX + 0.15f, room.MaxX - 0.15f, m / (float)mullionCount);
@@ -324,13 +331,13 @@ namespace TacSim.World
                 // Grounded brushed-steel observation guardrail with stanchion posts + flush muted deck safety strip (no floating yellow bar!)
                 Material railSteel = UrpMaterialFactory.GetOpaque("ObservationHandrail", new Color(0.26f, 0.30f, 0.35f), 0.48f, 0.72f);
                 Material safetyLineMat = UrpMaterialFactory.GetOpaque("DeckSafetyLine", new Color(0.48f, 0.36f, 0.14f), 0.18f, 0.12f);
-                float railSpanX = Mathf.Max(2f, size2d.x - 4f);
+                float railSpanX = Mathf.Clamp(safeSpanX - 4f, 2f, TacSimContentLoader.MaxRoomSpanMeters);
                 float railAtlasY = room.MinY + 0.92f;
                 CreateBox(root, "ViewingHandrail", AtlasToUnity(center2d.x, elev + 0.96f, railAtlasY), new Vector3(railSpanX, 0.055f, 0.065f), railSteel, false);
                 CreateBox(root, "ViewingKneeRail", AtlasToUnity(center2d.x, elev + 0.52f, railAtlasY), new Vector3(railSpanX, 0.030f, 0.030f), railSteel, false);
                 CreateBox(root, "DeckSafetyInlay", AtlasToUnity(center2d.x, elev + 0.004f, railAtlasY + 0.22f), new Vector3(railSpanX, 0.006f, 0.065f), safetyLineMat, false);
 
-                int stanchions = Mathf.Max(2, Mathf.RoundToInt(railSpanX / 6.0f));
+                int stanchions = Mathf.Clamp(Mathf.RoundToInt(railSpanX / 6.0f), 2, MaxViewingStanchions);
                 for (int st = 0; st <= stanchions; st++)
                 {
                     float sx = Mathf.Lerp(center2d.x - railSpanX * 0.5f, center2d.x + railSpanX * 0.5f, st / (float)stanchions);
@@ -1702,7 +1709,7 @@ namespace TacSim.World
                 if (_cradleHullSigns[c] != null)
                 {
                     _cradleHullSigns[c].gameObject.SetActive(hasShip);
-                    if (hasShip) _cradleHullSigns[c].text = mooredLabelsForCradles[c];
+                    if (hasShip) _cradleHullSigns[c].text = MushProtocol.EscapeUnityRichText(mooredLabelsForCradles[c]);
                 }
             }
             if (_dockedShipVisual != null)
@@ -1824,7 +1831,8 @@ namespace TacSim.World
             {
                 if (rv.TacSim.OwnHullDockedHere && !string.IsNullOrEmpty(rv.TacSim.OwnHullName))
                 {
-                    mooredLabelsForCradles.Add($"CRADLE 01 — {rv.TacSim.OwnHullName.ToUpperInvariant()} [YOUR HULL]");
+                    string safeOwnHull = MushProtocol.EscapeUnityRichText(rv.TacSim.OwnHullName.ToUpperInvariant());
+                    mooredLabelsForCradles.Add($"CRADLE 01 — {safeOwnHull} [YOUR HULL]");
                     if (!string.IsNullOrEmpty(rv.TacSim.OwnHull))
                         dockedHullIds.Add(rv.TacSim.OwnHull);
                 }
@@ -1833,7 +1841,8 @@ namespace TacSim.World
                 IReadOnlyList<TacSimDockedHullRef> sourceHulls = rv.TacSim.DockedHulls.Count > 0
                     ? (IReadOnlyList<TacSimDockedHullRef>)rv.TacSim.DockedHulls
                     : (_hasAuthoritativeBerthHulls ? (IReadOnlyList<TacSimDockedHullRef>)_lastBerthTradeHulls : rv.TacSim.DockedHulls);
-                for (int h = 0; h < sourceHulls.Count; h++)
+                int hullCap = Math.Min(sourceHulls.Count, MaxMooredCradleHulls);
+                for (int h = 0; h < hullCap; h++)
                 {
                     var dh = sourceHulls[h];
                     if (!string.IsNullOrEmpty(dh.Id)) dockedHullIds.Add(dh.Id);
@@ -1850,7 +1859,7 @@ namespace TacSim.World
                                 break;
                             }
                         }
-                        if (!dup)
+                        if (!dup && mooredLabelsForCradles.Count < MaxMooredCradleHulls)
                         {
                             string markSuffix = !string.IsNullOrEmpty(dh.Mark) ? $" ({MushProtocol.EscapeUnityRichText(dh.Mark)})" : string.Empty;
                             mooredLabelsForCradles.Add($"CRADLE {mooredLabelsForCradles.Count + 1:D2} — {upper}{markSuffix}");
@@ -1887,9 +1896,9 @@ namespace TacSim.World
 
                 if (isDockedShip)
                 {
-                    if (isBerthGallery)
+                    if (isBerthGallery && mooredLabelsForCradles.Count < MaxMooredCradleHulls)
                     {
-                        string upper = item.Name.ToUpperInvariant();
+                        string upper = MushProtocol.EscapeUnityRichText((item.Name ?? string.Empty).ToUpperInvariant());
                         bool alreadyAdded = false;
                         for (int m = 0; m < mooredLabelsForCradles.Count; m++)
                         {
@@ -1910,6 +1919,9 @@ namespace TacSim.World
                     continue;
                 if (!isNpc && !isExplicitPlayer && (hasAuthoritativeThingTyping || isBerthGallery || LooksLikeStaticRoomThing(item.Name, room)))
                     continue;
+
+                if (actorIdx >= MaxSpawnedRoomActors)
+                    break;
 
                 seenActorIds.Add(item.Id);
                 Vector3 pos = ComputeNpcStandSpot(room, elev, actorIdx);
@@ -1945,11 +1957,11 @@ namespace TacSim.World
                 bb.SetRoomSafeBounds(roomMinW.x, roomMaxW.x, roomMinW.z, roomMaxW.z, wallMarginM: 1.50f);
 
                 string safeActorName = MushProtocol.EscapeUnityRichText(item.Name);
-                bb.NameplateText = CreateTmp3D(bbGo.transform, "Nameplate", Vector3.zero, isNpc ? $"{safeActorName}\n<size=68%><color=#88CCFF>[NPC]</color></size>" : safeActorName, 1.32f, Color.white);
+                bb.NameplateText = CreateTmp3D(bbGo.transform, "Nameplate", Vector3.zero, isNpc ? $"{safeActorName}\n<size=68%><color=#88CCFF>[NPC]</color></size>" : safeActorName, 1.32f, Color.white, allowRichText: isNpc);
                 bb.NameplateText.rectTransform.sizeDelta = new Vector2(2.60f, 0.58f);
 
                 // Bottom-anchored compact speech bubble so multi-line dialogue grows UPWARD above the nameplate without clipping into walls!
-                bb.SpeechBubbleText = CreateTmp3D(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.34f, 0f), "", 1.05f, new Color(1f, 0.95f, 0.65f));
+                bb.SpeechBubbleText = CreateTmp3D(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.34f, 0f), "", 1.05f, new Color(1f, 0.95f, 0.65f), allowRichText: false);
                 bb.SpeechBubbleText.rectTransform.pivot = new Vector2(0.5f, 0.0f);
                 bb.SpeechBubbleText.rectTransform.sizeDelta = new Vector2(2.50f, 2.20f);
                 bb.SpeechBubbleText.alignment = TextAlignmentOptions.Bottom;
@@ -1957,12 +1969,12 @@ namespace TacSim.World
 
                 var wi = npcGo.AddComponent<WorldInteractable>();
                 wi.kind = InteractableKind.NpcActor;
-                wi.promptTitle = $"Talk to {item.Name}";
+                wi.promptTitle = $"Talk to {MushProtocol.EscapeUnityRichText(item.Name)}";
                 wi.promptSubtitle = isNpc
                     ? (!string.IsNullOrEmpty(seedNpc?.ShortDesc) ? seedNpc.ShortDesc : "Speak in-character or ask about the port")
                     : "Greet pilot";
                 wi.detailBody = seedNpc?.ShortDesc ?? string.Empty;
-                wi.commandOrKey = item.Name;
+                wi.commandOrKey = MushProtocol.TryValidateSafeKeywordOrName(item.Name, out string safeNpcName) ? safeNpcName : string.Empty;
                 wi.maxInteractDistance = 4.2f;
                 wi.OnInteracted = target => OnInteractableTriggered?.Invoke(target);
 
@@ -2221,8 +2233,13 @@ namespace TacSim.World
                 return true;
             }
 
-            for (float offset = 1.0f; offset <= (maxSafe - minSafe); offset += 1.0f)
+            float span = maxSafe - minSafe;
+            if (float.IsNaN(span) || float.IsInfinity(span) || span <= 0f)
+                return false;
+            int maxSteps = Math.Min(MaxWallSlotScanSteps, (int)Math.Ceiling(Math.Min(span, MaxWallSlotScanSteps)));
+            for (int step = 1; step <= maxSteps; step++)
             {
+                float offset = step * 1.0f;
                 float right = clamped + offset;
                 if (right <= maxSafe && IsHorizontalSlotClear(room.FloorIndex, yWall, right, halfClearanceM + 2.2f, hDoors, existingXs, minPlaqueSpacingM))
                 {
@@ -2284,8 +2301,13 @@ namespace TacSim.World
                 return true;
             }
 
-            for (float offset = 1.0f; offset <= (maxSafe - minSafe); offset += 1.0f)
+            float span = maxSafe - minSafe;
+            if (float.IsNaN(span) || float.IsInfinity(span) || span <= 0f)
+                return false;
+            int maxSteps = Math.Min(MaxWallSlotScanSteps, (int)Math.Ceiling(Math.Min(span, MaxWallSlotScanSteps)));
+            for (int step = 1; step <= maxSteps; step++)
             {
+                float offset = step * 1.0f;
                 float north = clamped + offset;
                 if (north <= maxSafe && IsVerticalSlotClear(room.FloorIndex, xWall, north, halfClearanceM + 2.2f, vDoors, existingYs, minPlaqueSpacingM))
                 {
@@ -2347,9 +2369,14 @@ namespace TacSim.World
             if (!ConflictsWithHorizontalDoor(room.FloorIndex, yWall, clamped, halfClearanceM + 2.3f, hDoors))
                 return clamped;
 
-            // Scan left and right along the wall for the nearest non-doorway span
-            for (float offset = 1.5f; offset <= (maxSafe - minSafe); offset += 1.5f)
+            // Scan left and right along the wall for the nearest non-doorway span (bounded integer steps to avoid float infinite loops).
+            float span = maxSafe - minSafe;
+            if (float.IsNaN(span) || float.IsInfinity(span) || span <= 0f)
+                return clamped;
+            int maxSteps = Math.Min(MaxWallSlotScanSteps, (int)Math.Ceiling(Math.Min(span, MaxWallSlotScanSteps * 1.5f) / 1.5f));
+            for (int step = 1; step <= maxSteps; step++)
             {
+                float offset = step * 1.5f;
                 float right = clamped + offset;
                 if (right <= maxSafe && !ConflictsWithHorizontalDoor(room.FloorIndex, yWall, right, halfClearanceM + 2.3f, hDoors))
                     return right;
@@ -2421,7 +2448,7 @@ namespace TacSim.World
             string safeTitle = MushProtocol.EscapeUnityRichText(room.Name.ToUpperInvariant());
             string safeShort = MushProtocol.EscapeUnityRichText(room.ShortDesc);
             string summary = $"{safeTitle}\n<color=#88CCFF>{safeShort}</color>";
-            var tmp = CreateTmp3D(boardRoot.transform, "BoardText", new Vector3(0f, 0f, -0.07f), summary, 1.45f, new Color(0.82f, 0.95f, 1f));
+            var tmp = CreateTmp3D(boardRoot.transform, "BoardText", new Vector3(0f, 0f, -0.07f), summary, 1.45f, new Color(0.82f, 0.95f, 1f), allowRichText: true);
             tmp.rectTransform.sizeDelta = new Vector2(4.30f, 1.65f);
             tmp.alignment = TextAlignmentOptions.TopLeft;
             tmp.overflowMode = TextOverflowModes.Ellipsis;
@@ -2466,15 +2493,17 @@ namespace TacSim.World
             labelGo.transform.localPosition = new Vector3(0f, 1.44f, 0f);
             labelGo.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
             var bb = labelGo.AddComponent<WorldBillboard>();
-            var labelTmp = CreateTmp3D(labelGo.transform, "PlaqueTitle", Vector3.zero, $"[{keyword.ToUpperInvariant()}]", 1.08f, new Color(0.55f, 0.90f, 1f));
+            string safeDisplayKeyword = MushProtocol.EscapeUnityRichText((keyword ?? string.Empty).ToUpperInvariant());
+            var labelTmp = CreateTmp3D(labelGo.transform, "PlaqueTitle", Vector3.zero, $"[{safeDisplayKeyword}]", 1.08f, new Color(0.55f, 0.90f, 1f), allowRichText: false);
             labelTmp.rectTransform.sizeDelta = new Vector2(2.40f, 0.48f);
             bb.NameplateText = labelTmp;
 
+            bool validKw = MushProtocol.TryValidateSafeKeywordOrName(keyword, out string safeCmdKeyword);
             var wi = plaqueRoot.AddComponent<WorldInteractable>();
             wi.kind = InteractableKind.RoomDetailPlaque;
-            wi.promptTitle = $"Inspect {keyword}";
-            wi.promptSubtitle = $"look {keyword}";
-            wi.commandOrKey = $"look {keyword}";
+            wi.promptTitle = $"Inspect {MushProtocol.EscapeUnityRichText(keyword)}";
+            wi.promptSubtitle = validKw ? $"look {safeCmdKeyword}" : "Inspect plaque";
+            wi.commandOrKey = validKw ? $"look {safeCmdKeyword}" : string.Empty;
             wi.detailBody = textBody;
             wi.OnInteracted = item => OnInteractableTriggered?.Invoke(item);
         }
@@ -2543,17 +2572,19 @@ namespace TacSim.World
 
         private static void CreateWorldSign(Transform parent, string label, Vector3 worldPos, Quaternion rot, float fontSize, Color color)
         {
-            var tmp = CreateTmp3D(parent, "Sign_" + label, Vector3.zero, label, fontSize, color);
+            string safeLabel = MushProtocol.EscapeUnityRichText(label);
+            var tmp = CreateTmp3D(parent, "Sign_" + safeLabel, Vector3.zero, safeLabel, fontSize, color, allowRichText: false);
             tmp.transform.position = worldPos;
             tmp.transform.rotation = rot;
         }
 
-        private static TextMeshPro CreateTmp3D(Transform parent, string name, Vector3 localPos, string text, float fontSize, Color color)
+        private static TextMeshPro CreateTmp3D(Transform parent, string name, Vector3 localPos, string text, float fontSize, Color color, bool allowRichText = false)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
             var tmp = go.AddComponent<TextMeshPro>();
+            tmp.richText = allowRichText;
             tmp.text = text;
             tmp.fontSize = fontSize;
             tmp.color = color;

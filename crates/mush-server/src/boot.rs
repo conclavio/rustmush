@@ -46,7 +46,9 @@
 use std::sync::Arc;
 
 use mush_config::accounts::import_accounts_json;
-use mush_config::config::{Config, StoreBackend, StoreReceiptPolicy};
+use mush_config::config::{
+    Config, StoreBackend, StoreReceiptPolicy, redact_redis_error, redact_redis_url,
+};
 use mush_config::decision_keys::DurableDecisionKeyStore;
 use mush_config::geology_keys::DurableGeologyKeyStore;
 use mush_config::metrics::Metrics;
@@ -130,13 +132,15 @@ pub async fn open_store(config: &Config) -> Result<OpenedStore, String> {
     let store: Arc<dyn ObjectStore> = match config.store_backend().map_err(|e| e.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
-            tracing::info!(%url, "connecting to Redis");
+            let safe_url = redact_redis_url(url);
+            tracing::info!(url = %safe_url, "connecting to Redis");
             // The remediation text is deliberately long: this is the single
             // most common first-run failure, and the terse `cannot reach Redis`
             // the split half used to print left the operator guessing.
             let store = RedisStore::connect_read_only(url).await.map_err(|e| {
+                let err = redact_redis_error(url, &e);
                 format!(
-                    "cannot reach Redis at {url}: {e}\n\
+                    "cannot reach Redis at {safe_url}: {err}\n\
                      mushd requires its store at boot. Start Redis (or point \
                      [store].redis_url at it), or set [store].store = \"memory\" \
                      for a throwaway world."

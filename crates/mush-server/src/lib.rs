@@ -34,12 +34,12 @@
 #![deny(clippy::unwrap_used, clippy::panic_in_result_fn)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use std::time::Duration;
 
-use mush_config::config::{Config, StoreBackend};
+use mush_config::config::{Config, StoreBackend, redact_redis_error};
 use mush_config::exit::{ExitClass, ExitFailure};
 use mush_config::generation::Generation;
 use mush_config::ipguard::IpGuard;
@@ -138,9 +138,10 @@ async fn open_quarantine_recovery_store(config: &Config) -> Result<Arc<dyn Objec
     match config.store_backend().map_err(|error| error.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
-            let store = RedisStore::connect_read_only(url)
-                .await
-                .map_err(|error| format!("cannot read Redis quarantine targets: {error}"))?;
+            let store = RedisStore::connect_read_only(url).await.map_err(|error| {
+                let err = redact_redis_error(url, &error);
+                format!("cannot read Redis quarantine targets: {err}")
+            })?;
             Ok(Arc::new(store))
         }
         StoreBackend::Memory => Ok(Arc::new(InMemoryStore::new())),
@@ -462,6 +463,9 @@ pub async fn serve_classified(
         LinkEnv {
             links: Arc::clone(&links),
             tasks: Arc::clone(&tasks),
+            link_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_IPC_LINKS)),
+            hello_timeout: IPC_HELLO_TIMEOUT,
+            global_service_requests: ServiceRequestLimiter::new(),
             world: world.clone(),
             store: ingress_store,
             offer_routes,
@@ -522,6 +526,7 @@ pub async fn serve_classified(
     // `Bye`, and ends. The writers are waited for in the tail, bounded.
     accept.abort();
     let _ = accept.await;
+    tasks.abort_handshakes();
     let link_tasks = tasks.take_all();
     for (supervisor, _) in &link_tasks {
         supervisor.abort();
@@ -604,12 +609,26 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(250);
 /// it holds and send its `Bye` before the supervisor abandons it.
 const LINK_WRITER_WAIT: Duration = Duration::from_secs(5);
 
+/// Maximum simultaneous IPC gateway connections (pre-Hello handshakes +
+/// registered live links; P2-EDGE-10). Rolling swaps use at most two
+/// generations; eight leaves generous headroom for overlap/probes while
+/// preventing unbounded link/queue/task multiplication.
+const MAX_CONCURRENT_IPC_LINKS: usize = 8;
+
+/// Maximum time an accepted IPC peer is given to send its initial
+/// `ToServer::Hello` frame before the socket is dropped without allocating
+/// an outbox or registering into [`LinkRegistry`] (P2-EDGE-10).
+const IPC_HELLO_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Everything a link needs beyond its own socket halves; one per server,
 /// cloned into each link's supervisor.
 #[derive(Clone)]
 struct LinkEnv {
     links: Arc<LinkRegistry>,
     tasks: Arc<LinkTasks>,
+    link_slots: Arc<Semaphore>,
+    hello_timeout: Duration,
+    global_service_requests: ServiceRequestLimiter,
     world: WorldHandle,
     store: Arc<dyn ObjectStore>,
     offer_routes: Arc<OfferRouteTable>,
@@ -625,12 +644,14 @@ struct LinkEnv {
 }
 
 /// The tasks of every open link — the supervisor (which runs the reader) to
-/// abort and the writer to wait for — so the shutdown tail can end each link
-/// the way the single boundary used to be ended: reader dropped, writer
-/// drained to its `Bye`.
+/// abort and the writer to wait for — plus in-flight pre-Hello handshake tasks,
+/// so the shutdown tail can end each link the way the single boundary used to
+/// be ended: reader dropped, writer drained to its `Bye`.
 #[derive(Default)]
 struct LinkTasks {
     table: Mutex<HashMap<LinkId, (tokio::task::AbortHandle, tokio::task::JoinHandle<()>)>>,
+    handshakes: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
+    next_handshake: AtomicU64,
 }
 
 impl LinkTasks {
@@ -639,6 +660,31 @@ impl LinkTasks {
     ) -> MutexGuard<'_, HashMap<LinkId, (tokio::task::AbortHandle, tokio::task::JoinHandle<()>)>>
     {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn handshakes(&self) -> MutexGuard<'_, HashMap<u64, tokio::task::AbortHandle>> {
+        self.handshakes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn alloc_handshake_id(&self) -> u64 {
+        self.next_handshake.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn insert_handshake(&self, id: u64, handle: tokio::task::AbortHandle) {
+        self.handshakes().insert(id, handle);
+    }
+
+    fn remove_handshake(&self, id: u64) {
+        self.handshakes().remove(&id);
+    }
+
+    fn abort_handshakes(&self) {
+        let handles: Vec<_> = self.handshakes().drain().map(|(_, h)| h).collect();
+        for handle in handles {
+            handle.abort();
+        }
     }
 
     fn insert(
@@ -660,13 +706,53 @@ impl LinkTasks {
     }
 }
 
-/// Accept gateways for the life of the server (doc 33 §4.3): each one becomes
-/// a link with its own writer and supervisor. Never returns on its own; a
-/// failed `accept` is logged and retried after [`ACCEPT_RETRY`].
+struct HandshakeGuard {
+    tasks: Arc<LinkTasks>,
+    id: u64,
+}
+
+impl Drop for HandshakeGuard {
+    fn drop(&mut self) {
+        self.tasks.remove_handshake(self.id);
+    }
+}
+
+/// Accept gateways for the life of the server (doc 33 §4.3): each one must
+/// acquire a bounded concurrent-link slot and complete the initial `Hello`
+/// handshake within [`LinkEnv::hello_timeout`] before registering into
+/// [`LinkRegistry`] or allocating an outbox (P2-EDGE-10). Never returns on its
+/// own; a failed `accept` is logged and retried after [`ACCEPT_RETRY`].
 async fn accept_links(listener: IpcListener, env: LinkEnv) {
+    let link_slots = Arc::clone(&env.link_slots);
+    accept_links_with(
+        listener,
+        link_slots,
+        move |reader_half, writer_half, permit| {
+            spawn_link_handshake(&env, reader_half, writer_half, permit);
+        },
+    )
+    .await;
+}
+
+/// Core IPC accept loop enforcing `link_slots` before handing accepted sockets
+/// to `on_admit` (P2-EDGE-10).
+async fn accept_links_with<F>(listener: IpcListener, link_slots: Arc<Semaphore>, mut on_admit: F)
+where
+    F: FnMut(BoxRead, BoxWrite, tokio::sync::OwnedSemaphorePermit),
+{
     loop {
         match listener.accept().await {
-            Ok((reader_half, writer_half)) => open_link(&env, reader_half, writer_half),
+            Ok((reader_half, writer_half)) => {
+                let Ok(link_permit) = Arc::clone(&link_slots).try_acquire_owned() else {
+                    tracing::warn!(
+                        cap = MAX_CONCURRENT_IPC_LINKS,
+                        "ipc concurrent link cap reached; dropping accepted connection"
+                    );
+                    drop((reader_half, writer_half));
+                    continue;
+                };
+                on_admit(reader_half, writer_half, link_permit);
+            }
             Err(e) => {
                 // A transient accept failure (descriptors exhausted, a peer
                 // reset mid-handshake) is not the end of the server.
@@ -677,14 +763,130 @@ async fn accept_links(listener: IpcListener, env: LinkEnv) {
     }
 }
 
-/// Wire one accepted gateway as a link: its outbox, its version cell, its
-/// writer task (greeting first) and its supervisor (the reader, then the
-/// detach).
-fn open_link(env: &LinkEnv, reader_half: BoxRead, writer_half: BoxWrite) {
-    // The protocol version this link's gateway announces (doc 33 §4.1): the
-    // reader records it from the first frame, the writer's emission gate reads
-    // it on every frame, so a frame the gateway cannot decode is never sent.
+/// Run the server->gateway + gateway->server `Hello` handshake on a freshly
+/// accepted socket BEFORE allocating the `to_gw` outbox or registering into
+/// [`LinkRegistry`] (P2-EDGE-10).
+async fn handshake_ipc_peer(
+    reader_half: BoxRead,
+    mut writer_half: BoxWrite,
+    features: Vec<String>,
+    panels: Vec<String>,
+    metrics: &Metrics,
+    write_timeout: Duration,
+    hello_timeout: Duration,
+) -> Option<(
+    FrameReader<BoxRead>,
+    BoxWrite,
+    LinkVersion,
+    Option<ToServer>,
+)> {
+    if !write_or_teardown(
+        &mut writer_half,
+        &ToGateway::Hello {
+            proto: IPC_VERSION,
+            min_proto: IPC_MIN_PROTO,
+            server: server_id(),
+            features,
+            panels,
+        },
+        metrics,
+        write_timeout,
+        "failed to send Hello; boundary down",
+    )
+    .await
+    {
+        return None;
+    }
+    let mut reader = FrameReader::new(reader_half);
+    let first = match tokio::time::timeout(hello_timeout, reader.read::<ToServer>()).await {
+        Ok(Ok(Some(msg))) => msg,
+        Ok(Ok(None)) => {
+            tracing::debug!("ipc peer disconnected before Hello");
+            return None;
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "ipc peer failed before Hello");
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = hello_timeout.as_millis() as u64,
+                "ipc peer did not send Hello within timeout; dropping connection"
+            );
+            return None;
+        }
+    };
     let version = LinkVersion::unknown();
+    let pending_first = match first {
+        ToServer::Hello { proto, min_proto } => {
+            if admit_gateway(&version, proto, Some(min_proto)).is_err() {
+                return None;
+            }
+            None
+        }
+        other => {
+            if admit_gateway(&version, IPC_PRE_HELLO_VERSION, None).is_err() {
+                return None;
+            }
+            Some(other)
+        }
+    };
+    Some((reader, writer_half, version, pending_first))
+}
+
+/// Spawn the bounded pre-Hello handshake task; on success, register the link
+/// and hand off to its writer and supervisor (retaining `link_permit` until
+/// link teardown completes).
+fn spawn_link_handshake(
+    env: &LinkEnv,
+    reader_half: BoxRead,
+    writer_half: BoxWrite,
+    link_permit: OwnedSemaphorePermit,
+) {
+    let handshake_id = env.tasks.alloc_handshake_id();
+    let env_for_task = env.clone();
+    let handle = tokio::spawn(async move {
+        let _guard = HandshakeGuard {
+            tasks: Arc::clone(&env_for_task.tasks),
+            id: handshake_id,
+        };
+        let Some((reader, writer_half, version, pending_first)) = handshake_ipc_peer(
+            reader_half,
+            writer_half,
+            env_for_task.features.clone(),
+            env_for_task.panels.clone(),
+            &env_for_task.metrics,
+            env_for_task.write_timeout,
+            env_for_task.hello_timeout,
+        )
+        .await
+        else {
+            drop(link_permit);
+            return;
+        };
+        open_handshaked_link(
+            &env_for_task,
+            reader,
+            writer_half,
+            version,
+            pending_first,
+            link_permit,
+        );
+    });
+    env.tasks
+        .insert_handshake(handshake_id, handle.abort_handle());
+}
+
+/// Wire one handshaked gateway as a link: its outbox, its writer task and its
+/// supervisor (the reader, then the detach).
+fn open_handshaked_link(
+    env: &LinkEnv,
+    reader: FrameReader<BoxRead>,
+    writer_half: BoxWrite,
+    version: LinkVersion,
+    pending_first: Option<ToServer>,
+    link_permit: OwnedSemaphorePermit,
+) {
     let (to_gw_tx, to_gw_rx) = mpsc::channel::<ToGateway>(env.to_gw_cap);
     // `teardown` is the one-shot this link's [`LinkSink`] notifies on overflow
     // and its writer waits on.
@@ -700,19 +902,18 @@ fn open_link(env: &LinkEnv, reader_half: BoxRead, writer_half: BoxWrite) {
     let id = link.id();
     tracing::info!(link = id, "gateway connected");
 
-    // Writer: greet (with the panel manifest), then drain this link's outbox
-    // to its socket. Exits when every holder of the outbox is gone (the
-    // registry entry, the reader's handle, any request handler), OR early on a
-    // per-frame write timeout / a `teardown` notification (a `to_gw` overflow)
-    // — either drops the writer's socket half, EOFing the link: the gateway
-    // enters its gap, reconnects, and re-attaches every held session (M18).
+    // Writer: drain this link's outbox to its socket (Hello was already sent
+    // during `handshake_ipc_peer`). Exits when every holder of the outbox is
+    // gone (the registry entry, the reader's handle, any request handler), OR
+    // early on a per-frame write timeout / a `teardown` notification (a
+    // `to_gw` overflow) — either drops the writer's socket half, EOFing the
+    // link: the gateway enters its gap, reconnects, and re-attaches every held
+    // session (M18).
     let (writer_done_tx, writer_done) = oneshot::channel::<()>();
-    let writer = writer_loop(
+    let writer = writer_loop_after_hello(
         writer_half,
         to_gw_rx,
         EmissionGate::new(version),
-        env.features.clone(),
-        env.panels.clone(),
         Arc::clone(&env.metrics),
         teardown,
         env.write_timeout,
@@ -721,7 +922,14 @@ fn open_link(env: &LinkEnv, reader_half: BoxRead, writer_half: BoxWrite) {
         writer.await;
         let _ = writer_done_tx.send(());
     });
-    let supervisor = tokio::spawn(supervise_link(env.clone(), link, reader_half, writer_done));
+    let supervisor = tokio::spawn(supervise_link(
+        env.clone(),
+        link,
+        reader,
+        pending_first,
+        writer_done,
+        link_permit,
+    ));
     env.tasks.insert(id, supervisor.abort_handle(), writer);
 }
 
@@ -737,8 +945,10 @@ fn open_link(env: &LinkEnv, reader_half: BoxRead, writer_half: BoxWrite) {
 async fn supervise_link(
     env: LinkEnv,
     link: Link,
-    reader_half: BoxRead,
+    reader: FrameReader<BoxRead>,
+    pending_first: Option<ToServer>,
     mut writer_done: oneshot::Receiver<()>,
+    _link_permit: OwnedSemaphorePermit,
 ) {
     let id = link.id();
     // Pinned on this task's stack: a `select!` that moved the reader between
@@ -746,14 +956,17 @@ async fn supervise_link(
     // the detach, releasing its `Link` (an outbox sender) and its
     // `WorldHandle` clone.
     {
-        let reader = reader_loop(
-            reader_half,
+        let reader = reader_loop_inner(
+            reader,
             env.world.clone(),
             Arc::clone(&env.store),
             Arc::clone(&env.offer_routes),
             link.clone(),
             &env.metrics,
             env.world_exit.clone(),
+            false,
+            pending_first,
+            Some(env.global_service_requests.clone()),
         );
         tokio::pin!(reader);
         tokio::select! {
@@ -902,12 +1115,10 @@ fn world_exit_result(result: Result<WorldOutcome, tokio::task::JoinError>) -> Re
 /// Never skip-a-message-and-continue: a full socket buffer means the next write
 /// blocks too, and skipping could drop a keyframe — the boundary teardown +
 /// re-attach is the correct heal.
-// GG.0 added the emission gate as the loop's eighth argument; the loop is the
-// one place these all meet, so the count is the shape, not a smell.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 async fn writer_loop(
     mut w: BoxWrite,
-    mut rx: mpsc::Receiver<ToGateway>,
+    rx: mpsc::Receiver<ToGateway>,
     gate: EmissionGate,
     features: Vec<String>,
     panels: Vec<String>,
@@ -915,8 +1126,6 @@ async fn writer_loop(
     teardown: Arc<Notify>,
     write_timeout: Duration,
 ) {
-    // The Hello must reach the gateway before any frame; honor the write
-    // timeout so a peer that never reads cannot wedge the handshake forever.
     if !write_or_teardown(
         &mut w,
         &ToGateway::Hello {
@@ -934,6 +1143,17 @@ async fn writer_loop(
     {
         return;
     }
+    writer_loop_after_hello(w, rx, gate, metrics, teardown, write_timeout).await;
+}
+
+async fn writer_loop_after_hello(
+    mut w: BoxWrite,
+    mut rx: mpsc::Receiver<ToGateway>,
+    gate: EmissionGate,
+    metrics: Arc<Metrics>,
+    teardown: Arc<Notify>,
+    write_timeout: Duration,
+) {
     let mut health_tick = tokio::time::interval(Duration::from_secs(1));
     health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -1929,11 +2149,38 @@ pub async fn reader_loop(
     metrics: &Arc<Metrics>,
     world_exit: WorldExitStatus,
 ) -> std::io::Result<()> {
+    reader_loop_inner(
+        FrameReader::new(r),
+        world,
+        store,
+        offer_routes,
+        link,
+        metrics,
+        world_exit,
+        true,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reader_loop_inner(
+    mut reader: FrameReader<mush_ipc::BoxRead>,
+    world: WorldHandle,
+    store: Arc<dyn ObjectStore>,
+    offer_routes: Arc<OfferRouteTable>,
+    link: Link,
+    metrics: &Arc<Metrics>,
+    world_exit: WorldExitStatus,
+    mut first_frame: bool,
+    mut pending_first: Option<ToServer>,
+    global_service_requests: Option<ServiceRequestLimiter>,
+) -> std::io::Result<()> {
     // Replies and dispositions ride this link's own bounded outbox, so a full
     // one tears THIS link down (a dropped `Reply` would hang its `ServiceReq`
     // oneshot — I1) and no other.
     let reply_sink = link.sink().clone();
-    let mut reader = FrameReader::new(r);
     let service_requests = ServiceRequestLimiter::new();
     let input_claims = Arc::new(Mutex::new(ServerInputClaims::default()));
     // Held in this function's own state, so EVERY way out of it — the early
@@ -1943,9 +2190,14 @@ pub async fn reader_loop(
     // Set the moment this reader forwards a `ControlMsg::Shutdown`, so the
     // closed channel that follows reads as the exit it asked for.
     let mut shutdown_seen = false;
-    // The first frame names the gateway's version, or its shape does.
-    let mut first_frame = true;
-    while let Some(msg) = reader.read::<ToServer>().await? {
+    loop {
+        let msg = match pending_first.take() {
+            Some(first) => first,
+            None => match reader.read::<ToServer>().await? {
+                Some(msg) => msg,
+                None => break,
+            },
+        };
         if first_frame {
             first_frame = false;
             if let ToServer::Hello { proto, min_proto } = &msg {
@@ -2226,8 +2478,15 @@ pub async fn reader_loop(
                 }
             }
             ToServer::Request { id, req } => {
-                match service_requests.try_admit() {
-                    Ok(permit) => {
+                let admitted = service_requests.try_admit().and_then(|link_permit| {
+                    let global_permit = match &global_service_requests {
+                        Some(global) => Some(global.try_admit()?),
+                        None => None,
+                    };
+                    Ok((link_permit, global_permit))
+                });
+                match admitted {
+                    Ok((link_permit, global_permit)) => {
                         let world = world.clone();
                         // The `Reply` is must-deliver: `LinkSink::send` tries this
                         // link's bounded `to_gw` and, on a full channel, tears the
@@ -2235,10 +2494,10 @@ pub async fn reader_loop(
                         // hang the caller's oneshot — I1).
                         let sink = reply_sink.clone();
                         tokio::spawn(async move {
-                            // Hold the owned permit through response enqueue; task
-                            // count and correlated server custody are therefore both
-                            // bounded by the same hard protocol ceiling.
-                            let _permit = permit;
+                            // Hold both per-link and global owned permits through
+                            // response enqueue so multiple links cannot multiply
+                            // in-flight handlers (P2-EDGE-10).
+                            let _permits = (link_permit, global_permit);
                             let resp = handle_request(&world, req).await;
                             sink.send(ToGateway::Reply { id, resp });
                         });
@@ -3538,5 +3797,137 @@ mod writer_tests {
             );
             assert_eq!(link.get(), None, "a refused link is never announced");
         }
+    }
+
+    /// P2-EDGE-10: an accepted IPC peer that never sends `ToServer::Hello`
+    /// times out inside `handshake_ipc_peer` before registering into
+    /// `LinkRegistry` or allocating a link outbox.
+    #[tokio::test]
+    async fn p2_edge_10_pre_hello_timeout_drops_silent_ipc_peer() {
+        use super::handshake_ipc_peer;
+        use mush_ipc::FrameReader;
+
+        let (server_io, mut client_io) = tokio::io::duplex(4096);
+        let (server_r, server_w) = tokio::io::split(server_io);
+        let metrics = Arc::new(Metrics::new());
+
+        let task = tokio::spawn(async move {
+            handshake_ipc_peer(
+                Box::new(server_r),
+                Box::new(server_w),
+                vec![],
+                vec![],
+                &metrics,
+                Duration::from_secs(1),
+                Duration::from_millis(80),
+            )
+            .await
+            .is_some()
+        });
+
+        // Client reads the server's Hello but deliberately never replies.
+        let mut client_reader = FrameReader::new(&mut client_io);
+        let hello = client_reader
+            .read::<ToGateway>()
+            .await
+            .expect("client reads server Hello");
+        assert!(matches!(hello, Some(ToGateway::Hello { .. })));
+
+        let handshaked = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("handshake must time out promptly")
+            .expect("task join");
+        assert!(
+            !handshaked,
+            "silent peer must be dropped before LinkRegistry registration"
+        );
+    }
+
+    /// P2-EDGE-10: `accept_links_with` caps concurrent accepted links
+    /// (both handshaking and active) so excess links are dropped immediately,
+    /// and releasing a timed-out handshake frees its slot for the next peer.
+    #[tokio::test]
+    async fn p2_edge_10_concurrent_ipc_link_cap_drops_excess_connections() {
+        use super::{accept_links_with, handshake_ipc_peer};
+        use mush_ipc::{FrameReader, IpcEndpoint};
+        use tokio::sync::Semaphore;
+
+        let listener = mush_ipc::listen(&IpcEndpoint::parse("127.0.0.1:0").expect("parse"))
+            .await
+            .expect("listen");
+        let addr = IpcEndpoint::Tcp(listener.tcp_addr().expect("tcp addr"));
+        let sem = Arc::new(Semaphore::new(2));
+        let metrics = Arc::new(Metrics::new());
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accepted_c = Arc::clone(&accepted);
+        let sem_accept = Arc::clone(&sem);
+        let metrics_c = Arc::clone(&metrics);
+
+        let server = tokio::spawn(accept_links_with(
+            listener,
+            sem_accept,
+            move |r, w, permit| {
+                accepted_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let metrics = Arc::clone(&metrics_c);
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let _ = handshake_ipc_peer(
+                        r,
+                        w,
+                        vec![],
+                        vec![],
+                        &metrics,
+                        Duration::from_secs(1),
+                        Duration::from_millis(200),
+                    )
+                    .await;
+                });
+            },
+        ));
+
+        let (r1, _w1) = mush_ipc::connect(&addr).await.expect("c1");
+        let (r2, _w2) = mush_ipc::connect(&addr).await.expect("c2");
+        let mut fr1 = FrameReader::new(r1);
+        let mut fr2 = FrameReader::new(r2);
+        // Wait until both admitted connections have received the server's Hello
+        // (proving both permits are occupied).
+        assert!(matches!(
+            fr1.read::<ToGateway>().await.expect("r1"),
+            Some(ToGateway::Hello { .. })
+        ));
+        assert!(matches!(
+            fr2.read::<ToGateway>().await.expect("r2"),
+            Some(ToGateway::Hello { .. })
+        ));
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(sem.available_permits(), 0);
+
+        // Third connection is dropped immediately by `accept_links_with` while cap is full.
+        let (mut r3, _w3) = mush_ipc::connect(&addr).await.expect("c3");
+        let mut buf = [0u8; 16];
+        let eof = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::io::AsyncReadExt::read(&mut r3, &mut buf),
+        )
+        .await
+        .expect("excess IPC socket must close promptly");
+        assert!(matches!(eof, Ok(0) | Err(_)));
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        // After the two silent handshakes time out (200ms), their slots return
+        // and a fourth connection is admitted and receives Hello.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(sem.available_permits(), 2);
+        let (r4, _w4) = mush_ipc::connect(&addr).await.expect("c4");
+        let mut fr4 = FrameReader::new(r4);
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), fr4.read::<ToGateway>())
+                .await
+                .expect("fourth peer must be admitted after timeout frees slots")
+                .expect("r4"),
+            Some(ToGateway::Hello { .. })
+        ));
+
+        server.abort();
     }
 }

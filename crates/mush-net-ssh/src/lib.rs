@@ -81,3 +81,72 @@ pub use trusted::BoundTrustedServer;
 pub use trusted::{TrustedConfig, TrustedIngress};
 pub use tui::pixel::PixelConfig;
 pub use welcome::{WelcomeCmd, parse_welcome};
+
+/// Whether `c` is a Unicode bidirectional formatting control or line/paragraph
+/// separator that can spoof visual text direction or break single-line framing
+/// (`SSH-M6` / `P2-CLIENT-6`):
+/// - `U+061C` (Arabic Letter Mark)
+/// - `U+200E..=U+200F` (LRM, RLM)
+/// - `U+2028..=U+2029` (Line Separator, Paragraph Separator)
+/// - `U+202A..=U+202E` (LRE, RLE, PDF, LRO, RLO)
+/// - `U+2066..=U+2069` (LRI, RLI, FSI, PDI)
+#[must_use]
+pub(crate) const fn is_forbidden_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200E}'..='\u{200F}'
+            | '\u{2028}'..='\u{2029}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Whether `c` is a Unicode control character (`Cc`) or a forbidden BiDi /
+/// line-separator formatting control (`P2-CLIENT-6`).
+#[must_use]
+pub(crate) fn is_stripped_terminal_char(c: char) -> bool {
+    c.is_control() || is_forbidden_format_char(c)
+}
+
+/// Whether any JSON string value or object key inside `root` carries a
+/// forbidden Unicode BiDi control or `U+2028`/`U+2029` line/paragraph
+/// separator (`P2-CLIENT-6`). Iterative so deep nesting cannot overflow the
+/// stack.
+#[must_use]
+pub(crate) fn json_contains_forbidden_format_chars(root: &serde_json::Value) -> bool {
+    let mut stack = vec![root];
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::String(s) => {
+                if s.chars().any(is_forbidden_format_char) {
+                    return true;
+                }
+            }
+            serde_json::Value::Array(items) => stack.extend(items),
+            serde_json::Value::Object(map) => {
+                for (k, val) in map {
+                    if k.chars().any(is_forbidden_format_char) {
+                        return true;
+                    }
+                    stack.push(val);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Reject structured [`mush_proto::InvokeRequest`] payloads carrying Unicode
+/// BiDi controls or `U+2028`/`U+2029` separators in any string field or key
+/// (`P2-CLIENT-6`).
+pub(crate) fn reject_forbidden_invoke_format_chars(
+    request: &mush_proto::InvokeRequest,
+) -> Result<(), &'static str> {
+    let value = serde_json::to_value(request).map_err(|_| "invalid request")?;
+    if json_contains_forbidden_format_chars(&value) {
+        return Err("request contains forbidden Unicode formatting characters");
+    }
+    Ok(())
+}

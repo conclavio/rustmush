@@ -269,23 +269,25 @@ namespace TacSim.Core
             };
             SpaceStage.OnOrbitalTargetClicked += (id, isRock) =>
             {
+                if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeToken))
+                    return;
                 if (Audio != null) Audio.PlayRadarScanPing();
-                string safeId = MushProtocol.EscapeUnityRichText(id);
+                string safeId = MushProtocol.EscapeUnityRichText(safeToken);
                 if (isRock)
                 {
-                    SpaceStage.NotifyApproachOrdered(id);
+                    SpaceStage.NotifyApproachOrdered(safeToken);
                     RefreshOrbitalReadout();
                     if (Hud != null)
                         Hud.AppendLogLine($"<color=#66FFCC>[MINING]</color> Ordering approach toward Asteroid Pocket <b>{safeId}</b> — click <b>MATCH VEL</b> (`+helm/match {safeId}`) once inside 2,000 m & ‹ 5 m/s.");
                     if (_ws != null && _ws.IsConnected)
-                        _ws.SendLine($"+helm/approach {id}");
+                        _ws.SendLine($"+helm/approach {safeToken}");
                 }
                 else
                 {
                     if (Hud != null)
                         Hud.AppendLogLine($"<color=#FFBB55>[TAC]</color> Requesting target lock on <b>{safeId}</b>...");
                     if (_ws != null && _ws.IsConnected)
-                        _ws.SendLine($"+tac/lock {id}");
+                        _ws.SendLine($"+tac/lock {safeToken}");
                 }
             };
 
@@ -302,6 +304,8 @@ namespace TacSim.Core
 
             ArenaStage.OnLiveCockpitVerbRequested += verb =>
             {
+                if (string.IsNullOrWhiteSpace(verb) || MushProtocol.ContainsControlChars(verb))
+                    return;
                 if (Audio != null) Audio.PlayForCommandLine(verb);
                 if (_ws != null && _ws.IsConnected)
                     _ws.SendLine(verb);
@@ -438,12 +442,13 @@ namespace TacSim.Core
             out string refusalNotice)
         {
             refusalNotice = null;
-            string rock = string.IsNullOrWhiteSpace(selectedRockId) ? string.Empty : selectedRockId.Trim().ToUpperInvariant();
-            if (string.IsNullOrEmpty(rock))
+            if (!MushProtocol.TryValidateSafeCommandToken(selectedRockId, out string validRock))
             {
                 refusalNotice = "Select an orbital rock (`A`, `B`, or `C`) first.";
                 return null;
             }
+            string rock = validRock.ToUpperInvariant();
+            string safeRock = MushProtocol.EscapeUnityRichText(rock);
 
             if (string.Equals(uiAction, "space:helm_match", StringComparison.OrdinalIgnoreCase))
                 return $"+helm/match {rock}";
@@ -451,7 +456,7 @@ namespace TacSim.Core
             // Both `+mine/laser` and `+mine/drones` unconditionally require `session.matched_rock == Some(rock)` on `mushd`.
             if (!string.Equals(authoritativeMatchedRockId, rock, StringComparison.OrdinalIgnoreCase))
             {
-                refusalNotice = $"Lock RCS velocity match on Rock {rock} first (click <b>MATCH VEL</b> / `+helm/match {rock}` inside 2,000 m & ‹ 5 m/s).";
+                refusalNotice = $"Lock RCS velocity match on Rock {safeRock} first (click <b>MATCH VEL</b> / `+helm/match {safeRock}` inside 2,000 m & ‹ 5 m/s).";
                 return null;
             }
 
@@ -460,7 +465,7 @@ namespace TacSim.Core
             if (string.Equals(uiAction, "space:mine_drones", StringComparison.OrdinalIgnoreCase))
                 return $"+mine/drones {rock} 1";
 
-            refusalNotice = $"Unknown orbital mining action `{uiAction}`.";
+            refusalNotice = $"Unknown orbital mining action `{MushProtocol.EscapeUnityRichText(uiAction)}`.";
             return null;
         }
 
@@ -510,6 +515,11 @@ namespace TacSim.Core
                     bool rebuiltGeometry = !string.IsNullOrEmpty(rebuildPackId) &&
                                            StationWorld.RebuildStationIfContentChanged(AssetCatalog, rebuildPackId);
 
+                    if (rebuiltGeometry)
+                    {
+                        _navWalker.Cancel();
+                    }
+
                     if (rebuiltGeometry && StationWorld.TryMatchStationRoom(_lastRoomView, out string syncedEntry))
                     {
                         bool switchedPack = !string.Equals(prevLoadedPack, StationWorld.LoadedPackId, StringComparison.OrdinalIgnoreCase);
@@ -542,12 +552,17 @@ namespace TacSim.Core
                 else if (!string.IsNullOrEmpty(StationWorld.LoadedPackId))
                 {
                     string prevRoom = StationWorld.ActiveRoomEntryId ?? _serverStationRoomEntry;
-                    if (StationWorld.RebuildStationIfContentChanged(AssetCatalog, StationWorld.LoadedPackId) && !string.IsNullOrEmpty(prevRoom))
-                        StationWorld.HighlightActiveRoom(prevRoom);
+                    if (StationWorld.RebuildStationIfContentChanged(AssetCatalog, StationWorld.LoadedPackId))
+                    {
+                        _navWalker.Cancel();
+                        if (!string.IsNullOrEmpty(prevRoom))
+                            StationWorld.HighlightActiveRoom(prevRoom);
+                    }
                 }
             }
             if (dirtyUnit && ShipInterior != null && !string.IsNullOrEmpty(ShipInterior.LoadedUnitId))
             {
+                _navWalker.Cancel();
                 ShipInterior.BuildInterior(AssetCatalog, ShipInterior.LoadedUnitId);
                 if (CameraRig != null)
                     CameraRig.BridgeViewAnchor = ShipInterior.BridgeCameraAnchor;
@@ -624,7 +639,7 @@ namespace TacSim.Core
             try
             {
                 string safeAccount = MushProtocol.EscapeUnityRichText(account);
-                string safeUrl = MushProtocol.EscapeUnityRichText(baseUrl);
+                string safeUrl = MushProtocol.EscapeUnityRichText(MushAuthClient.SanitizeUrlForDisplayOrStorage(baseUrl));
                 Hud.SetLoginStatus(isRegister ? $"Registering '{safeAccount}' on {safeUrl}..." : $"Signing in to {safeUrl} as '{safeAccount}'...");
                 MushAuthSession session = isRegister
                     ? await MushAuthClient.RegisterAsync(baseUrl, account, password, charName)
@@ -684,7 +699,7 @@ namespace TacSim.Core
             {
                 ResetSessionState();
 
-                string safeUrl = MushProtocol.EscapeUnityRichText(session.BaseHttpUrl);
+                string safeUrl = MushProtocol.EscapeUnityRichText(MushAuthClient.SanitizeUrlForDisplayOrStorage(session.BaseHttpUrl));
                 string safeChar = MushProtocol.EscapeUnityRichText(chosen.Name);
                 string safeAcct = MushProtocol.EscapeUnityRichText(session.Account);
                 Hud.SetLoginStatus($"Loading server pack cache for <b>{safeUrl}</b>...");
@@ -854,12 +869,19 @@ namespace TacSim.Core
             switch (wi.kind)
             {
                 case InteractableKind.RoomDetailPlaque:
-                    if (_ws != null && _ws.IsConnected && !string.IsNullOrEmpty(wi.commandOrKey))
+                    if (_ws != null && _ws.IsConnected &&
+                        !string.IsNullOrEmpty(wi.commandOrKey) &&
+                        wi.commandOrKey.StartsWith("look ", StringComparison.OrdinalIgnoreCase) &&
+                        MushProtocol.TryValidateSafeKeywordOrName(wi.commandOrKey.Substring(5), out string safePlaqueKw))
                     {
                         FlushPendingRoomMovesBeforeAction();
-                        _ws.SendLine(wi.commandOrKey);
+                        _ws.SendLine($"look {safePlaqueKw}");
                     }
-                    Hud.ShowDetailModal(wi.promptTitle.ToUpperInvariant(), string.IsNullOrEmpty(wi.detailBody) ? "Inspecting..." : wi.detailBody);
+                    string safePlaqueTitle = MushProtocol.EscapeUnityRichText((wi.promptTitle ?? string.Empty).ToUpperInvariant());
+                    string safePlaqueBody = string.IsNullOrEmpty(wi.detailBody)
+                        ? "Inspecting..."
+                        : MushProtocol.EscapeUnityRichText(wi.detailBody);
+                    Hud.ShowDetailModal(safePlaqueTitle, safePlaqueBody);
                     break;
 
                 case InteractableKind.NpcActor:
@@ -907,60 +929,64 @@ namespace TacSim.Core
 
         private void OpenNpcConversationModal(WorldInteractable wi)
         {
-            string name = wi.commandOrKey ?? string.Empty;
-            string safeName = MushProtocol.EscapeUnityRichText(name);
+            bool hasValidName = MushProtocol.TryValidateSafeKeywordOrName(wi.commandOrKey, out string name);
+            string displayName = hasValidName ? name : (wi.commandOrKey ?? string.Empty);
+            string safeName = MushProtocol.EscapeUnityRichText(displayName);
             string roleNote = !string.IsNullOrWhiteSpace(wi.detailBody)
                 ? $"<color=#88CCEE>{MushProtocol.EscapeUnityRichText(wi.detailBody)}</color>\n"
                 : string.Empty;
 
             var topics = new List<(string, Action)>();
-            if (name.IndexOf("Ilse", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (hasValidName)
             {
-                topics.Add(("How do I enrol a Dray?", () => ExecutePlayerCommand($"say {name}, how do I enrol for a Co-op Dray?")));
-                topics.Add(("Explain the lay & buyout", () => ExecutePlayerCommand($"say {name}, how do the lay and buyout work?")));
-                topics.Add(("Check my statement", () => ExecutePlayerCommand($"say {name}, can you check where my Co-op statement stands?")));
-            }
-            else if (name.IndexOf("Qureshi", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                topics.Add(("Ask about volatiles & fuel", () => ExecutePlayerCommand($"say {name}, what are Occator's volatiles and reaction mass lines looking like?")));
-                topics.Add(("Ask about +survey work", () => ExecutePlayerCommand($"say {name}, what survey commissions is Occator running?")));
-            }
-            else if (name.IndexOf("Margit", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Søndergaard", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                topics.Add(("Ask about concentrate & alloy", () => ExecutePlayerCommand($"say {name}, how are the concentrate ask and Freeport Works alloy bid looking?")));
-                topics.Add(("Which claims consign here?", () => ExecutePlayerCommand($"say {name}, which Belt claims consigned the concentrate on the board?")));
-            }
-            else if (name.IndexOf("Dov", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                topics.Add(("Ask about provisions cases", () => ExecutePlayerCommand($"say {name}, how many cases of provisions do I need for Stickney?")));
-                topics.Add(("Ask about bunkering schedule", () => ExecutePlayerCommand($"say {name}, how do I put reaction mass on my loading schedule?")));
-            }
-            else if (name.IndexOf("Halvorsen", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                topics.Add(("Ask about Clearing & +credit", () => ExecutePlayerCommand($"say {name}, how does Ceres Clearing handle pilot accounts?")));
-                topics.Add(("What is dry money?", () => ExecutePlayerCommand($"say {name}, what do people mean by dry money versus wet money?")));
-            }
-            else if (name.IndexOf("Mbatha", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                topics.Add(("Ask about hull valuation", () => ExecutePlayerCommand($"say {name}, how does Tycho Mutual value a Dray on the board?")));
-                topics.Add(("Ask about Re-float Program", () => ExecutePlayerCommand($"say {name}, how does the Re-float Program work?")));
-            }
-            else if (name.IndexOf("Petrossian", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                topics.Add(("Ask about bunks & crew calls", () => ExecutePlayerCommand($"say {name}, any bunks open or runs on the job board tonight?")));
-                topics.Add(("Who's in port?", () => ExecutePlayerCommand($"say {name}, who got back to port last?")));
-            }
-            else
-            {
-                topics.Add(("Ask about First Captain hulls", () => ExecutePlayerCommand($"say {name}, how do I charter a Co-op Dray?")));
-                topics.Add(("Ask about Stickney & Kirkwood lane", () => ExecutePlayerCommand($"say {name}, how is the lane to Stickney looking?")));
+                if (name.IndexOf("Ilse", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("How do I enrol a Dray?", () => ExecutePlayerCommand($"say {name}, how do I enrol for a Co-op Dray?")));
+                    topics.Add(("Explain the lay & buyout", () => ExecutePlayerCommand($"say {name}, how do the lay and buyout work?")));
+                    topics.Add(("Check my statement", () => ExecutePlayerCommand($"say {name}, can you check where my Co-op statement stands?")));
+                }
+                else if (name.IndexOf("Qureshi", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("Ask about volatiles & fuel", () => ExecutePlayerCommand($"say {name}, what are Occator's volatiles and reaction mass lines looking like?")));
+                    topics.Add(("Ask about +survey work", () => ExecutePlayerCommand($"say {name}, what survey commissions is Occator running?")));
+                }
+                else if (name.IndexOf("Margit", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Søndergaard", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("Ask about concentrate & alloy", () => ExecutePlayerCommand($"say {name}, how are the concentrate ask and Freeport Works alloy bid looking?")));
+                    topics.Add(("Which claims consign here?", () => ExecutePlayerCommand($"say {name}, which Belt claims consigned the concentrate on the board?")));
+                }
+                else if (name.IndexOf("Dov", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("Ask about provisions cases", () => ExecutePlayerCommand($"say {name}, how many cases of provisions do I need for Stickney?")));
+                    topics.Add(("Ask about bunkering schedule", () => ExecutePlayerCommand($"say {name}, how do I put reaction mass on my loading schedule?")));
+                }
+                else if (name.IndexOf("Halvorsen", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("Ask about Clearing & +credit", () => ExecutePlayerCommand($"say {name}, how does Ceres Clearing handle pilot accounts?")));
+                    topics.Add(("What is dry money?", () => ExecutePlayerCommand($"say {name}, what do people mean by dry money versus wet money?")));
+                }
+                else if (name.IndexOf("Mbatha", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("Ask about hull valuation", () => ExecutePlayerCommand($"say {name}, how does Tycho Mutual value a Dray on the board?")));
+                    topics.Add(("Ask about Re-float Program", () => ExecutePlayerCommand($"say {name}, how does the Re-float Program work?")));
+                }
+                else if (name.IndexOf("Petrossian", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    topics.Add(("Ask about bunks & crew calls", () => ExecutePlayerCommand($"say {name}, any bunks open or runs on the job board tonight?")));
+                    topics.Add(("Who's in port?", () => ExecutePlayerCommand($"say {name}, who got back to port last?")));
+                }
+                else
+                {
+                    topics.Add(("Ask about First Captain hulls", () => ExecutePlayerCommand($"say {name}, how do I charter a Co-op Dray?")));
+                    topics.Add(("Ask about Stickney & Kirkwood lane", () => ExecutePlayerCommand($"say {name}, how is the lane to Stickney looking?")));
+                }
             }
 
             Hud.ShowDetailModal(
                 safeName.ToUpperInvariant(),
                 $"{roleNote}Speak directly with <b>{safeName}</b>. Type a question below or choose a quick topic:",
                 topics,
-                npcName: name);
+                npcName: hasValidName ? name : null);
         }
 
         private static string SuggestUniqueHullName()
@@ -1311,9 +1337,10 @@ namespace TacSim.Core
             }
             if (cmd.StartsWith("space:rock:", StringComparison.OrdinalIgnoreCase))
             {
-                string rId = cmd.Substring("space:rock:".Length).Trim().ToUpperInvariant();
-                if (!string.IsNullOrEmpty(rId) && rId.IndexOf(' ') < 0)
+                string rawRock = cmd.Substring("space:rock:".Length);
+                if (MushProtocol.TryValidateSafeCommandToken(rawRock, out string validRock))
                 {
+                    string rId = validRock.ToUpperInvariant();
                     if (Audio != null) Audio.PlayUiClick();
                     SpaceStage.NotifyApproachOrdered(rId);
                     RefreshOrbitalReadout();
@@ -1353,21 +1380,21 @@ namespace TacSim.Core
             if (cmd == "space:mine_stake")
             {
                 if (Audio != null) Audio.PlayUiClick();
-                if (string.IsNullOrEmpty(SpaceStage.SelectedRockId))
+                if (!MushProtocol.TryValidateSafeCommandToken(SpaceStage.SelectedRockId, out string stakeRock))
                 {
                     Hud.AppendLogLine("<color=#FFAA55>[MINING]</color> Select an orbital rock (`A`, `B`, or `C`) before staking a claim.");
                     return;
                 }
                 if (_ws != null && _ws.IsConnected)
-                    _ws.SendLine($"+mine/stake {SpaceStage.SelectedRockId}");
+                    _ws.SendLine($"+mine/stake {stakeRock.ToUpperInvariant()}");
                 else
                     LogDisconnectedCommandNotice();
                 return;
             }
             if (cmd.StartsWith("space:lock:", StringComparison.OrdinalIgnoreCase))
             {
-                string tgt = cmd.Substring("space:lock:".Length).Trim();
-                if (!string.IsNullOrEmpty(tgt) && tgt.IndexOf(' ') < 0)
+                string rawTgt = cmd.Substring("space:lock:".Length);
+                if (MushProtocol.TryValidateSafeCommandToken(rawTgt, out string tgt))
                 {
                     if (Audio != null) Audio.PlayRadarScanPing();
                     if (_ws != null && _ws.IsConnected)
@@ -1503,6 +1530,12 @@ namespace TacSim.Core
 
         private void HandleDockingTapeReady(string tapeCommand, bool isClampCandidate)
         {
+            if (string.IsNullOrWhiteSpace(tapeCommand) ||
+                MushProtocol.ContainsControlChars(tapeCommand) ||
+                !tapeCommand.StartsWith("+helm/dock tape ", StringComparison.Ordinal))
+            {
+                return;
+            }
             Hud.AppendLogLine(isClampCandidate
                 ? "<color=#88DDFF>[DOCKING]</color> Collar gates aligned — submitting 60 Hz RLE tape for server verification..."
                 : "<color=#FFAA66>[DOCKING]</color> Collar contact outside gate tolerance — submitting 60 Hz RLE tape...");
@@ -1523,7 +1556,7 @@ namespace TacSim.Core
             }
             else
             {
-                Hud?.AppendLogLine($"<color=#FF8866>[DOCKING CLOSED]</color> Session ended ({norm}).");
+                Hud?.AppendLogLine($"<color=#FF8866>[DOCKING CLOSED]</color> Session ended ({MushProtocol.EscapeUnityRichText(norm)}).");
                 CameraRig?.SetMode(seatedAtHelm ? CameraRigMode.OrbitalExterior : CameraRigMode.ThirdPersonWalk);
             }
         }
@@ -1740,15 +1773,23 @@ namespace TacSim.Core
                 _serverStationRoomEntry = null;
                 _serverShipCompartment = null;
 
-                string ceresExitCmd = FindExitToCeresFreeport(rv);
-                if (_ws != null && _ws.IsConnected && !_limboAutoEnterAttempted && !string.IsNullOrEmpty(ceresExitCmd))
+                bool wsReady = (_ws != null && _ws.IsConnected) || _simulateConnectedForTests;
+                if (wsReady && _awaitingInitialRoomSync && !_limboAutoEnterAttempted && IsLimboStartRoom(rv))
                 {
-                    _limboAutoEnterAttempted = true;
-                    string safeRoom = MushProtocol.EscapeUnityRichText(rv.Name);
-                    string safeCmd = MushProtocol.EscapeUnityRichText(ceresExitCmd);
-                    Hud.AppendLogLine($"<color=#88DDFF>[TRANSIT]</color> Stepping from <b>{safeRoom}</b> into Ceres Freeport ({safeCmd})...");
-                    _ws.SendLine(ceresExitCmd);
-                    return;
+                    string ceresExitCmd = FindExitToCeresFreeport(rv);
+                    if (!string.IsNullOrEmpty(ceresExitCmd))
+                    {
+                        _limboAutoEnterAttempted = true;
+                        _awaitingInitialRoomSync = false;
+                        string safeRoom = MushProtocol.EscapeUnityRichText(rv.Name);
+                        string safeCmd = MushProtocol.EscapeUnityRichText(ceresExitCmd);
+                        Hud.AppendLogLine($"<color=#88DDFF>[TRANSIT]</color> Stepping from <b>{safeRoom}</b> into Ceres Freeport ({safeCmd})...");
+                        if (_ws != null && _ws.IsConnected)
+                            _ws.SendLine(ceresExitCmd);
+                        else
+                            OnCommandDispatched?.Invoke(ceresExitCmd);
+                        return;
+                    }
                 }
 
                 _awaitingInitialRoomSync = false;
@@ -1856,9 +1897,23 @@ namespace TacSim.Core
             Hud.Overlays?.RefreshLobbySelectionHighlights();
         }
 
+        public static bool IsLimboStartRoom(MushRoomView rv)
+        {
+            if (rv == null) return false;
+            if (string.Equals(rv.Id, "#0", StringComparison.Ordinal))
+                return true;
+            if (rv.Atlas != null &&
+                (string.Equals(rv.Atlas.Entry, "limbo", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(rv.Atlas.Entry, "room.limbo", StringComparison.OrdinalIgnoreCase)))
+                return true;
+            return string.Equals((rv.Name ?? string.Empty).Trim(), "Limbo", StringComparison.OrdinalIgnoreCase) &&
+                   rv.Atlas == null &&
+                   rv.TacSim == null;
+        }
+
         public static string FindExitToCeresFreeport(MushRoomView rv)
         {
-            if (rv == null || rv.Exits == null) return null;
+            if (rv == null || rv.Exits == null || !IsLimboStartRoom(rv)) return null;
             for (int i = 0; i < rv.Exits.Count; i++)
             {
                 var ex = rv.Exits[i];

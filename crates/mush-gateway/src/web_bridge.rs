@@ -50,6 +50,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use mush_core::{DisconnectKind, ObjId};
 use mush_ipc::{ConnectionAdmission, InputSend, ToServer, WireInbound};
@@ -149,16 +150,14 @@ impl TokenRegistry {
                 self.recent_revocations.remove(&old_hash);
             }
         }
-        let doomed: Vec<u64> = self
-            .conn_tokens
+        // P2-EDGE-1: keep `conn_tokens` entries intact until each connection
+        // is actually detached from `SessionManager`, so an interrupted
+        // revocation can never blind retries or `reconcile_web_tokens`.
+        self.conn_tokens
             .iter()
             .filter(|&(_, h)| h == hash)
             .map(|(&c, _)| c)
-            .collect();
-        for conn in &doomed {
-            self.conn_tokens.remove(conn);
-        }
-        doomed
+            .collect()
     }
 
     fn try_track_if_unrevoked(&mut self, conn: u64, hash: String) -> bool {
@@ -190,7 +189,7 @@ impl TokenRegistry {
 /// The production [`WebHooks`] implementation: the shared [`GameBridge`]
 /// core plus the token store and the panel manifest.
 pub struct WebBridge<A: AuthBackend + 'static> {
-    core: GameBridge<A>,
+    core: Arc<GameBridge<A>>,
     store: Arc<dyn ObjectStore>,
     /// Panel feed ids for `hello` / `PanelSubscribe` checks
     /// (module-registered feeds plus the engine-side `"who"`), collected at
@@ -200,8 +199,8 @@ pub struct WebBridge<A: AuthBackend + 'static> {
     /// them (never the raw token) plus the in-process revocation barrier, so
     /// `logout` and cross-generation revocations boot every live connection
     /// for that token and fence any in-flight attach/resume (design 02 §6.2,
-    /// EXT-P1-3).
-    tokens: Mutex<TokenRegistry>,
+    /// EXT-P1-3, P2-EDGE-1).
+    tokens: Arc<Mutex<TokenRegistry>>,
     /// The composing-hint rate limit, per connection (interface plan I4,
     /// D-I-11).
     composing: Mutex<crate::composing::ComposingLimiter>,
@@ -244,10 +243,10 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
         panels: Vec<String>,
     ) -> WebBridge<A> {
         WebBridge {
-            core: GameBridge::with_link(accounts, sessions, link, guard),
+            core: Arc::new(GameBridge::with_link(accounts, sessions, link, guard)),
             store,
             panels,
-            tokens: Mutex::new(TokenRegistry::default()),
+            tokens: Arc::new(Mutex::new(TokenRegistry::default())),
             composing: Mutex::new(crate::composing::ComposingLimiter::default()),
             metrics: Arc::new(mush_net_web::Metrics::new()),
             conn_id_bit: 0,
@@ -269,7 +268,9 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     /// the bridge without one.
     #[must_use]
     pub fn with_drain(mut self, drain: Arc<GatewayDrain>) -> WebBridge<A> {
-        self.core.set_drain(drain);
+        if let Some(core) = Arc::get_mut(&mut self.core) {
+            core.set_drain(drain);
+        }
         self
     }
 
@@ -490,34 +491,52 @@ impl<A: AuthBackend + 'static> WebBridge<A> {
     /// tells the WS pump to close the socket after draining. Mirrors
     /// [`GameBridge::quit`] with `Boot` semantics.
     async fn boot_conn(&self, conn: ConnId, why: &str) {
-        if let Some(actor) = self.core.actor_of(conn) {
-            self.core
-                .link
-                .to_server(ToServer::Inbound(WireInbound::ConnDown {
-                    conn: conn.0,
-                    actor,
-                    reason: DisconnectKind::Boot,
-                }))
-                .await;
-            self.core.delivery_barrier(conn, "web boot").await;
-        }
-        send_event_to_conn(
-            &self.core.sessions,
-            conn,
-            OutputEvent::Disconnect {
-                reason: RichText::tag("system", why),
-            },
-        );
-        self.core
-            .sessions
-            .detach(conn, mush_session::DetachReason::Booted);
-        locked(&self.tokens, "token registry").remove_conn(conn.0);
+        boot_conn_parts(&self.core, &self.tokens, conn, why).await;
     }
 }
+
+/// Detached-task-friendly implementation of [`WebBridge::boot_conn`]: detaches
+/// the connection and removes it from `conn_tokens` only AFTER `sessions.detach`
+/// completes (P2-EDGE-1).
+async fn boot_conn_parts<A: AuthBackend + 'static>(
+    core: &GameBridge<A>,
+    tokens: &Mutex<TokenRegistry>,
+    conn: ConnId,
+    why: &str,
+) {
+    if let Some(actor) = core.actor_of(conn) {
+        core.link
+            .to_server(ToServer::Inbound(WireInbound::ConnDown {
+                conn: conn.0,
+                actor,
+                reason: DisconnectKind::Boot,
+            }))
+            .await;
+        core.delivery_barrier(conn, "web boot").await;
+    }
+    send_event_to_conn(
+        &core.sessions,
+        conn,
+        OutputEvent::Disconnect {
+            reason: RichText::tag("system", why),
+        },
+    );
+    core.sessions
+        .detach(conn, mush_session::DetachReason::Booted);
+    locked(tokens, "token registry").remove_conn(conn.0);
+}
+
+/// Maximum simultaneous local `boot_conn` barriers run by one `WebBridge::logout`
+/// (P2-EDGE-1).
+const MAX_CONCURRENT_LOGOUT_BOOTS: usize = 8;
 
 impl<A: AuthBackend + 'static> crate::controls::WebTokenRevoker for WebBridge<A> {
     fn revoke_token_hash(&self, token_hash: &str) -> Vec<u64> {
         locked(&self.tokens, "token registry").record_revocation(token_hash)
+    }
+
+    fn forget_conn(&self, conn: u64) {
+        locked(&self.tokens, "token registry").remove_conn(conn);
     }
 
     fn live_token_hashes(&self) -> Vec<String> {
@@ -621,31 +640,50 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
     }
 
     fn logout<'a>(&'a self, token: &'a str) -> BoxFuture<'a, Result<(), LogoutErr>> {
+        let hash = token_hash(token);
+        let store = Arc::clone(&self.store);
+        let core = Arc::clone(&self.core);
+        let tokens = Arc::clone(&self.tokens);
         Box::pin(async move {
-            let hash = token_hash(token);
-            let del_result = self.store.token_del(&hash).await;
-            if let Err(ref e) = del_result {
-                tracing::error!(error = %e, "token delete failed on logout");
+            // Detach revocation, peer-generation broadcast, and local boots into
+            // a non-cancellable task (P2-EDGE-1): client abort or HTTP
+            // `request_timeout` dropping this future mid-barrier can never
+            // strand live WebSockets or suppress `ToServer::RevokeWebToken`.
+            let task = tokio::spawn(async move {
+                let del_result = store.token_del(&hash).await;
+                if let Err(ref e) = del_result {
+                    tracing::error!(error = %e, "token delete failed on logout");
+                }
+                // Record the revocation in-process immediately (blocking any
+                // concurrent attach/resume) WITHOUT evicting `conn_tokens`
+                // until each connection is actually detached below.
+                let doomed = locked(&tokens, "token registry").record_revocation(&hash);
+                // Propagate revocation to peer gateway generations BEFORE
+                // awaiting local delivery barriers so slow local barriers
+                // cannot delay peer-generation ejection (EXT-P1-3, P2-EDGE-1).
+                let _ = core
+                    .link
+                    .to_server(ToServer::RevokeWebToken { token_hash: hash })
+                    .await;
+                // Boot local connections concurrently (bounded), so multiple
+                // live tabs on a busy world do not stack 5s barriers serially.
+                futures::stream::iter(doomed)
+                    .for_each_concurrent(MAX_CONCURRENT_LOGOUT_BOOTS, |conn| {
+                        let core = Arc::clone(&core);
+                        let tokens = Arc::clone(&tokens);
+                        async move {
+                            tracing::info!(conn, "logout boots live web connection");
+                            boot_conn_parts(&core, &tokens, ConnId(conn), "You have logged out.")
+                                .await;
+                        }
+                    })
+                    .await;
+                del_result.map(|_| ()).map_err(|_| LogoutErr::Unavailable)
+            });
+            match task.await {
+                Ok(res) => res,
+                Err(_) => Err(LogoutErr::Unavailable),
             }
-            // Revocation is instant (even if durable delete failed — the
-            // caller receives 503 to retry, while live connections are still
-            // booted now and in-flight attach/resume sees the revocation
-            // barrier).
-            let doomed = locked(&self.tokens, "token registry").record_revocation(&hash);
-            for conn in doomed {
-                tracing::info!(conn, "logout boots live web connection");
-                self.boot_conn(ConnId(conn), "You have logged out.").await;
-            }
-            // Propagate revocation to every other connected gateway generation
-            // via the server link (EXT-P1-3). If the server is in a restart
-            // gap, peer generations also reconcile live tokens against the
-            // shared store on refresh/reconnect.
-            let _ = self
-                .core
-                .link
-                .to_server(ToServer::RevokeWebToken { token_hash: hash })
-                .await;
-            del_result.map(|_| ()).map_err(|_| LogoutErr::Unavailable)
         })
     }
 
@@ -2041,5 +2079,172 @@ mod tests {
             }
         }
         assert!(saw_disconnect, "booted connection must receive Disconnect");
+    }
+
+    /// P2-EDGE-1: dropping/cancelling `WebBridge::logout` mid-barrier (client
+    /// disconnect or HTTP `request_timeout`) must NOT strand live WebSockets,
+    /// blind `live_token_hashes()` prior to detach, or suppress peer-generation
+    /// `ToServer::RevokeWebToken`, and local boots must run concurrently.
+    #[tokio::test]
+    async fn p2_edge_1_cancelled_logout_completes_concurrent_boots_and_broadcast() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::Notify;
+
+        struct BlockingBarrierLink {
+            block_barriers: std::sync::atomic::AtomicBool,
+            barrier_hits: AtomicUsize,
+            barrier_entered: Notify,
+            release_barriers: Notify,
+            sent: Mutex<Vec<ToServer>>,
+        }
+
+        impl GatewayLink for BlockingBarrierLink {
+            fn to_server(&self, msg: ToServer) -> BoxFuture<'_, bool> {
+                self.sent.lock().unwrap().push(msg);
+                Box::pin(async { true })
+            }
+            fn request(
+                &self,
+                req: mush_ipc::ServiceReq,
+            ) -> BoxFuture<'_, Option<mush_ipc::ServiceResp>> {
+                Box::pin(async move {
+                    match req {
+                        mush_ipc::ServiceReq::ConnectionReady { .. } => {
+                            Some(mush_ipc::ServiceResp::ConnectionReady(true))
+                        }
+                        mush_ipc::ServiceReq::Barrier => {
+                            if self.block_barriers.load(Ordering::SeqCst) {
+                                self.barrier_hits.fetch_add(1, Ordering::SeqCst);
+                                self.barrier_entered.notify_waiters();
+                                self.release_barriers.notified().await;
+                            }
+                            Some(mush_ipc::ServiceResp::Barrier)
+                        }
+                        _ => None,
+                    }
+                })
+            }
+        }
+
+        let actor = ObjId(9);
+        let token = "cancel-safe-logout-token";
+        let expected_hash = token_hash(token);
+        let now = unix_now_s();
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        store
+            .token_put(
+                expected_hash.clone(),
+                TokenRecord {
+                    account: "acct".to_string(),
+                    created: now,
+                    expires: now + TOKEN_TTL_S,
+                },
+            )
+            .await
+            .unwrap();
+        let sessions = Arc::new(SessionManager::default());
+        let link = Arc::new(BlockingBarrierLink {
+            block_barriers: std::sync::atomic::AtomicBool::new(false),
+            barrier_hits: AtomicUsize::new(0),
+            barrier_entered: Notify::new(),
+            release_barriers: Notify::new(),
+            sent: Mutex::new(Vec::new()),
+        });
+        let bridge = WebBridge::with_link(
+            Arc::new(ResumeAuth { actor }),
+            Arc::clone(&sessions),
+            Arc::clone(&link) as Arc<dyn GatewayLink>,
+            Arc::new(IpGuard::new()),
+            Arc::clone(&store),
+            Vec::new(),
+        );
+
+        let mut rxs = Vec::new();
+        for conn_id in [71u64, 72, 73] {
+            let (tx, rx) = mpsc::channel::<Arc<Envelope>>(16);
+            bridge
+                .connect_character(
+                    NewWebConn {
+                        id: conn_id,
+                        addr: "127.0.0.1".parse().unwrap(),
+                        tx,
+                        closer: mush_net_web::ConnCloser::detached(),
+                    },
+                    token,
+                    u64::from(actor.0),
+                )
+                .await
+                .expect("attach succeeds");
+            rxs.push(rx);
+        }
+        assert_eq!(sessions.connection_count(), 3);
+        link.block_barriers.store(true, Ordering::SeqCst);
+
+        // Start logout, wait until all 3 boot_conn barriers are concurrently
+        // in flight, then DROP the logout future (simulating client abort / 408).
+        {
+            let logout_fut = bridge.logout(token);
+            tokio::pin!(logout_fut);
+            let wait_all_barriers = async {
+                loop {
+                    let notified = link.barrier_entered.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if link.barrier_hits.load(Ordering::SeqCst) == 3 {
+                        return;
+                    }
+                    notified.await;
+                }
+            };
+            tokio::select! {
+                _ = &mut logout_fut => panic!("logout cannot complete while barriers are blocked"),
+                _ = tokio::time::timeout(std::time::Duration::from_secs(2), wait_all_barriers) => {}
+            }
+            // All 3 boots entered concurrently, RevokeWebToken was ALREADY sent,
+            // and conn_tokens is NOT blinded while sessions are still live!
+            assert_eq!(link.barrier_hits.load(Ordering::SeqCst), 3);
+            assert!(
+                link.sent.lock().unwrap().iter().any(|m| matches!(
+                    m,
+                    ToServer::RevokeWebToken { token_hash } if token_hash == &expected_hash
+                )),
+                "RevokeWebToken must be sent before awaiting local barriers"
+            );
+            assert!(
+                crate::controls::WebTokenRevoker::live_token_hashes(&bridge)
+                    .contains(&expected_hash),
+                "conn_tokens must remain visible until sessions actually detach"
+            );
+            // Drop `logout_fut` right here (simulating HTTP abort / request_timeout)!
+        }
+
+        // Release barriers: the detached revocation task must still finish
+        // booting every live connection and cleaning up `conn_tokens`.
+        link.release_barriers.notify_waiters();
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while (sessions.connection_count() > 0
+            || !crate::controls::WebTokenRevoker::live_token_hashes(&bridge).is_empty())
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(sessions.connection_count(), 0, "all 3 sessions must detach");
+        assert!(
+            crate::controls::WebTokenRevoker::live_token_hashes(&bridge).is_empty(),
+            "conn_tokens cleaned up after detach"
+        );
+        assert!(store.token_get(&expected_hash).await.unwrap().is_none());
+        for rx in &mut rxs {
+            let mut saw_disconnect = false;
+            while let Ok(env) = rx.try_recv() {
+                if matches!(env.event, OutputEvent::Disconnect { .. }) {
+                    saw_disconnect = true;
+                }
+            }
+            assert!(
+                saw_disconnect,
+                "each booted session must receive Disconnect"
+            );
+        }
     }
 }

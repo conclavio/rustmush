@@ -32,7 +32,16 @@ pub trait RelaySink: Send + Sync {
 pub trait WebTokenRevoker: Send + Sync {
     /// Record `token_hash` as revoked (blocking in-flight attach/resume) and
     /// return every live connection id authenticated by that token hash.
+    ///
+    /// Implementations should retain `conn_tokens` entries until each
+    /// connection is actually detached and reported via [`Self::forget_conn`]
+    /// so a cancelled revocation can never blind retries or reconciliation
+    /// (P2-EDGE-1).
     fn revoke_token_hash(&self, token_hash: &str) -> Vec<u64>;
+
+    /// Forget a connection id after it has been detached from the session
+    /// manager (P2-EDGE-1).
+    fn forget_conn(&self, _conn: u64) {}
 
     /// Snapshot the unique token hashes currently authenticating live web
     /// connections on this gateway.
@@ -63,6 +72,14 @@ impl GatewayControls {
         match self.web_tokens.get() {
             Some(revoker) => revoker.revoke_token_hash(token_hash),
             None => Vec::new(),
+        }
+    }
+
+    /// Remove a detached web connection from the web bridge's live token table
+    /// (P2-EDGE-1).
+    pub fn forget_web_conn(&self, conn: u64) {
+        if let Some(revoker) = self.web_tokens.get() {
+            revoker.forget_conn(conn);
         }
     }
 

@@ -1004,7 +1004,7 @@ namespace TacSim.UI
 
             if (Application.isPlaying)
             {
-                PlayerPrefs.SetString(PrefLastUrl, url);
+                PlayerPrefs.SetString(PrefLastUrl, MushAuthClient.SanitizeUrlForDisplayOrStorage(url));
                 PlayerPrefs.SetString(PrefLastAccount, acct);
                 if (!string.IsNullOrEmpty(cname))
                     PlayerPrefs.SetString(PrefLastCharacter, cname);
@@ -1157,16 +1157,19 @@ namespace TacSim.UI
                 return;
             }
 
+            string cleanSpoken = MushProtocol.StripControlChars(spoken).Trim();
+            if (string.IsNullOrEmpty(cleanSpoken)) return;
+
             if (!string.IsNullOrEmpty(_modalCommandPrefix))
             {
-                OnCommandSubmitted?.Invoke($"{_modalCommandPrefix} {spoken}");
+                OnCommandSubmitted?.Invoke($"{_modalCommandPrefix} {cleanSpoken}");
                 return;
             }
 
-            if (!string.IsNullOrEmpty(_activeNpcTargetName))
-                OnCommandSubmitted?.Invoke($"say {_activeNpcTargetName}, {spoken}");
+            if (MushProtocol.TryValidateSafeKeywordOrName(_activeNpcTargetName, out string safeNpcTarget))
+                OnCommandSubmitted?.Invoke($"say {safeNpcTarget}, {cleanSpoken}");
             else
-                OnCommandSubmitted?.Invoke($"say {spoken}");
+                OnCommandSubmitted?.Invoke($"say {cleanSpoken}");
         }
 
         private void SubmitChatInput()

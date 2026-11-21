@@ -63,9 +63,30 @@ pub struct WebConfig {
     /// listener; excess sockets are dropped immediately before reading
     /// HTTP/TLS bytes.
     pub max_connections: usize,
+    /// Per-client-network (`/32` IPv4 or `/64` IPv6, with `trusted_proxies`
+    /// exempt on the direct-peer check) cap on simultaneous open TCP
+    /// connections before acquiring the global [`max_connections`](Self::max_connections)
+    /// semaphore (P2-EDGE-2). `0` disables the per-IP cap.
+    pub max_connections_per_ip: usize,
+    /// Aggregate cap on simultaneous open TCP connections from one IPv6 `/48`
+    /// allocation across all of its `/64`s (P2-EDGE-2). `0` disables the `/48`
+    /// aggregate cap.
+    pub max_connections_per_v6_48: usize,
     /// Maximum time allowed to receive HTTP/1 request headers (and complete
     /// the TLS handshake when `tls` is configured), milliseconds.
     pub header_read_timeout_ms: u64,
+    /// Maximum time a single response write may stall without making TCP
+    /// progress before the socket is closed (P2-EDGE-2), milliseconds. `0`
+    /// disables the write-progress timeout.
+    pub write_timeout_ms: u64,
+    /// Maximum HTTP/1.1 requests served on one keep-alive connection before
+    /// closing it with `Connection: close` (P2-EDGE-2; does not apply after a
+    /// WebSocket `101` upgrade). `0` disables the per-connection request cap.
+    pub max_keepalive_requests: usize,
+    /// Maximum wall-clock lifetime of an un-upgraded HTTP/1.1 connection
+    /// before closing it (P2-EDGE-2; disarmed automatically on WebSocket `101`
+    /// upgrade), milliseconds. `0` disables the age cap.
+    pub max_http_conn_age_ms: u64,
     /// Maximum time allowed for non-upgrade HTTP handlers (excludes `/ws`),
     /// milliseconds. `0` disables the handler timeout.
     pub request_timeout_ms: u64,
@@ -99,7 +120,12 @@ impl Default for WebConfig {
             send_timeout_ms: 10_000,
             max_frame_bytes: mush_proto::MAX_INVOKE_BYTES,
             max_connections: 2_048,
+            max_connections_per_ip: 32,
+            max_connections_per_v6_48: 128,
             header_read_timeout_ms: 10_000,
+            write_timeout_ms: 15_000,
+            max_keepalive_requests: 100,
+            max_http_conn_age_ms: 120_000,
             request_timeout_ms: 30_000,
             metrics_enabled: false,
             asset_pack: None,

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using TacSim.Core;
+using TacSim.Net;
 
 namespace TacSim.Space
 {
@@ -225,9 +226,12 @@ namespace TacSim.Space
             int feedMaxFrames = feed.Int("max_frames", MaxTapeFrames);
             int clampedMaxFrames = feedMaxFrames > 0 ? Math.Min(feedMaxFrames, MaxTapeFrames) : MaxTapeFrames;
 
+            string rawSessionId = feed.Str("session_id", "dock.0.1");
+            string safeSessionId = MushProtocol.TryValidateSafeCommandToken(rawSessionId, out string validSid) ? validSid : string.Empty;
+
             var s = new DockingClientSession
             {
-                SessionId = feed.Str("session_id", "dock.0.1"),
+                SessionId = safeSessionId,
                 TargetLabel = feed.Str("target_label", feed.Str("target_name", "Docking Collar")),
                 DxMm = poseSrc.Long("dx_mm", poseSrc.Long("lateral_x_mm", 600)),
                 DyMm = poseSrc.Long("dy_mm", poseSrc.Long("lateral_y_mm", -420)),
@@ -476,7 +480,9 @@ namespace TacSim.Space
 
         public string FormatTapeCommand()
         {
-            return $"+helm/dock tape {SessionId} {EncodeRle()}";
+            if (!MushProtocol.TryValidateSafeCommandToken(SessionId, out string safeSid))
+                return string.Empty;
+            return $"+helm/dock tape {safeSid} {EncodeRle()}";
         }
     }
 }

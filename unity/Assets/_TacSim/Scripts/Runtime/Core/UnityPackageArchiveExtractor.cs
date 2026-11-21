@@ -19,6 +19,41 @@ namespace TacSim.Core
         public const long MaxSingleEntryBytes = 256L * 1024 * 1024;
         public const long MaxTotalUncompressedBytes = 2L * 1024 * 1024 * 1024;
 
+        private static readonly HashSet<string> BlockedExecutableExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".cs", ".asmdef", ".asmref", ".dll", ".exe", ".so", ".dylib", ".bundle",
+            ".rsp", ".js", ".boo", ".shader", ".compute", ".raytrace", ".cginc", ".hlsl",
+            ".glslinc", ".shadergraph", ".shadersubgraph", ".bat", ".cmd", ".ps1", ".sh",
+            ".py", ".rb", ".pl", ".vbs", ".wsf", ".hta", ".msi", ".com", ".scr", ".jar",
+            ".aar", ".winmd", ".pdb", ".mdb", ".a", ".lib", ".ocx", ".meta"
+        };
+
+        private static readonly HashSet<string> AllowedPassiveAssetExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Meshes / 3D models
+            ".fbx", ".obj", ".dae", ".3ds", ".blend", ".mesh", ".ply", ".stl", ".glb", ".gltf",
+            // Textures / images
+            ".png", ".tga", ".jpg", ".jpeg", ".tif", ".tiff", ".psd", ".exr", ".hdr",
+            ".bmp", ".gif", ".dds", ".ktx", ".webp", ".cubemap",
+            // Materials / prefabs / animations / passive Unity assets
+            ".mat", ".prefab", ".asset", ".anim", ".controller", ".overridecontroller",
+            ".mask", ".avatar", ".physicmaterial", ".physicsmaterial", ".physicsmaterial2d",
+            ".mixer", ".rendertexture", ".lighting", ".flare", ".guiskin", ".fontsettings",
+            ".ttf", ".otf", ".unity", ".unitypackage", ".playable", ".signal",
+            ".terrainlayer", ".brush", ".preset", ".spriteatlas", ".spriteatlasv2",
+            // Audio
+            ".wav", ".mp3", ".ogg", ".aif", ".aiff", ".flac",
+            // Passive docs / data
+            ".txt", ".md", ".pdf", ".json", ".xml", ".csv", ".bytes"
+        };
+
+        private static readonly HashSet<string> WindowsReservedDeviceNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        };
+
         public static int ExtractPackageFile(string packageFilePath, string projectRootDir)
         {
             if (string.IsNullOrWhiteSpace(packageFilePath) || !File.Exists(packageFilePath))
@@ -70,24 +105,44 @@ namespace TacSim.Core
                         string raw = Encoding.UTF8.GetString(buf);
                         int nl = raw.IndexOfAny(new[] { '\r', '\n', '\0' });
                         if (nl >= 0) raw = raw.Substring(0, nl);
-                        string cleaned = raw.Trim().Replace('\\', '/');
-                        if (TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, cleaned, out _))
+                        string cleaned = raw.Replace('\\', '/');
+                        if (TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, cleaned, out _, allowExtensionlessDirectory: true))
                             guidToRelPath[guid] = cleaned;
                     }
                     else
                     {
                         if (string.Equals(leaf, "asset", StringComparison.OrdinalIgnoreCase))
+                        {
                             folderGuidsWithPayload.Add(guid);
+                        }
+                        else if (string.Equals(leaf, "asset.meta", StringComparison.OrdinalIgnoreCase) && size > MaxMetaHeaderBytes)
+                        {
+                            throw new InvalidDataException($"asset.meta size {size} exceeds permitted limit ({MaxMetaHeaderBytes} bytes).");
+                        }
                         SkipExact(dataStream, size);
                     }
                 });
             }
 
+            // Re-validate every GUID carrying a file payload against strict passive-asset extension allowlist
+            // so extensionless or disallowed payloads (and their sidecar .meta) are never written.
+            var disallowedFileGuids = new List<string>();
+            foreach (string payloadGuid in folderGuidsWithPayload)
+            {
+                if (guidToRelPath.TryGetValue(payloadGuid, out string relPath) &&
+                    !TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, relPath, out _, allowExtensionlessDirectory: false))
+                {
+                    disallowedFileGuids.Add(payloadGuid);
+                }
+            }
+            for (int i = 0; i < disallowedFileGuids.Count; i++)
+                guidToRelPath.Remove(disallowedFileGuids[i]);
+
             // First ensure all folder entries (GUIDs that have a pathname & meta, but no `asset` file payload) exist as directories.
             foreach (var kv in guidToRelPath)
             {
                 if (!folderGuidsWithPayload.Contains(kv.Key) &&
-                    TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, kv.Value, out string folderFull))
+                    TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, kv.Value, out string folderFull, allowExtensionlessDirectory: true))
                 {
                     Directory.CreateDirectory(folderFull);
                 }
@@ -103,14 +158,28 @@ namespace TacSim.Core
                 WalkTarEntries(gz2, maxSingleEntryBytes, maxTotalUncompressedBytes, (entryPath, typeFlag, size, dataStream) =>
                 {
                     if (!TrySplitGuidEntry(entryPath, out string guid, out string leaf) ||
-                        !guidToRelPath.TryGetValue(guid, out string relAssetPath) ||
-                        !TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, relAssetPath, out string destAssetFull))
+                        !guidToRelPath.TryGetValue(guid, out string relAssetPath))
                     {
                         SkipExact(dataStream, size);
                         return;
                     }
 
-                    if (string.Equals(leaf, "asset", StringComparison.OrdinalIgnoreCase))
+                    bool isAssetFile = string.Equals(leaf, "asset", StringComparison.OrdinalIgnoreCase);
+                    bool isAssetMeta = string.Equals(leaf, "asset.meta", StringComparison.OrdinalIgnoreCase);
+                    if (!isAssetFile && !isAssetMeta)
+                    {
+                        SkipExact(dataStream, size);
+                        return;
+                    }
+
+                    bool allowExtensionless = !isAssetFile && !folderGuidsWithPayload.Contains(guid);
+                    if (!TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, relAssetPath, out string destAssetFull, allowExtensionless))
+                    {
+                        SkipExact(dataStream, size);
+                        return;
+                    }
+
+                    if (isAssetFile)
                     {
                         string parentDir = Path.GetDirectoryName(destAssetFull);
                         if (!string.IsNullOrEmpty(parentDir))
@@ -121,8 +190,10 @@ namespace TacSim.Core
                         }
                         filesWritten++;
                     }
-                    else if (string.Equals(leaf, "asset.meta", StringComparison.OrdinalIgnoreCase))
+                    else
                     {
+                        if (size > MaxMetaHeaderBytes)
+                            throw new InvalidDataException($"asset.meta size {size} exceeds permitted limit ({MaxMetaHeaderBytes} bytes).");
                         string metaFull = destAssetFull + ".meta";
                         string parentDir = Path.GetDirectoryName(metaFull);
                         if (!string.IsNullOrEmpty(parentDir))
@@ -133,67 +204,114 @@ namespace TacSim.Core
                         }
                         filesWritten++;
                     }
-                    else
-                    {
-                        SkipExact(dataStream, size);
-                    }
                 });
             }
 
             return filesWritten;
         }
 
+        private static bool IsWindowsReservedName(string segment)
+        {
+            if (string.IsNullOrEmpty(segment))
+                return true;
+            string stem = segment;
+            int dot = stem.IndexOf('.');
+            if (dot >= 0)
+                stem = stem.Substring(0, dot);
+            stem = stem.TrimEnd(' ', '.');
+            return WindowsReservedDeviceNames.Contains(stem);
+        }
+
         internal static bool TryResolveSafeAssetDestination(string fullProjectRoot, string assetsPrefix, string relAssetPath, out string fullDest)
+        {
+            return TryResolveSafeAssetDestination(fullProjectRoot, assetsPrefix, relAssetPath, out fullDest, allowExtensionlessDirectory: false);
+        }
+
+        internal static bool TryResolveSafeAssetDestination(
+            string fullProjectRoot,
+            string assetsPrefix,
+            string relAssetPath,
+            out string fullDest,
+            bool allowExtensionlessDirectory)
         {
             fullDest = null;
             if (string.IsNullOrWhiteSpace(relAssetPath))
                 return false;
 
-            string normalized = relAssetPath.Trim().Replace('\\', '/');
+            string normalized = relAssetPath.Replace('\\', '/');
             if (!normalized.StartsWith("Assets/", StringComparison.Ordinal) || normalized.Length <= "Assets/".Length)
                 return false;
 
-            // Reject drive prefixes, alternate data streams, NUL/control characters.
+            // Reject drive prefixes, alternate data streams, wildcards, and C0/DEL/C1 control characters.
             for (int i = 0; i < normalized.Length; i++)
             {
                 char ch = normalized[i];
-                if (ch < 0x20 || ch == ':')
+                if (ch < 0x20 || (ch >= 0x7f && ch <= 0x9f) ||
+                    ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|')
+                {
                     return false;
+                }
             }
 
             string[] segments = normalized.Split('/');
             if (segments.Length < 2 || !string.Equals(segments[0], "Assets", StringComparison.Ordinal))
                 return false;
 
-            bool hasEditorSegment = false;
             for (int i = 0; i < segments.Length; i++)
             {
                 string seg = segments[i];
                 if (string.IsNullOrEmpty(seg) || seg == "." || seg == "..")
                     return false;
-                if (i == 1 && string.Equals(seg, "_TacSim", StringComparison.OrdinalIgnoreCase))
+                // Reject Windows trailing dots/spaces and leading whitespace on every path segment before canonicalization.
+                if (seg[0] == ' ' || seg[seg.Length - 1] == ' ' || seg[seg.Length - 1] == '.')
                     return false;
-                if (i >= 1 && i < segments.Length - 1 && string.Equals(seg, "Editor", StringComparison.OrdinalIgnoreCase))
-                    hasEditorSegment = true;
-            }
-
-            // Never permit external packages to drop or overwrite Editor C# scripts / assemblies.
-            if (hasEditorSegment)
-            {
-                string leaf = segments[segments.Length - 1];
-                if (leaf.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
-                    leaf.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase) ||
-                    leaf.EndsWith(".asmref", StringComparison.OrdinalIgnoreCase) ||
-                    leaf.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                {
+                string canonSeg = seg.TrimEnd('.', ' ');
+                if (string.IsNullOrEmpty(canonSeg) || IsWindowsReservedName(canonSeg))
                     return false;
-                }
+                if (i == 1 && string.Equals(canonSeg, "_TacSim", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (i >= 1 && string.Equals(canonSeg, "Editor", StringComparison.OrdinalIgnoreCase))
+                    return false;
             }
 
             string combined = Path.GetFullPath(Path.Combine(fullProjectRoot, normalized.Replace('/', Path.DirectorySeparatorChar)));
             // Use strict case-sensitive canonical prefix verification so Assets/../assets/... cannot escape on Linux/macOS.
             if (!combined.StartsWith(assetsPrefix, StringComparison.Ordinal))
                 return false;
+
+            // Re-validate every canonical segment and extension AFTER Path.GetFullPath (closes Windows canonicalization bypasses).
+            string postRel = combined.Substring(assetsPrefix.Length);
+            string[] postSegments = postRel.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.None);
+            if (postSegments.Length == 0)
+                return false;
+            for (int i = 0; i < postSegments.Length; i++)
+            {
+                string ps = postSegments[i];
+                if (string.IsNullOrEmpty(ps) || ps == "." || ps == ".." ||
+                    ps[0] == ' ' || ps[ps.Length - 1] == ' ' || ps[ps.Length - 1] == '.')
+                {
+                    return false;
+                }
+                string canonPs = ps.TrimEnd('.', ' ');
+                if (string.IsNullOrEmpty(canonPs) || IsWindowsReservedName(canonPs))
+                    return false;
+                if (i == 0 && string.Equals(canonPs, "_TacSim", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (string.Equals(canonPs, "Editor", StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            string leaf = postSegments[postSegments.Length - 1];
+            string ext = Path.GetExtension(leaf);
+            if (!string.IsNullOrEmpty(ext))
+            {
+                if (BlockedExecutableExtensions.Contains(ext) || !AllowedPassiveAssetExtensions.Contains(ext))
+                    return false;
+            }
+            else if (!allowExtensionlessDirectory)
+            {
+                return false;
+            }
 
             fullDest = combined;
             return true;
@@ -302,6 +420,11 @@ namespace TacSim.Core
                     SkipExact(tarStream, size + pad);
                     continue;
                 }
+
+                // Strict tar typeFlag allowlist: accept only regular files ('0' or '\0') after metadata/dir headers.
+                // Reject symlinks ('2'), hardlinks ('1'), devices ('3'/'4'), FIFOs ('6'), and unknown types.
+                if (typeFlag != (byte)'0' && typeFlag != 0)
+                    throw new InvalidDataException($"Unsupported tar entry typeFlag 0x{typeFlag:x2} in .unitypackage.");
 
                 onEntry(name, typeFlag, size, tarStream);
                 SkipExact(tarStream, pad);

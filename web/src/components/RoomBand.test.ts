@@ -94,6 +94,29 @@ describe("room band exit buttons submit safe goto commands", () => {
 
     expect(onCmd.mock.calls).toEqual([["goto North"], ["goto @destroy me"]]);
   });
+
+  it("P2-CLIENT-7: renders duplicate room exit names without each_key_duplicate crash", async () => {
+    const onCmd = vi.fn();
+    const roomView: RoomView = {
+      ...HALL,
+      exits: [
+        { name: "North", aliases: ["n"] },
+        { name: "North", aliases: [] },
+        { name: "North", aliases: [] },
+      ],
+    };
+    const app = {
+      roomView,
+      screens: { exits: new Map([["n", "North"]]) },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+    } as unknown as GameApp;
+
+    render(RoomBand, { props: { app, onCmd } });
+    const buttons = screen.getAllByRole("button", { name: /North/ });
+    expect(buttons).toHaveLength(3);
+    await fireEvent.click(buttons[1]!);
+    expect(onCmd).toHaveBeenCalledWith("goto North");
+  });
 });
 
 describe("channel colorHex inline style sanitization", () => {
