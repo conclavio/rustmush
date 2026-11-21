@@ -242,6 +242,14 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         crate::port::record::record_spec(),
         Arc::new(crate::port::record::record_cmd),
     )?;
+    // ---- Doc 50 cut OP.7 (Q-50-30): `+operation`, a pure read ----
+    //
+    // In the same ReadOnly bracket: the operation through the frame's seam, the two clocks, the
+    // tank farm's reading and the arm's job records; no document, no post, no submission.
+    reg.command(
+        crate::op_page::operation_spec(),
+        Arc::new(crate::op_page::operation_cmd),
+    )?;
     reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
     // ---- Doc 18 cut IC6 (§4.1, §4.2; D-18-23, D-18-34): `+coop` and `+ship` ----
     //

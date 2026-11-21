@@ -93,6 +93,15 @@ pub const MAX_COMPLETED_BUBBLES: usize = 8;
 /// Maximum 1:1 wall-clock catch-up step (`30,000 ms`, `30 s`) applied on a single late tick fire (`SF.R17`).
 pub const MAX_BUBBLE_TICK_STEP_MS: u32 = 30_000;
 
+/// **Breaking off** (doc 50 cut OP.6, Q-50-62): a carrier holding at least this far from every
+/// operational operation foe in its bubble (`25,000 m`, provisional) for [`BREAK_OFF_WALL_S`] is
+/// released to resume its passage. It loses the engagement and nothing else.
+pub const BREAK_OFF_M: i64 = 25_000;
+
+/// How long a carrier must hold outside [`BREAK_OFF_M`] of every operation foe to break off
+/// (`60 s` of wall time, provisional; doc 50 cut OP.6, Q-50-62).
+pub const BREAK_OFF_WALL_S: i64 = 60;
+
 /// Maximum wall-clock duration (`60 s`) a carrier may hold a resolved bubble open for derelict salvage (`SF.R17`).
 pub const SALVAGE_HOLD_TIMEOUT_WALL_S: i64 = 60;
 
@@ -125,6 +134,17 @@ pub struct BubbleCarrierEntry {
     /// Wall-clock deadline (`World::now()`) after which `holding_for_salvage` expires (`SF.R17`).
     #[serde(default)]
     pub holding_for_salvage_until_wall_s: Option<i64>,
+    /// **Its operation foes** (doc 50 cut OP.6, Q-50-26): the carriers of the bubble that fly for
+    /// the other side of the operation, hull `ObjId.0`s, fixed when either joined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub op_foes: Vec<u32>,
+    /// Since when (`World::now()`) it has held outside [`BREAK_OFF_M`] of every operational foe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apart_since_wall_s: Option<i64>,
+    /// **It has broken off** (Q-50-62): held apart for [`BREAK_OFF_WALL_S`]. Its foes no longer
+    /// hold it in the bubble.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub broken_off: bool,
 }
 
 /// **The thinks a bubble owes its next step** (doc 44 unit MW.11, Q-44-28;
@@ -518,10 +538,94 @@ impl ActiveInterdictionBubble {
                 return false;
             }
         }
-        !self.bubble.ships.values().any(|ship| {
+        // Doc 50 cut OP.6 (Q-50-62): a carrier that broke off is no longer held by its operation
+        // foes. Every other hostile holds it as before.
+        let left_behind = self.broken_off_foe_ships(hull);
+        !self.bubble.ships.iter().any(|(id, ship)| {
             ship.status == HullStatus::Operational
                 && self.bubble.party_relation(carrier_party, ship.party) == Relation::Hostile
+                && !left_behind.contains(id.as_str())
         })
+    }
+
+    /// **A carrier joins: her relations to the carriers already here** (doc 50 cut OP.6, Q-50-26):
+    /// hostile both ways to each of `foes` (they fly for the other side of the operation, inside
+    /// its window), and each names her among its foes; friendly to every other, as before.
+    pub fn relate_joining_carrier(&mut self, hull: ObjId, party: PartyId, foes: &[ObjId]) {
+        for existing in self.carriers.values_mut() {
+            if foes.contains(&existing.hull) {
+                self.bubble
+                    .set_party_relation(party, existing.party, Some(Mark::Hostile));
+                self.bubble
+                    .set_party_relation(existing.party, party, Some(Mark::Hostile));
+                if !existing.op_foes.contains(&hull.0) {
+                    existing.op_foes.push(hull.0);
+                }
+            } else {
+                self.bubble
+                    .set_party_relation(party, existing.party, Some(Mark::Friendly));
+            }
+        }
+    }
+
+    /// The ship ids of `hull`'s operation foes, when it has broken off from them (doc 50 cut OP.6).
+    fn broken_off_foe_ships(&self, hull: ObjId) -> std::collections::BTreeSet<&str> {
+        let Some(entry) = self.carriers.get(&hull).filter(|e| e.broken_off) else {
+            return std::collections::BTreeSet::new();
+        };
+        entry
+            .op_foes
+            .iter()
+            .filter_map(|foe| self.carriers.get(&ObjId(*foe)))
+            .map(|foe| foe.ship_id.as_str())
+            .collect()
+    }
+
+    /// **Track breaking off** (doc 50 cut OP.6, Q-50-62): each carrier with operation foes that
+    /// holds outside [`BREAK_OFF_M`] of every operational one is timed from when it first did, and
+    /// breaks off once it has held there for [`BREAK_OFF_WALL_S`]. Coming back inside starts the
+    /// time again; a carrier that broke off stays broken off.
+    pub fn track_break_off(&mut self, wall_now_s: i64) {
+        let reach = i128::from(BREAK_OFF_M) * i128::from(BREAK_OFF_M);
+        let apart: Vec<(ObjId, bool)> = self
+            .carriers
+            .values()
+            .filter(|entry| !entry.op_foes.is_empty() && !entry.broken_off)
+            .map(|entry| {
+                let own = self.bubble.ships.get(&entry.ship_id).map(|s| s.pos_m);
+                let clear = own.is_some_and(|own| {
+                    entry
+                        .op_foes
+                        .iter()
+                        .filter_map(|foe| self.carriers.get(&ObjId(*foe)))
+                        .filter_map(|foe| self.bubble.ships.get(&foe.ship_id))
+                        .filter(|foe| foe.status == HullStatus::Operational)
+                        .all(|foe| {
+                            let d: i128 = (0..3)
+                                .map(|i| {
+                                    let x = i128::from(own[i]) - i128::from(foe.pos_m[i]);
+                                    x * x
+                                })
+                                .sum();
+                            d >= reach
+                        })
+                });
+                (entry.hull, clear)
+            })
+            .collect();
+        for (hull, clear) in apart {
+            let Some(entry) = self.carriers.get_mut(&hull) else {
+                continue;
+            };
+            if !clear {
+                entry.apart_since_wall_s = None;
+                continue;
+            }
+            let since = *entry.apart_since_wall_s.get_or_insert(wall_now_s);
+            if wall_now_s.saturating_sub(since) >= BREAK_OFF_WALL_S {
+                entry.broken_off = true;
+            }
+        }
     }
 
     /// Return whether the encounter is clear for all carriers in the bubble to resume their [`CarrierJourney`] (`SF.R18`).
@@ -3941,6 +4045,8 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             .filter(|tug| !book.active_tows.contains_key(tug))
             .collect();
         for active in book.by_domain.values_mut() {
+            // Doc 50 cut OP.6 (Q-50-62): who has held apart from their operation foes long enough.
+            active.track_break_off(wall_now_s);
             for entry in active.carriers.values_mut() {
                 if entry.holding_for_salvage
                     && entry
@@ -5640,6 +5746,17 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 continue;
             };
             let initial_prop_kg = carrier_ship.propellant_kg;
+            // Doc 50 cut OP.6 (Q-50-26): inside the operation's window, the carriers already here
+            // that fly for the other side are her foes, and she theirs.
+            let foes: Vec<ObjId> = ctx
+                .w
+                .module_state::<SpaceBubbleBook>()
+                .and_then(|b| b.by_domain.get(&domain))
+                .map(|active| active.carriers.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|existing| super::op_sides::foes(ctx.w, hull, *existing))
+                .collect();
             let mut is_kirkwood_picket = false;
             if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
                 && let Some(active) = book.by_domain.get_mut(&domain)
@@ -5647,13 +5764,7 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                 let offset_idx = i64::try_from(active.carriers.len().max(1)).unwrap_or(1);
                 carrier_ship.pos_m = [0, 200 * offset_idx, 0];
                 is_kirkwood_picket = active.picket.is_some();
-                for existing in active.carriers.values() {
-                    active.bubble.set_party_relation(
-                        carrier_party,
-                        existing.party,
-                        Some(Mark::Friendly),
-                    );
-                }
+                active.relate_joining_carrier(hull, carrier_party, &foes);
                 if let Some(ref mut picket) = active.picket {
                     active.bubble.set_party_relation(
                         carrier_party,
@@ -5687,6 +5798,9 @@ fn promote_due_interdictions(ctx: &mut Ctx<'_>, now: &ClockStamp) {
                         approaching_derelict: false,
                         holding_for_salvage: false,
                         holding_for_salvage_until_wall_s: None,
+                        op_foes: foes.iter().map(|f| f.0).collect(),
+                        apart_since_wall_s: None,
+                        broken_off: false,
                     },
                 );
                 active.ship_hulls.insert(carrier_ship_id, hull);
@@ -5984,6 +6098,9 @@ fn build_interdiction_bubble(
             approaching_derelict: false,
             holding_for_salvage: false,
             holding_for_salvage_until_wall_s: None,
+            op_foes: Vec::new(),
+            apart_since_wall_s: None,
+            broken_off: false,
         },
     );
 
@@ -6348,6 +6465,9 @@ mod interdictor_tests {
             approaching_derelict: false,
             holding_for_salvage: false,
             holding_for_salvage_until_wall_s: None,
+            op_foes: Vec::new(),
+            apart_since_wall_s: None,
+            broken_off: false,
         }
     }
 
@@ -6426,6 +6546,141 @@ mod interdictor_tests {
             .ships
             .get(INTERDICTOR)
             .expect("the interdictor")
+    }
+
+    /// Two carriers, `ESCORT` and `RUNNER`, joined as operation foes (doc 50 cut OP.6), the
+    /// interdictor no longer hostile to either; `RUNNER` at `runner_at`.
+    fn foes_at(runner_at: [i64; 3]) -> ActiveInterdictionBubble {
+        let runner_party = admitted_party(3);
+        let mut active = interdiction(&[(ESCORT, CARRIER_PARTY, [0, 0, 0], [0, 0, 0])]);
+        for party in [CARRIER_PARTY, runner_party] {
+            active
+                .bubble
+                .set_party_relation(party, INTERDICTOR_PARTY, None);
+            active
+                .bubble
+                .set_party_relation(INTERDICTOR_PARTY, party, None);
+        }
+        let entry = carrier_entry(RUNNER, runner_party);
+        active.bubble.insert_ship(SpaceShipState::new_dray(
+            &entry.ship_id,
+            "Runner",
+            runner_party,
+            runner_at,
+            [0, 0, 0],
+        ));
+        active.relate_joining_carrier(RUNNER, runner_party, &[ESCORT]);
+        let mut entry = entry;
+        entry.op_foes = vec![ESCORT.0];
+        active.carriers.insert(RUNNER, entry);
+        active
+    }
+
+    /// **Doc 50 cut OP.6 (Q-50-26): a carrier joining her foes is hostile to them both ways**,
+    /// and to a carrier who is no foe she is friendly.
+    #[test]
+    fn op6_a_carrier_joining_her_operation_foes_is_hostile_to_them_both_ways() {
+        let active = foes_at([0, 1_000, 0]);
+        let runner_party = active.carrier_party_for(RUNNER);
+        assert_eq!(
+            active.bubble.party_relation(CARRIER_PARTY, runner_party),
+            Relation::Hostile
+        );
+        assert_eq!(
+            active.bubble.party_relation(runner_party, CARRIER_PARTY),
+            Relation::Hostile
+        );
+        assert_eq!(
+            active.carriers[&ESCORT].op_foes,
+            vec![RUNNER.0],
+            "the one already here names her among its foes"
+        );
+        assert!(
+            !active.is_carrier_clear_to_resume(ESCORT),
+            "foes hold each other"
+        );
+        assert!(!active.is_carrier_clear_to_resume(RUNNER));
+
+        let mut friends = interdiction(&[(ESCORT, CARRIER_PARTY, [0, 0, 0], [0, 0, 0])]);
+        friends.relate_joining_carrier(RUNNER, admitted_party(3), &[]);
+        assert_eq!(
+            friends
+                .bubble
+                .party_relation(admitted_party(3), CARRIER_PARTY),
+            Relation::Friend,
+            "outside the operation every carrier is friendly to every other"
+        );
+    }
+
+    /// **Doc 50 cut OP.6 (Q-50-62): holding apart from every foe for the time breaks off**; coming
+    /// back inside starts the time again, and a carrier that broke off resumes.
+    #[test]
+    fn op6_holding_apart_from_every_foe_for_the_time_breaks_off() {
+        let mut active = foes_at([0, 1_000, 0]);
+        active.track_break_off(100);
+        assert_eq!(
+            active.carriers[&RUNNER].apart_since_wall_s, None,
+            "inside the reach"
+        );
+        // She holds outside the reach…
+        if let Some(ship) = active
+            .bubble
+            .ships
+            .get_mut(&carrier_entry(RUNNER, CARRIER_PARTY).ship_id)
+        {
+            ship.pos_m = [0, BREAK_OFF_M + 1, 0];
+        }
+        active.track_break_off(200);
+        assert_eq!(active.carriers[&RUNNER].apart_since_wall_s, Some(200));
+        active.track_break_off(200 + BREAK_OFF_WALL_S - 1);
+        assert!(
+            !active.carriers[&RUNNER].broken_off,
+            "not yet held long enough"
+        );
+        // …comes back inside, which starts the time again…
+        if let Some(ship) = active
+            .bubble
+            .ships
+            .get_mut(&carrier_entry(RUNNER, CARRIER_PARTY).ship_id)
+        {
+            ship.pos_m = [0, 1_000, 0];
+        }
+        active.track_break_off(300);
+        assert_eq!(active.carriers[&RUNNER].apart_since_wall_s, None);
+        // …and holds outside it for the whole time: she breaks off, and so does her foe.
+        if let Some(ship) = active
+            .bubble
+            .ships
+            .get_mut(&carrier_entry(RUNNER, CARRIER_PARTY).ship_id)
+        {
+            ship.pos_m = [0, BREAK_OFF_M + 1, 0];
+        }
+        active.track_break_off(400);
+        active.track_break_off(400 + BREAK_OFF_WALL_S);
+        assert!(active.carriers[&RUNNER].broken_off);
+        assert!(
+            active.is_carrier_clear_to_resume(RUNNER),
+            "she resumes her passage"
+        );
+        assert!(active.is_carrier_clear_to_resume(ESCORT));
+    }
+
+    /// **Doc 50 cut OP.6: breaking off leaves every other hostile holding her** (Q-50-62 frees her
+    /// from her operation foes only): the interdictor still holds a carrier that broke off.
+    #[test]
+    fn op6_breaking_off_leaves_every_other_hostile_holding_her() {
+        let mut active = foes_at([0, BREAK_OFF_M + 1, 0]);
+        let runner_party = active.carrier_party_for(RUNNER);
+        active
+            .bubble
+            .set_party_relation(runner_party, INTERDICTOR_PARTY, Some(Mark::Hostile));
+        active.track_break_off(0);
+        active.track_break_off(BREAK_OFF_WALL_S);
+        assert!(active.carriers[&RUNNER].broken_off);
+        assert!(
+            !active.is_carrier_clear_to_resume(RUNNER),
+            "the interdictor holds her as before"
+        );
     }
 
     /// An escort that heaves to does not clear the runner beside her, and after the
@@ -7246,6 +7501,9 @@ mod interdictor_tests {
                 holding_for_salvage: true,
                 holding_for_salvage_until_wall_s: None,
                 last_synced_propellant_kg: 40_000,
+                op_foes: Vec::new(),
+                apart_since_wall_s: None,
+                broken_off: false,
             },
         );
         carriers.insert(
@@ -7260,6 +7518,9 @@ mod interdictor_tests {
                 holding_for_salvage: true,
                 holding_for_salvage_until_wall_s: None,
                 last_synced_propellant_kg: 40_000,
+                op_foes: Vec::new(),
+                apart_since_wall_s: None,
+                broken_off: false,
             },
         );
         let mut active = ActiveInterdictionBubble {

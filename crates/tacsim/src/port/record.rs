@@ -271,7 +271,7 @@ fn fine_line(ctx: &Ctx<'_>, row: &ProvenOffense) -> String {
             let rate = i64::from(ctx.w.world_timeline().current().rate.max(1));
             let real_h = due.saturating_sub(now).max(0) / rate / 3_600;
             format!(
-                "fine #{id} of {amount}, due; its grace runs to {} IC (about {real_h} real hours)                  (+debts/pay {id})",
+                "fine #{id} of {amount}, due; its grace runs to {} IC (about {real_h} real hours) (+debts/pay {id})",
                 crate::port::licence::ic_stamp(due)
             )
         }

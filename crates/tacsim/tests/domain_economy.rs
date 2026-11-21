@@ -135,6 +135,8 @@ mod op3_hauls;
 mod op4_stockpile;
 #[path = "domain_economy/op5_import_duty.rs"]
 mod op5_import_duty;
+#[path = "domain_economy/op7_operation.rs"]
+mod op7_operation;
 #[path = "domain_economy/orders.rs"]
 mod orders;
 #[path = "domain_economy/pl2_producers.rs"]

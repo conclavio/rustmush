@@ -26,6 +26,15 @@ non-member. A hidden faction looks like no faction at all.
                       Each hold shows the IC date it began. A region has
                       one de facto holder at most; claims can be several.
                       Covert holds show only to the holder's officers.
+  +operation          The Isidis operation: who declared it against whom,
+                      what each side's win changes in the terms at Isidis,
+                      the notice and the window in IC and real time, the
+                      Concession Review and Hold the Concession, the tank
+                      farm's level against its target, the work open for
+                      it, who holds Isidis now, and past operations with
+                      their result. Every player with a hull on the lane
+                      gets an official notice when one is declared and
+                      when it is decided.
   +intel              Includes your factions' shared intel pools when your
                       rank clears you to read them — see `help intel`.
 
@@ -151,4 +160,4 @@ See `help intel`.
 
 ## See also
 
-  +factions, +faction, +territory, +intel, help intel, help npc
+  +factions, +faction, +territory, +operation, +intel, help intel, help npc

@@ -594,7 +594,7 @@ fn goods_def<'a>(w: &'a World, word: &str) -> Option<&'a crate::definitions::goo
         .find(|g| g.id.as_str() == word || g.label.eq_ignore_ascii_case(&word))
 }
 
-fn label(w: &World, good: &CanonicalId) -> String {
+pub(crate) fn label(w: &World, good: &CanonicalId) -> String {
     goods_def(w, good.as_str()).map_or_else(|| good.to_string(), |g| g.label.clone())
 }
 
@@ -1391,7 +1391,7 @@ pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
                 .get(j.shipper)
                 .map_or_else(|| SmolStr::new("someone"), |o| o.name.clone().into()),
             subject: format!(
-                "carry {} {} to {}{}",
+                "carry {} {} to {}{}{}",
                 j.quantity,
                 label(w, &j.good),
                 super::venue_name(w, &j.destination),
@@ -1406,7 +1406,9 @@ pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
                             .and_then(|g| g.good(&j.good))
                             .map_or(0, |g| g.reference_major)
                     )
-                )
+                ),
+                // Doc 50 cut OP.7 (Q-50-30): the operation's work says so on the board.
+                crate::op_page::job_tag(w, j.contract)
             )
             .into(),
             pay: Amount::from_minor(j.fee_minor),

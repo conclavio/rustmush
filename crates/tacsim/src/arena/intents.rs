@@ -2386,6 +2386,44 @@ mod tests {
     }
 
     #[test]
+    fn cockpit_ticket_handoff_rejects_a_late_held_turn_until_fresh_input() {
+        let mut arena = two_tanks(1);
+        online(&mut arena, RED);
+        let heading = |epoch, seq, mdeg| intent(RED, epoch, seq, IntentKind::Heading { mdeg });
+        let turn = |arena: &mut Arena, epoch, seq, mdeg| {
+            apply_intent(arena, &heading(epoch, seq, mdeg), IntentSource::Seat)
+        };
+        assert_eq!(
+            turn(&mut arena, 1, 0, 45_000),
+            IntentOutcome::AppliedContinuous
+        );
+        for (epoch, state) in [(2, ControlState::Linkdead), (3, ControlState::Live)] {
+            apply_control(
+                &mut arena,
+                &Control {
+                    unit: RED,
+                    channel: Channel::Helm,
+                    epoch,
+                    state,
+                    pilot: None,
+                },
+            );
+        }
+        // A repeat that was in flight when the SSH connection dropped may
+        // arrive *after* the revival. Only the old, applied heading survives.
+        assert_eq!(
+            turn(&mut arena, 1, 1, 80_000),
+            IntentOutcome::Refused(Refusal::Epoch)
+        );
+        assert_eq!(arena.unit(RED).unwrap().desired_heading_mdeg, 45_000);
+        assert_eq!(
+            turn(&mut arena, 3, 0, 180_000),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(arena.unit(RED).unwrap().desired_heading_mdeg, 180_000);
+    }
+
+    #[test]
     fn a_purge_is_per_channel_and_a_stale_control_purges_nothing() {
         let mut arena = two_tanks(1);
         apply_intent(

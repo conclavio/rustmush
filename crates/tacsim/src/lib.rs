@@ -166,6 +166,8 @@ pub mod match_;
 pub mod minds;
 // Doc 50 unit LW.2: the record of proven offenses, one per offender and polity.
 pub mod offense;
+// Doc 50 cut OP.7: `+operation` and the operation's notices.
+pub mod op_page;
 // Doc 50 cut OP.0: the operation frame TacSim reaches through the composition root (the
 // module's own docs say how).
 pub mod operations;

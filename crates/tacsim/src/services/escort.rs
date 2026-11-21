@@ -1338,9 +1338,11 @@ pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
                 .get(j.poster)
                 .map_or_else(|| SmolStr::new("someone"), |o| o.name.clone().into()),
             subject: format!(
-                "escort {} on {}",
+                "escort {} on {}{}",
                 name(w, j.protected),
-                journey_words(w, &j.journey)
+                journey_words(w, &j.journey),
+                // Doc 50 cut OP.7 (Q-50-30): the operation's work says so on the board.
+                crate::op_page::job_tag(w, j.contract)
             )
             .into(),
             pay: Amount::from_minor(j.fee_minor),

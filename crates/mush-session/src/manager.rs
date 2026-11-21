@@ -222,7 +222,26 @@ pub struct SessionMeta {
 #[derive(Clone, Copy, Debug)]
 enum SessState {
     Online,
-    Linkdead { since: Instant },
+    Linkdead { since: Instant, previous: ConnId },
+}
+
+/// Original drop boundary, held until the world confirms a conditional revival.
+/// A failed world admission restores this exact deadline and former owner.
+#[derive(Clone, Copy)]
+pub struct ResumeWindow {
+    session: SessId,
+    previous: ConnId,
+    since: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeRefusal {
+    /// The previous interval no longer exists or its deadline has passed.
+    Expired,
+    /// The connection or character already has a live owner.
+    Busy,
+    /// The authenticated account does not own this session.
+    Denied,
 }
 
 struct SessEntry {
@@ -750,7 +769,10 @@ impl SessionManager {
                     close_char = Some(s.character);
                     DetachOutcome::Closed
                 } else {
-                    s.state = SessState::Linkdead { since: now };
+                    s.state = SessState::Linkdead {
+                        since: now,
+                        previous: conn,
+                    };
                     linkdead_char = Some(s.character);
                     DetachOutcome::Linkdead {
                         grace: self.config.linkdead_grace,
@@ -799,7 +821,7 @@ impl SessionManager {
     pub fn take_expired(&self, now: Instant) -> Vec<ExpiredSession> {
         let grace = self.config.linkdead_grace;
         let expired = |state: SessState| match state {
-            SessState::Linkdead { since } => now.saturating_duration_since(since) >= grace,
+            SessState::Linkdead { since, .. } => now.saturating_duration_since(since) >= grace,
             SessState::Online => false,
         };
         let candidates: Vec<SessId> = self
@@ -835,7 +857,7 @@ impl SessionManager {
         self.sessions
             .iter()
             .filter_map(|r| match r.state {
-                SessState::Linkdead { since } => Some(since + grace),
+                SessState::Linkdead { since, .. } => Some(since + grace),
                 SessState::Online => None,
             })
             .min()
@@ -1496,6 +1518,106 @@ impl SessionManager {
     /// The live (or linkdead) session for a character.
     pub fn session_of_char(&self, character: CharKey) -> Option<SessId> {
         self.by_char.get(&character).map(|r| *r)
+    }
+
+    /// The named account's sole live connection to the requested character.
+    pub fn exclusive_session(
+        &self,
+        conn: ConnId,
+        character: CharKey,
+        account: &str,
+    ) -> Option<SessId> {
+        let sess = self.session_of_conn(conn)?;
+        let entry = self.sessions.get(&sess)?;
+        (entry.character == character
+            && entry.account == account
+            && entry.conns.as_slice() == [conn])
+        .then_some(sess)
+    }
+
+    /// Claim the exact previous connection's link-dead interval under the same
+    /// session lock as ordinary attach and expiry. This path cannot create a
+    /// new character session or join one that already has a live connection.
+    pub fn resume_linkdead(
+        &self,
+        handle: ConnectionHandle,
+        character: CharKey,
+        account: &str,
+        session: SessId,
+        previous: ConnId,
+    ) -> Result<ResumeWindow, ResumeRefusal> {
+        let conn = handle.id;
+        if conn == previous || self.bare.contains_key(&conn) {
+            return Err(ResumeRefusal::Busy);
+        }
+        let indexed = self.by_char.get(&character).ok_or(ResumeRefusal::Expired)?;
+        if *indexed != session {
+            return Err(ResumeRefusal::Expired);
+        }
+        let mut entry = self
+            .sessions
+            .get_mut(&session)
+            .ok_or(ResumeRefusal::Expired)?;
+        if entry.account != account {
+            return Err(ResumeRefusal::Denied);
+        }
+        let SessState::Linkdead {
+            since,
+            previous: last,
+        } = entry.state
+        else {
+            return Err(ResumeRefusal::Busy);
+        };
+        if last != previous || since.elapsed() >= self.config.linkdead_grace {
+            return Err(ResumeRefusal::Expired);
+        }
+        if !entry.conns.is_empty() {
+            return Err(ResumeRefusal::Busy);
+        }
+        let Entry::Vacant(vacant) = self.conns.entry(conn) else {
+            return Err(ResumeRefusal::Busy);
+        };
+        entry.last_addr = handle.addr;
+        let bucket = Mutex::new(FloodBucket::new(
+            self.config.flood_rate,
+            self.config.flood_burst,
+            handle.connected_at,
+        ));
+        entry.state = SessState::Online;
+        entry.conns.push(conn);
+        vacant.insert(ConnEntry {
+            handle: Arc::new(handle),
+            sess: session,
+            bucket,
+        });
+        Ok(ResumeWindow {
+            session,
+            previous,
+            since,
+        })
+    }
+
+    /// Restore the original grace after a rejected world/transport admission.
+    /// An intervening attach, detach, or reap wins over a stale rollback.
+    pub fn restore_resume_window(
+        &self,
+        failed: ConnId,
+        original: ResumeWindow,
+    ) -> Option<Duration> {
+        if let Some(mut entry) = self.sessions.get_mut(&original.session)
+            && matches!(entry.state, SessState::Linkdead { previous, .. } if previous == failed)
+        {
+            entry.state = SessState::Linkdead {
+                since: original.since,
+                previous: original.previous,
+            };
+            return Some(
+                self.config
+                    .linkdead_grace
+                    .saturating_sub(original.since.elapsed()),
+            );
+        }
+        None
     }
 
     /// The character a session is playing.

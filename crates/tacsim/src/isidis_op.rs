@@ -74,6 +74,22 @@ pub struct IsidisOp {
     /// Why the last declaration was refused, for staff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
+    /// **Finished operations**, oldest first (doc 50 cut OP.7: `+operation` lists them with
+    /// their result), at most `crate::op_page::MAX_PAST`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub past: Vec<PastOp>,
+}
+
+/// **One finished operation** (doc 50 cut OP.7).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PastOp {
+    /// The operation, as the frame numbers it.
+    pub operation: u64,
+    /// The IC second it was declared.
+    pub declared_ic: i64,
+    /// Who won: `republic`, `freeport` or `none`.
+    pub outcome: String,
 }
 
 /// The arm's record, as the store holds it.
@@ -158,13 +174,20 @@ fn step(ctx: &mut Ctx<'_>, doc: &mut IsidisOp) {
                     operation,
                     "tacsim: the Republic declares the Isidis operation"
                 );
+                // Doc 50 cut OP.7: a decided operation goes to the past before it is replaced.
+                crate::op_page::keep_past(doc);
                 *doc = IsidisOp {
                     clock: Some(review.id.0),
                     operation: Some(operation),
                     declared_ic: Some(ctx.w.world_ic_now().at),
                     outcome: None,
                     refused: None,
+                    past: std::mem::take(&mut doc.past),
                 };
+                // Doc 50 cut OP.7 (Q-50-30): the lane hears of it at once.
+                if let Some(status) = frame.status(ctx.w, operation) {
+                    crate::op_page::tell_declared(ctx, &status);
+                }
             }
             Err(why) => {
                 tracing::warn!(%why, "tacsim: the Isidis operation could not be declared");
@@ -192,6 +215,8 @@ fn step(ctx: &mut Ctx<'_>, doc: &mut IsidisOp) {
         OperationOutcome::Partial | OperationOutcome::Abandoned => "none",
     };
     doc.outcome = Some(word.to_owned());
+    // Doc 50 cut OP.7 (Q-50-30): the lane hears who won at once.
+    crate::op_page::tell_resolved(ctx, word);
 }
 
 /// **The Republic assumes the Concession's administration** (Q-50-29): its de facto control

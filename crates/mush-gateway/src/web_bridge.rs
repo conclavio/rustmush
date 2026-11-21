@@ -553,6 +553,7 @@ impl<A: AuthBackend + 'static> WebHooks for WebBridge<A> {
                         ConnectErr::WorldGone
                         | ConnectErr::Restarting
                         | ConnectErr::ServerDown
+                        | ConnectErr::ResumeExpired
                         | ConnectErr::NotAdmitted => AttachErr::Unavailable,
                         ConnectErr::NotYourCharacter => AttachErr::Refused(format!("{e}.")),
                     });

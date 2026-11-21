@@ -1857,9 +1857,184 @@ The declaring arm, the operation frame and the resolution into control and the i
 
 ## OP.6
 
-Not built.
+Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-50-62). On OP.5
+(#735). **No lane bump.**
+
+**Survey.** At OP.5's head:
+- **In a space bubble every carrier is friendly to every other** (doc 47's open call). A carrier
+  joining a bubble takes a party of its own (`next_available_carrier_party`) and is marked
+  friendly to every carrier already there (`space/tick.rs`, the join).
+- **A carrier leaves a bubble** when it is clear to resume (`is_carrier_clear_to_resume`): no
+  operational ship of a party hostile to hers remains, the picket has cleared her, and nothing is
+  in flight. With others still held, she detaches alone; otherwise the bubble closes.
+- **The operation** is read through `isidis_op::status` (OP.5): its phase, window, sides (the
+  Republic's customs office, Occator) and legal targets (`carrier`).
+- **A hull's flag** is `concession::hull_flag` (OP.2), and the Freeport arm's jobs are
+  `stockpile::arm(w).posts` (OP.4).
+
+**Built.**
+- **Whose side a hull flies for** (`tacsim::space::op_sides`; Q-50-61). Only while the operation
+  runs (phase `Running`) and names `carrier` among its legal targets:
+  - by its flag: its title holder's polity is a side's commanding organization's polity; or
+  - by a live job of a side's arm: a Freeport arm haul taken or aboard, or an escort of one taken
+    or watching.
+  - A hull that would fly for two sides, or none, flies for none. Two hulls on different sides
+    are operation foes (`op_sides::foes`).
+- **Legal targets in a bubble** (Q-50-26). A carrier joining a bubble is hostile, both ways, to
+  each carrier already there that is her operation foe, and friendly to every other, as before
+  (`ActiveInterdictionBubble::relate_joining_carrier`). Each names the other among its foes
+  (`BubbleCarrierEntry::op_foes`). Outside the window nothing changes.
+- **Breaking off** (Q-50-62). A carrier with operation foes that holds outside `BREAK_OFF_M`
+  (25,000 m, provisional) of every operational foe for `BREAK_OFF_WALL_S` (60 s of wall time,
+  provisional) breaks off (`track_break_off`, on the space tick beside the salvage hold's
+  expiry). Coming back inside starts the time again.
+  - A carrier that broke off is no longer held by her foes (`is_carrier_clear_to_resume`): she
+    detaches and resumes her passage. She loses the engagement and nothing else.
+  - Every other hostile holds her as before: a picket, an interdictor or a raider is not escaped
+    by distance.
+
+**Tests.**
+- `space::tick` unit tests, on a built bubble:
+  - `op6_a_carrier_joining_her_operation_foes_is_hostile_to_them_both_ways`: hostile both ways,
+    each names the other, foes hold each other; a carrier who is no foe joins friendly.
+  - `op6_holding_apart_from_every_foe_for_the_time_breaks_off`: inside the reach no time runs;
+    outside it the time starts, short of the time she has not broken off, coming back inside
+    starts it again, and held for the whole time she breaks off and resumes, as does her foe.
+  - `op6_breaking_off_leaves_every_other_hostile_holding_her`: the interdictor still holds a
+    carrier that broke off.
+- `domain_world::op6_sides::op6_in_the_window_a_freeport_hull_and_a_republic_hull_are_operation_foes`
+  (the production roster, OP.5's fake frame): a Co-op pool hull (Freeport-flagged) and a hull
+  titled to Stickney Yards (Republic) are foes, both ways, only while the operation runs; two
+  Co-op hulls are not, nor is a hull flying for no side.
+- **Mutations**, eight, each caught, each restored from a saved copy and compared:
+  - a joining foe made friendly; nobody ever breaking off; breaking off at once; coming back
+    inside keeping the time; breaking off freeing her from every hostile (the unit tests);
+  - foes before the window opens; the flag ignored; one side foes to itself (the story).
+- **On conclav.dev, green:**
+  - all of tacsim (5,081 tests);
+  - mush-server `split_boundary` and `commerce_composition` (320) and mush-contract-tests (208);
+  - `cargo fmt --all --check`;
+  - clippy `-D warnings` on tacsim and mush-server, all targets;
+  - rustdoc `-D warnings` in both modes.
+
+**Divergences.**
+- **Foes are fixed when a carrier joins.** A carrier already in a bubble when the window opens
+  stays friendly to the others there; the window is 28 IC days, and every passage after it opens
+  meets its foes as foes.
+- **Breaking off frees her only from her operation foes.** Q-50-62 reads "every hostile hull";
+  read that way a raider or an interdictor could be escaped by distance, which would change every
+  bubble outside the operation. Q-50-26 rules that outside the operation today's rule stands.
+- **The reach and the time are provisional**: 25,000 m (past the interdiction standoff of
+  18,000 m) and 60 s of wall time, so a player at 24:1 is not held by a foe who logged off.
+- **A side's polity is its commanding organization's**: the Republic's customs office is the
+  Republic's, Occator is the Freeport's.
+- **A job-borne side** (a Freeport arm haul or escort) is read as built, and no story here carries
+  one into a bubble.
+
+**Not built.**
+- `+operation`, the notices and the Republic's bid (OP.7).
+- The other side's clock moving when a hull flying for a side is lost (Q-50-25's last half).
+- A line telling a carrier she has broken off; she resumes with the resume's own lines.
 
 ## OP.7
+
+`+operation`, the notices and the job board's tags (Q-50-30). On OP.5 (#735). **No lane bump.**
+The Republic's bid (Q-50-27) is OP.7b, below.
+
+**Survey.** At OP.5's head:
+- **The operation reaches TacSim** only through the frame's seam: `isidis_op::record` (the
+  Review clock answered, the operation, when it was declared, who won) and `isidis_op::status`
+  (phase, sides, defenders, window, outcome).
+- **The defenders' notice is the campaign's** (OP.0): pushed on activation to Occator's active
+  members. Nothing tells anyone else, and nothing is said at the resolution.
+- **The pieces a page would join** each have their own reader: the two fronts' clocks
+  (`concession::review_clock`, `hold_clock`), the tank farm's last reading
+  (`stockpile::arm(w).level`), the Freeport arm's posts (`FreeportArm::posts`), Isidis's
+  control and its terms rows (`polity::control_at`, the region row's `terms`).
+- **The job board** is TacSim's `ServiceBoard`: a haul or escort row's subject is the host's
+  words, so a tag is the host's to add.
+- **Two LW.4 strings** carried runs of spaces from a lost line continuation: the offense notice
+  ("its      fine") and `+record`'s fine line before `(+debts/pay …)`.
+
+**Built.**
+- **`+operation`** (`tacsim::op_page`; Q-50-30), a read-only verb with a `legacy-handlers.toml`
+  row and a line in `help faction`. One page:
+  - who declared against whom: the declarer, for the Republic, against the defenders, for the
+    Freeport;
+  - **the stake**, as what each side's win changes in the terms at Isidis, read from the lane's
+    terms rows (`polity::terms_of`, new): under the Republic, the goods on its row pay its
+    import duty to its payee; under the Freeport, cargo pays none;
+  - the notice and the window, in IC dates and in real hours from now; once decided, who won;
+  - how it is decided: the tank farm's threshold at the close, and its level now;
+  - both fronts, by their titles, with their clocks;
+  - while the operation is in notice or in its window, **the work for it**: each of the
+    Freeport arm's hauls and escorts still untaken, with its pay and the verb that takes it;
+  - **who holds Isidis now**, since when, and what that puts on a sale there: the newcomer's
+    line;
+  - **past operations** with their result (`IsidisOp::past`, new, at most 16).
+- **The job board tags the operation's work** (`op_page::job_tag`): while the operation is in
+  notice or in its window, an arm's haul or escort on `+market/jobs` reads "(work for the
+  Isidis operation, the Freeport's side)". Once it is decided, the tag goes.
+- **The notices** (Q-50-30 as corrected, Q-45-17's channel). An official notice, delivered at
+  once, to every player with a hull on the lane (`op_page::lane_audience`: a live player, not the
+  God object, with a hull whose hold they may trade from):
+  - **at the declaration**: who declared for whom against whom, when the window opens (IC, and
+    real hours) and how long it runs. Occator's active members are left out, since the
+    campaign's own defender notice reaches them;
+  - **at the resolution**: who won, and what it puts on a sale at Isidis.
+
+  A connected player hears it; an absent one has it queued for login (`port_tick::notify`).
+- **The LW.4 strings** read with single spaces.
+
+**Tests.**
+- `domain_economy::op7_operation::op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won`
+  (the composed world, a fake frame in the slot, as OP.5's arm story seats one):
+  - Before: a newcomer with no hull reads that nothing is declared, the Review at 2 of 6, and
+    the Freeport administering a duty-free Isidis.
+  - Staff fill the Review, and the Assembly's tick declares. A pilot with a hull hears the
+    declaration's notice once, and the newcomer hears nothing.
+  - The page shows the declarer, the defender, both sides' terms (the 5% duty to Republic
+    Customs under the Republic, none under the Freeport), the notice and window, the farm's
+    level, and the Review full.
+  - The opened Freeport arm posts its haul: the page lists it with `+haul/accept`, and
+    `+market/jobs haul` tags it.
+  - The window opens, then the Republic wins. The pilot hears the resolution's notice, which
+    names the duty. The newcomer, who never joined, reads "Decided: the Republic won", that the
+    Republic administers Isidis and since when, and the duty a sale there pays. The board's tag
+    is gone.
+- `op_page::tests`: a list in words; the past kept once and bounded.
+- **Mutations**, each caught by the story at its own assertion: no declaration notice; no
+  resolution notice; no board tag; the notice to every player, hull or none; the holder line
+  always the Freeport's; the stake naming the Freeport's terms for both sides.
+- **On conclav.dev, green:**
+  - `domain_economy`'s `op7_`, `op5_`, `op4_`, `ex5_jobs`, `ex6_haul`, `ex7_wages`, `lw4_record`
+    and `lw3_law_audit` stories, and `domain_world`'s `op5_operation`;
+  - all of the tacsim lib (2,551 tests);
+  - mush-server `split_boundary` and `commerce_composition`, mush-contract-tests (the help lint
+    and the state-slot owners among them), mush-composition and the bot's library;
+  - `cargo fmt --all --check`; clippy `-D warnings` on tacsim and mush-server, all targets; the
+    M7 memory-size pass; rustdoc `-D warnings` in both modes.
+- **The first run** found the page naming each front's clock by its own title (its causes)
+  rather than the front's, and a connected pilot's notice said live where the story read only
+  the queue. The page names the fronts, and the story reads both.
+
+**Divergences.**
+- **The notice goes to whoever may trade a hull's hold** (`trade_hulls`: a charter, a title, a
+  commissioned ship, a ferry, a house helm). Q-50-30 says "a hull on the lane", and the lane is
+  the one game.
+- **No IC mail**: Q-50-30 as corrected makes the notice an official one, delivered at once.
+- **The declaration's notice leaves out the defender's members**, who have the campaign's. The
+  resolution's goes to everyone with a hull: the campaign sends nothing at the resolution.
+- **The page reads one operation**, the arm's record, and keeps the past on it. There is one
+  Isidis operation at a time.
+
+**Not built.** The Republic's bid (OP.7b). A tag for a Republic job: the Republic posts none in
+the first operation (Q-50-27 as corrected). A notice for an organization's members who hold no
+hull.
+
+### OP.7b
+
+The Republic's bid at Stickney (Q-50-27), with lane v51 and the Stickney pack cascade.
 
 Not built.
 

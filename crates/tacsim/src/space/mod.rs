@@ -19,6 +19,7 @@ pub mod customs;
 pub mod docking;
 pub mod duty;
 pub mod mining;
+pub mod op_sides;
 pub mod picket;
 pub mod save;
 pub mod sortie;
@@ -855,6 +856,9 @@ mod tests {
                 approaching_derelict: false,
                 holding_for_salvage: false,
                 holding_for_salvage_until_wall_s: None,
+                op_foes: Vec::new(),
+                apart_since_wall_s: None,
+                broken_off: false,
                 last_synced_propellant_kg: 12_000,
             },
         );

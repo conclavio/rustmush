@@ -686,6 +686,21 @@ pub fn terms_at(w: &World, place: &CanonicalId) -> Option<PlaceTerms> {
     })
 }
 
+/// **One polity's terms row at a lane place** (doc 50 cut OP.7): what that polity's hold
+/// puts there, whoever holds it now. `None` for a place in no row, or a polity with no row there
+/// (the terms as they are today).
+#[must_use]
+pub fn terms_of(w: &World, place: &CanonicalId, tag: &str) -> Option<TermsRow> {
+    regions_of(lane(w)?)?
+        .rows
+        .iter()
+        .find(|r| r.places.contains(place))?
+        .terms
+        .iter()
+        .find(|(t, _)| t.as_str() == tag)
+        .map(|(_, row)| row.clone())
+}
+
 /// **The Kirkwood picket's place** (the `location` with `kirkwood_picket`) on the latched lane.
 #[must_use]
 pub fn picket_place(w: &World) -> Option<CanonicalId> {

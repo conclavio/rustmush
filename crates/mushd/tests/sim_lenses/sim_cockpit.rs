@@ -844,6 +844,226 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     say(&mut ada, "HEADING 180", "Steering to 180").await;
 }
 
+/// A real SSH client behind a relay. Tests can close TCP or stop forwarding
+/// while keeping the server end open, as on a network change without a FIN.
+struct CockpitLink {
+    ssh: russh::client::Handle<support::AcceptAll>,
+    park: Option<tokio::sync::oneshot::Sender<()>>,
+    relay: tokio::task::JoinHandle<std::io::Result<Option<tokio::net::TcpStream>>>,
+}
+
+impl Drop for CockpitLink {
+    fn drop(&mut self) {
+        self.relay.abort();
+    }
+}
+
+impl CockpitLink {
+    const PANE: &'static str = "e11fe11fe11fe11fe11fe11fe11fe11f";
+
+    async fn open(addr: SocketAddr, mode: &str) -> (Self, Term) {
+        let mut tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (client, mut proxy) = tokio::io::duplex(128 * 1024);
+        let (park, parking) = tokio::sync::oneshot::channel();
+        let relay = tokio::spawn(async move {
+            tokio::select! {
+                result = tokio::io::copy_bidirectional(&mut proxy, &mut tcp) => result.map(|_| None),
+                _ = parking => Ok(Some(tcp)),
+            }
+        });
+        let mut ssh = russh::client::connect_stream(
+            Arc::new(russh::client::Config::default()),
+            client,
+            support::AcceptAll,
+        )
+        .await
+        .unwrap();
+        assert!(
+            ssh.authenticate_password("ada+Ada", PILOT_PASSWORD)
+                .await
+                .unwrap()
+                .success()
+        );
+        let channel = ssh.channel_open_session().await.unwrap();
+        channel
+            .request_pty(true, "xterm-256color", 160, 48, 0, 0, &[])
+            .await
+            .unwrap();
+        channel
+            .set_env(
+                true,
+                mush_net_ssh::resume::ENV_NAME,
+                format!("{mode}:{}", Self::PANE),
+            )
+            .await
+            .unwrap();
+        channel.request_shell(true).await.unwrap();
+        (
+            Self {
+                ssh,
+                park: Some(park),
+                relay,
+            },
+            Term::new(channel),
+        )
+    }
+
+    async fn ticket(&self, op: &str, ticket: Option<&str>, expected: &str) -> Option<String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let channel = self.ssh.channel_open_session().await.unwrap();
+        channel
+            .request_subsystem(true, mush_net_ssh::resume::SUBSYSTEM)
+            .await
+            .unwrap();
+        let mut side = channel.into_stream();
+        let mut request = serde_json::json!({"v": 1, "op": op, "pane": Self::PANE});
+        if let Some(ticket) = ticket {
+            request["ticket"] = ticket.into();
+        }
+        let frame = serde_json::to_vec(&request).unwrap();
+        side.write_u32(frame.len() as u32).await.unwrap();
+        side.write_all(&frame).await.unwrap();
+        side.flush().await.unwrap();
+        tokio::time::timeout(STEP_TIMEOUT, async {
+            loop {
+                let n = side.read_u32().await.unwrap() as usize;
+                assert!((1..=mush_net_ssh::resume::MAX_FRAME).contains(&n));
+                let mut payload = vec![0; n];
+                side.read_exact(&mut payload).await.unwrap();
+                let reply: Value = serde_json::from_slice(&payload).unwrap();
+                let status = reply["status"].as_str().unwrap();
+                if status == "auth_required" {
+                    continue;
+                }
+                assert_eq!(status, expected);
+                return reply["ticket"].as_str().map(str::to_owned);
+            }
+        })
+        .await
+        .expect("resume subsystem response")
+    }
+
+    async fn cut(mut self) {
+        self.relay.abort();
+        let _ = (&mut self.relay).await;
+    }
+
+    async fn lose_route(mut self) -> tokio::net::TcpStream {
+        self.park.take().unwrap().send(()).unwrap();
+        (&mut self.relay)
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("the server socket stays open")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cockpit_ticket_recovers_the_held_seat_and_paints_a_new_authoritative_frame() {
+    verify_cockpit_recovery(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cockpit_ticket_recovers_the_held_seat_when_the_old_tcp_connection_is_still_open() {
+    verify_cockpit_recovery(true).await;
+}
+
+async fn verify_cockpit_recovery(silent_loss: bool) {
+    let server = boot("cockpit-ticket-held", Duration::from_secs(60)).await;
+    let (_gm, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
+    open_the_centre(&mut god, "Simulator Lobby").await;
+    let red = dbref_of(
+        &ask(&mut god, "@find Red Tank 1", "END OF LIST").await,
+        RED_TANK,
+    );
+    let (_bo, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    let (original, mut ada) = CockpitLink::open(server.addr, "issue").await;
+    ada.expect("Connected as Ada").await;
+    take_off(&mut ada, &mut bo).await;
+    let callsign = support::drawn_callsigns(&server.store, 1).await[&red].clone();
+    let session = server
+        .sessions
+        .session_of_char(mush_session::CharKey(u64::from(ADA.0)))
+        .unwrap();
+    let ticket = original.ticket("issue", None, "issued").await.unwrap();
+    server.sessions.send_event_to_session(
+        session,
+        mush_proto::OutputEvent::Sys(mush_proto::RichText::plain("old cockpit notice")),
+    );
+    ada.expect("old cockpit notice").await;
+    ada.send_line("@tui").await;
+    ada.expect_squeezed_after(0, "Nolock").await;
+    ada.send_line("").await;
+    let powering = ada.mark();
+    ada.send_line("STARTUP").await;
+    // A plain xterm hears power_online as BEL. Its notification belongs to
+    // this socket and must not be repeated in the new pilot's first frame.
+    ada.expect_after(powering, "\x07").await;
+    let parked = if silent_loss {
+        let tcp = original.lose_route().await;
+        assert!(
+            !server.sessions.is_linkdead(session),
+            "no disconnect reached the server"
+        );
+        Some(tcp)
+    } else {
+        original.cut().await;
+        None
+    };
+    drop(ada);
+
+    let (resumed, mut ada) = CockpitLink::open(server.addr, "redeem").await;
+    let rotated = resumed
+        .ticket("redeem", Some(&ticket), "redeemed")
+        .await
+        .unwrap();
+    assert!(
+        ticket != rotated,
+        "successful handoff must rotate the ticket"
+    );
+    if let Some(mut tcp) = parked {
+        let closed = tokio::time::timeout(
+            STEP_TIMEOUT,
+            tokio::io::copy(&mut tcp, &mut tokio::io::sink()),
+        )
+        .await
+        .expect("the gateway closes the displaced TCP connection");
+        if let Err(error) = closed {
+            assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ),
+                "{error}"
+            );
+        }
+    }
+    assert_eq!(
+        server
+            .sessions
+            .session_of_char(mush_session::CharKey(u64::from(ADA.0))),
+        Some(session)
+    );
+    ada.expect_squeezed_after(0, "Nolock").await;
+    let frame: String = strip_ansi(&ada.seen)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        frame.contains(&format!("Callsign{callsign}")),
+        "first cockpit frame identifies the held tank"
+    );
+    assert!(!frame.contains("oldcockpitnotice"));
+    assert!(
+        !ada.seen.contains('\x07'),
+        "no sound from the old connection"
+    );
+
+    ada.send_line("").await; // open the command box from navigation mode
+    ada.send_line("HEADING 180").await;
+    ada.expect_squeezed_after(0, "Steeringto180").await;
+}
+
 /// **Past the grace the machine flies the tank until the pilot boards again**
 /// (16b cut Y.3; 16c `N4`; doc 07 §1.3 "Reclaiming control"; doc 16 §3.8).
 ///
@@ -871,7 +1091,9 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
         "Red Tank 1",
     );
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
-    let (ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
+    let (ada_handle, mut ada) = CockpitLink::open(server.addr, "issue").await;
+    ada.expect("Connected as Ada").await;
+    let ticket = ada_handle.ticket("issue", None, "issued").await.unwrap();
     take_off(&mut ada, &mut bo).await;
     // Power first, so the reclaimed tank can be ordered the moment it is hers.
     say(&mut ada, "STARTUP", "Startup sequence").await;
@@ -911,12 +1133,27 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
         support::holds_a_cockpit(&server.store, red).await
     })
     .await;
+    ada_handle.cut().await;
     drop(ada);
-    drop(ada_handle);
     // Past the two-second grace: the machine has the tank, and the board says so.
     // Doc 32 cut CF.0 (Q-CF-11): under the callsign drawn at check-out.
     let callsign = support::drawn_callsigns(&server.store, 1).await[&red].clone();
     support::wait_arena_pilot_out(&mut god, &callsign, "Ada", "flown by its mind").await;
+
+    let (replacement, _picker) = CockpitLink::open(server.addr, "redeem").await;
+    assert!(
+        replacement
+            .ticket("redeem", Some(&ticket), "expired")
+            .await
+            .is_none()
+    );
+    assert!(
+        server
+            .sessions
+            .session_of_char(mush_session::CharKey(u64::from(ADA.0)))
+            .is_none()
+    );
+    drop(replacement);
 
     // The reconnect is told, in one line — and it is not a revival.
     let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
