@@ -2068,7 +2068,9 @@ taken on OP.5's v50 with the lead's word.
   standing bid, its signatory Ilunga-Brandt of the customs detail. The office's capital rises from
   10,000 to 20,000 cr (provisional): the 5,000 cr bond and the bid's 11,200 cr, with room. The
   row's `note` says why, and `VendorDef` gains `note`, read by nothing. The strip chain's new head
-  is `lane_chain::strip_customs_store`.
+  is `lane_chain::strip_customs_store`. The office gains the `acceptor` role, without which a
+  contraband fine after the Republic's flip failed its acceptance ("Registry customs fine
+  acceptance failed") and the ship was never cleared (found by KC's doc 50b story).
 - **The Republic's bid** (`op_page::post_republic_bid`, Q-50-27 as corrected): when the arm
   declares, it posts a standing bid through `mush_market::post_wanted` for `BID_T` (200 t) of
   propellant at `BID_CR` (56 cr, provisional) into the office's store, and records the listing
