@@ -1441,9 +1441,12 @@ pub fn customs_fine_minor(w: &World, unlicensed_strategic_ore_kg: u64) -> Option
 /// The pilot holds no credit account or too little credit, or the Registry has no live
 /// account.
 pub fn customs_fine_payable(w: &World, pilot: ObjId, fine_minor: i64) -> Result<(), String> {
-    let credit = crate::port::credit::own_account(w, pilot)
+    let account = fine_account(w, pilot)
         .ok_or_else(|| "pilot holds no credit account for customs fine".to_owned())?;
-    let available = credit.available().map_or(0, Amount::minor);
+    let available = w
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().account(account).and_then(|a| a.available()))
+        .map_or(0, Amount::minor);
     if available < fine_minor {
         return Err(format!(
             "insufficient credit for customs fine (requires {fine_minor} minor units, available {available})"
@@ -1452,6 +1455,13 @@ pub fn customs_fine_payable(w: &World, pilot: ObjId, fine_minor: i64) -> Result<
     resolve_registry_principal_and_account(w)
         .map(|_| ())
         .ok_or_else(|| "Freeport Registry account unavailable".to_owned())
+}
+
+/// **The account a customs fine is paid from** (doc 50b; Q-50-56): a hauling house's helm pays
+/// from the house's own account, as the transit duty does, else the principal's own.
+fn fine_account(w: &World, pilot: ObjId) -> Option<AccountId> {
+    crate::port::hauler::house_account_of_helm(w, pilot)
+        .or_else(|| crate::port::credit::own_account(w, pilot).map(|credit| credit.id))
 }
 
 /// Levy a customs fine of `fine_minor` as a real `mush-economy` Public E4 contract from
@@ -1474,8 +1484,7 @@ pub fn levy_customs_fine_and_advance_front(
     fine_minor: i64,
 ) -> Result<(ContractId, Option<FrontId>), String> {
     customs_fine_payable(ctx.w, pilot, fine_minor)?;
-    let pilot_account = crate::port::credit::own_account(ctx.w, pilot)
-        .map(|credit| credit.id)
+    let pilot_account = fine_account(ctx.w, pilot)
         .ok_or_else(|| "pilot holds no credit account for customs fine".to_owned())?;
     // Doc 50 cut KC.2 (Q-50-14): the fine goes to the terms row's payee (the Republic's
     // customs office) once the holder's row sets one, else to the Registry, as built.
@@ -1611,6 +1620,7 @@ pub fn record_customs_seizure(
 pub fn record_ran_the_picket_incident(
     ctx: &mut Ctx<'_>,
     pilot: ObjId,
+    liable: ObjId,
     hull: ObjId,
 ) -> Option<FrontId> {
     // Doc 50 cut KC.1 (Q-50-13): the Republic's front.
@@ -1627,13 +1637,20 @@ pub fn record_ran_the_picket_incident(
                 hull.0,
                 mush_faction::CUSTOMS_ASSERTION_TITLE,
             ),
-            entities: vec![pilot, hull],
+            // Doc 50b: the pilot is the officer who flew the run; the principal who answers for
+            // the hull is its own field, and named too when it is someone else.
+            entities: if liable == pilot {
+                vec![pilot, hull]
+            } else {
+                vec![pilot, liable, hull]
+            },
             scope: mush_canon::CanonScope::Public,
             ic_time: ctx.w.world_ic_now().at,
             source: format!("space.picket.run/{}/{}", hull.0, ctx.w.world_ic_now().at),
             detail: json!({
                 "hull": hull.0,
                 "pilot": pilot.0,
+                "liable": liable.0,
             }),
         },
     )
