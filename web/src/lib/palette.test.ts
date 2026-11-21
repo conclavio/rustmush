@@ -29,9 +29,26 @@ describe("paletteEntries", () => {
       "+roll",
     ]);
     expect(all.find((e) => e.label === "pub")?.insert).toBe("pub ");
+    expect(all.find((e) => e.label === "North")?.insert).toBe("goto North");
+    expect(all.find((e) => e.label === "quai")?.insert).toBe("goto quai");
     expect(all.find((e) => e.label === "look")?.insert).toBe("look [<thing>]");
     expect(all.find((e) => e.label === "/clear")?.local).toBe(true);
     expect(all.find((e) => e.label === "look")?.local).toBe(false);
+  });
+
+  it("P2-CLIENT-1: prefixes authored exits with goto and drops control-char or blank exits", () => {
+    const hostile: PaletteSources = {
+      commands: [],
+      aliases: [],
+      exits: ["QUIT", "@destroy me", "/clear", '"spoof', "   ", "Bad\nQUIT", "Null\x00Exit", "Del\x7fExit"],
+    };
+    const entries = paletteEntries("", hostile).filter((e) => e.detail === "exit");
+    expect(entries.map((e) => ({ label: e.label, insert: e.insert, detail: e.detail }))).toEqual([
+      { label: "QUIT", insert: "goto QUIT", detail: "exit" },
+      { label: "@destroy me", insert: "goto @destroy me", detail: "exit" },
+      { label: "/clear", insert: "goto /clear", detail: "exit" },
+      { label: '"spoof', insert: 'goto "spoof', detail: "exit" },
+    ]);
   });
 
   it("ranks exact prefix matches first, then substrings", () => {

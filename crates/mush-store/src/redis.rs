@@ -173,6 +173,30 @@ const TRANSITION_AUTHORITATIVE_OUTBOX_LUA: &str =
 const REPAIR_AUTHORITATIVE_RETENTION_LUA: &str =
     include_str!("lua/repair_authoritative_retention.lua");
 
+/// Atomic compare-and-swap sliding-TTL update for `token:{hash}` (P2-CORE-14):
+/// updates the JSON payload and `EXAT` TTL only when the key still exists and
+/// holds the exact snapshot observed before mutation. A concurrent `DEL`
+/// (logout / `@newpassword`) or TTL expiry returns `0` and is never
+/// resurrected; a concurrent `token_touch` returns `-1` so the caller retries.
+const TOKEN_TOUCH_CAS_LUA: &str = r#"
+local cur = redis.call('GET', KEYS[1])
+if not cur then
+  return 0
+end
+if cur ~= ARGV[1] then
+  return -1
+end
+local res = redis.call('SET', KEYS[1], ARGV[2], 'EXAT', ARGV[3], 'XX')
+if res then
+  return 1
+end
+return 0
+"#;
+
+/// Bounded CAS retries when concurrent `token_touch` calls race on the same
+/// live key.
+const TOKEN_TOUCH_CAS_ATTEMPTS: usize = 8;
+
 /// SCAN page size used for bulk key walks.
 const SCAN_PAGE: u32 = 500;
 
@@ -3281,26 +3305,59 @@ impl ObjectStore for RedisStore {
         Box::pin(async move {
             validate_token_hash(hash)?;
             let key = token_key(hash);
-            // Read-modify-write: the record's `expires` field and the key
-            // TTL move together. Two concurrent touches race benignly (last
-            // write wins — both extend); a touch racing a delete could
-            // rewrite the key for at most one sliding window, which is the
-            // same as having touched just before the delete.
-            let doc: Option<String> = self.client.get(key.as_str()).await?;
-            let Some(doc) = doc else { return Ok(false) };
             if new_expires <= now_unix() {
-                // Sliding into the past is a delete.
-                let _: i64 = self.client.del(key).await?;
-                return Ok(true);
+                // Sliding into the past is an atomic delete: report whether a
+                // live token was actually removed, never resurrecting.
+                let removed: i64 = self.client.del(key).await?;
+                return Ok(removed > 0);
             }
+            // Atomic CAS update (P2-CORE-14): update the record's `expires`
+            // field and Redis `EXAT` TTL only if the key still exists. A
+            // concurrent logout (`token_del`) or `@newpassword`
+            // (`tokens_del_account`) deleting the key between GET and SET
+            // causes the script to return `0` without resurrecting the token.
+            let exp_arg = new_expires.to_string();
+            for _ in 0..TOKEN_TOUCH_CAS_ATTEMPTS {
+                let Some(doc): Option<String> = self.client.get(key.as_str()).await? else {
+                    return Ok(false);
+                };
+                let mut rec: TokenRecord = serde_json::from_str(&doc)?;
+                rec.expires = new_expires;
+                let updated = serde_json::to_string(&rec)?;
+                let status: i64 = self
+                    .client
+                    .eval(
+                        TOKEN_TOUCH_CAS_LUA,
+                        vec![key.as_str()],
+                        vec![doc, updated, exp_arg.clone()],
+                    )
+                    .await?;
+                match status {
+                    1 => return Ok(true),
+                    0 => return Ok(false),
+                    _ => {}
+                }
+            }
+            // High concurrent touch contention on the same live token: fall
+            // back to conditional `SET ... EXAT ... XX`, which still refuses
+            // to resurrect a deleted or expired key.
+            let Some(doc): Option<String> = self.client.get(key.as_str()).await? else {
+                return Ok(false);
+            };
             let mut rec: TokenRecord = serde_json::from_str(&doc)?;
             rec.expires = new_expires;
-            let doc = serde_json::to_string(&rec)?;
-            let _: () = self
+            let updated = serde_json::to_string(&rec)?;
+            let set: Option<String> = self
                 .client
-                .set(key, doc, Some(Expiration::EXAT(new_expires)), None, false)
+                .set(
+                    key,
+                    updated,
+                    Some(Expiration::EXAT(new_expires)),
+                    Some(SetOptions::XX),
+                    false,
+                )
                 .await?;
-            Ok(true)
+            Ok(set.is_some())
         })
     }
 
@@ -3993,6 +4050,30 @@ mod tests {
         assert!(
             !CHECKPOINT_AUTHORITATIVE_LUA.contains("FINALIZED_RENORMALISED"),
             "the observation belongs to finalize alone"
+        );
+    }
+
+    /// P2-CORE-14: `RedisStore::token_touch` must perform an atomic CAS update
+    /// that refuses to recreate a deleted or expired `token:{hash}` key (`XX`)
+    /// and never uses `cjson` on `TokenRecord` timestamps.
+    #[test]
+    fn token_touch_cas_script_is_atomic_and_never_resurrects() {
+        assert!(
+            TOKEN_TOUCH_CAS_LUA.contains("if not cur then\n  return 0"),
+            "missing key must return 0 without creating a record"
+        );
+        assert!(
+            TOKEN_TOUCH_CAS_LUA.contains("if cur ~= ARGV[1] then\n  return -1"),
+            "concurrently modified key must signal CAS retry"
+        );
+        assert!(
+            TOKEN_TOUCH_CAS_LUA
+                .contains("redis.call('SET', KEYS[1], ARGV[2], 'EXAT', ARGV[3], 'XX')"),
+            "SET must require XX so a deleted token can never be resurrected"
+        );
+        assert!(
+            !TOKEN_TOUCH_CAS_LUA.contains("cjson"),
+            "JSON decoding/encoding stays in Rust serde_json"
         );
     }
 }

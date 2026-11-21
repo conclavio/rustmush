@@ -286,6 +286,8 @@ pub enum DiscordEvent {
     Component {
         /// The clicking Discord user.
         user_id: u64,
+        /// The guild it was clicked in, if any (none in a DM).
+        guild_id: Option<u64>,
         /// The component's routing key.
         custom_id: String,
         /// The picked values (one for a single select; empty for a button).
@@ -301,6 +303,8 @@ pub enum DiscordEvent {
     Modal {
         /// The submitting Discord user.
         user_id: u64,
+        /// The guild it was submitted in, if any (none in a DM).
+        guild_id: Option<u64>,
         /// The modal's routing key.
         custom_id: String,
         /// `(field custom_id, value)` for every text field.
@@ -399,6 +403,74 @@ impl fmt::Debug for DiscordRest {
 
 /// The name of the webhook the bot creates in a relayed channel.
 pub const WEBHOOK_NAME: &str = "rustmush";
+
+/// Discord's maximum webhook username length, characters.
+pub const MAX_WEBHOOK_USERNAME_CHARS: usize = 80;
+
+/// Sanitize and clamp a character name for Discord webhook impersonation
+/// (`execute_webhook::username`, P2-EDGE-19): removes control characters,
+/// neutralizes Discord's forbidden substrings (`discord`, `clyde`, triple
+/// backticks) and reserved exact names (`everyone`, `here`), clamps to 80
+/// characters, and falls back to [`WEBHOOK_NAME`] if empty.
+#[must_use]
+pub fn sanitize_webhook_username(raw: &str) -> String {
+    let mut cleaned: String = raw
+        .chars()
+        .filter_map(|c| {
+            if c == '\n' || c == '\r' || c == '\t' {
+                Some(' ')
+            } else if c.is_control() {
+                None
+            } else {
+                Some(c)
+            }
+        })
+        .collect();
+    cleaned = cleaned.trim().to_owned();
+
+    // Neutralize Discord-forbidden substrings case-insensitively without
+    // leaving another forbidden substring behind.
+    for (needle, replacement) in [("discord", "d_scord"), ("clyde", "c_yde"), ("```", "'''")] {
+        loop {
+            let lower = cleaned.to_ascii_lowercase();
+            let Some(pos) = lower.find(needle) else {
+                break;
+            };
+            // `needle` is pure ASCII; byte boundaries align with UTF-8 chars
+            // only if all chars before `pos` had identical byte length in
+            // `to_ascii_lowercase()`, which is guaranteed by Rust's
+            // `to_ascii_lowercase()` (ASCII-only in-place byte transform).
+            cleaned.replace_range(pos..pos + needle.len(), replacement);
+        }
+    }
+
+    let clamped: String = cleaned
+        .chars()
+        .take(MAX_WEBHOOK_USERNAME_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if clamped.is_empty()
+        || clamped.eq_ignore_ascii_case("everyone")
+        || clamped.eq_ignore_ascii_case("here")
+    {
+        if clamped.is_empty() {
+            WEBHOOK_NAME.to_owned()
+        } else {
+            format!("{clamped}_")
+        }
+    } else {
+        clamped
+    }
+}
+
+/// Whether an HTTP status from `execute_webhook` means the cached webhook id or
+/// token is stale and should be evicted from the cache (P2-EDGE-19: only HTTP
+/// 404 or 401 — never HTTP 400 validation errors, which would thrash cache
+/// lookups/creations).
+fn should_evict_webhook_cache(status: u16) -> bool {
+    matches!(status, 401 | 404)
+}
 
 impl DiscordRest {
     /// The relay webhook for `channel`: cached, else an existing one of ours
@@ -584,11 +656,12 @@ impl DiscordApi for DiscordRest {
             let (hook_id, token) = self.webhook_for(channel_id).await?;
             let hook: Id<twilight_model::id::marker::WebhookMarker> = id(hook_id, "webhook")?;
             let none = twilight_model::channel::message::AllowedMentions::default();
+            let safe_username = sanitize_webhook_username(username);
             let sent = self
                 .client
                 .execute_webhook(hook, &token)
                 .allowed_mentions(Some(&none))
-                .username(username)
+                .username(&safe_username)
                 .content(content)
                 .wait()
                 .await;
@@ -601,13 +674,19 @@ impl DiscordApi for DiscordRest {
                     Ok(message.id.get())
                 }
                 Err(e) => {
-                    // A webhook someone deleted is forgotten so the next line
-                    // makes a new one.
+                    // Only evict a cached webhook when Discord reports it gone
+                    // or unauthorized (HTTP 404/401), never on HTTP 400 payload
+                    // errors (P2-EDGE-19).
+                    let evict = matches!(
+                        e.kind(),
+                        ErrorType::Response { status, .. }
+                            if should_evict_webhook_cache(status.get())
+                    );
                     let error = ApiError::from_http(&e);
-                    if matches!(error, ApiError::Permanent(_)) {
+                    if evict {
                         self.webhooks
                             .lock()
-                            .expect("webhook cache poisoned")
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .remove(&channel_id);
                     }
                     Err(error)
@@ -855,6 +934,7 @@ fn reduce(event: Event) -> Option<DiscordEvent> {
                         .or_else(|| interaction.channel.as_ref().map(|c| c.id.get()));
                     return Some(DiscordEvent::Component {
                         user_id,
+                        guild_id: interaction.guild_id.map(Id::get),
                         custom_id: data.custom_id,
                         values: data.values,
                         channel_id,
@@ -870,6 +950,7 @@ fn reduce(event: Event) -> Option<DiscordEvent> {
                     modal_fields(&data.components, &mut fields);
                     return Some(DiscordEvent::Modal {
                         user_id,
+                        guild_id: interaction.guild_id.map(Id::get),
                         custom_id: data.custom_id,
                         fields,
                         message_id,
@@ -1217,6 +1298,7 @@ pub mod testing {
     ) -> DiscordEvent {
         DiscordEvent::Component {
             user_id,
+            guild_id: None,
             custom_id: custom_id.to_string(),
             values: values.iter().map(|v| (*v).to_string()).collect(),
             channel_id: Some(900),
@@ -1238,6 +1320,7 @@ pub mod testing {
     ) -> DiscordEvent {
         DiscordEvent::Modal {
             user_id,
+            guild_id: None,
             custom_id: custom_id.to_string(),
             fields: fields
                 .iter()
@@ -1249,5 +1332,36 @@ pub mod testing {
                 token: "tok".to_string(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p2_edge_19_webhook_username_sanitization_and_cache_eviction_policy() {
+        assert_eq!(sanitize_webhook_username("Captain Vance"), "Captain Vance");
+        assert_eq!(sanitize_webhook_username("   \n\t\x07  "), WEBHOOK_NAME);
+        assert_eq!(sanitize_webhook_username("everyone"), "everyone_");
+        assert_eq!(sanitize_webhook_username("HERE"), "HERE_");
+
+        let forbidden = sanitize_webhook_username("DisCord Clyde ```bot```");
+        assert!(!forbidden.to_ascii_lowercase().contains("discord"));
+        assert!(!forbidden.to_ascii_lowercase().contains("clyde"));
+        assert!(!forbidden.contains("```"));
+
+        let long = "x".repeat(120);
+        assert_eq!(
+            sanitize_webhook_username(&long).chars().count(),
+            MAX_WEBHOOK_USERNAME_CHARS
+        );
+
+        assert!(should_evict_webhook_cache(404));
+        assert!(should_evict_webhook_cache(401));
+        assert!(!should_evict_webhook_cache(400));
+        assert!(!should_evict_webhook_cache(403));
+        assert!(!should_evict_webhook_cache(429));
+        assert!(!should_evict_webhook_cache(500));
     }
 }

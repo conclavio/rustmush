@@ -3,6 +3,8 @@
 // on what follows the slash, exact-prefix matches first. Pure, so vitest
 // pins the ranking.
 
+import { exitCommand } from "./keys";
+
 /** One command from the `commands.list` keyframe, as the palette needs it. */
 export interface PaletteCommand {
   name: string;
@@ -71,8 +73,9 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
     }
   }
   for (const exit of sources.exits) {
-    if (exit.length > 0) {
-      consider({ insert: exit, label: exit, detail: "exit", local: false }, exit);
+    const cmd = exitCommand(exit);
+    if (cmd !== null) {
+      consider({ insert: cmd, label: exit, detail: "exit", local: false }, exit);
     }
   }
   for (const c of sources.commands) {

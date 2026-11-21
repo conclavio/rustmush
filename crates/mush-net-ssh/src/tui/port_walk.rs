@@ -168,7 +168,7 @@ struct InteractableTarget {
 enum InteractAction {
     OpenDrawer(PortDrawerKind),
     OpenNpc { name: String },
-    Command(String),
+    Command(&'static str),
     TakeBridgeHelm,
 }
 
@@ -1199,11 +1199,13 @@ impl PortWalkState {
                 self.current_venue = None;
             } else if let Some(v) = venue_val.as_str() {
                 let clean_v = sanitize(v);
-                self.current_venue = if clean_v.is_empty() {
-                    None
-                } else {
-                    Some(clean_v)
-                };
+                let trimmed = clean_v.trim();
+                self.current_venue =
+                    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
             }
         }
         if let Some(pn_val) = obj.get("port_name") {
@@ -3068,7 +3070,7 @@ impl PortWalkState {
                 self.open_drawer(PortDrawerKind::Npc, manifest_panels, &mut out.queries, now);
             }
             InteractAction::Command(cmd) => {
-                out.commands.push(cmd);
+                out.commands.push(cmd.to_string());
             }
             InteractAction::TakeBridgeHelm => {
                 self.seated_at_helm = true;
@@ -3330,7 +3332,10 @@ impl PortWalkState {
 
         while let Some((cur, first_hop)) = queue.pop_front() {
             for p in portals {
-                if p.from_room != cur || visited.contains(&p.to_room) {
+                if p.from_room != cur
+                    || visited.contains(&p.to_room)
+                    || !p.command.starts_with("goto ")
+                {
                     continue;
                 }
                 let hop = first_hop
@@ -3610,7 +3615,7 @@ impl PortWalkState {
                             x_m: rcx,
                             y_m: rmax_y - 1.0,
                             floor: rfloor,
-                            action: InteractAction::Command("+ship/leave".to_string()),
+                            action: InteractAction::Command("+ship/leave"),
                         },
                     );
                 }
@@ -3740,7 +3745,7 @@ impl PortWalkState {
                         x_m: rcx,
                         y_m: hatch_y,
                         floor: rfloor,
-                        action: InteractAction::Command("+ship/board".to_string()),
+                        action: InteractAction::Command("+ship/board"),
                     },
                 );
             } else if self.pack_id.contains("ooc")
@@ -4543,21 +4548,27 @@ fn classify_room_kind(entry_id: &str, is_dock: bool, atlas_kind: &str) -> &'stat
     }
 }
 
-/// Extract the cleanest short MUSH exit alias from a semicolon-separated exit name string,
-/// e.g. `"Pressure Lobby <N>;n;north;lobby"` -> `"n"`, `"Inner Hatch <I>;inner;in"` -> `"inner"`.
-fn extract_exit_command(raw_name: &str) -> String {
-    let clean = sanitize(raw_name);
-    let mut parts = clean.split(';').map(str::trim).filter(|s| !s.is_empty());
-    let first = parts.next().unwrap_or("");
-    if let Some(alias) = parts.next() {
-        return alias.to_ascii_lowercase();
+/// Build a safe `goto <alias>` MUSH movement command from a semicolon-separated
+/// exit name string, e.g. `"Pressure Lobby <N>;n;north;lobby"` -> `Some("goto n")`,
+/// `"Inner Hatch <I>;inner;in"` -> `Some("goto inner")`. Rejects blank names or
+/// names containing C0/DEL/C1 control or Unicode BiDi / line-separator controls
+/// (`P2-CLIENT-2` / `EXT-P1-6`).
+fn extract_exit_command(raw_name: &str) -> Option<String> {
+    if raw_name.chars().any(crate::is_stripped_terminal_char) {
+        return None;
     }
-    if let (Some(lt), Some(gt)) = (first.find('<'), first.find('>'))
+    let mut parts = raw_name.split(';').map(str::trim).filter(|s| !s.is_empty());
+    let first = parts.next()?;
+    let candidate = if let Some(alias) = parts.next() {
+        alias.to_ascii_lowercase()
+    } else if let (Some(lt), Some(gt)) = (first.find('<'), first.find('>'))
         && gt > lt + 1
     {
-        return first[lt + 1..gt].trim().to_ascii_lowercase();
-    }
-    first.to_ascii_lowercase()
+        first[lt + 1..gt].trim().to_ascii_lowercase()
+    } else {
+        first.to_ascii_lowercase()
+    };
+    super::app::exit_command(&candidate)
 }
 
 fn parse_footprint_rect(fp: &Value) -> Option<(f64, f64, f64, f64)> {
@@ -4813,17 +4824,14 @@ fn parse_neighborhood_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<Porta
         let rb = &rooms[idx_b];
 
         let names = def.get("names").and_then(Value::as_array);
-        let cmd_ab = names
-            .and_then(|arr| arr.first())
-            .and_then(Value::as_str)
-            .map(extract_exit_command)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| to_id.clone());
+        let cmd_ab = match names.and_then(|arr| arr.first()).and_then(Value::as_str) {
+            Some(raw) => extract_exit_command(raw),
+            None => super::app::exit_command(&to_id),
+        };
         let cmd_ba = names
             .and_then(|arr| arr.get(1))
             .and_then(Value::as_str)
-            .map(extract_exit_command)
-            .filter(|s| !s.is_empty());
+            .and_then(extract_exit_command);
 
         let portal_def = def.get("portal");
         let (at_a, at_b) = parse_portal_at_endpoints(portal_def);
@@ -4837,17 +4845,19 @@ fn parse_neighborhood_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<Porta
                 Some((x, y)) => clamp_point_inside_room(rb, x, y),
                 None => rb.center(),
             };
-            portals.push(PortalGeom {
-                from_room: from_id.clone(),
-                to_room: to_id.clone(),
-                command: cmd_ab,
-                x_m: ax,
-                y_m: ay,
-                floor: ra.floor,
-                width_m: 2.8,
-                stairs_to: Some(rb.floor),
-                teleport: false,
-            });
+            if let Some(fwd) = cmd_ab {
+                portals.push(PortalGeom {
+                    from_room: from_id.clone(),
+                    to_room: to_id.clone(),
+                    command: fwd,
+                    x_m: ax,
+                    y_m: ay,
+                    floor: ra.floor,
+                    width_m: 2.8,
+                    stairs_to: Some(rb.floor),
+                    teleport: false,
+                });
+            }
             if let Some(rev) = cmd_ba {
                 portals.push(PortalGeom {
                     from_room: to_id,
@@ -4862,17 +4872,19 @@ fn parse_neighborhood_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<Porta
                 });
             }
         } else if let Some((mx, my)) = shared_edge_midpoint(ra, rb) {
-            portals.push(PortalGeom {
-                from_room: from_id.clone(),
-                to_room: to_id.clone(),
-                command: cmd_ab,
-                x_m: mx,
-                y_m: my,
-                floor: ra.floor,
-                width_m: 2.8,
-                stairs_to: None,
-                teleport: false,
-            });
+            if let Some(fwd) = cmd_ab {
+                portals.push(PortalGeom {
+                    from_room: from_id.clone(),
+                    to_room: to_id.clone(),
+                    command: fwd,
+                    x_m: mx,
+                    y_m: my,
+                    floor: ra.floor,
+                    width_m: 2.8,
+                    stairs_to: None,
+                    teleport: false,
+                });
+            }
             if let Some(rev) = cmd_ba {
                 portals.push(PortalGeom {
                     from_room: to_id,
@@ -4890,17 +4902,19 @@ fn parse_neighborhood_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<Porta
             // Non-adjacent horizontal portal (e.g. OOC `welcome_hall <-> simulator_lobby`)
             let (ax, ay) = boundary_point_toward(ra, rb);
             let (bx, by) = boundary_point_toward(rb, ra);
-            portals.push(PortalGeom {
-                from_room: from_id.clone(),
-                to_room: to_id.clone(),
-                command: cmd_ab,
-                x_m: ax,
-                y_m: ay,
-                floor: ra.floor,
-                width_m: 2.8,
-                stairs_to: None,
-                teleport: true,
-            });
+            if let Some(fwd) = cmd_ab {
+                portals.push(PortalGeom {
+                    from_room: from_id.clone(),
+                    to_room: to_id.clone(),
+                    command: fwd,
+                    x_m: ax,
+                    y_m: ay,
+                    floor: ra.floor,
+                    width_m: 2.8,
+                    stairs_to: None,
+                    teleport: true,
+                });
+            }
             if let Some(rev) = cmd_ba {
                 portals.push(PortalGeom {
                     from_room: to_id,
@@ -5026,18 +5040,14 @@ fn parse_unit_interior_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<Port
         let ra = &rooms[idx_a];
         let rb = &rooms[idx_b];
         let names = ex.get("names").and_then(Value::as_array);
-        let cmd_ab = names
-            .and_then(|arr| arr.first())
-            .and_then(Value::as_str)
-            .map(extract_exit_command)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| to_id.clone());
-        let cmd_ba = names
-            .and_then(|arr| arr.get(1))
-            .and_then(Value::as_str)
-            .map(extract_exit_command)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| from_id.clone());
+        let cmd_ab = match names.and_then(|arr| arr.first()).and_then(Value::as_str) {
+            Some(raw) => extract_exit_command(raw),
+            None => super::app::exit_command(&to_id),
+        };
+        let cmd_ba = match names.and_then(|arr| arr.get(1)).and_then(Value::as_str) {
+            Some(raw) => extract_exit_command(raw),
+            None => super::app::exit_command(&from_id),
+        };
 
         if ra.floor != rb.floor {
             // Place inter-deck ladders well clear (> 2.2 m) of each compartment's center (`SSH-C-02`).
@@ -5056,76 +5066,88 @@ fn parse_unit_interior_pack(pack_val: &Value) -> Option<(Vec<RoomGeom>, Vec<Port
                     )
                 }
             };
-            portals.push(PortalGeom {
-                from_room: from_id.clone(),
-                to_room: to_id.clone(),
-                command: cmd_ab,
-                x_m: ax,
-                y_m: ay,
-                floor: ra.floor,
-                width_m: 2.0,
-                stairs_to: Some(rb.floor),
-                teleport: false,
-            });
-            portals.push(PortalGeom {
-                from_room: to_id,
-                to_room: from_id,
-                command: cmd_ba,
-                x_m: bx,
-                y_m: by,
-                floor: rb.floor,
-                width_m: 2.0,
-                stairs_to: Some(ra.floor),
-                teleport: false,
-            });
+            if let Some(fwd) = cmd_ab {
+                portals.push(PortalGeom {
+                    from_room: from_id.clone(),
+                    to_room: to_id.clone(),
+                    command: fwd,
+                    x_m: ax,
+                    y_m: ay,
+                    floor: ra.floor,
+                    width_m: 2.0,
+                    stairs_to: Some(rb.floor),
+                    teleport: false,
+                });
+            }
+            if let Some(rev) = cmd_ba {
+                portals.push(PortalGeom {
+                    from_room: to_id,
+                    to_room: from_id,
+                    command: rev,
+                    x_m: bx,
+                    y_m: by,
+                    floor: rb.floor,
+                    width_m: 2.0,
+                    stairs_to: Some(ra.floor),
+                    teleport: false,
+                });
+            }
         } else if let Some((mx, my)) = shared_edge_midpoint(ra, rb) {
-            portals.push(PortalGeom {
-                from_room: from_id.clone(),
-                to_room: to_id.clone(),
-                command: cmd_ab,
-                x_m: mx,
-                y_m: my,
-                floor: ra.floor,
-                width_m: 2.0,
-                stairs_to: None,
-                teleport: false,
-            });
-            portals.push(PortalGeom {
-                from_room: to_id,
-                to_room: from_id,
-                command: cmd_ba,
-                x_m: mx,
-                y_m: my,
-                floor: rb.floor,
-                width_m: 2.0,
-                stairs_to: None,
-                teleport: false,
-            });
+            if let Some(fwd) = cmd_ab {
+                portals.push(PortalGeom {
+                    from_room: from_id.clone(),
+                    to_room: to_id.clone(),
+                    command: fwd,
+                    x_m: mx,
+                    y_m: my,
+                    floor: ra.floor,
+                    width_m: 2.0,
+                    stairs_to: None,
+                    teleport: false,
+                });
+            }
+            if let Some(rev) = cmd_ba {
+                portals.push(PortalGeom {
+                    from_room: to_id,
+                    to_room: from_id,
+                    command: rev,
+                    x_m: mx,
+                    y_m: my,
+                    floor: rb.floor,
+                    width_m: 2.0,
+                    stairs_to: None,
+                    teleport: false,
+                });
+            }
         } else {
             let (ax, ay) = boundary_point_toward(ra, rb);
             let (bx, by) = boundary_point_toward(rb, ra);
-            portals.push(PortalGeom {
-                from_room: from_id.clone(),
-                to_room: to_id.clone(),
-                command: cmd_ab,
-                x_m: ax,
-                y_m: ay,
-                floor: ra.floor,
-                width_m: 2.0,
-                stairs_to: None,
-                teleport: true,
-            });
-            portals.push(PortalGeom {
-                from_room: to_id,
-                to_room: from_id,
-                command: cmd_ba,
-                x_m: bx,
-                y_m: by,
-                floor: rb.floor,
-                width_m: 2.0,
-                stairs_to: None,
-                teleport: true,
-            });
+            if let Some(fwd) = cmd_ab {
+                portals.push(PortalGeom {
+                    from_room: from_id.clone(),
+                    to_room: to_id.clone(),
+                    command: fwd,
+                    x_m: ax,
+                    y_m: ay,
+                    floor: ra.floor,
+                    width_m: 2.0,
+                    stairs_to: None,
+                    teleport: true,
+                });
+            }
+            if let Some(rev) = cmd_ba {
+                portals.push(PortalGeom {
+                    from_room: to_id,
+                    to_room: from_id,
+                    command: rev,
+                    x_m: bx,
+                    y_m: by,
+                    floor: rb.floor,
+                    width_m: 2.0,
+                    stairs_to: None,
+                    teleport: true,
+                });
+            }
         }
     }
 
@@ -5369,28 +5391,32 @@ fn builtin_ceres_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
         |a: &str, b: &str, cmd_ab: &str, cmd_ba: &str, x: f64, y: f64, f_a: i64, f_b: i64| {
             let stairs_ab = (f_a != f_b).then_some(f_b);
             let stairs_ba = (f_a != f_b).then_some(f_a);
-            portals.push(PortalGeom {
-                from_room: a.into(),
-                to_room: b.into(),
-                command: cmd_ab.into(),
-                x_m: x,
-                y_m: y,
-                floor: f_a,
-                width_m: 2.8,
-                stairs_to: stairs_ab,
-                teleport: false,
-            });
-            portals.push(PortalGeom {
-                from_room: b.into(),
-                to_room: a.into(),
-                command: cmd_ba.into(),
-                x_m: x,
-                y_m: y,
-                floor: f_b,
-                width_m: 2.8,
-                stairs_to: stairs_ba,
-                teleport: false,
-            });
+            if let Some(command) = super::app::exit_command(cmd_ab) {
+                portals.push(PortalGeom {
+                    from_room: a.into(),
+                    to_room: b.into(),
+                    command,
+                    x_m: x,
+                    y_m: y,
+                    floor: f_a,
+                    width_m: 2.8,
+                    stairs_to: stairs_ab,
+                    teleport: false,
+                });
+            }
+            if let Some(command) = super::app::exit_command(cmd_ba) {
+                portals.push(PortalGeom {
+                    from_room: b.into(),
+                    to_room: a.into(),
+                    command,
+                    x_m: x,
+                    y_m: y,
+                    floor: f_b,
+                    width_m: 2.8,
+                    stairs_to: stairs_ba,
+                    teleport: false,
+                });
+            }
         };
 
     link(
@@ -5604,28 +5630,32 @@ fn builtin_ooc_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
 
     let mut portals = Vec::new();
     let mut link = |a: &str, b: &str, cmd_ab: &str, cmd_ba: &str, x: f64, y: f64| {
-        portals.push(PortalGeom {
-            from_room: a.into(),
-            to_room: b.into(),
-            command: cmd_ab.into(),
-            x_m: x,
-            y_m: y,
-            floor: 0,
-            width_m: 2.8,
-            stairs_to: None,
-            teleport: false,
-        });
-        portals.push(PortalGeom {
-            from_room: b.into(),
-            to_room: a.into(),
-            command: cmd_ba.into(),
-            x_m: x,
-            y_m: y,
-            floor: 0,
-            width_m: 2.8,
-            stairs_to: None,
-            teleport: false,
-        });
+        if let Some(command) = super::app::exit_command(cmd_ab) {
+            portals.push(PortalGeom {
+                from_room: a.into(),
+                to_room: b.into(),
+                command,
+                x_m: x,
+                y_m: y,
+                floor: 0,
+                width_m: 2.8,
+                stairs_to: None,
+                teleport: false,
+            });
+        }
+        if let Some(command) = super::app::exit_command(cmd_ba) {
+            portals.push(PortalGeom {
+                from_room: b.into(),
+                to_room: a.into(),
+                command,
+                x_m: x,
+                y_m: y,
+                floor: 0,
+                width_m: 2.8,
+                stairs_to: None,
+                teleport: false,
+            });
+        }
     };
 
     link(
@@ -5687,50 +5717,38 @@ fn builtin_ooc_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
     );
 
     // Non-adjacent corridor doorways (lounge <-> bus_stop, welcome_hall <-> simulator_lobby)
-    portals.push(PortalGeom {
-        from_room: "room.lounge".into(),
-        to_room: "room.bus_stop".into(),
-        command: "bs".into(),
-        x_m: 70.0,
-        y_m: 51.0,
-        floor: 0,
-        width_m: 2.8,
-        stairs_to: None,
-        teleport: true,
-    });
-    portals.push(PortalGeom {
-        from_room: "room.bus_stop".into(),
-        to_room: "room.lounge".into(),
-        command: "lounge".into(),
-        x_m: 70.0,
-        y_m: 44.0,
-        floor: 0,
-        width_m: 2.8,
-        stairs_to: None,
-        teleport: true,
-    });
-    portals.push(PortalGeom {
-        from_room: "room.welcome_hall".into(),
-        to_room: "room.simulator_lobby".into(),
-        command: "simulator".into(),
-        x_m: 59.0,
-        y_m: 82.0,
-        floor: 0,
-        width_m: 2.8,
-        stairs_to: None,
-        teleport: true,
-    });
-    portals.push(PortalGeom {
-        from_room: "room.simulator_lobby".into(),
-        to_room: "room.welcome_hall".into(),
-        command: "w".into(),
-        x_m: 119.0,
-        y_m: 75.0,
-        floor: 0,
-        width_m: 2.8,
-        stairs_to: None,
-        teleport: true,
-    });
+    for (from_room, to_room, raw_cmd, x_m, y_m) in [
+        ("room.lounge", "room.bus_stop", "bs", 70.0, 51.0),
+        ("room.bus_stop", "room.lounge", "lounge", 70.0, 44.0),
+        (
+            "room.welcome_hall",
+            "room.simulator_lobby",
+            "simulator",
+            59.0,
+            82.0,
+        ),
+        (
+            "room.simulator_lobby",
+            "room.welcome_hall",
+            "w",
+            119.0,
+            75.0,
+        ),
+    ] {
+        if let Some(command) = super::app::exit_command(raw_cmd) {
+            portals.push(PortalGeom {
+                from_room: from_room.into(),
+                to_room: to_room.into(),
+                command,
+                x_m,
+                y_m,
+                floor: 0,
+                width_m: 2.8,
+                stairs_to: None,
+                teleport: true,
+            });
+        }
+    }
 
     (rooms, portals)
 }
@@ -5811,28 +5829,32 @@ fn builtin_dray_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
                       x: f64,
                       y: f64,
                       f: i64| {
-        portals.push(PortalGeom {
-            from_room: a.into(),
-            to_room: b.into(),
-            command: cmd_ab.into(),
-            x_m: x,
-            y_m: y,
-            floor: f,
-            width_m: 2.0,
-            stairs_to: None,
-            teleport: false,
-        });
-        portals.push(PortalGeom {
-            from_room: b.into(),
-            to_room: a.into(),
-            command: cmd_ba.into(),
-            x_m: x,
-            y_m: y,
-            floor: f,
-            width_m: 2.0,
-            stairs_to: None,
-            teleport: false,
-        });
+        if let Some(command) = super::app::exit_command(cmd_ab) {
+            portals.push(PortalGeom {
+                from_room: a.into(),
+                to_room: b.into(),
+                command,
+                x_m: x,
+                y_m: y,
+                floor: f,
+                width_m: 2.0,
+                stairs_to: None,
+                teleport: false,
+            });
+        }
+        if let Some(command) = super::app::exit_command(cmd_ba) {
+            portals.push(PortalGeom {
+                from_room: b.into(),
+                to_room: a.into(),
+                command,
+                x_m: x,
+                y_m: y,
+                floor: f,
+                width_m: 2.0,
+                stairs_to: None,
+                teleport: false,
+            });
+        }
     };
     #[allow(clippy::too_many_arguments)]
     let link_stair = |portals: &mut Vec<PortalGeom>,
@@ -5846,28 +5868,32 @@ fn builtin_dray_layout() -> (Vec<RoomGeom>, Vec<PortalGeom>) {
                       bx: f64,
                       by: f64,
                       f_b: i64| {
-        portals.push(PortalGeom {
-            from_room: a.into(),
-            to_room: b.into(),
-            command: cmd_ab.into(),
-            x_m: ax,
-            y_m: ay,
-            floor: f_a,
-            width_m: 2.0,
-            stairs_to: Some(f_b),
-            teleport: false,
-        });
-        portals.push(PortalGeom {
-            from_room: b.into(),
-            to_room: a.into(),
-            command: cmd_ba.into(),
-            x_m: bx,
-            y_m: by,
-            floor: f_b,
-            width_m: 2.0,
-            stairs_to: Some(f_a),
-            teleport: false,
-        });
+        if let Some(command) = super::app::exit_command(cmd_ab) {
+            portals.push(PortalGeom {
+                from_room: a.into(),
+                to_room: b.into(),
+                command,
+                x_m: ax,
+                y_m: ay,
+                floor: f_a,
+                width_m: 2.0,
+                stairs_to: Some(f_b),
+                teleport: false,
+            });
+        }
+        if let Some(command) = super::app::exit_command(cmd_ba) {
+            portals.push(PortalGeom {
+                from_room: b.into(),
+                to_room: a.into(),
+                command,
+                x_m: bx,
+                y_m: by,
+                floor: f_b,
+                width_m: 2.0,
+                stairs_to: Some(f_a),
+                teleport: false,
+            });
+        }
     };
 
     link_horiz(
@@ -6055,7 +6081,7 @@ mod tests {
             let out = st.handle_key(Key::Char('w'), false, false, &[], t);
             emitted.extend(out.commands);
         }
-        assert_eq!(emitted, vec!["n".to_string()]);
+        assert_eq!(emitted, vec!["goto n".to_string()]);
     }
 
     /// A real `port.trade` frame (48e L8, clients:G3): tacsim's
@@ -6303,7 +6329,7 @@ mod tests {
         assert_eq!(st.active_location_key, "room.p03_customs");
         assert_eq!(
             st.first_bfs_step("room.p03_customs", "room.p04_concourse"),
-            Some(("c".to_string(), "room.p04_concourse".to_string()))
+            Some(("goto c".to_string(), "room.p04_concourse".to_string()))
         );
     }
 
@@ -6690,7 +6716,7 @@ mod tests {
             );
             emitted.extend(out.commands);
         }
-        assert_eq!(emitted, vec!["n".to_string()]);
+        assert_eq!(emitted, vec!["goto n".to_string()]);
         assert_eq!(st.active_location_key, "room.c05_registry");
         assert_eq!(
             st.server_location_key, "room.c03_arrivals",
@@ -7012,7 +7038,7 @@ mod tests {
             Some("Pilot"),
         );
 
-        // Walk North across doorway into `room.c05_registry` -> sends `"n"` once.
+        // Walk North across doorway into `room.c05_registry` -> sends `"goto n"` once.
         let mut emitted = Vec::new();
         for i in 0..16 {
             let out = st.handle_key(
@@ -7024,7 +7050,7 @@ mod tests {
             );
             emitted.extend(out.commands);
         }
-        assert_eq!(emitted, vec!["n"]);
+        assert_eq!(emitted, vec!["goto n"]);
         assert_eq!(st.active_location_key, "room.c05_registry");
         assert_eq!(st.server_location_key, "room.c03_arrivals");
         assert!(st.pending_move_target.is_some());
@@ -7335,5 +7361,142 @@ mod tests {
             now + Duration::from_secs(1),
         );
         assert_eq!(buy.commands, vec!["+market/quote 99=3"]);
+    }
+
+    #[test]
+    fn station_walk_prefixes_goto_and_drops_control_or_bidi_exits() {
+        // Direct extract_exit_command checks (`P2-CLIENT-2`).
+        assert_eq!(
+            extract_exit_command("Pressure Lobby <N>;n;north").as_deref(),
+            Some("goto n")
+        );
+        assert_eq!(
+            extract_exit_command("Concourse <C>").as_deref(),
+            Some("goto c")
+        );
+        assert_eq!(
+            extract_exit_command("@destroy me").as_deref(),
+            Some("goto @destroy me")
+        );
+        assert_eq!(
+            extract_exit_command("Innocent;QUIT").as_deref(),
+            Some("goto quit")
+        );
+        assert_eq!(
+            extract_exit_command("Innocent;\"spoofed").as_deref(),
+            Some("goto \"spoofed")
+        );
+        assert_eq!(extract_exit_command("North\nQUIT"), None);
+        assert_eq!(extract_exit_command("North\r\n@boot all"), None);
+        assert_eq!(extract_exit_command("North;bad\x1b[31m"), None);
+        assert_eq!(extract_exit_command("North\u{202E}evil"), None);
+        assert_eq!(extract_exit_command("North\u{2028}QUIT"), None);
+        assert_eq!(extract_exit_command("   "), None);
+
+        // Built-in layouts must prefix every single portal with `goto `.
+        for (_, portals) in [
+            builtin_ceres_layout(),
+            builtin_ooc_layout(),
+            builtin_dray_layout(),
+        ] {
+            assert!(!portals.is_empty());
+            for p in &portals {
+                assert!(
+                    p.command.starts_with("goto "),
+                    "unprefixed built-in portal command: {:?}",
+                    p.command
+                );
+            }
+        }
+
+        // Reconciled neighborhood pack with hostile exit names:
+        // - raw commands (`@destroy me`, `QUIT`) are prefixed with `goto `
+        // - control/BiDi exit names are dropped entirely (never falling back to raw `to_id`)
+        let pack = json!({
+            "entries": {
+                "room.a": {
+                    "kind": "room",
+                    "def": {
+                        "name": "Room A",
+                        "footprint": { "rect": [[0, 0], [20, 20]] },
+                        "surface": { "floor": ["deck", 0] }
+                    }
+                },
+                "room.b": {
+                    "kind": "room",
+                    "def": {
+                        "name": "Room B",
+                        "footprint": { "rect": [[20, 0], [40, 20]] },
+                        "surface": { "floor": ["deck", 0] }
+                    }
+                },
+                "room.c": {
+                    "kind": "room",
+                    "def": {
+                        "name": "Room C",
+                        "footprint": { "rect": [[0, 20], [20, 40]] },
+                        "surface": { "floor": ["deck", 0] }
+                    }
+                },
+                "exit.ab": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.b",
+                        "names": ["Trap;@destroy me", "Back;QUIT"]
+                    }
+                },
+                "exit.ac": {
+                    "kind": "exit",
+                    "def": {
+                        "from": "room.a",
+                        "to": "room.c",
+                        "names": ["Bad\nQUIT", "Bad\u{202E}Back"]
+                    }
+                }
+            }
+        });
+        let (_, portals) = parse_neighborhood_pack(&pack).expect("neighborhood parses");
+        assert_eq!(portals.len(), 2, "control/BiDi exits must be dropped");
+        assert_eq!(portals[0].command, "goto @destroy me");
+        assert_eq!(portals[1].command, "goto quit");
+
+        // Unit interior pack with hostile names & control chars behaves identically.
+        let unit_pack = json!({
+            "entries": {
+                "unit.test": {
+                    "kind": "unit",
+                    "def": {
+                        "interior": {
+                            "rooms": [
+                                { "id": "airlock", "name": "Airlock", "kind": "walkable" },
+                                { "id": "passage", "name": "Passage", "kind": "walkable" },
+                                { "id": "crew", "name": "Crew", "kind": "walkable" }
+                            ],
+                            "exits": [
+                                {
+                                    "from": "airlock",
+                                    "to": "passage",
+                                    "names": ["Hatch;\"say owned", "Out;\\emit boom"]
+                                },
+                                {
+                                    "from": "passage",
+                                    "to": "crew",
+                                    "names": ["Broken\r\nQUIT", "Broken\u{2029}back"]
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        });
+        let (_, ship_portals) = parse_unit_interior_pack(&unit_pack).expect("unit pack parses");
+        assert_eq!(
+            ship_portals.len(),
+            2,
+            "unit control/separator exits must be dropped"
+        );
+        assert_eq!(ship_portals[0].command, "goto \"say owned");
+        assert_eq!(ship_portals[1].command, "goto \\emit boom");
     }
 }

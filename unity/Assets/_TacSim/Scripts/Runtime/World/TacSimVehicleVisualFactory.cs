@@ -1,5 +1,6 @@
 using System;
 using TacSim.Core;
+using TacSim.Net;
 using TMPro;
 using UnityEngine;
 
@@ -349,7 +350,7 @@ namespace TacSim.World
             bbGo.transform.localPosition = new Vector3(0f, isBiped ? 6.2f : 4.2f, 0f);
             var bb = bbGo.AddComponent<WorldBillboard>();
             Color tagCol = isRed ? new Color(1f, 0.45f, 0.40f) : isBlue ? new Color(0.45f, 0.78f, 1f) : new Color(1f, 0.90f, 0.45f);
-            bb.NameplateText = CreateTmp(bbGo.transform, "TagText", Vector3.zero, callsign, 5.2f, tagCol);
+            bb.NameplateText = CreateTmp(bbGo.transform, "TagText", Vector3.zero, MushProtocol.EscapeUnityRichText(callsign), 5.2f, tagCol, allowRichText: true);
             rig.Billboard = bb;
 
             return rig;
@@ -430,7 +431,7 @@ namespace TacSim.World
             bbGo.transform.SetParent(root.transform, false);
             bbGo.transform.localPosition = new Vector3(0f, 3.4f, 0f);
             var bb = bbGo.AddComponent<WorldBillboard>();
-            bb.NameplateText = CreateTmp(bbGo.transform, "TagText", Vector3.zero, label, 3.8f, new Color(1f, 0.88f, 0.45f));
+            bb.NameplateText = CreateTmp(bbGo.transform, "TagText", Vector3.zero, MushProtocol.EscapeUnityRichText(label), 3.8f, new Color(1f, 0.88f, 0.45f), allowRichText: false);
             rig.Billboard = bb;
 
             return rig;
@@ -601,12 +602,13 @@ namespace TacSim.World
             return null;
         }
 
-        private static TextMeshPro CreateTmp(Transform parent, string name, Vector3 localPos, string text, float fontSize, Color color)
+        private static TextMeshPro CreateTmp(Transform parent, string name, Vector3 localPos, string text, float fontSize, Color color, bool allowRichText = false)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
             var tmp = go.AddComponent<TextMeshPro>();
+            tmp.richText = allowRichText;
             tmp.text = text;
             tmp.fontSize = fontSize;
             tmp.color = color;

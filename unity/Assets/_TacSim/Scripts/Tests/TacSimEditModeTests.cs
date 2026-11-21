@@ -2567,7 +2567,7 @@ namespace TacSim.Tests
 
                 // 6. Total byte quota (64 MiB) must reject once cumulative cached bytes would exceed 64 MiB.
                 var byteSync = new TacSimContentSync();
-                string chunk1MiB = "\"" + new string('a', (1024 * 1024) - 2) + "\"";
+                string chunk1MiB = "{\"d\":\"" + new string('a', (1024 * 1024) - 8) + "\"}";
                 string chunkSha = TacSimContentSync.ComputeSha256Hex(chunk1MiB);
                 for (int i = 0; i < 64; i++)
                     Assert.IsTrue(byteSync.StoreVerifiedPack($"mb_{i}", chunkSha, chunk1MiB));
@@ -4120,6 +4120,678 @@ namespace TacSim.Tests
                 UnityEngine.Time.time = 110.5f;
                 onRoom.Invoke(coord, new object[] { MakeStationRoom("#102", "Pressure Lobby", "room.c02_pressure") });
                 Assert.AreEqual(0, dispatched.Count, "Explicit command must cancel queued multi-hop navigation");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        private static System.IO.MemoryStream BuildSyntheticTarWithTypeFlag(string entryName, byte typeFlag, byte[] payload)
+        {
+            var gzOut = new System.IO.MemoryStream();
+            using (var gz = new System.IO.Compression.GZipStream(gzOut, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+            {
+                byte[] header = new byte[512];
+                byte[] nameBytes = System.Text.Encoding.ASCII.GetBytes(entryName);
+                System.Array.Copy(nameBytes, 0, header, 0, System.Math.Min(nameBytes.Length, 100));
+                byte[] modeBytes = System.Text.Encoding.ASCII.GetBytes("0000644\0");
+                System.Array.Copy(modeBytes, 0, header, 100, modeBytes.Length);
+                int len = payload != null ? payload.Length : 0;
+                string octalSize = System.Convert.ToString(len, 8).PadLeft(11, '0') + "\0";
+                System.Array.Copy(System.Text.Encoding.ASCII.GetBytes(octalSize), 0, header, 124, 12);
+                header[156] = typeFlag;
+                for (int c = 148; c < 156; c++) header[c] = (byte)' ';
+                int checksum = 0;
+                for (int c = 0; c < 512; c++) checksum += header[c];
+                string octalSum = System.Convert.ToString(checksum, 8).PadLeft(6, '0') + "\0 ";
+                System.Array.Copy(System.Text.Encoding.ASCII.GetBytes(octalSum), 0, header, 148, 8);
+                gz.Write(header, 0, 512);
+                if (len > 0)
+                {
+                    gz.Write(payload, 0, len);
+                    int rem = len % 512;
+                    if (rem != 0) gz.Write(new byte[512 - rem], 0, 512 - rem);
+                }
+                gz.Write(new byte[1024], 0, 1024);
+            }
+            gzOut.Position = 0;
+            return gzOut;
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_4_UnityPackageExtractor_BlocksAllScripts_WindowsTrailingDots_NonRegularTarTypes_AndMetaCap()
+        {
+            string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "TacSimP2Client4_" + System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                // 1. Executable/script/assembly/shader extensions blocked EVERYWHERE under Assets/ (not just Editor/),
+                //    Windows trailing dots/spaces & reserved device names rejected, while valid passive assets succeed.
+                byte[] payload = System.Text.Encoding.UTF8.GetBytes("payload");
+                using (var pkg = BuildSyntheticUnityPackage(
+                    ("00000000000000000000000000000001/asset", payload),
+                    ("00000000000000000000000000000001/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/RuntimeEvil.cs\n")),
+                    ("00000000000000000000000000000002/asset", payload),
+                    ("00000000000000000000000000000002/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Plugin.asmdef\n")),
+                    ("00000000000000000000000000000003/asset", payload),
+                    ("00000000000000000000000000000003/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Ref.asmref\n")),
+                    ("00000000000000000000000000000004/asset", payload),
+                    ("00000000000000000000000000000004/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Native.dll\n")),
+                    ("00000000000000000000000000000005/asset", payload),
+                    ("00000000000000000000000000000005/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/csc.rsp\n")),
+                    ("00000000000000000000000000000006/asset", payload),
+                    ("00000000000000000000000000000006/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Legacy.js\n")),
+                    ("00000000000000000000000000000007/asset", payload),
+                    ("00000000000000000000000000000007/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Legacy.boo\n")),
+                    ("00000000000000000000000000000008/asset", payload),
+                    ("00000000000000000000000000000008/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Custom.shader\n")),
+                    ("00000000000000000000000000000009/asset", payload),
+                    ("00000000000000000000000000000009/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/_TacSim./Prefabs/Bypass.prefab\n")),
+                    ("0000000000000000000000000000000a/asset", payload),
+                    ("0000000000000000000000000000000a/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/_TacSim /Prefabs/BypassSpace.prefab\n")),
+                    ("0000000000000000000000000000000b/asset", payload),
+                    ("0000000000000000000000000000000b/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Editor./Spoof.prefab\n")),
+                    ("0000000000000000000000000000000c/asset", payload),
+                    ("0000000000000000000000000000000c/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Sneaky.cs.\n")),
+                    ("0000000000000000000000000000000d/asset", payload),
+                    ("0000000000000000000000000000000d/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/CON.prefab\n")),
+                    ("0000000000000000000000000000000e/asset", payload),
+                    ("0000000000000000000000000000000e/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/SafeProp.prefab\n"))))
+                {
+                    int written = UnityPackageArchiveExtractor.ExtractPackageStream(pkg, tempDir);
+                    Assert.AreEqual(1, written, "Only the safe passive .prefab asset must extract");
+                }
+                Assert.IsTrue(System.IO.File.Exists(System.IO.Path.Combine(tempDir, "Assets", "Vendor", "SafeProp.prefab")));
+                Assert.IsFalse(System.IO.File.Exists(System.IO.Path.Combine(tempDir, "Assets", "Vendor", "RuntimeEvil.cs")));
+                Assert.IsFalse(System.IO.File.Exists(System.IO.Path.Combine(tempDir, "Assets", "Vendor", "Custom.shader")));
+                Assert.IsFalse(System.IO.Directory.Exists(System.IO.Path.Combine(tempDir, "Assets", "_TacSim")));
+
+                // 2. Non-regular tar typeFlags (hardlink '1', symlink '2', char dev '3', FIFO '6') throw InvalidDataException;
+                //    directory entry ('5') is accepted cleanly.
+                byte[] disallowedFlags = { (byte)'1', (byte)'2', (byte)'3', (byte)'4', (byte)'6' };
+                for (int i = 0; i < disallowedFlags.Length; i++)
+                {
+                    using (var badTar = BuildSyntheticTarWithTypeFlag("aaaa/asset", disallowedFlags[i], new byte[0]))
+                    {
+                        Assert.Throws<System.IO.InvalidDataException>(() =>
+                            UnityPackageArchiveExtractor.ExtractPackageStream(badTar, tempDir),
+                            $"Tar typeFlag '{(char)disallowedFlags[i]}' must be rejected");
+                    }
+                }
+                using (var dirTar = BuildSyntheticTarWithTypeFlag("aaaa/", (byte)'5', new byte[0]))
+                {
+                    Assert.AreEqual(0, UnityPackageArchiveExtractor.ExtractPackageStream(dirTar, tempDir));
+                }
+
+                // 3. Oversized asset.meta (> MaxMetaHeaderBytes = 64 KiB) throws InvalidDataException.
+                byte[] oversizedMeta = new byte[UnityPackageArchiveExtractor.MaxMetaHeaderBytes + 1];
+                using (var bigMetaPkg = BuildSyntheticUnityPackage(
+                    ("dddddddddddddddddddddddddddddddd/pathname", System.Text.Encoding.UTF8.GetBytes("Assets/Vendor/Mesh.prefab\n")),
+                    ("dddddddddddddddddddddddddddddddd/asset.meta", oversizedMeta)))
+                {
+                    Assert.Throws<System.IO.InvalidDataException>(() =>
+                        UnityPackageArchiveExtractor.ExtractPackageStream(bigMetaPkg, tempDir));
+                }
+            }
+            finally
+            {
+                if (System.IO.Directory.Exists(tempDir))
+                    System.IO.Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_8_FallbackPackSanitizer_DropsCompoundStaffLocks_AndRedactsNonStaffLocks()
+        {
+            string rawPack = @"{
+                ""manifest"": { ""id"": ""neighborhood.lock_test"", ""version"": 1 },
+                ""entries"": {
+                    ""room.public"": { ""kind"": ""room"", ""def"": { ""name"": ""Public"", ""access"": ""public"" } },
+                    ""exit.exact_staff"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""lock"": ""staff"" } },
+                    ""exit.compound_wiz"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""lock"": ""#1|flag^WIZARD"" } },
+                    ""exit.compound_roy"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""lock"": ""flag^ROYALTY&BADGE:OPS"" } },
+                    ""exit.portal_staff"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""portal"": { ""lock"": ""flag^WIZARD"" } } },
+                    ""exit.player_key"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""lock"": ""#42&KEY:SECRET_CODE"" } },
+                    ""exit.portal_key"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""portal"": { ""lock"": ""ATTR:PASS_99"" } } },
+                    ""exit.empty_lock"": { ""kind"": ""exit"", ""def"": { ""from"": ""room.public"", ""to"": ""room.public"", ""lock"": ""   "", ""portal"": { ""lock"": false } } }
+                }
+            }";
+
+            string sanitized = TacSimContentLoader.SanitizePackJsonForClient(rawPack);
+            StringAssert.DoesNotContain("WIZARD", sanitized);
+            StringAssert.DoesNotContain("ROYALTY", sanitized);
+            StringAssert.DoesNotContain("SECRET_CODE", sanitized);
+            StringAssert.DoesNotContain("#42", sanitized);
+            StringAssert.DoesNotContain("PASS_99", sanitized);
+
+            var entries = JsonNode.Parse(sanitized)["entries"].AsObject();
+            Assert.IsFalse(entries.ContainsKey("exit.exact_staff"));
+            Assert.IsFalse(entries.ContainsKey("exit.compound_wiz"));
+            Assert.IsFalse(entries.ContainsKey("exit.compound_roy"));
+            Assert.IsFalse(entries.ContainsKey("exit.portal_staff"));
+            Assert.AreEqual("locked", entries["exit.player_key"]["def"].Str("lock"));
+            Assert.AreEqual("locked", entries["exit.portal_key"]["def"]["portal"].Str("lock"));
+            Assert.IsFalse(entries["exit.empty_lock"]["def"].ContainsKey("lock"));
+            Assert.IsFalse(entries["exit.empty_lock"]["def"]["portal"].ContainsKey("lock"));
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_9_NonExitCommandInterpolation_ControlChars_AndStrictTokenAllowlists()
+        {
+            // 1. MushWsClient.SendLine rejects C0/DEL/C1 control characters centrally; BuildLineCommand strips them.
+            using (var ws = new MushWsClient())
+            {
+                ws.SendLine("look");
+                Assert.AreEqual(1, ws.OutboundQueueCount);
+                ws.SendLine("look\nQUIT");
+                ws.SendLine("look\r\n@destroy me");
+                ws.SendLine("look\0bad");
+                ws.SendLine("look\u007fbad");
+                ws.SendLine("look\u009b2J");
+                Assert.AreEqual(1, ws.OutboundQueueCount, "SendLine must reject all C0/DEL/C1 control characters");
+            }
+            string builtLine = MushProtocol.BuildLineCommand("hello\r\nQUIT\u009bworld");
+            var builtNode = JsonNode.Parse(builtLine);
+            Assert.AreEqual("helloQUITworld", builtNode.Str("d"));
+
+            // 2. Strict single-token allowlist (^[A-Za-z0-9._-]+$, no leading - / . / ..).
+            Assert.IsTrue(MushProtocol.TryValidateSafeCommandToken("A", out _));
+            Assert.IsTrue(MushProtocol.TryValidateSafeCommandToken("dock.401.1", out _));
+            Assert.IsTrue(MushProtocol.TryValidateSafeCommandToken("raider_7-a", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("A B", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("A\tB", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("A\nQUIT", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("-flag", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("..bad", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeCommandToken("a;QUIT", out _));
+
+            // 3. Safe keyword / NPC name validation rejects control chars and leading switches.
+            Assert.IsTrue(MushProtocol.TryValidateSafeKeywordOrName("Mooring Plaque", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeKeywordOrName("-switch", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeKeywordOrName("/switch", out _));
+            Assert.IsFalse(MushProtocol.TryValidateSafeKeywordOrName("Plaque\nQUIT", out _));
+
+            // 4. Orbital mining command builder rejects injected rock tokens.
+            Assert.IsNull(TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:helm_match", "A\nQUIT", true, "A", out _));
+            Assert.IsNull(TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:helm_match", "A --force", true, "A", out _));
+            Assert.IsNull(TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:helm_match", "-bad", true, "-bad", out _));
+            Assert.AreEqual("+helm/match A", TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:helm_match", "a", true, "A", out _));
+
+            // 5. DockingClientSession refuses crafted session_id in FromFeed and FormatTapeCommand.
+            var badDock = DockingClientSession.FromFeed(JsonNode.Parse(@"{""session_id"":""dock.1 extra"",""dx_mm"":0,""dy_mm"":0,""dz_mm"":100}"));
+            Assert.IsNotNull(badDock);
+            Assert.AreEqual(string.Empty, badDock.SessionId, "DockingClientSession.FromFeed must clear unsafe session_id");
+            Assert.AreEqual(string.Empty, badDock.FormatTapeCommand(), "FormatTapeCommand must refuse cleared/unsafe session_id");
+            var manualBad = new DockingClientSession { SessionId = "dock.1\nQUIT" };
+            Assert.AreEqual(string.Empty, manualBad.FormatTapeCommand(), "FormatTapeCommand must refuse unsafe session_id");
+
+            // 6. Arena ExecuteCockpitAction and MissionOverlays ResolveSquadAdvanceCommand refuse injected tokens.
+            var rootGo = new UnityEngine.GameObject("P2Client9ArenaTest");
+            try
+            {
+                var arena = rootGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var emitted = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emitted.Add;
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 1, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""contacts"": [{""designator"": ""B1 --evil"", ""kind"": ""tank"", ""cell"": [10,10], ""range_m"": 100, ""bearing"": 0}]
+                }"));
+                arena.ExecuteCockpitAction("lock B1 --evil");
+                arena.ExecuteCockpitAction("fire\nQUIT");
+                Assert.AreEqual(0, emitted.Count, "Injected designator and control-char cockpit actions must not emit commands");
+                arena.ExecuteCockpitAction("lock B1");
+                Assert.AreEqual(1, emitted.Count);
+                Assert.AreEqual("lock B1", emitted[0]);
+
+                var overlays = rootGo.AddComponent<TacSim.UI.TacSimMissionOverlays>();
+                overlays.BindControllers(null, arena, null);
+                var badGrid = new DecodedTerrainGrid
+                {
+                    Width = 10, Height = 10,
+                    Classes = new TerrainCellClass[100],
+                    ElevMeters = new float[100],
+                    KeySpots = new List<ArenaKeySpotDef> { new ArenaKeySpotDef { Letter = "A\nQUIT", CellX = 5, CellY = 5 } }
+                };
+                arena.BuildArenaTerrain(null, badGrid);
+                Assert.IsNull(overlays.ResolveSquadAdvanceCommand(), "Unsafe keyspot letter must be refused instead of interpolated into squad advance");
+                badGrid.KeySpots.Add(new ArenaKeySpotDef { Letter = "B", CellX = 6, CellY = 6 });
+                Assert.AreEqual("order all advance B", overlays.ResolveSquadAdvanceCommand(), "Valid keyspot letter must resolve cleanly");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_10_UnityRichTextDisabledByDefault_AndEscapesUntrustedStrings()
+        {
+            var rootGo = new UnityEngine.GameObject("P2Client10RichTextTest");
+            try
+            {
+                // 1. Station Berth Gallery escapes both OwnHullName AND peer-controlled rv.Contents hull name,
+                //    and all 3D TMP signs disable richText by default.
+                var stationGo = new UnityEngine.GameObject("StationRichText");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                var station = stationGo.AddComponent<StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var berthRoom = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#101"",
+                    ""name"": ""Visiting Berth Gallery"",
+                    ""ambient"": {
+                        ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c01_berth_gallery"", ""surface"": ""station"" },
+                        ""tacsim"": {
+                            ""own_hull"": ""#500"",
+                            ""own_hull_name"": ""<size=999>OwnEvil</size>"",
+                            ""own_hull_docked_here"": true
+                        }
+                    },
+                    ""contents"": [
+                        { ""id"": ""#501"", ""name"": ""<color=#ff0000>PeerDray</color> (Dray-class)"", ""kind"": ""thing"" }
+                    ]
+                }"));
+                station.ApplyRoomView(berthRoom, "#99");
+
+                var allTmps = stationGo.GetComponentsInChildren<TMPro.TextMeshPro>(true);
+                Assert.Greater(allTmps.Length, 0);
+                bool sawOwnEscaped = false;
+                bool sawPeerEscaped = false;
+                for (int i = 0; i < allTmps.Length; i++)
+                {
+                    // Diegetic status boards explicitly opt in to color markup after EscapeUnityRichText;
+                    // all other 3D signs (room headers, cradles, transits, plaques) must disable TMP richText!
+                    if (allTmps[i].name != "BoardText")
+                        Assert.IsFalse(allTmps[i].richText, $"3D TMP '{allTmps[i].name}' must have richText disabled by default");
+                    string txt = allTmps[i].text ?? string.Empty;
+                    StringAssert.DoesNotContain("<size=999>", txt);
+                    StringAssert.DoesNotContain("<color=#ff0000>", txt);
+                    if (txt.Contains("OWNEVIL")) sawOwnEscaped = true;
+                    if (txt.Contains("PEERDRAY")) sawPeerEscaped = true;
+                }
+                Assert.IsTrue(sawOwnEscaped, "Expected escaped OwnHullName on Berth Gallery cradle sign");
+                Assert.IsTrue(sawPeerEscaped, "Expected escaped peer docked hull name on Berth Gallery cradle sign");
+
+                // 2. Arena & vehicle visual factory escape callsigns/designators and disable TMP richText.
+                var arenaGo = new UnityEngine.GameObject("ArenaRichText");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 7, ""seated"": true, ""callsign"": ""<mark=#ff0>R1</mark>"", ""party"": ""R"",
+                    ""contacts"": [{""designator"": ""B1"", ""kind"": ""tank"", ""class_label"": ""<size=500>Heavy</size>"", ""cell"": [10,10], ""range_m"": 100, ""bearing"": 0}]
+                }"));
+                var arenaRig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(null, arenaGo.transform, "tank", "<size=999>CALL</size>", "R", UnityEngine.Vector3.zero, 0f);
+                var arenaUnitTmps = arenaRig.Root.GetComponentsInChildren<TMPro.TextMeshPro>(true);
+                Assert.Greater(arenaUnitTmps.Length, 0);
+                for (int i = 0; i < arenaUnitTmps.Length; i++)
+                {
+                    StringAssert.DoesNotContain("<size=999>", arenaUnitTmps[i].text ?? string.Empty);
+                    StringAssert.Contains("‹size=999›", arenaUnitTmps[i].text ?? string.Empty);
+                }
+
+                var roverRig = TacSimVehicleVisualFactory.SpawnSurfaceRover(null, arenaGo.transform, "<size=999>ROVER</size>", UnityEngine.Vector3.zero, 0f);
+                var roverTmps = roverRig.Root.GetComponentsInChildren<TMPro.TextMeshPro>(true);
+                Assert.Greater(roverTmps.Length, 0);
+                for (int i = 0; i < roverTmps.Length; i++)
+                {
+                    Assert.IsFalse(roverTmps[i].richText);
+                    StringAssert.DoesNotContain("<size=999>", roverTmps[i].text ?? string.Empty);
+                }
+
+                // 3. Mining refusal notice escapes untrusted action names.
+                TacSimGameCoordinator.ResolveOrbitalMiningCommand("space:<size=999>evil</size>", "A", true, "A", out string refusal);
+                StringAssert.DoesNotContain("<size=999>", refusal ?? string.Empty);
+                StringAssert.Contains("‹size=999›", refusal ?? string.Empty);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_11_JsonValidation_RoomBounds_WallSlotCap_WsByteBudget_HandshakeLane_EntityCaps_AndPendingExpiry()
+        {
+            // 1. StoreVerifiedPack rejects valid-SHA-256 malformed JSON and non-object JSON.
+            var sync = new TacSimContentSync();
+            string brokenJson = "{ not valid json";
+            Assert.IsFalse(sync.StoreVerifiedPack("broken", TacSimContentSync.ComputeSha256Hex(brokenJson), brokenJson));
+            string arrayJson = "[1, 2, 3]";
+            Assert.IsFalse(sync.StoreVerifiedPack("arr", TacSimContentSync.ComputeSha256Hex(arrayJson), arrayJson));
+            string strJson = "\"just a string\"";
+            Assert.IsFalse(sync.StoreVerifiedPack("str", TacSimContentSync.ComputeSha256Hex(strJson), strJson));
+
+            // 2. ContentModels parsers never throw FormatException on malformed JSON.
+            Assert.IsNotNull(TacSimContentLoader.ParseNeighborhoodJson("{ malformed", "neighborhood.bad"));
+            Assert.IsNotNull(TacSimContentLoader.ParseGoodsJson("{ malformed"));
+            Assert.IsNotNull(TacSimContentLoader.ParseShipUnitJson("{ malformed", "tacsim.unit.dray"));
+            Assert.DoesNotThrow(() => TacSimContentLoader.MergeCastJsonIntoPack(TacSimContentLoader.LoadCeresFreeport(), "{ malformed"));
+
+            // 3. Huge room coordinates / spans are clamped and StationWorldController terminates quickly with bounded mullions/stanchions.
+            var hugePack = TacSimContentLoader.ParseNeighborhoodJson(@"{
+                ""manifest"": { ""id"": ""neighborhood.huge"", ""version"": 1 },
+                ""entries"": {
+                    ""room.giant"": {
+                        ""kind"": ""room"",
+                        ""def"": {
+                            ""name"": ""Giant"",
+                            ""kind"": ""indoor"",
+                            ""footprint"": { ""rect"": [[0, 0], [1e20, 1e20]] },
+                            ""details"": { ""d1"": ""a"", ""d2"": ""b"", ""d3"": ""c"" }
+                        }
+                    }
+                }
+            }", "neighborhood.huge");
+            var giant = hugePack.Rooms["room.giant"];
+            Assert.LessOrEqual(giant.MaxX - giant.MinX, TacSimContentLoader.MaxRoomSpanMeters + 0.01f);
+            Assert.LessOrEqual(giant.MaxY - giant.MinY, TacSimContentLoader.MaxRoomSpanMeters + 0.01f);
+
+            // Even if a synthetic AtlasRoomDef bypasses ParseNeighborhoodJson with 1e20 bounds,
+            // StationWorldController wall-slot scans and mullion/stanchion builders must terminate and cap objects!
+            var rootGo = new UnityEngine.GameObject("P2Client11WorldTest");
+            try
+            {
+                var station = rootGo.AddComponent<StationWorldController>();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var rawHugePack = new AtlasNeighborhoodPack { PackId = "neighborhood.raw_huge", Name = "RawHuge" };
+                rawHugePack.Rooms["room.c01_berth_gallery"] = new AtlasRoomDef
+                {
+                    EntryId = "room.c01_berth_gallery",
+                    Name = "Huge Berth",
+                    Kind = "indoor",
+                    MinX = 0f,
+                    MaxX = 1e20f,
+                    MinY = 0f,
+                    MaxY = 1e20f,
+                    Details = new Dictionary<string, string> { ["a"] = "1", ["b"] = "2", ["c"] = "3" }
+                };
+                // Invoke private BuildRoomGeometry via BuildStation using dynamic pack registration
+                TacSimContentLoader.RegisterDynamicPack("neighborhood.raw_huge_test", @"{
+                    ""manifest"": { ""id"": ""neighborhood.raw_huge_test"", ""version"": 1 },
+                    ""entries"": {
+                        ""room.c01_berth_gallery"": {
+                            ""kind"": ""room"",
+                            ""def"": {
+                                ""name"": ""Huge Berth"",
+                                ""kind"": ""indoor"",
+                                ""footprint"": { ""rect"": [[0, 0], [1e20, 1e20]] },
+                                ""details"": { ""a"": ""1"", ""b"": ""2"", ""c"": ""3"" }
+                            }
+                        }
+                    }
+                }");
+                try
+                {
+                    station.BuildStation(null, "neighborhood.raw_huge_test");
+                }
+                finally
+                {
+                    TacSimContentLoader.ClearDynamicPacks();
+                }
+                sw.Stop();
+                Assert.Less(sw.ElapsedMilliseconds, 5000, "Station build on extreme bounds must not hang");
+                int mullions = 0;
+                int stanchions = 0;
+                var allTr = rootGo.GetComponentsInChildren<UnityEngine.Transform>(true);
+                for (int i = 0; i < allTr.Length; i++)
+                {
+                    if (allTr[i].name == "ViewportMullion") mullions++;
+                    if (allTr[i].name == "ViewingStanchion") stanchions++;
+                }
+                Assert.LessOrEqual(mullions, 64);
+                Assert.LessOrEqual(stanchions, 64);
+
+                // 4. MushWsClient enforces 16 MiB cumulative inbound byte budget AND preserves handshake `caps` under ping floods.
+                using (var ws = new MushWsClient())
+                {
+                    var env = MushProtocol.ParseEnvelope(@"{""seq"":1,""ts"":1,""t"":""sys"",""d"":{""text"":""chunk""}}");
+                    bool ok1 = ws.InjectSyntheticEnvelope(env, 4 * 1024 * 1024);
+                    bool ok2 = ws.InjectSyntheticEnvelope(env, 4 * 1024 * 1024);
+                    bool ok3 = ws.InjectSyntheticEnvelope(env, 4 * 1024 * 1024);
+                    bool ok4 = ws.InjectSyntheticEnvelope(env, 4 * 1024 * 1024);
+                    bool ok5 = ws.InjectSyntheticEnvelope(env, 1024);
+                    Assert.IsTrue(ok1 && ok2 && ok3 && ok4, "Up to 16 MiB inbound queued bytes must be accepted");
+                    Assert.IsFalse(ok5, "Exceeding 16 MiB cumulative inbound queue bytes must latch overflow");
+                    Assert.IsTrue(ws.InboundOverflowDetected);
+                }
+                using (var wsPrio = new MushWsClient())
+                {
+                    var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                    var enqHandshake = typeof(MushWsClient).GetMethod("EnqueueHandshakeRaw", flags);
+                    enqHandshake.Invoke(wsPrio, new object[] { MushProtocol.BuildCapsCommand(120, 40) });
+                    // Flood 100 server pings -> pongs go to _priorityOutbound and must NEVER evict handshake `caps`!
+                    for (int p = 0; p < 100; p++)
+                    {
+                        wsPrio.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope($@"{{""seq"":0,""ts"":{p},""t"":""ping"",""d"":{{""nonce"":""n{p}""}}}}"));
+                        wsPrio.PumpMainThread();
+                    }
+                    Assert.IsTrue(wsPrio.TryDequeueOutbound(out string firstOut));
+                    StringAssert.Contains("\"t\":\"caps\"", firstOut, "Handshake caps must survive a 100-ping flood without eviction");
+                }
+
+                // 5. SpaceFlightController caps rocks/contacts/torpedoes and TacSimMindTerminal expires & caps pending requests.
+                var spaceGo = new UnityEngine.GameObject("SpaceCapTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                var contactsArr = JsonNode.NewArray();
+                for (int c = 0; c < 200; c++)
+                {
+                    var co = JsonNode.NewObject();
+                    co["id"] = JsonNode.FromString($"c.{c}");
+                    co["label"] = JsonNode.FromString($"Ship {c}");
+                    co["kind"] = JsonNode.FromString("ship");
+                    co["x_km"] = JsonNode.FromDouble(c + 1);
+                    co["y_km"] = JsonNode.FromDouble(0);
+                    co["z_km"] = JsonNode.FromDouble(0);
+                    contactsArr.Add(co);
+                }
+                var torpArr = JsonNode.NewArray();
+                for (int t = 0; t < 150; t++)
+                {
+                    var to = JsonNode.NewObject();
+                    to["id"] = JsonNode.FromString($"t.{t}");
+                    to["x_km"] = JsonNode.FromDouble(t + 1);
+                    to["y_km"] = JsonNode.FromDouble(0);
+                    to["z_km"] = JsonNode.FromDouble(0);
+                    torpArr.Add(to);
+                }
+                var floodHolo = JsonNode.NewObject();
+                floodHolo["contacts"] = contactsArr;
+                floodHolo["torpedoes"] = torpArr;
+                space.ApplyHolotankFeed(floodHolo);
+                Assert.LessOrEqual(space.LiveTorpedoCount, 64, "Torpedoes must be capped at 64");
+
+                var mindGo = new UnityEngine.GameObject("MindPendingCap");
+                mindGo.transform.SetParent(rootGo.transform, false);
+                var mind = mindGo.AddComponent<TacSim.UI.TacSimMindTerminal>();
+                using (var wsMind = new MushWsClient())
+                {
+                    mind.BindClient(wsMind);
+                    for (int r = 1; r <= TacSim.UI.TacSimMindTerminal.MaxPendingRequests + 20; r++)
+                        mind.RequestUnitMindTrace(r, false);
+                    Assert.AreEqual(TacSim.UI.TacSimMindTerminal.MaxPendingRequests, mind.PendingRequestCount,
+                        "Pending mind invokes must be bounded by MaxPendingRequests");
+                    mind.PruneExpiredPendingRequests(UnityEngine.Time.realtimeSinceStartup + TacSim.UI.TacSimMindTerminal.PendingRequestTimeoutSec + 5f);
+                    Assert.AreEqual(0, mind.PendingRequestCount, "Expired pending mind invokes must be pruned");
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_12_LoopbackParsing_UriValidation_CredentialRedaction_AndDisconnectTokenClearing()
+        {
+            // 1. Fail-closed loopback checks on blank, userinfo, query, and fragment edge cases.
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority(""));
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("   "));
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("localhost:80@evil.com"));
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("[::1]:80@evil.com"));
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("localhost?x=1"));
+            Assert.IsFalse(MushAuthClient.IsLoopbackAuthority("localhost#frag"));
+            Assert.IsFalse(MushAuthClient.IsLoopbackUrl(""));
+            Assert.IsFalse(MushAuthClient.IsLoopbackUrl("localhost:80@evil.com"));
+            Assert.IsFalse(MushAuthClient.IsLoopbackUrl("https://localhost:80@evil.com"));
+            Assert.IsTrue(MushAuthClient.IsLoopbackAuthority("localhost:8080"));
+            Assert.IsTrue(MushAuthClient.IsLoopbackAuthority("127.0.0.1:8080"));
+            Assert.IsTrue(MushAuthClient.IsLoopbackAuthority("[::1]:8080"));
+
+            // 2. NormalizeBaseUrl does NOT choose cleartext http:// for userinfo-spoofed localhost@evil.com.
+            StringAssert.StartsWith("https://", MushAuthClient.NormalizeBaseUrl("localhost:80@evil.com"));
+
+            // 3. BuildValidatedAuthEndpointUri and BuildValidatedWebSocketUri reject UserInfo, Query, and Fragment.
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("https://user:pass@play.conclav.io", "/api/auth/login", allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("https://play.conclav.io?x=1", "/api/auth/login", allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushAuthClient.BuildValidatedAuthEndpointUri("https://play.conclav.io#frag", "/api/auth/login", allowInsecureNonLoopback: false));
+
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushWsClient.BuildValidatedWebSocketUri("https://user:pass@play.conclav.io", "char1", 0, allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushWsClient.BuildValidatedWebSocketUri("https://play.conclav.io?x=1", "char1", 0, allowInsecureNonLoopback: false));
+            Assert.Throws<System.InvalidOperationException>(() =>
+                MushWsClient.BuildValidatedWebSocketUri("https://play.conclav.io#frag", "char1", 0, allowInsecureNonLoopback: false));
+
+            var cleanAuthUri = MushAuthClient.BuildValidatedAuthEndpointUri("https://dev1.conclav.io", "/api/auth/login", allowInsecureNonLoopback: false);
+            Assert.AreEqual("https://dev1.conclav.io/api/auth/login", cleanAuthUri.AbsoluteUri);
+            var cleanWsUri = MushWsClient.BuildValidatedWebSocketUri("https://dev1.conclav.io", "char1", 42, allowInsecureNonLoopback: false);
+            Assert.AreEqual("wss://dev1.conclav.io/ws?char=char1&resume=42", cleanWsUri.AbsoluteUri);
+
+            // 4. SanitizeUrlForDisplayOrStorage strips embedded credentials, query, and fragment.
+            string sanitized = MushAuthClient.SanitizeUrlForDisplayOrStorage("https://alice:SuperSecretPass@play.conclav.io:8443/path?tok=secret#frag");
+            StringAssert.DoesNotContain("SuperSecretPass", sanitized);
+            StringAssert.DoesNotContain("alice", sanitized);
+            StringAssert.DoesNotContain("tok=secret", sanitized);
+            StringAssert.DoesNotContain("#frag", sanitized);
+            Assert.AreEqual("https://play.conclav.io:8443/path", sanitized);
+
+            // 5. MushWsClient clears _activeAuth in Disconnect() AND on server `disconnect` event.
+            var authField = typeof(MushWsClient).GetField("_activeAuth", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert.IsNotNull(authField);
+            using (var ws = new MushWsClient())
+            {
+                authField.SetValue(ws, new MushAuthSession { Token = "secret-tok-1", BaseHttpUrl = "https://dev1.conclav.io" });
+                Assert.IsNotNull(authField.GetValue(ws));
+                ws.Disconnect();
+                Assert.IsNull(authField.GetValue(ws), "Disconnect() must clear _activeAuth");
+
+                authField.SetValue(ws, new MushAuthSession { Token = "secret-tok-2", BaseHttpUrl = "https://dev1.conclav.io" });
+                ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{""seq"":10,""ts"":1,""t"":""disconnect"",""d"":{""reason"":""bye""}}"));
+                ws.PumpMainThread();
+                Assert.IsNull(authField.GetValue(ws), "Server disconnect envelope must clear _activeAuth");
+            }
+        }
+
+        [Test]
+        public void Security_P2_CLIENT_13_AutoTransitGatedOnInitialLimboSync_AndNavWalkerCanceledOnDynamicPackRebuild()
+        {
+            var rootGo = new UnityEngine.GameObject("P2Client13CoordTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var stationGo = new UnityEngine.GameObject("Station");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                coord.StationWorld = stationGo.AddComponent<StationWorldController>();
+                var shipGo = new UnityEngine.GameObject("Ship");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                coord.ShipInterior = shipGo.AddComponent<ShipInteriorController>();
+                var spaceGo = new UnityEngine.GameObject("Space");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SpaceStage = spaceGo.AddComponent<SpaceFlightController>();
+                var surfaceGo = new UnityEngine.GameObject("Surface");
+                surfaceGo.transform.SetParent(rootGo.transform, false);
+                coord.SurfaceStage = surfaceGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                coord.ArenaStage = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                coord.CameraRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                coord.CameraRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                var playerGo = new UnityEngine.GameObject("Player", typeof(UnityEngine.CharacterController));
+                playerGo.transform.SetParent(rootGo.transform, false);
+                coord.Player = playerGo.AddComponent<TacSim.Character.ThirdPersonPlayerController>();
+                coord.Player.VisualSpawner = playerGo.AddComponent<TacSim.Character.CharacterVisualSpawner>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                var onFlush = typeof(TacSimGameCoordinator).GetMethod("FlushPendingRoomMovesBeforeAction", flags);
+                var onRefresh = typeof(TacSimGameCoordinator).GetMethod("RefreshLoadedContentAfterSync", flags);
+                var simConnField = typeof(TacSimGameCoordinator).GetField("_simulateConnectedForTests", flags);
+                var awaitingInitField = typeof(TacSimGameCoordinator).GetField("_awaitingInitialRoomSync", flags);
+                var navWalkerField = typeof(TacSimGameCoordinator).GetField("_navWalker", flags);
+                simConnField.SetValue(coord, true);
+                awaitingInitField.SetValue(coord, true);
+
+                var dispatched = new List<string>();
+                coord.OnCommandDispatched += dispatched.Add;
+
+                // 1. Initial sync into normal station room (NOT Limbo) clears _awaitingInitialRoomSync;
+                //    subsequently entering a non-atlas room with a "Ceres Freeport" exit must NOT auto-transit!
+                var normalStationRoom = MushProtocol.ParseRoomView(JsonNode.Parse(
+                    @"{""id"":""#101"",""name"":""Visiting Berth Gallery"",""ambient"":{""atlas"":{""pack"":""neighborhood.ceres_freeport"",""entry"":""room.c01_berth_gallery"",""surface"":""station""}}}"));
+                UnityEngine.Time.time = 200f;
+                onRoom.Invoke(coord, new object[] { normalStationRoom });
+                Assert.AreEqual(0, dispatched.Count);
+
+                var trapNonAtlasRoom = new MushRoomView
+                {
+                    Id = "#777",
+                    Name = "Limbo",
+                    Exits = new List<MushExitRef>
+                    {
+                        new MushExitRef { Name = "Ceres Freeport", Aliases = new List<string> { "ceres" } }
+                    }
+                };
+                UnityEngine.Time.time = 201f;
+                onRoom.Invoke(coord, new object[] { trapNonAtlasRoom });
+                Assert.AreEqual(0, dispatched.Count, "Visiting a non-atlas room after initial sync must never trigger Limbo auto-transit");
+
+                // 2. Non-Limbo room on initial sync also must NOT auto-transit even if it has a Ceres exit.
+                awaitingInitField.SetValue(coord, true);
+                var nonLimboRoom = new MushRoomView
+                {
+                    Id = "#778",
+                    Name = "Smuggler Lounge",
+                    Exits = new List<MushExitRef>
+                    {
+                        new MushExitRef { Name = "Ceres Freeport", Aliases = new List<string> { "ceres" } }
+                    }
+                };
+                Assert.IsFalse(TacSimGameCoordinator.IsLimboStartRoom(nonLimboRoom));
+                onRoom.Invoke(coord, new object[] { nonLimboRoom });
+                Assert.AreEqual(0, dispatched.Count, "Non-Limbo initial room must never auto-transit");
+
+                // 3. Initial sync directly into Limbo DOES perform one-shot auto-transit with `goto ` prefix.
+                awaitingInitField.SetValue(coord, true);
+                Assert.IsTrue(TacSimGameCoordinator.IsLimboStartRoom(trapNonAtlasRoom));
+                onRoom.Invoke(coord, new object[] { trapNonAtlasRoom });
+                Assert.AreEqual(1, dispatched.Count);
+                Assert.AreEqual("goto ceres", dispatched[0]);
+
+                // 4. RefreshLoadedContentAfterSync cancels _navWalker on dynamic station pack rebuild!
+                dispatched.Clear();
+                onRoom.Invoke(coord, new object[] { normalStationRoom });
+                coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c03_arrivals"), 0f);
+                UnityEngine.Time.time = 210f;
+                onFlush.Invoke(coord, null);
+                var walker = (RoomBoundNavWalker)navWalkerField.GetValue(coord);
+                Assert.IsTrue(walker.InFlight.HasValue, "Expected an in-flight navigation hop before pack rebuild");
+                Assert.Greater(walker.QueuedCount, 0, "Expected queued hops before pack rebuild");
+
+                onRefresh.Invoke(coord, null);
+                Assert.IsFalse(walker.InFlight.HasValue, "Dynamic pack rebuild must cancel in-flight nav walker hop");
+                Assert.AreEqual(0, walker.QueuedCount, "Dynamic pack rebuild must clear queued nav walker hops");
             }
             finally
             {

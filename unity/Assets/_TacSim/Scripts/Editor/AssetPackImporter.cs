@@ -207,10 +207,15 @@ namespace TacSim.Editor
             if (!Directory.Exists(assetsDiskRoot))
                 return 0;
 
+            string tacSimPrefix = Path.GetFullPath(Path.Combine(assetsDiskRoot, "_TacSim"))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             int extracted = 0;
             string[] nestedPackages = Directory.GetFiles(assetsDiskRoot, "*.unitypackage", SearchOption.AllDirectories);
             foreach (string pkgPath in nestedPackages)
             {
+                string fullPkgPath = Path.GetFullPath(pkgPath);
+                if (fullPkgPath.StartsWith(tacSimPrefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 string fileName = Path.GetFileNameWithoutExtension(pkgPath);
                 foreach (string pattern in NestedUrpUpgradePatterns)
                 {

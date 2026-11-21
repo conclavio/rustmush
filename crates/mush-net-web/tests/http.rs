@@ -715,3 +715,117 @@ async fn request_timeout_returns_408_without_cutting_ws() {
         "WS connection must survive past request_timeout_ms"
     );
 }
+
+#[tokio::test]
+async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_ws() {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+    let hooks = Arc::new(MockWebHooks::new());
+    hooks.metrics_registry().set_world_loop_iteration(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    );
+    let config = WebConfig {
+        max_connections: 16,
+        max_connections_per_ip: 2,
+        max_keepalive_requests: 2,
+        max_http_conn_age_ms: 400,
+        header_read_timeout_ms: 5_000,
+        metrics_enabled: true,
+        ..test_config()
+    };
+    let addr = spawn_server(hooks.clone(), config).await;
+
+    // 1. Per-IP cap (2) drops 3rd socket even though global max_connections is 16.
+    let mut held1 = TcpStream::connect(addr).await.unwrap();
+    let mut held2 = TcpStream::connect(addr).await.unwrap();
+    held1.write_all(b"GET ").await.unwrap();
+    held2.write_all(b"GET ").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut excess = TcpStream::connect(addr).await.unwrap();
+    let _ = excess
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await;
+    let mut buf = [0u8; 64];
+    let res = tokio::time::timeout(Duration::from_secs(2), excess.read(&mut buf))
+        .await
+        .expect("3rd socket from same IP must close promptly");
+    assert!(
+        matches!(res, Ok(0) | Err(_)),
+        "per-IP cap must drop 3rd socket before HTTP response: {res:?}"
+    );
+    drop((held1, held2));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 2. max_keepalive_requests (2) sends Connection: close on the 2nd response
+    //    and closes the socket rather than allowing indefinite keep-alive pinning.
+    let mut ka = TcpStream::connect(addr).await.unwrap();
+    for i in 0..2 {
+        ka.write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp_bytes = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(2), ka.read(&mut chunk))
+                .await
+                .expect("healthz response")
+                .unwrap();
+            assert!(n > 0, "unexpected EOF on request {i}");
+            resp_bytes.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&resp_bytes);
+            if text.contains("\r\n\r\n") && text.contains("\"ok\"") {
+                if i == 1 {
+                    assert!(
+                        text.to_ascii_lowercase().contains("connection: close"),
+                        "2nd keep-alive response must include Connection: close: {text}"
+                    );
+                }
+                break;
+            }
+        }
+    }
+    let eof = tokio::time::timeout(Duration::from_secs(2), ka.read(&mut buf))
+        .await
+        .expect("keep-alive socket must close after max_keepalive_requests");
+    assert!(matches!(eof, Ok(0) | Err(_)), "expected EOF: {eof:?}");
+
+    // 3. WebSocket upgrade survives well past max_http_conn_age_ms (400ms).
+    let mut ws_req = format!("ws://{addr}/ws?char={}", common::CHAR_KEY)
+        .into_client_request()
+        .unwrap();
+    ws_req.headers_mut().insert(
+        "sec-websocket-protocol",
+        HeaderValue::from_str(&format!("rustmush.v1.{TOKEN}")).unwrap(),
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let frame = futures::StreamExt::next(&mut ws).await;
+    assert!(
+        frame.is_some_and(|f| f.is_ok()),
+        "upgraded WebSocket must not be cut by max_http_conn_age_ms"
+    );
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 4. is_ip_blocked is enforced across ALL routes, not just /api/auth/*.
+    hooks
+        .state()
+        .blocked
+        .insert(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    for path in ["/healthz", "/metrics", "/"] {
+        let resp = client()
+            .get(format!("http://{addr}{path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 403, "blocked IP must get 403 on {path}");
+    }
+}

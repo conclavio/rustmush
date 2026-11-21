@@ -17,6 +17,10 @@ pub const MAX_FRAME: usize = 1024;
 pub const SUBSYSTEM: &str = "rustmush-resume-v1";
 pub const ENV_NAME: &str = "RUSTMUSH_RESUME_V1";
 const MAX_LEASES: usize = 4096;
+/// Maximum active + detached cockpit resume leases held by any single account
+/// (`P2-CLIENT-5` / `P2-EDGE-16`), preventing one account from exhausting the
+/// global [`MAX_LEASES`] table.
+const MAX_LEASES_PER_ACCOUNT: usize = 8;
 const MAX_GRACE: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -313,16 +317,55 @@ impl Registry {
         let now = Instant::now();
         leases.retain(|_, lease| !lease.state.is_expired(now));
         let key = PaneKey::new(account, pane);
-        match leases.get(&key) {
-            Some(lease) if !matches!(lease.state, State::Detached(_)) => return Err(Failure::Busy),
-            None if leases.len() >= MAX_LEASES => return Err(Failure::Busy),
-            _ => {}
+        if let Some(lease) = leases.get(&key)
+            && !matches!(lease.state, State::Detached(_))
+        {
+            return Err(Failure::Busy);
         }
         if leases.iter().any(|(other, lease)| {
             (other != &key && lease.conn == conn)
                 || matches!(lease.state, State::Reserved { conn: candidate, .. } if candidate == conn)
         }) {
             return Err(Failure::Busy);
+        }
+        // Evict any prior detached leases for this same account + session or
+        // character, since this new exclusive connection supersedes them
+        // (`P2-CLIENT-5` / `P2-EDGE-16`).
+        leases.retain(|other, lease| {
+            !(other != &key
+                && other.account == account
+                && matches!(lease.state, State::Detached(_))
+                && (lease.session == session || lease.character == character))
+        });
+        if !leases.contains_key(&key) {
+            // Enforce strict per-account lease ceiling so one account can never
+            // starve other accounts out of the global `MAX_LEASES` pool
+            // (`P2-CLIENT-5` / `P2-EDGE-16`). Evict the account's oldest
+            // detached lease first; refuse if all slots are attached/reserved.
+            while leases
+                .keys()
+                .filter(|other| other.account == account)
+                .count()
+                >= MAX_LEASES_PER_ACCOUNT
+            {
+                let oldest_detached = leases
+                    .iter()
+                    .filter_map(|(other, lease)| match lease.state {
+                        State::Detached(deadline) if other.account == account => {
+                            Some((deadline, other.clone()))
+                        }
+                        _ => None,
+                    })
+                    .min_by(|(da, ka), (db, kb)| da.cmp(db).then_with(|| ka.pane.cmp(&kb.pane)))
+                    .map(|(_, victim)| victim);
+                let Some(victim) = oldest_detached else {
+                    return Err(Failure::Busy);
+                };
+                leases.remove(&victim);
+            }
+            if leases.len() >= MAX_LEASES {
+                return Err(Failure::Busy);
+            }
         }
         leases.insert(
             key,
@@ -452,14 +495,10 @@ fn checked_lease<'a>(
     digest: [u8; 32],
     now: Instant,
 ) -> Result<(&'a mut Lease, Option<Instant>), Failure> {
-    if !leases.contains_key(key) {
-        return Err(if leases.keys().any(|other| other.pane == key.pane) {
-            Failure::Denied
-        } else {
-            Failure::Expired
-        });
-    }
-    let lease = leases.get_mut(key).ok_or(Failure::Expired)?;
+    // Collapse missing/foreign-account keys to a uniform `Failure::Denied`
+    // without scanning other accounts' entries so callers cannot probe foreign
+    // pane IDs (`P2-CLIENT-5` / `P2-EDGE-16`).
+    let lease = leases.get_mut(key).ok_or(Failure::Denied)?;
     if selected.is_some_and(|ch| ch != lease.character) {
         return Err(Failure::Denied);
     }
@@ -645,7 +684,7 @@ mod tests {
         registry.detach(73, false);
         assert!(matches!(
             registry.reserve(74, PANE, "pilot", None, &latest),
-            Err(Failure::Expired)
+            Err(Failure::Denied)
         ));
     }
 
@@ -795,7 +834,7 @@ mod tests {
         registry.close_attached(2);
         assert_eq!(
             registry.attached_owner(PANE, "pilot", None, &replacement),
-            Err(Failure::Expired)
+            Err(Failure::Denied)
         );
     }
 
@@ -850,5 +889,146 @@ mod tests {
         assert!(decode_request(&padded).is_ok());
         padded.push(b' ');
         assert!(decode_request(&padded).is_err());
+    }
+
+    #[test]
+    fn single_account_cannot_exhaust_global_leases_and_evicts_stale_detached() {
+        let registry = Registry::default();
+        let pane_for = |i: usize| format!("{i:032x}");
+
+        // 1. Re-issuing for the same account+session on fresh pane IDs evicts
+        // prior detached leases immediately rather than accumulating them.
+        let (t0, _) = registry
+            .issue(1, &pane_for(1), "pilot", 3, SessId(10), MAX_GRACE)
+            .expect("initial lease");
+        registry.detach(1, true);
+        let (t1, _) = registry
+            .issue(2, &pane_for(2), "pilot", 3, SessId(10), MAX_GRACE)
+            .expect("supersede same session");
+        assert_eq!(registry.lock().len(), 1);
+        assert!(matches!(
+            registry.reserve(3, &pane_for(1), "pilot", None, &t0),
+            Err(Failure::Denied)
+        ));
+        registry.detach(2, true);
+        assert!(
+            registry
+                .reserve(3, &pane_for(2), "pilot", None, &t1)
+                .is_ok()
+        );
+        registry.detach(2, false);
+
+        // 2. Churning many distinct characters/sessions/panes on one account
+        // stays capped at MAX_LEASES_PER_ACCOUNT (evicting oldest detached) so
+        // one account can never starve another account out of MAX_LEASES.
+        let mut issued_tickets = Vec::new();
+        for i in 0..(MAX_LEASES_PER_ACCOUNT + 24) {
+            let conn = 100 + i as u64;
+            let pane = pane_for(100 + i);
+            let ch = 1000 + i as u64;
+            let sess = SessId(2000 + i as u64);
+            let (ticket, _) = registry
+                .issue(conn, &pane, "attacker", ch, sess, MAX_GRACE)
+                .expect("evicting own oldest detached lease succeeds");
+            registry.detach(conn, true);
+            issued_tickets.push((pane, ticket));
+        }
+        assert_eq!(
+            registry.lock().len(),
+            MAX_LEASES_PER_ACCOUNT,
+            "single account must never exceed MAX_LEASES_PER_ACCOUNT"
+        );
+        // Earliest detached leases were evicted; the newest MAX_LEASES_PER_ACCOUNT survive.
+        let (oldest_pane, oldest_ticket) = &issued_tickets[0];
+        assert!(matches!(
+            registry.reserve(9999, oldest_pane, "attacker", None, oldest_ticket),
+            Err(Failure::Denied)
+        ));
+        // Another account can still obtain leases cleanly.
+        assert!(
+            registry
+                .issue(5000, &pane_for(5000), "legit", 7, SessId(77), MAX_GRACE)
+                .is_ok()
+        );
+
+        // 3. If all MAX_LEASES_PER_ACCOUNT slots are actively Attached, a
+        // subsequent issue for that account returns Failure::Busy while another
+        // account still succeeds.
+        let active_reg = Registry::default();
+        for i in 0..MAX_LEASES_PER_ACCOUNT {
+            active_reg
+                .issue(
+                    10 + i as u64,
+                    &pane_for(500 + i),
+                    "busy-acct",
+                    50 + i as u64,
+                    SessId(500 + i as u64),
+                    MAX_GRACE,
+                )
+                .expect("up to per-account cap");
+        }
+        assert!(matches!(
+            active_reg.issue(
+                999,
+                &pane_for(999),
+                "busy-acct",
+                999,
+                SessId(999),
+                MAX_GRACE
+            ),
+            Err(Failure::Busy)
+        ));
+        assert!(
+            active_reg
+                .issue(
+                    1000,
+                    &pane_for(1000),
+                    "other-acct",
+                    1000,
+                    SessId(1000),
+                    MAX_GRACE
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn cross_account_redeem_collapses_foreign_and_nonexistent_pane_ids() {
+        let registry = Registry::default();
+        let foreign_pane = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let missing_pane = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let (ticket, _) = registry
+            .issue(1, foreign_pane, "alice", 10, SessId(100), MAX_GRACE)
+            .expect("issue for alice");
+
+        // While active (Attached): mallory gets identical Failure::Denied for
+        // alice's pane and a completely nonexistent pane.
+        assert_eq!(
+            registry.attached_owner(foreign_pane, "mallory", None, &ticket),
+            Err(Failure::Denied)
+        );
+        assert_eq!(
+            registry.attached_owner(missing_pane, "mallory", None, &ticket),
+            Err(Failure::Denied)
+        );
+        assert!(matches!(
+            registry.reserve(2, foreign_pane, "mallory", None, &ticket),
+            Err(Failure::Denied)
+        ));
+        assert!(matches!(
+            registry.reserve(2, missing_pane, "mallory", None, &ticket),
+            Err(Failure::Denied)
+        ));
+
+        // While Detached: still identical Failure::Denied (zero pane-ID oracle).
+        registry.detach(1, true);
+        assert!(matches!(
+            registry.reserve(2, foreign_pane, "mallory", None, &ticket),
+            Err(Failure::Denied)
+        ));
+        assert!(matches!(
+            registry.reserve(2, missing_pane, "mallory", None, &ticket),
+            Err(Failure::Denied)
+        ));
     }
 }

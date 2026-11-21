@@ -820,7 +820,8 @@ impl PanelStore {
 }
 
 /// The plain text of a serialized `RichText` (an array of spans) or a bare
-/// string, control characters dropped.
+/// string, control and Unicode BiDi / line-separator characters dropped
+/// (`P2-CLIENT-6`).
 #[must_use]
 pub fn rich_plain(v: &Value) -> String {
     let raw = match v {
@@ -831,7 +832,9 @@ pub fn rich_plain(v: &Value) -> String {
         Value::String(s) => s.clone(),
         _ => String::new(),
     };
-    raw.chars().filter(|c| !c.is_control()).collect()
+    raw.chars()
+        .filter(|&c| !crate::is_stripped_terminal_char(c))
+        .collect()
 }
 
 /// The `object.id` of a unit frame, if it carries one. A `null` frame (the

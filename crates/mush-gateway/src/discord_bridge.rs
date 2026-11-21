@@ -625,6 +625,11 @@ pub struct DiscordBridge<A: AuthBackend + 'static> {
     relay_out_sem: Arc<Semaphore>,
     /// Bounds concurrent non-`Revoke` control tasks spawned by [`BridgeControl`].
     control_sem: Arc<Semaphore>,
+    /// Per-account async lock table serializing `redeem` and `unlink` mutations
+    /// on the same account so two concurrent link redemptions cannot race past
+    /// the `account.discord.is_none()` check and leave a stale reverse-index
+    /// entry (P2-EDGE-12).
+    account_link_locks: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     /// The Discord channel staff-facing lines go to (D5, `[discord]
     /// .staff_channel_id`); `0` drops them.
     staff_channel_id: u64,
@@ -794,6 +799,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             auto_follow_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_AUTO_FOLLOW)),
             relay_out_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_RELAY_OUT)),
             control_sem: Arc::new(Semaphore::new(MAX_CONCURRENT_CONTROLS)),
+            account_link_locks: Mutex::new(HashMap::new()),
             staff_channel_id: config.staff_channel_id,
         }
     }
@@ -946,6 +952,72 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         }
     }
 
+    /// Acquire an exclusive in-process lock for link/unlink mutations on
+    /// `account` (case-folded), pruning dead weak entries lazily (P2-EDGE-12).
+    async fn account_link_lock(&self, account: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = account.to_ascii_lowercase();
+        let lock = {
+            let mut map = locked(&self.account_link_locks, "account link locks");
+            map.retain(|_, w| w.strong_count() > 0);
+            if let Some(existing) = map.get(&key).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let fresh = Arc::new(tokio::sync::Mutex::new(()));
+                map.insert(key, Arc::downgrade(&fresh));
+                fresh
+            }
+        };
+        lock.lock_owned().await
+    }
+
+    /// Look up the account mapped to `user_id` via the reverse index AND verify
+    /// the forward link (`account.discord.user_id == user_id`) so a stale
+    /// reverse-index entry can never inspect, unlink, follow, or act as another
+    /// user's linked account (P2-EDGE-12).
+    async fn verified_account_for_user(
+        &self,
+        user_id: u64,
+    ) -> Result<Option<AccountRec>, StoreError> {
+        let Some(account) = self.store.account_by_discord_user(user_id).await? else {
+            return Ok(None);
+        };
+        if account
+            .discord
+            .as_ref()
+            .is_some_and(|link| link.user_id == user_id)
+        {
+            Ok(Some(account))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Release `discord:user:{user_id}` with bounded retry and warning on
+    /// failure instead of silently discarding store errors (P2-EDGE-12).
+    async fn release_discord_user(&self, user_id: u64) {
+        const ATTEMPTS: usize = 3;
+        for attempt in 1..=ATTEMPTS {
+            match self.store.discord_user_release(user_id).await {
+                Ok(_) => return,
+                Err(error) if attempt < ATTEMPTS => {
+                    tracing::warn!(
+                        attempt,
+                        %error,
+                        "discord_user_release failed; retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50 * attempt as u64)).await;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        attempt,
+                        %error,
+                        "discord_user_release failed after retries; stale reverse index left for forward-link check"
+                    );
+                }
+            }
+        }
+    }
+
     /// The link flow, with the reason class for the log. `Err` is a refusal.
     async fn redeem(&self, user_id: u64, code: &str) -> Result<AccountRec, &'static str> {
         let hash = link_code_hash(code);
@@ -966,6 +1038,10 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         {
             return Err("banned user");
         }
+        // Serialize link/unlink operations on the target account so concurrent
+        // redemptions on the same account cannot both observe
+        // `account.discord.is_none()` and overwrite each other (P2-EDGE-12).
+        let _acct_lock = self.account_link_lock(&pending.account).await;
         let Some(account) = self
             .store
             .get_account(&pending.account)
@@ -978,8 +1054,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             return Err("account already linked");
         }
         if self
-            .store
-            .account_by_discord_user(user_id)
+            .verified_account_for_user(user_id)
             .await
             .map_err(|_| "store")?
             .is_some()
@@ -994,6 +1069,22 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             .map_err(|_| "store")?
         {
             return Err("user reserved elsewhere");
+        }
+        // Re-check account before writing (guards against out-of-band link).
+        match self.store.get_account(&account.name).await {
+            Ok(Some(fresh)) if fresh.discord.is_none() => {}
+            Ok(Some(_)) => {
+                self.release_discord_user(user_id).await;
+                return Err("account already linked");
+            }
+            Ok(None) => {
+                self.release_discord_user(user_id).await;
+                return Err("account gone");
+            }
+            Err(_) => {
+                self.release_discord_user(user_id).await;
+                return Err("store");
+            }
         }
         let link = DiscordLinkRec {
             user_id,
@@ -1011,12 +1102,27 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             Ok(true) => {}
             _ => {
                 // Undo the reservation so the user is not stuck half-linked.
-                let _ = self.store.discord_user_release(user_id).await;
+                self.release_discord_user(user_id).await;
                 return Err("account write failed");
             }
         }
-        self.remember_account(&account);
-        Ok(account)
+        // Post-write forward-link confirmation: if an external writer raced us,
+        // release our reverse-index reservation so it cannot linger stale.
+        match self.store.get_account(&account.name).await {
+            Ok(Some(confirmed))
+                if confirmed
+                    .discord
+                    .as_ref()
+                    .is_some_and(|l| l.user_id == user_id) =>
+            {
+                self.remember_account(&confirmed);
+                Ok(confirmed)
+            }
+            _ => {
+                self.release_discord_user(user_id).await;
+                Err("account already linked")
+            }
+        }
     }
 
     /// Which of the account's characters a follow attaches: the named one;
@@ -1069,7 +1175,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         intro: Option<&str>,
     ) -> FollowOutcome {
         let generation = self.revocation.load(Ordering::SeqCst);
-        let account = match self.store.account_by_discord_user(user_id).await {
+        let account = match self.verified_account_for_user(user_id).await {
             Ok(Some(a)) => a,
             Ok(None) => return FollowOutcome::NotLinked,
             Err(e) => {
@@ -1348,14 +1454,21 @@ fn bounded_reply(text: String) -> String {
 }
 
 impl<A: AuthBackend + 'static> DiscordBridge<A> {
+    /// Store-backed permission check returning the verified account; an
+    /// unavailable store fails closed.
+    async fn authorized_account(&self, user: u64, character: ObjId) -> Option<AccountRec> {
+        if !matches!(self.store.discord_ban_get(user).await, Ok(None)) {
+            return None;
+        }
+        match self.verified_account_for_user(user).await {
+            Ok(Some(a)) if a.characters.iter().any(|c| c.id == character) => Some(a),
+            _ => None,
+        }
+    }
+
     /// Store-backed permission check; an unavailable store fails closed.
     async fn authorized(&self, user: u64, character: ObjId) -> bool {
-        if !matches!(self.store.discord_ban_get(user).await, Ok(None)) {
-            return false;
-        }
-        matches!(self.store.account_by_discord_user(user).await, Ok(Some(a))
-            if a.discord.as_ref().is_some_and(|l| l.user_id == user)
-                && a.characters.iter().any(|c| c.id == character))
+        self.authorized_account(user, character).await.is_some()
     }
 
     fn invalidate_character(&self, actor: ObjId) -> Option<ConnId> {
@@ -1376,18 +1489,27 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         Some(old.conn)
     }
 
-    async fn validated_follow(&self, user: u64) -> Option<(ConnId, ObjId, Arc<FollowState>)> {
+    async fn validated_follow(
+        &self,
+        user: u64,
+    ) -> Option<(ConnId, ObjId, Arc<FollowState>, AccountRec)> {
         let (conn, actor, state) = self.follow_of(user)?;
-        if state.cancelled.is_cancelled() || !self.authorized(user, actor).await {
+        if state.cancelled.is_cancelled() {
             if let Some(conn) = self.invalidate_character(actor) {
                 self.core.quit(conn).await;
             }
             return None;
         }
+        let Some(account) = self.authorized_account(user, actor).await else {
+            if let Some(conn) = self.invalidate_character(actor) {
+                self.core.quit(conn).await;
+            }
+            return None;
+        };
         if state.cancelled.is_cancelled() || !self.follow_of(user).is_some_and(|f| f.0 == conn) {
             return None;
         }
-        Some((conn, actor, state))
+        Some((conn, actor, state, account))
     }
 
     /// The follow's connection and writer state, if `user_id` is following.
@@ -1619,7 +1741,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
     /// Anything outside the bridge's namespaces crosses to the server, which
     /// dispatches by prefix to the handler a module registered (03 §7a.4).
     async fn forward_interaction(&self, user_id: u64, ix: Interaction) -> InteractionReply {
-        let account = match self.store.account_by_discord_user(user_id).await {
+        let account = match self.verified_account_for_user(user_id).await {
             Ok(a) => a,
             Err(e) => {
                 tracing::warn!(error = %e, "discord interaction: account lookup failed");
@@ -1628,17 +1750,19 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
                 );
             }
         };
-        let actor = self
-            .follow_of(user_id)
-            .map(|(_, character, _)| character)
-            .or_else(|| {
-                let account = account.as_ref()?;
-                account
-                    .discord
-                    .as_ref()
-                    .and_then(|l| l.relay_character)
-                    .or_else(|| account.characters.first().map(|c| c.id))
-            });
+        let actor = account.as_ref().and_then(|account| {
+            self.follow_of(user_id)
+                .map(|(_, character, _)| character)
+                .filter(|c| account.characters.iter().any(|ch| ch.id == *c))
+                .or_else(|| {
+                    account
+                        .discord
+                        .as_ref()
+                        .and_then(|l| l.relay_character)
+                        .filter(|c| account.characters.iter().any(|ch| ch.id == *c))
+                })
+                .or_else(|| account.characters.first().map(|c| c.id))
+        });
         let values = if ix.values.is_empty() {
             ix.fields.into_iter().map(|(_, v)| v).collect()
         } else {
@@ -1932,7 +2056,8 @@ fn staff_line(event: &OutputEvent) -> Option<String> {
                 escape_md(&text.to_plain_text())
             );
             if let Some(a) = action {
-                s.push_str(&format!("  (`{}`)", a.prefill));
+                let safe_prefill = a.prefill.replace(['`', '\r', '\n'], " ");
+                s.push_str(&format!("  (`{safe_prefill}`)"));
             }
             Some(s)
         }
@@ -2069,9 +2194,11 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         if content.trim().is_empty() {
             return RelayLineOutcome::Ignored;
         }
-        // STRAG-M10: verify linked account and ban status BEFORE admitting into
-        // `relay_limiter`, so unlinked guild chatter cannot bloat the limiter map.
-        let account = match self.store.account_by_discord_user(user_id).await {
+        // STRAG-M10 + P2-EDGE-12: verify linked account (including forward link
+        // `account.discord.user_id == user_id`) and ban status BEFORE admitting
+        // into `relay_limiter`, so unlinked guild chatter or stale reverse-index
+        // entries cannot act or bloat the limiter map.
+        let account = match self.verified_account_for_user(user_id).await {
             Ok(Some(a)) => a,
             Ok(None) => return RelayLineOutcome::NotLinked,
             Err(e) => {
@@ -2119,6 +2246,7 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
         let actor = self
             .follow_of(user_id)
             .map(|(_, character, _)| character)
+            .filter(|c| account.characters.iter().any(|ch| ch.id == *c))
             .or_else(|| {
                 account
                     .discord
@@ -2155,6 +2283,32 @@ impl<A: AuthBackend + 'static> DiscordBridge<A> {
             }
         }
     }
+    /// Dispatch one DM command line after `validated_follow` has already
+    /// verified authorization and follow state (P2-EDGE-19: avoids duplicate
+    /// store lookups in `dm_message`).
+    async fn dm_line_validated(&self, user_id: u64, validated: ConnId, line: &str) -> LineOutcome {
+        let conn = {
+            let mut follows = locked(&self.follows, "follows");
+            match follows.get_mut(&user_id) {
+                Some(f) if f.conn == validated && !f.state.cancelled.is_cancelled() => {
+                    f.last_input = Instant::now();
+                    f.conn
+                }
+                _ => return LineOutcome::NotFollowing,
+            }
+        };
+        tracing::debug!(conn = conn.0, "discord dm line accepted for the follow");
+        match self.core.line(conn, line).await {
+            CoreLine::Continue => LineOutcome::Accepted,
+            CoreLine::Close => {
+                let mut follows = locked(&self.follows, "follows");
+                if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
+                    follows.remove(&user_id);
+                }
+                LineOutcome::Closed
+            }
+        }
+    }
 }
 
 /// The periodic idle sweep ([`IDLE_SWEEP_INTERVAL`]).
@@ -2175,7 +2329,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
         content: &'a str,
     ) -> BoxFuture<'a, LineOutcome> {
         Box::pin(async move {
-            let Some((conn, actor, _)) = self.validated_follow(user_id).await else {
+            let Some((conn, actor, _, account)) = self.validated_follow(user_id).await else {
                 return LineOutcome::NotFollowing;
             };
             if content.len() > mush_net_ssh::MAX_LINE_CHARS.saturating_mul(4) {
@@ -2200,12 +2354,9 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
                 return LineOutcome::Accepted;
             }
             let Some((alias, body)) = clean.trim().split_once(char::is_whitespace) else {
-                return self.dm_line(user_id, content).await;
+                return self.dm_line_validated(user_id, conn, content).await;
             };
             let (kind, text) = relay_kind(body.trim());
-            let Ok(Some(account)) = self.store.account_by_discord_user(user_id).await else {
-                return LineOutcome::NotFollowing;
-            };
             let Some(account) = account
                 .id
                 .or_else(|| AccountId::mint(&account.name, account.created).ok())
@@ -2295,9 +2446,23 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
 
     fn unlink(&self, user_id: u64) -> BoxFuture<'_, UnlinkOutcome> {
         Box::pin(async move {
-            let Ok(Some(account)) = self.store.account_by_discord_user(user_id).await else {
+            let Ok(Some(initial)) = self.verified_account_for_user(user_id).await else {
                 return UnlinkOutcome::NotLinked;
             };
+            // Serialize against concurrent `redeem` / `unlink` on the same
+            // account and re-verify the forward link under the lock before
+            // clearing `account.discord` (P2-EDGE-12).
+            let _acct_lock = self.account_link_lock(&initial.name).await;
+            let Ok(Some(account)) = self.store.get_account(&initial.name).await else {
+                return UnlinkOutcome::NotLinked;
+            };
+            if !account
+                .discord
+                .as_ref()
+                .is_some_and(|l| l.user_id == user_id)
+            {
+                return UnlinkOutcome::NotLinked;
+            }
             if !matches!(
                 self.store.set_account_discord(&account.name, None).await,
                 Ok(true)
@@ -2309,7 +2474,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
                     self.core.quit(conn).await;
                 }
             }
-            let _ = self.store.discord_user_release(user_id).await;
+            self.release_discord_user(user_id).await;
             // An unlinked user has no business following.
             let follow = locked(&self.follows, "follows").remove(&user_id);
             if let Some(f) = follow {
@@ -2328,7 +2493,7 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
 
     fn whoami(&self, user_id: u64) -> BoxFuture<'_, Option<WhoAmI>> {
         Box::pin(async move {
-            let account = self.store.account_by_discord_user(user_id).await.ok()??;
+            let account = self.verified_account_for_user(user_id).await.ok()??;
             let link = account.discord.as_ref()?;
             Some(WhoAmI {
                 account: account.name.clone(),
@@ -2361,30 +2526,10 @@ impl<A: AuthBackend + 'static> DiscordHooks for DiscordBridge<A> {
 
     fn dm_line<'a>(&'a self, user_id: u64, line: &'a str) -> BoxFuture<'a, LineOutcome> {
         Box::pin(async move {
-            let Some((validated, _, _)) = self.validated_follow(user_id).await else {
+            let Some((validated, _, _, _)) = self.validated_follow(user_id).await else {
                 return LineOutcome::NotFollowing;
             };
-            let conn = {
-                let mut follows = locked(&self.follows, "follows");
-                match follows.get_mut(&user_id) {
-                    Some(f) if f.conn == validated && !f.state.cancelled.is_cancelled() => {
-                        f.last_input = Instant::now();
-                        f.conn
-                    }
-                    _ => return LineOutcome::NotFollowing,
-                }
-            };
-            tracing::debug!(conn = conn.0, "discord dm line accepted for the follow");
-            match self.core.line(conn, line).await {
-                CoreLine::Continue => LineOutcome::Accepted,
-                CoreLine::Close => {
-                    let mut follows = locked(&self.follows, "follows");
-                    if follows.get(&user_id).is_some_and(|f| f.conn == conn) {
-                        follows.remove(&user_id);
-                    }
-                    LineOutcome::Closed
-                }
-            }
+            self.dm_line_validated(user_id, validated, line).await
         })
     }
 
@@ -4355,5 +4500,184 @@ mod tests {
             "Revoke must invalidate live follow even while control_sem is saturated"
         );
         drop(held_controls);
+    }
+
+    /// P2-EDGE-12: concurrent `redeem` calls on the same account must serialize
+    /// so only one Discord user wins and the loser leaves no stale reverse-index
+    /// entry; and even if a stale reverse-index entry exists, `unlink`, `whoami`,
+    /// `follow`, `forward_interaction`, and `relay_in_identified` must enforce
+    /// the forward link (`account.discord.user_id == user_id`), and
+    /// `forward_interaction` must verify `relay_character` ownership.
+    #[tokio::test]
+    async fn p2_edge_12_concurrent_redeem_stale_reverse_index_and_owned_relay_char() {
+        let r = rig_with(relay_config()).await;
+        // Mint two distinct link codes for the same account "Nick".
+        let now = unix_now_s();
+        for (raw, account) in [("AAAA-BBBB", "Nick"), ("CCCC-DDDD", "Nick")] {
+            let _ = mint(&r.store, account, raw, now + 600).await;
+        }
+        // Race two concurrent redemptions for the same account.
+        let (o1, o2) = tokio::join!(
+            r.bridge.link_redeem(USER, "AAAABBBB"),
+            r.bridge.link_redeem(OTHER, "CCCCDDDD"),
+        );
+        let linked_count = [&o1, &o2]
+            .into_iter()
+            .filter(|o| matches!(o, LinkOutcome::Linked { .. }))
+            .count();
+        assert_eq!(linked_count, 1, "exactly one concurrent redeem may win");
+        let (winner, loser) = if matches!(o1, LinkOutcome::Linked { .. }) {
+            (USER, OTHER)
+        } else {
+            (OTHER, USER)
+        };
+        assert!(
+            r.store
+                .account_by_discord_user(loser)
+                .await
+                .unwrap()
+                .is_none(),
+            "losing concurrent redeem must not leave a stale reverse-index entry"
+        );
+        assert_eq!(
+            r.store
+                .get_account("Nick")
+                .await
+                .unwrap()
+                .unwrap()
+                .discord
+                .unwrap()
+                .user_id,
+            winner
+        );
+
+        // Now forcibly inject a stale reverse-index entry for `loser` pointing
+        // at "Nick" (while "Nick" is actively linked to `winner`) and attach
+        // an active follow for `winner`.
+        assert!(r.store.discord_user_reserve(loser, "Nick").await.unwrap());
+        assert!(matches!(
+            r.bridge.follow(winner, Some("Nicky")).await,
+            FollowOutcome::Following { .. }
+        ));
+
+        // Every reader/mutator must refuse `loser` because `account.discord.user_id != loser`.
+        assert_eq!(r.bridge.unlink(loser).await, UnlinkOutcome::NotLinked);
+        assert!(
+            r.bridge.following(winner).is_some(),
+            "stale reverse-index holder must not terminate winner's follow via /unlink"
+        );
+        assert_eq!(
+            r.store
+                .get_account("Nick")
+                .await
+                .unwrap()
+                .unwrap()
+                .discord
+                .as_ref()
+                .map(|l| l.user_id),
+            Some(winner),
+            "stale reverse-index holder must not wipe winner's link via /unlink"
+        );
+        assert!(r.bridge.whoami(loser).await.is_none());
+        assert!(matches!(
+            r.bridge.follow(loser, Some("Nicky")).await,
+            FollowOutcome::NotLinked
+        ));
+        assert_eq!(
+            r.bridge.relay_in(loser, 4242, "spoofed").await,
+            RelayLineOutcome::NotLinked
+        );
+
+        // `forward_interaction` for stale `loser` must pass account=None, actor=None.
+        let _ = r
+            .bridge
+            .interaction(
+                loser,
+                Interaction {
+                    interaction_id: 1,
+                    custom_id: "mod:click".to_string(),
+                    values: vec![],
+                    fields: vec![],
+                    channel_id: Some(10),
+                    message_id: Some(20),
+                },
+            )
+            .await;
+        let forwarded = r.link.requests();
+        let ServiceReq::DiscordInteraction(stale_ix) = forwarded.last().unwrap() else {
+            panic!("expected forwarded DiscordInteraction");
+        };
+        assert_eq!(stale_ix.account, None);
+        assert_eq!(stale_ix.actor, None);
+
+        // `forward_interaction` must NOT forward an unowned/removed `relay_character`.
+        r.bridge.detach(winner).await;
+        let mut link = r
+            .store
+            .get_account("Nick")
+            .await
+            .unwrap()
+            .unwrap()
+            .discord
+            .unwrap();
+        link.relay_character = Some(ObjId(9999)); // not in account.characters!
+        r.store
+            .set_account_discord("Nick", Some(&link))
+            .await
+            .unwrap();
+        let _ = r
+            .bridge
+            .interaction(
+                winner,
+                Interaction {
+                    interaction_id: 2,
+                    custom_id: "mod:click2".to_string(),
+                    values: vec![],
+                    fields: vec![],
+                    channel_id: Some(10),
+                    message_id: Some(21),
+                },
+            )
+            .await;
+        let forwarded = r.link.requests();
+        let ServiceReq::DiscordInteraction(owner_ix) = forwarded.last().unwrap() else {
+            panic!("expected forwarded DiscordInteraction");
+        };
+        assert_eq!(owner_ix.account.as_deref(), Some("Nick"));
+        assert_eq!(
+            owner_ix.actor,
+            Some(NICKY),
+            "removed relay_character must not be forwarded as actor"
+        );
+    }
+
+    /// P2-EDGE-19: `staff_line` must sanitize backticks/newlines in action
+    /// prefill (preventing inline-code breakout and masked link injection) and
+    /// escape `[`, `]`, `#` in notice text/category.
+    #[test]
+    fn p2_edge_19_staff_line_neutralizes_backtick_breakout_and_masked_links() {
+        let ev = OutputEvent::Notice {
+            id: 1,
+            severity: NoticeSeverity::Warn,
+            category: SmolStr::new("req"),
+            text: RichText::plain("[phish](https://evil.example) # big"),
+            action: Some(NoticeAction {
+                label: "Reply".into(),
+                prefill: "ok`) [evil](https://evil.example) (`x\nline2".into(),
+            }),
+            ts: 0,
+        };
+        let rendered = staff_line(&ev).expect("notice renders");
+        assert!(rendered.contains(r"\[phish\](https://evil.example) \# big"));
+        // The prefill has only the two wrapping backticks around it — none inside.
+        let backticks = rendered.chars().filter(|&c| c == '`').count();
+        assert_eq!(
+            backticks, 2,
+            "prefill must not break out of inline code: {rendered}"
+        );
+        assert!(
+            !rendered.contains('\n'),
+            "prefill must not inject newlines: {rendered}"
+        );
     }
 }

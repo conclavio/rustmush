@@ -9,7 +9,7 @@
   // too (16b cut B.1, Q5): they sit under every screen but the channel
   // screen, so a prefill never has to leave the screen it was typed on.
   import type { GameApp } from "$lib/game.svelte";
-  import { isInteractiveControl, isTextField, navIntent } from "$lib/keys";
+  import { exitCommand, isInteractiveControl, isTextField, navIntent } from "$lib/keys";
   import { storageGet, storageSet } from "$lib/storage";
   import { systemPrefersLight, toggledTheme } from "$lib/theme";
   import { localCapable, pixelModule } from "$lib/pixel/local";
@@ -83,6 +83,14 @@
   /** Click-to-run: submit like typed input (with echo). */
   function runCmd(cmd: string): void {
     app.submit(cmd);
+  }
+
+  /** Click-to-walk an exit chip through safe `goto <exit>` framing. */
+  function walkExit(name: string): void {
+    const cmd = exitCommand(name);
+    if (cmd !== null) {
+      runCmd(cmd);
+    }
   }
 
   const gate = $derived(app.gate);
@@ -303,7 +311,7 @@
           {/each}
           {#if active.exitsAreKeys}
             {#each [...app.screens.exits] as [k, name] (k)}
-              <button type="button" class="chip exitchip" onclick={() => runCmd(name)}>
+              <button type="button" class="chip exitchip" onclick={() => walkExit(name)}>
                 <kbd>{k}</kbd>
                 {name}
               </button>

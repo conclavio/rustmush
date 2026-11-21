@@ -1,10 +1,11 @@
 //! Router assembly and the serve entry points.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -82,11 +83,7 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/logout", post(auth::logout))
-        .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT_BYTES))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::reject_blocked_ip,
-        ));
+        .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT_BYTES));
     let (auth_routes, limiter_gc) = rate_limit(auth_routes, &state.config);
 
     let mut http_ops = Router::new().route("/healthz", get(healthz));
@@ -105,9 +102,19 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
     // are governed by WS ping/pong and send timeouts instead.
     let ws_routes = Router::new().route("/ws", get(ws::ws_route));
 
-    let app = security_headers(non_upgrade.merge(ws_routes))
-        .layer(TraceLayer::new_for_http().make_span_with(scrubbed_span))
-        .with_state(state);
+    // P2-EDGE-2: check `is_ip_blocked` across ALL routes (static assets,
+    // `/healthz`, `/metrics`, `/api/auth/*`, and `/ws`), running before body
+    // parsing, rate limiting, and route handlers.
+    let app = security_headers(
+        non_upgrade
+            .merge(ws_routes)
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::reject_blocked_ip,
+            )),
+    )
+    .layer(TraceLayer::new_for_http().make_span_with(scrubbed_span))
+    .with_state(state);
     (app, limiter_gc)
 }
 
@@ -312,7 +319,17 @@ pub async fn serve_with_shutdown_bound(
     bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let listener = std::net::TcpListener::bind(config.listen)?;
+    let socket = match config.listen {
+        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4()?,
+        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6()?,
+    };
+    #[cfg(unix)]
+    let _ = socket.set_reuseaddr(true);
+    // Enable TCP SO_KEEPALIVE on the listener so accepted sockets inherit
+    // dead-peer detection (P2-EDGE-2).
+    let _ = socket.set_keepalive(true);
+    socket.bind(config.listen)?;
+    let listener = socket.listen(1024)?.into_std()?;
     serve_with_shutdown_bound_on(hooks, config, listener, bound, shutdown).await
 }
 
@@ -333,9 +350,18 @@ pub async fn serve_with_shutdown_bound_on(
     listener.set_nonblocking(true)?;
     let actual = listener.local_addr()?;
     let tls = config.tls.clone();
-    let max_connections = config.max_connections.max(1);
-    let header_timeout = Duration::from_millis(config.header_read_timeout_ms);
-    let conn_sem = Arc::new(Semaphore::new(max_connections));
+    let limits = ConnLimits {
+        conn_sem: Arc::new(Semaphore::new(config.max_connections.max(1))),
+        peer_limiter: Arc::new(PeerConnLimiter::new(
+            config.max_connections_per_ip,
+            config.max_connections_per_v6_48,
+            &config.trusted_proxies,
+        )),
+        header_timeout: Duration::from_millis(config.header_read_timeout_ms),
+        write_timeout: Duration::from_millis(config.write_timeout_ms),
+        max_keepalive_requests: config.max_keepalive_requests,
+        max_conn_age: Duration::from_millis(config.max_http_conn_age_ms),
+    };
     let (app, limiter_gc) = build(hooks, config);
 
     // Rate-limiter GC: drop per-IP buckets that have fully replenished.
@@ -359,38 +385,195 @@ pub async fn serve_with_shutdown_bound_on(
             if let Some(tx) = bound {
                 let _ = tx.send(actual);
             }
-            serve_http(listener, app, conn_sem, header_timeout, shutdown).await
+            serve_http(listener, app, limits, shutdown).await
         }
         Some(tls_config) => {
-            serve_tls(
-                listener,
-                actual,
-                tls_config,
-                app,
-                conn_sem,
-                header_timeout,
-                bound,
-                shutdown,
-            )
-            .await
+            serve_tls(listener, actual, tls_config, app, limits, bound, shutdown).await
         }
     };
     let _ = stop_gc.send(true);
     result
 }
 
-/// Wraps a stream so the global TCP connection semaphore permit lives for the
-/// entire lifetime of the connection (including after WebSocket upgrades).
+/// Shared TCP/HTTP connection bounds for `serve_http` and `serve_tls`
+/// (P2-EDGE-2).
+#[derive(Clone)]
+struct ConnLimits {
+    conn_sem: Arc<Semaphore>,
+    peer_limiter: Arc<PeerConnLimiter>,
+    header_timeout: Duration,
+    write_timeout: Duration,
+    max_keepalive_requests: usize,
+    max_conn_age: Duration,
+}
+
+#[derive(Default)]
+struct PeerConnCounts {
+    per_net: HashMap<IpAddr, usize>,
+    per_v6_48: HashMap<u64, usize>,
+}
+
+/// Per-network (`/32` IPv4, `/64` IPv6) and per-IPv6 `/48` concurrent TCP
+/// connection limiter checked at accept **before** acquiring the global
+/// `conn_sem` (P2-EDGE-2). Configured `trusted_proxies` are exempt from the
+/// direct-peer cap because a reverse proxy multiplexes many clients.
+struct PeerConnLimiter {
+    max_per_ip: usize,
+    max_per_v6_48: usize,
+    trusted_proxies: Arc<[IpAddr]>,
+    counts: Mutex<PeerConnCounts>,
+}
+
+impl PeerConnLimiter {
+    fn new(max_per_ip: usize, max_per_v6_48: usize, trusted_proxies: &[IpAddr]) -> Self {
+        Self {
+            max_per_ip,
+            max_per_v6_48,
+            trusted_proxies: trusted_proxies
+                .iter()
+                .map(|ip| ip.to_canonical())
+                .collect::<Vec<_>>()
+                .into(),
+            counts: Mutex::new(PeerConnCounts::default()),
+        }
+    }
+
+    fn is_trusted_proxy(&self, canonical_peer: IpAddr) -> bool {
+        self.trusted_proxies.contains(&canonical_peer)
+    }
+
+    fn try_acquire(self: &Arc<Self>, peer: IpAddr) -> Option<PeerConnGuard> {
+        let canonical = peer.to_canonical();
+        if self.is_trusted_proxy(canonical) || (self.max_per_ip == 0 && self.max_per_v6_48 == 0) {
+            return Some(PeerConnGuard::Exempt);
+        }
+        let net = fold_network_key(canonical);
+        let p48 = v6_48_prefix(canonical);
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.max_per_ip > 0 && counts.per_net.get(&net).copied().unwrap_or(0) >= self.max_per_ip
+        {
+            return None;
+        }
+        if self.max_per_v6_48 > 0
+            && let Some(prefix) = p48
+            && counts.per_v6_48.get(&prefix).copied().unwrap_or(0) >= self.max_per_v6_48
+        {
+            return None;
+        }
+        *counts.per_net.entry(net).or_default() += 1;
+        if let Some(prefix) = p48 {
+            *counts.per_v6_48.entry(prefix).or_default() += 1;
+        }
+        Some(PeerConnGuard::Tracked {
+            limiter: Arc::clone(self),
+            net,
+            p48,
+        })
+    }
+
+    fn release(&self, net: IpAddr, p48: Option<u64>) {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = counts.per_net.get_mut(&net) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                counts.per_net.remove(&net);
+            }
+        }
+        if let Some(prefix) = p48
+            && let Some(n) = counts.per_v6_48.get_mut(&prefix)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                counts.per_v6_48.remove(&prefix);
+            }
+        }
+    }
+}
+
+enum PeerConnGuard {
+    Exempt,
+    Tracked {
+        limiter: Arc<PeerConnLimiter>,
+        net: IpAddr,
+        p48: Option<u64>,
+    },
+}
+
+impl Drop for PeerConnGuard {
+    fn drop(&mut self) {
+        if let PeerConnGuard::Tracked { limiter, net, p48 } = self {
+            limiter.release(*net, *p48);
+        }
+    }
+}
+
+fn v6_48_prefix(canonical: IpAddr) -> Option<u64> {
+    match canonical {
+        IpAddr::V6(v6) => Some((u128::from(v6) >> 80) as u64),
+        IpAddr::V4(_) => None,
+    }
+}
+
+/// Wraps a stream so the global TCP connection semaphore permit, the per-IP
+/// peer guard, and a write-progress timeout live for the entire lifetime of
+/// the connection (including after WebSocket upgrades; P2-EDGE-2).
 struct PermitStream<S> {
     inner: S,
     _permit: OwnedSemaphorePermit,
+    _peer_guard: PeerConnGuard,
+    write_timeout: Duration,
+    write_deadline: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl<S> PermitStream<S> {
-    fn new(inner: S, permit: OwnedSemaphorePermit) -> Self {
+    fn new(
+        inner: S,
+        permit: OwnedSemaphorePermit,
+        peer_guard: PeerConnGuard,
+        write_timeout: Duration,
+    ) -> Self {
         Self {
             inner,
             _permit: permit,
+            _peer_guard: peer_guard,
+            write_timeout,
+            write_deadline: None,
+        }
+    }
+
+    fn poll_write_op<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        res: Poll<io::Result<T>>,
+    ) -> Poll<io::Result<T>> {
+        match res {
+            Poll::Ready(val) => {
+                self.write_deadline = None;
+                Poll::Ready(val)
+            }
+            Poll::Pending => {
+                if self.write_timeout.is_zero() {
+                    return Poll::Pending;
+                }
+                let deadline = self
+                    .write_deadline
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(self.write_timeout)));
+                if deadline.as_mut().poll(cx).is_ready() {
+                    self.write_deadline = None;
+                    Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "http response write timed out",
+                    )))
+                } else {
+                    Poll::Pending
+                }
+            }
         }
     }
 }
@@ -411,15 +594,21 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PermitStream<S> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+        let this = self.get_mut();
+        let res = Pin::new(&mut this.inner).poll_write(cx, buf);
+        this.poll_write_op(cx, res)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+        let this = self.get_mut();
+        let res = Pin::new(&mut this.inner).poll_flush(cx);
+        this.poll_write_op(cx, res)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+        let this = self.get_mut();
+        let res = Pin::new(&mut this.inner).poll_shutdown(cx);
+        this.poll_write_op(cx, res)
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -431,7 +620,9 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PermitStream<S> {
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+        let this = self.get_mut();
+        let res = Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        this.poll_write_op(cx, res)
     }
 }
 
@@ -445,23 +636,66 @@ fn http1_builder(header_timeout: Duration) -> hyper::server::conn::http1::Builde
     http1
 }
 
+async fn keepalive_request_cap(
+    State((seen, limit)): State<(Arc<AtomicUsize>, usize)>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let count = seen.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    let mut resp = next.run(req).await;
+    // Never overwrite `Connection: upgrade` on a WebSocket 101 handshake.
+    if count >= limit && resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+        resp.headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    resp
+}
+
 async fn serve_http1_conn<S>(
     stream: PermitStream<S>,
     remote_addr: SocketAddr,
     app: Router,
     http1: hyper::server::conn::http1::Builder,
+    max_keepalive_requests: usize,
+    max_conn_age: Duration,
     mut conn_shutdown: tokio::sync::watch::Receiver<bool>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let io = TokioIo::new(stream);
+    let app = if max_keepalive_requests > 0 {
+        let seen = Arc::new(AtomicUsize::new(0));
+        app.layer(middleware::from_fn_with_state(
+            (seen, max_keepalive_requests),
+            keepalive_request_cap,
+        ))
+    } else {
+        app
+    };
     let service = TowerToHyperService::new(app.layer(Extension(ConnectInfo(remote_addr))));
+    // Note: when a request upgrades to WebSocket (`101 Switching Protocols`),
+    // `conn` resolves immediately and transfers ownership of `PermitStream<S>`
+    // to Axum's upgraded WebSocket task — so `max_conn_age` below governs only
+    // un-upgraded HTTP/1.1 keep-alive connections and never cuts live WS sessions.
     let mut conn = std::pin::pin!(http1.serve_connection(io, service).with_upgrades());
+    let age_sleep = async {
+        if max_conn_age.is_zero() {
+            std::future::pending::<()>().await;
+        } else {
+            tokio::time::sleep(max_conn_age).await;
+        }
+    };
+    tokio::pin!(age_sleep);
     tokio::select! {
         res = conn.as_mut() => {
             if let Err(err) = res {
                 tracing::debug!(peer = %remote_addr, error = %err, "http connection closed");
             }
+        }
+        _ = &mut age_sleep => {
+            tracing::debug!(peer = %remote_addr, "http connection reached max lifetime; closing");
+            conn.as_mut().graceful_shutdown();
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn).await;
         }
         _ = conn_shutdown.changed() => {
             conn.as_mut().graceful_shutdown();
@@ -473,11 +707,10 @@ async fn serve_http1_conn<S>(
 async fn serve_http(
     listener: tokio::net::TcpListener,
     app: Router,
-    conn_sem: Arc<Semaphore>,
-    header_timeout: Duration,
+    limits: ConnLimits,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
-    let http1 = http1_builder(header_timeout);
+    let http1 = http1_builder(limits.header_timeout);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown = std::pin::pin!(shutdown);
     let mut tasks = tokio::task::JoinSet::new();
@@ -498,8 +731,14 @@ async fn serve_http(
                 continue;
             }
         };
-        let Ok(permit) = Arc::clone(&conn_sem).try_acquire_owned() else {
+        let Some(peer_guard) = limits.peer_limiter.try_acquire(remote_addr.ip()) else {
+            tracing::warn!(peer = %remote_addr, "web per-IP connection cap reached; dropping socket");
+            drop(stream);
+            continue;
+        };
+        let Ok(permit) = Arc::clone(&limits.conn_sem).try_acquire_owned() else {
             tracing::warn!(peer = %remote_addr, "web connection cap reached; dropping socket");
+            drop(peer_guard);
             drop(stream);
             continue;
         };
@@ -507,12 +746,17 @@ async fn serve_http(
         let http1 = http1.clone();
         let app = app.clone();
         let conn_shutdown = shutdown_rx.clone();
+        let write_timeout = limits.write_timeout;
+        let max_keepalive_requests = limits.max_keepalive_requests;
+        let max_conn_age = limits.max_conn_age;
         tasks.spawn(async move {
             serve_http1_conn(
-                PermitStream::new(stream, permit),
+                PermitStream::new(stream, permit, peer_guard, write_timeout),
                 remote_addr,
                 app,
                 http1,
+                max_keepalive_requests,
+                max_conn_age,
                 conn_shutdown,
             )
             .await;
@@ -529,14 +773,12 @@ async fn serve_http(
 }
 
 #[cfg(feature = "tls")]
-#[allow(clippy::too_many_arguments)]
 async fn serve_tls(
     listener: std::net::TcpListener,
     listen: SocketAddr,
     tls: crate::config::TlsConfig,
     app: Router,
-    conn_sem: Arc<Semaphore>,
-    header_timeout: Duration,
+    limits: ConnLimits,
     bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
@@ -555,10 +797,10 @@ async fn serve_tls(
     let mut server_config = (*loaded.get_inner()).clone();
     server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(server_config));
-    let handshake_timeout = if header_timeout.is_zero() {
+    let handshake_timeout = if limits.header_timeout.is_zero() {
         Duration::from_secs(24 * 60 * 60)
     } else {
-        header_timeout
+        limits.header_timeout
     };
     let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls_config)
         .handshake_timeout(handshake_timeout);
@@ -569,7 +811,7 @@ async fn serve_tls(
         let _ = tx.send(listen);
     }
 
-    let http1 = http1_builder(header_timeout);
+    let http1 = http1_builder(limits.header_timeout);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut shutdown = std::pin::pin!(shutdown);
     let mut tasks = tokio::task::JoinSet::new();
@@ -590,8 +832,14 @@ async fn serve_tls(
                 continue;
             }
         };
-        let Ok(permit) = Arc::clone(&conn_sem).try_acquire_owned() else {
+        let Some(peer_guard) = limits.peer_limiter.try_acquire(remote_addr.ip()) else {
+            tracing::warn!(peer = %remote_addr, "web per-IP connection cap reached; dropping socket");
+            drop(stream);
+            continue;
+        };
+        let Ok(permit) = Arc::clone(&limits.conn_sem).try_acquire_owned() else {
             tracing::warn!(peer = %remote_addr, "web connection cap reached; dropping socket");
+            drop(peer_guard);
             drop(stream);
             continue;
         };
@@ -600,6 +848,9 @@ async fn serve_tls(
         let http1 = http1.clone();
         let app = app.clone();
         let mut conn_shutdown = shutdown_rx.clone();
+        let write_timeout = limits.write_timeout;
+        let max_keepalive_requests = limits.max_keepalive_requests;
+        let max_conn_age = limits.max_conn_age;
         tasks.spawn(async move {
             let tls_stream = tokio::select! {
                 biased;
@@ -613,10 +864,12 @@ async fn serve_tls(
                 },
             };
             serve_http1_conn(
-                PermitStream::new(tls_stream, permit),
+                PermitStream::new(tls_stream, permit, peer_guard, write_timeout),
                 remote_addr,
                 app,
                 http1,
+                max_keepalive_requests,
+                max_conn_age,
                 conn_shutdown,
             )
             .await;
@@ -633,18 +886,121 @@ async fn serve_tls(
 }
 
 #[cfg(not(feature = "tls"))]
-#[allow(clippy::too_many_arguments)]
 async fn serve_tls(
     _listener: std::net::TcpListener,
     _listen: SocketAddr,
     _tls: crate::config::TlsConfig,
     _app: Router,
-    _conn_sem: Arc<Semaphore>,
-    _header_timeout: Duration,
+    _limits: ConnLimits,
     _bound: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
     _shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     Err(std::io::Error::other(
         "web.tls is configured but mush-net-web was built without the `tls` feature",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn peer_conn_limiter_enforces_per_ip_v6_64_v6_48_and_trusted_proxy_exemption() {
+        let trusted = [IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))];
+        let limiter = Arc::new(PeerConnLimiter::new(2, 3, &trusted));
+
+        // Trusted proxy is exempt from the direct-peer cap (including v4-mapped form).
+        let proxy_guards: Vec<_> = (0..5)
+            .map(|_| {
+                limiter
+                    .try_acquire(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))
+                    .expect("trusted proxy exempt")
+            })
+            .collect();
+        assert!(
+            limiter
+                .try_acquire("::ffff:10.0.0.1".parse().unwrap())
+                .is_some()
+        );
+        drop(proxy_guards);
+
+        // IPv4 /32 cap (and IPv4-mapped IPv6 shares the same bucket).
+        let v4: IpAddr = "203.0.113.5".parse().unwrap();
+        let v4_mapped: IpAddr = "::ffff:203.0.113.5".parse().unwrap();
+        let g1 = limiter.try_acquire(v4).expect("slot 1");
+        let g2 = limiter.try_acquire(v4_mapped).expect("slot 2");
+        assert!(
+            limiter.try_acquire(v4).is_none(),
+            "3rd conn from same IP dropped"
+        );
+        drop(g1);
+        let g3 = limiter.try_acquire(v4).expect("slot freed on drop");
+        drop((g2, g3));
+
+        // IPv6 /64 shares per-IP cap; IPv6 /48 shares aggregate cap across /64s.
+        let a1: IpAddr = "2001:db8:abcd:0001::1".parse().unwrap();
+        let a2: IpAddr = "2001:db8:abcd:0001::2".parse().unwrap();
+        let a3: IpAddr = "2001:db8:abcd:0001::3".parse().unwrap();
+        let b1: IpAddr = "2001:db8:abcd:0002::1".parse().unwrap();
+        let c1: IpAddr = "2001:db8:abcd:0003::1".parse().unwrap();
+        let other_48: IpAddr = "2001:db8:ffff:0001::1".parse().unwrap();
+
+        let ga1 = limiter.try_acquire(a1).expect("a1");
+        let ga2 = limiter.try_acquire(a2).expect("a2");
+        assert!(limiter.try_acquire(a3).is_none(), "same /64 capped at 2");
+        let gb1 = limiter.try_acquire(b1).expect("b1 brings /48 to 3");
+        assert!(limiter.try_acquire(c1).is_none(), "same /48 capped at 3");
+        assert!(
+            limiter.try_acquire(other_48).is_some(),
+            "different /48 unaffected"
+        );
+        drop((ga1, ga2, gb1));
+        assert!(limiter.try_acquire(c1).is_some(), "/48 freed on drop");
+        let _ = Ipv6Addr::LOCALHOST;
+    }
+
+    #[tokio::test]
+    async fn permit_stream_write_timeout_aborts_stalled_writer() {
+        struct PendingWriter;
+        impl AsyncRead for PendingWriter {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+        impl AsyncWrite for PendingWriter {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Poll::Pending
+            }
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Pending
+            }
+        }
+
+        let sem = Arc::new(Semaphore::new(1));
+        let permit = sem.try_acquire_owned().unwrap();
+        let mut stream = PermitStream::new(
+            PendingWriter,
+            permit,
+            PeerConnGuard::Exempt,
+            Duration::from_millis(50),
+        );
+        let err = stream
+            .write_all(b"hello")
+            .await
+            .expect_err("stalled write must time out");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
 }

@@ -160,6 +160,8 @@ namespace TacSim.Net
             new Regex(@"(Bearer\s+)[^\s'""<>\]\)},;]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex JsonTokenRegex =
             new Regex(@"(""token""\s*:\s*"")[^""]+("")", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex UrlUserInfoRegex =
+            new Regex(@"(://)[^/\s@?#]+@", RegexOptions.Compiled);
 
         public static string RedactSensitiveTokens(string input)
         {
@@ -167,7 +169,43 @@ namespace TacSim.Net
             string s = SubprotocolTokenRegex.Replace(input, "rustmush.v1.[REDACTED]");
             s = BearerTokenRegex.Replace(s, "$1[REDACTED]");
             s = JsonTokenRegex.Replace(s, "$1[REDACTED]$2");
+            s = UrlUserInfoRegex.Replace(s, "$1[REDACTED]@");
             return s;
+        }
+
+        /// <summary>
+        /// Strips any embedded <c>user:pass@</c> userinfo, query string, or fragment from a server URL
+        /// before logging, displaying in HUD notices, or persisting to <c>PlayerPrefs</c>.
+        /// </summary>
+        public static string SanitizeUrlForDisplayOrStorage(string rawUrl)
+        {
+            if (string.IsNullOrWhiteSpace(rawUrl))
+                return string.Empty;
+
+            string trimmed = rawUrl.Trim();
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri absUri))
+            {
+                string schemeAndServer = absUri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped);
+                string path = absUri.AbsolutePath;
+                if (string.IsNullOrEmpty(path) || path == "/")
+                    return schemeAndServer;
+                return schemeAndServer + path.TrimEnd('/');
+            }
+
+            // Handle schemeless URLs (e.g. `user:pass@host:8080/path?q=1#f`).
+            int qOrFrag = trimmed.IndexOfAny(new[] { '?', '#' });
+            if (qOrFrag >= 0)
+                trimmed = trimmed.Substring(0, qOrFrag);
+            int schemeIdx = trimmed.IndexOf("://", StringComparison.Ordinal);
+            string prefix = schemeIdx >= 0 ? trimmed.Substring(0, schemeIdx + 3) : string.Empty;
+            string rest = schemeIdx >= 0 ? trimmed.Substring(schemeIdx + 3) : trimmed;
+            int slashIdx = rest.IndexOf('/');
+            string authorityPart = slashIdx >= 0 ? rest.Substring(0, slashIdx) : rest;
+            string pathPart = slashIdx >= 0 ? rest.Substring(slashIdx) : string.Empty;
+            int atIdx = authorityPart.LastIndexOf('@');
+            if (atIdx >= 0)
+                authorityPart = authorityPart.Substring(atIdx + 1);
+            return (prefix + authorityPart + pathPart).TrimEnd('/');
         }
 
         public static string NormalizeBaseUrl(string raw)
@@ -194,31 +232,68 @@ namespace TacSim.Net
 
         public static bool IsLoopbackUrl(string normalizedUrl)
         {
-            if (string.IsNullOrWhiteSpace(normalizedUrl)) return true;
-            if (Uri.TryCreate(normalizedUrl, UriKind.Absolute, out Uri u))
-                return IsLoopbackAuthority(u.Authority);
-            return IsLoopbackAuthority(normalizedUrl);
+            if (string.IsNullOrWhiteSpace(normalizedUrl))
+                return false;
+            string trimmed = normalizedUrl.Trim();
+            if (trimmed.IndexOfAny(new[] { '@', '?', '#', '\\' }) >= 0)
+                return false;
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out Uri u))
+                return IsLoopbackUri(u);
+            return IsLoopbackAuthority(trimmed);
         }
 
         public static bool IsLoopbackAuthority(string rawAuthority)
         {
             if (string.IsNullOrWhiteSpace(rawAuthority))
-                return true;
+                return false;
             string hostPart = rawAuthority.Trim();
+            if (MushProtocol.ContainsControlChars(hostPart) ||
+                hostPart.IndexOfAny(new[] { '@', '?', '#', '\\', ' ', '\t' }) >= 0)
+            {
+                return false;
+            }
             int slash = hostPart.IndexOf('/');
             if (slash >= 0) hostPart = hostPart.Substring(0, slash);
+            if (string.IsNullOrEmpty(hostPart))
+                return false;
+
             if (hostPart.StartsWith("[", StringComparison.Ordinal))
             {
                 int close = hostPart.IndexOf(']');
-                string v6 = close > 1 ? hostPart.Substring(1, close - 1) : hostPart;
+                if (close <= 1)
+                    return false;
+                if (close + 1 < hostPart.Length)
+                {
+                    if (hostPart[close + 1] != ':' || close + 2 >= hostPart.Length)
+                        return false;
+                    for (int i = close + 2; i < hostPart.Length; i++)
+                    {
+                        if (hostPart[i] < '0' || hostPart[i] > '9')
+                            return false;
+                    }
+                }
+                string v6 = hostPart.Substring(1, close - 1);
                 return IPAddress.TryParse(v6, out IPAddress v6Addr) && IPAddress.IsLoopback(v6Addr);
             }
+
             string host = hostPart;
             int firstColon = hostPart.IndexOf(':');
             int lastColon = hostPart.LastIndexOf(':');
             if (firstColon >= 0 && firstColon == lastColon)
+            {
+                string portPart = hostPart.Substring(firstColon + 1);
+                if (portPart.Length == 0)
+                    return false;
+                for (int i = 0; i < portPart.Length; i++)
+                {
+                    if (portPart[i] < '0' || portPart[i] > '9')
+                        return false;
+                }
                 host = hostPart.Substring(0, firstColon);
+            }
             host = host.Trim();
+            if (string.IsNullOrEmpty(host))
+                return false;
             if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
                 return true;
             return IPAddress.TryParse(host, out IPAddress addr) && IPAddress.IsLoopback(addr);
@@ -226,7 +301,7 @@ namespace TacSim.Net
 
         public static bool IsLoopbackUri(Uri uri)
         {
-            if (uri == null || string.IsNullOrWhiteSpace(uri.Host))
+            if (uri == null || string.IsNullOrWhiteSpace(uri.Host) || !string.IsNullOrEmpty(uri.UserInfo))
                 return false;
             return IsLoopbackAuthority(uri.Host);
         }
@@ -306,8 +381,20 @@ namespace TacSim.Net
             bool allowInsecureNonLoopback = false)
         {
             string normalizedBase = NormalizeBaseUrl(baseUrl);
+            if (MushProtocol.ContainsControlChars(normalizedBase) ||
+                normalizedBase.IndexOf('?') >= 0 ||
+                normalizedBase.IndexOf('#') >= 0)
+            {
+                throw new InvalidOperationException("Auth server base URL must not contain query strings, fragments, or control characters.");
+            }
             if (!Uri.TryCreate(normalizedBase, UriKind.Absolute, out Uri baseUri))
                 throw new InvalidOperationException("Invalid auth server URL.");
+            if (!string.IsNullOrEmpty(baseUri.UserInfo) ||
+                !string.IsNullOrEmpty(baseUri.Query) ||
+                !string.IsNullOrEmpty(baseUri.Fragment))
+            {
+                throw new InvalidOperationException("Auth server base URL must not contain credentials (userinfo), query strings, or fragments.");
+            }
 
             bool isHttps = string.Equals(baseUri.Scheme, "https", StringComparison.OrdinalIgnoreCase);
             bool isHttp = string.Equals(baseUri.Scheme, "http", StringComparison.OrdinalIgnoreCase);
@@ -324,18 +411,28 @@ namespace TacSim.Net
                     throw new InvalidOperationException(
                         $"Refusing cleartext HTTP authentication ('{baseUri.Scheme}://{baseUri.Authority}') to non-loopback host in non-dev build; use https://.");
                 }
-                try { Debug.LogWarning($"[MushAuthClient] Authenticating over unencrypted remote HTTP ({normalizedBase}); use https:// in production."); }
+                string safeLogUrl = SanitizeUrlForDisplayOrStorage(normalizedBase);
+                try { Debug.LogWarning($"[MushAuthClient] Authenticating over unencrypted remote HTTP ({safeLogUrl}); use https:// in production."); }
                 catch { /* headless test runner */ }
             }
 
             string cleanEndpoint = string.IsNullOrWhiteSpace(endpoint)
                 ? string.Empty
                 : (endpoint.StartsWith("/", StringComparison.Ordinal) ? endpoint : "/" + endpoint);
-            if (!Uri.TryCreate(normalizedBase + cleanEndpoint, UriKind.Absolute, out Uri fullUri))
-                throw new InvalidOperationException("Invalid auth endpoint URI.");
+            string basePath = baseUri.AbsolutePath.TrimEnd('/');
+            var builder = new UriBuilder(baseUri)
+            {
+                UserName = string.Empty,
+                Password = string.Empty,
+                Path = basePath + cleanEndpoint,
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+            Uri fullUri = builder.Uri;
 
             if (!string.Equals(fullUri.Scheme, baseUri.Scheme, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(fullUri.Authority, baseUri.Authority, StringComparison.OrdinalIgnoreCase))
+                !string.Equals(fullUri.Authority, baseUri.Authority, StringComparison.OrdinalIgnoreCase) ||
+                !string.IsNullOrEmpty(fullUri.UserInfo))
             {
                 throw new InvalidOperationException("Auth endpoint URI changed target origin.");
             }

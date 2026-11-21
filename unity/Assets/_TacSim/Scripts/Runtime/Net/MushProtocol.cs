@@ -806,11 +806,82 @@ namespace TacSim.Net
             return obj.ToJson();
         }
 
+        public static bool ContainsControlChars(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char ch = s[i];
+                if (ch < 0x20 || (ch >= 0x7f && ch <= 0x9f))
+                    return true;
+            }
+            return false;
+        }
+
+        public static string StripControlChars(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            if (!ContainsControlChars(s)) return s;
+            var sb = new StringBuilder(s.Length);
+            for (int i = 0; i < s.Length; i++)
+            {
+                char ch = s[i];
+                if (ch >= 0x20 && !(ch >= 0x7f && ch <= 0x9f))
+                    sb.Append(ch);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Strict single-token allowlist (<c>^[A-Za-z0-9._-]+$</c>, rejecting leading switches/dots or traversal)
+        /// for telemetry IDs interpolated into commands (<c>rock</c>, <c>designator</c>, <c>letter</c>, <c>session_id</c>).
+        /// </summary>
+        public static bool TryValidateSafeCommandToken(string raw, out string token, int maxLen = 64)
+        {
+            token = null;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            if (ContainsControlChars(raw)) return false;
+            string s = raw.Trim();
+            if (s.Length == 0 || s.Length > maxLen) return false;
+            if (s[0] == '-' || s[0] == '.' || s.Contains("..", StringComparison.Ordinal)) return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                bool ok = (c >= 'A' && c <= 'Z') ||
+                          (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') ||
+                          c == '.' || c == '_' || c == '-';
+                if (!ok) return false;
+            }
+            token = s;
+            return true;
+        }
+
+        /// <summary>
+        /// Validates a room detail keyword or actor display name before interpolating it into
+        /// <c>look &lt;keyword&gt;</c> or <c>say &lt;name&gt;, ...</c>, rejecting control chars and leading switches/prefixes.
+        /// </summary>
+        public static bool TryValidateSafeKeywordOrName(string raw, out string cleaned, int maxLen = 80)
+        {
+            cleaned = null;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            if (ContainsControlChars(raw)) return false;
+            string s = raw.Trim();
+            if (s.Length == 0 || s.Length > maxLen) return false;
+            char first = s[0];
+            if (first == '-' || first == '/' || first == '@' || first == '+' ||
+                first == '"' || first == ':' || first == ';' || first == '\\')
+                return false;
+            cleaned = s;
+            return true;
+        }
+
         public static string BuildLineCommand(string commandLine)
         {
+            string clean = StripControlChars(commandLine ?? string.Empty);
             var obj = JsonNode.NewObject();
             obj["t"] = JsonNode.FromString("line");
-            obj["d"] = JsonNode.FromString(commandLine ?? string.Empty);
+            obj["d"] = JsonNode.FromString(clean);
             return obj.ToJson();
         }
 

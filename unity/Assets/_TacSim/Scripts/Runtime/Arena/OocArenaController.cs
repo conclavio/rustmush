@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using TacSim.Core;
+using TacSim.Net;
 using TacSim.World;
 using TMPro;
 using UnityEngine;
@@ -287,7 +288,10 @@ namespace TacSim.Arena
                 var txtGo = new GameObject("Txt");
                 txtGo.transform.SetParent(bbGo.transform, false);
                 var tmp = txtGo.AddComponent<TextMeshPro>();
-                tmp.text = $"[{sp.Letter}] {sp.Name.ToUpperInvariant()}";
+                tmp.richText = false;
+                string safeLetter = MushProtocol.EscapeUnityRichText(sp.Letter ?? string.Empty);
+                string safeSpotName = MushProtocol.EscapeUnityRichText((sp.Name ?? string.Empty).ToUpperInvariant());
+                tmp.text = $"[{safeLetter}] {safeSpotName}";
                 tmp.fontSize = 16f;
                 tmp.color = col;
                 tmp.alignment = TextAlignmentOptions.Center;
@@ -305,7 +309,8 @@ namespace TacSim.Arena
             CachedMapMatchId = (ulong)Math.Max(0L, mapData.Long("match", 0));
             BuildArenaTerrain(Catalog, decoded);
             EnsurePlayerRigSpawned(State.UnitType, State.Callsign, State.Party);
-            OnArenaCombatLog?.Invoke($"<color=#66EEAA>[ARENA MAP]</color> Loaded {decoded.Width}x{decoded.Height} heightfield ({decoded.DisplayName}, {decoded.KeySpots.Count} key spots).");
+            string safeDisplay = MushProtocol.EscapeUnityRichText(decoded.DisplayName);
+            OnArenaCombatLog?.Invoke($"<color=#66EEAA>[ARENA MAP]</color> Loaded {decoded.Width}x{decoded.Height} heightfield ({safeDisplay}, {decoded.KeySpots.Count} key spots).");
         }
 
         public void ApplyLiveCockpitFrame(JsonNode d)
@@ -387,7 +392,8 @@ namespace TacSim.Arena
             var wArr = d["weapons"].AsArray();
             if (wArr != null)
             {
-                for (int i = 0; i < wArr.Count; i++)
+                int wCap = Math.Min(wArr.Count, 16);
+                for (int i = 0; i < wCap; i++)
                 {
                     var w = wArr[i];
                     var armedObj = w["armed"];
@@ -417,13 +423,16 @@ namespace TacSim.Arena
 
             if (cArr != null)
             {
-                for (int i = 0; i < cArr.Count; i++)
+                const int MaxArenaContacts = 64;
+                int cCap = Math.Min(cArr.Count, MaxArenaContacts);
+                for (int i = 0; i < cCap; i++)
                 {
                     var c = cArr[i];
                     var cellArr = c["cell"].AsArray();
                     if (cellArr == null || cellArr.Count < 2) continue;
 
-                    string desig = c.Str("designator", $"C{i + 1}");
+                    string rawDesig = c.Str("designator", $"C{i + 1}");
+                    string desig = MushProtocol.TryValidateSafeCommandToken(rawDesig, out string safeDesig) ? safeDesig : $"C{i + 1}";
                     activeDesignators.Add(desig);
                     float bearingDeg = c.Float("bearing_deg", 0f);
                     var cs = new ArenaContactState
@@ -478,7 +487,8 @@ namespace TacSim.Arena
             var notices = d["notices"].AsArray();
             if (notices != null)
             {
-                for (int i = 0; i < notices.Count; i++)
+                int nCap = Math.Min(notices.Count, 32);
+                for (int i = 0; i < nCap; i++)
                 {
                     var n = notices[i];
                     string txt = n.Str("text", string.Empty);
@@ -614,15 +624,16 @@ namespace TacSim.Arena
                         string hold = TerrainGrid.HoldSpotLetter.Trim();
                         for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
                         {
-                            if (string.Equals(TerrainGrid.KeySpots[i].Letter, hold, StringComparison.OrdinalIgnoreCase))
-                                return TerrainGrid.KeySpots[i].Letter.Trim();
+                            if (string.Equals(TerrainGrid.KeySpots[i].Letter, hold, StringComparison.OrdinalIgnoreCase) &&
+                                MushProtocol.TryValidateSafeCommandToken(TerrainGrid.KeySpots[i].Letter, out string matchedHold, maxLen: 16))
+                                return matchedHold;
                         }
                     }
-                    if (!string.IsNullOrWhiteSpace(TerrainGrid.KeySpots[0].Letter))
-                        return TerrainGrid.KeySpots[0].Letter.Trim();
+                    if (MushProtocol.TryValidateSafeCommandToken(TerrainGrid.KeySpots[0].Letter, out string firstSpot, maxLen: 16))
+                        return firstSpot;
                 }
-                if (!string.IsNullOrWhiteSpace(TerrainGrid.HoldSpotLetter))
-                    return TerrainGrid.HoldSpotLetter.Trim();
+                if (MushProtocol.TryValidateSafeCommandToken(TerrainGrid.HoldSpotLetter, out string holdFallback, maxLen: 16))
+                    return holdFallback;
             }
             return "B";
         }
@@ -637,7 +648,8 @@ namespace TacSim.Arena
             }
 
             Vector3 wp = ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
-            PlayerRig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, unitType, $"{callsign} [YOU]", party, wp, State.HeadingDeg);
+            string safeCallsign = MushProtocol.EscapeUnityRichText(callsign);
+            PlayerRig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, unitType, $"{safeCallsign} [YOU]", party, wp, State.HeadingDeg);
             _desiredLiveHeadingDeg = State.HeadingDeg;
         }
 
@@ -647,9 +659,11 @@ namespace TacSim.Arena
             Vector3 localPos = TerrainGrid.SiteCellToLocalPos(cs.CellX, cs.CellY, 0f);
             Vector3 worldPos = ArenaStageOrigin + localPos;
 
+            string safeDesig = MushProtocol.EscapeUnityRichText(cs.Designator);
+            string safeClass = MushProtocol.EscapeUnityRichText(cs.ClassLabel);
             if (!_contactRigs.TryGetValue(cs.Designator, out var rig) || rig?.Root == null)
             {
-                rig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, cs.UnitType, cs.Designator, cs.Party, worldPos, cs.FacingDeg);
+                rig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, cs.UnitType, safeDesig, cs.Party, worldPos, cs.FacingDeg);
                 rig.Root.name = $"ArenaContact_{cs.Designator}";
                 _contactRigs[cs.Designator] = rig;
             }
@@ -664,7 +678,7 @@ namespace TacSim.Arena
             {
                 bool locked = string.Equals(State.LockedDesignator, cs.Designator, StringComparison.OrdinalIgnoreCase);
                 string lockMark = locked ? "<color=#FFEE44>>> LOCKED <<</color>\n" : string.Empty;
-                rig.Billboard.NameplateText.text = $"{lockMark}{cs.Designator} [{cs.ClassLabel}] {(int)cs.RangeM}m";
+                rig.Billboard.NameplateText.text = $"{lockMark}{safeDesig} [{safeClass}] {(int)cs.RangeM}m";
             }
         }
 
@@ -677,7 +691,7 @@ namespace TacSim.Arena
 
         public void ExecuteCockpitAction(string verbLine)
         {
-            if (string.IsNullOrWhiteSpace(verbLine)) return;
+            if (string.IsNullOrWhiteSpace(verbLine) || MushProtocol.ContainsControlChars(verbLine)) return;
             string trimmed = verbLine.Trim();
             string low = trimmed.ToLowerInvariant();
 
@@ -701,6 +715,13 @@ namespace TacSim.Arena
             {
                 // ORDER <squad|ALL> ADVANCE <spot> requires a spot argument (orders.rs:191-193).
                 trimmed = $"order all advance {ResolveDefaultAdvanceSpot()}";
+            }
+            else if (low.StartsWith("lock ", StringComparison.Ordinal))
+            {
+                string target = trimmed.Substring("lock ".Length).Trim();
+                if (!MushProtocol.TryValidateSafeCommandToken(target, out string safeTarget))
+                    return;
+                trimmed = $"lock {safeTarget}";
             }
             else if (low.StartsWith("throttle ", StringComparison.Ordinal))
             {
@@ -764,13 +785,15 @@ namespace TacSim.Arena
                         if (hn.StartsWith("ArenaContact_", StringComparison.OrdinalIgnoreCase))
                         {
                             string desig = hn.Substring("ArenaContact_".Length);
-                            ExecuteCockpitAction($"lock {desig}");
+                            if (MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig))
+                                ExecuteCockpitAction($"lock {safeDesig}");
                             return;
                         }
                         if (hn.StartsWith("KeySpot_", StringComparison.OrdinalIgnoreCase))
                         {
                             string letter = hn.Substring("KeySpot_".Length);
-                            ExecuteCockpitAction($"drive {letter}");
+                            if (MushProtocol.TryValidateSafeCommandToken(letter, out string safeLetter, maxLen: 16))
+                                ExecuteCockpitAction($"drive {safeLetter}");
                             return;
                         }
 

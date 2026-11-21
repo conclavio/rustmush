@@ -85,7 +85,7 @@
     {/each}
     {#if band.exits.length > 0}
       <span class="exits" aria-label="exits">
-        {#each band.exits as exit (exit.name)}
+        {#each band.exits as exit, i (`${i}\0${exit.name}`)}
           <button type="button" class="exit" onclick={() => walkExit(exit.name)} title={exit.key ? `${exit.name} (key ${exit.key})` : exit.name}>
             {#if exit.key}<kbd>{exit.key}</kbd>{/if}{exit.name}
           </button>

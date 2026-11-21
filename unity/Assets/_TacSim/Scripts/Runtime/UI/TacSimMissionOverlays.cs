@@ -207,22 +207,32 @@ namespace TacSim.UI
                 {
                     for (int i = 0; i < spots.Count; i++)
                     {
-                        if (string.Equals(spots[i].Letter, _selectedAdvanceSpot, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(spots[i].Name, _selectedAdvanceSpot, StringComparison.OrdinalIgnoreCase))
+                        if ((string.Equals(spots[i].Letter, _selectedAdvanceSpot, StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(spots[i].Name, _selectedAdvanceSpot, StringComparison.OrdinalIgnoreCase)) &&
+                            MushProtocol.TryValidateSafeCommandToken(spots[i].Letter, out string matchedSpot, maxLen: 16))
                         {
-                            return spots[i].Letter;
+                            return matchedSpot;
                         }
                     }
                 }
-                return spots[0].Letter;
+                for (int i = 0; i < spots.Count; i++)
+                {
+                    if (MushProtocol.TryValidateSafeCommandToken(spots[i].Letter, out string safeSpot, maxLen: 16))
+                        return safeSpot;
+                }
+                return null;
             }
-            return !string.IsNullOrEmpty(_selectedAdvanceSpot) ? _selectedAdvanceSpot : null;
+            return MushProtocol.TryValidateSafeCommandToken(_selectedAdvanceSpot, out string fallbackSpot, maxLen: 16)
+                ? fallbackSpot
+                : null;
         }
 
         public string ResolveSquadAdvanceCommand()
         {
             string spot = ResolveAdvanceSpot();
-            return !string.IsNullOrEmpty(spot) ? $"order all advance {spot}" : null;
+            return MushProtocol.TryValidateSafeCommandToken(spot, out string safeSpot, maxLen: 16)
+                ? $"order all advance {safeSpot}"
+                : null;
         }
 
         private void UpdateAdvanceButtonVisual()
@@ -749,8 +759,8 @@ namespace TacSim.UI
                 var pooled = new PooledContactRow();
                 var btn = CreateBtn(_arenaContactsListRoot, string.Empty, new Color(0.18f, 0.16f, 0.16f, 0.85f), () =>
                 {
-                    if (pooled.CanLock && !string.IsNullOrEmpty(pooled.BoundDesignator))
-                        OnArenaCockpitVerbRequested?.Invoke($"lock {pooled.BoundDesignator}");
+                    if (pooled.CanLock && MushProtocol.TryValidateSafeCommandToken(pooled.BoundDesignator, out string safeDesig))
+                        OnArenaCockpitVerbRequested?.Invoke($"lock {safeDesig}");
                 });
                 btn.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 28f);
                 pooled.Root = btn.gameObject;
@@ -907,10 +917,12 @@ namespace TacSim.UI
             for (int i = 0; i < Mathf.Min(4, spots.Count); i++)
             {
                 string letter = spots[i].Letter;
-                CreateBtn(_arenaKeySpotsRowRoot, $"DRIVE [{letter}]", new Color(0.14f, 0.34f, 0.44f), () =>
+                if (!MushProtocol.TryValidateSafeCommandToken(letter, out string safeLetter, maxLen: 16))
+                    continue;
+                CreateBtn(_arenaKeySpotsRowRoot, $"DRIVE [{safeLetter}]", new Color(0.14f, 0.34f, 0.44f), () =>
                 {
-                    SelectAdvanceSpot(letter);
-                    OnArenaCockpitVerbRequested?.Invoke($"drive {letter}");
+                    SelectAdvanceSpot(safeLetter);
+                    OnArenaCockpitVerbRequested?.Invoke($"drive {safeLetter}");
                 });
             }
             UpdateAdvanceButtonVisual();

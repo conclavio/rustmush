@@ -12,6 +12,7 @@
 // There is no read-marking Line command (cursors are delivery-driven), so
 // read state is client-local by design — documented in web/README.md.
 
+import { SvelteMap } from "svelte/reactivity";
 import type { NarrativeKind, ObjRef, RichText } from "../proto";
 import { safeColorHex } from "../render";
 
@@ -96,11 +97,11 @@ function parseMsg(v: unknown): Omit<ChanMsg, "id"> | null {
 export class ChannelsStore {
   list = $state<ChannelMeta[]>([]);
   /** Per-channel messages (key: lowercased channel name), oldest first. */
-  messages = $state<Record<string, ChanMsg[]>>({});
+  messages = new SvelteMap<string, ChanMsg[]>();
   /** Active tab (lowercased channel name), or `null` for main scrollback. */
   active = $state<string | null>(null);
   /** Channels whose backlog was already requested (avoid re-fetch loops). */
-  backlogFetched = $state<Record<string, boolean>>({});
+  backlogFetched = new SvelteMap<string, boolean>();
 
   /** Next `ChanMsg.id` (Svelte `#each` key), across all channels. */
   #nextMsgId = 1;
@@ -115,7 +116,7 @@ export class ChannelsStore {
   }
 
   messagesOf(name: string): ChanMsg[] {
-    return this.messages[this.#key(name)] ?? [];
+    return this.messages.get(this.#key(name)) ?? [];
   }
 
   unreadOf(name: string): number {
@@ -170,8 +171,9 @@ export class ChannelsStore {
       const old = this.byName(name);
       const existing = old?.epoch === epoch ? old : undefined;
       if (old && !existing) {
-        delete this.messages[this.#key(name)];
-        delete this.backlogFetched[this.#key(name)];
+        const key = this.#key(name);
+        this.messages.delete(key);
+        this.backlogFetched.delete(key);
       }
       next.push({
         name,
@@ -193,10 +195,15 @@ export class ChannelsStore {
     this.list = next;
     // Drop message lists of channels we left.
     const keep = new Set(next.map((c) => this.#key(c.name)));
-    for (const k of Object.keys(this.messages)) {
+    for (const k of [...this.messages.keys()]) {
       if (!keep.has(k)) {
-        delete this.messages[k];
-        delete this.backlogFetched[k];
+        this.messages.delete(k);
+        this.backlogFetched.delete(k);
+      }
+    }
+    for (const k of [...this.backlogFetched.keys()]) {
+      if (!keep.has(k)) {
+        this.backlogFetched.delete(k);
       }
     }
     if (this.active !== null && !keep.has(this.active)) {
@@ -217,8 +224,8 @@ export class ChannelsStore {
     // Live frames are ordered by the session envelope sequence. A new
     // membership cannot share the old arrival cursor or cached backlog.
     if (meta && meta.epoch !== epoch) {
-      delete this.messages[k];
-      delete this.backlogFetched[k];
+      this.messages.delete(k);
+      this.backlogFetched.delete(k);
       meta.epoch = epoch;
       meta.seq = 0;
       meta.readSeq = msg.seq - 1;
@@ -241,10 +248,11 @@ export class ChannelsStore {
       this.list.push(meta);
       this.list.sort((a, b) => a.name.localeCompare(b.name));
     }
-    const listRef = this.messages[k] ?? (this.messages[k] = []);
-    if (msg.seq > 0 && listRef.some((m) => m.seq === msg.seq)) {
+    const existingList = this.messages.get(k);
+    if (existingList && msg.seq > 0 && existingList.some((m) => m.seq === msg.seq)) {
       return false; // replayed duplicate
     }
+    const listRef = existingList ? [...existingList] : [];
     listRef.push({
       id: this.#nextMsgId++,
       seq: msg.seq,
@@ -257,6 +265,7 @@ export class ChannelsStore {
     if (listRef.length > CHANNEL_MSG_CAP) {
       listRef.splice(0, listRef.length - CHANNEL_MSG_CAP);
     }
+    this.messages.set(k, listRef);
     if (msg.seq > meta.seq) {
       meta.seq = msg.seq;
     }
@@ -286,7 +295,7 @@ export class ChannelsStore {
     }
     const k = this.#key(name);
     if ((this.byName(name)?.epoch ?? null) !== str(b.epoch)) return 0;
-    const existing = this.messages[k] ?? [];
+    const existing = this.messages.get(k) ?? [];
     const bySeq = new Map<number, ChanMsg>();
     for (const m of existing) {
       bySeq.set(m.seq, m);
@@ -303,8 +312,8 @@ export class ChannelsStore {
     if (all.length > CHANNEL_MSG_CAP) {
       all.splice(0, all.length - CHANNEL_MSG_CAP);
     }
-    this.messages[k] = all;
-    this.backlogFetched[k] = true;
+    this.messages.set(k, all);
+    this.backlogFetched.set(k, true);
     return merged;
   }
 
@@ -321,8 +330,8 @@ export class ChannelsStore {
 
   clear(): void {
     this.list = [];
-    this.messages = {};
-    this.backlogFetched = {};
+    this.messages.clear();
+    this.backlogFetched.clear();
     this.active = null;
   }
 }

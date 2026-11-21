@@ -64,7 +64,8 @@ fn login_ok(ok: &LoginOk) -> Response {
 }
 
 /// Reject requests from tempbanned/sitebanned IPs **before** reading or
-/// parsing the JSON request body (HIGH-3).
+/// parsing request bodies or serving any route (HIGH-3, P2-EDGE-2). Closes
+/// keep-alive on refusal so a blocked client cannot pin a TCP slot.
 pub(crate) async fn reject_blocked_ip(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -73,7 +74,12 @@ pub(crate) async fn reject_blocked_ip(
 ) -> Response {
     let ip = client_ip(peer.ip(), req.headers(), &state.config.trusted_proxies);
     if state.hooks.is_ip_blocked(ip) {
-        return err_json(StatusCode::FORBIDDEN, "forbidden");
+        let mut resp = err_json(StatusCode::FORBIDDEN, "forbidden");
+        resp.headers_mut().insert(
+            header::CONNECTION,
+            axum::http::HeaderValue::from_static("close"),
+        );
+        return resp;
     }
     next.run(req).await
 }

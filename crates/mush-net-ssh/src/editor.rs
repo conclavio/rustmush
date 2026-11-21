@@ -40,6 +40,18 @@ const ERASE_LINE: &[u8] = b"\r\x1b[K";
 /// preventing single-packet amplification OOMs.
 pub const MAX_FEED_OUT_BYTES: usize = 64 * 1024;
 
+/// Maximum completed actions (`Submit` / `EofQuit`) emitted by a single
+/// [`LineEditor::feed`] call (`P2-CLIENT-3`). Bounds empty-line `\r` and `^D`
+/// floods in a single 32 KiB SSH packet while remaining transparent to normal
+/// chunked input streams.
+const MAX_FEED_ACTIONS: usize = 1024;
+
+/// Maximum cumulative UTF-8 bytes of unedited history entries materialized into
+/// the edit buffer within a single [`LineEditor::feed`] call (`P2-CLIENT-3`).
+/// Bounds worst-case `Up` + edit + `Down` thrashing on 16 KiB history entries
+/// without affecting normal history recall or small chunked streams.
+const MAX_FEED_HISTORY_MATERIALIZE_BYTES: usize = 128 * 1024;
+
 fn decimal_digits(mut n: usize) -> usize {
     let mut digits = 1;
     while n >= 10 {
@@ -58,6 +70,7 @@ struct FeedBuf<'a> {
     dirty_redraw: bool,
     action_bytes: usize,
     action_limit: usize,
+    history_materialized_bytes: usize,
     record_history: bool,
 }
 
@@ -87,6 +100,20 @@ impl FeedBuf<'_> {
         if self.out.len().saturating_add(needed) <= self.limit {
             editor.redraw(self.out);
         }
+    }
+
+    fn allow_history_materialize(&mut self, line: &LineBuffer) -> bool {
+        if !line.is_history_unedited() {
+            return true;
+        }
+        let next = self
+            .history_materialized_bytes
+            .saturating_add(line.utf8_bytes());
+        if next > MAX_FEED_HISTORY_MATERIALIZE_BYTES {
+            return false;
+        }
+        self.history_materialized_bytes = next;
+        true
     }
 }
 
@@ -230,7 +257,7 @@ impl LineEditor {
         match self.mode {
             EchoMode::Normal => {
                 let mut buf = [0u8; 4];
-                for &c in self.line.chars() {
+                for c in self.line.chars() {
                     out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
                 }
             }
@@ -248,14 +275,7 @@ impl LineEditor {
     fn redraw_len(&self) -> usize {
         let mut len = ERASE_LINE.len() + self.prompt.len();
         match self.mode {
-            EchoMode::Normal => {
-                len += self
-                    .line
-                    .chars()
-                    .iter()
-                    .map(|c| c.len_utf8())
-                    .sum::<usize>();
-            }
+            EchoMode::Normal => len += self.line.utf8_bytes(),
             EchoMode::Masked => len += self.line.len(),
             EchoMode::NoEcho => {}
         }
@@ -293,6 +313,7 @@ impl LineEditor {
             dirty_redraw: false,
             action_bytes: 0,
             action_limit: bytes.len().saturating_mul(4).max(MAX_FEED_OUT_BYTES),
+            history_materialized_bytes: 0,
             record_history,
         };
         for &b in bytes {
@@ -349,7 +370,11 @@ impl LineEditor {
             0x03 => self.ctrl_c(buf),
             0x04 => {
                 if self.line.is_empty() {
-                    actions.push(EditorAction::EofQuit);
+                    if actions.len() < MAX_FEED_ACTIONS {
+                        actions.push(EditorAction::EofQuit);
+                    } else {
+                        buf.push_byte(BELL);
+                    }
                 } else {
                     self.delete_at_cursor(buf);
                 }
@@ -417,9 +442,13 @@ impl LineEditor {
     // ---- buffer edits ---------------------------------------------------
 
     fn insert_char(&mut self, c: char, buf: &mut FeedBuf<'_>) {
+        if !buf.allow_history_materialize(&self.line) {
+            buf.push_byte(BELL);
+            return;
+        }
         let at_end = self.line.at_end();
-        // A control character (incl. C1) or a full line is refused with a
-        // bell: the former is the ANSI-injection vector.
+        // A control character (incl. C1), BiDi/line-separator control, or a
+        // full line is refused with a bell.
         if !self.line.insert(c) {
             buf.push_byte(BELL);
             return;
@@ -439,6 +468,10 @@ impl LineEditor {
     }
 
     fn backspace(&mut self, buf: &mut FeedBuf<'_>) {
+        if !buf.allow_history_materialize(&self.line) {
+            buf.push_byte(BELL);
+            return;
+        }
         let at_end = self.line.at_end();
         let Some(removed) = self.line.backspace() else {
             buf.push_byte(BELL);
@@ -464,6 +497,10 @@ impl LineEditor {
     }
 
     fn delete_at_cursor(&mut self, buf: &mut FeedBuf<'_>) {
+        if !buf.allow_history_materialize(&self.line) {
+            buf.push_byte(BELL);
+            return;
+        }
         if self.line.delete().is_some() {
             if self.mode != EchoMode::NoEcho {
                 buf.mark_dirty();
@@ -474,12 +511,20 @@ impl LineEditor {
     }
 
     fn kill_to_start(&mut self, buf: &mut FeedBuf<'_>) {
+        if !buf.allow_history_materialize(&self.line) {
+            buf.push_byte(BELL);
+            return;
+        }
         if self.line.kill_to_start() && self.mode != EchoMode::NoEcho {
             buf.mark_dirty();
         }
     }
 
     fn kill_word(&mut self, buf: &mut FeedBuf<'_>) {
+        if !buf.allow_history_materialize(&self.line) {
+            buf.push_byte(BELL);
+            return;
+        }
         if self.line.kill_word() && self.mode != EchoMode::NoEcho {
             buf.mark_dirty();
         }
@@ -551,13 +596,17 @@ impl LineEditor {
 
     fn submit(&mut self, buf: &mut FeedBuf<'_>, actions: &mut Vec<EditorAction>) {
         buf.flush_redraw(self);
+        let line_bytes = self.line.utf8_bytes();
         let record = buf.record_history && self.mode == EchoMode::Normal;
-        let line = self.line.submit(record);
         buf.push_slice(CRLF);
-        if buf.action_bytes.saturating_add(line.len()) <= buf.action_limit {
+        if actions.len() < MAX_FEED_ACTIONS
+            && buf.action_bytes.saturating_add(line_bytes) <= buf.action_limit
+        {
+            let line = self.line.submit(record);
             buf.action_bytes = buf.action_bytes.saturating_add(line.len());
             actions.push(EditorAction::Submit(line));
         } else {
+            self.line.clear();
             buf.push_byte(BELL);
         }
     }
@@ -1105,5 +1154,41 @@ mod tests {
         let (_, out) = feed(&mut ed, b"\x1b[A");
         assert_eq!(out, vec![BELL]);
         assert!(ed.is_empty());
+    }
+
+    #[test]
+    fn cursor_zero_edit_burst_and_empty_submit_flood_stay_bounded() {
+        let mut ed = LineEditor::new();
+        ed.set_prompt("> ");
+        let seed = vec![b'a'; MAX_LINE_CHARS - 1];
+        feed(&mut ed, &seed);
+        // Move to cursor 0 (Ctrl-A), then send 32 KiB of alternating insert +
+        // backspace (P2-CLIENT-3): previously ~1.07 GiB of synchronous memmove.
+        feed(&mut ed, b"\x01");
+        assert_eq!(ed.cursor(), 0);
+        let mut burst = Vec::with_capacity(32 * 1024);
+        for _ in 0..16_384 {
+            burst.extend_from_slice(b"x\x7f");
+        }
+        let mut out = Vec::new();
+        let actions = ed.feed_with_history(&burst, &mut out, false);
+        assert!(actions.is_empty());
+        assert_eq!(ed.cursor(), 0);
+        assert_eq!(ed.line().len(), MAX_LINE_CHARS - 1);
+        assert!(out.len() <= MAX_FEED_OUT_BYTES);
+        assert_eq!(count_subslice(&out, ERASE_LINE), 1);
+
+        // 32 KiB of empty submits or Ctrl-D is bounded by MAX_FEED_ACTIONS.
+        let mut ed2 = LineEditor::new();
+        let (cr_actions, _) = feed(&mut ed2, &vec![b'\r'; 32 * 1024]);
+        assert_eq!(cr_actions.len(), MAX_FEED_ACTIONS);
+        let (eof_actions, _) = feed(&mut ed2, &vec![0x04; 32 * 1024]);
+        assert_eq!(eof_actions.len(), MAX_FEED_ACTIONS);
+
+        // BiDi and Unicode line separators are rejected with bell.
+        let mut ed3 = LineEditor::new();
+        let (_, out) = feed(&mut ed3, "a\u{202e}\u{2028}\u{2066}b".as_bytes());
+        assert_eq!(ed3.line(), "ab");
+        assert_eq!(out.iter().filter(|&&b| b == BELL).count(), 3);
     }
 }

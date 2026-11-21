@@ -40,6 +40,9 @@ pub fn bind_std(addr: SocketAddr) -> std::io::Result<std::net::TcpListener> {
         socket.set_reuse_address(true)?;
         socket.set_reuse_port(true)?;
     }
+    // Enable TCP SO_KEEPALIVE on the listener so accepted sockets inherit
+    // dead-peer detection (P2-EDGE-2).
+    let _ = socket.set_keepalive(true);
     socket.set_nonblocking(true)?;
     socket.bind(&addr.into())?;
     socket.listen(BACKLOG)?;
@@ -73,6 +76,16 @@ mod tests {
     async fn binds_loopback_v4() {
         let l = bind("127.0.0.1:0".parse().unwrap()).unwrap();
         assert!(l.local_addr().unwrap().port() > 0);
+    }
+
+    #[test]
+    fn bind_std_enables_tcp_keepalive() {
+        let l = bind_std("127.0.0.1:0".parse().unwrap()).unwrap();
+        let sock = socket2::SockRef::from(&l);
+        assert!(
+            sock.keepalive().unwrap(),
+            "reuseport listeners must enable SO_KEEPALIVE"
+        );
     }
 
     #[cfg(unix)]

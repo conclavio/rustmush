@@ -473,6 +473,67 @@ namespace TacSim.World
             }
         }
 
+        public const float MaxRoomCoordAbs = 100000f;
+        public const float MaxRoomSpanMeters = 500f;
+        public const int MaxRoomsPerPack = 256;
+        public const int MaxExitsPerPack = 512;
+        public const int MaxFeaturesPerPack = 512;
+        public const int MaxDetailsPerRoom = 64;
+        public const int MaxMarkersPerRoom = 64;
+        public const int MaxGoodsEntries = 512;
+        public const int MaxShipCompartments = 64;
+        public const int MaxShipExits = 128;
+        public const int MaxSeedNpcsPerPack = 256;
+        public const int MaxSeedItemsPerPack = 256;
+        public const int MaxFloorsPerStructure = 32;
+
+        /// <summary>
+        /// Mirrors <c>crates/tacsim/src/client_sync.rs::lock_str_is_staff</c>: detects both exact <c>"staff"</c>
+        /// and compound staff/wizard/royalty lock predicates.
+        /// </summary>
+        internal static bool IsStaffLockExpression(string lockExpr)
+        {
+            if (string.IsNullOrWhiteSpace(lockExpr))
+                return false;
+            string upper = lockExpr.Trim().ToUpperInvariant();
+            return upper == "STAFF" ||
+                   upper.Contains("FLAG^WIZARD", StringComparison.Ordinal) ||
+                   upper.Contains("FLAG^ROYALTY", StringComparison.Ordinal) ||
+                   upper.Contains("FLAG^STAFF", StringComparison.Ordinal);
+        }
+
+        private static void RedactNonStaffLockField(Dictionary<string, JsonNode> obj)
+        {
+            if (obj == null || !obj.TryGetValue("lock", out JsonNode lockVal))
+                return;
+            if (lockVal == null || lockVal.IsNull || (lockVal.Kind == JsonKind.Bool && !lockVal.AsBool()))
+            {
+                obj.Remove("lock");
+                return;
+            }
+            if (lockVal.Kind == JsonKind.String && string.IsNullOrWhiteSpace(lockVal.AsString()))
+            {
+                obj.Remove("lock");
+                return;
+            }
+            obj["lock"] = JsonNode.FromString("locked");
+        }
+
+        private static void ClampRoomBounds(float rawMin, float rawMax, out float clampedMin, out float clampedMax)
+        {
+            float a = (float.IsNaN(rawMin) || float.IsInfinity(rawMin)) ? 0f : rawMin;
+            float b = (float.IsNaN(rawMax) || float.IsInfinity(rawMax)) ? (a + 10f) : rawMax;
+            if (a > b)
+            {
+                float tmp = a;
+                a = b;
+                b = tmp;
+            }
+            clampedMin = Mathf.Clamp(a, -MaxRoomCoordAbs, MaxRoomCoordAbs);
+            float maxUpper = Mathf.Min(MaxRoomCoordAbs, clampedMin + MaxRoomSpanMeters);
+            clampedMax = Mathf.Clamp(b, clampedMin + 1.0f, Mathf.Max(clampedMin + 1.0f, maxUpper));
+        }
+
         /// <summary>
         /// Strips server-only narrative secrets, lore, quests, hooks, vendor lane schedules, hidden exits,
         /// restricted-room descriptions, and private NPC prompts before staging fallback packs into a client build.
@@ -483,7 +544,15 @@ namespace TacSim.World
             if (string.IsNullOrWhiteSpace(rawJson))
                 return rawJson;
 
-            JsonNode root = JsonNode.Parse(rawJson);
+            JsonNode root;
+            try
+            {
+                root = JsonNode.Parse(rawJson);
+            }
+            catch (Exception)
+            {
+                return "{}";
+            }
             if (root == null || !root.IsObject)
                 return rawJson;
 
@@ -543,7 +612,8 @@ namespace TacSim.World
                     if (string.Equals(def.Str("reveal"), "staff", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(def.Str("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(def["portal"].Str("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(def.Str("lock"), "staff", StringComparison.OrdinalIgnoreCase) ||
+                        IsStaffLockExpression(def.Str("lock")) ||
+                        IsStaffLockExpression(def["portal"].Str("lock")) ||
                         def.Bool("hidden", false) ||
                         def["portal"].Bool("hidden", false))
                     {
@@ -553,6 +623,11 @@ namespace TacSim.World
 
                     defObj.Remove("notes");
                     defObj.Remove("secrets");
+
+                    // Mirror crates/tacsim/src/client_sync.rs (EXT-P2-7 / P2-CLIENT-8): never disclose raw
+                    // lock expressions (#dbrefs, attribute/flag predicates) in client-staged packs.
+                    RedactNonStaffLockField(defObj);
+                    RedactNonStaffLockField(def["portal"].AsObject());
 
                     if (kind == "room")
                     {
@@ -829,12 +904,23 @@ namespace TacSim.World
         public static void MergeCastJsonIntoPack(AtlasNeighborhoodPack pack, string castJson)
         {
             if (pack == null || string.IsNullOrWhiteSpace(castJson)) return;
-            var root = JsonNode.Parse(castJson);
+            JsonNode root;
+            try
+            {
+                root = JsonNode.Parse(castJson);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[TacSimContentLoader] Ignoring malformed cast pack JSON: {ex.Message}");
+                return;
+            }
+            if (root == null || !root.IsObject) return;
             var entries = root["entries"].AsObject();
             if (entries == null) return;
 
             foreach (var kv in entries)
             {
+                if (pack.SeedNpcs.Count >= MaxSeedNpcsPerPack) break;
                 var entry = kv.Value;
                 string kind = entry.Str("kind", string.Empty);
                 if (kind != "npc" && kind != "person") continue;
@@ -900,10 +986,26 @@ namespace TacSim.World
 
         public static AtlasNeighborhoodPack ParseNeighborhoodJson(string json, string defaultPackId = "neighborhood.ceres_freeport")
         {
-            var root = JsonNode.Parse(json);
+            string fallbackPackId = string.IsNullOrEmpty(defaultPackId) ? "neighborhood.ceres_freeport" : defaultPackId;
+            if (string.IsNullOrWhiteSpace(json))
+                return fallbackPackId == "neighborhood.ooc_area" ? BuildFallbackOocArea() : BuildFallbackFreeport();
+
+            JsonNode root;
+            try
+            {
+                root = JsonNode.Parse(json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[TacSimContentLoader] Malformed neighborhood JSON for '{fallbackPackId}'; using fallback layout ({ex.Message}).");
+                return fallbackPackId == "neighborhood.ooc_area" ? BuildFallbackOocArea() : BuildFallbackFreeport();
+            }
+            if (root == null || !root.IsObject)
+                return fallbackPackId == "neighborhood.ooc_area" ? BuildFallbackOocArea() : BuildFallbackFreeport();
+
             var pack = new AtlasNeighborhoodPack
             {
-                PackId = root["manifest"].Str("id", string.IsNullOrEmpty(defaultPackId) ? "neighborhood.ceres_freeport" : defaultPackId),
+                PackId = root["manifest"].Str("id", fallbackPackId),
                 Name = "Ceres Freeport"
             };
 
@@ -917,7 +1019,8 @@ namespace TacSim.World
                 if (entry.Str("kind") != "structure") continue;
                 var floorsArr = entry["def"]["floors"].AsArray();
                 if (floorsArr == null) continue;
-                for (int i = 0; i < floorsArr.Count; i++)
+                int fCap = Math.Min(floorsArr.Count, MaxFloorsPerStructure);
+                for (int i = 0; i < fCap; i++)
                 {
                     var fl = floorsArr[i];
                     int idx = fl.Int("index", i);
@@ -945,9 +1048,13 @@ namespace TacSim.World
                 }
                 else if (kind == "room")
                 {
+                    if (pack.Rooms.Count >= MaxRoomsPerPack) continue;
                     var rect = def["footprint"]["rect"].AsArray();
                     if (rect == null || rect.Count < 2) continue;
                     int floorIdx = ParseSurfaceFloorIndex(def["surface"], pack.Floors);
+
+                    ClampRoomBounds(rect[0][0].AsFloat(0f), rect[1][0].AsFloat(10f), out float minX, out float maxX);
+                    ClampRoomBounds(rect[0][1].AsFloat(0f), rect[1][1].AsFloat(10f), out float minY, out float maxY);
 
                     var r = new AtlasRoomDef
                     {
@@ -958,23 +1065,28 @@ namespace TacSim.World
                         Kind = def.Str("kind", "indoor"),
                         Restricted = def.Str("access", "public") == "restricted",
                         FloorIndex = floorIdx,
-                        MinX = rect[0][0].AsFloat(0f),
-                        MinY = rect[0][1].AsFloat(0f),
-                        MaxX = rect[1][0].AsFloat(10f),
-                        MaxY = rect[1][1].AsFloat(10f)
+                        MinX = minX,
+                        MinY = minY,
+                        MaxX = maxX,
+                        MaxY = maxY
                     };
 
                     var detailsObj = def["details"].AsObject();
                     if (detailsObj != null)
                     {
+                        int detCount = 0;
                         foreach (var dk in detailsObj)
+                        {
+                            if (detCount++ >= MaxDetailsPerRoom) break;
                             r.Details[dk.Key] = dk.Value.AsString(string.Empty);
+                        }
                     }
 
                     var markers = def["markers"].AsArray();
                     if (markers != null)
                     {
-                        for (int m = 0; m < markers.Count; m++)
+                        int mCap = Math.Min(markers.Count, MaxMarkersPerRoom);
+                        for (int m = 0; m < mCap; m++)
                             r.Markers.Add(markers[m].AsString(string.Empty));
                     }
 
@@ -982,6 +1094,7 @@ namespace TacSim.World
                 }
                 else if (kind == "exit")
                 {
+                    if (pack.Exits.Count >= MaxExitsPerPack) continue;
                     string from = def.Str("from", string.Empty);
                     string to = def.Str("to", string.Empty);
                     if (from == "limbo" || to == "limbo") continue;
@@ -1019,6 +1132,7 @@ namespace TacSim.World
                 }
                 else if (kind == "feature")
                 {
+                    if (pack.Features.Count >= MaxFeaturesPerPack) continue;
                     var poly = def["polyline"].AsArray();
                     if (poly == null || poly.Count < 2) continue;
                     int floorIdx = ParseSurfaceFloorIndex(def["surface"], pack.Floors);
@@ -1040,6 +1154,7 @@ namespace TacSim.World
                 }
                 else if (kind == "npc" || kind == "person")
                 {
+                    if (pack.SeedNpcs.Count >= MaxSeedNpcsPerPack) continue;
                     bool enabled = !def.ContainsKey("enabled") || def.Bool("enabled", true);
                     string room = def.Str("room", def.Str("home", string.Empty));
                     if (!string.IsNullOrEmpty(room))
@@ -1059,6 +1174,7 @@ namespace TacSim.World
                 }
                 else if (kind == "item")
                 {
+                    if (pack.SeedItems.Count >= MaxSeedItemsPerPack) continue;
                     string room = def.Str("room", string.Empty);
                     if (!string.IsNullOrEmpty(room))
                     {
@@ -1122,12 +1238,24 @@ namespace TacSim.World
             if (string.IsNullOrWhiteSpace(json))
                 return BuildFallbackGoodsTable();
 
-            var root = JsonNode.Parse(json);
+            JsonNode root;
+            try
+            {
+                root = JsonNode.Parse(json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[TacSimContentLoader] Malformed goods JSON; using fallback table ({ex.Message}).");
+                return BuildFallbackGoodsTable();
+            }
+            if (root == null || !root.IsObject)
+                return BuildFallbackGoodsTable();
             var goods = root["goods"].AsArray();
             if (goods == null)
                 return BuildFallbackGoodsTable();
 
-            for (int i = 0; i < goods.Count; i++)
+            int gCap = Math.Min(goods.Count, MaxGoodsEntries);
+            for (int i = 0; i < gCap; i++)
             {
                 var g = goods[i];
                 var measures = g["measures"];
@@ -1193,10 +1321,26 @@ namespace TacSim.World
 
         public static ShipUnitTemplate ParseShipUnitJson(string json, string expectedUnitId = null)
         {
-            var root = JsonNode.Parse(json);
+            string fallbackUnitId = string.IsNullOrEmpty(expectedUnitId) ? "tacsim.unit.dray" : expectedUnitId;
+            if (string.IsNullOrWhiteSpace(json))
+                return BuildFallbackDray(fallbackUnitId);
+
+            JsonNode root;
+            try
+            {
+                root = JsonNode.Parse(json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[TacSimContentLoader] Malformed ship unit JSON for '{fallbackUnitId}'; using fallback Dray ({ex.Message}).");
+                return BuildFallbackDray(fallbackUnitId);
+            }
+            if (root == null || !root.IsObject)
+                return BuildFallbackDray(fallbackUnitId);
+
             var tpl = new ShipUnitTemplate
             {
-                UnitId = string.IsNullOrEmpty(expectedUnitId) ? "tacsim.unit.dray" : expectedUnitId,
+                UnitId = fallbackUnitId,
                 Label = "Dray-class bulk hauler"
             };
 
@@ -1233,7 +1377,8 @@ namespace TacSim.World
                 var rooms = interior["rooms"].AsArray();
                 if (rooms != null)
                 {
-                    for (int i = 0; i < rooms.Count; i++)
+                    int rCap = Math.Min(rooms.Count, MaxShipCompartments);
+                    for (int i = 0; i < rCap; i++)
                     {
                         var r = rooms[i];
                         string rKind = r.Str("kind");
@@ -1252,8 +1397,12 @@ namespace TacSim.World
                         var det = r["details"].AsObject();
                         if (det != null)
                         {
+                            int dCount = 0;
                             foreach (var dk in det)
+                            {
+                                if (dCount++ >= MaxDetailsPerRoom) break;
                                 comp.Details[dk.Key] = dk.Value.AsString(string.Empty);
+                            }
                         }
                         tpl.Compartments[id] = comp;
                     }
@@ -1262,7 +1411,8 @@ namespace TacSim.World
                 var exits = interior["exits"].AsArray();
                 if (exits != null)
                 {
-                    for (int i = 0; i < exits.Count; i++)
+                    int exCap = Math.Min(exits.Count, MaxShipExits);
+                    for (int i = 0; i < exCap; i++)
                     {
                         var ex = exits[i];
                         var names = ex["names"].AsArray();

@@ -640,7 +640,9 @@ fn cycle(at: usize, len: usize, back: bool) -> usize {
 }
 
 fn clean(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).collect()
+    text.chars()
+        .filter(|&c| !crate::is_stripped_terminal_char(c))
+        .collect()
 }
 
 /// The one pending market request: its id and, for an offer, the closing
@@ -787,7 +789,7 @@ fn action_control(offer: &Value) -> Result<ActionForm, &'static str> {
                     || choices.iter().any(|c| {
                         c.is_empty()
                             || c.len() > mush_proto::MAX_LEGAL_ACTION_TEXT_BYTES
-                            || c.chars().any(char::is_control)
+                            || c.chars().any(crate::is_stripped_terminal_char)
                     })
                 {
                     return Err(NO_CONTROL);
@@ -861,7 +863,9 @@ fn action_parameters(form: &ActionForm) -> Result<LegalActionParameters, String>
                     continue;
                 }
                 let typed = field.line.text();
-                if typed.len() > *maximum_bytes || typed.chars().any(char::is_control) {
+                if typed.len() > *maximum_bytes
+                    || typed.chars().any(crate::is_stripped_terminal_char)
+                {
                     return Err("Text is too long or contains a control character.".into());
                 }
                 LegalActionScalar::Text { value: typed }
@@ -1540,7 +1544,10 @@ impl MarketDesk {
             return;
         }
         let invoke = InvokeRequest::Mind(MindRequest::Market { action });
-        if let Err(error) = invoke.validate() {
+        if let Err(error) = invoke
+            .validate()
+            .and_then(|()| crate::reject_forbidden_invoke_format_chars(&invoke))
+        {
             self.say(&format!("Request refused: {error}"));
             return;
         }
@@ -1589,7 +1596,10 @@ impl MarketDesk {
             offer: form.offer.clone(),
             parameters,
         });
-        if let Err(error) = invoke.validate() {
+        if let Err(error) = invoke
+            .validate()
+            .and_then(|()| crate::reject_forbidden_invoke_format_chars(&invoke))
+        {
             self.say_action(&format!("Request refused: {error}"));
             return;
         }
@@ -2025,7 +2035,7 @@ fn edit(form: &mut Form, key: Key) {
     };
     let changed = match key {
         Key::Char(c) if digits && !c.is_ascii_digit() => false,
-        Key::Char(c) if line.len() < max && !c.is_control() => line.insert(c),
+        Key::Char(c) if line.len() < max && !crate::is_stripped_terminal_char(c) => line.insert(c),
         Key::Backspace => line.backspace().is_some(),
         Key::Delete => line.delete().is_some(),
         Key::Left => {
@@ -2120,5 +2130,66 @@ mod tests {
         desk.actions_replaced();
         assert!(desk.attempts.is_empty());
         assert!(submit(&mut desk, &view, MAX_ATTEMPTS + 1).is_some());
+    }
+
+    #[test]
+    fn bidi_and_line_separators_are_stripped_and_refused_in_market_and_legal_actions() {
+        assert_eq!(
+            clean("Code\u{202E}\u{2066}\u{2028}\u{2029}\u{061C}99"),
+            "Code99"
+        );
+        // A choice containing a BiDi override or U+2028 is rejected by action_control,
+        // while an otherwise identical clean choice is accepted and its label stripped.
+        let good_offer = serde_json::json!({
+            "offer": format!("{:064x}", 1),
+            "subject": { "kind": "self_actor" },
+            "targets": { "kind": "none" },
+            "parameters": [{
+                "id": "mode",
+                "required": true,
+                "kind": { "kind": "choice", "choices": ["ok", "clean"] }
+            }],
+            "presentation": { "label": "Act\u{202E}Now" }
+        });
+        let good_form = action_control(&good_offer).expect("clean choice offer is valid");
+        assert_eq!(good_form.label, "ActNow");
+        let bad_offer = serde_json::json!({
+            "offer": format!("{:064x}", 1),
+            "subject": { "kind": "self_actor" },
+            "targets": { "kind": "none" },
+            "parameters": [{
+                "id": "mode",
+                "required": true,
+                "kind": { "kind": "choice", "choices": ["ok", "spoof\u{202E}bad"] }
+            }],
+            "presentation": { "label": "Act\u{202E}Now" }
+        });
+        assert!(action_control(&bad_offer).is_err());
+
+        // Typing BiDi/line-separator characters into an Action text field drops them.
+        let text_view = serde_json::json!([{
+            "offer": format!("{:064x}", 2),
+            "subject": { "kind": "self_actor" },
+            "targets": { "kind": "none" },
+            "parameters": [{
+                "id": "note",
+                "required": true,
+                "kind": { "kind": "text", "maximum_bytes": 64 }
+            }],
+            "presentation": { "verb": "memo", "label": "Memo\u{202E}1", "help": "" }
+        }]);
+        let mut desk = MarketDesk::new();
+        desk.open_action(Some(&text_view), Some(0));
+        let (title, _) = desk.form_lines().expect("action form open");
+        assert_eq!(title, "Memo1");
+        for ch in ['h', '\u{202E}', '\u{2028}', '\u{2066}', 'i'] {
+            desk.key(Key::Char(ch));
+        }
+        desk.enter();
+        let invokes = desk.take_invokes();
+        assert_eq!(invokes.len(), 1);
+        let json = serde_json::to_string(&invokes[0].1).expect("serialize invoke");
+        assert!(json.contains("\"hi\""), "got {json}");
+        assert!(!json.contains('\u{202E}') && !json.contains('\u{2028}'));
     }
 }

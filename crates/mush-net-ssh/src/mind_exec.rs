@@ -57,6 +57,7 @@ impl ExecInput {
         }
         let request = InvokeRequest::Mind(request);
         request.validate()?;
+        crate::reject_forbidden_invoke_format_chars(&request)?;
         Ok(request)
     }
 }
@@ -142,5 +143,28 @@ mod tests {
             },
         ];
         assert!(owned_character(&two, None).is_none());
+    }
+
+    #[test]
+    fn bidi_and_unicode_line_separators_are_refused_in_exec_invokes() {
+        for bad in [
+            br#"{"op":"create","name":"spoof\u202eName","from":"Standard"}"#.as_slice(),
+            br#"{"op":"read","name":"alpha\u2028beta","revision":null}"#,
+            br#"{"op":"read","name":"alpha\u2066beta","revision":null}"#,
+            br#"{"op":"read","name":"alpha\u061cbeta","revision":null}"#,
+        ] {
+            let cmd = if bad.starts_with(br#"{"op":"create""#) {
+                MindExec::Push
+            } else {
+                MindExec::Pull
+            };
+            let mut input = ExecInput::new(cmd);
+            input.feed(bad).expect("within byte cap");
+            assert!(
+                input.finish().is_err(),
+                "expected refusal for {}",
+                String::from_utf8_lossy(bad)
+            );
+        }
     }
 }
