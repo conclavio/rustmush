@@ -2342,7 +2342,8 @@ taken on OP.5's v50 with the lead's word.
 - **The figures are provisional**: 56 cr, 200 t and the 20,000 cr capital.
 
 **Not built.** Escorts for the Republic's own supply hulls (Q-50-27 as corrected): the Republic
-posts no haul in the first operation, so there is no hull to escort. Salvage of interdicted hulls,
+posts no haul in the first operation, so there is no hull to escort. The owner ruled on
+2026-11-21 that none are built for now (Q-50-27's amendment). Salvage of interdicted hulls,
 which waits for a contract of its own.
 
 ## OP.8
