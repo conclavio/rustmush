@@ -72,6 +72,21 @@ pub const DECIDE_LEAD_IC: i64 = DAY;
 /// (doc 50 cut OP.3, Q-50-63's provisional grace): a dozen port fires, so a high clock rate
 /// cannot turn the one fire between two undocks into a departure.
 pub const LAUNCH_GRACE_WALL_S: i64 = 60;
+
+/// **The departure gap that still counts as flying together** (doc 50b, P3): [`TOGETHER_IC`], or the
+/// IC seconds [`LAUNCH_GRACE_WALL_S`] real seconds make at the world's clock rate, whichever is
+/// longer. At 24:1 it is [`TOGETHER_IC`]; at a test rate the launch grace carries through to the
+/// proximity test, so an escort that set out inside the grace is near on the passage too.
+#[must_use]
+pub fn together_ic(w: &World) -> i64 {
+    together_ic_at(w.world_timeline().current().rate)
+}
+
+/// [`together_ic`] at clock rate `rate`.
+#[must_use]
+pub fn together_ic_at(rate: u32) -> i64 {
+    TOGETHER_IC.max(i64::from(rate.max(1)).saturating_mul(LAUNCH_GRACE_WALL_S))
+}
 /// **The protected hull of an escort posted for a haul not yet taken** (doc 50 cut OP.3): no
 /// hull is Limbo.
 pub const UNBOUND: ObjId = ObjId(0);
@@ -172,6 +187,8 @@ pub const NO_FIELD: &str = "There is no field at {port}; a sortie escort names a
 pub const NO_HAUL: &str = "There is no haul {job} of yours still on its way to escort.";
 /// The line both read when the haul an escort was posted for closes untaken (doc 50 cut OP.3).
 pub const TOLD_HAUL_GONE: &str = "Escort {job} is called off: the haul it was posted for closed before a hull took it. The fee and any bond are back in the accounts they came from.";
+/// Told both when the haul is taken in the escort's own hull (doc 50b): `{job}`.
+pub const TOLD_SAME_HULL: &str = "Escort {job} is called off: the haul it was posted for was taken in the escort's own hull, and a hull does not escort herself. The fee and any bond are back in the accounts they came from.";
 /// Why: wrecked.
 pub const WHY_WRECKED: &str = "she was wrecked";
 /// Why: captured.
@@ -516,7 +533,7 @@ impl FactProvider for EscortFactProvider {
 // ---- the host's reading ---------------------------------------------------------------------
 
 /// **Whether `escort` is near `protected` in space** (Q-48-46, provisional): both in one bubble,
-/// or both on one passage: the same route, departed within [`TOGETHER_IC`], and neither held in
+/// or both on one passage: the same route, departed within [`together_ic`], and neither held in
 /// a bubble the other is not in.
 #[must_use]
 pub fn near_in_space(w: &World, protected: ObjId, escort: ObjId) -> bool {
@@ -537,7 +554,7 @@ pub fn near_in_space(w: &World, protected: ObjId, escort: ObjId) -> bool {
     let (Some(a), Some(b)) = (journeys.get(protected), journeys.get(escort)) else {
         return false;
     };
-    a.route() == b.route() && (a.departed().at - b.departed().at).abs() <= TOGETHER_IC
+    a.route() == b.route() && (a.departed().at - b.departed().at).abs() <= together_ic(w)
 }
 
 /// **Whether `escort` is near `protected` in a field**: both deployed in the one site.
@@ -620,12 +637,12 @@ fn left(w: &World, job: &EscortJob, escort: ObjId) -> bool {
     match &job.journey {
         Journey::Passage { to, .. } => {
             // Still docked inside the departure gap is not leaving (48e services:G3; doc 50 cut
-            // OP.3): `near_in_space` counts a passage flown together within [`TOGETHER_IC`] of
+            // OP.3): `near_in_space` counts a passage flown together within [`together_ic`] of
             // hers, and a high clock rate is allowed [`LAUNCH_GRACE_WALL_S`] real seconds.
             let now = w.world_ic_now().at;
             let wall = w.now();
             let setting_out = job.watch.as_ref().is_some_and(|watch| {
-                now.saturating_sub(watch.launch_ic) <= TOGETHER_IC
+                now.saturating_sub(watch.launch_ic) <= together_ic(w)
                     || wall.saturating_sub(watch.launch_wall) <= LAUNCH_GRACE_WALL_S
             });
             !setting_out
@@ -766,6 +783,20 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
     {
         let haul = super::haul::haul_of(ctx.w, contract);
         if let Some(hull) = haul.as_ref().and_then(|h| h.hull) {
+            // Doc 50b (OP.3): the hauler took the haul in the escort's own hull. A hull does not
+            // escort herself, whichever contract was taken first, so the escort is called off.
+            if hull == escort {
+                if !matches!(
+                    mush_economy::cancel_job(ctx, ContractId(job.contract)),
+                    Ok(true)
+                ) {
+                    return false;
+                }
+                job.stage = EscortStage::Closed;
+                let line = TOLD_SAME_HULL.replace("{job}", &job.job());
+                tell_both(ctx, job, &line);
+                return true;
+            }
             job.protected = hull;
             return true;
         }
@@ -1361,6 +1392,15 @@ pub fn services(w: &World, venue: &MarketId) -> Vec<mush_market::Service> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Doc 50b (P3): the launch grace carries into the proximity test.** At 24:1 the gap is
+    /// [`TOGETHER_IC`]; at 3,600:1 it is the IC seconds [`LAUNCH_GRACE_WALL_S`] make.
+    #[test]
+    fn op50b_the_together_gap_follows_the_clock_rate() {
+        assert_eq!(together_ic_at(24), TOGETHER_IC);
+        assert_eq!(together_ic_at(3_600), 3_600 * LAUNCH_GRACE_WALL_S);
+        assert_eq!(together_ic_at(0), TOGETHER_IC);
+    }
 
     /// **Doc 48 cut EX.6**: the near share is per-mille of the journey, and 90% keeps it.
     #[test]

@@ -384,3 +384,180 @@ async fn op3_an_escort_one_fire_behind_at_a_high_rate_has_not_left() {
         "one fire behind is setting out: {watching:?}"
     );
 }
+
+/// Wreck `hull`: staff's damage through the unit's one plan path, every cell to its least.
+fn wreck(rig: &mut Rig, hull: ObjId) {
+    let unit = mush_tactics::module::unit_of(rig.tw.world(), hull)
+        .cloned()
+        .expect("the hull is a unit");
+    let ops: Vec<mush_tactics::UnitMutationOp> = unit
+        .cells()
+        .filter(|(_, cell)| cell.current > cell.min)
+        .map(|(addr, cell)| mush_tactics::UnitMutationOp::SetCell {
+            addr: addr.clone(),
+            value: cell.min,
+        })
+        .collect();
+    let plan = mush_tactics::UnitMutationPlan::new(
+        ops,
+        Some(unit.revision()),
+        Some("the hull is lost".into()),
+    )
+    .expect("a plan");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@unit/damage #{}={}",
+            hull.0,
+            serde_json::to_string(&plan).expect("the plan's text")
+        ),
+    );
+    assert!(!out.contains("Usage"), "{out}");
+    assert!(escort::wrecked(rig.tw.world(), hull));
+}
+
+/// **Doc 50b (OP.3): a haul taken in its escort's own hull calls the escort off.** A pilot takes
+/// the escort posted for a haul with her hull, then takes the haul in the same hull: a hull does
+/// not escort herself, so the escort is called off and its contract cancelled, and the haul runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op50b_a_haul_taken_in_its_escorts_own_hull_calls_the_escort_off() {
+    let mut rig = stocked();
+    let (factor, haul_contract) = org_haul(&mut rig);
+    let occator = org_of(&rig, "ceres_port", "occator");
+    let posted = run(
+        &mut rig.tw,
+        factor,
+        &format!("+escort/post haul={haul_contract} fee=300 as=#{occator} go"),
+    );
+    assert!(posted.contains("posted"), "{posted}");
+    let escort_contract = escort::escorts(rig.tw.world())
+        .into_iter()
+        .find(|j| j.haul == Some(haul_contract))
+        .map(|j| j.contract)
+        .expect("the escort for the haul");
+    let (both, row) = prospector(&mut rig, "Both", 87, "Selfsame");
+    let hull = ObjId(row.hull);
+    let took = run(
+        &mut rig.tw,
+        both,
+        &format!("+escort/accept {escort_contract} with=#{} go", hull.0),
+    );
+    assert!(took.contains("You take escort"), "{took}");
+    let took = run(
+        &mut rig.tw,
+        both,
+        &format!("+haul/accept {haul_contract} go"),
+    );
+    assert!(took.contains("You take haul"), "{took}");
+    settle(&mut rig, 3);
+    let called_off = escort_job(&rig, escort_contract);
+    assert_eq!(called_off.stage, EscortStage::Closed, "{called_off:?}");
+    assert_ne!(called_off.protected, hull, "never bound to herself");
+    assert!(
+        !state(&rig, escort_contract).is_live(),
+        "the escort's contract is cancelled: {:?}",
+        state(&rig, escort_contract)
+    );
+    assert_eq!(haul_job(&rig, haul_contract).stage, HaulStage::Aboard);
+}
+
+/// **Doc 50b (OP.3): a delivery committed before the hull is lost stays delivered.** The hauler
+/// delivers at Isidis and the leg lands; her hull is wrecked before the haul's arm next looks.
+/// The arm acknowledges the delivery first: the contract settles and owes no lost leg.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op50b_a_delivery_committed_before_the_hull_is_lost_stays_delivered() {
+    let mut rig = stocked();
+    set_rate(&mut rig.tw, 24);
+    let (_, haul_contract) = org_haul(&mut rig);
+    let (hauler, row) = prospector(&mut rig, "Hauler", 88, "Tallow");
+    let hull = ObjId(row.hull);
+    let took = run(
+        &mut rig.tw,
+        hauler,
+        &format!("+haul/accept {haul_contract} go"),
+    );
+    assert!(took.contains("You take haul"), "{took}");
+    settle(&mut rig, 3);
+    assert_eq!(haul_job(&rig, haul_contract).stage, HaulStage::Aboard);
+    load(&mut rig, &row, 60, 40, 0x0b51);
+    board(&mut rig, hauler);
+    for (to, lot) in [("stickney", 0x0b53), ("isidis", 0x0b55)] {
+        if to == "isidis" {
+            load(&mut rig, &row, 20, 4, lot);
+        }
+        let ticket = file_and_launch(&mut rig, hauler, hull, &format!("+ship/undock {to}"));
+        let (_, queued) = advance_to(
+            &mut rig,
+            ticket.plan.depart_ic + ticket.plan.total_s + 3_600,
+        );
+        land_quietly(&mut rig, &queued);
+        settle(&mut rig, 3);
+    }
+    let delivering = run(
+        &mut rig.tw,
+        hauler,
+        &format!("+haul/deliver {haul_contract} go"),
+    );
+    assert!(!delivering.contains("not docked"), "{delivering}");
+    // The delivery leg lands; the hull is lost before the arm's next fire.
+    let queued = crate::driving_rig::drain(&mut rig.tw);
+    land_quietly(&mut rig, &queued);
+    wreck(&mut rig, hull);
+    settle(&mut rig, 4);
+    let done = haul_job(&rig, haul_contract);
+    assert!(
+        matches!(done.stage, HaulStage::Delivered | HaulStage::Closed),
+        "delivered, not lost: {done:?}"
+    );
+    assert!(
+        matches!(state(&rig, haul_contract), ContractState::Settled { .. }),
+        "the contract settles: {:?}",
+        state(&rig, haul_contract)
+    );
+}
+
+/// **Doc 50b (doc 50 §7's cargo reading): a full Dray-P can neither mine more nor take an
+/// organization's haul.** Her hold is filled with a bulk trade good held as a lot; the ore hold's reading counts
+/// it, so no room is left for ore, and the haul's admission refuses her.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op50b_a_full_dray_p_can_neither_mine_more_nor_take_a_haul() {
+    let mut rig = stocked();
+    let (_, haul_contract) = org_haul(&mut rig);
+    let (pilot, row) = prospector(&mut rig, "Full", 89, "Brimful");
+    let hull = ObjId(row.hull);
+    let cap = tacsim::space::mining::hull_hold_capacity_tonnes(rig.tw.world(), hull);
+    assert!(cap > 0, "a Dray-P has a hold");
+    // Held as a lot, as a buyer of a personal ask receives it: seeded pooled, then crystallized,
+    // so a pool-only reading misses it.
+    let hold = crate::driving_rig::hold_vault_of(&rig.tw, &row);
+    crate::driving_rig::seed_hold(&mut rig, &row, "structural_alloys", cap, 0x0b61);
+    let out = run(
+        &mut rig.tw,
+        pilot,
+        &format!("@inv/crystallize #{}/structural_alloys={cap}", hold.0),
+    );
+    let queued = crate::driving_rig::drain(&mut rig.tw);
+    assert!(!queued.is_empty(), "{out}");
+    crate::driving_rig::land_all(&mut rig, &queued);
+    assert_eq!(
+        crate::driving_rig::hold_pool(&mut rig.tw, hold, "structural_alloys"),
+        0,
+        "none of it pooled"
+    );
+    // The haul's admission refuses her (it is the docked hull's helm she takes it in).
+    let refused = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+haul/accept {haul_contract} go"),
+    );
+    assert!(refused.contains(haul::NO_ROOM), "{refused}");
+    // Aboard, the mining status reads the ore hold full: no room is left to mine into.
+    board(&mut rig, pilot);
+    let status = run(&mut rig.tw, pilot, "+mine/status");
+    assert!(
+        status.contains(&format!("hold: {cap}/{cap} t")),
+        "the alloys fill the ore hold: {status}"
+    );
+    let _ = hull;
+}
