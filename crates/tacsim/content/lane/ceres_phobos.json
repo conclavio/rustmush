@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 51,
+    "version": 52,
     "kind": "campaign_seed",
-    "digest": "137c914476449eeb21b4ec7bdf902a806073c70f45e5b7ac6507ad46689ff9d6",
+    "digest": "4cc4a8235b8996663cc78d8d1e2d8e98fb6b6632857bb263e484b22efa6fdeff",
     "requires": []
   },
   "entries": {
@@ -3159,7 +3159,8 @@
         "treasury": "tacsim.treasury",
         "orgs": [
           { "id": "isidis_factor", "name": "Isidis Concession Factor", "capital_major": 50000, "faction": "freeport" },
-          { "id": "isidis_tank_farm", "name": "Occator Isidis Tank Farm", "capital_major": 300000, "faction": "freeport", "roles": [ "acceptor" ] }
+          { "id": "isidis_tank_farm", "name": "Occator Isidis Tank Farm", "capital_major": 300000, "faction": "freeport", "roles": [ "acceptor" ] },
+          { "id": "meridiani", "name": "Meridiani Security Group", "capital_major": 100000, "faction": "freeport" }
         ],
         "vendors": [
           { "org": "isidis_tank_farm", "storefront": "neighborhood.isidis_concession.item.tank_manifold",

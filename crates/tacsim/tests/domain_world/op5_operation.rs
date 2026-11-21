@@ -64,6 +64,7 @@ impl OperationFrame for FakeFrame {
             legal_targets: request.legal_targets,
             window: (0, request.window_secs),
             outcome,
+            told: Vec::new(),
         })
     }
 }
@@ -161,7 +162,10 @@ fn op5_the_republic_declares_on_the_reviews_fill_and_its_success_takes_isidis() 
         MetFavors::Defenders,
         "at its threshold the defenders hold"
     );
-    assert_eq!(request.defenders, vec![occator.clone()]);
+    // Doc 50b item 9 (Q-50-19 as amended): Meridiani defends beside Occator; the bond and the
+    // Freeport's side stay Occator's.
+    let meridiani = lane_org(&tw, "meridiani");
+    assert_eq!(request.defenders, vec![occator.clone(), meridiani]);
     assert_eq!(
         request.sides,
         vec![

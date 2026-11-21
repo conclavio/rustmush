@@ -43,6 +43,8 @@ struct FakeFrame {
     declared: Mutex<Vec<(OperationRequest, i64)>>,
     phase: Mutex<Option<OperationPhase>>,
     outcome: Mutex<Option<OperationOutcome>>,
+    /// Whom the campaign's own notice tells (doc 50b item 9).
+    told: Mutex<Vec<ObjId>>,
 }
 
 impl OperationFrame for FakeFrame {
@@ -68,6 +70,7 @@ impl OperationFrame for FakeFrame {
             legal_targets: request.legal_targets,
             window: (open, open + request.window_secs),
             outcome: *self.outcome.lock().ok()?,
+            told: self.told.lock().ok()?.clone(),
         })
     }
 }
@@ -105,6 +108,9 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
     assert!(opened.contains("Freeport arm: open"), "{opened}");
     let (hauler, _row) = prospector(&mut rig, "Hauler", 91, "Brine Moth");
     let newcomer = pilot(&mut rig, "Newcomer", 92);
+    // Doc 50b item 9: a pilot with a hull on the lane whom the campaign's own notice tells.
+    let (told, _) = prospector(&mut rig, "Told", 93, "Grey Moth");
+    *frame.told.lock().expect("lock") = vec![told];
 
     // Before: nothing declared, the Review short, the Freeport holding a duty-free Isidis.
     let page = run(&mut rig.tw, newcomer, OPERATION_VERB);
@@ -142,7 +148,8 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
     let heard = notices(&rig, &declared, hauler);
     for want in [
         "Official notice: Republic Customs Office has declared an operation for the Republic to \
-         assume the administration of the Isidis Concession, against Occator Water & Propellant.",
+         assume the administration of the Isidis Concession, against Occator Water & Propellant \
+         and Meridiani Security Group.",
         "and runs 28 IC days",
         "real hours",
         "+operation",
@@ -164,12 +171,16 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
         !notices(&rig, &declared, newcomer).contains("Official notice"),
         "a player with no hull on the lane is told nothing"
     );
+    assert!(
+        !notices(&rig, &declared, told).contains("Official notice"),
+        "doc 50b item 9: one the campaign tells has no second notice from the lane"
+    );
 
     // The page, in notice.
     let page = run(&mut rig.tw, hauler, OPERATION_VERB);
     for want in [
         "The Isidis operation (operation 11): Republic Customs Office, for the Republic, against \
-         Occator Water & Propellant, for the Freeport, defending.",
+         Occator Water & Propellant and Meridiani Security Group, for the Freeport, defending.",
         "If the Republic wins, it administers the Isidis Concession, and",
         "pay an import duty of 5% of their catalog value to Republic Customs Office",
         "If the Freeport holds, it keeps the Concession, and cargo sold at Isidis pays no import \
