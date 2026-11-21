@@ -2425,11 +2425,22 @@ fn file_invocation(
 /// The parameters a `@claim/file` submission carries, with the offer's own fixed
 /// three spliced in exactly where `merge_parameters` would have put them.
 fn file_parameters(filer: ObjId, issuer: &str, staff: bool, vouched: &[&str]) -> serde_json::Value {
+    file_parameters_over("place:7", filer, issuer, staff, vouched)
+}
+
+fn file_parameters_over(
+    subject: &str,
+    filer: ObjId,
+    issuer: &str,
+    staff: bool,
+    vouched: &[&str],
+) -> serde_json::Value {
+    let holder = format!("obj:{}", filer.0);
     serde_json::json!({
         "now": now(),
-        "subject": "place:7",
+        "subject": subject,
         "issuer": issuer,
-        "holder": format!("obj:{}", filer.0),
+        "holder": holder,
         "object": 9_100,
         "exclusivity": "shared",
         "priority": 1,
@@ -2441,6 +2452,9 @@ fn file_parameters(filer: ObjId, issuer: &str, staff: bool, vouched: &[&str]) ->
         "claim_filed_by": filer.0,
         "claim_file_staff": staff,
         "claim_issuers": vouched,
+        "claim_file_objects": {
+            "9100": format!("obj:{}", filer.0),
+        },
     })
 }
 
@@ -2591,12 +2605,26 @@ fn ws02_s3_claim_file_is_offered_only_to_staff_and_to_an_authorised_principal() 
 fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
     let (mut world, families) = boot_orgs();
     let alice = world.spawn_player("alice");
+    let body = deposit(0x5305, 40_000, &[(0, 500)])
+        .with_jurisdiction(PrincipalId::Organization(mush_org::OrgId(1)));
+    let dep_subject = format!("deposit:{}", body.id());
+    apply(world.engine_mut(), &families, |txn| {
+        families.open_deposit(txn, body.clone())
+    })
+    .expect("open governed deposit");
+    let dep_claims = |w: &mut TestWorld| {
+        read(w.engine_mut(), &families, |txn| {
+            families
+                .claims_over(txn, ClaimSubject::Deposit { deposit: body.id() })
+                .expect("claims")
+        })
+    };
     let action = claim_file_action(&world);
     let forged = file_invocation(
         &action,
         alice,
         0x52,
-        file_parameters(alice, "org:2", false, &["org:1"]),
+        file_parameters_over(&dep_subject, alice, "org:2", false, &["org:1"]),
     );
     let refusal = world
         .engine_mut()
@@ -2612,7 +2640,7 @@ fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
         "a forged issuer is unauthorized, not merely rejected"
     );
     assert!(
-        filed_claims(&mut world, &families).is_empty(),
+        dep_claims(&mut world).is_empty(),
         "and no ClaimRecord was written"
     );
     // A replay of one filer's own vouched offer under a SECOND filer's name is
@@ -2622,7 +2650,7 @@ fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
         &action,
         bob,
         0x53,
-        file_parameters(alice, "org:1", false, &["org:1"]),
+        file_parameters_over(&dep_subject, alice, "org:1", false, &["org:1"]),
     );
     let refusal = world
         .engine_mut()
@@ -2636,13 +2664,13 @@ fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
         provider_code(&refusal),
         mush_core::ActionErrorCode::Unauthorized
     );
-    assert!(filed_claims(&mut world, &families).is_empty());
+    assert!(dep_claims(&mut world).is_empty());
     // The honest one, through the identical prepare, commits.
     let honest = file_invocation(
         &action,
         alice,
         0x54,
-        file_parameters(alice, "org:1", false, &["org:1"]),
+        file_parameters_over(&dep_subject, alice, "org:1", false, &["org:1"]),
     );
     let (prepared, _) = world
         .engine_mut()
@@ -2656,7 +2684,7 @@ fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
         .engine_mut()
         .install_prepared_action(prepared.into_parts().1)
         .expect("the fixture installs");
-    let filed = filed_claims(&mut world, &families);
+    let filed = dep_claims(&mut world);
     assert_eq!(filed.len(), 1, "exactly the one vouched filing");
     assert_eq!(
         filed[0].issuer(),
@@ -2665,7 +2693,6 @@ fn ws02_s3_a_forged_issuer_refuses_unauthorized_and_files_nothing() {
     );
     // And that org-issued claim still authorises its holder's extraction: the
     // tenure leg passes and only the licence leg is missing.
-    let body = deposit(0x5305, 40_000, &[(0, 500)]);
     assert!(
         matches!(
             mush_industry::extraction_authorized(
@@ -2900,18 +2927,30 @@ fn ws02_a2_claim_file_lands_through_the_real_offer_route() {
     install_offer_keys(&mut world);
     let alice = world.spawn_player("alice");
     let org = vouch(&mut world, alice);
+    let body =
+        deposit(0xA201, 10_000, &[(0, 500)]).with_jurisdiction(PrincipalId::Organization(org));
+    apply(world.engine_mut(), &families, |txn| {
+        families.open_deposit(txn, body.clone())
+    })
+    .expect("open governed deposit");
     let ic = world.world().world_ic_now();
 
     let _ = world.run(
         alice,
         &format!(
-            "@claim/file place:7=org:{}/obj:{}/shared/1/1000/bound",
-            org.0, alice.0
+            "@claim/file {}=org:{}/obj:{}/shared/1/1000/bound",
+            body.id(),
+            org.0,
+            alice.0
         ),
     );
     land(&mut world, 0xA2).expect("@claim/file resolves — this is the WS02-A2 regression");
 
-    let filed = filed_claims(&mut world, &families);
+    let filed = read(world.engine_mut(), &families, |txn| {
+        families
+            .claims_over(txn, ClaimSubject::Deposit { deposit: body.id() })
+            .expect("claims")
+    });
     assert_eq!(filed.len(), 1, "the filing landed");
     assert_eq!(
         filed[0].issuer(),
@@ -2937,8 +2976,15 @@ fn ws02_a2_claim_file_lands_through_the_real_offer_route() {
 fn ws02_a2_a_clockstamp_object_submitted_for_term_stays_refused() {
     let (mut world, families) = boot_orgs();
     let alice = world.spawn_player("alice");
+    let body = deposit(0xA202, 10_000, &[(0, 500)])
+        .with_jurisdiction(PrincipalId::Organization(mush_org::OrgId(1)));
+    let dep_subject = format!("deposit:{}", body.id());
+    apply(world.engine_mut(), &families, |txn| {
+        families.open_deposit(txn, body.clone())
+    })
+    .expect("open governed deposit");
     let action = claim_file_action(&world);
-    let mut parameters = file_parameters(alice, "org:1", false, &["org:1"]);
+    let mut parameters = file_parameters_over(&dep_subject, alice, "org:1", false, &["org:1"]);
     parameters["term"] = serde_json::json!(later(100_000));
     let refusal = world
         .engine_mut()

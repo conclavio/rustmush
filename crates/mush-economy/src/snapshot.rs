@@ -76,6 +76,14 @@ pub struct EconomySnapshot {
     /// Derived active services and terminal services with unpaid installments.
     service_obligations_by_owner: BTreeMap<SmolStr, BTreeSet<ObligationId>>,
     contracts: BTreeMap<ContractId, EconomicContract>,
+    /// Derived: non-terminal contracts plus any terminal contract still carrying
+    /// a pending recovery transition (P2-MOD-14), keeping sweep and attestation
+    /// scans O(live) regardless of historical settled contracts.
+    live_contracts: BTreeSet<ContractId>,
+    /// Immutable creator object stamped when a contract is first drafted
+    /// (P2-MOD-11). Persisted alongside `contract:{id}` and never mutated by
+    /// `@contract/role author`.
+    contract_creators: BTreeMap<ContractId, ObjId>,
     /// Derived: the `(object, vault)` pairs a **live** contract's `DepositInto`
     /// condition holds, and which contract holds each. Only that contract's own
     /// settlement or refund may withdraw the object (§3.5).
@@ -302,6 +310,22 @@ impl EconomySnapshot {
     pub fn contracts(&self) -> impl Iterator<Item = &EconomicContract> {
         self.contracts.values()
     }
+    /// Non-terminal contracts (plus any terminal contract still carrying a
+    /// pending recovery transition), in contract-id order.
+    pub(crate) fn live_contracts(&self) -> impl Iterator<Item = &EconomicContract> {
+        self.live_contracts
+            .iter()
+            .filter_map(|id| self.contracts.get(id))
+    }
+    /// The immutable world object that originally drafted `id`, if recorded.
+    #[must_use]
+    pub(crate) fn contract_creator(&self, id: ContractId) -> Option<ObjId> {
+        self.contract_creators.get(&id).copied()
+    }
+    /// Record the immutable creator for `id` (write-once per contract id).
+    pub(crate) fn set_contract_creator(&mut self, id: ContractId, creator: ObjId) {
+        self.contract_creators.entry(id).or_insert(creator);
+    }
     /// Every `(object, vault)` pair a live contract holds (§3.5). Re-derived at boot
     /// from the `Active`/`ReadyToSettle` contracts' `DepositInto` conditions.
     #[must_use]
@@ -516,6 +540,8 @@ impl EconomySnapshot {
     /// never be re-minted.
     pub(crate) fn remove_contract(&mut self, id: ContractId) {
         self.contract_locks.retain(|_, c| *c != id);
+        self.live_contracts.remove(&id);
+        self.contract_creators.remove(&id);
         self.contracts.remove(&id);
     }
     /// Drop a dead approval request (the sweep's GC — the same rule boot applies).
@@ -580,6 +606,16 @@ impl EconomySnapshot {
                     self.contract_locks.insert((*object, *vault), contract.id);
                 }
             }
+        }
+        let needs_sweep = !contract.state.is_terminal()
+            || contract.pending.is_some()
+            || (matches!(contract.state, ContractState::Settled { .. })
+                && contract.canon_published.is_none()
+                && contract.consent.visibility.is_public());
+        if needs_sweep {
+            self.live_contracts.insert(contract.id);
+        } else {
+            self.live_contracts.remove(&contract.id);
         }
         self.contracts.insert(contract.id, contract);
     }

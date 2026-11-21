@@ -36,10 +36,10 @@ use mush_core::{
     AuthoritativeActionOutput, CanonicalHash, CanonicalId, ClockStamp, CommitToken,
     DefinitionDescriptor, DefinitionDigest, DefinitionId, DefinitionKind, DefinitionRef,
     DefinitionValidationContext, DurableSchedule, DurableScheduleDraft, Engine, LegalActionQuery,
-    MAX_ACTION_PARAMETER_BYTES, ModError, ObjId, PerceivedRef, PrincipalId as CorePrincipalId,
-    Registrar, ReservationId, RevisionSet, RulesValue, ScheduleActionAdapter, ScheduleActionDraft,
-    ScheduleAdvance, ScheduleCatchUpOrder, ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy,
-    StateFamilyHandle, SubjectKey, World,
+    MAX_ACTION_PARAMETER_BYTES, ModError, ObjId, ObjKind, PerceivedRef,
+    PrincipalId as CorePrincipalId, Registrar, ReservationId, RevisionSet, RulesValue,
+    ScheduleActionAdapter, ScheduleActionDraft, ScheduleAdvance, ScheduleCatchUpOrder,
+    ScheduleEvaluation, ScheduleId, ScheduleRestartPolicy, StateFamilyHandle, SubjectKey, World,
 };
 use mush_economy::{AccountId, ContractId, EconomicVisibility, ExternalRef, VaultId};
 use mush_inventory::{EndpointRef, Grade};
@@ -53,8 +53,8 @@ use crate::families::{
 use crate::record::{
     Accessibility, BandId, ClaimId, ClaimRecord, ClaimSubject, ContestState, CurvePoint,
     Exclusivity, ExtractionRun, FACT_WORKORDER_COMPLETED, MAX_ACCESSIBILITY, MAX_BAND_BYTES,
-    MAX_CLAIM_PRIORITY, MAX_CURVE_POINTS, MAX_ORE_RESERVE, MAX_REASON_BYTES, NS, OreDeposit,
-    OreDepositId, RunState, Transferability, YieldCurve,
+    MAX_CLAIM_PRIORITY, MAX_CLAIM_TERM_SECS, MAX_CURVE_POINTS, MAX_ORE_RESERVE, MAX_REASON_BYTES,
+    MAX_STAFF_CLAIM_TERM_SECS, NS, OreDeposit, OreDepositId, RunState, Transferability, YieldCurve,
 };
 use crate::workorder::{
     DeliveryTarget, InterruptionCause, PRODUCTION_CADENCE_SECS, PRODUCTION_MAX_CATCH_UP,
@@ -334,6 +334,9 @@ pub struct IndustryProvider {
     /// admits an actor to `ClaimTenure` for exactly the ONE server-authored
     /// act it vouches for. `None`: the verb registers and offers nothing.
     tenure: Option<std::sync::Arc<dyn crate::seams::TenureAuthority>>,
+    /// The configured `(ruleset, code)` claim title catalog (P2-MOD-16), used to
+    /// vouch only freshly minted unclaimed claim title objects on `ClaimFile`.
+    claim_catalog: (SmolStr, SmolStr),
     /// The hashed catalog, keyed on [`crate::workorder::RecipeAuthority::catalog_revision`]. The
     /// walk and the hashing happen once per pack publish, not once per
     /// projection — and `project_legal_actions` runs every provider on every
@@ -387,6 +390,10 @@ pub const CLAIM_FILE_STAFF: &str = "claim_file_staff";
 /// The `principal_token` spellings of the authorities a non-staff actor may file
 /// under, published as a fixed parameter beside the offer's own `Choice`.
 pub const CLAIM_ISSUERS: &str = "claim_issuers";
+/// Server-authored map of freshly minted unclaimed claim title objects
+/// (`object_id -> title_owner principal_token`) that `ClaimFile` may bind
+/// (P2-MOD-16), preventing arbitrary `ObjId` binding on direct `ClaimFile`.
+pub const CLAIM_FILE_OBJECTS: &str = "claim_file_objects";
 
 /// Doc 20 cut SM.6 (§3.4): the actor a system opening was offered to, published
 /// as a fixed parameter so `open()` can tell its own offer from somebody else's.
@@ -1206,6 +1213,82 @@ fn authorize_claim_file(
                 .any(|allowed| allowed == token.as_str())
         });
     if vouched { Ok(()) } else { Err(unauthorized()) }
+}
+
+/// P2-MOD-16: collect freshly minted, unclaimed claim title objects that
+/// `ClaimFile` may bind for `actor`, mapping `obj_id -> title_owner token`.
+///
+/// Fails closed (returns an empty map) if the `claims` family scan errors or
+/// truncates past `MAX_LIST_PAGES`, so a direct `ClaimFile` submission can
+/// never bind an already-claimed object, a non-claim asset, or a title whose
+/// owner disagrees with the submitted `holder`.
+fn unclaimed_claim_objects(
+    engine: &Engine,
+    families: &IndustryFamilies,
+    actor: ObjId,
+    staff: bool,
+    claim_catalog: &(SmolStr, SmolStr),
+) -> serde_json::Map<String, Value> {
+    let Some(economy) = engine.world.module_state::<mush_economy::EconomyStore>() else {
+        return serde_json::Map::new();
+    };
+    let state = engine.action_state();
+    let mut claimed: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= crate::record::MAX_LIST_PAGES {
+            // Fail closed on truncated scan rather than risking double-binding.
+            return serde_json::Map::new();
+        }
+        pages += 1;
+        let Ok(page) = state.scan_family(
+            &families.claims,
+            cursor.as_deref(),
+            crate::record::INDUSTRY_PAGE,
+        ) else {
+            return serde_json::Map::new();
+        };
+        for entry in page.entries() {
+            claimed.insert(entry.value().object());
+        }
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    let mut eligible: Vec<(ObjId, String)> = economy
+        .snapshot()
+        .assets()
+        .filter(|asset| {
+            asset.lifecycle == mush_economy::AssetLifecycle::Active
+                && !asset.frozen
+                && asset.encumbrances.is_empty()
+                && !claimed.contains(&asset.object)
+                && asset.catalog.as_ref().is_some_and(|cat| {
+                    cat.ruleset == claim_catalog.0 && cat.code == claim_catalog.1
+                })
+                && engine
+                    .world
+                    .get(asset.object)
+                    .is_some_and(|obj| obj.kind == ObjKind::Thing && (staff || obj.owner == actor))
+        })
+        .map(|asset| {
+            (
+                asset.object,
+                mush_economy::principal_token(&asset.title_owner).to_string(),
+            )
+        })
+        .collect();
+    // Newest minted objects first so freshly created `@claim/file` objects are
+    // always included inside the bounded map.
+    eligible.sort_by_key(|a| std::cmp::Reverse(a.0));
+    eligible.truncate(MAX_DEPOSIT_CHOICES);
+    let mut out = serde_json::Map::new();
+    for (obj, owner) in eligible {
+        out.insert(obj.0.to_string(), json!(owner));
+    }
+    out
 }
 
 /// CRIT-14: point-lookup all open (non-terminal) work orders for `actor` via
@@ -2067,9 +2150,11 @@ impl ActionProvider for IndustryProvider {
         let actor = query.actor();
         let staff = crate::store::is_staff(&engine.world, actor);
         let mut parameters = Vec::new();
-        // The `ClaimFile` offer's server-authored authority list, published below
-        // as a fixed parameter so `prepare_authoritative` can re-check it.
+        // The `ClaimFile` offer's server-authored authority list and unclaimed
+        // claim-title object map, published below as fixed parameters so
+        // `prepare_authoritative` can re-check them.
         let mut claim_issuers: Vec<String> = Vec::new();
+        let mut claim_file_objects: Option<serde_json::Map<String, Value>> = None;
         // The `WoDraft` offer's server-authored books, published the same way and
         // for the same reason.
         let mut wo_books: Option<WoOfferBooks> = None;
@@ -2192,6 +2277,13 @@ impl ActionProvider for IndustryProvider {
                         },
                     )?);
                 }
+                claim_file_objects = Some(unclaimed_claim_objects(
+                    engine,
+                    &self.families,
+                    actor,
+                    staff,
+                    &self.claim_catalog,
+                ));
                 parameters.push(text("holder", 64)?);
                 parameters.push(integer("object", 0, i64::from(u32::MAX))?);
                 parameters.push(text("exclusivity", 16)?);
@@ -2524,6 +2616,10 @@ impl ActionProvider for IndustryProvider {
             map.insert(CLAIM_FILED_BY.to_owned(), json!(actor.0));
             map.insert(CLAIM_FILE_STAFF.to_owned(), json!(staff));
             map.insert(CLAIM_ISSUERS.to_owned(), json!(claim_issuers));
+            map.insert(
+                CLAIM_FILE_OBJECTS.to_owned(),
+                Value::Object(claim_file_objects.unwrap_or_default()),
+            );
         }
         // ---- Doc 20 cut SM.6: the contest gate's structural half (§9.6) ----
         if let Some(binding) = contest_binding
@@ -2910,10 +3006,7 @@ impl IndustryProvider {
                 if existing.is_lapsed() {
                     return Ok(ExclusiveConflict::Lapsed);
                 }
-                if matches!(
-                    existing.term().checked_cmp(now),
-                    Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                ) {
+                if crate::families::claim_is_expired(&existing, now) {
                     continue;
                 }
                 return Ok(ExclusiveConflict::Live);
@@ -3395,28 +3488,47 @@ impl IndustryProvider {
             .get(CLAIM_FILE_STAFF)
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        // HIGH-34: when filing over a Deposit, require the deposit to exist and
-        // enforce `issuer == deposit.jurisdiction()` for non-staff filers so a
-        // player-created org can never file foreign tenure over a jurisdiction-
-        // governed deposit (or occupy its `MAX_CLAIMS_PER_SUBJECT` slots).
-        if let ClaimSubject::Deposit {
-            deposit: deposit_id,
-        } = subject
-        {
-            let deposit = self
-                .families
-                .deposit(txn, deposit_id)
-                .map_err(|source| refuse(&source))?
-                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, REFUSED))?;
-            if !is_staff_file
-                && let Some(jurisdiction) = deposit.jurisdiction()
-                && &issuer != jurisdiction
-            {
-                return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+        // HIGH-34 + P2-MOD-16: fail closed for non-staff on `ClaimSubject::Place`
+        // and on un-jurisdicted deposits (`deposit.jurisdiction().is_none()`), and
+        // require `issuer == jurisdiction` when filing over a deposit so a
+        // player-created org can never file foreign tenure or occupy subject slots.
+        match subject {
+            ClaimSubject::Place { .. } => {
+                if !is_staff_file {
+                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+                }
+            }
+            ClaimSubject::Deposit {
+                deposit: deposit_id,
+            } => {
+                let deposit = self
+                    .families
+                    .deposit(txn, deposit_id)
+                    .map_err(|source| refuse(&source))?
+                    .ok_or_else(|| error(ActionErrorCode::ProviderRejected, REFUSED))?;
+                if !is_staff_file && deposit.jurisdiction() != Some(&issuer) {
+                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+                }
             }
         }
         let holder = principal_field(parameters, "holder")?;
         let object = obj_field(parameters, "object")?;
+        // P2-MOD-16: verify the submitted `object` is a freshly minted,
+        // unclaimed claim title whose live E4 `title_owner` matches `holder`,
+        // as vouched by the offer's server-authored `CLAIM_FILE_OBJECTS` map.
+        // Non-staff always require this proof; staff also check it whenever
+        // the offer route populated `CLAIM_FILE_OBJECTS`.
+        if !is_staff_file || parameters.contains_key(CLAIM_FILE_OBJECTS) {
+            let holder_token = mush_economy::principal_token(&holder);
+            let vouched_owner = parameters
+                .get(CLAIM_FILE_OBJECTS)
+                .and_then(Value::as_object)
+                .and_then(|map| map.get(&object.0.to_string()))
+                .and_then(Value::as_str);
+            if vouched_owner != Some(holder_token.as_str()) {
+                return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+            }
+        }
         let exclusivity = match text_field(parameters, "exclusivity")?.as_str() {
             "exclusive" => Exclusivity::Exclusive,
             "shared" => Exclusivity::Shared,
@@ -3448,7 +3560,7 @@ impl IndustryProvider {
                     format!("a claim priority is 0..={MAX_CLAIM_PRIORITY}"),
                 )
             })?;
-        let term = term_field(parameters, now)?;
+        let term = term_field(parameters, now, is_staff_file)?;
         let id = derive_claim_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
 
         match self.exclusive_conflict(txn, subject, &issuer, exclusivity, now)? {
@@ -5132,6 +5244,7 @@ fn revision_field(parameters: &serde_json::Map<String, Value>) -> Result<u64, Ac
 fn term_field(
     parameters: &serde_json::Map<String, Value>,
     now: &ClockStamp,
+    is_staff: bool,
 ) -> Result<ClockStamp, ActionError> {
     let at = parameters
         .get("term")
@@ -5142,6 +5255,23 @@ fn term_field(
                 "a claim names the IC second its term expires at",
             )
         })?;
+    let max_term = if is_staff {
+        MAX_STAFF_CLAIM_TERM_SECS
+    } else {
+        MAX_CLAIM_TERM_SECS
+    };
+    let Some(duration) = at.checked_sub(now.at) else {
+        return Err(error(
+            ActionErrorCode::InvalidRequest,
+            "a claim term must be in the future",
+        ));
+    };
+    if duration <= 0 || duration > max_term {
+        return Err(error(
+            ActionErrorCode::InvalidRequest,
+            "a claim term must be positive and within the allowed maximum",
+        ));
+    }
     Ok(ClockStamp {
         clock: now.clock.clone(),
         at,
@@ -5231,6 +5361,10 @@ pub fn register(
             opener,
             jurisdiction,
             tenure,
+            claim_catalog: (
+                SmolStr::new_static(crate::module::CLAIM_CATALOG_RULESET),
+                SmolStr::new_static(crate::module::CLAIM_CATALOG_CODE),
+            ),
         },
         None,
         None,
@@ -5245,6 +5379,7 @@ pub(crate) struct Seams {
     pub(crate) opener: Option<std::sync::Arc<dyn crate::seams::SystemOpener>>,
     pub(crate) jurisdiction: std::sync::Arc<dyn crate::seams::JurisdictionAuthority>,
     pub(crate) tenure: Option<std::sync::Arc<dyn crate::seams::TenureAuthority>>,
+    pub(crate) claim_catalog: (SmolStr, SmolStr),
 }
 
 pub(crate) fn register_with_core_origins(
@@ -5260,6 +5395,7 @@ pub(crate) fn register_with_core_origins(
         opener,
         jurisdiction,
         tenure,
+        claim_catalog,
     } = seams;
     let outcome_descriptor = descriptor(
         "outcome",
@@ -5362,6 +5498,7 @@ pub(crate) fn register_with_core_origins(
                 opener: opener.clone(),
                 jurisdiction: std::sync::Arc::clone(&jurisdiction),
                 tenure: tenure.clone(),
+                claim_catalog: claim_catalog.clone(),
                 catalog: std::sync::Mutex::new(None),
                 truncation_warned: std::sync::Mutex::new(None),
             },

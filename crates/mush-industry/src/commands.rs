@@ -534,11 +534,16 @@ fn cmd_claim(
         }
         let holder = crate::provider::parse_principal(parts[1].trim())
             .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
-        // HIGH-34: validate every claim parameter, subject existence, deposit
-        // jurisdiction, exclusivity conflict, and subject claim cap BEFORE
-        // minting a world `Thing` and an E4 title so invalid or unauthorized
-        // `@claim/file` attempts cannot create orphan objects or titles.
+        // HIGH-34 + P2-MOD-16: validate every claim parameter, subject existence,
+        // deposit jurisdiction (fail closed on un-jurisdicted deposits and
+        // `ClaimSubject::Place` for non-staff), positive bounded `term_secs`,
+        // exclusivity conflict, and subject claim cap BEFORE minting a world
+        // `Thing` and an E4 title so invalid or unauthorized `@claim/file`
+        // attempts cannot create orphan objects or titles.
         let subject = if let Some(rest) = lhs.strip_prefix("place:") {
+            if !staff {
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            }
             let place_id: u32 = rest
                 .trim()
                 .parse()
@@ -559,10 +564,7 @@ fn cmd_claim(
             {
                 return Err(CmdError::msg(NO_SUCH_CLAIM));
             }
-            if !staff
-                && let Some(jurisdiction) = deposit.jurisdiction()
-                && &issuer != jurisdiction
-            {
+            if !staff && deposit.jurisdiction() != Some(&issuer) {
                 return Err(CmdError::msg(NO_SUCH_CLAIM));
             }
             ClaimSubject::Deposit {
@@ -581,10 +583,17 @@ fn cmd_claim(
             .ok()
             .filter(|value| *value <= crate::record::MAX_CLAIM_PRIORITY)
             .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
+        let max_term = if staff {
+            crate::record::MAX_STAFF_CLAIM_TERM_SECS
+        } else {
+            crate::record::MAX_CLAIM_TERM_SECS
+        };
         let term_secs: i64 = parts[4]
             .trim()
             .parse()
-            .map_err(|_| CmdError::msg(NO_SUCH_CLAIM))?;
+            .ok()
+            .filter(|value| *value > 0 && *value <= max_term)
+            .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
         let transferability_str = parts[5].trim();
         if !matches!(transferability_str, "transferable" | "bound") {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
@@ -593,6 +602,10 @@ fn cmd_claim(
             return Err(CmdError::msg("Industry is not available on this server."));
         }
         let now = ctx.w.world_ic_now();
+        let term = now
+            .at
+            .checked_add(term_secs)
+            .ok_or_else(|| CmdError::msg(NO_SUCH_CLAIM))?;
         let subject_key = crate::families::claim_subject_token(subject);
         if let Ok(Some(index)) = ctx.action_state(&families.claim_index, &subject_key) {
             let existing: Vec<crate::ClaimRecord> = index
@@ -605,24 +618,15 @@ fn cmd_claim(
                     && claim.contest_state().authorizes()
                     && (exclusivity == crate::record::Exclusivity::Exclusive
                         || claim.exclusivity() == crate::record::Exclusivity::Exclusive)
-                    && (claim.is_lapsed()
-                        || !matches!(
-                            claim.term().checked_cmp(&now),
-                            Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                        ))
+                    && (claim.is_lapsed() || !crate::families::claim_is_expired(claim, &now))
                 {
                     return Err(CmdError::msg(NO_SUCH_CLAIM));
                 }
             }
             if index.claims().len() >= crate::record::MAX_CLAIMS_PER_SUBJECT {
-                let has_prunable = existing.iter().any(|claim| {
-                    matches!(claim.contest_state(), ContestState::Seized { .. })
-                        || (!claim.is_lapsed()
-                            && matches!(
-                                claim.term().checked_cmp(&now),
-                                Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                            ))
-                });
+                let has_prunable = existing
+                    .iter()
+                    .any(|claim| crate::families::claim_is_prunable(claim, &now));
                 if !has_prunable {
                     return Err(CmdError::msg(NO_SUCH_CLAIM));
                 }
@@ -665,7 +669,6 @@ fn cmd_claim(
         // `ProjectedParameterSchema::validate` before the provider ever ran, so
         // no filing could land. `term_field` rebuilds the stamp against the
         // offer's own fixed `now`, whose generation is this same tick's.
-        let term = now.at.saturating_add(term_secs);
         let parameters = json!({
             "subject": lhs,
             // The **canonical** token, not the raw text: the projection's

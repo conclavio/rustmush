@@ -515,7 +515,7 @@ fn matching_contracts(
     let mut out: Vec<(ContractId, Vec<usize>)> = Vec::new();
     for c in store
         .snapshot()
-        .contracts()
+        .live_contracts()
         .filter(|contract| contract.consent.managed.is_none())
     {
         // `Disputed` is included for the same reason `@contract/attest` accepts it:
@@ -554,20 +554,46 @@ fn matching_contracts(
     out
 }
 
-/// Whether any of the record's entities is (or acts for) one of the contract's
-/// parties (E4c verify fold, E1).
+/// Whether any of the record's entities is directly one of the contract's
+/// parties (or an active member / directly authorized officer of an org party),
+/// with NO staff wildcard bypass (E4c verify fold, E1; P2-MOD-43).
 ///
-/// `acts_for` rather than an identity match, for the same reason `may_view_hold`
-/// uses it: a contract whose party is `org:Ironhold` is answered by an outcome naming
-/// one of Ironhold's officers, and an identity match would silently never fire.
+/// Using `WorldAuth::acts_for` would let any staff object (e.g., `GOD` or a GM
+/// mentioned in a canon record) wildcard-match every non-system party on every
+/// contract. Instead we check exact identity for object parties and direct org
+/// membership or explicit root posting grant (which never short-circuits on
+/// staff) for organization parties.
 fn names_a_party(ctx: &Ctx<'_>, entities: &[ObjId], c: &EconomicContract) -> bool {
-    let auth = crate::api::WorldAuth { w: ctx.w };
-    entities.iter().any(|o| {
-        let me = PrincipalId::Object(*o);
-        c.consent
-            .parties
-            .iter()
-            .any(|p| p == &me || auth.acts_for(&me, p))
+    entities.iter().any(|entity| {
+        c.consent.parties.iter().any(|party| match party {
+            PrincipalId::Object(o) => entity == o,
+            PrincipalId::Organization(org) => {
+                let Some(store) = ctx.w.module_state::<mush_org::OrgStore>() else {
+                    return false;
+                };
+                let state = store.state();
+                let Some(org_rec) = state.org(*org) else {
+                    return false;
+                };
+                if org_rec.status != mush_org::OrgStatus::Active {
+                    return false;
+                }
+                if state
+                    .membership(*org, *entity)
+                    .is_some_and(|m| m.status == mush_org::MembershipStatus::Active)
+                {
+                    return true;
+                }
+                crate::api::scope_coherent(ctx.w, Some(org_rec.root_scope), party)
+                    && crate::api::holds_capability(
+                        ctx.w,
+                        *entity,
+                        "economy.account.post",
+                        org_rec.root_scope,
+                    )
+            }
+            PrincipalId::System(_) => false,
+        })
     })
 }
 

@@ -263,6 +263,40 @@ pub struct Cycled {
     pub remaining: u64,
 }
 
+/// Whether `claim`'s term has reached or passed `now` on the same clock
+/// generation (`term <= now`). An incomparable clock generation returns `false`
+/// (K4a: never expires early).
+pub(crate) fn claim_is_expired(claim: &ClaimRecord, now: &ClockStamp) -> bool {
+    matches!(
+        claim.term().checked_cmp(now),
+        Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    )
+}
+
+/// Whether `claim` may be evicted from a full subject index at `now`.
+///
+/// `Seized` claims are always terminal and prunable. `Suspended` and `Lapsed`
+/// claims are NEVER pruned (even past their term) so disciplinary holds and
+/// take-over records stay intact. Non-lapsed, non-suspended claims past or at
+/// their term (`term <= now`) are prunable.
+pub(crate) fn claim_is_prunable(claim: &ClaimRecord, now: &ClockStamp) -> bool {
+    if matches!(
+        claim.contest_state(),
+        crate::record::ContestState::Seized { .. }
+    ) {
+        return true;
+    }
+    if claim.is_lapsed()
+        || matches!(
+            claim.contest_state(),
+            crate::record::ContestState::Suspended { .. }
+        )
+    {
+        return false;
+    }
+    claim_is_expired(claim, now)
+}
+
 impl IndustryFamilies {
     // ---- deposits ----
 
@@ -422,15 +456,16 @@ impl IndustryFamilies {
                 match txn.get(&self.claims, &existing_id)? {
                     None => prunable.push(existing_id),
                     Some(rec) => {
-                        let seized = matches!(
-                            rec.contest_state(),
-                            crate::record::ContestState::Seized { .. }
+                        let prunable_rec = now.map_or_else(
+                            || {
+                                matches!(
+                                    rec.contest_state(),
+                                    crate::record::ContestState::Seized { .. }
+                                )
+                            },
+                            |stamp| claim_is_prunable(rec, stamp),
                         );
-                        let expired = now.is_some_and(|stamp| {
-                            !rec.is_lapsed()
-                                && rec.term().checked_cmp(stamp) == Ok(std::cmp::Ordering::Less)
-                        });
-                        if seized || expired {
+                        if prunable_rec {
                             prunable.push(existing_id);
                         }
                     }

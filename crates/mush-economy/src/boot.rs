@@ -88,6 +88,7 @@ struct ParsedDocuments {
     stored_cadences: BTreeMap<CadenceId, CadenceClock>,
     stored_escalations: BTreeMap<EscalationId, Escalation>,
     stored_contracts: BTreeMap<ContractId, EconomicContract>,
+    stored_contract_creators: BTreeMap<ContractId, ObjId>,
     stored_notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>>,
     meta: Option<serde_json::Value>,
     max_approval_key: Option<u64>,
@@ -109,7 +110,7 @@ struct DocumentRecovery {
 fn parse_documents(
     kv: &[(SmolStr, serde_json::Value)],
     recovery: DocumentRecovery,
-) -> Result<ParsedDocuments, ModError> {
+) -> Result<Box<ParsedDocuments>, ModError> {
     let DocumentRecovery {
         require_charter_pending,
         require_coverage,
@@ -133,6 +134,7 @@ fn parse_documents(
     let mut stored_cadences: BTreeMap<CadenceId, CadenceClock> = BTreeMap::new();
     let mut stored_escalations: BTreeMap<EscalationId, Escalation> = BTreeMap::new();
     let mut stored_contracts: BTreeMap<ContractId, EconomicContract> = BTreeMap::new();
+    let mut stored_contract_creators: BTreeMap<ContractId, ObjId> = BTreeMap::new();
     let mut stored_notices: BTreeMap<ObjId, Vec<crate::notice::PendingNotice>> = BTreeMap::new();
     let mut meta: Option<serde_json::Value> = None;
     // Every `approval:{id}` key seen, readable or not (the allocator floor).
@@ -359,6 +361,11 @@ fn parse_documents(
                     "economy: house_renewal contract requires complete paired recovery",
                 ));
             }
+            if let Some(raw) = value.get("created_by").and_then(serde_json::Value::as_u64)
+                && let Ok(creator) = u32::try_from(raw)
+            {
+                stored_contract_creators.insert(c.id, ObjId(creator));
+            }
             stored_contracts.insert(c.id, c);
         } else if let Some(id) = key.strip_prefix("escalation:") {
             // A **leaf** (§4.6), exactly like an approval request: an unreadable alert
@@ -438,7 +445,7 @@ fn parse_documents(
         }
     }
 
-    Ok(ParsedDocuments {
+    Ok(Box::new(ParsedDocuments {
         instruments,
         stored_accounts,
         stored_assets,
@@ -449,6 +456,7 @@ fn parse_documents(
         stored_cadences,
         stored_escalations,
         stored_contracts,
+        stored_contract_creators,
         stored_notices,
         meta,
         max_approval_key,
@@ -457,7 +465,7 @@ fn parse_documents(
         max_escalation_key,
         max_contract_key,
         checkpoint_keys,
-    })
+    }))
 }
 
 struct CheckpointRecovery {
@@ -1152,6 +1160,7 @@ fn reconcile_boot_projections(inputs: ProjectionInputs<'_>) -> ProjectionRepairs
 
 struct ContractReconciliation<'a> {
     stored_contracts: BTreeMap<ContractId, EconomicContract>,
+    stored_contract_creators: BTreeMap<ContractId, ObjId>,
     state: &'a FoldState,
     snapshot: &'a mut EconomySnapshot,
     outcomes: &'a crate::contract::CanonOutcomeKinds,
@@ -1170,6 +1179,7 @@ struct ContractReconciliation<'a> {
 fn reconcile_boot_contracts(inputs: ContractReconciliation<'_>) -> Vec<EconomicContract> {
     let ContractReconciliation {
         stored_contracts,
+        stored_contract_creators,
         state,
         snapshot,
         outcomes,
@@ -1527,6 +1537,12 @@ fn reconcile_boot_contracts(inputs: ContractReconciliation<'_>) -> Vec<EconomicC
         }
     }
 
+    for (id, creator) in stored_contract_creators {
+        if snapshot.contract(id).is_some() {
+            snapshot.set_contract_creator(id, creator);
+        }
+    }
+
     healed_contracts
 }
 
@@ -1800,6 +1816,7 @@ pub(crate) fn load_boot_with_coverage(
         stored_cadences,
         stored_escalations,
         mut stored_contracts,
+        stored_contract_creators,
         stored_notices,
         meta,
         max_approval_key,
@@ -1808,7 +1825,7 @@ pub(crate) fn load_boot_with_coverage(
         max_escalation_key,
         max_contract_key,
         checkpoint_keys,
-    } = parse_documents(
+    } = *parse_documents(
         &kv,
         DocumentRecovery {
             require_charter_pending,
@@ -2394,6 +2411,7 @@ pub(crate) fn load_boot_with_coverage(
 
     let healed_contracts = reconcile_boot_contracts(ContractReconciliation {
         stored_contracts,
+        stored_contract_creators,
         state: &state,
         snapshot: &mut snapshot,
         outcomes,
@@ -2543,7 +2561,7 @@ pub(crate) fn load_boot_with_coverage(
         api::persist_obligation(ctx.out, o);
     }
     for c in &healed_contracts {
-        api::persist_contract(ctx.out, c);
+        api::persist_contract(ctx.out, c, snapshot.contract_creator(c.id));
     }
     for e in &opened_escalations {
         api::persist_escalation(ctx.out, e);
@@ -2767,8 +2785,8 @@ fn obligation_unusable(w: &World, snapshot: &EconomySnapshot, o: &Obligation) ->
                 k.state,
                 crate::contract::ContractState::Active
                     | crate::contract::ContractState::ReadyToSettle
-                    | crate::contract::ContractState::Settled { .. }
-            )
+            ) || (matches!(k.state, crate::contract::ContractState::Settled { .. })
+                && crate::contract::is_lease_shaped(k))
         });
         if !live {
             return Some(format!(

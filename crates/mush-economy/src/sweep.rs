@@ -131,6 +131,11 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     expire_holds(ctx, now, ic_now);
     settle_obligations(ctx, evidence);
     forgive_suspended(ctx, evidence);
+    // P2-MOD-14: collect previously terminal zero-history contracts before
+    // `step_contracts` so contracts expiring in this sweep stay inspectable for
+    // one sweep (still capped at 8/64 by `land_terminal`), while keeping
+    // `collect_garbage` (including `age_cold_keys`) after `step_contracts`.
+    collect_prunable_contracts(ctx);
     step_contracts(ctx, now, ic_now);
     collect_garbage(ctx, now);
     // Doc 13 (W-D5): key documents for a journal older than the cut, at the
@@ -886,9 +891,32 @@ fn post_period(
         let cap = debit
             .as_ref()
             .and_then(|a| store.config().mint_cap(snap, &a.instrument));
-        (debit, credit, cap)
+        // P2-MOD-1 belt-and-suspenders: a contract-caused obligation only posts
+        // while its contract is `Active`/`ReadyToSettle`, or `Settled` when
+        // lease-shaped (non-lease contract obligations terminate on `Settled`).
+        let contract_live = match o.cause {
+            crate::obligation::ObligationCause::Contract(cid) => {
+                snap.contract(cid).is_some_and(|k| {
+                    matches!(
+                        k.state,
+                        crate::contract::ContractState::Active
+                            | crate::contract::ContractState::ReadyToSettle
+                    ) || (matches!(k.state, crate::contract::ContractState::Settled { .. })
+                        && crate::contract::is_lease_shaped(k))
+                })
+            }
+            _ => true,
+        };
+        (debit, credit, cap, contract_live)
     };
-    let (debit, credit, mint_cap) = gate;
+    let (debit, credit, mint_cap, contract_live) = gate;
+    if !contract_live {
+        return (
+            Disposition::Human(EscalationKind::SettlementRefused),
+            "its contract is no longer live".to_string(),
+            None,
+        );
+    }
     let debit_live = debit
         .as_ref()
         .is_none_or(|a| api::scope_coherent(ctx.w, a.scope, &a.owner));
@@ -1366,7 +1394,7 @@ fn step_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             None => true,
             Some(e) => e.renotify_due(now) || e.reopen_due(now),
         };
-        snap.contracts()
+        snap.live_contracts()
             .filter(|contract| contract.consent.managed.is_none())
             .filter_map(|c| {
                 // A pending terminal transition outranks everything: its plan may
@@ -1529,7 +1557,7 @@ fn stamp_observed_conditions(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             spent: std::collections::BTreeMap::new(),
         };
         let snap = store.snapshot();
-        snap.contracts()
+        snap.live_contracts()
             .filter(|contract| contract.consent.managed.is_none())
             .filter(|c| {
                 matches!(
@@ -1583,7 +1611,7 @@ fn republish_settlements(ctx: &mut Ctx<'_>, now: i64) {
             return;
         };
         let snap = store.snapshot();
-        snap.contracts()
+        snap.live_contracts()
             .filter(|contract| contract.consent.managed.is_none())
             .filter(|c| c.canon_published.is_none() && c.consent.visibility.is_public())
             .filter_map(|c| match c.state {
@@ -1650,7 +1678,7 @@ fn page_stale_contracts(ctx: &mut Ctx<'_>, now: i64, ic_now: i64) {
             return;
         }
         let snap = store.snapshot();
-        snap.contracts()
+        snap.live_contracts()
             .filter(|contract| contract.consent.managed.is_none())
             // E6a step 1 verify fold (M2): `Draft` belongs here too. An A′ amendment
             // leaves a draft that may still hold the author's escrow, and one that is
@@ -2056,8 +2084,35 @@ fn renotify(ctx: &mut Ctx<'_>, now: i64) {
 /// **Nothing collected here can be re-minted**: the hold allocator is floored from
 /// the journal, the approval and escalation allocators from every parsable key plus
 /// `meta`'s high-water mark, which boot persists on every boot.
+/// Collect retained zero-history terminal contracts (`Cancelled`, `Expired`, or
+/// zero-value/no-tx `Settled`) from RAM and KV (HIGH-22 + P2-MOD-14).
+fn collect_prunable_contracts(ctx: &mut Ctx<'_>) {
+    let prunable: Vec<_> = {
+        let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+            return;
+        };
+        let snap = store.snapshot();
+        snap.contracts()
+            .filter(|c| crate::contract_live::is_prunable_cancelled_draft(c, snap))
+            .take(MAX_GC_PER_SWEEP)
+            .map(|c| c.id)
+            .collect()
+    };
+    if prunable.is_empty() {
+        return;
+    }
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        for id in &prunable {
+            store.snapshot.remove_contract(*id);
+        }
+    }
+    for id in &prunable {
+        api::delete_key(ctx.out, api::contract_key(*id));
+    }
+}
+
 fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
-    let (approvals, holds, escalations, cancelled_drafts) = {
+    let (approvals, holds, escalations) = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
             return;
         };
@@ -2105,13 +2160,7 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             .take(MAX_GC_PER_SWEEP)
             .map(|e| e.id)
             .collect();
-        let cancelled_drafts: Vec<_> = snap
-            .contracts()
-            .filter(|c| crate::contract_live::is_prunable_cancelled_draft(c, snap))
-            .take(MAX_GC_PER_SWEEP)
-            .map(|c| c.id)
-            .collect();
-        (approvals, holds, escalations, cancelled_drafts)
+        (approvals, holds, escalations)
     };
     // E6a step 1 verify fold (D4 + R3): the rolling-window index is pruned on **read**
     // as well as on write — an account debited once and never again used to hold its
@@ -2142,11 +2191,7 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
             );
         }
     }
-    if approvals.is_empty()
-        && holds.is_empty()
-        && escalations.is_empty()
-        && cancelled_drafts.is_empty()
-    {
+    if approvals.is_empty() && holds.is_empty() && escalations.is_empty() {
         return;
     }
     {
@@ -2164,9 +2209,6 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
         for id in &escalations {
             store.escalations.remove(id);
         }
-        for id in &cancelled_drafts {
-            store.snapshot.remove_contract(*id);
-        }
     }
     for id in &approvals {
         api::delete_key(ctx.out, api::approval_key(*id));
@@ -2176,9 +2218,6 @@ fn collect_garbage(ctx: &mut Ctx<'_>, now: i64) {
     }
     for id in &escalations {
         api::delete_key(ctx.out, crate::escalation::escalation_key(*id));
-    }
-    for id in &cancelled_drafts {
-        api::delete_key(ctx.out, api::contract_key(*id));
     }
 }
 

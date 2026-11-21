@@ -109,7 +109,8 @@ pub fn stands_in_contract(w: &World, id: ContractId, who: ObjId) -> bool {
     let me = PrincipalId::Object(who);
     let auth = api::WorldAuth { w };
     let stands = |p: &PrincipalId| p == &me || auth.acts_for(&me, p);
-    c.consent.parties.iter().any(&stands)
+    store.snapshot().contract_creator(id) == Some(who)
+        || c.consent.parties.iter().any(&stands)
         || [
             c.roles.author.as_ref(),
             c.roles.payer.as_ref(),
@@ -579,22 +580,24 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // §9's cap, counted over NON-TERMINAL contracts: a terminal one costs nothing to
     // keep, and an issuer who cannot open a seventeenth draft can still read the
     // sixteen they have.
+    // P2-MOD-11: count per-creator quotas against the immutable `created_by`
+    // metadata (never the mutable cosmetic `c.roles.author` field).
     let (open, authored_open) = ctx.w.module_state::<EconomyStore>().map_or((0, 0), |st| {
-        let author = PrincipalId::Object(ctx.actor);
+        let snap = st.snapshot();
         let mut by_issuer = 0usize;
-        let mut by_author = 0usize;
-        for c in st.snapshot().contracts() {
+        let mut by_creator = 0usize;
+        for c in snap.live_contracts() {
             if !counts_as_trade(c) {
                 continue;
             }
             if c.issuer == issuer {
                 by_issuer += 1;
             }
-            if c.roles.author.as_ref() == Some(&author) {
-                by_author += 1;
+            if created_by_of(snap, c) == Some(ctx.actor) {
+                by_creator += 1;
             }
         }
-        (by_issuer, by_author)
+        (by_issuer, by_creator)
     });
     if open >= MAX_OPEN_CONTRACTS_PER_ISSUER {
         return Err(CmdError::msg(format!(
@@ -781,11 +784,11 @@ fn check_org_party_caps(
     for org_party in unconsented {
         let target_key = principal_key(org_party);
         let existing = snap
-            .contracts()
+            .live_contracts()
             .filter(|x| x.id != c.id && !x.state.is_terminal())
             .filter(|x| {
                 principal_key(&x.issuer) == principal_key(&c.issuer)
-                    || x.roles.author.as_ref() == Some(&me)
+                    || created_by_of(snap, x) == Some(ctx.actor)
             })
             .filter(|x| {
                 x.consent
@@ -806,6 +809,18 @@ fn check_org_party_caps(
         }
     }
     Ok(())
+}
+
+/// Immutable creator attribution for quota and rate-limit accounting
+/// (P2-MOD-11). Reads the write-once `created_by` metadata recorded when the
+/// contract was first created, falling back only to `c.issuer` when `c.issuer`
+/// is an object principal (for legacy persisted records predating `created_by`).
+/// Never consults the mutable cosmetic `c.roles.author` field.
+fn created_by_of(snap: &crate::snapshot::EconomySnapshot, c: &EconomicContract) -> Option<ObjId> {
+    snap.contract_creator(c.id).or(match c.issuer {
+        PrincipalId::Object(o) => Some(o),
+        _ => None,
+    })
 }
 
 fn build_party(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -1033,11 +1048,14 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             if amount.is_zero() || amount.is_negative() {
                 return Err(CmdError::msg("An obligation amount must be positive."));
             }
+            let min_every = crate::contract::MIN_PLAYER_OBLIGATION_EVERY_SECS;
             let every = opts
                 .get("every")
                 .and_then(|s| s.parse::<i64>().ok())
-                .filter(|n| *n > 0)
-                .ok_or_else(|| CmdError::msg("every= must be a positive number of seconds."))?;
+                .filter(|n| *n >= min_every)
+                .ok_or_else(|| {
+                    CmdError::msg(format!("every= must be at least {min_every} seconds."))
+                })?;
             let grace = opts
                 .get("grace")
                 .and_then(|s| s.parse::<u8>().ok())
@@ -1846,7 +1864,7 @@ fn counts_as_trade(c: &EconomicContract) -> bool {
 fn party_at_cap(store: &EconomyStore, party: &PrincipalId) -> bool {
     store
         .snapshot()
-        .contracts()
+        .live_contracts()
         .filter(|c| c.state.is_live() && c.consent.parties.contains(party))
         .count()
         >= MAX_LIVE_CONTRACTS_PER_PARTY
@@ -1887,7 +1905,7 @@ fn check_offer_structure(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), Cont
     for p in &c.consent.parties {
         let live = store
             .snapshot()
-            .contracts()
+            .live_contracts()
             .filter(|x| x.id != c.id && x.state.is_live())
             .filter(|x| x.consent.parties.contains(p))
             .count();
@@ -1900,6 +1918,14 @@ fn check_offer_structure(ctx: &Ctx<'_>, c: &EconomicContract) -> Result<(), Cont
         .any(|a| !crate::contract::party_escrow_backed(c, store.snapshot(), &a.party))
     {
         return Err(ContractError::AcceptanceUnbacked);
+    }
+    // P2-MOD-1: any surviving acceptance re-stamped onto an amended surface
+    // must also satisfy deliverable authorization (obligations, title transfers,
+    // collateral) under the re-offering actor's live authority so `@contract/amend`
+    // + `@contract/deliver` + `@contract/offer` can never bypass acceptance gates.
+    let reoffer_actor = PrincipalId::Object(ctx.actor);
+    for a in &c.acceptances {
+        authorize_accept_deliverables(ctx, c, &a.party, &reoffer_actor)?;
     }
     Ok(())
 }
@@ -2098,19 +2124,36 @@ fn contract_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "Contract #{id} is already accepted on your behalf."
         ))),
         Err(ContractError::Refused(e)) => {
-            let first = c
+            let who = acting_party_or_self(ctx, &c);
+            let who_key = principal_key(&who);
+            let mut also: Vec<NamedResource> = c
                 .consent
                 .terms
                 .consideration
                 .iter()
-                .find(|x| principal_key(&x.from) == principal_key(&acting_party_or_self(ctx, &c)))
-                .map_or(AccountId(0), |x| x.account);
-            Err(refuse(
-                ctx,
-                NamedResource::Contract(id),
-                &[NamedResource::Account(first)],
-                &e,
-            ))
+                .filter(|x| principal_key(&x.from) == who_key)
+                .map(|x| NamedResource::Account(x.account))
+                .collect();
+            for d in &c.consent.terms.deliverables {
+                match d {
+                    Deliverable::Obligation { template }
+                        if principal_key(&template.debtor) == who_key =>
+                    {
+                        also.push(NamedResource::Account(template.debit_account));
+                    }
+                    Deliverable::TitleTransfer { object, from, .. }
+                    | Deliverable::Collateral { object, from }
+                        if principal_key(from) == who_key =>
+                    {
+                        also.push(NamedResource::Asset(*object));
+                    }
+                    _ => {}
+                }
+            }
+            if also.is_empty() {
+                also.push(NamedResource::Account(AccountId(0)));
+            }
+            Err(refuse(ctx, NamedResource::Contract(id), &also, &e))
         }
         Err(e) => Err(contract_refusal(ctx, &c, &e)),
     }
@@ -2203,6 +2246,11 @@ fn accept_core_backed(
     if c.accepted_by(&party) {
         return Err(ContractError::AlreadyAccepted);
     }
+    // P2-MOD-1: authorize every deliverable committing `party` (recurring
+    // obligations, title transfers, and collateral pledges) under `actor`'s
+    // live compartment/resource authority BEFORE recording any acceptance,
+    // even when `consideration` is empty.
+    authorize_accept_deliverables(ctx, &c, &party, &actor)?;
     // Everything this party owes, escrowed in one plan.
     let considerations: Vec<Consideration> = c
         .consent
@@ -2344,6 +2392,194 @@ fn accept_core_backed(
         },
         remainder,
     ))
+}
+
+/// How many times a schedule can fire within a rolling approval window of
+/// `period_secs` seconds (at least 1).
+fn fires_in_window(schedule: &EconomicSchedule, period_secs: i64) -> i128 {
+    match (schedule.clock, schedule.cadence) {
+        (EconomicClock::RealUtc | EconomicClock::WorldIc, Some(every)) if every > 0 => {
+            i128::from((period_secs / every).max(1))
+        }
+        _ => 1,
+    }
+}
+
+/// P2-MOD-1: enforce live resource-level authority for every deliverable on `c`
+/// that commits `party` (`Deliverable::Obligation`, `TitleTransfer`,
+/// `Collateral`), preventing a sub-compartment `contract.accept` grant from
+/// escaping into another compartment or root treasury.
+#[inline(never)]
+fn authorize_accept_deliverables(
+    ctx: &Ctx<'_>,
+    c: &EconomicContract,
+    party: &PrincipalId,
+    actor: &PrincipalId,
+) -> Result<(), ContractError> {
+    use crate::engine::AuthEval as _;
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return Err(ContractError::Infeasible("no economy"));
+    };
+    let snap = store.snapshot();
+    let auth = api::WorldAuth { w: ctx.w };
+    let party_key = principal_key(party);
+    let mut oblig_per_account: std::collections::BTreeMap<AccountId, Amount> =
+        std::collections::BTreeMap::new();
+
+    for d in &c.consent.terms.deliverables {
+        match d {
+            Deliverable::Obligation { template }
+                if principal_key(&template.debtor) == party_key =>
+            {
+                if template.amount.is_zero() || template.amount.is_negative() {
+                    return Err(ContractError::Infeasible(
+                        "a contract's obligation amount must be positive",
+                    ));
+                }
+                if matches!(
+                    template.schedule.clock,
+                    EconomicClock::RealUtc | EconomicClock::WorldIc
+                ) && let Some(every) = template.schedule.cadence
+                    && every < crate::contract::MIN_PLAYER_OBLIGATION_EVERY_SECS
+                {
+                    return Err(ContractError::Infeasible(
+                        "a contract's recurring obligation cadence is too short",
+                    ));
+                }
+                let acct = snap
+                    .account(template.debit_account)
+                    .ok_or(ContractError::NoSuchAccount(template.debit_account))?;
+                if acct.status != AccountStatus::Active {
+                    return Err(ContractError::Refused(EconomyError::InactiveAccount(
+                        template.debit_account,
+                    )));
+                }
+                if matches!(acct.owner, PrincipalId::System(_))
+                    || principal_key(&acct.owner) != party_key
+                {
+                    return Err(ContractError::Refused(EconomyError::Unauthorized));
+                }
+                let neg = template
+                    .amount
+                    .checked_neg()
+                    .ok_or(ContractError::Overflow)?;
+                if !auth.authorize(actor, acct, neg) {
+                    return Err(ContractError::Refused(EconomyError::Unauthorized));
+                }
+                let slot = oblig_per_account
+                    .entry(template.debit_account)
+                    .or_insert(Amount::ZERO);
+                *slot = slot
+                    .checked_add(template.amount)
+                    .ok_or(ContractError::Overflow)?;
+            }
+            Deliverable::TitleTransfer { object, from, to } if principal_key(from) == party_key => {
+                let asset = snap
+                    .asset(*object)
+                    .ok_or(ContractError::NoSuchAsset(*object))?;
+                if asset.frozen {
+                    return Err(ContractError::Refused(EconomyError::AssetFrozen(*object)));
+                }
+                if asset.lifecycle != crate::record::AssetLifecycle::Active
+                    || principal_key(&asset.title_owner) != party_key
+                {
+                    return Err(ContractError::NoSuchAsset(*object));
+                }
+                if !auth.authorize_title_transfer(actor, asset, to) {
+                    return Err(ContractError::Refused(EconomyError::Unauthorized));
+                }
+            }
+            Deliverable::Collateral { object, from } if principal_key(from) == party_key => {
+                let asset = snap
+                    .asset(*object)
+                    .ok_or(ContractError::NoSuchAsset(*object))?;
+                if asset.frozen {
+                    return Err(ContractError::Refused(EconomyError::AssetFrozen(*object)));
+                }
+                if asset.lifecycle != crate::record::AssetLifecycle::Active
+                    || principal_key(&asset.title_owner) != party_key
+                {
+                    return Err(ContractError::NoSuchAsset(*object));
+                }
+                if !auth.authorize_collateral(actor, asset) {
+                    return Err(ContractError::Refused(EconomyError::Unauthorized));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if oblig_per_account.is_empty() {
+        return Ok(());
+    }
+
+    let now = ctx.w.now();
+    for (debit_id, oblig_sum) in oblig_per_account {
+        let acct = snap
+            .account(debit_id)
+            .ok_or(ContractError::NoSuchAccount(debit_id))?;
+        let mut cons_sum = Amount::ZERO;
+        for cons in &c.consent.terms.consideration {
+            if cons.account == debit_id && principal_key(&cons.from) == party_key {
+                cons_sum = cons_sum
+                    .checked_add(cons.amount)
+                    .ok_or(ContractError::Overflow)?;
+            }
+        }
+        let combined = oblig_sum
+            .checked_add(cons_sum)
+            .ok_or(ContractError::Overflow)?;
+        let neg_combined = combined.checked_neg().ok_or(ContractError::Overflow)?;
+        // Re-check cumulative obligation + consideration amount against GrantLimit.
+        if !auth.authorize(actor, acct, neg_combined) {
+            return Err(ContractError::Refused(EconomyError::Unauthorized));
+        }
+        // Enforce the debit account's ApprovalRule threshold and rolling window:
+        // standing obligations are exempt from the rolling window at sweep time
+        // (`ObligationAuth::window_exempt`), so accepting a contract that creates
+        // obligations over an account's threshold or window budget must fail closed.
+        if let Some(rule) = acct.approval.as_ref() {
+            if combined > rule.threshold {
+                return Err(ContractError::Refused(EconomyError::ApprovalRequired));
+            }
+            if let Some(window) = rule.window.as_ref() {
+                let mut projected: i128 = store
+                    .spent_in_window(debit_id, now, window.period_secs)
+                    .widen();
+                projected = projected.saturating_add(cons_sum.widen());
+                for d in &c.consent.terms.deliverables {
+                    if let Deliverable::Obligation { template } = d
+                        && template.debit_account == debit_id
+                        && principal_key(&template.debtor) == party_key
+                    {
+                        let commitment = template.amount.widen().saturating_mul(fires_in_window(
+                            &template.schedule,
+                            window.period_secs,
+                        ));
+                        projected = projected.saturating_add(commitment);
+                    }
+                }
+                for existing in snap.obligations() {
+                    if existing.debit_account == debit_id
+                        && !matches!(
+                            existing.status,
+                            ObligationStatus::Cancelled | ObligationStatus::Satisfied
+                        )
+                    {
+                        let commitment = existing.amount.widen().saturating_mul(fires_in_window(
+                            &existing.schedule,
+                            window.period_secs,
+                        ));
+                        projected = projected.saturating_add(commitment);
+                    }
+                }
+                if projected > window.total.widen() {
+                    return Err(ContractError::Refused(EconomyError::ApprovalRequired));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The hold ops a backed acceptance adds to its escrow plan (doc 48 cut EX.1a): the
@@ -2995,6 +3231,12 @@ fn settle_with(ctx: &mut Ctx<'_>, id: ContractId, companions: Vec<EconomicContra
             next.state = ContractState::Settled { transaction: tx };
             next.settle_attempts = 0;
             api::install_contract_write(ctx, terminal_write.settled(tx));
+            // P2-MOD-1: non-lease contract obligations terminate when the
+            // contract settles; only lease-shaped contracts carry rent beyond
+            // settlement.
+            if !crate::contract::is_lease_shaped(&next) {
+                cancel_lease_obligations(ctx, id);
+            }
             notify_parties(ctx, &next, &format!("Contract #{id} has settled."));
             Settled::Posted(tx)
         }
@@ -3387,30 +3629,64 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
 
 // ---- cancellation, amendment, refunds --------------------------------------
 
-/// Whether an unmanaged contract has never carried acceptances, escrow, deposits,
-/// amendments, pending unwinds, or canon output and can therefore be pruned outright
-/// instead of remaining as a permanent tombstone.
+/// Whether an unmanaged contract has no posted economic history — no escrow,
+/// deposits, pending unwinds, canon output, live or settled-period obligations,
+/// or live collateral/lease encumbrances — and can therefore be pruned outright
+/// once terminal instead of accumulating as a permanent tombstone (P2-MOD-14).
+///
+/// Deliberately ignores `acceptances` and `amendments`: a zero-consideration
+/// contract that was self-accepted or amended before cancellation/expiry still
+/// moved zero value and must not become an uncollectable tombstone.
 fn has_no_economic_history(c: &EconomicContract, snap: &crate::snapshot::EconomySnapshot) -> bool {
     c.consent.managed.is_none()
-        && c.acceptances.is_empty()
         && c.escrow.is_empty()
         && c.deposits.is_empty()
-        && c.amendments == 0
         && c.pending.is_none()
         && c.canon_published.is_none()
         && qualifying_escrow(c, snap).holds.is_empty()
         && !snap
             .holds()
-            .any(|h| h.status.is_held() && h.purpose == HoldPurpose::Escrow { contract: c.id })
+            .any(|h| h.purpose == HoldPurpose::Escrow { contract: c.id })
+        && !snap.obligations().any(|o| {
+            o.cause == ObligationCause::Contract(c.id)
+                && (!matches!(
+                    o.status,
+                    ObligationStatus::Cancelled | ObligationStatus::Satisfied
+                ) || o.periods_settled > 0)
+        })
+        && !snap.assets().any(|a| {
+            a.encumbrances.iter().any(|e| {
+                matches!(
+                    e,
+                    crate::record::Encumbrance::Collateral { contract }
+                        | crate::record::Encumbrance::Lease { contract, .. }
+                        if *contract == c.id
+                )
+            })
+        })
 }
 
-/// A `Cancelled` tombstone with no economic history that may be evicted past
-/// the retention cap or collected by `sweep::collect_garbage`.
+/// A terminal unmanaged tombstone (`Cancelled`, `Expired`, or zero-value/no-tx
+/// `Settled`) with no economic history that may be evicted past the retention
+/// cap or collected by `sweep::collect_garbage` (HIGH-22 + P2-MOD-14).
 pub(crate) fn is_prunable_cancelled_draft(
     c: &EconomicContract,
     snap: &crate::snapshot::EconomySnapshot,
 ) -> bool {
-    c.state == ContractState::Cancelled && has_no_economic_history(c, snap)
+    let terminal_prunable = match c.state {
+        ContractState::Cancelled | ContractState::Expired => true,
+        ContractState::Settled { transaction } => {
+            transaction.0 == 0
+                && c.consent.terms.consideration.is_empty()
+                && c.consent.terms.deliverables.is_empty()
+        }
+        ContractState::Draft
+        | ContractState::Offered
+        | ContractState::Active
+        | ContractState::ReadyToSettle
+        | ContractState::Disputed => false,
+    };
+    terminal_prunable && has_no_economic_history(c, snap)
 }
 
 /// Evict oldest zero-history `Cancelled` draft/offer tombstones past the
@@ -4170,12 +4446,17 @@ pub(crate) fn heal_lost_transitions(ctx: &mut Ctx<'_>) {
                  finished from its key document"
             );
             let mut c = c;
+            let stop_obligations = !matches!(state, ContractState::Settled { .. })
+                || !crate::contract::is_lease_shaped(&c);
             c.state = state;
             c.pending = None;
             c.revision = c.revision.saturating_add(1);
             if let Err(error) = api::put_contract(ctx, c) {
                 report_contract_write_refusal(ctx, &error);
                 return;
+            }
+            if stop_obligations {
+                cancel_lease_obligations(ctx, id);
             }
             forget_heal(ctx, id);
         } else if unknown.is_empty() {
@@ -4213,6 +4494,10 @@ fn land_terminal(
     let id = c.id;
     api::install_contract_write(ctx, prepared);
     cancel_lease_obligations(ctx, id);
+    // P2-MOD-14: enforce per-issuer and global retention caps across ALL
+    // zero-history terminal transitions (`Cancelled` and `Expired`), while
+    // keeping `id` itself immediately inspectable.
+    prune_excess_cancelled_drafts(ctx, id);
     let msg = match kind {
         PendingKind::Forfeit => format!("Contract #{id} lapsed; its escrow was forfeit."),
         PendingKind::Cancel | PendingKind::Expire => {

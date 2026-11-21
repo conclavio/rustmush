@@ -2082,3 +2082,313 @@ fn p2_mod_15_funded_terminal_work_orders_round_trip_and_prune_past_256() {
     assert!(store.is_complete(), "store must remain complete");
     assert!(!store.orders_truncated(), "work orders must not truncate");
 }
+
+// ---- P2-MOD-16 test --------------------------------------------------------
+
+#[test]
+fn p2_mod_16_claim_file_closes_place_unjurisdicted_negative_term_arbitrary_obj_and_suspended_prune()
+{
+    let (mut tw, families, _drifted) = boot_full();
+    let alice = tw.spawn_player("Alice");
+    let bob = tw.spawn_player("Bob");
+    let place = tw
+        .world_mut()
+        .create(ObjKind::Room, "Belt", GOD, None)
+        .expect("place");
+
+    // Alice holds `economy.account.post` on her own player org.
+    ok(&mut tw, GOD, "@org/create Freebooters");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@org/grant #{}=Freebooters economy.account.post", alice.0),
+    );
+    let player_org = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("orgs")
+        .state()
+        .orgs()
+        .find(|o| o.name == "Freebooters")
+        .expect("player org")
+        .id;
+
+    // Open an UN-JURISDICTED deposit (jurisdiction: None) and a governed deposit.
+    let unj_id = OreDepositId(0x1601);
+    let unj_dep = OreDeposit::new(
+        unj_id,
+        place,
+        cid("metals"),
+        Grade::new(1).expect("grade"),
+        Accessibility::new(100).expect("acc"),
+        BandId::new("high").expect("gband"),
+        BandId::new("rich").expect("rband"),
+        YieldCurve::new(vec![CurvePoint {
+            cumulative: 0,
+            per_cycle: 100,
+        }])
+        .expect("curve"),
+        EndpointRef(VaultId(1601)),
+        10_000,
+    )
+    .expect("unj deposit");
+    let gov_id = OreDepositId(0x1602);
+    let gov_dep = OreDeposit::new(
+        gov_id,
+        place,
+        cid("metals"),
+        Grade::new(1).expect("grade"),
+        Accessibility::new(100).expect("acc"),
+        BandId::new("high").expect("gband"),
+        BandId::new("rich").expect("rband"),
+        YieldCurve::new(vec![CurvePoint {
+            cumulative: 0,
+            per_cycle: 100,
+        }])
+        .expect("curve"),
+        EndpointRef(VaultId(1602)),
+        10_000,
+    )
+    .expect("gov deposit")
+    .with_jurisdiction(PrincipalId::Organization(player_org));
+    apply(tw.engine_mut(), &families, |txn| {
+        families.open_deposit(txn, unj_dep)
+    })
+    .expect("open un-jurisdicted deposit");
+    apply(tw.engine_mut(), &families, |txn| {
+        families.open_deposit(txn, gov_dep)
+    })
+    .expect("open governed deposit");
+
+    let objs_before = tw.world().next_id();
+    let titles_before = snap(&tw).assets().count();
+
+    // 1. Non-staff org officer CANNOT file over `ClaimSubject::Place` (0 objects/titles minted).
+    err(
+        &mut tw,
+        alice,
+        &format!(
+            "@claim/file place:{}=org:{}/obj:{}/shared/1/10000/transferable",
+            place.0, player_org.0, alice.0
+        ),
+    );
+    // 2. Non-staff org officer CANNOT file over an un-jurisdicted deposit (`jurisdiction: None`).
+    err(
+        &mut tw,
+        alice,
+        &format!(
+            "@claim/file {unj_id}=org:{}/obj:{}/shared/1/10000/transferable",
+            player_org.0, alice.0
+        ),
+    );
+    // 3. Negative, zero, and over-cap `term_secs` are refused BEFORE minting any object/title.
+    for bad_term in [-100i64, 0, mush_industry::record::MAX_CLAIM_TERM_SECS + 1] {
+        err(
+            &mut tw,
+            alice,
+            &format!(
+                "@claim/file {gov_id}=org:{}/obj:{}/shared/1/{bad_term}/transferable",
+                player_org.0, alice.0
+            ),
+        );
+    }
+    assert_eq!(
+        tw.world().next_id(),
+        objs_before,
+        "refused @claim/file must mint ZERO world objects"
+    );
+    assert_eq!(
+        snap(&tw).assets().count(),
+        titles_before,
+        "refused @claim/file must mint ZERO E4 titles"
+    );
+
+    // 4. Direct `ClaimFile` submission cannot bind an arbitrary `ObjId` (like Bob's titled hull),
+    // nor file on `Place`, nor file on an un-jurisdicted deposit, nor pass `term <= now`.
+    let bobs_ship = tw
+        .world_mut()
+        .create(ObjKind::Thing, "BobShip", bob, None)
+        .expect("ship");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", bobs_ship.0, bob.0),
+    );
+    let file_action = action_ref(&tw.engine().registry, IndustryVerb::ClaimFile).expect("action");
+    let now_at = tw.world().world_ic_now().at;
+    let direct_obj = submit_direct(
+        &mut tw,
+        alice,
+        file_action.clone(),
+        json!({
+            "subject": gov_id.to_string(),
+            "issuer": format!("org:{}", player_org.0),
+            "holder": format!("obj:{}", alice.0),
+            "object": bobs_ship.0,
+            "exclusivity": "shared",
+            "priority": 1,
+            "term": now_at + 10_000,
+            "transferability": "transferable",
+        }),
+        1601,
+    );
+    assert!(
+        direct_obj.is_err(),
+        "direct ClaimFile with arbitrary ObjId must be refused: {direct_obj:?}"
+    );
+    let direct_place = submit_direct(
+        &mut tw,
+        alice,
+        file_action.clone(),
+        json!({
+            "subject": format!("place:{}", place.0),
+            "issuer": format!("org:{}", player_org.0),
+            "holder": format!("obj:{}", alice.0),
+            "object": bobs_ship.0,
+            "exclusivity": "shared",
+            "priority": 1,
+            "term": now_at + 10_000,
+            "transferability": "transferable",
+        }),
+        1602,
+    );
+    assert!(
+        direct_place.is_err(),
+        "direct ClaimFile on Place by non-staff must be refused: {direct_place:?}"
+    );
+    let direct_unj = submit_direct(
+        &mut tw,
+        alice,
+        file_action.clone(),
+        json!({
+            "subject": unj_id.to_string(),
+            "issuer": format!("org:{}", player_org.0),
+            "holder": format!("obj:{}", alice.0),
+            "object": bobs_ship.0,
+            "exclusivity": "shared",
+            "priority": 1,
+            "term": now_at + 10_000,
+            "transferability": "transferable",
+        }),
+        1603,
+    );
+    assert!(
+        direct_unj.is_err(),
+        "direct ClaimFile on un-jurisdicted deposit by non-staff must be refused: {direct_unj:?}"
+    );
+
+    // 5. Expired `Suspended` claims are NEVER pruned even when the subject index is full,
+    // AND `term == now` is consistently treated as expired/prunable across licence, commands, and families.
+    let now = tw.world().world_ic_now();
+    let past = ClockStamp {
+        clock: now.clock.clone(),
+        at: now.at - 10,
+    };
+    let exact_now = now.clone();
+    let expired_suspended_id = ClaimId(0x16F0);
+    let exact_boundary_id = ClaimId(0x16F1);
+    let susp = ClaimRecord::new(
+        expired_suspended_id,
+        ClaimSubject::Deposit { deposit: gov_id },
+        PrincipalId::Organization(player_org),
+        PrincipalId::Object(alice),
+        ObjId(9600),
+        Exclusivity::Shared,
+        1,
+        past.clone(),
+        Transferability::Transferable,
+    )
+    .expect("expired suspended")
+    .with_contest_state(ContestState::Suspended {
+        by: PrincipalId::Organization(player_org),
+    })
+    .expect("suspend");
+    apply(tw.engine_mut(), &families, |txn| {
+        families.file_claim(txn, susp)
+    })
+    .expect("file expired suspended");
+    let boundary = ClaimRecord::new(
+        exact_boundary_id,
+        ClaimSubject::Deposit { deposit: gov_id },
+        PrincipalId::Organization(player_org),
+        PrincipalId::Object(alice),
+        ObjId(9601),
+        Exclusivity::Shared,
+        1,
+        exact_now.clone(),
+        Transferability::Transferable,
+    )
+    .expect("boundary");
+    apply(tw.engine_mut(), &families, |txn| {
+        families.file_claim(txn, boundary)
+    })
+    .expect("file boundary");
+    for i in 2..MAX_CLAIMS_PER_SUBJECT {
+        let live = ClaimRecord::new(
+            ClaimId(0x16F0 + i as u64),
+            ClaimSubject::Deposit { deposit: gov_id },
+            PrincipalId::Organization(player_org),
+            PrincipalId::Object(alice),
+            ObjId(9600 + i as u32),
+            Exclusivity::Shared,
+            1,
+            ClockStamp {
+                clock: now.clock.clone(),
+                at: now.at + 50_000,
+            },
+            Transferability::Transferable,
+        )
+        .expect("live");
+        apply(tw.engine_mut(), &families, |txn| {
+            families.file_claim(txn, live)
+        })
+        .expect("file live");
+    }
+
+    // Verify `term == now` returns ClaimExpired in extraction_authorized.
+    let boundary_rec = read(tw.engine_mut(), &families, |txn| {
+        families.claim(txn, exact_boundary_id).unwrap().unwrap()
+    });
+    let gov_rec = read(tw.engine_mut(), &families, |txn| {
+        families.deposit(txn, gov_id).unwrap().unwrap()
+    });
+    assert_eq!(
+        mush_industry::licence::extraction_authorized(
+            tw.world(),
+            alice,
+            &PrincipalId::Object(alice),
+            &gov_rec,
+            gov_rec.initial_reserve(),
+            &[boundary_rec],
+            None,
+            &now,
+        ),
+        Err(mush_industry::ExtractionRefusal::ClaimExpired),
+        "term == now must be consistently expired in extraction_authorized"
+    );
+
+    // Filing a 9th claim by Alice (the governing jurisdiction!) succeeds by pruning
+    // the `term == now` claim while preserving the expired `Suspended` claim!
+    ok(
+        &mut tw,
+        alice,
+        &format!(
+            "@claim/file {gov_id}=org:{}/obj:{}/shared/1/10000/transferable",
+            player_org.0, alice.0
+        ),
+    );
+    land(&mut tw, 1604).expect("9th claim prunes term==now claim while keeping expired Suspended");
+    let remaining = read(tw.engine_mut(), &families, |txn| {
+        families
+            .claims_over(txn, ClaimSubject::Deposit { deposit: gov_id })
+            .expect("claims")
+    });
+    assert!(
+        remaining.iter().any(|c| c.id() == expired_suspended_id),
+        "expired Suspended claim must NEVER be pruned"
+    );
+    assert!(
+        !remaining.iter().any(|c| c.id() == exact_boundary_id),
+        "term == now claim must be pruned cleanly"
+    );
+}

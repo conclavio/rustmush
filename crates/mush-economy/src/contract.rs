@@ -137,6 +137,11 @@ pub const DISPUTE_TTL_SECS: i64 = 3 * 86_400;
 pub const STALE_CONTRACT_AGE_SECS: i64 = 7 * 86_400;
 /// Permille denominator — a `Share::Permille` is out of this.
 pub const PERMILLE: u32 = 1000;
+/// Minimum recurring cadence (in seconds) for a real-time or IC-clocked
+/// contract `Deliverable::Obligation` (P2-MOD-1). Prevents 1-second recurring
+/// drain bombs while preserving standard lease and test cadences (>= 60s) and
+/// manual-clocked leases (`cadence: None`).
+pub const MIN_PLAYER_OBLIGATION_EVERY_SECS: i64 = 60;
 
 // ---- the consent surface --------------------------------------------------
 
@@ -2117,10 +2122,35 @@ pub fn check_offerable(
             Deliverable::Obligation { template } => {
                 account_instrument(snapshot, template.debit_account, &mut instrument)?;
                 account_instrument(snapshot, template.credit_account, &mut instrument)?;
-                if matches!(template.debtor, PrincipalId::System(_)) {
+                if template.amount.is_zero() || template.amount.is_negative() {
+                    return Err(ContractError::Infeasible(
+                        "a contract's obligation amount must be positive",
+                    ));
+                }
+                if matches!(
+                    template.schedule.clock,
+                    EconomicClock::RealUtc | EconomicClock::WorldIc
+                ) && let Some(every) = template.schedule.cadence
+                    && every < MIN_PLAYER_OBLIGATION_EVERY_SECS
+                {
+                    return Err(ContractError::Infeasible(
+                        "a contract's recurring obligation cadence is too short",
+                    ));
+                }
+                let debit_acct = snapshot
+                    .account(template.debit_account)
+                    .ok_or(ContractError::NoSuchAccount(template.debit_account))?;
+                if matches!(template.debtor, PrincipalId::System(_))
+                    || matches!(debit_acct.owner, PrincipalId::System(_))
+                {
                     return Err(ContractError::Infeasible(
                         "a system source/sink cannot be the debtor of a contract's obligation: \
                          that would be a standing mint",
+                    ));
+                }
+                if principal_key(&debit_acct.owner) != principal_key(&template.debtor) {
+                    return Err(ContractError::Infeasible(
+                        "a contract's obligation debit account is not owned by its debtor",
                     ));
                 }
                 if !consent
@@ -2735,7 +2765,7 @@ pub fn settlement_plan(
 ) -> Result<EconomyPlan, ContractError> {
     check_settlement(c, snapshot, env)?;
     let outcome = resolve_outcome(c, snapshot, env)?;
-    resolved_settlement_plan(c, snapshot, outcome)
+    resolved_settlement_plan(c, snapshot, outcome, env)
 }
 
 /// The existing settlement preconditions, without choosing an outcome. The live
@@ -2766,6 +2796,7 @@ fn resolved_settlement_plan(
     c: &EconomicContract,
     snapshot: &EconomySnapshot,
     outcome: Option<usize>,
+    env: &ValidateEnv<'_>,
 ) -> Result<EconomyPlan, ContractError> {
     // Every escrow hold must still be live — a broken escrow is a dispute, never a
     // settlement that pays out less than the parties agreed — and must actually BE
@@ -2838,13 +2869,19 @@ fn resolved_settlement_plan(
                 if consequences.as_ref().is_some_and(|xs| !xs.contains(&i)) {
                     continue;
                 }
+                // P2-MOD-10: only assign `c.consent.scope` as `to_scope` when
+                // the recipient organization IS the contract's own issuer and
+                // that scope coherently belongs to it (Invariant 18). A title
+                // transferred to a *different* organization must land unscoped
+                // (`None`) rather than carrying the issuer's compartment.
                 asset_ops.push(AssetOp::TransferTitle {
                     object: *object,
                     to: to.clone(),
-                    to_scope: c
-                        .consent
-                        .scope
-                        .filter(|_| matches!(to, PrincipalId::Organization(_))),
+                    to_scope: c.consent.scope.filter(|scope| {
+                        matches!(to, PrincipalId::Organization(_))
+                            && principal_key(to) == principal_key(&c.issuer)
+                            && env.auth.scope_coherent(Some(*scope), to)
+                    }),
                 });
             }
             Deliverable::Collateral { object, from } => {
@@ -3186,6 +3223,9 @@ pub struct ContractAuth<'a> {
     /// other purpose, and empty for an object depositor (whose return goes through
     /// the ordinary destination rule).
     homes: Vec<(ObjId, ObjId)>,
+    /// P2-MOD-10: whether `contract.consent.scope` is live and belongs to
+    /// `contract.issuer` according to the live `ValidateEnv` when settling.
+    issuer_scope_coherent: bool,
 }
 
 impl<'a> ContractAuth<'a> {
@@ -3203,6 +3243,30 @@ impl<'a> ContractAuth<'a> {
         contract: &'a EconomicContract,
         snapshot: &EconomySnapshot,
         outcome: Option<usize>,
+    ) -> ContractAuth<'a> {
+        ContractAuth::settling_inner(contract, snapshot, outcome, true)
+    }
+
+    /// [`ContractAuth::settling`] with live compartment coherence checked
+    /// against `env` (P2-MOD-10).
+    #[must_use]
+    pub(crate) fn settling_with_env(
+        contract: &'a EconomicContract,
+        snapshot: &EconomySnapshot,
+        outcome: Option<usize>,
+        env: &ValidateEnv<'_>,
+    ) -> ContractAuth<'a> {
+        let coherent = env
+            .auth
+            .scope_coherent(contract.consent.scope, &contract.issuer);
+        ContractAuth::settling_inner(contract, snapshot, outcome, coherent)
+    }
+
+    fn settling_inner(
+        contract: &'a EconomicContract,
+        snapshot: &EconomySnapshot,
+        outcome: Option<usize>,
+        issuer_scope_coherent: bool,
     ) -> ContractAuth<'a> {
         let terms = &contract.consent.terms;
         let total = escrowed_total(contract, snapshot);
@@ -3227,6 +3291,7 @@ impl<'a> ContractAuth<'a> {
                 titles,
             },
             homes: Vec::new(),
+            issuer_scope_coherent,
         }
     }
 
@@ -3245,6 +3310,7 @@ impl<'a> ContractAuth<'a> {
             qualifying: qualifying_ids(contract, snapshot),
             purpose: ContractPurpose::Forfeit { to, total },
             homes: Vec::new(),
+            issuer_scope_coherent: false,
         }
     }
 
@@ -3277,6 +3343,7 @@ impl<'a> ContractAuth<'a> {
                     _ => None,
                 })
                 .collect(),
+            issuer_scope_coherent: false,
         }
     }
 
@@ -3466,11 +3533,23 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         }
     }
 
+    fn scope_coherent(&self, scope: Option<OrgScopeId>, owner: &PrincipalId) -> bool {
+        match scope {
+            None => true,
+            Some(_) => {
+                matches!(owner, PrincipalId::Organization(_))
+                    && self.contract.consent.scope == scope
+                    && principal_key(owner) == principal_key(&self.contract.issuer)
+                    && self.issuer_scope_coherent
+            }
+        }
+    }
+
     fn authorize_title_receipt(
         &self,
         _actor: &PrincipalId,
         to: &PrincipalId,
-        _to_scope: Option<OrgScopeId>,
+        to_scope: Option<OrgScopeId>,
     ) -> bool {
         if !self.bound() {
             return false;
@@ -3478,6 +3557,11 @@ impl crate::engine::AuthEval for ContractAuth<'_> {
         let ContractPurpose::Settle { titles, .. } = &self.purpose else {
             return false;
         };
+        // P2-MOD-10: a scoped receipt is valid only when `to_scope` is this
+        // contract's own live issuer scope AND `to` is that issuer org.
+        if !self.scope_coherent(to_scope, to) {
+            return false;
+        }
         self.contract.fully_accepted()
             && self.contract.accepted_by(to)
             && self

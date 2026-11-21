@@ -43,8 +43,8 @@ pub(crate) fn prepare_settlement<'a>(
 ) -> Result<SettlementPreparation<'a>, ContractError> {
     let outcome = resolve_outcome(contract, snapshot, env)?;
     check_settlement(contract, snapshot, env)?;
-    let plan = resolved_settlement_plan(contract, snapshot, outcome)?;
-    let authorization = ContractAuth::settling(contract, snapshot, outcome);
+    let plan = resolved_settlement_plan(contract, snapshot, outcome, env)?;
+    let authorization = ContractAuth::settling_with_env(contract, snapshot, outcome, env);
     Ok(SettlementPreparation {
         plan,
         authorization,

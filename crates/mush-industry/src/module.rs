@@ -859,6 +859,7 @@ impl IndustryModule {
                 opener: self.opener.clone(),
                 jurisdiction,
                 tenure: self.tenure.clone(),
+                claim_catalog: self.claim_catalog(),
             },
             self.core_origins.as_deref(),
             self.core_factory.as_deref(),

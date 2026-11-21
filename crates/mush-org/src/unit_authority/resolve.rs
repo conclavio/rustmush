@@ -45,7 +45,9 @@ struct Resolver<'a> {
     now: i64,
     actors: Vec<ObjId>,
     path: BTreeSet<UnitGrantId>,
+    control_path: BTreeSet<(OrgId, OrgScopeId)>,
     visits: usize,
+    visit_limit: usize,
     sources: Vec<UnitAuthoritySource>,
     checking_exclusions: bool,
     // Declaration/root checks prove lending authority only. Exercising a role
@@ -76,7 +78,9 @@ impl<'a> Resolver<'a> {
             now,
             actors: vec![actor],
             path: BTreeSet::new(),
+            control_path: BTreeSet::new(),
             visits: 0,
+            visit_limit: MAX_UNIT_PROOF_VISITS,
             sources: Vec::new(),
             checking_exclusions: false,
             mission_lineage_only: false,
@@ -84,7 +88,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn charge(&mut self) -> Result<(), UnitGrantError> {
-        if self.visits >= MAX_UNIT_PROOF_VISITS {
+        if self.visits >= self.visit_limit {
             return Err(UnitGrantError::Capacity);
         }
         self.visits += 1;
@@ -248,6 +252,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn grantee(&self, grant: &UnitGrant) -> Result<(), UnitGrantError> {
+        if is_self_loan(grant) {
+            return Err(UnitGrantError::Cycle);
+        }
         match &grant.grantee {
             UnitGrantee::Character(actor) if self.facts.principal_exists(*actor) => Ok(()),
             UnitGrantee::Organization {
@@ -557,7 +564,9 @@ impl<'a> Resolver<'a> {
                 now: self.now,
                 actors: self.actors.clone(),
                 path: BTreeSet::new(),
+                control_path: BTreeSet::new(),
                 visits: self.visits,
+                visit_limit: self.visit_limit,
                 sources: Vec::new(),
                 checking_exclusions: true,
                 mission_lineage_only: self.mission_lineage_only,
@@ -594,6 +603,19 @@ impl<'a> Resolver<'a> {
     }
 
     fn control(&mut self, request: ControlRequest<'_>) -> Result<ControlProof, UnitGrantError> {
+        let key = (request.organization, request.selector.root());
+        if !self.control_path.insert(key) {
+            return Err(UnitGrantError::Cycle);
+        }
+        let result = self.control_inner(request);
+        self.control_path.remove(&key);
+        result
+    }
+
+    fn control_inner(
+        &mut self,
+        request: ControlRequest<'_>,
+    ) -> Result<ControlProof, UnitGrantError> {
         let ControlRequest {
             organization,
             unit,
@@ -653,48 +675,95 @@ impl<'a> Resolver<'a> {
             });
         }
         // Explicit organization loans are real parent proofs, not supplied
-        // booleans. They share the same path and work budget as the outer grant.
-        // Pre-filter active, in-window, delegable, narrowing, and scope-matching
-        // rows before charging proof visits so dead/unrelated loans cannot
-        // exhaust the visit budget.
-        let candidates: Vec<_> = self
-            .grants
-            .iter()
-            .filter(|(id, grant)| {
-                grant.id == **id
-                    && grant.status == UnitGrantStatus::Active
-                    && grant.capability == capability
-                    && (!delegate || grant.delegable)
-                    && time_valid(grant.valid_from, grant.valid_until, self.now)
-                    && window.is_none_or(|(from, until)| {
-                        window_narrows(grant.valid_from, grant.valid_until, from, until)
-                    })
-                    && (recovery != RecoveryPolicy::ReturnOnly
-                        || grant.recovery == RecoveryPolicy::ReturnOnly)
-                    && match &grant.scope {
-                        UnitScope::Units { units } => units.contains(&unit),
-                        UnitScope::OrganizationControlled { excluded, .. } => {
-                            !excluded.contains(&unit)
-                        }
+        // booleans. Pre-filter active, in-window, delegable, narrowing,
+        // non-self-loan, non-cyclic, and scope-matching rows before charging
+        // proof visits, prioritize directly-backed candidates ahead of indirect
+        // loan chains, and isolate each candidate under a fair visit sub-budget
+        // so an attacker's unsolicited loan bomb can never abort legitimate
+        // higher-ID loans.
+        let mut direct_candidates = Vec::new();
+        let mut indirect_candidates = Vec::new();
+        for (id, grant) in self.grants {
+            if grant.id != *id
+                || grant.status != UnitGrantStatus::Active
+                || grant.capability != capability
+                || (delegate && !grant.delegable)
+                || is_self_loan(grant)
+                || !time_valid(grant.valid_from, grant.valid_until, self.now)
+                || !window.is_none_or(|(from, until)| {
+                    window_narrows(grant.valid_from, grant.valid_until, from, until)
+                })
+                || (recovery == RecoveryPolicy::ReturnOnly
+                    && grant.recovery != RecoveryPolicy::ReturnOnly)
+            {
+                continue;
+            }
+            let UnitGrantee::Organization {
+                organization: grantee_org,
+                scope: grantee_scope,
+            } = grant.grantee
+            else {
+                continue;
+            };
+            if grantee_org != organization
+                || !self.scope_active(grantee_org, grantee_scope)
+                || !scope_contains(self.orgs, selector, grantee_scope)
+            {
+                continue;
+            }
+            match &grant.scope {
+                UnitScope::Units { units } => {
+                    if units.contains(&unit) {
+                        direct_candidates.push(grant.clone());
                     }
-                    && matches!(
-                        grant.grantee,
-                        UnitGrantee::Organization {
-                            organization: org,
-                            scope,
-                        } if org == organization
-                            && self.scope_active(org, scope)
-                            && scope_contains(self.orgs, selector, scope)
-                    )
-            })
-            .map(|(_, grant)| grant.clone())
-            .collect();
-        for grant in candidates {
+                }
+                UnitScope::OrganizationControlled {
+                    organization: scope_org,
+                    scope: scope_sel,
+                    excluded,
+                } => {
+                    if excluded.contains(&unit)
+                        || !self.scope_active(*scope_org, scope_sel.root())
+                        || self.control_path.contains(&(*scope_org, scope_sel.root()))
+                    {
+                        continue;
+                    }
+                    let directly_backed = (asset.owner == PrincipalId::Organization(*scope_org)
+                        && asset.scope.is_some_and(|s| {
+                            self.scope_active(*scope_org, s)
+                                && scope_contains(self.orgs, scope_sel, s)
+                        }))
+                        || self
+                            .facts
+                            .organization_control(*scope_org, unit, capability, self.now)
+                            .is_some();
+                    if directly_backed {
+                        direct_candidates.push(grant.clone());
+                    } else {
+                        indirect_candidates.push(grant.clone());
+                    }
+                }
+            }
+        }
+        direct_candidates.extend(indirect_candidates);
+        let total = direct_candidates.len();
+        let mut saw_capacity = false;
+        for (idx, grant) in direct_candidates.into_iter().enumerate() {
             let UnitGrantee::Organization { scope, .. } = grant.grantee else {
                 continue;
             };
+            let remaining = self.visit_limit.saturating_sub(self.visits);
+            if remaining == 0 {
+                saw_capacity = true;
+                break;
+            }
+            let left = total - idx;
+            let share = (remaining / left).max(1);
+            let saved_limit = self.visit_limit;
+            self.visit_limit = self.visits.saturating_add(share).min(saved_limit);
+            let inserted_grantee_scope = self.control_path.insert((organization, scope));
             let checkpoint = self.sources.len();
-            match self.walk(
+            let step = self.walk(
                 &grant,
                 unit,
                 delegate,
@@ -703,16 +772,28 @@ impl<'a> Resolver<'a> {
                     scope,
                 },
                 depth,
-            ) {
+            );
+            if inserted_grantee_scope {
+                self.control_path.remove(&(organization, scope));
+            }
+            self.visit_limit = saved_limit;
+            match step {
                 Ok(()) => {
                     self.policy(scope, capability)?;
                     return Ok(ControlProof { scope });
                 }
-                Err(UnitGrantError::Capacity) => return Err(UnitGrantError::Capacity),
+                Err(UnitGrantError::Capacity) => {
+                    saw_capacity = true;
+                    self.sources.truncate(checkpoint);
+                }
                 Err(_) => self.sources.truncate(checkpoint),
             }
         }
-        Err(UnitGrantError::NoAuthority)
+        if saw_capacity {
+            Err(UnitGrantError::Capacity)
+        } else {
+            Err(UnitGrantError::NoAuthority)
+        }
     }
 
     fn direct_org(&mut self, request: &UnitAuthRequest) -> Result<(), UnitGrantError> {
@@ -777,8 +858,13 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+        // Isolate each org root on its own sub-budget so an unsolicited loan
+        // bomb targeting one organization can never abort another org root's
+        // proof with Capacity.
+        let base_visits = self.visits;
+        let per_root_limit = self.visit_limit.saturating_sub(base_visits);
+        let mut saw_capacity = false;
         for parent in roots {
-            let checkpoint = self.sources.len();
             let Ok(root) = self.root(
                 &parent,
                 request.actor,
@@ -787,26 +873,52 @@ impl<'a> Resolver<'a> {
             ) else {
                 continue;
             };
-            match self.control(ControlRequest {
-                organization: root.organization,
-                unit: request.unit,
-                capability,
-                delegate: request.action.requires_delegation(),
-                selector: &root.scope,
-                depth: 0,
-                window: None,
-                recovery: RecoveryPolicy::None,
-            }) {
-                Ok(control) => {
-                    self.policy(control.scope, capability)?;
+            let mut sub = Resolver {
+                orgs: self.orgs,
+                grants: self.grants,
+                facts: self.facts,
+                predicates: self.predicates,
+                now: self.now,
+                actors: vec![request.actor],
+                path: BTreeSet::new(),
+                control_path: BTreeSet::new(),
+                visits: 0,
+                visit_limit: per_root_limit,
+                sources: Vec::new(),
+                checking_exclusions: false,
+                mission_lineage_only: self.mission_lineage_only,
+            };
+            let step = sub
+                .control(ControlRequest {
+                    organization: root.organization,
+                    unit: request.unit,
+                    capability,
+                    delegate: request.action.requires_delegation(),
+                    selector: &root.scope,
+                    depth: 0,
+                    window: None,
+                    recovery: RecoveryPolicy::None,
+                })
+                .and_then(|control| sub.policy(control.scope, capability));
+            match step {
+                Ok(()) => {
+                    for src in sub.sources {
+                        self.source(src);
+                    }
                     self.source(root.source);
                     return Ok(());
                 }
-                Err(UnitGrantError::Capacity) => return Err(UnitGrantError::Capacity),
-                Err(_) => self.sources.truncate(checkpoint),
+                Err(UnitGrantError::Capacity) => {
+                    saw_capacity = true;
+                }
+                Err(_) => {}
             }
         }
-        Err(UnitGrantError::NoAuthority)
+        if saw_capacity {
+            Err(UnitGrantError::Capacity)
+        } else {
+            Err(UnitGrantError::NoAuthority)
+        }
     }
 }
 
@@ -859,9 +971,26 @@ fn root_scope_narrows(orgs: &OrgState, root: &RootProof, inner: &UnitScope) -> b
     }
 }
 
+fn is_self_loan(grant: &UnitGrant) -> bool {
+    matches!(
+        (&grant.grantee, &grant.scope),
+        (
+            UnitGrantee::Organization {
+                organization: grantee_org,
+                ..
+            },
+            UnitScope::OrganizationControlled {
+                organization: scope_org,
+                ..
+            },
+        ) if grantee_org == scope_org
+    )
+}
+
 fn active_loan_orgs(
     grants: &BTreeMap<UnitGrantId, UnitGrant>,
     capability: UnitCapability,
+    unit: ObjId,
     now: i64,
 ) -> BTreeSet<OrgId> {
     grants
@@ -870,7 +999,12 @@ fn active_loan_orgs(
             if grant.id == *id
                 && grant.status == UnitGrantStatus::Active
                 && grant.capability == capability
+                && !is_self_loan(grant)
                 && time_valid(grant.valid_from, grant.valid_until, now)
+                && match &grant.scope {
+                    UnitScope::Units { units } => units.contains(&unit),
+                    UnitScope::OrganizationControlled { excluded, .. } => !excluded.contains(&unit),
+                }
                 && let UnitGrantee::Organization { organization, .. } = grant.grantee
             {
                 Some(organization)
@@ -1032,7 +1166,7 @@ pub fn authorize_unit(
     }
     let capability = request.action.capability();
     let requires_delegation = request.action.requires_delegation();
-    let loan_orgs = active_loan_orgs(grants, capability, request.now);
+    let loan_orgs = active_loan_orgs(grants, capability, request.unit, request.now);
     let mut near = UnitGrantError::NoAuthority;
     let mut grant_capacity = false;
     for (id, grant) in grants {
@@ -1084,26 +1218,31 @@ pub fn authorize_unit(
             }
             continue;
         }
-        let checkpoint = resolver.sources.len();
-        match resolver.walk(grant, request.unit, requires_delegation, &grant.grantee, 0) {
+        // Isolate every candidate grant on its own fresh proof budget so an
+        // attacker's unsolicited grant bomb at a lower ID can never exhaust the
+        // budget or abort legitimate higher-ID grants.
+        let mut candidate_resolver =
+            match Resolver::new(orgs, grants, facts, predicates, request.now, request.actor) {
+                Ok(r) => r,
+                Err(error) => return UnitDecision::Deny(error),
+            };
+        match candidate_resolver.walk(grant, request.unit, requires_delegation, &grant.grantee, 0) {
             Ok(()) => {
                 if let UnitGrantee::CurrentLeader(binding) = &grant.grantee
                     && let Some(command) = &request.mission
                 {
-                    resolver.source(UnitAuthoritySource::Mission {
+                    candidate_resolver.source(UnitAuthoritySource::Mission {
                         binding: binding.clone(),
                         term: command.term,
                     });
                 }
-                return UnitDecision::Allow(resolver.witness());
+                return UnitDecision::Allow(candidate_resolver.witness());
             }
             Err(UnitGrantError::Capacity) => {
                 grant_capacity = true;
-                break;
             }
             Err(error) => {
                 near = error;
-                resolver.sources.truncate(checkpoint);
             }
         }
     }
