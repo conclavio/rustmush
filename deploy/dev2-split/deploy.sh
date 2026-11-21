@@ -49,6 +49,7 @@ DRAIN_DIR="$SELF/../drain"                # swap.sh, binary-changed.sh, the sysc
 GW_UNIT=dev2mush-gateway                  # the template: $GW_UNIT@a, $GW_UNIT@b
 GW_STATE=/var/lib/$GW_UNIT                # its StateDirectory: draining-<gen> markers
 SINGLE_UNIT=/etc/systemd/system/dev2mush-gateway.service   # pre-GG.4
+REDIS_SOCK=/run/redis-dev2mush/redis.sock
 
 for arg in "$@"; do
   case "$arg" in
@@ -59,89 +60,105 @@ done
 
 echo "== rustmush dev2 SPLIT (hot-restart) deploy =="
 
-# 0. Refuse a stale embedded client by source commit, including rollbacks.
-# npm run build stamps web/dist/.commit; git archive carries .source-commit.
-# The shared guard runs before any installed configuration or service changes.
-bash "$BUILD/scripts/check-web-bundle.sh" "$BUILD"
+if [ -L "$ROOT" ] || [ -L "$BUILD" ]; then
+  echo "FATAL: $ROOT and $BUILD must not be symlinks" >&2
+  exit 1
+fi
 
-# 1. Service user (shared across mush instances).
+# 1. Service user (shared across dev1/dev2 dev boxes; production should isolate
+#    dedicated per-instance/per-half users — see docs/ops.md).
 if ! id mush >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin mush
   echo "created system user 'mush'"
 fi
 
-# 2. Directories (same tree the all-in-one uses, provisioned the same way —
-# every path the RENDERED config writes to, owned by the unit's User=, rather
-# than created on first boot with whatever umask the unit happened to have):
-#   data/                 [server].data_dir
-#   data/logs/            [log].file = true writes daily-rotating copies here
-#                         (gateway.log and server.log — one per half)
-#   data/archive/         [store.archive].dir, the J5 ledger tier — this holds
-#                         MONEY; back it up with the store, not instead of it
-#   data/offer-keys/      [offers].key_dir   — K5 offer signing, mode 0700
-#   data/resolution-keys/ [resolution].key_dir — K4 resolution RNG, mode 0700
-#   data/geology-keys/    [tacsim.geology].key_dir — doc 20 geology, mode 0700
-# All of them are under $ROOT, which is both units' one `ReadWritePaths=`
-# entry; the IPC socket's /run/rustmush-dev2 comes from the SERVER unit's
-# `RuntimeDirectory=` (the gateway only connects to it). The gateway
-# generations' markers and Discord lock live in the template's
-# `StateDirectory=` (/var/lib/dev2mush-gateway, made by systemd), and their
-# trusted sockets in the doorway's /run/rustmush-ssh. /var/log/redis stays
-# redis-owned.
-install -d -o mush -g mush -m 0750 "$ROOT" "$ROOT/data" "$ROOT/data/logs" "$ROOT/data/archive" "$ROOT/tls"
+# 2. Directories and root/service ownership boundary.
+#    $ROOT, $ROOT/build, instance.env, and mushd.toml stay root:root (0755/0644)
+#    so User=mush cannot modify binaries, deploy scripts, or configs. Only
+#    $ROOT/data (which is both units' ReadWritePaths= entry) is owned by mush:mush:
+#      data/                 [server].data_dir
+#      data/logs/            [log].file = true writes daily-rotating copies here
+#                            (gateway.log and server.log — one per half)
+#      data/archive/         [store.archive].dir, the J5 ledger tier — this holds
+#                            MONEY; back it up with the store, not instead of it
+#      data/offer-keys/      [offers].key_dir   — K5 offer signing, mode 0700
+#      data/resolution-keys/ [resolution].key_dir — K4 resolution RNG, mode 0700
+#      data/geology-keys/    [tacsim.geology].key_dir — doc 20 geology, mode 0700
+#    The IPC socket's /run/rustmush-dev2 comes from the SERVER unit's RuntimeDirectory=
+#    (the gateway only connects to it). The gateway generations' markers and
+#    Discord lock live in the template's StateDirectory= (/var/lib/dev2mush-gateway),
+#    and their trusted sockets in the doorway's /run/rustmush-ssh. /var/log/redis
+#    stays redis:redis; /run/redis-dev2mush is redis:mush 0750 for Unix-socket Redis.
+install -d -o root -g root -m 0755 "$ROOT"
+if [ -d "$BUILD" ]; then
+  chown -Rh root:root "$BUILD"
+fi
+if [ -L "$ROOT/data" ] || [ -L "$ROOT/tls" ]; then
+  echo "FATAL: $ROOT/data and $ROOT/tls must not be symlinks" >&2
+  exit 1
+fi
+install -d -o mush -g mush -m 0750 "$ROOT/data" "$ROOT/data/logs" "$ROOT/data/archive"
 install -d -o mush -g mush -m 0700 "$ROOT/data/offer-keys" "$ROOT/data/resolution-keys" "$ROOT/data/geology-keys"
-mkdir -p /var/lib/redis-dev2mush /var/log/redis /run/redis-dev2mush
-chown redis:redis /var/lib/redis-dev2mush /run/redis-dev2mush /var/log/redis
+chown -Rh mush:mush "$ROOT/data"
+install -d -o root -g mush -m 0750 "$ROOT/tls"
+install -d -o redis -g redis -m 0700 /var/lib/redis-dev2mush
+install -d -o redis -g redis -m 0750 /var/log/redis
+install -d -o redis -g mush -m 0750 /run/redis-dev2mush
 
-# 3. Redis config + unit (reused verbatim from the all-in-one instance).
+# 0. Refuse a stale embedded client by source commit, including rollbacks.
+#    Runs unprivileged as mush before any installed config or service changes.
+runuser -u mush -- bash "$BUILD/scripts/check-web-bundle.sh" "$BUILD"
+
+# 3. Redis config + unit (Unix socket only, port 0).
+REDIS_CHANGED=0
+if ! cmp -s "$DEV2/redis-dev2mush.conf" /etc/redis/redis-dev2mush.conf 2>/dev/null || \
+   ! cmp -s "$DEV2/redis-dev2mush.service" /etc/systemd/system/redis-dev2mush.service 2>/dev/null; then
+  REDIS_CHANGED=1
+fi
 install -m 640 -o redis -g redis "$DEV2/redis-dev2mush.conf" /etc/redis/redis-dev2mush.conf
-install -m 644 "$DEV2/redis-dev2mush.service" /etc/systemd/system/redis-dev2mush.service
+install -m 644 -o root -g root "$DEV2/redis-dev2mush.service" /etc/systemd/system/redis-dev2mush.service
 
 # 4. Resolve the EXTERNAL IPv4 (source IP of the default route — the public
 #    interface, NOT the tailscale address), install dev2's instance.env with
 #    that address written into it, and render mushd.toml from the shared
-#    template. Same file, same recipe, same result as the all-in-one: the two
-#    shapes differ in which binaries read the config, never in the config.
-#
-#    The committed instance.env carries `EXTERNAL_IP=auto`: the box's address is
-#    not a fact about the repository. The INSTALLED copy is the resolved one,
-#    and it is the file a re-render reads and the one
-#    `scripts/reset-instance.sh /opt/rustmush/dev2/instance.env --yes` is
-#    pointed at. ([ipc].listen is a unix socket under /run/rustmush-dev2 and needs no
-#    substitution — the server unit's RuntimeDirectory provides that dir, and
-#    both halves read the same value: the server binds it, the gateway dials it.)
+#    template.
 EXT_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)"
-if [ -z "${EXT_IP:-}" ]; then echo "FATAL: could not resolve external IP" >&2; exit 1; fi
-echo "external IP: $EXT_IP  (ssh :6792, ipc unix /run/rustmush-dev2/dev2.sock)"
-#
-#    Staged the way render.sh stages the config it produces: the installed
-#    instance.env is what `scripts/reset-instance.sh` is pointed at, and a shell
-#    redirection truncates its target before `sed` has read a byte — so a ship
-#    that left $DEV2/instance.env behind, or a full disk, would replace a good
-#    file with an empty one. Write beside it, verify, then move.
-sed "s|^EXTERNAL_IP=.*|EXTERNAL_IP=$EXT_IP|" "$DEV2/instance.env" > "$ROOT/instance.env.new"
-if ! grep -q "^EXTERNAL_IP=$EXT_IP\$" "$ROOT/instance.env.new"; then
-  echo "FATAL: $DEV2/instance.env has no EXTERNAL_IP line to resolve" >&2
-  rm -f "$ROOT/instance.env.new"; exit 1
+if ! [[ "${EXT_IP:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "FATAL: could not resolve external IPv4 (got '${EXT_IP:-}')" >&2
+  exit 1
 fi
-mv "$ROOT/instance.env.new" "$ROOT/instance.env"
+echo "external IP: $EXT_IP  (ssh :6792, ipc unix /run/rustmush-dev2/dev2.sock, redis unix $REDIS_SOCK)"
 
-# The render is deploy/instance/render.sh — one copy of the sed loop and the
-# completeness check for every box. It also runs BOTH split halves over the
-# result with `--check-config` (the gateway reads the shared set plus the
-# boundary; the server half is the one that dies on [tacsim] and the archive
-# window) and fails HERE if either refuses — before any unit is started or
-# restarted, and leaving the live mushd.toml alone. The gateway is checked AS
-# a generation: without `--generation`, a symlinked [ssh].trusted_socket (the
-# generations' handoff link, doc 33 §4.4) is a refusal by design.
-bash "$INSTANCE_DIR/render.sh" \
+if [ -L "$ROOT/instance.env" ] || [ -L "$ROOT/mushd.toml" ]; then
+  echo "FATAL: $ROOT/instance.env and $ROOT/mushd.toml must not be symlinks" >&2
+  exit 1
+fi
+ENV_STAGED="$(mktemp "$ROOT/.instance.env.new.XXXXXX")"
+sed "s|^EXTERNAL_IP=.*|EXTERNAL_IP=$EXT_IP|" "$DEV2/instance.env" > "$ENV_STAGED"
+if ! grep -q "^EXTERNAL_IP=$EXT_IP\$" "$ENV_STAGED"; then
+  echo "FATAL: $DEV2/instance.env has no EXTERNAL_IP line to resolve" >&2
+  rm -f "$ENV_STAGED"
+  exit 1
+fi
+chown root:root "$ENV_STAGED"
+chmod 0644 "$ENV_STAGED"
+mv "$ENV_STAGED" "$ROOT/instance.env"
+
+# Render mushd.toml and run BOTH split halves' --check-config unprivileged as mush.
+RENDER_CHECK_USER=mush bash "$INSTANCE_DIR/render.sh" \
   "$ROOT/instance.env" "$INSTANCE_DIR/mushd.toml.tmpl" "$ROOT/mushd.toml" \
   "$BUILD/target/release/mush-gateway --generation a" "$BUILD/target/release/mush-server"
+chown root:root "$ROOT/mushd.toml"
+chmod 0644 "$ROOT/mushd.toml"
 
 # 5. TLS cert — read by the gateway only when instance.env renders the native
 #    TLS shape (WEB_TLS = a `tls = { ... }` line; gateway built with --features
 #    tls). dev2 is behind Caddy and renders no `tls` key, so nothing reads this
 #    pair there; it is kept for an env that does.
+if [ -L "$ROOT/tls/cert.pem" ] || [ -L "$ROOT/tls/key.pem" ]; then
+  echo "FATAL: $ROOT/tls cert/key must not be symlinks" >&2
+  exit 1
+fi
 if [ ! -f "$ROOT/tls/cert.pem" ]; then
   openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
     -keyout "$ROOT/tls/key.pem" -out "$ROOT/tls/cert.pem" \
@@ -149,32 +166,39 @@ if [ ! -f "$ROOT/tls/cert.pem" ]; then
     -addext "subjectAltName=DNS:conclav.io,IP:$EXT_IP" >/dev/null 2>&1
   echo "generated self-signed cert (825d)"
 fi
+if [ -f "$ROOT/tls/cert.pem" ]; then
+  chown root:mush "$ROOT/tls/cert.pem"
+  chmod 0644 "$ROOT/tls/cert.pem"
+fi
+if [ -f "$ROOT/tls/key.pem" ]; then
+  chown root:mush "$ROOT/tls/key.pem"
+  chmod 0640 "$ROOT/tls/key.pem"
+fi
 
-# 6. LLM keys env file (root:mush 640; injected into the SERVER unit only —
-#    the gateway never sees it, doc 33 GG.1).
-if [ ! -f "$ROOT/dev2.env" ]; then
+# 6. LLM keys env file (root:root 0600; read by systemd PID 1 as root and
+#    injected into the SERVER unit only — the gateway omits EnvironmentFile=
+#    and mush can never read dev2.env off disk, doc 33 GG.1).
+if [ -L "$ROOT/dev2.env" ]; then
+  echo "FATAL: $ROOT/dev2.env must not be a symlink" >&2
+  exit 1
+fi
+if [ -f "$ROOT/dev2.env" ]; then
+  chown root:root "$ROOT/dev2.env"
+  chmod 0600 "$ROOT/dev2.env"
+else
   echo "WARNING: $ROOT/dev2.env missing — LLM calls will fail until it exists" >&2
+  echo "         (scp your ANTHROPIC_API_KEY/OPENROUTER_API_KEY there, chown root:root, chmod 600)" >&2
 fi
 
 # 7. The units: the server, and the gateway TEMPLATE (dev2mush-gateway@.service;
-#    its instances are @a and @b, doc 33 §4.7). A gateway unit from before GG.1
-#    supervised the server as its child; that gateway, if it is the one
-#    running, is stopped in step 9 before the pair comes up (stopping it kills
-#    its child), which is the ONE deploy that drops connections. Remembered
-#    here, before the unit files change.
+#    its instances are @a and @b, doc 33 §4.7).
 OLD_GATEWAY_SUPERVISES=0
 if systemctl is-active --quiet dev2mush-gateway.service 2>/dev/null && \
    ! [ -f /etc/systemd/system/dev2mush-server.service ]; then
   OLD_GATEWAY_SUPERVISES=1
 fi
-install -m 644 "$SELF/dev2mush-server.service" /etc/systemd/system/dev2mush-server.service
-install -m 644 "$SELF/dev2mush-gateway@.service" /etc/systemd/system/dev2mush-gateway@.service
-
-# 8. Ownership: whole tree is the mush user's EXCEPT the key file (root:mush
-#    640). `chown -R` does not touch modes, so the two 0700 key directories
-#    provisioned in step 2 stay 0700.
-chown -R mush:mush "$ROOT"
-if [ -f "$ROOT/dev2.env" ]; then chown root:mush "$ROOT/dev2.env"; chmod 640 "$ROOT/dev2.env"; fi
+install -m 644 -o root -g root "$SELF/dev2mush-server.service" /etc/systemd/system/dev2mush-server.service
+install -m 644 -o root -g root "$SELF/dev2mush-gateway@.service" /etc/systemd/system/dev2mush-gateway@.service
 
 # 9. Bring up Redis, then the server, then the gateway generation. If the
 #    all-in-one dev2mush is running, it is stopped + disabled first (the two
@@ -201,9 +225,12 @@ if [ -f "$ROOT/dev2.env" ]; then chown root:mush "$ROOT/dev2.env"; chmod 640 "$R
 #    Neither half's restart touches the other (doc 33 GG.2): the server is
 #    left alone by a swap, and a server restart never restarts a gateway.
 systemctl daemon-reload
-systemctl enable --now redis-dev2mush.service
+systemctl enable redis-dev2mush.service
+if [ "$REDIS_CHANGED" = "1" ] || ! systemctl is-active --quiet redis-dev2mush.service || [ ! -S "$REDIS_SOCK" ]; then
+  systemctl restart redis-dev2mush.service
+fi
 sleep 1
-redis-cli -p 6791 ping >/dev/null && echo "redis-dev2mush: PONG on 6791"
+redis-cli -s "$REDIS_SOCK" ping >/dev/null && echo "redis-dev2mush: PONG on $REDIS_SOCK"
 
 if systemctl is-enabled --quiet dev2mush.service 2>/dev/null || \
    systemctl is-active --quiet dev2mush.service 2>/dev/null; then
@@ -246,8 +273,8 @@ if systemctl is-active --quiet dev2mush-server.service; then
   SERVER_EXE="$(running_exe dev2mush-server.service)"
   SERVER_CHANGED="$(bash "$DRAIN_DIR/binary-changed.sh" "$BUILD/target/release/mush-server" "$SERVER_EXE")"
   if [ "${SERVER_RESTART:-0}" = "1" ] || [ "$SERVER_CHANGED" = "changed" ]; then
-    NEW_IPC="$("$BUILD/target/release/mush-server" --ipc-version)"
-    OLD_IPC="$("$SERVER_EXE" --ipc-version 2>/dev/null)" || OLD_IPC=unknown
+    NEW_IPC="$(runuser -u mush -- "$BUILD/target/release/mush-server" --ipc-version)"
+    OLD_IPC="$(runuser -u mush -- "$SERVER_EXE" --ipc-version 2>/dev/null)" || OLD_IPC=unknown
     if [ "$NEW_IPC" != "$OLD_IPC" ]; then
       if DRAINING="$(draining_gen)"; then
         if [ "${FORCE:-0}" = "1" ]; then
@@ -345,17 +372,26 @@ if [ "$GATEWAY_SKIP" != "1" ]; then
     systemctl reset-failed "$GW_UNIT@$START.service" 2>/dev/null || true
     systemctl enable "$GW_UNIT@$START.service"
     systemctl start "$GW_UNIT@$START.service"
-    TRUSTED="$(sed -n 's/^[[:space:]]*trusted_socket[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$ROOT/mushd.toml" | head -1)"
+    TRUSTED="$(sed -n 's/^[[:space:]]*trusted_socket[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/mushd.toml" | head -1)"
     if [ -n "$TRUSTED" ]; then
+      if ! [[ "$TRUSTED" =~ ^/run/rustmush-ssh/[A-Za-z0-9._-]+$ ]]; then
+        echo "FATAL: refusing unexpected [ssh].trusted_socket outside /run/rustmush-ssh/: $TRUSTED" >&2
+        exit 1
+      fi
       case "$TRUSTED" in
         *.sock) TARGET="${TRUSTED%.sock}.$START.sock" ;;
         *)      TARGET="$TRUSTED.$START" ;;
       esac
-      if [ ! -d "$(dirname "$TRUSTED")" ]; then
+      if [ ! -d "$(dirname "$TRUSTED")" ] || [ -L "$(dirname "$TRUSTED")" ]; then
         echo "WARNING: $(dirname "$TRUSTED") does not exist (the doorway's runtime directory): no trusted link made; gateway-swap.sh makes it on the first swap" >&2
       elif [ -L "$TRUSTED" ] || [ ! -e "$TRUSTED" ]; then
-        ln -sfn "$TARGET" "$TRUSTED.new"
-        mv -T "$TRUSTED.new" "$TRUSTED"
+        # shellcheck disable=SC2016
+        runuser -u mush -- bash -c '
+          set -euo pipefail
+          tmp="$(mktemp -u "${2}.new.XXXXXX")"
+          ln -s "$1" "$tmp"
+          mv -T "$tmp" "$2"
+        ' _ "$TARGET" "$TRUSTED"
         echo "trusted link: $TRUSTED -> $TARGET"
       else
         echo "WARNING: $TRUSTED exists and is not a symlink (a gateway from before GG.4 bound it?): remove it and re-run," >&2

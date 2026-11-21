@@ -173,7 +173,7 @@ npm --prefix web run build
 tar -c -C web dist | ssh -i $KEY $VPS 'tar -x -C /opt/rustmush/dev1/build/web'
 # 4. Build the release binary WITH native TLS
 ssh -i $KEY $VPS 'cd /opt/rustmush/dev1/build && ~/.cargo/bin/cargo build --release -p mushd --features tls'
-# 5. Ship the LLM keys as the systemd EnvironmentFile (root:mush 640)
+# 5. Ship the LLM keys as the systemd EnvironmentFile (root:root 600)
 scp -i $KEY .env $VPS:/opt/rustmush/dev1/dev1.env
 # 6. Configure + start (creates user/dirs/redis/cert, resolves external IP, wires systemd)
 ssh -i $KEY $VPS 'bash /opt/rustmush/dev1/build/deploy/dev1/deploy.sh'

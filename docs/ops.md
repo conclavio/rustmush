@@ -44,22 +44,31 @@ native builds) or Redis inside WSL2. No local option at all? Tunnel to a
 disposable remote instance: `ssh -N -L 6379:127.0.0.1:6379 you@your-vps`.
 
 Production (Ubuntu LTS, same box as mushd): distro/packaged Redis 8 under
-systemd. Recommended `redis.conf` baseline:
+systemd, bound to a **per-instance Unix domain socket** (no TCP port) so
+unrelated local users and co-located services cannot reach the store.
+Recommended `redis.conf` baseline (`deploy/dev1/redis-dev1mush.conf`):
 
 ```conf
+port 0
+unixsocket /run/redis-dev1mush/redis.sock
+unixsocketperm 660
+protected-mode yes
 appendonly yes
 appendfsync everysec        # or: always (see next section)
 save 3600 1 300 100 60 10000   # default RDB save points, kept as the backup layer
-bind 127.0.0.1 -::1         # mushd is local; never expose Redis publicly
 ```
 
-Point `mushd.toml` at it:
+Run the instance's Redis unit with `RuntimeDirectory=redis-<inst>mush`,
+`RuntimeDirectoryMode=0750`, `StateDirectoryMode=0700`, `User=redis`, and
+`Group=<instance-redis-group>` (`Group=mush` on the `dev1`/`dev2` dev boxes; a
+dedicated per-instance group in production). Point `mushd.toml` at it:
 
 ```toml
 [store]
-store = "redis"                          # default
-redis_url = "redis://127.0.0.1:6379"     # redis://[user:pass@]host:port[/db]
-receipt_policy = "applied"               # or "host_power_loss" (strict AOF validation)
+store = "redis"                                       # default
+redis_url = "redis+unix:///run/redis-dev1mush/redis.sock"
+# (or TCP for dev/Docker: redis://[user:pass@]127.0.0.1:6379[/db])
+receipt_policy = "applied"                            # or "host_power_loss" (strict AOF validation)
 ```
 
 `mushd` fails fast at boot when Redis is unreachable — deliberately. Fix the
@@ -2063,10 +2072,14 @@ scripts/vps-gate.sh --env "MINE_RATE=24" --extra "--run-ignored only -E 'test(/^
 
 `--env` (gate.yml's `env` input, doc 43 cut TS.2) exports its pairs to every
 later step of the run, so a dispatch can select a variant no hosted job sets
-(doc 43 §5.9). Values cannot hold spaces, and gate.yml refuses the names the
-workflow or the toolchain owns (`REDIS_URL` is the `redis` input's; `CARGO_*`,
-`RUST*`, `NEXTEST_*`, `PATH`, the runner's own). The script sends the input only
-when it is given, so it still dispatches a branch whose gate.yml predates it.
+(doc 43 §5.9). Values cannot hold spaces or newlines, and `gate.yml` enforces a
+strict allowlist of test/harness configuration names and prefixes (`TACSIM_*`,
+`MUSH_*`, `MINE_RATE`, `FIELD_RAID`, `FIELD_IDLE_S`, `MIND_PULSE_MS`, `GC12_*`,
+`MW20_*`, `M6_*`, `RUN_LLM_SMOKE`, `RELIEF_PREVIEW`, `RUST_LOG`,
+`RUST_BACKTRACE`). Likewise `extra` is parsed with `shlex.split` against an
+explicit allowlist of `cargo nextest run` flags (never `eval`). The script sends
+`env` only when it is given, so it still dispatches a branch whose `gate.yml`
+predates it.
 
 `--wip` pushes a commit of the working tree, uncommitted work and untracked
 files included, to `gate/<branch>` (never to the branch itself; the index and
@@ -2152,12 +2165,20 @@ and overrides, not in the box.
   dev1, dev2 and the production Redis win the cores and the disk under
   contention; 56 GB on conclav.dev, which has nothing to yield to). One job
   at a time per box (`gate.yml`'s `concurrency` group queues, never cancels).
-- The jobs' Redis is `redis-gate.service` on 127.0.0.1:6799
+- The jobs' Redis is `redis-gate.service` on `127.0.0.1:6799`
   (`deploy/vps-runner/redis-gate.conf`: the four modules, `appendonly yes`
   with `appendfsync always`, as CI's disposable Redis runs), wiped with
-  `FLUSHALL` before every sweep. conclav.io's instances on 6379 (production),
-  6788 (dev1), 6791 (dev2) and 6798 (dev1 trade) are never touched;
-  conclav.dev has only the package's default instance on 6379 beside it.
+  `FLUSHALL` before every sweep. It intentionally stays on loopback TCP because
+  the parallel test suites select logical DBs 0..15 by URL path (which `fred`'s
+  `redis+unix://` parser does not carry), whereas `dev1` and `dev2` run on
+  permission-isolated Unix sockets (`/run/redis-dev{1,2}mush/redis.sock`,
+  `port 0`, `redis:mush 0660`) so `ghrunner` cannot touch them.
+- **Production host separation:** `conclav.io` co-locates `ghrunner` with the
+  `dev1`/`dev2` development boxes for convenience, while `conclav.dev` is a
+  dedicated CI host. **Production game instances MUST NOT share a host with
+  self-hosted CI runners (`ghrunner` or `redis-gate`)** — run CI runners on a
+  separate host so build scripts, proc-macros, and CI workloads never share a
+  kernel, filesystem, or loopback interface with production game data.
 - Every job has its own temporary directory (`TMPDIR` is the runner's
   per-job temp, wiped between jobs): `/tmp` on conclav.io holds root-owned
   leftovers of by-hand harness runs (`tacsim-lance-smoke`,
@@ -2182,14 +2203,17 @@ RUNNER_TOKEN=<that token> RUNNER_NAME=conclav-dev RUNNER_LABELS=vps,conclav-dev 
 ```
 
 It is idempotent: the build packages from apt (and Redis Open Source with its
-modules from packages.redis.io when the box has none), the user, the runner
-(its tarball checked against the release's digest), rustup, the pinned
-toolchain, nextest, the Redis config and unit, the registration (once), the
-service with its override, and with `WITH_MOLD=1` mold 3.0.0 under `/usr`
-(the owner's recipe: a clone of rui314/mold at its release tag, `cargo build
---release`, `PREFIX=/usr ./install-mold.sh`; for linker experiments only,
-nothing links with it unless a dispatch says so). Rerun it after editing the
-files beside it. `gh api repos/conclavio/rustmush/actions/runners` shows both
+modules from packages.redis.io when the box has none, with its GPG key
+SHA-256-verified), the user, the runner (downloaded and SHA-256-verified by
+root before extracting; `installdependencies.sh` runs only from the root-owned
+staging tree on fresh install, and the systemd unit is written directly by root
+rather than executing `ghrunner`-writable `svc.sh`), pinned SHA-256-verified
+`rustup-init`, the pinned toolchain, SHA-256-verified `cargo-nextest`, the
+Redis config and unit, the registration (once), the service with its override,
+and with `WITH_MOLD=1` `mold` 3.0.0 pinned by commit SHA and built/installed
+into `~ghrunner/.local` entirely as `ghrunner` (never executing `install-mold.sh`
+as root; for linker experiments only, nothing links with it unless a dispatch
+says so). Rerun it after editing the files beside it. `gh api repos/conclavio/rustmush/actions/runners` shows both
 runners, their labels and whether they are online; `systemctl status
 actions.runner.conclavio-rustmush.<runner name>` on a box says the same. A
 second label on an existing registration is an API call, not a
@@ -2924,6 +2948,41 @@ the test rig (`crates/mush-gateway/tests/split_halves/harness.rs`, which stands
 in for the server unit and sends the generations' signals in-process).
 Production is Linux, where `systemctl restart <name>mush-server` and
 `gateway-swap.sh` are the deploy.
+
+### Host isolation & production hardening
+
+- **Root vs. service ownership boundary:** `deploy.sh` keeps
+  `/opt/rustmush/<inst>`, `/opt/rustmush/<inst>/build`, `instance.env`, and
+  `mushd.toml` owned `root:root` (`0755`/`0644`), and systemd units restrict
+  `ReadWritePaths=` strictly to `/opt/rustmush/<inst>/data` (plus
+  `-/run/rustmush-ssh` for gateways and `StateDirectory=`/`RuntimeDirectory=`).
+  Root-executed deploy/swap/bring-up scripts never run service binaries or
+  `mush`-writable helpers as `root` (preflight `--check-config`,
+  `--ipc-version`, `check-web-bundle.sh`, and trusted-socket symlink updates
+  drop privileges via `runuser -u mush`). Swap locks live in `0700 root:root`
+  `/run/rustmush-locks/`, and `sshdoorway-logrotate.service` keeps its state
+  file in root-owned `/var/lib/logrotate/sshdoorway.status`.
+- **Secret `EnvironmentFile` permissions:** `/opt/rustmush/<inst>/<inst>.env`
+  is owned `root:root` mode `0600`. Systemd PID 1 reads `EnvironmentFile=` as
+  `root` before dropping privileges to the service `User=`, so
+  `<inst>mush-server.service` receives its LLM/Discord keys in its process
+  environment while `<inst>mush-gateway@.service` (which omits
+  `EnvironmentFile=`) cannot read the secret file off disk.
+- **Per-instance Unix-socket Redis:** `dev1` and `dev2` run dedicated Redis
+  instances with `port 0`, `unixsocket /run/redis-dev{1,2}mush/redis.sock`,
+  `unixsocketperm 660`, `User=redis`, `Group=mush`, `RuntimeDirectoryMode=0750`,
+  and `StateDirectoryMode=0700` so co-located services (`ghrunner`,
+  `sshdoorway`, `caddy`) cannot reach the stores.
+- **Development vs. production OS user isolation (rollout requirement):**
+  `dev1` and `dev2` intentionally continue sharing the single `mush` OS user on
+  `conclav.io` because both are development games. **For production instances,
+  isolate dedicated per-instance AND per-half OS users and groups** — separate
+  gateway user (e.g. `mush-<inst>-gw`), server user (`mush-<inst>-srv`), and
+  dedicated per-instance Redis/IPC access groups — so `/proc/<server-pid>/environ`
+  (holding LLM/Discord secrets), IPC sockets, Redis sockets, and data
+  directories are isolated at the kernel UID boundary across both instances and
+  halves. **Production hosts must also NOT co-locate self-hosted CI runners
+  (`ghrunner` / `redis-gate`)** — run CI runners on a separate host.
 
 ### Web client (M16d): served by the gateway + survives the hot restart
 

@@ -59,13 +59,19 @@ if [[ ! -x "$shared" ]]; then
 fi
 
 config="${GATEWAY_SWAP_CONFIG:-$ROOT/mushd.toml}"
+# Drop privileges to mush when running as root so root never executes the
+# gateway binary directly during preflight.
+default_check="$ROOT/build/target/release/mush-gateway --config $config --check-config --generation a"
+if [[ "$(id -u)" -eq 0 ]]; then
+    default_check="runuser -u mush -- $default_check"
+fi
 args=(
     --unit "$UNIT"
     # The unit's StateDirectory=dev2mush-gateway; the gateway reads $STATE_DIRECTORY.
     --marker-dir "${GATEWAY_SWAP_MARKER_DIR:-/var/lib/$UNIT}"
     # The gateway's own preflight over the installed config, as a generation
     # (without --generation a symlinked trusted socket is a refusal, doc 33 §4.4).
-    --check "${GATEWAY_SWAP_CHECK:-$ROOT/build/target/release/mush-gateway --config $config --check-config --generation a}"
+    --check "${GATEWAY_SWAP_CHECK:-$default_check}"
     --drain-note "warnings at 12h/6h/2h/1h/15m/1m remaining; exits when empty or at 24 h"
 )
 # The doorway dials the configured [ssh].trusted_socket, a symlink that the
@@ -80,6 +86,15 @@ trusted_socket() {
 }
 link="${GATEWAY_SWAP_LINK-$(trusted_socket "$config")}"
 if [[ -n "$link" ]]; then
+    if [[ "$link" == *..* ]]; then
+        echo "refusing trusted_socket containing '..': $link" >&2
+        exit 1
+    fi
+    if [[ -z "${GATEWAY_SWAP_LINK+x}" && -z "${GATEWAY_SWAP_CONFIG+x}" ]] && \
+       ! [[ "$link" =~ ^/run/rustmush-ssh/[A-Za-z0-9._-]+$ ]]; then
+        echo "refusing unexpected trusted_socket path outside /run/rustmush-ssh/: $link" >&2
+        exit 1
+    fi
     case "$link" in
         *.sock) target_default="${link%.sock}.%g.sock" ;;
         *)      target_default="$link.%g" ;;

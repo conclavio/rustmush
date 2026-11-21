@@ -12,8 +12,8 @@
 # is written down here instead:
 #
 #   1. stop the unit, so nothing is writing while the store goes away;
-#   2. FLUSHDB this instance's OWN Redis — the one on REDIS_PORT, never the
-#      box's 6379 development instance;
+#   2. FLUSHDB this instance's OWN Redis — from REDIS_URL (or legacy REDIS_PORT),
+#      never the box's 6379 development instance;
 #   3. empty the data dir, preserving ssh_host_ed25519 (the ledger archive, the quarantine
 #      spool, the offer/resolution/decision key rings and the logs all live
 #      under it), owned by the user the unit runs as;
@@ -142,7 +142,44 @@ require_value() {
 
 instance="$(require_value INSTANCE)"
 data_dir="$(require_value DATA_DIR)"
-redis_port="$(require_value REDIS_PORT)"
+redis_url="$(env_value REDIS_URL || true)"
+redis_port="$(env_value REDIS_PORT || true)"
+redis_cli_args=()
+redis_desc=""
+if [ -n "$redis_url" ]; then
+	case "$redis_url" in
+	redis+unix:///*)
+		redis_sock="${redis_url#redis+unix://}"
+		redis_sock="${redis_sock%%\?*}"
+		redis_cli_args=(-s "$redis_sock")
+		redis_desc="unix $redis_sock"
+		;;
+	redis://*)
+		rest="${redis_url#redis://}"
+		authority="${rest%%[/?#]*}"
+		host_port="${authority##*@}"
+		if [[ "$host_port" == *:* ]]; then
+			redis_host="${host_port%:*}"
+			redis_port="${host_port##*:}"
+		else
+			redis_host="$host_port"
+			redis_port="6379"
+		fi
+		redis_cli_args=(-h "$redis_host" -p "$redis_port")
+		redis_desc="$redis_host:$redis_port"
+		;;
+	*)
+		echo "$0: unsupported REDIS_URL in $env_file (expected redis+unix:///... or redis://...)" >&2
+		exit 1
+		;;
+	esac
+elif [ -n "$redis_port" ]; then
+	redis_cli_args=(-h 127.0.0.1 -p "$redis_port")
+	redis_desc="127.0.0.1:$redis_port"
+else
+	echo "$0: $env_file has neither REDIS_URL nor REDIS_PORT" >&2
+	exit 1
+fi
 
 # `DATA_DIR` is deleted whole, as root, from a value an operator typed into a
 # text file. `require_value` only proves it is non-empty, and nothing further
@@ -267,13 +304,13 @@ fi
 # required it above.
 rendered="$(dirname "$env_file")/mushd.toml"
 
-echo "resetting instance '$instance': unit $unit, redis 127.0.0.1:$redis_port, data $data_dir"
+echo "resetting instance '$instance': unit $unit, redis $redis_desc, data $data_dir"
 echo "preserving SSH host identity: $host_key (if present)"
 
 # Same rule as the tool check: prove the store answers before taking the game
-# down, or a wrong REDIS_PORT ends with a stopped unit and an untouched world.
-if ! redis-cli -h 127.0.0.1 -p "$redis_port" PING >/dev/null 2>&1; then
-	echo "$0: no Redis answering on 127.0.0.1:$redis_port (REDIS_PORT in $env_file)" >&2
+# down, or a wrong REDIS_URL ends with a stopped unit and an untouched world.
+if ! redis-cli "${redis_cli_args[@]}" PING >/dev/null 2>&1; then
+	echo "$0: no Redis answering at $redis_desc (REDIS_URL/REDIS_PORT in $env_file)" >&2
 	exit 1
 fi
 
@@ -281,9 +318,9 @@ fi
 #    write its RAM copy straight back.
 systemctl stop "$unit"
 
-# 2. This instance's own Redis, logical db 0 — the db `redis://127.0.0.1:PORT`
-#    with no path selects, which is what the template renders.
-redis-cli -h 127.0.0.1 -p "$redis_port" -n 0 FLUSHDB
+# 2. This instance's own Redis, logical db 0 — the db `redis+unix:///...` or
+#    `redis://127.0.0.1:PORT` with no path selects, which is what the template renders.
+redis-cli "${redis_cli_args[@]}" -n 0 FLUSHDB
 
 # 3. World-bound data goes; the SSH host identity is deliberately unchanged.
 #    Keep that file in place, so a failed wipe cannot lose a staged backup.

@@ -15,23 +15,25 @@ Group=mush
 # must not starve the public port (doc 29a section 7, round 2).
 LimitNOFILE=65536
 WorkingDirectory=/opt/rustmush/dev1
-# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root-owned, mode 640,
-# injected by systemd — the mush user never reads the file, keys never logged.
+# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root:root, mode 0600,
+# read by systemd PID 1 as root before dropping to User=mush — never readable
+# on disk by the mush user, keys never logged.
 EnvironmentFile=/opt/rustmush/dev1/dev1.env
 ExecStart=/opt/rustmush/dev1/build/target/release/mushd --config /opt/rustmush/dev1/mushd.toml
 Restart=on-failure
 RestartSec=5
 
-# Hardening: the service needs only its own tree + the loopback Redis. Every
-# path the RENDERED mushd.toml writes to is inside that one tree — the data dir
-# and, under it, logs/, archive/ (the J5 ledger tier), offer-keys/,
-# resolution-keys/, geology-keys/ and quarantine/ — all provisioned by deploy.sh, so
-# ProtectSystem=strict has nothing else to let through.
+# Hardening: the service needs write access ONLY to its data directory (plus
+# the doorway socket dir). $ROOT, $ROOT/build, mushd.toml, instance.env and
+# dev1.env stay root-owned and read-only under ProtectSystem=strict. Every path
+# the RENDERED mushd.toml writes to is inside data/: logs/, archive/ (the J5
+# ledger tier), offer-keys/, resolution-keys/, geology-keys/ and quarantine/ —
+# all provisioned by deploy.sh.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/rustmush/dev1
+ReadWritePaths=/opt/rustmush/dev1/data
 # Doc 29: the trusted-ingress socket sshdoorway connects to ([ssh].trusted_socket).
 # The "-" keeps the unit starting on a box without the directory (tmpfiles
 # deploy/sshdoorway/sshdoorway.conf creates it setgid, group sshdoorway).

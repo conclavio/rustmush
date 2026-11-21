@@ -29,7 +29,7 @@
 #   --symlink-target <path> what <link> points at; %g stands for the generation
 #   --after <command>       run (with bash -c) once the swap is done; a failure
 #                           is a warning, not an error (a logging check)
-#   --lock <path>           the flock (default /run/lock/<stem>-swap.lock)
+#   --lock <path>           the flock (default /run/rustmush-locks/<stem>-swap.lock)
 #   --drain-note <text>     said when the old generation is told to drain
 #   --force                 see above
 #
@@ -70,7 +70,20 @@ if [[ -n "$link" || -n "$link_target" ]]; then
     [[ -n "$link" && -n "$link_target" ]] || { echo "--symlink and --symlink-target go together" >&2; usage; }
     [[ "$link_target" == *%g* ]] || { echo "--symlink-target must contain %g" >&2; usage; }
 fi
-: "${lock:=/run/lock/$unit-swap.lock}"
+if [[ -z "$lock" ]]; then
+    lock_dir=/run/rustmush-locks
+    if [[ "$(id -u)" -eq 0 ]]; then
+        install -d -m 0700 -o root -g root "$lock_dir"
+    else
+        mkdir -p "$lock_dir"
+        chmod 0700 "$lock_dir"
+    fi
+    lock="$lock_dir/$unit-swap.lock"
+fi
+if [[ -L "$lock" ]]; then
+    echo "refusing symlinked swap lock: $lock" >&2
+    exit 1
+fi
 
 exec 9>"$lock"
 flock -n 9 || { echo "another swap of $unit is running" >&2; exit 1; }
@@ -144,11 +157,37 @@ if [[ -n "$link" ]]; then
         put_down "$new"
         exit 1
     fi
-    tmp="$link.swap.$$"
-    rm -f "$tmp"
-    ln -s "$target" "$tmp"
-    # rename(2) over the old link: no moment without a link.
-    mv -T "$tmp" "$link"
+    link_dir="$(dirname "$link")"
+    if [[ "$link" == *..* ]] || [[ -L "$link_dir" ]]; then
+        echo "refusing unsafe symlink path or symlinked parent directory: $link" >&2
+        put_down "$new"
+        exit 1
+    fi
+    # Never create/rename symlinks as root inside a non-root-owned directory
+    # (such as mush-owned /run/rustmush-ssh): drop to the directory owner first.
+    replace_symlink() {
+        local t="$1" l="$2" tmp
+        tmp="$(mktemp -u "${l}.swap.XXXXXX")"
+        ln -s "$t" "$tmp"
+        # rename(2) over the old link: no moment without a link.
+        mv -T "$tmp" "$l"
+    }
+    if [[ "$(id -u)" -eq 0 ]]; then
+        dir_owner="$(stat -c %U "$link_dir")"
+        if [[ "$dir_owner" != root ]]; then
+            # shellcheck disable=SC2016
+            runuser -u "$dir_owner" -- bash -c '
+                set -euo pipefail
+                tmp="$(mktemp -u "${2}.swap.XXXXXX")"
+                ln -s "$1" "$tmp"
+                mv -T "$tmp" "$2"
+            ' _ "$target" "$link"
+        else
+            replace_symlink "$target" "$link"
+        fi
+    else
+        replace_symlink "$target" "$link"
+    fi
     echo "$link -> $target"
 fi
 

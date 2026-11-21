@@ -8,27 +8,20 @@
 # deployment lane with separate ports, data directories and service names.
 #
 # RENDERING. The template is parameterised by an `instance.env` file of plain
-# `KEY=value` lines; rendering substitutes every `__KEY__` token with that key's
-# value, and nothing else. That is the entire mechanism — it is a `sed`, not a
-# template language, so the shell that deploys and the test that checks the
-# shipped files cannot disagree about what a rendered config is. There is ONE
-# recipe, it is executable as `deploy/instance/render.sh <instance.env>
-# <template> <out> [binary ...]` (which both deploy scripts and CI's
-# provisioning job call, and which additionally preflights the result with each
-# named binary's own `--check-config`), and it is this:
+# `KEY=value` lines; rendering substitutes every `__KEY__` token literally with
+# that key's value, and nothing else. There is ONE recipe, executable as
+# `deploy/instance/render.sh <instance.env> <template> <out> [binary ...]`
+# (which both deploy scripts and CI's provisioning job call, and which
+# additionally preflights the result with each named binary's own
+# `--check-config`). It performs literal string substitution (never shell
+# sourcing and never GNU `sed -f` code generation), so the shell that deploys
+# and the test that checks the shipped files cannot disagree about what a
+# rendered config is.
 #
-#   while IFS='=' read -r k v; do
-#     case "$k" in ''|'#'*) continue;; esac
-#     printf 's|__%s__|%s|g\n' "$k" "$v"
-#   done < instance.env > /tmp/render.sed
-#   sed -f /tmp/render.sed mushd.toml.tmpl > mushd.toml
-#   grep -n '^[^#]*__' mushd.toml && { echo 'INCOMPLETE instance.env'; exit 1; }
-#
-# instance.env is NOT a shell script and must never be `source`d: a value is a
-# sed replacement, not a shell word, so `INSTANCE_TITLE=rustmush dev3 (oWoD)` is
+# instance.env is NOT a shell script and must never be `source`d: `INSTANCE_TITLE=rustmush dev3 (oWoD)` is
 # a perfectly good line here and a syntax error to `.` — which would leave every
-# key after it unset and render a config full of empty ports. The loop above
-# reads the line; it does not evaluate it.
+# key after it unset and render a config full of empty ports. The renderer reads
+# each line literally; it never evaluates it.
 #
 # A rendered config with an unsubstituted token left in a LIVE (non-comment)
 # line is an incomplete instance.env — that is what the grep catches, and
@@ -57,9 +50,10 @@ file = true
 
 [store]
 store = "redis"
-# This instance's OWN Redis, never the box's 6379 development instance (whose
-# namespaces the gated test suite wipes).
-redis_url = "redis://127.0.0.1:__REDIS_PORT__"
+# This instance's OWN Redis (a per-instance Unix socket on Linux deployments,
+# e.g. `redis+unix:///run/redis-<instance>mush/redis.sock`, never the box's 6379
+# development instance whose namespaces the gated test suite wipes).
+redis_url = "__REDIS_URL__"
 receipt_policy = "applied"
 
 # The J5 ledger archive tier. ON, because it is the half of the ledger's
@@ -608,8 +602,9 @@ wake_majors = __WAKE_MAJORS__
 
 # --- LLM ---------------------------------------------------------------------
 # API keys are NEVER inlined: each provider names an env var, supplied by the
-# unit's EnvironmentFile (/opt/rustmush/__INSTANCE__/__INSTANCE__.env, root:mush
-# 0640). Routing is by the MODEL-ID PREFIX on each route, not by naming a
+# unit's EnvironmentFile (/opt/rustmush/__INSTANCE__/__INSTANCE__.env, root:root
+# 0600 — read by systemd as root before dropping to User=mush, never readable on
+# disk by the gateway or the mush user). Routing is by the MODEL-ID PREFIX on each route, not by naming a
 # provider: "anthropic/<model>" goes to `anthropic` (prefix stripped), anything
 # else goes to `openrouter` verbatim — so keep these two provider ids as written.
 [llm]

@@ -82,17 +82,19 @@ import getpass
 import json
 import os
 import pty
+import pwd
 import re
 import secrets
 import select
-import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import termios
 import time
+from urllib.parse import urlparse
 
 HOUSES = [
     # launch.json key, organisation, configured source name, @mind/launch selector
@@ -268,9 +270,12 @@ class Session:
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
         host, port = box.ssh_endpoint
+        known_hosts = box.write_known_hosts(host, port)
         self.proc = subprocess.Popen(
             ["ssh", "-tt", "-p", str(port), "-o", "BatchMode=yes",
-             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+             "-o", "StrictHostKeyChecking=yes",
+             "-o", f"UserKnownHostsFile={known_hosts}",
+             "-o", "GlobalKnownHostsFile=/dev/null",
              "-o", "LogLevel=ERROR", f"play@{host}"],
             stdin=slave, stdout=slave, stderr=slave, preexec_fn=tty, close_fds=True)
         os.close(slave)
@@ -434,28 +439,124 @@ class Session:
 # --- the box: paths, the unit, the private boots -----------------------------
 
 
+def open_nofollow(path, flags, mode=0o600, dir_fd=None):
+    """Open a regular file without following symlinks and verify its file type."""
+    fd = os.open(path, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Stop(f"refusing non-regular file at {path}")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_safe_dir(path, mode, uid=None, gid=None, parent_fd=None):
+    """Create or verify a directory without following symlinks, apply mode/owner
+    on its open FD, and return the pinned directory FD."""
+    if parent_fd is None and os.path.islink(path):
+        raise Stop(f"refusing symlinked directory at {path}")
+    try:
+        os.mkdir(path, mode, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode):
+            raise Stop(f"expected directory at {path}")
+        if os.geteuid() == 0 and uid is not None and gid is not None:
+            os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def atomic_write_at(dst_dir_fd, dst_name, content, mode, stage_dir_fd, uid=None, gid=None):
+    """Write `content` into a uniquely created file inside root-owned `stage_dir_fd`
+    (O_CREAT|O_EXCL|O_NOFOLLOW), set mode/owner on its open FD, and atomically
+    renameat over `(dst_dir_fd, dst_name)` without path re-resolution races."""
+    stage_name = f".stage-{secrets.token_hex(8)}"
+    fd = os.open(
+        stage_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        mode,
+        dir_fd=stage_dir_fd,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
+            handle.write(content)
+            handle.flush()
+        os.fchmod(fd, mode)
+        if os.geteuid() == 0 and uid is not None and gid is not None:
+            os.fchown(fd, uid, gid)
+        os.close(fd)
+        fd = -1
+        os.replace(stage_name, dst_name, src_dir_fd=stage_dir_fd, dst_dir_fd=dst_dir_fd)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(stage_name, dir_fd=stage_dir_fd)
+        except OSError:
+            pass
+        raise
+
+
+def pick_ephemeral_ports(count=2):
+    """Allocate `count` distinct ephemeral loopback TCP ports."""
+    sockets = []
+    try:
+        ports = []
+        for _ in range(count):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("127.0.0.1", 0))
+            sockets.append(sock)
+            ports.append(sock.getsockname()[1])
+        return ports
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
 class Box:
     def __init__(self, args):
         self.args = args
         self.env_file = os.path.abspath(args.env)
+        if os.path.islink(self.env_file):
+            raise Stop(f"refusing symlinked instance.env: {self.env_file}")
         self.env = read_env(self.env_file)
-        for key in ("INSTANCE", "DATA_DIR", "BUILD_DIR", "SSH_PORT", "REDIS_PORT"):
+        for key in ("INSTANCE", "DATA_DIR", "BUILD_DIR", "SSH_PORT"):
             if not self.env.get(key):
                 raise Stop(f"{self.env_file} has no {key} line")
+        if not self.env.get("REDIS_URL") and not self.env.get("REDIS_PORT"):
+            raise Stop(f"{self.env_file} has neither REDIS_URL nor REDIS_PORT")
         self.instance = self.env["INSTANCE"]
         self.data = self.env["DATA_DIR"]
+        if os.path.islink(self.data):
+            raise Stop(f"refusing symlinked DATA_DIR: {self.data}")
         self.config = os.path.join(os.path.dirname(self.env_file), "mushd.toml")
+        if os.path.islink(self.config):
+            raise Stop(f"refusing symlinked config: {self.config}")
         self.here = os.path.dirname(os.path.abspath(__file__))
         self.repo = os.path.dirname(os.path.dirname(self.here))
         self.bin = args.bin_dir or os.path.join(self.env["BUILD_DIR"], "target", "release")
         self.work = os.path.join(self.data, "bringup")
+        self.runtime = os.path.join(self.work, "runtime")
         self.document = os.path.join(self.data, "launch.json")
         self.state_file = os.path.join(self.work, "state.json")
         self.pids_file = os.path.join(self.work, "private.pids")
+        self.known_hosts_file = os.path.join(self.work, "known_hosts")
         self.children = []
         self.ssh_endpoint = None
+        self.ssh_host_key_path = None
         self.unit = None
         self.owner = None
+        self.owner_uid = None
+        self.owner_gid = None
         self.boots = 0
         self.timings = {}
         self.split = all(os.access(os.path.join(self.bin, b), os.X_OK)
@@ -469,14 +570,30 @@ class Box:
             raise Stop(f"MINDS_LAUNCH is not `on` in {self.env_file}: this instance does not "
                        "take the named launch, and render.sh would leave launch_path commented")
         self.find_unit()
-        os.makedirs(self.work, mode=0o700, exist_ok=True)
-        self.own(self.work)
+        # Keep `self.work` owned by root:owner (0750) when running as root and
+        # pin both `self.data_fd` and `self.work_fd` to their directory inodes
+        # so the service user cannot race directory renames/symlinks mid-run.
+        self.data_fd = os.open(self.data, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if self.owner and os.geteuid() == 0:
+            self.work_fd = open_safe_dir("bringup", 0o750, uid=0, gid=self.owner_gid, parent_fd=self.data_fd)
+            rt_fd = open_safe_dir("runtime", 0o700, uid=self.owner_uid, gid=self.owner_gid, parent_fd=self.work_fd)
+        else:
+            self.work_fd = open_safe_dir("bringup", 0o700, parent_fd=self.data_fd)
+            rt_fd = open_safe_dir("runtime", 0o700, parent_fd=self.work_fd)
+        os.close(rt_fd)
         self.state = {}
-        if os.path.isfile(self.state_file):
-            with open(self.state_file, encoding="utf-8") as handle:
+        try:
+            fd = open_nofollow("state.json", os.O_RDONLY, dir_fd=self.work_fd)
+        except FileNotFoundError:
+            fd = None
+        if fd is not None:
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
                 self.state = json.load(handle)
-        self.log = open(os.path.join(self.work, "transcript.log"), "ab")
-        os.chmod(self.log.name, 0o600)
+        log_fd = open_nofollow("transcript.log",
+                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600,
+                               dir_fd=self.work_fd)
+        os.fchmod(log_fd, 0o600)
+        self.log = os.fdopen(log_fd, "ab")
         self.reap_leftovers()
 
     # ---- the unit and the service user
@@ -500,15 +617,48 @@ class Box:
         user = subprocess.run(["systemctl", "show", "-p", "User", "--value", self.unit],
                               capture_output=True, text=True).stdout.strip()
         self.owner = user or "mush"
+        pw = pwd.getpwnam(self.owner)
+        self.owner_uid = pw.pw_uid
+        self.owner_gid = pw.pw_gid
 
     def as_owner(self, command):
         if self.owner and os.geteuid() == 0:
             return ["runuser", "-u", self.owner, "--"] + command
         return command
 
-    def own(self, path):
-        if self.owner and os.geteuid() == 0:
-            shutil.chown(path, self.owner, self.owner)
+    def redis_cli_args(self):
+        """Return (redis-cli connection args, display description) for this instance."""
+        url = self.env.get("REDIS_URL", "")
+        if url:
+            if url.startswith("redis+unix:///"):
+                sock_path = url[len("redis+unix://"):].split("?", 1)[0]
+                return ["-s", sock_path], f"unix {sock_path}"
+            if url.startswith("redis://"):
+                parsed = urlparse(url)
+                host = parsed.hostname or "127.0.0.1"
+                port = str(parsed.port or 6379)
+                return ["-h", host, "-p", port], f"{host}:{port}"
+            raise Stop(f"unsupported REDIS_URL in {self.env_file}: {url!r}")
+        port = self.env["REDIS_PORT"]
+        return ["-h", "127.0.0.1", "-p", port], f"127.0.0.1:{port}"
+
+    def write_known_hosts(self, host, port):
+        """Pin the instance's own Ed25519 SSH host key into a temporary
+        known_hosts file so StrictHostKeyChecking=yes refuses any port squatter."""
+        key_path = self.ssh_host_key_path or os.path.join(self.data, "ssh_host_ed25519")
+        if os.path.islink(key_path) or not os.path.isfile(key_path):
+            raise Stop(f"SSH host key missing or symlinked at {key_path}")
+        # Derive the public key unprivileged as self.owner so root never opens
+        # files inside mush-writable data directories.
+        done = subprocess.run(self.as_owner(["ssh-keygen", "-y", "-f", key_path]),
+                              capture_output=True, text=True)
+        if done.returncode != 0 or not done.stdout.strip():
+            raise Stop(f"ssh-keygen -y -f {key_path} failed: {(done.stderr or done.stdout).strip()}")
+        pubkey = done.stdout.strip().splitlines()[0]
+        host_token = host if port == 22 else f"[{host}]:{port}"
+        atomic_write_at(self.work_fd, "known_hosts", f"{host_token} {pubkey}\n",
+                        0o600, stage_dir_fd=self.work_fd)
+        return self.known_hosts_file
 
     def systemctl(self, verb):
         done = subprocess.run(["systemctl", verb, self.unit], capture_output=True, text=True)
@@ -528,45 +678,53 @@ class Box:
         self.log.flush()
 
     def save_state(self):
-        staged = self.state_file + ".new"
-        with open(staged, "w", encoding="utf-8") as handle:
-            json.dump(self.state, handle, indent=2)
-        os.chmod(staged, 0o600)
-        os.replace(staged, self.state_file)
+        atomic_write_at(self.work_fd, "state.json", json.dumps(self.state, indent=2),
+                        0o600, stage_dir_fd=self.work_fd)
 
     # ---- the launch document
 
     def read_document(self):
-        if not os.path.isfile(self.document):
+        try:
+            fd = open_nofollow("launch.json", os.O_RDONLY, dir_fd=self.data_fd)
+        except FileNotFoundError:
             return None
-        with open(self.document, encoding="utf-8") as handle:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
             return json.load(handle)
 
     def write_document(self, document):
-        staged = self.document + ".new"
-        with open(staged, "w", encoding="utf-8") as handle:
-            json.dump(document, handle, indent=2)
-            handle.write("\n")
-        os.chmod(staged, 0o640)
-        self.own(staged)
-        os.replace(staged, self.document)
+        # Stage inside pinned root-owned `self.work_fd` (never in mush-writable
+        # `self.data`) with O_CREAT|O_EXCL, then renameat over `launch.json`.
+        uid = 0 if (self.owner and os.geteuid() == 0) else None
+        gid = self.owner_gid if (self.owner and os.geteuid() == 0) else None
+        atomic_write_at(self.data_fd, "launch.json", json.dumps(document, indent=2) + "\n",
+                        0o640, stage_dir_fd=self.work_fd, uid=uid, gid=gid)
 
     # ---- the render: the one in deploy/instance/render.sh, never a copy
 
     def render(self):
-        before = os.stat(self.config)
+        if os.path.islink(self.config):
+            raise Stop(f"refusing symlinked config: {self.config}")
+        before = os.lstat(self.config)
+        env = dict(os.environ)
+        if self.owner and os.geteuid() == 0:
+            env["RENDER_CHECK_USER"] = self.owner
         done = subprocess.run(
             ["bash", os.path.join(self.here, "render.sh"), self.env_file,
              os.path.join(self.here, "mushd.toml.tmpl"), self.config, self.world_binary],
-            capture_output=True, text=True)
+            capture_output=True, text=True, env=env)
         if done.returncode != 0:
             raise Stop(f"the render refused:\n{done.stdout}{done.stderr}")
-        if os.geteuid() == 0:
-            os.chown(self.config, before.st_uid, before.st_gid)
-        os.chmod(self.config, before.st_mode & 0o7777)
+        fd = open_nofollow(self.config, os.O_RDONLY)
+        try:
+            if os.geteuid() == 0:
+                os.fchown(fd, before.st_uid, before.st_gid)
+            os.fchmod(fd, before.st_mode & 0o7777)
+        finally:
+            os.close(fd)
 
     def launch_is_live(self):
-        with open(self.config, encoding="utf-8") as handle:
+        fd = open_nofollow(self.config, os.O_RDONLY)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
             return config_value(handle.read(), "tacsim.minds", "launch_path") is not None
 
     # ---- the private boots
@@ -575,30 +733,44 @@ class Box:
         """Boot the world on the private socket with a private gateway on
         loopback beside it, and wait until the front door answers."""
         self.boots += 1
-        with open(self.config, encoding="utf-8") as handle:
+        fd = open_nofollow(self.config, os.O_RDONLY)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
             rendered = handle.read()
-        port = self.args.private_port or (int(self.env["SSH_PORT"]) + 20000) % 65536
+        if self.args.private_port:
+            port, web_port = self.args.private_port, self.args.private_port + 1
+        else:
+            port, web_port = pick_ephemeral_ports(2)
         edits = {
             ("ssh", "listen"): f'"127.0.0.1:{port}"',
             ("ssh", "trusted_socket"): '""',
-            ("web", "listen"): f'"127.0.0.1:{port + 1}"',
+            ("web", "listen"): f'"127.0.0.1:{web_port}"',
             ("web", "trusted_proxies"): "[]",
         }
-        sock = os.path.join(self.work, "ipc.sock")
+        sock = os.path.join(self.runtime, "ipc.sock")
         private = os.path.join(self.work, "private.toml")
         if self.split:
-            gateway_data = os.path.join(self.work, "gateway-data")
-            os.makedirs(gateway_data, exist_ok=True)
-            self.own(gateway_data)
+            gateway_data = os.path.join(self.runtime, "gateway-data")
+            rt_fd = os.open("runtime", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=self.work_fd)
+            try:
+                if self.owner and os.geteuid() == 0:
+                    gd_fd = open_safe_dir("gateway-data", 0o700, uid=self.owner_uid, gid=self.owner_gid, parent_fd=rt_fd)
+                else:
+                    gd_fd = open_safe_dir("gateway-data", 0o700, parent_fd=rt_fd)
+                os.close(gd_fd)
+            finally:
+                os.close(rt_fd)
             edits[("ipc", "listen")] = f'"{sock}"'
             edits[("server", "data_dir")] = f'"{gateway_data}"'
-        with open(private, "w", encoding="utf-8") as handle:
-            handle.write(private_config(rendered, edits, drop={("web", "tls")}))
-        self.own(private)
+            host_key_path = os.path.join(gateway_data, "ssh_host_ed25519")
+        else:
+            host_key_path = os.path.join(self.data, "ssh_host_ed25519")
+        uid = 0 if (self.owner and os.geteuid() == 0) else None
+        gid = self.owner_gid if (self.owner and os.geteuid() == 0) else None
+        atomic_write_at(self.work_fd, "private.toml", private_config(rendered, edits, drop={("web", "tls")}),
+                        0o640, stage_dir_fd=self.work_fd, uid=uid, gid=gid)
         started = time.monotonic()
         if self.split:
-            if os.path.exists(sock):
-                os.remove(sock)
+            subprocess.run(self.as_owner(["rm", "-f", sock]), check=True)
             server = self.spawn([self.world_binary, "--config", self.config, "--ipc", sock],
                                 f"server-{self.boots}.log")
             self.until(lambda: os.path.exists(sock), server, f"the {label} boot's IPC socket")
@@ -606,7 +778,9 @@ class Box:
                                f"gateway-{self.boots}.log")
         else:
             front = self.spawn([self.world_binary, "--config", private], f"server-{self.boots}.log")
-        self.until(lambda: port_open(port), front, f"the {label} boot's front door on 127.0.0.1:{port}")
+        self.until(lambda: os.path.isfile(host_key_path) and port_open(port),
+                   front, f"the {label} boot's front door on 127.0.0.1:{port}")
+        self.ssh_host_key_path = host_key_path
         self.ssh_endpoint = ("127.0.0.1", port)
         self.timings[f"boot {self.boots} ({label})"] = round(time.monotonic() - started, 1)
         say(f"the {label} boot is up: the world on a private socket, the front door on "
@@ -614,13 +788,15 @@ class Box:
 
     def spawn(self, command, log_name):
         log_path = os.path.join(self.work, log_name)
-        log = open(log_path, "ab")
-        self.own(log_path)
-        child = subprocess.Popen(self.as_owner(command), stdout=log, stderr=log,
-                                 stdin=subprocess.DEVNULL, start_new_session=True)
+        log_fd = open_nofollow(log_name, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600, dir_fd=self.work_fd)
+        os.fchmod(log_fd, 0o600)
+        with os.fdopen(log_fd, "ab") as log:
+            child = subprocess.Popen(self.as_owner(command), stdout=log, stderr=log,
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
         child.log_path = log_path
         self.children.append(child)
-        with open(self.pids_file, "a", encoding="utf-8") as handle:
+        pids_fd = open_nofollow("private.pids", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600, dir_fd=self.work_fd)
+        with os.fdopen(pids_fd, "a", encoding="utf-8") as handle:
             handle.write(f"{child.pid}\n")
         return child
 
@@ -628,9 +804,11 @@ class Box:
         """Stop the private boots of a run that was killed before it could:
         the pids it wrote down, where each is still a process of this work
         directory."""
-        if not os.path.isfile(self.pids_file):
+        try:
+            fd = open_nofollow("private.pids", os.O_RDONLY, dir_fd=self.work_fd)
+        except FileNotFoundError:
             return
-        with open(self.pids_file, encoding="utf-8") as handle:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
             pids = [int(line) for line in handle.read().split() if line.isdigit()]
         left = []
         for pid in pids:
@@ -655,14 +833,19 @@ class Box:
                 os.killpg(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        os.remove(self.pids_file)
+        os.unlink("private.pids", dir_fd=self.work_fd)
 
     def until(self, ready, child, what):
         end = time.monotonic() + self.args.boot_timeout
-        while not ready():
+        while True:
             if child.poll() is not None:
                 raise Stop(f"{what} never came: the process exited {child.returncode}. "
                            f"The end of {child.log_path}:\n{tail(child.log_path)}")
+            if ready():
+                if child.poll() is not None:
+                    raise Stop(f"{what} never came: the process exited {child.returncode}. "
+                               f"The end of {child.log_path}:\n{tail(child.log_path)}")
+                return
             if time.monotonic() >= end:
                 raise Stop(f"gave up after {self.args.boot_timeout}s waiting for {what}; "
                            f"see {child.log_path}")
@@ -685,14 +868,18 @@ class Box:
                 child.wait()
         self.children = []
         self.ssh_endpoint = None
-        if os.path.isfile(self.pids_file):
-            os.remove(self.pids_file)
+        self.ssh_host_key_path = None
+        try:
+            os.unlink("private.pids", dir_fd=self.work_fd)
+        except FileNotFoundError:
+            pass
 
     def public_endpoint(self):
-        with open(self.config, encoding="utf-8") as handle:
+        fd = open_nofollow(self.config, os.O_RDONLY)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
             listen = config_value(handle.read(), "ssh", "listen")
         host, _, port = listen.rpartition(":")
-        return (host, int(port))
+        return (host.strip("[]"), int(port))
 
 
 def port_open(port):
@@ -1382,16 +1569,16 @@ def return_hulls(box, staff):
 def purchases(box, org):
     """The House's procurement ledger, read from the store: the rows whose
     licence was granted. No typed command shows it."""
-    port = box.env["REDIS_PORT"]
+    cli_args, redis_desc = box.redis_cli_args()
     scan = subprocess.run(
-        ["redis-cli", "-h", "127.0.0.1", "-p", port, "--scan", "--pattern",
+        ["redis-cli", *cli_args, "--scan", "--pattern",
          "mod:tacsim:action-state/v1/tacsim.procurement_ledger/*"],
         capture_output=True, text=True)
     if scan.returncode != 0:
-        raise Stop(f"redis-cli cannot read the procurement ledger on 127.0.0.1:{port}: {scan.stderr}")
+        raise Stop(f"redis-cli cannot read the procurement ledger at {redis_desc}: {scan.stderr}")
     rows = []
     for key in scan.stdout.split():
-        got = subprocess.run(["redis-cli", "-h", "127.0.0.1", "-p", port, "JSON.GET", key],
+        got = subprocess.run(["redis-cli", *cli_args, "JSON.GET", key],
                              capture_output=True, text=True).stdout.strip()
         if got:
             value = json.loads(got)
@@ -1611,6 +1798,7 @@ def bring_up(box, password):
 def staff_on_the_unit(box, password):
     """A staff session at the instance's own front door, once it answers."""
     box.ssh_endpoint = box.public_endpoint()
+    box.ssh_host_key_path = os.path.join(box.data, "ssh_host_ed25519")
     end = time.monotonic() + box.args.boot_timeout
     while True:
         try:
@@ -1697,7 +1885,7 @@ def main():
                         help="a rig: no unit is stopped or started, and the instance must be down")
     parser.add_argument("--bin-dir", help="where the binaries are (<BUILD_DIR>/target/release)")
     parser.add_argument("--private-port", type=int,
-                        help="the loopback SSH port of the private gateway (SSH_PORT + 20000)")
+                        help="the loopback SSH port of the private gateway (default: ephemeral loopback port)")
     parser.add_argument("--seed-line", default="standard",
                         choices=["standard"] + [h[0] for h in HOUSES],
                         help="what #1 rates and lists on the player market: `standard`, a copy of "

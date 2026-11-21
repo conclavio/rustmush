@@ -130,10 +130,10 @@ jobs:
             package: mush-server
             test: world_task::submission_disposition::tests::player_market_typed::typed_market_story_quote_pay_complete_panels_resale_and_restart
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Pinned Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # The automatic key is the job id, shared by every matrix cell, so
           # the first story to finish would save its package's dependencies
@@ -226,10 +226,10 @@ jobs:
           - name: CO.6 story 7, the fact interface
             test: c4_story_7_facts::c4_story_7_minds_facts_settle_contracts_on_the_launch_and_survive_a_restart
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Pinned Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: m8-gate-stories
       - name: Execute the exact M8 story
@@ -246,10 +246,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The runner records one clean revision/run identity, checks independent
       # bot dependencies, executes both real targets, then compares their frozen
       # contexts and intervals. Exact inventory-owned child commands:
@@ -276,7 +276,7 @@ jobs:
       # The evidence upload continues on error (see the test job's JUnit
       # upload): a transient artifact-service failure must not turn a passed
       # acceptance red. The next step warns instead.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: evidence
         if: always()
         continue-on-error: true
@@ -295,10 +295,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Recompute all thinks and substeps for twenty-four Class III hulls over 900 seconds
         run: cargo test -p tacsim --lib m6_real_24_class_iii_900s_complete_tape_replays_every_think_and_substep -- --ignored --nocapture
   # Doc 17h cut M8g G4 (D-UM-42), dispatch-only (G5), weekly since doc 43 TS.2: the leak battery. An ungoverned core
@@ -313,10 +313,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Every witness asks every question; only the built channels answer
         run: |
           cargo test -p tacsim --test domain_field m8_leaks:: -j 2 -- --ignored --test-threads=1 --nocapture
@@ -331,10 +331,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Every Trial case of the House minds
         run: cargo test --locked -p tacsim --lib minds::registry::trials::house_tests::house_minds_over_every_trial_case -j 2 -- --ignored --exact --test-threads=1 --nocapture
       - name: Two genuine Registry ratings score above zero
@@ -578,7 +578,7 @@ jobs:
       # binaries under full debuginfo. The cross-platform mind-hash gates below
       # still hold: their pins are blessed on Windows, so the Linux run is the
       # cross-platform comparison.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # WS01-S11B: rust-toolchain.toml at the repo root is the only place in
       # this repo that names a Rust version. `rustup toolchain install` with no
       # argument installs the toolchain that file pins, with the `clippy` and
@@ -590,7 +590,7 @@ jobs:
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # 2026-10-20: the action's automatic key is the job id, not the
           # matrix cell, so without this the three shards would share one key:
@@ -615,7 +615,14 @@ jobs:
       # an older one at startup rather than mid-run.
       - name: cargo-nextest 0.9.148
         if: matrix.shard != 'lint'
-        run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl --proto =https --tlsv1.2 -LsSf -o "$tmp/nextest.tar.gz" \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-gnu.tar.gz
+          echo "223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc  $tmp/nextest.tar.gz" | sha256sum -c -
+          tar zxf "$tmp/nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       # Doc 43 rule 2.3 #15: a pull request that touches a path a nightly-,
       # weekly- or dispatch-tier job runs those jobs at the fast pace (this
       # workflow's dispatch, `mind_pulse_ms` empty) and gets them green before
@@ -918,7 +925,7 @@ jobs:
         id: junit
         if: always() && matrix.shard != 'lint'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nextest-junit-${{ matrix.shard }}
           # junit-first.xml: a tacsim-integration cell's whole targets
@@ -954,7 +961,7 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - name: Browser smoke (TS.9) - node
         if: matrix.shard == 'rest-mushd'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -987,7 +994,7 @@ jobs:
           echo "version=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")" >> "$GITHUB_OUTPUT"
       - name: Browser smoke (TS.9) - the cached browser
         if: matrix.shard == 'rest-mushd'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
@@ -1033,7 +1040,7 @@ jobs:
       - name: Browser smoke (TS.9) - report
         if: failure() && matrix.shard == 'rest-mushd'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: playwright-report
           path: |
@@ -1065,13 +1072,13 @@ jobs:
     name: Toggleable features compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Clippy the native-TLS path
         run: cargo clippy -p mush-net-web -p mush-gateway -p mushd --features mush-net-web/tls,mush-gateway/tls,mushd/tls --all-targets -- -D warnings
       - name: Build the proxyless-deploy binaries
@@ -1086,9 +1093,9 @@ jobs:
     name: Workspace documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Resolve every documentation link
         env:
           RUSTDOCFLAGS: "-D warnings"
@@ -1114,13 +1121,13 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Doc 21 cut G.3b: the SPA carries the cockpit picture's wasm module.
       - run: |
           rustup toolchain install
           rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -1141,7 +1148,7 @@ jobs:
         env:
           RELEASE_SMOKE_DIR: ${{ runner.temp }}/release-smoke
         run: scripts/release-smoke.sh target/release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: release-smoke-logs
@@ -1164,13 +1171,13 @@ jobs:
     name: Instance provisioning acceptance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Renders the shipped `instance.env` file, preflights it under both
       # check sets AND in the real `mush-server` binary, proves a typo'd
       # `receipt_policy` is refused by name, and boots the shipped instance (with
@@ -1311,13 +1318,13 @@ jobs:
     env:
       REDIS_URL: redis://127.0.0.1:6379
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Start disposable Redis 8
         run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
       - name: Redis store and boot fault contracts
@@ -1361,13 +1368,13 @@ jobs:
     env:
       REDIS_URL: redis://127.0.0.1:6379
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Start disposable Redis 8
         run: docker run -d --rm --name redis -p 127.0.0.1:6379:6379 redis:8 redis-server --appendonly yes --appendfsync always --no-appendfsync-on-rewrite no
       - name: Scale harness
@@ -1390,13 +1397,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The live commander lane `arena_live_commander_five_matches`
       # (crates/mush-bot/tests/arena_live_commander.rs) is deliberately run by
       # no job: it spends real money and CI never sets its variables (16c
@@ -1427,13 +1434,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Bot win rate from the muster
         run: cargo test -p mush-bot --test arena_muster_rate -- --ignored --nocapture
 
@@ -1522,17 +1529,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: bot
       - name: cargo-nextest 0.9.148
-        run: curl -LsSf https://get.nexte.st/0.9.148/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl --proto =https --tlsv1.2 -LsSf -o "$tmp/nextest.tar.gz" \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-gnu.tar.gz
+          echo "223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc  $tmp/nextest.tar.gz" | sha256sum -c -
+          tar zxf "$tmp/nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       - name: The round story, both sizes
         run: cargo nextest run -P ci-bot -p mush-bot --test mining_cohort --run-ignored only --test-threads 2 -E 'test(=fr7_round::fr7_the_rounds_story_at_256) | test(=fr7_round::fr7_the_rounds_story_at_512)'
 
@@ -1557,13 +1571,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: bot-minds-lane
       - name: Build the split pair and the bot
@@ -1578,7 +1592,7 @@ jobs:
         run: scripts/bot-minds-lane.sh target/debug "$RUNNER_TEMP/minds-lane"
       # What the two bots read and typed, their reports, and the instance's logs. Never the
       # keys or the staff password, which stay in the runner's scratch directory.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         continue-on-error: true
         with:
@@ -1645,18 +1659,18 @@ jobs:
     env:
       TACSIM_JSON: harness.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         shell: bash
         run: |
           rustup toolchain install
           rustc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: TacSim harness
         run: cargo test --release -p tacsim --test harness -- --ignored --test-threads=1 --nocapture --skip tacsim_harness_delta_against_the_committed_baseline
       - name: Compare with the committed baseline
         run: cargo test --release -p tacsim --test harness tacsim_harness_delta_against_the_committed_baseline -- --exact --ignored --nocapture
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: tacsim-harness-report
@@ -1669,7 +1683,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Doc 21 cut G.3b: `npm test` and `npm run build` build the cockpit
       # picture's WebAssembly module first (web/scripts/build-wasm.mjs), so
       # this job needs the pinned toolchain and its wasm32 target.
@@ -1678,8 +1692,8 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -1696,8 +1710,8 @@ jobs:
   unity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "8.0.x"
       - name: Compile C# scripts and run NUnit tests

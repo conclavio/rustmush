@@ -20,9 +20,10 @@ NotifyAccess=main
 User=mush
 Group=mush
 WorkingDirectory=/opt/rustmush/dev2
-# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root:mush, mode 640.
-# The server is the half that makes the LLM calls; since doc 33 GG.1 the
-# gateway never sees this file. Keys are never logged.
+# LLM API keys (ANTHROPIC_API_KEY / OPENROUTER_API_KEY). root:root, mode 0600.
+# systemd PID 1 reads this file as root before dropping to User=mush; the server
+# is the half that makes LLM calls and since doc 33 GG.1 the gateway omits
+# EnvironmentFile= and cannot read this file off disk. Keys are never logged.
 EnvironmentFile=/opt/rustmush/dev2/dev2.env
 # One config, two readers: the server reads its own sections plus [ipc]. It
 # binds [ipc].listen — /run/rustmush-dev2/dev2.sock in the rendered mushd.toml
@@ -59,16 +60,16 @@ RestartSec=2
 RuntimeDirectory=rustmush-dev2
 RuntimeDirectoryMode=0750
 
-# Hardening: the service needs only its own tree, the loopback Redis and the
-# socket directory above. Every path the RENDERED mushd.toml writes to is
-# inside the one ReadWritePaths tree: the data dir and, under it, logs/
-# (server.log), archive/ (the J5 ledger tier), offer-keys/, resolution-keys/,
-# geology-keys/ and quarantine/ — all provisioned by deploy.sh.
+# Hardening: the service needs write access ONLY to its data directory and the
+# RuntimeDirectory above; $ROOT, $ROOT/build, mushd.toml, instance.env and
+# dev2.env stay root-owned and read-only. Every path the RENDERED mushd.toml
+# writes to is inside data/: logs/ (server.log), archive/ (the J5 ledger tier),
+# offer-keys/, resolution-keys/, geology-keys/ and quarantine/.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/rustmush/dev2
+ReadWritePaths=/opt/rustmush/dev2/data
 
 [Install]
 WantedBy=multi-user.target

@@ -18,6 +18,12 @@ futures.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 
+# Unix domain socket Redis URLs (`redis+unix:///...`) for Linux deployments.
+# Scoped to Unix targets because fred's `unix-sockets` feature imports
+# `tokio::net::UnixStream` unconditionally.
+[target.'cfg(unix)'.dependencies]
+fred = { workspace = true, features = ["unix-sockets"] }
+
 [dev-dependencies]
 tokio.workspace = true
 # A skipped document is only diagnosable if the log names the key that
