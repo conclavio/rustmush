@@ -880,7 +880,7 @@ fn apply(ctx: &mut Ctx<'_>, row: &ReportLanded, r: &SaleReceipt) {
             paid: false,
         }),
     };
-    if !crate::offense::record_offense(ctx, key, offense, |_, row| row.debt.is_some()) {
+    if !crate::offense::record_offense(ctx, key, offense, crate::offense::is_settled) {
         return;
     }
     let entry = mush_market::MarketId::new(r.venue.as_str())
