@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v51 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v52 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,10 +45,25 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50b item 9 (lane v52): Meridiani taken out**: Meridiani Security Group's organization
+/// row at Isidis, so a strip chain rebuilds a lane before v52 (idempotent). The chain's head.
+pub fn strip_meridiani(doc: &mut Value) {
+    if let Some(orgs) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("isidis_port"))
+        .and_then(|e| e.get_mut("def"))
+        .and_then(|d| d.get_mut("orgs"))
+        .and_then(Value::as_array_mut)
+    {
+        orgs.retain(|o| o.get("id").and_then(Value::as_str) != Some("meridiani"));
+    }
+}
+
 /// **Doc 50 cut OP.7b (lane v51): the Republic Customs store taken out**: the customs office's
 /// vendor row at Stickney, its capital back at 10,000 and its acceptor role off, so a strip chain
-/// rebuilds a lane before v51 (idempotent). The chain's head.
+/// rebuilds a lane before v51 (idempotent); lane v52's [`strip_meridiani`] first.
 pub fn strip_customs_store(doc: &mut Value) {
+    strip_meridiani(doc);
     let Some(port) = doc
         .get_mut("entries")
         .and_then(|e| e.get_mut("stickney_port"))

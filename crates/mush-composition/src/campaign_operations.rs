@@ -133,6 +133,7 @@ impl OperationFrame for CampaignOperationFrame {
                 .collect(),
             window: (doc.terms.window.0.at, doc.terms.window.1.at),
             outcome,
+            told: mush_campaign::notice::defenders(w, doc),
         })
     }
 }

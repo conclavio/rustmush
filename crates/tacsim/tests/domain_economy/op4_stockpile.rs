@@ -512,6 +512,7 @@ impl OperationFrame for ClosingFrame {
             legal_targets: request.legal_targets,
             window: (0, close),
             outcome: None::<OperationOutcome>,
+            told: Vec::new(),
         })
     }
 }

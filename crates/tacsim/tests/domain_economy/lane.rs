@@ -92,7 +92,8 @@ use support::ground::{UNSIGNED, sign};
 /// Doc 50 cut OP.4: v49, the tank farm's drain and its bid's refresh (was `117842fb…` at v48).
 /// Doc 50 cut OP.5: v50, the Isidis import duty under the Republic (was `3a9a5f7f…` at v49).
 /// Doc 50 cut OP.7b: v51, the Republic Customs store at Stickney, its capital and its acceptor role (was `c9bcd33c…` at v50).
-const LANE_DIGEST: &str = "137c914476449eeb21b4ec7bdf902a806073c70f45e5b7ac6507ad46689ff9d6";
+/// Doc 50b item 9: v52, Meridiani Security Group at Isidis (was `137c9144…` at v51).
+const LANE_DIGEST: &str = "4cc4a8235b8996663cc78d8d1e2d8e98fb6b6632857bb263e484b22efa6fdeff";
 
 /// The date the lane's bodies stand at (the script's chord minimum, R4).
 const LANE_DATE: &str = "2351-05-13";
@@ -442,6 +443,25 @@ fn op1_strip_isidis_rebuilds_the_published_v45() {
     assert_eq!(
         pack.manifest().digest().to_hex(),
         "ecb08a2c9c609d82649291ad597b4cde33793545f542b6e659ee6d984efb04e2"
+    );
+}
+
+/// **Doc 50b item 9: `strip_meridiani` rebuilds the published v51**: the shipped v52 less
+/// Meridiani Security Group's row at Isidis, re-signed at 51, is OP.7b's digest.
+#[test]
+fn b50_strip_meridiani_rebuilds_the_published_v51() {
+    let mut doc: serde_json::Value = serde_json::from_str(LANE_JSON).expect("the lane is JSON");
+    doc["manifest"]["version"] = 51.into();
+    doc["manifest"]["digest"] = UNSIGNED.into();
+    support::lane_chain::strip_meridiani(&mut doc);
+    let once = doc.clone();
+    support::lane_chain::strip_meridiani(&mut doc);
+    assert_eq!(doc, once, "the strip is idempotent");
+    let signed = sign(&serde_json::to_string_pretty(&doc).expect("serializes"));
+    let pack = load_pack(&signed).expect("v51 verifies");
+    assert_eq!(
+        pack.manifest().digest().to_hex(),
+        "137c914476449eeb21b4ec7bdf902a806073c70f45e5b7ac6507ad46689ff9d6"
     );
 }
 
@@ -846,8 +866,8 @@ fn ic2_the_lane_pack_is_pinned() {
     assert_eq!(manifest.version(), LANE_VERSION);
     assert_eq!(
         manifest.version(),
-        51,
-        "lane v51 since doc 50 cut OP.7b (v50 at doc 50 cut OP.5, v49 at doc 50 cut OP.4, v48 at doc 50 cut KC.4, v47 at doc 50 cut KC.2, v46 at doc 50 cut OP.1, v45 at doc 50 cut KC.0, v44 at doc 48e lane L4, v43 at doc 48 unit EX.10, v42 at doc 48 unit EX.9, v41 at doc 48 unit PL.8, v40 at doc 48 unit PL.6, v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
+        52,
+        "lane v52 since doc 50b item 9 (v51 at doc 50 cut OP.7b, v50 at doc 50 cut OP.5, v49 at doc 50 cut OP.4, v48 at doc 50 cut KC.4, v47 at doc 50 cut KC.2, v46 at doc 50 cut OP.1, v45 at doc 50 cut KC.0, v44 at doc 48e lane L4, v43 at doc 48 unit EX.10, v42 at doc 48 unit EX.9, v41 at doc 48 unit PL.8, v40 at doc 48 unit PL.6, v39 at doc 48 unit PL.5, v38 at doc 48 unit EX.3, v37 at doc 48 unit PL.3, v36 at doc 48 unit PL.2, v35 at doc 48 unit PL.1, v34 at doc 47 unit CO.10, v33 at the owner's IN.11 house-restock ruling, v32 at doc 39 cut IN.11, v31 at the player-response floor, v29 at doc 39 cut IN.10, v28 at doc 41 cut RS.6a, v27 at doc 39 cut IN.9, v26 at doc 39 cut IN.7, v24 at doc 39 cut IN.5, v23 at doc 42 cut CR.2, v22 at doc 39 cut IN.6, v21 at doc 41 cut RS.1, v20 at doc 39 cuts IN.1 and IN.4, v19 at GC.13, v18 at GC.7, v17 at S.1, v16 at CF.6c, v15 at SM.12b, v14 at SM.12a, v13 at relay R9b, v12 at doc 20 cut SM.10) (v11 \
          at SM.5, v10 at SM.3a, v9 at SM.2, v8 at A.8, v7 at A.7, v6 at A.4b, v5 at A.4, v4 at A.1)"
     );
     assert_eq!(manifest.kind(), tacsim::PackKind::CampaignSeed);

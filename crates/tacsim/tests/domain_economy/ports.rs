@@ -631,8 +631,8 @@ fn ic3_boot_creates_the_nine_orgs_and_one_sweep_settles_their_capital() {
         -(i64::try_from(total_capital()).expect("fits") * 100 + passenger_seeded_capital(&tw))
     );
     assert_eq!(
-        treasury_balance, -1_747_100_000,
-        "17,471,000.00cr: the Republic Customs Office's 10,000 more (doc 50 cut OP.7b), the Isidis Concession's 350,000 (doc 50 cut OP.1), 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
+        treasury_balance, -1_757_100_000,
+        "17,571,000.00cr: Meridiani Security Group's 100,000 (doc 50b item 9), the Republic Customs Office's 10,000 more (doc 50 cut OP.7b), the Isidis Concession's 350,000 (doc 50 cut OP.1), 8,200,000 at v2, the moon ports' 6,300,000 (doc 19 cut A.8), the \
          Freeport Registry's 50,000 (doc 20 cut SM.2), Occator's 250,000 raise (doc 20 cut \
          SM.5), the Pallas Syndicate's 50,000 (doc 20 cut SM.10), R9b's Fleet 100,000, \
          Freeport Works' 1,000,000 (doc 39 cut IN.5), Stickney Yards' 50,000 raise (IN.7's, in \

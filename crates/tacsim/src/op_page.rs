@@ -24,7 +24,7 @@
 use mush_core::{CanonicalId, CmdError, Ctx, Flags, ObjId, ObjKind, World};
 use mush_org::PrincipalId;
 
-use crate::isidis_op::{DEFENDER_ORG, ISIDIS_PLACE, IsidisOp};
+use crate::isidis_op::{ISIDIS_PLACE, IsidisOp};
 use crate::operations::{OperationOutcome, OperationPhase, OperationStatus};
 
 /// The verb.
@@ -412,28 +412,9 @@ pub fn lane_audience(w: &World) -> Vec<ObjId> {
         .collect()
 }
 
-/// The defender organization's active members, whom the campaign tells itself.
-fn defender_members(w: &World) -> Vec<ObjId> {
-    let Some((org, _)) = CanonicalId::new(DEFENDER_ORG)
-        .ok()
-        .and_then(|id| crate::polity::lane_org_account(w, &id))
-    else {
-        return Vec::new();
-    };
-    w.module_state::<mush_org::OrgStore>()
-        .map(|store| {
-            store
-                .state()
-                .members_in(org)
-                .filter(|m| m.status == mush_org::MembershipStatus::Active)
-                .map(|m| m.member)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// **The declaration's notice** (Q-50-30): to every player with a hull on the lane but the
-/// defender's members, who have the campaign's own.
+/// **The declaration's notice** (Q-50-30): to every player with a hull on the lane but those the
+/// campaign's own notice tells (doc 50b item 9: [`OperationStatus::told`], so a defender's member
+/// past the campaign's recipient cap still hears the lane's).
 pub(crate) fn tell_declared(ctx: &mut Ctx<'_>, status: &OperationStatus) {
     let w: &World = ctx.w;
     let declarer = crate::surface::retrieval::principal_name(w, &status.declarer);
@@ -453,9 +434,8 @@ pub(crate) fn tell_declared(ctx: &mut Ctx<'_>, status: &OperationStatus) {
             "{days}",
             &(close.saturating_sub(open) / crate::port::stock::IC_DAY).to_string(),
         );
-    let skip = defender_members(w);
     for who in lane_audience(w) {
-        if !skip.contains(&who) {
+        if !status.told.contains(&who) {
             crate::port_tick::notify(ctx, who, &line);
         }
     }

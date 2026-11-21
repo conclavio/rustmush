@@ -39,6 +39,10 @@ pub const OP_KEY: &str = "tacsim:isidis_op";
 pub const DECLARER_ORG: &str = "republic_customs";
 /// The defenders' backer, who takes the bond when the Republic fails (Q-50-22, Q-50-57 item 5).
 pub const DEFENDER_ORG: &str = "occator";
+/// **Meridiani Security Group**, the Concession's contracted security, defending beside Occator
+/// (Q-50-19 as amended by the owner, 2026-11-20, doc 50b item 9; lane v52). It is a defender and
+/// not a side: the Freeport's side is still Occator's, and the bond still forfeits to Occator.
+pub const DEFENDER_ALLY_ORG: &str = "meridiani";
 /// The Concession's place, for its region.
 pub const ISIDIS_PLACE: &str = "isidis_port";
 /// The bond, whole credits (provisional).
@@ -120,9 +124,12 @@ pub fn request(w: &World) -> Result<OperationRequest, String> {
         .ok_or_else(|| format!("{DECLARER_ORG} has no account"))?;
     let (defender, defender_account) = crate::polity::lane_org_account(w, &id(DEFENDER_ORG)?)
         .ok_or_else(|| format!("{DEFENDER_ORG} has no account"))?;
+    let (ally, _) = crate::polity::lane_org_account(w, &id(DEFENDER_ALLY_ORG)?)
+        .ok_or_else(|| format!("{DEFENDER_ALLY_ORG} has no account"))?;
     let scale = 10_i64.pow(u32::from(crate::port::apply::credit_scale(w)));
     let declarer = PrincipalId::Organization(declarer);
     let defender = PrincipalId::Organization(defender);
+    let ally = PrincipalId::Organization(ally);
     Ok(OperationRequest {
         declarer: declarer.clone(),
         summary: SUMMARY.to_owned(),
@@ -132,7 +139,7 @@ pub fn request(w: &World) -> Result<OperationRequest, String> {
             ("republic".to_owned(), declarer),
             ("freeport".to_owned(), defender.clone()),
         ],
-        defenders: vec![defender.clone()],
+        defenders: vec![defender.clone(), ally],
         legal_targets: LEGAL_TARGETS.iter().map(|s| (*s).to_owned()).collect(),
         bond: Some(OperationBond {
             account,

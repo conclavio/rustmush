@@ -3863,7 +3863,7 @@ fn lane_variant(version: u32, edit: impl FnOnce(&mut Value)) -> String {
 /// it is SM.12a's published v14, digest for digest; `strip_yard` is idempotent.
 #[test]
 fn sm12b_strip_yard_rebuilds_the_published_v14() {
-    assert_eq!(LANE_VERSION, 51, "lane v51 since doc 50 cut OP.7");
+    assert_eq!(LANE_VERSION, 52, "lane v52 since doc 50b item 9");
     let pack = load_pack(&lane_variant(14, |doc| {
         support::drones::strip_designs(doc);
         support::drones::strip_yard(doc);

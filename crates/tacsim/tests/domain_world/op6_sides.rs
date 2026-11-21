@@ -52,6 +52,7 @@ impl OperationFrame for FakeFrame {
             legal_targets: request.legal_targets,
             window: (0, request.window_secs),
             outcome: None::<OperationOutcome>,
+            told: Vec::new(),
         })
     }
 }

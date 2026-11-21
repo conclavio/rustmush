@@ -2030,6 +2030,24 @@ brief):
 - **Item 6, the shares counter (P3).** The enrollment's `shares_minor` folds only the Trust's
   share, never the duty.
 
+**Doc 50b item 9: Meridiani defends** (Q-50-19 as amended by the owner, 2026-11-20). **Lane v52
+(relay v43)**, on OP.7b's v51 with the lead's word.
+- **Lane v52** seeds Meridiani Security Group as an organization at Isidis (`meridiani`): capital
+  100,000 cr (provisional), polity `freeport`. Doc 11 §4.4 places it under retainer to the
+  Freeport, defending the Concession; its Republic operating licence is not an edge, so it answers
+  to the Freeport here (the smallest choice: a lane organization names one polity).
+  `strip_meridiani` heads the strip chain.
+- **The declaring arm names it a defender beside Occator** (`isidis_op::DEFENDER_ALLY_ORG`). It is a
+  defender and not a side: the Freeport's side is still Occator's, and the bond still forfeits
+  to Occator. Its members get the campaign's defender notice, and the page and the lane's notice
+  name it.
+- **The lane's notice skips only those the campaign tells.** `OperationStatus::told`, filled at
+  the composition root from `mush_campaign::notice::defenders`, is who the campaign's own notice
+  reaches within its 256-recipient cap. A defender's member past the cap, with a hull on the lane,
+  hears the lane's notice; before, every defender member was skipped.
+- **Stories:** OP.5's arm story names Meridiani among the defenders; OP.7's story has the notice
+  and the page name it, and a pilot the campaign tells hears nothing from the lane.
+
 **Owner rulings, 2026-11-20.**
 - Hold the Concession keeps advancing once each IC month the farm stands at the threshold, as
   built.

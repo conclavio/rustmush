@@ -123,6 +123,9 @@ pub struct OperationStatus {
     pub window: (i64, i64),
     /// Who won, once decided ([`OperationPhase::Settling`] or [`OperationPhase::Settled`]).
     pub outcome: Option<OperationOutcome>,
+    /// **The players the frame's own notice tells** (doc 50b item 9): the defenders' members it
+    /// reaches, within its recipient cap. The lane's notice skips these, and only these.
+    pub told: Vec<mush_core::ObjId>,
 }
 
 /// **The operation frame** (this module's head): implemented at the composition root over
