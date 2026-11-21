@@ -95,6 +95,13 @@ owner = "campaign"
 reason = "Doc 50 cut OP.6: the side rule's story seats a fake operation frame (TacSim's own OperationFrame trait) to set the operation's phase, as OP.5's story does. The real frame is OP.0's, proven over the campaign in mush-composition's op0_frame; nothing else writes the slot."
 
 [[site]]
+module = "tacsim/tests::op4_stockpile"
+accessor = "World::module_state_insert"
+slot = "OperationFrameSlot"
+owner = "campaign"
+reason = "Doc 50b item 3: the close probe's story seats a fake operation frame (TacSim's own OperationFrame trait) to set the window's close over the composed lane, as OP.5's story does. The real frame is OP.0's, proven over the campaign in mush-composition's op0_frame; nothing else writes the slot."
+
+[[site]]
 module = "tacsim/tests::op5_operation"
 accessor = "World::module_state_insert"
 slot = "OperationFrameSlot"

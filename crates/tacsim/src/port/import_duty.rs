@@ -32,6 +32,8 @@ pub struct ImportDuty {
     pub amount: Amount,
     /// The line's clause.
     pub clause: String,
+    /// Why it is levied (doc 50b item 5): the rate and the holder, as the quote shows it.
+    pub reason: String,
 }
 
 impl ImportDuty {
@@ -49,21 +51,35 @@ impl ImportDuty {
 /// **The import duty `sale` owes**, or `None` when its venue's holder levies none on its good.
 #[must_use]
 pub fn import_duty(w: &World, sale: &SaleTerms<'_>) -> Option<ImportDuty> {
-    let (def, _) = crate::port::market::port_of_venue(w, sale.market)?;
+    import_duty_at(w, sale.market, sale.commodity, sale.quantity, sale.gross)
+}
+
+/// **The import duty a sale of `quantity` of `commodity` at `market` for `gross` owes**, whoever
+/// sells (doc 50b item 5: the quote reads it before any seller is known); `None` when the
+/// venue's holder levies none on the good.
+#[must_use]
+pub fn import_duty_at(
+    w: &World,
+    market: &mush_market::MarketId,
+    commodity: &mush_core::CanonicalId,
+    quantity: u64,
+    gross: Amount,
+) -> Option<ImportDuty> {
+    let (def, _) = crate::port::market::port_of_venue(w, market)?;
     let terms = crate::polity::terms_at(w, &def.location)?;
     let row = terms.row.as_ref()?;
-    if row.import_duty_permille == 0 || !row.import_goods.contains(sale.commodity) {
+    if row.import_duty_permille == 0 || !row.import_goods.contains(commodity) {
         return None;
     }
     let reference = w
         .module_state::<crate::TacsimStore>()?
         .goods()?
-        .good(sale.commodity)?
+        .good(commodity)?
         .reference_major;
     let scale = 10_i128.pow(u32::from(crate::port::apply::credit_scale(w)));
-    let value = i128::from(reference) * i128::from(sale.quantity) * scale;
+    let value = i128::from(reference) * i128::from(quantity) * scale;
     let duty =
-        (value * i128::from(row.import_duty_permille) / 1_000).min(i128::from(sale.gross.minor()));
+        (value * i128::from(row.import_duty_permille) / 1_000).min(i128::from(gross.minor()));
     let duty = i64::try_from(duty).ok().filter(|d| *d > 0)?;
     let (_, to) = crate::polity::lane_org_account(w, &row.payee)?;
     let amount = Amount::from_minor(duty);
@@ -73,12 +89,16 @@ pub fn import_duty(w: &World, sale: &SaleTerms<'_>) -> Option<ImportDuty> {
     } else {
         format!("{whole}.{tenth}%")
     };
+    let why = crate::space::duty::reason_clause(w, &terms).unwrap_or_default();
     let clause = DUTY_CLAUSE
         .replace("{duty}", &crate::port::board::money(w, amount))
         .replace("{percent}", &percent)
-        .replace(
-            "{reason}",
-            &crate::space::duty::reason_clause(w, &terms).unwrap_or_default(),
-        );
-    Some(ImportDuty { to, amount, clause })
+        .replace("{reason}", &why);
+    let reason = format!("{percent} of the catalog value; {why}");
+    Some(ImportDuty {
+        to,
+        amount,
+        clause,
+        reason,
+    })
 }

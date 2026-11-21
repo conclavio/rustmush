@@ -253,6 +253,18 @@ pub struct PortDef {
     pub hauler: Option<Box<HaulerDef>>,
 }
 
+impl PortDef {
+    /// **Whether a house here authors an ask for `good`** (doc 50b item 1). A port that authors
+    /// none for a ship's stores (Isidis) never sells her any, so a passage away from it is flown
+    /// on what she brought.
+    #[must_use]
+    pub fn authors_ask(&self, good: &CanonicalId) -> bool {
+        self.vendors
+            .iter()
+            .any(|vendor| vendor.asks.iter().any(|ask| &ask.good == good))
+    }
+}
+
 /// The most hulls one hauling house runs (doc 48 unit EX.10).
 pub const MAX_HAULER_HULLS: usize = 8;
 /// The most goods one hauling house carries.

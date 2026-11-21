@@ -161,3 +161,60 @@ fn op6_in_the_window_a_freeport_hull_and_a_republic_hull_are_operation_foes() {
         "after the window closes nobody is"
     );
 }
+
+/// **Doc 50b: a side's loss moves the other side's clock** (Q-50-25 as corrected, Q-50-51). In
+/// the window a Republic-flagged hull's lost haul moves Hold the Concession one segment, once for
+/// its contract; a Freeport hull's finds the Review full and moves nothing; outside the window no
+/// hull flies for a side and nothing moves.
+#[test]
+fn op50b_a_sides_loss_moves_the_other_sides_clock_once() {
+    use tacsim::services::haul::loss_moves_the_other_side;
+    let frame = Arc::new(FakeFrame {
+        declared: Mutex::new(Vec::new()),
+        phase: Mutex::new(OperationPhase::Running),
+    });
+    let mut tw = declared(&frame);
+    let freeport = pool_hulls(&tw)[0];
+    let cutter = republic_hull(&mut tw);
+    let hold = |tw: &TestWorld| tacsim::concession::hold_clock(tw.world()).expect("Hold");
+    let review = |tw: &TestWorld| tacsim::concession::review_clock(tw.world()).expect("Review");
+    let before = hold(&tw).filled;
+    support::with_ctx(&mut tw, |ctx| {
+        loss_moves_the_other_side(ctx, cutter, 77, "isidis", "seized");
+    });
+    assert_eq!(
+        hold(&tw).filled,
+        before + 1,
+        "the Republic's loss moves Hold"
+    );
+    assert!(
+        hold(&tw)
+            .causes
+            .iter()
+            .any(|c| c.as_str() == format!("{}77", tacsim::services::haul::LOSS_CAUSE)),
+        "a typed cause keyed by the contract"
+    );
+    support::with_ctx(&mut tw, |ctx| {
+        loss_moves_the_other_side(ctx, cutter, 77, "isidis", "lost");
+    });
+    assert_eq!(hold(&tw).filled, before + 1, "one contract counts once");
+    let full = review(&tw).filled;
+    support::with_ctx(&mut tw, |ctx| {
+        loss_moves_the_other_side(ctx, freeport, 78, "isidis", "lost");
+    });
+    assert_eq!(review(&tw).filled, full, "a full Review moves no further");
+    assert_eq!(
+        hold(&tw).filled,
+        before + 1,
+        "a Freeport loss never moves Hold"
+    );
+    *frame.phase.lock().expect("lock") = OperationPhase::Settling;
+    support::with_ctx(&mut tw, |ctx| {
+        loss_moves_the_other_side(ctx, cutter, 79, "isidis", "seized");
+    });
+    assert_eq!(
+        hold(&tw).filled,
+        before + 1,
+        "outside the window nothing moves"
+    );
+}

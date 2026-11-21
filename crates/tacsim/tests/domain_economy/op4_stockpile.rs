@@ -9,16 +9,23 @@
 //!   level. At the threshold the close probe is met and Hold the Concession moves once that month;
 //!   the arm posts nothing more while the farm stands there.
 //! - **An untaken haul** is carried by Ceres' hauling house after seven IC days, in a real hull,
-//!   by the Kirkwood route, and delivered into the tank farm.
+//!   by the Kirkwood route, and delivered into the tank farm. Doc 50b item 1: she sails home to
+//!   Ceres on the stores she filled for the leg back, and carries a second haul.
 //! - **A house hull at the picket** pays the transit duty from the house's own account.
 //!
 //! **What is a fixture.** Propellant seeded into the tank farm's vault, a stand-in for the
 //! deliveries that would fill it; staff's `@tacsim/port haulers`, `@econ/pay` and
 //! `@faction/control` (the Republic holding the approach, as KC.1's fill makes it).
 
-use mush_core::{GOD, ObjId, World};
+use std::sync::{Arc, Mutex};
+
+use mush_core::{Ctx, GOD, ObjId, World};
 use mush_economy::{AccountId, ContractId, ContractState, EconomyStore, VaultId};
 use mush_inventory::LotId;
+use tacsim::operations::{
+    OperationFrame, OperationFrameSlot, OperationOutcome, OperationPhase, OperationRequest,
+    OperationStatus,
+};
 use tacsim::port::hauler::{HaulerHouse, HaulerRow};
 use tacsim::services::escort;
 use tacsim::services::haul::{self, HaulStage};
@@ -150,8 +157,8 @@ async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
     assert!(level < stockpile::STOCKPILE_THRESHOLD_T, "{level}");
     assert_eq!(
         tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, 1),
-        Some(false),
-        "short of its threshold, the probe is not met"
+        None,
+        "no operation has closed: the probe waits (doc 50b item 3)"
     );
     let post = first.posts[0].clone();
     let job = haul::haul_of(rig.tw.world(), post.haul).expect("the haul");
@@ -223,11 +230,6 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
     ahead(&mut rig, 600);
     let level = arm(&rig).level.expect("a reading");
     assert!(level >= stockpile::STOCKPILE_THRESHOLD_T, "{level}");
-    assert_eq!(
-        tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, 1),
-        Some(true),
-        "at its threshold, the probe is met"
-    );
     let moved = hold_clock(&rig);
     assert_eq!(
         moved.filled,
@@ -256,7 +258,8 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
 
 /// **Doc 50 cut OP.4: an untaken haul is carried by the hauling house** (Q-50-24): seven IC days
 /// after the arm posts it, Ceres' house takes it in VCC-01, flies it by Stickney to Isidis and
-/// delivers it into the tank farm; the contract settles.
+/// delivers it into the tank farm; the contract settles. Then (doc 50b item 1) she sails home by
+/// Stickney to Ceres and takes another of the arm's hauls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
     let mut rig = opened();
@@ -324,6 +327,56 @@ async fn op4_an_untaken_haul_is_carried_by_the_hauling_house() {
         ),
         "delivered, not lapsed: {:?}",
         contract_state(&rig, job.contract)
+    );
+
+    // Doc 50b item 1: Isidis sells her no stores, and nothing is bid there that she carries. She
+    // filled for the leg home before she left Stickney, so she sails back by Stickney to Ceres,
+    // where the trip ends, and carries another of the arm's hauls.
+    let delivered_at = whereabouts.len();
+    let mut second = None;
+    for _ in 0..(40 * 12) {
+        ahead(&mut rig, 2 * 3_600);
+        let here = match tacsim::port::ship::berth_of(rig.tw.world(), hull) {
+            tacsim::port::ship::Berth::Docked { def, .. } => format!("docked at {}", def.venue),
+            tacsim::port::ship::Berth::UnderWay => "under way".to_owned(),
+            tacsim::port::ship::Berth::Elsewhere => "elsewhere".to_owned(),
+        };
+        if whereabouts.last().is_none_or(|last| !last.ends_with(&here)) {
+            whereabouts.push(format!(
+                "IC day {}: {here}",
+                ic_now(&rig.tw).div_euclid(DAY)
+            ));
+        }
+        if let Some(next) = haul::hauls(rig.tw.world()).into_iter().find(|j| {
+            stockpile::is_arm_haul(rig.tw.world(), j.contract)
+                && j.contract != job.contract
+                && j.hull.map(|h| h.0) == Some(hull.0)
+        }) {
+            second = Some(next);
+            break;
+        }
+    }
+    let home = &whereabouts[delivered_at..];
+    let second = second.unwrap_or_else(|| {
+        panic!(
+            "she never carried a second haul: {whereabouts:?}
+{:?}
+{}",
+            vcc01(&rig),
+            plan_log(&rig, hull)
+        )
+    });
+    assert!(
+        home.iter().any(|w| w.ends_with("docked at stickney"))
+            && home.iter().any(|w| w.ends_with("docked at ceres")),
+        "home by Stickney to Ceres: {whereabouts:?}"
+    );
+    let row = vcc01(&rig);
+    assert!(row.trips >= 1, "the first trip ended: {row:?}");
+    assert_eq!(
+        row.trip.as_ref().and_then(|t| t.haul),
+        Some(second.contract),
+        "the second haul is her trip in hand: {row:?}"
     );
 }
 
@@ -416,5 +469,131 @@ async fn op4_a_house_hull_pays_the_kirkwood_duty_from_the_house() {
         balance(rig.tw.world(), purse),
         purse_at,
         "not from her helm's purse"
+    );
+}
+
+// ---- doc 50b item 3: the close probe reads the farm at the close ------------------------
+
+/// The operation number [`ClosingFrame`] hands out.
+const OP: u64 = 11;
+
+/// **A stand-in operation frame** whose window closes at the instant the story sets: running
+/// before it, settling after.
+#[derive(Default)]
+struct ClosingFrame {
+    declared: Mutex<Vec<OperationRequest>>,
+    close: Mutex<i64>,
+}
+
+impl OperationFrame for ClosingFrame {
+    fn declare(&self, _ctx: &mut Ctx<'_>, request: &OperationRequest) -> Result<u64, String> {
+        self.declared
+            .lock()
+            .map_err(|_| "poisoned".to_owned())?
+            .push(request.clone());
+        Ok(OP)
+    }
+
+    fn status(&self, w: &World, operation: u64) -> Option<OperationStatus> {
+        if operation != OP {
+            return None;
+        }
+        let request = self.declared.lock().ok()?.first()?.clone();
+        let close = *self.close.lock().ok()?;
+        Some(OperationStatus {
+            phase: if w.world_ic_now().at < close {
+                OperationPhase::Running
+            } else {
+                OperationPhase::Settling
+            },
+            declarer: request.declarer,
+            sides: request.sides,
+            defenders: request.defenders,
+            legal_targets: request.legal_targets,
+            window: (0, close),
+            outcome: None::<OperationOutcome>,
+        })
+    }
+}
+
+/// **Doc 50b item 3: the close probe reads the tank farm at the window's close** (Q-50-21 as
+/// corrected: "read once, at the window's close"). The Republic declares; before the close the
+/// probe waits. Propellant reaches the farm, enough for its threshold, after the port tick's
+/// last reading before the close: the probe still waits, where the cached reading would have
+/// answered "not met". On the first fire after the close the farm is read once for the
+/// operation, and the probe is met.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op4_the_close_probe_reads_the_farm_at_the_close() {
+    let mut rig = stocked();
+    let frame = Arc::new(ClosingFrame::default());
+    *frame.close.lock().expect("lock") = i64::MAX;
+    let seated: Arc<dyn OperationFrame> = frame.clone();
+    rig.tw
+        .world_mut()
+        .module_state_insert(OperationFrameSlot::new(seated));
+    let review = tacsim::concession::review_clock(rig.tw.world()).expect("the Review");
+    let left = review.segments - review.filled;
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@clock/advance {}={left}", review.id.0),
+    );
+    for _ in 0..6 {
+        fires(&mut rig, 1);
+        if tacsim::isidis_op::record(rig.tw.world()).and_then(|r| r.operation) == Some(OP) {
+            break;
+        }
+    }
+    assert_eq!(
+        tacsim::isidis_op::record(rig.tw.world()).and_then(|r| r.operation),
+        Some(OP),
+        "the operation is declared"
+    );
+    let close = ic_now(&rig.tw) + DAY / 2;
+    *frame.close.lock().expect("lock") = close;
+    let probe =
+        |rig: &Rig| tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, OP);
+    fires(&mut rig, 2);
+    assert!(
+        arm(&rig)
+            .level
+            .is_some_and(|l| l < stockpile::STOCKPILE_THRESHOLD_T),
+        "{:?}",
+        arm(&rig)
+    );
+    assert_eq!(probe(&rig), None, "before the close the probe waits");
+
+    // Propellant lands in the farm after the last reading before the close.
+    let vault = farm_vault(&rig);
+    let level = hold_pool(&mut rig.tw, vault, stockpile::STOCKPILE_GOOD);
+    seed_pool(
+        &mut rig,
+        vault,
+        stockpile::STOCKPILE_GOOD,
+        stockpile::STOCKPILE_THRESHOLD_T - level + 100,
+        LotId(9_963),
+    );
+    assert_eq!(
+        probe(&rig),
+        None,
+        "no reading at the close yet: the probe waits, never the cached reading"
+    );
+
+    // The close passes; the first fire reads the farm once, for this operation.
+    let _ = to_ic(&mut rig, close + 60);
+    fires(&mut rig, 3);
+    let read = arm(&rig).close_read.expect("the farm read at the close");
+    assert_eq!(read.operation, OP);
+    assert!(read.read_ic >= close, "{read:?} against {close}");
+    assert!(read.level >= stockpile::STOCKPILE_THRESHOLD_T, "{read:?}");
+    assert_eq!(
+        probe(&rig),
+        Some(true),
+        "at its threshold at the close: met"
+    );
+    assert_eq!(
+        tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, OP + 1),
+        None,
+        "another operation's close is not this one's"
     );
 }

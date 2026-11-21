@@ -15,6 +15,8 @@
 //!   inspection; a hull whose pilot is away is assessed the same way with no submission
 //!   ([`assess_absent`]).
 
+use std::collections::BTreeMap;
+
 use mush_core::{CanonicalId, Ctx, ObjId, World};
 use mush_economy::{AccountId, Amount};
 use mush_org::{OrgId, PrincipalId};
@@ -178,17 +180,7 @@ pub fn estimate_line(
 /// terms: ` (Kirkwood duty ~400 cr)`. Empty otherwise.
 #[must_use]
 pub fn haul_clause(w: &World, origin: &str, destination: &str, value_major: u64) -> String {
-    let crosses = crate::port::voyage::lane_ports(w)
-        .into_iter()
-        .any(|(def, _)| {
-            def.venue.as_str() == origin
-                && def
-                    .routes
-                    .iter()
-                    .filter(|(venue, _)| venue.as_str() == destination)
-                    .flat_map(|(_, ids)| ids.iter())
-                    .any(|id| route_crosses_picket(w, id))
-        });
+    let crosses = haul_crosses_picket(w, origin, destination);
     let duty = crosses
         .then(|| live_terms(w).and_then(|t| t.row))
         .flatten()
@@ -198,6 +190,46 @@ pub fn haul_clause(w: &World, origin: &str, destination: &str, value_major: u64)
     };
     let unit = 10_i64.pow(u32::from(crate::port::apply::credit_scale(w)));
     format!(" (Kirkwood duty ~{} cr)", (minor + unit - 1) / unit)
+}
+
+/// **Whether a haul from `origin` to `destination` crosses the picket** (Q-50-8; doc 50b): the
+/// fewest hops of listed lane routes that join the two venues, as a hauler flies them port to
+/// port (Ceres to Isidis by Stickney), any hop of which may cross. A venue pair no chain of
+/// listed routes joins crosses nothing.
+fn haul_crosses_picket(w: &World, origin: &str, destination: &str) -> bool {
+    let ports = crate::port::voyage::lane_ports(w);
+    let routes_from = |venue: &str| {
+        ports
+            .iter()
+            .find(|(def, _)| def.venue.as_str() == venue)
+            .map(|(def, _)| &def.routes)
+    };
+    // Breadth first over venues: each reached venue keeps whether its path so far crossed.
+    let mut reached: BTreeMap<String, bool> = BTreeMap::new();
+    reached.insert(origin.to_owned(), false);
+    let mut frontier = vec![origin.to_owned()];
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for venue in &frontier {
+            let crossed = reached.get(venue).copied().unwrap_or(false);
+            let Some(routes) = routes_from(venue) else {
+                continue;
+            };
+            for (to, ids) in routes {
+                if reached.contains_key(to.as_str()) {
+                    continue;
+                }
+                let hop = ids.iter().any(|id| route_crosses_picket(w, id));
+                reached.insert(to.to_string(), crossed || hop);
+                next.push(to.to_string());
+            }
+        }
+        if let Some(&crossed) = reached.get(destination) {
+            return crossed;
+        }
+        frontier = next;
+    }
+    false
 }
 
 /// How a duty was met.
@@ -268,7 +300,40 @@ pub fn levy_once(
     {
         book.duty_crossings.insert(key);
     }
+    if let (Some((_, cursor)), DutyOutcome::Owed(debt)) = (crossing, levied.1) {
+        record_owed_duty(ctx, hull, cursor, &levied.0, debt);
+    }
     Some(levied)
+}
+
+/// **An owed duty on the hull's record** (doc 50b; Q-50-54): an offense row of the payee's polity
+/// against whoever answers for the hull, carrying the duty's debt, so once the debt is past its
+/// grace the departure hold and the trade restriction read it as they read a fine.
+fn record_owed_duty(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, quote: &DutyQuote, debt: u64) {
+    let Some(polity) = crate::polity::lane_org_account(ctx.w, &quote.payee)
+        .and_then(|(org, _)| crate::polity::polity_of_org(ctx.w, org))
+    else {
+        tracing::warn!(payee = %quote.payee, "tacsim: an owed duty's payee answers to no polity; no record is kept");
+        return;
+    };
+    let Some(offender) = crate::offense::answerer_for_hull(ctx.w, hull) else {
+        return;
+    };
+    let at_ic = ctx.w.world_ic_now().at;
+    let offense = crate::offense::ProvenOffense {
+        kind: crate::offense::OffenseKind::UnpaidDuty,
+        evidence: crate::offense::Evidence::Duty {
+            hull,
+            cursor,
+            at_ic,
+        },
+        proof: crate::offense::Proof::Audit,
+        proven_ic: at_ic,
+        debt: Some(debt),
+        payout: None,
+    };
+    let key = crate::offense::OffenseKey { offender, polity };
+    let _ = crate::offense::record_offense(ctx, key, offense, |_, row| row.debt.is_some());
 }
 
 fn open_and_pay(

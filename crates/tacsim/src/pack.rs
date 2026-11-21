@@ -1841,6 +1841,18 @@ impl RulesPack {
             detail,
         })?;
         // Doc 50 cut KC.0 (Q-50-3): the regions block's places and holders are this pack's.
+        // Doc 50b: one block a pack. Every read takes the first it finds, so a second would be
+        // silently ignored.
+        let blocks: Vec<&CanonicalId> = entries
+            .iter()
+            .filter(|(_, entry)| matches!(entry, PackEntry::Regions(_)))
+            .map(|(id, _)| id)
+            .collect();
+        if let [_, second, ..] = blocks.as_slice() {
+            return Err(PackError::DefinitionRefused {
+                detail: format!("{second}: a pack carries one regions block"),
+            });
+        }
         for (id, entry) in &entries {
             if let PackEntry::Regions(def) = entry {
                 crate::polity::check_regions(&entries, def).map_err(|detail| {
