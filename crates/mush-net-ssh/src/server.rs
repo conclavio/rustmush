@@ -149,6 +149,11 @@ const OVER_CAP_NOTICE: &str = "Too many connections from your address; try again
 /// (doc 29a §7, round 2).
 const PENDING_STRIKES: u8 = 3;
 
+/// Maximum cumulative raw shell bytes accepted before a connection attaches to
+/// an authenticated character (`P2-CLIENT-3`). Bounds pre-auth CPU / bandwidth
+/// burn from unauthenticated `ssh play@host` streams that never send `\r`.
+const MAX_PREAUTH_INPUT_BYTES: usize = 64 * 1024;
+
 /// Cap on one output-pump write to the transport (design 02 §8.4: "try 5 s
 /// then disconnect"). A client that stops reading (terminal `^S`, dead
 /// peer behind a live TCP window) stalls `handle.data` on SSH window
@@ -623,6 +628,7 @@ impl Ingress {
             auth_deadline,
             flood: FloodBucket::new(PREAUTH_FLOOD_RATE, PREAUTH_FLOOD_BURST, Instant::now()),
             pending_strikes: 0,
+            preauth_bytes: 0,
             closing: false,
             attested: None,
         }
@@ -922,6 +928,9 @@ pub(crate) struct ConnHandler {
     /// Consecutive line-mode inputs that arrived while the channel's window
     /// was exhausted (see [`PENDING_STRIKES`], HIGH-7).
     pending_strikes: u8,
+    /// Cumulative raw shell input bytes received before entering a character
+    /// (see [`MAX_PREAUTH_INPUT_BYTES`], `P2-CLIENT-3`).
+    preauth_bytes: usize,
     /// Set once [`close_polite`](Self::close_polite) initiates disconnect so
     /// remaining actions in the same packet and any subsequent channel data are
     /// ignored immediately (HIGH-8).
@@ -2424,6 +2433,12 @@ impl Handler for ConnHandler {
             return Ok(());
         }
         self.pending_strikes = 0;
+        if !self.connected.load(Ordering::SeqCst) {
+            self.preauth_bytes = self.preauth_bytes.saturating_add(data.len());
+            if self.preauth_bytes > MAX_PREAUTH_INPUT_BYTES {
+                return Err(russh::Error::Disconnect);
+            }
+        }
         let (echo, actions) = {
             let mut sh = self.lock();
             let mut out = Vec::new();
@@ -2645,7 +2660,9 @@ async fn flush_pump_side_effects(
     queries: Vec<(String, serde_json::Value)>,
 ) {
     for (id, request) in invokes {
-        hooks.invoke(conn_id, id, request).await;
+        if crate::reject_forbidden_invoke_format_chars(&request).is_ok() {
+            hooks.invoke(conn_id, id, request).await;
+        }
     }
     for line in lines {
         hooks.control_line(conn_id, line).await;
@@ -2780,7 +2797,9 @@ impl GameCommands {
                     }
                 }
                 GameAction::Invoke { id, request } => {
-                    self.hooks.invoke(self.conn_id, id, request).await;
+                    if crate::reject_forbidden_invoke_format_chars(&request).is_ok() {
+                        self.hooks.invoke(self.conn_id, id, request).await;
+                    }
                 }
                 GameAction::Query { name, args } => {
                     submit_query(

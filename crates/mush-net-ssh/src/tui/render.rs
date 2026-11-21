@@ -210,11 +210,14 @@ pub fn hhmm(unix: i64) -> String {
     format!("{:02}:{:02}", s / 3600, (s % 3600) / 60)
 }
 
-/// `text` with control characters removed. `pub(crate)` since 16b cut B.3,
-/// so the cockpit's notices ring cleans a reply exactly as every renderer here
-/// cleans server text.
+/// `text` with control characters and Unicode BiDi / line-separator controls
+/// removed (`P2-CLIENT-6`). `pub(crate)` since 16b cut B.3, so the cockpit's
+/// notices ring cleans a reply exactly as every renderer here cleans server
+/// text.
 pub(crate) fn clean(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).collect()
+    text.chars()
+        .filter(|&c| !crate::is_stripped_terminal_char(c))
+        .collect()
 }
 
 /// A dim span with owned text (control chars stripped).
@@ -3045,7 +3048,7 @@ pub(super) fn campaign_legend(data: &Value) -> Vec<(char, String)> {
 pub(super) fn one_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     match (chars.next(), chars.next()) {
-        (Some(one), None) if !one.is_control() => Some(one),
+        (Some(one), None) if !crate::is_stripped_terminal_char(one) => Some(one),
         _ => None,
     }
 }

@@ -41,9 +41,7 @@ fn counter(value: &str) -> bool {
 fn label(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.chars().count() <= max
-        && !value
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        && !value.chars().any(crate::is_stripped_terminal_char)
 }
 
 pub(super) fn decode(value: &Value) -> Option<Detachment> {
@@ -235,5 +233,14 @@ mod tests {
         frame = fixture();
         frame["slots"][0]["controller"] = serde_json::json!("unknown");
         assert!(decode(&frame).is_none());
+
+        // BiDi override/isolate/mark and Unicode line/paragraph separators fail closed.
+        for bad in [
+            "\u{202E}", "\u{2066}", "\u{200E}", "\u{061C}", "\u{2028}", "\u{2029}",
+        ] {
+            let mut f = fixture();
+            f["slots"][0]["pilot"] = serde_json::json!(format!("Aster{bad}Spoof"));
+            assert!(decode(&f).is_none(), "expected rejection for {bad:?}");
+        }
     }
 }

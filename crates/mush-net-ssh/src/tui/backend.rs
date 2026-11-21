@@ -40,9 +40,11 @@ const MAX_WIDTH: u16 = crate::caps::MAX_WIDTH;
 /// Upper bound on reported terminal rows; shared with [`crate::caps::MAX_HEIGHT`].
 const MAX_HEIGHT: u16 = crate::caps::MAX_HEIGHT;
 
-/// Strip ANSI / CSI / OSC / DCS / APC (Kitty Graphics) / PM / SOS escape sequences
-/// and all remaining C0 (`0x00..=0x1F`), DEL (`0x7F`), and C1 (`0x80..=0x9F`) control
-/// characters from untrusted server or player strings (`SSH-C-03`).
+/// Strip ANSI / CSI / OSC / DCS / APC (Kitty Graphics) / PM / SOS escape sequences,
+/// all remaining C0 (`0x00..=0x1F`), DEL (`0x7F`), and C1 (`0x80..=0x9F`) control
+/// characters, and Unicode BiDi / line-separator controls (`U+061C`,
+/// `U+200E..=U+200F`, `U+2028..=U+2029`, `U+202A..=U+202E`, `U+2066..=U+2069`)
+/// from untrusted server or player strings (`SSH-C-03` / `P2-CLIENT-6`).
 #[must_use]
 pub(crate) fn sanitize_control_sequences(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -111,7 +113,7 @@ pub(crate) fn sanitize_control_sequences(s: &str) -> String {
                     }
                 }
             }
-            ch if ch.is_control() => {}
+            ch if crate::is_stripped_terminal_char(ch) => {}
             ch => out.push(ch),
         }
     }
@@ -318,12 +320,13 @@ impl Backend for SshBackend {
                 expected = None;
                 continue;
             }
-            // Defense-in-depth (`SSH-C-03`): never allow raw C0/C1/ESC/OSC/Kitty
-            // control bytes inside a ratatui cell glyph to reach the SSH stream.
+            // Defense-in-depth (`SSH-C-03` / `P2-CLIENT-6`): never allow raw
+            // C0/C1/ESC/OSC/Kitty control bytes or Unicode BiDi / line-separator
+            // controls inside a ratatui cell glyph to reach the SSH stream.
             let has_control = if sym.is_ascii() {
                 sym.bytes().any(|b| b < 0x20 || b == 0x7f)
             } else {
-                sym.chars().any(char::is_control)
+                sym.chars().any(crate::is_stripped_terminal_char)
             };
             if has_control {
                 let clean = sanitize_control_sequences(sym);
@@ -523,5 +526,31 @@ mod tests {
         assert!(!out.contains("_Ga=t"));
         assert!(!out.contains("[31m"));
         assert!(!out.contains('\u{009b}'));
+    }
+
+    #[test]
+    fn draw_and_sanitize_strip_unicode_bidi_and_line_separators() {
+        let dirty = "price\u{061C}\u{200E}\u{200F}\u{2028}\u{2029}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}100";
+        assert_eq!(sanitize_control_sequences(dirty), "price100");
+
+        let mut be = SshBackend::new(80, 24, ColorDepth::None);
+        let rlo = cell("\u{202E}A");
+        let lri = cell("\u{2066}\u{2069}");
+        let sep = cell("B\u{2028}\u{2029}");
+        let alm = cell("\u{061C}\u{200E}\u{200F}C");
+        let cells = [(0, 0, &rlo), (1, 0, &lri), (2, 0, &sep), (3, 0, &alm)];
+        be.draw(cells.into_iter()).unwrap();
+        let out = String::from_utf8(be.take_output()).unwrap();
+        assert_eq!(out, "\x1b[1;1HA BC");
+        for forbidden in [
+            '\u{061C}', '\u{200E}', '\u{200F}', '\u{2028}', '\u{2029}', '\u{202A}', '\u{202B}',
+            '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            assert!(
+                !out.contains(forbidden),
+                "leaked U+{:04X}",
+                forbidden as u32
+            );
+        }
     }
 }

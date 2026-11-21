@@ -219,6 +219,79 @@ pub const MAX_TUI_BURST_OPS: usize = 16;
 /// history-recall bursts (`Up`+`Enter`) cannot amplify into megabytes.
 pub const MAX_TUI_BURST_SUBMIT_BYTES: usize = crate::editor::MAX_FEED_OUT_BYTES;
 
+/// Maximum decoded keys processed in a single [`TuiApp::feed_input`] call
+/// (`P2-CLIENT-3`). Admits a full [`crate::line::MAX_LINE_CHARS`] paste plus
+/// framing keys while preventing oversized packet floods from stalling the
+/// connection lock.
+pub const MAX_TUI_BURST_KEYS: usize = crate::line::MAX_LINE_CHARS + 128;
+
+/// Maximum non-typing / navigation / control keys processed in a single
+/// [`TuiApp::feed_input`] call (`P2-CLIENT-3`). Prevents 32 KiB bursts of
+/// `Ctrl-N`, `Tab`, `Backspace`, arrows, or nav hotkeys from spinning under
+/// the connection mutex.
+const MAX_TUI_BURST_CONTROL_KEYS: usize = 256;
+
+/// Maximum mid-burst palette refilter or tab-completion runs allowed before
+/// deferring to the single end-of-burst flush (`P2-CLIENT-3`).
+const MAX_TUI_BURST_EXPENSIVE_UI_OPS: u8 = 4;
+
+/// Maximum cumulative UTF-8 bytes of unedited history materialized into the
+/// edit buffer within a single [`TuiApp::feed_input`] call (`P2-CLIENT-3`).
+const MAX_TUI_BURST_HISTORY_MATERIALIZE_BYTES: usize = 128 * 1024;
+
+/// Per-burst work budget shared across a single [`TuiApp::feed_input`] call
+/// (`P2-CLIENT-3`): accounts for `/`-prefixed local command submissions,
+/// debounces palette refiltering and tab completion, and bounds history
+/// materializations.
+#[derive(Default)]
+struct BurstBudget {
+    defer_ui: bool,
+    local_ops: usize,
+    local_bytes: usize,
+    expensive_ui_ops: u8,
+    history_materialized_bytes: usize,
+    palette_dirty: bool,
+    pending_complete: bool,
+}
+
+impl BurstBudget {
+    fn can_submit(&self, r: &InputResult, len: usize) -> bool {
+        r.op_count().saturating_add(self.local_ops) < MAX_TUI_BURST_OPS
+            && r.submit_bytes()
+                .saturating_add(self.local_bytes)
+                .saturating_add(len)
+                <= MAX_TUI_BURST_SUBMIT_BYTES
+    }
+
+    fn record_local_submit(&mut self, len: usize) {
+        self.local_ops = self.local_ops.saturating_add(1);
+        self.local_bytes = self.local_bytes.saturating_add(len);
+    }
+
+    fn take_expensive_ui_slot(&mut self) -> bool {
+        if self.expensive_ui_ops < MAX_TUI_BURST_EXPENSIVE_UI_OPS {
+            self.expensive_ui_ops += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn allow_history_materialize(&mut self, line: &LineBuffer) -> bool {
+        if !line.is_history_unedited() {
+            return true;
+        }
+        let next = self
+            .history_materialized_bytes
+            .saturating_add(line.utf8_bytes());
+        if next > MAX_TUI_BURST_HISTORY_MATERIALIZE_BYTES {
+            return false;
+        }
+        self.history_materialized_bytes = next;
+        true
+    }
+}
+
 /// What a decoded input burst asks the transport to do. Every burst that
 /// changed visible state also asks for a repaint.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -591,6 +664,12 @@ pub struct TuiApp {
     /// spatial avatar state, BFS doorway sync, `port.trade` 1-click buy, and
     /// Bridge Helm flight visor handoff.
     port_walk: PortWalkState,
+    /// Instrumentation counter for palette refilter regression tests.
+    #[cfg(test)]
+    palette_refilters: usize,
+    /// Instrumentation counter for tab-completion regression tests.
+    #[cfg(test)]
+    complete_runs: usize,
 }
 
 fn system_clock() -> i64 {
@@ -965,6 +1044,10 @@ impl TuiApp {
             pixel_moved: false,
             sounds: super::sound::Sounds::new(),
             port_walk: PortWalkState::new(),
+            #[cfg(test)]
+            palette_refilters: 0,
+            #[cfg(test)]
+            complete_runs: 0,
         })
     }
 
@@ -3116,17 +3199,38 @@ impl TuiApp {
 
     // ---- keys -------------------------------------------------------------
 
-    /// Decode a burst of raw input bytes and act on every key.
+    /// Decode a burst of raw input bytes and act on every key, enforcing
+    /// per-burst key caps, debounced palette/completion runs, and local-command
+    /// submission budgets (`P2-CLIENT-3`).
     pub fn feed_input(&mut self, bytes: &[u8]) -> InputResult {
         let mut result = InputResult::default();
         let mut moved = false;
-        for key in self.parser.feed(bytes) {
-            self.handle_key(key, &mut result);
+        let mut budget = BurstBudget {
+            defer_ui: true,
+            ..BurstBudget::default()
+        };
+        let mut control_keys = 0usize;
+        for key in self.parser.feed(bytes).into_iter().take(MAX_TUI_BURST_KEYS) {
+            let is_plain_input_char = matches!(key, Key::Char(_))
+                && self.mode == Mode::Input
+                && !self.workshop.open
+                && !self.market.form_open()
+                && !(self.active == ScreenId(1) && self.port_walk.drawer_open())
+                && !(self.answering.is_none() && !self.requests.is_empty())
+                && !self.help;
+            if !is_plain_input_char {
+                if control_keys >= MAX_TUI_BURST_CONTROL_KEYS {
+                    break;
+                }
+                control_keys += 1;
+            }
+            self.handle_key_with_budget(key, &mut result, &mut budget);
             // Doc 21 cut G.12b: a key that showed or hid screen 0's picture
             // owes a repaint even when a later key in the burst (a probe
             // reply's second marker) asks for none.
             moved |= std::mem::take(&mut self.pixel_moved);
         }
+        self.flush_burst_ui(&mut budget, true);
         result.redraw |= moved;
         result
     }
@@ -3137,9 +3241,15 @@ impl TuiApp {
     /// stop order goes out with the key's; a chat line opened over it stops
     /// a turn first.
     pub fn handle_key(&mut self, key: Key, r: &mut InputResult) {
+        let mut budget = BurstBudget::default();
+        self.handle_key_with_budget(key, r, &mut budget);
+        self.flush_burst_ui(&mut budget, true);
+    }
+
+    fn handle_key_with_budget(&mut self, key: Key, r: &mut InputResult, budget: &mut BurstBudget) {
         let flying = self.mode == Mode::Nav;
         let asked = r.queries.len();
-        self.handle_key_inner(key, r);
+        self.handle_key_inner(key, r, budget);
         // The market's page asks a key raised (entering the screen, `r`, a
         // page key): out until their keyframes answer.
         let now = self.now();
@@ -3159,7 +3269,24 @@ impl TuiApp {
         r.extend_submits(self.pixel.take_orders());
     }
 
-    fn handle_key_inner(&mut self, key: Key, r: &mut InputResult) {
+    fn flush_burst_ui(&mut self, budget: &mut BurstBudget, end_of_burst: bool) {
+        if budget.pending_complete {
+            budget.pending_complete = false;
+            if end_of_burst || !budget.defer_ui || budget.take_expensive_ui_slot() {
+                self.complete();
+            }
+        }
+        if budget.palette_dirty {
+            budget.palette_dirty = false;
+            if self.palette.is_some()
+                && (end_of_burst || !budget.defer_ui || budget.take_expensive_ui_slot())
+            {
+                self.refilter_palette();
+            }
+        }
+    }
+
+    fn handle_key_inner(&mut self, key: Key, r: &mut InputResult, budget: &mut BurstBudget) {
         r.redraw = true;
         // Pixel cockpit spike (2026-10-21): the probe's replies are not keys
         // a person pressed; `^G` opens or closes another screen's picture;
@@ -3259,7 +3386,7 @@ impl TuiApp {
                 return;
             }
             _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
-                if self.pixel_key(key, r) {
+                if self.pixel_key(key, r, budget) {
                     return;
                 }
             }
@@ -3335,7 +3462,7 @@ impl TuiApp {
                 return;
             }
             Key::Ctrl('k') => {
-                self.toggle_palette();
+                self.toggle_palette(budget);
                 return;
             }
             Key::Ctrl('p') => {
@@ -3392,8 +3519,8 @@ impl TuiApp {
             return;
         }
         match self.mode {
-            Mode::Nav => self.nav_key(key, r),
-            Mode::Input => self.input_key(key, r),
+            Mode::Nav => self.nav_key(key, r, budget),
+            Mode::Input => self.input_key(key, r, budget),
         }
     }
 
@@ -3413,7 +3540,7 @@ impl TuiApp {
     /// passes the global keys back (answered `false`, and the app acts on
     /// them as on every screen), and `F1` … `F6` open the line with an
     /// `ORDER` ready, which Esc drops. Whether the key was spent here.
-    fn pixel_key(&mut self, key: Key, r: &mut InputResult) -> bool {
+    fn pixel_key(&mut self, key: Key, r: &mut InputResult, budget: &mut BurstBudget) -> bool {
         if self.mode == Mode::Input {
             match key {
                 Key::Repeat(arrow) => {
@@ -3423,22 +3550,23 @@ impl TuiApp {
                         Arrow::Left => Key::Left,
                         Arrow::Right => Key::Right,
                     };
-                    self.input_key(key, r);
+                    self.input_key(key, r, budget);
                 }
                 // A held letter's repeats type it again (doc 21 cut G.12,
                 // `W-G12-1`); its release is nothing.
-                Key::CharRepeat(c) => self.input_key(Key::Char(c), r),
+                Key::CharRepeat(c) => self.input_key(Key::Char(c), r, budget),
                 Key::Release(_) | Key::CharRelease(_) | Key::Alt(_) => r.redraw = false,
                 Key::Esc if self.order_prefill => self.leave_input(false),
                 Key::Enter => {
-                    self.input_key(key, r);
+                    self.input_key(key, r, budget);
                     if self.mode == Mode::Input {
                         self.leave_input(false);
                     }
                 }
-                _ => self.input_key(key, r),
+                _ => self.input_key(key, r, budget),
             }
             self.palette = None;
+            budget.palette_dirty = false;
             return true;
         }
         if self.pixel.kind() == PictureKind::StationWalk && self.port_walk.drawer_open() {
@@ -3672,7 +3800,7 @@ impl TuiApp {
         self.workshop.draw(frame, area, self.caps.utf8, flight);
     }
 
-    fn nav_key(&mut self, key: Key, r: &mut InputResult) {
+    fn nav_key(&mut self, key: Key, r: &mut InputResult, budget: &mut BurstBudget) {
         match key {
             Key::Char(c @ '0'..='9') => self.switch_screen(c as u8 - b'0', r),
             Key::Enter if self.focus_the_picture_row() => {}
@@ -3680,9 +3808,12 @@ impl TuiApp {
             Key::Char(c @ ('"' | ':' | ';' | '\\')) => self.enter_input(Some(c.to_string())),
             Key::Char('/') => {
                 self.enter_input(Some("/".to_string()));
-                self.open_palette();
+                self.open_palette(budget);
             }
-            Key::Esc => self.palette = None,
+            Key::Esc => {
+                self.palette = None;
+                budget.palette_dirty = false;
+            }
             Key::Tab => self.move_focus(1),
             Key::BackTab => self.move_focus(-1),
             Key::Up => self.scroll_focused(-1, r),
@@ -4046,7 +4177,13 @@ impl TuiApp {
         }
     }
 
-    fn input_key(&mut self, key: Key, r: &mut InputResult) {
+    fn input_key(&mut self, key: Key, r: &mut InputResult, budget: &mut BurstBudget) {
+        if key != Key::Tab && budget.pending_complete {
+            budget.pending_complete = false;
+            if !budget.defer_ui || budget.take_expensive_ui_slot() {
+                self.complete();
+            }
+        }
         if let Key::Alt(c) = key {
             match c {
                 '0'..='9' => self.switch_screen(c as u8 - b'0', r),
@@ -4056,6 +4193,12 @@ impl TuiApp {
             return;
         }
         if self.palette.is_some() {
+            if matches!(key, Key::Up | Key::Down | Key::Tab | Key::Enter) && budget.palette_dirty {
+                budget.palette_dirty = false;
+                if !budget.defer_ui || budget.take_expensive_ui_slot() {
+                    self.refilter_palette();
+                }
+            }
             match key {
                 Key::Up => {
                     if let Some(p) = &mut self.palette {
@@ -4071,18 +4214,21 @@ impl TuiApp {
                 }
                 Key::Tab => {
                     self.pick_palette();
+                    budget.palette_dirty = false;
                     return;
                 }
                 Key::Enter => {
                     // A pick that changes nothing (the line already is the
                     // entry, or nothing matched) falls through to submit, so
                     // `/clear` typed in full runs on one Enter.
+                    budget.palette_dirty = false;
                     if self.pick_palette() {
                         return;
                     }
                 }
                 Key::Esc => {
                     self.palette = None;
+                    budget.palette_dirty = false;
                     return;
                 }
                 _ => {}
@@ -4098,45 +4244,63 @@ impl TuiApp {
                     return;
                 }
                 // Pre-check the per-packet submission cap BEFORE draining or
-                // allocating a potentially 16 KiB `String` (EXT-P1-5) so
-                // repeated `Up`+`Enter` bursts cannot allocate unbounded owned
-                // lines before dispatch.
-                let is_local = self.line.chars().first() == Some(&'/');
-                if self.answering.is_none()
-                    && !is_local
-                    && !r.can_push_submit(self.line.utf8_bytes())
-                {
+                // allocating a potentially 16 KiB `String` (EXT-P1-5 /
+                // P2-CLIENT-3) — covering BOTH game lines and `/`-prefixed
+                // local commands so repeated `Up`+`Enter` bursts cannot
+                // allocate unbounded owned lines or spam local scrollback.
+                let is_local = self.line.first_char() == Some('/');
+                let line_bytes = self.line.utf8_bytes();
+                if self.answering.is_none() {
+                    if !budget.can_submit(r, line_bytes) {
+                        self.line.clear();
+                        self.scroll_off = 0;
+                        return;
+                    }
+                    if is_local {
+                        budget.record_local_submit(line_bytes);
+                    }
+                } else if !r.can_push_op() || line_bytes > MAX_TUI_BURST_SUBMIT_BYTES {
                     self.line.clear();
                     self.scroll_off = 0;
                     return;
                 }
                 let line = self.line.submit(self.input_mode == InputMode::Normal);
-                self.submit_line(line, r);
+                self.submit_line_with_budget(line, r, budget);
             }
             Key::Esc => {
                 // The overlay's own printed contract: "Esc cancels (the game
                 // decides for you)".
                 self.cancel_answer(r);
                 self.leave_input(true);
+                budget.palette_dirty = false;
             }
             Key::Char('/') if self.line.is_empty() => {
                 self.line.insert('/');
-                self.open_palette();
+                self.open_palette(budget);
             }
             Key::Char(c) => {
-                self.line.insert(c);
-                self.refilter_palette();
+                if budget.allow_history_materialize(&self.line) {
+                    self.line.insert(c);
+                    if self.palette.is_some() {
+                        budget.palette_dirty = true;
+                    }
+                }
             }
             Key::Backspace => {
-                self.line.backspace();
-                if self.line.is_empty() {
-                    self.palette = None;
-                } else {
-                    self.refilter_palette();
+                if budget.allow_history_materialize(&self.line) {
+                    self.line.backspace();
+                    if self.line.is_empty() {
+                        self.palette = None;
+                        budget.palette_dirty = false;
+                    } else if self.palette.is_some() {
+                        budget.palette_dirty = true;
+                    }
                 }
             }
             Key::Delete => {
-                self.line.delete();
+                if budget.allow_history_materialize(&self.line) {
+                    self.line.delete();
+                }
             }
             Key::Left => {
                 self.line.left();
@@ -4151,10 +4315,14 @@ impl TuiApp {
                 self.line.end();
             }
             Key::Ctrl('u') => {
-                self.line.kill_to_start();
+                if budget.allow_history_materialize(&self.line) {
+                    self.line.kill_to_start();
+                }
             }
             Key::Ctrl('w') => {
-                self.line.kill_word();
+                if budget.allow_history_materialize(&self.line) {
+                    self.line.kill_word();
+                }
             }
             Key::Ctrl('c') => self.line.clear(),
             Key::Up => {
@@ -4177,7 +4345,13 @@ impl TuiApp {
                 }
             }
             Key::PgDn => self.scroll_off = self.scroll_off.saturating_sub(PAGE),
-            Key::Tab => self.complete(),
+            Key::Tab => {
+                if budget.defer_ui {
+                    budget.pending_complete = true;
+                } else {
+                    self.complete();
+                }
+            }
             _ => r.redraw = false,
         }
     }
@@ -4239,7 +4413,12 @@ impl TuiApp {
         }
     }
 
+    #[cfg(test)]
     fn submit_line(&mut self, line: String, r: &mut InputResult) {
+        self.submit_line_with_budget(line, r, &BurstBudget::default());
+    }
+
+    fn submit_line_with_budget(&mut self, line: String, r: &mut InputResult, budget: &BurstBudget) {
         if let Some((id, epoch)) = self.answering.take() {
             // The box was capturing a target/text answer (I10): the line is
             // the answer, not a command; an empty line cancels.
@@ -4297,7 +4476,7 @@ impl TuiApp {
             StickyMode::Emit => "@emit ".len().saturating_add(line.len()),
             StickyMode::Ooc => "ooc ".len().saturating_add(line.len()),
         };
-        if !r.can_push_submit(out_len) {
+        if !budget.can_submit(r, out_len) {
             return;
         }
         let out = match self.sticky {
@@ -4619,9 +4798,10 @@ impl TuiApp {
 
     // ---- palette and completion ------------------------------------------
 
-    fn toggle_palette(&mut self) {
+    fn toggle_palette(&mut self, budget: &mut BurstBudget) {
         if self.palette.is_some() {
             self.palette = None;
+            budget.palette_dirty = false;
             return;
         }
         if self.mode == Mode::Nav {
@@ -4629,12 +4809,16 @@ impl TuiApp {
         } else if self.line.is_empty() {
             self.line.insert('/');
         }
-        self.open_palette();
+        self.open_palette(budget);
     }
 
-    fn open_palette(&mut self) {
+    fn open_palette(&mut self, budget: &mut BurstBudget) {
         self.palette = Some(Palette::default());
-        self.refilter_palette();
+        if budget.defer_ui {
+            budget.palette_dirty = true;
+        } else {
+            self.refilter_palette();
+        }
     }
 
     /// The text after the slash, or the whole line when it has none.
@@ -4647,65 +4831,63 @@ impl TuiApp {
         if self.palette.is_none() {
             return;
         }
+        #[cfg(test)]
+        {
+            self.palette_refilters += 1;
+        }
         let q = self.palette_query();
+        let max_entries = MAX_PALETTE_ROWS * 4;
         let mut prefix: Vec<PaletteEntry> = Vec::new();
         let mut rest: Vec<PaletteEntry> = Vec::new();
-        let mut consider = |entry: PaletteEntry, key: &str| {
+        // Check the match BEFORE cloning/allocating `PaletteEntry` strings so
+        // non-matching commands never allocate (`P2-CLIENT-3`).
+        let mut consider = |key: &str, make: &dyn Fn() -> PaletteEntry| {
+            if prefix.len() >= max_entries {
+                return;
+            }
             let k = key.to_lowercase();
             if q.is_empty() || k.starts_with(&q) {
-                prefix.push(entry);
-            } else if k.contains(&q) {
-                rest.push(entry);
+                prefix.push(make());
+            } else if rest.len() < max_entries && k.contains(&q) {
+                rest.push(make());
             }
         };
         for (cmd, desc) in LOCAL_COMMANDS {
-            consider(
-                PaletteEntry {
-                    insert: cmd.to_string(),
-                    label: cmd.to_string(),
-                    detail: desc.to_string(),
-                },
-                cmd,
-            );
+            consider(cmd, &|| PaletteEntry {
+                insert: (*cmd).to_string(),
+                label: (*cmd).to_string(),
+                detail: (*desc).to_string(),
+            });
         }
         for alias in &self.channel_aliases {
-            consider(
-                PaletteEntry {
-                    insert: format!("{alias} "),
-                    label: alias.clone(),
-                    detail: "channel".to_string(),
-                },
-                alias,
-            );
+            consider(alias, &|| PaletteEntry {
+                insert: format!("{alias} "),
+                label: alias.clone(),
+                detail: "channel".to_string(),
+            });
         }
         if let Some(room) = &self.room {
             for exit in &room.exits {
                 let Some(cmd) = exit_command(&exit.name) else {
                     continue;
                 };
-                consider(
-                    PaletteEntry {
-                        insert: cmd,
-                        label: sanitize(&exit.name),
-                        detail: "exit".to_string(),
-                    },
-                    &exit.name,
-                );
+                consider(&exit.name, &|| PaletteEntry {
+                    insert: cmd.clone(),
+                    label: sanitize(&exit.name),
+                    detail: "exit".to_string(),
+                });
             }
         }
         for c in &self.commands {
-            consider(
-                PaletteEntry {
-                    insert: c.usage.clone(),
-                    label: c.name.clone(),
-                    detail: c.summary.clone(),
-                },
-                &c.name,
-            );
+            consider(&c.name, &|| PaletteEntry {
+                insert: c.usage.clone(),
+                label: c.name.clone(),
+                detail: c.summary.clone(),
+            });
         }
         let mut entries = prefix;
         entries.extend(rest);
-        entries.truncate(MAX_PALETTE_ROWS * 4);
+        entries.truncate(max_entries);
         if let Some(p) = &mut self.palette {
             p.entries = entries;
             p.selected = 0;
@@ -4731,6 +4913,10 @@ impl TuiApp {
     /// Tab completion over `commands.list`: complete the first word to the
     /// first command it prefixes.
     fn complete(&mut self) {
+        #[cfg(test)]
+        {
+            self.complete_runs += 1;
+        }
         let text = self.line.text();
         if text.is_empty() {
             return;
@@ -4743,13 +4929,12 @@ impl TuiApp {
             if token.is_empty() {
                 return;
             }
-            let mut traits: Vec<String> = self
+            let best = self
                 .sheet_traits()
                 .into_iter()
                 .filter(|t| t.starts_with(&token))
-                .collect();
-            traits.sort();
-            if let Some(t) = traits.first() {
+                .min();
+            if let Some(t) = best {
                 let head = &rest[..start];
                 self.line.set(&format!("+roll {head}{t}"));
             }
@@ -4759,14 +4944,14 @@ impl TuiApp {
             return;
         }
         let lower = text.to_lowercase();
-        let mut matches = self
+        let best = self
             .commands
             .iter()
             .filter(|c| c.name.to_lowercase().starts_with(&lower))
-            .map(|c| c.name.clone())
-            .collect::<Vec<_>>();
-        matches.sort();
-        if let Some(m) = matches.first() {
+            .map(|c| c.name.as_str())
+            .min()
+            .map(str::to_owned);
+        if let Some(m) = best {
             self.line.set(&format!("{m} "));
         }
     }
@@ -6116,7 +6301,7 @@ impl TuiApp {
             let exits: Vec<String> = self
                 .exit_keys
                 .iter()
-                .map(|(k, n)| format!("{k} {n}"))
+                .map(|(k, n)| format!("{k} {}", sanitize(n)))
                 .collect();
             lines.push(Line::from(format!("exits: {}", exits.join("  "))));
         }
@@ -6243,15 +6428,16 @@ fn ascii_title(s: &str) -> String {
 }
 
 /// Build the safe `goto <exit>` command for an authored room exit name, or
-/// `None` when the name is blank or contains C0/DEL/C1 control characters
-/// (such as CR/LF/ESC). Prefixing `goto ` guarantees a hostile room builder's
-/// exit name (e.g. `@destroy me`, `QUIT`, `"hi`, or a channel alias) can only
-/// traverse a real exit and never dispatch an arbitrary command (EXT-P1-6;
-/// mirrors `web/src/lib/keys.ts` `exitCommand`).
+/// `None` when the name is blank or contains C0/DEL/C1 control characters or
+/// Unicode BiDi / line-separator controls (such as CR/LF/ESC/RLO/U+2028).
+/// Prefixing `goto ` guarantees a hostile room builder's exit name (e.g.
+/// `@destroy me`, `QUIT`, `"hi`, or a channel alias) can only traverse a real
+/// exit and never dispatch an arbitrary command (EXT-P1-6 / `P2-CLIENT-2` /
+/// `P2-CLIENT-6`; mirrors `web/src/lib/keys.ts` `exitCommand`).
 #[must_use]
 pub fn exit_command(name: &str) -> Option<String> {
     let trimmed = name.trim();
-    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+    if trimmed.is_empty() || trimmed.chars().any(crate::is_stripped_terminal_char) {
         return None;
     }
     Some(format!("goto {trimmed}"))
@@ -12175,5 +12361,116 @@ mod tests {
         assert!(entries.contains(&"goto QUIT".to_string()));
         assert!(!entries.iter().any(|e| e.contains("Bad")));
         assert!(!entries.iter().any(|e| e.contains("Esc")));
+
+        // Unicode BiDi and line/paragraph separators are also rejected (`P2-CLIENT-6`).
+        assert_eq!(exit_command("North\u{202E}evil"), None);
+        assert_eq!(exit_command("North\u{2066}evil"), None);
+        assert_eq!(exit_command("North\u{2028}QUIT"), None);
+        assert_eq!(exit_command("North\u{2029}QUIT"), None);
+        assert_eq!(exit_command("North\u{061C}evil"), None);
+    }
+
+    #[test]
+    fn tui_debounces_palette_and_completion_and_budgets_local_slash_submits() {
+        let mut app = app();
+        // Seed a realistic command list (hundreds of commands).
+        let commands: Vec<serde_json::Value> = (0..200)
+            .map(|i| {
+                serde_json::json!({
+                    "name": format!("cmd_{i:03}"),
+                    "usage": format!("cmd_{i:03} <arg>"),
+                    "summary": format!("Command number {i}")
+                })
+            })
+            .collect();
+        app.apply_event(&OutputEvent::Panel {
+            feed: "commands.list".into(),
+            kind: mush_proto::PanelFrameKind::Keyframe,
+            data: serde_json::json!({ "commands": commands }),
+        });
+
+        // 1. Open palette and send a 32 KiB burst of alternating `a` + Backspace:
+        // `refilter_palette()` must run at most ONCE at the end of the packet (`P2-CLIENT-3`).
+        let mut palette_burst = Vec::with_capacity(32 * 1024);
+        palette_burst.push(b'/');
+        for _ in 0..16_383 {
+            palette_burst.extend_from_slice(b"a\x7f");
+        }
+        app.palette_refilters = 0;
+        let _ = app.feed_input(&palette_burst);
+        assert_eq!(
+            app.palette_refilters, 1,
+            "palette refilter must be debounced to once per packet"
+        );
+        assert!(app.palette.is_some());
+
+        // Even interleaved char + Up + Backspace bursts cap refilters cleanly.
+        let mut interleaved = Vec::with_capacity(16 * 1024);
+        for _ in 0..2_000 {
+            interleaved.extend_from_slice(b"c\x1b[A\x7f");
+        }
+        app.palette_refilters = 0;
+        let _ = app.feed_input(&interleaved);
+        assert!(
+            app.palette_refilters <= usize::from(MAX_TUI_BURST_EXPENSIVE_UI_OPS) + 1,
+            "interleaved refilters {} exceeded cap",
+            app.palette_refilters
+        );
+        // Close palette & clear input.
+        app.feed_input(b"\x1b\x03");
+
+        // 2. Repeated Tab completion flood in a single 32 KiB packet runs `complete()` ONCE.
+        let mut tab_burst = b"cmd_00".to_vec();
+        tab_burst.resize(32 * 1024, b'\t');
+        app.complete_runs = 0;
+        let _ = app.feed_input(&tab_burst);
+        assert_eq!(
+            app.complete_runs, 1,
+            "Tab completion flood must debounce to once per packet"
+        );
+        assert_eq!(app.input_text(), "cmd_000 ");
+
+        // Legitimate `Tab` + `Enter` in one burst still completes and submits.
+        app.feed_input(b"\x03");
+        let completed_submit = app.feed_input(b"cmd_001\t\r");
+        assert_eq!(completed_submit.submit, vec!["cmd_001 "]);
+
+        // 3. `/`-prefixed `is_local` 16 KiB UTF-8 `Up`+`Enter` burst is bounded by
+        // `MAX_TUI_BURST_OPS` and `MAX_TUI_BURST_SUBMIT_BYTES` (`P2-CLIENT-3`).
+        let mut big_local = String::with_capacity(crate::line::MAX_LINE_BYTES);
+        big_local.push('/');
+        for _ in 0..(crate::line::MAX_LINE_BYTES - 1) / '🎲'.len_utf8() {
+            big_local.push('🎲');
+        }
+        let big_local_bytes = big_local.len();
+        big_local.push('\r');
+        app.feed_input(big_local.as_bytes());
+        let scrollback_before = app.scrollback.len();
+        let mut local_burst = Vec::with_capacity(32 * 1024);
+        for _ in 0..8_192 {
+            local_burst.extend_from_slice(b"\x1b[A\r");
+        }
+        let _ = app.feed_input(&local_burst);
+        let added = app.scrollback.len().saturating_sub(scrollback_before);
+        let max_by_bytes = MAX_TUI_BURST_SUBMIT_BYTES / big_local_bytes;
+        assert!(
+            added <= max_by_bytes.min(MAX_TUI_BURST_OPS),
+            "16 KiB /local burst added {added} scrollback entries (expected <= {})",
+            max_by_bytes.min(MAX_TUI_BURST_OPS)
+        );
+
+        // Short `/bogus` `Up`+`Enter` burst is capped at `MAX_TUI_BURST_OPS`.
+        app.feed_input(b"/bogus\r");
+        let scrollback_before_short = app.scrollback.len();
+        let mut short_local_burst = Vec::with_capacity(2048);
+        for _ in 0..200 {
+            short_local_burst.extend_from_slice(b"\x1b[A\r");
+        }
+        let _ = app.feed_input(&short_local_burst);
+        let added_short = app.scrollback.len().saturating_sub(scrollback_before_short);
+        assert_eq!(
+            added_short, MAX_TUI_BURST_OPS,
+            "short /local burst must be bounded by MAX_TUI_BURST_OPS"
+        );
     }
 }

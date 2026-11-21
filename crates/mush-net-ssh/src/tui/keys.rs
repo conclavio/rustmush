@@ -281,7 +281,7 @@ impl KeyParser {
                                 let seq = std::mem::take(&mut self.pending);
                                 if let Ok(s) = std::str::from_utf8(&seq)
                                     && let Some(c) = s.chars().next()
-                                    && !c.is_control()
+                                    && !crate::is_stripped_terminal_char(c)
                                 {
                                     keys.push(Key::Char(c));
                                 }
@@ -529,8 +529,8 @@ fn csi_u_key(params: &str) -> Option<Key> {
         9 => Key::Tab,
         127 | 8 => Key::Backspace,
         _ if ctrl && base.is_ascii() => Key::Ctrl(base.to_ascii_lowercase()),
-        _ if alt && !typed.is_control() => Key::Alt(typed),
-        _ if !typed.is_control() => Key::Char(typed),
+        _ if alt && !crate::is_stripped_terminal_char(typed) => Key::Alt(typed),
+        _ if !crate::is_stripped_terminal_char(typed) => Key::Char(typed),
         _ => return None,
     };
     Some(match (event, key) {
