@@ -51,6 +51,20 @@ use crate::store::put_port_map;
 /// The capability the clerk is granted on each storefront (lead ruling L25).
 pub const CLERK_CAPABILITY: &str = "vault.withdraw";
 
+/// **A storefront the port's clerk keeps** (doc 50 cut OP.7b): a vendor row whose `storefront`
+/// is this word names no authored item. Its vault is backed by the port's stock clerk, the `DARK`
+/// Thing the applier makes once in the staff spine, so no object is made for it (a new boot object
+/// would renumber every later one). The map row records the clerk as its storefront, so a re-apply
+/// or a restart finds it there; a recorded clerk that is gone is refused, as every recorded
+/// storefront is. At most one vendor of a port names it, since one object backs one vault.
+pub const CLERK_STOREFRONT: &str = "clerk";
+
+/// Whether `vendor`'s storefront is the port's clerk ([`CLERK_STOREFRONT`]).
+#[must_use]
+pub fn clerk_storefront(vendor: &VendorDef) -> bool {
+    vendor.storefront == CLERK_STOREFRONT
+}
+
 /// **A vendor's storefront object**: its authored item, or (doc 39 cut IN.5; §4.2's "the pool is
 /// the works'") the port's works room when the vendor names it, so the vendor's stock is the
 /// works' stores — the vault `crate::port::works` finds on the facility.
@@ -205,7 +219,7 @@ fn credit() -> Result<InstrumentId, String> {
 }
 
 /// The catalogue reference of one good (ruleset `tacsim`, code = the good id).
-fn catalog_of(good: &CanonicalId) -> CatalogRef {
+pub(crate) fn catalog_of(good: &CanonicalId) -> CatalogRef {
     CatalogRef {
         ruleset: SmolStr::new_static(crate::NS),
         code: SmolStr::new(good.as_str()),
@@ -382,6 +396,21 @@ pub(crate) fn preflight(
                         row.vault
                     ));
                 }
+            }
+            // Doc 50 cut OP.7b: a store the clerk keeps needs the spine the clerk is made in,
+            // and a recorded clerk that backs no vault yet.
+            None if clerk_storefront(vendor) => {
+                if spine.is_none() {
+                    return Err(format!(
+                        "{id}: vendor {org}: the port's staff spine, where its clerk keeps its \
+                         store, is not on this world"
+                    ));
+                }
+                if let Some(clerk) = map.and_then(|m| m.clerk.as_ref()) {
+                    backs_no_vault(w, id, org, ObjId(clerk.thing))?;
+                }
+                authored_object(w, &def.area, &vendor.signatory, "npc")
+                    .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
             }
             None => {
                 let storefront = storefront_of(w, id, def, vendor)?;
@@ -583,9 +612,14 @@ pub(crate) fn put(
             .map_or_else(|| org.to_string(), |o| o.name.clone());
         // (e).3–4 Storefront, signatory and the storefront vault (unrecorded only).
         if !map.vendors.contains_key(org) {
-            let storefront = storefront_of(ctx.w, id, def, vendor)?;
             let signatory = authored_object(ctx.w, &def.area, &vendor.signatory, "npc")
                 .map_err(|detail| format!("{id}: vendor {org}: signatory: {detail}"))?;
+            // Doc 50 cut OP.7b: the port's clerk keeps the store, recorded on the row below.
+            let storefront = if clerk_storefront(vendor) {
+                clerk
+            } else {
+                storefront_of(ctx.w, id, def, vendor)?
+            };
             // Doc 18 cut IC14 row 30: the preflight's rule, re-run where the vault is made.
             backs_no_vault(ctx.w, id, org, storefront)?;
             let vault = alloc_vault_id(ctx).map_err(|e| format!("{id}: vendor {org}: {e}"))?;

@@ -900,6 +900,9 @@ the five.
 - **Alternative:** staff declare; or a player officer of a Republic House may.
 - **Why:** the faction design's own test is "no faction-head bottleneck". Institutions are
   compiled arms today.
+- **Amended (owner ruling, 2026-11-20, doc 50b):** OP.5 named Occator as the only defender,
+  because Meridiani has no lane organization. The owner ruled to seed Meridiani as a lane
+  organization and name it a defender beside Occator, as this question says.
 
 **Q-50-20 — What moves the Review before that.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the two causes of doc 11 the code can supply: a seized Freeport-flagged
@@ -927,6 +930,9 @@ the five.
 - **Why:** doc 11 words it "stockpiles reach threshold". A level can be fed by a haul job, by a
   sale into a standing bid or by the faction's own hull, so a player who took no job still counts.
   A level is safe across a restart. Events double count on a retry unless each carries a cause id.
+- **Confirmed (owner ruling, 2026-11-20, doc 50b):** the Hold the Concession clock advances once
+  an IC month while the farm stands at its threshold, as OP.4 built it, even with no new delivery.
+  The verdict at the window's close still reads the level itself, at the close.
 
 **Q-50-22 — The budget, and who spends it.** **Ruled 2026-11-19: accepted as corrected.**
 - **Proposed default:** the Freeport side's money is its backing organization's treasury (Occator,
@@ -1270,6 +1276,9 @@ the five.
 - **Alternative:** unit tests a piece.
 - **Why:** the owner stated the first two as milestones. The empty run is the "no faction-head
   bottleneck" test.
+- **Amended (owner ruling, 2026-11-20, doc 50b):** the stories may run at 3,600:1 instead of
+  24:1, a recorded divergence. The first story still needs two accounts and a filing before the
+  flip as well as after it.
 
 **Q-50-48 — The bot.** **Ruled 2026-11-19: accepted as written.**
 - **Proposed default:** the mining bot learns the duty line and the `+record` page, and its
@@ -1483,6 +1492,9 @@ Each names the triage row that raised it.
   way out is to disable one. That is tolerable against a picket that stands down. It is not
   between two players, one of whom may have logged off.
 - **With this ruled (2026-11-19):** Q-50-26 is built for the first operation, with this way out.
+- **Confirmed as built (owner ruling, 2026-11-20, doc 50b):** OP.6 times breaking off from the
+  operation's hostile hulls only, so an NPC raider or interdictor still holds the hull as it does
+  today. The owner confirmed that narrower rule.
 
 **Q-50-63 — Escorts for an organization's hauls.** (doc 50a A-8)
 **Ruled 2026-11-19: accepted as proposed.**

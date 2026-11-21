@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.lane.ceres_phobos",
-    "version": 50,
+    "version": 51,
     "kind": "campaign_seed",
-    "digest": "c9bcd33c242141950bd558ca5554a4dade10660e1219ecf7725171fffe8823d6",
+    "digest": "363b4e4425c099821c497ae38061649f67f777d9b2f6643fa38b9e12513a022a",
     "requires": []
   },
   "entries": {
@@ -2943,7 +2943,7 @@
           { "id": "kasei", "name": "Kasei Metals", "capital_major": 600000, "faction": "republic", "roles": [ "acceptor" ] },
           { "id": "stickney_yards", "name": "Stickney Yards", "capital_major": 50000, "faction": "republic", "raises": [ 50000 ], "roles": [ "acceptor" ] },
           { "id": "yard_commissary", "name": "Yard Commissary", "capital_major": 50000, "faction": "republic", "roles": [ "acceptor" ] },
-          { "id": "republic_customs", "name": "Republic Customs Office", "capital_major": 10000, "faction": "republic" }
+          { "id": "republic_customs", "name": "Republic Customs Office", "capital_major": 20000, "faction": "republic" }
         ],
         "vendors": [
           { "org": "kasei", "storefront": "neighborhood.stickney_yards.item.kasei_manifold",
@@ -3004,7 +3004,10 @@
           { "org": "yard_commissary", "storefront": "neighborhood.stickney_yards.item.commissary_locker",
             "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.okonkwo",
             "stock": [ { "good": "provisions", "qty": 2600, "grade": 50, "issue": 1 } ],
-            "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ] }
+            "asks":  [ { "good": "provisions", "price_major": 10, "boards": ["commissary"] } ] },
+          { "org": "republic_customs", "storefront": "clerk",
+            "agent": "stickney_port.clerk", "signatory": "neighborhood.stickney_yards.npc.ilunga_brandt",
+            "note": "Doc 50 cut OP.7b (Q-50-27): the Republic's bonded store, kept by Stickney's stock clerk (no atlas item, no new object), with no standing bid of its own. While the Isidis operation runs, its arm bids 56 cr a tonne for 200 t of propellant here (provisional): over the tank farm's 50 at Isidis, so a hauler has a second buyer, and under Kasei's 60 ask at Stickney, so nobody buys propellant at Stickney to sell it back here. The office's capital is 20,000 cr (provisional, from 10,000): the operation's 5,000 cr bond and the bid's 11,200 cr, with room to spare." }
         ],
         "routes": { "ceres": [ "stickney_ceres" ], "isidis": [ "stickney_isidis" ] },
         "premium": { "k_permille": 300, "cap_permille": 500 },
