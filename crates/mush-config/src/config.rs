@@ -2350,6 +2350,12 @@ pub struct IpcCfg {
     /// The high-water threshold (percent of a queue's cap) at which a crossing
     /// logs an edge-gated warn. Default `80`.
     pub high_water_warn_pct: u8,
+    /// Opt-in escape hatch allowing `[ipc].listen` to bind a non-loopback TCP
+    /// address (such as `0.0.0.0` or a LAN IP). Default `false`: the boundary
+    /// protocol is unauthenticated, so non-loopback TCP binds are refused
+    /// unless explicitly enabled here for an isolated private network
+    /// (P2-EDGE-10).
+    pub allow_non_loopback: bool,
 }
 
 impl Default for IpcCfg {
@@ -2360,6 +2366,7 @@ impl Default for IpcCfg {
             to_gw_cap: 8192,
             write_timeout_ms: 5000,
             high_water_warn_pct: 80,
+            allow_non_loopback: false,
         }
     }
 }
@@ -2405,6 +2412,90 @@ impl Default for PixelCfg {
             diagnostics: false,
         }
     }
+}
+
+/// Redact credentials (`user:pass@` userinfo and password-like query
+/// parameters) from a `[store].redis_url` before logging or formatting errors
+/// (P2-EDGE-11).
+#[must_use]
+pub fn redact_redis_url(url: &str) -> String {
+    let (prefix, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    let split_at = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, suffix) = rest.split_at(split_at);
+    let safe_authority = match authority.rsplit_once('@') {
+        Some((_, host_port)) => format!("***@{host_port}"),
+        None => authority.to_owned(),
+    };
+    let safe_suffix = redact_redis_suffix(suffix);
+    match prefix {
+        Some(scheme) => format!("{scheme}://{safe_authority}{safe_suffix}"),
+        None => format!("{safe_authority}{safe_suffix}"),
+    }
+}
+
+fn redact_redis_suffix(suffix: &str) -> String {
+    let Some(q_idx) = suffix.find('?') else {
+        return suffix.to_owned();
+    };
+    let (path, rest) = suffix.split_at(q_idx + 1);
+    let (query, frag) = match rest.find('#') {
+        Some(f_idx) => rest.split_at(f_idx),
+        None => (rest, ""),
+    };
+    let mut out = String::with_capacity(suffix.len());
+    out.push_str(path);
+    for (i, pair) in query.split('&').enumerate() {
+        if i > 0 {
+            out.push('&');
+        }
+        match pair.split_once('=') {
+            Some((key, _))
+                if matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "password" | "pass" | "auth" | "token" | "secret"
+                ) =>
+            {
+                out.push_str(key);
+                out.push_str("=***");
+            }
+            _ => out.push_str(pair),
+        }
+    }
+    out.push_str(frag);
+    out
+}
+
+/// Scrub any raw URL, userinfo, or password substrings from a Redis error
+/// string before displaying or logging it (P2-EDGE-11).
+#[must_use]
+pub fn redact_redis_error(redis_url: &str, err: impl std::fmt::Display) -> String {
+    let mut text = err.to_string();
+    let safe_url = redact_redis_url(redis_url);
+    if safe_url != redis_url {
+        text = text.replace(redis_url, &safe_url);
+        let rest = redis_url
+            .split_once("://")
+            .map_or(redis_url, |(_, tail)| tail);
+        let split_at = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..split_at];
+        if let Some((userinfo, _)) = authority.rsplit_once('@') {
+            if !userinfo.is_empty() {
+                text = text.replace(&format!("{userinfo}@"), "***@");
+                if userinfo.contains(':') || userinfo.len() >= 4 {
+                    text = text.replace(userinfo, "***");
+                }
+            }
+            if let Some((_, pass)) = userinfo.split_once(':')
+                && pass.len() >= 4
+            {
+                text = text.replace(pass, "***");
+            }
+        }
+    }
+    text
 }
 
 /// The host and TCP port a `[store].redis_url` points at, when it names one.
@@ -2715,6 +2806,18 @@ impl Config {
             #[cfg(unix)]
             mush_ipc::IpcEndpoint::Unix(_) => return Ok(endpoint),
         };
+        // P2-EDGE-10: reject non-loopback TCP binds unless explicitly opted
+        // into, because the IPC boundary protocol carries no authentication.
+        if !addr.ip().to_canonical().is_loopback() && !self.ipc.allow_non_loopback {
+            return Err(ConfigError::BadIpcListen {
+                value: self.ipc.listen.clone(),
+                detail: "non-loopback TCP bind is refused because the IPC boundary is \
+                         unauthenticated; bind a loopback address (or a Unix socket on \
+                         Linux), or set [ipc].allow_non_loopback = true only on a \
+                         private/isolated network"
+                    .to_owned(),
+            });
+        }
         // Only a Redis-backed instance actually has a listener on that port;
         // `store = "memory"` never contacts `redis_url` at all.
         if self.store.store.eq_ignore_ascii_case("redis")
@@ -2724,7 +2827,7 @@ impl Config {
         {
             return Err(ConfigError::IpcStorePortCollision {
                 ipc_listen: self.ipc.listen.clone(),
-                redis_url: self.store.redis_url.clone(),
+                redis_url: redact_redis_url(&self.store.redis_url),
                 port: redis_port,
             });
         }
@@ -4067,6 +4170,73 @@ cap_permile = 400"
         assert_eq!(set.store.archive.retain_hours, 72);
         assert_eq!(set.store.archive.segment_chunks, 16);
         assert_eq!(set.store.archive.max_purge_per_pass, 4_096, "default kept");
+    }
+
+    #[test]
+    fn p2_edge_10_ipc_rejects_non_loopback_tcp_unless_opted_in() {
+        for bad in ["0.0.0.0:6791", "[::]:6791", "192.168.1.50:6791"] {
+            let mut cfg = Config::default();
+            cfg.ipc.listen = bad.to_owned();
+            let err = cfg
+                .ipc_endpoint()
+                .expect_err("non-loopback IPC TCP must be refused by default");
+            assert!(
+                matches!(err, ConfigError::BadIpcListen { .. }),
+                "{bad}: {err}"
+            );
+            assert!(err.to_string().contains("allow_non_loopback"), "{err}");
+
+            // Explicit opt-in allows it.
+            cfg.ipc.allow_non_loopback = true;
+            assert!(cfg.ipc_endpoint().is_ok(), "{bad} should succeed on opt-in");
+        }
+        // Loopback IPv4, IPv6, and IPv4-mapped IPv6 are allowed by default.
+        for ok in ["127.0.0.1:6791", "[::1]:6791", "[::ffff:127.0.0.1]:6791"] {
+            let mut cfg = Config::default();
+            cfg.ipc.listen = ok.to_owned();
+            assert!(cfg.ipc_endpoint().is_ok(), "{ok} should be allowed");
+        }
+    }
+
+    #[test]
+    fn p2_edge_11_redact_redis_url_and_collision_error_scrub_credentials() {
+        assert_eq!(
+            redact_redis_url("redis://127.0.0.1:6379/0"),
+            "redis://127.0.0.1:6379/0"
+        );
+        assert_eq!(
+            redact_redis_url("redis://alice:s3cr3t@127.0.0.1:6379/0"),
+            "redis://***@127.0.0.1:6379/0"
+        );
+        assert_eq!(
+            redact_redis_url("rediss://:p@ssw0rd@[::1]:6380/2?password=extra"),
+            "rediss://***@[::1]:6380/2?password=***"
+        );
+        assert_eq!(
+            redact_redis_url("unix://user:topsecret@/run/redis/dev1.sock"),
+            "unix://***@/run/redis/dev1.sock"
+        );
+        let scrubbed = redact_redis_error(
+            "redis://ops:supersecret@127.0.0.1:6379",
+            "failed to parse redis://ops:supersecret@127.0.0.1:6379 (auth supersecret)",
+        );
+        assert!(!scrubbed.contains("supersecret"), "{scrubbed}");
+        assert!(!scrubbed.contains("ops:supersecret"), "{scrubbed}");
+
+        // ConfigError::IpcStorePortCollision must never leak redis credentials.
+        let mut cfg = Config::default();
+        cfg.store.store = "redis".to_owned();
+        cfg.store.redis_url = "redis://admin:verysecretpass@127.0.0.1:6791/0".to_owned();
+        cfg.ipc.listen = "127.0.0.1:6791".to_owned();
+        let err = cfg.ipc_endpoint().expect_err("port collision expected");
+        let rendered = err.to_string();
+        assert!(rendered.contains("6791"), "{rendered}");
+        assert!(
+            rendered.contains("redis://***@127.0.0.1:6791/0"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("verysecretpass"), "{rendered}");
+        assert!(!rendered.contains("admin:"), "{rendered}");
     }
 }
 

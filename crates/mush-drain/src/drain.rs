@@ -215,6 +215,11 @@ impl<S> Drain<S> {
     pub async fn wait_empty(&self) {
         loop {
             let notified = self.empty.notified();
+            tokio::pin!(notified);
+            // Register in `Notify`'s waiter queue BEFORE reading `live()` so a
+            // concurrent `LiveGuard::drop` calling `notify_waiters()` cannot
+            // fire between the check and the await (P2-EDGE-17).
+            notified.as_mut().enable();
             if self.live() == 0 {
                 return;
             }
@@ -577,5 +582,34 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(s.lines(), ["bye in 0s"]);
         assert!(s.is_closed());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_empty_never_loses_wakeup_on_concurrent_last_drop() {
+        // P2-EDGE-17 regression: repeatedly race dropping the last LiveGuard
+        // against wait_empty() across threads. Without pinning + enable()
+        // before checking live() == 0, notify_waiters() can fire in the gap
+        // and hang wait_empty() forever.
+        for i in 0..500u64 {
+            let d = Drain::<Rec>::new();
+            let guard = d.enter(i);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let b2 = Arc::clone(&barrier);
+            let dropper = tokio::task::spawn_blocking(move || {
+                b2.wait();
+                drop(guard);
+            });
+            let d2 = Arc::clone(&d);
+            let waiter = tokio::spawn(async move {
+                barrier.wait();
+                d2.wait_empty().await;
+            });
+            tokio::time::timeout(Duration::from_secs(5), waiter)
+                .await
+                .expect("wait_empty must not miss the last LiveGuard drop")
+                .unwrap();
+            dropper.await.unwrap();
+            assert_eq!(d.live(), 0);
+        }
     }
 }

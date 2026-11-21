@@ -103,8 +103,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -449,10 +449,15 @@ impl IpEntry {
         }
     }
 
-    /// Whether evicting this entry loses nothing that matters: no live
-    /// connection and no active ban.
-    fn evictable(&self) -> bool {
-        self.conns == 0 && self.uncounted == 0 && self.banned_until.is_none()
+    /// Whether this entry holds at least one live connection.
+    fn has_live_conns(&self) -> bool {
+        self.conns > 0 || self.uncounted > 0
+    }
+
+    /// Whether evicting this entry loses nothing that matters at `now`: no
+    /// live connection and no unexpired tempban (P2-EDGE-8).
+    fn evictable(&self, now: Instant) -> bool {
+        !self.has_live_conns() && self.banned_until.is_none_or(|until| now >= until)
     }
 }
 
@@ -464,9 +469,10 @@ pub struct IpGuard {
     /// Failure/connection accounting, keyed on the **folded network** ([`IpGuard::key`]),
     /// not the exact address.
     map: DashMap<IpAddr, IpEntry>,
-    /// Persisted-siteban mirror: ip → expiry (unix seconds; `None` =
-    /// permanent). Loaded from the store at boot, updated on `@siteban`.
-    sitebans: DashMap<IpAddr, Option<i64>>,
+    /// Persisted-siteban mirror: canonical ip → expiry (unix seconds; `None` =
+    /// permanent). Loaded from the store at boot, updated on `@siteban`, and
+    /// swapped atomically on refresh (P2-EDGE-7).
+    sitebans: RwLock<HashMap<IpAddr, Option<i64>>>,
     /// Lift identifiers retained until their store TTL expires. Never evicted
     /// early: that would permit a refresh to apply an old pardon twice.
     tempban_lifts: std::sync::Mutex<std::collections::HashMap<String, i64>>,
@@ -494,7 +500,7 @@ impl IpGuard {
         IpGuard {
             cfg,
             map: DashMap::new(),
-            sitebans: DashMap::new(),
+            sitebans: RwLock::new(HashMap::new()),
             tempban_lifts: std::sync::Mutex::default(),
             gates: Mutex::default(),
             global: AtomicUsize::new(0),
@@ -522,16 +528,29 @@ impl IpGuard {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Keep the failure/connection map under [`MAX_TRACKED`] entries before
-    /// an insert: sweep it of idle entries at most once per [`SWEEP_EVERY`],
-    /// and if it is still full evict one entry that holds no live connection
-    /// and no active ban. Never refuses (module docs).
-    fn bound_map(&self, now: Instant) {
-        if self.map.len() < MAX_TRACKED {
-            return;
+    fn sitebans_read(&self) -> RwLockReadGuard<'_, HashMap<IpAddr, Option<i64>>> {
+        self.sitebans
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn sitebans_write(&self) -> RwLockWriteGuard<'_, HashMap<IpAddr, Option<i64>>> {
+        self.sitebans
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keep the failure/connection map strictly bounded under [`MAX_TRACKED`]
+    /// entries before inserting `net`: returns `true` when `net` already exists
+    /// or room is available (after a rate-limited sweep or O(1) bounded-sample
+    /// eviction), or `false` when the table is full of live connections and
+    /// cannot make room without exceeding the ceiling (P2-EDGE-8).
+    fn bound_map(&self, net: IpAddr, now: Instant) -> bool {
+        if self.map.contains_key(&net) || self.map.len() < MAX_TRACKED {
+            return true;
         }
         let mut gates = self.gates();
-        self.bound_map_locked(&mut gates, now);
+        self.bound_map_locked(&mut gates, net, now)
     }
 
     /// Gate one accepted SSH connection at `now`, before any handshake
@@ -611,7 +630,9 @@ impl IpGuard {
         {
             return refuse(&mut gates, DropReason::Prefix48);
         }
-        self.bound_map_locked(&mut gates, now);
+        if !self.bound_map_locked(&mut gates, net, now) {
+            return refuse(&mut gates, DropReason::Global);
+        }
         let admission = {
             let mut e = self.map.entry(net).or_default();
             if e.conns < self.cfg.max_conns {
@@ -637,10 +658,18 @@ impl IpGuard {
         admission
     }
 
-    /// [`IpGuard::bound_map`] with the gates already locked.
-    fn bound_map_locked(&self, gates: &mut Gates, now: Instant) {
-        if self.map.len() < MAX_TRACKED {
-            return;
+    /// [`IpGuard::bound_map`] with the gates already locked (P2-EDGE-8).
+    ///
+    /// Never performs an O(N) full-map scan on every call: after the
+    /// rate-limited [`SWEEP_EVERY`] sweep, samples at most `EVICT_SAMPLE_BUDGET`
+    /// entries. Prefers evicting an idle/expired entry (`evictable(now)`); if
+    /// every sampled entry holds an active tempban (no live connections),
+    /// evicts the soonest-expiring tempban so `self.map` never grows past
+    /// [`MAX_TRACKED`]. If every sampled entry holds live connections, returns
+    /// `false` so callers fail closed with bounded work.
+    fn bound_map_locked(&self, gates: &mut Gates, net: IpAddr, now: Instant) -> bool {
+        if self.map.contains_key(&net) || self.map.len() < MAX_TRACKED {
+            return true;
         }
         if gates
             .last_map_sweep
@@ -653,17 +682,46 @@ impl IpGuard {
             });
         }
         if self.map.len() < MAX_TRACKED {
-            return;
+            return true;
         }
-        let victim = self
-            .map
-            .iter()
-            .find(|e| e.value().evictable())
-            .map(|e| *e.key());
-        if let Some(net) = victim {
-            self.map.remove_if(&net, |_, e| e.evictable());
+
+        const EVICT_SAMPLE_BUDGET: usize = 64;
+
+        let mut idle_victim: Option<IpAddr> = None;
+        let mut earliest_ban_victim: Option<(IpAddr, Instant)> = None;
+
+        for entry in self.map.iter().take(EVICT_SAMPLE_BUDGET) {
+            if entry.evictable(now) {
+                idle_victim = Some(*entry.key());
+                break;
+            }
+            if !entry.has_live_conns()
+                && let Some(until) = entry.banned_until
+                && earliest_ban_victim.is_none_or(|(_, best)| until < best)
+            {
+                earliest_ban_victim = Some((*entry.key(), until));
+            }
+        }
+
+        if let Some(victim) = idle_victim
+            && self
+                .map
+                .remove_if(&victim, |_, e| e.evictable(now))
+                .is_some()
+        {
             *gates.counters.entry("map-evict").or_default() += 1;
+            return true;
         }
+        if let Some((victim, _)) = earliest_ban_victim
+            && self
+                .map
+                .remove_if(&victim, |_, e| !e.has_live_conns())
+                .is_some()
+        {
+            *gates.counters.entry("map-evict").or_default() += 1;
+            return true;
+        }
+        self.map.len() < MAX_TRACKED
     }
 
     /// [`IpGuard::admit_at`] with `Instant::now()`.
@@ -822,7 +880,9 @@ impl IpGuard {
     /// [`IpGuard::is_blocked_at`].
     pub fn record_token_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
         let net = self.key(ip);
-        self.bound_map(now);
+        if !self.bound_map(net, now) {
+            return false;
+        }
         let mut e = self.map.entry(net).or_default();
         let window = self.cfg.token_window;
         e.token_failures
@@ -878,7 +938,9 @@ impl IpGuard {
     /// blocks every address in that network, not just this one.
     pub fn record_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
         let net = self.key(ip);
-        self.bound_map(now);
+        if !self.bound_map(net, now) {
+            return false;
+        }
         let mut e = self.map.entry(net).or_default();
         let window = self.cfg.window;
         e.failures
@@ -913,7 +975,9 @@ impl IpGuard {
     /// network has reached [`MAX_REGISTERS_PER_WINDOW`].
     pub fn check_register_at(&self, ip: IpAddr, now: Instant) -> bool {
         let net = self.key(ip);
-        self.bound_map(now);
+        if !self.bound_map(net, now) {
+            return false;
+        }
         let mut e = self.map.entry(net).or_default();
         e.registrations
             .retain(|&t| now.saturating_duration_since(t) < REGISTER_WINDOW);
@@ -1051,8 +1115,11 @@ impl IpGuard {
         if self.is_exempt(ip) {
             return true;
         }
-        self.bound_map(Instant::now());
-        let mut e = self.map.entry(self.key(ip)).or_default();
+        let net = self.key(ip);
+        if !self.bound_map(net, Instant::now()) {
+            return false;
+        }
+        let mut e = self.map.entry(net).or_default();
         if e.conns >= self.cfg.max_conns {
             return false;
         }
@@ -1104,56 +1171,80 @@ impl IpGuard {
     // Persisted sitebans (mirror of the store's `ban:*` namespace)
     // ------------------------------------------------------------------
 
-    /// Replace the siteban mirror wholesale (boot-time load from the
-    /// store). Expired entries are dropped on the way in.
+    /// Replace the siteban mirror atomically (boot-time load and periodic
+    /// refresh from the store). Expired entries are dropped on the way in,
+    /// IPv4-mapped IPv6 addresses are canonicalized to IPv4, and the map is
+    /// built before acquiring the write lock so concurrent readers never see
+    /// a cleared or half-populated mirror (P2-EDGE-7).
     pub fn load_sitebans(&self, bans: impl IntoIterator<Item = (IpAddr, Option<i64>)>) {
         let now = crate::unix_now_s();
-        self.sitebans.clear();
+        let mut fresh: HashMap<IpAddr, Option<i64>> = HashMap::new();
         for (ip, until) in bans {
             if until.is_none_or(|u| u > now) {
-                self.sitebans.insert(ip, until);
+                let canonical = ip.to_canonical();
+                fresh
+                    .entry(canonical)
+                    .and_modify(|existing| {
+                        *existing = match (*existing, until) {
+                            (None, _) | (_, None) => None,
+                            (Some(a), Some(b)) => Some(a.max(b)),
+                        };
+                    })
+                    .or_insert(until);
             }
         }
+        *self.sitebans_write() = fresh;
     }
 
     /// Mirror one siteban (called after the store write is acknowledged).
-    /// An already-expired `until` clears instead, matching the store's
+    /// Canonicalizes IPv4-mapped IPv6 addresses to IPv4 (P2-EDGE-7). An
+    /// already-expired `until` clears instead, matching the store's
     /// instant-expiry semantics.
     pub fn set_siteban(&self, ip: IpAddr, until_unix: Option<i64>) {
+        let ip = ip.to_canonical();
+        let mut bans = self.sitebans_write();
         if until_unix.is_some_and(|u| u <= crate::unix_now_s()) {
-            self.sitebans.remove(&ip);
+            bans.remove(&ip);
         } else {
-            self.sitebans.insert(ip, until_unix);
+            bans.insert(ip, until_unix);
         }
     }
 
     /// Drop one siteban from the mirror; `true` if it was present.
+    /// Canonicalizes IPv4-mapped IPv6 addresses to IPv4 (P2-EDGE-7).
     pub fn clear_siteban(&self, ip: IpAddr) -> bool {
-        self.sitebans.remove(&ip).is_some()
+        let ip = ip.to_canonical();
+        self.sitebans_write().remove(&ip).is_some()
     }
 
     /// Whether a mirrored siteban is active at `now_unix` (unix seconds).
-    /// Expired entries are pruned as a side effect, like the store's TTL.
+    /// Canonicalizes IPv4-mapped IPv6 addresses to IPv4 (P2-EDGE-7). Expired
+    /// entries are pruned as a side effect, like the store's TTL.
     #[must_use]
     pub fn siteban_active_at(&self, ip: IpAddr, now_unix: i64) -> bool {
-        let Some(entry) = self.sitebans.get(&ip) else {
-            return false;
+        let ip = ip.to_canonical();
+        let expired = {
+            let bans = self.sitebans_read();
+            match bans.get(&ip).copied() {
+                None => return false,
+                Some(None) => return true,
+                Some(Some(until)) if until > now_unix => return true,
+                Some(Some(_)) => true,
+            }
         };
-        match *entry {
-            None => true,
-            Some(until) if until > now_unix => true,
-            Some(_) => {
-                drop(entry);
-                self.sitebans.remove(&ip);
-                false
+        if expired {
+            let mut bans = self.sitebans_write();
+            if matches!(bans.get(&ip), Some(Some(until)) if *until <= now_unix) {
+                bans.remove(&ip);
             }
         }
+        false
     }
 
     /// Number of mirrored sitebans (diagnostics/tests).
     #[must_use]
     pub fn siteban_count(&self) -> usize {
-        self.sitebans.len()
+        self.sitebans_read().len()
     }
 }
 
@@ -1949,5 +2040,104 @@ mod tests {
 
         g.release(lo, Admission::Admit);
         assert!(!g.only_exempt_live());
+    }
+
+    #[test]
+    fn p2_edge_7_sitebans_canonicalize_ipv4_mapped_ipv6_and_swap_atomically() {
+        let g = std::sync::Arc::new(IpGuard::new());
+        let v4: IpAddr = "203.0.113.42".parse().unwrap();
+        let mapped: IpAddr = "::ffff:203.0.113.42".parse().unwrap();
+        let now = crate::unix_now_s();
+
+        // Banning IPv4 blocks IPv4-mapped IPv6 and clears via either form.
+        g.set_siteban(v4, None);
+        assert!(g.siteban_active_at(v4, now));
+        assert!(g.siteban_active_at(mapped, now));
+        assert!(g.is_blocked(mapped));
+        assert!(g.clear_siteban(mapped));
+        assert!(!g.siteban_active_at(v4, now));
+
+        // Banning IPv4-mapped IPv6 blocks IPv4; loading both deduplicates to one
+        // canonical entry keeping the stricter (permanent) ban.
+        g.load_sitebans([(mapped, Some(now + 60)), (v4, None)]);
+        assert_eq!(g.siteban_count(), 1);
+        assert!(g.siteban_active_at(v4, now + 3600));
+        assert!(g.siteban_active_at(mapped, now + 3600));
+
+        // Concurrent load_sitebans swaps atomically: a reader checking an
+        // always-present IP across rapid reloads must never observe a gap.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_guard = std::sync::Arc::clone(&g);
+        let reader_stop = std::sync::Arc::clone(&stop);
+        let reader = std::thread::spawn(move || {
+            let mut checks = 0u64;
+            while !reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                assert!(
+                    reader_guard.siteban_active_at(mapped, now),
+                    "atomic load_sitebans swap must never drop an active ban mid-refresh"
+                );
+                checks += 1;
+            }
+            checks
+        });
+        let filler: Vec<(IpAddr, Option<i64>)> = (1..=200u8)
+            .map(|n| (IpAddr::V4(Ipv4Addr::new(198, 51, 100, n)), None))
+            .chain(std::iter::once((v4, None)))
+            .collect();
+        for _ in 0..200 {
+            g.load_sitebans(filler.iter().copied());
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let checks = reader.join().unwrap();
+        assert!(checks > 0);
+    }
+
+    #[test]
+    fn p2_edge_8_bound_map_hard_caps_all_tempbanned_table_with_bounded_work() {
+        let g = gated(IpGuardConfig {
+            max_failures: 1,
+            ban: Duration::from_secs(900),
+            ..IpGuardConfig::default()
+        });
+        let t0 = Instant::now();
+        // Fill all MAX_TRACKED slots with active tempbans across a /48.
+        for i in 0..(MAX_TRACKED as u128) {
+            let v6 = Ipv6Addr::from((0x2001_0db8_0042u128 << 80) | (i << 64) | 1);
+            assert!(g.record_failure_at(IpAddr::V6(v6), t0));
+        }
+        assert_eq!(g.tracked(), MAX_TRACKED);
+
+        // Further inserts while every entry is actively tempbanned must stay
+        // strictly <= MAX_TRACKED (never unbounded growth) and execute in O(1)
+        // bounded time rather than scanning all 65,536 entries per call.
+        let start = Instant::now();
+        for i in 0..512u32 {
+            let extra = IpAddr::V4(Ipv4Addr::from(0x0c00_0000 + i));
+            assert!(g.record_failure_at(extra, t0));
+            assert!(
+                g.tracked() <= MAX_TRACKED,
+                "map exceeded MAX_TRACKED: {}",
+                g.tracked()
+            );
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "512 bounded evictions took too long: {:?}",
+            start.elapsed()
+        );
+        assert!(
+            g.take_counters().get("map-evict").copied().unwrap_or(0) >= 512,
+            "full tempban map must evict to remain hard-capped"
+        );
+
+        // Expired tempbans are immediately recognized as evictable even before
+        // a periodic sweep runs.
+        let expired_at = t0 + Duration::from_secs(901);
+        let e = IpEntry {
+            banned_until: Some(t0 + Duration::from_secs(900)),
+            ..IpEntry::default()
+        };
+        assert!(!e.evictable(t0 + Duration::from_secs(899)));
+        assert!(e.evictable(expired_at));
     }
 }

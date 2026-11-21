@@ -420,6 +420,20 @@ impl InputCustody {
         Some(held.request)
     }
 
+    fn remove_conn(&mut self, conn: u64) -> usize {
+        let doomed: Vec<RequestUid> = self
+            .entries
+            .iter()
+            .filter(|(_, held)| held.request.input.conn() == conn)
+            .map(|(uid, _)| *uid)
+            .collect();
+        let removed = doomed.len();
+        for uid in doomed {
+            let _ = self.remove(uid);
+        }
+        removed
+    }
+
     fn snapshot(&self) -> Vec<GatewayRequest> {
         self.entries
             .values()
@@ -816,6 +830,9 @@ struct SitebanMirror {
     /// Shared lifecycle ledger so a gap-time web-token eviction releases its
     /// slot even while the server boundary is down.
     lifecycle: Arc<Mutex<LifecycleCustody>>,
+    /// Shared input replay custody so ejected connections' queued commands are
+    /// discarded before any reconnect replay (P2-EDGE-9).
+    input_custody: Arc<Mutex<InputCustody>>,
     /// Gateway-side control hooks (used to reconcile live web tokens against
     /// the shared store on periodic refresh and post-gap reconnect).
     controls: Arc<controls::GatewayControls>,
@@ -887,6 +904,7 @@ impl SitebanMirror {
                     let to_server_tx = self.boundary.current().map(|c| c.tx.clone());
                     for conn in doomed {
                         let conn_id = mush_session::ConnId(conn);
+                        locked(&self.input_custody, "input custody").remove_conn(conn);
                         let _ = self.sessions.send_to_conn(conn_id, Arc::clone(&notice));
                         if let Some(tx) = &to_server_tx {
                             detach_one_conn(&self.sessions, tx, conn, DetachCause::Booted);
@@ -909,6 +927,7 @@ impl SitebanMirror {
                                 );
                             }
                         }
+                        self.controls.forget_web_conn(conn);
                         dropped += 1;
                     }
                 }
@@ -933,19 +952,13 @@ impl SitebanMirror {
     /// Close every live connection whose peer address the mirror now blocks
     /// (owner decision: a siteban ejects, it does not merely lock the door
     /// behind the people already inside). Idempotent — the connections it
-    /// drops are gone by the next pass.
+    /// drops are gone by the next pass. Also detaches locally and discards
+    /// queued input custody during a server restart gap (P2-EDGE-9).
     fn drop_banned_connections(&self) -> usize {
         if self.guard.siteban_count() == 0 {
             return 0;
         }
-        let Some(conn) = self.boundary.current() else {
-            // Restart gap: the server cannot be told about the detach yet. The
-            // mirror is already refreshed, so new connections stay refused, and
-            // the re-seed on reconnect ejects these the moment the boundary is
-            // back.
-            return 0;
-        };
-        let to_server_tx = conn.tx.clone();
+        let to_server_tx = self.boundary.current().map(|c| c.tx.clone());
         let now = mush_config::unix_now_s();
         let mut dropped = 0usize;
         for meta in self.sessions.who() {
@@ -953,12 +966,31 @@ impl SitebanMirror {
                 if !self.guard.siteban_active_at(handle.addr, now) {
                     continue;
                 }
-                detach_one_conn(
-                    &self.sessions,
-                    &to_server_tx,
-                    handle.id.0,
-                    DetachCause::Booted,
-                );
+                let conn = handle.id.0;
+                locked(&self.input_custody, "input custody").remove_conn(conn);
+                if let Some(tx) = &to_server_tx {
+                    detach_one_conn(&self.sessions, tx, conn, DetachCause::Booted);
+                } else {
+                    let conn_id = mush_session::ConnId(conn);
+                    let actor = self
+                        .sessions
+                        .session_of_conn(conn_id)
+                        .and_then(|s| self.sessions.character_of(s))
+                        .map(char_key_obj);
+                    if self
+                        .sessions
+                        .detach(conn_id, DetachReason::Booted)
+                        .is_some()
+                        && let Some(actor) = actor
+                    {
+                        locked(&self.lifecycle, "lifecycle custody").observe_conn_down(
+                            conn,
+                            actor,
+                            DisconnectKind::Boot,
+                        );
+                    }
+                }
+                self.controls.forget_web_conn(conn);
                 dropped += 1;
             }
         }
@@ -1601,7 +1633,13 @@ async fn gateway_reader(
                 close_web_sessions(&sessions, &to_server_tx, chars, notice.as_ref(), cause);
             }
             ToGateway::RevokeWebToken { token_hash } => {
-                revoke_web_token_conns(&sessions, &to_server_tx, &controls, &token_hash);
+                revoke_web_token_conns(
+                    &sessions,
+                    &to_server_tx,
+                    &input_custody,
+                    &controls,
+                    &token_hash,
+                );
             }
             ToGateway::Hello {
                 proto,
@@ -1777,6 +1815,7 @@ fn close_web_sessions(
 fn revoke_web_token_conns(
     sessions: &Arc<SessionManager>,
     to_server_tx: &ToServerTx,
+    input_custody: &Arc<Mutex<InputCustody>>,
     controls: &controls::GatewayControls,
     token_hash: &str,
 ) {
@@ -1789,8 +1828,10 @@ fn revoke_web_token_conns(
     });
     for conn in doomed {
         tracing::info!(conn, "cross-generation logout boots live web connection");
+        locked(input_custody, "input custody").remove_conn(conn);
         let _ = sessions.send_to_conn(mush_session::ConnId(conn), Arc::clone(&notice));
         detach_one_conn(sessions, to_server_tx, conn, DetachCause::Booted);
+        controls.forget_web_conn(conn);
     }
 }
 
@@ -2368,27 +2409,36 @@ async fn keep_boundary(
                 result = &mut attempt => result,
             };
             match result {
-                Ok(mut w) => match resync_boundary(&w.conn, &sessions, &env.input_custody).await {
-                    Ok(count) => {
-                        tracing::info!(
-                            count,
-                            "re-announced held sessions; fresh world crossed the readiness barrier"
-                        );
-                        break w;
+                Ok(mut w) => {
+                    // P2-EDGE-9: refresh sitebans and reconcile web token
+                    // revocations BEFORE re-announcing held sessions and
+                    // replaying buffered input_custody, so sitebanned or
+                    // gap-revoked connections are detached locally and their
+                    // queued commands discarded before the fresh world ever
+                    // sees them.
+                    siteban_mirror.refresh().await;
+                    match resync_boundary(&w.conn, &sessions, &env.input_custody).await {
+                        Ok(count) => {
+                            tracing::info!(
+                                count,
+                                "re-announced held sessions; fresh world crossed the readiness barrier"
+                            );
+                            break w;
+                        }
+                        Err(e) => {
+                            // Hello without this exact barrier is not a successful
+                            // reconnect: keep the public boundary in its gap, close
+                            // this private attempt, and try again.
+                            failures = failures.saturating_add(1);
+                            skew_streak = 0;
+                            tracing::error!(error = %e, "post-reconnect resync failed; retrying");
+                            let _ = w.close.send(());
+                            let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.down).await;
+                            let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.writer).await;
+                            tokio::time::sleep(backoff(failures)).await;
+                        }
                     }
-                    Err(e) => {
-                        // Hello without this exact barrier is not a successful
-                        // reconnect: keep the public boundary in its gap, close
-                        // this private attempt, and try again.
-                        failures = failures.saturating_add(1);
-                        skew_streak = 0;
-                        tracing::error!(error = %e, "post-reconnect resync failed; retrying");
-                        let _ = w.close.send(());
-                        let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.down).await;
-                        let _ = tokio::time::timeout(KEEPER_STOP_WAIT, &mut w.writer).await;
-                        tokio::time::sleep(backoff(failures)).await;
-                    }
-                },
+                }
                 Err(BoundaryFailure::Unreachable(e)) => {
                     // Nothing there. The attempt polled for its whole budget, so
                     // the next one follows at once; a down server is not a
@@ -2447,11 +2497,8 @@ async fn keep_boundary(
             );
         }
         broadcast(&sessions, reconnected_notice());
-        // Re-seed the siteban mirror on every reconnect, not just on the
-        // periodic tick: a ban staff issued while the boundary was down (or one
-        // whose ejection the gap swallowed) heals here instead of waiting out
-        // the interval with the banned address still connected.
-        siteban_mirror.refresh().await;
+        // Sitebans and web token revocations were already refreshed above before
+        // `resync_boundary` and `boundary.connect` (P2-EDGE-9).
         wired = Some(fresh);
     }
 }
@@ -2618,6 +2665,7 @@ pub async fn serve(config: Config, opts: GatewayOptions) -> Result<(), String> {
         sessions: Arc::clone(&sessions),
         boundary: boundary.clone(),
         lifecycle: Arc::clone(&env.lifecycle),
+        input_custody: Arc::clone(&env.input_custody),
         controls: Arc::clone(&controls),
         interval: opts.siteban_refresh.unwrap_or(SITEBAN_REFRESH),
     };
@@ -2997,13 +3045,15 @@ fn install_sighup_handler() {}
 /// runs). Mirrors the server's opener but the gateway only ever touches
 /// account/token/ban keys.
 async fn open_store(config: &Config) -> Result<Arc<dyn ObjectStore>, String> {
-    use mush_config::config::StoreBackend;
+    use mush_config::config::{StoreBackend, redact_redis_error, redact_redis_url};
     match config.store_backend().map_err(|e| e.to_string())? {
         StoreBackend::Redis => {
             let url = &config.store.redis_url;
-            let store = mush_store::RedisStore::connect(url)
-                .await
-                .map_err(|e| format!("cannot reach Redis at {url}: {e}"))?;
+            let safe_url = redact_redis_url(url);
+            let store = mush_store::RedisStore::connect(url).await.map_err(|e| {
+                let err = redact_redis_error(url, &e);
+                format!("cannot reach Redis at {safe_url}: {err}")
+            })?;
             Ok(Arc::new(store))
         }
         StoreBackend::Memory => Ok(Arc::new(mush_store::InMemoryStore::new())),
@@ -3185,6 +3235,7 @@ mod tests {
             // mirror, it just cannot report a detach to a server that is gone.
             boundary: BoundaryHandle::default(),
             lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
             controls: Arc::new(controls::GatewayControls::default()),
             interval: SITEBAN_REFRESH,
         };
@@ -3219,6 +3270,7 @@ mod tests {
             sessions: Arc::new(SessionManager::new()),
             boundary: BoundaryHandle::default(),
             lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
             controls: Arc::new(controls::GatewayControls::default()),
             interval: SITEBAN_REFRESH,
         };
@@ -3292,6 +3344,7 @@ mod tests {
             sessions: Arc::clone(&sessions),
             boundary,
             lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
             controls: Arc::new(controls::GatewayControls::default()),
             interval: SITEBAN_REFRESH,
         };
@@ -3425,6 +3478,7 @@ mod tests {
             sessions: Arc::clone(&sessions),
             boundary: boundary.clone(),
             lifecycle: Arc::clone(&lifecycle),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
             controls,
             interval: SITEBAN_REFRESH,
         };
@@ -3464,6 +3518,190 @@ mod tests {
             lifecycle.lock().unwrap().obligations(),
             0,
             "gap-time eviction must release lifecycle custody slot"
+        );
+    }
+
+    /// P2-EDGE-9: during a server restart gap (before `resync_boundary` and
+    /// `boundary.connect`), `SitebanMirror::refresh` must eject newly
+    /// sitebanned AND gap-revoked web connections locally, release their
+    /// lifecycle custody, and purge their queued `input_custody` commands so
+    /// neither is re-announced or replayed onto the freshly booted world.
+    #[tokio::test]
+    async fn p2_edge_9_pre_resync_refresh_purges_sitebanned_and_revoked_conns_and_custody() {
+        struct StubRevoker {
+            conns: Mutex<HashMap<u64, String>>,
+        }
+        impl controls::WebTokenRevoker for StubRevoker {
+            fn revoke_token_hash(&self, token_hash: &str) -> Vec<u64> {
+                self.conns
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|&(_, h)| h == token_hash)
+                    .map(|(&c, _)| c)
+                    .collect()
+            }
+            fn forget_conn(&self, conn: u64) {
+                self.conns.lock().unwrap().remove(&conn);
+            }
+            fn live_token_hashes(&self) -> Vec<String> {
+                let map = self.conns.lock().unwrap();
+                let mut seen = HashSet::new();
+                map.values()
+                    .filter(|h| seen.insert((*h).clone()))
+                    .cloned()
+                    .collect()
+            }
+        }
+
+        let sessions = Arc::new(SessionManager::new());
+        let (tx_banned, _rx_banned) = mpsc::channel::<Arc<Envelope>>(8);
+        let (tx_revoked, _rx_revoked) = mpsc::channel::<Arc<Envelope>>(8);
+        let (tx_good, _rx_good) = mpsc::channel::<Arc<Envelope>>(8);
+        sessions.attach(
+            ConnectionHandle::new_structured(ConnId(21), addr(99), ansi_caps(true), tx_banned),
+            CharKey(201),
+            "banned_acct".to_string(),
+        );
+        sessions.attach(
+            ConnectionHandle::new_structured(ConnId(22), addr(100), ansi_caps(true), tx_revoked),
+            CharKey(202),
+            "revoked_acct".to_string(),
+        );
+        sessions.attach(
+            ConnectionHandle::new_structured(ConnId(23), addr(101), ansi_caps(true), tx_good),
+            CharKey(203),
+            "good_acct".to_string(),
+        );
+
+        let store: Arc<dyn ObjectStore> = Arc::new(mush_store::InMemoryStore::new());
+        let now = mush_config::unix_now_s();
+        let h_revoked = crate::web_bridge::token_hash("gap-revoked");
+        let h_good = crate::web_bridge::token_hash("still-good");
+        // Only `h_good` remains in the store; `h_revoked` was revoked during
+        // the restart gap and `127.0.0.99` was sitebanned during the gap.
+        store
+            .token_put(
+                h_good.clone(),
+                mush_store::TokenRecord {
+                    account: "good_acct".to_string(),
+                    created: now,
+                    expires: now + 3600,
+                },
+            )
+            .await
+            .unwrap();
+        store.set_ban("127.0.0.99", None, "gap ban").await.unwrap();
+
+        let controls = Arc::new(controls::GatewayControls::default());
+        controls.set_web_tokens(Arc::new(StubRevoker {
+            conns: Mutex::new(HashMap::from([(22, h_revoked), (23, h_good)])),
+        }));
+
+        let input_custody = Arc::new(Mutex::new(InputCustody::default()));
+        for (seq, (conn, actor, line)) in [
+            (1u64, (21u64, ObjId(201), "banned cmd")),
+            (2, (22, ObjId(202), "revoked cmd")),
+            (3, (23, ObjId(203), "good cmd")),
+        ] {
+            let req = GatewayRequest::new(
+                1,
+                seq,
+                GatewayInput::Cmd {
+                    conn,
+                    actor,
+                    line: line.to_string(),
+                },
+            );
+            assert!(matches!(
+                input_custody.lock().unwrap().admit(req),
+                InputCustodyAdmission::Admitted
+            ));
+        }
+
+        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<ToServer>();
+        let (tx, _metrics, lifecycle) = test_tx(raw_tx, usize::MAX, 0);
+        for (conn, actor) in [(21u64, ObjId(201)), (22, ObjId(202)), (23, ObjId(203))] {
+            lifecycle.lock().unwrap().connections.insert(
+                conn,
+                ConnectionCustody {
+                    actor,
+                    phase: LifecyclePhase::Live,
+                    restore_linkdead_on_cancel: false,
+                },
+            );
+        }
+
+        // Gateway is in a restart gap (boundary has no current server).
+        let boundary = BoundaryHandle::default();
+        boundary.enter_gap();
+        let mirror = SitebanMirror {
+            store,
+            guard: Arc::new(IpGuard::new()),
+            sessions: Arc::clone(&sessions),
+            boundary,
+            lifecycle: Arc::clone(&lifecycle),
+            input_custody: Arc::clone(&input_custody),
+            controls,
+            interval: SITEBAN_REFRESH,
+        };
+
+        // Pre-resync refresh runs while still in Gap: both conn 21 (sitebanned)
+        // and conn 22 (revoked token) are detached locally and purged from
+        // lifecycle + input_custody.
+        assert_eq!(mirror.refresh().await, 2);
+        assert!(sessions.conn_handle(ConnId(21)).is_none());
+        assert!(sessions.conn_handle(ConnId(22)).is_none());
+        assert!(sessions.conn_handle(ConnId(23)).is_some());
+        assert_eq!(lifecycle.lock().unwrap().obligations(), 1);
+
+        // Now run resync_boundary on the fresh server connection: ONLY conn 23
+        // is re-announced and ONLY conn 23's queued command is replayed.
+        let fresh_conn = Arc::new(BoundaryConn {
+            tx,
+            pending: SocketGatewayLink::pending_table(),
+        });
+        let resync = tokio::spawn({
+            let fresh_conn = Arc::clone(&fresh_conn);
+            let sessions = Arc::clone(&sessions);
+            let input_custody = Arc::clone(&input_custody);
+            async move { resync_boundary(&fresh_conn, &sessions, &input_custody).await }
+        });
+
+        let reannounce = raw_rx.recv().await.expect("ReAnnounce");
+        match reannounce {
+            ToServer::ReAnnounce(recs) => {
+                let ids: Vec<u64> = recs.iter().map(|r| r.conn).collect();
+                assert_eq!(ids, vec![23], "banned/revoked conns must not re-announce");
+            }
+            other => panic!("expected ReAnnounce, got {other:?}"),
+        }
+        let barrier = raw_rx.recv().await.expect("Barrier");
+        assert!(matches!(
+            barrier,
+            ToServer::Request {
+                id: RESYNC_BARRIER_REQUEST_ID,
+                req: ServiceReq::Barrier
+            }
+        ));
+        let waiter = fresh_conn
+            .pending
+            .lock()
+            .unwrap()
+            .waiters
+            .remove(&RESYNC_BARRIER_REQUEST_ID)
+            .expect("barrier waiter");
+        let _ = waiter.send(ServiceResp::Barrier);
+        assert_eq!(resync.await.unwrap().expect("resync ok"), 1);
+
+        let replayed = raw_rx.recv().await.expect("replayed input");
+        match replayed {
+            ToServer::Input(req) => assert_eq!(req.input.conn(), 23),
+            other => panic!("expected replayed Input for conn 23, got {other:?}"),
+        }
+        assert!(
+            raw_rx.try_recv().is_err(),
+            "no banned or revoked conn input may be replayed"
         );
     }
 

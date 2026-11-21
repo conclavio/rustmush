@@ -24,10 +24,16 @@ pub const LINK_ATTEMPT_WINDOW: Duration = Duration::from_secs(600);
 /// How often an unfollowed user typing in the DM is reminded to `/follow`.
 pub const HINT_INTERVAL: Duration = Duration::from_secs(600);
 
-/// Maximum Discord interaction/message handler tasks permitted in flight at
-/// once (STRAG-M11). Spawning handlers under this semaphore keeps slow REST,
-/// Redis, or IPC calls from stalling `twilight-gateway::Shard` heartbeats.
+/// Maximum Discord interaction (`SlashCommand`, `Component`, `Modal`) handler
+/// tasks permitted in flight at once (STRAG-M11). Spawning handlers under this
+/// semaphore keeps slow REST, Redis, or IPC calls from stalling
+/// `twilight-gateway::Shard` heartbeats.
 pub const MAX_CONCURRENT_EVENTS: usize = 64;
+
+/// Maximum Discord `Message` handler tasks (guild relay + DM lines) permitted
+/// in flight at once, isolated from [`MAX_CONCURRENT_EVENTS`] so guild message
+/// bursts cannot starve slash commands, buttons, or modals (P2-EDGE-19).
+pub const MAX_CONCURRENT_MESSAGES: usize = 32;
 
 /// Sliding window for per-user interaction rate limiting (STRAG-M11).
 pub const INTERACTION_WINDOW: Duration = Duration::from_secs(10);
@@ -35,6 +41,14 @@ pub const INTERACTION_WINDOW: Duration = Duration::from_secs(10);
 /// Maximum slash/component/modal interactions one Discord user may initiate
 /// per [`INTERACTION_WINDOW`] (STRAG-M11).
 pub const INTERACTION_PER_USER: usize = 10;
+
+/// Sliding window for per-user `DiscordEvent::Message` rate limiting
+/// (P2-EDGE-19).
+pub const MESSAGE_WINDOW: Duration = Duration::from_secs(10);
+
+/// Maximum `DiscordEvent::Message` events one Discord user may initiate per
+/// [`MESSAGE_WINDOW`] before dropping prior to hook/Redis work (P2-EDGE-19).
+pub const MESSAGE_PER_USER: usize = 15;
 
 /// Maximum distinct Discord user ids tracked simultaneously in each in-memory
 /// limiter/hint map (STRAG-M11).
@@ -213,21 +227,28 @@ impl LinkLimiter {
 }
 
 /// Per-user state the bot shares across spawned event tasks: the `/link`
-/// limiter, the per-user interaction rate limiter, and the bounded hint clock
-/// (the "use `/follow`" reminder, relay notes, and rate-limit warnings share
-/// one clock per user).
+/// limiter, the per-user interaction and message rate limiters, and the
+/// bounded hint clock (the "use `/follow`" reminder, relay notes, and
+/// rate-limit warnings share one clock per user).
 struct Loop {
     limiter: LinkLimiter,
     interactions: SlidingLimiter,
+    messages: SlidingLimiter,
     hinted: HashMap<u64, Instant>,
     max_hinted: usize,
 }
 
 impl Loop {
-    fn new(link_attempts: u32, interaction_limit: usize, max_users: usize) -> Loop {
+    fn new(
+        link_attempts: u32,
+        interaction_limit: usize,
+        message_limit: usize,
+        max_users: usize,
+    ) -> Loop {
         Loop {
             limiter: LinkLimiter::with_cap(link_attempts, max_users),
             interactions: SlidingLimiter::new(interaction_limit, INTERACTION_WINDOW, max_users),
+            messages: SlidingLimiter::new(message_limit, MESSAGE_WINDOW, max_users),
             hinted: HashMap::new(),
             max_hinted: max_users.max(1),
         }
@@ -302,7 +323,9 @@ pub async fn serve(
         events,
         config,
         MAX_CONCURRENT_EVENTS,
+        MAX_CONCURRENT_MESSAGES,
         INTERACTION_PER_USER,
+        MESSAGE_PER_USER,
         MAX_TRACKED_USERS,
         shutdown,
     )
@@ -316,7 +339,9 @@ async fn serve_with_limits(
     mut events: Box<dyn EventSource>,
     config: DiscordConfig,
     max_concurrent: usize,
+    max_concurrent_messages: usize,
     interaction_limit: usize,
+    message_limit: usize,
     max_tracked_users: usize,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServeError> {
@@ -328,9 +353,12 @@ async fn serve_with_limits(
     let state = Arc::new(Mutex::new(Loop::new(
         config.link_attempts_per_10m,
         interaction_limit,
+        message_limit,
         max_tracked_users,
     )));
-    let sem = Arc::new(Semaphore::new(max_concurrent.max(1)));
+    let interaction_sem = Arc::new(Semaphore::new(max_concurrent.max(1)));
+    let message_sem = Arc::new(Semaphore::new(max_concurrent_messages.max(1)));
+    let allowed_guild_id = config.guild_id;
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -343,22 +371,56 @@ async fn serve_with_limits(
                     tracing::error!("discord bot: gateway closed permanently");
                     return Err(ServeError::GatewayClosed);
                 };
-                dispatch_event(&hooks, &api, &state, &sem, event);
+                dispatch_event(
+                    &hooks,
+                    &api,
+                    &state,
+                    &interaction_sem,
+                    &message_sem,
+                    allowed_guild_id,
+                    event,
+                );
             }
         }
     }
 }
 
+fn event_guild_id(event: &DiscordEvent) -> Option<u64> {
+    match event {
+        DiscordEvent::Ready => None,
+        DiscordEvent::SlashCommand { guild_id, .. }
+        | DiscordEvent::Component { guild_id, .. }
+        | DiscordEvent::Modal { guild_id, .. }
+        | DiscordEvent::Message { guild_id, .. } => *guild_id,
+    }
+}
+
 /// Dispatch one gateway event onto a semaphore-bounded spawned task without
-/// ever blocking the gateway event loop (STRAG-M11).
+/// ever blocking the gateway event loop (STRAG-M11, P2-EDGE-19).
 fn dispatch_event(
     hooks: &Arc<dyn DiscordHooks>,
     api: &Arc<dyn DiscordApi>,
     state: &Arc<Mutex<Loop>>,
-    sem: &Arc<Semaphore>,
+    interaction_sem: &Arc<Semaphore>,
+    message_sem: &Arc<Semaphore>,
+    allowed_guild_id: u64,
     event: DiscordEvent,
 ) {
-    match &event {
+    // P2-EDGE-19: enforce `config.guild_id` on every guild-scoped event BEFORE
+    // touching per-user rate limiters, semaphores, or Redis hooks. DM events
+    // carry `guild_id: None` and are admitted normally.
+    if let Some(gid) = event_guild_id(&event)
+        && (allowed_guild_id == 0 || gid != allowed_guild_id)
+    {
+        tracing::debug!(
+            guild = gid,
+            expected = allowed_guild_id,
+            "discord bot: ignoring event from unconfigured guild"
+        );
+        return;
+    }
+
+    let target_sem = match &event {
         DiscordEvent::Ready => {
             tracing::info!("discord bot: gateway ready");
             return;
@@ -378,7 +440,7 @@ fn dispatch_event(
             };
             if !admitted {
                 tracing::debug!("discord bot: per-user interaction rate limit exceeded");
-                if warn_user && let Ok(permit) = Arc::clone(sem).try_acquire_owned() {
+                if warn_user && let Ok(permit) = Arc::clone(interaction_sem).try_acquire_owned() {
                     let api = Arc::clone(api);
                     tokio::spawn(async move {
                         let _permit = permit;
@@ -405,11 +467,24 @@ fn dispatch_event(
                 }
                 return;
             }
+            interaction_sem
         }
-        DiscordEvent::Message { .. } => {}
-    }
+        DiscordEvent::Message {
+            user_id, content, ..
+        } => {
+            if content.trim().is_empty() {
+                return;
+            }
+            let admitted = lock_loop(state).messages.admit(*user_id, Instant::now());
+            if !admitted {
+                tracing::debug!("discord bot: per-user message rate limit exceeded");
+                return;
+            }
+            message_sem
+        }
+    };
 
-    let Ok(permit) = Arc::clone(sem).try_acquire_owned() else {
+    let Ok(permit) = Arc::clone(target_sem).try_acquire_owned() else {
         tracing::warn!("discord bot: event concurrency cap reached; shedding event");
         return;
     };
@@ -601,6 +676,7 @@ async fn handle_event(
             channel_id,
             message_id,
             handle,
+            ..
         } => {
             tracing::debug!(
                 dm = channel_id.is_some(),
@@ -629,6 +705,7 @@ async fn handle_event(
             fields,
             message_id,
             handle,
+            ..
         } => {
             tracing::debug!(fields = fields.len(), "discord bot: modal submission");
             let reply = hooks
@@ -1138,7 +1215,7 @@ mod tests {
         );
         assert_eq!(limiter.len(), 1);
 
-        let mut lp = Loop::new(5, 10, 2);
+        let mut lp = Loop::new(5, 10, 15, 2);
         assert!(lp.hint_due_at(1, t0));
         assert!(lp.hint_due_at(2, t0));
         assert!(
@@ -1219,7 +1296,9 @@ mod tests {
             Box::new(source),
             config(),
             2,
+            2,
             10,
+            15,
             100,
             async move {
                 let _ = stop_rx.await;
@@ -1306,5 +1385,220 @@ mod tests {
             })
             .count();
         assert_eq!(throttled_replies, 1);
+    }
+
+    #[tokio::test]
+    async fn p2_edge_19_foreign_guild_events_rejected_before_hooks_or_limiters() {
+        let wrong_guild = Some(999);
+        let right_guild = Some(42);
+        let events = vec![
+            DiscordEvent::SlashCommand {
+                user_id: 1,
+                guild_id: wrong_guild,
+                name: "whoami".to_string(),
+                options: vec![],
+                handle: InteractionHandle {
+                    id: 1,
+                    token: "t".to_string(),
+                },
+            },
+            DiscordEvent::Component {
+                user_id: 1,
+                guild_id: wrong_guild,
+                custom_id: "btn:foreign".to_string(),
+                values: vec![],
+                channel_id: Some(10),
+                message_id: Some(20),
+                handle: InteractionHandle {
+                    id: 2,
+                    token: "t".to_string(),
+                },
+            },
+            DiscordEvent::Modal {
+                user_id: 1,
+                guild_id: wrong_guild,
+                custom_id: "mod:foreign".to_string(),
+                fields: vec![("k".into(), "v".into())],
+                message_id: Some(21),
+                handle: InteractionHandle {
+                    id: 3,
+                    token: "t".to_string(),
+                },
+            },
+            DiscordEvent::Message {
+                message_id: 4,
+                user_id: 1,
+                channel_id: 777,
+                guild_id: wrong_guild,
+                content: "foreign guild message".to_string(),
+            },
+            // Same user in the configured guild and DM still works (limiters not consumed).
+            DiscordEvent::Component {
+                user_id: 1,
+                guild_id: right_guild,
+                custom_id: "btn:home".to_string(),
+                values: vec![],
+                channel_id: Some(10),
+                message_id: Some(22),
+                handle: InteractionHandle {
+                    id: 5,
+                    token: "t".to_string(),
+                },
+            },
+            DiscordEvent::Message {
+                message_id: 6,
+                user_id: 1,
+                channel_id: 777,
+                guild_id: right_guild,
+                content: "home guild message".to_string(),
+            },
+        ];
+        let (api, hooks) = run_events(events).await;
+        let interactions = hooks.interactions.lock().unwrap();
+        assert_eq!(interactions.len(), 1);
+        assert_eq!(interactions[0].1.custom_id, "btn:home");
+        let relayed = hooks.relayed.lock().unwrap();
+        assert_eq!(relayed.len(), 1);
+        assert_eq!(relayed[0].2, "home guild message");
+        assert!(
+            replies(&api).is_empty(),
+            "foreign slash command must not reply"
+        );
+    }
+
+    #[tokio::test]
+    async fn p2_edge_19_message_burst_rate_limited_and_isolated_from_interactions() {
+        struct StallingMessageHooks {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            whoami_hits: Mutex<Vec<u64>>,
+            relay_hits: Mutex<Vec<u64>>,
+        }
+
+        impl DiscordHooks for StallingMessageHooks {
+            fn link_redeem<'a>(&'a self, _: u64, _: &'a str) -> BoxFuture<'a, LinkOutcome> {
+                Box::pin(async { LinkOutcome::Refused })
+            }
+            fn unlink(&self, _: u64) -> BoxFuture<'_, UnlinkOutcome> {
+                Box::pin(async { UnlinkOutcome::NotLinked })
+            }
+            fn whoami(&self, user_id: u64) -> BoxFuture<'_, Option<WhoAmI>> {
+                Box::pin(async move {
+                    self.whoami_hits.lock().unwrap().push(user_id);
+                    None
+                })
+            }
+            fn follow<'a>(&'a self, _: u64, _: Option<&'a str>) -> BoxFuture<'a, FollowOutcome> {
+                Box::pin(async { FollowOutcome::NotLinked })
+            }
+            fn detach(&self, _: u64) -> BoxFuture<'_, DetachOutcome> {
+                Box::pin(async { DetachOutcome::NotFollowing })
+            }
+            fn dm_line<'a>(&'a self, _: u64, _: &'a str) -> BoxFuture<'a, LineOutcome> {
+                Box::pin(async { LineOutcome::NotFollowing })
+            }
+            fn interaction(&self, _: u64, _: Interaction) -> BoxFuture<'_, InteractionReply> {
+                Box::pin(async { InteractionReply::Ack })
+            }
+            fn relay_line<'a>(
+                &'a self,
+                user_id: u64,
+                _: u64,
+                _: &'a str,
+            ) -> BoxFuture<'a, RelayLineOutcome> {
+                Box::pin(async move {
+                    self.relay_hits.lock().unwrap().push(user_id);
+                    if user_id == 99 {
+                        self.entered.notify_waiters();
+                        self.release.notified().await;
+                    }
+                    RelayLineOutcome::Ignored
+                })
+            }
+        }
+
+        let api = FakeApi::new();
+        let hooks = Arc::new(StallingMessageHooks {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            whoami_hits: Mutex::new(Vec::new()),
+            relay_hits: Mutex::new(Vec::new()),
+        });
+        let (source, tx) = FakeEvents::new();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        // Message semaphore = 1, interaction semaphore = 2, message per-user = 2.
+        let task = tokio::spawn(serve_with_limits(
+            hooks.clone(),
+            api.clone(),
+            Box::new(source),
+            config(),
+            2,
+            1,
+            10,
+            2,
+            100,
+            async move {
+                let _ = stop_rx.await;
+            },
+        ));
+
+        // Saturate the 1-slot message semaphore with a stalled guild message.
+        let entered = hooks.entered.notified();
+        tx.send(DiscordEvent::Message {
+            message_id: 1,
+            user_id: 99,
+            channel_id: 777,
+            guild_id: Some(42),
+            content: "stall".to_string(),
+        })
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), entered)
+            .await
+            .expect("stalled message must enter");
+
+        // Slash command still succeeds immediately because interactions have
+        // their own semaphore isolated from messages.
+        tx.send(slash(5, "whoami", &[])).unwrap();
+        let mut waited = 0;
+        while !hooks.whoami_hits.lock().unwrap().contains(&5) && waited < 40 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        assert!(
+            hooks.whoami_hits.lock().unwrap().contains(&5),
+            "saturated message semaphore must not block slash commands"
+        );
+
+        // Release stall and verify per-user message rate limit (cap = 2).
+        hooks.release.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        for seq in 0..5u64 {
+            tx.send(DiscordEvent::Message {
+                message_id: 10 + seq,
+                user_id: 77,
+                channel_id: 777,
+                guild_id: Some(42),
+                content: format!("spam {seq}"),
+            })
+            .unwrap();
+            // Let the 1-slot message semaphore clear between sends so the
+            // per-user message rate limit (cap = 2) is what drops messages 2..5.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let user77_hits = hooks
+            .relay_hits
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&u| u == 77)
+            .count();
+        assert_eq!(
+            user77_hits, 2,
+            "per-user message rate limit must cap message dispatch before hooks"
+        );
+
+        let _ = stop_tx.send(());
+        task.await.unwrap().unwrap();
     }
 }
