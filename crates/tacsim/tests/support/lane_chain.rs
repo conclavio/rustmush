@@ -1,4 +1,4 @@
-//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v50 added, stripped
+//! **The lane's newest strip chain** (doc 43 cut TS.8): what lanes v17–v51 added, stripped
 //! newest first, so a suite that rebuilds an older lane from the shipped one calls one function
 //! and a lane bump extends one chain.
 //!
@@ -45,9 +45,38 @@ pub const SEEDED_PARTS: [(&str, &str, u64); 18] = [
     ("stickney_yards", "tacsim.part.plant.hauler_mk1", 6),
 ];
 
+/// **Doc 50 cut OP.7b (lane v51): the Republic Customs store taken out**: the customs office's
+/// vendor row at Stickney, its capital back at 10,000 and its acceptor role off, so a strip chain
+/// rebuilds a lane before v51 (idempotent). The chain's head.
+pub fn strip_customs_store(doc: &mut Value) {
+    let Some(port) = doc
+        .get_mut("entries")
+        .and_then(|e| e.get_mut("stickney_port"))
+        .and_then(|e| e.get_mut("def"))
+    else {
+        return;
+    };
+    if let Some(vendors) = port.get_mut("vendors").and_then(Value::as_array_mut) {
+        vendors.retain(|v| v.get("org").and_then(Value::as_str) != Some("republic_customs"));
+    }
+    if let Some(orgs) = port.get_mut("orgs").and_then(Value::as_array_mut) {
+        for org in orgs
+            .iter_mut()
+            .filter(|o| o.get("id").and_then(Value::as_str) == Some("republic_customs"))
+        {
+            org["capital_major"] = 10_000.into();
+            if let Some(org) = org.as_object_mut() {
+                org.remove("roles");
+            }
+        }
+    }
+}
+
 /// **Doc 50 cut OP.5 (lane v50): the Isidis import duty taken out**: the Isidis region row's
-/// `terms`, so a strip chain rebuilds a lane before v50 (idempotent). The chain's head.
+/// `terms`, so a strip chain rebuilds a lane before v50 (idempotent); lane v51's
+/// [`strip_customs_store`] first.
 pub fn strip_import_duty(doc: &mut Value) {
+    strip_customs_store(doc);
     let Some(rows) = doc
         .get_mut("entries")
         .and_then(|e| e.get_mut("regions"))

@@ -29,7 +29,8 @@ use mush_core::{
     OfferExecutionContext, OfferSubmission, RequestUid, ScopedIdempotencyKey,
 };
 use mush_economy::{
-    ContractState, EconomyConfig, EconomyStore, EscalationKind, PartyCap, PartyCapSource, VaultId,
+    ContractState, CustodyRef, EconomyConfig, EconomyStore, EscalationKind, PartyCap,
+    PartyCapSource, VaultId,
 };
 use mush_inventory::{EndpointRef, InventoryHandles, Lineage, LotId};
 use mush_market::{CapacityProvider, ListingId, MarketStore, Presence, VenueGate};
@@ -2581,7 +2582,8 @@ fn ic8_a_world_on_lane_v2_takes_v3_by_the_shelf() {
         let map = port_map(&rig.tw, entry);
         assert!(map.clerk.is_some(), "{entry}: the clerk");
         // Doc 39 cut IN.5: Freeport Works is Ceres's fourth.
-        let vendors = if entry == "ceres_port" { 4 } else { 3 };
+        // Doc 50 cut OP.7b (lane v51): the Republic Customs Office is Stickney's fourth.
+        let vendors = 4;
         assert_eq!(map.vendors.len(), vendors, "{entry}: the vendors");
         assert!(!map.boards.is_empty(), "{entry}: the boards");
         for row in map.vendors.values() {
@@ -3242,4 +3244,57 @@ fn a8_a_world_on_lane_v7_takes_v8_by_the_shelf() {
     }
     sweep(&mut rig.tw, 120);
     stock(&mut rig);
+}
+
+/// **Doc 50 cut OP.7b: Stickney's clerk keeps the customs office's store**
+/// (`port::vendor::CLERK_STOREFRONT`). The shipped lane backs the Republic Customs Office's
+/// storefront vault on Stickney's stock clerk, the `DARK` Thing in the staff spine, so no object
+/// is made for it. A later version of the lane that changes Stickney's entry (the row's note),
+/// applied by the shelf, re-runs the applier over the recorded row: it keeps the clerk and the
+/// vault, and makes nothing.
+#[test]
+fn op7b_the_clerk_keeps_the_customs_store_and_a_reapply_keeps_it() {
+    let again = mush_content::load_pack(&lane_variant(LANE_VERSION + 1, |doc| {
+        let vendors = doc["entries"]["stickney_port"]["def"]["vendors"]
+            .as_array_mut()
+            .expect("Stickney's vendors");
+        let row = vendors
+            .iter_mut()
+            .find(|v| v["org"] == "republic_customs")
+            .expect("the customs office's row");
+        row["note"] = serde_json::json!("A later note.");
+    }))
+    .expect("the variant verifies");
+    let mut rig = boot(Roster::bare().with_shelf(vec![again]));
+    let clerk = clerk(&rig.tw, "stickney_port");
+    let row = port_map(&rig.tw, "stickney_port").vendors[&cid("republic_customs")].clone();
+    assert_eq!(ObjId(row.storefront), clerk, "the clerk keeps the store");
+    let obj = rig.tw.world().get(clerk).expect("the clerk").clone();
+    assert!(
+        obj.flags.contains(mush_core::Flags::DARK),
+        "dark, staff-only"
+    );
+    let backing = rig.tw.world().module_state::<EconomyStore>().and_then(|e| {
+        e.snapshot()
+            .vault(VaultId(row.vault))
+            .map(|v| v.backing.clone())
+    });
+    assert_eq!(backing, Some(CustodyRef::Container(clerk)));
+    assert!(row.vendor.is_some() && row.grant.is_some());
+    let objects = rig.tw.world().iter().count();
+    let (plan, apply) = plan_and_apply(&mut rig.tw);
+    assert!(
+        apply.contains(&format!("Applied {LANE_PACK}@{}", LANE_VERSION + 1))
+            && apply.contains("1 updated")
+            && !apply.contains("STOPPED"),
+        "the update applies whole: {plan}\n{apply}"
+    );
+    let after = port_map(&rig.tw, "stickney_port").vendors[&cid("republic_customs")].clone();
+    assert_eq!(after.storefront, row.storefront, "the recorded store");
+    assert_eq!(after.vault, row.vault, "the same vault");
+    assert_eq!(
+        rig.tw.world().iter().count(),
+        objects,
+        "a re-apply makes nothing"
+    );
 }

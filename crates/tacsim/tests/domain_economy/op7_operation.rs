@@ -30,7 +30,8 @@ use tacsim::operations::{
 use tacsim::port_tick::pending_notices;
 
 use crate::driving_rig::{
-    OutputEvent, Rig, drain, land_quietly, pilot, prospector, run, said, stocked,
+    OutputEvent, Rig, cid, drain, land_quietly, pilot, port_map, prospector, reboot, run, said,
+    station_room, stocked,
 };
 
 /// The operation number the fake frame hands out.
@@ -233,5 +234,111 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
     assert!(
         !board.contains(JOB_TAG.trim()),
         "the tag ends with it: {board}"
+    );
+}
+
+/// Seat a fake frame in the slot the composition root fills.
+fn seat(rig: &mut Rig) -> Arc<FakeFrame> {
+    let frame = Arc::new(FakeFrame::default());
+    let seated: Arc<dyn OperationFrame> = frame.clone();
+    rig.tw
+        .world_mut()
+        .module_state_insert(OperationFrameSlot::new(seated));
+    frame
+}
+
+/// **Doc 50 cut OP.7b: the Republic bids at Stickney while the operation runs** (Q-50-27):
+/// Stickney's clerk keeps the customs office's store, a restart keeps it there, and the arm's bid
+/// stands from the declaration to the resolution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op7b_the_republic_bids_at_stickney_while_the_operation_runs() {
+    let rig = stocked();
+    // The store: Stickney's DARK stock clerk in the staff spine backs the office's vault.
+    let map = port_map(&rig.tw, "stickney_port");
+    let row = map.vendors[&cid("republic_customs")].clone();
+    let clerk = map
+        .clerk
+        .as_ref()
+        .map(|c| ObjId(c.thing))
+        .expect("the clerk");
+    assert_eq!(ObjId(row.storefront), clerk, "the clerk keeps the store");
+    let spine = station_room(&rig.tw, "stickney_port", "room.p15_maintenance");
+    let obj = rig.tw.world().get(clerk).expect("the clerk").clone();
+    assert_eq!(obj.location, Some(spine), "in the staff spine");
+    assert!(
+        obj.flags.contains(mush_core::Flags::DARK),
+        "dark, staff-only"
+    );
+    assert!(row.vendor.is_some(), "the market vendor is registered");
+
+    // A restart keeps the store with the clerk, through the map row.
+    let mut rig = reboot(rig, &[]);
+    let again = port_map(&rig.tw, "stickney_port").vendors[&cid("republic_customs")].clone();
+    assert_eq!(again.storefront, row.storefront, "the same store");
+    assert_eq!(again.vault, row.vault, "the same vault");
+
+    // The Review fills and the Republic declares: its bid stands at Stickney.
+    let frame = seat(&mut rig);
+    let review = tacsim::concession::review_clock(rig.tw.world()).expect("the Review");
+    let said = run(
+        &mut rig.tw,
+        GOD,
+        &format!(
+            "@clock/advance {}={}",
+            review.id.0,
+            review.segments - review.filled
+        ),
+    );
+    assert!(!said.contains("Usage"), "{said}");
+    let _ = fires(&mut rig, 4);
+    assert_eq!(frame.declared.lock().expect("lock").len(), 1);
+    let listing = tacsim::isidis_op::record(rig.tw.world())
+        .and_then(|r| r.bid)
+        .expect("the Republic's bid is posted");
+    let bid = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|s| s.listing(mush_market::ListingId(listing)).cloned())
+        .expect("the bid's listing");
+    assert_eq!(bid.price.minor(), tacsim::op_page::BID_CR * 100);
+    assert_eq!(bid.quantity, tacsim::op_page::BID_T);
+    assert_eq!(bid.market.as_str(), "stickney");
+    // The office holds the bond and still funds the whole bid.
+    let (_, account) = tacsim::polity::lane_org_account(rig.tw.world(), &cid("republic_customs"))
+        .expect("the office's account");
+    let available = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| e.snapshot().account(account).and_then(|a| a.available()))
+        .map_or(0, |a| a.minor());
+    let whole =
+        tacsim::op_page::BID_CR * i64::try_from(tacsim::op_page::BID_T).expect("fits") * 100;
+    assert!(available >= whole, "{available} funds {whole}");
+    let hauler = pilot(&mut rig, "Seller", 93);
+    let page = run(&mut rig.tw, hauler, OPERATION_VERB);
+    assert!(
+        page.contains(&format!(
+            "The Republic's bid: Republic Customs Office buys up to {} t of",
+            tacsim::op_page::BID_T
+        )) && page.contains(&format!("+market/sell {listing}=<qty>")),
+        "{page}"
+    );
+
+    // The defenders hold: the bid is withdrawn with the operation.
+    *frame.phase.lock().expect("lock") = Some(OperationPhase::Settled);
+    *frame.outcome.lock().expect("lock") = Some(OperationOutcome::DeclarerFailed);
+    let _ = fires(&mut rig, 4);
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<mush_market::MarketStore>()
+            .is_some_and(|s| s.listing(mush_market::ListingId(listing)).is_none()),
+        "the bid is withdrawn"
+    );
+    assert_eq!(
+        tacsim::isidis_op::record(rig.tw.world()).and_then(|r| r.bid),
+        None
     );
 }
