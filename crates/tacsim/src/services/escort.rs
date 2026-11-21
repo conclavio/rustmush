@@ -72,6 +72,16 @@ pub const DECIDE_LEAD_IC: i64 = DAY;
 /// (doc 50 cut OP.3, Q-50-63's provisional grace): a dozen port fires, so a high clock rate
 /// cannot turn the one fire between two undocks into a departure.
 pub const LAUNCH_GRACE_WALL_S: i64 = 60;
+/// **Maximum cumulative linkdead grace IC seconds credited over one escort contract**: two IC
+/// hours ([`crate::space::tick::SPACE_LINKDEAD_GRACE_WALL_S`] at 24:1), bounding cumulative
+/// grace even under accelerated clock rates or disconnect/reconnect cycling.
+pub const LINKDEAD_GRACE_IC_S: i64 = 7_200;
+
+/// Whether `n` is zero (for serde `skip_serializing_if`).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
+}
 
 /// **The departure gap that still counts as flying together** (doc 50b, P3): [`TOGETHER_IC`], or the
 /// IC seconds [`LAUNCH_GRACE_WALL_S`] real seconds make at the world's clock rate, whichever is
@@ -284,6 +294,21 @@ pub struct Watch {
     /// Whether the protected hull lay docked at a port on the way at the last fire.
     #[serde(default)]
     pub between: bool,
+    /// Whether the escort had verified same-mode proximity (`near == true`) on the current leg or
+    /// sortie before entering linkdead grace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub was_near: bool,
+    /// The last real wall second (`World::now`) this watch stepped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_wall: Option<i64>,
+    /// Cumulative real wall seconds of linkdead grace consumed over this escort contract
+    /// (persisted on the escort record and never reset when a player reconnects).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub grace_wall_s: i64,
+    /// Cumulative IC seconds of linkdead grace consumed over this escort contract
+    /// (persisted on the escort record and never reset when a player reconnects).
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub grace_ic: i64,
 }
 
 impl Watch {
@@ -374,6 +399,11 @@ impl EscortJob {
         }
         if self.accept_by_ic < self.posted_ic {
             return Err("the wait ends before the posting".to_owned());
+        }
+        if let Some(watch) = &self.watch
+            && (watch.grace_wall_s < 0 || watch.grace_ic < 0)
+        {
+            return Err("cumulative grace cannot be negative".to_owned());
         }
         Ok(())
     }
@@ -532,11 +562,14 @@ impl FactProvider for EscortFactProvider {
 
 // ---- the host's reading ---------------------------------------------------------------------
 
-/// **Whether `escort` is near `protected` in space** (Q-48-46, provisional): both in one bubble,
-/// or both on one passage: the same route, departed within [`together_ic`], and neither held in
-/// a bubble the other is not in.
+/// **Whether `escort` is near `protected` in space** (Q-48-46, provisional): `escort` is a
+/// space-capable ship hull, and both are in one bubble, or both on one passage (the same route,
+/// departed within [`together_ic`], and neither held in a bubble the other is not in).
 #[must_use]
 pub fn near_in_space(w: &World, protected: ObjId, escort: ObjId) -> bool {
+    if crate::port::ship::hull_view(w, escort).is_none() {
+        return false;
+    }
     if let Some(book) = w.module_state::<crate::space::tick::SpaceBubbleBook>() {
         if let Some(bubble) = book.active_for_hull(protected) {
             return bubble.contains_carrier(escort)
@@ -544,7 +577,10 @@ pub fn near_in_space(w: &World, protected: ObjId, escort: ObjId) -> bool {
                     .active_for_hull(escort)
                     .is_some_and(|other| other.domain == bubble.domain);
         }
-        if book.active_for_hull(escort).is_some() {
+        if book.active_for_hull(escort).is_some()
+            || book.free_flights.contains_key(&escort)
+            || book.cluster_sessions.contains_key(&escort)
+        {
             return false;
         }
     }
@@ -554,7 +590,11 @@ pub fn near_in_space(w: &World, protected: ObjId, escort: ObjId) -> bool {
     let (Some(a), Some(b)) = (journeys.get(protected), journeys.get(escort)) else {
         return false;
     };
-    a.route() == b.route() && (a.departed().at - b.departed().at).abs() <= together_ic(w)
+    matches!(
+        b.state(),
+        mush_sim::JourneyState::Cruising | mush_sim::JourneyState::Arrived
+    ) && a.route() == b.route()
+        && (a.departed().at - b.departed().at).abs() <= together_ic(w)
 }
 
 /// **Whether `escort` is near `protected` in a field**: both deployed in the one site.
@@ -563,21 +603,91 @@ pub fn near_in_field(w: &World, site: &str, escort: ObjId) -> bool {
     crate::field::field_of_unit(w, escort).is_some_and(|s| s.as_str() == site)
 }
 
-/// **Whether `escort`'s player has dropped and the grace still runs**: in space the linkdead
-/// window not expired; in a field the unit away with its player's link lost under the grace.
-#[must_use]
-pub fn within_grace(w: &World, escort: ObjId) -> bool {
-    if let Some(state) = w
-        .module_state::<crate::space::tick::SpaceBubbleBook>()
-        .and_then(|book| book.linkdead_state(escort))
-    {
-        return !state.grace_expired
-            && w.now() - state.grace_started_wall_s
-                < crate::space::tick::SPACE_LINKDEAD_GRACE_WALL_S;
+/// Cumulative real wall seconds of linkdead grace permitted for `journey` over the whole contract.
+const fn max_grace_wall_s(journey: &Journey) -> i64 {
+    match journey {
+        Journey::Passage { .. } => crate::space::tick::SPACE_LINKDEAD_GRACE_WALL_S,
+        Journey::Field { .. } => crate::field::absent::FIELD_LINKDEAD_GRACE_WALL_S,
     }
-    crate::field::absent::away_of(w, escort).is_some_and(|away| {
-        !away.handed
-            && w.now() - away.since_wall_s < crate::field::absent::FIELD_LINKDEAD_GRACE_WALL_S
+}
+
+/// The wall second when `escort`'s current same-mode linkdead window began, if `escort` matches
+/// `journey`'s mode and has an active, unexpired linkdead grace state for that mode.
+fn raw_grace_started_wall(w: &World, journey: &Journey, escort: ObjId) -> Option<i64> {
+    match journey {
+        Journey::Passage { .. } => {
+            // A ground rig or non-ship vehicle can never satisfy space passage escort grace.
+            crate::port::ship::hull_view(w, escort)?;
+            let book = w.module_state::<crate::space::tick::SpaceBubbleBook>()?;
+            // Only hulls actually cruising on a passage or inside an active space bubble qualify
+            // (never hulls parked in decoupled free-flight or asteroid cluster sessions, whose
+            // paused `JourneyState::Promoted` record still sits in `JourneyBook`).
+            if book.free_flights.contains_key(&escort)
+                || book.cluster_sessions.contains_key(&escort)
+            {
+                return None;
+            }
+            let on_passage = w
+                .module_state::<mush_sim::JourneyBook>()
+                .and_then(|jb| jb.get(escort))
+                .is_some_and(|j| matches!(j.state(), mush_sim::JourneyState::Cruising));
+            let in_bubble = book.active_for_hull(escort).is_some();
+            if !on_passage && !in_bubble {
+                return None;
+            }
+            let state = book.linkdead_state(escort)?;
+            (!state.grace_expired
+                && w.now().saturating_sub(state.grace_started_wall_s)
+                    < crate::space::tick::SPACE_LINKDEAD_GRACE_WALL_S)
+                .then_some(state.grace_started_wall_s)
+        }
+        Journey::Field { site } => {
+            if !near_in_field(w, site, escort) {
+                return None;
+            }
+            let away = crate::field::absent::away_of(w, escort)?;
+            (!away.handed
+                && w.now().saturating_sub(away.since_wall_s)
+                    < crate::field::absent::FIELD_LINKDEAD_GRACE_WALL_S)
+                .then_some(away.since_wall_s)
+        }
+    }
+}
+
+/// **Whether `escort`'s player has dropped and the contract's mode-scoped linkdead grace still
+/// runs**: requires matching journey mode, prior verified proximity (`Watch::was_near`), active
+/// unexpired linkdead state, and remaining cumulative contract grace budget.
+#[must_use]
+pub fn within_grace(w: &World, job: &EscortJob, escort: ObjId) -> bool {
+    let Some(watch) = job.watch.as_ref() else {
+        return false;
+    };
+    watch.was_near
+        && watch.grace_wall_s < max_grace_wall_s(&job.journey)
+        && watch.grace_ic < LINKDEAD_GRACE_IC_S
+        && raw_grace_started_wall(w, &job.journey, escort).is_some()
+}
+
+/// Whether `escort` matches the asset class required for `journey`.
+fn escort_matches_journey(w: &World, journey: &Journey, escort: ObjId) -> Result<(), &'static str> {
+    match journey {
+        Journey::Passage { .. } => crate::port::ship::hull_view(w, escort)
+            .map(|_| ())
+            .ok_or("a passage escort takes a ship hull"),
+        Journey::Field { .. } => mush_tactics::module::unit_of(w, escort)
+            .map(|_| ())
+            .ok_or("a field escort takes a combat unit or rig"),
+    }
+}
+
+/// Whether the haul an escort was posted for has closed or entered pre-delivery return before the
+/// escort's journey began.
+fn haul_cancelled_before_journey(w: &World, contract: u64) -> bool {
+    super::haul::haul_of(w, contract).is_none_or(|h| {
+        matches!(
+            h.stage,
+            super::haul::HaulStage::Closed | super::haul::HaulStage::Returning
+        )
     })
 }
 
@@ -628,12 +738,8 @@ fn near(w: &World, job: &EscortJob, escort: ObjId) -> bool {
     }
 }
 
-/// Whether the escort has left the journey: docked elsewhere while she is under way, or out of
-/// the field while she is in it, and not inside the linkdead grace.
-fn left(w: &World, job: &EscortJob, escort: ObjId) -> bool {
-    if within_grace(w, escort) {
-        return false;
-    }
+/// Whether the escort has left the journey, disregarding linkdead grace.
+fn left_without_grace(w: &World, job: &EscortJob, escort: ObjId) -> bool {
     match &job.journey {
         Journey::Passage { to, .. } => {
             // Still docked inside the departure gap is not leaving (48e services:G3; doc 50 cut
@@ -659,22 +765,30 @@ fn needs_step(ctx: &Ctx<'_>, job: &EscortJob) -> bool {
     let now = ctx.w.world_ic_now().at;
     let live = super::contract_state(ctx.w, job.contract).is_some_and(|s| s.is_live());
     match job.stage {
-        EscortStage::Posted => now > job.accept_by_ic || !live,
+        EscortStage::Posted => {
+            now > job.accept_by_ic
+                || !live
+                || job
+                    .haul
+                    .is_some_and(|contract| haul_cancelled_before_journey(ctx.w, contract))
+        }
         EscortStage::Taken => {
             job.with.is_none()
+                || job
+                    .haul
+                    .is_some_and(|contract| haul_cancelled_before_journey(ctx.w, contract))
                 || (job.protected == UNBOUND
                     && job.haul.is_some_and(|contract| {
-                        let haul = super::haul::haul_of(ctx.w, contract);
-                        haul.as_ref().and_then(|h| h.hull).is_some()
-                            || haul
-                                .as_ref()
-                                .is_none_or(|h| h.stage == super::haul::HaulStage::Closed)
+                        super::haul::haul_of(ctx.w, contract).is_some_and(|h| {
+                            h.stage == super::haul::HaulStage::Aboard && h.hull.is_some()
+                        })
                     }))
                 || !live
                 || job.due_ic.is_some_and(|due| now >= due)
-                || wrecked(ctx.w, job.protected)
-                || captured(ctx.w, job.protected)
-                || journey_now(ctx.w, job).0
+                || (job.protected != UNBOUND
+                    && (wrecked(ctx.w, job.protected)
+                        || captured(ctx.w, job.protected)
+                        || journey_now(ctx.w, job).0))
         }
         EscortStage::Watching => true,
         EscortStage::Kept | EscortStage::Failed => !live,
@@ -726,6 +840,23 @@ fn step(ctx: &mut Ctx<'_>, job: &mut EscortJob) -> bool {
     let live = state.as_ref().is_some_and(|s| s.is_live());
     match job.stage {
         EscortStage::Posted => {
+            if job
+                .haul
+                .is_some_and(|contract| haul_cancelled_before_journey(ctx.w, contract))
+            {
+                if live
+                    && !matches!(
+                        mush_economy::cancel_job(ctx, ContractId(job.contract)),
+                        Ok(true)
+                    )
+                {
+                    return false;
+                }
+                job.stage = EscortStage::Closed;
+                let line = TOLD_HAUL_GONE.replace("{job}", &job.job());
+                tell_both(ctx, job, &line);
+                return true;
+            }
             if now <= job.accept_by_ic && live {
                 return false;
             }
@@ -769,6 +900,109 @@ fn count(watch: &mut Watch, now: i64, is_near: bool, field_closed: bool) -> i64 
     dt
 }
 
+/// Handle haul binding and pre-journey haul cancellation for a `Taken` haul escort (`P2-TSW-22`).
+/// Returns `Some(changed)` when `watch` should return early, or `None` to continue normal checks.
+fn step_haul_binding(
+    ctx: &mut Ctx<'_>,
+    job: &mut EscortJob,
+    escort: ObjId,
+    now: i64,
+    live: bool,
+) -> Option<bool> {
+    if job.stage != EscortStage::Taken {
+        return None;
+    }
+    let contract = job.haul?;
+    if haul_cancelled_before_journey(ctx.w, contract) {
+        if live
+            && !matches!(
+                mush_economy::cancel_job(ctx, ContractId(job.contract)),
+                Ok(true)
+            )
+        {
+            return Some(false);
+        }
+        job.stage = EscortStage::Closed;
+        let line = TOLD_HAUL_GONE.replace("{job}", &job.job());
+        tell_both(ctx, job, &line);
+        return Some(true);
+    }
+    if job.protected != UNBOUND {
+        return None;
+    }
+    let haul = super::haul::haul_of(ctx.w, contract);
+    // Only bind once the haul's `Load` leg has actually landed (`HaulStage::Aboard`), so a
+    // pre-load cancellation (`no_room` / `MAX_LEG_TRIES`) never leaves an escort bound to an
+    // empty hull.
+    if let Some(hull) = haul
+        .as_ref()
+        .filter(|h| h.stage == super::haul::HaulStage::Aboard)
+        .and_then(|h| h.hull)
+    {
+        // Doc 50b (OP.3): the hauler took the haul in the escort's own hull. A hull does not
+        // escort herself, whichever contract was taken first, so the escort is called off.
+        if hull == escort {
+            if !matches!(
+                mush_economy::cancel_job(ctx, ContractId(job.contract)),
+                Ok(true)
+            ) {
+                return Some(false);
+            }
+            job.stage = EscortStage::Closed;
+            let line = TOLD_SAME_HULL.replace("{job}", &job.job());
+            tell_both(ctx, job, &line);
+            return Some(true);
+        }
+        job.protected = hull;
+        return Some(true);
+    }
+    if !live || job.due_ic.is_some_and(|due| now >= due) {
+        return None;
+    }
+    Some(false)
+}
+
+/// Update `watch`'s prior-proximity and cumulative grace counters for one fire (`P2-TSW-10`).
+/// Returns `true` when this fire is covered by mode-scoped, bounded linkdead grace.
+fn advance_grace(
+    journey: &Journey,
+    watch: &mut Watch,
+    actually_near: bool,
+    grace_started: Option<i64>,
+    now: i64,
+    wall: i64,
+) -> bool {
+    let dt_ic = now.saturating_sub(watch.last_ic).max(0);
+    let wall_base = watch
+        .last_wall
+        .unwrap_or_else(|| grace_started.unwrap_or(wall));
+    let dt_wall = wall.saturating_sub(wall_base).max(0);
+    watch.last_wall = Some(wall);
+    if actually_near {
+        watch.was_near = true;
+        return false;
+    }
+    let wall_cap = max_grace_wall_s(journey);
+    if watch.was_near
+        && grace_started.is_some()
+        && watch.grace_wall_s < wall_cap
+        && watch.grace_ic < LINKDEAD_GRACE_IC_S
+    {
+        let next_wall = watch.grace_wall_s.saturating_add(dt_wall);
+        let next_ic = watch.grace_ic.saturating_add(dt_ic);
+        if next_wall <= wall_cap && next_ic <= LINKDEAD_GRACE_IC_S {
+            watch.grace_wall_s = next_wall;
+            watch.grace_ic = next_ic;
+            return true;
+        }
+        // Cumulative grace ceiling crossed: exhaust grace permanently for this contract.
+        watch.grace_wall_s = wall_cap;
+        watch.grace_ic = LINKDEAD_GRACE_IC_S;
+    }
+    watch.was_near = false;
+    false
+}
+
 /// **The watch over a taken job.** Each fire's interval is counted by [`count`], which leaves a
 /// field journey's closing interval out; the outcome is decided when the journey ends.
 fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
@@ -776,46 +1010,8 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
         job.stage = EscortStage::Closed;
         return true;
     };
-    // Doc 50 cut OP.3 (Q-50-63): an escort posted for a haul binds to the hauler's hull when the
-    // haul is taken, and is called off if the haul closes untaken.
-    if job.protected == UNBOUND
-        && let Some(contract) = job.haul
-    {
-        let haul = super::haul::haul_of(ctx.w, contract);
-        if let Some(hull) = haul.as_ref().and_then(|h| h.hull) {
-            // Doc 50b (OP.3): the hauler took the haul in the escort's own hull. A hull does not
-            // escort herself, whichever contract was taken first, so the escort is called off.
-            if hull == escort {
-                if !matches!(
-                    mush_economy::cancel_job(ctx, ContractId(job.contract)),
-                    Ok(true)
-                ) {
-                    return false;
-                }
-                job.stage = EscortStage::Closed;
-                let line = TOLD_SAME_HULL.replace("{job}", &job.job());
-                tell_both(ctx, job, &line);
-                return true;
-            }
-            job.protected = hull;
-            return true;
-        }
-        if haul
-            .as_ref()
-            .is_none_or(|h| h.stage == super::haul::HaulStage::Closed)
-        {
-            if !matches!(
-                mush_economy::cancel_job(ctx, ContractId(job.contract)),
-                Ok(true)
-            ) {
-                return false;
-            }
-            job.stage = EscortStage::Closed;
-            let line = TOLD_HAUL_GONE.replace("{job}", &job.job());
-            tell_both(ctx, job, &line);
-            return true;
-        }
-        return false;
+    if let Some(changed) = step_haul_binding(ctx, job, escort, now, live) {
+        return changed;
     }
     if live && job.stage == EscortStage::Taken && job.due_ic.is_some_and(|due| now >= due) {
         // The term ran out and her journey never began (48e services:G2): no escort was owed,
@@ -858,10 +1054,12 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
         return true;
     }
     let (running, ended) = journey_now(ctx.w, job);
+    let wall = ctx.w.now();
     if job.stage == EscortStage::Taken {
         if !running {
             return false;
         }
+        let initially_near = near(ctx.w, job, escort);
         job.stage = EscortStage::Watching;
         job.watch = Some(Watch {
             started_ic: now,
@@ -869,8 +1067,12 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
             journey_ic: 0,
             near_ic: 0,
             launch_ic: now,
-            launch_wall: ctx.w.now(),
+            launch_wall: wall,
             between: false,
+            was_near: initially_near,
+            last_wall: Some(wall),
+            grace_wall_s: 0,
+            grace_ic: 0,
         });
         let line = TOLD_STARTED.replace("{job}", &job.job());
         tell_both(ctx, job, &line);
@@ -883,30 +1085,40 @@ fn watch(ctx: &mut Ctx<'_>, job: &mut EscortJob, now: i64, live: bool) -> bool {
             return false;
         };
         watch.last_ic = now;
+        watch.last_wall = Some(wall);
         watch.between = true;
         return true;
     }
+    let actually_near = near(ctx.w, job, escort);
     if let Some(watch) = job.watch.as_mut()
         && watch.between
     {
         watch.between = false;
         watch.launch_ic = now;
-        watch.launch_wall = ctx.w.now();
+        watch.launch_wall = wall;
+        watch.last_wall = Some(wall);
+        // Require verified proximity on the new leg before linkdead grace applies to it.
+        watch.was_near = actually_near;
     }
-    let is_near = near(ctx.w, job, escort) || within_grace(ctx.w, escort);
-    let left_it = !ended && left(ctx.w, job, escort);
+    let grace_started = raw_grace_started_wall(ctx.w, &job.journey, escort);
     let in_field = matches!(job.journey, Journey::Field { .. });
+    let journey = job.journey.clone();
     let Some(watch) = job.watch.as_mut() else {
         return false;
     };
+    let prev_grace = (watch.was_near, watch.grace_wall_s, watch.grace_ic);
+    let in_grace = advance_grace(&journey, watch, actually_near, grace_started, now, wall);
+    let is_near = actually_near || in_grace;
     let dt = count(watch, now, is_near, in_field && ended);
     let permille = watch.permille();
+    let grace_changed = prev_grace != (watch.was_near, watch.grace_wall_s, watch.grace_ic);
+    let left_it = !ended && !in_grace && left_without_grace(ctx.w, job, escort);
     if left_it {
         fail(ctx, job, WHY_LEFT);
         return true;
     }
     if !ended {
-        return dt > 0;
+        return dt > 0 || grace_changed;
     }
     if permille >= NEAR_PERMILLE {
         job.stage = EscortStage::Kept;
@@ -1076,7 +1288,8 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         None => None,
     };
     let hull = match (&haul, words.as_slice()) {
-        (Some(h), []) => h.hull.unwrap_or(UNBOUND),
+        (Some(h), []) if h.stage == super::haul::HaulStage::Aboard => h.hull.unwrap_or(UNBOUND),
+        (Some(_), []) => UNBOUND,
         (None, [word]) => hull_word(word).ok_or_else(|| ESCORT_USAGE.to_owned())?,
         _ => return Err(ESCORT_USAGE.to_owned()),
     };
@@ -1261,6 +1474,12 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
         .and_then(|c| escort_of(ctx.w, c))
         .filter(|j| j.stage == EscortStage::Posted)
         .ok_or_else(|| NO_SUCH_JOB.replace("{job}", word))?;
+    if job
+        .haul
+        .is_some_and(|contract| haul_cancelled_before_journey(ctx.w, contract))
+    {
+        return Err(NO_SUCH_JOB.replace("{job}", word));
+    }
     if job.poster == ctx.actor {
         return Err(OWN_JOB.to_owned());
     }
@@ -1273,6 +1492,9 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
     }
     if !holds(ctx.w, ctx.actor, with) {
         return Err(NOT_YOURS.to_owned());
+    }
+    if let Err(why) = escort_matches_journey(ctx.w, &job.journey, with) {
+        return Err(ACCEPT_FAILED.replace("{why}", why));
     }
     let bond = if job.bond_minor > 0 {
         BOND_CLAUSE.replace("{bond}", &money_minor(ctx, job.bond_minor))
@@ -1546,5 +1768,159 @@ mod tests {
         assert!(dels.contains(&escort_key(1)));
         assert!(dels.contains(&escort_key(4)));
         assert!(dels.contains(&escort_key(2_000)));
+    }
+
+    /// **P2-TSW-10**: `advance_grace` requires prior verified proximity (`was_near`), clears
+    /// `was_near` if the escort leaves while connected, and enforces non-renewable cumulative
+    /// wall-second and IC-second ceilings across disconnect/reconnect cycles.
+    #[test]
+    fn p2_tsw_10_grace_requires_prior_proximity_and_caps_reconnect_cycling() {
+        let passage = Journey::Passage {
+            from: "ceres".into(),
+            to: "stickney".into(),
+        };
+        // Never near -> linkdead grants zero grace.
+        let mut never_near = Watch {
+            started_ic: 0,
+            last_ic: 0,
+            launch_ic: 0,
+            launch_wall: 100,
+            last_wall: Some(100),
+            was_near: false,
+            ..Watch::default()
+        };
+        assert!(
+            !advance_grace(&passage, &mut never_near, false, Some(105), 720, 130),
+            "no prior proximity -> zero grace"
+        );
+        assert_eq!(never_near.grace_wall_s, 0);
+
+        // Verified proximity, then disconnect -> grace covers up to 300 wall s / 7,200 IC s total,
+        // even when the escort reconnects and drops again to reset `grace_started_wall_s`.
+        let mut watch = Watch {
+            started_ic: 0,
+            last_ic: 0,
+            launch_ic: 0,
+            launch_wall: 100,
+            last_wall: Some(100),
+            was_near: false,
+            ..Watch::default()
+        };
+        assert!(!advance_grace(&passage, &mut watch, true, None, 720, 130));
+        count(&mut watch, 720, true, false);
+        assert!(watch.was_near);
+
+        // Cycle 1: linkdead for 240 wall s (8 fires of 30s at 24:1 = 5,760 IC s).
+        let mut wall = 130;
+        let mut ic = 720;
+        for _ in 0..8 {
+            wall += 30;
+            ic += 720;
+            assert!(advance_grace(
+                &passage,
+                &mut watch,
+                false,
+                Some(131),
+                ic,
+                wall
+            ));
+            count(&mut watch, ic, true, false);
+        }
+        assert_eq!(watch.grace_wall_s, 240);
+        assert_eq!(watch.grace_ic, 5_760);
+
+        // Reconnect briefly and re-drop right before the next tick (fresh `grace_started_wall_s`
+        // = wall - 1). Two more 30s fires exhaust the remaining 60s budget cleanly.
+        for _ in 0..2 {
+            wall += 30;
+            ic += 720;
+            assert!(advance_grace(
+                &passage,
+                &mut watch,
+                false,
+                Some(wall - 1),
+                ic,
+                wall
+            ));
+            count(&mut watch, ic, true, false);
+        }
+        assert_eq!(watch.grace_wall_s, 300);
+        assert_eq!(watch.grace_ic, LINKDEAD_GRACE_IC_S);
+
+        // Even after reconnecting with a brand-new linkdead window, cumulative grace is spent.
+        wall += 30;
+        ic += 720;
+        assert!(
+            !advance_grace(&passage, &mut watch, false, Some(wall - 1), ic, wall),
+            "reconnect cycling cannot extend grace past the contract ceiling"
+        );
+        assert!(!watch.was_near);
+
+        // Even if the escort flies near again later, cumulative grace stays exhausted.
+        wall += 30;
+        ic += 720;
+        assert!(!advance_grace(&passage, &mut watch, true, None, ic, wall));
+        count(&mut watch, ic, true, false);
+        assert!(watch.was_near);
+        wall += 30;
+        ic += 720;
+        assert!(
+            !advance_grace(&passage, &mut watch, false, Some(wall - 1), ic, wall),
+            "cumulative grace never resets for the remainder of the contract"
+        );
+    }
+
+    /// **P2-TSW-10**: leaving proximity while connected clears `was_near`, and an accelerated IC
+    /// jump cannot credit more than [`LINKDEAD_GRACE_IC_S`].
+    #[test]
+    fn p2_tsw_10_leaving_clears_was_near_and_ic_cap_bounds_fast_clocks() {
+        let passage = Journey::Passage {
+            from: "ceres".into(),
+            to: "stickney".into(),
+        };
+        let mut watch = Watch {
+            started_ic: 0,
+            last_ic: 0,
+            launch_ic: 0,
+            launch_wall: 100,
+            last_wall: Some(100),
+            was_near: true,
+            ..Watch::default()
+        };
+        // Not near while connected -> clears `was_near`.
+        assert!(!advance_grace(&passage, &mut watch, false, None, 720, 130));
+        count(&mut watch, 720, false, false);
+        assert!(!watch.was_near);
+        // Going linkdead on the next tick is denied because `was_near` was cleared.
+        assert!(!advance_grace(
+            &passage,
+            &mut watch,
+            false,
+            Some(131),
+            1_440,
+            160
+        ));
+
+        // Accelerated clock: 10 wall seconds = 10,000 IC seconds > LINKDEAD_GRACE_IC_S -> denied.
+        let mut fast = Watch {
+            started_ic: 0,
+            last_ic: 0,
+            launch_ic: 0,
+            launch_wall: 100,
+            last_wall: Some(100),
+            was_near: true,
+            ..Watch::default()
+        };
+        assert!(
+            !advance_grace(
+                &passage,
+                &mut fast,
+                false,
+                Some(101),
+                LINKDEAD_GRACE_IC_S + 1,
+                110
+            ),
+            "IC grace ceiling blocks fast-clock grace abuse"
+        );
     }
 }

@@ -646,3 +646,197 @@ async fn op4_the_close_probe_reads_the_farm_at_the_close() {
         "another operation's close is not this one's"
     );
 }
+
+/// **P2-TSW-8**: concurrent in-flight quotes and unpaid settled fills into `isidis_tank_farm`'s
+/// propellant bid cannot bypass either Occator's available balance or its 20,000 cr/month cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn p2_tsw_8_in_flight_quotes_and_unpaid_fills_enforce_cap_and_balance() {
+    use crate::driving_rig::{
+        advance_to, board, file_and_launch, hold_vault_of, land_all, load, prospector, set_rate,
+        station_room, teleport,
+    };
+
+    let mut rig = stocked();
+    set_rate(&mut rig.tw, 24);
+    let occator = org_account(&rig, "ceres_port", "occator");
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let (pilot, row) = prospector(&mut rig, "TankSeller", 96, "Siphon");
+    let hull = ObjId(row.hull);
+    let hold = hold_vault_of(&rig.tw, &row);
+    load(&mut rig, &row, 60, 40, 0x0f71);
+    board(&mut rig, pilot);
+    for (to, lot) in [("stickney", 0_u64), ("isidis", 0x0f73)] {
+        if lot != 0 {
+            load(&mut rig, &row, 20, 4, lot);
+        }
+        let ticket = file_and_launch(&mut rig, pilot, hull, &format!("+ship/undock {to}"));
+        let (_, queued) = advance_to(
+            &mut rig,
+            ticket.plan.depart_ic + ticket.plan.total_s + 3_600,
+        );
+        land_quietly(&mut rig, &queued);
+        fires(&mut rig, 2);
+    }
+    let ashore = run(&mut rig.tw, pilot, "+ship/leave");
+    assert!(!ashore.contains("Usage"), "{ashore}");
+    let market = station_room(&rig.tw, "isidis_port", "room.i03_market");
+    teleport(&mut rig.tw, pilot, market);
+
+    let bid = port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids
+        [&cid("propellant")]
+        .listing;
+    let price_minor = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|s| {
+            s.listing(mush_market::ListingId(bid))
+                .map(|l| l.price.minor())
+        })
+        .expect("tank farm bid listing");
+    assert!(price_minor > 0, "{price_minor}");
+
+    // Seed plenty of propellant into the docked hold (100 t).
+    seed_pool(&mut rig, hold, "propellant", 100, LotId(0x0f75));
+
+    // (1) Fund Occator for exactly ONE 10 t sale: a concurrent second 10 t sale while the first
+    // quote is still in-flight must be refused (closes quote TOCTOU).
+    let ten_gross = price_minor * 10;
+    let cur = balance(rig.tw.world(), occator);
+    if cur > ten_gross {
+        let excess = cur - ten_gross;
+        let _ = run(
+            &mut rig.tw,
+            GOD,
+            &format!("@econ/pay {}={treasury} {excess}", occator.0),
+        );
+    } else if cur < ten_gross {
+        let add = ten_gross - cur;
+        let _ = run(
+            &mut rig.tw,
+            GOD,
+            &format!("@econ/mint {treasury}={} {add}", occator.0),
+        );
+    }
+    assert_eq!(balance(rig.tw.world(), occator), ten_gross);
+
+    let first = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}=10 from={}", hold.0),
+    );
+    assert!(first.contains("Sold "), "first 10 t sale fits: {first}");
+    // Land the delivery leg so the pilot has no pending authoritative submission, WITHOUT
+    // settling the economy contract: the quote is still in-flight (`settled == None`) and
+    // `on_fill` has not run yet. A second 10 t sale must still be refused.
+    let queued = drain(&mut rig.tw);
+    land_all(&mut rig, &queued);
+    assert!(
+        arm(&rig).fills.is_empty(),
+        "quote has not settled into doc.fills yet"
+    );
+    let second_in_flight = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}=10 from={}", hold.0),
+    );
+    assert!(
+        second_in_flight.contains(stockpile::FARM_BUDGET_SPENT),
+        "in-flight quote must encumber Occator's balance: {second_in_flight}"
+    );
+
+    // (2) Temporarily dip Occator 1 cr below `ten_gross` and settle the first contract so
+    // `on_fill` records `ArmFill { paid: false }` that `fund_fills` cannot yet reimburse.
+    // Occator still holds `ten_gross - 100` (enough for 9 t on raw balance), yet a 1 t sale must
+    // be refused because the unpaid fill encumbers the balance.
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay {}={treasury} 100", occator.0),
+    );
+    for _ in 0..6 {
+        sweep(&mut rig.tw, 31);
+    }
+    crate::in10_pools::settle(&mut rig, 3);
+    let doc = arm(&rig);
+    assert_eq!(doc.fills.len(), 1, "first fill recorded: {doc:?}");
+    assert!(
+        !doc.fills[0].paid,
+        "unreimbursed fill stays unpaid while Occator is short: {doc:?}"
+    );
+    assert!(
+        balance(rig.tw.world(), occator) >= price_minor,
+        "raw balance alone would cover 1 t"
+    );
+    let bid = port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids
+        [&cid("propellant")]
+        .listing;
+    let while_unpaid = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}=1 from={}", hold.0),
+    );
+    assert!(
+        while_unpaid.contains(stockpile::FARM_BUDGET_SPENT),
+        "unpaid fill must encumber Occator's balance before fund_fills runs: {while_unpaid}"
+    );
+
+    // (3) Fund Occator well above the 20,000 cr monthly cap and verify concurrent in-flight
+    // quotes cannot overshoot the monthly cap either.
+    let cap_minor = stockpile::ARM_MONTHLY_CAP_CR * 100;
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} {}", occator.0, cap_minor * 5),
+    );
+    fires(&mut rig, 2);
+    let bid = port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids
+        [&cid("propellant")]
+        .listing;
+    let price_minor = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|s| {
+            s.listing(mush_market::ListingId(bid))
+                .map(|l| l.price.minor())
+        })
+        .expect("tank farm bid listing");
+    let month = tacsim::concession::ic_month(ic_now(&rig.tw));
+    let remaining_minor = cap_minor - arm(&rig).spent_in(month);
+    let fit_tonnes = u64::try_from(remaining_minor / price_minor).expect("non-negative");
+    assert!(fit_tonnes >= 2, "headroom left in month: {fit_tonnes}");
+    seed_pool(&mut rig, hold, "propellant", fit_tonnes + 20, LotId(0x0f77));
+    let half = fit_tonnes / 2;
+    let rest = fit_tonnes - half;
+    let s1 = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}={half} from={}", hold.0),
+    );
+    assert!(s1.contains("Sold "), "first half fits cap: {s1}");
+    let q1 = drain(&mut rig.tw);
+    land_all(&mut rig, &q1);
+    let s2 = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}={rest} from={}", hold.0),
+    );
+    assert!(s2.contains("Sold "), "second half reaches cap: {s2}");
+    let q2 = drain(&mut rig.tw);
+    land_all(&mut rig, &q2);
+    // Both sales are still unsettled in MarketStore! Even 1 more tonne must be refused against
+    // the monthly cap.
+    let over_cap = run(
+        &mut rig.tw,
+        pilot,
+        &format!("+market/sell {bid}=1 from={}", hold.0),
+    );
+    assert!(
+        over_cap.contains(stockpile::FARM_BUDGET_SPENT),
+        "concurrent in-flight quotes cannot exceed the 20,000 cr monthly cap: {over_cap}"
+    );
+}
