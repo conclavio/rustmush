@@ -148,11 +148,51 @@ pub(crate) fn site_domain(w: &World, entry: &CanonicalId) -> Option<DomainId> {
         .and_then(|map| Some(DomainId(map.domain?)))
 }
 
+/// **Every lane site's passive domain, indexed once by site entry** (EXT-P2-12).
+#[must_use]
+pub(crate) fn site_domains(w: &World) -> BTreeMap<CanonicalId, DomainId> {
+    let mut out = BTreeMap::new();
+    let Some(store) = w.module_state::<crate::TacsimStore>() else {
+        return out;
+    };
+    for map in store
+        .port_maps()
+        .filter(|map| map.pack.as_str() == crate::definitions::content::LANE_PACK)
+    {
+        if let Some(domain) = map.domain {
+            out.entry(map.entry.clone()).or_insert(DomainId(domain));
+        }
+    }
+    out
+}
+
+/// **Every tactical unit placed directly on any ground domain, grouped by domain in unit order**
+/// (EXT-P2-12): a single pass over `UnitStore::units` instead of rescanning all units per site.
+#[must_use]
+pub(crate) fn ground_by_domain(w: &World) -> BTreeMap<DomainId, Vec<ObjId>> {
+    let mut by_domain: BTreeMap<DomainId, Vec<ObjId>> = BTreeMap::new();
+    let (Some(store), Some(spatial)) = (
+        w.module_state::<mush_tactics::module::UnitStore>(),
+        w.module_state::<mush_sim::SpatialState>(),
+    ) else {
+        return by_domain;
+    };
+    for &unit in store.units.keys() {
+        if let mush_sim::SpatialParent::Direct { domain, .. } = spatial.parent_of(unit) {
+            by_domain.entry(domain).or_default().push(unit);
+        }
+    }
+    by_domain
+}
+
 /// **Every unit on the site's ground**, in unit order: a tactical unit placed directly on the
 /// domain, the carriers on their pads included (doc 32 cut CF.3, Q-CF-19).
 #[must_use]
 pub(crate) fn on_ground(w: &World, domain: DomainId) -> Vec<ObjId> {
-    let Some(store) = w.module_state::<mush_tactics::module::UnitStore>() else {
+    let (Some(store), Some(spatial)) = (
+        w.module_state::<mush_tactics::module::UnitStore>(),
+        w.module_state::<mush_sim::SpatialState>(),
+    ) else {
         return Vec::new();
     };
     store
@@ -161,8 +201,8 @@ pub(crate) fn on_ground(w: &World, domain: DomainId) -> Vec<ObjId> {
         .copied()
         .filter(|unit| {
             matches!(
-                crate::surface::act::where_is(w, *unit),
-                crate::surface::act::Where::Ground { domain: on, .. } if on == domain
+                spatial.parent_of(*unit),
+                mush_sim::SpatialParent::Direct { domain: on, .. } if on == domain
             )
         })
         .collect()
@@ -361,7 +401,7 @@ fn flight_of(ctx: &Ctx<'_>, unit: ObjId, entry: &CanonicalId) -> Option<FlightFa
 
 /// **An operation's current leader** (doc 26): its command roster's, else its first slot's
 /// controller (a roster that has not reconciled yet).
-fn roster_leader(record: &crate::detachment::sortie::OperationRecord) -> Option<ObjId> {
+pub(crate) fn roster_leader(record: &crate::detachment::sortie::OperationRecord) -> Option<ObjId> {
     record
         .command
         .as_ref()
@@ -1228,5 +1268,91 @@ mod tests {
             pairs,
             vec![(PartyId::nth(0).expect("A"), PartyId::nth(1).expect("B"))]
         );
+    }
+
+    /// **EXT-P2-12**: `ground_by_domain` indexes all tactical units placed directly on ground
+    /// domains in a single pass over `UnitStore::units`, preserving ascending `ObjId` order and
+    /// matching `on_ground` per domain while excluding bay/interior/unplaced units.
+    #[test]
+    fn ext_p2_12_ground_by_domain_matches_on_ground_in_single_pass() {
+        struct Seed {
+            units: Option<mush_tactics::module::UnitStore>,
+            spatial: Option<mush_sim::SpatialState>,
+        }
+        impl mush_core::GameModule for Seed {
+            fn name(&self) -> &'static str {
+                "seed"
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                if let Some(units) = self.units.take() {
+                    reg.state(units);
+                }
+                if let Some(spatial) = self.spatial.take() {
+                    reg.state(spatial);
+                }
+                Ok(())
+            }
+        }
+
+        let rules = crate::arena::test_support::rules();
+        let spec = crate::arena::test_support::tactical_unit_spec(rules.clone());
+        let mut units = mush_tactics::module::UnitStore::default();
+        let mut spatial = mush_sim::SpatialState::default();
+
+        let (d1, d2, d_empty) = (DomainId(10), DomainId(20), DomainId(30));
+        for id in [ObjId(5), ObjId(12), ObjId(25), ObjId(30), ObjId(40)] {
+            units.units.insert(
+                id,
+                mush_tactics::TacticalUnit::from_spec(&spec, id).expect("unit"),
+            );
+        }
+        let direct = |obj: ObjId, domain: DomainId| mush_sim::data::PlacementRecord {
+            object: obj,
+            parent: mush_sim::SpatialParent::Direct {
+                domain,
+                pose: mush_sim::data::Pose::at(0, 0, 0, rules.clone()),
+            },
+            unplaced: None,
+            revision: 1,
+        };
+        spatial.placements.insert(ObjId(25), direct(ObjId(25), d1));
+        spatial.placements.insert(ObjId(5), direct(ObjId(5), d1));
+        spatial.placements.insert(ObjId(12), direct(ObjId(12), d2));
+        // Interior (bay) and unplaced units must NOT appear in `ground_by_domain`.
+        spatial.placements.insert(
+            ObjId(30),
+            mush_sim::data::PlacementRecord {
+                object: ObjId(30),
+                parent: mush_sim::SpatialParent::Interior {
+                    space: ObjId(999),
+                    slot: None,
+                },
+                unplaced: None,
+                revision: 1,
+            },
+        );
+        // ObjId(40) has no placement record (unplaced).
+
+        let engine = mush_core::Engine::with_modules(
+            World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(Seed {
+                units: Some(units),
+                spatial: Some(spatial),
+            })],
+        )
+        .expect("engine");
+
+        let indexed = ground_by_domain(&engine.world);
+        assert_eq!(indexed.len(), 2);
+        assert_eq!(indexed.get(&d1), Some(&vec![ObjId(5), ObjId(25)]));
+        assert_eq!(indexed.get(&d2), Some(&vec![ObjId(12)]));
+        assert_eq!(indexed.get(&d_empty), None);
+        assert_eq!(on_ground(&engine.world, d1), vec![ObjId(5), ObjId(25)]);
+        assert_eq!(on_ground(&engine.world, d2), vec![ObjId(12)]);
+        assert!(on_ground(&engine.world, d_empty).is_empty());
     }
 }
