@@ -2,7 +2,8 @@
 //! (`driving`'s keyed rig), through the port tick, the IC11 executor and the voyage path.
 //!
 //! Lane v43 gives Ceres the Vesta Carrying Company: two Drays, `VCC-01` based at Ceres and
-//! `VCC-02` at Luna, that carry water, carbon feedstock, alloys and boards from one lane port's
+//! `VCC-02` at Luna, and lane v54 a third, `VCC-03` at Ceres (doc 50 cut OP.8's second Ceres
+//! hull), that carry water, carbon feedstock, alloys and boards from one lane port's
 //! house ask to another's house bid whenever the gap pays for the trip. It also gives the Deimos
 //! reserve, at a port that produces nothing, its people's use of water and carbon. The house
 //! trades from the IC day after the tick first sees it.
@@ -154,13 +155,16 @@ fn drain_org(rig: &mut Rig, entry: &str, org: &str) {
     assert_eq!(balance(rig.tw.world(), account), 0, "{org} is drained");
 }
 
+/// The house's hulls: VCC-01 and VCC-03 at Ceres, VCC-02 at Luna (lane v54).
+const HULLS: usize = 3;
+
 /// The house's first day, its hulls laid up and their first trips planned.
 fn first_trips(rig: &mut Rig) -> Vec<HaulerRow> {
     let day = ic_now(&rig.tw).div_euclid(DAY) + 1;
     let _ = to_ic(rig, day * DAY + 600);
     for _ in 0..240 {
         let rows = house(rig).rows;
-        if rows.len() == 2 && rows.iter().all(|row| row.trip.is_some()) {
+        if rows.len() == HULLS && rows.iter().all(|row| row.trip.is_some()) {
             return rows;
         }
         fires(rig, 1);
@@ -181,7 +185,7 @@ async fn ex10_a_laid_up_house_plans_no_trip() {
     for _ in 0..120 {
         fires(&mut rig, 1);
         let rows = house(&rig).rows;
-        if rows.len() == 2
+        if rows.len() == HULLS
             && rows.iter().all(|row| {
                 row.hull.is_some()
                     && row.helm.is_some()
@@ -237,12 +241,12 @@ async fn ex10_a_laid_up_house_plans_no_trip() {
     );
 }
 
-/// Fires until both hulls are fitted out: hull, helm, grants and purse.
+/// Fires until every hull is fitted out: hull, helm, grants and purse.
 fn fitted(rig: &mut Rig) {
     for _ in 0..120 {
         fires(rig, 1);
         let rows = house(rig).rows;
-        if rows.len() == 2
+        if rows.len() == HULLS
             && rows.iter().all(|row| {
                 row.hull.is_some()
                     && row.helm.is_some()
@@ -376,10 +380,10 @@ async fn ex10_the_house_seeds_its_hulls_and_trades_where_a_gap_pays() {
             "a helm's grant and purse"
         );
         let trip = row.trip.clone().expect("a trip in hand");
-        let home = if row.mark == "VCC-01" {
-            "ceres"
-        } else {
+        let home = if row.mark == "VCC-02" {
             "luna"
+        } else {
+            "ceres"
         };
         assert_eq!(
             trip.from.as_str(),
@@ -387,7 +391,11 @@ async fn ex10_the_house_seeds_its_hulls_and_trades_where_a_gap_pays() {
             "{} trades from her home",
             row.mark
         );
-        assert!(trip.bid_major > trip.ask_major, "a gap: {trip:?}");
+        // VCC-03 (lane v54) finds Ceres's own gap taken by VCC-01 and sails on what pays from
+        // there; the two original hulls each trade a gap.
+        if row.mark != "VCC-03" {
+            assert!(trip.bid_major > trip.ask_major, "a gap: {trip:?}");
+        }
         assert!(trip.profit_minor > 0, "the gap pays for the trip: {trip:?}");
         // The plan is the helm's, and the executor flies it.
         let plan = match tacsim::port::orders::orders_state(rig.tw.world(), hull) {

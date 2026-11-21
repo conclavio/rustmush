@@ -50,11 +50,12 @@ pub const TANK_FARM_ORG: &str = "isidis_tank_farm";
 pub const TANK_FARM_ENTRY: &str = "isidis_port";
 /// The stockpile's one good (Q-50-58: propellant only in the first operation).
 pub const STOCKPILE_GOOD: &str = "propellant";
-/// The level the farm must stand at, whole tonnes (provisional; doc 50 cut OP.8 retune: 2,960,
-/// was 4,000). A fresh world is stocked 40 t over it (3,000 t) and draws it down a tonne an IC
-/// day; Ceres' house lands 30 t about every 35 days, so the house holds the farm at its threshold
-/// for some four months and the drain wins by the close, unless players carry more.
-pub const STOCKPILE_THRESHOLD_T: u64 = 2_960;
+/// The level the farm must stand at, whole tonnes (provisional; doc 50 cut OP.8's second Ceres
+/// hull: 2,905, was 2,960 at the retune and 4,000 before). A fresh world is stocked 95 t over it
+/// (3,000 t) and draws it down 2 t an IC day; Ceres' house's two hulls land 30 t each about every
+/// 35 days, so the house holds the farm at its threshold month after month and the drain wins by
+/// the close, unless players carry more.
+pub const STOCKPILE_THRESHOLD_T: u64 = 2_905;
 /// The close probe's name (doc 50 cut OP.0's `CLOSE_PROBES`): met when the farm is at its
 /// threshold, the defenders' success.
 pub const TANK_FARM_PROBE: &str = "isidis.tank_farm";
@@ -69,18 +70,20 @@ pub const ARM_ROOM: &str = "exchange";
 /// One haul's size, whole tonnes (provisional; doc 50 cut OP.8 retune: 30, was 20, the most a
 /// house Dray carries in her tankage and still makes the direct run).
 pub const ARM_HAUL_T: u64 = 30;
-/// **The arm's reserve over the threshold**, whole tonnes (provisional; doc 50 cut OP.8 retune):
-/// it posts while the farm stands short of its threshold plus two hauls, so a player's delivery
-/// adds to the house's rather than standing in for it.
-pub const ARM_RESERVE_T: u64 = 2 * ARM_HAUL_T;
+/// **The arm's reserve over the threshold**, whole tonnes (provisional; doc 50 cut OP.8 retune,
+/// five hauls since its second Ceres hull, was two): it posts while the farm stands short of its
+/// threshold plus five hauls, over the start stock, so a player's delivery adds to the house's
+/// rather than standing in for it.
+pub const ARM_RESERVE_T: u64 = 5 * ARM_HAUL_T;
 /// One haul's fee, whole credits (provisional).
 pub const ARM_HAUL_FEE_CR: i64 = 600;
 /// One escort's fee, whole credits (provisional).
 pub const ARM_ESCORT_FEE_CR: i64 = 400;
 /// A month's cap on what the arm posts, whole credits (provisional; Q-50-22).
 pub const ARM_MONTHLY_CAP_CR: i64 = 20_000;
-/// At most this many of the arm's hauls on the board or under way at once.
-pub const ARM_MAX_OPEN: usize = 2;
+/// At most this many of the arm's hauls on the board or under way at once (doc 50 cut OP.8's
+/// second Ceres hull: three, was two, so one is left for a player beside the house's two hulls).
+pub const ARM_MAX_OPEN: usize = 3;
 /// The IC days an arm's haul waits for a player before the hauling house takes it (Q-50-24,
 /// provisional).
 pub const FALLBACK_IC_DAYS: i64 = 7;
@@ -387,6 +390,33 @@ pub fn untaken(w: &World, venue: &str, now_ic: i64, claimed: &[u64]) -> Option<u
         })
         .map(|job| job.contract)
         .min()
+}
+
+/// **Whether the arm is posting** (doc 50 cut OP.8's second Ceres hull): open, its agent granted,
+/// the farm's last reading short of its threshold plus [`ARM_RESERVE_T`], and fewer than
+/// [`ARM_MAX_OPEN`] of its hauls open. A post follows within the IC day while it stands, so a
+/// hauling house's hull at Ceres waits for it (`crate::port::hauler`) rather than leave on a trade
+/// the day a player takes the haul on the board.
+#[must_use]
+pub fn posting(w: &World) -> bool {
+    let Some(doc) = arm(w) else {
+        return false;
+    };
+    let short = doc
+        .level
+        .is_some_and(|level| level < STOCKPILE_THRESHOLD_T.saturating_add(ARM_RESERVE_T));
+    let open = doc
+        .posts
+        .iter()
+        .filter_map(|p| haul::haul_of(w, p.haul))
+        .filter(|job| {
+            matches!(
+                job.stage,
+                HaulStage::Posted | HaulStage::Taken | HaulStage::Aboard
+            )
+        })
+        .count();
+    !doc.laid_up && doc.grant.is_some() && short && open < ARM_MAX_OPEN
 }
 
 /// **An arm's haul on the board at `venue`** (doc 50 cut OP.8; Q-50-24): posted there, untaken

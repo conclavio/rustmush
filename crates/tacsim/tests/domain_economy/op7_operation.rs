@@ -190,7 +190,7 @@ async fn op7_the_lane_follows_the_operation_and_a_newcomer_reads_who_won() {
          duty.",
         "Notice runs: the window opens",
         "real hours",
-        "the Freeport holds if Occator's tank farm at Isidis stands at 2960 t",
+        "the Freeport holds if Occator's tank farm at Isidis stands at 2905 t",
         "It holds ",
         "The Concession Review (the Republic): 6 of 6, filled.",
         "Work for it:",

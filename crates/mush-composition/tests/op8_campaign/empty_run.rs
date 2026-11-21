@@ -10,11 +10,12 @@
 //!   player takes, through the Kirkwood picket, which her house's mind answers;
 //! - the campaign settles who won, and the arm writes it into control and the import duty.
 //!
-//! **The contest** (doc 50 cut OP.8's retune, the figures provisional): the farm starts 40 t over
-//! its threshold and drains a tonne an IC day; the house's 30 t hauls hold it there and move Hold
-//! the Concession in months the start stock alone would not; in the window the picket takes the
-//! house's haul as the Freeport's, and the farm reads short at the close. The Republic wins,
-//! narrowly. `newcomer` is the same run with one player haul more, and the Freeport holds.
+//! **The contest** (doc 50 cut OP.8's retune and its second Ceres hull, the figures provisional):
+//! the farm starts 95 t over its threshold and drains 2 t an IC day; the house's two hulls' 30 t
+//! hauls hold it there and move Hold the Concession in months the start stock alone would not; in
+//! the window the picket takes the house's hauls as the Freeport's, and the farm reads short at
+//! the close. The Republic wins, narrowly. `newcomer` is the same run with one player haul more,
+//! and the Freeport holds.
 //!
 //! **What is a fixture.** The rig's setup alone: the stock rig's world, the Freeport arm and Ceres'
 //! house opened again (the stock rig lays them up; a production world has both open) and the rate
@@ -149,10 +150,11 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
     // Hold the Concession moved on the farm at its threshold, in a month when the start stock
     // alone would have stood under it: the house's hauls held it there.
     let hold = hold_clock(w).expect("Hold the Concession");
-    // A tonne an IC day: the first reading's margin over the threshold is its days.
+    // The farm drains 2 t an IC day (lane v54): the first reading's margin over the threshold,
+    // halved, is its days.
     let first = levels.first().map_or(0, |(_, level)| *level);
     let margin_days =
-        i64::try_from(first.saturating_sub(stockpile::STOCKPILE_THRESHOLD_T)).expect("days");
+        i64::try_from(first.saturating_sub(stockpile::STOCKPILE_THRESHOLD_T) / 2).expect("days");
     let start_stock_lasts = tacsim::concession::ic_month(start + margin_days * DAY);
     let held_by_house = hold.causes.iter().any(|cause| {
         cause

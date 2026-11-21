@@ -2599,3 +2599,47 @@ The owner on 2026-11-21, of this cut's finding that neither front could move: "Y
 - Another Ceres hull for the house, which would widen the contest. It is a lane change to EX.10's
   roster, the owner's call.
 - No escort on either story.
+
+### OP.8's second Ceres hull (lane v54, relay v45)
+
+The owner on 2026-11-21, of #755's leftovers: "add a second ceres hull, leave the other for
+later". Nothing reads Hold the Concession's completion, and that stays as it is. On main after
+#755.
+
+**Built.**
+- **VCC-03, a second Ceres-based hull** in Ceres' hauling house (EX.10's roster, in the lane):
+  lane v54, relay v45 re-signed, the pins moved, and `lane_chain::strip_second_hull` at the head
+  of the strip chain (`lane::op8_strip_second_hull_rebuilds_the_published_v53`).
+- **`stockpile::posting`**, which says whether the arm is posting: open and granted, the farm short
+  of its threshold plus its reserve, and a slot free.
+  - `hauler::waits_home` now also keeps a Ceres hull at home while the arm is posting.
+  - Measured: in the newcomer story the player takes the arm's only posted haul on day 0. With
+    nothing on the board on day 1, both house hulls left on trades and took nothing until days
+    37 and 51, so her haul added 2 t to the close, not 30.
+
+**The figures** (provisional; the retune's figure → this cut's):
+- **threshold:** 2,960 → 2,905 t;
+- **drain:** 1 → 2 t an IC day, its faucet 50 → 100 cr;
+- **the arm's reserve:** two → five hauls (60 → 150 t);
+- **open hauls:** 2 → 3;
+- **unchanged:** the 30 t haul, the 3,000 t start stock, the fees, the cap and the 7-day fallback.
+
+**Why** (measured on conclav.dev; drains of 1, 2 and 3 t and a 25 t haul, run in parallel):
+- **The two hulls land 60 t about every 35 days**: VCC-01 and VCC-03 deliver on days 26, 61,
+  96 and 131, and both are lost in the window, on days 151 and 152.
+- **At 1 t a day the house wins**: the farm reads 3,065 t at the close and the Freeport holds with
+  no players.
+- **At 2 t a day it doesn't**, and the empty run's close is 2,890 t. With one player haul more it
+  is 2,922 t, the haul adding 32 t once the house waits for the arm's posts. The threshold sits
+  between them, 15 t from the empty run's close and 17 t from the player run's.
+- **The player needs one haul**, and that haul is additive: the third open haul is hers.
+- **The reserve has to clear the farm's peak**, 3,008 t on the empty run. At the old two hauls,
+  threshold plus reserve (2,965 t) would sit under the 3,000 t start stock, and the arm would not
+  post. Five hauls (3,055 t) clears it.
+- **The budget** is at most three posts open, at 1,000 cr each, under the 20,000 cr cap, from
+  Occator's treasury.
+
+**Divergences.**
+- **Hold the Concession fills on the empty run**, as at the retune.
+- **A Ceres hull waits at home while the arm is posting**, even before it has posted.
+- **The second hull is VCC-03, home Ceres**, on the house's lot, goods and design (a Dray).

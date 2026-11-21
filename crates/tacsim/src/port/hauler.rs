@@ -1187,15 +1187,18 @@ fn hop_toward(
 }
 
 /// **Waiting at home for the Freeport arm's work** (doc 50 cut OP.8; Q-50-24): a hull docked at
-/// her home port while an arm's haul is on the board there ([`crate::stockpile::awaiting`]) sets
-/// out on no trade, so she is there to carry it when its days are up.
+/// her home port while an arm's haul is on the board there ([`crate::stockpile::awaiting`]), or
+/// while the arm posts there ([`crate::stockpile::posting`]; the arm's port only), sets out on no
+/// trade, so she is there to carry it when its days are up.
 fn waits_home(ctx: &Ctx<'_>, here_def: &PortDef, home: &CanonicalId) -> bool {
     let at_home = ports_by_venue(ctx.w)
         .into_iter()
         .any(|(def, map)| &map.entry == home && def.venue == here_def.venue);
+    let arms_port = home.as_str() == crate::stockpile::ARM_ENTRY;
     at_home
-        && crate::stockpile::awaiting(ctx.w, here_def.venue.as_str(), ctx.w.world_ic_now().at)
+        && (crate::stockpile::awaiting(ctx.w, here_def.venue.as_str(), ctx.w.world_ic_now().at)
             .is_some()
+            || (arms_port && crate::stockpile::posting(ctx.w)))
 }
 
 /// **Called home for the Freeport arm's work** (doc 50 cut OP.8; Q-50-24): a hull lying idle

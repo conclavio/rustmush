@@ -163,8 +163,8 @@ async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
         "the rearm's munitions: before {before:?}, after {after:?}"
     );
     // Doc 48 unit EX.9: the consumers in this run are the Lunar Habitat Board, which uses up
-    // 16 crew-days of its provisions an IC day, and (doc 50 cut OP.4) the Isidis tank farm, a
-    // tonne of propellant an IC day (20 t before doc 50 cut OP.8's retune).
+    // 16 crew-days of its provisions an IC day, and (doc 50 cut OP.4) the Isidis tank farm, 2 t
+    // of propellant an IC day (lane v54; 1 t at v53, 20 t before doc 50 cut OP.8's retune).
     let provisions_kg = store(&rig.tw)
         .goods()
         .and_then(|goods| {
@@ -182,7 +182,7 @@ async fn ex0_the_census_holds_across_a_burn_and_a_rearm() {
         })
         .expect("propellant weighs");
     let used = after["consumed"] - before["consumed"];
-    let farm_day = i128::from(propellant_kg);
+    let farm_day = 2 * i128::from(propellant_kg);
     let board_day = 16 * i128::from(provisions_kg);
     assert!(
         used >= 0 && (0..=used / board_day).any(|days| (used - days * board_day) % farm_day == 0),
