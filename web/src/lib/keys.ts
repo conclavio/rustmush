@@ -166,7 +166,7 @@ function bareIntent(
   return null;
 }
 
-function hasControlChar(s: string): boolean {
+export function hasControlChar(s: string): boolean {
   for (let i = 0; i < s.length; i++) {
     const code = s.charCodeAt(i);
     if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {

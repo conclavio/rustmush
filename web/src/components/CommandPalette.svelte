@@ -15,7 +15,7 @@
     {#if app.paletteEntries.length === 0}
       <div class="empty">no matches</div>
     {/if}
-    {#each app.paletteEntries as e, i (e.label + e.detail)}
+    {#each app.paletteEntries as e, i (`${i}\0${e.label}\0${e.detail}`)}
       <button
         type="button"
         role="option"

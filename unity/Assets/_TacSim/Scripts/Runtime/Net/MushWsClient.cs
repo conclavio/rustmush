@@ -42,6 +42,7 @@ namespace TacSim.Net
         public const int CloseCodeTokenCooloff = 4429;
         public const int MaxInboundFrameBytes = 4 * 1024 * 1024;
         public const int MaxInboundMessageBytes = MaxInboundFrameBytes;
+        public const long MaxInboundQueueBytes = 16L * 1024L * 1024L;
         public const int MaxOutboundFrameBytes = 272 * 1024;
         public const int MaxInboundQueueSize = 2048;
         public const int MaxInboundQueueCount = MaxInboundQueueSize;
@@ -93,10 +94,12 @@ namespace TacSim.Net
         private readonly SemaphoreSlim _connectGate = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _outboundSignal = new SemaphoreSlim(0);
         private SocketRuntime _runtime;
-        private readonly Queue<(long epoch, MushEnvelope env)> _reliableInbound = new Queue<(long, MushEnvelope)>();
-        private readonly Dictionary<string, (long epoch, MushEnvelope env)> _latestTelemetry = new Dictionary<string, (long, MushEnvelope)>(StringComparer.Ordinal);
+        private readonly Queue<(long epoch, MushEnvelope env, int bytes)> _reliableInbound = new Queue<(long, MushEnvelope, int)>();
+        private readonly Dictionary<string, (long epoch, MushEnvelope env, int bytes)> _latestTelemetry = new Dictionary<string, (long, MushEnvelope, int)>(StringComparer.Ordinal);
         private readonly Queue<string> _telemetryOrder = new Queue<string>();
+        private long _inboundQueuedBytes;
         private bool _inboundOverflowDetected;
+        private readonly ConcurrentQueue<string> _handshakeOutbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> _priorityOutbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> _outbound = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<(long epoch, int? code, string message)> _socketDrops = new ConcurrentQueue<(long, int?, string)>();
@@ -157,7 +160,8 @@ namespace TacSim.Net
         public MushWsConnectionState State { get; private set; } = MushWsConnectionState.Disconnected;
         public ulong LastSeq => _lastSeq;
         public int InboundQueueCount { get { lock (_inboundLock) { return _reliableInbound.Count + _latestTelemetry.Count; } } }
-        public int OutboundQueueCount => _priorityOutbound.Count + _outbound.Count;
+        public long InboundQueueBytes { get { lock (_inboundLock) { return _inboundQueuedBytes; } } }
+        public int OutboundQueueCount => _handshakeOutbound.Count + _priorityOutbound.Count + _outbound.Count;
         public int PanelFeedCount => _panelFeeds.Count;
         public int ViewCursorCount => _viewCursors.Count;
         public int ReconnectAttemptCount => _reconnectAttempt;
@@ -250,13 +254,49 @@ namespace TacSim.Net
             bool allowInsecureNonLoopback = false)
         {
             string wsBase = MushAuthClient.ToWebSocketBaseUrl(httpBaseUrl);
-            string query = BuildWsQuery(characterKey, lastSeq);
-            var uri = new Uri($"{wsBase}/ws?{query}");
-            bool isSecure = string.Equals(uri.Scheme, "wss", StringComparison.OrdinalIgnoreCase);
-            if (!isSecure && !allowInsecureNonLoopback && !MushAuthClient.IsLoopbackUri(uri))
+            if (MushProtocol.ContainsControlChars(wsBase) ||
+                wsBase.IndexOf('?') >= 0 ||
+                wsBase.IndexOf('#') >= 0)
+            {
+                throw new InvalidOperationException("WebSocket server base URL must not contain query strings, fragments, or control characters.");
+            }
+            if (!Uri.TryCreate(wsBase, UriKind.Absolute, out Uri baseUri))
+                throw new InvalidOperationException("Invalid WebSocket server URL.");
+            if (!string.IsNullOrEmpty(baseUri.UserInfo) ||
+                !string.IsNullOrEmpty(baseUri.Query) ||
+                !string.IsNullOrEmpty(baseUri.Fragment))
+            {
+                throw new InvalidOperationException("WebSocket server base URL must not contain credentials (userinfo), query strings, or fragments.");
+            }
+
+            bool isWss = string.Equals(baseUri.Scheme, "wss", StringComparison.OrdinalIgnoreCase);
+            bool isWs = string.Equals(baseUri.Scheme, "ws", StringComparison.OrdinalIgnoreCase);
+            if (!isWss && !isWs)
+                throw new InvalidOperationException($"Unsupported WebSocket URL scheme '{baseUri.Scheme}'; use wss://.");
+
+            if (!isWss && !allowInsecureNonLoopback && !MushAuthClient.IsLoopbackUri(baseUri))
             {
                 throw new InvalidOperationException(
-                    $"Refusing cleartext WebSocket connection ('{uri.Scheme}://{uri.Authority}') to non-loopback host in non-dev build; use https:// / wss://.");
+                    $"Refusing cleartext WebSocket connection ('{baseUri.Scheme}://{baseUri.Authority}') to non-loopback host in non-dev build; use https:// / wss://.");
+            }
+
+            string query = BuildWsQuery(characterKey, lastSeq);
+            string basePath = baseUri.AbsolutePath.TrimEnd('/');
+            var builder = new UriBuilder(baseUri)
+            {
+                UserName = string.Empty,
+                Password = string.Empty,
+                Path = basePath + "/ws",
+                Query = query,
+                Fragment = string.Empty
+            };
+            Uri uri = builder.Uri;
+
+            if (!string.Equals(uri.Scheme, baseUri.Scheme, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(uri.Authority, baseUri.Authority, StringComparison.OrdinalIgnoreCase) ||
+                !string.IsNullOrEmpty(uri.UserInfo))
+            {
+                throw new InvalidOperationException("WebSocket endpoint URI changed target origin.");
             }
             return uri;
         }
@@ -322,6 +362,7 @@ namespace TacSim.Net
                 throw new InvalidOperationException("No active session credentials.");
 
             CloseSocketOnly();
+            DrainQueue(_handshakeOutbound);
             DrainQueue(_priorityOutbound);
             DrainQueue(_outbound);
 
@@ -385,8 +426,8 @@ namespace TacSim.Net
             _nextReconnectAtMonotonicSec = -1.0;
             State = MushWsConnectionState.Online;
 
-            // Declare structured true_color Web client capabilities immediately upon attach
-            EnqueuePriorityRaw(MushProtocol.BuildCapsCommand(120, 40));
+            // Declare structured true_color Web client capabilities immediately upon attach (dedicated lane so ping floods cannot evict caps).
+            EnqueueHandshakeRaw(MushProtocol.BuildCapsCommand(120, 40));
             OnConnectionStatusChanged?.Invoke($"Connected to {uri.Host}");
 
             _ = Task.Run(() => ReceiveLoopAsync(rt, epoch));
@@ -398,12 +439,15 @@ namespace TacSim.Net
             _hasAttemptedConnect = true;
             Interlocked.Increment(ref _sessionEpoch);
             _intentionalDisconnect = true;
+            _activeAuth = null;
+            _activeCharKey = null;
             _nextReconnectAtMonotonicSec = -1.0;
             _reconnectInFlight = false;
             _subscribedForCurrentSocket = false;
             State = MushWsConnectionState.Disconnected;
             ClearInboundQueues();
             DrainQueue(_socketDrops);
+            DrainQueue(_handshakeOutbound);
             DrainQueue(_priorityOutbound);
             DrainQueue(_outbound);
             CloseSocketOnly();
@@ -435,7 +479,8 @@ namespace TacSim.Net
 
         public void SendLine(string commandLine)
         {
-            if (string.IsNullOrWhiteSpace(commandLine)) return;
+            if (string.IsNullOrWhiteSpace(commandLine) || MushProtocol.ContainsControlChars(commandLine))
+                return;
             EnqueueRaw(MushProtocol.BuildLineCommand(commandLine.Trim()));
         }
 
@@ -494,13 +539,22 @@ namespace TacSim.Net
         {
             if (env != null)
             {
-                _intentionalDisconnect = false;
-                EnqueueInboundBounded(Interlocked.Read(ref _sessionEpoch), env);
+                int estimatedBytes = env.Data != null ? Math.Max(64, env.Data.ToJson().Length) : 64;
+                InjectSyntheticEnvelope(env, estimatedBytes);
             }
+        }
+
+        public bool InjectSyntheticEnvelope(MushEnvelope env, int estimatedBytes)
+        {
+            if (env == null) return true;
+            _intentionalDisconnect = false;
+            return EnqueueInboundBounded(Interlocked.Read(ref _sessionEpoch), env, Math.Max(1, estimatedBytes));
         }
 
         public bool TryDequeueOutbound(out string rawJson)
         {
+            if (_handshakeOutbound.TryDequeue(out rawJson))
+                return true;
             if (_priorityOutbound.TryDequeue(out rawJson))
                 return true;
             return _outbound.TryDequeue(out rawJson);
@@ -826,6 +880,8 @@ namespace TacSim.Net
                     string reason = MushProtocol.FlattenRichText(d["reason"]);
                     _intentionalDisconnect = true;
                     _isConnected = false;
+                    _activeAuth = null;
+                    _activeCharKey = null;
                     State = MushWsConnectionState.SessionEnded;
                     OnConnectionStatusChanged?.Invoke($"Disconnected: {reason}");
                     OnFatalSessionEnded?.Invoke(reason);
@@ -906,6 +962,17 @@ namespace TacSim.Net
             }
         }
 
+        internal bool EnqueueHandshakeRaw(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return false;
+            if (Encoding.UTF8.GetByteCount(json) > MaxOutboundFrameBytes) return false;
+            if (!CanEnqueueOutbound) return false;
+            if (_handshakeOutbound.Count >= 8) return false;
+            _handshakeOutbound.Enqueue(json);
+            _outboundSignal.Release();
+            return true;
+        }
+
         private bool EnqueuePriorityRaw(string json)
         {
             if (string.IsNullOrEmpty(json)) return false;
@@ -968,9 +1035,10 @@ namespace TacSim.Net
             return true;
         }
 
-        private bool EnqueueInboundBounded(long epoch, MushEnvelope env)
+        private bool EnqueueInboundBounded(long epoch, MushEnvelope env, int frameBytes)
         {
             if (env == null) return true;
+            int clampedBytes = Math.Max(1, Math.Min(frameBytes, MaxInboundMessageBytes));
             lock (_inboundLock)
             {
                 if (_inboundOverflowDetected)
@@ -978,8 +1046,23 @@ namespace TacSim.Net
 
                 if (TryGetReplaceableTelemetryKey(env, out string telemetryKey))
                 {
-                    bool isNewKey = !_latestTelemetry.ContainsKey(telemetryKey);
-                    _latestTelemetry[telemetryKey] = (epoch, env);
+                    int replacedBytes = 0;
+                    bool isNewKey = !_latestTelemetry.TryGetValue(telemetryKey, out var existingTel);
+                    if (!isNewKey)
+                        replacedBytes = existingTel.bytes;
+                    long nextTelBytes = _inboundQueuedBytes - replacedBytes + clampedBytes;
+                    if (nextTelBytes > MaxInboundQueueBytes)
+                    {
+                        CompactReplaceableViewsLocked();
+                        nextTelBytes = _inboundQueuedBytes - replacedBytes + clampedBytes;
+                        if (nextTelBytes > MaxInboundQueueBytes)
+                        {
+                            _inboundOverflowDetected = true;
+                            return false;
+                        }
+                    }
+                    _latestTelemetry[telemetryKey] = (epoch, env, clampedBytes);
+                    _inboundQueuedBytes = Math.Max(0L, nextTelBytes);
                     if (isNewKey)
                         _telemetryOrder.Enqueue(telemetryKey);
                     return true;
@@ -992,19 +1075,28 @@ namespace TacSim.Net
                 {
                     string feed = env.Data.Str("feed", string.Empty);
                     if (!string.IsNullOrEmpty(feed))
-                        _latestTelemetry.Remove("panel:" + feed);
+                    {
+                        string tKey = "panel:" + feed;
+                        if (_latestTelemetry.TryGetValue(tKey, out var removedTel))
+                        {
+                            _latestTelemetry.Remove(tKey);
+                            _inboundQueuedBytes = Math.Max(0L, _inboundQueuedBytes - removedTel.bytes);
+                        }
+                    }
                 }
                 else if (env.EventType == "disconnect" ||
                          (env.EventType == "resumed" && env.Data != null && env.Data.IsObject && !env.Data.Bool("replayed", true)))
                 {
+                    foreach (var kv in _latestTelemetry)
+                        _inboundQueuedBytes = Math.Max(0L, _inboundQueuedBytes - kv.Value.bytes);
                     _latestTelemetry.Clear();
                     _telemetryOrder.Clear();
                 }
 
-                if (_reliableInbound.Count >= MaxInboundQueueSize)
+                if (_reliableInbound.Count >= MaxInboundQueueSize || _inboundQueuedBytes + clampedBytes > MaxInboundQueueBytes)
                     CompactReplaceableViewsLocked();
 
-                if (_reliableInbound.Count >= MaxInboundQueueSize)
+                if (_reliableInbound.Count >= MaxInboundQueueSize || _inboundQueuedBytes + clampedBytes > MaxInboundQueueBytes)
                 {
                     // Never drop queued reliable events or advance _lastSeq past an omitted gap;
                     // latch overflow so ReceiveLoopAsync triggers a clean reconnect/resync from _lastSeq.
@@ -1012,7 +1104,8 @@ namespace TacSim.Net
                     return false;
                 }
 
-                _reliableInbound.Enqueue((epoch, env));
+                _reliableInbound.Enqueue((epoch, env, clampedBytes));
+                _inboundQueuedBytes += clampedBytes;
                 return true;
             }
         }
@@ -1032,12 +1125,18 @@ namespace TacSim.Net
                 return;
 
             _reliableInbound.Clear();
+            long reliableBytes = 0;
             for (int i = 0; i < items.Length; i++)
             {
                 if (TryGetReplaceableViewId(items[i].env, out string viewId) && lastIndexByView[viewId] != i)
                     continue;
                 _reliableInbound.Enqueue(items[i]);
+                reliableBytes += items[i].bytes;
             }
+            long telemetryBytes = 0;
+            foreach (var kv in _latestTelemetry)
+                telemetryBytes += kv.Value.bytes;
+            _inboundQueuedBytes = reliableBytes + telemetryBytes;
         }
 
         private bool TryDequeueNextInbound(long currentEpoch, out MushEnvelope env, out bool isCoalescedTelemetry)
@@ -1047,6 +1146,7 @@ namespace TacSim.Net
                 while (_reliableInbound.Count > 0)
                 {
                     var item = _reliableInbound.Dequeue();
+                    _inboundQueuedBytes = Math.Max(0L, _inboundQueuedBytes - item.bytes);
                     if (item.epoch != currentEpoch)
                         continue;
                     env = item.env;
@@ -1060,6 +1160,7 @@ namespace TacSim.Net
                     if (!_latestTelemetry.TryGetValue(key, out var item))
                         continue;
                     _latestTelemetry.Remove(key);
+                    _inboundQueuedBytes = Math.Max(0L, _inboundQueuedBytes - item.bytes);
                     if (item.epoch != currentEpoch)
                         continue;
                     env = item.env;
@@ -1079,6 +1180,7 @@ namespace TacSim.Net
                 _reliableInbound.Clear();
                 _latestTelemetry.Clear();
                 _telemetryOrder.Clear();
+                _inboundQueuedBytes = 0;
                 _inboundOverflowDetected = false;
             }
         }
@@ -1161,7 +1263,7 @@ namespace TacSim.Net
                                         EnqueuePriorityRaw(MushProtocol.BuildPongCommand(nonce));
                                         env.PongAlreadySent = true;
                                     }
-                                    if (!EnqueueInboundBounded(epoch, env))
+                                    if (!EnqueueInboundBounded(epoch, env, (int)ms.Length))
                                     {
                                         try { ws.Abort(); } catch { /* ignore */ }
                                         HandleSocketLoopFailureForEpoch(epoch, rt, null, "Inbound reliable queue overflow; resyncing session");
@@ -1203,6 +1305,12 @@ namespace TacSim.Net
             {
                 while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open && Interlocked.Read(ref _sessionEpoch) == epoch)
                 {
+                    if (_handshakeOutbound.TryDequeue(out string handshakeMsg))
+                    {
+                        byte[] bytes = Encoding.UTF8.GetBytes(handshakeMsg);
+                        await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct);
+                        continue;
+                    }
                     if (_priorityOutbound.TryDequeue(out string prioMsg))
                     {
                         byte[] bytes = Encoding.UTF8.GetBytes(prioMsg);

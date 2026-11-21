@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using TacSim.Core;
+using TacSim.Net;
 using UnityEngine;
 
 namespace TacSim.World
@@ -389,15 +390,21 @@ namespace TacSim.World
             var spotsArr = mapFrame["spots"].AsArray();
             if (spotsArr != null)
             {
-                for (int i = 0; i < spotsArr.Count; i++)
+                int spotCap = Math.Min(spotsArr.Count, 32);
+                for (int i = 0; i < spotCap; i++)
                 {
                     var sp = spotsArr[i];
                     var cellArr = sp["cell"].AsArray();
                     if (cellArr == null || cellArr.Count < 2) continue;
+                    string fallbackLetter = ((char)('A' + (i % 26))).ToString();
+                    string rawLetter = sp.Str("letter", fallbackLetter);
+                    string safeLetter = MushProtocol.TryValidateSafeCommandToken(rawLetter, out string validLetter, maxLen: 16)
+                        ? validLetter
+                        : fallbackLetter;
                     grid.KeySpots.Add(new ArenaKeySpotDef
                     {
-                        Letter = sp.Str("letter", ((char)('A' + i)).ToString()),
-                        Name = sp.Str("name", $"Point {(char)('A' + i)}"),
+                        Letter = safeLetter,
+                        Name = sp.Str("name", $"Point {fallbackLetter}"),
                         CellX = cellArr[0].AsInt(128),
                         CellY = cellArr[1].AsInt(128)
                     });

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using TacSim.Core;
+using TacSim.Net;
 using TacSim.World;
 using TMPro;
 using UnityEngine;
@@ -392,6 +393,7 @@ namespace TacSim.Space
             var txtGo = new GameObject("Label");
             txtGo.transform.SetParent(bbGo.transform, false);
             _lockAspectLabel = txtGo.AddComponent<TextMeshPro>();
+            _lockAspectLabel.richText = false;
             _lockAspectLabel.fontSize = 14f;
             _lockAspectLabel.color = new Color(1.0f, 0.78f, 0.36f);
             _lockAspectLabel.alignment = TextAlignmentOptions.Center;
@@ -543,25 +545,33 @@ namespace TacSim.Space
                 }
             }
 
+            const int MaxOrbitalRocks = 32;
+            const int MaxOrbitalContacts = 64;
+            const int MaxLiveTorpedoes = 64;
+
             var rocksArr = holotank["rocks"].AsArray() ?? holotank["cluster"]?["rocks"].AsArray();
             if (rocksArr != null)
             {
-                for (int r = 0; r < rocksArr.Count; r++)
+                int rocksSpawned = 0;
+                for (int r = 0; r < rocksArr.Count && rocksSpawned < MaxOrbitalRocks; r++)
                 {
                     var rk = rocksArr[r];
                     if (!rk.IsObject) continue;
-                    string rId = rk.Str("id", rk.Str("letter", string.Empty)).Trim().ToUpperInvariant();
-                    if (string.IsNullOrEmpty(rId)) continue;
+                    string rawRockId = rk.Str("id", rk.Str("letter", string.Empty));
+                    if (!MushProtocol.TryValidateSafeCommandToken(rawRockId, out string validRockId)) continue;
+                    string rId = validRockId.ToUpperInvariant();
                     string spectral = rk.Str("spectral", rk.Str("label", "Pocket"));
                     Vector3 offset = ComputeRelativeStageOffset(rk, obsXKm, obsYKm, obsZKm, defaultRadius: 48f, index: r);
                     UpsertOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
                     seenTargets.Add(rId);
+                    rocksSpawned++;
                 }
             }
 
             if (contactsArr != null)
             {
-                for (int i = 0; i < contactsArr.Count; i++)
+                int contactsSpawned = 0;
+                for (int i = 0; i < contactsArr.Count && contactsSpawned < MaxOrbitalContacts; i++)
                 {
                     var c = contactsArr[i];
                     if (!c.IsObject) continue;
@@ -570,8 +580,8 @@ namespace TacSim.Space
                         continue;
 
                     string kind = c.Str("kind", string.Empty);
-                    string id = c.Str("designator", c.Str("id", string.Empty)).Trim();
-                    if (string.IsNullOrEmpty(id)) continue;
+                    string rawId = c.Str("designator", c.Str("id", string.Empty));
+                    if (!MushProtocol.TryValidateSafeCommandToken(rawId, out string id)) continue;
 
                     if (string.Equals(kind, "rock", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(kind, "asteroid", StringComparison.OrdinalIgnoreCase))
@@ -581,6 +591,7 @@ namespace TacSim.Space
                         Vector3 offset = ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 50f, index: i);
                         UpsertOreRockTarget(rKey, lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
                         seenTargets.Add(rKey);
+                        contactsSpawned++;
                         if (c.Bool("locked", false))
                             SelectedRockId = rKey;
                         continue;
@@ -598,6 +609,7 @@ namespace TacSim.Space
                               : (friendly ? new Color(0.45f, 1.0f, 0.65f) : new Color(0.45f, 0.82f, 1f));
                     UpsertNavalContact(id, $"{id} — {name}", pos, rot, col, hostile, friendly);
                     seenTargets.Add(id);
+                    contactsSpawned++;
                     if (c.Bool("locked", false))
                         LockedContactId = id;
                 }
@@ -607,7 +619,8 @@ namespace TacSim.Space
             var torpsArr = holotank["torpedoes"].AsArray();
             if (torpsArr != null)
             {
-                for (int t = 0; t < torpsArr.Count; t++)
+                int torpCap = Math.Min(torpsArr.Count, MaxLiveTorpedoes);
+                for (int t = 0; t < torpCap; t++)
                 {
                     var tp = torpsArr[t];
                     if (!tp.IsObject) continue;
@@ -904,6 +917,7 @@ namespace TacSim.Space
             var txtGo = new GameObject("Label");
             txtGo.transform.SetParent(bbGo.transform, false);
             var tmp = txtGo.AddComponent<TextMeshPro>();
+            tmp.richText = false;
             tmp.text = MushProtocolLiteEscape(label);
             tmp.fontSize = 16f;
             tmp.color = color;
@@ -1264,12 +1278,13 @@ namespace TacSim.Space
             if (cockpitContacts != null && cockpitContacts.Count > 0 && _contactsContainer != null &&
                 _namedOrbitalTargets.Count == 0 && _liveTorpedoMarkers.Count == 0)
             {
-                for (int i = 0; i < cockpitContacts.Count; i++)
+                int fallbackCap = Math.Min(cockpitContacts.Count, 64);
+                for (int i = 0; i < fallbackCap; i++)
                 {
                     var c = cockpitContacts[i];
                     if (!c.IsObject) continue;
-                    string cid = c.Str("id", string.Empty).Trim();
-                    if (string.IsNullOrEmpty(cid)) continue;
+                    string rawCid = c.Str("id", string.Empty);
+                    if (!MushProtocol.TryValidateSafeCommandToken(rawCid, out string cid)) continue;
                     string kind = c.Str("kind", "ship");
                     string label = c.Str("label", cid);
                     Vector3 pos = OrbitalStageOrigin + ComputeRelativeStageOffset(c, 0.0, 0.0, 0.0, defaultRadius: 85f, index: i);
@@ -1482,8 +1497,8 @@ namespace TacSim.Space
                 return;
             }
             string sid = dockingFeed.Str("session_id", string.Empty);
-            if (string.IsNullOrEmpty(sid)) return;
-            if (ActiveDockingSession != null && ActiveDockingSession.SessionId == sid)
+            if (!MushProtocol.TryValidateSafeCommandToken(sid, out string safeSid)) return;
+            if (ActiveDockingSession != null && ActiveDockingSession.SessionId == safeSid)
                 return;
 
             ActiveDockingSession = DockingClientSession.FromFeed(dockingFeed);
@@ -1555,10 +1570,10 @@ namespace TacSim.Space
                 if (ActiveDockingSession.IsClamped)
                 {
                     string tapeCmd = ActiveDockingSession.FormatTapeCommand();
-                    if (tapeCmd.Length > DockingClientSession.MaxSafeCommandChars)
+                    if (string.IsNullOrEmpty(tapeCmd) || tapeCmd.Length > DockingClientSession.MaxSafeCommandChars)
                     {
                         ActiveDockingSession = null;
-                        OnSpaceAlert?.Invoke("Docking tape exceeded safe command length — aborting session; re-initiate approach.");
+                        OnSpaceAlert?.Invoke("Docking tape invalid or exceeded safe command length — aborting session; re-initiate approach.");
                         OnDockingAborted?.Invoke();
                         return;
                     }
@@ -1572,7 +1587,7 @@ namespace TacSim.Space
                 if (ActiveDockingSession.IsCollarScrapeBounce)
                 {
                     string tapeCmd = ActiveDockingSession.FormatTapeCommand();
-                    if (tapeCmd.Length > DockingClientSession.MaxSafeCommandChars)
+                    if (string.IsNullOrEmpty(tapeCmd) || tapeCmd.Length > DockingClientSession.MaxSafeCommandChars)
                     {
                         ActiveDockingSession = null;
                         OnDockingAborted?.Invoke();
@@ -1658,10 +1673,12 @@ namespace TacSim.Space
                         {
                             if (kv.Value != null && (hit.transform == kv.Value || hit.transform.IsChildOf(kv.Value)))
                             {
+                                if (!MushProtocol.TryValidateSafeCommandToken(kv.Key, out string safeKey))
+                                    break;
                                 bool isRock = _knownRockIds.Contains(kv.Key);
-                                if (isRock) SelectedRockId = kv.Key;
-                                else LockedContactId = kv.Key;
-                                OnOrbitalTargetClicked?.Invoke(kv.Key, isRock);
+                                if (isRock) SelectedRockId = safeKey;
+                                else LockedContactId = safeKey;
+                                OnOrbitalTargetClicked?.Invoke(safeKey, isRock);
                                 break;
                             }
                         }

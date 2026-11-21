@@ -258,10 +258,17 @@ namespace TacSim.UI
             Other
         }
 
+        public const int MaxPendingRequests = 64;
+        public const float PendingRequestTimeoutSec = 60f;
+        public const int MaxOwnQuotesPerPage = 64;
+        public const int MaxWaitingCodesPerPage = 64;
+        public const int MaxPooledRows = 256;
+
         private sealed class PendingMindRequest
         {
             public PendingMindOp Op;
             public string TargetName;
+            public float SentAtRealtime;
             public int DraftSessionGenerationAtSend;
             public int DraftBaseGenerationAtSend;
             public int DraftEditVersionAtSend;
@@ -272,6 +279,27 @@ namespace TacSim.UI
         }
 
         private readonly Dictionary<ulong, PendingMindRequest> _pendingRequests = new Dictionary<ulong, PendingMindRequest>();
+
+        public int PendingRequestCount => _pendingRequests.Count;
+
+        public void PruneExpiredPendingRequests(float nowRealtime)
+        {
+            if (_pendingRequests.Count == 0) return;
+            List<ulong> expired = null;
+            foreach (var kv in _pendingRequests)
+            {
+                if (nowRealtime - kv.Value.SentAtRealtime >= PendingRequestTimeoutSec)
+                {
+                    if (expired == null) expired = new List<ulong>();
+                    expired.Add(kv.Key);
+                }
+            }
+            if (expired != null)
+            {
+                for (int i = 0; i < expired.Count; i++)
+                    _pendingRequests.Remove(expired[i]);
+            }
+        }
 
         // Two-click confirmation state (`U-M15` + dirty-draft guard)
         private string _armedConfirmKey;
@@ -480,7 +508,8 @@ namespace TacSim.UI
                 var qArr = ownObj["quotes"].AsArray();
                 if (qArr != null)
                 {
-                    for (int i = 0; i < qArr.Count; i++)
+                    int qCap = Math.Min(qArr.Count, MaxOwnQuotesPerPage);
+                    for (int i = 0; i < qCap; i++)
                     {
                         var q = qArr[i];
                         if (!q.IsObject) continue;
@@ -496,7 +525,8 @@ namespace TacSim.UI
                 var wArr = ownObj["waiting"].AsArray();
                 if (wArr != null)
                 {
-                    for (int i = 0; i < wArr.Count; i++)
+                    int wCap = Math.Min(wArr.Count, MaxWaitingCodesPerPage);
+                    for (int i = 0; i < wCap; i++)
                     {
                         var item = wArr[i];
                         // Live `query.rs:302` emits `[{"code": "<8-hex>"}]`; keep string fallback defensively (`U-H25`).
@@ -851,6 +881,7 @@ namespace TacSim.UI
             if (service != "mind" || res == null || !res.IsObject)
                 return;
 
+            PruneExpiredPendingRequests(Time.realtimeSinceStartup);
             string status = res.Str("status", string.Empty);
             bool isProgressOnly = status == "queued" || status == "pending";
             _pendingRequests.TryGetValue(requestId, out var pending);
@@ -1224,6 +1255,23 @@ namespace TacSim.UI
             bool chainCheck = false, bool chainSave = false, string saveNotes = null, bool allowDiscardDirty = false)
         {
             if (_ws == null) return 0;
+            float nowRealtime = Time.realtimeSinceStartup;
+            PruneExpiredPendingRequests(nowRealtime);
+            if (_pendingRequests.Count >= MaxPendingRequests)
+            {
+                ulong oldestId = 0;
+                float oldestTime = float.MaxValue;
+                foreach (var kv in _pendingRequests)
+                {
+                    if (kv.Value.SentAtRealtime < oldestTime)
+                    {
+                        oldestTime = kv.Value.SentAtRealtime;
+                        oldestId = kv.Key;
+                    }
+                }
+                if (oldestId != 0)
+                    _pendingRequests.Remove(oldestId);
+            }
             ulong reqId = _ws.SendMindInvoke(req);
             if (reqId > 0)
             {
@@ -1231,6 +1279,7 @@ namespace TacSim.UI
                 {
                     Op = op,
                     TargetName = targetName ?? LoadedMindName,
+                    SentAtRealtime = nowRealtime,
                     DraftSessionGenerationAtSend = _draftSessionGeneration,
                     DraftBaseGenerationAtSend = _draftBaseGeneration,
                     DraftEditVersionAtSend = _localDraftEditVersion,
@@ -1673,6 +1722,7 @@ namespace TacSim.UI
 
         private void Update()
         {
+            PruneExpiredPendingRequests(Time.realtimeSinceStartup);
             bool loginBlocking = IsLoginOverlayBlocking();
             bool online = _ws != null && _ws.State == MushWsConnectionState.Online && !loginBlocking;
 
@@ -2011,21 +2061,24 @@ namespace TacSim.UI
         private void EnsureMarketRowPool(int needed)
         {
             if (_marketRowsContainer == null) return;
-            while (_marketRows.Count < needed)
+            int capped = Math.Min(needed, MaxPooledRows);
+            while (_marketRows.Count < capped)
                 _marketRows.Add(CreatePooledActionRow(_marketRowsContainer, $"MktRow_{_marketRows.Count}", rowHeight: 48f));
         }
 
         private void EnsureHoldingRowPool(int needed)
         {
             if (_holdingRowsContainer == null) return;
-            while (_holdingRows.Count < needed)
+            int capped = Math.Min(needed, MaxPooledRows);
+            while (_holdingRows.Count < capped)
                 _holdingRows.Add(CreatePooledActionRow(_holdingRowsContainer, $"HoldRow_{_holdingRows.Count}", rowHeight: 42f));
         }
 
         private void EnsureLibraryButtonPool(int needed)
         {
             if (_libraryButtonsContainer == null) return;
-            while (_libraryButtons.Count < needed)
+            int capped = Math.Min(needed, MaxPooledRows);
+            while (_libraryButtons.Count < capped)
             {
                 int slot = _libraryButtons.Count;
                 Text btnLbl = null;
@@ -2084,7 +2137,7 @@ namespace TacSim.UI
             int rowIndex = 0;
 
             // 1. Live market listings (including decoded TermsLine / SplitLine / Transferable; `U-M15`, `48d H-43`).
-            for (int i = 0; i < MarketPage.Rows.Count; i++)
+            for (int i = 0; i < MarketPage.Rows.Count && rowIndex < _marketRows.Count; i++)
             {
                 var r = MarketPage.Rows[i];
                 var slot = _marketRows[rowIndex++];
@@ -2127,7 +2180,7 @@ namespace TacSim.UI
             }
 
             // 2. Own open quotes (`U-H25`).
-            for (int i = 0; i < MarketPage.OwnQuotes.Count; i++)
+            for (int i = 0; i < MarketPage.OwnQuotes.Count && rowIndex < _marketRows.Count; i++)
             {
                 var q = MarketPage.OwnQuotes[i];
                 var slot = _marketRows[rowIndex++];
@@ -2161,7 +2214,7 @@ namespace TacSim.UI
             }
 
             // 3. Funded escrow purchases waiting for Complete or Refund (`U-H25`).
-            for (int i = 0; i < MarketPage.WaitingCodes.Count; i++)
+            for (int i = 0; i < MarketPage.WaitingCodes.Count && rowIndex < _marketRows.Count; i++)
             {
                 string wCode = MarketPage.WaitingCodes[i];
                 var slot = _marketRows[rowIndex++];
@@ -2206,7 +2259,7 @@ namespace TacSim.UI
                 : $"Section: {HoldingsPage.Section.ToUpperInvariant()} · {HoldingsPage.Rows.Count} holding(s)";
 
             EnsureHoldingRowPool(HoldingsPage.Rows.Count);
-            for (int i = 0; i < HoldingsPage.Rows.Count; i++)
+            for (int i = 0; i < HoldingsPage.Rows.Count && i < _holdingRows.Count; i++)
             {
                 var r = HoldingsPage.Rows[i];
                 var slot = _holdingRows[i];

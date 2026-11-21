@@ -7,7 +7,7 @@
 // Everything here is a pure function over wire types so the vitest suite
 // covers it without a DOM.
 
-import { exitCommand } from "./keys";
+import { exitCommand, hasControlChar } from "./keys";
 import type {
   Color,
   NarrativeKind,
@@ -367,7 +367,9 @@ export function roomLines(view: RoomView): RLine[] {
       if (i > 0) {
         line.push(mk(", "));
       }
-      line.push(mk(obj.name, "player", `look ${obj.name}`));
+      const trimmed = obj.name.trim();
+      const lookCmd = trimmed.length > 0 && !hasControlChar(trimmed) ? `look ${trimmed}` : undefined;
+      line.push(mk(obj.name, "player", lookCmd));
     });
     lines.push(line);
   }

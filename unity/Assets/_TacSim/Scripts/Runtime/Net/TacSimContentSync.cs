@@ -266,6 +266,11 @@ namespace TacSim.Net
                         continue;
                     if (string.Equals(ComputeSha256Hex(json), item.Sha256, StringComparison.OrdinalIgnoreCase))
                     {
+                        JsonNode parsedCached;
+                        try { parsedCached = JsonNode.Parse(json); }
+                        catch (Exception) { continue; }
+                        if (parsedCached == null || !parsedCached.IsObject)
+                            continue;
                         string lowerSha = item.Sha256.ToLowerInvariant();
                         _localDigests[item.Id] = lowerSha;
                         _localByteSizes[item.Id] = byteCount;
@@ -346,6 +351,22 @@ namespace TacSim.Net
             if (!string.Equals(actualSha, expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
                 SafeLogWarn($"[TacSimContentSync] Digest mismatch for pack '{id}': expected {expectedSha256}, got {actualSha}.");
+                return false;
+            }
+
+            // Validate JSON syntax before caching, persisting, or registering into live loaders (P2-CLIENT-11).
+            try
+            {
+                var parsed = JsonNode.Parse(json);
+                if (parsed == null || !parsed.IsObject)
+                {
+                    SafeLogWarn($"[TacSimContentSync] Rejecting non-object JSON payload for pack '{id}'.");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                SafeLogWarn($"[TacSimContentSync] Rejecting malformed JSON payload for pack '{id}': {ex.Message}");
                 return false;
             }
 

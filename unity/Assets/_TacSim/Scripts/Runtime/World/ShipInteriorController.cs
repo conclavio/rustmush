@@ -345,7 +345,7 @@ namespace TacSim.World
                     UrpMaterialFactory.GetOpaque("Slate", new Color(0.05f, 0.09f, 0.14f), 0.55f, 0.3f), false);
                 string safeName = MushProtocol.EscapeUnityRichText(comp.Name.ToUpperInvariant());
                 string safeShort = MushProtocol.EscapeUnityRichText(comp.ShortDesc);
-                var tmp = CreateLocalTmp(gaugeRoot, new Vector3(0.045f, 0f, 0f), Quaternion.Euler(0f, -90f, 0f), $"{safeName}\n<size=70%>{safeShort}</size>", 1.42f);
+                var tmp = CreateLocalTmp(gaugeRoot, new Vector3(0.045f, 0f, 0f), Quaternion.Euler(0f, -90f, 0f), $"{safeName}\n<size=70%>{safeShort}</size>", 1.42f, allowRichText: true);
                 _gaugeDisplays[comp.Id] = tmp;
                 _gaugeLines[comp.Id] = new List<string> { safeName, $"<size=70%>{safeShort}</size>" };
 
@@ -957,6 +957,9 @@ namespace TacSim.World
                         continue;
                 }
 
+                if (slotIdx >= 32)
+                    break;
+
                 seenIds.Add(item.Id);
                 Vector3 targetPos = ComputeCrewStandSpot(comp, slotIdx);
                 slotIdx++;
@@ -996,10 +999,10 @@ namespace TacSim.World
 
                 string safeActorName = MushProtocol.EscapeUnityRichText(item.Name);
                 string roleBadge = isNpc ? "<color=#88CCFF>[CREW / NPC]</color>" : "<color=#66EEAA>[CREW]</color>";
-                bb.NameplateText = CreateCrewBillboardTmp(bbGo.transform, "Nameplate", Vector3.zero, $"{safeActorName}\n<size=68%>{roleBadge}</size>", 1.26f, Color.white);
+                bb.NameplateText = CreateCrewBillboardTmp(bbGo.transform, "Nameplate", Vector3.zero, $"{safeActorName}\n<size=68%>{roleBadge}</size>", 1.26f, Color.white, allowRichText: true);
                 bb.NameplateText.rectTransform.sizeDelta = new Vector2(2.40f, 0.56f);
 
-                bb.SpeechBubbleText = CreateCrewBillboardTmp(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.32f, 0f), string.Empty, 1.02f, new Color(1f, 0.95f, 0.65f));
+                bb.SpeechBubbleText = CreateCrewBillboardTmp(bbGo.transform, "SpeechBubble", new Vector3(0f, 0.32f, 0f), string.Empty, 1.02f, new Color(1f, 0.95f, 0.65f), allowRichText: false);
                 bb.SpeechBubbleText.rectTransform.pivot = new Vector2(0.5f, 0.0f);
                 bb.SpeechBubbleText.rectTransform.sizeDelta = new Vector2(2.35f, 2.00f);
                 bb.SpeechBubbleText.alignment = TextAlignmentOptions.Bottom;
@@ -1007,9 +1010,9 @@ namespace TacSim.World
 
                 var wi = actorGo.AddComponent<WorldInteractable>();
                 wi.kind = InteractableKind.NpcActor;
-                wi.promptTitle = $"Talk to {item.Name}";
+                wi.promptTitle = $"Talk to {safeActorName}";
                 wi.promptSubtitle = isNpc ? "Speak with crew member" : "Speak with co-op shipmate";
-                wi.commandOrKey = item.Name;
+                wi.commandOrKey = MushProtocol.TryValidateSafeKeywordOrName(item.Name, out string safeCrewName) ? safeCrewName : string.Empty;
                 wi.maxInteractDistance = 3.8f;
                 wi.OnInteracted = target => OnInteractableTriggered?.Invoke(target);
 
@@ -1264,13 +1267,14 @@ namespace TacSim.World
             return go;
         }
 
-        private static TextMeshPro CreateLocalTmp(Transform parent, Vector3 localPos, Quaternion localRot, string text, float size)
+        private static TextMeshPro CreateLocalTmp(Transform parent, Vector3 localPos, Quaternion localRot, string text, float size, bool allowRichText = false)
         {
             var go = new GameObject("GaugeText");
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
             go.transform.localRotation = localRot;
             var tmp = go.AddComponent<TextMeshPro>();
+            tmp.richText = allowRichText;
             tmp.text = text;
             tmp.fontSize = size;
             tmp.color = new Color(0.78f, 0.95f, 1.0f);
@@ -1280,12 +1284,13 @@ namespace TacSim.World
             return tmp;
         }
 
-        private static TextMeshPro CreateCrewBillboardTmp(Transform parent, string name, Vector3 localPos, string text, float fontSize, Color color)
+        private static TextMeshPro CreateCrewBillboardTmp(Transform parent, string name, Vector3 localPos, string text, float fontSize, Color color, bool allowRichText = false)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
             var tmp = go.AddComponent<TextMeshPro>();
+            tmp.richText = allowRichText;
             tmp.text = text;
             tmp.fontSize = fontSize;
             tmp.color = color;

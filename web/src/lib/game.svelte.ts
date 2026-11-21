@@ -441,7 +441,7 @@ export class GameApp {
         // block ever re-requesting it. Clear it (applyBacklog dedups by seq,
         // so a refetch is safe) and, if a tab is open right now, refetch it
         // immediately — closed tabs refetch on their next openChannelTab.
-        this.channels.backlogFetched = {};
+        this.channels.backlogFetched.clear();
         if (this.channels.active !== null) {
           const meta = this.channels.byName(this.channels.active);
           if (meta) {
@@ -939,7 +939,7 @@ export class GameApp {
         // reply falling back to Sys means the query isn't available yet
         // (see SheetStore.markUnavailable's docs).
         if (pending?.kind === "backlog") {
-          this.channels.backlogFetched[pending.channel.toLowerCase()] = true;
+          this.channels.backlogFetched.set(pending.channel.toLowerCase(), true);
         }
         if (pending?.kind === "sheet" && !this.sheet.loaded) {
           // Only blank the panel when nothing was ever loaded: a transient
@@ -2066,6 +2066,21 @@ export class GameApp {
     if (!entry) {
       return;
     }
+    if (entry.detail === "exit") {
+      const safe = entry.insert.startsWith("goto ")
+        ? exitCommand(entry.insert.slice(5))
+        : exitCommand(entry.insert);
+      if (safe === null) {
+        return;
+      }
+      if (run) {
+        this.composer?.setText("");
+        this.submit(safe);
+        return;
+      }
+      this.composer?.focus(safe);
+      return;
+    }
     if (run && !entry.local) {
       this.composer?.setText("");
       this.submit(entry.insert);
@@ -2091,6 +2106,10 @@ export class GameApp {
     }
     if (entry.local) {
       this.submit("/help");
+      return;
+    }
+    if (entry.detail === "exit") {
+      this.submit("help goto");
       return;
     }
     const verb = entry.insert.trim().split(/\s+/)[0] ?? "";
@@ -2229,8 +2248,8 @@ export class GameApp {
     this.channels.activate(channel);
     const meta = this.channels.byName(channel);
     const key = channel.toLowerCase();
-    if (meta?.logged && !this.channels.backlogFetched[key]) {
-      this.channels.backlogFetched[key] = true; // one request per session
+    if (meta?.logged && !this.channels.backlogFetched.get(key)) {
+      this.channels.backlogFetched.set(key, true); // one request per session
       this.#req(
         { kind: "backlog", channel },
         { t: "channel_backlog", d: { channel, before_seq: null, limit: 100 } },

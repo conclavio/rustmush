@@ -6,7 +6,7 @@
 // driven through a fake socket, `lib/game.test.ts`'s harness in miniature,
 // so every fact below is what a connected client would draw.
 
-import { render, screen, within } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -152,5 +152,93 @@ describe("screen 0 draws a replay while one is open and no seat is held (16b cut
     await tick();
     expect(screen.getByText(WAITING_FOR_THE_REPLAY)).toBeTruthy();
     expect(screen.queryByText(NOT_IN_A_COCKPIT)).toBeNull();
+  });
+});
+
+describe("P2-CLIENT-1 & P2-CLIENT-7: footer exit chips and command palette safety", () => {
+  function sentLines(ws: FakeSocket): string[] {
+    return ws.sent
+      .map((raw) => JSON.parse(raw) as { t: string; d?: unknown })
+      .filter((msg) => msg.t === "line" && typeof msg.d === "string")
+      .map((msg) => msg.d as string);
+  }
+
+  it("footer exit chips submit goto-prefixed commands even for hostile exit names", async () => {
+    const { ws } = await mountGame();
+    ws.deliver(
+      {
+        t: "room",
+        d: {
+          id: "#10",
+          name: "Trap Room",
+          desc: [],
+          contents: [],
+          exits: [
+            { name: "QUIT", aliases: ["q"] },
+            { name: "@destroy me", aliases: ["d"] },
+            { name: "/clear", aliases: ["c"] },
+          ],
+          zone: null,
+        },
+      } as OutputEvent,
+      1,
+    );
+    await tick();
+
+    const legend = screen.getByRole("contentinfo", { name: "keys" });
+    const chips = Array.from(legend.querySelectorAll("button.exitchip"));
+    expect(chips).toHaveLength(3);
+    ws.sent.length = 0;
+
+    for (const chip of chips) {
+      await fireEvent.click(chip);
+    }
+
+    expect(sentLines(ws)).toEqual(["goto QUIT", "goto @destroy me", "goto /clear"]);
+  });
+
+  it("command palette runs goto-prefixed exits, guards paletteHelp, and tolerates duplicate exit names", async () => {
+    const { app, ws } = await mountGame();
+    ws.deliver(
+      {
+        t: "room",
+        d: {
+          id: "#11",
+          name: "Duplicate Hall",
+          desc: [],
+          contents: [],
+          exits: [
+            { name: "QUIT", aliases: ["q"] },
+            { name: "QUIT", aliases: [] },
+            { name: "@destroy me", aliases: [] },
+          ],
+          zone: null,
+        },
+      } as OutputEvent,
+      1,
+    );
+    await tick();
+
+    // Opening the palette with duplicate exits must not crash with each_key_duplicate
+    app.screens.paletteOpen = true;
+    app.paletteQuery("QUIT");
+    await tick();
+
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(2);
+
+    ws.sent.length = 0;
+    app.paletteSelected = 0;
+    app.palettePick(true);
+    expect(sentLines(ws)).toEqual(["goto QUIT"]);
+
+    // paletteHelp on an exit row must request `help goto`, never `help QUIT`
+    app.screens.paletteOpen = true;
+    app.paletteQuery("@destroy");
+    await tick();
+    ws.sent.length = 0;
+    app.paletteSelected = 0;
+    app.paletteHelp();
+    expect(sentLines(ws)).toEqual(["help goto"]);
   });
 });

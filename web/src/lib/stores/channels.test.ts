@@ -148,7 +148,7 @@ describe("ChannelsStore", () => {
     });
     expect(merged).toBe(3);
     expect(st.messagesOf("Public").map((m) => m.seq)).toEqual([2, 3, 4, 5]);
-    expect(st.backlogFetched.public).toBe(true);
+    expect(st.backlogFetched.get("public")).toBe(true);
     // Unread untouched by history reads.
     expect(st.unreadOf("Public")).toBe(0);
   });
@@ -196,10 +196,10 @@ describe("ChannelsStore", () => {
         })),
       },
     });
-    expect(st.backlogFetched.public).toBe(true);
+    expect(st.backlogFetched.get("public")).toBe(true);
 
     // Full rehydrate: GameApp clears the flags…
-    st.backlogFetched = {};
+    st.backlogFetched.clear();
     // …then refetches; the server now also has seq 6 (arrived while gapped).
     const merged = st.applyBacklog({
       backlog: {
@@ -257,11 +257,11 @@ describe("IC membership epochs", () => {
     const st = new ChannelsStore();
     st.applyState(stateData([{ name: "Radio", ic: true, epoch: "old", seq: 2, last_read: 0 }]));
     st.live({ ...liveMsg("Radio", 2), epoch: "old" });
-    st.backlogFetched.radio = true;
+    st.backlogFetched.set("radio", true);
     st.applyState(stateData([{ name: "Radio", ic: true, epoch: "new", seq: 0 }]));
     expect(st.messagesOf("Radio")).toHaveLength(0);
     expect(st.unreadOf("Radio")).toBe(0);
-    expect(st.backlogFetched.radio).toBeUndefined();
+    expect(st.backlogFetched.get("radio")).toBeUndefined();
     expect(st.live({ ...liveMsg("Radio", 1), epoch: "new" })).toBe(true);
     expect(st.unreadOf("Radio")).toBe(1);
     expect(st.applyBacklog({ backlog: { channel: "Radio", epoch: "old", messages: [liveMsg("Radio", 2)] } })).toBe(0);
@@ -276,4 +276,37 @@ describe("IC membership epochs", () => {
     expect(st.applyBacklog({ backlog: { channel: "Radio", epoch: "new", messages: [{ ...liveMsg("Radio", 2), text: "arrived body" }] } })).toBe(1);
     expect(st.messagesOf("Radio")[1]?.text).toEqual([{ text: "arrived body" }]);
   });
+});
+
+describe("P2-CLIENT-16: prototype-key channel names do not collide", () => {
+  it.each(["__proto__", "constructor", "toString", "valueOf", "hasOwnProperty"])(
+    "handles channel named %s across state, live, backlog, and clear without TypeError",
+    (chanName) => {
+      const st = new ChannelsStore();
+      st.applyState(stateData([{ name: chanName, seq: 1, last_read: 0 }]));
+      expect(st.messagesOf(chanName)).toEqual([]);
+      expect(st.backlogFetched.get(chanName.toLowerCase())).toBeUndefined();
+
+      expect(st.live(liveMsg(chanName, 2))).toBe(true);
+      expect(st.live(liveMsg(chanName, 2))).toBe(false);
+      expect(st.messagesOf(chanName).map((m) => m.seq)).toEqual([2]);
+
+      const merged = st.applyBacklog({
+        backlog: {
+          channel: chanName,
+          messages: [liveMsg(chanName, 1)],
+        },
+      });
+      expect(merged).toBe(1);
+      expect(st.messagesOf(chanName).map((m) => m.seq)).toEqual([1, 2]);
+      expect(st.backlogFetched.get(chanName.toLowerCase())).toBe(true);
+
+      st.activate(chanName);
+      expect(st.unreadOf(chanName)).toBe(0);
+
+      st.clear();
+      expect(st.messagesOf(chanName)).toEqual([]);
+      expect(st.backlogFetched.get(chanName.toLowerCase())).toBeUndefined();
+    },
+  );
 });
