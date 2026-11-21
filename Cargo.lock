@@ -2216,6 +2216,7 @@ dependencies = [
 name = "mush-composition"
 version = "0.1.0"
 dependencies = [
+ "mush-ansi",
  "mush-atlas",
  "mush-campaign",
  "mush-canon",
@@ -2232,6 +2233,7 @@ dependencies = [
  "mush-llm",
  "mush-mail",
  "mush-market",
+ "mush-mind",
  "mush-npc",
  "mush-org",
  "mush-party",
@@ -2248,9 +2250,12 @@ dependencies = [
  "mush-testkit",
  "mush-weather",
  "mush-worldgen",
+ "serde",
  "serde_json",
+ "sha2",
  "smol_str",
  "tacsim",
+ "tokio",
  "tracing",
 ]
 

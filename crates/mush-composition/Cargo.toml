@@ -48,6 +48,14 @@ tracing.workspace = true
 # economy and org modules over `TestWorld`. Not a crate edge.
 mush-proto.workspace = true
 mush-testkit.workspace = true
+# Doc 50 cut OP.8: `tests/op8_campaign.rs` composes TacSim's own test roster by path (`driving`'s
+# rig and tests/support) with the campaign seated beside it, so it takes what those files use.
+# Dev-dependencies, not crate edges.
+mush-ansi.workspace = true
+mush-mind.workspace = true
+serde.workspace = true
+sha2.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

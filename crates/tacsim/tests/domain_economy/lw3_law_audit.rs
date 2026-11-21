@@ -154,23 +154,25 @@ async fn lw3_an_audit_finds_strategic_ore_held_without_the_papers() {
     assert_eq!(freeport_record(&rig, holder).map(|r| r.rows.len()), Some(1));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
-async fn lw3_a_buyer_reports_a_private_sale_hands_over_the_lot_and_is_repaid() {
-    let mut rig = crate::driving_rig::stocked();
-    let (seller, row) = prospector(&mut rig, "Smuggler", 62, "Tern");
-    let hold = hold_vault_of(&rig.tw, &row);
-    seed_lot(&mut rig, hold, "strategic_ore", 2, LotId(0x50b2));
-    let _ = crate::in5_production::mint(&mut rig, seller);
+/// **A private sale** (doc 50 cut LW.3; shared with doc 50 cut OP.8's third story): `seller`, at
+/// Ceres' exchange, lists their hold's lot `lot` of `units` t at 300 cr a tonne to a new trader
+/// alone, who quotes, accepts into a fresh locker and settles. `(trader, quote, the accept's reply)`.
+pub(crate) fn sell_privately(
+    rig: &mut crate::driving_rig::Rig,
+    seller: ObjId,
+    lot: LotId,
+    units: u64,
+    (trader_name, seed): (&str, i64),
+) -> (ObjId, u64, String) {
     let exchange = station_room(&rig.tw, CERES, "room.c07_exchange");
     teleport(&mut rig.tw, seller, exchange);
-    let trader = pilot(&mut rig, "Trader", 63);
+    let trader = pilot(rig, trader_name, seed);
     let _ = run(
         &mut rig.tw,
         GOD,
         &format!("@account/open #{}=tacsim.credit", trader.0),
     );
-    let _ = crate::in5_production::mint(&mut rig, trader);
+    let _ = crate::in5_production::mint(rig, trader);
     teleport(&mut rig.tw, trader, exchange);
     let opened = run(&mut rig.tw, trader, "+locker/open");
     assert!(opened.contains("is open"), "{opened}");
@@ -179,27 +181,30 @@ async fn lw3_a_buyer_reports_a_private_sale_hands_over_the_lot_and_is_repaid() {
         .map(|l| VaultId(l.vault))
         .expect("the locker");
 
-    // The private sale: 2 t at 300 cr a tonne (the verb's price is minor units), to the trader
-    // alone.
+    // The private sale at 300 cr a tonne (the verb's price is minor units), to the trader alone.
     let offered = run(
         &mut rig.tw,
         seller,
-        &format!("+market/post {} price=30000 to=Trader", LotId(0x50b2)),
+        &format!("+market/post {lot} price=30000 to={trader_name}"),
     );
     assert!(offered.contains("Listed for sale as #"), "{offered}");
     let queued = drain(&mut rig.tw);
-    land_all(&mut rig, &queued);
+    land_all(rig, &queued);
     let listing = rig
         .tw
         .world()
         .module_state::<mush_market::MarketStore>()
         .and_then(|m| {
             m.live_listings()
-                .find(|l| l.source.exact_lot() == Some(LotId(0x50b2)))
+                .find(|l| l.source.exact_lot() == Some(lot))
                 .map(|l| l.id.0)
         })
         .expect("the private listing");
-    let quoted = run(&mut rig.tw, trader, &format!("+market/quote {listing}=2"));
+    let quoted = run(
+        &mut rig.tw,
+        trader,
+        &format!("+market/quote {listing}={units}"),
+    );
     assert!(quoted.contains("Quote #"), "{quoted}");
     let quote = rig
         .tw
@@ -217,12 +222,25 @@ async fn lw3_a_buyer_reports_a_private_sale_hands_over_the_lot_and_is_repaid() {
         &format!("+market/accept {quote}={}", locker.0),
     );
     let queued = drain(&mut rig.tw);
-    land_all(&mut rig, &queued);
+    land_all(rig, &queued);
     // The inventory mirror refreshes on its minute sweep; the market's sweep then settles.
     for _ in 0..3 {
         crate::driving_rig::sweep(&mut rig.tw, 60);
-        crate::in10_pools::settle(&mut rig, 1);
+        crate::in10_pools::settle(rig, 1);
     }
+    (trader, quote, accepted)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn lw3_a_buyer_reports_a_private_sale_hands_over_the_lot_and_is_repaid() {
+    let mut rig = crate::driving_rig::stocked();
+    let (seller, row) = prospector(&mut rig, "Smuggler", 62, "Tern");
+    let hold = hold_vault_of(&rig.tw, &row);
+    seed_lot(&mut rig, hold, "strategic_ore", 2, LotId(0x50b2));
+    let _ = crate::in5_production::mint(&mut rig, seller);
+    let (trader, quote, accepted) =
+        sell_privately(&mut rig, seller, LotId(0x50b2), 2, ("Trader", 63));
     let receipt = tacsim::port::law_report::receipts_of(rig.tw.world(), trader)
         .and_then(|b| b.receipts.into_iter().find(|r| r.quote == quote))
         .unwrap_or_else(|| panic!("the trader's receipt ({accepted})"));

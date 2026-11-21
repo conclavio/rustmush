@@ -15,11 +15,13 @@
 
 use mush_core::{GOD, ObjId};
 use mush_inventory::LotId;
+use tacsim::offense::{OffenseKind, Proof};
 
 use crate::driving_rig::{
-    cid, command, fire, hold_vault_of, port_map, prospector, run, seed_pool, station_room, teleport,
+    cid, command, drain, fire, hold_vault_of, land_all, port_map, prospector, run, seed_lot,
+    seed_pool, station_room, teleport,
 };
-use crate::lw3_law_audit::{credit, freeport_record, seed_strategic_claim};
+use crate::lw3_law_audit::{credit, freeport_record, seed_strategic_claim, sell_privately};
 
 const CERES: &str = "ceres_port";
 
@@ -149,5 +151,171 @@ async fn lw4_an_unpaid_fine_restricts_until_it_is_paid() {
     assert!(
         !sold.contains("does not let you trade restricted goods") && !queued.is_empty(),
         "{sold}"
+    );
+}
+
+/// **Doc 50 cut OP.8: the third acceptance story, the smuggler** (Q-50-47 as corrected: the
+/// smuggler cannot pay at once, the unpaid fine restricts them, paying it lifts the restriction,
+/// and the standing loss stays and shows on `+record`; Q-50-67: the reporting buyer hands over
+/// the goods). Two accounts at Ceres:
+/// - a prospector with no claim sells a trader 2 t of strategic ore privately, and then spends
+///   all they have;
+/// - the trader reports the sale and hands the lot over; the seller is fined the 1,000 cr floor
+///   at once and cannot pay it, so is under the Freeport's restriction and 5 standing down, and is
+///   told at once;
+/// - `+record` shows the sale, how it was proven (never by whom), the fine and its grace, what
+///   lifts the restriction, and the standing lost; the board refuses the smuggler's strategic
+///   ore;
+/// - paid through `+debts/pay`, the restriction lifts and the board trades again, the trader is
+///   paid back, and `+record` still shows the standing lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // the sale, the report, the restriction and the payment
+async fn op8_a_reported_smuggler_who_cannot_pay_is_restricted_until_paid_and_keeps_the_loss() {
+    let mut rig = crate::driving_rig::stocked();
+    let (seller, row) = prospector(&mut rig, "Smuggler", 72, "Tern");
+    let hold = hold_vault_of(&rig.tw, &row);
+    seed_lot(&mut rig, hold, "strategic_ore", 2, LotId(0x50d1));
+    let _ = crate::in5_production::mint(&mut rig, seller);
+    let (trader, quote, accepted) =
+        sell_privately(&mut rig, seller, LotId(0x50d1), 2, ("Fence", 73));
+    assert!(
+        tacsim::port::law_report::receipts_of(rig.tw.world(), trader).is_some_and(|b| b
+            .receipts
+            .iter()
+            .any(|r| r.quote == quote && !r.seller_papers)),
+        "the trader's receipt records that the seller lacked the papers ({accepted})"
+    );
+    let freeport = tacsim::polity::polity(rig.tw.world(), "freeport").expect("the Freeport");
+
+    // The smuggler spends everything: the sale's proceeds and the rest go to the treasury.
+    let treasury = port_map(&rig.tw, CERES).treasury.expect("a treasury");
+    let account = tacsim::port::credit::own_account(rig.tw.world(), seller)
+        .expect("an account")
+        .id;
+    let available = credit(&rig, seller);
+    assert!(available > 0, "the sale paid the smuggler");
+    let out = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/pay #{}=#{treasury} {available}", account.0),
+    );
+    assert!(out.contains("Paid: transaction #"), "{out}");
+
+    // ---- 1. The report: the goods handed over, the seller fined at once and unable to pay ----
+    let filed = run(&mut rig.tw, trader, &format!("+law/report {quote} go"));
+    assert!(filed.contains("report is filed"), "{filed}");
+    let queued = drain(&mut rig.tw);
+    assert_eq!(queued.len(), 1, "one report: {filed}");
+    land_all(&mut rig, &queued);
+    let trader_before = credit(&rig, trader);
+    let (events, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    crate::in10_pools::settle(&mut rig, 2);
+    let told = [
+        rig.tw.seen_by(&events, seller).join("\n"),
+        tacsim::port_tick::pending_notices(rig.tw.world(), seller).join("\n"),
+    ]
+    .join("\n");
+    assert!(
+        told.contains("Official notice:") && told.contains("+record"),
+        "the smuggler is told at once: {told}"
+    );
+    let record = freeport_record(&rig, seller).expect("the smuggler's record");
+    let sale = record
+        .rows
+        .iter()
+        .find(|r| r.kind == OffenseKind::RestrictedSale)
+        .expect("the sale is proven");
+    assert_eq!(sale.proof, Proof::Reported { by: trader });
+    let fine = sale.debt.expect("fined at once");
+    let status = rig
+        .tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .obligation(mush_economy::ObligationId(fine))
+                .map(|o| o.status.clone())
+        });
+    assert!(
+        !matches!(status, Some(mush_economy::ObligationStatus::Satisfied)),
+        "the smuggler cannot pay: {status:?}"
+    );
+    assert_eq!(standing(&rig, seller), -5, "a proven sale (Q-50-69)");
+    assert!(
+        tacsim::port::record::restricted(rig.tw.world(), seller, freeport),
+        "the unpaid fine restricts"
+    );
+    assert_eq!(
+        credit(&rig, trader),
+        trader_before,
+        "the trader is paid only once the fine is collected"
+    );
+
+    // ---- 2. Restricted: `+record` says why and what lifts it; the board refuses ----
+    let page = run(&mut rig.tw, seller, "+record");
+    let lifts = format!("It lifts on paying fine #{fine}.");
+    let fined = format!("fine #{fine} of");
+    for want in [
+        "proven by a party's report of the sale's receipt",
+        fined.as_str(),
+        "its grace runs to",
+        "Restrictions in force:",
+        lifts.as_str(),
+        tacsim::port::record::STANDING_LOST,
+        ": -5.",
+    ] {
+        assert!(page.contains(want), "{want:?} in {page}");
+    }
+    assert!(!page.contains("Fence"), "never who reported: {page}");
+    let bid = strategic_bid(&rig);
+    let (refused, queued) = command(&mut rig, seller, &format!("+market/sell {bid}=1"));
+    assert!(
+        refused.contains("does not let you trade restricted goods"),
+        "{refused}"
+    );
+    assert!(queued.is_empty(), "nothing moves: {refused}");
+
+    // ---- 3. Paid: the restriction lifts, the trader is repaid, the loss stays on `+record` ----
+    let _ = crate::in5_production::mint(&mut rig, seller);
+    let paid = run(&mut rig.tw, seller, &format!("+debts/pay {fine}"));
+    assert!(paid.contains(&format!("Debt #{fine} paid")), "{paid}");
+    assert!(
+        !tacsim::port::record::restricted(rig.tw.world(), seller, freeport),
+        "paying lifts the restriction"
+    );
+    let (_, queued) = fire(&mut rig);
+    land_all(&mut rig, &queued);
+    crate::in10_pools::settle(&mut rig, 2);
+    assert_eq!(
+        credit(&rig, trader) - trader_before,
+        60_000 + 20_000,
+        "the price paid back and a fifth of the fine, once collected"
+    );
+    assert_eq!(
+        standing(&rig, seller),
+        -5,
+        "paying restores nothing (Q-50-42)"
+    );
+    let page = run(&mut rig.tw, seller, "+record");
+    for want in [
+        "No restriction is in force.",
+        fined.as_str(),
+        "paid",
+        tacsim::port::record::STANDING_LOST,
+        ": -5.",
+    ] {
+        assert!(page.contains(want), "{want:?} after paying, in {page}");
+    }
+    // With both papers now, the board buys from the smuggler again.
+    seed_strategic_claim(&mut rig, seller);
+    seed_pool(&mut rig, hold, "strategic_ore", 1, LotId(0x50d2));
+    let _ = fire(&mut rig);
+    let now = rig.tw.world().world_ic_now().at;
+    assert!(tacsim::port::law::papers_clear(rig.tw.world(), seller, now));
+    let (sold, queued) = command(&mut rig, seller, &format!("+market/sell {bid}=1"));
+    assert!(
+        !sold.contains("does not let you trade restricted goods") && !queued.is_empty(),
+        "the board trades with the smuggler again: {sold}"
     );
 }

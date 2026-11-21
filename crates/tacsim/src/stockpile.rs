@@ -382,6 +382,25 @@ pub fn untaken(w: &World, venue: &str, now_ic: i64, claimed: &[u64]) -> Option<u
         .min()
 }
 
+/// **An arm's haul on the board at `venue`** (doc 50 cut OP.8; Q-50-24): posted there, untaken
+/// and inside its acceptance window, however young. A hauling house's hull lying idle away from
+/// that port is called home for it (`crate::port::hauler`), so she is there to carry it when its
+/// [`FALLBACK_IC_DAYS`] are up. The oldest first.
+#[must_use]
+pub fn awaiting(w: &World, venue: &str, now_ic: i64) -> Option<u64> {
+    arm(w)?
+        .posts
+        .iter()
+        .filter_map(|p| haul::haul_of(w, p.haul))
+        .filter(|job| {
+            job.stage == HaulStage::Posted
+                && job.origin.as_str() == venue
+                && now_ic < job.accept_by_ic
+        })
+        .map(|job| job.contract)
+        .min()
+}
+
 /// Whether contract `haul` is one of the arm's.
 #[must_use]
 pub fn is_arm_haul(w: &World, haul: u64) -> bool {

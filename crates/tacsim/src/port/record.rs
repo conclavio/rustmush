@@ -29,7 +29,8 @@ pub const RECORD_VERB: &str = "+record";
 /// The help.
 pub const RECORD_HELP: &str = "+record   your record: proven offenses, which polity proved each and \
      how, their fines and grace, the restrictions in force and what lifts each, your receipts of \
-     private sales, and any core the Registry holds impounded on a hull of yours.";
+     private sales, your standing where an offense is proven, and any core the Registry holds \
+     impounded on a hull of yours.";
 /// **"Below neutral"** (Q-50-69): the unfriendly band or lower.
 pub const RESTRICTED_AT_OR_BELOW: i16 = -10;
 /// The standing a witness-proven sale costs (Q-50-69, provisional).
@@ -40,6 +41,10 @@ pub const RUN_STANDING: i16 = -10;
 /// paid case).
 pub const UNPAID_AUDIT_STANDING: i16 = -5;
 
+/// **`+record`'s standing heading** (doc 50 cut OP.8): the standing lost with each polity that
+/// proved an offense, which paying a fine restores none of (Q-50-42).
+pub const STANDING_LOST: &str =
+    "Your standing where an offense is proven (paying a fine restores none of it):";
 /// The restriction's refusal on a board: `{polity}`.
 pub const BOARD_RESTRICTED: &str = "{polity} does not let you trade restricted goods on its boards \
      while you are under its restriction (+record shows it, and what lifts it).";
@@ -318,7 +323,10 @@ pub fn record_page(ctx: &Ctx<'_>, who: ObjId) -> String {
             }
         }
     }
-    let mut polities: Vec<FactionId> = records.iter().map(|r| r.key.polity).collect();
+    let mut proving: Vec<FactionId> = records.iter().map(|r| r.key.polity).collect();
+    proving.sort();
+    proving.dedup();
+    let mut polities = proving.clone();
     if let Some(st) = w.module_state::<mush_faction::FactionState>() {
         polities.extend(st.factions.keys().copied());
     }
@@ -351,6 +359,19 @@ pub fn record_page(ctx: &Ctx<'_>, who: ObjId) -> String {
                 lifts.join(" and ")
             ));
         }
+    }
+    // Doc 50 cut OP.8 (Q-50-47's third story, Q-50-42): the standing an offense cost stays, a
+    // fine paid or not, so the page shows it with each polity that proved one.
+    let lost: Vec<String> = proving
+        .into_iter()
+        .filter_map(|p| {
+            let standing = score(w, p, who);
+            (standing < 0).then(|| format!("  {}: {standing}.", polity_name(w, p)))
+        })
+        .collect();
+    if !lost.is_empty() {
+        out.push(STANDING_LOST.to_owned());
+        out.extend(lost);
     }
     if let Some(book) =
         crate::port::law_report::receipts_of(w, who).filter(|b| !b.receipts.is_empty())

@@ -1122,7 +1122,8 @@ fn carry(
 
 /// **A carried trip's next hop toward `to`** (doc 50 cut OP.4, doc 50b item 1): the purse funded
 /// for the hop's stores under a ledger key of `leg` and the hop's port, then the plan (the fill and
-/// the departure). A port with no route on toward `to` notes it for staff.
+/// the departure). A port with no route on toward `to` notes it for staff. Answers whether the
+/// hop's plan was written.
 fn hop_toward(
     ctx: &mut Ctx<'_>,
     hauler: &HaulerDef,
@@ -1131,15 +1132,15 @@ fn hop_toward(
     (here_def, here_map): (&PortDef, &PortMap),
     (to, leg): (&CanonicalId, &str),
     row: &mut HaulerRow,
-) {
+) -> bool {
     let Some(n) = row.trip.as_ref().map(|trip| trip.n) else {
-        return;
+        return false;
     };
     let Some(next) = next_hop(ctx.w, here_def, to) else {
         let mut note = format!("trip {n}: no route toward {to}");
         note.truncate(MAX_NOTE);
         row.note = Some(note);
-        return;
+        return false;
     };
     let stores = stores_minor(ctx, hull, (here_def, here_map), &next).unwrap_or(0);
     let want = i64::try_from(
@@ -1160,7 +1161,7 @@ fn hop_toward(
                 format!("{} funds hauler {} for a hop", hauler.org, row.mark),
             ))
     {
-        return;
+        return false;
     }
     let choice = Choice {
         good: None,
@@ -1172,14 +1173,74 @@ fn hop_toward(
         profit_minor: 0,
         carried: true,
     };
-    if let Some(doc) = plan(ctx, hull, helm, &choice)
-        && let Err(error) = crate::store::put_orders(ctx, &doc)
-    {
+    let Some(doc) = plan(ctx, hull, helm, &choice) else {
+        return false;
+    };
+    if let Err(error) = crate::store::put_orders(ctx, &doc) {
         tracing::warn!(
             mark = %row.mark, %error,
             "tacsim: a carried trip's hop could not be planned"
         );
+        return false;
     }
+    true
+}
+
+/// **Called home for the Freeport arm's work** (doc 50 cut OP.8; Q-50-24): a hull lying idle
+/// away from her home port, with an arm's haul on the board there ([`crate::stockpile::awaiting`]),
+/// sets out for home empty, one hop at a time, before she looks for a trade. Each hop is a trip of
+/// its own that ends where it docks. Answers whether she set out.
+fn called_home(
+    ctx: &mut Ctx<'_>,
+    hauler: &HaulerDef,
+    (hull, helm): (ObjId, ObjId),
+    (purse, house_account): (AccountId, AccountId),
+    (here_def, here_map): (&PortDef, &PortMap),
+    home: &CanonicalId,
+    row: &mut HaulerRow,
+) -> bool {
+    let Some(home_venue) = ports_by_venue(ctx.w)
+        .into_iter()
+        .find(|(_, map)| &map.entry == home)
+        .map(|(def, _)| def.venue)
+    else {
+        return false;
+    };
+    let now = ctx.w.world_ic_now().at;
+    if here_def.venue == home_venue
+        || crate::stockpile::awaiting(ctx.w, home_venue.as_str(), now).is_none()
+    {
+        return false;
+    }
+    row.trip = Some(Trip {
+        n: row.trips.saturating_add(1),
+        good: None,
+        from: here_def.venue.clone(),
+        to: home_venue.clone(),
+        units: 0,
+        ask_major: 0,
+        bid_major: 0,
+        profit_minor: 0,
+        haul: None,
+    });
+    if hop_toward(
+        ctx,
+        hauler,
+        (hull, helm),
+        (purse, house_account),
+        (here_def, here_map),
+        (&home_venue, "called-home"),
+        row,
+    ) {
+        tracing::info!(
+            mark = %row.mark, from = %here_def.venue, home = %home_venue,
+            "tacsim: a hauler is called home for the Freeport arm's haul"
+        );
+        row.note = None;
+        return true;
+    }
+    row.trip = None;
+    false
 }
 
 // ---- the tick --------------------------------------------------------------------------
@@ -1564,6 +1625,19 @@ fn step(
                 haul: None,
             });
         }
+        return;
+    }
+    // Doc 50 cut OP.8 (Q-50-24): away from home with the arm's work on the board there, she
+    // sails home for it before she trades.
+    if called_home(
+        ctx,
+        hauler,
+        (hull, helm),
+        (purse, house_account),
+        (&here_def, &here_map),
+        home,
+        row,
+    ) {
         return;
     }
     // 6. A trip, when one pays.
