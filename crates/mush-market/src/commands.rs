@@ -740,14 +740,16 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 || format!("Quote #{id}."),
                 |q| {
                     let instrument = quote_instrument(ctx.w, &q);
-                    format!(
+                    let mut line = format!(
                         "Quote #{id}: {} × {} = {} — good until {} (real time). It reserves \
                          nothing; take it up with +market/accept #{id}.",
                         q.quantity,
                         money(ctx.w, instrument.as_ref(), q.price),
                         money(ctx.w, instrument.as_ref(), q.total()),
                         q.expires.at
-                    )
+                    );
+                    line.push_str(&venue_cut_lines(ctx, &q, instrument.as_ref()));
+                    line
                 },
             );
             info(ctx, msg);
@@ -755,6 +757,44 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Err(e) => Err(refuse_market(ctx, &e)),
     }
+}
+
+/// **The venue's cuts on a quote** (doc 50b item 5; Q-50-59): each cut the venue's law takes out
+/// of the seller's proceeds ([`crate::module::ProceedsPolicy::venue_cuts`]), with its reason.
+/// On a bid the one quoting is the seller; on an ask it is the listing's seller. Empty when
+/// the venue takes none.
+fn venue_cut_lines(
+    ctx: &Ctx<'_>,
+    q: &crate::record::Quote,
+    instrument: Option<&mush_economy::InstrumentId>,
+) -> String {
+    let Some(listing) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.listing(q.listing))
+    else {
+        return String::new();
+    };
+    let (commodity, payer) = match &listing.source {
+        Supply::Wanted { commodity, .. } => (&commodity.0, "you pay"),
+        Supply::Lot { commodity, .. } => (&commodity.0, "the seller pays"),
+        _ => return String::new(),
+    };
+    let Some(policy) = crate::module::proceeds_policy(ctx.w) else {
+        return String::new();
+    };
+    policy
+        .venue_cuts(ctx.w, &listing.market, commodity, q.quantity, q.total())
+        .into_iter()
+        .map(|cut| {
+            format!(
+                " Out of it {payer} {} of {} ({}).",
+                cut.label,
+                money(ctx.w, instrument, cut.amount),
+                cut.reason
+            )
+        })
+        .collect()
 }
 
 fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

@@ -42,6 +42,14 @@ fn own_account(rig: &Rig, who: ObjId) -> AccountId {
         .expect("an account")
 }
 
+/// The Co-op shares counted on her enrollment, minor units.
+fn shares(rig: &Rig, pilot: ObjId) -> i64 {
+    crate::driving_rig::store(&rig.tw)
+        .enrolments()
+        .find(|e| e.pilot == pilot)
+        .map_or(0, |e| e.shares_minor)
+}
+
 fn customs(rig: &Rig) -> AccountId {
     tacsim::polity::lane_org_account(rig.tw.world(), &cid("republic_customs"))
         .expect("the customs office's account")
@@ -54,6 +62,12 @@ fn hop(rig: &mut Rig, pilot: ObjId, hull: ObjId, to: &str) {
     let (_, queued) = advance_to(rig, ticket.plan.depart_ic + ticket.plan.total_s + 3_600);
     land_quietly(rig, &queued);
     crate::in10_pools::settle(rig, 3);
+}
+
+/// The tank farm's propellant bid.
+fn farm_bid(rig: &Rig) -> u64 {
+    port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids[&cid("propellant")]
+        .listing
 }
 
 /// Sell [`QTY`] t of propellant from her hold into the tank farm's bid; the sale's line.
@@ -111,7 +125,13 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
         balance(rig.tw.world(), own_account(&rig, pilot)),
         balance(rig.tw.world(), customs(&rig)),
     );
+    let bid = farm_bid(&rig);
+    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {bid}={QTY}"));
+    assert!(!quoted.contains("Out of it"), "nothing levied: {quoted}");
+    let counted = shares(&rig, pilot);
     let line = sell(&mut rig, pilot, hold, 0x0f55);
+    let share = shares(&rig, pilot) - counted;
+    assert!(share > 0, "the Co-op's share is counted: {line}");
     assert!(!line.contains("Import duty"), "{line}");
     let free_net = balance(rig.tw.world(), own_account(&rig, pilot)) - before.0;
     assert!(
@@ -137,7 +157,22 @@ async fn op5_the_import_duty_follows_the_concessions_holder() {
         balance(rig.tw.world(), own_account(&rig, pilot)),
         balance(rig.tw.world(), customs(&rig)),
     );
+    let bid = farm_bid(&rig);
+    let quoted = run(&mut rig.tw, pilot, &format!("+market/quote {bid}={QTY}"));
+    assert!(
+        quoted.contains(&format!(
+            "Out of it you pay import duty {:.2}cr",
+            f64::from(i32::try_from(duty).expect("fits")) / 100.0
+        )) && quoted.contains("5% of the catalog value"),
+        "doc 50b item 5: the bid's quote shows the duty and why: {quoted}"
+    );
+    let counted = shares(&rig, pilot);
     let line = sell(&mut rig, pilot, hold, 0x0f57);
+    assert_eq!(
+        shares(&rig, pilot) - counted,
+        share,
+        "doc 50b item 6: the duty is never counted among her Co-op shares"
+    );
     assert!(
         line.contains("Import duty")
             && line.contains("5% of the catalog value")
@@ -208,6 +243,38 @@ async fn op5_an_organizations_listing_pays_the_import_duty() {
         let out = run(&mut rig.tw, GOD, &line);
         assert!(!out.contains("Permission denied"), "{line}: {out}");
     }
+    // The organization pays its listing fee from its own account.
+    let org = rig
+        .tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|store| {
+            store
+                .state()
+                .orgs()
+                .find(|org| org.name.as_str() == "Lark")
+                .map(|org| mush_org::PrincipalId::Organization(org.id))
+        })
+        .expect("Lark");
+    let org_account = rig
+        .tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .accounts_of(&org)
+                .find(|a| a.instrument.as_str() == tacsim::CREDIT)
+                .map(|a| a.id)
+        })
+        .expect("Lark's account");
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@econ/mint {treasury}={} 100000", org_account.0),
+    );
     seed_lot(&mut rig, locker, "propellant", QTY, LotId(0x0f59));
     let listed = run(
         &mut rig.tw,
@@ -239,9 +306,6 @@ async fn op5_an_organizations_listing_pays_the_import_duty() {
         .expect("the organization's listing");
 
     let (buyer, into) = at_isidis(&mut rig, "Buyer", 93);
-    let treasury = port_map(&rig.tw, "ceres_port")
-        .treasury
-        .expect("a treasury");
     let wallet = own_account(&rig, buyer);
     let _ = run(
         &mut rig.tw,
@@ -253,6 +317,11 @@ async fn op5_an_organizations_listing_pays_the_import_duty() {
         balance(rig.tw.world(), customs(&rig)),
     );
     let quoted = run(&mut rig.tw, buyer, &format!("+market/quote {id}"));
+    assert!(
+        quoted.contains("Out of it the seller pays import duty 20.00cr")
+            && quoted.contains("5% of the catalog value"),
+        "doc 50b item 5: the quote shows the duty and why: {quoted}"
+    );
     let quote = quoted
         .split("Quote #")
         .nth(1)

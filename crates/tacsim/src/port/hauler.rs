@@ -719,18 +719,9 @@ fn explain(ctx: &Ctx<'_>, hauler: &HaulerDef, hull: ObjId, here: (&PortDef, &Por
 // ---- the plan ------------------------------------------------------------------------
 
 /// **The sailing plan for a choice**: the lot within the ask, the fill, the departure, the sale
-/// at no less than the ask (an empty hop: the fill and the departure).
-///
-/// `held_fuel` (doc 50 cut OP.4) is reaction mass in her tank held for a carried haul: the
-/// executor's fill counts it as aboard while the burn spends only what is free, so that much more
-/// is bought after the fill.
-fn plan(
-    ctx: &Ctx<'_>,
-    hull: ObjId,
-    helm: ObjId,
-    choice: &Choice,
-    held_fuel: u64,
-) -> Option<Orders> {
+/// at no less than the ask (an empty hop: the fill and the departure). Reaction mass held for a
+/// carried haul is the executor's fill's to count (doc 50b item 7), so nothing is bought back.
+fn plan(ctx: &Ctx<'_>, hull: ObjId, helm: ObjId, choice: &Choice) -> Option<Orders> {
     let goods = ctx.w.module_state::<TacsimStore>()?.goods()?;
     let propellant = crate::port::burn::consumable_good(goods, Consumable::Propellant)?;
     let provisions = crate::port::burn::consumable_good(goods, Consumable::Provisions)?;
@@ -743,18 +734,10 @@ fn plan(
             on_short: OnShort::Partial,
         });
     }
-    for good in [propellant.clone(), provisions] {
+    for good in [propellant, provisions] {
         whats.push(What::Buy {
             good,
             qty: Qty::Fill,
-            max_major: None,
-            on_short: OnShort::Partial,
-        });
-    }
-    if held_fuel > 0 {
-        whats.push(What::Buy {
-            good: propellant,
-            qty: Qty::Units(held_fuel),
             max_major: None,
             on_short: OnShort::Partial,
         });
@@ -861,6 +844,20 @@ fn pay(
     minor: i64,
     why: String,
 ) -> bool {
+    pay_in(ctx, HAULER_KEY, key, (from, to), minor, why)
+}
+
+/// **A transfer of `minor` from one account to another**, under the idempotency key `key` in
+/// namespace `ns` (doc 50b item 8: the Freeport arm's own, for the tank farm's fills). A
+/// repeated key is answered as posted. Answers whether it posted.
+pub(crate) fn pay_in(
+    ctx: &mut Ctx<'_>,
+    ns: &'static str,
+    key: String,
+    (from, to): (AccountId, AccountId),
+    minor: i64,
+    why: String,
+) -> bool {
     if minor <= 0 {
         return true;
     }
@@ -874,22 +871,22 @@ fn pay(
         description: why,
         visibility: mush_economy::EconomicVisibility::Public,
         ..EconomyPlan::new(
-            IdempotencyKey::new(HAULER_KEY, key),
+            IdempotencyKey::new(ns, key),
             PrincipalId::Object(ctx.actor),
             EconomicCause::Internal {
-                kind: SmolStr::new_static(HAULER_KEY),
+                kind: SmolStr::new_static(ns),
                 id: from.0,
             },
             vec![
                 RequestedLine {
                     account: from,
                     delta: debit,
-                    memo: SmolStr::new_static(HAULER_KEY),
+                    memo: SmolStr::new_static(ns),
                 },
                 RequestedLine {
                     account: to,
                     delta: credit,
-                    memo: SmolStr::new_static(HAULER_KEY),
+                    memo: SmolStr::new_static(ns),
                 },
             ],
         )
@@ -1077,18 +1074,13 @@ fn carry(
             let Ok(to) = CanonicalId::new(job.destination.as_str()) else {
                 return;
             };
-            let goods = ctx.w.module_state::<TacsimStore>().and_then(|s| s.goods());
-            let held_fuel = goods
-                .and_then(|g| crate::port::burn::consumable_good(g, Consumable::Propellant))
-                .filter(|propellant| propellant == &job.good)
-                .map_or(0, |_| job.quantity);
             hop_toward(
                 ctx,
                 hauler,
                 (hull, helm),
                 (purse, house_account),
                 (here_def, here_map),
-                (&to, "haul-hop", held_fuel),
+                (&to, "haul-hop"),
                 row,
             );
         }
@@ -1107,7 +1099,7 @@ fn carry(
                 (hull, helm),
                 (purse, house_account),
                 (here_def, here_map),
-                (&trip.from, "haul-home", 0),
+                (&trip.from, "haul-home"),
                 row,
             );
         }
@@ -1129,16 +1121,15 @@ fn carry(
 }
 
 /// **A carried trip's next hop toward `to`** (doc 50 cut OP.4, doc 50b item 1): the purse funded
-/// for the hop's stores under a ledger key of `leg` and the hop's port, then the plan (the fill,
-/// `held_fuel` more reaction mass, and the departure). A port with no route on toward `to` notes
-/// it for staff.
+/// for the hop's stores under a ledger key of `leg` and the hop's port, then the plan (the fill and
+/// the departure). A port with no route on toward `to` notes it for staff.
 fn hop_toward(
     ctx: &mut Ctx<'_>,
     hauler: &HaulerDef,
     (hull, helm): (ObjId, ObjId),
     (purse, house_account): (AccountId, AccountId),
     (here_def, here_map): (&PortDef, &PortMap),
-    (to, leg, held_fuel): (&CanonicalId, &str, u64),
+    (to, leg): (&CanonicalId, &str),
     row: &mut HaulerRow,
 ) {
     let Some(n) = row.trip.as_ref().map(|trip| trip.n) else {
@@ -1181,7 +1172,7 @@ fn hop_toward(
         profit_minor: 0,
         carried: true,
     };
-    if let Some(doc) = plan(ctx, hull, helm, &choice, held_fuel)
+    if let Some(doc) = plan(ctx, hull, helm, &choice)
         && let Err(error) = crate::store::put_orders(ctx, &doc)
     {
         tracing::warn!(
@@ -1627,7 +1618,7 @@ fn step(
     ) {
         return;
     }
-    let Some(doc) = plan(ctx, hull, helm, &choice, 0) else {
+    let Some(doc) = plan(ctx, hull, helm, &choice) else {
         return;
     };
     if let Err(error) = crate::store::put_orders(ctx, &doc) {

@@ -17,9 +17,15 @@
 //! deliveries that would fill it; staff's `@tacsim/port haulers`, `@econ/pay` and
 //! `@faction/control` (the Republic holding the approach, as KC.1's fill makes it).
 
-use mush_core::{GOD, ObjId, World};
+use std::sync::{Arc, Mutex};
+
+use mush_core::{Ctx, GOD, ObjId, World};
 use mush_economy::{AccountId, ContractId, ContractState, EconomyStore, VaultId};
 use mush_inventory::LotId;
+use tacsim::operations::{
+    OperationFrame, OperationFrameSlot, OperationOutcome, OperationPhase, OperationRequest,
+    OperationStatus,
+};
 use tacsim::port::hauler::{HaulerHouse, HaulerRow};
 use tacsim::services::escort;
 use tacsim::services::haul::{self, HaulStage};
@@ -151,8 +157,8 @@ async fn op4_the_freeport_arm_posts_a_haul_and_its_escort_for_occator() {
     assert!(level < stockpile::STOCKPILE_THRESHOLD_T, "{level}");
     assert_eq!(
         tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, 1),
-        Some(false),
-        "short of its threshold, the probe is not met"
+        None,
+        "no operation has closed: the probe waits (doc 50b item 3)"
     );
     let post = first.posts[0].clone();
     let job = haul::haul_of(rig.tw.world(), post.haul).expect("the haul");
@@ -224,11 +230,6 @@ async fn op4_the_tank_farm_drains_and_at_its_threshold_hold_advances() {
     ahead(&mut rig, 600);
     let level = arm(&rig).level.expect("a reading");
     assert!(level >= stockpile::STOCKPILE_THRESHOLD_T, "{level}");
-    assert_eq!(
-        tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, 1),
-        Some(true),
-        "at its threshold, the probe is met"
-    );
     let moved = hold_clock(&rig);
     assert_eq!(
         moved.filled,
@@ -468,5 +469,221 @@ async fn op4_a_house_hull_pays_the_kirkwood_duty_from_the_house() {
         balance(rig.tw.world(), purse),
         purse_at,
         "not from her helm's purse"
+    );
+}
+
+// ---- doc 50b item 3: the close probe reads the farm at the close ------------------------
+
+/// The operation number [`ClosingFrame`] hands out.
+const OP: u64 = 11;
+
+/// **A stand-in operation frame** whose window closes at the instant the story sets: running
+/// before it, settling after.
+#[derive(Default)]
+struct ClosingFrame {
+    declared: Mutex<Vec<OperationRequest>>,
+    close: Mutex<i64>,
+}
+
+impl OperationFrame for ClosingFrame {
+    fn declare(&self, _ctx: &mut Ctx<'_>, request: &OperationRequest) -> Result<u64, String> {
+        self.declared
+            .lock()
+            .map_err(|_| "poisoned".to_owned())?
+            .push(request.clone());
+        Ok(OP)
+    }
+
+    fn status(&self, w: &World, operation: u64) -> Option<OperationStatus> {
+        if operation != OP {
+            return None;
+        }
+        let request = self.declared.lock().ok()?.first()?.clone();
+        let close = *self.close.lock().ok()?;
+        Some(OperationStatus {
+            phase: if w.world_ic_now().at < close {
+                OperationPhase::Running
+            } else {
+                OperationPhase::Settling
+            },
+            declarer: request.declarer,
+            sides: request.sides,
+            defenders: request.defenders,
+            legal_targets: request.legal_targets,
+            window: (0, close),
+            outcome: None::<OperationOutcome>,
+        })
+    }
+}
+
+/// **Doc 50b item 3: the close probe reads the tank farm at the window's close** (Q-50-21 as
+/// corrected: "read once, at the window's close"). The Republic declares; before the close the
+/// probe waits. Propellant reaches the farm, enough for its threshold, after the port tick's
+/// last reading before the close: the probe still waits, where the cached reading would have
+/// answered "not met". On the first fire after the close the farm is read once for the
+/// operation, and the probe is met.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op4_the_close_probe_reads_the_farm_at_the_close() {
+    let mut rig = stocked();
+    let frame = Arc::new(ClosingFrame::default());
+    *frame.close.lock().expect("lock") = i64::MAX;
+    let seated: Arc<dyn OperationFrame> = frame.clone();
+    rig.tw
+        .world_mut()
+        .module_state_insert(OperationFrameSlot::new(seated));
+    let review = tacsim::concession::review_clock(rig.tw.world()).expect("the Review");
+    let left = review.segments - review.filled;
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@clock/advance {}={left}", review.id.0),
+    );
+    for _ in 0..6 {
+        fires(&mut rig, 1);
+        if tacsim::isidis_op::record(rig.tw.world()).and_then(|r| r.operation) == Some(OP) {
+            break;
+        }
+    }
+    assert_eq!(
+        tacsim::isidis_op::record(rig.tw.world()).and_then(|r| r.operation),
+        Some(OP),
+        "the operation is declared"
+    );
+    let close = ic_now(&rig.tw) + DAY / 2;
+    *frame.close.lock().expect("lock") = close;
+    let probe =
+        |rig: &Rig| tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, OP);
+    fires(&mut rig, 2);
+    assert!(
+        arm(&rig)
+            .level
+            .is_some_and(|l| l < stockpile::STOCKPILE_THRESHOLD_T),
+        "{:?}",
+        arm(&rig)
+    );
+    assert_eq!(probe(&rig), None, "before the close the probe waits");
+
+    // Propellant lands in the farm after the last reading before the close.
+    let vault = farm_vault(&rig);
+    let level = hold_pool(&mut rig.tw, vault, stockpile::STOCKPILE_GOOD);
+    seed_pool(
+        &mut rig,
+        vault,
+        stockpile::STOCKPILE_GOOD,
+        stockpile::STOCKPILE_THRESHOLD_T - level + 100,
+        LotId(9_963),
+    );
+    assert_eq!(
+        probe(&rig),
+        None,
+        "no reading at the close yet: the probe waits, never the cached reading"
+    );
+
+    // The close passes; the first fire reads the farm once, for this operation.
+    let _ = to_ic(&mut rig, close + 60);
+    fires(&mut rig, 3);
+    let read = arm(&rig).close_read.expect("the farm read at the close");
+    assert_eq!(read.operation, OP);
+    assert!(read.read_ic >= close, "{read:?} against {close}");
+    assert!(read.level >= stockpile::STOCKPILE_THRESHOLD_T, "{read:?}");
+    assert_eq!(
+        probe(&rig),
+        Some(true),
+        "at its threshold at the close: met"
+    );
+    assert_eq!(
+        tacsim::operations::close_probe(rig.tw.world(), stockpile::TANK_FARM_PROBE, OP + 1),
+        None,
+        "another operation's close is not this one's"
+    );
+}
+
+// ---- doc 50b item 8: Occator funds the tank farm's bid --------------------------------
+
+/// **Doc 50b item 8: the tank farm's bid is Occator's to fund, inside its cap** (Q-50-22). A
+/// seller at Isidis sells propellant from her locker into the farm's standing bid:
+/// - more than the month's cap would cover is refused, and nothing is sold;
+/// - 10 t sells. The sale is the arm's, counted in the month's spend, and on the next fires
+///   Occator pays the farm back what it paid, once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op4_occator_funds_the_tank_farms_bid_inside_its_cap() {
+    let mut rig = stocked();
+    let occator = org_account(&rig, "ceres_port", "occator");
+    let farm = org_account(&rig, "isidis_port", "isidis_tank_farm");
+    let seller = crate::driving_rig::pilot(&mut rig, "Seller", 94);
+    let _ = run(
+        &mut rig.tw,
+        GOD,
+        &format!("@account/open #{}=tacsim.credit", seller.0),
+    );
+    let market = crate::driving_rig::station_room(&rig.tw, "isidis_port", "room.i03_market");
+    crate::driving_rig::teleport(&mut rig.tw, seller, market);
+    let opened = run(&mut rig.tw, seller, "+locker/open");
+    let venue = mush_market::MarketId::new("isidis").expect("venue");
+    let locker = tacsim::port::locker::locker_of(rig.tw.world(), seller, &venue)
+        .map(|l| VaultId(l.vault))
+        .unwrap_or_else(|| panic!("a locker at Isidis: {opened}"));
+    let bid = port_map(&rig.tw, "isidis_port").vendors[&cid("isidis_tank_farm")].bids
+        [&cid("propellant")]
+        .listing;
+    seed_pool(
+        &mut rig,
+        locker,
+        stockpile::STOCKPILE_GOOD,
+        500,
+        LotId(9_965),
+    );
+
+    // Past the cap: 401 t at 50 cr is more than the month's 20,000 cr.
+    let refused = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/sell {bid}=401 from={}", locker.0),
+    );
+    assert!(
+        refused.contains(stockpile::FARM_BUDGET_SPENT),
+        "past Occator's cap the farm takes nothing: {refused}"
+    );
+    assert!(!refused.contains("Sold "), "{refused}");
+
+    // Inside it: 10 t sells, and Occator pays for it.
+    let before = (
+        balance(rig.tw.world(), occator),
+        balance(rig.tw.world(), farm),
+    );
+    let sold = run(
+        &mut rig.tw,
+        seller,
+        &format!("+market/sell {bid}=10 from={}", locker.0),
+    );
+    assert!(sold.contains("Sold "), "{sold}");
+    let queued = drain(&mut rig.tw);
+    land_quietly(&mut rig, &queued);
+    for _ in 0..6 {
+        sweep(&mut rig.tw, 31);
+        let queued = drain(&mut rig.tw);
+        land_quietly(&mut rig, &queued);
+    }
+    fires(&mut rig, 3);
+    let gross = 10 * 50 * 100;
+    let doc = arm(&rig);
+    assert_eq!(doc.fills.len(), 1, "one fill, counted once: {doc:?}");
+    let fill = &doc.fills[0];
+    assert!(fill.paid, "paid back: {fill:?}");
+    assert_eq!(fill.spent_minor, gross);
+    let month = tacsim::concession::ic_month(ic_now(&rig.tw));
+    assert_eq!(doc.spent_in(month), gross, "in the month's spend");
+    assert_eq!(
+        before.0 - balance(rig.tw.world(), occator),
+        gross,
+        "Occator paid for the fill"
+    );
+    // The farm paid the seller and was paid back; its own money is where it was, but for the
+    // export faucet's daily share.
+    assert!(
+        balance(rig.tw.world(), farm) >= before.1,
+        "the farm spends none of its own: {} against {}",
+        balance(rig.tw.world(), farm),
+        before.1
     );
 }
