@@ -121,6 +121,19 @@ the haul; the 35 km breach records the pilot, not the hull, and writes a ruling.
 - The fill check's switch to the reading has no story of its own. It calls the same function the
   picket's story mutation-checks.
 
+**Fixes from doc 50b** (the outside review's CR finding; PR "50b customs P1").
+- **A seizure takes the whole quantity before clearance.** One ruling takes at most
+  `MAX_SEIZED_ROWS` (16) lots. A ruling that lands having taken less than it was filed for
+  clears nothing: the rest is filed as a new ruling carrying `taken_before_t`, the ship stays
+  uncleared, and the clearance names the whole total. Story:
+  `kc2b_seventeen_lots_of_ore_are_all_seized_before_clearance` (seventeen 3 t lots end with 0 t
+  aboard).
+- **The seizure's lots are filtered inside the walk.** `works::unheld_lots_of` scans the lot
+  family for unheld lots of the good, so lots of other goods, or held ones, no longer crowd the
+  ore out of the 32 a walk returned.
+- Still not built: a lot larger than what is left to take is skipped (no lot is split), and a
+  held lot is still not taken.
+
 ## KC.0a
 
 The faction engine that the Kirkwood chain and the Isidis operation stand on (Q-50-50, Q-50-51,
@@ -534,6 +547,33 @@ must land after OP.1's.
 - The Co-op's share by control (KC.4).
 - The import duty and the restricted goods (LW.1, OP.5).
 - The penalties past the grace.
+
+**Fixes from doc 50b** (the outside review's KC.2 findings; PR "50b customs P1").
+- **The shortcut rule is narrowed (Q-50-55).** The fallback leg is never owed for the departure
+  port's own venue (a Ceres halo's way home, autopilot or the link-dead return), and is owed for
+  a destination only when a lane route with no interdicted leg joins it to that route's far end
+  (from Ceres: Deimos and Isidis, not Titan). Story:
+  `kc2b_the_return_from_the_ceres_halo_meets_no_picket`.
+- **The fine before the duty, one duty a crossing.** `levy_transit_duty` pays the duty only from
+  what a fine found on the same crossing leaves (`reserve_minor`), else it is owed. `levy_once`
+  charges it once a crossing, keyed by hull and journey cursor (`SpaceBubbleBook::duty_crossings`),
+  so a resubmission pays none. Story:
+  `kc2b_the_fine_is_paid_before_the_duty_and_the_ore_is_not_seized` (1,100 cr, a 1,000 cr fine:
+  the fine paid, one duty owed, the ore not seized).
+- **An absent hull is assessed the same way (Q-50-54).** `assess_absent` reads the manifest
+  through `customs_finding`, the helper `+helm/submit` now uses too, and files a fine or a
+  seizure as a ruling with the principal as its officer. A clean hold is cleared at once. Story:
+  `kc2b_an_away_pilots_hull_is_fined_for_unlicensed_ore`.
+- **An absent crossing's leg is marked cleared** at the boundary, so another carrier's open
+  picket never takes her in as awaiting heave-to.
+- **A restart.** The live hook records each Kirkwood crossing (`picket_crossings`). Before any
+  interdiction is promoted, the space tick queues every crossing a journey's cursor has passed
+  that the hook never saw (boot recovery skips it) as an absent one, its leg marked cleared.
+  Story: `kc2b_a_restart_across_the_picket_leg_still_charges_the_duty_once`.
+- **Divergences** (the smallest choice where the review is silent):
+  - The far-side test looks one route hop from the picket route's far end.
+  - A passage that arrives during an outage leaves no journey to read, and is not assessed.
+  - An absent hull's ruling lines name the "Kirkwood picket" where a corvette would be named.
 
 ## KC.3
 

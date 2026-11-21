@@ -4204,6 +4204,9 @@ pub(crate) fn launch_step(ctx: &mut Ctx<'_>, state: &mut PortTickState, hull: u3
     }
     if let Some(book) = ctx.w.module_state_mut::<crate::space::SpaceBubbleBook>() {
         book.cleared_interdiction_legs.retain(|&(h, _)| h != hull);
+        // Doc 50b: a new passage's crossings are its own.
+        book.picket_crossings.retain(|&(h, _)| h != hull);
+        book.duty_crossings.retain(|&(h, _)| h != hull);
     }
     // In the same outbox as the journey: a restart sees both or neither — and, since doc 23
     // cut S.2, the departure the epoch arm reads its principal from (V5).

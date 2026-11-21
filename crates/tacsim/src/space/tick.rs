@@ -1218,10 +1218,20 @@ pub struct SpaceBubbleBook {
     /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
     #[serde(default)]
     pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
-    /// **Doc 50 cut KC.2 (Q-50-54)**: hulls that crossed the Kirkwood picket's leg with nobody
-    /// aboard, awaiting the space tick's transit-duty assessment. Skipped when empty.
+    /// **Doc 50 cut KC.2 (Q-50-54)**: crossings of the Kirkwood picket's leg made with nobody
+    /// aboard, `(hull, cursor)`, awaiting the space tick's assessment (the manifest and the
+    /// transit duty). Skipped when empty.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub absent_duty: std::collections::BTreeSet<ObjId>,
+    pub absent_duty: std::collections::BTreeSet<(ObjId, u32)>,
+    /// **Doc 50b**: the Kirkwood crossings, `(hull, cursor)`, whose boundary the live hook saw. A
+    /// crossing a journey's cursor holds and this does not was caught up at boot, where the hook
+    /// never runs, and is assessed as an absent one. Skipped when empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub picket_crossings: std::collections::BTreeSet<(ObjId, u32)>,
+    /// **Doc 50b**: the Kirkwood crossings, `(hull, cursor)`, whose transit duty has been
+    /// levied, so a resubmission on the same crossing is never charged again. Skipped when empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub duty_crossings: std::collections::BTreeSet<(ObjId, u32)>,
     /// Active 6-DOF docking sessions keyed by carrier hull [`ObjId`] (`SF.R7`, `Q-35-5`, `D-35-14`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub docking_sessions: BTreeMap<ObjId, super::docking::DockingSession>,
@@ -3371,6 +3381,9 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     step_active_bubbles(ctx, &now);
     step_free_flight_records(ctx, &now);
     super::mining::step_clusters_on_tick(ctx, now.clone());
+    // Doc 50b: a Kirkwood crossing a restart caught up is queued, and its leg marked cleared,
+    // before any interdiction is promoted.
+    super::duty::catch_up_crossings(ctx);
     promote_due_interdictions(ctx, &now);
     step_delivered_tows_at_port(ctx, &now);
     crate::surface::claim::tick(ctx);
@@ -3677,6 +3690,12 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
     book.cleared_interdiction_legs.retain(|&(hull, _)| {
         active_journey_hulls.contains(&hull) || active_bubble_hulls.contains(&hull)
     });
+    // Doc 50b: a crossing's records go with its journey.
+    for crossings in [&mut book.picket_crossings, &mut book.duty_crossings] {
+        crossings.retain(|&(hull, _)| {
+            active_journey_hulls.contains(&hull) || active_bubble_hulls.contains(&hull)
+        });
+    }
 
     book.propellant_ledgers
         .retain(|hull, _| existing_hulls.contains(hull));

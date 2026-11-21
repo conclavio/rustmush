@@ -251,6 +251,21 @@ pub struct PendingCustomsRuling {
     /// world as they did before the unit (logged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub into: Option<u64>,
+    /// **A resumed seizure's tonnes already taken** (doc 50b): a seizure that could not take
+    /// all it was filed for in one ruling (at most [`MAX_SEIZED_ROWS`] lots a ruling) files the
+    /// rest as a new ruling, carrying what the earlier ones took. 0 on a first filing.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub taken_before_t: u32,
+    /// **Filed on an unattended hull** (doc 50b, Q-50-54): the absent hull's assessment files the
+    /// ruling with her principal as its officer, who is not aboard her. Such a ruling is offered
+    /// to its officer wherever they are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+const fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The most hauls and lots one seizure's filing names.
@@ -372,20 +387,37 @@ fn seq_of(invocation: &ActionInvocation) -> Result<u32, mush_core::ActionError> 
 fn filed_by(w: &mush_core::World, actor: ObjId) -> Vec<PendingCustomsRuling> {
     // Doc 50 cut OP.4 (Q-50-56): a hauling house's helm is the house's one soul aboard the hull
     // it sails, and records the ruling on her.
-    let Some(hull) = super::commands::hull_aboard_for_actor(w, actor)
-        .or_else(|| crate::port::hauler::hauler_hull(w, actor))
-    else {
-        return Vec::new();
-    };
+    let aboard = super::commands::hull_aboard_for_actor(w, actor)
+        .or_else(|| crate::port::hauler::hauler_hull(w, actor));
     w.module_state::<SpaceBubbleBook>()
         .map(|book| {
             book.pending_customs_rulings
                 .iter()
-                .filter(|ruling| ruling.actor == actor && ruling.hull == hull)
+                // Doc 50b: an unattended hull's ruling is its officer's wherever they are.
+                .filter(|ruling| {
+                    ruling.actor == actor && (ruling.unattended || Some(ruling.hull) == aboard)
+                })
                 .cloned()
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// **Mark ruling `seq` on `hull` as filed on an unattended hull** (doc 50b), so its officer is
+/// offered it away from her. Called by the absent assessment right after the filing, before the
+/// submission is processed.
+pub(crate) fn mark_unattended(ctx: &mut Ctx<'_>, hull: ObjId, seq: u32) {
+    if let Some(ruling) = ctx
+        .w
+        .module_state_mut::<SpaceBubbleBook>()
+        .and_then(|book| {
+            book.pending_customs_rulings
+                .iter_mut()
+                .find(|ruling| ruling.hull == hull && ruling.seq == seq)
+        })
+    {
+        ruling.unattended = true;
+    }
 }
 
 impl CustomsProvider {
@@ -689,7 +721,7 @@ pub(crate) fn file_ruling(
     names: (String, String),
 ) -> Result<u32, CmdError> {
     let actor = ctx.actor;
-    file_ruling_as(ctx, actor, hull, principal, finding, names)
+    file_ruling_as(ctx, actor, hull, principal, finding, names, 0)
 }
 
 /// **A run by burning past the picket's boundary** (doc 50 unit CR; doc 50a A-10e): the space
@@ -719,7 +751,7 @@ pub(crate) fn file_breach(ctx: &mut Ctx<'_>, hull: ObjId) {
     };
     if let Some(pilot) = super::commands::helm_pilot_aboard(ctx.w, hull) {
         let principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, pilot);
-        if file_ruling_as(ctx, pilot, hull, principal, CustomsFinding::Ran, names).is_ok() {
+        if file_ruling_as(ctx, pilot, hull, principal, CustomsFinding::Ran, names, 0).is_ok() {
             let line = format!(
                 "[PICKET] You burn past the Republic Customs picket's boundary uncleared. Corvette `{}` is logging the run.",
                 names_corvette(ctx, hull)
@@ -748,14 +780,16 @@ fn names_corvette(ctx: &Ctx<'_>, hull: ObjId) -> String {
         .unwrap_or_default()
 }
 
-/// [`file_ruling`] with `actor` as the ruling's officer, who need not be the command's actor.
-fn file_ruling_as(
+/// [`file_ruling`] with `actor` as the ruling's officer, who need not be the command's actor,
+/// and `taken_before_t` the tonnes earlier rulings of a resumed seizure took.
+pub(crate) fn file_ruling_as(
     ctx: &mut Ctx<'_>,
     actor: ObjId,
     hull: ObjId,
     principal: ObjId,
     finding: CustomsFinding,
     (corvette, carrier): (String, String),
+    taken_before_t: u32,
 ) -> Result<u32, CmdError> {
     if ctx
         .w
@@ -809,6 +843,8 @@ fn file_ruling_as(
             hauls,
             lots,
             into,
+            taken_before_t,
+            unattended: false,
         };
         book.pending_customs_rulings.push(pending.clone());
         pending
@@ -845,12 +881,16 @@ fn seizable(ctx: &Ctx<'_>, vault: u64) -> (Vec<u64>, Vec<LotId>) {
         .map(|job| job.contract)
         .take(MAX_SEIZED_ROWS)
         .collect();
-    let lots = crate::port::works::lots_in(ctx, EndpointRef(mush_economy::VaultId(vault)))
-        .into_iter()
-        .filter(|(_, good, _)| *good == ore)
-        .map(|(id, _, _)| id)
-        .take(MAX_SEIZED_ROWS)
-        .collect();
+    // Doc 50b: filtered by good (and hold) inside the walk, so other lots never crowd the ore out.
+    let lots = crate::port::works::unheld_lots_of(
+        ctx,
+        EndpointRef(mush_economy::VaultId(vault)),
+        &ore,
+        MAX_SEIZED_ROWS,
+    )
+    .into_iter()
+    .map(|(id, _)| id)
+    .collect();
     (hauls, lots)
 }
 
@@ -1085,8 +1125,49 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
         CustomsFinding::Seized {
             unlicensed_strategic_ore_kg,
             seize_t,
-            ..
+            vault,
         } => {
+            // Doc 50b: a ruling takes at most `MAX_SEIZED_ROWS` lots. One that took less than it
+            // was filed for clears nothing: the rest is filed as a new ruling, and the ship stays
+            // uncleared until the whole quantity is taken.
+            let filed_t = match pending.finding {
+                CustomsFinding::Seized { seize_t, .. } => seize_t,
+                _ => seize_t,
+            };
+            let taken_t = pending.taken_before_t.saturating_add(seize_t);
+            if seize_t < filed_t {
+                let rest = CustomsFinding::Seized {
+                    unlicensed_strategic_ore_kg,
+                    seize_t: filed_t - seize_t,
+                    vault,
+                };
+                let line = match file_ruling_as(
+                    ctx,
+                    pending.actor,
+                    hull,
+                    pending.principal,
+                    rest,
+                    (corvette.clone(), carrier.clone()),
+                    taken_t,
+                ) {
+                    Ok(seq) => {
+                        if pending.unattended {
+                            mark_unattended(ctx, hull, seq);
+                        }
+                        format!(
+                            "[PICKET] Republic Customs Corvette `{corvette}` has confiscated {taken_t} t of the unlicensed `strategic_ore` aboard `{carrier}` and is taking the rest. Hold your heave-to: she is not cleared yet."
+                        )
+                    }
+                    Err(error) => {
+                        tracing::warn!(hull = hull.0, %error, "tacsim: the rest of a seizure could not be filed");
+                        CUSTOMS_RULING_LAPSED.to_owned()
+                    }
+                };
+                say(ctx, pending, &line);
+                super::commands::push_space_panels(ctx, hull);
+                return;
+            }
+            let seize_t = taken_t;
             let seized_kg = u64::from(seize_t).saturating_mul(1_000);
             let front_raw =
                 super::picket::record_customs_seizure(ctx, ruling.principal, hull, seized_kg)
