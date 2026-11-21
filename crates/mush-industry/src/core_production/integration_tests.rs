@@ -1477,6 +1477,95 @@ fn scheduled_progress_preserves_actual_ingress_and_all_dependency_custody_fences
     Ok(())
 }
 
+/// **P2-MOD-2**: a `core_integration` order uses `wo_holder(order)` as its slot
+/// holder key, so `parse_wo_holder` returns `Some(order)` even though the order
+/// does NOT live in `industry.work_orders`. Once past its 28-IC-day slot
+/// deadline, neither `reserve_slot_for`, `first_elapsed_slot_reservation`, nor
+/// `expire_slot` may expire it; cancellation still releases cleanly and passes
+/// cold-boot audit (`integration/audit.rs`).
+#[test]
+fn p2_mod_2_elapsed_core_integration_slot_never_expires_despite_wo_holder() -> Result {
+    let mut f = FactoryRig::new(false)?;
+    let id = f.accepted()?;
+    let order = f.order(id)?;
+    let factory_obj = order.intent.site_factory()?;
+    let max_slots = order.intent.facility.maximum_slots();
+    let industry = f.runtime()?.industry.clone();
+
+    // Fill any remaining slots so `available == 0`.
+    let now_before = f.r.w.world().world_ic_now();
+    let avail = {
+        let mut txn =
+            f.r.w
+                .engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        industry.available_slots(&mut txn, factory_obj, max_slots)?
+    };
+    for filler in 0..avail {
+        let filler_holder =
+            crate::workorder::wo_holder(crate::workorder::WorkOrderId(0xF100_0000 + filler))?;
+        let p = {
+            let mut txn =
+                f.r.w
+                    .engine_mut()
+                    .action_transaction(&industry.facility_books)?;
+            industry.reserve_slot_for(
+                &mut txn,
+                factory_obj,
+                max_slots,
+                &filler_holder,
+                &now_before,
+                mush_inventory::REFIT_RESERVATION_LEAD_SECS * 4,
+            )?;
+            txn.prepare()?
+        };
+        let (writes, install) = p.into_parts();
+        f.r.w.engine_mut().install_prepared_action(install)?;
+        fold_module_ops_into(&mut f.r.boot, writes);
+    }
+
+    // Advance past the 28-IC-day integration slot reservation deadline.
+    let past_deadline = order.intent.expires_at.at + 60;
+    f.r.w.world_mut().set_now(past_deadline);
+    let now_after = f.r.w.world().world_ic_now();
+
+    let contender = crate::workorder::wo_holder(crate::workorder::WorkOrderId(0xE100_0001))?;
+    {
+        let mut txn =
+            f.r.w
+                .engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        check!(
+            industry
+                .reserve_slot_for(&mut txn, factory_obj, max_slots, &contender, &now_after, 0)
+                .is_err(),
+            "reserve_slot_for must not expire a core_integration slot"
+        );
+        check!(
+            industry
+                .first_elapsed_slot_reservation(&mut txn, factory_obj, &now_after)?
+                .is_none(),
+            "first_elapsed_slot_reservation must ignore core_integration slots despite wo_holder"
+        );
+        check_eq!(
+            industry.expire_slot(&mut txn, factory_obj, order.capacity, 1, &now_after),
+            Err(crate::IndustryError::NoWorkOrder)
+        );
+        let rec = industry
+            .slot_reservation(&mut txn, factory_obj, order.capacity)?
+            .ok_or("integration slot still present")?;
+        check_eq!(rec.state(), mush_core::ReservationState::Held);
+        check_eq!(rec.revision(), 1);
+    }
+
+    // Cancel releases the slot unconditionally (rev 1 -> Released rev 2) and
+    // passes full cold-boot restart audit.
+    f.commit(6, f.buyer, 29, FactoryRig::order_parameters(id))?;
+    f.restart(CoreOriginMode::Active)?;
+    check!(f.order(id)?.terminal.is_some());
+    Ok(())
+}
+
 // Preserve all ModuleBootData fields and ordered document/ledger/stream tails.
 // Equality failures report only the fixed message above.
 fn factory_boot_image(boot: &Boot) -> std::collections::BTreeMap<&str, Value> {

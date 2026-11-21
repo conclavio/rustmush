@@ -106,6 +106,13 @@ struct CaptureControl {
     /// panic (`clippy::panic_in_result_fn`), and returning a refusal would look
     /// like the very refusal the test expects, so the test reads this instead.
     uncaught: Arc<std::sync::atomic::AtomicBool>,
+    /// Records the exact `RegisteredCoreInputs::publish` outcome in bay-part
+    /// cross-custody modes (4 = held, 5 = released).
+    bay_probe: Arc<Mutex<Option<std::result::Result<(), Error>>>>,
+    /// Optional industry-owned fixture family handle for cross-custody txn tests.
+    industry_family: Arc<std::sync::OnceLock<mush_core::StateFamilyHandle<u64, u64>>>,
+    /// Count returned by `operations_for_boot` on `on_world_loaded`.
+    boot_ops: Arc<Mutex<Option<usize>>>,
 }
 struct ProbeOwner {
     input: RegisteredCoreInputs,
@@ -196,6 +203,7 @@ struct Input {
 }
 struct Provider {
     input: RegisteredCoreInputs,
+    bay_parts: Option<crate::bay_part::BayPartHandle>,
     owner: mush_core::participant::ParticipantHandle<ProbeOwner>,
     outcome: DefinitionRef,
     phase: usize,
@@ -220,7 +228,8 @@ impl ActionProvider for Provider {
             )
             .unwrap()
         };
-        if self.control.mode.load(Ordering::SeqCst) >= 2 {
+        let mode = self.control.mode.load(Ordering::SeqCst);
+        if mode == 2 || mode == 3 {
             let captured = self
                 .control
                 .captured
@@ -229,7 +238,7 @@ impl ActionProvider for Provider {
                 .clone()
                 .ok_or_else(refuse)?;
             let result = self.input.publish(txn, ctx, &captured);
-            if self.control.mode.load(Ordering::SeqCst) == 3 {
+            if mode == 3 {
                 // Catching a comparison refusal must not rescue preparation.
                 if result.is_ok() {
                     self.control.uncaught.store(true, Ordering::SeqCst);
@@ -274,9 +283,22 @@ impl ActionProvider for Provider {
         let witness = ctx
             .prepare_owner(&self.owner, request)
             .map_err(|_| refuse())?;
-        if self.control.mode.load(Ordering::SeqCst) == 1 {
+        if mode == 1 {
             *self.control.captured.lock().map_err(|_| refuse())? = Some(witness);
             // The actual owner was invoked, but no capsule leaves this refusal.
+            return Err(refuse());
+        }
+        if mode == 4 || mode == 5 {
+            let bay = self.bay_parts.as_ref().ok_or_else(refuse)?;
+            if mode == 4 {
+                bay.reserve(txn, 999, p.lot, p.endpoint, token(99))
+                    .map_err(|_| refuse())?;
+            } else {
+                bay.seed_released_for_test(txn, 999, p.lot, p.endpoint, token(99), token(100))
+                    .map_err(|_| refuse())?;
+            }
+            let res = self.input.publish(txn, ctx, &witness).map(|_| ());
+            *self.control.bay_probe.lock().map_err(|_| refuse())? = Some(res);
             return Err(refuse());
         }
         let op = self
@@ -365,12 +387,39 @@ impl GameModule for Industry {
             },
         )?;
         reg.state(self.state.clone());
+        let bay_parts = f.bay_parts().cloned();
+        if bay_parts.is_some() {
+            let fam_id = |suffix: &str| {
+                CanonicalId::new(format!("industry.core_input_fixture.{suffix}.v1"))
+                    .map_err(|e| ModError::msg(e.to_string()))
+            };
+            let fam_desc = mush_core::StateFamilyDescriptor::new(
+                mush_core::StateFamilyId::new("industry_core_input_fixture")
+                    .map_err(|e| ModError::msg(e.to_string()))?,
+                fam_id("key")?,
+                fam_id("value")?,
+                1,
+                fam_id("decode")?,
+                fam_id("validate")?,
+                fam_id("canonical")?,
+            )
+            .map_err(|e| ModError::msg(e.to_string()))?;
+            let h = reg.state_family(
+                fam_desc,
+                |k: &u64| Ok(k.to_string()),
+                |v: &Value| v.as_u64().ok_or_else(|| "a number".to_owned()),
+                |_: &u64| Ok(()),
+                |v: &u64| Ok(json!(v)),
+            )?;
+            let _ = self.control.industry_family.set(h);
+        }
         for (phase, action) in registered.into_iter().enumerate() {
             let owner = reg.request_owner_participant::<ProbeOwner>(action.clone())?;
             reg.action_provider(
                 action,
                 Provider {
                     input: input.clone(),
+                    bay_parts: bay_parts.clone(),
                     owner,
                     outcome: outcome.clone(),
                     phase,
@@ -382,7 +431,7 @@ impl GameModule for Industry {
     }
     fn on_world_loaded(
         &mut self,
-        _: &mut ModuleCtx<'_>,
+        ctx: &mut ModuleCtx<'_>,
         data: ModuleBootData,
     ) -> std::result::Result<(), ModError> {
         let n = data
@@ -393,13 +442,38 @@ impl GameModule for Industry {
             .transpose()?
             .unwrap_or(0);
         self.state.0.store(n, Ordering::SeqCst);
+        if let Some(f) = self.cell.get()
+            && let Some(core) = f.core_inputs()
+            && let Ok(ops) = core.operations_for_boot(ctx)
+            && let Ok(mut guard) = self.control.boot_ops.lock()
+        {
+            *guard = Some(ops.len());
+        }
         Ok(())
     }
+}
+fn bay_binding() -> crate::bay_part::BayPartBinding {
+    let mut builder = DefinitionRegistryBuilder::new();
+    let [accept, install, cancel] = [
+        crate::bay_part::ACCEPT_ACTION,
+        crate::bay_part::INSTALL_ACTION,
+        crate::bay_part::CANCEL_ACTION,
+    ]
+    .map(|id| builder.register(owner(), descriptor("action", id)).unwrap());
+    crate::bay_part::BayPartBinding::new(accept, install, cancel).unwrap()
 }
 fn modules(
     state: ProbeState,
     control: CaptureControl,
     configured: bool,
+) -> (Vec<Box<dyn GameModule>>, InventoryHandleCell) {
+    modules_with_bay(state, control, configured, false)
+}
+fn modules_with_bay(
+    state: ProbeState,
+    control: CaptureControl,
+    configured: bool,
+    with_bay: bool,
 ) -> (Vec<Box<dyn GameModule>>, InventoryHandleCell) {
     let cell: InventoryHandleCell = Arc::default();
     let mut inventory = InventoryModule::new().with_handle_cell(Arc::clone(&cell));
@@ -407,6 +481,9 @@ fn modules(
         inventory = inventory
             .with_quantity_delegates(["industry"])
             .with_core_inputs(binding());
+    }
+    if with_bay {
+        inventory = inventory.with_bay_parts(bay_binding());
     }
     let mut modules: Vec<Box<dyn GameModule>> =
         vec![Box::new(EconomyModule::new()), Box::new(inventory)];
@@ -505,9 +582,15 @@ struct Rig {
 }
 impl Rig {
     fn new() -> Result<Self> {
+        Self::build(false)
+    }
+    fn new_with_bay_parts() -> Result<Self> {
+        Self::build(true)
+    }
+    fn build(with_bay: bool) -> Result<Self> {
         let state = ProbeState::default();
         let control = CaptureControl::default();
-        let (modules, cell) = modules(state.clone(), control.clone(), true);
+        let (modules, cell) = modules_with_bay(state.clone(), control.clone(), true, with_bay);
         let mut w = TestWorld::with_modules(modules);
         w.world_mut().set_now(1000);
         w.world_mut().set_game_clock(mush_core::clock::GameClock {
@@ -1277,6 +1360,182 @@ fn exact_owner_binding_rejects_same_token_cross_action_or_changed_invocation_eve
                 .is_none()
         );
         check!(r.w.engine().action_state().get(&r.f.lots, &lot)?.is_some());
+    }
+    Ok(())
+}
+
+/// **P2-MOD-18**: cross-custody exclusion between `lot_holds`, `core_inputs`,
+/// `bay_parts`, and `consume_product(s)` prevents double custody and protects
+/// `core_input::audit::reconcile` / `InventoryStore::is_complete()`.
+#[test]
+fn p2_mod_18_cross_custody_reserve_and_consume_product_exclusion() -> Result {
+    let mut r = Rig::new_with_bay_parts()?;
+    let endpoint = r.endpoints[0];
+
+    // 1. A lot held in `inventory_lot_holds` cannot be reserved via `CoreInputRequest::Reserve`;
+    //    once released, reservation succeeds cleanly.
+    let lot_hold_id = LotId(101);
+    r.mint(lot_hold_id, 1)?;
+    let f = r.f.clone();
+    r.native(|txn| {
+        f.hold_lot(txn, endpoint, lot_hold_id, "market:listing:1")
+            .map(|_| ())
+    })?;
+    check!(
+        r.prep(0, 11, 1, lot_hold_id).is_err(),
+        "CoreInputRequest::Reserve must refuse a lot held in lot_holds"
+    );
+    check!(
+        r.w.engine()
+            .action_state()
+            .get(&r.f.core_inputs.as_ref().unwrap().shared.operations, &1)?
+            .is_none(),
+        "refused reserve must write no core_input operation"
+    );
+    r.native(|txn| f.release_lot(txn, lot_hold_id, "market:listing:1"))?;
+    r.act(0, 12, 1, lot_hold_id)?;
+    check_eq!(r.op(1)?.state()?, CoreInputState::Held);
+
+    // 2. A lot held as `CoreInputState::Held` MUST be rejected by BOTH
+    //    `consume_product` and `consume_products` (preventing boot-brick in
+    //    `core_input::audit::reconcile`).
+    let held_lot =
+        r.w.engine()
+            .action_state()
+            .get(&r.f.lots, &lot_hold_id)?
+            .cloned()
+            .ok_or("held lot")?;
+    let extra_id = LotId(102);
+    r.mint(extra_id, 1)?;
+    let extra_lot =
+        r.w.engine()
+            .action_state()
+            .get(&r.f.lots, &extra_id)?
+            .cloned()
+            .ok_or("extra lot")?;
+    {
+        let mut txn = r.w.engine_mut().action_transaction(&r.f.lots)?;
+        check_eq!(
+            r.f.consume_product(&mut txn, &held_lot),
+            Err(crate::InventoryError::ExactInput)
+        );
+        check_eq!(
+            r.f.consume_products(&mut txn, &[extra_lot.clone(), held_lot.clone()]),
+            Err(crate::InventoryError::ExactInput)
+        );
+    }
+    // Cold boot reconciliation stays complete and `operations_for_boot` succeeds.
+    let cold_control = CaptureControl::default();
+    let (cold_modules, cold_cell) =
+        modules_with_bay(ProbeState::default(), cold_control.clone(), true, true);
+    let (_, registry) = mush_testkit::boot_world();
+    let mut cold_engine = Engine::with_modules(r.w.world().clone(), registry, cold_modules)?;
+    let mut boot_clone = r.boot.clone();
+    let mut typed = Vec::new();
+    for (ns, data) in &mut boot_clone {
+        data.kv.retain(|(key, value)| {
+            if mush_core::is_action_state_persistence_key(key) {
+                typed.push(ActionStateBootRecord::new(
+                    ns.clone(),
+                    key.clone(),
+                    value.clone(),
+                ));
+                false
+            } else {
+                true
+            }
+        });
+    }
+    cold_engine.hydrate_action_state(typed)?;
+    cold_engine.modules_loaded(
+        boot_clone,
+        &mut Outbox::new(),
+        &mut mush_core::Effects::new(),
+    )?;
+    let cold_store = cold_engine
+        .world
+        .module_state::<InventoryStore>()
+        .ok_or("cold store")?;
+    check!(
+        cold_store.is_complete(),
+        "InventoryStore must remain complete"
+    );
+    check_eq!(
+        *cold_control.boot_ops.lock().map_err(|_| "boot_ops")?,
+        Some(1),
+        "operations_for_boot must reconstruct the 1 Held core_input operation"
+    );
+    let _ = cold_cell;
+
+    // 3. A lot held by `bay_parts` (`BayPartState::Held`) MUST be refused by
+    //    `CoreInputRequest::Reserve` (`Error::Reserved`), AND refused by
+    //    `consume_product` / `consume_products` (`InventoryError::ExactInput`);
+    //    once `bay_parts` releases it (`BayPartState::Released`), both allow it.
+    let bay_lot_id = LotId(103);
+    r.mint(bay_lot_id, 1)?;
+    let bay_lot =
+        r.w.engine()
+            .action_state()
+            .get(&r.f.lots, &bay_lot_id)?
+            .cloned()
+            .ok_or("bay lot")?;
+
+    // Mode 4: `bay_parts.reserve` holds `bay_lot_id`, then `CoreInputRequest::Reserve` runs.
+    r.control.mode.store(4, Ordering::SeqCst);
+    *r.control.bay_probe.lock().map_err(|_| "bay probe")? = None;
+    check!(r.prep(0, 13, 2, bay_lot_id).is_err());
+    check_eq!(
+        *r.control.bay_probe.lock().map_err(|_| "bay probe")?,
+        Some(Err(Error::Reserved)),
+        "CoreInputRequest::Reserve must return Error::Reserved on a bay-part held lot"
+    );
+
+    // Mode 5: `bay_parts.reserve` then `bay_parts.release`, then `CoreInputRequest::Reserve` runs.
+    r.control.mode.store(5, Ordering::SeqCst);
+    *r.control.bay_probe.lock().map_err(|_| "bay probe")? = None;
+    check!(r.prep(0, 14, 2, bay_lot_id).is_err());
+    check_eq!(
+        *r.control.bay_probe.lock().map_err(|_| "bay probe")?,
+        Some(Ok(())),
+        "CoreInputRequest::Reserve must allow a lot whose prior bay-part hold was Released"
+    );
+    r.control.mode.store(0, Ordering::SeqCst);
+
+    // Verify `consume_product` & `consume_products` reject a `BayPartState::Held` lot
+    // and accept it once `BayPartState::Released`.
+    let bay_handle = r.f.bay_parts().ok_or("bay parts")?.clone();
+    let ind_handle = r
+        .control
+        .industry_family
+        .get()
+        .ok_or("industry fixture handle")?
+        .clone();
+    {
+        // Industry-owned txn: `BayPartState::Held` blocks both `consume_product`
+        // and `consume_products`.
+        let mut txn = r.w.engine_mut().action_transaction(&ind_handle)?;
+        bay_handle.reserve(&mut txn, 77, bay_lot_id, endpoint, token(77))?;
+        check_eq!(
+            r.f.consume_product(&mut txn, &bay_lot),
+            Err(crate::InventoryError::ExactInput)
+        );
+        check_eq!(
+            r.f.consume_products(&mut txn, &[extra_lot.clone(), bay_lot.clone()]),
+            Err(crate::InventoryError::ExactInput)
+        );
+    }
+    {
+        // Industry-owned txn: `BayPartState::Released` allows `consume_product`.
+        let mut txn = r.w.engine_mut().action_transaction(&ind_handle)?;
+        bay_handle.seed_released_for_test(
+            &mut txn,
+            77,
+            bay_lot_id,
+            endpoint,
+            token(77),
+            token(78),
+        )?;
+        r.f.consume_product(&mut txn, &bay_lot)?;
     }
     Ok(())
 }

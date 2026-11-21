@@ -867,3 +867,176 @@ fn ud4b_a_cancelled_bay_order_releases_the_fee_the_hull_and_the_part() -> Result
     check!(r.order(id)?.terminal.is_some());
     Ok(())
 }
+
+#[inline(never)]
+fn bay_order_slot_meta(
+    r: &Rig,
+    id: crate::workorder::WorkOrderId,
+) -> Result<(i64, i64, mush_core::ReservationId)> {
+    let order = r.order(id)?;
+    Ok((
+        order.intent.accepted_at.at,
+        order.intent.expires_at.at,
+        order.capacity,
+    ))
+}
+
+#[inline(never)]
+fn bay_order_has_installation(r: &Rig, id: crate::workorder::WorkOrderId) -> Result<bool> {
+    Ok(r.order(id)?.installation.is_some())
+}
+
+#[inline(never)]
+fn bay_order_is_terminal(r: &Rig, id: crate::workorder::WorkOrderId) -> Result<bool> {
+    Ok(r.order(id)?.terminal.is_some())
+}
+
+#[inline(never)]
+fn run_elapsed_bay_refit_case(install_case: bool) -> Result {
+    let mut r = Box::new(Rig::new()?);
+    let id = r.accepted()?;
+    let (accepted_at, expires_at, capacity) = bay_order_slot_meta(&r, id)?;
+    let industry = r.runtime()?.industry.clone();
+    let max_slots =
+        r.w.world()
+            .module_state::<crate::IndustryStore>()
+            .and_then(|st| st.facility(r.bay))
+            .ok_or("bay facility")?
+            .maximum_slots();
+
+    // Fill any remaining facility slots so `available == 0` when we probe
+    // `reserve_slot_for` after the bay-refit slot's 28-IC-day deadline.
+    let now_before = r.w.world().world_ic_now();
+    let avail = {
+        let mut txn =
+            r.w.engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        industry.available_slots(&mut txn, r.bay, max_slots)?
+    };
+    for filler in 0..avail {
+        let filler_holder =
+            crate::workorder::wo_holder(crate::workorder::WorkOrderId(0xF000_0000 + filler))?;
+        let p = {
+            let mut txn =
+                r.w.engine_mut()
+                    .action_transaction(&industry.facility_books)?;
+            industry.reserve_slot_for(
+                &mut txn,
+                r.bay,
+                max_slots,
+                &filler_holder,
+                &now_before,
+                mush_inventory::REFIT_RESERVATION_LEAD_SECS * 4,
+            )?;
+            txn.prepare()?
+        };
+        let (writes, install) = p.into_parts();
+        r.w.engine_mut().install_prepared_action(install)?;
+        fold_module_ops_into(&mut r.boot, writes);
+    }
+
+    // Advance past the bay-refit slot's 28-IC-day reservation deadline.
+    let past_deadline = expires_at + 60;
+    r.w.world_mut().set_now(past_deadline);
+    let now_after = r.w.world().world_ic_now();
+
+    // 1. `reserve_slot_for` at `available == 0` must NOT opportunistically
+    //    expire the bay-refit slot.
+    let contender = crate::workorder::wo_holder(crate::workorder::WorkOrderId(0xE000_0001))?;
+    {
+        let mut txn =
+            r.w.engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        check!(
+            industry
+                .reserve_slot_for(&mut txn, r.bay, max_slots, &contender, &now_after, 0)
+                .is_err(),
+            "reserve_slot_for must refuse when only an elapsed bay-refit slot exists"
+        );
+    }
+
+    // 2. `first_elapsed_slot_reservation` skips non-WO slots.
+    {
+        let mut txn =
+            r.w.engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        check!(
+            industry
+                .first_elapsed_slot_reservation(&mut txn, r.bay, &now_after)?
+                .is_none(),
+            "first_elapsed_slot_reservation must ignore bay-refit slots"
+        );
+    }
+
+    // 3. Direct `expire_slot` refuses non-WO reservations.
+    {
+        let mut txn =
+            r.w.engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        check_eq!(
+            industry.expire_slot(&mut txn, r.bay, capacity, 1, &now_after),
+            Err(crate::IndustryError::NoWorkOrder)
+        );
+    }
+
+    // 4. `@wo/reclaim` / `WoReclaim` must NOT be offered for `r.bay`.
+    r.w.engine_mut()
+        .set_offer_keys(mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(1, [0x41; 32])?,
+            [],
+        )?);
+    let query = r.w.engine().legal_action_query(
+        mush_core::PrincipalId::Object { id: GOD },
+        GOD,
+        mush_core::PerceivedRef::SelfActor,
+    )?;
+    let offers = r.w.engine().project_legal_actions(&query)?;
+    let reclaim_action = crate::provider::action_ref(
+        &r.w.engine().registry,
+        crate::provider::IndustryVerb::WoReclaim,
+    )
+    .ok_or("reclaim action")?;
+    check!(
+        offers.projected_for_action(&reclaim_action).is_none(),
+        "WoReclaim must not be offered when only a bay-refit slot elapsed"
+    );
+
+    // 5. The bay-refit slot is still Held at rev 1.
+    {
+        let mut txn =
+            r.w.engine_mut()
+                .action_transaction(&industry.facility_books)?;
+        let rec = industry
+            .slot_reservation(&mut txn, r.bay, capacity)?
+            .ok_or("bay slot still present")?;
+        check_eq!(rec.state(), mush_core::ReservationState::Held);
+        check_eq!(rec.revision(), 1);
+    }
+    if install_case {
+        // Rewind within the 28-IC-day window to complete work & Install
+        // (verifying unconditional `release_slot(..., 1)` + cold-boot audit).
+        r.w.world_mut().set_now(accepted_at);
+        r.advance(id, 30)?;
+        r.advance(id, 31)?;
+        r.commit(4, r.requester, 32, json!({"order": id.to_string()}))?;
+        check!(bay_order_has_installation(&r, id)?);
+    } else {
+        // Past the 28-IC-day deadline, Cancel MUST still succeed cleanly,
+        // release the slot to Released (rev 2), and pass cold-boot audit!
+        r.commit(5, r.requester, 32, json!({"order": id.to_string()}))?;
+        check!(bay_order_is_terminal(&r, id)?);
+    }
+    r.restart()?;
+    check!(bay_order_is_terminal(&r, id)?);
+    Ok(())
+}
+
+/// **P2-MOD-2**: an elapsed (>28 IC day) paid bay-refit slot must NEVER be
+/// expired by `reserve_slot_for`, `first_elapsed_slot_reservation`,
+/// `expire_slot`, or `@wo/reclaim`, and must still complete or cancel cleanly
+/// and pass cold-boot audit.
+#[test]
+fn p2_mod_2_elapsed_bay_refit_slot_never_expires_and_survives_boot() -> Result {
+    run_elapsed_bay_refit_case(true)?;
+    run_elapsed_bay_refit_case(false)
+}

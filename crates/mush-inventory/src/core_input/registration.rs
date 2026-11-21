@@ -41,6 +41,8 @@ pub(super) struct Shared {
     pub(super) census: StateFamilyHandle<(), Census>,
     pub(super) lots: StateFamilyHandle<LotId, Lot>,
     pub(super) lot_census: StateFamilyHandle<EndpointRef, LotCensus>,
+    pub(super) lot_holds: StateFamilyHandle<LotId, crate::lot_hold::LotHold>,
+    pub(super) bay_parts: std::sync::OnceLock<crate::bay_part::BayPartHoldCheck>,
 }
 #[derive(Clone, Debug)]
 pub struct CoreInputHandle {
@@ -105,6 +107,9 @@ impl CoreInputHandle {
             Ok(())
         }
     }
+    pub(crate) fn bind_bay_parts(&self, bay_parts: crate::bay_part::BayPartHoldCheck) {
+        let _ = self.shared.bay_parts.set(bay_parts);
+    }
     pub(crate) fn require_unheld(&self, txn: &mut ActionTxn<'_>, lot: LotId) -> Result<(), Error> {
         match self.current(txn, lot)?.map(|o| o.state()).transpose()? {
             Some(CoreInputState::Held | CoreInputState::Consumed) => Err(Error::Reserved),
@@ -158,6 +163,7 @@ pub(crate) fn register(
     binding: CoreInputBinding,
     lots: StateFamilyHandle<LotId, Lot>,
     lot_census: StateFamilyHandle<EndpointRef, LotCensus>,
+    lot_holds: StateFamilyHandle<LotId, crate::lot_hold::LotHold>,
 ) -> Result<CoreInputHandle, ModError> {
     binding
         .validate()
@@ -227,6 +233,8 @@ pub(crate) fn register(
             census,
             lots,
             lot_census,
+            lot_holds,
+            bay_parts: std::sync::OnceLock::new(),
         }),
         service,
     })

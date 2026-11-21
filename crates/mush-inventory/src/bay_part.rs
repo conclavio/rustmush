@@ -182,6 +182,35 @@ struct Shared {
     core_inputs: Option<crate::core_input::CoreInputHandle>,
     lot_holds: StateFamilyHandle<LotId, crate::lot_hold::LotHold>,
 }
+/// Lightweight read-only view of the bay-part custody families for
+/// cross-custody exclusion (avoids an `Arc` cycle with `CoreInputHandle`).
+#[derive(Clone, Debug)]
+pub(crate) struct BayPartHoldCheck {
+    parts: StateFamilyHandle<u64, BayPartCustody>,
+    heads: StateFamilyHandle<LotId, Head>,
+}
+
+impl BayPartHoldCheck {
+    pub(crate) fn require_unheld(&self, txn: &mut ActionTxn<'_>, lot: LotId) -> Result<(), Error> {
+        let Some(head) = txn.get(&self.heads, &lot).map_err(bad)?.cloned() else {
+            return Ok(());
+        };
+        let custody = txn
+            .get(&self.parts, &head.order)
+            .map_err(bad)?
+            .cloned()
+            .ok_or(Error::Integrity)?;
+        custody.validate()?;
+        if custody.order != head.order || head.lot != lot || custody.lot != lot {
+            return Err(Error::Integrity);
+        }
+        match custody.state {
+            BayPartState::Held | BayPartState::Consumed => Err(Error::Reserved),
+            BayPartState::Released => Ok(()),
+        }
+    }
+}
+
 /// The registered bay part families, handed to the Industry bay provider.
 #[derive(Clone, Debug)]
 pub struct BayPartHandle {
@@ -287,6 +316,13 @@ impl BayPartHandle {
             return Err(Error::Integrity);
         }
         Ok(Some(custody))
+    }
+    /// Lightweight hold-check view shared with `core_input` without creating an `Arc` cycle.
+    pub(crate) fn hold_check(&self) -> BayPartHoldCheck {
+        BayPartHoldCheck {
+            parts: self.shared.parts.clone(),
+            heads: self.shared.heads.clone(),
+        }
     }
     /// Refuse an ordinary verb on a lot a bay order holds or consumed.
     pub(crate) fn require_unheld(&self, txn: &mut ActionTxn<'_>, lot: LotId) -> Result<(), Error> {
@@ -476,6 +512,36 @@ impl BayPartHandle {
     /// The binding's three actions.
     pub fn binding(&self) -> &BayPartBinding {
         &self.shared.binding
+    }
+    #[cfg(test)]
+    pub(crate) fn seed_released_for_test(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        order: u64,
+        lot: LotId,
+        stores: EndpointRef,
+        accepted: CommitToken,
+        released: CommitToken,
+    ) -> Result<(), Error> {
+        Self::industry(txn)?;
+        let f = &self.shared;
+        let custody = BayPartCustody {
+            format: 1,
+            order,
+            lot,
+            stores,
+            accepted,
+            state: BayPartState::Released,
+            terminal: Some(released),
+        };
+        let head = Head {
+            format: 1,
+            lot,
+            order,
+        };
+        txn.insert(&f.parts, &order, custody).map_err(bad)?;
+        txn.insert(&f.heads, &lot, head).map_err(bad)?;
+        Ok(())
     }
 }
 

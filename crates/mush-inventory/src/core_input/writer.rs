@@ -188,6 +188,17 @@ impl RegisteredCoreInputs {
                 if current.id() != *lot || current.endpoint() != *endpoint {
                     return Err(Error::Integrity);
                 }
+                // P2-MOD-18: refuse any lot already held by an exact lot hold or a bay refit
+                // order so two custody regimes can never hold the same physical lot.
+                if txn.get(&f.lot_holds, lot).map_err(bad)?.is_some() {
+                    return Err(Error::Reserved);
+                }
+                if let Some(bay) = f.bay_parts.get() {
+                    bay.require_unheld(txn, *lot).map_err(|error| match error {
+                        crate::bay_part::Error::Integrity => Error::Integrity,
+                        _ => Error::Reserved,
+                    })?;
+                }
                 let previous = self.handle.current(txn, *lot)?;
                 let (attempt, prior) = if let Some(old) = &previous {
                     if old.state()? != CoreInputState::Released {

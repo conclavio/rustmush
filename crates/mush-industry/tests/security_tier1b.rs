@@ -1800,3 +1800,285 @@ fn t2a_direct_claim_contest_cannot_seize_pledged_or_contest_disputed_claims() {
     )
     .expect("suspending a disputed claim remains permitted");
 }
+
+// ---- P2-MOD-15 test --------------------------------------------------------
+
+#[test]
+fn p2_mod_15_funded_terminal_work_orders_round_trip_and_prune_past_256() {
+    let (mut tw, families, _drifted, _faucet, budget, source, dest) = setup_wo_scene(2, 100_000);
+    let mut tok = 4000u64;
+
+    // 1. Steady-state funded lifecycle: draft -> submit -> cancel -> money::sweep.
+    //    Past the 64-order retention floor, `WoDraft` must emit canonical
+    //    `wo#<16hex>` IDs in `WO_PRUNABLE` that round-trip `WorkOrderId::parse`
+    //    and prune funded terminal orders cleanly.
+    let mut saw_prunable = false;
+    let draft_action = action_ref(&tw.engine().registry, IndustryVerb::WoDraft).expect("draft act");
+    for iter in 0..80 {
+        ok(
+            &mut tw,
+            GOD,
+            &format!(
+                "@wo/draft tacsim.core/alloy_smelt/1=7 1 {} {} {}",
+                budget.0, source.0.0, dest.0.0
+            ),
+        );
+        // Past the 64-order floor, resolve the staged `@wo/draft` directly once to
+        // assert every server-authored `WO_PRUNABLE` entry is canonical `wo#<16hex>`
+        // and round-trips `WorkOrderId::parse`.
+        if iter >= 65 && !saw_prunable {
+            let staged = tw
+                .engine_mut()
+                .take_authoritative_submit()
+                .expect("staged draft");
+            let req = mush_core::RequestUid::from_bytes([0x41; 16]);
+            let (resolved_action, resolved) = {
+                let engine = tw.engine();
+                let query = engine
+                    .legal_action_query(
+                        mush_core::PrincipalId::Object { id: GOD },
+                        GOD,
+                        mush_core::PerceivedRef::SelfActor,
+                    )
+                    .expect("query");
+                let offers = engine.project_legal_actions(&query).expect("project");
+                let projected = offers
+                    .projected_for_action(&draft_action)
+                    .expect("draft offered");
+                let submission = mush_core::OfferSubmission {
+                    offer: projected.offer(),
+                    subject: projected.subject().clone(),
+                    targets: Vec::new(),
+                    parameters: staged.parameters,
+                };
+                let execution = mush_core::OfferExecutionContext {
+                    request: req,
+                    principal: mush_core::PrincipalId::Object { id: GOD },
+                    actor: GOD,
+                    idempotency: ScopedIdempotencyKey::new(
+                        IdempotencyScope {
+                            principal: mush_core::PrincipalId::Object { id: GOD },
+                            owner: draft_action.key().owner.clone(),
+                            namespace: cid(draft_action.key().id.as_str()),
+                        },
+                        1,
+                        IdempotencyKey::Request(req),
+                    ),
+                    viewer_scope: query.viewer_scope(),
+                    now: None,
+                };
+                let resolved = engine
+                    .resolve_legal_action(&offers, execution, submission)
+                    .expect("resolve draft");
+                let (a, r, _g) = resolved.into_authoritative_parts();
+                (a, r)
+            };
+            let arr = resolved
+                .invocation()
+                .parameters()
+                .get(mush_industry::provider::WO_PRUNABLE)
+                .and_then(|v| v.as_array())
+                .expect("WO_PRUNABLE must be populated past 64 funded terminal orders");
+            assert!(!arr.is_empty());
+            for entry in arr {
+                let text = entry.as_str().expect("string wo id");
+                let parsed = WorkOrderId::parse(text)
+                    .unwrap_or_else(|| panic!("WO_PRUNABLE entry must parse cleanly: {text}"));
+                assert_eq!(
+                    text,
+                    parsed.to_string(),
+                    "WO_PRUNABLE must emit canonical wo#<16hex>"
+                );
+            }
+            saw_prunable = true;
+            tok += 1;
+            let mut commit_bytes = [0u8; 16];
+            commit_bytes[..8].copy_from_slice(&tok.to_le_bytes());
+            let (prepared, outcome) = tw
+                .engine_mut()
+                .prepare_registered_resolved_authoritative_action(
+                    &resolved_action,
+                    &resolved,
+                    CommitToken::from_bytes(commit_bytes),
+                )
+                .expect("prepare draft");
+            let (_, installation) = prepared.into_parts();
+            tw.engine_mut()
+                .install_prepared_action(installation)
+                .expect("install draft");
+            let order_str = outcome
+                .outcome()
+                .data()
+                .get("order")
+                .and_then(|v| v.as_str())
+                .expect("order id")
+                .to_owned();
+            ok(&mut tw, GOD, &format!("@wo/submit {order_str}"));
+            tok += 1;
+            land(&mut tw, tok).expect("submit lands");
+            ok(&mut tw, GOD, &format!("@wo/cancel {order_str}"));
+            tok += 1;
+            land(&mut tw, tok).expect("cancel lands");
+            let next_now = tw.world().now() + 60;
+            tw.set_now(next_now);
+            let _ = tw.fire_due(next_now * 1000);
+            continue;
+        }
+        tok += 1;
+        let drafted = land(&mut tw, tok).expect("draft lands");
+        let order_str = drafted["order"].as_str().expect("order id").to_owned();
+        ok(&mut tw, GOD, &format!("@wo/submit {order_str}"));
+        tok += 1;
+        land(&mut tw, tok).expect("submit lands");
+        ok(&mut tw, GOD, &format!("@wo/cancel {order_str}"));
+        tok += 1;
+        land(&mut tw, tok).expect("cancel lands");
+        // Advance clock and fire Coarse tick so `money::sweep` releases the hold.
+        let next_now = tw.world().now() + 60;
+        tw.set_now(next_now);
+        let _ = tw.fire_due(next_now * 1000);
+    }
+    assert!(
+        saw_prunable,
+        "funded orders past 64 must emit canonical WO_PRUNABLE entries"
+    );
+    // Finish rotating `money::sweep` across all retained orders from Part 1 so
+    // every Part-1 hold clears before we burst 320 more orders into bucket 1/2.
+    for _ in 0..4 {
+        let next_now = tw.world().now() + 60;
+        tw.set_now(next_now);
+        let _ = tw.fire_due(next_now * 1000);
+    }
+    let after_steady = count_work_orders(&tw, &families);
+    assert!(
+        after_steady <= 70,
+        "80 funded work orders must prune to near the 64-order floor, got {after_steady}"
+    );
+
+    // 2. Burst >256 funded terminal work orders directly through `open_work_order`
+    //    + `put_work_order_pruning` WITHOUT passing `prunable`, forcing bucket 1
+    //    (cap 256) to evict into overflow bucket 2, plus 40 additional untracked
+    //    terminal rows (exercising the bounded work_orders scan fallback).
+    let (recipe, pinned) = ToggleRecipes {
+        drifted: Arc::new(AtomicBool::new(false)),
+    }
+    .alloy();
+    let burst_count = 320u64;
+    for i in 0..burst_count {
+        let id = WorkOrderId(0xB000_0000 + i);
+        let draft = WorkOrder::draft(
+            id,
+            PrincipalId::Object(GOD),
+            PrincipalId::Object(GOD),
+            ObjId(7),
+            2,
+            1,
+            1,
+            recipe.clone(),
+            pinned.clone(),
+            1,
+            budget,
+            Some(source),
+            DeliveryTarget::Endpoint { endpoint: dest },
+            EconomicVisibility::Parties,
+        )
+        .expect("draft");
+        let running = draft.with_state(WorkOrderState::Running).expect("running");
+        let running_rev = running.revision();
+        let failed = running
+            .clone()
+            .with_state(WorkOrderState::Failed)
+            .expect("failed");
+        apply(tw.engine_mut(), &families, |txn| {
+            families.open_work_order(txn, running)
+        })
+        .expect("open burst funded order");
+        apply(tw.engine_mut(), &families, |txn| {
+            families.put_work_order_pruning(txn, running_rev, failed, &[])
+        })
+        .expect("terminate burst funded order");
+    }
+    // Also seed 40 untracked terminal orders outside both rings.
+    apply(tw.engine_mut(), &families, |txn| {
+        for i in 0..40u64 {
+            let id = WorkOrderId(0xC000_0000 + i);
+            let order = WorkOrder::draft(
+                id,
+                PrincipalId::Object(GOD),
+                PrincipalId::Object(GOD),
+                ObjId(7),
+                2,
+                1,
+                1,
+                recipe.clone(),
+                pinned.clone(),
+                1,
+                budget,
+                Some(source),
+                DeliveryTarget::Endpoint { endpoint: dest },
+                EconomicVisibility::Parties,
+            )
+            .expect("draft")
+            .with_state(WorkOrderState::Cancelled)
+            .expect("cancelled");
+            txn.insert(&families.work_orders, &id, order)?;
+        }
+        Ok(())
+    })
+    .expect("seed untracked terminal orders");
+
+    // Verify overflow bucket 2 was populated rather than discarded!
+    let overflow_len = tw
+        .engine()
+        .action_state()
+        .get(
+            &families.wo_terminal_ring,
+            &mush_industry::workorder::TERMINAL_RING_OVERFLOW_ORDERS,
+        )
+        .expect("read overflow ring")
+        .map_or(0, mush_industry::workorder::TerminalWorkOrderRing::len);
+    assert!(
+        overflow_len >= 64,
+        "bucket-1 evictions past 256 must be tracked in overflow bucket 2, got {overflow_len}"
+    );
+
+    // 3. Drive normal draft+cancel commits; each prunes up to 16 settled/evicted/untracked
+    //    terminal orders so the entire 360+ backlog drains cleanly.
+    for _ in 0..25 {
+        ok(
+            &mut tw,
+            GOD,
+            &format!(
+                "@wo/draft tacsim.core/alloy_smelt/1=7 1 {} {} {}",
+                budget.0, source.0.0, dest.0.0
+            ),
+        );
+        tok += 1;
+        let drafted = land(&mut tw, tok).expect("draft lands");
+        let order_str = drafted["order"].as_str().expect("order id").to_owned();
+        ok(&mut tw, GOD, &format!("@wo/cancel {order_str}"));
+        tok += 1;
+        land(&mut tw, tok).expect("cancel lands");
+    }
+
+    let remaining = count_work_orders(&tw, &families);
+    assert!(
+        remaining <= 64 + MAX_RETAINED_TERMINAL_DRAFT_CANCELS,
+        "all evicted/untracked funded terminal orders past 256 must prune cleanly (<= 128), got {remaining}"
+    );
+    assert!(
+        tw.engine()
+            .action_state()
+            .get(
+                &families.wo_terminal_ring,
+                &mush_industry::workorder::TERMINAL_RING_OVERFLOW_ORDERS,
+            )
+            .expect("read overflow ring")
+            .is_none(),
+        "overflow bucket 2 must be removed once drained"
+    );
+    tw.modules_loaded(HashMap::new());
+    let store = tw.world().module_state::<IndustryStore>().expect("store");
+    assert!(store.is_complete(), "store must remain complete");
+    assert!(!store.orders_truncated(), "work orders must not truncate");
+}

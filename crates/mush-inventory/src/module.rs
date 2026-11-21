@@ -479,6 +479,7 @@ impl GameModule for InventoryModule {
                     binding,
                     lots.clone(),
                     lot_census.clone(),
+                    lot_holds.clone(),
                 )
             })
             .transpose()?;
@@ -496,6 +497,9 @@ impl GameModule for InventoryModule {
                 )
             })
             .transpose()?;
+        if let (Some(core), Some(bay)) = (&core_inputs, &bay_parts) {
+            core.bind_bay_parts(bay.hold_check());
+        }
         let families = InventoryFamilies {
             pools,
             books: books.clone(),

@@ -504,4 +504,394 @@ fn attested_parent_holder_capture_is_in_the_term_and_complete_envelope() -> Test
     Ok(())
 }
 
+/// **P2-MOD-19**: a House attestation committed by an authorized House officer
+/// or `tacsim.house_attestation` agent (`actor != birth.requester`) writes
+/// `house: Some(...)`, `charter_ownership: None`, `owner: actor` and MUST pass
+/// all five `owner_attestation::history` verification helpers (`current`,
+/// `current_in_txn`, `historical`, `historical_in_txn`, `verify`) and Roll boot
+/// audit (`history::audit`), while non-House (personal) attestations MUST still
+/// enforce `charter_transfer::history::require_captured(_in_txn)`.
+#[test]
+fn p2_mod_19_house_attestation_by_other_officer_passes_all_readers_and_boot_audit() -> TestResult {
+    use crate::commerce::{
+        CharterId, FiledRevisionId, LineId, RevisionIdentity, TermGeneration,
+        charter_transfer::records::CharterOwnershipRef,
+        filed::{FiledRevisionContent, FilingPosition, FilingSequence},
+        publication_tests::{open_gate_for_owner_unit_test, saved},
+        rating::{RatingClass, RatingFamilies, RatingSubject, test_support::complete_rating},
+        records::{
+            FiledRecord, FilingEconomicReceipt, InitialFilingOperation, PUBLICATION_FORMAT,
+            RevisionPolicy, canonical_duplicate_digest, schema_line_digest,
+        },
+    };
+    use crate::{Envelope, FORMAT, ReferenceRecord, RevisionAdapter, RollError, RollStore};
+    use mush_core::{ClockRef, ClockStamp, ModuleBootData, ModuleCtx, Outbox};
+    use mush_economy::{AccountId, Amount, TransactionId};
+    use mush_org::{OrgId, OrgScopeId, PrincipalId as OrgPrincipal, SystemPrincipalId};
+
+    struct TestLanguage;
+    impl RevisionAdapter for TestLanguage {
+        fn normalize_source(&self, source: &str) -> Result<String, RollError> {
+            Ok(source.into())
+        }
+        fn validate(&self, _: &str, _: &Envelope) -> Result<(), RollError> {
+            Ok(())
+        }
+    }
+
+    let (_, sources, base_disk, revision) = saved();
+    let curator = ObjId(10); // matches `saved()`'s `ACTOR`
+    let officer = ObjId(99); // different authorised officer / agent (`actor != birth.requester`)
+    let org = OrgId(4);
+    let scope = OrgScopeId(6);
+    let stamp = |at: i64| ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at,
+    };
+    let wic = |at: i64| WorldIcSeconds::from_stamp(&stamp(at)).unwrap();
+
+    let identity = RevisionIdentity::capture(&revision)?;
+    let definition = DefinitionDigest::from_bytes([0x44; 32]);
+    let compat = RatingCompatibility::combat_v1(manifest().digest());
+    let subject = RatingSubject::new(
+        identity,
+        revision.envelope.digest("fn think() {}")?,
+        schema_line_digest(&revision.envelope)?,
+        definition,
+        definition,
+        RatingClass::I,
+    );
+    let rating_job = CommitToken::from_bytes([0x12; 16]);
+    let complete = complete_rating(
+        subject,
+        compat,
+        DefinitionDigest::from_bytes([0x55; 32]),
+        rating_job,
+        stamp(100),
+    )?;
+    let rating_ref = complete.receipt.reference()?;
+
+    let charter = CharterId::new(20)?;
+    let line = LineId::new(1)?;
+    let filed_id = FiledRevisionId::new(1)?;
+    let licence_id = LicenceId::new(1)?;
+    let gen1 = TermGeneration::new(1)?;
+    let gen2 = TermGeneration::new(2)?;
+    let birth_commit = CommitToken::from_bytes([0x10; 16]);
+    let attest_commit = CommitToken::from_bytes([0x20; 16]);
+
+    let filed = FiledRecord {
+        format: PUBLICATION_FORMAT,
+        content: FiledRevisionContent::capture(
+            filed_id,
+            FilingPosition {
+                charter,
+                line,
+                sequence: FilingSequence::new(1)?,
+            },
+            &revision,
+            wic(100),
+            None,
+        )?,
+        definition,
+        duplicate: canonical_duplicate_digest(&revision)?,
+        rating: rating_ref,
+        operation: birth_commit,
+    };
+    let term1 = OwnerTerm {
+        attestation: None,
+        parent: None,
+        format: PUBLICATION_FORMAT,
+        licence: licence_id,
+        generation: gen1,
+        window: TermWindow::new(wic(100), wic(100), wic(200), wic(220))?,
+        revision: RevisionPolicy::Follow { line },
+        operation: birth_commit,
+    };
+    let ev = evidence(None);
+    let term2 = OwnerTerm {
+        attestation: Some(ev.clone()),
+        parent: None,
+        format: 3,
+        licence: licence_id,
+        generation: gen2,
+        window: ev.window(wic(205))?,
+        revision: RevisionPolicy::Follow { line },
+        operation: attest_commit,
+    };
+    let licence = OwnerLicence {
+        format: 2,
+        id: licence_id,
+        charter,
+        line,
+        term: gen2,
+        operation: birth_commit,
+    };
+
+    let build_birth = |house: bool| -> TestResult<InitialFilingOperation> {
+        let (format, issued_owner, house_attr) = if house {
+            (
+                2,
+                OrgPrincipal::Organization(org),
+                Some(mush_economy::registry_filing::HouseFilingAttribution::new(
+                    curator, org, scope,
+                )?),
+            )
+        } else {
+            (PUBLICATION_FORMAT, OrgPrincipal::Object(curator), None)
+        };
+        Ok(InitialFilingOperation {
+            parent: None,
+            format,
+            commit: birth_commit,
+            requester: curator,
+            shell: serde_json::from_value(json!({
+                "requester": curator,
+                "request": RequestUid::from_bytes([1; 16]),
+            }))?,
+            shell_receipt: CommitToken::from_bytes([0x01; 16]),
+            charter,
+            line,
+            filed: filed_id,
+            licence: licence_id,
+            term: gen1,
+            revision: identity,
+            rating: rating_ref,
+            economic: FilingEconomicReceipt {
+                house: house_attr,
+                transaction: TransactionId(1),
+                journal_seq: 1,
+                title: charter.object(),
+                issued_owner,
+                title_revision: 1,
+                payer: AccountId(1),
+                sink: AccountId(2),
+                fee: Amount::ZERO,
+                issuer: SystemPrincipalId::new("test.registry").ok_or("issuer")?,
+                catalog: mush_economy::CatalogRef {
+                    ruleset: "roll".into(),
+                    code: "mind_charter".into(),
+                },
+            },
+        })
+    };
+
+    #[derive(Default)]
+    struct AuditProbe {
+        current_ok: Option<bool>,
+        historical_ok: Option<bool>,
+        verify_ok: Option<bool>,
+        audit_count: Option<Result<u64, String>>,
+    }
+
+    type FixtureHandles = (CommerceFamilies, RatingFamilies);
+    struct FixtureMod {
+        handles: Arc<Mutex<Option<FixtureHandles>>>,
+        store: Option<RollStore>,
+        birth: InitialFilingOperation,
+        op: AttestationOperation,
+        licence: OwnerLicence,
+        gen2: TermGeneration,
+        term2: OwnerTerm,
+        probe: Arc<Mutex<AuditProbe>>,
+    }
+    impl GameModule for FixtureMod {
+        fn name(&self) -> &'static str {
+            "roll"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let f = CommerceFamilies::register(reg)?;
+            let r = RatingFamilies::register(reg)?;
+            *self.handles.lock().map_err(|_| ModError::msg("lock"))? = Some((f, r));
+            if let Some(store) = self.store.take() {
+                reg.state(store);
+            }
+            Ok(())
+        }
+        fn on_world_loaded(
+            &mut self,
+            ctx: &mut ModuleCtx<'_>,
+            _: ModuleBootData,
+        ) -> Result<(), ModError> {
+            let guard = self.handles.lock().map_err(|_| ModError::msg("lock"))?;
+            let Some((f, ratings)) = guard.as_ref() else {
+                return Err(ModError::msg("handles"));
+            };
+            let roll = ctx
+                .w
+                .module_state::<RollStore>()
+                .ok_or_else(|| ModError::msg("roll store"))?;
+            let mut probe = self.probe.lock().map_err(|_| ModError::msg("probe"))?;
+            probe.current_ok =
+                Some(history::current(ctx, roll, f, &self.licence).is_ok_and(|t| t == self.term2));
+            probe.historical_ok = Some(
+                history::historical(ctx, roll, f, &self.birth, self.gen2)
+                    .is_ok_and(|t| t == self.term2),
+            );
+            probe.verify_ok = Some(history::verify(ctx, roll, f, ratings, &self.op).is_ok());
+            probe.audit_count =
+                Some(history::audit(ctx, roll, f, ratings, true).map_err(|e| format!("{e:?}")));
+            Ok(())
+        }
+    }
+
+    let check_case = |birth: &InitialFilingOperation,
+                      op: &AttestationOperation,
+                      expect_ok: bool|
+     -> TestResult {
+        let mut disk = base_disk.clone();
+        for required in op.roots()? {
+            let rec = ReferenceRecord {
+                format: FORMAT,
+                key: required.anchor.key(),
+                revisions: vec![required.target()],
+            };
+            disk.insert(rec.key.key(), serde_json::to_value(&rec)?);
+        }
+        let boot = ModuleBootData {
+            kv: disk
+                .iter()
+                .map(|(k, v)| (k.as_str().into(), v.clone()))
+                .collect(),
+            ..Default::default()
+        };
+        let mut store = RollStore::load_commerce(&boot)?;
+        store.audit_sources(&TestLanguage, &sources)?;
+        open_gate_for_owner_unit_test(&mut store);
+
+        let shared = Arc::new(Mutex::new(None));
+        let probe = Arc::new(Mutex::new(AuditProbe::default()));
+        let mut engine = boxed_test_engine(
+            World::new_minimal(),
+            Registry::new(),
+            vec![Box::new(FixtureMod {
+                handles: shared.clone(),
+                store: Some(store),
+                birth: birth.clone(),
+                op: op.clone(),
+                licence: licence.clone(),
+                gen2,
+                term2: term2.clone(),
+                probe: probe.clone(),
+            })],
+        )?;
+        let (f, ratings) = shared
+            .lock()
+            .map_err(|_| "lock")?
+            .clone()
+            .ok_or("handles")?;
+        let mut txn = engine.action_transaction(&f.licences)?;
+        txn.insert(&f.operations, &birth.key(), birth.clone())?;
+        txn.insert(&f.filed, &filed.key(), filed.clone())?;
+        txn.insert(&f.terms, &term1.key(), term1.clone())?;
+        txn.insert(&f.terms, &term2.key(), term2.clone())?;
+        txn.insert(&f.licences, &licence.key(), licence.clone())?;
+        txn.insert(&f.owner_attestations, &op.key(), op.clone())?;
+        txn.insert(&ratings.receipts, &rating_job, complete.receipt.clone())?;
+        let (_, install) = txn.prepare()?.into_parts();
+        engine.install_prepared_action(install)?;
+
+        // Fire real `on_world_loaded` with a real `ModuleCtx` to test `current`,
+        // `historical`, `verify`, and `audit`.
+        engine.modules_loaded(
+            std::collections::HashMap::new(),
+            &mut Outbox::new(),
+            &mut mush_core::Effects::new(),
+        )?;
+        {
+            let p = probe.lock().map_err(|_| "probe")?;
+            check_eq!(p.current_ok, Some(expect_ok), "history::current");
+            check_eq!(p.historical_ok, Some(expect_ok), "history::historical");
+            check_eq!(p.verify_ok, Some(expect_ok), "history::verify");
+            if expect_ok {
+                check_eq!(p.audit_count, Some(Ok(1)), "history::audit");
+            } else {
+                check!(
+                    matches!(p.audit_count, Some(Err(_))),
+                    "history::audit must fail"
+                );
+            }
+        }
+
+        // Also test the two transactional helpers: `current_in_txn` and `historical_in_txn`.
+        let world_snap = engine.world.clone();
+        let mut txn = engine.action_transaction(&f.licences)?;
+        let cur_txn = history::current_in_txn(&mut txn, &world_snap, &f, &licence);
+        let hist_txn = history::historical_in_txn(&mut txn, &world_snap, &f, birth, gen2);
+        if expect_ok {
+            check_eq!(cur_txn?, term2);
+            check_eq!(hist_txn?, term2);
+        } else {
+            check!(cur_txn.is_err(), "current_in_txn must reject");
+            check!(hist_txn.is_err(), "historical_in_txn must reject");
+        }
+        Ok(())
+    };
+
+    // 1. House attestation by `officer != birth.requester` MUST PASS all 5
+    //    history readers and full Roll boot audit!
+    let house_birth = build_birth(true)?;
+    let house_op = AttestationOperation {
+        format: 1,
+        charter_ownership: None,
+        house: Some(HouseAttestation {
+            organization: org,
+            scope,
+        }),
+        operation: attest_commit,
+        action: protocol::house_action(&manifest(), 100, 20)?,
+        manifest: manifest(),
+        owner: officer,
+        licence: licence_id,
+        charter,
+        line,
+        birth_operation: birth_commit,
+        predecessor: gen1,
+        predecessor_operation: birth_commit,
+        predecessor_digest: term_digest(&term1)?,
+        filed: filed_id,
+        revision: identity,
+        rating: rating_ref,
+        title_revision: 1,
+        observed_ic: stamp(205),
+        observed_utc: 205,
+        next: term2.clone(),
+    };
+    house_op.follows(&term1, &house_birth)?;
+    check_case(&house_birth, &house_op, true)?;
+
+    // 2. Personal (non-House) attestation by `owner == birth.requester` passes.
+    let personal_birth = build_birth(false)?;
+    let personal_ok = AttestationOperation {
+        format: 1,
+        charter_ownership: None,
+        house: None,
+        action: protocol::action(&manifest(), 100, 20)?,
+        owner: curator,
+        ..house_op.clone()
+    };
+    personal_ok.follows(&term1, &personal_birth)?;
+    check_case(&personal_birth, &personal_ok, true)?;
+
+    // 3. Personal (non-House) attestation by `officer != birth.requester` with
+    //    an unbacked `charter_ownership` MUST STILL BE REJECTED by all 5 helpers
+    //    (`require_captured` / `require_captured_in_txn`) and `history::audit`!
+    let forged_ownership: CharterOwnershipRef = serde_json::from_value(json!({
+        "generation": 65537,
+        "operation": CommitToken::from_bytes([0x99; 16]),
+        "digest": DefinitionDigest::from_bytes([0x88; 32]),
+    }))?;
+    let personal_forged = AttestationOperation {
+        format: 2,
+        charter_ownership: Some(forged_ownership),
+        house: None,
+        action: protocol::action(&manifest(), 100, 20)?,
+        owner: officer,
+        ..house_op
+    };
+    personal_forged.follows(&term1, &personal_birth)?;
+    check_case(&personal_birth, &personal_forged, false)?;
+    Ok(())
+}
+
 use mush_testkit::fixtures::boxed_engine as boxed_test_engine;
