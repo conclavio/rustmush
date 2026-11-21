@@ -2634,6 +2634,42 @@ pub(crate) struct ClaimHandles {
 /// The books cannot be read (the stage's fail-closed line).
 const STAGE_DARK: &str = "The Registry's books cannot be read right now; nothing changes.";
 
+/// Recount an account's live claims across all lane sites inside the tenure bundle (reviewer F7;
+/// M13) and refuse when adding `key` would exceed [`MAX_LIVE_CLAIMS_PER_ACCOUNT`].
+fn check_live_claim_cap(
+    txn: &mut mush_core::ActionTxn<'_>,
+    handles: &ClaimHandles,
+    sites: &[CanonicalId],
+    skip: &BlockKey,
+    account: mush_core::AccountId,
+    at: i64,
+) -> Result<(), String> {
+    let mut n = 0_usize;
+    for site in sites {
+        for each in crate::port::def::BLOCK_LETTERS {
+            let other = BlockKey {
+                site: site.clone(),
+                letter: each,
+            };
+            if &other == skip {
+                continue;
+            }
+            let held = txn
+                .get(&handles.claims, &other)
+                .map_err(|_| STAGE_DARK.to_owned())?
+                .and_then(|row| row.claim.as_ref())
+                .is_some_and(|claim| claim.account == Some(account) && claim.live(at));
+            if held {
+                n = n.saturating_add(1);
+            }
+        }
+    }
+    if n >= MAX_LIVE_CLAIMS_PER_ACCOUNT {
+        return Err(CLAIM_CAP.replace("{max}", &MAX_LIVE_CLAIMS_PER_ACCOUNT.to_string()));
+    }
+    Ok(())
+}
+
 /// **The game's own writes in industry's tenure bundle** (the brief's 3.6 item 18; D2, OC11):
 /// `tacsim.claims` only — never an industry family (the D10 tripwire). The block's worked basis
 /// from its cursors (an absent cursor is 0); per act: a stake writes a fresh [`BlockClaim`]
@@ -2711,29 +2747,7 @@ pub(crate) fn stage(
                 _ => return Err(claimed()),
             }
             let account = game.account.ok_or_else(|| STAGE_DARK.to_owned())?;
-            let mut n = 0_usize;
-            for site in &game.sites {
-                for each in crate::port::def::BLOCK_LETTERS {
-                    let other = BlockKey {
-                        site: site.clone(),
-                        letter: each,
-                    };
-                    if other == key {
-                        continue;
-                    }
-                    let held = txn
-                        .get(&handles.claims, &other)
-                        .map_err(|_| STAGE_DARK.to_owned())?
-                        .and_then(|row| row.claim.as_ref())
-                        .is_some_and(|claim| claim.account == Some(account) && claim.live(at));
-                    if held {
-                        n = n.saturating_add(1);
-                    }
-                }
-            }
-            if n >= MAX_LIVE_CLAIMS_PER_ACCOUNT {
-                return Err(CLAIM_CAP.replace("{max}", &MAX_LIVE_CLAIMS_PER_ACCOUNT.to_string()));
-            }
+            check_live_claim_cap(txn, handles, &game.sites, &key, account, at)?;
             record.claim = Some(BlockClaim {
                 holder: holder.clone(),
                 account: Some(account),
@@ -2800,6 +2814,8 @@ pub(crate) fn stage(
             if !old.live(at) || &old.holder == to || !old.player_held() {
                 return Err(STAGE_DARK.to_owned());
             }
+            let account = game.account.ok_or_else(|| STAGE_DARK.to_owned())?;
+            check_live_claim_cap(txn, handles, &game.sites, &key, account, at)?;
             let refund = match (&old.holder, old.fee, game.refund_minor) {
                 (PrincipalId::Object(loser), Some(paid_by), Some(minor)) if minor > 0 => {
                     Some(RefundOwed {
@@ -2812,7 +2828,7 @@ pub(crate) fn stage(
             };
             record.claim = Some(BlockClaim {
                 holder: to.clone(),
-                account: game.account,
+                account: Some(account),
                 epoch: outcome.epoch_after,
                 opened_ic: old.opened_ic,
                 registered_ic: at,
@@ -3193,5 +3209,155 @@ mod tests {
         snap.put_contract(contract);
         assert!(fee_disputed_in_snapshot(&snap, Some(88)));
         assert!(!fee_disputed_in_snapshot(&snap, Some(89)));
+    }
+
+    /// **M13**: `claims::stage` must recount live claims per account in `"contest"` just as in
+    /// `"stake"`, refusing concurrent contest bundles that would push an account past
+    /// `MAX_LIVE_CLAIMS_PER_ACCOUNT`.
+    #[test]
+    fn m13_stage_contest_enforces_max_live_claims_per_account() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let port_handles = tw
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .expect("port handles")
+            .clone();
+        let handles = ClaimHandles {
+            claims: port_handles.families.claims.clone(),
+            pockets: port_handles.families.pockets.clone(),
+        };
+        let site = CanonicalId::new("urvara_port").expect("site");
+        let challenger_account = mush_core::AccountId::mint("challenger", 1).expect("acct");
+        let loser_account = mush_core::AccountId::mint("loser", 2).expect("acct");
+        let challenger = ObjId(10);
+        let loser = ObjId(20);
+        let now = ClockStamp {
+            clock: tw.world().world_ic_now().clock,
+            at: 10_000,
+        };
+        let make_claim = |holder: ObjId, account: mush_core::AccountId| BlockClaim {
+            holder: PrincipalId::Object(holder),
+            account: Some(account),
+            epoch: 1,
+            opened_ic: Some(1_000),
+            registered_ic: 5_000,
+            term_start_ic: 5_000,
+            term_end_ic: 100_000,
+            worked_at_term_start: 0,
+            discovered_ic: Some(4_000),
+            declared: None,
+            fee: Some(1),
+            refund: None,
+            lapsed_ic: None,
+        };
+        let make_act = |letter: char, account: Option<mush_core::AccountId>| {
+            let mut game = TenureGame::new(&site, letter, "contest");
+            game.account = account;
+            game.sites = vec![site.clone()];
+            game.contract = Some(55);
+            game.refund_minor = Some(1_000);
+            TenureAct {
+                receipt: SmolStr::new_static("r1"),
+                actor: challenger,
+                place: ObjId(700),
+                kind: TenureKind::Contest {
+                    claims: Vec::new(),
+                    to: PrincipalId::Object(challenger),
+                    discovered_at: 3_000,
+                    term_at: 200_000,
+                },
+                summary: TENURE_SUMMARY.to_owned(),
+                game: serde_json::to_value(&game).expect("encodes"),
+            }
+        };
+        let outcome = TenureOutcome {
+            epoch_before: 1,
+            epoch_after: 2,
+            since_before: Some(1_000),
+        };
+
+        let engine = tw.engine_mut();
+        // Seed `MAX_LIVE_CLAIMS_PER_ACCOUNT` live claims for challenger's account on blocks A..
+        // plus target block held by `loser`, and commit them.
+        let target_letter = crate::port::def::BLOCK_LETTERS[MAX_LIVE_CLAIMS_PER_ACCOUNT];
+        let target_key = BlockKey {
+            site: site.clone(),
+            letter: target_letter,
+        };
+        {
+            let prepared = {
+                let mut txn = engine
+                    .action_transaction(&handles.claims)
+                    .expect("claims txn");
+                for &letter in &crate::port::def::BLOCK_LETTERS[..MAX_LIVE_CLAIMS_PER_ACCOUNT] {
+                    let key = BlockKey {
+                        site: site.clone(),
+                        letter,
+                    };
+                    let mut row = BlockTenure::new(site.clone(), letter, ObjId(500));
+                    row.claim = Some(make_claim(challenger, challenger_account));
+                    txn.insert(&handles.claims, &key, row).expect("insert");
+                }
+                let mut target_row = BlockTenure::new(site.clone(), target_letter, ObjId(700));
+                target_row.claim = Some(make_claim(loser, loser_account));
+                txn.insert(&handles.claims, &target_key, target_row)
+                    .expect("insert target");
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+
+        // 1. Contest at cap must be rejected with CLAIM_CAP.
+        let act_at_cap = make_act(target_letter, Some(challenger_account));
+        {
+            let mut txn = engine
+                .action_transaction(&handles.claims)
+                .expect("claims txn");
+            let err = stage(&mut txn, &handles, &act_at_cap, &outcome, &now)
+                .expect_err("contest past per-account claim cap must fail");
+            assert_eq!(
+                err,
+                CLAIM_CAP.replace("{max}", &MAX_LIVE_CLAIMS_PER_ACCOUNT.to_string())
+            );
+        }
+
+        // 2. Contest without an account fails closed.
+        let act_no_acct = make_act(target_letter, None);
+        {
+            let mut txn = engine
+                .action_transaction(&handles.claims)
+                .expect("claims txn");
+            assert_eq!(
+                stage(&mut txn, &handles, &act_no_acct, &outcome, &now),
+                Err(STAGE_DARK.to_owned())
+            );
+        }
+
+        // 3. Lapse one existing claim so challenger is below cap -> contest now succeeds.
+        let first_key = BlockKey {
+            site: site.clone(),
+            letter: crate::port::def::BLOCK_LETTERS[0],
+        };
+        let mut lapsed_row = BlockTenure::new(site.clone(), first_key.letter, ObjId(500));
+        let mut lapsed = make_claim(challenger, challenger_account);
+        lapsed.lapsed_ic = Some(now.at);
+        lapsed_row.claim = Some(lapsed);
+        let mut txn = engine
+            .action_transaction(&handles.claims)
+            .expect("claims txn");
+        txn.replace(&handles.claims, &first_key, lapsed_row)
+            .expect("replace");
+        stage(&mut txn, &handles, &act_at_cap, &outcome, &now).expect("contest under cap succeeds");
+        let after = txn
+            .get(&handles.claims, &target_key)
+            .expect("reads")
+            .expect("row")
+            .claim
+            .as_ref()
+            .expect("claim");
+        assert_eq!(after.holder, PrincipalId::Object(challenger));
+        assert_eq!(after.account, Some(challenger_account));
     }
 }

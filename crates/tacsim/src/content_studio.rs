@@ -1739,6 +1739,16 @@ pub fn prepare_assist_snapshot(
             "You need the BUILDER_LLM power to use Content Assist.",
         )));
     }
+    if family == "npc"
+        && scope == "relocate"
+        && let Some(from_val) = context.get("from_station")
+        && from_val.as_str().is_none_or(|s| s.trim().is_empty())
+    {
+        return Some(Err(error(
+            "invalid",
+            "scope `relocate` requires a non-empty `from_station` string.",
+        )));
+    }
     let catalog = build_catalog_from_world(w);
     Some(Ok(ContentAssistSnapshot {
         actor: Some(actor),
@@ -2275,6 +2285,47 @@ fn synthesize_assist_patch(family: &str, scope: &str, brief: &str, context: &Val
     }
 }
 
+fn slice_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Replace non-empty `from` with `to` in `text`, capping the output length at
+/// `max_bytes` so adversarial `from`/`to` pairs cannot trigger gigabyte
+/// allocations (`L1`).
+fn bounded_replace(text: &str, from: &str, to: &str, max_bytes: usize) -> String {
+    if from.trim().is_empty() {
+        return slice_utf8(text, max_bytes).to_owned();
+    }
+    let mut out = String::with_capacity(text.len().min(max_bytes));
+    let mut rest = text;
+    while let Some(idx) = rest.find(from) {
+        let prefix = &rest[..idx];
+        let remaining = max_bytes.saturating_sub(out.len());
+        if prefix.len() >= remaining {
+            out.push_str(slice_utf8(prefix, remaining));
+            return out;
+        }
+        out.push_str(prefix);
+        let remaining = max_bytes.saturating_sub(out.len());
+        if to.len() >= remaining {
+            out.push_str(slice_utf8(to, remaining));
+            return out;
+        }
+        out.push_str(to);
+        rest = &rest[idx + from.len()..];
+    }
+    let remaining = max_bytes.saturating_sub(out.len());
+    out.push_str(slice_utf8(rest, remaining));
+    out
+}
+
 fn synthesize_npc_patch(scope: &str, brief: &str, lower: &str, context: &Value) -> Value {
     let (port_id, room_pack, default_room, station_label) =
         if lower.contains("stickney") || lower.contains("phobos") {
@@ -2368,26 +2419,40 @@ fn synthesize_npc_patch(scope: &str, brief: &str, lower: &str, context: &Value) 
         "does_not_know" => json!({ "does_not_know": does_not_know }),
         "fallback" => json!({ "fallback": fallback }),
         "relocate" => {
-            let from_label = context
-                .get("from_station")
-                .and_then(Value::as_str)
-                .unwrap_or("Ceres Freeport");
-            let to_label = context
-                .get("to_station")
-                .and_then(Value::as_str)
-                .unwrap_or(station_label);
-            let adapt = |text: &str| text.replace(from_label, to_label);
-            let old_persona = context
-                .get("persona")
-                .and_then(Value::as_str)
-                .unwrap_or(&persona);
-            let old_bg = context
-                .get("background")
-                .and_then(Value::as_str)
-                .unwrap_or(&background);
+            const MAX_LABEL_BYTES: usize = 128;
+            const MAX_PERSONA_BYTES: usize = 8 * 1024;
+            const MAX_BACKGROUND_BYTES: usize = 32 * 1024;
+            let from_label = slice_utf8(
+                context
+                    .get("from_station")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Ceres Freeport"),
+                MAX_LABEL_BYTES,
+            );
+            let to_label = slice_utf8(
+                context
+                    .get("to_station")
+                    .and_then(Value::as_str)
+                    .unwrap_or(station_label),
+                MAX_LABEL_BYTES,
+            );
+            let old_persona = slice_utf8(
+                context
+                    .get("persona")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&persona),
+                MAX_PERSONA_BYTES,
+            );
+            let old_bg = slice_utf8(
+                context
+                    .get("background")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&background),
+                MAX_BACKGROUND_BYTES,
+            );
             json!({
-                "persona": adapt(old_persona),
-                "background": adapt(old_bg),
+                "persona": bounded_replace(old_persona, from_label, to_label, MAX_PERSONA_BYTES),
+                "background": bounded_replace(old_bg, from_label, to_label, MAX_BACKGROUND_BYTES),
             })
         }
         _ => json!({
@@ -2840,5 +2905,41 @@ mod tests {
         check_eq!(outer.len(), 8);
 
         Ok(())
+    }
+
+    #[test]
+    fn relocate_patch_rejects_empty_from_station_and_bounds_expansion() {
+        // Empty `from_station` must not expand `text` via `"".replace(...)`.
+        let huge_to = "B".repeat(50_000);
+        let persona = "A".repeat(10_000);
+        let patch = synthesize_npc_patch(
+            "relocate",
+            "relocate npc",
+            "relocate npc",
+            &json!({
+                "from_station": "",
+                "to_station": huge_to,
+                "persona": persona,
+                "background": persona,
+            }),
+        );
+        let out_persona = patch["persona"].as_str().unwrap_or("");
+        assert!(out_persona.len() <= 8 * 1024);
+        assert!(out_persona.chars().all(|c| c == 'A'));
+
+        // Single-byte `from_station` with huge `to_station` stays strictly bounded.
+        let patch2 = synthesize_npc_patch(
+            "relocate",
+            "relocate npc",
+            "relocate npc",
+            &json!({
+                "from_station": "A",
+                "to_station": huge_to,
+                "persona": "A".repeat(8_000),
+                "background": "A".repeat(8_000),
+            }),
+        );
+        assert!(patch2["persona"].as_str().unwrap_or("").len() <= 8 * 1024);
+        assert!(patch2["background"].as_str().unwrap_or("").len() <= 32 * 1024);
     }
 }

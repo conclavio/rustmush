@@ -1231,6 +1231,14 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
     if own.seal.digest == crate::arena::mind::SealRef::none().digest {
         return IntentOutcome::Refused(Refusal::Profile);
     }
+    let floor = if arena.floor_lifted(unit) {
+        0
+    } else {
+        arena.odds_floor_permille
+    };
+    let Some(own) = arena.unit(unit) else {
+        return IntentOutcome::Refused(Refusal::Unknown);
+    };
     let live_mind = own.controller == Controller::Mind && !own.limits.wreck;
     let Some(runtime) = arena.profiles.get(&unit) else {
         return IntentOutcome::Refused(Refusal::Profile);
@@ -1250,7 +1258,7 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
         &profile,
         &ids,
         &own.seal.channels,
-        arena.odds_floor_permille,
+        floor,
     ) {
         Ok(prepared) => prepared,
         Err(_) => return IntentOutcome::Refused(Refusal::Profile),

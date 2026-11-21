@@ -5255,7 +5255,7 @@ impl Arena {
                 reason: "seal floor differs from frozen match floor".into(),
             });
         }
-        let runtime = crate::arena::runtime::prepare_profile_runtime(
+        let runtime = crate::arena::runtime::prepare_profile_runtime_with_floors(
             cards,
             unit.id,
             &unit.seal.cards,
@@ -5264,6 +5264,7 @@ impl Arena {
             unit.seal.class,
             &operands,
             &unit.seal.channels,
+            unit.seal.effective_floor(),
             odds_floor_permille,
         )
         .map_err(admission_error)?;

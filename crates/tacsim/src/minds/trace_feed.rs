@@ -69,6 +69,7 @@ struct Cursor {
     unit: ObjId,
     count: Option<usize>,
     last_ms: i64,
+    watermark: [u8; 32],
     digest: [u8; 32],
 }
 
@@ -83,24 +84,140 @@ pub(crate) fn cleared() -> Value {
     json!({"schema":{"id":FEED,"version":TRACE_VERSION},"available":false,"traces":[]})
 }
 
-fn payload(unit: ObjId, mut rows: Vec<ThinkTrace>) -> Value {
-    let mut omitted = 0;
+fn hash_outcome(hasher: &mut Sha256, outcome: &Outcome) {
+    match outcome {
+        Outcome::Pending => hasher.update([0u8]),
+        Outcome::Applied => hasher.update([1u8]),
+        Outcome::Refused { reason } => {
+            hasher.update([2u8]);
+            hasher.update((reason.len() as u64).to_le_bytes());
+            hasher.update(reason.as_bytes());
+        }
+        Outcome::Faulted { fault } => {
+            hasher.update([3u8, *fault as u8]);
+        }
+        Outcome::Cancelled { reason } => {
+            hasher.update([4u8, *reason as u8]);
+        }
+    }
+}
+
+/// Non-JSON structural fingerprint of a trace slice so `tick()` can skip JSON
+/// serialization entirely when no retained row changed.
+fn trace_watermark(rows: &[ThinkTrace]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update((rows.len() as u64).to_le_bytes());
+    for row in rows {
+        h.update(row.think_seq.to_le_bytes());
+        h.update(row.t_ms.to_le_bytes());
+        h.update([u8::from(row.settled), u8::from(row.rom)]);
+        match row.landed_ms {
+            Some(ms) => {
+                h.update([1u8]);
+                h.update(ms.to_le_bytes());
+            }
+            None => h.update([0u8]),
+        }
+        h.update([row.fault.map_or(u8::MAX, |f| f as u8)]);
+        h.update([row.rom_drop.map_or(u8::MAX, |r| r as u8)]);
+        match row.diagnostics.counts() {
+            Some((ops, fees)) => {
+                h.update([1u8]);
+                h.update(ops.to_le_bytes());
+                h.update(fees.to_le_bytes());
+            }
+            None => h.update([0u8]),
+        }
+        h.update(row.diagnostics.omitted_intents().to_le_bytes());
+        hash_outcome(&mut h, &row.outcome);
+        h.update((row.author.len() as u64).to_le_bytes());
+        for line in &row.author {
+            h.update((line.len() as u64).to_le_bytes());
+            h.update(line.as_bytes());
+        }
+        h.update((row.intents.len() as u64).to_le_bytes());
+        for intent in &row.intents {
+            h.update((intent.action.len() as u64).to_le_bytes());
+            h.update(intent.action.as_bytes());
+            match &intent.detail {
+                Some(detail) => {
+                    h.update([1u8]);
+                    h.update((detail.len() as u64).to_le_bytes());
+                    h.update(detail.as_bytes());
+                }
+                None => h.update([0u8]),
+            }
+            hash_outcome(&mut h, &intent.outcome);
+        }
+    }
+    h.finalize().into()
+}
+
+/// Single-pass `O(K)` newest-first packing bounded to [`MAX_PAYLOAD_BYTES`],
+/// returning both the envelope and its SHA-256 digest without redundant passes.
+fn payload_with_digest(unit: ObjId, rows: Vec<ThinkTrace>) -> (Value, [u8; 32]) {
+    let total = rows.len();
+    let empty = json!({
+        "schema": {"id": FEED, "version": TRACE_VERSION},
+        "available": true,
+        "unit": unit.0,
+        "omitted_thinks": total,
+        "traces": [],
+    });
+    let Ok(base_bytes) = serde_json::to_vec(&empty) else {
+        let data = cleared();
+        let sum = digest(&data);
+        return (data, sum);
+    };
+    if base_bytes.len() > MAX_PAYLOAD_BYTES {
+        let data = cleared();
+        let sum = digest(&data);
+        return (data, sum);
+    }
+
+    let mut used = base_bytes.len();
+    let mut kept_rev: Vec<ThinkTrace> = Vec::with_capacity(total);
+    for row in rows.into_iter().rev() {
+        let Ok(row_bytes) = serde_json::to_vec(&row) else {
+            break;
+        };
+        let extra = row_bytes
+            .len()
+            .saturating_add(usize::from(!kept_rev.is_empty()));
+        if used.saturating_add(extra) > MAX_PAYLOAD_BYTES {
+            break;
+        }
+        used = used.saturating_add(extra);
+        kept_rev.push(row);
+    }
+    kept_rev.reverse();
+    let mut omitted = total.saturating_sub(kept_rev.len());
     loop {
-        let data = json!({"schema":{"id":FEED,"version":TRACE_VERSION},
-            "available":true,"unit":unit.0,"omitted_thinks":omitted,"traces":rows});
-        if serde_json::to_vec(&data).is_ok_and(|bytes| bytes.len() <= MAX_PAYLOAD_BYTES) {
-            return data;
+        let data = json!({
+            "schema": {"id": FEED, "version": TRACE_VERSION},
+            "available": true,
+            "unit": unit.0,
+            "omitted_thinks": omitted,
+            "traces": kept_rev,
+        });
+        if let Ok(bytes) = serde_json::to_vec(&data)
+            && bytes.len() <= MAX_PAYLOAD_BYTES
+        {
+            let sum: [u8; 32] = Sha256::digest(&bytes).into();
+            return (data, sum);
         }
-        if rows.is_empty() {
-            return cleared();
+        if kept_rev.is_empty() {
+            let data = cleared();
+            let sum = digest(&data);
+            return (data, sum);
         }
-        rows.remove(0);
-        omitted += 1;
+        kept_rev.remove(0);
+        omitted = omitted.saturating_add(1);
     }
 }
 
 fn read(w: &World, actor: ObjId, unit: ObjId, count: Option<usize>) -> Option<Value> {
-    mind_traces(w, actor, unit, count).map(|rows| payload(unit, rows))
+    mind_traces(w, actor, unit, count).map(|rows| payload_with_digest(unit, rows).0)
 }
 
 fn now_ms(w: &World, unit: ObjId) -> Option<i64> {
@@ -157,10 +274,12 @@ pub(crate) fn select(
         clear(ctx);
         return Err(format!("Trace count must be between 1 and {THINKS}."));
     }
-    let Some(data) = read(ctx.w, ctx.actor, unit, count) else {
+    let Some(rows) = mind_traces(ctx.w, ctx.actor, unit, count) else {
         clear(ctx);
         return Err(UNAVAILABLE.into());
     };
+    let watermark = trace_watermark(&rows);
+    let (data, sum) = payload_with_digest(unit, rows);
     let at_ms = now_ms(ctx.w, unit).unwrap_or(0);
     let actor = ctx.actor;
     let cursor = Cursor {
@@ -169,7 +288,8 @@ pub(crate) fn select(
         unit,
         count,
         last_ms: at_ms,
-        digest: digest(&data),
+        watermark,
+        digest: sum,
     };
     let state = ctx.w.module_state_mut::<Followers>().ok_or(UNAVAILABLE)?;
     if follow {
@@ -227,9 +347,22 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
             continue;
         }
         let actor = cursor.actor;
-        // ACL is checked even when simulation time is paused or unchanged.
-        let data = read(ctx.w, actor, cursor.unit, cursor.count);
-        let Some(data) = data else {
+        // ACL is checked even when simulation time is paused or unchanged,
+        // without serializing any JSON payload.
+        if mind_traces(ctx.w, actor, cursor.unit, Some(1)).is_none() {
+            if let Some(state) = ctx.w.module_state_mut::<Followers>() {
+                state.cursors.remove(&conn);
+            }
+            if ctx.w.get(actor).is_some() {
+                emit(ctx, conn, &cursor, &feed, cleared());
+            }
+            continue;
+        }
+        let at_ms = now_ms(ctx.w, cursor.unit).unwrap_or(cursor.last_ms);
+        if at_ms.saturating_sub(cursor.last_ms) < 1_000 {
+            continue;
+        }
+        let Some(rows) = mind_traces(ctx.w, actor, cursor.unit, cursor.count) else {
             if let Some(state) = ctx.w.module_state_mut::<Followers>() {
                 state.cursors.remove(&conn);
             }
@@ -238,23 +371,23 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<mush_core::SceneId>) {
             }
             continue;
         };
-        let at_ms = now_ms(ctx.w, cursor.unit).unwrap_or(cursor.last_ms);
-        if at_ms.saturating_sub(cursor.last_ms) < 1_000 {
+        let next_watermark = trace_watermark(&rows);
+        if next_watermark == cursor.watermark {
             continue;
         }
-        let next_digest = digest(&data);
-        if next_digest == cursor.digest {
-            continue;
-        }
+        let (data, next_digest) = payload_with_digest(cursor.unit, rows);
         if let Some(current) = ctx
             .w
             .module_state_mut::<Followers>()
             .and_then(|state| state.cursors.get_mut(&conn))
         {
             current.last_ms = at_ms;
+            current.watermark = next_watermark;
             current.digest = next_digest;
         }
-        emit(ctx, conn, &cursor, &feed, data);
+        if next_digest != cursor.digest {
+            emit(ctx, conn, &cursor, &feed, data);
+        }
     }
 }
 
@@ -453,6 +586,7 @@ mod tests {
             unit: ObjId(999),
             count: None,
             last_ms: 0,
+            watermark: [0; 32],
             digest: [0; 32],
         }
     }
@@ -565,5 +699,81 @@ mod tests {
                 matches!(data, mush_proto::OutputEvent::Panel { data, .. } if data["available"] == false)
             );
         }
+    }
+
+    #[test]
+    fn payload_packs_newest_first_within_budget_and_watermark_detects_mutations() {
+        use crate::arena::author_trace::{IntentTrace, Kernel, ThinkDiagnostics};
+
+        // Construct 64 rich ThinkTrace rows (~3-5 KiB each -> >200 KiB total) so
+        // packing must drop the oldest prefix and retain a contiguous newest suffix <= 60 KiB.
+        let mut rows = Vec::with_capacity(THINKS);
+        for seq in 1..=u64::try_from(THINKS).unwrap() {
+            let mut diag = ThinkDiagnostics::measured(seq * 10, seq * 3);
+            for _ in 0..16 {
+                diag.kernel(Kernel::BestHostile, 1);
+            }
+            diag.rule(
+                1,
+                "fire when target in range and aspect clear",
+                Some(true),
+                [("in_range", Some(true)), ("aspect_ok", Some(true))],
+            );
+            rows.push(ThinkTrace {
+                settled: true,
+                fault: None,
+                rom_drop: None,
+                think_seq: seq,
+                t_ms: i64::try_from(seq * 1_000).unwrap(),
+                landed_ms: Some(i64::try_from(seq * 1_000 + 250).unwrap()),
+                rom: false,
+                diagnostics: diag,
+                author: vec!["x".repeat(120); 8],
+                intents: vec![
+                    IntentTrace {
+                        action: "fire".into(),
+                        detail: Some("cannon slot 1".into()),
+                        outcome: Outcome::Applied,
+                    };
+                    8
+                ],
+                outcome: Outcome::Applied,
+            });
+        }
+
+        let wm_before = trace_watermark(&rows);
+        assert_eq!(wm_before, trace_watermark(&rows));
+
+        let (data, sum) = payload_with_digest(ObjId(42), rows.clone());
+        let encoded = serde_json::to_vec(&data).unwrap();
+        assert!(
+            encoded.len() <= MAX_PAYLOAD_BYTES,
+            "encoded payload {} exceeds {}",
+            encoded.len(),
+            MAX_PAYLOAD_BYTES
+        );
+        assert_eq!(sum, digest(&data));
+        let traces = data["traces"].as_array().unwrap();
+        let omitted = usize::try_from(data["omitted_thinks"].as_u64().unwrap()).unwrap();
+        assert!(!traces.is_empty());
+        assert!(
+            omitted > 0,
+            "64 rich rows should exceed 60 KiB and omit oldest"
+        );
+        assert_eq!(traces.len() + omitted, THINKS);
+        // Contiguous newest suffix in chronological order ending at think_seq == 64.
+        let expected_first = u64::try_from(omitted + 1).unwrap();
+        assert_eq!(
+            traces.first().unwrap()["think_seq"].as_u64(),
+            Some(expected_first)
+        );
+        assert_eq!(
+            traces.last().unwrap()["think_seq"].as_u64(),
+            Some(u64::try_from(THINKS).unwrap())
+        );
+
+        // Mutating an intent detail on an earlier row must change the watermark.
+        rows[0].intents[0].detail = Some("cannon slot 2".into());
+        assert_ne!(wm_before, trace_watermark(&rows));
     }
 }

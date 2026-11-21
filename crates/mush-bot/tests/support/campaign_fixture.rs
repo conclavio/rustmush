@@ -220,6 +220,7 @@ impl SshHooks for Fixture {
         &'a self,
         _: &'a str,
         _: &'a str,
+        _: IpAddr,
     ) -> FutureBox<'a, std::result::Result<(), CreateErr>> {
         Box::pin(async { Err(CreateErr::BadName("Fixture cast is fixed".into())) })
     }

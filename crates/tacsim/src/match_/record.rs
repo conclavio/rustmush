@@ -1154,6 +1154,10 @@ fn live_state_digest(state: &str) -> String {
     crate::arena::digest_text(&Sha256::digest(state.as_bytes()).into())
 }
 
+/// Maximum serialized byte size of the embedded `LiveState` JSON string inside
+/// `tacsim:live:<n>` (`M20`), preventing unbounded KV/snapshot bloat.
+pub const MAX_LIVE_RECORD_BYTES: usize = 4 * 1024 * 1024;
+
 /// **Build a live document from borrows** — what [`LiveRecord::to_document`]
 /// and [`write_live`] both write.
 #[allow(clippy::too_many_arguments)]
@@ -1168,6 +1172,11 @@ fn live_document(
 ) -> Result<serde_json::Value, LiveRecordError> {
     let state = serde_json::to_string(&LiveStateRef { record, centre })
         .map_err(|error| LiveRecordError::Malformed(error.to_string()))?;
+    if state.len() > MAX_LIVE_RECORD_BYTES {
+        return Err(LiveRecordError::Malformed(format!(
+            "live match state exceeds {MAX_LIVE_RECORD_BYTES} bytes"
+        )));
+    }
     serde_json::to_value(LiveDocument {
         record: LIVE_RECORD.to_owned(),
         format: LIVE_FORMAT,
@@ -1229,6 +1238,11 @@ impl LiveRecord {
         }
         let head = LiveDocument::deserialize(document)
             .map_err(|error| LiveRecordError::Malformed(error.to_string()))?;
+        if head.state.len() > MAX_LIVE_RECORD_BYTES {
+            return Err(LiveRecordError::Malformed(format!(
+                "live match state exceeds {MAX_LIVE_RECORD_BYTES} bytes"
+            )));
+        }
         let computed = live_state_digest(&head.state);
         if computed != head.state_digest {
             return Err(LiveRecordError::DigestMismatch {
@@ -1238,6 +1252,16 @@ impl LiveRecord {
         }
         let LiveState { record, centre } = serde_json::from_str(&head.state)
             .map_err(|error| LiveRecordError::Malformed(error.to_string()))?;
+        if record
+            .folds
+            .values()
+            .any(|fold| fold.mind_spans_len() > super::report::MAX_MIND_SPANS)
+        {
+            return Err(LiveRecordError::Malformed(format!(
+                "fold mind spans exceed {}",
+                super::report::MAX_MIND_SPANS
+            )));
+        }
         if record.id != head.match_id {
             return Err(LiveRecordError::Malformed(format!(
                 "the document is match {} and the record inside it is match {}",
@@ -3135,5 +3159,57 @@ mod tests {
                 "{said}"
             );
         }
+    }
+
+    #[test]
+    fn t2b_m20_live_record_rejects_unbounded_spans_and_oversized_documents() {
+        use super::super::report::{HandOver, MAX_MIND_SPANS};
+
+        let mut live = af2_live();
+        if let Some(fold) = live.record.folds.get_mut(&ObjId(101)) {
+            fold.released(1_000, HandOver::LetGo);
+            fold.reclaimed(2_000);
+        }
+        let doc = live.to_document().expect("valid live document");
+        assert!(LiveRecord::from_document(&doc).is_ok());
+
+        // Inject MAX_MIND_SPANS + 1 spans directly into the persisted state JSON and re-stamp.
+        let mut state_json: serde_json::Value =
+            serde_json::from_str(doc["state"].as_str().expect("state string")).expect("state json");
+        let spans: Vec<serde_json::Value> = (0..=MAX_MIND_SPANS)
+            .map(|i| {
+                let t = (i as i64) * 100;
+                serde_json::json!({
+                    "from_ms": t,
+                    "to_ms": t + 50,
+                    "by": "let_go",
+                })
+            })
+            .collect();
+        state_json["record"]["folds"]["101"]["mind"]["spans"] = serde_json::Value::Array(spans);
+        let tampered_state = serde_json::to_string(&state_json).expect("reserialize");
+        let mut tampered_doc = doc.clone();
+        tampered_doc["state_digest"] = serde_json::Value::from(live_state_digest(&tampered_state));
+        tampered_doc["state"] = serde_json::Value::from(tampered_state);
+        assert!(
+            matches!(
+                LiveRecord::from_document(&tampered_doc),
+                Err(LiveRecordError::Malformed(_))
+            ),
+            "live record decode must reject > MAX_MIND_SPANS"
+        );
+
+        // Oversized state payload past MAX_LIVE_RECORD_BYTES is rejected before JSON parsing.
+        let huge_state = " ".repeat(MAX_LIVE_RECORD_BYTES + 1);
+        let mut huge_doc = doc;
+        huge_doc["state_digest"] = serde_json::Value::from(live_state_digest(&huge_state));
+        huge_doc["state"] = serde_json::Value::from(huge_state);
+        assert!(
+            matches!(
+                LiveRecord::from_document(&huge_doc),
+                Err(LiveRecordError::Malformed(_))
+            ),
+            "live record decode must reject payloads past MAX_LIVE_RECORD_BYTES"
+        );
     }
 }

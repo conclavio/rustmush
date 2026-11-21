@@ -44,6 +44,10 @@ pub enum AuthResult {
     BadCreds,
     /// The account is banned; the connection should be refused.
     Banned,
+    /// Authentication backend is transiently saturated (e.g. Argon2id
+    /// concurrency cap reached); refuse politely without counting a
+    /// credential failure against the peer's IP.
+    Busy,
 }
 
 /// What the embedder's guard says about a freshly accepted TCP connection
@@ -155,11 +159,13 @@ pub trait SshHooks: Send + Sync {
     }
 
     /// Create a new account (this also creates the account's first,
-    /// same-named character).
+    /// same-named character) on behalf of the peer at `addr` (used for
+    /// per-IP registration throttling and block checks).
     fn create_account<'a>(
         &'a self,
         account: &'a str,
         password: &'a str,
+        addr: IpAddr,
     ) -> BoxFuture<'a, Result<(), CreateErr>>;
 
     /// Create an additional character on an already-authenticated account —

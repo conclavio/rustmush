@@ -923,7 +923,7 @@ impl Arena {
             // [`Frame::sight_cm`]. **16b cut E.1** made it one product
             // in one place ([`UnitState::sight_cm`]), because the
             // machine's own fighting reach is priced off it too.
-            sight_cm: unit.sight_cm(self.definition.terrain.cell_cm()),
+            sight_cm: unit.scope_sight_cm(self.definition.terrain.cell_cm()),
             contacts,
             scan_tables,
             // Per platform, so two pilots in one tank are both told.

@@ -70,6 +70,31 @@ pub const UNGRANTED_FIRE: &str = "fire: this hull has no weapons station (refuse
 /// The most a slot's odds term can ask: a certain hit, per mille.
 const PERMILLE_MAX: INT = 1_000;
 
+/// Maximum byte length of a weapon identifier accepted by fire-station calls.
+const MAX_WEAPON_ID_BYTES: usize = 64;
+
+/// Whether `id` is a non-empty canonical ASCII weapon identifier (bounded to
+/// [`MAX_WEAPON_ID_BYTES`] bytes without whitespace or control characters).
+/// Enforced on armed and unarmed hulls alike so oversized or control-heavy
+/// strings never reach intent/notice buffers or inflate arena snapshots.
+fn valid_weapon_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_WEAPON_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
+}
+
+/// Read a weapon identifier argument, refusing oversized or non-canonical
+/// strings as `type` even on unarmed hulls.
+fn weapon_arg(value: &Dynamic, text: &str) -> Result<ImmutableString, Box<EvalAltResult>> {
+    let word = word_arg(value, text)?;
+    if !valid_weapon_id(word.as_str()) {
+        return Err(refused(REFUSED_TYPE, text));
+    }
+    Ok(word)
+}
+
 /// The refusal a seventeenth push answers.
 const TOO_MANY: &str = "a think emits at most 16 intents";
 
@@ -183,7 +208,7 @@ fn emcon(on: Dynamic) -> Result<(), Box<EvalAltResult>> {
 /// **`fire(weapon, slot)`** → `Fire { weapon, slot: Some(slot) }`.
 fn fire(weapon: Dynamic, slot: Dynamic) -> Result<(), Box<EvalAltResult>> {
     const TEXT: &str = "fire takes a weapon's id and a slot number";
-    let weapon = word_arg(&weapon, TEXT)?;
+    let weapon = weapon_arg(&weapon, TEXT)?;
     let slot: u8 = bounded(int_arg(&slot, TEXT)?, TEXT)?;
     let kind = IntentKind::Fire {
         weapon: SmolStr::new(weapon.as_str()),
@@ -234,7 +259,7 @@ fn arm(
 ) -> Result<(), Box<EvalAltResult>> {
     const TEXT: &str =
         "arm takes a weapon, lock, best or a contact, then five whole numbers in range";
-    let weapon = word_arg(&weapon, TEXT)?;
+    let weapon = weapon_arg(&weapon, TEXT)?;
     let min_permille = int_arg(&min_permille, TEXT)?;
     if min_permille > PERMILLE_MAX {
         return Err(refused(REFUSED_TYPE, TEXT));
@@ -263,7 +288,7 @@ fn disarm(weapon: Dynamic) -> Result<(), Box<EvalAltResult>> {
     let weapon: Option<ImmutableString> = if weapon.is_unit() {
         None
     } else {
-        Some(word_arg(&weapon, "disarm takes a weapon's id or ()")?)
+        Some(weapon_arg(&weapon, "disarm takes a weapon's id or ()")?)
     };
     let kind = IntentKind::Condition(Arming::Disarm {
         weapon: weapon.as_ref().map(|id| SmolStr::new(id.as_str())),
@@ -536,6 +561,58 @@ mod tests {
         );
         assert_eq!(ran.ctx.refused, Some(REFUSED_TYPE));
         assert!(ran.ctx.intents.is_empty());
+    }
+
+    #[test]
+    fn unarmed_and_armed_fire_station_rejects_oversized_or_non_canonical_weapon_ids() {
+        let too_long = "a".repeat(MAX_WEAPON_ID_BYTES + 1);
+        let at_cap = "a".repeat(MAX_WEAPON_ID_BYTES);
+        // Valid 64-byte canonical id still flows through on an unarmed hull (refused at landing).
+        let ok_unarmed = think_with(
+            &format!("fn think(v, c) {{ fire(\"{at_cap}\", 1); }}"),
+            context_on(unarmed_view()),
+            card(),
+            &[],
+        );
+        assert!(ok_unarmed.result.is_ok(), "{:?}", ok_unarmed.result);
+        assert_eq!(ok_unarmed.ctx.intents.len(), 1);
+
+        let bad_cases = [
+            "fire(\"\", 1)".to_owned(),
+            format!("fire(\"{too_long}\", 1)"),
+            "fire(\"bad\\u0001ctrl\", 1)".to_owned(),
+            "fire(\"has space\", 1)".to_owned(),
+            "fire(\"nonascii_\\u00e9\", 1)".to_owned(),
+            format!("arm(\"{too_long}\", \"best\", 100, 15, 0, 0, 420)"),
+            "arm(\"\\u0007bell\", \"best\", 100, 15, 0, 0, 420)".to_owned(),
+            format!("disarm(\"{too_long}\")"),
+            "disarm(\"bad\\nid\")".to_owned(),
+            "disarm(\"\")".to_owned(),
+        ];
+        for call in &bad_cases {
+            let source = format!("fn think(v, c) {{ {call}; }}");
+            let ran_unarmed = think_with(&source, context_on(unarmed_view()), card(), &[]);
+            assert!(
+                matches!(ran_unarmed.result, Err(Fault::Type(_))),
+                "unarmed {call}: {:?}",
+                ran_unarmed.result
+            );
+            assert_eq!(
+                ran_unarmed.ctx.refused,
+                Some(REFUSED_TYPE),
+                "unarmed {call}"
+            );
+            assert!(ran_unarmed.ctx.intents.is_empty(), "unarmed {call}");
+
+            let ran_armed = think(&source);
+            assert!(
+                matches!(ran_armed.result, Err(Fault::Type(_))),
+                "armed {call}: {:?}",
+                ran_armed.result
+            );
+            assert_eq!(ran_armed.ctx.refused, Some(REFUSED_TYPE), "armed {call}");
+            assert!(ran_armed.ctx.intents.is_empty(), "armed {call}");
+        }
     }
 
     /// 17b §2's M2.3 test 3: **every refusal is uncatchable** — a `try`

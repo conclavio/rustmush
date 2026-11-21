@@ -58,6 +58,7 @@ struct FeedBuf<'a> {
     dirty_redraw: bool,
     action_bytes: usize,
     action_limit: usize,
+    record_history: bool,
 }
 
 impl FeedBuf<'_> {
@@ -207,6 +208,12 @@ impl LineEditor {
         self.line.forget_last_history();
     }
 
+    /// Wipe all recorded history entries. Used when leaving pre-auth
+    /// screens so no pre-login line can ever leak into in-game ↑ recall.
+    pub fn clear_history(&mut self) {
+        self.line.clear_history();
+    }
+
     /// Whether anything of this editor is visible on the client's current
     /// terminal line — used by the output pump to decide whether async
     /// output must erase and re-print the line around itself.
@@ -266,6 +273,19 @@ impl LineEditor {
     /// capped at [`MAX_FEED_OUT_BYTES`]); completed lines and EOF-quit
     /// requests are returned in order.
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<u8>) -> Vec<EditorAction> {
+        self.feed_with_history(bytes, out, true)
+    }
+
+    /// Like [`feed`](Self::feed), with explicit control over whether
+    /// submitted lines enter recall history. Pre-auth screens pass `false`
+    /// so pipelined multi-line bursts carrying credentials never persist
+    /// plaintext passwords in recall memory.
+    pub fn feed_with_history(
+        &mut self,
+        bytes: &[u8],
+        out: &mut Vec<u8>,
+        record_history: bool,
+    ) -> Vec<EditorAction> {
         let mut actions = Vec::new();
         let mut buf = FeedBuf {
             limit: out.len().saturating_add(MAX_FEED_OUT_BYTES),
@@ -273,6 +293,7 @@ impl LineEditor {
             dirty_redraw: false,
             action_bytes: 0,
             action_limit: bytes.len().saturating_mul(4).max(MAX_FEED_OUT_BYTES),
+            record_history,
         };
         for &b in bytes {
             self.feed_byte(b, &mut buf, &mut actions);
@@ -530,7 +551,8 @@ impl LineEditor {
 
     fn submit(&mut self, buf: &mut FeedBuf<'_>, actions: &mut Vec<EditorAction>) {
         buf.flush_redraw(self);
-        let line = self.line.submit(self.mode == EchoMode::Normal);
+        let record = buf.record_history && self.mode == EchoMode::Normal;
+        let line = self.line.submit(record);
         buf.push_slice(CRLF);
         if buf.action_bytes.saturating_add(line.len()) <= buf.action_limit {
             buf.action_bytes = buf.action_bytes.saturating_add(line.len());
@@ -1057,5 +1079,31 @@ mod tests {
         assert_eq!(count_subslice(&out, ERASE_LINE), 2);
         let s = String::from_utf8_lossy(&out);
         assert!(s.contains("> abc\x1b[1D^C\r\n\r\x1b[K> "), "{s:?}");
+    }
+
+    #[test]
+    fn feed_with_history_false_suppresses_pipelined_credentials_and_clear_history_wipes() {
+        let mut ed = LineEditor::new();
+        let mut out = Vec::new();
+        let actions = ed.feed_with_history(b"connect alice hunter2\rsay hello\r", &mut out, false);
+        assert_eq!(
+            actions,
+            vec![
+                EditorAction::Submit("connect alice hunter2".into()),
+                EditorAction::Submit("say hello".into()),
+            ]
+        );
+        // Up-arrow recalls nothing and rings the bell.
+        let (_, out) = feed(&mut ed, b"\x1b[A");
+        assert_eq!(out, vec![BELL]);
+        assert!(ed.is_empty());
+
+        // Normal recording still works, and clear_history wipes all entries.
+        submit_one(&mut ed, b"look\r");
+        submit_one(&mut ed, b"who\r");
+        ed.clear_history();
+        let (_, out) = feed(&mut ed, b"\x1b[A");
+        assert_eq!(out, vec![BELL]);
+        assert!(ed.is_empty());
     }
 }

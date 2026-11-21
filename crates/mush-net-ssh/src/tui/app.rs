@@ -209,6 +209,16 @@ pub struct TuiManifest {
     pub room: Option<RoomView>,
 }
 
+/// Maximum total outbound operations (`submit + invokes + responds + queries`)
+/// accepted from a single TUI input burst (EXT-P1-5 / SSH-M3).
+pub const MAX_TUI_BURST_OPS: usize = 16;
+
+/// Maximum cumulative UTF-8 bytes of submitted command lines accepted from a
+/// single TUI input burst (EXT-P1-5). Matches [`crate::editor::MAX_FEED_OUT_BYTES`]
+/// (64 KiB) so normal multi-line pastes and max-length lines succeed while
+/// history-recall bursts (`Up`+`Enter`) cannot amplify into megabytes.
+pub const MAX_TUI_BURST_SUBMIT_BYTES: usize = crate::editor::MAX_FEED_OUT_BYTES;
+
 /// What a decoded input burst asks the transport to do. Every burst that
 /// changed visible state also asks for a repaint.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -217,7 +227,8 @@ pub struct InputResult {
     pub redraw: bool,
     /// Completed command lines to forward to `hooks.line`, in order. A single
     /// burst can carry more than one (a multi-line paste), so this
-    /// accumulates rather than collapsing to the last.
+    /// accumulates rather than collapsing to the last, capped by
+    /// [`MAX_TUI_BURST_OPS`] and [`MAX_TUI_BURST_SUBMIT_BYTES`].
     pub submit: Vec<String>,
     /// Leave the TUI (the detach hotkey or `/notui`).
     pub detach: bool,
@@ -230,6 +241,83 @@ pub struct InputResult {
     pub responds: Vec<(u64, String, RespondChoice)>,
     /// Typed mind requests; mutations are sent only after explicit Enter.
     pub invokes: Vec<(u64, mush_proto::InvokeRequest)>,
+}
+
+impl InputResult {
+    /// Total outbound operations accumulated in this burst so far.
+    #[must_use]
+    pub fn op_count(&self) -> usize {
+        self.submit.len() + self.invokes.len() + self.responds.len() + self.queries.len()
+    }
+
+    /// Cumulative UTF-8 bytes of submitted command lines in this burst so far.
+    #[must_use]
+    pub fn submit_bytes(&self) -> usize {
+        self.submit.iter().map(String::len).sum()
+    }
+
+    fn can_push_op(&self) -> bool {
+        self.op_count() < MAX_TUI_BURST_OPS
+    }
+
+    fn can_push_submit(&self, len: usize) -> bool {
+        self.can_push_op() && self.submit_bytes().saturating_add(len) <= MAX_TUI_BURST_SUBMIT_BYTES
+    }
+
+    fn push_submit(&mut self, line: String) -> bool {
+        if self.can_push_submit(line.len()) {
+            self.submit.push(line);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn extend_submits<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        for line in iter {
+            if !self.push_submit(line) {
+                break;
+            }
+        }
+    }
+
+    fn push_query(&mut self, query: (String, Value)) -> bool {
+        if self.can_push_op() {
+            self.queries.push(query);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn extend_queries<I: IntoIterator<Item = (String, Value)>>(&mut self, iter: I) {
+        for query in iter {
+            if !self.push_query(query) {
+                break;
+            }
+        }
+    }
+
+    fn push_respond(&mut self, resp: (u64, String, RespondChoice)) -> bool {
+        if self.can_push_op() {
+            self.responds.push(resp);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn extend_invokes<I: IntoIterator<Item = (u64, mush_proto::InvokeRequest)>>(
+        &mut self,
+        iter: I,
+    ) {
+        for invoke in iter {
+            if !self.can_push_op() {
+                break;
+            }
+            self.invokes.push(invoke);
+        }
+    }
 }
 
 /// A server-initiated request being shown as an overlay (interface plan I10).
@@ -2793,8 +2881,11 @@ impl TuiApp {
         {
             return;
         }
+        if !r.can_push_op() {
+            return;
+        }
         self.backlog_pending = Some(now);
-        r.queries.push((
+        r.push_query((
             "narrative.backlog".to_string(),
             serde_json::json!({ "before_seq": self.backlog_cursor, "limit": NARRATIVE_PAGE }),
         ));
@@ -3065,7 +3156,7 @@ impl TuiApp {
             r.redraw = true;
             self.pixel_moved = true;
         }
-        r.submit.extend(self.pixel.take_orders());
+        r.extend_submits(self.pixel.take_orders());
     }
 
     fn handle_key_inner(&mut self, key: Key, r: &mut InputResult) {
@@ -3154,15 +3245,17 @@ impl TuiApp {
                     self.pixel_replay_follow(true);
                 }
                 if opened && kind == PictureKind::StationWalk {
+                    let mut queries = Vec::new();
                     self.port_walk
-                        .ensure_queries(&self.manifest.panels, &mut r.queries, now);
+                        .ensure_queries(&self.manifest.panels, &mut queries, now);
+                    r.extend_queries(queries);
                 }
                 if opened && self.mode == Mode::Input {
                     self.leave_input(true);
                 }
-                r.submit.extend(self.pixel.take_orders());
-                r.submit.extend(self.port_walk.take_orders());
-                self.pixel_chart_ask(&mut r.queries);
+                r.extend_submits(self.pixel.take_orders());
+                r.extend_submits(self.port_walk.take_orders());
+                self.pixel_chart_ask_burst(r);
                 return;
             }
             _ if self.pixel.is_active() && key != Key::Ctrl(']') => {
@@ -3191,7 +3284,7 @@ impl TuiApp {
             if let Some(command) = prefill {
                 self.enter_input(Some(command));
             }
-            r.invokes.extend(self.workshop.take_invokes());
+            r.extend_invokes(self.workshop.take_invokes());
             return;
         }
         // 17g cut C3b: an open market or action form owns the keys, as the
@@ -3204,8 +3297,8 @@ impl TuiApp {
             && self.input_mode == InputMode::Normal
         {
             self.market.key(key);
-            r.invokes.extend(self.market.take_invokes());
-            r.queries.extend(self.market.take_queries());
+            r.extend_invokes(self.market.take_invokes());
+            r.extend_queries(self.market.take_queries());
             return;
         }
         if key != Key::Ctrl(']')
@@ -3220,9 +3313,9 @@ impl TuiApp {
             let out =
                 self.port_walk
                     .handle_key(key, false, false, &self.manifest.panels, Instant::now());
-            r.submit.extend(out.commands);
-            r.submit.extend(self.port_walk.take_orders());
-            r.queries.extend(out.queries);
+            r.extend_submits(out.commands);
+            r.extend_submits(self.port_walk.take_orders());
+            r.extend_queries(out.queries);
             return;
         }
         match key {
@@ -3231,12 +3324,14 @@ impl TuiApp {
                 return;
             }
             Key::Ctrl('t') if self.active == ScreenId(1) => {
+                let mut queries = Vec::new();
                 self.port_walk.toggle_contextual_drawer(
                     &self.manifest.panels,
-                    &mut r.queries,
+                    &mut queries,
                     Instant::now(),
                 );
-                r.submit.extend(self.port_walk.take_orders());
+                r.extend_queries(queries);
+                r.extend_submits(self.port_walk.take_orders());
                 return;
             }
             Key::Ctrl('k') => {
@@ -3354,17 +3449,17 @@ impl TuiApp {
                 &self.manifest.panels,
                 Instant::now(),
             );
-            r.submit.extend(out.commands);
-            r.submit.extend(self.port_walk.take_orders());
-            r.queries.extend(out.queries);
+            r.extend_submits(out.commands);
+            r.extend_submits(self.port_walk.take_orders());
+            r.extend_queries(out.queries);
             self.pixel.invalidate_last_sent();
             return true;
         }
         if key == Key::Enter {
             self.port_walk.stop_motion();
             self.pixel.chat_opened(Instant::now());
-            r.submit.extend(self.pixel.take_orders());
-            r.submit.extend(self.port_walk.take_orders());
+            r.extend_submits(self.pixel.take_orders());
+            r.extend_submits(self.port_walk.take_orders());
             self.mode = Mode::Input;
             match self.draft.take() {
                 Some(draft) => self.line.set(&draft),
@@ -3374,11 +3469,13 @@ impl TuiApp {
         }
         if self.pixel.kind() == PictureKind::StationWalk {
             if key == Key::Ctrl('t') {
+                let mut queries = Vec::new();
                 self.port_walk.toggle_contextual_drawer(
                     &self.manifest.panels,
-                    &mut r.queries,
+                    &mut queries,
                     Instant::now(),
                 );
+                r.extend_queries(queries);
                 return true;
             }
             let out = self.port_walk.handle_key(
@@ -3388,9 +3485,9 @@ impl TuiApp {
                 &self.manifest.panels,
                 Instant::now(),
             );
-            r.submit.extend(out.commands);
-            r.submit.extend(self.port_walk.take_orders());
-            r.queries.extend(out.queries);
+            r.extend_submits(out.commands);
+            r.extend_submits(self.port_walk.take_orders());
+            r.extend_queries(out.queries);
             if out.enter_helm_cockpit {
                 self.pixel.switch_kind_live(PictureKind::SpaceCockpit);
                 return true;
@@ -3420,7 +3517,7 @@ impl TuiApp {
             // only `Esc` stands up from Docking. Standing up notifies the server via
             // `+helm/station off`.
             self.port_walk.set_seated_at_helm(false);
-            r.submit.push("+helm/station off".to_string());
+            r.push_submit("+helm/station off".to_string());
             self.pixel.switch_kind_live(PictureKind::StationWalk);
             return true;
         }
@@ -3428,14 +3525,14 @@ impl TuiApp {
             return true;
         }
         let used = self.pixel.key(key, Instant::now());
-        r.submit.extend(self.pixel.take_orders());
-        self.pixel_chart_ask(&mut r.queries);
+        r.extend_submits(self.pixel.take_orders());
+        self.pixel_chart_ask_burst(r);
         match used {
             KeyUse::Used => true,
             KeyUse::Passed => false,
             KeyUse::Prefill(line) => {
                 self.pixel.chat_opened(Instant::now());
-                r.submit.extend(self.pixel.take_orders());
+                r.extend_submits(self.pixel.take_orders());
                 self.enter_input(Some(line));
                 self.order_prefill = true;
                 true
@@ -3538,6 +3635,15 @@ impl TuiApp {
         }
     }
 
+    fn pixel_chart_ask_burst(&mut self, r: &mut InputResult) {
+        if r.can_push_op() && self.pixel.chart_refresh_due(Instant::now()) {
+            r.push_query((
+                CHART_FEED.to_string(),
+                Value::Object(serde_json::Map::new()),
+            ));
+        }
+    }
+
     /// Invocations queued by a response (for example authoritative read after edit),
     /// the workshop's and (17g cut C3b) the market desk's.
     pub fn take_invokes(&mut self) -> Vec<(u64, mush_proto::InvokeRequest)> {
@@ -3550,7 +3656,7 @@ impl TuiApp {
         self.palette = None;
         self.help = false;
         self.workshop.show();
-        r.invokes.extend(self.workshop.take_invokes());
+        r.extend_invokes(self.workshop.take_invokes());
     }
 
     fn draw_workshop(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -3629,7 +3735,11 @@ impl TuiApp {
         if self.screen().exits_are_keys
             && let Some((_, name)) = self.exit_keys.iter().find(|(k, _)| *k == c)
         {
-            r.submit.push(name.clone());
+            if r.can_push_op()
+                && let Some(cmd) = exit_command(name)
+            {
+                r.push_submit(cmd);
+            }
             return;
         }
         // 16b cut I.2: the active TABLE — the picture's own while it is the
@@ -3645,7 +3755,11 @@ impl TuiApp {
                 let key = self.selected_row_key().unwrap_or_default();
                 self.enter_input(Some(format!("{p}{key}")));
             }
-            KeyAction::Run(cmd) => r.submit.push(cmd.to_string()),
+            KeyAction::Run(cmd) => {
+                if r.can_push_submit(cmd.len()) {
+                    r.push_submit(cmd.to_string());
+                }
+            }
             // Doc 20 cut SM.9 (lead ruling 6): the act's line for the quarry's rig, into the
             // box; nothing is sent.
             KeyAction::PrefillRig(act) => {
@@ -3709,16 +3823,18 @@ impl TuiApp {
                     let empty = || Value::Object(serde_json::Map::new());
                     if picture.live {
                         // 16b cut I.4: a live picture's pull is the picture.
-                        self.live_asked_at = Some(now);
-                        r.queries.push((OBSERVER_FEED.to_string(), empty()));
-                    } else if !self.replay_ask_outstanding(now) {
+                        if r.can_push_op() {
+                            self.live_asked_at = Some(now);
+                            r.push_query((OBSERVER_FEED.to_string(), empty()));
+                        }
+                    } else if !self.replay_ask_outstanding(now) && r.can_push_op() {
                         self.replay_asked_at = Some(now);
-                        r.queries.push((REPLAY_FEED.to_string(), empty()));
+                        r.push_query((REPLAY_FEED.to_string(), empty()));
                     }
-                    if !self.holds_the_ground(picture.match_id) {
+                    if !self.holds_the_ground(picture.match_id) && r.can_push_op() {
                         self.map_asked_at = Some(now);
                         self.map_asked_for = Some(picture.match_id);
-                        r.queries.push((ARENA_MAP_FEED.to_string(), empty()));
+                        r.push_query((ARENA_MAP_FEED.to_string(), empty()));
                     }
                 }
             }
@@ -3769,7 +3885,9 @@ impl TuiApp {
             // screen is ON — the listings page and the holdings section a
             // page key or `h` moved to — not the first ones `on_enter` names.
             LocalAction::Refresh if self.active == MARKET_SCREEN => {
-                r.queries.extend(self.market.page_queries());
+                if r.can_push_op() {
+                    r.extend_queries(self.market.page_queries());
+                }
             }
             // 17g cut C3b (the C3 plan §2.4): the market's keys. Each opens a
             // form over the row its pane highlights, flips the section or asks
@@ -3795,7 +3913,7 @@ impl TuiApp {
                     .and_then(|(_, row)| row.row_key);
                 self.market
                     .local(action, focus, listing.as_deref(), holding.as_deref());
-                r.queries.extend(self.market.take_queries());
+                r.extend_queries(self.market.take_queries());
             }
             // 17g cut C3b: the legal-actions panel's `a` — the highlighted
             // offer's parameter form, read from the stored view (the panel
@@ -3812,10 +3930,13 @@ impl TuiApp {
                 // again always and the map only when it has gone dark — and a
                 // map ask that did go out arms the latch, so the next frame and
                 // the timer count it rather than asking a second time.
-                let queries = self.screen_queries();
-                let now = self.now();
-                self.note_map_ask(&queries, now);
-                r.queries.extend(queries);
+                if r.can_push_op() {
+                    let queries = self.screen_queries();
+                    let now = self.now();
+                    let asked = r.queries.len();
+                    r.extend_queries(queries);
+                    self.note_map_ask(r.queries.get(asked..).unwrap_or(&[]), now);
+                }
             }
             // Doc 20 cut SM.9: the quarry's three view keys, each a client step over what the
             // held frames list, then both frames asked again with the new arguments.
@@ -3825,13 +3946,17 @@ impl TuiApp {
                 let current = self.quarry_rig();
                 view.rig = next_in(&slots, current);
                 self.panels.set_quarry(view);
-                r.queries.extend(self.screen_queries());
+                if r.can_push_op() {
+                    r.extend_queries(self.screen_queries());
+                }
             }
             LocalAction::QuarryZoom => {
                 let mut view = self.panels.quarry().clone();
                 view.mode = view.mode.next();
                 self.panels.set_quarry(view);
-                r.queries.extend(self.screen_queries());
+                if r.can_push_op() {
+                    r.extend_queries(self.screen_queries());
+                }
             }
             // Doc 21 cut G.12b: screen 0's `p` while it could draw the picture
             // — the text cockpit, and back; `Self::pixel_sync` does the rest.
@@ -3852,8 +3977,8 @@ impl TuiApp {
                         self.leave_input(true);
                     }
                 }
-                r.submit.extend(self.pixel.take_orders());
-                self.pixel_chart_ask(&mut r.queries);
+                r.extend_submits(self.pixel.take_orders());
+                self.pixel_chart_ask_burst(r);
             }
             LocalAction::QuarryLayer => {
                 let mut view = self.panels.quarry().clone();
@@ -3885,11 +4010,15 @@ impl TuiApp {
                     .or_else(|| view.family.as_ref().map(ToString::to_string));
                 view.family = next_in(&words, shown).map(mush_proto::SmolStr::from);
                 self.panels.set_quarry(view);
-                r.queries.extend(self.screen_queries());
+                if r.can_push_op() {
+                    r.extend_queries(self.screen_queries());
+                }
             }
             LocalAction::Backlog => {
-                if let Some(channel) = self.selected_channel() {
-                    r.queries.push((
+                if r.can_push_op()
+                    && let Some(channel) = self.selected_channel()
+                {
+                    r.push_query((
                         "comsys.backlog".to_string(),
                         serde_json::json!({
                             "channel": channel,
@@ -3966,6 +4095,19 @@ impl TuiApp {
                     // it never reaches `submit_line`, so send it here.
                     self.cancel_answer(r);
                     self.leave_input(false);
+                    return;
+                }
+                // Pre-check the per-packet submission cap BEFORE draining or
+                // allocating a potentially 16 KiB `String` (EXT-P1-5) so
+                // repeated `Up`+`Enter` bursts cannot allocate unbounded owned
+                // lines before dispatch.
+                let is_local = self.line.chars().first() == Some(&'/');
+                if self.answering.is_none()
+                    && !is_local
+                    && !r.can_push_submit(self.line.utf8_bytes())
+                {
+                    self.line.clear();
+                    self.scroll_off = 0;
                     return;
                 }
                 let line = self.line.submit(self.input_mode == InputMode::Normal);
@@ -4088,7 +4230,7 @@ impl TuiApp {
         };
         match choice {
             Some(c) => {
-                r.responds.push((id, epoch, c));
+                r.push_respond((id, epoch, c));
                 // Answered or cancelled, the front ask is done — and the
                 // next one, if any, is now showing.
                 self.requests.pop_front();
@@ -4106,7 +4248,7 @@ impl TuiApp {
             } else {
                 RespondChoice::Text(line)
             };
-            r.responds.push((id, epoch, choice));
+            r.push_respond((id, epoch, choice));
             return;
         }
         self.scroll_off = 0;
@@ -4147,6 +4289,17 @@ impl TuiApp {
                 .channel_aliases
                 .iter()
                 .any(|a| a.eq_ignore_ascii_case(first));
+        let out_len = match self.sticky {
+            StickyMode::None => line.len(),
+            _ if explicit => line.len(),
+            StickyMode::Say => "say ".len().saturating_add(line.len()),
+            StickyMode::Pose => "pose ".len().saturating_add(line.len()),
+            StickyMode::Emit => "@emit ".len().saturating_add(line.len()),
+            StickyMode::Ooc => "ooc ".len().saturating_add(line.len()),
+        };
+        if !r.can_push_submit(out_len) {
+            return;
+        }
         let out = match self.sticky {
             StickyMode::None => line,
             _ if explicit => line,
@@ -4155,7 +4308,7 @@ impl TuiApp {
             StickyMode::Emit => format!("@emit {line}"),
             StickyMode::Ooc => format!("ooc {line}"),
         };
-        r.submit.push(out);
+        r.push_submit(out);
     }
 
     /// Cancel the ask the box is capturing a free-text answer for, if any.
@@ -4169,7 +4322,7 @@ impl TuiApp {
     /// there no answer should ride the wire.
     fn cancel_answer(&mut self, r: &mut InputResult) {
         if let Some((id, epoch)) = self.answering.take() {
-            r.responds.push((id, epoch, RespondChoice::Cancel));
+            r.push_respond((id, epoch, RespondChoice::Cancel));
         }
     }
 
@@ -4219,13 +4372,17 @@ impl TuiApp {
             // the latch like any other, or the pump's next tick — the latch
             // long aged on a pilot who sat on screen 1 — would pull the whole
             // terrain a second time while the first answer is still on the wire.
-            let queries = self.screen_queries();
-            let now = self.now();
-            self.note_map_ask(&queries, now);
-            // 17g cut C3b: entering the market asks the two pages the desk is on
-            // (`screen_queries`), and the desk notes them.
-            self.market.note_asks(&queries);
-            r.queries.extend(queries);
+            if r.can_push_op() {
+                let queries = self.screen_queries();
+                let now = self.now();
+                let asked = r.queries.len();
+                r.extend_queries(queries);
+                let accepted = r.queries.get(asked..).unwrap_or(&[]);
+                self.note_map_ask(accepted, now);
+                // 17g cut C3b: entering the market asks the two pages the desk is on
+                // (`screen_queries`), and the desk notes them.
+                self.market.note_asks(accepted);
+            }
         }
     }
 
@@ -4523,9 +4680,12 @@ impl TuiApp {
         }
         if let Some(room) = &self.room {
             for exit in &room.exits {
+                let Some(cmd) = exit_command(&exit.name) else {
+                    continue;
+                };
                 consider(
                     PaletteEntry {
-                        insert: exit.name.clone(),
+                        insert: cmd,
                         label: sanitize(&exit.name),
                         detail: "exit".to_string(),
                     },
@@ -6082,13 +6242,32 @@ fn ascii_title(s: &str) -> String {
         .to_string()
 }
 
+/// Build the safe `goto <exit>` command for an authored room exit name, or
+/// `None` when the name is blank or contains C0/DEL/C1 control characters
+/// (such as CR/LF/ESC). Prefixing `goto ` guarantees a hostile room builder's
+/// exit name (e.g. `@destroy me`, `QUIT`, `"hi`, or a channel alias) can only
+/// traverse a real exit and never dispatch an arbitrary command (EXT-P1-6;
+/// mirrors `web/src/lib/keys.ts` `exitCommand`).
+#[must_use]
+pub fn exit_command(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
+        return None;
+    }
+    Some(format!("goto {trimmed}"))
+}
+
 /// The one-letter exit keys a room offers (D-I-19): every exit whose name
 /// or an alias is exactly one ASCII letter binds that letter, unless the
 /// letter is a global or jump key; first exit wins a contested letter.
+/// Exits whose primary name is rejected by [`exit_command`] are skipped.
 #[must_use]
 pub fn exit_keys(exits: &[ExitRef]) -> Vec<(char, String)> {
     let mut keys: Vec<(char, String)> = Vec::new();
     for exit in exits {
+        if exit_command(&exit.name).is_none() {
+            continue;
+        }
         let candidates =
             std::iter::once(exit.name.as_str()).chain(exit.aliases.iter().map(String::as_str));
         for cand in candidates {
@@ -6421,7 +6600,7 @@ mod tests {
         app.apply_event(&room_with_exits());
         assert_eq!(app.exit_keys(), &[('n', "North".to_string())]);
         let r = app.feed_input(b"n");
-        assert_eq!(r.submit, vec!["North".to_string()]);
+        assert_eq!(r.submit, vec!["goto North".to_string()]);
         let r = app.feed_input(b"3");
         assert_eq!(
             app.active_screen(),
@@ -6435,14 +6614,14 @@ mod tests {
         let r = app.feed_input(b"n");
         assert_eq!(
             r.submit,
-            vec!["North".to_string()],
+            vec!["goto North".to_string()],
             "back on the scene screen"
         );
         app.feed_input(b"\r");
         let r = app.feed_input(b"\x1bn");
         assert_eq!(
             r.submit,
-            vec!["North".to_string()],
+            vec!["goto North".to_string()],
             "Alt+n walks from the box"
         );
         // A room without a one-letter exit binds nothing.
@@ -9365,7 +9544,11 @@ mod tests {
         control.apply_event(&room_with_exits());
         let _ = super::super::frame_text(&mut control, 120, 34);
         let r = control.feed_input(b"@notui\r");
-        assert_eq!(r.submit.first().map(String::as_str), Some("North"), "{r:?}");
+        assert_eq!(
+            r.submit.first().map(String::as_str),
+            Some("goto North"),
+            "{r:?}"
+        );
         assert!(!r.submit.contains(&"@notui".to_string()), "{r:?}");
 
         // Help below the floor: drawn, and Esc closes it.
@@ -11855,5 +12038,142 @@ mod tests {
             !r_after.submit.iter().any(|s| s.starts_with("+ship/rename")),
             "Ctrl+G must cancel hull rename edit buffer"
         );
+    }
+
+    #[test]
+    fn tui_feed_input_caps_history_recall_submit_and_op_bursts_before_allocation() {
+        let mut app = app();
+        // Enter input mode and record a max-byte 16 KiB line in history.
+        app.feed_input(b"\r");
+        let mut big = "🎲".repeat(crate::line::MAX_LINE_BYTES / 4).into_bytes();
+        assert_eq!(big.len(), crate::line::MAX_LINE_BYTES);
+        big.push(b'\r');
+        let seeded = app.feed_input(&big);
+        assert_eq!(seeded.submit.len(), 1);
+        assert_eq!(seeded.submit_bytes(), crate::line::MAX_LINE_BYTES);
+
+        // 32 KiB packet repeating Up + Enter 8,192 times: previously allocated
+        // ~128 MiB of owned `Vec<String>` before dispatch ran (EXT-P1-5).
+        let mut burst = Vec::with_capacity(32 * 1024);
+        for _ in 0..8_192 {
+            burst.extend_from_slice(b"\x1b[A\r");
+        }
+        let recalled = app.feed_input(&burst);
+        assert!(
+            !recalled.submit.is_empty() && recalled.submit.len() <= MAX_TUI_BURST_OPS,
+            "recalled submit count {} must be bounded by {MAX_TUI_BURST_OPS}",
+            recalled.submit.len()
+        );
+        assert!(
+            recalled.submit_bytes() <= MAX_TUI_BURST_SUBMIT_BYTES,
+            "recalled submit bytes {} exceeded {MAX_TUI_BURST_SUBMIT_BYTES}",
+            recalled.submit_bytes()
+        );
+
+        // Short-line burst (100 commands in one packet) is capped at MAX_TUI_BURST_OPS.
+        let short_burst = b"look\r".repeat(100);
+        let short = app.feed_input(&short_burst);
+        assert_eq!(short.submit.len(), MAX_TUI_BURST_OPS);
+        assert_eq!(short.op_count(), MAX_TUI_BURST_OPS);
+
+        // Exit hotkey spam and query spam in nav mode are also bounded by MAX_TUI_BURST_OPS.
+        app.feed_input(b"\x1b");
+        app.apply_event(&room_with_exits());
+        let exit_spam = app.feed_input(&b"n".repeat(100));
+        assert_eq!(exit_spam.submit.len(), MAX_TUI_BURST_OPS);
+        assert!(exit_spam.submit.iter().all(|s| s == "goto North"));
+
+        // Switch to mail screen (3) and spam refresh (`r`) 100 times in one burst.
+        app.feed_input(b"3");
+        let query_spam = app.feed_input(&b"r".repeat(100));
+        assert!(query_spam.op_count() <= MAX_TUI_BURST_OPS);
+        assert_eq!(query_spam.queries.len(), MAX_TUI_BURST_OPS);
+    }
+
+    #[test]
+    fn exit_hotkeys_prefix_goto_and_reject_blank_or_control_char_names() {
+        // Direct exit_command validation (mirrors web/src/lib/keys.ts exitCommand).
+        assert_eq!(exit_command("North").as_deref(), Some("goto North"));
+        assert_eq!(
+            exit_command("  Airlock Bay 2  ").as_deref(),
+            Some("goto Airlock Bay 2")
+        );
+        assert_eq!(
+            exit_command("@destroy me").as_deref(),
+            Some("goto @destroy me")
+        );
+        assert_eq!(exit_command("QUIT").as_deref(), Some("goto QUIT"));
+        assert_eq!(exit_command("\"hello").as_deref(), Some("goto \"hello"));
+        assert_eq!(exit_command(":waves").as_deref(), Some("goto :waves"));
+        assert_eq!(exit_command(";poses").as_deref(), Some("goto ;poses"));
+        assert_eq!(exit_command("\\emits").as_deref(), Some("goto \\emits"));
+        assert_eq!(exit_command(""), None);
+        assert_eq!(exit_command("   "), None);
+        assert_eq!(exit_command("North\nQUIT"), None);
+        assert_eq!(exit_command("North\r\n@boot all"), None);
+        assert_eq!(exit_command("North\x00evil"), None);
+        assert_eq!(exit_command("North\x7fevil"), None);
+        assert_eq!(exit_command("North\u{009b}2J"), None);
+
+        // Hostile authored exits in a RoomView cannot invoke raw commands via
+        // hotkeys or the palette, and control-char/blank exits bind no hotkey.
+        let mut app = app();
+        app.apply_event(&OutputEvent::Room(RoomView {
+            name: "Trap Room".into(),
+            id: "#9".into(),
+            desc: RichText::plain("Suspicious exits."),
+            contents: vec![],
+            exits: vec![
+                ExitRef {
+                    name: "\"say owned".into(),
+                    aliases: vec!["n".into()],
+                },
+                ExitRef {
+                    name: "@destroy me".into(),
+                    aliases: vec!["e".into()],
+                },
+                ExitRef {
+                    name: "QUIT".into(),
+                    aliases: vec!["s".into()],
+                },
+                ExitRef {
+                    name: "Bad\nQUIT".into(),
+                    aliases: vec!["w".into()],
+                },
+                ExitRef {
+                    name: "   ".into(),
+                    aliases: vec!["u".into()],
+                },
+                ExitRef {
+                    name: "Esc\u{009b}2J".into(),
+                    aliases: vec!["d".into()],
+                },
+            ],
+            zone: None,
+            ambient: Default::default(),
+        }));
+        assert_eq!(
+            app.exit_keys(),
+            &[
+                ('n', "\"say owned".to_string()),
+                ('e', "@destroy me".to_string()),
+                ('s', "QUIT".to_string()),
+            ]
+        );
+        assert_eq!(app.feed_input(b"n").submit, vec!["goto \"say owned"]);
+        assert_eq!(app.feed_input(b"e").submit, vec!["goto @destroy me"]);
+        assert_eq!(app.feed_input(b"s").submit, vec!["goto QUIT"]);
+        assert!(app.feed_input(b"w").submit.is_empty());
+        assert!(app.feed_input(b"u").submit.is_empty());
+        assert!(app.feed_input(b"d").submit.is_empty());
+
+        // Palette exit entries also insert `goto <exit>` and drop invalid names.
+        app.feed_input(b"/");
+        let entries = app.palette_entries();
+        assert!(entries.contains(&"goto \"say owned".to_string()));
+        assert!(entries.contains(&"goto @destroy me".to_string()));
+        assert!(entries.contains(&"goto QUIT".to_string()));
+        assert!(!entries.iter().any(|e| e.contains("Bad")));
+        assert!(!entries.iter().any(|e| e.contains("Esc")));
     }
 }

@@ -1205,7 +1205,11 @@ fn lateral_seen_cms(shooter: &UnitState, target: &SeenPose) -> i32 {
 /// refusal).
 fn sight_condition(shooter: &UnitState) -> u32 {
     let Some(sensor) = shooter.sensor.as_ref() else {
-        return FULL_CONDITION;
+        return if shooter.sensor_authored.is_some() {
+            0
+        } else {
+            FULL_CONDITION
+        };
     };
     let (Ok(component), Ok(cell)) = (
         mush_tactics::ComponentId::new(sensor.component.as_str()),

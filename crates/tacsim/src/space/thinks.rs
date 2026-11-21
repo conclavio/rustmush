@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, PoisonError};
 
 use mush_core::ObjId;
 use mush_sim::DomainId;
@@ -223,6 +223,96 @@ struct Flight {
 const HELD_WARN_TICKS: u32 = 5;
 const HELD_WARN_AGAIN_TICKS: u32 = 60;
 
+/// Maximum number of compiled space-mind runners retained in [`ThinkHost`]'s LRU cache (`M11`).
+const MAX_CACHED_RUNNERS: usize = 256;
+
+/// Maximum number of prepared [`SealedMind`] entries retained in [`ThinkHost`]'s LRU cache (`M11`).
+const MAX_CACHED_SEALED: usize = 512;
+
+/// One LRU-stamped runner cache slot.
+#[derive(Debug)]
+struct CachedRunner {
+    last_used: u64,
+    runner: Arc<dyn MindRunner>,
+}
+
+/// One LRU-stamped sealed-mind cache slot.
+#[derive(Debug)]
+struct CachedSealed {
+    last_used: u64,
+    sortie: crate::arena::mind::SortieId,
+    mind: Arc<SealedMind>,
+}
+
+/// **A scripted runner compiled lazily on its first `think()`** (`M11`): keeps Rhai AST
+/// compilation off the single-threaded world tick and outside [`ThinkHost`]'s runner mutex.
+/// Once compiled on a [`MindPool`] worker thread, the compiled runner is memoized in
+/// [`OnceLock`] and the raw source text is released.
+#[derive(Debug)]
+struct LazyScriptedRunner {
+    unit: ObjId,
+    digest: [u8; 32],
+    source: Mutex<Option<String>>,
+    compiled: OnceLock<Result<Arc<dyn MindRunner>, String>>,
+}
+
+impl LazyScriptedRunner {
+    fn new(unit: ObjId, digest: [u8; 32], source: String) -> Self {
+        Self {
+            unit,
+            digest,
+            source: Mutex::new(Some(source)),
+            compiled: OnceLock::new(),
+        }
+    }
+}
+
+impl MindRunner for LazyScriptedRunner {
+    fn think(&self, job: &crate::arena::mind::ThinkJob<'_>) -> ThinkResult {
+        let compiled = self.compiled.get_or_init(|| {
+            let source = self
+                .source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            let Some(source) = source else {
+                return Err("missing source".to_owned());
+            };
+            let digest = self.digest;
+            let built = crate::minds::sealed::scripted_runner(
+                self.unit,
+                &digest,
+                &ArenaConfig::default(),
+                &|wanted| (*wanted == digest).then(|| source.clone()),
+            );
+            match built {
+                Ok(runner) => Ok(runner),
+                Err(error) => {
+                    tracing::warn!(
+                        unit = self.unit.0,
+                        %error,
+                        "tacsim: a space mind failed to compile"
+                    );
+                    Err(error.to_string())
+                }
+            }
+        });
+        match compiled {
+            Ok(runner) => MindRunner::think(runner.as_ref(), job),
+            Err(_) => ThinkResult {
+                diagnostics: None,
+                rule_sample: None,
+                intents: Vec::new(),
+                memory: job.memory.to_vec(),
+                fault: Some(crate::arena::mind::ThinkFault {
+                    cause: SmolStr::new_static("compile"),
+                }),
+                trace: Vec::new(),
+            },
+        }
+    }
+}
+
 /// **The host of every space think** (the file head): the pool, the runners by digest, and
 /// the batches in flight. One for each [`TacsimStore`] ([`TacsimStore::space_thinks`]).
 /// Nothing in it is persisted: an owner whose record says a think is owed and who finds
@@ -234,11 +324,13 @@ pub struct ThinkHost {
     pool: Option<Arc<MindPool>>,
     /// Whether a late batch holds its owner's step (the server) or is waited for (a rig).
     hold: AtomicBool,
-    runners: Mutex<BTreeMap<[u8; 32], Arc<dyn MindRunner>>>,
+    /// Monotonic LRU clock for [`Self::runners`] and [`Self::sealed`].
+    lru_clock: AtomicU64,
+    runners: Mutex<BTreeMap<[u8; 32], CachedRunner>>,
     /// The mind sealed aboard each hull, as it was last made ready, with the sortie its
     /// seal names: one for a hull, replaced when her next claim's seal is first thought
-    /// with.
-    sealed: Mutex<BTreeMap<ObjId, (crate::arena::mind::SortieId, Arc<SealedMind>)>>,
+    /// with. Bounded by [`MAX_CACHED_SEALED`].
+    sealed: Mutex<BTreeMap<ObjId, CachedSealed>>,
     flights: Mutex<BTreeMap<Owner, Flight>>,
     thinks: AtomicU64,
     batches: AtomicU64,
@@ -380,6 +472,7 @@ impl ThinkHost {
         ThinkHost {
             pool,
             hold: AtomicBool::new(false),
+            lru_clock: AtomicU64::new(1),
             runners: Mutex::new(BTreeMap::new()),
             sealed: Mutex::new(BTreeMap::new()),
             flights: Mutex::new(BTreeMap::new()),
@@ -388,6 +481,34 @@ impl ThinkHost {
             held: AtomicU64::new(0),
             runners_built: AtomicU64::new(0),
         }
+    }
+
+    fn next_lru_stamp(&self) -> u64 {
+        self.lru_clock.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn insert_runner_lru(
+        &self,
+        runners: &mut BTreeMap<[u8; 32], CachedRunner>,
+        digest: [u8; 32],
+        runner: Arc<dyn MindRunner>,
+    ) {
+        if !runners.contains_key(&digest)
+            && runners.len() >= MAX_CACHED_RUNNERS
+            && let Some(evict_key) = runners
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(k, _)| *k)
+        {
+            runners.remove(&evict_key);
+        }
+        runners.insert(
+            digest,
+            CachedRunner {
+                last_used: self.next_lru_stamp(),
+                runner,
+            },
+        );
     }
 
     /// **Hold late steps from now on** (the file head): the world loop's call, once, when it
@@ -436,39 +557,48 @@ impl ThinkHost {
 
     /// [`ThinkHost::runner`] over the source `sources` answers for `digest`: the store's for
     /// a doctrine, the text its claim retains for a mind sealed aboard.
+    ///
+    /// Rhai AST compilation is deferred into [`LazyScriptedRunner`] so it runs on a
+    /// [`MindPool`] worker thread rather than synchronously on the world tick thread while
+    /// holding the runner cache mutex (`M11`).
     fn runner_from(
         &self,
         unit: ObjId,
         digest: [u8; 32],
         sources: &dyn Fn(&[u8; 32]) -> Option<String>,
     ) -> Option<Arc<dyn MindRunner>> {
+        {
+            let mut runners = self.runners.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(entry) = runners.get_mut(&digest) {
+                entry.last_used = self.next_lru_stamp();
+                return Some(Arc::clone(&entry.runner));
+            }
+        }
+        let Some(source) = sources(&digest) else {
+            tracing::warn!(
+                unit = unit.0,
+                "tacsim: a space mind has no source for its digest"
+            );
+            return None;
+        };
+        let candidate: Arc<dyn MindRunner> =
+            Arc::new(LazyScriptedRunner::new(unit, digest, source));
         let mut runners = self.runners.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(runner) = runners.get(&digest) {
-            return Some(Arc::clone(runner));
+        if let Some(entry) = runners.get_mut(&digest) {
+            entry.last_used = self.next_lru_stamp();
+            return Some(Arc::clone(&entry.runner));
         }
-        let built =
-            crate::minds::sealed::scripted_runner(unit, &digest, &ArenaConfig::default(), sources);
-        match built {
-            Ok(runner) => {
-                self.runners_built.fetch_add(1, Ordering::Relaxed);
-                runners.insert(digest, Arc::clone(&runner));
-                Some(runner)
-            }
-            Err(error) => {
-                tracing::warn!(unit = unit.0, %error, "tacsim: a space mind has no runner");
-                None
-            }
-        }
+        self.runners_built.fetch_add(1, Ordering::Relaxed);
+        self.insert_runner_lru(&mut runners, digest, Arc::clone(&candidate));
+        Some(candidate)
     }
 
     /// Put `runner` in place of the one `digest` would build: a test's way to make a
     /// worker slow, or to count its calls.
     #[cfg(test)]
     pub(crate) fn install_runner(&self, digest: [u8; 32], runner: Arc<dyn MindRunner>) {
-        self.runners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(digest, runner);
+        let mut runners = self.runners.lock().unwrap_or_else(PoisonError::into_inner);
+        self.insert_runner_lru(&mut runners, digest, runner);
     }
 
     /// Whether `owner`'s batch under `mark` has answered: a test's way to wait for the
@@ -490,7 +620,16 @@ impl ThinkHost {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(digest)
-            .map(Arc::clone)
+            .map(|entry| Arc::clone(&entry.runner))
+    }
+
+    /// How many runners are currently cached in [`ThinkHost`]'s LRU map.
+    #[cfg(test)]
+    pub(crate) fn cached_runner_count(&self) -> usize {
+        self.runners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// **One think, frozen** (the file head): `unit` thinking with the source `digest`
@@ -548,14 +687,31 @@ impl ThinkHost {
         classes: &ClassTable,
     ) -> Option<Arc<SealedMind>> {
         let mut sealed = self.sealed.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((sortie, mind)) = sealed.get(&hull)
-            && *sortie == seal.sortie
-            && mind.source_sha256 == seal.source_sha256
+        if let Some(entry) = sealed.get_mut(&hull)
+            && entry.sortie == seal.sortie
+            && entry.mind.source_sha256 == seal.source_sha256
         {
-            return Some(Arc::clone(mind));
+            entry.last_used = self.next_lru_stamp();
+            return Some(Arc::clone(&entry.mind));
         }
         let mind = Arc::new(SealedMind::of(seal, source, classes)?);
-        sealed.insert(hull, (seal.sortie, Arc::clone(&mind)));
+        if !sealed.contains_key(&hull)
+            && sealed.len() >= MAX_CACHED_SEALED
+            && let Some(evict_key) = sealed
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(k, _)| *k)
+        {
+            sealed.remove(&evict_key);
+        }
+        sealed.insert(
+            hull,
+            CachedSealed {
+                last_used: self.next_lru_stamp(),
+                sortie: seal.sortie,
+                mind: Arc::clone(&mind),
+            },
+        );
         Some(mind)
     }
 
@@ -1307,6 +1463,80 @@ mod tests {
             answers
                 .first()
                 .is_some_and(|answer| answer.result.is_none())
+        );
+    }
+
+    #[test]
+    fn think_host_runners_cache_enforces_lru_cap_and_defers_compile_off_world_thread() {
+        let host = ThinkHost::on_pool(MindPool::new(1));
+        let digest = drone_mining_digest().0;
+        let first_job = host
+            .job(None, ObjId(77), digest, 0, &view(0), &[])
+            .expect("first job");
+        assert_eq!(host.cached_runner_count(), 1);
+        assert!(host.kept_runner(&digest).is_some());
+
+        // Populate beyond MAX_CACHED_RUNNERS distinct digests; keep `digest` hot via a touch.
+        for i in 0..(MAX_CACHED_RUNNERS + 16) {
+            let mut key = [0u8; 32];
+            key[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            key[31] = 0xAA;
+            host.install_runner(key, Arc::clone(&first_job.runner));
+            if i == MAX_CACHED_RUNNERS / 2 {
+                // Touch the real digest so LRU keeps it while evicting the oldest synthetic key.
+                let _ = host.job(None, ObjId(77), digest, 1, &view(1), &[]);
+            }
+        }
+        assert_eq!(
+            host.cached_runner_count(),
+            MAX_CACHED_RUNNERS,
+            "runner cache must never exceed MAX_CACHED_RUNNERS"
+        );
+        assert!(
+            host.kept_runner(&digest).is_some(),
+            "recently used runner must survive LRU eviction"
+        );
+
+        // Compile failure inside LazyScriptedRunner faults cleanly so settle falls back to next source.
+        let bad_src = "fn think(v, c) { @@@ invalid syntax";
+        let bad_seal = test_support::sealed_draft(ObjId(88), Vec::new(), bad_src);
+        let bad_mind = host
+            .sealed_mind(ObjId(88), &bad_seal, bad_src, &ClassTable::STOCK)
+            .expect("sealed mind");
+        let (jobs, sealed) = host.jobs_on(
+            None,
+            ObjId(88),
+            &[
+                Source::Sealed(bad_mind),
+                Source::Doctrine(drone_mining_digest().0),
+            ],
+            0,
+            &view(0),
+            &[],
+        );
+        assert_eq!(jobs.len(), 2);
+        assert!(sealed.is_some());
+        let ask = Ask {
+            who: Thinker::Backup,
+            unit: ObjId(88),
+            think_seq: 0,
+            contacts: BTreeMap::new(),
+            jobs,
+            sealed,
+        };
+        let owner = Owner::Adrift(ObjId(88));
+        assert!(host.submit(owner, (0, 0), vec![ask]));
+        let Owed::Ready { mut answers, .. } = host.settle(owner, (0, 0), Due::default()) else {
+            panic!("expected ready answer");
+        };
+        let answer = answers.pop().expect("one answer");
+        assert!(
+            answer.result.is_some(),
+            "fallback doctrine must answer when sealed mind fails lazy compile"
+        );
+        assert!(
+            answer.sealed.is_none(),
+            "fallback answer must not be attributed to the broken sealed mind"
         );
     }
 }

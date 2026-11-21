@@ -70,8 +70,9 @@ fn version_is_present_and_travels_in_hello() {
     // step behind is served (the golden suite holds the recorded contract).
     // 14 (doc 44 unit MW.24) adds the bare connection's two lifecycle frames,
     // the first bump inside the window.
-    assert_eq!(IPC_VERSION, 14, "the boundary protocol version is pinned");
-    assert_eq!(IPC_MIN_PROTO, 13, "the window is exactly one step");
+    // 15 (EXT-P1-3) adds cross-generation web bearer-token revocation.
+    assert_eq!(IPC_VERSION, 15, "the boundary protocol version is pinned");
+    assert_eq!(IPC_MIN_PROTO, 14, "the window is exactly one step");
     assert_eq!(
         MAX_IN_FLIGHT_SERVICE_REQUESTS, 256,
         "service-request custody is a fixed cross-boundary contract"
@@ -462,7 +463,7 @@ fn licence_source_request_uses_v8_custody_and_closed_v7_request_cannot_decode_it
         serde_json::from_value::<OldMind>(value.get("request").expect("nested request").clone())
             .is_err()
     );
-    assert_eq!(IPC_VERSION, 14);
+    assert_eq!(IPC_VERSION, 15);
 }
 
 #[test]
@@ -500,7 +501,7 @@ fn attributed_remove_requires_new_closed_invoke_vocabulary()
         serde_json::from_slice::<mush_proto::InvokeResult>(&bytes)?,
         reply
     );
-    assert_eq!(IPC_VERSION, 14);
+    assert_eq!(IPC_VERSION, 15);
     Ok(())
 }
 

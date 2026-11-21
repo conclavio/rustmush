@@ -50,8 +50,7 @@ namespace TacSim.Core
         private MushRoomView _lastRoomView;
         private string _serverStationRoomEntry;
         private string _serverShipCompartment;
-        private string _pendingMoveTarget;
-        private float _pendingMoveSentAt = -100f;
+        private readonly RoomBoundNavWalker _navWalker = new RoomBoundNavWalker();
         private float _nextMoveStepAllowedAt;
         private bool _simulateConnectedForTests;
         private string _currentClockStr = "08:15 UTC";
@@ -578,8 +577,7 @@ namespace TacSim.Core
             _lastRoomView = null;
             _serverStationRoomEntry = null;
             _serverShipCompartment = null;
-            _pendingMoveTarget = null;
-            _pendingMoveSentAt = -100f;
+            _navWalker.Cancel();
             _nextMoveStepAllowedAt = 0f;
             _currentHullBadge = "NO CHARTER";
             _awaitingAppendedTradePage = false;
@@ -723,6 +721,14 @@ namespace TacSim.Core
                 Hud.ShowLoginOverlay(true, display);
         }
 
+        private void DispatchNavHop(QueuedNavHop hop, float cooldownSec)
+        {
+            _nextMoveStepAllowedAt = Time.time + cooldownSec;
+            OnCommandDispatched?.Invoke(hop.Command);
+            if (_ws != null && _ws.IsConnected)
+                _ws.SendLine(hop.Command);
+        }
+
         private void Sync3DPositionWithServer()
         {
             if (Player == null || Player.PhysicsSuspended || Player.IsSeatedAtHelm || SpaceStage.IsDockingActive)
@@ -731,9 +737,10 @@ namespace TacSim.Core
             if (_awaitingInitialRoomSync || !wsReady)
                 return;
 
-            // Strictly one outbound room-move step in flight at a time so multi-hop corridors (e.g. `e` -> `e`)
-            // never double-send or overshoot past the player's physical room while waiting for `RoomView`!
-            bool moveInFlight = !string.IsNullOrEmpty(_pendingMoveTarget) && (Time.time - _pendingMoveSentAt) < 3.5f;
+            // Strictly one outbound room-bound move step in flight at a time so multi-hop corridors
+            // never blast ahead or overshoot past the player's physical room before `RoomView` confirms!
+            _navWalker.ExpireIfStale(Time.time);
+            bool moveInFlight = _navWalker.HasInFlight(Time.time);
 
             if (_isAboardShip)
             {
@@ -746,15 +753,9 @@ namespace TacSim.Core
                     return;
 
                 var path = ShipInterior.FindExitPath(_serverShipCompartment, physComp);
-                if (path.Count > 0)
-                {
-                    _pendingMoveTarget = path[0].targetCompartment;
-                    _pendingMoveSentAt = Time.time;
-                    _nextMoveStepAllowedAt = Time.time + 0.35f;
-                    OnCommandDispatched?.Invoke(path[0].command);
-                    if (_ws != null && _ws.IsConnected)
-                        _ws.SendLine(path[0].command);
-                }
+                var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Ship, _serverShipCompartment, path, Time.time);
+                if (first.HasValue)
+                    DispatchNavHop(first.Value, 0.35f);
             }
             else
             {
@@ -772,55 +773,74 @@ namespace TacSim.Core
                     return;
 
                 var path = StationWorld.FindExitPath(_serverStationRoomEntry, physRoom);
-                if (path.Count > 0)
-                {
-                    _pendingMoveTarget = path[0].targetRoom;
-                    _pendingMoveSentAt = Time.time;
-                    _nextMoveStepAllowedAt = Time.time + 0.35f;
-                    OnCommandDispatched?.Invoke(path[0].command);
-                    if (_ws != null && _ws.IsConnected)
-                        _ws.SendLine(path[0].command);
-                }
+                var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Station, _serverStationRoomEntry, path, Time.time);
+                if (first.HasValue)
+                    DispatchNavHop(first.Value, 0.35f);
             }
         }
 
         private void FlushPendingRoomMovesBeforeAction()
         {
-            if (_ws == null || !_ws.IsConnected || Player == null)
+            bool wsReady = (_ws != null && _ws.IsConnected) || _simulateConnectedForTests;
+            if (!wsReady || _awaitingInitialRoomSync || Player == null)
                 return;
+
+            _navWalker.ExpireIfStale(Time.time);
 
             if (_isAboardShip)
             {
-                string startComp = !string.IsNullOrEmpty(_pendingMoveTarget) ? _pendingMoveTarget : _serverShipCompartment;
-                string physComp = ShipInterior.TryFindContainingCompartment(Player.transform.position, startComp, hysteresisM: 0.1f);
-                if (!string.IsNullOrEmpty(startComp) && !string.IsNullOrEmpty(physComp) && physComp != startComp)
+                if (string.IsNullOrEmpty(_serverShipCompartment))
+                    return;
+                string startHint = !string.IsNullOrEmpty(_navWalker.InFlightTarget) ? _navWalker.InFlightTarget : _serverShipCompartment;
+                string physComp = ShipInterior.TryFindContainingCompartment(Player.transform.position, startHint, hysteresisM: 0.1f);
+                if (string.IsNullOrEmpty(physComp))
+                    return;
+
+                if (_navWalker.HasInFlight(Time.time))
                 {
-                    var hops = ShipInterior.FindExitPath(startComp, physComp);
-                    for (int i = 0; i < hops.Count; i++)
-                        _ws.SendLine(hops[i].command);
-                    if (hops.Count > 0)
+                    string inFlightTarget = _navWalker.InFlightTarget;
+                    if (!string.IsNullOrEmpty(inFlightTarget) && physComp != inFlightTarget)
                     {
-                        _pendingMoveTarget = physComp;
-                        _pendingMoveSentAt = Time.time;
-                        _nextMoveStepAllowedAt = Time.time + 0.6f;
+                        var tail = ShipInterior.FindExitPath(inFlightTarget, physComp);
+                        _navWalker.ReplaceQueuedTailWhileInFlight(NavWalkerScope.Ship, tail, Time.time);
                     }
+                    return;
+                }
+
+                if (physComp != _serverShipCompartment)
+                {
+                    var hops = ShipInterior.FindExitPath(_serverShipCompartment, physComp);
+                    var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Ship, _serverShipCompartment, hops, Time.time);
+                    if (first.HasValue)
+                        DispatchNavHop(first.Value, 0.6f);
                 }
             }
             else
             {
-                string startRoom = !string.IsNullOrEmpty(_pendingMoveTarget) ? _pendingMoveTarget : _serverStationRoomEntry;
-                string physRoom = StationWorld.TryFindContainingRoomWithHysteresis(Player.transform.position, startRoom, hysteresisM: 0.1f);
-                if (!string.IsNullOrEmpty(startRoom) && !string.IsNullOrEmpty(physRoom) && physRoom != startRoom)
+                if (string.IsNullOrEmpty(_serverStationRoomEntry))
+                    return;
+                string startHint = !string.IsNullOrEmpty(_navWalker.InFlightTarget) ? _navWalker.InFlightTarget : _serverStationRoomEntry;
+                string physRoom = StationWorld.TryFindContainingRoomWithHysteresis(Player.transform.position, startHint, hysteresisM: 0.1f);
+                if (string.IsNullOrEmpty(physRoom))
+                    return;
+
+                if (_navWalker.HasInFlight(Time.time))
                 {
-                    var hops = StationWorld.FindExitPath(startRoom, physRoom);
-                    for (int i = 0; i < hops.Count; i++)
-                        _ws.SendLine(hops[i].command);
-                    if (hops.Count > 0)
+                    string inFlightTarget = _navWalker.InFlightTarget;
+                    if (!string.IsNullOrEmpty(inFlightTarget) && physRoom != inFlightTarget)
                     {
-                        _pendingMoveTarget = physRoom;
-                        _pendingMoveSentAt = Time.time;
-                        _nextMoveStepAllowedAt = Time.time + 0.6f;
+                        var tail = StationWorld.FindExitPath(inFlightTarget, physRoom);
+                        _navWalker.ReplaceQueuedTailWhileInFlight(NavWalkerScope.Station, tail, Time.time);
                     }
+                    return;
+                }
+
+                if (physRoom != _serverStationRoomEntry)
+                {
+                    var hops = StationWorld.FindExitPath(_serverStationRoomEntry, physRoom);
+                    var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Station, _serverStationRoomEntry, hops, Time.time);
+                    if (first.HasValue)
+                        DispatchNavHop(first.Value, 0.6f);
                 }
             }
         }
@@ -1139,14 +1159,12 @@ namespace TacSim.Core
             if (_ws != null && _ws.IsConnected)
             {
                 FlushPendingRoomMovesBeforeAction();
-                _pendingMoveTarget = null;
-                _pendingMoveSentAt = -100f;
+                _navWalker.Cancel();
                 _ws.SendLine(cmd);
             }
             else
             {
-                _pendingMoveTarget = null;
-                _pendingMoveSentAt = -100f;
+                _navWalker.Cancel();
                 LogDisconnectedCommandNotice();
             }
         }
@@ -1438,15 +1456,14 @@ namespace TacSim.Core
             {
                 FlushPendingRoomMovesBeforeAction();
                 // Any explicit typed/UI command may initiate a server-driven room change (e.g. typing `concourse` or `bridge`
-                // while standing still); clear `_pendingMoveTarget` so HandleServerRoomView teleports the stationary avatar!
-                _pendingMoveTarget = null;
-                _pendingMoveSentAt = -100f;
+                // while standing still); cancel pending queued navigation so HandleServerRoomView teleports the stationary avatar
+                // and stale queued hops never fire after an unrelated command!
+                _navWalker.Cancel();
                 _ws.SendLine(cmd);
             }
             else
             {
-                _pendingMoveTarget = null;
-                _pendingMoveSentAt = -100f;
+                _navWalker.Cancel();
                 LogDisconnectedCommandNotice();
             }
         }
@@ -1523,9 +1540,6 @@ namespace TacSim.Core
         private void HandleServerRoomView(MushRoomView rv)
         {
             _lastRoomView = rv;
-            string acknowledgedWalkTarget = _pendingMoveTarget;
-            _pendingMoveTarget = null;
-            _pendingMoveSentAt = -100f;
             _nextMoveStepAllowedAt = Time.time + 0.22f;
 
             if (rv.IcTime != null)
@@ -1574,6 +1588,21 @@ namespace TacSim.Core
                 string physComp = Player != null
                     ? ShipInterior.TryFindContainingCompartment(Player.transform.position, ShipInterior.ActiveCompartmentId, hysteresisM: 0.55f)
                     : null;
+
+                string acknowledgedWalkTarget = null;
+                QueuedNavHop? nextQueuedHop = null;
+                if (!wasAboard || firstSync || shipUnitChanged)
+                {
+                    _navWalker.Cancel();
+                }
+                else
+                {
+                    bool allowAdvance = !string.IsNullOrEmpty(physComp) && physComp != resolvedComp;
+                    var navRes = _navWalker.OnAuthoritativeRoomUpdate(NavWalkerScope.Ship, resolvedComp, Time.time, allowAdvance);
+                    acknowledgedWalkTarget = navRes.AcknowledgedTarget;
+                    nextQueuedHop = navRes.NextHopToSend;
+                }
+
                 bool alreadyInComp = wasAboard && !firstSync && !shipUnitChanged &&
                                      !string.IsNullOrEmpty(physComp) && physComp == resolvedComp;
                 bool correlatedShipWalkAhead = wasAboard && !firstSync && !shipUnitChanged &&
@@ -1609,6 +1638,13 @@ namespace TacSim.Core
                     string activeUiComp = correlatedShipWalkAhead && !string.IsNullOrEmpty(physComp) ? physComp : resolvedComp;
                     Hud.RefreshContextualQuickActions($"interior:{activeUiComp}", Player.IsSeatedAtHelm);
                 }
+
+                bool wsReadyShip = (_ws != null && _ws.IsConnected) || _simulateConnectedForTests;
+                if (nextQueuedHop.HasValue && wsReadyShip &&
+                    string.Equals(nextQueuedHop.Value.FromRoom, resolvedComp, StringComparison.Ordinal))
+                {
+                    DispatchNavHop(nextQueuedHop.Value, 0.35f);
+                }
             }
             else if (StationWorld.TryMatchStationRoom(rv, out string matchedStationEntry))
             {
@@ -1633,6 +1669,21 @@ namespace TacSim.Core
                 string physRoom = Player != null
                     ? StationWorld.TryFindContainingRoomWithHysteresis(Player.transform.position, StationWorld.ActiveRoomEntryId)
                     : null;
+
+                string acknowledgedWalkTarget = null;
+                QueuedNavHop? nextQueuedHop = null;
+                if (wasAboard || firstSync || stationPackSwitched)
+                {
+                    _navWalker.Cancel();
+                }
+                else
+                {
+                    bool allowAdvance = !string.IsNullOrEmpty(physRoom) && physRoom != matchedStationEntry;
+                    var navRes = _navWalker.OnAuthoritativeRoomUpdate(NavWalkerScope.Station, matchedStationEntry, Time.time, allowAdvance);
+                    acknowledgedWalkTarget = navRes.AcknowledgedTarget;
+                    nextQueuedHop = navRes.NextHopToSend;
+                }
+
                 bool alreadyInRoom = !firstSync && !wasAboard && !stationPackSwitched &&
                                      !string.IsNullOrEmpty(physRoom) && physRoom == matchedStationEntry;
                 bool correlatedStationWalkAhead = !firstSync && !wasAboard && !stationPackSwitched &&
@@ -1674,21 +1725,29 @@ namespace TacSim.Core
                     Hud.UpdateTopBar($"{rv.Name.ToUpperInvariant()} [{surface}]", $"{_currentClockStr} | {_currentHullBadge}");
                     Hud.RefreshContextualQuickActions(matchedStationEntry, false);
                 }
+
+                bool wsReadyStation = (_ws != null && _ws.IsConnected) || _simulateConnectedForTests;
+                if (nextQueuedHop.HasValue && wsReadyStation &&
+                    string.Equals(nextQueuedHop.Value.FromRoom, matchedStationEntry, StringComparison.Ordinal))
+                {
+                    DispatchNavHop(nextQueuedHop.Value, 0.35f);
+                }
             }
             else
             {
+                _navWalker.Cancel();
                 _isAboardShip = false;
                 _serverStationRoomEntry = null;
                 _serverShipCompartment = null;
 
-                string ceresExitAlias = FindExitToCeresFreeport(rv);
-                if (_ws != null && _ws.IsConnected && !_limboAutoEnterAttempted && !string.IsNullOrEmpty(ceresExitAlias))
+                string ceresExitCmd = FindExitToCeresFreeport(rv);
+                if (_ws != null && _ws.IsConnected && !_limboAutoEnterAttempted && !string.IsNullOrEmpty(ceresExitCmd))
                 {
                     _limboAutoEnterAttempted = true;
                     string safeRoom = MushProtocol.EscapeUnityRichText(rv.Name);
-                    string safeAlias = MushProtocol.EscapeUnityRichText(ceresExitAlias);
-                    Hud.AppendLogLine($"<color=#88DDFF>[TRANSIT]</color> Stepping from <b>{safeRoom}</b> into Ceres Freeport ({safeAlias})...");
-                    _ws.SendLine(ceresExitAlias);
+                    string safeCmd = MushProtocol.EscapeUnityRichText(ceresExitCmd);
+                    Hud.AppendLogLine($"<color=#88DDFF>[TRANSIT]</color> Stepping from <b>{safeRoom}</b> into Ceres Freeport ({safeCmd})...");
+                    _ws.SendLine(ceresExitCmd);
                     return;
                 }
 
@@ -1797,7 +1856,7 @@ namespace TacSim.Core
             Hud.Overlays?.RefreshLobbySelectionHighlights();
         }
 
-        private static string FindExitToCeresFreeport(MushRoomView rv)
+        public static string FindExitToCeresFreeport(MushRoomView rv)
         {
             if (rv == null || rv.Exits == null) return null;
             for (int i = 0; i < rv.Exits.Count; i++)
@@ -1807,14 +1866,23 @@ namespace TacSim.Core
                                     ex.Name.IndexOf("Freeport", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                     ex.Name.IndexOf("Arrivals", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (matchesCeres)
-                    return ex.Aliases.Count > 0 ? ex.Aliases[0] : ex.Name;
+                {
+                    string candidate = ex.Aliases.Count > 0 ? ex.Aliases[0] : ex.Name;
+                    string safeCmd = TacSimContentLoader.FormatSafeExitCommand(candidate);
+                    if (!string.IsNullOrEmpty(safeCmd))
+                        return safeCmd;
+                }
 
                 for (int j = 0; j < ex.Aliases.Count; j++)
                 {
                     string al = ex.Aliases[j];
                     if (string.Equals(al, "ceres", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(al, "freeport", StringComparison.OrdinalIgnoreCase))
-                        return al;
+                    {
+                        string safeCmd = TacSimContentLoader.FormatSafeExitCommand(al);
+                        if (!string.IsNullOrEmpty(safeCmd))
+                            return safeCmd;
+                    }
                 }
             }
             return null;

@@ -150,6 +150,7 @@ impl SshHooks for Hooks {
         &'a self,
         _: &'a str,
         _: &'a str,
+        _: IpAddr,
     ) -> BoxFuture<'a, Result<(), CreateErr>> {
         Box::pin(async { Err(CreateErr::Weak) })
     }

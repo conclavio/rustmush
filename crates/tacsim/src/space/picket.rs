@@ -512,20 +512,39 @@ impl KirkwoodPicketState {
     }
 
     /// Return the customs inspection status for carrier `hull` (`SF.R18`).
+    ///
+    /// Legacy single-carrier saves with an empty `carrier_inspection_status` map
+    /// still fall back to `self.inspection_status`; once per-carrier entries
+    /// exist, a carrier without its own entry starts at `AwaitingHeaveTo` so one
+    /// carrier's clearance never bleeds onto another (`M9`).
     #[must_use]
     pub fn inspection_status_for(&self, hull: ObjId) -> PicketInspectionStatus {
-        self.carrier_inspection_status
-            .get(&hull)
-            .copied()
-            .unwrap_or(self.inspection_status)
+        if let Some(&status) = self.carrier_inspection_status.get(&hull) {
+            status
+        } else if self.carrier_inspection_status.is_empty() {
+            self.inspection_status
+        } else {
+            PicketInspectionStatus::AwaitingHeaveTo
+        }
     }
 
     /// Return the customs inspection outcome for carrier `hull` (`SF.R18`).
+    ///
+    /// Never falls back to another carrier's legacy `self.inspection_outcome`
+    /// once per-carrier state is populated (`M9`).
     #[must_use]
     pub fn inspection_outcome_for(&self, hull: ObjId) -> Option<&PicketInspectionOutcome> {
-        self.carrier_inspection_outcome
-            .get(&hull)
-            .or(self.inspection_outcome.as_ref())
+        if let Some(outcome) = self.carrier_inspection_outcome.get(&hull) {
+            Some(outcome)
+        } else if self.carrier_inspection_outcome.is_empty()
+            && self.carrier_inspection_status.len() <= 1
+            && (self.carrier_inspection_status.is_empty()
+                || self.carrier_inspection_status.contains_key(&hull))
+        {
+            self.inspection_outcome.as_ref()
+        } else {
+            None
+        }
     }
 
     /// Record the customs inspection status for carrier `hull` (`SF.R18`).
@@ -2204,6 +2223,48 @@ mod tests {
         assert_eq!(
             bubble.party_relation(CUSTOMS_CORVETTE_PARTY, CARRIER_PARTY),
             Relation::Hostile
+        );
+    }
+
+    #[test]
+    fn multi_carrier_picket_does_not_share_carrier_a_outcome_or_clearance_with_carrier_b() {
+        let mut picket = KirkwoodPicketState::new(
+            ObjId(100),
+            "corvette".to_owned(),
+            ObjId(101),
+            "raider".to_owned(),
+        );
+        let hull_a = ObjId(10);
+        let hull_b = ObjId(20);
+
+        picket.set_inspection_status_for(hull_a, PicketInspectionStatus::Cleared);
+        picket.set_inspection_outcome_for(
+            hull_a,
+            PicketInspectionOutcome::Cleared {
+                strategic_ore_kg: 0,
+            },
+        );
+
+        // Carrier B has not been cleared and has no customs outcome yet.
+        assert_eq!(
+            picket.inspection_status_for(hull_b),
+            PicketInspectionStatus::AwaitingHeaveTo
+        );
+        assert_eq!(picket.inspection_outcome_for(hull_b), None);
+
+        // When Carrier B runs the picket, its outcome must stay None so the tick
+        // enqueues `hull_b` into `ran_picket_hulls` instead of inheriting A's outcome.
+        picket.set_inspection_status_for(hull_b, PicketInspectionStatus::RanThePicket);
+        assert_eq!(
+            picket.inspection_status_for(hull_b),
+            PicketInspectionStatus::RanThePicket
+        );
+        assert_eq!(picket.inspection_outcome_for(hull_b), None);
+        assert_eq!(
+            picket.inspection_outcome_for(hull_a),
+            Some(&PicketInspectionOutcome::Cleared {
+                strategic_ore_kg: 0,
+            })
         );
     }
 }

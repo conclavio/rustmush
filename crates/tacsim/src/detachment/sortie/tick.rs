@@ -36,6 +36,9 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     {
         return;
     }
+    // M34: evict settled/expired `Pending` intents and emit post-commit lapse notices.
+    runtime::prune_settled(ctx, &h);
+    runtime::flush_committed_lapses(ctx, &h);
     let after = ctx.w.module_state::<TickState>().and_then(|s| s.after);
     let Ok(Some(index)) = ctx.action_state(&h.index, &()) else {
         return;
@@ -50,9 +53,12 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
         .filter(|unit| after.is_none_or(|last| *unit > last))
         .take(33)
         .collect::<Vec<_>>();
+    if units.is_empty() && after.is_some() {
+        units = index.units.iter().copied().take(33).collect();
+    }
     let more = units.len() > 32;
     units.truncate(32);
-    let next = if more { units.last().copied() } else { None };
+    let last_unit = units.last().copied();
     let heads = units
         .iter()
         .filter_map(|unit| {
@@ -63,12 +69,12 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
                 .cloned()
         })
         .collect::<Vec<_>>();
-    if let Some(state) = ctx.w.module_state_mut::<TickState>() {
-        state.after = next
-    }
     let mut acted = BTreeSet::new();
     let mut operations = BTreeSet::new();
+    let mut last_visited: Option<mush_core::ObjId> = None;
+    let mut hit_cap = false;
     for head in heads {
+        last_visited = Some(head.flight.unit);
         let Ok(Some(flight)) = ctx
             .action_state(&h.flights, &head.flight)
             .map(|f| f.cloned())
@@ -128,6 +134,7 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             {
                 acted.insert(op.id.organizer);
                 if acted.len() >= 8 {
+                    hit_cap = true;
                     break;
                 }
                 continue;
@@ -150,6 +157,7 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             {
                 acted.insert(op.id.organizer);
                 if acted.len() >= 8 {
+                    hit_cap = true;
                     break;
                 }
                 continue;
@@ -195,7 +203,71 @@ fn tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
             acted.insert(flight.continuation_actor());
         }
         if acted.len() >= 8 {
+            hit_cap = true;
             break;
         }
+    }
+    // M35: persist cursor at the last unit actually visited when the per-tick actor cap broke
+    // early, wrapping to `None` only after traversing all remaining units in the index.
+    let next = next_cursor(hit_cap, more, last_visited, last_unit);
+    if let Some(state) = ctx.w.module_state_mut::<TickState>() {
+        state.after = next;
+    }
+}
+
+/// Compute the next scan cursor for [`tick`] so breaking on the 8-actor cap resumes right after
+/// `last_visited` instead of restarting at index 0 and starving higher-`ObjId` flights (M35).
+fn next_cursor(
+    hit_cap: bool,
+    more: bool,
+    last_visited: Option<mush_core::ObjId>,
+    last_unit: Option<mush_core::ObjId>,
+) -> Option<mush_core::ObjId> {
+    if hit_cap {
+        if !more && last_visited == last_unit {
+            None
+        } else {
+            last_visited
+        }
+    } else if more {
+        last_unit
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::ObjId;
+
+    #[test]
+    fn m35_cursor_resumes_after_cap_break_without_starving_higher_flights() {
+        // <= 32 flights total (`more == false`), broke at actor cap on unit #8 out of #16:
+        // cursor must stay at #8 so next tick visits #9..#16 instead of restarting at #1.
+        assert_eq!(
+            next_cursor(true, false, Some(ObjId(8)), Some(ObjId(16))),
+            Some(ObjId(8))
+        );
+        // When the 8th acted unit happens to be the very last unit with no more remaining,
+        // wrap immediately to `None`.
+        assert_eq!(
+            next_cursor(true, false, Some(ObjId(8)), Some(ObjId(8))),
+            None
+        );
+        // > 32 flights (`more == true`), broke at #8 -> resume at #8 (not #32!).
+        assert_eq!(
+            next_cursor(true, true, Some(ObjId(8)), Some(ObjId(32))),
+            Some(ObjId(8))
+        );
+        // Finished whole slice without hitting cap: advance past #32 if `more`, else wrap.
+        assert_eq!(
+            next_cursor(false, true, Some(ObjId(32)), Some(ObjId(32))),
+            Some(ObjId(32))
+        );
+        assert_eq!(
+            next_cursor(false, false, Some(ObjId(16)), Some(ObjId(16))),
+            None
+        );
     }
 }

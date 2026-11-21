@@ -133,28 +133,71 @@ pub struct SalvageCustody {
     pub at_risk: Vec<mush_tactics::field_ops::AtRiskRepairEntry>,
 }
 
-/// **Put `custody` on `record`**, replacing any earlier one for the same hull; past
-/// [`MAX_CUSTODY`] the oldest goes.
-pub(crate) fn hold(record: &mut SiteRecord, custody: SalvageCustody) {
-    record.custody.retain(|row| row.hull != custody.hull);
+/// **Whether `record` has room to hold a foreign custody row for `hull`** (M18):
+/// `false` if `hull` already has an active [`ClaimSeam::Filed`] claim on `record`, or if all
+/// [`MAX_CUSTODY`] slots hold active [`ClaimSeam::Filed`] claims (so no unfiled [`ClaimSeam::Owed`]
+/// row can be evicted).
+#[must_use]
+pub(crate) fn can_hold(record: &SiteRecord, hull: ObjId) -> bool {
+    if let Some(existing) = record.custody.iter().find(|row| row.hull == hull) {
+        return matches!(existing.claim, ClaimSeam::Owed);
+    }
+    record.custody.len() < MAX_CUSTODY
+        || record
+            .custody
+            .iter()
+            .any(|row| matches!(row.claim, ClaimSeam::Owed))
+}
+
+/// **Put `custody` on `record`** (M18): replaces an existing unfiled [`ClaimSeam::Owed`] row for
+/// the same hull (never overwriting an active [`ClaimSeam::Filed`] claim); when at
+/// [`MAX_CUSTODY`], evicts only the oldest unfiled [`ClaimSeam::Owed`] row by
+/// `(recovered_ic, hull)`. Refuses without mutating `record` if all [`MAX_CUSTODY`] slots hold
+/// active filed claims.
+///
+/// # Errors
+///
+/// `"custody_filed"` if `custody.hull` already has a filed claim on `record`; `"custody_full"` if
+/// all [`MAX_CUSTODY`] slots are occupied by active filed claims.
+pub(crate) fn hold(record: &mut SiteRecord, custody: SalvageCustody) -> Result<(), &'static str> {
+    if let Some(existing) = record.custody.iter().find(|row| row.hull == custody.hull) {
+        if matches!(existing.claim, ClaimSeam::Filed { .. }) {
+            return Err("custody_filed");
+        }
+        record.custody.retain(|row| row.hull != custody.hull);
+    } else if record.custody.len() >= MAX_CUSTODY {
+        let Some(oldest_owed) = record
+            .custody
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row.claim, ClaimSeam::Owed))
+            .min_by_key(|(_, row)| (row.recovered_ic, row.hull))
+            .map(|(at, _)| at)
+        else {
+            return Err("custody_full");
+        };
+        record.custody.remove(oldest_owed);
+    }
     let at = record
         .custody
         .partition_point(|row| row.hull < custody.hull);
     record.custody.insert(at, custody);
     while record.custody.len() > MAX_CUSTODY {
-        let oldest = record
+        let oldest_owed = record
             .custody
             .iter()
             .enumerate()
+            .filter(|(_, row)| matches!(row.claim, ClaimSeam::Owed))
             .min_by_key(|(_, row)| (row.recovered_ic, row.hull))
             .map(|(at, _)| at);
-        match oldest {
+        match oldest_owed {
             Some(at) => {
                 record.custody.remove(at);
             }
             None => break,
         }
     }
+    Ok(())
 }
 
 /// **The custody record over `hull`**, read from every lane site's record (Q-S14): `None` when
@@ -647,9 +690,9 @@ mod tests {
             evidence: Vec::new(),
             at_risk: Vec::new(),
         };
-        hold(&mut record, custody(9, 5));
-        hold(&mut record, custody(7, 6));
-        hold(&mut record, custody(9, 8));
+        hold(&mut record, custody(9, 5)).expect("held");
+        hold(&mut record, custody(7, 6)).expect("held");
+        hold(&mut record, custody(9, 8)).expect("held");
         assert_eq!(
             record
                 .custody
@@ -660,9 +703,81 @@ mod tests {
         );
         record.check().expect("the record checks");
         for hull in 100..(100 + u32::try_from(MAX_CUSTODY).expect("small")) {
-            hold(&mut record, custody(hull, i64::from(hull)));
+            hold(&mut record, custody(hull, i64::from(hull))).expect("held");
         }
         assert_eq!(record.custody.len(), MAX_CUSTODY);
         assert!(record.custody.iter().all(|row| row.hull != ObjId(7)));
+    }
+
+    /// **M18**: active `ClaimSeam::Filed` salvage claims are never evicted when custody hits
+    /// `MAX_CUSTODY`; only unfiled `Owed` rows may be evicted, and a full table of filed claims
+    /// refuses new foreign custody without mutating existing rows.
+    #[test]
+    fn m18_filed_salvage_claims_are_never_evicted_past_max_custody() {
+        let mut record = ground();
+        let make = |hull: u32, at: i64, claim: ClaimSeam| SalvageCustody {
+            hull: ObjId(hull),
+            holder: ObjId(2),
+            carrier: ObjId(3),
+            recovered_by: ObjId(4),
+            recovered_ic: at,
+            left_ic: Some(1),
+            claim,
+            operation: None,
+            pin: None,
+            file: None,
+            told: Vec::new(),
+            evidence: Vec::new(),
+            at_risk: Vec::new(),
+        };
+        // Fill 31 slots with active Filed claims (older timestamps) + 1 Owed slot (newer timestamp).
+        for i in 0..(MAX_CUSTODY - 1) {
+            let idx = u32::try_from(i).expect("small");
+            let hull = 100 + idx;
+            hold(
+                &mut record,
+                make(
+                    hull,
+                    i64::from(idx),
+                    ClaimSeam::Filed {
+                        contract: u64::from(hull),
+                    },
+                ),
+            )
+            .expect("filed fits");
+        }
+        hold(&mut record, make(500, 999, ClaimSeam::Owed)).expect("owed fits");
+        assert_eq!(record.custody.len(), MAX_CUSTODY);
+        assert!(can_hold(&record, ObjId(600)));
+
+        // Adding hull 600 must evict the newer Owed row (500), never the older Filed row (100).
+        hold(&mut record, make(600, 1_000, ClaimSeam::Owed)).expect("evicts owed");
+        assert_eq!(record.custody.len(), MAX_CUSTODY);
+        assert!(record.custody.iter().all(|row| row.hull != ObjId(500)));
+        assert!(record.custody.iter().any(|row| row.hull == ObjId(100)));
+        assert!(record.custody.iter().any(|row| row.hull == ObjId(600)));
+
+        // Refusing to overwrite an active Filed claim for the same hull.
+        assert!(!can_hold(&record, ObjId(100)));
+        assert_eq!(
+            hold(&mut record, make(100, 2_000, ClaimSeam::Owed)),
+            Err("custody_filed")
+        );
+
+        // Promote hull 600 to Filed so all 32 slots hold active Filed claims.
+        record
+            .custody
+            .iter_mut()
+            .find(|row| row.hull == ObjId(600))
+            .expect("600 present")
+            .claim = ClaimSeam::Filed { contract: 600 };
+        assert!(!can_hold(&record, ObjId(700)));
+        let snapshot = record.custody.clone();
+        assert_eq!(
+            hold(&mut record, make(700, 3_000, ClaimSeam::Owed)),
+            Err("custody_full")
+        );
+        assert_eq!(record.custody, snapshot, "no filed claim was evicted");
+        record.check().expect("record stays valid");
     }
 }

@@ -432,6 +432,30 @@ pub fn apply_intents_answering(
         events.extend(tape.record_and_apply(bubble, command));
     };
 
+    // Drop any stale fire-control lock whose target is missing or no longer
+    // detected by this ship's sensors (`M12`).
+    let stale_lock = bubble.ships.get(ship_id).is_some_and(|ship| {
+        ship.locked_target_id.as_deref().is_some_and(|locked| {
+            bubble.ships.get(locked).is_none_or(|target| {
+                target.id == ship.id
+                    || !super::commands::is_bubble_ship_detected(
+                        ship,
+                        target,
+                        bubble.ic_timestamp_s,
+                    )
+            })
+        })
+    });
+    if stale_lock {
+        command(
+            bubble,
+            BubbleInputCommand::SetLockedTarget {
+                ship_id: ship_id.to_owned(),
+                target_id: None,
+            },
+        );
+    }
+
     let mut heading: Option<u32> = None;
     let mut strength: Option<i32> = None;
     let mut shots: Vec<Shot> = Vec::new();
@@ -459,7 +483,8 @@ pub fn apply_intents_answering(
             }
             IntentKind::Lock { contact } if seat.lock || seat.fire == FireRule::Answer => {
                 // A seat with the sensors locks what it likes. One that only answers locks
-                // a ship it may answer and no other: its lock is half of a shot.
+                // a ship it may answer and no other: its lock is half of a shot. `contacts`
+                // only contains contacts observed in this think's view.
                 match contacts
                     .get(contact)
                     .filter(|target| seat.lock || may_fire_on(target))
@@ -521,6 +546,14 @@ pub fn apply_intents_answering(
                     .locked_target_id
                     .as_deref()
                     .and_then(|locked| bubble.ships.get(locked))
+                    .filter(|target| {
+                        target.id != ship.id
+                            && super::commands::is_bubble_ship_detected(
+                                ship,
+                                target,
+                                bubble.ic_timestamp_s,
+                            )
+                    })
                     .map(|target| {
                         [
                             target.pos_m[0].saturating_sub(ship.pos_m[0]),
@@ -551,12 +584,28 @@ pub fn apply_intents_answering(
         }
     }
 
-    // The mounts, at her lock, in the order the mind named them.
+    // The mounts, at her lock, in the order the mind named them (only while detected or observed
+    // in this think's contact view).
     let target = bubble
         .ships
         .get(ship_id)
         .and_then(|ship| ship.locked_target_id.clone());
-    let Some(target) = target.filter(|_| !shots.is_empty()) else {
+    let Some(target) = target.filter(|target| {
+        !shots.is_empty()
+            && (contacts.values().any(|seen| seen == target)
+                || bubble
+                    .ships
+                    .get(ship_id)
+                    .zip(bubble.ships.get(target.as_str()))
+                    .is_some_and(|(ship, tgt)| {
+                        tgt.id != ship.id
+                            && super::commands::is_bubble_ship_detected(
+                                ship,
+                                tgt,
+                                bubble.ic_timestamp_s,
+                            )
+                    }))
+    }) else {
         applied.dropped += u32::try_from(shots.len()).unwrap_or(u32::MAX);
         return applied;
     };
@@ -1699,5 +1748,62 @@ mod tests {
                 .map(|ship| (ship.torpedo_tubes.clone(), ship.railguns.clone()))
         };
         assert_eq!(mounts(&replayed), mounts(&bubble));
+    }
+
+    #[test]
+    fn speed_intent_does_not_leak_undetected_locked_target_and_step_clears_lock_on_loss() {
+        let mut bubble = LocalSpaceBubble::new("b.m12", "d.12", "M12 Lock Loss", 1_000);
+        let mut dray =
+            SpaceShipState::new_dray("dray", "Salt Moth", CARRIER_PARTY, [0, 0, 0], [0, 0, 0]);
+        dray.locked_target_id = Some("raider".to_owned());
+        bubble.insert_ship(dray);
+
+        // Cold Ghost raider at 25 km is undetected by sensors.
+        let mut raider = SpaceShipState::new_corvette(
+            "raider",
+            "Ghost Raider",
+            crate::space::BELT_RAIDER_PARTY,
+            [25_000, 12_000, -4_000],
+            [0, 0, 0],
+        );
+        raider.emcon = EmconPosture::Ghost;
+        raider.heat_permille = 0;
+        raider.thrust_mps2 = [0, 0, 0];
+        raider.thrust_mmps2 = [0, 0, 0];
+        bubble.insert_ship(raider);
+        assert!(
+            !crate::space::commands::is_bubble_ship_detected(
+                &bubble.ships["dray"],
+                &bubble.ships["raider"],
+                bubble.ic_timestamp_s,
+            ),
+            "precondition: cold Ghost raider at 25 km must be undetected"
+        );
+
+        // 1. Mind Speed intent without Heading must drop instead of burning toward undetected lock,
+        //    and stale lock is cleared on the tape.
+        let mut tape = BubbleInputTape::new(&bubble);
+        let mut events = Vec::new();
+        let applied = apply_intents(
+            &mut bubble,
+            &mut tape,
+            "dray",
+            Seat::PATROL,
+            &BTreeMap::new(),
+            &[IntentKind::Speed { cms: 50 }],
+            &mut events,
+        );
+        assert_eq!(applied.dropped, 1);
+        assert!(!applied.asked_burn);
+        assert_eq!(bubble.ships["dray"].thrust_mmps2, [0, 0, 0]);
+        assert_eq!(bubble.ships["dray"].locked_target_id, None);
+
+        // 2. Stepping the bubble directly clears a stale lock when target drops out of detection.
+        bubble.ships.get_mut("dray").unwrap().locked_target_id = Some("raider".to_owned());
+        let _ = bubble.step_wall_ms_at(1_000, 1_001);
+        assert_eq!(
+            bubble.ships["dray"].locked_target_id, None,
+            "step_wall_ms_at must clear locked_target_id on sensor loss"
+        );
     }
 }

@@ -2,6 +2,7 @@
 //! connection completion can take the worker result and freshly authorize use.
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
 
 use mush_core::{
     ArgShape, CmdError, CommandSpec, ConnectionCompletion, ConnectionCompletionHandle, Ctx,
@@ -15,7 +16,7 @@ use mush_roll::commerce::authored_access::AuthoredDraftAccess;
 use mush_roll::{EditBase, RollError};
 
 use super::commands::{WorkshopCommands, roll, sources};
-use super::executor::{JobId, JobKind, MAX_JOBS, Principal};
+use super::executor::{JobId, JobKind, MAX_JOBS, Principal, RESULT_TTL};
 use super::invalid;
 
 /// Only service custody is stored here, never eligibility or source authority.
@@ -34,6 +35,7 @@ struct Entry {
     ticket: ConnectionCompletion,
     delivery: Delivery,
     lease: u64,
+    started: Instant,
 }
 #[derive(Default)]
 pub(super) struct Jobs(Mutex<BTreeMap<JobId, Arc<Entry>>>);
@@ -86,7 +88,18 @@ impl WorkshopCommands {
             .w
             .module_state::<CompletionHandle>()
             .ok_or(RollError::Missing)?;
+        let tracked = self.executor.tracked_ids();
         let mut jobs = self.authored.0.lock().map_err(|_| RollError::Missing)?;
+        jobs.retain(|id, row| {
+            let live = row.ticket.is_live(ctx.w)
+                && !row.ticket.has_entered()
+                && row.started.elapsed() <= RESULT_TTL
+                && tracked.contains(id);
+            if !live {
+                let _ = self.executor.cancel(row.principal, *id);
+            }
+            live
+        });
         if jobs.len() >= MAX_JOBS {
             return Err(invalid("workshop", "authoring queue is full"));
         }
@@ -116,6 +129,7 @@ impl WorkshopCommands {
                 ticket,
                 delivery,
                 lease,
+                started: Instant::now(),
             }),
         );
         Ok(id)
@@ -167,8 +181,13 @@ impl WorkshopCommands {
             Err(_) => return,
         };
         let ready = self.executor.ready();
+        let tracked = self.executor.tracked_ids();
         for (id, row) in jobs {
-            if !row.ticket.is_live(ctx.w) || row.ticket.has_entered() {
+            if !row.ticket.is_live(ctx.w)
+                || row.ticket.has_entered()
+                || row.started.elapsed() > RESULT_TTL
+                || !tracked.contains(&id)
+            {
                 let _ = self.executor.cancel(row.principal, id);
                 self.remove_authored(id);
                 // Generic terminal UX needs no source/parent read, but still
@@ -330,18 +349,34 @@ impl WorkshopCommands {
                 return Err(RollError::Missing);
             }
             if cancel {
-                self.executor.cancel(principal, id)?;
-                self.remove_authored(id);
-                if original != request {
-                    ctx.out.to_conn(
-                        conn,
-                        OutputEvent::InvokeResult {
-                            id: original,
-                            result: InvokeResult::Mind(MindResponse::Cancelled { job: number }),
-                        },
-                    );
+                let cancelled = self.executor.cancel(principal, id);
+                match cancelled {
+                    Ok(()) => {
+                        self.remove_authored(id);
+                        if original != request {
+                            ctx.out.to_conn(
+                                conn,
+                                OutputEvent::InvokeResult {
+                                    id: original,
+                                    result: InvokeResult::Mind(MindResponse::Cancelled {
+                                        job: number,
+                                    }),
+                                },
+                            );
+                        }
+                        Ok(MindResponse::Cancelled { job: number })
+                    }
+                    Err(RollError::Missing) => {
+                        self.remove_authored(id);
+                        Err(RollError::Missing)
+                    }
+                    Err(err) => Err(err),
                 }
-                Ok(MindResponse::Cancelled { job: number })
+            } else if row.started.elapsed() > RESULT_TTL || !self.executor.is_tracked(principal, id)
+            {
+                let _ = self.executor.cancel(principal, id);
+                self.remove_authored(id);
+                Err(RollError::Missing)
             } else {
                 Ok(MindResponse::Pending { job: number })
             }
@@ -438,5 +473,11 @@ pub(in crate::minds) mod probe {
                     .lock()
                     .is_ok_and(|rows| rows.keys().any(|id| id.number() == number))
             })
+    }
+    pub(in crate::minds) fn expire_in_executor(world: &mush_core::World, number: u64) -> bool {
+        world
+            .module_state::<WorkshopService>()
+            .and_then(|s| s.0.upgrade())
+            .is_some_and(|service| service.executor.expire_job_for_test(number))
     }
 }

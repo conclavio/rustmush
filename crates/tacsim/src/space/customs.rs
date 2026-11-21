@@ -760,7 +760,7 @@ pub(crate) fn file_breach(ctx: &mut Ctx<'_>, hull: ObjId) {
         }
         return;
     }
-    let principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, hull);
+    let principal = breach_principal_for_uncrewed(ctx.w, hull);
     let front_id =
         super::picket::record_ran_the_picket_incident(ctx, principal, principal, hull).map(|f| f.0);
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>()
@@ -1254,4 +1254,57 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
     };
     say(ctx, pending, &line);
     super::commands::push_space_panels(ctx, hull);
+}
+
+/// Resolve the captain/principal to attribute a `RanThePicket` breach to when
+/// no pilot currently occupies the helm (`M9`): checks captain aboard, departed
+/// voyage pilot, and hull owner before falling back to `hull`.
+#[must_use]
+fn breach_principal_for_uncrewed(w: &mush_core::World, hull: ObjId) -> ObjId {
+    let aboard = super::commands::resolve_hull_captain_aboard(w, hull, hull);
+    let fallback_captain = if aboard != hull {
+        aboard
+    } else {
+        w.module_state::<crate::store::TacsimStore>()
+            .and_then(|s| match s.voyage_state(hull) {
+                crate::port::voyage::VoyageState::Present(v) => {
+                    v.departed.as_ref().map(|d| d.pilot)
+                }
+                crate::port::voyage::VoyageState::Absent
+                | crate::port::voyage::VoyageState::Unreadable => None,
+            })
+            .filter(|&pilot| pilot != hull)
+            .or_else(|| w.get(hull).map(|o| o.owner).filter(|&o| o != hull))
+            .unwrap_or(hull)
+    };
+    super::picket::resolve_hull_customs_principal(w, hull, fallback_captain)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uncrewed_picket_breach_resolves_captain_owner_instead_of_hull() {
+        let mut world = mush_core::World::new_minimal();
+        let captain = world
+            .create(
+                mush_core::ObjKind::Player,
+                "Ada",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+        let hull = world
+            .create(
+                mush_core::ObjKind::Thing,
+                "Salt Moth",
+                captain,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+        let resolved = breach_principal_for_uncrewed(&world, hull);
+        assert_eq!(resolved, captain);
+        assert_ne!(resolved, hull);
+    }
 }

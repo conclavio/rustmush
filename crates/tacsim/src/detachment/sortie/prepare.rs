@@ -349,8 +349,22 @@ pub(super) fn snapshot(
     actor: ObjId,
     intent: &Intent,
 ) -> Result<Snapshot, String> {
+    if runtime::pending(world, actor) != Some(intent) {
+        return Err("Deployment request expired or unavailable.".into());
+    }
+    snapshot_unregistered(world, read, h, actor, intent)
+}
+/// Validate and build a deployment snapshot without requiring `intent` to already sit in
+/// `runtime::Pending`, so `enqueue` can reject invalid intents before allocating a queue slot
+/// and `prune_settled` can detect already-committed entries (M34).
+pub(super) fn snapshot_unregistered(
+    world: &World,
+    read: &mut impl Read,
+    h: &SortieHandles,
+    actor: ObjId,
+    intent: &Intent,
+) -> Result<Snapshot, String> {
     if !h.enabled
-        || runtime::pending(world, actor) != Some(intent)
         || !world
             .now()
             .checked_sub(intent.utc)

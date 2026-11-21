@@ -336,9 +336,12 @@ fn publish(ctx: &mut Ctx<'_>, id: &str, version: u32, rules: &Value, look: &Valu
         return vec!["The TacSim layer is not enabled here.".into()];
     };
     if store.designs.contains_key(&(id.to_string(), version)) {
+        let next_hint = match version.checked_add(1) {
+            Some(next) => format!(" (publish {next})"),
+            None => String::new(),
+        };
         return vec![format!(
-            "{id}@{version} is already published; a published version never changes (publish {})",
-            version + 1
+            "{id}@{version} is already published; a published version never changes{next_hint}"
         )];
     }
     if let Some(slug) = id.strip_prefix(UNIT_PREFIX) {
@@ -392,7 +395,14 @@ fn design_cmd(ctx: &mut Ctx<'_>) -> Result<(), mush_core::CmdError> {
     };
     let word = ctx.args.raw().trim().to_string();
     let (want_id, want_version) = match word.split_once('@') {
-        Some((id, v)) => (id.to_string(), v.parse::<u32>().ok()),
+        Some((id, v)) => {
+            let parsed = v.parse::<u32>().map_err(|_| {
+                mush_core::CmdError::msg(format!(
+                    "Invalid design version `{v}` in `{word}`; expected a whole number."
+                ))
+            })?;
+            (id.to_string(), Some(parsed))
+        }
         None => (word.clone(), None),
     };
     let matches: Vec<DesignRecord> = store
@@ -622,5 +632,87 @@ mod tests {
         let mut stray = laser_def();
         stray["colour"] = json!("red");
         assert!(check("tacsim.unit.design_stray", 1, &stray).pack.is_none());
+    }
+
+    #[test]
+    fn design_withdraw_rejects_non_numeric_version_and_publish_handles_u32_max() {
+        struct DesignOwner(Option<crate::TacsimStore>);
+        impl mush_core::GameModule for DesignOwner {
+            fn name(&self) -> &'static str {
+                crate::store::NS
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                if let Some(store) = self.0.take() {
+                    reg.state(store);
+                }
+                Ok(())
+            }
+        }
+
+        let mut store = crate::TacsimStore::default();
+        let design_id = "tacsim.unit.design.l2".to_string();
+        for ver in [1_u32, u32::MAX] {
+            store.designs.insert(
+                (design_id.clone(), ver),
+                DesignRecord {
+                    id: design_id.clone(),
+                    version: ver,
+                    pack: json!({"manifest": {"id": "tacsim.pack.design.l2", "digest": "abc"}}),
+                    look: json!({}),
+                    withdrawn: false,
+                },
+            );
+        }
+        let mut engine = mush_core::Engine::with_modules(
+            mush_core::World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(DesignOwner(Some(store)))],
+        )
+        .unwrap();
+        let mut out = mush_core::Outbox::new();
+
+        // 1. `@design/withdraw <id>@<non-numeric>` must error without withdrawing any version.
+        {
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::from_names(["withdraw"]),
+                args: mush_core::ParsedArgs::parse(
+                    mush_core::ArgShape::Raw,
+                    "tacsim.unit.design.l2@notanumber",
+                ),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::store::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let err = design_cmd(&mut ctx).expect_err("bad @version must be rejected");
+            assert!(err.to_string().contains("Invalid design version"));
+        }
+        let store_after = engine.world.module_state::<crate::TacsimStore>().unwrap();
+        assert!(
+            store_after.designs().all(|d| !d.withdrawn),
+            "no versions may be withdrawn when @version suffix fails to parse"
+        );
+
+        // 2. Republishing at `u32::MAX` must not overflow `version + 1`.
+        {
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::store::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let refusals = publish(&mut ctx, &design_id, u32::MAX, &json!({}), &json!({}));
+            assert_eq!(refusals.len(), 1);
+            assert!(refusals[0].contains("already published"));
+        }
     }
 }

@@ -769,7 +769,7 @@ pub(crate) fn coupled(w: &World, tug: ObjId) -> Option<&RecoveryOperation> {
 // ---- world reads --------------------------------------------------------------------------
 
 /// The site's record.
-fn record_of(ctx: &Ctx<'_>, site: &CanonicalId) -> Option<SiteRecord> {
+pub(crate) fn record_of(ctx: &Ctx<'_>, site: &CanonicalId) -> Option<SiteRecord> {
     let handles = ctx.w.module_state::<PortHandles>()?;
     let key = SiteKey(site.clone());
     ctx.action_state(&handles.families.sites, &key)
@@ -1501,6 +1501,9 @@ pub(crate) fn register(
     reg.state(FieldReleases::default());
     reg.state(crate::surface::tender::TendApplied::default());
     reg.state(crate::surface::claim::ClaimMail::default());
+    reg.state(crate::surface::claim::PendingClaimNotices::default());
+    reg.state(crate::surface::security::ProvenActs::default());
+    reg.state(crate::surface::security::PendingProvenMarks::default());
     let nonces = reg.state_family::<(ObjId, ObjId), u64, _, _, _, _>(
         crate::port::families::family_descriptor(
             TOW_NONCE_FAMILY,
@@ -1924,6 +1927,11 @@ impl ActionProvider for TowProvider {
                     .room
                     .check_can_load(op.casualty_mass().total_mass_kg(), facts.volume_l)
                     .map_err(|e| refused(code(&e)))?;
+                if !(facts.written_off || facts.friendly || facts.retrieval)
+                    && !crate::surface::salvage::can_hold(&record, facts.casualty)
+                {
+                    return Err(refused("custody_full"));
+                }
                 record
                     .tows
                     .put_act(
@@ -1979,7 +1987,12 @@ impl ActionProvider for TowProvider {
                 self.pick_up(txn, &mut record, (tv, actor), &facts, (promoted, now))?
             }
             TowOrder::Claim { order } => {
-                if promoted {
+                if promoted
+                    && !matches!(
+                        order.as_ref(),
+                        crate::surface::claim::ClaimOrder::MarkProven { .. }
+                    )
+                {
                     return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
                 }
                 if order.hull() != tv {
@@ -2227,6 +2240,13 @@ fn verify_live_site_order_world(
                         return Err(refused("claim_window_closed"));
                     }
                 }
+                ClaimOrder::MarkProven { site, clerk, .. } => {
+                    if actor != *clerk
+                        || crate::surface::claim::clerk_of(world, site) != Some(actor)
+                    {
+                        return Err(refused("claim_not_system"));
+                    }
+                }
                 ClaimOrder::AuthorizeBlock { .. }
                 | ClaimOrder::Refuse { .. }
                 | ClaimOrder::Ask { .. }
@@ -2317,7 +2337,8 @@ impl TowProvider {
             | ClaimOrder::File { .. }
             | ClaimOrder::Report { .. }
             | ClaimOrder::AtRisk { .. }
-            | ClaimOrder::Settle { .. } => {}
+            | ClaimOrder::Settle { .. }
+            | ClaimOrder::MarkProven { .. } => {}
         }
         Ok(())
     }
@@ -2362,7 +2383,8 @@ impl TowProvider {
             | ClaimOrder::File { .. }
             | ClaimOrder::Report { .. }
             | ClaimOrder::AtRisk { .. }
-            | ClaimOrder::Settle { .. } => return Ok(()),
+            | ClaimOrder::Settle { .. }
+            | ClaimOrder::MarkProven { .. } => return Ok(()),
         };
         let key = crate::surface::claims::BlockKey {
             site: site.clone(),
@@ -2443,6 +2465,13 @@ impl TowProvider {
         now: i64,
         closing: &mut Option<(ObjId, crate::surface::black_box::BlackBoxLine)>,
     ) -> Result<(), mush_core::ActionError> {
+        // M18: check custody cap before mutating the site's tow/unit index so a full table of
+        // active filed claims refuses cleanly without evicting filed claims or corrupting state.
+        if !(facts.written_off || facts.friendly || facts.retrieval)
+            && !crate::surface::salvage::can_hold(record, facts.casualty)
+        {
+            return Err(refused("custody_full"));
+        }
         let at = now.max(op.updated_at_ic());
         let mut revision = op.revision();
         // The tow's last leg, to where the tug stands at the ramp (the library's speed check
@@ -2547,7 +2576,8 @@ impl TowProvider {
                     evidence: Vec::new(),
                     at_risk: Vec::new(),
                 },
-            );
+            )
+            .map_err(refused)?;
         }
         // The casualty's own rig record: its epoch closed into the carrier, its surface work
         // cleared, its charge counted from the bay.
@@ -3457,6 +3487,13 @@ pub(crate) fn load_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Result<
                 .replace("{why}", &why(&error)),
         ));
     }
+    if !(facts.written_off || facts.friendly || facts.retrieval)
+        && !crate::surface::salvage::can_hold(&record, casualty)
+    {
+        return Err(CmdError::msg(
+            "This site's salvage custody register is full of active filed claims; try again once one settles.",
+        ));
+    }
     let cfg = recovery_config(ctx.w);
     let min = minutes(cfg.load_s).to_string();
     let fill = |line: &str| {
@@ -4039,12 +4076,22 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                     .and_then(|index| index.0.get(&act.tug))
                     .map(|(_, op)| op.casualty());
                 if !promoted && let Some(casualty) = casualty {
-                    let captives =
-                        place_in_bay(ctx, &site, (act.tug, act.operator), casualty, carrier);
-                    if !captives.is_empty()
-                        && let Some(taken) = ctx.w.module_state_mut::<TowCaptives>()
-                    {
-                        taken.0.insert(act.tug, (casualty, captives));
+                    let foreign_custody = !friendly(ctx, &site, casualty, carrier)
+                        && !crate::port::tv::written_off(ctx.w, casualty)
+                        && !custodian_of(ctx, &site, carrier).is_some_and(|who| {
+                            crate::surface::retrieval::held_by(ctx.w, casualty, who).is_some()
+                        });
+                    let has_room = !foreign_custody
+                        || record_of(ctx, &site)
+                            .is_none_or(|r| crate::surface::salvage::can_hold(&r, casualty));
+                    if has_room {
+                        let captives =
+                            place_in_bay(ctx, &site, (act.tug, act.operator), casualty, carrier);
+                        if !captives.is_empty()
+                            && let Some(taken) = ctx.w.module_state_mut::<TowCaptives>()
+                        {
+                            taken.0.insert(act.tug, (casualty, captives));
+                        }
                     }
                 }
                 let facts = casualty.and_then(|casualty| {

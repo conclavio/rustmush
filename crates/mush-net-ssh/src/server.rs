@@ -87,7 +87,7 @@ use crate::hooks::{
     Admission, AuthResult, BlockReason, CharSummary, NewConn, PixelEvent, SshHooks,
 };
 use crate::kill::{KillSwitch, Killable};
-use crate::tui::{TuiManifest, TuiSession};
+use crate::tui::{MAX_TUI_BURST_OPS, MAX_TUI_BURST_SUBMIT_BYTES, TuiManifest, TuiSession};
 use crate::welcome::{WelcomeCmd, parse_welcome};
 use crate::{caps, hostkey};
 mod cockpit;
@@ -159,10 +159,6 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// the `sftp` subsystem before the server closes it (HIGH-6).
 const SFTP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Maximum TUI invokes + queries + responds accepted from a single input
-/// packet before dropping excess burst work (SSH-M3).
-const MAX_TUI_BURST_OPS: usize = 16;
-
 /// How often the TUI's WHO rail re-queries the world while `Mode::Tui` is
 /// active (design M15 D5: a read-only 3-5 s refresh that does *not* stamp
 /// idle — the pump submits the query, it never types the WHO command).
@@ -195,6 +191,7 @@ const WELCOME_HELP: &str = "\
   QUIT                           disconnect";
 
 const BAD_CREDS_MSG: &str = "Either that account does not exist, or the password is wrong.";
+const AUTH_BUSY_MSG: &str = "The authentication service is busy; please try again shortly.";
 const QUIT_CONFIRM_MSG: &str = "Really disconnect? Type y to confirm, anything else to cancel.";
 
 /// Configuration for [`SshServer::run`].
@@ -1275,6 +1272,12 @@ impl ConnHandler {
                 self.hooks.auth_failed(self.addr);
                 reject_toward_interactive()
             }
+            AuthResult::Busy => {
+                // Transient auth saturation (e.g. Argon2id semaphore cap):
+                // refuse politely without counting a credential failure
+                // against the peer's IP (EXT-P2-2).
+                reject_toward_interactive()
+            }
             AuthResult::Banned => Auth::reject(),
         }
     }
@@ -1358,13 +1361,14 @@ impl ConnHandler {
         line: &str,
     ) -> Result<(), russh::Error> {
         // Credential-bearing lines must never be recallable from the
-        // editor history (↑ would re-show the plaintext password) —
-        // dropped before any early return can leave them behind.
+        // editor history (↑ would re-show the plaintext password). Recording
+        // is already suppressed outside `Mode::InGame`; wiping here provides
+        // defense-in-depth before any early return can leave anything behind.
         if matches!(
             parse_welcome(line),
             WelcomeCmd::Connect { .. } | WelcomeCmd::Create { .. }
         ) {
-            self.lock().editor.forget_last_history();
+            self.lock().editor.clear_history();
         }
         if !line.trim().is_empty() && self.flood.check(Instant::now()) == FloodVerdict::Throttled {
             return self.write_text(session, "You're doing that too fast.");
@@ -1421,6 +1425,7 @@ impl ConnHandler {
                 self.hooks.auth_failed(self.addr);
                 self.write_text(session, BAD_CREDS_MSG)
             }
+            AuthResult::Busy => self.write_text(session, AUTH_BUSY_MSG),
             AuthResult::Ok {
                 account,
                 characters,
@@ -1443,7 +1448,11 @@ impl ConnHandler {
             let notice = self.blocked_notice();
             return self.close_polite(session, &notice);
         }
-        match self.hooks.create_account(account, password).await {
+        match self
+            .hooks
+            .create_account(account, password, self.addr)
+            .await
+        {
             Err(CreateErr::Taken) => {
                 self.write_text(session, "That account name is already taken.")
             }
@@ -1476,6 +1485,10 @@ impl ConnHandler {
         chars: Vec<CharSummary>,
         requested_char: Option<String>,
     ) -> Result<(), russh::Error> {
+        // Leaving welcome/pre-auth: clear any editor recall history so
+        // pre-login lines can never leak into character select or in-game
+        // Up-arrow recall (EXT-P2-3).
+        self.lock().editor.clear_history();
         // Some(None) is an explicit, unowned name. It always falls through
         // to this account's menu, even for a single-character account.
         let requested = requested_char
@@ -1987,7 +2000,7 @@ impl Handler for ConnHandler {
             // agent keys trip the 5-failures tempban on a single connect.
             // Password failures remain the ban trigger; per-connection key
             // spray is already bounded by the SSH MaxAuthTries limit.
-            AuthResult::BadCreds => Ok(reject_toward_interactive()),
+            AuthResult::BadCreds | AuthResult::Busy => Ok(reject_toward_interactive()),
             AuthResult::Banned => Ok(Auth::reject()),
         }
     }
@@ -2414,7 +2427,11 @@ impl Handler for ConnHandler {
         let (echo, actions) = {
             let mut sh = self.lock();
             let mut out = Vec::new();
-            let actions = sh.editor.feed(data, &mut out);
+            // Suppress recall history outside `Mode::InGame` so welcome-screen
+            // credentials (including pipelined multi-line bursts) never enter
+            // recall memory (EXT-P2-3).
+            let record_history = matches!(sh.mode, Mode::InGame);
+            let actions = sh.editor.feed_with_history(data, &mut out, record_history);
             (out, actions)
         };
         if !echo.is_empty() {
@@ -2544,7 +2561,8 @@ enum GameAction {
 /// typed invokes/responds first (preserving 17g cut C3b), then submitted lines
 /// followed on the SAME FIFO channel by any follow-up queries emitted alongside
 /// them so commands execute before refresh queries read world state, capped at
-/// [`MAX_TUI_BURST_OPS`] invokes + responds + queries per packet.
+/// [`MAX_TUI_BURST_OPS`] total ops (invokes + responds + submissions + queries)
+/// and [`MAX_TUI_BURST_SUBMIT_BYTES`] submitted bytes per packet (EXT-P1-5).
 fn dispatch_tui_input_result(
     result: crate::tui::InputResult,
     shared: &Mutex<Shared>,
@@ -2560,6 +2578,7 @@ fn dispatch_tui_input_result(
         return queue_action(GameAction::Line("@notui".to_owned()));
     }
     let mut budget = MAX_TUI_BURST_OPS;
+    let mut submit_bytes = 0usize;
     for (id, request) in result.invokes {
         if budget == 0 {
             break;
@@ -2580,8 +2599,13 @@ fn dispatch_tui_input_result(
         let notify = Arc::clone(&connection_state(shared).repaint);
         notify.notify_one();
         // A burst can carry more than one line (a multi-line paste); each
-        // is forwarded in order so none is dropped.
+        // is forwarded in order up to the burst op and byte limits.
         for line in result.submit {
+            if budget == 0 || submit_bytes.saturating_add(line.len()) > MAX_TUI_BURST_SUBMIT_BYTES {
+                break;
+            }
+            budget -= 1;
+            submit_bytes = submit_bytes.saturating_add(line.len());
             queue_action(GameAction::Line(line))?;
         }
         for (name, args) in result.queries {
@@ -2657,6 +2681,7 @@ impl Player {
         let worker = self.worker;
         let repaint = {
             let mut sh = worker.lock();
+            sh.editor.clear_history();
             sh.mode = Mode::InGame;
             sh.playing = self
                 .pane
@@ -4352,6 +4377,7 @@ mod tests {
             &'a self,
             _account: &'a str,
             _password: &'a str,
+            _addr: IpAddr,
         ) -> futures::future::BoxFuture<'a, Result<(), crate::hooks::CreateErr>> {
             Box::pin(async { Err(crate::hooks::CreateErr::Taken) })
         }
@@ -4548,5 +4574,59 @@ mod tests {
         sh.recompute_caps();
         assert_eq!(sh.caps.color, mush_proto::ColorDepth::TrueColor);
         assert!(!sh.caps.utf8);
+    }
+
+    #[tokio::test]
+    async fn dispatch_tui_input_result_counts_submissions_against_burst_budget() {
+        let shared = Mutex::new(line_mode_shared());
+        let (tx, mut rx) = mpsc::channel::<GameAction>(64);
+
+        // Oversized submit count + trailing query: capped at MAX_TUI_BURST_OPS total.
+        let many_submits = crate::tui::InputResult {
+            submit: (0..(MAX_TUI_BURST_OPS + 10))
+                .map(|i| format!("cmd{i}"))
+                .collect(),
+            queries: vec![("who".to_owned(), serde_json::json!({}))],
+            ..Default::default()
+        };
+        dispatch_tui_input_result(many_submits, &shared, Some(&tx)).unwrap();
+
+        let mut drained = Vec::new();
+        while let Ok(action) = rx.try_recv() {
+            drained.push(action);
+        }
+        assert_eq!(
+            drained.len(),
+            MAX_TUI_BURST_OPS,
+            "submissions must share and respect MAX_TUI_BURST_OPS"
+        );
+        assert!(
+            drained
+                .iter()
+                .all(|action| matches!(action, GameAction::Line(_))),
+            "trailing query beyond burst budget must be dropped"
+        );
+
+        // Oversized cumulative submit bytes: capped at MAX_TUI_BURST_SUBMIT_BYTES.
+        let chunk = "x".repeat(crate::line::MAX_LINE_BYTES);
+        let big_submits = crate::tui::InputResult {
+            submit: vec![chunk; 8],
+            ..Default::default()
+        };
+        dispatch_tui_input_result(big_submits, &shared, Some(&tx)).unwrap();
+
+        let mut total_bytes = 0usize;
+        let mut count = 0usize;
+        while let Ok(action) = rx.try_recv() {
+            if let GameAction::Line(line) = action {
+                total_bytes += line.len();
+                count += 1;
+            }
+        }
+        assert_eq!(
+            count,
+            MAX_TUI_BURST_SUBMIT_BYTES / crate::line::MAX_LINE_BYTES
+        );
+        assert!(total_bytes <= MAX_TUI_BURST_SUBMIT_BYTES);
     }
 }

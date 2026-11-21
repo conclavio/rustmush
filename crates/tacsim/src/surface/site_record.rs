@@ -488,6 +488,13 @@ pub struct SiteRecord {
     /// byte-identical to GC.5's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlawful: Vec<crate::surface::claim::UnlawfulAct>,
+    /// **Unlawful acts on this ground already proven to port security** (M19): matches the exact
+    /// identity tuple `ProvenOffense::same_as` checks on `Evidence::Site`, kept durably on the
+    /// site record so settled offenses evicted from `OffenseRecord` past `MAX_OFFENSE_ROWS` (64)
+    /// cannot be re-reported and double-fined. Pruned to rows still present in `unlawful` (at
+    /// most [`crate::surface::claim::MAX_UNLAWFUL`]); omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proven_unlawful: Vec<ProvenUnlawfulMark>,
     /// **The landholders' recovery delegations** (doc 41 cut RS.3, Q-41-21): who may recover
     /// hulls off a block while its claim stands, read into a pin at the attach; at most
     /// [`crate::surface::claim::MAX_LAND_GRANTS`]. Omitted while empty, so a record no
@@ -513,6 +520,43 @@ pub struct SiteRecord {
     /// holds either. Omitted while nothing did, so a record is byte-identical to FR.3's.
     #[serde(default, skip_serializing_if = "SiteMatter::is_fresh")]
     pub matter: SiteMatter,
+}
+
+/// **Identity of an already-proven unlawful site act** (M19): matches the exact fields
+/// `ProvenOffense::same_as` compares for `Evidence::Site`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenUnlawfulMark {
+    /// What kind of unlawful act.
+    pub kind: crate::surface::claim::UnlawfulKind,
+    /// Who committed it.
+    pub actor: ObjId,
+    /// Subject object number.
+    pub subject: u32,
+    /// When it occurred, IC seconds.
+    pub at_ic: i64,
+}
+
+impl ProvenUnlawfulMark {
+    /// Extract the durable proof mark from an [`crate::surface::claim::UnlawfulAct`].
+    #[must_use]
+    pub const fn of(act: &crate::surface::claim::UnlawfulAct) -> Self {
+        Self {
+            kind: act.kind,
+            actor: act.actor,
+            subject: act.subject,
+            at_ic: act.at_ic,
+        }
+    }
+
+    /// Whether this mark identifies `act`.
+    #[must_use]
+    pub fn matches(&self, act: &crate::surface::claim::UnlawfulAct) -> bool {
+        self.kind == act.kind
+            && self.actor == act.actor
+            && self.subject == act.subject
+            && self.at_ic == act.at_ic
+    }
 }
 
 /// **A site's matter terms** ([`SiteRecord::matter`]), kilograms, ever.
@@ -635,6 +679,7 @@ impl SiteRecord {
             tows: crate::surface::tow::Tows::default(),
             custody: Vec::new(),
             unlawful: Vec::new(),
+            proven_unlawful: Vec::new(),
             land_grants: Vec::new(),
             consent_asks: Vec::new(),
             pending: Vec::new(),
@@ -717,6 +762,26 @@ impl SiteRecord {
         let before = self.pending.len();
         self.pending.retain(|row| row.hull != hull);
         self.pending.len() != before
+    }
+
+    /// **Whether `act` is durably marked as already proven** (M19).
+    #[must_use]
+    pub fn is_proven_unlawful(&self, act: &crate::surface::claim::UnlawfulAct) -> bool {
+        let mark = ProvenUnlawfulMark::of(act);
+        self.proven_unlawful.contains(&mark)
+    }
+
+    /// **Record `mark` as durably proven on this site** (M19), pruning marks whose acts have
+    /// already rolled off `unlawful` and keeping the list bounded by `MAX_UNLAWFUL`.
+    pub fn mark_proven_unlawful(&mut self, mark: ProvenUnlawfulMark) {
+        self.proven_unlawful
+            .retain(|kept| self.unlawful.iter().any(|act| kept.matches(act)));
+        if !self.proven_unlawful.contains(&mark) {
+            if self.proven_unlawful.len() >= crate::surface::claim::MAX_UNLAWFUL {
+                self.proven_unlawful.remove(0);
+            }
+            self.proven_unlawful.push(mark);
+        }
     }
 
     /// The record's key, derived from the value (the families rule: writers derive the key from
@@ -1244,6 +1309,12 @@ impl SiteRecord {
         if self.unlawful.len() > crate::surface::claim::MAX_UNLAWFUL {
             return Err(format!(
                 "a site record's evidence log keeps at most {} entries",
+                crate::surface::claim::MAX_UNLAWFUL
+            ));
+        }
+        if self.proven_unlawful.len() > crate::surface::claim::MAX_UNLAWFUL {
+            return Err(format!(
+                "a site record keeps at most {} proven evidence marks",
                 crate::surface::claim::MAX_UNLAWFUL
             ));
         }

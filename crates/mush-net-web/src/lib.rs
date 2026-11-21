@@ -13,7 +13,7 @@
 //! |---|---|
 //! | `POST /api/auth/login` | `{account, password}` → `{token, account, characters[]}`; uniform 401 |
 //! | `POST /api/auth/register` | `{account, password, char_name}` → same as login |
-//! | `POST /api/auth/logout` | `Authorization: Bearer` → 204 |
+//! | `POST /api/auth/logout` | `Authorization: Bearer` → 204 (503 if durable revocation fails) |
 //! | `GET /ws` | token via `Sec-WebSocket-Protocol: rustmush.v1.<token>` only, `?char=<key>`, optional `?resume=<last_seq>` |
 //! | `GET /healthz` | `{ok, uptime_s, version, connections, loop_lag_ms, world_loop_unixtime, store_ok}` (lock-free read of the shared [`metrics::Metrics`]) |
 //! | `GET /metrics` | Prometheus text exposition; gated on `WebConfig::metrics_enabled` (opt-in, default off); non-sensitive aggregates only |
@@ -88,8 +88,8 @@ pub use app::{
 };
 pub use config::{TlsConfig, WebConfig};
 pub use hooks::{
-    AttachErr, CharSummary, LoginErr, LoginOk, NewWebConn, RegisterErr, ResumeErr, ResumeOk,
-    SessionStart, TokenIdentity, TokenVerdict, WEB_CONN_ID_BASE, WebHooks,
+    AttachErr, CharSummary, LoginErr, LoginOk, LogoutErr, NewWebConn, RegisterErr, ResumeErr,
+    ResumeOk, SessionStart, TokenIdentity, TokenVerdict, WEB_CONN_ID_BASE, WebHooks,
 };
 pub use hooks::{CloseRequest, ConnCloser};
 pub use metrics::{LlmFeatureStat, LlmTodaySpend, Metrics, MetricsSnapshot, WorldSample};

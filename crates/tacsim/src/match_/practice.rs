@@ -94,6 +94,10 @@ pub const PRACTICE_STATUS_AWAY: &str = "  its mind has the controls; MIND BACK t
 pub const PRACTICE_SEAT_REFUSED: &str =
     "the seat gives no order while the mind flies the hull; MIND BACK takes the controls";
 
+/// Minimum arena milliseconds after ending a practice hand-over before
+/// `MIND AWAY` may open another (`M20`), preventing unbounded span churn.
+pub const PRACTICE_COOLDOWN_MS: i64 = 1_000;
+
 /// **The practice match that holds `unit`**: a running match of the arena registry that is
 /// not an IC field's. `None` for a unit in a field and for one no arena holds.
 #[must_use]
@@ -273,6 +277,9 @@ pub fn away(
             name,
             posture,
         )));
+    }
+    if crate::match_::lobby::practice_cooldown_due(ctx.w, driver, PRACTICE_COOLDOWN_MS) {
+        return Err(IntentRefusal::Busy.into());
     }
     tell(ctx, match_id, driver, unit, posture)?;
     let tasks = ctx

@@ -623,6 +623,13 @@ pub fn hold_for_tests(w: &mut World, record: CrewRecord) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn clear_for_tests(w: &mut World) {
+    if let Some(book) = w.module_state_mut::<CrewBook>() {
+        book.0.clear();
+    }
+}
+
 /// **Whether `who` is physically inside `obj`**: the location chain, or the spatial graph.
 #[must_use]
 pub(crate) fn inside(w: &World, who: ObjId, obj: ObjId) -> bool {
@@ -1178,9 +1185,10 @@ pub fn capture_cause(site: &CanonicalId, ordinal: u32, captive: ObjId) -> String
 
 /// **Whether `captor` held `captive` Hostile at the capture** (doc 42 Q-42-21): an organization
 /// of either declared Hostile on one of the other's (doc 40 cut FR.1's stance table, read now),
-/// or either stood behind fire in the site's last field (a GC.10 receipt of that field naming
-/// them). A field's private marks end with it (Q-CF-8) and leave no record, so a mark that was
-/// never followed by fire reads as no hostility.
+/// or the pair exchanged non-voided fire in the site's last field (checked pairwise via the RAM
+/// fire ledger or the durable GC.10 receipts naming both shooter and victim, M33). A field's
+/// private marks end with it (Q-CF-8) and leave no record, so a mark that was never followed by
+/// pairwise fire reads as no hostility.
 #[must_use]
 pub(crate) fn held_hostile(
     w: &World,
@@ -1195,10 +1203,49 @@ pub(crate) fn held_hostile(
     if ordinal == 0 {
         return false;
     }
-    mush_faction::standing_causes(w, &super::standing::cause_prefix(site, ordinal))
+    if w.module_state::<super::FieldBook>()
+        .is_some_and(|book| book.had_fire_pair(site, ordinal, captor, captive))
+    {
+        return true;
+    }
+    let prefix = super::standing::cause_prefix(site, ordinal);
+    let captor_factions: std::collections::BTreeSet<mush_faction::FactionId> =
+        mush_faction::open_factions(w, captor).into_iter().collect();
+    let captive_factions: std::collections::BTreeSet<mush_faction::FactionId> =
+        mush_faction::open_factions(w, captive)
+            .into_iter()
+            .collect();
+    mush_faction::standing_causes(w, &prefix)
         .iter()
-        .filter_map(|cause| mush_faction::standing_receipt(w, cause))
-        .any(|receipt| receipt.subject == captor || receipt.subject == captive)
+        .any(|cause| {
+            let Some(receipt) = mush_faction::standing_receipt(w, cause) else {
+                return false;
+            };
+            if receipt.voided_by.is_some() {
+                return false;
+            }
+            match super::standing::cause_victims(&prefix, cause) {
+                Some(victims) => {
+                    (receipt.subject == captor && victims.contains(&captive))
+                        || (receipt.subject == captive && victims.contains(&captor))
+                }
+                // Legacy pre-M33 receipts without encoded victim IDs: require the affected
+                // factions to intersect the other party's open factions rather than matching any
+                // third-party fire receipt (such as firing at raiders).
+                None => {
+                    (receipt.subject == captor
+                        && receipt
+                            .effects
+                            .iter()
+                            .any(|e| captive_factions.contains(&e.faction)))
+                        || (receipt.subject == captive
+                            && receipt
+                                .effects
+                                .iter()
+                                .any(|e| captor_factions.contains(&e.faction)))
+                }
+            }
+        })
 }
 
 /// Whether an organization of `a` and one of `b` stand Hostile, either way (the stance table).
@@ -1330,12 +1377,31 @@ pub struct NpcExit {
 pub struct NpcExits {
     owed: BTreeMap<ObjId, NpcExit>,
     tries: BTreeMap<ObjId, u32>,
+    next_seq: u64,
+}
+
+/// Monotonic per-boot sequence for crew exit idempotency keys (prevents collisions on frozen IC clocks).
+pub(crate) fn next_exit_seq(w: &mut World) -> u64 {
+    let Some(book) = w.module_state_mut::<NpcExits>() else {
+        return 0;
+    };
+    book.next_seq = book.next_seq.saturating_add(1);
+    book.next_seq
 }
 
 /// **The exit owed for `npc`**, if any.
 #[must_use]
 pub fn npc_exit_of(w: &World, npc: ObjId) -> Option<&NpcExit> {
     w.module_state::<NpcExits>()?.owed.get(&npc)
+}
+
+/// Whether a pending [`NpcExit`] applies to `contract` (matching employer and hired at or before
+/// the exit instant, so a stale exit can never shadow or destroy a newer contract).
+#[must_use]
+pub(crate) fn exit_applies(w: &World, contract: &crate::detachment::crew::CrewContract) -> bool {
+    npc_exit_of(w, contract.npc).is_some_and(|exit| {
+        exit.organizer == contract.employer && contract.hired_at.at <= exit.recovered_ic
+    })
 }
 
 /// **The exits owed to `organizer`'s roster**, in NPC order (the action's offer).
@@ -1492,7 +1558,8 @@ pub(crate) fn npc_exits(ctx: &mut Ctx<'_>) {
         let Ok(contract) = ctx.action_state(&contracts, &exit.npc) else {
             continue;
         };
-        let contracted = contract.is_some_and(|c| c.employer == exit.organizer);
+        let contracted = contract
+            .is_some_and(|c| c.employer == exit.organizer && c.hired_at.at <= exit.recovered_ic);
         let reserved = match &reservations {
             Some(handle) => match ctx.action_state(handle, &exit.npc) {
                 Ok(found) => found.is_some_and(|r| r.organizer == exit.organizer),
@@ -3750,5 +3817,142 @@ mod tests {
             gates.iter().all(|gate| refusal(&w, who, *gate).is_none()),
             "a passenger"
         );
+    }
+
+    #[test]
+    fn m33_held_hostile_checks_pairwise_fire_and_rejects_third_party_receipts() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_faction::FactionModule::new()),
+            Box::new(crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..crate::TacsimConfig::default()
+            })),
+        ]);
+        let captor = tw
+            .world_mut()
+            .create(ObjKind::Player, "Captor", mush_core::GOD, None)
+            .expect("captor");
+        let captive = tw
+            .world_mut()
+            .create(ObjKind::Player, "Captive", mush_core::GOD, None)
+            .expect("captive");
+        let third = tw
+            .world_mut()
+            .create(ObjKind::Player, "Third", mush_core::GOD, None)
+            .expect("third");
+        let raider = tw
+            .world_mut()
+            .create(ObjKind::Npc, "Raider", mush_core::GOD, None)
+            .expect("raider");
+        let site = CanonicalId::new("ahuna_flank").expect("site");
+        let prefix = super::super::standing::cause_prefix(&site, 1);
+
+        tw.exec_ok(mush_core::GOD, "@faction/create Coop");
+        tw.exec_ok(mush_core::GOD, "@faction/create Raiders");
+        tw.exec_ok(
+            mush_core::GOD,
+            &format!("@faction/add Coop=#{}/level:1", captive.0),
+        );
+        tw.exec_ok(
+            mush_core::GOD,
+            &format!("@faction/add Coop=#{}/level:1", third.0),
+        );
+        tw.exec_ok(
+            mush_core::GOD,
+            &format!("@faction/add Raiders=#{}/level:1", raider.0),
+        );
+        let (fac_coop, fac_raider) = {
+            let state = tw
+                .world()
+                .module_state::<mush_faction::FactionState>()
+                .expect("factions");
+            (
+                state.faction_by_name("Coop").expect("coop").id,
+                state.faction_by_name("Raiders").expect("raiders").id,
+            )
+        };
+
+        let mut out = mush_core::Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            // 1. Captor fired on raider -> must NOT exempt capturing neutral player `captive`.
+            mush_faction::record_standing(
+                &mut ctx,
+                &format!("{prefix}ac:{}:{}", captor.0, raider.0),
+                captor,
+                &[mush_faction::StandingEffect {
+                    faction: fac_raider,
+                    delta: -1,
+                }],
+                "raider fire",
+            )
+            .expect("raider receipt");
+            // 2. Captor fired on `third` (same faction as `captive`) -> must NOT exempt `captive`.
+            mush_faction::record_standing(
+                &mut ctx,
+                &format!("{prefix}ad:{}:{}", captor.0, third.0),
+                captor,
+                &[mush_faction::StandingEffect {
+                    faction: fac_coop,
+                    delta: -1,
+                }],
+                "third party fire",
+            )
+            .expect("third receipt");
+            // 3. Captive fired on raider -> must NOT allow neutral bystander `captor` penalty-free capture.
+            mush_faction::record_standing(
+                &mut ctx,
+                &format!("{prefix}bc:{}:{}", captive.0, raider.0),
+                captive,
+                &[mush_faction::StandingEffect {
+                    faction: fac_raider,
+                    delta: -1,
+                }],
+                "captive defensive fire",
+            )
+            .expect("captive receipt");
+        }
+        assert!(
+            !held_hostile(tw.world(), &site, 1, captor, captive),
+            "non-pairwise fire receipts must never waive capture standing penalty"
+        );
+
+        // 4. Direct pairwise fire between captor and captive (encoded victim) DOES mark hostile.
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: Default::default(),
+                args: Default::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            mush_faction::record_standing(
+                &mut ctx,
+                &format!("{prefix}ab:{}:{}", captor.0, captive.0),
+                captor,
+                &[mush_faction::StandingEffect {
+                    faction: fac_coop,
+                    delta: -1,
+                }],
+                "pairwise fire",
+            )
+            .expect("pairwise receipt");
+        }
+        assert!(held_hostile(tw.world(), &site, 1, captor, captive));
+        assert!(held_hostile(tw.world(), &site, 1, captive, captor));
     }
 }

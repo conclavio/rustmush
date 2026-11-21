@@ -1654,8 +1654,9 @@ impl Arena {
                     .into_iter()
                     .filter(|candidate| candidate.id != sharer)
                     .filter(|candidate| {
-                        self.unit_row(candidate)
-                            .is_some_and(|mate| mate.team == side && !mate.limits.wreck)
+                        self.unit_row(candidate).is_some_and(|mate| {
+                            mate.team == side && !mate.limits.wreck && !mate.sensor_offline()
+                        })
                     })
                     .collect()
             })
@@ -2450,6 +2451,12 @@ pub struct FrameOrder {
 }
 
 pub(crate) fn valid_order_identity(identity: &str) -> bool {
+    if let Some(hex) = identity.strip_prefix("dth:") {
+        return hex.len() == 28
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    }
     if identity.len() > 53 {
         return false;
     }

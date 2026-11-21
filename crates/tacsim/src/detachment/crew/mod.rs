@@ -163,7 +163,8 @@ fn offers(
                             .get(&room)
                             .is_some_and(|geo| geo.key.pack == port.area)
                     })
-        }) || contracted(*npc)?
+        }) || crate::field::npc_exit_of(world, *npc).is_some()
+            || contracted(*npc)?
         {
             continue;
         }

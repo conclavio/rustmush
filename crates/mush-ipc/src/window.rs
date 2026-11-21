@@ -154,6 +154,7 @@ impl ToGateway {
             | ToGateway::CloseWebSessions { .. }
             | ToGateway::Hello { .. }
             | ToGateway::Bye => PRE_WINDOW,
+            ToGateway::RevokeWebToken { .. } => 15,
         }
     }
 
@@ -346,5 +347,29 @@ mod tests {
         // version, its gate opens without being rebuilt.
         silent.link().record(IPC_VERSION);
         assert_eq!(silent.admit(ToGateway::Bye), Some(ToGateway::Bye));
+    }
+
+    #[test]
+    fn revoke_web_token_is_gated_to_version_15() {
+        let msg = ToGateway::RevokeWebToken {
+            token_hash: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                .to_string(),
+        };
+        assert_eq!(msg.introduced_at(), 15);
+        assert_eq!(
+            EmissionGate::new(LinkVersion::announced(14)).admit(msg.clone()),
+            None,
+            "v14 gateway must not receive v15 RevokeWebToken"
+        );
+        assert_eq!(
+            EmissionGate::new(LinkVersion::unknown()).admit(msg.clone()),
+            None,
+            "unannounced link defaults to window floor (14)"
+        );
+        assert_eq!(
+            EmissionGate::new(LinkVersion::announced(15)).admit(msg.clone()),
+            Some(msg),
+            "v15 gateway receives RevokeWebToken"
+        );
     }
 }

@@ -32,6 +32,7 @@
 
 use mush_atlas::TerrainClass;
 use mush_atlas::trace::{Bresenham, CellGrid, canonical_ends};
+use mush_core::ObjId;
 
 use crate::arena::state::{Arena, ArenaTerrain};
 
@@ -82,6 +83,38 @@ impl Arena {
             .iter()
             .filter(|unit| unit.limits.wreck)
             .filter_map(|unit| self.definition.terrain.cell_of(&unit.pose))
+            .collect()
+    }
+
+    /// **The cells of wrecks `viewer` knows are dead**, in contact order,
+    /// omitting `except` — read strictly from `viewer`'s held contacts that
+    /// read dead (`Arena::contact_reads_dead`) at each held plot cell, so
+    /// observer-facing advice traces never leak undetected wrecks.
+    #[must_use]
+    pub fn known_wreck_cells(&self, viewer: ObjId, except: [(u16, u16); 2]) -> Vec<(u16, u16)> {
+        self.contacts
+            .of(viewer)
+            .filter(|(_, held)| {
+                self.contact_reads_dead(held)
+                    && self.unit(held.target).is_some_and(|unit| unit.limits.wreck)
+            })
+            .filter_map(|(_, held)| held.seen_at.cell(&self.definition.terrain))
+            .filter(|cell| !except.contains(cell))
+            .collect()
+    }
+
+    /// **The cells of wrecks `viewer` knows are dead**, for mind advice
+    /// (`line_to`), read strictly from `viewer`'s held contacts that read dead
+    /// (`Arena::contact_reads_dead`) at each held plot cell.
+    #[must_use]
+    pub fn mind_wrecks_for(&self, viewer: ObjId) -> Vec<(u16, u16)> {
+        self.contacts
+            .of(viewer)
+            .filter(|(_, held)| {
+                self.contact_reads_dead(held)
+                    && self.unit(held.target).is_some_and(|unit| unit.limits.wreck)
+            })
+            .filter_map(|(_, held)| held.seen_at.cell(&self.definition.terrain))
             .collect()
     }
 
@@ -239,5 +272,129 @@ mod tests {
             state.ammo.insert(smol_str::SmolStr::new("cannon"), 0);
         }
         assert!(arena.hostile_in_weapons_range());
+    }
+
+    #[test]
+    fn t2b_m23_undetected_wreck_hides_from_advice_while_blocking_physics() {
+        use crate::arena::stock_mind::{Ground, line_to};
+
+        let mut arena = row();
+        // Place light woods in HULK's cell (3, 1): a trace that does NOT see
+        // HULK reads light-woods attenuation (25); a trace that overlays HULK as
+        // WRECK_CLASS (Wall) stops at (3, 1) with 0 foliage attenuation.
+        let mut cells = std::sync::Arc::make_mut(&mut arena.definition)
+            .terrain
+            .cells()
+            .to_vec();
+        let width = usize::from(arena.definition.terrain.width());
+        let height = arena.definition.terrain.height();
+        let cell_cm = arena.definition.terrain.cell_cm();
+        if let Some(cell) = cells.get_mut(width + 3) {
+            cell.class = mush_atlas::TerrainClass::WoodsLight;
+        }
+        std::sync::Arc::make_mut(&mut arena.definition).terrain =
+            crate::arena::state::ArenaTerrain::new(
+                u16::try_from(width).expect("width"),
+                height,
+                cell_cm,
+                cells,
+            )
+            .expect("terrain");
+
+        let blue_id = crate::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let blue_seen = SeenPose::of(arena.unit(BLUE).expect("blue"));
+        arena.contacts.insert(
+            RED,
+            blue_id,
+            ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                blue_seen,
+            ),
+        );
+        wreck(&mut arena, HULK);
+
+        // Physics traces still see the live wreck between RED (1,1) and BLUE (5,1).
+        let mut counters = PerceptionCounters::default();
+        assert_eq!(
+            arena.sight(eye((1, 1)), eye((5, 1)), &mut counters),
+            Sight::BlockedBy(Blocker::Terrain {
+                at: (3, 1),
+                class: WRECK_CLASS,
+            })
+        );
+        assert_eq!(
+            arena.fire_line(RED, BLUE).0,
+            Sight::BlockedBy(Blocker::Terrain {
+                at: (3, 1),
+                class: WRECK_CLASS,
+            })
+        );
+        assert_eq!(
+            arena.fire_attenuation(RED, BLUE),
+            0,
+            "physics ray stops at live wreck before reaching woods at (4,1)"
+        );
+
+        // Observer-facing advice must NOT reveal the undetected wreck.
+        let wrecks_undetected = arena.mind_wrecks_for(RED);
+        assert!(wrecks_undetected.is_empty());
+        assert!(arena.known_wreck_cells(RED, [(1, 1), (5, 1)]).is_empty());
+        assert!(
+            line_to(
+                &Ground {
+                    def: &arena.definition,
+                    wrecks: &wrecks_undetected,
+                },
+                (1, 1),
+                (5, 1),
+            ),
+            "mind line_to must not leak undetected wreck"
+        );
+        assert!(
+            arena.fire_attenuation_at(RED, BLUE, (5, 1)) > 0,
+            "advice trace must walk past undetected wreck to woods at (4,1)"
+        );
+
+        // Even a held contact on HULK that does NOT read dead yet must not leak.
+        let hulk_id = crate::arena::rng::draw_contact_id(arena.seed, RED, HULK);
+        let hulk_seen = SeenPose::of(arena.unit(HULK).expect("hulk"));
+        let mut hulk_contact = ShadowContact::sighted(
+            HULK,
+            Classification::Classified {
+                party: PartyId::BLUE,
+            },
+            0,
+            hulk_seen,
+        );
+        arena.contacts.insert(RED, hulk_id, hulk_contact);
+        assert!(arena.mind_wrecks_for(RED).is_empty());
+        assert!(arena.fire_attenuation_at(RED, BLUE, (5, 1)) > 0);
+
+        // Once RED holds a dead-reading contact on HULK, advice traces include (3,1).
+        hulk_contact.known_dead = true;
+        arena.contacts.insert(RED, hulk_id, hulk_contact);
+        let wrecks_known = arena.mind_wrecks_for(RED);
+        assert_eq!(wrecks_known, vec![(3, 1)]);
+        assert_eq!(arena.known_wreck_cells(RED, [(1, 1), (5, 1)]), vec![(3, 1)]);
+        assert!(
+            !line_to(
+                &Ground {
+                    def: &arena.definition,
+                    wrecks: &wrecks_known,
+                },
+                (1, 1),
+                (5, 1),
+            ),
+            "mind line_to sees viewer-known dead wreck"
+        );
+        assert_eq!(
+            arena.fire_attenuation_at(RED, BLUE, (5, 1)),
+            0,
+            "advice trace stops at viewer-known dead wreck before woods at (4,1)"
+        );
     }
 }

@@ -238,14 +238,18 @@ namespace TacSim.World
 
                     if (ex.FromRoom == cur && !visited.Contains(ex.ToRoom))
                     {
+                        string cmd = TacSimContentLoader.FormatSafeExitCommand(ex.ForwardCommand);
+                        if (string.IsNullOrEmpty(cmd)) continue;
                         visited.Add(ex.ToRoom);
-                        cameFrom[ex.ToRoom] = (cur, ex.ForwardCommand);
+                        cameFrom[ex.ToRoom] = (cur, cmd);
                         queue.Enqueue(ex.ToRoom);
                     }
                     else if (ex.ToRoom == cur && !visited.Contains(ex.FromRoom))
                     {
+                        string cmd = TacSimContentLoader.FormatSafeExitCommand(ex.ReverseCommand);
+                        if (string.IsNullOrEmpty(cmd)) continue;
                         visited.Add(ex.FromRoom);
-                        cameFrom[ex.FromRoom] = (cur, ex.ReverseCommand);
+                        cameFrom[ex.FromRoom] = (cur, cmd);
                         queue.Enqueue(ex.FromRoom);
                     }
                 }
@@ -288,6 +292,8 @@ namespace TacSim.World
         public string ReverseCommand;
         public string ForwardLabel;
         public string ReverseLabel;
+        /// <summary>True ONLY for statically synthesized non-exit ship actions (+tv/bay in|out).</summary>
+        public bool IsStaticAction;
     }
 
     public sealed class ShipUnitTemplate
@@ -318,14 +324,18 @@ namespace TacSim.World
                     var ex = Exits[i];
                     if (ex.From == cur && !visited.Contains(ex.To))
                     {
+                        string cmd = TacSimContentLoader.FormatShipTraversalCommand(ex.ForwardCommand, ex.IsStaticAction);
+                        if (string.IsNullOrEmpty(cmd)) continue;
                         visited.Add(ex.To);
-                        cameFrom[ex.To] = (cur, ex.ForwardCommand);
+                        cameFrom[ex.To] = (cur, cmd);
                         queue.Enqueue(ex.To);
                     }
                     else if (ex.To == cur && !visited.Contains(ex.From))
                     {
+                        string cmd = TacSimContentLoader.FormatShipTraversalCommand(ex.ReverseCommand, ex.IsStaticAction);
+                        if (string.IsNullOrEmpty(cmd)) continue;
                         visited.Add(ex.From);
-                        cameFrom[ex.From] = (cur, ex.ReverseCommand);
+                        cameFrom[ex.From] = (cur, cmd);
                         queue.Enqueue(ex.From);
                     }
                 }
@@ -977,8 +987,8 @@ namespace TacSim.World
                     if (from == "limbo" || to == "limbo") continue;
 
                     var names = def["names"].AsArray();
-                    ParseExitSpec(names != null && names.Count > 0 ? names[0].AsString("") : "North;n", out string fwdLabel, out string fwdCmd);
-                    ParseExitSpec(names != null && names.Count > 1 ? names[1].AsString("") : "South;s", out string revLabel, out string revCmd);
+                    ParseExitSpec(names != null && names.Count > 0 ? names[0].AsString("") : "", out string fwdLabel, out string fwdCmd);
+                    ParseExitSpec(names != null && names.Count > 1 ? names[1].AsString("") : "", out string revLabel, out string revCmd);
 
                     var portal = def["portal"];
                     var ex = new AtlasExitDef
@@ -1256,8 +1266,8 @@ namespace TacSim.World
                     {
                         var ex = exits[i];
                         var names = ex["names"].AsArray();
-                        ParseExitSpec(names != null && names.Count > 0 ? names[0].AsString("") : "In;in", out string fLbl, out string fCmd);
-                        ParseExitSpec(names != null && names.Count > 1 ? names[1].AsString("") : "Out;out", out string rLbl, out string rCmd);
+                        ParseExitSpec(names != null && names.Count > 0 ? names[0].AsString("") : "", out string fLbl, out string fCmd);
+                        ParseExitSpec(names != null && names.Count > 1 ? names[1].AsString("") : "", out string rLbl, out string rCmd);
                         tpl.Exits.Add(new ShipExitPairDef
                         {
                             From = ex.Str("from", string.Empty),
@@ -1265,7 +1275,8 @@ namespace TacSim.World
                             ForwardLabel = fLbl,
                             ForwardCommand = fCmd,
                             ReverseLabel = rLbl,
-                            ReverseCommand = rCmd
+                            ReverseCommand = rCmd,
+                            IsStaticAction = false
                         });
                     }
                 }
@@ -1280,7 +1291,8 @@ namespace TacSim.World
                         ForwardLabel = "Vehicle Bay",
                         ForwardCommand = "+tv/bay in",
                         ReverseLabel = "Cargo Hold",
-                        ReverseCommand = "+tv/bay out"
+                        ReverseCommand = "+tv/bay out",
+                        IsStaticAction = true
                     });
                 }
             }
@@ -1312,17 +1324,67 @@ namespace TacSim.World
             };
         }
 
+        public static bool HasControlChar(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return false;
+            for (int i = 0; i < input.Length; i++)
+            {
+                char c = input[i];
+                if (c < 0x20 || (c >= 0x7f && c <= 0x9f))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Formats an authored room/portal exit name or alias into a safe `goto &lt;exit&gt;`
+        /// command, or null when blank or containing C0/DEL/C1 control characters (EXT-P1-6).
+        /// </summary>
+        public static string FormatSafeExitCommand(string rawExit)
+        {
+            if (string.IsNullOrWhiteSpace(rawExit))
+                return null;
+            string trimmed = rawExit.Trim();
+            if (trimmed.Length == 0 || HasControlChar(trimmed))
+                return null;
+            return "goto " + trimmed;
+        }
+
+        /// <summary>
+        /// Formats a ship-interior traversal command: static non-exit ship-bay actions
+        /// (`+tv/bay in`, `+tv/bay out`) are allowlisted ONLY when <paramref name="isStaticAction"/> is true;
+        /// all authored ship exits are unconditionally prefixed with `goto ` (EXT-P1-6).
+        /// </summary>
+        public static string FormatShipTraversalCommand(string rawCommand, bool isStaticAction = false)
+        {
+            if (isStaticAction)
+            {
+                if (string.IsNullOrWhiteSpace(rawCommand))
+                    return null;
+                string trimmed = rawCommand.Trim();
+                return (string.Equals(trimmed, "+tv/bay in", StringComparison.Ordinal) ||
+                        string.Equals(trimmed, "+tv/bay out", StringComparison.Ordinal))
+                    ? trimmed
+                    : null;
+            }
+            return FormatSafeExitCommand(rawCommand);
+        }
+
         private static void ParseExitSpec(string raw, out string displayLabel, out string shortAlias)
         {
-            if (string.IsNullOrWhiteSpace(raw))
+            if (string.IsNullOrWhiteSpace(raw) || HasControlChar(raw))
             {
                 displayLabel = "Exit";
-                shortAlias = "n";
+                shortAlias = string.Empty;
                 return;
             }
             string[] parts = raw.Split(';');
-            displayLabel = parts[0].Trim();
-            shortAlias = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]) ? parts[1].Trim() : displayLabel;
+            string head = parts[0].Trim();
+            displayLabel = string.IsNullOrEmpty(head) ? "Exit" : head;
+            string alias = parts.Length > 1 ? parts[1].Trim() : string.Empty;
+            shortAlias = !string.IsNullOrEmpty(alias) ? alias : head;
+            if (FormatSafeExitCommand(shortAlias) == null)
+                shortAlias = string.Empty;
         }
 
         private static AtlasNeighborhoodPack BuildFallbackFreeport()
@@ -1380,6 +1442,199 @@ namespace TacSim.World
         {
             if (string.IsNullOrEmpty(s)) return "Compartment";
             return char.ToUpperInvariant(s[0]) + s.Substring(1);
+        }
+    }
+
+    public enum NavWalkerScope
+    {
+        Station,
+        Ship
+    }
+
+    public readonly struct QueuedNavHop
+    {
+        public readonly NavWalkerScope Scope;
+        public readonly string FromRoom;
+        public readonly string TargetRoom;
+        public readonly string Command;
+
+        public QueuedNavHop(NavWalkerScope scope, string fromRoom, string targetRoom, string command)
+        {
+            Scope = scope;
+            FromRoom = fromRoom;
+            TargetRoom = targetRoom;
+            Command = command;
+        }
+    }
+
+    public readonly struct NavRoomUpdateResult
+    {
+        public readonly string AcknowledgedTarget;
+        public readonly QueuedNavHop? NextHopToSend;
+        public readonly bool CanceledOnMismatch;
+
+        public NavRoomUpdateResult(string acknowledgedTarget, QueuedNavHop? nextHopToSend, bool canceledOnMismatch)
+        {
+            AcknowledgedTarget = acknowledgedTarget;
+            NextHopToSend = nextHopToSend;
+            CanceledOnMismatch = canceledOnMismatch;
+        }
+    }
+
+    /// <summary>
+    /// Room-bound single-hop navigation queue (EXT-P1-6):
+    /// binds every queued hop to its expected source room and scope, sends at most ONE hop
+    /// at a time, waits for an authoritative room update matching the expected destination
+    /// before advancing the next hop, and cancels all remaining queued hops on any room
+    /// mismatch, scope/pack change, timeout, or unrelated player action.
+    /// </summary>
+    public sealed class RoomBoundNavWalker
+    {
+        public const float InFlightTimeoutSeconds = 3.5f;
+
+        private QueuedNavHop? _inFlight;
+        private float _inFlightSentAtSec = -100f;
+        private readonly Queue<QueuedNavHop> _queue = new Queue<QueuedNavHop>();
+
+        public QueuedNavHop? InFlight => _inFlight;
+        public string InFlightTarget => _inFlight.HasValue ? _inFlight.Value.TargetRoom : null;
+        public float InFlightSentAtSec => _inFlightSentAtSec;
+        public int QueuedCount => _queue.Count;
+
+        public bool HasInFlight(float nowSec)
+        {
+            return _inFlight.HasValue && (nowSec - _inFlightSentAtSec) < InFlightTimeoutSeconds;
+        }
+
+        public bool ExpireIfStale(float nowSec)
+        {
+            if (_inFlight.HasValue && (nowSec - _inFlightSentAtSec) >= InFlightTimeoutSeconds)
+            {
+                Cancel();
+                return true;
+            }
+            return false;
+        }
+
+        public void Cancel()
+        {
+            _inFlight = null;
+            _inFlightSentAtSec = -100f;
+            _queue.Clear();
+        }
+
+        public QueuedNavHop? PlanAndDispatchOne(
+            NavWalkerScope scope,
+            string currentServerRoom,
+            IReadOnlyList<(string command, string targetRoom)> hops,
+            float nowSec)
+        {
+            ExpireIfStale(nowSec);
+            if (HasInFlight(nowSec))
+                return null;
+
+            _queue.Clear();
+            if (string.IsNullOrEmpty(currentServerRoom) || hops == null || hops.Count == 0)
+                return null;
+
+            var bound = new List<QueuedNavHop>(hops.Count);
+            string prev = currentServerRoom;
+            for (int i = 0; i < hops.Count; i++)
+            {
+                string cmd = hops[i].command;
+                string target = hops[i].targetRoom;
+                if (string.IsNullOrEmpty(cmd) || string.IsNullOrEmpty(target))
+                {
+                    Cancel();
+                    return null;
+                }
+                bound.Add(new QueuedNavHop(scope, prev, target, cmd));
+                prev = target;
+            }
+
+            QueuedNavHop first = bound[0];
+            if (!string.Equals(first.FromRoom, currentServerRoom, StringComparison.Ordinal))
+                return null;
+
+            _inFlight = first;
+            _inFlightSentAtSec = nowSec;
+            for (int i = 1; i < bound.Count; i++)
+                _queue.Enqueue(bound[i]);
+
+            return first;
+        }
+
+        public void ReplaceQueuedTailWhileInFlight(
+            NavWalkerScope scope,
+            IReadOnlyList<(string command, string targetRoom)> hopsFromInFlightTarget,
+            float nowSec)
+        {
+            ExpireIfStale(nowSec);
+            if (!_inFlight.HasValue || _inFlight.Value.Scope != scope)
+                return;
+
+            _queue.Clear();
+            if (hopsFromInFlightTarget == null || hopsFromInFlightTarget.Count == 0)
+                return;
+
+            string prev = _inFlight.Value.TargetRoom;
+            for (int i = 0; i < hopsFromInFlightTarget.Count; i++)
+            {
+                string cmd = hopsFromInFlightTarget[i].command;
+                string target = hopsFromInFlightTarget[i].targetRoom;
+                if (string.IsNullOrEmpty(cmd) || string.IsNullOrEmpty(target))
+                {
+                    _queue.Clear();
+                    return;
+                }
+                _queue.Enqueue(new QueuedNavHop(scope, prev, target, cmd));
+                prev = target;
+            }
+        }
+
+        public NavRoomUpdateResult OnAuthoritativeRoomUpdate(
+            NavWalkerScope scope,
+            string confirmedRoom,
+            float nowSec,
+            bool allowAdvance = true)
+        {
+            if (!_inFlight.HasValue)
+            {
+                _queue.Clear();
+                return new NavRoomUpdateResult(null, null, canceledOnMismatch: false);
+            }
+
+            QueuedNavHop prev = _inFlight.Value;
+            if (prev.Scope != scope || !string.Equals(prev.TargetRoom, confirmedRoom, StringComparison.Ordinal))
+            {
+                Cancel();
+                return new NavRoomUpdateResult(null, null, canceledOnMismatch: true);
+            }
+
+            _inFlight = null;
+            _inFlightSentAtSec = -100f;
+
+            if (!allowAdvance)
+            {
+                _queue.Clear();
+                return new NavRoomUpdateResult(confirmedRoom, null, canceledOnMismatch: false);
+            }
+
+            if (_queue.Count == 0)
+                return new NavRoomUpdateResult(confirmedRoom, null, canceledOnMismatch: false);
+
+            QueuedNavHop next = _queue.Dequeue();
+            if (next.Scope != scope ||
+                !string.Equals(next.FromRoom, confirmedRoom, StringComparison.Ordinal) ||
+                string.IsNullOrEmpty(next.Command))
+            {
+                Cancel();
+                return new NavRoomUpdateResult(confirmedRoom, null, canceledOnMismatch: true);
+            }
+
+            _inFlight = next;
+            _inFlightSentAtSec = nowSec;
+            return new NavRoomUpdateResult(confirmedRoom, next, canceledOnMismatch: false);
         }
     }
 }

@@ -535,6 +535,10 @@ struct Said {
     word: SmolStr,
 }
 
+/// Maximum number of mind hand-over spans retained per pilot fold (`M20`),
+/// bounding RAM, `tacsim:live:<n>` KV size, and per-shot `flying_at` scans.
+pub const MAX_MIND_SPANS: usize = 256;
+
 /// **What the fold keeps of the pilot's own mind** (17b cut M5.6): the
 /// check-out's [`OwnMind`], the spans the world opened and closed, and off
 /// the tape — on the pilot's OWN hull alone — the hull's shots inside a span
@@ -1013,23 +1017,60 @@ impl Fold {
     /// block neither the tape nor the check-out carries (a declared
     /// departure, the design note's §7 3): a shot in the pulse of the
     /// hand-over may be counted on either side of it. A span already open is
-    /// left as it is. One opened on a wreck is kept here and read as none
-    /// when the block is built (`MindTrack::flown`): the hull's
-    /// `unit_destroyed` may reach the fold after this call.
+    /// left as it is. Contiguous toggles on the same route coalesce; past
+    /// [`MAX_MIND_SPANS`], zero-duration or oldest intermediate spans are
+    /// compacted so the vector stays bounded. One opened on a wreck is kept
+    /// here and read as none when the block is built (`MindTrack::flown`):
+    /// the hull's `unit_destroyed` may reach the fold after this call.
     pub fn released(&mut self, at_ms: i64, by: HandOver) {
-        if self
-            .mind
-            .spans
-            .last()
-            .is_some_and(|span| span.to_ms.is_none())
-        {
-            return;
+        if let Some(last) = self.mind.spans.last_mut() {
+            if last.to_ms.is_none() {
+                return;
+            }
+            if last.to_ms.is_some_and(|to_ms| to_ms >= at_ms) && last.by == by {
+                last.to_ms = None;
+                return;
+            }
+        }
+        if self.mind.spans.len() >= MAX_MIND_SPANS {
+            if let Some(empty) = self
+                .mind
+                .spans
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find_map(|(i, span)| (span.to_ms == Some(span.from_ms)).then_some(i))
+            {
+                self.mind.spans.remove(empty);
+            } else if self.mind.spans.len() > 1 {
+                self.mind.spans.remove(1);
+            } else {
+                return;
+            }
         }
         self.mind.spans.push(Span {
             from_ms: at_ms,
             to_ms: None,
             by,
         });
+    }
+
+    /// Arena timestamp when the pilot's most recent closed `MIND AWAY` practice
+    /// span ended, if any (used to enforce the practice toggle cooldown).
+    #[must_use]
+    pub(crate) fn last_let_go_end_ms(&self) -> Option<i64> {
+        self.mind
+            .spans
+            .iter()
+            .rev()
+            .find(|span| span.by == HandOver::LetGo && span.to_ms.is_some())
+            .and_then(|span| span.to_ms)
+    }
+
+    /// Number of recorded mind hand-over spans on this fold (bounded by [`MAX_MIND_SPANS`]).
+    #[must_use]
+    pub(crate) fn mind_spans_len(&self) -> usize {
+        self.mind.spans.len()
     }
 
     /// **The pilot took the tank back at `at_ms`** (17b cut M5.6): the open
@@ -5303,5 +5344,26 @@ mod tests {
             lines[3].as_str(),
             "  1:04.000  order_released unit=#301 squad=red-1 issuer=-"
         );
+    }
+
+    #[test]
+    fn t2b_m20_mind_spans_coalesce_and_cap_at_max() {
+        let mut fold = Fold::new(roster(), Reader::Pilot { unit: ME }, RULES);
+        // Contiguous same-route spans at the same timestamp coalesce into one span.
+        fold.released(1_000, HandOver::LetGo);
+        fold.reclaimed(2_000);
+        fold.released(2_000, HandOver::LetGo);
+        fold.reclaimed(3_000);
+        assert_eq!(fold.mind_spans_len(), 1);
+        assert_eq!(fold.last_let_go_end_ms(), Some(3_000));
+
+        // Repeated non-contiguous open/close cycles cap strictly at MAX_MIND_SPANS.
+        for i in 1..=400_i64 {
+            let start = i * 5_000;
+            fold.released(start, HandOver::LetGo);
+            fold.reclaimed(start + 1_000);
+        }
+        assert_eq!(fold.mind_spans_len(), MAX_MIND_SPANS);
+        assert_eq!(fold.last_let_go_end_ms(), Some(400 * 5_000 + 1_000));
     }
 }

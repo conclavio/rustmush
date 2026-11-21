@@ -2653,6 +2653,30 @@ impl LocalSpaceBubble {
         }
         self.ic_timestamp_s = self.ic_timestamp_s.max(ic_now_s);
 
+        // Clear any stale fire-control lock whose target disappeared or dropped
+        // out of sensor detection (`M12`).
+        let stale_locks: Vec<String> = self
+            .ships
+            .iter()
+            .filter_map(|(sid, ship)| {
+                let locked = ship.locked_target_id.as_deref()?;
+                let still_detected = self.ships.get(locked).is_some_and(|target| {
+                    target.id != ship.id
+                        && super::commands::is_bubble_ship_detected(
+                            ship,
+                            target,
+                            self.ic_timestamp_s,
+                        )
+                });
+                (!still_detected).then(|| sid.clone())
+            })
+            .collect();
+        for sid in stale_locks {
+            if let Some(ship) = self.ships.get_mut(&sid) {
+                ship.locked_target_id = None;
+            }
+        }
+
         BubbleStepReport {
             wall_advanced_ms: dt_wall_ms,
             substeps_executed: substeps,

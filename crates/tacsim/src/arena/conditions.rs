@@ -984,6 +984,56 @@ pub enum Held {
     Why(HeldWhy),
 }
 
+/// Per-evaluation lazy memo for read-only contact/odds/section queries so
+/// multi-slot `Rule::Lock` and predicate evaluation runs `frame_scope`,
+/// `frame_odds`, `aim_at(own.lock)`, and `frame_sections` at most once per
+/// evaluation pass without altering deterministic results or tie-breaking.
+#[derive(Default)]
+struct EvalMemo {
+    contacts: Option<Vec<crate::arena::perception::FrameContact>>,
+    scan_tables: Option<Vec<Vec<SmolStr>>>,
+    odds: Option<Vec<crate::arena::perception::FrameOdds>>,
+    lock_aim: Option<Option<crate::arena::resolution::LockAim>>,
+    lock_weapon_odds: Vec<(SmolStr, u32)>,
+    sections: Option<Vec<crate::arena::step::FrameSection>>,
+}
+
+impl EvalMemo {
+    fn ensure_scope(&mut self, arena: &Arena, unit: ObjId) {
+        if self.contacts.is_none() {
+            let (contacts, scan_tables) = arena.frame_scope(unit);
+            self.contacts = Some(contacts);
+            self.scan_tables = Some(scan_tables);
+        }
+    }
+
+    fn odds(&mut self, arena: &Arena, unit: ObjId) -> &[crate::arena::perception::FrameOdds] {
+        self.odds.get_or_insert_with(|| arena.frame_odds(unit))
+    }
+
+    fn lock_aim(
+        &mut self,
+        arena: &Arena,
+        unit: ObjId,
+        contact: ContactId,
+    ) -> Option<crate::arena::resolution::LockAim> {
+        *self
+            .lock_aim
+            .get_or_insert_with(|| arena.aim_at(unit, contact))
+    }
+
+    fn sections(&mut self, arena: &Arena, unit: ObjId) -> &[crate::arena::step::FrameSection] {
+        self.sections
+            .get_or_insert_with(|| arena.frame_sections(unit))
+    }
+
+    fn invalidate_lock(&mut self) {
+        self.lock_aim = None;
+        self.lock_weapon_odds.clear();
+        self.odds = None;
+    }
+}
+
 impl Arena {
     /// **The warrant** (D-UM-17): whether `slot`'s terms hold for `unit` at
     /// `at_ms`, answering the lock, the chance and the aspect — or the first
@@ -1104,20 +1154,40 @@ impl Arena {
     }
 
     fn rule_odds(&self, unit: ObjId, contact: ContactId, weapon: &str) -> Option<u32> {
+        let mut memo = EvalMemo::default();
+        self.rule_odds_with(unit, contact, weapon, &mut memo)
+    }
+
+    fn rule_odds_with(
+        &self,
+        unit: ObjId,
+        contact: ContactId,
+        weapon: &str,
+        memo: &mut EvalMemo,
+    ) -> Option<u32> {
         // The lock's weapon odds are always on WEAPONSTATUS once classified;
         // other contacts have only the bounded published odds rows, never a
         // secret extra query, and unclassified contacts expose no odds.
         let own = self.unit(unit)?;
         own.weapon(weapon)?;
         if own.lock == Some(contact) {
-            let aim = self.aim_at(unit, contact)?;
+            if let Some((_, p)) = memo
+                .lock_weapon_odds
+                .iter()
+                .find(|(id, _)| id.as_str() == weapon)
+            {
+                return Some(*p);
+            }
+            let aim = memo.lock_aim(self, unit, contact)?;
             if !aim.classified {
                 return None;
             }
-            return Some(self.resolve_seen(unit, &aim, weapon).p_permille);
+            let p = self.resolve_seen(unit, &aim, weapon).p_permille;
+            memo.lock_weapon_odds.push((SmolStr::new(weapon), p));
+            return Some(p);
         }
-        self.frame_odds(unit)
-            .into_iter()
+        memo.odds(self, unit)
+            .iter()
             .find(|row| row.contact == contact && row.weapon == weapon)
             .map(|row| row.p_permille)
     }
@@ -1128,6 +1198,19 @@ impl Arena {
         rule: &Rule,
         contact: Option<ContactId>,
         at_ms: i64,
+    ) -> bool {
+        let mut memo = EvalMemo::default();
+        self.rule_predicates_hold_with(unit, rule, contact, at_ms, None, &mut memo)
+    }
+
+    fn rule_predicates_hold_with(
+        &self,
+        unit: ObjId,
+        rule: &Rule,
+        contact: Option<ContactId>,
+        at_ms: i64,
+        candidate_row: Option<(Aspect, Option<crate::arena::perception::FrameCondition>)>,
+        memo: &mut EvalMemo,
     ) -> bool {
         if rule.predicates().is_empty() {
             return true;
@@ -1152,13 +1235,17 @@ impl Arena {
             )
         });
         let row = if needs_row {
-            contact
-                .and_then(|id| {
-                    self.frame_contacts(unit)
-                        .into_iter()
+            held.and_then(|_| {
+                candidate_row.or_else(|| {
+                    let id = contact?;
+                    memo.ensure_scope(self, unit);
+                    memo.contacts
+                        .as_ref()?
+                        .iter()
                         .find(|row| row.id == id)
+                        .map(|row| (row.aspect, row.condition))
                 })
-                .filter(|_| held.is_some())
+            })
         } else {
             None
         };
@@ -1169,11 +1256,11 @@ impl Arena {
             } => contact
                 .filter(|_| held.is_some())
                 .zip(weapon.as_deref().or(default_weapon))
-                .and_then(|(id, weapon)| self.rule_odds(unit, id, weapon))
+                .and_then(|(id, weapon)| self.rule_odds_with(unit, id, weapon, memo))
                 .is_some_and(|odds| odds >= u32::from(*min_permille)),
-            RulePredicate::Aspect { mask } => row
-                .as_ref()
-                .is_some_and(|row| held.is_some() && aspect_in(*mask, row.aspect)),
+            RulePredicate::Aspect { mask } => {
+                row.is_some_and(|(aspect, _)| held.is_some() && aspect_in(*mask, aspect))
+            }
             RulePredicate::Range { comparison, metres } => held.is_some_and(|held| {
                 let step = if own.lock == contact {
                     lock_range_step_m(at_ms.saturating_sub(held.last_seen_ms))
@@ -1188,10 +1275,10 @@ impl Arena {
             RulePredicate::Band { band } => held
                 .zip(default_weapon.and_then(|id| own.weapon(id)))
                 .is_some_and(|(held, weapon)| {
-                    let word = crate::arena::view::contact_band(
+                    let word = crate::arena::view::contact_band_for(
                         held.seen_at.range_from(&own.pose),
                         &weapon.bands_cm(),
-                        own.sight_cm(self.definition.terrain.cell_cm()),
+                        own.sight_cap(self.definition.terrain.cell_cm()),
                     );
                     word == match band {
                         RuleBand::Close => "close",
@@ -1208,11 +1295,12 @@ impl Arena {
                     .is_some_and(|reading| reading.condition.bands != 0),
             }),
             RulePredicate::TargetSection { section, state } => row
-                .as_ref()
-                .and_then(|row| row.condition)
+                .and_then(|(_, condition)| condition)
                 .is_some_and(|reading| {
-                    let tables = self.frame_scan_tables(unit);
-                    tables
+                    memo.ensure_scope(self, unit);
+                    memo.scan_tables
+                        .as_deref()
+                        .unwrap_or(&[])
                         .get(usize::from(reading.table))
                         .and_then(|names| names.iter().position(|name| name == section))
                         .and_then(|index| reading.bands.band(index))
@@ -1250,8 +1338,8 @@ impl Arena {
             RulePredicate::OwnSection {
                 section,
                 below_percent,
-            } => self
-                .frame_sections(unit)
+            } => memo
+                .sections(self, unit)
                 .iter()
                 .find(|row| row.id == *section)
                 .and_then(|row| row.internals)
@@ -1284,6 +1372,11 @@ impl Arena {
     /// fire retains its existing station-trigger semantics.
     #[must_use]
     pub fn rule_vetoed(&self, unit: ObjId, weapon: &str, at_ms: i64) -> bool {
+        let mut memo = EvalMemo::default();
+        self.rule_vetoed_with(unit, weapon, at_ms, &mut memo)
+    }
+
+    fn rule_vetoed_with(&self, unit: ObjId, weapon: &str, at_ms: i64, memo: &mut EvalMemo) -> bool {
         let lock = self.unit(unit).and_then(|state| state.lock);
         self.conditions
             .slots(unit)
@@ -1298,11 +1391,11 @@ impl Arena {
                 };
                 self.runtime_permits(unit, slot, rule, at_ms)
                     && matches!(rule, Rule::HoldFire { weapon: held, .. } if held == weapon)
-                    && self.rule_predicates_hold(unit, rule, lock, at_ms)
+                    && self.rule_predicates_hold_with(unit, rule, lock, at_ms, None, memo)
             })
     }
 
-    fn first_fire_rule(&self, unit: ObjId, at_ms: i64) -> Option<u8> {
+    fn first_fire_rule_with(&self, unit: ObjId, at_ms: i64, memo: &mut EvalMemo) -> Option<u8> {
         let lock = self.unit(unit).and_then(|state| state.lock);
         self.conditions
             .slots(unit)
@@ -1314,14 +1407,19 @@ impl Arena {
                 let condition = rule.fire()?;
                 if !self.runtime_permits(unit, slot, rule, at_ms)
                     || rule.independent()
-                    || self.rule_vetoed(unit, &condition.weapon, at_ms)
-                    || !self.rule_predicates_hold(unit, rule, lock, at_ms)
+                    || self.rule_vetoed_with(unit, &condition.weapon, at_ms, memo)
+                    || !self.rule_predicates_hold_with(unit, rule, lock, at_ms, None, memo)
                     || self.warrant(unit, condition, at_ms).is_err()
                 {
                     return None;
                 }
                 u8::try_from(at.saturating_add(1)).ok()
             })
+    }
+
+    fn first_fire_rule(&self, unit: ObjId, at_ms: i64) -> Option<u8> {
+        let mut memo = EvalMemo::default();
+        self.first_fire_rule_with(unit, at_ms, &mut memo)
     }
 
     /// Recheck a cited rule at the shot's millisecond, including conditional
@@ -1449,7 +1547,19 @@ impl Arena {
         None
     }
 
+    #[cfg(test)]
     fn rule_lock_target(&self, unit: ObjId, rule: &Rule, at_ms: i64) -> Option<ContactId> {
+        let mut memo = EvalMemo::default();
+        self.rule_lock_target_with(unit, rule, at_ms, &mut memo)
+    }
+
+    fn rule_lock_target_with(
+        &self,
+        unit: ObjId,
+        rule: &Rule,
+        at_ms: i64,
+        memo: &mut EvalMemo,
+    ) -> Option<ContactId> {
         let Rule::Lock {
             selector, weapon, ..
         } = rule
@@ -1457,55 +1567,87 @@ impl Arena {
             return None;
         };
         let own = self.unit(unit)?;
+        if own.sensor_offline() {
+            return None;
+        }
         let weapon = weapon
             .as_deref()
             .or_else(|| own.default_weapon().map(|weapon| weapon.id.as_str()));
-        self.frame_contacts(unit)
-            .into_iter()
-            .filter(|row| {
-                row.relation == crate::arena::party::Relation::Hostile
-                    && row.reads_dead != Some(true)
-                    && self.rule_predicates_hold(unit, rule, Some(row.id), at_ms)
-            })
-            .filter_map(|row| {
-                let rank = match selector {
-                    LockSelector::Nearest => 0_i64,
-                    LockSelector::BestOdds => -i64::from(self.rule_odds(unit, row.id, weapon?)?),
-                    LockSelector::Weakest => {
-                        let reading = row.condition?;
-                        let damage: i64 = (0..usize::from(reading.bands.sections))
-                            .filter_map(|index| reading.bands.band(index))
-                            .map(|band| match band {
-                                crate::arena::condition::ConditionBand::Green => 0,
-                                crate::arena::condition::ConditionBand::Yellow => 1,
-                                crate::arena::condition::ConditionBand::Red => 2,
-                                crate::arena::condition::ConditionBand::Destroyed => 3,
-                            })
-                            .sum();
-                        -damage
-                    }
-                    LockSelector::Flank => match row.aspect {
-                        Aspect::Rear => 0,
-                        Aspect::Left | Aspect::Right => 1,
-                        Aspect::Front => 2,
-                    },
-                    // Freshest *published plot*, not the private acquisition clock.
-                    LockSelector::Newest => row.age_ms,
-                };
-                Some((
+        memo.ensure_scope(self, unit);
+        let count = memo.contacts.as_ref().map_or(0, Vec::len);
+        let mut best: Option<((i64, u64, ContactId), ContactId)> = None;
+        for index in 0..count {
+            let Some((id, relation, reads_dead, aspect, condition, range_cm, age_ms)) = memo
+                .contacts
+                .as_ref()
+                .and_then(|rows| rows.get(index))
+                .map(|row| {
                     (
-                        rank,
-                        range_m_rounded(
-                            row.range_cm,
-                            crate::arena::perception::CONTACT_RANGE_STEP_M,
-                        ),
                         row.id,
-                    ),
-                    row.id,
-                ))
-            })
-            .min_by_key(|(key, _)| *key)
-            .map(|(_, id)| id)
+                        row.relation,
+                        row.reads_dead,
+                        row.aspect,
+                        row.condition,
+                        row.range_cm,
+                        row.age_ms,
+                    )
+                })
+            else {
+                continue;
+            };
+            if relation != crate::arena::party::Relation::Hostile || reads_dead == Some(true) {
+                continue;
+            }
+            if !self.rule_predicates_hold_with(
+                unit,
+                rule,
+                Some(id),
+                at_ms,
+                Some((aspect, condition)),
+                memo,
+            ) {
+                continue;
+            }
+            let rank = match selector {
+                LockSelector::Nearest => 0_i64,
+                LockSelector::BestOdds => {
+                    let Some(weapon) = weapon else { continue };
+                    let Some(odds) = self.rule_odds_with(unit, id, weapon, memo) else {
+                        continue;
+                    };
+                    -i64::from(odds)
+                }
+                LockSelector::Weakest => {
+                    let Some(reading) = condition else { continue };
+                    let damage: i64 = (0..usize::from(reading.bands.sections))
+                        .filter_map(|i| reading.bands.band(i))
+                        .map(|band| match band {
+                            crate::arena::condition::ConditionBand::Green => 0,
+                            crate::arena::condition::ConditionBand::Yellow => 1,
+                            crate::arena::condition::ConditionBand::Red => 2,
+                            crate::arena::condition::ConditionBand::Destroyed => 3,
+                        })
+                        .sum();
+                    -damage
+                }
+                LockSelector::Flank => match aspect {
+                    Aspect::Rear => 0,
+                    Aspect::Left | Aspect::Right => 1,
+                    Aspect::Front => 2,
+                },
+                // Freshest *published plot*, not the private acquisition clock.
+                LockSelector::Newest => age_ms,
+            };
+            let key = (
+                rank,
+                range_m_rounded(range_cm, crate::arena::perception::CONTACT_RANGE_STEP_M),
+                id,
+            );
+            if best.is_none_or(|(best_key, _)| key < best_key) {
+                best = Some((key, id));
+            }
+        }
+        best.map(|(_, id)| id)
     }
 
     /// A sensor pass can trigger a LOCK rule without an existing lock.
@@ -1565,6 +1707,7 @@ impl Arena {
         if self.ended.is_some() || self.rule_evaluation_deferred(unit, t_ms) {
             return Vec::new();
         }
+        let mut memo = EvalMemo::default();
         // Sensors rules own their own channel and use the normal admission
         // and lock resolver. One matching rule wins, even if its lock is already
         // held. A ready gun never invents an extra sensor event.
@@ -1578,7 +1721,7 @@ impl Arena {
                         let rule = rule.as_ref()?;
                         let slot = u8::try_from(index.saturating_add(1)).ok()?;
                         self.runtime_permits(unit, slot, rule, t_ms)
-                            .then(|| self.rule_lock_target(unit, rule, t_ms))
+                            .then(|| self.rule_lock_target_with(unit, rule, t_ms, &mut memo))
                             .flatten()
                     });
             if let Some(contact) = target
@@ -1606,13 +1749,15 @@ impl Arena {
                     if self.action_hash == ActionHash::Outside {
                         self.action_hash = ActionHash::Pending;
                     }
-                    let _ = self.resolve_lock(unit, contact, t_ms);
+                    if self.resolve_lock(unit, contact, t_ms).is_ok() {
+                        memo.invalidate_lock();
+                    }
                 }
             }
         }
         // Choose once against this event's picture. A shot changing its own
         // ammo cannot make a second authored rule fire during the same event.
-        let selected = self.first_fire_rule(unit, t_ms);
+        let selected = self.first_fire_rule_with(unit, t_ms, &mut memo);
         let armed: Vec<(u8, Rule, bool)> = self
             .conditions
             .slots(unit)
@@ -5161,5 +5306,216 @@ mod tests {
             apply_intent(&mut arena, &wreck_switch, IntentSource::Seat),
             IntentOutcome::Refused(Refusal::Wreck)
         );
+    }
+
+    #[test]
+    fn t2b_m22_memoized_evaluate_conditions_matches_unmemoized_and_invalidates_on_lock_change() {
+        use crate::arena::test_support::line_tank;
+        const BLUE2: ObjId = ObjId(10);
+        let mut red = line_tank(RED, PartyId::RED, pose(1_500, 1_500));
+        red.controller = Controller::Mind;
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("reseal");
+        let blue1 = line_tank(BLUE, PartyId::BLUE, pose(1_500, 7_500));
+        let blue2 = line_tank(BLUE2, PartyId::BLUE, pose(1_500, 3_500));
+        let mut arena = arena_of(vec![red, blue1, blue2]);
+        arena.unit_mut(RED).expect("red").power = Power::Online;
+
+        let c1 = id_of(RED, BLUE);
+        let c2 = id_of(RED, BLUE2);
+        let p1 = crate::arena::state::SeenPose::of(arena.unit(BLUE).expect("blue1"));
+        let p2 = crate::arena::state::SeenPose::of(arena.unit(BLUE2).expect("blue2"));
+        arena.contacts.insert(
+            RED,
+            c1,
+            crate::arena::state::ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                p1,
+            ),
+        );
+        arena.contacts.insert(
+            RED,
+            c2,
+            crate::arena::state::ShadowContact::sighted(
+                BLUE2,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                p2,
+            ),
+        );
+
+        let lock_rule_a = Rule::lock_rule(
+            LockSelector::BestOdds,
+            Some(SmolStr::new_static("cannon")),
+            vec![
+                RulePredicate::Odds {
+                    weapon: Some(SmolStr::new_static("cannon")),
+                    min_permille: 100,
+                },
+                RulePredicate::Aspect { mask: ASPECTS_ANY },
+                RulePredicate::Target {
+                    state: TargetState::Identified,
+                },
+            ],
+        );
+        let lock_rule_b = Rule::lock_rule(
+            LockSelector::Nearest,
+            Some(SmolStr::new_static("cannon")),
+            vec![RulePredicate::Aspect { mask: ASPECTS_ANY }],
+        );
+        let fire_rule = Rule::fire_rule(
+            slot("cannon", 100),
+            vec![RulePredicate::Odds {
+                weapon: Some(SmolStr::new_static("cannon")),
+                min_permille: 100,
+            }],
+        );
+
+        // Memoized calls across multiple lock rules match fresh unmemoized calls identically.
+        let unmemo_a = arena.rule_lock_target(RED, &lock_rule_a, 0);
+        let unmemo_b = arena.rule_lock_target(RED, &lock_rule_b, 0);
+        let mut memo = EvalMemo::default();
+        let memo_a = arena.rule_lock_target_with(RED, &lock_rule_a, 0, &mut memo);
+        let memo_b = arena.rule_lock_target_with(RED, &lock_rule_b, 0, &mut memo);
+        assert_eq!(memo_a, unmemo_a);
+        assert_eq!(memo_b, unmemo_b);
+        let picked = memo_a.expect("BestOdds selects a classified hostile");
+
+        // `evaluate_conditions` acquires the lock via slot 1, invalidates the lock memo,
+        // and immediately fires slot 2 against the newly locked target.
+        arena
+            .conditions
+            .replace_profile_rules(RED, &[Some(lock_rule_a), Some(fire_rule)], 2)
+            .expect("install rules");
+        assert_eq!(arena.unit(RED).expect("red").lock, None);
+        let ammo_before = arena.unit(RED).expect("red").weapon_ammo("cannon");
+        let mut counters = MotorCounters::default();
+        let notices =
+            arena.evaluate_conditions(RED, 0, ConditionTrigger::Pass, None, &mut counters);
+        assert_eq!(arena.unit(RED).expect("red").lock, Some(picked));
+        assert!(
+            arena.unit(RED).expect("red").weapon_ammo("cannon") < ammo_before,
+            "fire rule fired immediately after lock acquisition and memo invalidation: {notices:?}"
+        );
+    }
+
+    #[test]
+    fn t2b_m25_ungoverned_core_admits_switches_profiles_and_hydrates_under_floor() {
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::intents::{
+            Intent, IntentKind, IntentOutcome, IntentSource, apply_intent,
+        };
+        use crate::arena::party::FieldHost;
+        use crate::arena::profile_seal::SealedCards;
+        use crate::arena::runtime_card::stock_definition;
+        use crate::arena::snapshot::Snapshot;
+        use crate::arena::state::{Channel, Controller, CustodyOut, MatchMode, Power};
+        use crate::arena::test_support::{
+            cannon, definition, pose, resolution, tactical_unit_cored, tank,
+        };
+
+        // Profile 0: under-floor fire rule (min_permille = 0, below match floor 100).
+        // Profile 1: standard authored fire rule (min_permille = 100, no explicit Odds predicate).
+        let under_floor = Rule::fire_rule(slot("cannon", 0), Vec::new());
+        let standard_floor = Rule::fire_rule(slot("cannon", 100), Vec::new());
+        let reflex = crate::config::ReflexConfig::default();
+        let alpha = crate::arena::card::preset("Line", &reflex).expect("Line preset");
+        let bravo = crate::arena::card::preset("Sniper", &reflex).expect("Sniper preset");
+        let mut def = stock_definition(
+            &[("Alpha".into(), alpha), ("Bravo".into(), bravo)],
+            CoreClass::I,
+        )
+        .expect("definition");
+        def.profiles[0].rules = vec![m6_authored(under_floor.clone(), false)];
+        def.profiles[1].rules = vec![m6_authored(standard_floor.clone(), false)];
+
+        let mut red = tank(RED, PartyId::RED, pose(1_500, 1_500));
+        red.controller = Controller::Mind;
+        red.unit = tactical_unit_cored(RED, CoreClass::I);
+        red.weapons = vec![cannon()];
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("reseal");
+        red.seal.core = Some(SmolStr::new_static("core"));
+        red.seal.core_class = CoreClass::I;
+        red.seal.class = CoreClass::I;
+        red.seal.governed = false;
+        assert!(red.seal.lifts_floor());
+        assert_eq!(red.seal.effective_floor(), 0);
+        let cards = SealedCards::prepare(
+            def,
+            &[SmolStr::new_static("Alpha"), SmolStr::new_static("Bravo")],
+            &ClassTable::STOCK.row(CoreClass::I),
+            &red.seal.weapons,
+            &red.seal.channels,
+            red.seal.effective_floor(),
+        )
+        .expect("ungoverned cards seal with both under-floor and match-floor rules");
+        red.seal.card = cards.opening_card.clone();
+        red.seal.card_digest = cards.opening_digest;
+        red.seal.cards = cards;
+        assert!(
+            red.seal
+                .verify(&ClassTable::STOCK, &red.seal.weapons)
+                .is_ok()
+        );
+
+        let blue = tank(BLUE, PartyId::BLUE, pose(1_500, 5_500));
+        let arena = Arena::new(
+            CustodyOut {
+                definition: definition(),
+                units: vec![red, blue],
+                pilots: Vec::new(),
+                resolution: resolution(),
+                seed: 2_350,
+                mode: MatchMode::Skirmish,
+                host: FieldHost::all_hostile(),
+            },
+            &crate::config::ArenaConfig::default(),
+            &crate::config::MatchConfig::default(),
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("ungoverned core admits cleanly");
+        assert!(arena.floor_lifted(RED));
+        assert_eq!(
+            arena.conditions.slots(RED).first().and_then(Option::as_ref),
+            Some(&under_floor)
+        );
+
+        // Snapshot encode + decode (`hydrate_profiles`) preserves ungoverned under-floor runtime.
+        let snap1 = Snapshot::encode(&arena).expect("encode ungoverned arena");
+        let mut arena = Snapshot::decode(&snap1.document, (*arena.definition).clone())
+            .expect("hydrate ungoverned core with under-floor rules");
+        assert_eq!(
+            arena.conditions.slots(RED).first().and_then(Option::as_ref),
+            Some(&under_floor)
+        );
+
+        // Profile switch to Bravo (standard match-floor rule under lifted floor) succeeds.
+        arena.unit_mut(RED).expect("red").power = Power::Online;
+        arena.epochs.raise(RED, Channel::Helm, 1);
+        let switch = Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Profile { index: 1 },
+            seq: 1,
+        };
+        assert_eq!(
+            apply_intent(&mut arena, &switch, IntentSource::Seat),
+            IntentOutcome::AppliedContinuous
+        );
+        assert_eq!(
+            arena.conditions.slots(RED).first().and_then(Option::as_ref),
+            Some(&standard_floor)
+        );
+        let snap2 = Snapshot::encode(&arena).expect("encode after switch");
+        let _ = Snapshot::decode(&snap2.document, (*arena.definition).clone())
+            .expect("hydrate after ungoverned profile switch");
     }
 }

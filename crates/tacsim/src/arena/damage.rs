@@ -637,7 +637,9 @@ impl Arena {
     ///
     /// Gated strictly on `shooter` holding `target` as
     /// [`crate::arena::state::Classification::Classified`] so advice queries
-    /// never read an unclassified target's `sensor_height_cm`.
+    /// never read an unclassified target's `sensor_height_cm`, and overlays
+    /// only wrecks `shooter` knows are dead (`Arena::known_wreck_cells`) so
+    /// advice traces never leak undetected wrecks along the sightline.
     fn fire_trace_at(
         &self,
         shooter: ObjId,
@@ -654,13 +656,15 @@ impl Arena {
         if !classified {
             return None;
         }
-        self.trace_eye_to(self.fire_eye(self.unit(shooter)?)?, target, cell)
+        let from = self.fire_eye(self.unit(shooter)?)?;
+        let wrecks = self.known_wreck_cells(shooter, [from.cell, cell]);
+        self.trace_eye_to_with_wrecks(from, target, cell, &wrecks)
     }
 
     /// **The walk itself** (16b cut AE.2 factored it out of `fire_trace_at`):
     /// from `from` to `cell`, at the target's own eye height, over the arena's
-    /// cells. Every fire trace — the shot's at acceptance, the impact's from the
-    /// launch eye, the cockpit's advice to a plot — is this one line walk.
+    /// cells. Every physics fire trace — the shot's at acceptance and the
+    /// impact's from the launch eye — overlays every live wreck.
     ///
     /// **Doc 36 cut GC.2** (Q-36-7, G-8): over the terrain with every wreck's
     /// cell read as a wall ([`crate::arena::wreck_cover::WithWrecks`]), the two
@@ -672,18 +676,28 @@ impl Arena {
         target: ObjId,
         cell: (u16, u16),
     ) -> Option<mush_atlas::trace::CellTrace> {
+        let wrecks = self.wreck_cells([from.cell, cell]);
+        self.trace_eye_to_with_wrecks(from, target, cell, &wrecks)
+    }
+
+    fn trace_eye_to_with_wrecks(
+        &self,
+        from: mush_atlas::trace::Eye,
+        target: ObjId,
+        cell: (u16, u16),
+        wrecks: &[(u16, u16)],
+    ) -> Option<mush_atlas::trace::CellTrace> {
         let at = self.unit(target)?;
         let to = mush_atlas::trace::Eye {
             cell,
             height_cm: i32::try_from(at.sensor_height_cm).unwrap_or(i32::MAX),
         };
-        let wrecks = self.wreck_cells([from.cell, cell]);
         if wrecks.is_empty() {
             return Some(trace_cells(&self.definition.terrain, from, to));
         }
         let grid = crate::arena::wreck_cover::WithWrecks {
             terrain: &self.definition.terrain,
-            wrecks: &wrecks,
+            wrecks,
         };
         Some(trace_cells(&grid, from, to))
     }

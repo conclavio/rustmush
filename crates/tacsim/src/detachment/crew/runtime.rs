@@ -410,8 +410,10 @@ pub(crate) fn submit_captured(
     else {
         return false;
     };
+    let wall = ctx.w.now();
+    let seq = crate::field::crew::next_exit_seq(ctx.w);
     let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
-        "tacsim.crew/{}/captured/{}/{tries}",
+        "tacsim.crew/{}/captured/{}/{wall}/{tries}/{seq}",
         exit.npc.0, exit.recovered_ic
     )) else {
         return false;
@@ -425,8 +427,9 @@ pub(crate) fn submit_captured(
 /// **Submit a discharge's owed exit as its employer** (doc 48 cut EX.7b): the same closed call,
 /// from the employer's own command, so the roster's half lands with the discharge instead of at
 /// the tow tick's next pass. The tick still submits it until it lands ([`submit_captured`]).
-/// The key is `tacsim.crew/<npc>/discharged/<at>`, `at` the discharge's IC instant.
-pub(super) fn submit_discharged(ctx: &mut mush_core::Ctx<'_>, npc: ObjId, at: i64) {
+/// Includes `hired_at`, wall time, and a monotonic sequence so frozen-IC-clock repeat discharges
+/// never collide on idempotency keys.
+pub(super) fn submit_discharged(ctx: &mut mush_core::Ctx<'_>, npc: ObjId, at: i64, hired_at: i64) {
     let Some(action) = ctx
         .w
         .module_state::<CapturedHandles>()
@@ -434,8 +437,10 @@ pub(super) fn submit_discharged(ctx: &mut mush_core::Ctx<'_>, npc: ObjId, at: i6
     else {
         return;
     };
+    let wall = ctx.w.now();
+    let seq = crate::field::crew::next_exit_seq(ctx.w);
     let Ok(key) = mush_core::IdempotencyKeyText::parse_canonical(format!(
-        "tacsim.crew/{}/discharged/{at}",
+        "tacsim.crew/{}/discharged/{at}/{hired_at}/{wall}/{seq}",
         npc.0
     )) else {
         return;
@@ -544,7 +549,9 @@ impl ActionProvider for CapturedProvider {
             .get(&self.contracts, &npc)
             .map_err(|_| captured_refused())?
             .cloned();
-        if contract.is_some_and(|c| c.npc == npc && c.employer == actor) {
+        if contract
+            .is_some_and(|c| c.npc == npc && c.employer == actor && c.hired_at.at <= recovered_ic)
+        {
             txn.remove(&self.contracts, &npc)
                 .map_err(|_| captured_refused())?;
             ended = true;

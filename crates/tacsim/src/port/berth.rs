@@ -343,59 +343,109 @@ fn lockers_wanted(ctx: &Ctx<'_>) -> BTreeMap<String, Want> {
     out
 }
 
-/// **The lien** (Q-48-54): the berth arrears `seller` owes for `hull` at the port she stands in
-/// are paid from the seller's account, which a settled sale of her has just credited. A debt the
-/// account cannot cover stands, and is logged.
-pub(crate) fn collect_lien(ctx: &mut Ctx<'_>, hull: ObjId, seller: &PrincipalId) {
-    let crate::port::ship::Berth::Docked { map, .. } = crate::port::ship::berth_of(ctx.w, hull)
-    else {
-        return;
+/// Parse a berth obligation namespace `tacsim.berth.<port>.<hull>` into `(port, hull)`.
+fn parse_berth_namespace(ns: &str) -> Option<(&str, ObjId)> {
+    let (entry, hull) = ns.strip_prefix(BERTH_NS_PREFIX)?.rsplit_once('.')?;
+    let hull = ObjId(hull.parse::<u32>().ok()?);
+    (!entry.is_empty() && hull.0 > 0).then_some((entry, hull))
+}
+
+/// Whether `principal` currently holds an active Co-op charter on `hull`.
+fn is_active_charterer(w: &World, hull: ObjId, principal: &PrincipalId) -> bool {
+    let PrincipalId::Object(pilot) = *principal else {
+        return false;
     };
-    let ns = berth_namespace(map.entry.as_str(), hull);
+    w.module_state::<crate::store::TacsimStore>()
+        .and_then(|s| s.enrolment_for_hull(hull))
+        .is_some_and(|e| {
+            e.pilot == pilot
+                && matches!(
+                    e.status,
+                    crate::port::coop::EnrolmentStatus::Active
+                        | crate::port::coop::EnrolmentStatus::BuyoutPending
+                )
+        })
+}
+
+/// **The lien** (Q-48-54; M6): every berth arrears debt `seller` owes for `hull` across all ports
+/// is paid from the seller's account, which a settled sale of her has just credited (paying the
+/// port where she currently lies docked first, then any other port's arrears). A debt the account
+/// cannot cover stands, and is logged.
+pub(crate) fn collect_lien(ctx: &mut Ctx<'_>, hull: ObjId, seller: &PrincipalId) {
+    let current_ns = match crate::port::ship::berth_of(ctx.w, hull) {
+        crate::port::ship::Berth::Docked { map, .. } => {
+            Some(berth_namespace(map.entry.as_str(), hull))
+        }
+        crate::port::ship::Berth::UnderWay | crate::port::ship::Berth::Elsewhere => None,
+    };
+    let mut namespaces: Vec<String> = mush_economy::debts_of(ctx.w, seller, &[])
+        .into_iter()
+        .filter_map(|debt| match debt.cause {
+            mush_economy::ObligationCause::Ruleset { namespace }
+                if parse_berth_namespace(namespace.as_str())
+                    .is_some_and(|(_, debt_hull)| debt_hull == hull) =>
+            {
+                Some(namespace.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    namespaces.sort();
+    namespaces.dedup();
+    if let Some(ref here) = current_ns
+        && let Some(pos) = namespaces.iter().position(|ns| ns == here)
+    {
+        let ns = namespaces.remove(pos);
+        namespaces.insert(0, ns);
+    }
+    if namespaces.is_empty() {
+        return;
+    }
     // Doc 48e (48d H-13 (a)): the lien is the port's, collected under system authority whatever
     // ctx settled the sale (the sweep, or a player's command that promoted it).
     let saved = ctx.actor;
     ctx.actor = mush_core::GOD;
-    for debt in mush_economy::debts_of(ctx.w, seller, &[ns.as_str()]) {
-        if let Err(error) = mush_economy::pay_debt(ctx, debt.id, &ns) {
-            tracing::warn!(debt = debt.id.0, hull = hull.0, %error, "tacsim: a berth lien was not collected at her sale");
+    for ns in &namespaces {
+        for debt in mush_economy::debts_of(ctx.w, seller, &[ns.as_str()]) {
+            if let Err(error) = mush_economy::pay_debt(ctx, debt.id, ns) {
+                tracing::warn!(debt = debt.id.0, hull = hull.0, %ns, %error, "tacsim: a berth lien was not collected at her sale");
+            }
         }
     }
     ctx.actor = saved;
 }
 
-/// **The liens of hulls sold another way** (doc 48e, 48c#11 and 48d H-07): a cored hull sells
+/// **The liens of hulls sold another way** (doc 48e, 48c#11 and 48d H-07; M6): a cored hull sells
 /// through EX.2b's private resale, a union with no economy contract, so the sale observer never
-/// sees it. Each fire, every berth arrears debt whose hull lies at that port titled to someone
-/// other than the debtor is collected from the debtor, as a sale at that port collects it
-/// (Q-48-54: "a lien on the hull's next sale at that port").
+/// sees it. Each fire, every berth arrears debt whose hull is now titled to someone other than
+/// the debtor (and is not still chartered by the debtor) is collected across all ports from the
+/// debtor.
 fn collect_sold_liens(ctx: &mut Ctx<'_>) {
     let Some(store) = ctx.w.module_state::<EconomyStore>() else {
         return;
     };
-    let sold: Vec<(ObjId, PrincipalId)> = store
-        .snapshot()
-        .obligations()
-        .filter(|o| {
-            o.schedule.cadence.is_none()
-                && matches!(
-                    o.status,
-                    ObligationStatus::Active | ObligationStatus::Delinquent
-                )
-        })
-        .filter_map(|o| {
-            let mush_economy::ObligationCause::Ruleset { namespace } = &o.cause else {
-                return None;
-            };
-            let (entry, hull) = namespace.strip_prefix(BERTH_NS_PREFIX)?.rsplit_once('.')?;
-            let hull = ObjId(hull.parse::<u32>().ok()?);
-            let docked_there = matches!(crate::port::ship::berth_of(ctx.w, hull),
-                crate::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == entry);
-            let passed =
-                crate::port::house_sweep::title_of(ctx.w, hull).as_ref() != Some(&o.debtor);
-            (docked_there && passed).then(|| (hull, o.debtor.clone()))
-        })
-        .collect();
+    let mut sold: Vec<(ObjId, PrincipalId)> = Vec::new();
+    for o in store.snapshot().obligations().filter(|o| {
+        o.schedule.cadence.is_none()
+            && matches!(
+                o.status,
+                ObligationStatus::Active
+                    | ObligationStatus::Grace { .. }
+                    | ObligationStatus::Delinquent
+            )
+    }) {
+        let mush_economy::ObligationCause::Ruleset { namespace } = &o.cause else {
+            continue;
+        };
+        let Some((_, hull)) = parse_berth_namespace(namespace.as_str()) else {
+            continue;
+        };
+        let passed = crate::port::house_sweep::title_of(ctx.w, hull).as_ref() != Some(&o.debtor)
+            && !is_active_charterer(ctx.w, hull, &o.debtor);
+        if passed && !sold.iter().any(|(h, p)| *h == hull && *p == o.debtor) {
+            sold.push((hull, o.debtor.clone()));
+        }
+    }
     for (hull, seller) in sold {
         collect_lien(ctx, hull, &seller);
     }
@@ -406,8 +456,7 @@ fn collect_sold_liens(ctx: &mut Ctx<'_>) {
 pub fn arrears_of(w: &World, who: &PrincipalId, ns: &str) -> i64 {
     mush_economy::debts_of(w, who, &[ns])
         .iter()
-        .map(|d| d.amount.minor())
-        .sum()
+        .fold(0_i64, |sum, d| sum.saturating_add(d.amount.minor()))
 }
 
 #[cfg(test)]
@@ -421,5 +470,20 @@ mod tests {
             "tacsim.berth.ceres_port.12"
         );
         assert_eq!(locker_namespace("ceres", ObjId(7)), "tacsim.locker.ceres.7");
+    }
+
+    #[test]
+    fn m6_parse_berth_namespace_and_cross_port_lien_sweep() {
+        assert_eq!(
+            parse_berth_namespace("tacsim.berth.ceres_port.12"),
+            Some(("ceres_port", ObjId(12)))
+        );
+        assert_eq!(
+            parse_berth_namespace("tacsim.berth.stickney_port.12"),
+            Some(("stickney_port", ObjId(12)))
+        );
+        assert_eq!(parse_berth_namespace("tacsim.locker.ceres.12"), None);
+        assert_eq!(parse_berth_namespace("tacsim.berth.ceres_port.0"), None);
+        assert_eq!(parse_berth_namespace("tacsim.berth..12"), None);
     }
 }

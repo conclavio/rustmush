@@ -118,7 +118,14 @@ pub use mush_core::ControlMsg;
 // full as before; a 14 gateway refuses a 13 server. Nothing is gated toward
 // the gateway (no `ToGateway` frame changed), and 12 leaves the window, so a
 // gateway with no Hello is now refused.
-pub const IPC_VERSION: u32 = 14;
+// Version 15 (EXT-P1-3) adds cross-generation web bearer-token revocation:
+// `ToServer::RevokeWebToken` and `ToGateway::RevokeWebToken` carry the
+// SHA-256 hex token hash so a logout hitting any gateway generation propagates
+// through the server to every other connected gateway link, booting live WS
+// sessions for that token on draining generations immediately. `ToGateway::
+// RevokeWebToken` is gated at version 15 in `ToGateway::introduced_at`, so a
+// 15 server serves a 14 gateway safely inside the one-step window.
+pub const IPC_VERSION: u32 = 15;
 
 /// The oldest protocol version this build still serves: the floor of the
 /// window, one step below [`IPC_VERSION`]. A server at [`IPC_VERSION`] accepts
@@ -160,6 +167,12 @@ pub const MAX_RESPOND_CHOICE_ID_BYTES: usize = 256;
 /// Maximum Unicode scalar count of a [`RespondChoice::Text`] body, matching
 /// the gateway's `MAX_LINE_CHARS` line limit.
 pub const MAX_RESPOND_TEXT_CHARS: usize = 8_192;
+
+/// Maximum ASCII byte length of a hex-encoded bearer-token hash carried in
+/// [`ToServer::RevokeWebToken`] and [`ToGateway::RevokeWebToken`] (SHA-256 hex
+/// is 64 bytes; this hard bound stops a hostile raw peer from amplifying large
+/// strings across gateway links).
+pub const MAX_TOKEN_HASH_BYTES: usize = 128;
 
 /// Maximum number of correlated service requests one split-process boundary
 /// may hold in flight at once.
@@ -1284,6 +1297,15 @@ pub enum ToServer {
     },
     /// Operator/driver control (`@shutdown`, `@dump`).
     Control(ControlMsg),
+    /// Cross-generation web bearer-token revocation (version 15, EXT-P1-3):
+    /// a gateway that received `/api/auth/logout` sends the SHA-256 hex hash
+    /// (never the raw token) so the server broadcasts [`ToGateway::RevokeWebToken`]
+    /// to every other connected gateway generation without touching the world
+    /// loop.
+    RevokeWebToken {
+        /// SHA-256 hex digest of the revoked bearer token.
+        token_hash: String,
+    },
 }
 
 /// Server → gateway. Everything the server half sends across the boundary.
@@ -1421,6 +1443,15 @@ pub enum ToGateway {
         ///
         /// [`WebHooks`]: https://docs.rs/mush-net-web
         panels: Vec<String>,
+    },
+    /// Cross-generation web bearer-token revocation (version 15, EXT-P1-3):
+    /// another gateway generation logged out this bearer token. Boot every
+    /// live web connection on this gateway authenticated by `token_hash` and
+    /// record the revocation against any in-flight attach/resume. Other tokens
+    /// on the same account and SSH sessions stay untouched.
+    RevokeWebToken {
+        /// SHA-256 hex digest of the revoked bearer token.
+        token_hash: String,
     },
     /// The server is shutting the boundary down cleanly.
     Bye,

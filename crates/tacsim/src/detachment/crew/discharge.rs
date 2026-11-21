@@ -171,31 +171,96 @@ fn held_back(ctx: &Ctx<'_>, npc: ObjId, at: Standing) -> Option<&'static str> {
     }
 }
 
-/// Vacate every station `who` holds in `host`.
-fn vacate(ctx: &mut Ctx<'_>, who: ObjId, host: ObjId) {
-    let held: Vec<mush_sim::StationId> = ctx
+/// Vacate every station `who` holds across `host` and any other host recorded in `SpatialState`.
+fn vacate_all(ctx: &mut Ctx<'_>, who: ObjId, primary_host: Option<ObjId>) {
+    let mut hosts: std::collections::BTreeSet<ObjId> = ctx
         .w
         .module_state::<mush_sim::SpatialState>()
-        .and_then(|state| state.assignments.get(&host))
-        .map(|seats| {
-            seats
-                .seats
-                .iter()
-                .filter(|(_, seat)| seat.actor == who)
-                .map(|(station, _)| station.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    for station in held {
-        if let Err(error) = mush_sim::vacate_station(ctx, host, &station, who) {
-            tracing::warn!(
-                npc = who.0,
-                unit = host.0,
-                ?error,
-                "tacsim: a discharged hire's seat did not vacate"
-            );
+        .and_then(|state| state.derived.assignments_by_actor.get(&who))
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect();
+    if let Some(host) = primary_host {
+        hosts.insert(host);
+    }
+    for host in hosts {
+        let held: Vec<mush_sim::StationId> = ctx
+            .w
+            .module_state::<mush_sim::SpatialState>()
+            .and_then(|state| state.assignments.get(&host))
+            .map(|seats| {
+                seats
+                    .seats
+                    .iter()
+                    .filter(|(_, seat)| seat.actor == who)
+                    .map(|(station, _)| station.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for station in held {
+            if let Err(error) = mush_sim::vacate_station(ctx, host, &station, who) {
+                tracing::warn!(
+                    npc = who.0,
+                    unit = host.0,
+                    ?error,
+                    "tacsim: a discharged hire's seat did not vacate"
+                );
+            }
         }
     }
+}
+
+/// Terminate a standing crew contract whose recurring wage reached delinquency (or whose employer
+/// lost their active credit account before any wage opened), returning `true` when the world half
+/// landed and `false` when deferred (e.g. NPC is currently on a sortie, in an open field, or held).
+pub(super) fn terminate_delinquent(ctx: &mut Ctx<'_>, contract: &super::CrewContract) -> bool {
+    let npc = contract.npc;
+    let live_npc = ctx
+        .w
+        .get(npc)
+        .is_some_and(|o| o.kind == ObjKind::Npc && !o.flags.contains(Flags::GOING));
+    if !live_npc || crate::field::crew::exit_applies(ctx.w, contract) {
+        return false;
+    }
+    let at = standing(ctx.w, npc);
+    if held_back(ctx, npc, at).is_some() {
+        return false;
+    }
+    let Some(room) = crate::field::crew::pool_room(ctx.w, npc, contract.terms.port.as_str()) else {
+        return false;
+    };
+    let primary_host = match at {
+        Standing::Ship(host) | Standing::Unit(host) => Some(host),
+        Standing::Ashore => None,
+    };
+    vacate_all(ctx, npc, primary_host);
+    send_back(ctx, npc, room);
+    let now = ctx.w.world_ic_now().at;
+    crate::field::crew::owe_npc_exit(
+        ctx,
+        crate::field::NpcExit {
+            format: crate::field::crew::NPC_EXIT_FORMAT,
+            npc,
+            organizer: contract.employer,
+            recovered_ic: now,
+        },
+    );
+    let npc_name = crate::port::coop::name_of(ctx.w, npc);
+    let room_name = crate::port::coop::name_of(ctx.w, room);
+    ctx.out.sys_to_actor(
+        contract.employer,
+        "tacsim.detachment",
+        format!(
+            "{npc_name}'s crew contract ended for delinquent wages; they have returned to {room_name}."
+        ),
+    );
+    mush_npc::notify_role_event(
+        ctx,
+        npc,
+        "Your crew contract ended for delinquent wages; you are back at the hiring hall.",
+    );
+    true
 }
 
 /// `who` goes back to `room`, their pool room, as a captured hull's NPC does.
@@ -252,7 +317,7 @@ pub(super) fn discharge(
     };
     if !live(actor, ObjKind::Player)
         || !live(npc, ObjKind::Npc)
-        || crate::field::npc_exit_of(ctx.w, npc).is_some()
+        || crate::field::crew::exit_applies(ctx.w, &contract)
     {
         return Err(NOT_YOURS.into());
     }
@@ -277,10 +342,11 @@ pub(super) fn discharge(
         tracing::warn!(npc = npc.0, %error, "tacsim: a discharge's wage was not settled");
         NOT_NOW.to_string()
     })?;
-    match at {
-        Standing::Ship(host) | Standing::Unit(host) => vacate(ctx, npc, host),
-        Standing::Ashore => {}
-    }
+    let primary_host = match at {
+        Standing::Ship(host) | Standing::Unit(host) => Some(host),
+        Standing::Ashore => None,
+    };
+    vacate_all(ctx, npc, primary_host);
     send_back(ctx, npc, room);
     let now = ctx.w.world_ic_now().at;
     crate::field::crew::owe_npc_exit(
@@ -292,7 +358,7 @@ pub(super) fn discharge(
             recovered_ic: now,
         },
     );
-    super::runtime::submit_discharged(ctx, npc, now);
+    super::runtime::submit_discharged(ctx, npc, now, contract.hired_at.at);
     mush_npc::notify_role_event(ctx, npc, NPC_TOLD);
     let settled = match wage {
         None => DISCHARGED_FREE.replace("{name}", &name),

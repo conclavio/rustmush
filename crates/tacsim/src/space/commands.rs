@@ -4178,10 +4178,19 @@ fn tac_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(ship) = active.bubble.ships.get(active.carrier_ship_id_for(hull)) else {
         return Err(CmdError::msg("Carrier ship state missing from bubble."));
     };
+    let visible_lock = ship
+        .locked_target_id
+        .as_deref()
+        .filter(|id| {
+            active.bubble.ships.get(*id).is_some_and(|target| {
+                is_bubble_ship_detected(ship, target, active.bubble.ic_timestamp_s)
+            })
+        })
+        .unwrap_or("none");
     let mut lines = vec![status_header(
         &display_name(ctx.w, hull),
         &ship.id,
-        ship.locked_target_id.as_deref().unwrap_or("none"),
+        visible_lock,
         ship.pdc_auto,
         ship.heat_permille,
     )];
@@ -4877,6 +4886,77 @@ pub(crate) fn debit_hull_propellant_for_dv(
     Ok(burn_kg)
 }
 
+/// Gate `+helm/approach derelict` so a carrier cannot invoke derelict braking
+/// approach during active combat, while hostile ordnance is in flight, or while
+/// disabled / locked in docking / out of propellant (`M8`).
+///
+/// Friendly post-kill ordnance still in flight (e.g. a Customs Corvette's final
+/// rounds after the raider goes down) does not refuse queuing the order, though
+/// `step_derelict_approach_in_bubble` holds closing until all ordnance clears.
+fn validate_derelict_approach_gates(w: &World, hull: ObjId) -> Result<(), CmdError> {
+    let Some(book) = w.module_state::<SpaceBubbleBook>() else {
+        return Err(CmdError::msg("No active space bubble."));
+    };
+    let Some(active) = book.active_for_hull(hull) else {
+        return Err(CmdError::msg("No active space bubble for this ship."));
+    };
+    let own_ship_id = active.carrier_ship_id_for(hull);
+    let own_party = active.carrier_party_for(hull);
+    let own_ship = active
+        .bubble
+        .ships
+        .get(own_ship_id)
+        .ok_or_else(|| CmdError::msg("Carrier ship state missing from bubble."))?;
+    if own_ship.status != HullStatus::Operational {
+        return Err(CmdError::msg("This ship is disabled."));
+    }
+    if book.is_hull_paused_for_docking(hull) || own_ship.docking_hold {
+        return Err(CmdError::msg(
+            "Main drive is locked during an active docking session (`docking_hold`).",
+        ));
+    }
+    if own_ship.propellant_kg == 0 || own_ship.delta_v_mps <= 0 {
+        return Err(CmdError::msg(
+            "Insufficient propellant to initiate derelict braking approach.",
+        ));
+    }
+    let hostile_ordnance = active.bubble.torpedoes.iter().any(|torp| {
+        torp.target_id == own_ship_id
+            || active.bubble.ships.get(&torp.shooter_id).is_some_and(|s| {
+                active.bubble.party_relation(s.party, own_party) == Relation::Hostile
+            })
+    }) || active.bubble.railgun_slugs.iter().any(|slug| {
+        slug.target_id == own_ship_id
+            || active.bubble.ships.get(&slug.shooter_id).is_some_and(|s| {
+                active.bubble.party_relation(s.party, own_party) == Relation::Hostile
+            })
+    });
+    if hostile_ordnance {
+        return Err(CmdError::msg(
+            "Cannot initiate derelict approach while hostile ordnance is in flight in the tactical bubble.",
+        ));
+    }
+    for (ship_id, ship) in &active.bubble.ships {
+        if ship_id == own_ship_id
+            || ship.status != HullStatus::Operational
+            || active.bubble.party_relation(ship.party, own_party) != Relation::Hostile
+        {
+            continue;
+        }
+        // Do not refuse on undetected Ghost hostiles at command time (avoids a stealth-oracle
+        // leak and preserves pre-ambush queuing); `step_derelict_approach_in_bubble` holds
+        // position and velocity while any operational hostile exists in the bubble.
+        if !is_bubble_ship_detected(own_ship, ship, active.bubble.ic_timestamp_s) {
+            continue;
+        }
+        return Err(CmdError::msg(format!(
+            "Cannot initiate derelict approach while hostile contact `{}` is still operational in the tactical bubble.",
+            ship.callsign
+        )));
+    }
+    Ok(())
+}
+
 fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (hull, _) = require_aboard_and_seat(ctx, Some("movement"))?;
     ensure_hull_can_maneuver(ctx.w, hull)?;
@@ -4936,6 +5016,7 @@ fn helm_approach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 contact_hull.0
             )));
         }
+        validate_derelict_approach_gates(ctx.w, hull)?;
         let burned_kg = debit_hull_propellant_for_dv(ctx, hull, 12, true)?;
         let hold_until_wall_s = ctx
             .w

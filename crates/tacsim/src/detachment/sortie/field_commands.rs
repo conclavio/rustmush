@@ -405,39 +405,22 @@ fn posture_at(op: &OperationRecord, slot: Slot, sequence: u64) -> bool {
 }
 /// **The orders this roster's NPC leaders gave, as `+sortie/orders` shows them** (doc 44 unit
 /// MW.14c): a head line, then one line an order, oldest first, each within 120 columns.
+/// Consumes pre-indexed replies from [`report`]'s single pass over `PropagationStore` (M36.5).
 fn npc_orders(
     ctx: &Ctx<'_>,
     op: &OperationRecord,
     orders: &field_orders::FieldOrders,
+    npc_replies: &std::collections::BTreeMap<(mush_core::ObjId, String), (u64, String)>,
 ) -> Vec<String> {
-    use mush_propagation::{EnvelopeState, record::DispatchKind};
     if orders.given.is_empty() {
         return Vec::new();
     }
-    let store = ctx.w.module_state::<mush_propagation::PropagationStore>();
     let mut lines = vec![super::NPC_ORDERS_HEAD.to_owned()];
     for given in &orders.given {
         let key = field_orders::message_key(op.id, given.sequence, given.slot);
-        let reply_prefix = format!("{key}:reply:");
-        let answer = store.and_then(|store| {
-            store
-                .envelopes()
-                .filter(|reply| {
-                    reply.kind() == DispatchKind::DetachmentReply
-                        && reply.recipient() == given.issuer
-                        && matches!(
-                            reply.state(),
-                            EnvelopeState::Delivered | EnvelopeState::Acknowledged
-                        )
-                        && reply
-                            .dispatch_ref()
-                            .is_some_and(|d| d.key.starts_with(&reply_prefix))
-                })
-                .max_by_key(|reply| reply.id())
-                .and_then(|reply| reply.dispatch_ref())
-                .and_then(|reply| reply.key.strip_prefix(&reply_prefix))
-                .map(str::to_ascii_uppercase)
-        });
+        let answer = npc_replies
+            .get(&(given.issuer, key))
+            .map(|(_, word)| word.to_ascii_uppercase());
         let status = match answer {
             Some(word) => format!("{word} received"),
             None => "no reply confirmed".to_owned(),
@@ -540,46 +523,74 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
     let book = OrderBook::restore(&orders.book, &roster).map_err(|e| e.to_string())?;
     // Issuers read their actual outbox, independently of the recipient's
     // command book. Only an arrived return packet discloses an acknowledgement.
+    // M36.5: index both the caller's outbox replies and NPC-leader replies in one pass over
+    // `PropagationStore::envelopes()` instead of up to 33 nested full scans.
+    let mut npc_replies: std::collections::BTreeMap<(mush_core::ObjId, String), (u64, String)> =
+        std::collections::BTreeMap::new();
     let outbox = if let Some(store) = ctx.w.module_state::<mush_propagation::PropagationStore>() {
         let prefix = format!(
             "dt:{}:{}:{}:",
             op.id.organizer.0, op.id.draft.0, op.id.activation
         );
-        let mut sent = store
-            .envelopes()
-            .filter(|e| {
-                e.kind() == DispatchKind::Detachment
-                    && e.issuer() == ctx.actor
-                    && e.dispatch_ref().is_some_and(|r| r.key.starts_with(&prefix))
-            })
-            .collect::<Vec<_>>();
+        let need_npc_replies = !orders.given.is_empty();
+        let mut sent = Vec::new();
+        let mut player_replies: std::collections::BTreeMap<
+            (mush_core::ObjId, String),
+            (u64, String),
+        > = std::collections::BTreeMap::new();
+        for e in store.envelopes() {
+            let Some(dispatch) = e.dispatch_ref() else {
+                continue;
+            };
+            if !dispatch.key.starts_with(&prefix) {
+                continue;
+            }
+            match e.kind() {
+                DispatchKind::Detachment if e.issuer() == ctx.actor => {
+                    sent.push(e);
+                }
+                DispatchKind::DetachmentReply
+                    if matches!(
+                        e.state(),
+                        EnvelopeState::Delivered | EnvelopeState::Acknowledged
+                    ) =>
+                {
+                    let Some((msg_key, word)) = dispatch.key.split_once(":reply:") else {
+                        continue;
+                    };
+                    if e.recipient() == ctx.actor {
+                        let k = (e.issuer(), msg_key.to_owned());
+                        let replace = player_replies
+                            .get(&k)
+                            .is_none_or(|(prev_id, _)| e.id() > *prev_id);
+                        if replace {
+                            player_replies.insert(k, (e.id(), word.to_owned()));
+                        }
+                    }
+                    if need_npc_replies {
+                        let k = (e.recipient(), msg_key.to_owned());
+                        let replace = npc_replies
+                            .get(&k)
+                            .is_none_or(|(prev_id, _)| e.id() > *prev_id);
+                        if replace {
+                            npc_replies.insert(k, (e.id(), word.to_owned()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         sent.sort_unstable_by_key(|e| std::cmp::Reverse(e.id()));
         sent.truncate(16);
         sent.reverse();
         sent.into_iter()
             .map(|e| {
                 let key = e.dispatch_ref().map(|r| r.key.as_str()).unwrap_or("");
-                let reply_prefix = format!("{key}:reply:");
-                let reply = store
-                    .envelopes()
-                    .filter(|r| {
-                        r.kind() == DispatchKind::DetachmentReply
-                            && r.issuer() == e.recipient()
-                            && r.recipient() == ctx.actor
-                            && matches!(
-                                r.state(),
-                                EnvelopeState::Delivered | EnvelopeState::Acknowledged
-                            )
-                            && r.dispatch_ref()
-                                .is_some_and(|d| d.key.starts_with(&reply_prefix))
-                    })
-                    .max_by_key(|r| r.id());
-                let status = reply
-                    .and_then(|r| r.dispatch_ref())
-                    .and_then(|r| r.key.strip_prefix(&reply_prefix))
+                let status = player_replies
+                    .get(&(e.recipient(), key.to_owned()))
                     .map_or_else(
                         || "submitted; no reply confirmed".into(),
-                        |r| format!("{} received", r.to_ascii_uppercase()),
+                        |(_, word)| format!("{} received", word.to_ascii_uppercase()),
                     );
                 let (sequence, slot) = key
                     .strip_prefix(&prefix)
@@ -615,7 +626,7 @@ pub(super) fn report(ctx: &mut Ctx<'_>, op: &OperationRecord) -> Result<(), Stri
     // refuses anyone else the whole report); the NPC is theirs, hired under the organiser's
     // contract, and leads their units. As with a player's own outbox, an answer is shown only
     // once its reply has reached the leader who gave the order.
-    for message in npc_orders(ctx, op, orders) {
+    for message in npc_orders(ctx, op, orders, &npc_replies) {
         line(ctx, message);
     }
     for member in roster.members() {

@@ -1508,13 +1508,13 @@ fn m1a5_a_think_of_seventeen_intents_lands_nothing_and_keeps_its_memory() {
             Says {
                 think_seq: 0,
                 intents: vec![IntentKind::Startup, IntentKind::Emcon { on: true }],
-                memory: Some(vec![1]),
+                memory: Some(br#"{"a":1}"#.to_vec()),
                 fault: None,
             },
             Says {
                 think_seq: 1,
                 intents: vec![IntentKind::Speed { cms: 300 }; MIND_INTENTS_MAX + 1],
-                memory: Some(vec![9, 9]),
+                memory: Some(br#"{"a":9}"#.to_vec()),
                 fault: None,
             },
         ],
@@ -1523,7 +1523,7 @@ fn m1a5_a_think_of_seventeen_intents_lands_nothing_and_keeps_its_memory() {
     let think = think_at(RED, 1);
     let counters = rig.until(think + SUBSTEP, |arena| arena.now_ms >= think);
     let state = rig.arena.minds.get(&RED).cloned().unwrap_or_default();
-    assert_eq!(state.memory, vec![1], "the old memory is kept");
+    assert_eq!(state.memory, br#"{"a":1}"#, "the old memory is kept");
     let drained = mind
         .seen()
         .into_iter()
@@ -1574,7 +1574,7 @@ fn m1a5_a_think_of_seventeen_intents_lands_nothing_and_keeps_its_memory() {
     let handed = mind.seen().into_iter().find(|seen| seen.think_seq == 2);
     assert_eq!(
         handed.as_ref().map(|seen| seen.memory.clone()),
-        Some(vec![1])
+        Some(br#"{"a":1}"#.to_vec())
     );
     assert!(
         handed.is_some_and(|seen| seen.view.notices.starts_with(&drained)),
@@ -1613,7 +1613,7 @@ fn m1a5_a_think_of_sixteen_intents_lands_whole() {
             Says {
                 think_seq: 1,
                 intents: speeds,
-                memory: Some(vec![5, 5]),
+                memory: Some(br#"{"a":5}"#.to_vec()),
                 fault: None,
             },
         ],
@@ -1635,7 +1635,7 @@ fn m1a5_a_think_of_sixteen_intents_lands_whole() {
     let counters = rig.until(land + SUBSTEP, |arena| arena.now_ms >= land);
     assert_eq!(counters.mind_overflows, 0);
     let state = rig.arena.minds.get(&RED).cloned().unwrap_or_default();
-    assert_eq!(state.memory, vec![5, 5], "the new memory landed");
+    assert_eq!(state.memory, br#"{"a":5}"#, "the new memory landed");
     assert_eq!(state.pending, None);
     assert!(refusals(&rig.arena, RED).is_empty(), "nothing refused");
     assert_eq!(
@@ -1871,7 +1871,7 @@ fn m1a5_mind_kinds_run_last_at_their_millisecond_in_unit_id_order() {
                 Says {
                     think_seq: 0,
                     intents: vec![IntentKind::Startup],
-                    memory: Some(vec![7]),
+                    memory: Some(br#"{"a":7}"#.to_vec()),
                     fault: None,
                 },
                 says(1, Vec::new()),
@@ -1969,7 +1969,7 @@ fn m1a5_mind_kinds_run_last_at_their_millisecond_in_unit_id_order() {
         .into_iter()
         .find(|seen| seen.unit == RED && seen.think_seq == 1)
         .map(|seen| seen.memory);
-    assert_eq!(second, Some(vec![7]), "landed, then thought");
+    assert_eq!(second, Some(br#"{"a":7}"#.to_vec()), "landed, then thought");
 }
 
 // ---------------------------------------------------------------------------
@@ -7634,7 +7634,7 @@ fn strikes_script(faulted: &[u64], overflow: bool) -> Vec<Says> {
                     } else {
                         vec![speed]
                     },
-                    memory: Some(vec![9, 9]),
+                    memory: Some(br#"{"n":99}"#.to_vec()),
                     fault: (!overflow).then_some("ops"),
                 }
             } else {
@@ -7645,7 +7645,7 @@ fn strikes_script(faulted: &[u64], overflow: bool) -> Vec<Says> {
                         1 => vec![IntentKind::Emcon { on: true }],
                         _ => Vec::new(),
                     },
-                    memory: Some(vec![u8::try_from(n).unwrap_or(u8::MAX)]),
+                    memory: Some(format!(r#"{{"n":{n}}}"#).into_bytes()),
                     fault: None,
                 }
             }
@@ -7773,7 +7773,7 @@ fn m2_a_faulting_runner_lands_nothing_counts_a_strike_and_three_drop_the_hull() 
         assert_eq!(handed.seed, SEED, "ThinkJob::seed at think {n}");
         assert_eq!(after.think_seq, n + 1, "think {n} ran");
         if (2..=4).contains(&n) {
-            assert_eq!(after.memory, vec![1], "think {n}: the memory kept");
+            assert_eq!(after.memory, br#"{"n":1}"#, "think {n}: the memory kept");
             assert_eq!(after.memory, before.memory, "think {n}");
             assert_eq!(
                 after.ranges, before.ranges,
@@ -9871,11 +9871,11 @@ fn m3_a_decode_reinstalls_each_unit_s_runner_from_its_seal() {
 fn m3_a_released_over_a_hull_its_mind_flies_changes_no_controller() {
     let (mut rig, _) = possess_field(vec![
         Says {
-            memory: Some(vec![7]),
+            memory: Some(br#"{"a":7}"#.to_vec()),
             ..says(0, vec![IntentKind::Speed { cms: 500 }])
         },
         Says {
-            memory: Some(vec![8]),
+            memory: Some(br#"{"a":8}"#.to_vec()),
             ..says(1, vec![IntentKind::Speed { cms: 600 }])
         },
         says(2, vec![IntentKind::Speed { cms: 700 }]),
@@ -9931,7 +9931,7 @@ fn m3_a_released_over_a_hull_its_mind_flies_changes_no_controller() {
 
     let _ = rig.until(10_000, |arena| !in_flight(arena, RED));
     let landed = rig.arena.minds.get(&RED).expect("the mind's row");
-    assert_eq!(landed.memory, vec![8], "think 1's answer landed");
+    assert_eq!(landed.memory, br#"{"a":8}"#, "think 1's answer landed");
     assert_eq!(landed.think_seq, found.think_seq, "no think since");
     assert!(
         refusals(&rig.arena, RED).contains(&("speed".to_owned(), Refusal::Epoch)),

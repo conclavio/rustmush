@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub const BOOK_FAMILY: &str = "tacsim.detachment_plans";
 pub const INVITE_FAMILY: &str = "tacsim.detachment_invitations";
 pub const MAX_INVITATIONS: usize = 32;
+/// Maximum simultaneous pending invitations one organizer may place in a single recipient's inbox.
+pub const MAX_INVITATIONS_PER_ORGANIZER: usize = 2;
 const MAX_INDEX_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

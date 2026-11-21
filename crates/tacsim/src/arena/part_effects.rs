@@ -176,6 +176,11 @@ pub(crate) fn derive(state: &mut UnitState, cell_cm: u16) -> Derived {
         };
         state.sensor_authored = (live.as_ref() != Some(&authored)).then_some(authored);
         state.sensor = live;
+        // Doc 40 cut FR.5 (Q-40-3): an offline sight holds no lock (its contacts
+        // still age out through `Arena::sensor_pass`).
+        if state.sensor_offline() {
+            state.lock = None;
+        }
     }
     // The pod and the filter, from their cells.
     let ecm = mounted_part(&state.unit, crate::definitions::unit::JAM_RADIUS_CELL)
@@ -598,5 +603,116 @@ mod tests {
             );
             assert_eq!(Eccm::read(&tactical), None, "{word} eccm must read offline");
         }
+    }
+
+    #[test]
+    fn t2b_m24_offline_sensor_clears_lock_blocks_lock_fire_mesh_and_caps_bands() {
+        use crate::arena::perception::PerceptionCounters;
+        use crate::arena::state::{Classification, SeenPose, ShadowContact};
+        use crate::arena::view::{SightCap, band_bounds_m_for, contact_band_for};
+        use crate::arena::weapons::FiredBy;
+
+        const WING: ObjId = ObjId(5);
+        const UNFIT: ObjId = ObjId(12);
+        let red = crate::arena::test_support::line_tank(RED, PartyId::RED, pose(1_500, 1_500));
+        let wing = crate::arena::test_support::line_tank(WING, PartyId::RED, pose(2_500, 1_500));
+        let blue = crate::arena::test_support::line_tank(BLUE, PartyId::BLUE, pose(7_500, 1_500));
+        let mut unfitted_custody = tank(UNFIT, PartyId::RED, pose(3_500, 1_500));
+        unfitted_custody.sensor = None;
+        let mut arena = arena_of(vec![red, wing, blue, unfitted_custody]);
+        arena.unit_mut(RED).expect("red").power = Power::Online;
+        arena.unit_mut(WING).expect("wing").power = Power::Online;
+        let cell_cm = arena.definition.terrain.cell_cm();
+        let authored_sight_cm = arena.unit(RED).expect("red").sight_cm(cell_cm);
+        assert!(authored_sight_cm > 0);
+
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, RED, BLUE);
+        let plot = SeenPose::of(arena.unit(BLUE).expect("blue"));
+        arena.contacts.insert(
+            RED,
+            contact,
+            ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                plot,
+            ),
+        );
+        // Intact: lock succeeds and records baseline gunnery error cone.
+        assert_eq!(arena.resolve_lock(RED, contact, 0), Ok(()));
+        let aim = arena.lock_aim(RED).expect("aim");
+        let intact_err = arena.resolve_seen(RED, &aim, "cannon").error_urad;
+
+        // Jam RED's visual sensor and derive part effects.
+        set_word(&mut arena, RED, "visual_sensor", "jammed");
+        arena.apply_part_effects(RED);
+        let state = arena.unit(RED).expect("red");
+        assert!(state.sensor_offline());
+        assert_eq!(state.lock, None, "jamming sight clears existing lock");
+        assert_eq!(state.fight_limit_cm(cell_cm), 0);
+        assert_eq!(state.fight_inner_cm(cell_cm), 0);
+        assert_eq!(state.sight_cap(cell_cm), SightCap::Offline);
+        assert_eq!(
+            state.scope_sight_cm(cell_cm),
+            authored_sight_cm,
+            "scope size stays nominal rather than dropping to 0 (5x uncapped)"
+        );
+        let cannon_bands = state.weapon("cannon").expect("cannon").bands_cm();
+        assert_eq!(
+            contact_band_for(5_000, &cannon_bands, SightCap::Offline),
+            "beyond"
+        );
+        assert_eq!(band_bounds_m_for(SightCap::Offline, &cannon_bands), None);
+
+        // Offline sensor refuses LOCK and FIRE (even if a lock were somehow set).
+        assert_eq!(
+            arena.resolve_lock(RED, contact, 100),
+            Err(Refusal::NoContact)
+        );
+        arena.unit_mut(RED).expect("red").lock = Some(contact);
+        assert_eq!(
+            arena.resolve_fire_by(RED, "cannon", 100, FiredBy::Seat),
+            Err(Refusal::NoLock)
+        );
+        arena.unit_mut(RED).expect("red").lock = None;
+
+        // Offline sensor degrades gunnery accuracy below intact (never FULL_CONDITION).
+        let offline_err = arena.resolve_seen(RED, &aim, "cannon").error_urad;
+        assert!(
+            offline_err > intact_err,
+            "offline sight error_urad ({offline_err}) must exceed intact ({intact_err})"
+        );
+
+        // Offline sensor does not receive mesh contacts via share_pass.
+        arena.contacts.clear_viewer(RED);
+        let wing_contact = crate::arena::rng::draw_contact_id(arena.seed, WING, BLUE);
+        arena.contacts.insert(
+            WING,
+            wing_contact,
+            ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                100,
+                plot,
+            ),
+        );
+        let mut p_counters = PerceptionCounters::default();
+        let mut journal = Vec::new();
+        let _ = arena.share_pass(WING, 100, &mut p_counters, &mut journal);
+        assert_eq!(
+            arena.contacts.of(RED).count(),
+            0,
+            "offline-sensor hull must not receive mesh contacts"
+        );
+
+        // Contrast: an unfitted hull (`sensor == None && sensor_authored == None`)
+        // keeps SightCap::Unfitted and does not read sensor_offline().
+        let unfitted = arena.unit(UNFIT).expect("unfitted");
+        assert!(!unfitted.sensor_offline());
+        assert_eq!(unfitted.sight_cap(cell_cm), SightCap::Unfitted);
     }
 }

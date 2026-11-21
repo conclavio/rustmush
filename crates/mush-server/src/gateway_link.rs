@@ -55,6 +55,11 @@ impl GatewayLink for WorldHandle {
                 // halves are one build, so there is no window to check and no
                 // link version to record. Accept and ignore, as above.
                 ToServer::Hello { .. } => true,
+                // Cross-generation token revocation only fans out across peer
+                // gateway links; in-process `mushd` has a single `WebBridge`
+                // which already booted its local connections before calling
+                // `to_server`.
+                ToServer::RevokeWebToken { .. } => true,
                 // A correlated request must go through `request` (it needs a
                 // reply); routing one here is a programming error.
                 ToServer::Request { .. } => {

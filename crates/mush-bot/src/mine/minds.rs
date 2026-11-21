@@ -822,6 +822,8 @@ pub mod hull_sale {
     pub const HULL_IN_BAY: &str = "stow her before she is listed.";
     /// `tacsim::port::hull_sale::HULL_RIG_ABOARD`'s tail.
     pub const HULL_RIG_ABOARD: &str = "return it to Occator before she is listed.";
+    /// `tacsim::port::hull_sale::HULL_OCCUPIED`'s tail.
+    pub const HULL_OCCUPIED: &str = "clear her before she is listed.";
 }
 
 /// **A governed core resold to a player** (doc 48 unit EX.2b): `+core/offer`, `+core/offers` and
@@ -1427,6 +1429,7 @@ mod tests {
             HULL_ELSEWHERE,
             HULL_IN_BAY,
             HULL_RIG_ABOARD,
+            HULL_OCCUPIED,
         )
     }
 

@@ -715,7 +715,7 @@ impl Arena {
     ///   profile). Value-identical to [`Arena::contact_reads_dead`] wherever a
     ///   reading is held, and deliberately not a call of it;
     /// * `fatal` — that mask's section words, beside a held reading only.
-    pub(super) fn frame_scope(&self, platform: ObjId) -> (Vec<FrameContact>, Vec<Vec<SmolStr>>) {
+    pub(crate) fn frame_scope(&self, platform: ObjId) -> (Vec<FrameContact>, Vec<Vec<SmolStr>>) {
         let Some(from) = self.unit(platform) else {
             return (Vec::new(), Vec::new());
         };

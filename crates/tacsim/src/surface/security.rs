@@ -33,11 +33,143 @@ use mush_faction::FactionId;
 use mush_org::{OrgId, PrincipalId};
 
 use crate::offense::{
-    Evidence, Offender, OffenseKey, OffenseKind, Proof, ProvenOffense, record_offense,
+    Evidence, MAX_OFFENSE_ROWS, Offender, OffenseKey, OffenseKind, Proof, ProvenOffense,
+    record_offense,
 };
 use crate::store::TacsimStore;
 use crate::surface::claim::UnlawfulAct;
 use crate::surface::retrieval::DEBT_NAMESPACE;
+use crate::surface::site_record::ProvenUnlawfulMark;
+
+/// Maximum site-level proven-act marks cached per site in RAM (M19).
+const MAX_PROVEN_CACHE_PER_SITE: usize = crate::surface::claim::MAX_UNLAWFUL * 2;
+
+/// **In-RAM index of unlawful site acts already proven to port security** (M19): paired with the
+/// durable [`crate::surface::site_record::SiteRecord::proven_unlawful`] list so replays are
+/// refused immediately (even before the durable `MarkProven` action lands) and durably across
+/// server restarts after settled offenses roll off `OffenseRecord` past `MAX_OFFENSE_ROWS`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProvenActs(BTreeMap<CanonicalId, Vec<ProvenUnlawfulMark>>);
+
+/// **Pending durable `MarkProven` writes queued for `SiteRecord.proven_unlawful`** (M19):
+/// flushed by [`flush_proven_marks`] on proof and on every [`crate::surface::claim::tick`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PendingProvenMarks {
+    by_site: BTreeMap<CanonicalId, Vec<ProvenUnlawfulMark>>,
+    next_tag: u32,
+}
+
+/// Whether `act` on `site` has already been proven (in RAM or durably on `SiteRecord.proven_unlawful`).
+fn is_already_proven(ctx: &Ctx<'_>, site: &CanonicalId, act: &UnlawfulAct) -> bool {
+    let record = crate::surface::tow::record_of(ctx, site);
+    is_already_proven_with(ctx.w, record.as_ref(), site, act)
+}
+
+/// Core check for [`is_already_proven`]: RAM [`ProvenActs`] cache OR durable `SiteRecord.proven_unlawful`.
+fn is_already_proven_with(
+    w: &World,
+    record: Option<&crate::surface::site_record::SiteRecord>,
+    site: &CanonicalId,
+    act: &UnlawfulAct,
+) -> bool {
+    let mark = ProvenUnlawfulMark::of(act);
+    if w.module_state::<ProvenActs>()
+        .and_then(|cache| cache.0.get(site))
+        .is_some_and(|marks| marks.contains(&mark))
+    {
+        return true;
+    }
+    record.is_some_and(|record| record.is_proven_unlawful(act))
+}
+
+/// Record `(site, act)` as proven in RAM and queue its durable write onto
+/// `SiteRecord.proven_unlawful` (M19).
+fn remember_proven(ctx: &mut Ctx<'_>, site: &CanonicalId, act: &UnlawfulAct) {
+    let mark = ProvenUnlawfulMark::of(act);
+    if let Some(cache) = ctx.w.module_state_mut::<ProvenActs>() {
+        let entry = cache.0.entry(site.clone()).or_default();
+        if !entry.contains(&mark) {
+            if entry.len() >= MAX_PROVEN_CACHE_PER_SITE {
+                entry.remove(0);
+            }
+            entry.push(mark);
+        }
+    }
+    if let Some(pending) = ctx.w.module_state_mut::<PendingProvenMarks>() {
+        let entry = pending.by_site.entry(site.clone()).or_default();
+        if !entry.contains(&mark) {
+            if entry.len() >= crate::surface::claim::MAX_UNLAWFUL {
+                entry.remove(0);
+            }
+            entry.push(mark);
+        }
+    }
+}
+
+/// Flush pending durable [`ProvenUnlawfulMark`] writes onto their `SiteRecord`s via
+/// `ClaimOrder::MarkProven` submitted under the site's clerk Thing (never `GOD`) (M19).
+pub(crate) fn flush_proven_marks(ctx: &mut Ctx<'_>) {
+    let sites: Vec<CanonicalId> = ctx
+        .w
+        .module_state::<PendingProvenMarks>()
+        .map(|pending| pending.by_site.keys().cloned().collect())
+        .unwrap_or_default();
+    if sites.is_empty() {
+        return;
+    }
+    for site in sites {
+        let Some(record) = crate::surface::tow::record_of(ctx, &site) else {
+            // No SiteRecord exists yet (e.g. unit test without a site record); keep RAM cache
+            // intact and drop the pending durable write so we never spin.
+            if let Some(pending) = ctx.w.module_state_mut::<PendingProvenMarks>() {
+                pending.by_site.remove(&site);
+            }
+            continue;
+        };
+        let Some(clerk) = crate::surface::claim::clerk_of(ctx.w, &site) else {
+            if let Some(pending) = ctx.w.module_state_mut::<PendingProvenMarks>() {
+                pending.by_site.remove(&site);
+            }
+            continue;
+        };
+        let remaining: Vec<ProvenUnlawfulMark> = ctx
+            .w
+            .module_state::<PendingProvenMarks>()
+            .and_then(|pending| pending.by_site.get(&site))
+            .map(|marks| {
+                marks
+                    .iter()
+                    .copied()
+                    .filter(|mark| !record.proven_unlawful.contains(mark))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if remaining.is_empty() {
+            if let Some(pending) = ctx.w.module_state_mut::<PendingProvenMarks>() {
+                pending.by_site.remove(&site);
+            }
+            continue;
+        }
+        if ctx.authoritative_pending(clerk) {
+            continue;
+        }
+        let tag = ctx
+            .w
+            .module_state_mut::<PendingProvenMarks>()
+            .map_or(1, |pending| {
+                pending.next_tag = pending.next_tag.wrapping_add(1).max(1);
+                pending.next_tag
+            });
+        let order = crate::surface::tow::TowOrder::Claim {
+            order: Box::new(crate::surface::claim::ClaimOrder::MarkProven {
+                site: site.clone(),
+                clerk,
+                marks: remaining,
+            }),
+        };
+        let _ = crate::surface::tow::submit(ctx, clerk, clerk, order, tag);
+    }
+}
 
 /// **The fine for an unlawful pickup**, major credits (Q-41-25, provisional).
 pub const FINE_PICKUP_MAJOR: u64 = 500;
@@ -148,6 +280,24 @@ pub(crate) fn prove(
         offender: Offender::Character(act.actor),
         polity,
     };
+    // M19: refuse to re-prove an act already marked proven (even after its settled row rolled off
+    // `OffenseRecord` past `MAX_OFFENSE_ROWS`).
+    if is_already_proven(ctx, site, act) {
+        return false;
+    }
+    // M19: if `OffenseRecord` is already at cap and `record_offense` is about to evict a settled
+    // site offense (including pre-existing rows created before durable marks), preserve its mark
+    // so it cannot be re-reported and double-fined after eviction.
+    let evicting_site_act: Option<(CanonicalId, UnlawfulAct)> =
+        crate::offense::record_of(ctx.w, &key)
+            .filter(|rec| rec.rows.len() >= MAX_OFFENSE_ROWS)
+            .and_then(|rec| {
+                rec.rows
+                    .iter()
+                    .find(|row| settled(ctx.w, row))
+                    .and_then(ProvenOffense::site_act)
+                    .map(|(old_site, old_act)| (old_site.clone(), old_act.clone()))
+            });
     let offense = ProvenOffense {
         kind,
         evidence: Evidence::Site {
@@ -159,7 +309,15 @@ pub(crate) fn prove(
         debt: None,
         payout: None,
     };
-    record_offense(ctx, key, offense, settled)
+    let added = record_offense(ctx, key, offense, settled);
+    if added {
+        if let Some((old_site, old_act)) = evicting_site_act {
+            remember_proven(ctx, &old_site, &old_act);
+        }
+        remember_proven(ctx, site, act);
+        flush_proven_marks(ctx);
+    }
+    added
 }
 
 /// The status of the obligation `id`, when it reads.
@@ -658,4 +816,107 @@ fn witnessed(
                 && known.seen_ic >= act.at_ic
                 && known.seen_ic <= act.at_ic.saturating_add(REPORT_SIGHT_IC_S)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::claim::UnlawfulKind;
+    use crate::surface::site_record::{SiteKey, SiteRecord};
+
+    /// **M19**: once an unlawful site act has been proven and durably marked on
+    /// `SiteRecord.proven_unlawful`, evicting its settled row from `OffenseRecord` past
+    /// `MAX_OFFENSE_ROWS` (64) — even across a full restart that clears RAM caches — must not
+    /// allow the act to be re-proven or double-fined.
+    #[test]
+    fn m19_evicted_settled_offense_cannot_be_reproved_after_restart() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let site = CanonicalId::new("urvara_port").expect("site");
+        let offender = ObjId(77);
+        let polity = FactionId(1);
+        let act = UnlawfulAct {
+            kind: UnlawfulKind::Recovery,
+            actor: offender,
+            subject: 300,
+            landholder: Some(ObjId(99)),
+            at_ic: 1_000,
+        };
+
+        // 1. Persist a `SiteRecord` carrying `act` in `unlawful` and marked in `proven_unlawful`
+        // (and verify `SiteRecord` round-trips `proven_unlawful` through JSON cleanly).
+        let mut site_rec = SiteRecord::new(site.clone());
+        crate::surface::claim::log_unlawful(&mut site_rec, act.clone());
+        site_rec.mark_proven_unlawful(ProvenUnlawfulMark::of(&act));
+        assert!(site_rec.is_proven_unlawful(&act));
+        let encoded = serde_json::to_value(&site_rec).expect("encodes");
+        let decoded: SiteRecord = serde_json::from_value(encoded).expect("decodes");
+        assert!(decoded.is_proven_unlawful(&act));
+        decoded.check().expect("site record valid");
+
+        let sites_handle = tw
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .expect("handles")
+            .families
+            .sites
+            .clone();
+        {
+            let engine = tw.engine_mut();
+            let prepared = {
+                let mut txn = engine.action_transaction(&sites_handle).expect("txn");
+                txn.insert(&sites_handle, &SiteKey(site.clone()), decoded)
+                    .expect("insert");
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+
+        // 2. Simulate post-eviction + restart state: `OffenseRecord` no longer holds `act` (empty
+        // or holds 64 newer rows), AND RAM `ProvenActs` is completely empty.
+        if let Some(cache) = tw.world_mut().module_state_mut::<ProvenActs>() {
+            cache.0.clear();
+        }
+        let key = OffenseKey {
+            offender: Offender::Character(offender),
+            polity,
+        };
+        assert!(crate::offense::record_of(tw.world(), &key).is_none());
+
+        // `is_already_proven_with` must still recognize `act` from durable `SiteRecord.proven_unlawful`!
+        let stored_record = tw
+            .engine()
+            .action_state()
+            .get(&sites_handle, &SiteKey(site.clone()))
+            .expect("reads site record");
+        assert!(
+            is_already_proven_with(tw.world(), stored_record, &site, &act),
+            "durable SiteRecord.proven_unlawful must block replay after eviction & restart"
+        );
+
+        // 3. Also verify `log_unlawful` prunes `proven_unlawful` once the act rolls off `unlawful`.
+        let mut rolling = SiteRecord::new(site);
+        crate::surface::claim::log_unlawful(&mut rolling, act.clone());
+        rolling.mark_proven_unlawful(ProvenUnlawfulMark::of(&act));
+        for i in 1..=crate::surface::claim::MAX_UNLAWFUL {
+            crate::surface::claim::log_unlawful(
+                &mut rolling,
+                UnlawfulAct {
+                    kind: UnlawfulKind::Pickup,
+                    actor: offender,
+                    subject: 400 + u32::try_from(i).expect("small"),
+                    landholder: Some(ObjId(99)),
+                    at_ic: 2_000 + i64::try_from(i).expect("small"),
+                },
+            );
+        }
+        assert!(
+            !rolling.is_proven_unlawful(&act),
+            "mark pruned once its unlawful act has rolled off the site log"
+        );
+        rolling.check().expect("valid after pruning");
+    }
 }

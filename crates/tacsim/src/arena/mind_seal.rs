@@ -242,6 +242,19 @@ impl MindSeal {
         self.identity().validate()?;
         self.requested.validate()?;
         self.rom_identity.validate()?;
+        if (self.class != CoreClass::Zero || self.core_class != CoreClass::Zero || !self.governed)
+            && self.core.is_none()
+        {
+            return Err(invalid(
+                "non-zero class or ungoverned execution requires a fitted core",
+            ));
+        }
+        if self.class > self.core_class {
+            return Err(invalid("sealed execution class exceeds core class"));
+        }
+        if self.governed && self.cards.definition.declared_class > self.core_class {
+            return Err(invalid("governed execution cannot exceed its core's class"));
+        }
         if let Some(certificate) = self.requested.origin.certificate()
             && self.class != CoreClass::Zero
         {
@@ -354,5 +367,75 @@ fn invalid_key() -> ProfileKey {
     ProfileKey {
         definition: mush_core::DefinitionDigest::from_bytes([0; 32]),
         index: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arena::state::PartyId;
+    use crate::arena::test_support::{cannon, pose, tactical_unit_cored, tank};
+
+    fn fixture_seal(governed: bool) -> MindSeal {
+        let mut unit = tank(ObjId(4), PartyId::RED, pose(1_500, 1_500));
+        unit.unit = tactical_unit_cored(ObjId(4), CoreClass::I);
+        unit.weapons = vec![cannon()];
+        unit.reseal(&crate::match_::SealTerms::fixture())
+            .expect("fixture seal");
+        let mut seal = unit.seal;
+        seal.core = Some(SmolStr::new_static("core"));
+        seal.core_class = CoreClass::I;
+        seal.class = CoreClass::I;
+        seal.governed = governed;
+        seal
+    }
+
+    #[test]
+    fn t2b_m25_verify_enforces_core_and_class_on_non_filed_seals() {
+        let valid = fixture_seal(true);
+        assert!(valid.verify(&ClassTable::STOCK, &valid.weapons).is_ok());
+
+        // Non-filed seal with class > Zero and core: None must be rejected.
+        let mut missing_core_class = valid.clone();
+        missing_core_class.core = None;
+        assert!(
+            missing_core_class
+                .verify(&ClassTable::STOCK, &missing_core_class.weapons)
+                .is_err(),
+            "non-filed seal with class > Zero requires a core"
+        );
+
+        // Non-filed ungoverned seal with core: None must be rejected.
+        let mut missing_core_ungoverned = fixture_seal(false);
+        missing_core_ungoverned.core = None;
+        missing_core_ungoverned.class = CoreClass::Zero;
+        missing_core_ungoverned.core_class = CoreClass::Zero;
+        assert!(
+            missing_core_ungoverned
+                .verify(&ClassTable::STOCK, &missing_core_ungoverned.weapons)
+                .is_err(),
+            "ungoverned seal requires a core"
+        );
+
+        // Non-filed seal claiming execution class above core_class must be rejected.
+        let mut over_class = valid.clone();
+        over_class.class = CoreClass::II;
+        over_class.core_class = CoreClass::I;
+        assert!(
+            over_class
+                .verify(&ClassTable::STOCK, &over_class.weapons)
+                .is_err(),
+            "execution class cannot exceed core class"
+        );
+
+        // Governed non-filed seal whose cards declare a class above core_class must be rejected.
+        let mut over_declared = valid.clone();
+        over_declared.cards.definition.declared_class = CoreClass::II;
+        assert!(
+            over_declared
+                .verify(&ClassTable::STOCK, &over_declared.weapons)
+                .is_err(),
+            "governed non-filed seal cannot exceed core class via declared_class"
+        );
     }
 }

@@ -1312,11 +1312,23 @@ namespace UnityEngine
     {
         public class DownloadHandler : IDisposable
         {
-            public string text { get; set; } = string.Empty;
-            public byte[] data { get; set; } = Array.Empty<byte>();
-            public void Dispose() { }
+            private string _text = string.Empty;
+            private byte[] _data = Array.Empty<byte>();
+            public string text { get => GetText(); set => _text = value; }
+            public byte[] data { get => GetData(); set => _data = value; }
+            protected virtual byte[] GetData() => _data;
+            protected virtual string GetText() => _text;
+            protected virtual bool ReceiveData(byte[] data, int dataLength) => true;
+            protected virtual void ReceiveContentLengthHeader(ulong contentLength) { }
+            protected virtual void CompleteContent() { }
+            public virtual void Dispose() { }
         }
         public class DownloadHandlerBuffer : DownloadHandler { }
+        public class DownloadHandlerScript : DownloadHandler
+        {
+            public DownloadHandlerScript() { }
+            public DownloadHandlerScript(byte[] preallocatedBuffer) { }
+        }
         public class UploadHandler : IDisposable { public void Dispose() { } }
         public class UploadHandlerRaw : UploadHandler
         {
@@ -1345,6 +1357,8 @@ namespace UnityEngine
             public UploadHandler uploadHandler { get; set; }
             public DownloadHandler downloadHandler { get; set; }
             public int timeout { get; set; }
+            public int redirectLimit { get; set; } = 32;
+            public bool aborted { get; private set; }
             public long responseCode { get; set; } = 200;
             public Result result { get; set; } = Result.Success;
             public string error { get; set; }
@@ -1355,6 +1369,7 @@ namespace UnityEngine
             public void SetRequestHeader(string name, string value) { }
             public string GetResponseHeader(string name) => null;
             public Dictionary<string, string> GetResponseHeaders() => new Dictionary<string, string>();
+            public void Abort() { aborted = true; }
             public UnityWebRequestAsyncOperation SendWebRequest() => new UnityWebRequestAsyncOperation();
             public void Dispose() { uploadHandler?.Dispose(); downloadHandler?.Dispose(); }
         }

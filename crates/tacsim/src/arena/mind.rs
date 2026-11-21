@@ -1196,6 +1196,38 @@ pub fn run_batch_inline(thinks: &[CollectedThink]) -> Vec<ThinkAnswer> {
 /// writer.
 pub use mush_mind::memory::{MemError, Memory, Value as MemValue};
 
+/// Maximum length of a canonical weapon identifier carried in mind intents or notices.
+pub const MAX_WEAPON_SYMBOL_BYTES: usize = 64;
+
+/// Whether `word` is a bounded canonical ASCII weapon identifier (`1..=64` bytes of
+/// ASCII alphanumerics, `_`, or `-`), matching `conditions::validate_rule_shape`.
+#[must_use]
+pub fn valid_weapon_symbol(word: &str) -> bool {
+    !word.is_empty()
+        && word.len() <= MAX_WEAPON_SYMBOL_BYTES
+        && word.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
+}
+
+/// Validate weapon symbols carried by mind-emitted intents before storing them
+/// in `PendingThink` or refusal notices so unarmed hulls cannot blow snapshot
+/// reserve budgets with unbounded or control-character strings.
+fn intent_weapon_symbols_valid(intent: &IntentKind) -> bool {
+    use crate::arena::conditions::{Arming, validate_rule_shape};
+    match intent {
+        IntentKind::Fire { weapon, .. } => valid_weapon_symbol(weapon),
+        IntentKind::Condition(Arming::Arm(condition)) => valid_weapon_symbol(&condition.weapon),
+        IntentKind::Condition(Arming::Disarm { weapon }) => {
+            weapon.as_deref().is_none_or(valid_weapon_symbol)
+        }
+        IntentKind::Condition(Arming::Rules { rules, .. }) => {
+            rules.iter().all(|rule| validate_rule_shape(rule).is_ok())
+        }
+        _ => true,
+    }
+}
+
 /// **The stock class's memory limits** (doc 17 §8; D-UM-35's class I
 /// `memory_keys`): at most 32 keys of 1 to 24 characters, strings of at most
 /// 32 bytes, INT arrays of at most 32 — and, since 17b cut M2.2, keys and
@@ -2184,7 +2216,7 @@ impl Arena {
         let period = profile.think_ms;
         let seed = self.seed;
         let map = Arc::clone(&self.definition);
-        let wrecks = self.mind_wrecks();
+        let wrecks = self.mind_wrecks_for(unit);
         let Some(runtime) = self.profiles.get(&unit) else {
             return;
         };
@@ -2363,6 +2395,12 @@ impl Arena {
         // own, or `intents` for an overflow with no fault — is what the
         // `mind_fault` line carries.
         let overflowed = result.intents.len() > MIND_INTENTS_MAX;
+        let bad_intent = result
+            .intents
+            .iter()
+            .any(|intent| !intent_weapon_symbols_valid(intent));
+        let memory_bad =
+            result.fault.is_none() && !crate::arena::memory_bound::fits(self, unit, &result.memory);
         let sample_bad = result.rule_sample.as_ref().is_some_and(|sample| {
             let mut checked = crate::arena::profile_rules::RuleLease::default();
             // Due events retain their scheduled millisecond, while the public
@@ -2385,6 +2423,8 @@ impl Arena {
             .as_ref()
             .map(|fault| fault.cause.clone())
             .or_else(|| overflowed.then(|| SmolStr::new_static(OVERFLOW_CAUSE)))
+            .or_else(|| bad_intent.then(|| SmolStr::new_static("type")))
+            .or_else(|| memory_bad.then(|| SmolStr::new_static("memory")))
             .or_else(|| sample_bad.then(|| SmolStr::new_static("rules")));
         if let Some(cause) = cause.as_deref() {
             self.traces.mark_fault(unit, think.think_seq, cause);
@@ -2876,13 +2916,30 @@ impl Arena {
                 continue;
             };
             let notice = match kind {
-                IntentKind::Fire { weapon, .. } => {
-                    self.refusal_notice(unit, kind.as_str(), refusal, Some(weapon.clone()), t_ms)
-                }
+                IntentKind::Fire { weapon, .. } => self.refusal_notice(
+                    unit,
+                    kind.as_str(),
+                    refusal,
+                    valid_weapon_symbol(weapon).then(|| weapon.clone()),
+                    t_ms,
+                ),
                 // 17b cut M1b.1: a refused arming names its weapon, as a refused
                 // `FIRE` does, in the one shape phase 4 stages a seat's in.
                 IntentKind::Condition(arming) => {
-                    self.arming_refusal_notice(unit, arming, refusal, t_ms)
+                    match self.arming_refusal_notice(unit, arming, refusal, t_ms) {
+                        crate::arena::perception::FrameNotice::Refused {
+                            order,
+                            refusal,
+                            weapon,
+                            detail,
+                        } => crate::arena::perception::FrameNotice::Refused {
+                            order,
+                            refusal,
+                            weapon: weapon.filter(|name| valid_weapon_symbol(name)),
+                            detail,
+                        },
+                        other => other,
+                    }
                 }
                 _ => self.refusal_notice(unit, kind.as_str(), refusal, None, t_ms),
             };
@@ -3258,21 +3315,19 @@ impl Arena {
             Ok(card) => card,
             Err(error) => return refused(error.to_string()),
         };
+        let floor = if self.floor_lifted(unit) {
+            0
+        } else {
+            self.odds_floor_permille
+        };
         let Some(runtime) = self.profiles.get(&unit) else {
             return refused("missing_runtime".to_owned());
         };
-        let prepared = match runtime.prepare_card(
-            &catalog,
-            unit,
-            card,
-            &profile,
-            &ids,
-            &channels,
-            self.odds_floor_permille,
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => return refused(error.to_string()),
-        };
+        let prepared =
+            match runtime.prepare_card(&catalog, unit, card, &profile, &ids, &channels, floor) {
+                Ok(prepared) => prepared,
+                Err(error) => return refused(error.to_string()),
+            };
         let Some(runtime) = self.profiles.get_mut(&unit) else {
             return refused("missing_runtime".to_owned());
         };
@@ -6569,5 +6624,141 @@ mod tests {
         assert_eq!(dropped.minds[&RED].dropped, Some(DropCause::Strikes));
         assert!(dropped.profiles[&RED].dropped, "the runtime flies the ROM");
         assert_eq!(dropped.ledger.seq(), lines, "no second mind_dropped line");
+    }
+
+    #[test]
+    fn t2b_m3_rejects_oversized_and_non_ascii_weapon_symbols() {
+        use crate::arena::conditions::{Arming, FireCondition, SlotTarget};
+
+        assert!(valid_weapon_symbol("cannon_105"));
+        assert!(valid_weapon_symbol(&"a".repeat(MAX_WEAPON_SYMBOL_BYTES)));
+        assert!(!valid_weapon_symbol(""));
+        assert!(!valid_weapon_symbol(
+            &"a".repeat(MAX_WEAPON_SYMBOL_BYTES + 1)
+        ));
+        assert!(!valid_weapon_symbol("bad\nweapon"));
+        assert!(!valid_weapon_symbol("BadUpper"));
+        assert!(!valid_weapon_symbol("bad space"));
+
+        let bad_intents = [
+            IntentKind::Fire {
+                weapon: SmolStr::new("x".repeat(8_192)),
+                slot: None,
+            },
+            IntentKind::Condition(Arming::Arm(FireCondition {
+                weapon: SmolStr::new("bad\x00gun"),
+                target: SlotTarget::Contact { id: ContactId(1) },
+                min_permille: 100,
+                aspects: 0,
+                min_rounds_left: 0,
+                min_range_m: 0,
+                max_range_m: 0,
+            })),
+            IntentKind::Condition(Arming::Disarm {
+                weapon: Some(SmolStr::new("y".repeat(MAX_WEAPON_SYMBOL_BYTES + 1))),
+            }),
+        ];
+        for bad_intent in bad_intents {
+            let mut arena = minded();
+            let baseline_snap = crate::arena::snapshot::Snapshot::encode(&arena).expect("baseline");
+            let baseline_len = serde_json::to_string(&baseline_snap.document)
+                .expect("serialize")
+                .len();
+            let mut counters = crate::arena::motor::MotorCounters::default();
+            arena.collect_think(RED, 0, 0, &mut counters);
+            arena.stamp_collected(0);
+            let collected = arena.unsettled.pop().expect("collected think");
+            let result = ThinkResult {
+                intents: vec![bad_intent],
+                memory: b"{}".to_vec(),
+                fault: None,
+                rule_sample: None,
+                diagnostics: None,
+                trace: Vec::new(),
+            };
+            let settled = arena.settle_collected(&collected, result);
+            assert_eq!(settled.faults, 1, "invalid weapon symbol faults");
+            assert_eq!(arena.minds[&RED].strikes, 1);
+            assert!(
+                arena.minds[&RED].pending.is_none(),
+                "invalid weapon string never enters pending snapshot state"
+            );
+            let encoded = crate::arena::snapshot::Snapshot::encode(&arena).expect("encodes");
+            let json_str = serde_json::to_string(&encoded.document).expect("serialize");
+            assert!(
+                !json_str.contains(&"x".repeat(128)) && !json_str.contains(&"y".repeat(65)),
+                "oversized weapon string must not appear in snapshot"
+            );
+            assert!(
+                json_str.len() <= baseline_len + 512,
+                "snapshot remains compact without oversized weapon string ({} vs baseline {})",
+                json_str.len(),
+                baseline_len
+            );
+        }
+
+        // Defense-in-depth in `mind_land`: an invalid weapon string is stripped
+        // before staging `FrameNotice::Refused`.
+        let mut arena = minded();
+        arena.minds.get_mut(&RED).expect("mind").pending = Some(PendingThink {
+            think_seq: 0,
+            t_ms: 0,
+            epochs: [0, 0, 0],
+            profile_token: arena.profiles[&RED].token(),
+            lands_ms: 250,
+            period_ms: 250,
+            profile_class: arena.mind_class(RED),
+            rule_sample: None,
+            intents: vec![IntentKind::Fire {
+                weapon: SmolStr::new("z".repeat(4_096)),
+                slot: None,
+            }],
+            memory: b"{}".to_vec(),
+        });
+        let mut counters = crate::arena::motor::MotorCounters::default();
+        arena.mind_land(RED, 0, 250, &mut counters);
+        assert!(
+            arena.minds[&RED].notices.iter().any(|notice| matches!(
+                notice,
+                FrameNotice::Refused {
+                    order,
+                    weapon: None,
+                    ..
+                } if order == "fire"
+            )),
+            "invalid weapon string stripped from FrameNotice::Refused: {:?}",
+            arena.minds[&RED].notices
+        );
+    }
+
+    #[test]
+    fn t2b_m26_settle_collected_faults_noncanonical_and_overlimit_memory() {
+        let cases = [
+            b"[1]".to_vec(),
+            br#"{ "a": 1 }"#.to_vec(),
+            format!(r#"{{"k":"{}"}}"#, "a".repeat(33)).into_bytes(),
+        ];
+        for bad_memory in cases {
+            let mut arena = minded();
+            let initial_memory = br#"{"kept":1}"#.to_vec();
+            arena.minds.get_mut(&RED).expect("mind").memory = initial_memory.clone();
+            let mut counters = crate::arena::motor::MotorCounters::default();
+            arena.collect_think(RED, 0, 0, &mut counters);
+            arena.stamp_collected(0);
+            let collected = arena.unsettled.pop().expect("collected think");
+            let result = ThinkResult {
+                intents: Vec::new(),
+                memory: bad_memory,
+                fault: None,
+                rule_sample: None,
+                diagnostics: None,
+                trace: Vec::new(),
+            };
+            let settled = arena.settle_collected(&collected, result);
+            assert_eq!(settled.faults, 1);
+            assert_eq!(arena.minds[&RED].strikes, 1);
+            assert_eq!(arena.minds[&RED].memory, initial_memory);
+            assert!(arena.minds[&RED].pending.is_none());
+        }
     }
 }

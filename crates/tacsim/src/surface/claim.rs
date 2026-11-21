@@ -104,6 +104,9 @@ pub const MAX_WITNESSES: usize = 16;
 pub const MAX_TOLD: usize = MAX_WITNESSES * 2 + 2;
 /// The most delivered or read evidence records one custody keeps.
 pub const MAX_EVIDENCE: usize = 16;
+/// Evidence slots reserved out of [`MAX_EVIDENCE`] for title parties and the block's landholder
+/// (M16), so third-party reports can never lock them out of recording evidence.
+pub const RESERVED_EVIDENCE_SLOTS: usize = 4;
 /// The most entries the site's evidence log keeps; past it the oldest goes.
 pub const MAX_UNLAWFUL: usize = 64;
 /// The salvage award's registered title issuer: the lane's registry
@@ -837,12 +840,16 @@ pub struct UnlawfulAct {
     pub at_ic: i64,
 }
 
-/// **Write `act` to the site's evidence log**, past [`MAX_UNLAWFUL`] dropping the oldest.
+/// **Write `act` to the site's evidence log**, past [`MAX_UNLAWFUL`] dropping the oldest and
+/// pruning proven marks whose acts have rolled off the log (M19).
 pub(crate) fn log_unlawful(record: &mut SiteRecord, act: UnlawfulAct) {
     record.unlawful.push(act);
     while record.unlawful.len() > MAX_UNLAWFUL {
         record.unlawful.remove(0);
     }
+    record
+        .proven_unlawful
+        .retain(|kept| record.unlawful.iter().any(|logged| kept.matches(logged)));
 }
 
 /// **The captives an unlawful recovery carried off** (doc 42 cut CR.1, Q-42-22): one
@@ -911,6 +918,90 @@ pub fn evidence_of(custody: &SalvageCustody, who: ObjId) -> Option<SalvageEviden
         .iter()
         .find(|record| record.holder == who && record.operation_id == operation)
         .cloned()
+}
+
+/// Whether `who` is a privileged party to `custody`'s salvage claim (pinned title answerer,
+/// block landholder, filed prior owner, or notified recipient) entitled to reserved evidence slots
+/// (M16).
+fn is_party_or_landholder(custody: &SalvageCustody, who: ObjId) -> bool {
+    custody
+        .pin
+        .as_ref()
+        .is_some_and(|pin| pin.answers_for(who) || pin.landholder() == Some(who))
+        || custody
+            .file
+            .as_ref()
+            .is_some_and(|file| file.prior_owner == who)
+        || custody.told.contains(&who)
+}
+
+/// Check whether `custody` can accept a delivered evidence report for `to` (M16): rejects
+/// duplicates (any recipient who already holds a recorded evidence slot for this operation) and
+/// enforces [`RESERVED_EVIDENCE_SLOTS`] for non-party recipients.
+fn check_report_slot(
+    custody: &SalvageCustody,
+    evidence: &SalvageEvidenceRecord,
+) -> Result<(), &'static str> {
+    if custody.evidence.contains(evidence)
+        || custody
+            .evidence
+            .iter()
+            .any(|e| e.holder == evidence.holder && e.operation_id == evidence.operation_id)
+    {
+        return Err("claim_evidence_duplicate");
+    }
+    let privileged = is_party_or_landholder(custody, evidence.holder);
+    let non_priv_cap = MAX_EVIDENCE.saturating_sub(RESERVED_EVIDENCE_SLOTS);
+    if !privileged {
+        let non_priv = custody
+            .evidence
+            .iter()
+            .filter(|e| !is_party_or_landholder(custody, e.holder))
+            .count();
+        if non_priv >= non_priv_cap || custody.evidence.len() >= MAX_EVIDENCE {
+            return Err("claim_evidence_full");
+        }
+    } else if custody.evidence.len() >= MAX_EVIDENCE
+        && !custody
+            .evidence
+            .iter()
+            .any(|e| !is_party_or_landholder(custody, e.holder))
+    {
+        return Err("claim_evidence_full");
+    }
+    Ok(())
+}
+
+/// Insert `evidence` into `custody.evidence` enforcing [`RESERVED_EVIDENCE_SLOTS`] (M16):
+/// non-privileged entries cannot exceed `MAX_EVIDENCE - RESERVED_EVIDENCE_SLOTS`; a privileged
+/// party/landholder arriving at `MAX_EVIDENCE` displaces the oldest non-privileged entry.
+fn push_evidence_with_reservation(
+    custody: &mut SalvageCustody,
+    evidence: SalvageEvidenceRecord,
+) -> Result<(), &'static str> {
+    let privileged = is_party_or_landholder(custody, evidence.holder);
+    let non_priv_cap = MAX_EVIDENCE.saturating_sub(RESERVED_EVIDENCE_SLOTS);
+    if !privileged {
+        let non_priv = custody
+            .evidence
+            .iter()
+            .filter(|e| !is_party_or_landholder(custody, e.holder))
+            .count();
+        if non_priv >= non_priv_cap || custody.evidence.len() >= MAX_EVIDENCE {
+            return Err("claim_evidence_full");
+        }
+    } else if custody.evidence.len() >= MAX_EVIDENCE {
+        let Some(pos) = custody
+            .evidence
+            .iter()
+            .position(|e| !is_party_or_landholder(custody, e.holder))
+        else {
+            return Err("claim_evidence_full");
+        };
+        custody.evidence.remove(pos);
+    }
+    custody.evidence.push(evidence);
+    Ok(())
 }
 
 // ---- the claim's orders -------------------------------------------------------------------
@@ -1033,6 +1124,16 @@ pub enum ClaimOrder {
         /// The refused ask.
         ask: ConsentAsk,
     },
+    /// **Site-clerk durable proof mark** (M19): marks unlawful acts on `site` as already proven
+    /// so settled offenses evicted past `MAX_OFFENSE_ROWS` cannot be re-reported and double-fined.
+    MarkProven {
+        /// The site.
+        site: CanonicalId,
+        /// The site's clerk object submitting the durable mark (never `GOD`).
+        clerk: ObjId,
+        /// The proven unlawful act identities to persist on `SiteRecord.proven_unlawful`.
+        marks: Vec<crate::surface::site_record::ProvenUnlawfulMark>,
+    },
 }
 
 impl ClaimOrder {
@@ -1048,11 +1149,12 @@ impl ClaimOrder {
             | Self::AtRisk { site, .. }
             | Self::AuthorizeBlock { site, .. }
             | Self::Ask { site, .. }
-            | Self::Refuse { site, .. } => site,
+            | Self::Refuse { site, .. }
+            | Self::MarkProven { site, .. } => site,
         }
     }
 
-    /// The hull it is about (a block delegation's block place).
+    /// The hull it is about (a block delegation's block place, or the site's clerk for proof marks).
     #[must_use]
     pub fn hull(&self) -> ObjId {
         match self {
@@ -1065,6 +1167,7 @@ impl ClaimOrder {
             Self::AuthorizeBlock { place, .. }
             | Self::Ask { place, .. }
             | Self::Refuse { place, .. } => *place,
+            Self::MarkProven { clerk, .. } => *clerk,
         }
     }
 }
@@ -1379,6 +1482,15 @@ pub(crate) fn prepare(
     order: &ClaimOrder,
     now_ic: i64,
 ) -> Result<String, &'static str> {
+    if let ClaimOrder::MarkProven { clerk, marks, .. } = order {
+        if actor != *clerk {
+            return Err("claim_not_system");
+        }
+        for mark in marks {
+            record.mark_proven_unlawful(*mark);
+        }
+        return Ok("proven".to_owned());
+    }
     if let ClaimOrder::AuthorizeBlock { grant, .. } = order {
         put_land_grant(record, actor, grant, now_ic)?;
         return Ok("authorized".to_owned());
@@ -1494,12 +1606,8 @@ pub(crate) fn prepare(
                 return Err("claim_no_recipient");
             }
             evidence.holder = *to;
-            if !custody.evidence.contains(&evidence) {
-                if custody.evidence.len() >= MAX_EVIDENCE {
-                    return Err("claim_evidence_full");
-                }
-                custody.evidence.push(evidence);
-            }
+            check_report_slot(custody, &evidence)?;
+            push_evidence_with_reservation(custody, evidence)?;
             Ok("reported".to_owned())
         }
         ClaimOrder::Inspect { .. } => {
@@ -1518,10 +1626,7 @@ pub(crate) fn prepare(
                 .iter()
                 .any(|e| e.holder == actor && e.operation_id == operation)
             {
-                if custody.evidence.len() >= MAX_EVIDENCE {
-                    return Err("claim_evidence_full");
-                }
-                custody.evidence.push(read);
+                push_evidence_with_reservation(custody, read)?;
             }
             Ok("inspected".to_owned())
         }
@@ -1556,9 +1661,10 @@ pub(crate) fn prepare(
             (*window_end, *now_real),
             now_ic,
         ),
-        ClaimOrder::AuthorizeBlock { .. } | ClaimOrder::Ask { .. } | ClaimOrder::Refuse { .. } => {
-            Err("claim_no_custody")
-        }
+        ClaimOrder::AuthorizeBlock { .. }
+        | ClaimOrder::Ask { .. }
+        | ClaimOrder::Refuse { .. }
+        | ClaimOrder::MarkProven { .. } => Err("claim_no_custody"),
     }
 }
 
@@ -1652,7 +1758,7 @@ pub fn install_claim_mail(w: &mut World, mail: Arc<ClaimMailFn>) -> bool {
 }
 
 /// The site's clerk, whose name a registry's letters go under; else the actor.
-fn clerk_of(w: &World, site: &CanonicalId) -> Option<ObjId> {
+pub(crate) fn clerk_of(w: &World, site: &CanonicalId) -> Option<ObjId> {
     w.module_state::<crate::store::TacsimStore>()?
         .port_maps()
         .find(|map| &map.entry == site)?
@@ -1973,11 +2079,11 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
             let custody = book.space_custody.get_mut(&hull)?;
             let mut evidence = evidence_of(custody, actor)?;
             evidence.holder = *to;
-            if !custody.evidence.contains(&evidence) {
-                if custody.evidence.len() >= MAX_EVIDENCE {
-                    return Some(false);
-                }
-                custody.evidence.push(evidence);
+            if check_report_slot(custody, &evidence).is_err() {
+                return Some(false);
+            }
+            if push_evidence_with_reservation(custody, evidence).is_err() {
+                return Some(false);
             }
             Some(true)
         }
@@ -2000,11 +2106,9 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
                 .evidence
                 .iter()
                 .any(|e| e.holder == actor && e.operation_id == operation)
+                && push_evidence_with_reservation(custody, read).is_err()
             {
-                if custody.evidence.len() >= MAX_EVIDENCE {
-                    return Some(false);
-                }
-                custody.evidence.push(read);
+                return Some(false);
             }
             Some(true)
         }
@@ -2065,19 +2169,254 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
             }
             Some(true)
         }
-        ClaimOrder::AuthorizeBlock { .. } | ClaimOrder::Ask { .. } | ClaimOrder::Refuse { .. } => {
-            None
+        ClaimOrder::AuthorizeBlock { .. }
+        | ClaimOrder::Ask { .. }
+        | ClaimOrder::Refuse { .. }
+        | ClaimOrder::MarkProven { .. } => None,
+    }
+}
+
+/// Outcome of submitting a [`ClaimOrder`]: refused/unwired, committed synchronously (space
+/// custody), or queued for authoritative commit on a site record (M16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubmitOutcome {
+    Failed,
+    Committed,
+    Queued,
+}
+
+/// Maximum queued post-commit claim notices retained in RAM.
+const MAX_PENDING_CLAIM_NOTICES: usize = 256;
+
+/// A claim IC mail or registry notice deferred until its `tacsim_surface_tow` order commits on
+/// the site record (M16).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingClaimNotice {
+    Report {
+        site: CanonicalId,
+        hull: ObjId,
+        submitter: ObjId,
+        to: ObjId,
+        operation: mush_tactics::field_ops::RecoveryOpId,
+        subject: String,
+        body: String,
+    },
+    Refuse {
+        site: CanonicalId,
+        letter: char,
+        landholder: ObjId,
+        registered_ic: i64,
+        asker: ObjId,
+        refused_ic: i64,
+        notice: String,
+    },
+    Ask {
+        site: CanonicalId,
+        letter: char,
+        landholder: ObjId,
+        registered_ic: i64,
+        asker: ObjId,
+        asked_ic: i64,
+        notice: String,
+    },
+}
+
+impl PendingClaimNotice {
+    fn submitter(&self) -> ObjId {
+        match self {
+            Self::Report { submitter, .. } => *submitter,
+            Self::Refuse { landholder, .. } => *landholder,
+            Self::Ask { asker, .. } => *asker,
+        }
+    }
+
+    fn same_target(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Report {
+                    site: s1,
+                    hull: h1,
+                    to: t1,
+                    operation: o1,
+                    ..
+                },
+                Self::Report {
+                    site: s2,
+                    hull: h2,
+                    to: t2,
+                    operation: o2,
+                    ..
+                },
+            ) => s1 == s2 && h1 == h2 && t1 == t2 && o1 == o2,
+            (
+                Self::Refuse {
+                    site: s1,
+                    letter: l1,
+                    landholder: h1,
+                    asker: a1,
+                    ..
+                },
+                Self::Refuse {
+                    site: s2,
+                    letter: l2,
+                    landholder: h2,
+                    asker: a2,
+                    ..
+                },
+            ) => s1 == s2 && l1 == l2 && h1 == h2 && a1 == a2,
+            (
+                Self::Ask {
+                    site: s1,
+                    letter: l1,
+                    landholder: h1,
+                    asker: a1,
+                    ..
+                },
+                Self::Ask {
+                    site: s2,
+                    letter: l2,
+                    landholder: h2,
+                    asker: a2,
+                    ..
+                },
+            ) => s1 == s2 && l1 == l2 && h1 == h2 && a1 == a2,
+            _ => false,
         }
     }
 }
 
-/// Submit `order` as `actor` through the tow action (or directly on `SpaceBubbleBook::space_custody` for space hulls).
-fn submit(ctx: &mut Ctx<'_>, actor: ObjId, order: ClaimOrder, tag: u32) -> bool {
+/// **Deferred salvage IC mail / notices awaiting authoritative commit** (M16): registered in
+/// [`crate::surface::tow::register`] and flushed by [`tick`] only after the committed
+/// `SiteRecord` reflects the order.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PendingClaimNotices(Vec<PendingClaimNotice>);
+
+fn queue_pending_notice(ctx: &mut Ctx<'_>, notice: PendingClaimNotice) {
+    let Some(slot) = ctx.w.module_state_mut::<PendingClaimNotices>() else {
+        return;
+    };
+    if slot.0.iter().any(|existing| existing.same_target(&notice)) {
+        return;
+    }
+    if slot.0.len() >= MAX_PENDING_CLAIM_NOTICES {
+        slot.0.remove(0);
+    }
+    slot.0.push(notice);
+}
+
+/// Deliver deferred claim notices whose orders have committed on `SiteRecord`, and discard any
+/// whose submission finished without committing (M16).
+fn flush_pending_notices(ctx: &mut Ctx<'_>) {
+    let pending: Vec<PendingClaimNotice> = ctx
+        .w
+        .module_state_mut::<PendingClaimNotices>()
+        .map(|slot| std::mem::take(&mut slot.0))
+        .unwrap_or_default();
+    if pending.is_empty() {
+        return;
+    }
+    let mut keep = Vec::new();
+    for item in pending {
+        let committed = match &item {
+            PendingClaimNotice::Report {
+                site,
+                hull,
+                to,
+                operation,
+                ..
+            } => crate::surface::tow::record_of(ctx, site).is_some_and(|record| {
+                record.custody.iter().any(|row| {
+                    row.hull == *hull
+                        && row.operation == Some(*operation)
+                        && row
+                            .evidence
+                            .iter()
+                            .any(|e| e.holder == *to && e.operation_id == *operation)
+                })
+            }),
+            PendingClaimNotice::Refuse {
+                site,
+                letter,
+                landholder,
+                registered_ic,
+                asker,
+                refused_ic,
+                ..
+            } => crate::surface::tow::record_of(ctx, site).is_some_and(|record| {
+                record.consent_asks.iter().any(|ask| {
+                    ask.letter == *letter
+                        && ask.landholder == *landholder
+                        && ask.registered_ic == *registered_ic
+                        && ask.asker == *asker
+                        && ask.refused_ic == Some(*refused_ic)
+                })
+            }),
+            PendingClaimNotice::Ask {
+                site,
+                letter,
+                landholder,
+                registered_ic,
+                asker,
+                asked_ic,
+                ..
+            } => crate::surface::tow::record_of(ctx, site).is_some_and(|record| {
+                record.consent_asks.iter().any(|ask| {
+                    ask.letter == *letter
+                        && ask.landholder == *landholder
+                        && ask.registered_ic == *registered_ic
+                        && ask.asker == *asker
+                        && ask.asked_ic == *asked_ic
+                        && ask.refused_ic.is_none()
+                })
+            }),
+        };
+        if committed {
+            match item {
+                PendingClaimNotice::Report {
+                    site,
+                    to,
+                    subject,
+                    body,
+                    ..
+                } => tell(ctx, &site, &[to], &subject, &body),
+                PendingClaimNotice::Refuse { asker, notice, .. } => {
+                    mush_economy::deliver_notice(ctx, asker, notice);
+                }
+                PendingClaimNotice::Ask {
+                    landholder, notice, ..
+                } => {
+                    mush_economy::deliver_notice(ctx, landholder, notice);
+                }
+            }
+        } else if ctx.authoritative_pending(item.submitter()) {
+            keep.push(item);
+        }
+    }
+    if !keep.is_empty()
+        && let Some(slot) = ctx.w.module_state_mut::<PendingClaimNotices>()
+    {
+        for item in keep {
+            if slot.0.len() < MAX_PENDING_CLAIM_NOTICES
+                && !slot.0.iter().any(|existing| existing.same_target(&item))
+            {
+                slot.0.push(item);
+            }
+        }
+    }
+}
+
+/// Submit `order` as `actor` through the tow action (or directly on `SpaceBubbleBook::space_custody`
+/// for space hulls), reporting whether it failed, committed immediately, or queued.
+fn submit_outcome(ctx: &mut Ctx<'_>, actor: ObjId, order: ClaimOrder, tag: u32) -> SubmitOutcome {
     if let Some(ok) = submit_space_claim_order(ctx, actor, &order) {
-        return ok;
+        return if ok {
+            SubmitOutcome::Committed
+        } else {
+            SubmitOutcome::Failed
+        };
     }
     let hull = order.hull();
-    crate::surface::tow::submit(
+    if crate::surface::tow::submit(
         ctx,
         actor,
         hull,
@@ -2085,7 +2424,16 @@ fn submit(ctx: &mut Ctx<'_>, actor: ObjId, order: ClaimOrder, tag: u32) -> bool 
             order: Box::new(order),
         },
         tag,
-    )
+    ) {
+        SubmitOutcome::Queued
+    } else {
+        SubmitOutcome::Failed
+    }
+}
+
+/// Submit `order` as `actor` through the tow action (or directly on `SpaceBubbleBook::space_custody` for space hulls).
+fn submit(ctx: &mut Ctx<'_>, actor: ObjId, order: ClaimOrder, tag: u32) -> bool {
+    submit_outcome(ctx, actor, order, tag) != SubmitOutcome::Failed
 }
 
 /// **`+salvage`** (this module's head).
@@ -2748,17 +3096,26 @@ pub(crate) fn ask_consent(
             refused_ic: None,
         },
     };
-    if !submit(ctx, actor, order, 7) {
-        return Err(crate::port::tv::TV_UNWIRED.to_owned());
+    let notice = CONSENT_NOTICE
+        .replace("{who}", &name(ctx.w, actor))
+        .replace("{block}", &block)
+        .replace("{days}", &CONSENT_IC_DAYS.to_string());
+    match submit_outcome(ctx, actor, order, 7) {
+        SubmitOutcome::Failed => return Err(crate::port::tv::TV_UNWIRED.to_owned()),
+        SubmitOutcome::Committed => mush_economy::deliver_notice(ctx, landholder, notice),
+        SubmitOutcome::Queued => queue_pending_notice(
+            ctx,
+            PendingClaimNotice::Ask {
+                site: site.clone(),
+                letter,
+                landholder,
+                registered_ic: claim.registered_ic,
+                asker: actor,
+                asked_ic: now_ic,
+                notice,
+            },
+        ),
     }
-    mush_economy::deliver_notice(
-        ctx,
-        landholder,
-        CONSENT_NOTICE
-            .replace("{who}", &name(ctx.w, actor))
-            .replace("{block}", &block)
-            .replace("{days}", &CONSENT_IC_DAYS.to_string()),
-    );
     Ok(landholder)
 }
 
@@ -2846,7 +3203,18 @@ fn refuse_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), 
     if asker == ctx.actor {
         return Err(CmdError::msg(SALVAGE_USAGE));
     }
+    let actor = ctx.actor;
+    let now_ic = ctx.w.world_ic_now().at;
+    let record = crate::surface::tow::record_or_new(ctx, &site);
     let who_name = name(ctx.w, asker);
+    // M16: reject repeat refusals while an active refusal already stands so repeat calls cannot
+    // spam IC notices.
+    if consent_on(&record, letter, (actor, claim.registered_ic), asker, now_ic) == Consent::Refused
+    {
+        return Err(CmdError::msg(format!(
+            "{who_name} is already refused recovery on {block}."
+        )));
+    }
     if !go {
         ctx.out.sys_to_actor(
             ctx.actor,
@@ -2858,16 +3226,13 @@ fn refuse_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), 
         );
         return Ok(());
     }
-    let actor = ctx.actor;
-    let now_ic = ctx.w.world_ic_now().at;
-    let record = crate::surface::tow::record_or_new(ctx, &site);
     let asked_ic = record
         .consent_asks
         .iter()
         .find(|ask| ask.letter == letter && ask.of(asker, (actor, claim.registered_ic)))
         .map_or(now_ic, |ask| ask.asked_ic);
     let order = ClaimOrder::Refuse {
-        site,
+        site: site.clone(),
         place,
         ask: ConsentAsk {
             letter,
@@ -2878,17 +3243,26 @@ fn refuse_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), 
             refused_ic: Some(now_ic),
         },
     };
-    if !submit(ctx, actor, order, 8) {
-        return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
+    let notice = REFUSED_NOTICE
+        .replace("{who}", &name(ctx.w, actor))
+        .replace("{block}", &block)
+        .replace("{days}", &CONSENT_IC_DAYS.to_string());
+    match submit_outcome(ctx, actor, order, 8) {
+        SubmitOutcome::Failed => return Err(CmdError::msg(crate::port::tv::TV_UNWIRED)),
+        SubmitOutcome::Committed => mush_economy::deliver_notice(ctx, asker, notice),
+        SubmitOutcome::Queued => queue_pending_notice(
+            ctx,
+            PendingClaimNotice::Refuse {
+                site,
+                letter,
+                landholder: actor,
+                registered_ic: claim.registered_ic,
+                asker,
+                refused_ic: now_ic,
+                notice,
+            },
+        ),
     }
-    mush_economy::deliver_notice(
-        ctx,
-        asker,
-        REFUSED_NOTICE
-            .replace("{who}", &name(ctx.w, actor))
-            .replace("{block}", &block)
-            .replace("{days}", &CONSENT_IC_DAYS.to_string()),
-    );
     ctx.out.sys_to_actor(
         actor,
         "tacsim.salvage",
@@ -2962,15 +3336,33 @@ fn report_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), 
     let (site, row) = named(ctx, word)?;
     let label = name(ctx.w, row.hull);
     let me = ctx.actor;
-    if evidence_of(&row, me).is_none() {
+    let Some(mut evidence) = evidence_of(&row, me) else {
         return Err(CmdError::msg(NO_EVIDENCE.replace("{name}", &label)));
-    }
+    };
     let to = ctx
         .w
         .iter()
         .find(|o| o.kind == mush_core::ObjKind::Player && o.name.eq_ignore_ascii_case(who))
         .map(|o| o.id)
         .ok_or_else(|| CmdError::msg(NO_SUCH_WHO.replace("{who}", who)))?;
+    // M16: reject self-reports, duplicates, and full evidence lists before queueing or mailing.
+    if to == me {
+        return Err(CmdError::msg(crate::surface::security::REPORT_OWN));
+    }
+    evidence.holder = to;
+    match check_report_slot(&row, &evidence) {
+        Ok(()) => {}
+        Err("claim_evidence_duplicate") => {
+            return Err(CmdError::msg(format!(
+                "{who} already holds evidence of the {label}'s recovery."
+            )));
+        }
+        Err(_) => {
+            return Err(CmdError::msg(format!(
+                "No evidence slots remain on the {label}'s recovery for {who}."
+            )));
+        }
+    }
     let fill = |line: &str| {
         line.replace("{name}", &label)
             .replace("{who}", who)
@@ -2981,27 +3373,35 @@ fn report_cmd(ctx: &mut Ctx<'_>, word: &str, who: &str, go: bool) -> Result<(), 
             .sys_to_actor(me, "tacsim.salvage", fill(REPORT_PREVIEW));
         return Ok(());
     }
+    let operation = evidence.operation_id;
     let order = ClaimOrder::Report {
         site: site.clone(),
         hull: row.hull,
         to,
     };
-    if !submit(ctx, me, order, 3) {
-        return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
-    }
-    ctx.out
-        .sys_to_actor(me, "tacsim.salvage", fill(REPORT_SENT));
+    let subject = NOTICE_SUBJECT.replace("{name}", &label);
     let body = format!(
         "{} hands you their evidence of the {label}'s recovery: +salvage lists it.",
         name(ctx.w, me)
     );
-    tell(
-        ctx,
-        &site,
-        &[to],
-        &NOTICE_SUBJECT.replace("{name}", &label),
-        &body,
-    );
+    match submit_outcome(ctx, me, order, 3) {
+        SubmitOutcome::Failed => return Err(CmdError::msg(crate::port::tv::TV_UNWIRED)),
+        SubmitOutcome::Committed => tell(ctx, &site, &[to], &subject, &body),
+        SubmitOutcome::Queued => queue_pending_notice(
+            ctx,
+            PendingClaimNotice::Report {
+                site,
+                hull: row.hull,
+                submitter: me,
+                to,
+                operation,
+                subject,
+                body,
+            },
+        ),
+    }
+    ctx.out
+        .sys_to_actor(me, "tacsim.salvage", fill(REPORT_SENT));
     Ok(())
 }
 
@@ -3203,6 +3603,10 @@ fn leased_or_chartered(w: &World, hull: ObjId) -> bool {
 /// are flagged hot one act at a time (§4.6).
 #[allow(clippy::too_many_lines)]
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
+    // M16: deliver IC mail / registry notices only after their orders commit on `SiteRecord`.
+    flush_pending_notices(ctx);
+    // M19: persist any newly proven site unlawful-act marks durably onto `SiteRecord`.
+    crate::surface::security::flush_proven_marks(ctx);
     let now_real = ctx.w.now();
     let registry = registry_name(ctx.w);
     let Some(issuer) = mush_org::SystemPrincipalId::new(AWARD_ISSUER) else {
@@ -4493,5 +4897,97 @@ mod tests {
             None,
             "landholder and all pinned answerers must be notified with zero procedure defect"
         );
+    }
+
+    /// **M16**: evidence reports reject self-reports and duplicates, reserve
+    /// `RESERVED_EVIDENCE_SLOTS` out of `MAX_EVIDENCE` for parties & landholders so third-party
+    /// report floods cannot lock them out, and privileged parties can displace non-party entries
+    /// if the table is full.
+    #[test]
+    fn m16_evidence_slot_reservation_and_duplicate_self_report_guards() {
+        let landholder = ObjId(500);
+        let title_owner = ObjId(501);
+        let org_officer = ObjId(502);
+        let witness = ObjId(600);
+        let site = CanonicalId::new("urvara_port").expect("site");
+        let mut pin = pin_on(GroundTenure::Owned {
+            landholder,
+            claim_id: Some(smol_str::SmolStr::new("urvara/A")),
+        });
+        pin.answering = Some(title_owner);
+        pin.answerers = vec![title_owner, org_officer];
+        pin.witnesses.push(Witness {
+            holder: witness,
+            kind: WitnessKind::Known,
+            unit: ObjId(601),
+        });
+        let mut record = SiteRecord::new(site.clone());
+        record.custody.push(custody(pin));
+        let hull = record.custody[0].hull;
+
+        // 1. Self-report rejected.
+        let self_report = ClaimOrder::Report {
+            site: site.clone(),
+            hull,
+            to: witness,
+        };
+        assert_eq!(
+            prepare(&mut record, witness, &self_report, 100),
+            Err("claim_no_recipient")
+        );
+
+        // 2. Non-party reports fill up to `MAX_EVIDENCE - RESERVED_EVIDENCE_SLOTS` (12).
+        let non_priv_cap = MAX_EVIDENCE - RESERVED_EVIDENCE_SLOTS;
+        for i in 0..non_priv_cap {
+            let to = ObjId(700 + u32::try_from(i).expect("small"));
+            let order = ClaimOrder::Report {
+                site: site.clone(),
+                hull,
+                to,
+            };
+            assert_eq!(
+                prepare(&mut record, witness, &order, 100).as_deref(),
+                Ok("reported")
+            );
+        }
+
+        // 3. Duplicate report to an already-notified stranger rejected.
+        let dup = ClaimOrder::Report {
+            site: site.clone(),
+            hull,
+            to: ObjId(700),
+        };
+        assert_eq!(
+            prepare(&mut record, witness, &dup, 100),
+            Err("claim_evidence_duplicate")
+        );
+
+        // 4. Further non-party report past the non-privileged cap is refused so reserved slots stay free.
+        let extra_stranger = ClaimOrder::Report {
+            site: site.clone(),
+            hull,
+            to: ObjId(999),
+        };
+        assert_eq!(
+            prepare(&mut record, witness, &extra_stranger, 100),
+            Err("claim_evidence_full")
+        );
+
+        // 5. Title owner, org officer, and landholder all fit in the reserved slots.
+        for party in [title_owner, org_officer, landholder] {
+            let order = ClaimOrder::Report {
+                site: site.clone(),
+                hull,
+                to: party,
+            };
+            assert_eq!(
+                prepare(&mut record, witness, &order, 100).as_deref(),
+                Ok("reported"),
+                "privileged party {party:?} must fit in reserved evidence slots"
+            );
+            assert!(evidence_of(&record.custody[0], party).is_some());
+        }
+        assert!(record.custody[0].evidence.len() <= MAX_EVIDENCE);
+        assert!(record.check().is_ok());
     }
 }

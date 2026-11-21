@@ -34,17 +34,46 @@ pub(crate) fn prepare_profile_runtime(
     channels: &[Channel],
     floor: u32,
 ) -> Result<ProfileRuntime, SchemaError> {
+    prepare_profile_runtime_with_floors(
+        catalog, unit, cards, rom, classes, class, weapons, channels, floor, floor,
+    )
+}
+
+/// Prepare one complete runtime with separate card and ROM Compact floors (an
+/// ungoverned core lifts `cards_floor` to `0` while keeping `rom_floor` at the
+/// captured Compact floor).
+#[allow(clippy::too_many_arguments)] // Admission must bind both immutable seals and separate card/ROM floors.
+pub(crate) fn prepare_profile_runtime_with_floors(
+    catalog: &mut CardCatalog,
+    unit: ObjId,
+    cards: &SealedCards,
+    rom: &SealedCards,
+    classes: &ClassTable,
+    class: CoreClass,
+    weapons: &[RuleWeapon],
+    channels: &[Channel],
+    cards_floor: u32,
+    rom_floor: u32,
+) -> Result<ProfileRuntime, SchemaError> {
     let profile = classes.row(class);
-    cards.verify(&profile, weapons, channels, floor)?;
-    rom.verify(&classes.row(CoreClass::Zero), weapons, channels, floor)?;
+    cards.verify(&profile, weapons, channels, cards_floor)?;
+    rom.verify(&classes.row(CoreClass::Zero), weapons, channels, rom_floor)?;
     let (profiles, _) = cards.admit(catalog)?;
     let (_, rom) = rom.admit(catalog)?;
     let ids = weapons
         .iter()
         .map(|weapon| weapon.id.clone())
         .collect::<Vec<_>>();
-    ProfileRuntime::new(
-        catalog, unit, profiles, rom, &profile, &ids, channels, floor,
+    ProfileRuntime::new_with_floors(
+        catalog,
+        unit,
+        profiles,
+        rom,
+        &profile,
+        &ids,
+        channels,
+        cards_floor,
+        rom_floor,
     )
 }
 
@@ -345,13 +374,19 @@ impl Arena {
             if runtime.profiles != own.seal.profiles || runtime.rom.key() != own.seal.rom {
                 return Err(invalid("runtime differs from captured seal bindings"));
             }
-            runtime.hydrate(
+            let cards_floor = if !own.seal.governed && own.seal.class != CoreClass::Zero {
+                0
+            } else {
+                self.odds_floor_permille
+            };
+            runtime.hydrate_with_floors(
                 &self.cards,
                 own.id,
                 &self.classes.row(own.seal.class),
                 &self.classes.row(CoreClass::Zero),
                 &ids,
                 &channels,
+                cards_floor,
                 self.odds_floor_permille,
                 self.now_ms,
             )?;

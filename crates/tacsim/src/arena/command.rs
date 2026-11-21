@@ -495,7 +495,7 @@ impl Arena {
                 bands_cm: commander.fire_bands_cm(),
                 // 16b cut E.1: the same product the commander's own frame carries,
                 // so the brief's band word is the word its pilots would read.
-                sight_cm: commander.sight_cm(self.definition.terrain.cell_cm()),
+                sight_cm: commander.scope_sight_cm(self.definition.terrain.cell_cm()),
                 // **16b cut E.2** (16c `T-56`): the floor this module enforces,
                 // read here where it is already in hand, so an order that names
                 // no time to live stands exactly as long as the squad will wait

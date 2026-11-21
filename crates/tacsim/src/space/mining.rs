@@ -901,26 +901,46 @@ pub fn ensure_cluster_laid_up(
 }
 
 /// Ensure a `DARK` collector-drone `Thing` exists for `(hull, slot)` so [`ExcursionId`] carries
-/// a real `ObjId`.
+/// a real `ObjId`, reusing an existing server-owned drone `Thing` inside `hull` across cluster
+/// visits so repeated visits never leak permanent `World` objects (`M10`).
 pub fn ensure_drone_thing(ctx: &mut Ctx<'_>, hull: ObjId, slot: u8) -> Result<ObjId, String> {
     if let Some(existing) = ctx
         .w
         .module_state::<super::tick::SpaceBubbleBook>()
         .and_then(|book| book.cluster_sessions.get(&hull))
         .and_then(|s| s.drone_things.get(&slot).copied())
+        .filter(|&id| {
+            ctx.w
+                .get(id)
+                .is_some_and(|o| o.kind == ObjKind::Thing && !o.flags.contains(Flags::GOING))
+        })
     {
+        return Ok(existing);
+    }
+    let expected_name = format!("Hull #{} Collector Drone {}", hull.0, slot);
+    if let Some(existing) = ctx.w.contents_of(hull).iter().copied().find(|&id| {
+        ctx.w.get(id).is_some_and(|o| {
+            o.kind == ObjKind::Thing
+                && o.owner == mush_core::GOD
+                && o.flags.contains(Flags::DARK)
+                && !o.flags.contains(Flags::GOING)
+                && o.name == expected_name
+        })
+    }) {
+        if let Some(session) = ctx
+            .w
+            .module_state_mut::<super::tick::SpaceBubbleBook>()
+            .and_then(|book| book.cluster_sessions.get_mut(&hull))
+        {
+            session.drone_things.insert(slot, existing);
+        }
         return Ok(existing);
     }
     let saved = ctx.actor;
     ctx.actor = mush_core::GOD;
     let created = ctx
         .w
-        .create(
-            ObjKind::Thing,
-            &format!("Hull #{} Collector Drone {}", hull.0, slot),
-            mush_core::GOD,
-            Some(hull),
-        )
+        .create(ObjKind::Thing, &expected_name, mush_core::GOD, Some(hull))
         .map_err(|e| e.to_string());
     if let Ok(thing) = created {
         let _ = ctx.w.set_flag(thing, Flags::DARK, true);
@@ -2401,5 +2421,104 @@ mod tests {
         assert_eq!(c2.rows[0].drawn_t, 24);
         assert_eq!(c2.rows[1].drawn_t, 11);
         c2.check().unwrap();
+    }
+
+    #[test]
+    fn ensure_drone_thing_reuses_dark_drone_things_across_cluster_visits() {
+        struct SpaceOwner;
+        impl mush_core::GameModule for SpaceOwner {
+            fn name(&self) -> &'static str {
+                crate::store::NS
+            }
+            fn register(
+                &mut self,
+                reg: &mut mush_core::Registrar<'_>,
+            ) -> Result<(), mush_core::ModError> {
+                reg.state(super::super::tick::SpaceBubbleBook::default());
+                Ok(())
+            }
+        }
+
+        let mut engine = mush_core::Engine::with_modules(
+            mush_core::World::new_minimal(),
+            mush_core::Registry::new(),
+            vec![Box::new(SpaceOwner)],
+        )
+        .unwrap();
+        let hull = engine
+            .world
+            .create(
+                ObjKind::Thing,
+                "Salt Moth",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .unwrap();
+        let cluster = CanonicalId::new("cluster.test").unwrap();
+        let mut out = mush_core::Outbox::new();
+
+        let mut first_ids = Vec::new();
+        {
+            engine
+                .world
+                .module_state_mut::<super::super::tick::SpaceBubbleBook>()
+                .unwrap()
+                .cluster_sessions
+                .insert(
+                    hull,
+                    ActiveClusterMiningSession::new(hull, cluster.clone(), 100),
+                );
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::store::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            for slot in 1..=4_u8 {
+                first_ids.push(ensure_drone_thing(&mut ctx, hull, slot).unwrap());
+            }
+        }
+        assert_eq!(engine.world.contents_of(hull).len(), 4);
+
+        // Depart cluster (ends cluster session), then return 3 more times.
+        for visit in 0..3 {
+            engine
+                .world
+                .module_state_mut::<super::super::tick::SpaceBubbleBook>()
+                .unwrap()
+                .end_cluster_session(hull);
+            engine
+                .world
+                .module_state_mut::<super::super::tick::SpaceBubbleBook>()
+                .unwrap()
+                .cluster_sessions
+                .insert(
+                    hull,
+                    ActiveClusterMiningSession::new(hull, cluster.clone(), 200 + visit),
+                );
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(crate::store::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let reused: Vec<ObjId> = (1..=4_u8)
+                .map(|slot| ensure_drone_thing(&mut ctx, hull, slot).unwrap())
+                .collect();
+            assert_eq!(reused, first_ids, "visit {visit} must reuse drone Things");
+            assert_eq!(
+                engine.world.contents_of(hull).len(),
+                4,
+                "repeated cluster visits must not leak DARK Things"
+            );
+        }
     }
 }

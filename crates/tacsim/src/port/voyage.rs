@@ -1652,12 +1652,12 @@ pub(crate) fn resolve_space_undock_destination(
     None
 }
 
-/// Plan a passage from `from_venue` to an orbital cluster or celestial body (`anchor_body`) for
-/// `+ship/undock <cluster|body>` (`SF.R17`).
+/// Plan a passage from `from_location` (`PortDef::location`) to an orbital cluster or celestial
+/// body (`anchor_body`) for `+ship/undock <cluster|body>` (`SF.R17`; M7).
 pub(crate) fn plan_space_undock_on(
     w: &World,
     basis: &Basis,
-    from_venue: &CanonicalId,
+    from_location: &CanonicalId,
     anchor_body: &CanonicalId,
     corridor_routes: &[CanonicalId],
     explicit_throttle: bool,
@@ -1676,18 +1676,19 @@ pub(crate) fn plan_space_undock_on(
         .ok_or_else(|| PlanError::UnknownRoute {
             route: "(none listed)".to_owned(),
         })?;
-    let from_body = crate::port::passage::body_or_place_of(&sky, pack, from_venue)?;
+    let from_body = crate::port::passage::body_or_place_of(&sky, pack, from_location)?;
     let from_pos = sky
         .position_km(&from_body, basis.depart_ic)
         .ok_or_else(|| PlanError::UnknownBody {
-            place: from_venue.to_string(),
+            place: from_location.to_string(),
         })?;
     let from_vel = sky
         .velocity_mps(&from_body, basis.depart_ic)
         .unwrap_or([0, 0, 0]);
-    let mut plan = crate::port::passage::plan_passage_from(
+    let mut plan = crate::port::passage::plan_passage_from_place(
         &sky,
         pack,
+        Some(from_location),
         from_pos,
         from_vel,
         anchor_body,
@@ -1702,17 +1703,29 @@ pub(crate) fn plan_space_undock_on(
         && basis.spec.drive.throttle_permille
             > crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE
     {
-        for permille in [
-            MIN_THROTTLE_PERMILLE,
-            crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE,
-        ] {
+        let mut candidates: Vec<u32> = Vec::with_capacity(3);
+        if let Some((_, surface_mg, _)) = crate::port::passage::site_end(pack, from_location)
+            && let Some(least) = crate::port::passage::least_landing_throttle(
+                &basis.spec.drive,
+                basis.spec.dry_kg,
+                basis.payload,
+                surface_mg,
+            )
+            && least > MIN_THROTTLE_PERMILLE
+        {
+            candidates.push(least);
+        }
+        candidates.push(MIN_THROTTLE_PERMILLE);
+        candidates.push(crate::port::passage::MIN_EXPEDITION_THROTTLE_PERMILLE);
+        for permille in candidates {
             if basis.spec.drive.throttle_permille <= permille {
                 continue;
             }
             let economy_drive = basis.spec.drive.clone().at_throttle(permille);
-            if let Ok(econ_plan) = crate::port::passage::plan_passage_from(
+            if let Ok(econ_plan) = crate::port::passage::plan_passage_from_place(
                 &sky,
                 pack,
+                Some(from_location),
                 from_pos,
                 from_vel,
                 anchor_body,
@@ -3619,7 +3632,7 @@ pub(crate) fn prepare_departure(
         plan_space_undock_on(
             w,
             &basis,
-            &def.venue,
+            &def.location,
             anchor_body,
             &dest_routes,
             explicit_throttle,

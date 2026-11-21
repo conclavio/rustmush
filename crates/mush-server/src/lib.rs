@@ -51,8 +51,8 @@ use mush_ipc::{
     IPC_VERSION_SKEW_MARKER, IpcEndpoint, IpcListener, LegalActionsError, LinkVersion,
     MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES, MAX_IN_FLIGHT_GATEWAY_INPUT_BYTES_PER_CONNECTION,
     MAX_IN_FLIGHT_GATEWAY_INPUTS, MAX_IN_FLIGHT_GATEWAY_INPUTS_PER_CONNECTION,
-    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, ProtoWindow, RequestUid,
-    ServiceReq, ServiceResp, ToGateway, ToServer,
+    MAX_IN_FLIGHT_LIFECYCLE_OBLIGATIONS, MAX_IN_FLIGHT_SERVICE_REQUESTS, MAX_TOKEN_HASH_BYTES,
+    ProtoWindow, RequestUid, ServiceReq, ServiceResp, ToGateway, ToServer,
 };
 use mush_store::{BundleStatus, InMemoryStore, ObjectStore, RedisStore};
 use tokio::sync::mpsc;
@@ -2355,6 +2355,27 @@ pub async fn reader_loop(
                     );
                 }
             }
+            ToServer::RevokeWebToken { token_hash } => {
+                if token_hash.is_empty()
+                    || token_hash.len() > MAX_TOKEN_HASH_BYTES
+                    || !token_hash.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    tracing::warn!(
+                        link = link.id(),
+                        len = token_hash.len(),
+                        "malformed RevokeWebToken hash dropped"
+                    );
+                    continue;
+                }
+                let peers = link
+                    .registry()
+                    .broadcast_except(link.id(), &ToGateway::RevokeWebToken { token_hash });
+                tracing::debug!(
+                    link = link.id(),
+                    peers,
+                    "broadcasted cross-generation web token revocation"
+                );
+            }
         }
     }
     Ok(())
@@ -3499,7 +3520,7 @@ mod writer_tests {
         // not a Hello is a 12 peer, and since the bump to 14 (doc 44 unit
         // MW.24) 12 is below the window, so such a link is refused like any
         // other outside it.
-        assert_eq!(IPC_PRE_HELLO_VERSION, IPC_MIN_PROTO - 1);
+        const { assert!(IPC_PRE_HELLO_VERSION < IPC_MIN_PROTO) };
         let link = LinkVersion::unknown();
         let err = admit_gateway(&link, IPC_PRE_HELLO_VERSION, None)
             .expect_err("a gateway with no Hello is below the window");

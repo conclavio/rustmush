@@ -86,6 +86,12 @@ impl LineBuffer {
         self.buf.len()
     }
 
+    /// Current UTF-8 byte length of the buffer.
+    #[must_use]
+    pub fn utf8_bytes(&self) -> usize {
+        self.utf8_bytes
+    }
+
     /// Whether the buffer is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -218,14 +224,15 @@ impl LineBuffer {
         }
         match self.hist_pos {
             None => {
-                self.saved = std::mem::take(&mut self.buf);
+                std::mem::swap(&mut self.saved, &mut self.buf);
                 self.hist_pos = Some(self.history.len() - 1);
             }
             Some(0) => return false,
             Some(p) => self.hist_pos = Some(p - 1),
         }
         if let Some(p) = self.hist_pos {
-            self.buf = self.history[p].chars().collect();
+            self.buf.clear();
+            self.buf.extend(self.history[p].chars());
         }
         self.recompute_utf8_bytes();
         self.cursor = self.buf.len();
@@ -239,11 +246,13 @@ impl LineBuffer {
             None => return false,
             Some(p) if p + 1 < self.history.len() => {
                 self.hist_pos = Some(p + 1);
-                self.buf = self.history[p + 1].chars().collect();
+                self.buf.clear();
+                self.buf.extend(self.history[p + 1].chars());
             }
             Some(_) => {
                 self.hist_pos = None;
-                self.buf = std::mem::take(&mut self.saved);
+                std::mem::swap(&mut self.buf, &mut self.saved);
+                self.saved.clear();
             }
         }
         self.recompute_utf8_bytes();
@@ -302,6 +311,7 @@ impl LineBuffer {
         self.utf8_bytes = 0;
         self.cursor = 0;
         self.hist_pos = None;
+        self.saved.clear();
     }
 
     /// Drop the most recently recorded line (a credential the welcome
@@ -309,6 +319,15 @@ impl LineBuffer {
     pub fn forget_last_history(&mut self) {
         self.history.pop_back();
         self.hist_pos = None;
+    }
+
+    /// Wipe all recorded history entries and leave history navigation.
+    /// Used when leaving pre-auth screens so welcome lines can never leak
+    /// into in-game ↑ recall.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.hist_pos = None;
+        self.saved.clear();
     }
 }
 
@@ -414,5 +433,21 @@ mod tests {
         b.set(&"🎲".repeat(MAX_LINE_CHARS));
         assert!(b.text().len() <= MAX_LINE_BYTES);
         assert_eq!(b.len(), max_dice);
+    }
+
+    #[test]
+    fn clear_history_wipes_recorded_lines_and_navigation() {
+        let mut b = LineBuffer::default();
+        b.set("first");
+        assert_eq!(b.utf8_bytes(), 5);
+        b.submit(true);
+        b.set("second");
+        b.submit(true);
+        assert_eq!(b.history_len(), 2);
+        assert!(b.history_up());
+        b.clear_history();
+        assert_eq!(b.history_len(), 0);
+        assert!(!b.history_up());
+        assert!(!b.history_down());
     }
 }

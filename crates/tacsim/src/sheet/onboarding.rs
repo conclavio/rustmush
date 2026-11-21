@@ -49,6 +49,24 @@ pub fn is_onboarding_verb(verb: &str) -> bool {
     ALLOWED.iter().any(|allowed| *allowed == verb)
 }
 
+/// Whether `name` is on the onboarding query allowlist — the read-only client
+/// hydration queries an unapproved, gated character still needs during chargen
+/// (core `"room"` attach-look and `"who"` list, command palette, their own
+/// pilot sheet, and joined channel list). Every live-grid/TacSim/arena/market
+/// query is refused until approval.
+#[must_use]
+pub fn is_onboarding_query(name: &str) -> bool {
+    const ALLOWED_QUERIES: &[&str] = &[
+        "room",
+        "who",
+        "commands.list",
+        "tacsim.sheet",
+        "comsys.state",
+    ];
+    let name = name.to_ascii_lowercase();
+    ALLOWED_QUERIES.iter().any(|allowed| *allowed == name)
+}
+
 /// The message shown when the gate refuses a command.
 fn refusal() -> String {
     "You must finish creating your character and have it approved before you can do that. \
@@ -105,6 +123,18 @@ impl CommandGate for OnboardingGate {
         // collides with an allowlisted verb (`l`, `look`, `say`, ...) would slip
         // through. Refuse any line that resolves to an exit.
         if mush_core::commands::movement::find_exit(w, actor, line).is_some() {
+            return Err(refusal());
+        }
+        // Engine-level query gating passes synthetic `@query <name>` lines.
+        // Only the onboarding-safe hydration queries pass; every live-grid,
+        // TacSim, arena, and market query is refused until approval.
+        if verb == "@query" {
+            if let Some(query_name) = line.strip_prefix("@query ")
+                && !query_name.contains(char::is_whitespace)
+                && is_onboarding_query(query_name)
+            {
+                return Ok(());
+            }
             return Err(refusal());
         }
         if !is_onboarding_verb(verb) {
@@ -250,8 +280,302 @@ mod tests {
             assert!(is_onboarding_verb(verb), "{verb} should be allowed");
         }
         assert!(is_onboarding_verb("LOOK"), "the test is case-insensitive");
-        for verb in ["+roll", "@dig", "home", "page", "+spec"] {
+        for verb in [
+            "+roll",
+            "@dig",
+            "home",
+            "page",
+            "+spec",
+            "@invoke",
+            "@legal_action",
+        ] {
             assert!(!is_onboarding_verb(verb), "{verb} should be gated");
         }
+    }
+
+    #[test]
+    fn the_query_allowlist_carries_chargen_and_core_read_only_queries() {
+        for query in [
+            "room",
+            "who",
+            "commands.list",
+            "tacsim.sheet",
+            "comsys.state",
+        ] {
+            assert!(is_onboarding_query(query), "{query} should be allowed");
+        }
+        assert!(
+            is_onboarding_query("ROOM"),
+            "query check is case-insensitive"
+        );
+        assert!(
+            is_onboarding_query("WHO"),
+            "query check is case-insensitive"
+        );
+        for query in [
+            "tacsim.content",
+            "arena.map",
+            "mind.market",
+            "mind.holdings",
+            "tactics.contacts",
+            "port.trade",
+            "comsys.backlog",
+        ] {
+            assert!(!is_onboarding_query(query), "{query} should be gated");
+        }
+    }
+
+    #[test]
+    fn onboarding_gate_blocks_invokes_live_queries_and_legal_actions_until_approved() {
+        use mush_core::action::{PerceivedRef, PrincipalId};
+        use mush_core::{Effects, Engine, Inbound, Outbox};
+        use mush_proto::{InvokeRequest, MindRequest, OutputEvent};
+
+        let cfg = OnboardingConfig {
+            chargen_required: true,
+            start_room: mush_core::LIMBO,
+            start_room_unapproved: mush_core::LIMBO,
+        };
+        let schema = Arc::new(crate::sheet::schema::sheet_schema());
+        let mut world = World::new_minimal();
+        let nick = world
+            .create(
+                ObjKind::Player,
+                "Nick",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("player");
+        let mut reg = Registry::new();
+        reg.add_command_gate(Arc::new(OnboardingGate::new(cfg, Arc::clone(&schema))));
+        struct DummyQuery;
+        impl mush_core::QueryHandler for DummyQuery {
+            fn query(
+                &self,
+                _w: &World,
+                _actor: ObjId,
+                _params: &serde_json::Value,
+            ) -> Result<OutputEvent, mush_proto::RichText> {
+                Ok(OutputEvent::Sys(mush_proto::RichText::plain("ok")))
+            }
+        }
+        struct DummyInvoke;
+        impl mush_core::module::InvokeHandler for DummyInvoke {
+            fn invoke(
+                &self,
+                _ctx: &mut Ctx<'_>,
+                _conn: mush_core::output::ConnId,
+                _id: u64,
+                request: &InvokeRequest,
+            ) -> mush_proto::InvokeResult {
+                request.invalid()
+            }
+        }
+        {
+            let mut r = mush_core::Registrar::new(&mut reg, "test");
+            r.query_handler("room", Arc::new(DummyQuery)).expect("room");
+            r.query_handler("who", Arc::new(DummyQuery)).expect("who");
+            r.query_handler("tacsim.content", Arc::new(DummyQuery))
+                .expect("tacsim.content");
+            r.query_handler("arena.map", Arc::new(DummyQuery))
+                .expect("arena.map");
+            r.query_handler("tacsim.sheet", Arc::new(DummyQuery))
+                .expect("tacsim.sheet");
+            r.query_handler("commands.list", Arc::new(DummyQuery))
+                .expect("commands.list");
+            r.query_handler("comsys.state", Arc::new(DummyQuery))
+                .expect("comsys.state");
+            r.invoke_handler("mind", Arc::new(DummyInvoke))
+                .expect("mind");
+        }
+        let mut engine = Engine::new(world, reg);
+        engine.step(
+            Inbound::ConnUp {
+                conn: 1,
+                actor: nick,
+                caps_structured: true,
+                from_linkdead: false,
+            },
+            &mut Outbox::new(),
+            &mut Effects::new(),
+        );
+
+        // 1. Pre-onboarding player is blocked from `mind` Invoke.
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Invoke {
+                conn: 1,
+                actor: nick,
+                id: 10,
+                request: InvokeRequest::Mind(MindRequest::List {}),
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        assert!(
+            matches!(
+                out.events(),
+                [(
+                    _,
+                    OutputEvent::InvokeResult {
+                        id: 10,
+                        result: mush_proto::InvokeResult::Mind(mush_proto::MindResponse::Error {
+                            code,
+                            ..
+                        }),
+                    }
+                )] if code == "unavailable"
+            ),
+            "expected unavailable refusal for gated invoke: {:?}",
+            out.events()
+        );
+
+        // 2. Pre-onboarding player is blocked from live-grid/TacSim/arena queries,
+        //    while core read-only (`room`, `who`) and chargen hydration queries pass.
+        for blocked in ["tacsim.content", "arena.map"] {
+            let mut out = Outbox::new();
+            engine.step(
+                Inbound::Query {
+                    conn: 1,
+                    actor: nick,
+                    id: 11,
+                    name: blocked.into(),
+                    args: serde_json::json!({}),
+                },
+                &mut out,
+                &mut Effects::new(),
+            );
+            assert!(
+                matches!(
+                    out.events(),
+                    [(
+                        _,
+                        OutputEvent::Reply {
+                            id: 11,
+                            event,
+                        }
+                    )] if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text().contains("finish creating your character"))
+                ),
+                "expected onboarding refusal for `{blocked}` query: {:?}",
+                out.events()
+            );
+        }
+
+        for allowed in [
+            "room",
+            "who",
+            "tacsim.sheet",
+            "commands.list",
+            "comsys.state",
+        ] {
+            let mut out = Outbox::new();
+            engine.step(
+                Inbound::Query {
+                    conn: 1,
+                    actor: nick,
+                    id: 12,
+                    name: allowed.into(),
+                    args: serde_json::json!({}),
+                },
+                &mut out,
+                &mut Effects::new(),
+            );
+            assert!(
+                matches!(
+                    out.events(),
+                    [(
+                        _,
+                        OutputEvent::Reply {
+                            id: 12,
+                            event,
+                        }
+                    )] if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text() == "ok")
+                ),
+                "allowed query `{allowed}` should pass onboarding gate: {:?}",
+                out.events()
+            );
+        }
+
+        // 3. Pre-onboarding player is blocked from `legal_action_query` (and `project_legal_actions`).
+        assert!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: nick },
+                    nick,
+                    PerceivedRef::SelfActor,
+                )
+                .is_err(),
+            "gated player must be refused legal_action_query"
+        );
+        let direct_query = mush_core::LegalActionQuery::new(
+            PrincipalId::Object { id: nick },
+            nick,
+            mush_core::SubjectKey::Object { id: nick },
+            PerceivedRef::SelfActor,
+            1,
+            None,
+        )
+        .expect("direct query");
+        let projected = engine
+            .project_legal_actions(&direct_query)
+            .expect("empty sink for gated actor");
+        assert!(projected.is_empty(), "gated actor projects zero offers");
+
+        // 4. Staff (God) is never gated by onboarding.
+        assert!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: mush_core::GOD },
+                    mush_core::GOD,
+                    PerceivedRef::SelfActor,
+                )
+                .is_ok(),
+            "staff must not be gated"
+        );
+
+        // 5. Approving the sheet lifts the gate for queries, invokes, and legal actions.
+        let store = SheetStore::new(Arc::clone(&schema));
+        let mut doc = store.get_or_default(&engine.world, nick);
+        doc.approved = ApprovalState::Approved {
+            by: mush_core::GOD,
+            at: 1,
+        };
+        store
+            .put(&mut engine.world, nick, &doc)
+            .expect("approve sheet");
+
+        assert!(
+            engine
+                .legal_action_query(
+                    PrincipalId::Object { id: nick },
+                    nick,
+                    PerceivedRef::SelfActor,
+                )
+                .is_ok(),
+            "approved player passes legal_action_query"
+        );
+        let mut out = Outbox::new();
+        engine.step(
+            Inbound::Query {
+                conn: 1,
+                actor: nick,
+                id: 13,
+                name: "tacsim.content".into(),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut Effects::new(),
+        );
+        assert!(
+            matches!(
+                out.events(),
+                [(
+                    _,
+                    OutputEvent::Reply { id: 13, event }
+                )] if matches!(event.as_ref(), OutputEvent::Sys(rt) if rt.to_plain_text() == "ok")
+            ),
+            "approved player passes tacsim.content query: {:?}",
+            out.events()
+        );
     }
 }

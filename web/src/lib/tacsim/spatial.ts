@@ -2,6 +2,7 @@
 // exit resolvers for the Web 3D Station & Ship Interior viewport.
 // Mirrors Unity's `ContentModels.cs`, `StationWorldController.cs`, and `ShipInteriorController.cs`.
 
+import { exitCommand } from "../keys";
 import type { RoomView } from "../proto";
 import { plainText } from "../render";
 
@@ -130,6 +131,8 @@ export interface ShipExitPairDef {
   forwardCommand: string;
   reverseLabel: string;
   reverseCommand: string;
+  /** True ONLY for statically synthesized non-exit ship actions (`+tv/bay in` / `+tv/bay out`). */
+  isStaticAction?: boolean;
 }
 
 export interface ShipUnitTemplate {
@@ -558,13 +561,55 @@ export function computeShipTemplateSignature(tpl: ShipUnitTemplate): string {
   return parts.join("|");
 }
 
+const ALLOWED_STATIC_SHIP_ACTIONS: ReadonlySet<string> = new Set([
+  "+tv/bay in",
+  "+tv/bay out",
+]);
+
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Format an authored room/portal exit name or alias into a safe `goto <exit>`
+ * command, or `null` when blank or containing C0/DEL/C1 control characters
+ * (EXT-P1-6, matching `web/src/lib/keys.ts` `exitCommand`).
+ */
+export function formatStationExitCommand(rawExit: string): string | null {
+  return exitCommand(rawExit);
+}
+
+/**
+ * Format a ship-interior traversal command: explicit static non-exit ship actions
+ * (`+tv/bay in` / `+tv/bay out`) are allowlisted ONLY when `isStaticAction` is true;
+ * all authored ship exits are unconditionally prefixed with `goto ` (EXT-P1-6).
+ */
+export function formatShipTraversalCommand(
+  rawCommand: string,
+  isStaticAction = false,
+): string | null {
+  if (isStaticAction) {
+    const trimmed = rawCommand.trim();
+    return ALLOWED_STATIC_SHIP_ACTIONS.has(trimmed) ? trimmed : null;
+  }
+  return exitCommand(rawCommand);
+}
+
 function parseExitSpec(raw: string): { label: string; cmd: string } {
   const trimmed = raw.trim();
-  if (!trimmed) return { label: "Exit", cmd: "n" };
+  if (!trimmed || hasControlChar(raw)) return { label: "Exit", cmd: "" };
   const parts = trimmed.split(";");
-  const label = (parts[0] ?? "Exit").trim() || "Exit";
-  const cmd = (parts[1] ?? "").trim() || label;
-  return { label, cmd };
+  const head = (parts[0] ?? "").trim();
+  const label = head || "Exit";
+  const alias = (parts[1] ?? "").trim();
+  const candidate = alias || head;
+  return { label, cmd: exitCommand(candidate) !== null ? candidate : "" };
 }
 
 export function inferIsMale(actorName: string, bioOrPersona?: string | null): boolean {
@@ -721,8 +766,8 @@ export function parseNeighborhoodPack(
       const fromRoom = asStr(def["from"]);
       const toRoom = asStr(def["to"]);
       const names = asArr(def["names"]);
-      const fwd = parseExitSpec(names && names.length > 0 ? asStr(names[0], "North;n") : "North;n");
-      const rev = parseExitSpec(names && names.length > 1 ? asStr(names[1], "South;s") : "South;s");
+      const fwd = parseExitSpec(names && names.length > 0 ? asStr(names[0], "") : "");
+      const rev = parseExitSpec(names && names.length > 1 ? asStr(names[1], "") : "");
       const portal = asObj(def["portal"]);
       const hidden =
         asBool(def["hidden"], false) ||
@@ -942,12 +987,16 @@ export function findStationExitPath(
     for (const ex of pack.exits) {
       if (ex.hidden || ex.locked) continue;
       if (ex.fromRoom === cur && !visited.has(ex.toRoom)) {
+        const cmd = formatStationExitCommand(ex.forwardCommand);
+        if (cmd === null) continue;
         visited.add(ex.toRoom);
-        cameFrom.set(ex.toRoom, { prev: cur, cmd: ex.forwardCommand });
+        cameFrom.set(ex.toRoom, { prev: cur, cmd });
         queue.push(ex.toRoom);
       } else if (ex.toRoom === cur && !visited.has(ex.fromRoom)) {
+        const cmd = formatStationExitCommand(ex.reverseCommand);
+        if (cmd === null) continue;
         visited.add(ex.fromRoom);
-        cameFrom.set(ex.fromRoom, { prev: cur, cmd: ex.reverseCommand });
+        cameFrom.set(ex.fromRoom, { prev: cur, cmd });
         queue.push(ex.fromRoom);
       }
     }
@@ -1118,8 +1167,8 @@ export function parseShipUnitJson(
       const ex = asObj(exVal);
       if (!ex) continue;
       const names = asArr(ex["names"]);
-      const fwd = parseExitSpec(names && names.length > 0 ? asStr(names[0], "In;in") : "In;in");
-      const rev = parseExitSpec(names && names.length > 1 ? asStr(names[1], "Out;out") : "Out;out");
+      const fwd = parseExitSpec(names && names.length > 0 ? asStr(names[0], "") : "");
+      const rev = parseExitSpec(names && names.length > 1 ? asStr(names[1], "") : "");
       tpl.exits.push({
         from: asStr(ex["from"]),
         to: asStr(ex["to"]),
@@ -1127,6 +1176,7 @@ export function parseShipUnitJson(
         forwardCommand: fwd.cmd,
         reverseLabel: rev.label,
         reverseCommand: rev.cmd,
+        isStaticAction: false,
       });
     }
   }
@@ -1139,6 +1189,7 @@ export function parseShipUnitJson(
       forwardCommand: "+tv/bay in",
       reverseLabel: "Cargo Hold",
       reverseCommand: "+tv/bay out",
+      isStaticAction: true,
     });
   }
 
@@ -1227,12 +1278,16 @@ export function findShipExitPath(
     if (cur === cTo) break;
     for (const ex of tpl.exits) {
       if (ex.from === cur && !visited.has(ex.to)) {
+        const cmd = formatShipTraversalCommand(ex.forwardCommand, ex.isStaticAction === true);
+        if (cmd === null) continue;
         visited.add(ex.to);
-        cameFrom.set(ex.to, { prev: cur, cmd: ex.forwardCommand });
+        cameFrom.set(ex.to, { prev: cur, cmd });
         queue.push(ex.to);
       } else if (ex.to === cur && !visited.has(ex.from)) {
+        const cmd = formatShipTraversalCommand(ex.reverseCommand, ex.isStaticAction === true);
+        if (cmd === null) continue;
         visited.add(ex.from);
-        cameFrom.set(ex.from, { prev: cur, cmd: ex.reverseCommand });
+        cameFrom.set(ex.from, { prev: cur, cmd });
         queue.push(ex.from);
       }
     }
@@ -1859,9 +1914,251 @@ export function buildFallbackDray(unitId = "tacsim.unit.dray"): ShipUnitTemplate
       forwardCommand: "+tv/bay in",
       reverseLabel: "Cargo Hold",
       reverseCommand: "+tv/bay out",
+      isStaticAction: true,
     });
   }
   return tpl;
+}
+
+export type NavWalkerScope = "station" | "ship";
+
+export interface QueuedNavHop {
+  readonly scope: NavWalkerScope;
+  readonly fromRoom: string;
+  readonly targetRoom: string;
+  readonly command: string;
+}
+
+export interface NavRoomUpdateResult {
+  readonly acknowledgedTarget: string | null;
+  readonly nextHopToSend: QueuedNavHop | null;
+  readonly canceledOnMismatch: boolean;
+}
+
+export const NAV_HOP_IN_FLIGHT_TIMEOUT_MS = 3500;
+
+/**
+ * Room-bound single-hop navigation queue (EXT-P1-6):
+ * - Every queued hop is bound to its expected `fromRoom` and `scope`.
+ * - At most ONE hop is ever dispatched on the wire at a time.
+ * - Subsequent hops advance ONLY after an authoritative room update confirms the
+ *   in-flight hop's `targetRoom` AND matches the next hop's `fromRoom`.
+ * - Any mismatched room update, scope/pack change, timeout, or unrelated player
+ *   action immediately cancels all remaining queued hops.
+ */
+export class RoomBoundNavWalker {
+  private _inFlight: QueuedNavHop | null = null;
+  private _inFlightSentAtMs = -10_000;
+  private readonly _queue: QueuedNavHop[] = [];
+
+  get inFlight(): QueuedNavHop | null {
+    return this._inFlight;
+  }
+
+  get inFlightTarget(): string | null {
+    return this._inFlight?.targetRoom ?? null;
+  }
+
+  get inFlightSentAtMs(): number {
+    return this._inFlightSentAtMs;
+  }
+
+  get queuedCount(): number {
+    return this._queue.length;
+  }
+
+  get queuedHops(): readonly QueuedNavHop[] {
+    return this._queue;
+  }
+
+  hasInFlight(nowMs: number): boolean {
+    return (
+      this._inFlight !== null &&
+      nowMs - this._inFlightSentAtMs < NAV_HOP_IN_FLIGHT_TIMEOUT_MS
+    );
+  }
+
+  expireIfStale(nowMs: number): boolean {
+    if (
+      this._inFlight !== null &&
+      nowMs - this._inFlightSentAtMs >= NAV_HOP_IN_FLIGHT_TIMEOUT_MS
+    ) {
+      this.cancel();
+      return true;
+    }
+    return false;
+  }
+
+  cancel(): void {
+    this._inFlight = null;
+    this._inFlightSentAtMs = -10_000;
+    this._queue.length = 0;
+  }
+
+  setExternalInFlightTarget(
+    scope: NavWalkerScope,
+    fromRoom: string,
+    targetRoom: string | null,
+    sentAtMs: number,
+  ): void {
+    if (!targetRoom) {
+      this.cancel();
+      return;
+    }
+    this._inFlight = { scope, fromRoom, targetRoom, command: "" };
+    this._inFlightSentAtMs = sentAtMs;
+    this._queue.length = 0;
+  }
+
+  setExternalInFlightSentAtMs(sentAtMs: number): void {
+    this._inFlightSentAtMs = sentAtMs;
+  }
+
+  /**
+   * Plan a room-bound path starting at `currentServerRoom` and dispatch AT MOST ONE hop.
+   * When a hop is already in flight, sends NOTHING (`null`).
+   */
+  planAndDispatchOne(
+    scope: NavWalkerScope,
+    currentServerRoom: string,
+    hops: ReadonlyArray<{ command: string; targetRoom: string }>,
+    nowMs: number,
+  ): QueuedNavHop | null {
+    this.expireIfStale(nowMs);
+    if (this.hasInFlight(nowMs)) {
+      return null;
+    }
+    this._queue.length = 0;
+    if (!currentServerRoom || hops.length === 0) {
+      return null;
+    }
+    let prev = currentServerRoom;
+    const bound: QueuedNavHop[] = [];
+    for (const h of hops) {
+      if (!h.command || !h.targetRoom) {
+        this.cancel();
+        return null;
+      }
+      bound.push({
+        scope,
+        fromRoom: prev,
+        targetRoom: h.targetRoom,
+        command: h.command,
+      });
+      prev = h.targetRoom;
+    }
+    const first = bound[0]!;
+    if (first.fromRoom !== currentServerRoom) {
+      return null;
+    }
+    this._inFlight = first;
+    this._inFlightSentAtMs = nowMs;
+    for (let i = 1; i < bound.length; i++) {
+      this._queue.push(bound[i]!);
+    }
+    return first;
+  }
+
+  /**
+   * Replace queued continuation hops behind an already-in-flight hop without sending
+   * anything immediately. Each hop is bound to its expected source room starting from
+   * `inFlight.targetRoom` and discarded if `inFlight.targetRoom` is not confirmed.
+   */
+  replaceQueuedTailWhileInFlight(
+    scope: NavWalkerScope,
+    hopsFromInFlightTarget: ReadonlyArray<{ command: string; targetRoom: string }>,
+    nowMs: number,
+  ): void {
+    this.expireIfStale(nowMs);
+    if (!this._inFlight || this._inFlight.scope !== scope) {
+      return;
+    }
+    this._queue.length = 0;
+    let prev = this._inFlight.targetRoom;
+    for (const h of hopsFromInFlightTarget) {
+      if (!h.command || !h.targetRoom) {
+        this._queue.length = 0;
+        return;
+      }
+      this._queue.push({
+        scope,
+        fromRoom: prev,
+        targetRoom: h.targetRoom,
+        command: h.command,
+      });
+      prev = h.targetRoom;
+    }
+  }
+
+  /**
+   * Handle an authoritative room update from the server.
+   * Advances at most ONE next queued hop ONLY if `(scope, confirmedRoom)` matches
+   * `inFlight` AND the next queued hop's `(scope, fromRoom)`. Otherwise cancels all
+   * remaining queued hops.
+   */
+  onAuthoritativeRoomUpdate(
+    scope: NavWalkerScope,
+    confirmedRoom: string,
+    nowMs: number,
+    allowAdvance = true,
+  ): NavRoomUpdateResult {
+    const prev = this._inFlight;
+    if (!prev) {
+      this._queue.length = 0;
+      return {
+        acknowledgedTarget: null,
+        nextHopToSend: null,
+        canceledOnMismatch: false,
+      };
+    }
+
+    if (prev.scope !== scope || prev.targetRoom !== confirmedRoom) {
+      this.cancel();
+      return {
+        acknowledgedTarget: null,
+        nextHopToSend: null,
+        canceledOnMismatch: true,
+      };
+    }
+
+    this._inFlight = null;
+    this._inFlightSentAtMs = -10_000;
+
+    if (!allowAdvance) {
+      this._queue.length = 0;
+      return {
+        acknowledgedTarget: confirmedRoom,
+        nextHopToSend: null,
+        canceledOnMismatch: false,
+      };
+    }
+
+    const next = this._queue.shift() ?? null;
+    if (!next) {
+      return {
+        acknowledgedTarget: confirmedRoom,
+        nextHopToSend: null,
+        canceledOnMismatch: false,
+      };
+    }
+
+    if (next.scope !== scope || next.fromRoom !== confirmedRoom || !next.command) {
+      this.cancel();
+      return {
+        acknowledgedTarget: confirmedRoom,
+        nextHopToSend: null,
+        canceledOnMismatch: true,
+      };
+    }
+
+    this._inFlight = next;
+    this._inFlightSentAtMs = nowMs;
+    return {
+      acknowledgedTarget: confirmedRoom,
+      nextHopToSend: next,
+      canceledOnMismatch: false,
+    };
+  }
 }
 
 export type QuickActionItem = {
