@@ -89,7 +89,7 @@
 //! Prepare/validate/apply ordering prevents that phantom-tail case; the
 //! retained-write table is not a substitute for transaction discipline.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -263,6 +263,12 @@ impl PreparedLedgerAppend {
         self.seq
     }
 
+    /// Chunk index written by this plan (`log:{log_id}:{chunk}`).
+    #[must_use]
+    pub fn chunk(&self) -> u64 {
+        self.chunk.chunk
+    }
+
     /// Build the exact replayable Ledger write for an authoritative bundle
     /// without consuming this plan. The caller retains the same plan until
     /// the bundle's exact receipt is acknowledged, then installs it through
@@ -388,6 +394,11 @@ pub enum LedgerAppendError {
     /// New bounded callers cannot introduce a recursively unsafe value.
     #[error("ledger entry exceeds the bounded input shape")]
     InputLimit,
+    /// The log already has persisted chunks on disk whose tail was evicted or
+    /// omitted during a filtered restore; appending would reset to chunk 0 and
+    /// overwrite immutable history.
+    #[error("ledger log is closed or evicted and cannot be appended to without its resident tail")]
+    LogClosed,
 }
 
 /// The sole failure mode after a valid append has been prepared.
@@ -458,6 +469,12 @@ impl LogTail {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ledger {
     logs: BTreeMap<SmolStr, LogTail>,
+    /// Logs known to have persisted chunks on disk whose open tails are not
+    /// resident in `logs` (either omitted during a filtered
+    /// [`Ledger::restore_logs_from_history`] or dropped via
+    /// [`Ledger::evict_log`]). Refusing appends to these ids prevents silently
+    /// starting from [`LogTail::fresh`] and overwriting persisted chunk `0`.
+    closed_logs: BTreeSet<SmolStr>,
     chunk_target_bytes: usize,
 }
 
@@ -473,6 +490,7 @@ impl Ledger {
     pub fn new() -> Ledger {
         Ledger {
             logs: BTreeMap::new(),
+            closed_logs: BTreeSet::new(),
             chunk_target_bytes: DEFAULT_CHUNK_TARGET_BYTES,
         }
     }
@@ -484,6 +502,7 @@ impl Ledger {
     pub fn with_chunk_target(chunk_target_bytes: usize) -> Ledger {
         Ledger {
             logs: BTreeMap::new(),
+            closed_logs: BTreeSet::new(),
             chunk_target_bytes,
         }
     }
@@ -530,6 +549,15 @@ impl Ledger {
             };
             bytes += size;
         }
+        for id in &self.closed_logs {
+            let Some(remaining) = max_bytes.checked_sub(bytes) else {
+                return false;
+            };
+            let Ok(size) = encoded_len_bounded(id, remaining) else {
+                return false;
+            };
+            bytes += size;
+        }
         true
     }
 
@@ -551,6 +579,9 @@ impl Ledger {
                 bytes: log_id.len(),
                 max: MAX_LEDGER_LOG_ID_BYTES,
             });
+        }
+        if self.closed_logs.contains(log_id) {
+            return Err(LedgerAppendError::LogClosed);
         }
         let max = max_resident_bytes.min(MAX_SAFE_CHUNK_BYTES);
         if !bounded_tail(log_id, self.chunk_target_bytes, self.logs.get(log_id), max) {
@@ -585,6 +616,9 @@ impl Ledger {
                 bytes: log_id.len(),
                 max: MAX_LEDGER_LOG_ID_BYTES,
             });
+        }
+        if self.closed_logs.contains(log_id) {
+            return Err(LedgerAppendError::LogClosed);
         }
 
         let expected_tail = self.logs.get(log_id).cloned();
@@ -689,6 +723,7 @@ impl Ledger {
         prepared: PreparedLedgerAppend,
     ) -> Result<BoundLedgerAppend<'_>, LedgerApplyError> {
         if self.chunk_target_bytes != prepared.chunk_target_bytes
+            || self.closed_logs.contains(prepared.log_id.as_str())
             || self.logs.get(prepared.log_id.as_str()) != prepared.expected_tail.as_ref()
         {
             return Err(LedgerApplyError::StalePrestate);
@@ -725,6 +760,7 @@ impl Ledger {
                 return Err(LedgerBatchError::InputLimit);
             }
             if self.chunk_target_bytes != plan.chunk_target_bytes
+                || self.closed_logs.contains(plan.log_id.as_str())
                 || live != plan.expected_tail.as_ref()
             {
                 return Err(LedgerBatchError::StalePrestate);
@@ -795,16 +831,54 @@ impl Ledger {
         self.logs.get(log_id).map_or(0, |t| t.open_chunk)
     }
 
+    /// Whether `log_id` currently has a resident open tail in RAM.
+    #[must_use]
+    pub fn has_tail(&self, log_id: &str) -> bool {
+        self.logs.contains_key(log_id)
+    }
+
+    /// Whether `log_id` is marked closed/evicted (persisted history exists on
+    /// disk without a resident tail, so further appends fail closed with
+    /// [`LedgerAppendError::LogClosed`]).
+    #[must_use]
+    pub fn is_closed(&self, log_id: &str) -> bool {
+        self.closed_logs.contains(log_id)
+    }
+
     /// Evict one log's in-memory open tail from RAM without deleting any
     /// persisted chunk documents on disk.
     ///
     /// Returns `true` if a resident tail was present for `log_id` and removed.
-    /// Callers should only invoke this for logs that will receive no further
-    /// appends (such as a pruned closed scene): after eviction,
+    /// Evicting records `log_id` as closed so any subsequent
+    /// [`prepare_append`](Self::prepare_append) for that id fails closed with
+    /// [`LedgerAppendError::LogClosed`] rather than resetting to chunk `0` and
+    /// overwriting persisted history. After eviction,
     /// [`open_entries`](Self::open_entries) is empty and
     /// [`next_seq`](Self::next_seq) / [`open_chunk`](Self::open_chunk) report `0`.
     pub fn evict_log(&mut self, log_id: &str) -> bool {
-        self.logs.remove(log_id).is_some()
+        if self.logs.remove(log_id).is_some() {
+            self.closed_logs.insert(SmolStr::new(log_id));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drop all in-memory state (resident open tail and closed-log guard) for a
+    /// log whose persisted `log:{id}:*` chunk documents are being deleted from
+    /// storage.
+    ///
+    /// Unlike [`evict_log`](Self::evict_log), this leaves no closed-log marker
+    /// in RAM because the persisted history is being purged alongside it.
+    /// Callers must only invoke this when emitting storage deletions for every
+    /// persisted chunk of `log_id` (and never for a log whose on-disk chunks
+    /// remain reachable).
+    ///
+    /// Returns `true` if `log_id` had a resident tail or closed-log marker.
+    pub fn purge_log(&mut self, log_id: &str) -> bool {
+        let had_tail = self.logs.remove(log_id).is_some();
+        let was_closed = self.closed_logs.remove(log_id);
+        had_tail || was_closed
     }
 
     /// Inspect `docs` under this ledger's chunk target (the open-tail rule),
@@ -902,10 +976,12 @@ impl Ledger {
             return Err(bounded_restore_error(&over_target));
         }
         let mut restored = BTreeMap::new();
+        let mut closed = BTreeSet::new();
         let mut chunks_kept = 0usize;
         let mut entries_kept = 0usize;
         for (log_id, chunks) in &history.by_log {
             if !keep(log_id) {
+                closed.insert(log_id.clone());
                 continue;
             }
             let (&tail_index, tail) = chunks
@@ -952,6 +1028,7 @@ impl Ledger {
         // replaces, rather than merges with, any old RAM state; absent logs
         // must not survive a repeated restore.
         self.logs = restored;
+        self.closed_logs = closed;
         Ok(report)
     }
 
@@ -972,13 +1049,16 @@ impl Ledger {
         let mut restored_logs = 0usize;
         for (log_id, chunks) in &history.by_log {
             let Some((tail_index, tail)) = chunks.last_key_value() else {
+                self.closed_logs.insert(log_id.clone());
                 continue;
             };
             let Some(next_seq) = tail.seqs.last().and_then(|seq| seq.checked_add(1)) else {
+                self.closed_logs.insert(log_id.clone());
                 continue;
             };
             let tail = if tail.sealed {
                 let Some(open_chunk) = tail_index.checked_add(1) else {
+                    self.closed_logs.insert(log_id.clone());
                     continue;
                 };
                 LogTail {
@@ -989,6 +1069,7 @@ impl Ledger {
                 }
             } else {
                 let Some((parsed, open_bytes)) = history.tails.get(log_id) else {
+                    self.closed_logs.insert(log_id.clone());
                     continue;
                 };
                 LogTail {
@@ -998,6 +1079,7 @@ impl Ledger {
                     open_bytes: *open_bytes,
                 }
             };
+            self.closed_logs.remove(log_id);
             self.logs.insert(log_id.clone(), tail);
             restored_logs = restored_logs.saturating_add(1);
         }
@@ -3406,5 +3488,119 @@ mod tests {
         };
         let docs = as_docs(&[(key, value)]);
         assert!(inspect_ledger(&docs, None).is_clean());
+    }
+
+    #[test]
+    fn p2_core_4_evicted_and_unrestored_logs_fail_closed_instead_of_clobbering_chunk_zero() {
+        // 1. Evicting a resident tail marks the log closed so subsequent
+        //    prepare/bind paths refuse instead of resetting to LogTail::fresh().
+        let mut led = Ledger::with_chunk_target(0);
+        let stale_single = led.prepare_append("s", serde_json::json!("stale")).unwrap();
+        let stale_batch = led
+            .prepare_append_bounded("s", serde_json::json!("stale_batch"), 4096)
+            .unwrap();
+        let stale_seq = led
+            .prepare_sequence_bounded(
+                vec![("s".to_string(), serde_json::json!("stale_seq"))],
+                4096,
+            )
+            .unwrap();
+
+        let p0 = led.prepare_append("s", serde_json::json!("c0")).unwrap();
+        assert_eq!(p0.chunk(), 0);
+        led.apply_prepared(p0).unwrap();
+        let p1 = led.prepare_append("s", serde_json::json!("c1")).unwrap();
+        assert_eq!(p1.chunk(), 1);
+        led.apply_prepared(p1).unwrap();
+        assert!(led.has_tail("s"));
+        assert!(!led.is_closed("s"));
+
+        assert!(led.evict_log("s"));
+        assert!(!led.has_tail("s"));
+        assert!(led.is_closed("s"));
+
+        let before = led.clone();
+        assert_eq!(
+            led.prepare_append("s", serde_json::json!("overwrite"))
+                .unwrap_err(),
+            LedgerAppendError::LogClosed
+        );
+        assert_eq!(
+            led.prepare_append_bounded("s", serde_json::json!("overwrite"), 4096)
+                .unwrap_err(),
+            LedgerAppendError::LogClosed
+        );
+        assert_eq!(
+            led.prepare_sequence_bounded(
+                vec![("s".to_string(), serde_json::json!("overwrite"))],
+                4096,
+            )
+            .err(),
+            Some(LedgerSequenceError::Append(LedgerAppendError::LogClosed))
+        );
+        // Plans prepared BEFORE "s" existed must ALSO be refused as stale once
+        // "s" has been appended and evicted (even though `logs.get("s")` is None again).
+        assert_eq!(
+            led.bind_prepared(stale_single).err(),
+            Some(LedgerApplyError::StalePrestate)
+        );
+        assert_eq!(
+            led.bind_prepared_batch(vec![stale_batch]).err(),
+            Some(LedgerBatchError::StalePrestate)
+        );
+        assert_eq!(
+            led.bind_prepared_sequence(stale_seq).err(),
+            Some(LedgerSequenceError::StalePrestate)
+        );
+        assert_eq!(
+            led, before,
+            "all fail-closed refusals leave ledger unchanged"
+        );
+
+        // 2. Filtered restore (`restore_logs_from_history`) marks omitted logs
+        //    closed so appending to an unrestored on-disk log fails closed too.
+        let kv = vec![
+            kv_chunk("live", 0, false, 0, 2),
+            kv_chunk("closed", 0, true, 0, 4),
+            kv_chunk("closed", 1, false, 4, 1),
+        ];
+        let history = inspect_ledger(&as_docs(&kv), None);
+        assert!(history.is_clean());
+        let mut restored = Ledger::new();
+        restored
+            .restore_logs_from_history(&history, |log| log == "live")
+            .unwrap();
+        assert!(restored.has_tail("live"));
+        assert!(!restored.is_closed("live"));
+        assert!(!restored.has_tail("closed"));
+        assert!(restored.is_closed("closed"));
+
+        let snapshot = restored.clone();
+        assert_eq!(
+            restored
+                .prepare_append("closed", serde_json::json!("would_clobber_chunk_0"))
+                .unwrap_err(),
+            LedgerAppendError::LogClosed
+        );
+        assert_eq!(
+            restored, snapshot,
+            "omitted-log refusal must not mutate state"
+        );
+        // Peer restored log remains appendable as normal.
+        let next_live = restored
+            .prepare_append("live", serde_json::json!("ok"))
+            .unwrap();
+        assert_eq!(next_live.seq(), 2);
+        assert_eq!(next_live.chunk(), 0);
+        restored.apply_prepared(next_live).unwrap();
+
+        // 3. `purge_log` clears both resident tails and closed-log guards when
+        //    the caller deletes persisted chunks from storage.
+        assert!(restored.purge_log("closed"));
+        assert!(!restored.is_closed("closed"));
+        assert!(!restored.purge_log("closed"));
+        assert!(restored.purge_log("live"));
+        assert!(!restored.has_tail("live"));
+        assert!(!restored.is_closed("live"));
     }
 }

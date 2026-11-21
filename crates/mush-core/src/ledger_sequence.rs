@@ -144,7 +144,10 @@ impl Ledger {
             {
                 return Err(LedgerSequenceError::InputLimit);
             }
-            if self.chunk_target_bytes != plan.policy || live != expected.as_ref() {
+            if self.chunk_target_bytes != plan.policy
+                || self.closed_logs.contains(id.as_str())
+                || live != expected.as_ref()
+            {
                 return Err(LedgerSequenceError::StalePrestate);
             }
         }

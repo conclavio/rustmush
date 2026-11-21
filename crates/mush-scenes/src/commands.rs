@@ -12,9 +12,9 @@ use std::sync::Arc;
 use mush_core::output::display_name;
 use mush_core::request::{RequestCompletion, RequestOutcome};
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ModuleWrite, ObjId, ObjKind, Powers,
-    Registrar, Role, StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key,
-    perm, read_cold_range,
+    ArgShape, CmdError, CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role,
+    StoreReadCompletion, StoreReadResult, World, archive_page_range, chunk_key, perm,
+    read_cold_range,
 };
 use mush_proto::{RequestKind, RequestOption, RespondChoice, RichText};
 use smol_str::SmolStr;
@@ -24,8 +24,8 @@ use crate::data::{
     DEFAULT_ROUND_SECONDS, KIND_TIMESTOP, MAX_IC_FLOOR_LEAD_SECS, MAX_NUDGE_MINUTES,
     MAX_OUTCOME_NOTE_BYTES, MAX_OUTCOME_SUBJECTS, MAX_RETAINED_CLOSED_SCENES, PauseReason,
     PendingArchiveRead, SCENE_IDLE_TIMEOUT_SECS, SceneEvent, SceneEventKind, SceneMode,
-    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, persist_meta, persist_scene,
-    push_op, scene_key,
+    SceneOutcome, SceneRecord, SceneStatus, SceneUid, ScenesState, emit_pruned_scene_deletes,
+    persist_meta, persist_scene,
 };
 
 /// Record one lifecycle event into `s`'s log (stamped with the current wall
@@ -119,17 +119,10 @@ fn turn_line(w: &World, s: &SceneRecord) -> String {
 }
 
 /// Prune excess closed scenes past [`MAX_RETAINED_CLOSED_SCENES`] and emit KV
-/// deletions for each evicted record.
+/// deletions for each evicted record and its persisted ledger chunks.
 fn prune_closed_scenes(ctx: &mut Ctx<'_>) {
-    let evicted = state(ctx).prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES);
-    for uid in evicted {
-        push_op(
-            ctx.out,
-            ModuleWrite::Del {
-                key: scene_key(uid),
-            },
-        );
-    }
+    let evicted = state(ctx).prune_closed_scenes_detailed(MAX_RETAINED_CLOSED_SCENES);
+    emit_pruned_scene_deletes(ctx.out, &evicted);
 }
 
 // ----------------------------------------------------------------------
@@ -698,6 +691,7 @@ fn record_consent(
         Some(participant),
         serde_json::json!({ "about": about, "choice": choice, "round": round }),
     );
+    restamp_log_chunks(ctx, updated.id);
     if choice != "abstain" {
         to_actor(
             ctx,
@@ -752,11 +746,20 @@ fn auto_end_idle_scene(ctx: &mut Ctx<'_>, id: SceneUid, now: i64) {
         None,
         serde_json::json!({ "reason": "idle_timeout" }),
     );
-    let log_chunks = state_ref(ctx).events.open_chunk(&updated.id.to_string());
-    updated.log_chunks = Some(log_chunks);
-    state(ctx).scenes.update_scene(updated.id, |rec| {
-        rec.log_chunks = Some(log_chunks);
-    });
+    let log_chunks = {
+        let st = state_ref(ctx);
+        let log_id = updated.id.to_string();
+        st.events
+            .has_tail(&log_id)
+            .then(|| st.events.open_chunk(&log_id))
+            .or_else(|| st.known_log_max_chunk.get(&updated.id).copied())
+    };
+    if let Some(log_chunks) = log_chunks {
+        updated.log_chunks = Some(log_chunks);
+        state(ctx).scenes.update_scene(updated.id, |rec| {
+            rec.log_chunks = Some(log_chunks);
+        });
+    }
     persist_scene(ctx.out, &updated);
     announce(
         ctx,
@@ -1081,11 +1084,20 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(ctx.actor),
         serde_json::json!({}),
     );
-    let log_chunks = state_ref(ctx).events.open_chunk(&updated.id.to_string());
-    updated.log_chunks = Some(log_chunks);
-    state(ctx).scenes.update_scene(updated.id, |rec| {
-        rec.log_chunks = Some(log_chunks);
-    });
+    let log_chunks = {
+        let st = state_ref(ctx);
+        let log_id = updated.id.to_string();
+        st.events
+            .has_tail(&log_id)
+            .then(|| st.events.open_chunk(&log_id))
+            .or_else(|| st.known_log_max_chunk.get(&updated.id).copied())
+    };
+    if let Some(log_chunks) = log_chunks {
+        updated.log_chunks = Some(log_chunks);
+        state(ctx).scenes.update_scene(updated.id, |rec| {
+            rec.log_chunks = Some(log_chunks);
+        });
+    }
     persist_scene(ctx.out, &updated);
     announce(
         ctx,
@@ -1114,14 +1126,23 @@ fn timestop_end(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // ----------------------------------------------------------------------
 
 /// Re-stamp a scene's archive bound from the ledger's open chunk after an
-/// append that may have rolled the chunk (the seal on a closed scene), and
-/// persist the record only when the bound moved (H1, D-H-2).
+/// append that may have rolled the chunk (the seal or post-close consent on a
+/// closed scene), and persist the record only when the bound moved (H1, D-H-2).
 fn restamp_log_chunks(ctx: &mut Ctx<'_>, id: SceneUid) {
-    let open = state_ref(ctx).events.open_chunk(&id.to_string());
+    let log_id = id.to_string();
+    let open = {
+        let st = state_ref(ctx);
+        if !st.events.has_tail(&log_id) {
+            return;
+        }
+        st.events.open_chunk(&log_id)
+    };
     let changed = state(ctx)
         .scenes
         .update_scene(id, |rec| {
-            if rec.log_chunks.is_some() && rec.log_chunks != Some(open) {
+            if (rec.log_chunks.is_some() || rec.status == SceneStatus::Closed)
+                && rec.log_chunks != Some(open)
+            {
                 rec.log_chunks = Some(open);
                 Some(rec.clone())
             } else {
@@ -1172,7 +1193,7 @@ fn archive_read(ctx: &mut Ctx<'_>, recap: bool) -> Result<(), CmdError> {
         let st = state_ref(ctx);
         (
             st.events.open_chunk(&log_id),
-            st.events.next_seq(&log_id) > 0,
+            st.events.next_seq(&log_id) > 0 && !st.archived_on_boot.contains(&s.id),
         )
     };
     // Which chunks are on disk. A live tail (the log is in RAM) means every
@@ -1499,8 +1520,16 @@ fn timestop_log(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let log_id = s.id.to_string();
     // Distinguish "nothing recorded" from "the open tail rolled over" — the
     // total is the ledger's sequence count, not just the RAM tail's length.
-    let total = state_ref(ctx).events.next_seq(&log_id);
-    if total == 0 {
+    // Closed scenes loaded at boot are served through `+timestop/log/archive`
+    // even when their open tail is kept resident for post-restart sealing.
+    let (total, archived_on_boot) = {
+        let st = state_ref(ctx);
+        (
+            st.events.next_seq(&log_id),
+            st.archived_on_boot.contains(&s.id),
+        )
+    };
+    if total == 0 || (s.status == SceneStatus::Closed && archived_on_boot) {
         let msg = if s.status == SceneStatus::Closed {
             format!(
                 "Scene #{}'s transcript is archived; read it with +timestop/log/archive [page].",
@@ -1617,8 +1646,14 @@ fn scene_recap(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     let staff = is_staff(ctx.w, actor);
     let log_id = s.id.to_string();
-    let total = state_ref(ctx).events.next_seq(&log_id);
-    if total == 0 {
+    let (total, archived_on_boot) = {
+        let st = state_ref(ctx);
+        (
+            st.events.next_seq(&log_id),
+            st.archived_on_boot.contains(&s.id),
+        )
+    };
+    if total == 0 || (s.status == SceneStatus::Closed && archived_on_boot) {
         let msg = if s.status == SceneStatus::Closed {
             "That scene's transcript is archived; read it with +recap/archive [page]."
         } else {
