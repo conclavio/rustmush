@@ -868,3 +868,633 @@ fn ext_p2_13_dark_visitors_are_omitted_live_and_hidden_in_legacy_logs_and_archiv
         texts(&out)
     );
 }
+
+/// Apply an incremental batch of module ops to an existing `InMemoryStore`.
+fn apply_ops(store: &InMemoryStore, serial: u64, ops: Vec<ModuleOp>) {
+    futures::executor::block_on(async {
+        store
+            .write(WriteBatch {
+                serial,
+                module_ops: ops,
+                ..WriteBatch::default()
+            })
+            .await
+            .unwrap();
+    });
+}
+
+/// Reboot the scenes module from `store`, returning the boot result and
+/// preserving any deferred boot module ops for callers to inspect/apply.
+fn try_reboot_with_ops(
+    store: &InMemoryStore,
+) -> Result<(Engine, Vec<ModuleOp>), mush_core::ModError> {
+    let kv = futures::executor::block_on(async { store.module_json_list(NS).await.unwrap() });
+    let boot = ModuleBootData {
+        kv: kv.into_iter().map(|(k, v)| (SmolStr::new(k), v)).collect(),
+        streams: HashMap::new(),
+        ..Default::default()
+    };
+    let mut world = World::new_minimal();
+    world.set_now(2_000);
+    let bar = world
+        .create(ObjKind::Room, "The Tap Room", GOD, None)
+        .unwrap();
+    let nick = world
+        .create(ObjKind::Player, "Nick", GOD, Some(bar))
+        .unwrap();
+    let ann = world
+        .create(ObjKind::Player, "Ann", GOD, Some(bar))
+        .unwrap();
+    world.set_connected(nick, true);
+    world.set_connected(ann, true);
+    world.set_live_conns(nick, 1);
+    world.set_live_conns(ann, 1);
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![
+            Box::new(mush_canon::CanonModule::new()),
+            Box::new(ScenesModule::new()),
+        ],
+    )?;
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine.modules_loaded(HashMap::from([(SmolStr::new(NS), boot)]), &mut out, &mut fx)?;
+    let boot_ops = engine.take_module_ops();
+    Ok((engine, boot_ops))
+}
+
+/// Extract all `log:*` docs from `store` in the raw `(key, text)` form that
+/// `inspect_ledger` validates at boot.
+fn ledger_docs_in(store: &InMemoryStore) -> Vec<mush_core::LedgerDoc> {
+    futures::executor::block_on(async { store.module_json_list(NS).await.unwrap() })
+        .into_iter()
+        .filter(|(k, _)| mush_core::is_log_key(k))
+        .map(|(k, v)| (SmolStr::new(k), serde_json::to_string(&v).unwrap()))
+        .collect()
+}
+
+/// P2-CORE-4 / P2-MOD-6: Closing a multi-chunk (>16 KiB) unsealed scene,
+/// restarting (`load_boot`), sealing it with `+scene/outcome` (and recording a
+/// post-seal consent response), and restarting again must keep chunk 0 intact,
+/// append the seal at the true tail, and pass `inspect_ledger` + `load_boot`.
+#[test]
+fn p2_mod_6_sealing_multi_chunk_closed_scene_post_restart_preserves_chunk_zero_and_reboots_cleanly()
+{
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let id = scenes(&r.engine).scenes.keys().next().copied().unwrap();
+    let log_id = id.to_string();
+    let (out, _) = run(
+        &mut r.engine,
+        GOD,
+        &format!("@scene/facilitate {}=#{}", id.0, r.ann.0),
+    );
+    assert!(texts(&out).contains("may now seal"), "{}", texts(&out));
+
+    // Exceed the real 16 KiB default chunk target so chunk 0 seals and chunk 1 opens.
+    let line = format!("say {}", "a".repeat(512));
+    for _ in 0..40 {
+        run(&mut r.engine, r.nick, &line);
+    }
+    assert!(
+        scenes(&r.engine).events.open_chunk(&log_id) >= 1,
+        "must span multiple chunks (>16 KiB), got open_chunk={}",
+        scenes(&r.engine).events.open_chunk(&log_id)
+    );
+    run(&mut r.engine, r.nick, "+timestop/end");
+    let seq_after_end = scenes(&r.engine).events.next_seq(&log_id);
+    let chunk_after_end = scenes(&r.engine).events.open_chunk(&log_id);
+    assert!(chunk_after_end >= 1);
+    assert_eq!(
+        scenes(&r.engine).scenes[&id].log_chunks,
+        Some(chunk_after_end)
+    );
+
+    let store = store_from(r.engine.take_module_ops());
+    let original_chunk_0 = futures::executor::block_on(async {
+        store
+            .module_json_get(NS, &chunk_key(&log_id, 0))
+            .await
+            .unwrap()
+            .expect("chunk 0 persisted")
+    });
+    assert_eq!(
+        original_chunk_0["sealed"],
+        serde_json::json!(true),
+        "chunk 0 must be sealed before restart"
+    );
+
+    // Restart #1: scene is Closed + unsealed, so tail restores for sealing while
+    // H1 archive UX (`+timestop/log` -> `+timestop/log/archive`) stays intact.
+    let (mut engine1, boot_ops1) = try_reboot_with_ops(&store).expect("restart #1 succeeds");
+    assert!(boot_ops1.is_empty());
+    let nick1 = engine1.world.resolve_player("Nick").unwrap();
+    let ann1 = engine1.world.resolve_player("Ann").unwrap();
+    assert_eq!(scenes(&engine1).scenes[&id].status, SceneStatus::Closed);
+    assert!(scenes(&engine1).events.has_tail(&log_id));
+    assert_eq!(scenes(&engine1).events.next_seq(&log_id), seq_after_end);
+    let (log_out, _) = run(&mut engine1, nick1, "+timestop/log");
+    assert!(
+        texts(&log_out).contains("+timestop/log/archive"),
+        "closed-before-restart UX preserved: {}",
+        texts(&log_out)
+    );
+
+    // Seal post-restart with `+scene/outcome`!
+    let (seal_out, _) = run(&mut engine1, ann1, "+scene/outcome success=Nick");
+    assert!(
+        texts(&seal_out).contains("is sealed"),
+        "post-restart seal failed: {}",
+        texts(&seal_out)
+    );
+    // Also respond to the post-seal `CONSENT_OUTCOME` request (a second append
+    // onto the closed scene post-restart).
+    let req_id = seal_out
+        .events()
+        .iter()
+        .find_map(|(aud, ev)| match (aud, ev) {
+            (mush_core::output::Audience::Actor(a), OutputEvent::Request { id, .. })
+                if *a == nick1 =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("CONSENT_OUTCOME request sent to Nick");
+    {
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine1.step(
+            Inbound::Respond {
+                epoch: engine1.request_epoch().into(),
+                conn: 1,
+                actor: nick1,
+                id: req_id,
+                choice: mush_proto::RespondChoice::Confirm(true),
+            },
+            &mut out,
+            &mut fx,
+        );
+    }
+
+    let seal_ops = engine1.take_module_ops();
+    assert!(
+        !seal_ops.iter().any(|op| matches!(
+            &op.op,
+            ModuleWrite::JsonSet { key, .. } if *key == chunk_key(&log_id, 0)
+        )),
+        "post-restart sealing must NEVER rewrite sealed chunk 0"
+    );
+    apply_ops(&store, 2, seal_ops);
+
+    let chunk_0_after = futures::executor::block_on(async {
+        store
+            .module_json_get(NS, &chunk_key(&log_id, 0))
+            .await
+            .unwrap()
+            .expect("chunk 0 still persisted")
+    });
+    assert_eq!(
+        chunk_0_after, original_chunk_0,
+        "chunk 0 must remain byte-for-byte intact"
+    );
+
+    // Verify `inspect_ledger` passes cleanly across every persisted chunk!
+    let history = mush_core::inspect_ledger(&ledger_docs_in(&store), None);
+    assert!(
+        history.is_clean(),
+        "inspect_ledger must be clean after post-restart seal: {:?}",
+        history.breaches()
+    );
+    assert_eq!(
+        history.entries_of(&log_id) as u64,
+        seq_after_end + 2,
+        "Sealed + Consent appended at the true tail"
+    );
+
+    // Restart #2: must succeed cleanly, and now that `outcome.is_some()`, the
+    // terminal closed scene's tail is NOT retained in RAM and IS closed in Ledger.
+    let (mut engine2, _) = try_reboot_with_ops(&store).expect("restart #2 must not boot-brick");
+    assert!(scenes(&engine2).scenes[&id].outcome.is_some());
+    assert!(
+        !scenes(&engine2).events.has_tail(&log_id),
+        "already-sealed closed scene does not keep a resident tail"
+    );
+    assert!(
+        scenes(&engine2).events.is_closed(&log_id),
+        "already-sealed closed scene is marked closed in Ledger"
+    );
+    assert_eq!(
+        scenes(&engine2)
+            .events
+            .prepare_append(&log_id, serde_json::json!({"bad": true}))
+            .unwrap_err(),
+        mush_core::LedgerAppendError::LogClosed
+    );
+
+    // Archive read still shows the newly appended Sealed event on page 0.
+    let nick2 = engine2.world.resolve_player("Nick").unwrap();
+    let (_, fx) = run(&mut engine2, nick2, "+timestop/log/archive");
+    let (_, _, corr, keys) = the_read(&fx);
+    let out = complete(&mut engine2, nick2, corr, perform(&store, &keys));
+    let txt = texts(&out);
+    assert!(
+        txt.contains("sealed the outcome: success"),
+        "archive includes post-restart Sealed event: {txt}"
+    );
+}
+
+/// P2-MOD-6: Conferring a sealer via `@scene/facilitate` AFTER a restart on a
+/// multi-chunk closed scene and sealing it works cleanly, AND `record_scene_event`
+/// itself fails closed without writing chunk 0 if a closed/chunked scene ever
+/// lacks a resident tail.
+#[test]
+fn p2_mod_6_post_restart_facilitate_then_seal_and_record_scene_event_fail_closed_guard() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+    let id = scenes(&r.engine).scenes.keys().next().copied().unwrap();
+    let log_id = id.to_string();
+    let line = format!("say {}", "b".repeat(512));
+    for _ in 0..40 {
+        run(&mut r.engine, r.nick, &line);
+    }
+    run(&mut r.engine, r.nick, "+timestop/end");
+    let store = store_from(r.engine.take_module_ops());
+    let original_chunk_0 = futures::executor::block_on(async {
+        store
+            .module_json_get(NS, &chunk_key(&log_id, 0))
+            .await
+            .unwrap()
+            .unwrap()
+    });
+
+    // Restart #1 with NO sealer conferred beforehand.
+    let (mut engine1, _) = try_reboot_with_ops(&store).expect("restart #1 succeeds");
+    let ann1 = engine1.world.resolve_player("Ann").unwrap();
+    assert!(scenes(&engine1).scenes[&id].sealer.is_none());
+
+    // Staff confers sealer on the closed scene post-restart, then Ann seals.
+    let (fac_out, _) = run(
+        &mut engine1,
+        GOD,
+        &format!("@scene/facilitate {}=#{}", id.0, ann1.0),
+    );
+    assert!(
+        texts(&fac_out).contains("may now seal"),
+        "{}",
+        texts(&fac_out)
+    );
+    let (seal_out, _) = run(&mut engine1, ann1, "+scene/outcome success=Nick");
+    assert!(
+        texts(&seal_out).contains("is sealed"),
+        "{}",
+        texts(&seal_out)
+    );
+    apply_ops(&store, 2, engine1.take_module_ops());
+
+    let chunk_0_after = futures::executor::block_on(async {
+        store
+            .module_json_get(NS, &chunk_key(&log_id, 0))
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    assert_eq!(chunk_0_after, original_chunk_0);
+    let (engine2, _) = try_reboot_with_ops(&store).expect("restart #2 succeeds cleanly");
+    let saved_bound = scenes(&engine2).scenes[&id].log_chunks;
+    assert!(saved_bound.is_some());
+
+    // Isolate the `record_scene_event` + `restamp_log_chunks` fail-closed guard
+    // by booting a store that holds only the closed, unsealed, chunked `scene:0`
+    // record (with `log_chunks = Some(bound)` and `sealer = Some(ann1)`) and NO
+    // `log:0:*` docs — so `Ledger` has neither a tail nor a `closed_logs` marker.
+    let mut unsealed_rec = scenes(&engine2).scenes[&id].clone();
+    unsealed_rec.outcome = None;
+    let isolated_store = store_from(vec![
+        ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::JsonSet {
+                key: mush_scenes::scene_key(id),
+                value: serde_json::to_value(&unsealed_rec).unwrap(),
+            },
+        },
+        ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::JsonSet {
+                key: SmolStr::new_static("meta"),
+                value: serde_json::json!({ "next_scene_uid": 1 }),
+            },
+        },
+    ]);
+    let (mut isolated_engine, _) =
+        try_reboot_with_ops(&isolated_store).expect("isolated boot succeeds");
+    assert!(!scenes(&isolated_engine).events.has_tail(&log_id));
+    assert!(!scenes(&isolated_engine).events.is_closed(&log_id));
+
+    let ann2 = isolated_engine.world.resolve_player("Ann").unwrap();
+    let _ = run(&mut isolated_engine, ann2, "+scene/outcome success=Nick");
+    let ops = isolated_engine.take_module_ops();
+    assert!(
+        !ops.iter().any(|op| op.ns == NS
+            && matches!(
+                &op.op,
+                ModuleWrite::JsonSet { key, .. } if mush_core::is_log_key(key)
+            )),
+        "record_scene_event must refuse and emit no scenes log:* write when tail is absent: {ops:?}"
+    );
+    assert_eq!(
+        scenes(&isolated_engine).scenes[&id].log_chunks,
+        saved_bound,
+        "restamp_log_chunks must not reset log_chunks to 0 when tail is absent"
+    );
+}
+
+/// P2-MOD-31: `prune_closed_scenes` deletes both `scene:{uid}` and all
+/// `log:{uid}:0..=hi` KV chunks, `on_obj_destroyed` stamps `log_chunks`, and
+/// `load_boot` sweeps any pre-existing orphaned `log:{uid}:*` keys without
+/// disturbing retained scenes or breaking archive reads.
+#[test]
+fn p2_mod_31_prune_deletes_kv_log_chunks_stamps_on_obj_destroyed_and_cleans_boot_orphans() {
+    let mut r = rig();
+    let bar = r.engine.world.get(r.nick).unwrap().location.unwrap();
+
+    // Make Nick Royalty so we can open/close > MAX_RETAINED_CLOSED_SCENES scenes without
+    // hitting the non-staff rate limit.
+    r.engine
+        .world
+        .get_mut(r.nick)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::ROYALTY);
+
+    // Scene 0: multi-chunk (>16 KiB) scene closed via `+timestop/end`.
+    run(&mut r.engine, r.nick, "+timestop");
+    let long_line = format!("say {}", "c".repeat(512));
+    for _ in 0..40 {
+        run(&mut r.engine, r.nick, &long_line);
+    }
+    run(&mut r.engine, r.nick, "+timestop/end");
+    let scene0 = mush_scenes::SceneUid(0);
+    assert!(
+        scenes(&r.engine).scenes[&scene0].log_chunks.unwrap() >= 1,
+        "scene 0 must span multiple chunks"
+    );
+
+    // Scene 1: multi-chunk (>16 KiB) scene closed via `on_obj_destroyed` when its sole participant dies.
+    let solo_room = r
+        .engine
+        .world
+        .create(ObjKind::Room, "Solo Room", GOD, None)
+        .unwrap();
+    let doomed = r
+        .engine
+        .world
+        .create(ObjKind::Player, "Doomed", GOD, Some(solo_room))
+        .unwrap();
+    r.engine.world.set_connected(doomed, true);
+    r.engine.world.set_live_conns(doomed, 1);
+    run(&mut r.engine, doomed, "+timestop");
+    for _ in 0..40 {
+        run(&mut r.engine, doomed, &long_line);
+    }
+    let scene1 = mush_scenes::SceneUid(1);
+    let expected_scene1_chunks = scenes(&r.engine).events.open_chunk("1");
+    assert!(
+        expected_scene1_chunks >= 1,
+        "scene 1 must span multiple chunks"
+    );
+    r.engine.world.destroy(doomed).unwrap();
+    r.engine.emit_world_event(
+        &mush_core::WorldEvent::ObjDestroyed { obj: doomed },
+        &mut Outbox::new(),
+        &mut Effects::new(),
+    );
+    assert_eq!(
+        scenes(&r.engine).scenes[&scene1].status,
+        SceneStatus::Closed
+    );
+    assert_eq!(
+        scenes(&r.engine).scenes[&scene1].log_chunks,
+        Some(expected_scene1_chunks),
+        "on_obj_destroyed must stamp log_chunks on the closed scene"
+    );
+    assert!(
+        scenes(&r.engine).scenes[&scene1].ended_at.is_some(),
+        "on_obj_destroyed must stamp ended_at on the closed scene"
+    );
+
+    // Create and close enough additional scenes to evict scenes 0, 1, and 2.
+    let total = mush_scenes::MAX_RETAINED_CLOSED_SCENES + 3;
+    for i in 2..total {
+        let (out, _) = run(&mut r.engine, r.nick, "+timestop");
+        assert!(
+            texts(&out).contains("a timestop begins"),
+            "scene {i} start failed: {}",
+            texts(&out)
+        );
+        if i == total - 1 {
+            run(&mut r.engine, r.nick, "say retained survivor");
+        }
+        run(&mut r.engine, r.nick, "+timestop/end");
+    }
+    let _ = bar;
+
+    // Persist everything into InMemoryStore.
+    let store = store_from(r.engine.take_module_ops());
+    let stored_keys: std::collections::BTreeSet<String> = futures::executor::block_on(async {
+        store
+            .module_json_list(NS)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    });
+
+    // Evicted scenes 0, 1, 2 must have NEITHER `scene:{uid}` NOR any `log:{uid}:*` left in KV!
+    for evicted_uid in [0u64, 1, 2] {
+        assert!(
+            !stored_keys.contains(&format!("scene:{evicted_uid}")),
+            "evicted scene:{evicted_uid} leaked in KV"
+        );
+        assert!(
+            !stored_keys
+                .iter()
+                .any(|k| k.starts_with(&format!("log:{evicted_uid}:"))),
+            "evicted log:{evicted_uid}:* chunk(s) leaked in KV"
+        );
+    }
+    // Retained closed scenes (3..total) still have their scene doc and log chunks intact.
+    let last_uid = (total - 1) as u64;
+    assert!(stored_keys.contains(&format!("scene:{last_uid}")));
+    assert!(stored_keys.contains(&format!("log:{last_uid}:0")));
+
+    // Inject a pre-existing orphaned multi-chunk log (no `scene:9999`, simulating PR #750
+    // leftovers) and verify `load_boot` validates it, cleans it up, and advances `next_scene_uid`.
+    let orphan_chunk_0 = serde_json::json!({
+        "chunk": 0,
+        "sealed": true,
+        "entries": [{"seq": 0, "value": {"kind": "started", "ic_time": 0, "at": 1}}]
+    });
+    let orphan_chunk_1 = serde_json::json!({
+        "chunk": 1,
+        "sealed": false,
+        "entries": [{"seq": 1, "value": {"kind": "ended", "ic_time": 0, "at": 2}}]
+    });
+    apply_ops(
+        &store,
+        2,
+        vec![
+            ModuleOp {
+                ns: SmolStr::new(NS),
+                op: ModuleWrite::JsonSet {
+                    key: chunk_key("9999", 0),
+                    value: orphan_chunk_0,
+                },
+            },
+            ModuleOp {
+                ns: SmolStr::new(NS),
+                op: ModuleWrite::JsonSet {
+                    key: chunk_key("9999", 1),
+                    value: orphan_chunk_1,
+                },
+            },
+        ],
+    );
+
+    let (mut booted, boot_ops) = try_reboot_with_ops(&store).expect("boot cleans orphans cleanly");
+    assert!(
+        scenes(&booted).next_scene_uid > 9999,
+        "next_scene_uid must stay ahead of any swept orphan uid"
+    );
+    apply_ops(&store, 3, boot_ops);
+
+    let keys_after_boot: std::collections::BTreeSet<String> = futures::executor::block_on(async {
+        store
+            .module_json_list(NS)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    });
+    assert!(!keys_after_boot.contains("log:9999:0"));
+    assert!(!keys_after_boot.contains("log:9999:1"));
+
+    // Retained surviving scene's archive remains completely readable after reboot!
+    let nick_boot = booted.world.resolve_player("Nick").unwrap();
+    let (_, fx) = run(&mut booted, nick_boot, "+timestop/log/archive");
+    let (_, _, corr, keys) = the_read(&fx);
+    let out = complete(&mut booted, nick_boot, corr, perform(&store, &keys));
+    assert!(
+        texts(&out).contains("retained survivor"),
+        "retained closed scene archive intact: {}",
+        texts(&out)
+    );
+
+    // Final clean reboot check after all deletions.
+    let (_booted2, boot_ops2) = try_reboot_with_ops(&store).expect("final reboot passes");
+    assert!(boot_ops2.is_empty());
+}
+
+/// P2-MOD-31 (boot-time pruning): when KV starts with more than
+/// `MAX_RETAINED_CLOSED_SCENES` closed scenes, `load_boot` deletes both
+/// `scene:{uid}` and all `log:{uid}:0..=hi` chunks of the evicted scenes, and
+/// leaves zero closed-log markers for them in `Ledger`.
+#[test]
+fn p2_mod_31_boot_prune_deletes_excess_closed_scene_log_chunks_and_purges_ledger() {
+    let mut r = rig();
+    r.engine
+        .world
+        .get_mut(r.nick)
+        .unwrap()
+        .flags
+        .insert(mush_core::Flags::ROYALTY);
+
+    // Create 1 real closed scene as a valid template, then clone it into KV at
+    // MAX_RETAINED_CLOSED_SCENES + 2 distinct uids with 2 chunks each.
+    run(&mut r.engine, r.nick, "+timestop");
+    run(&mut r.engine, r.nick, "+timestop/end");
+    let template = scenes(&r.engine).scenes[&mush_scenes::SceneUid(0)].clone();
+
+    let total = (mush_scenes::MAX_RETAINED_CLOSED_SCENES + 2) as u64;
+    let mut ops = Vec::new();
+    for uid in 0..total {
+        let mut rec = template.clone();
+        rec.id = mush_scenes::SceneUid(uid);
+        rec.log_chunks = Some(1);
+        ops.push(ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::JsonSet {
+                key: mush_scenes::scene_key(rec.id),
+                value: serde_json::to_value(&rec).unwrap(),
+            },
+        });
+        let log_id = uid.to_string();
+        ops.push(ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::JsonSet {
+                key: chunk_key(&log_id, 0),
+                value: serde_json::json!({
+                    "chunk": 0,
+                    "sealed": true,
+                    "entries": [{"seq": 0, "value": {"kind": "started", "ic_time": 0, "at": 1}}]
+                }),
+            },
+        });
+        ops.push(ModuleOp {
+            ns: SmolStr::new(NS),
+            op: ModuleWrite::JsonSet {
+                key: chunk_key(&log_id, 1),
+                value: serde_json::json!({
+                    "chunk": 1,
+                    "sealed": false,
+                    "entries": [{"seq": 1, "value": {"kind": "ended", "ic_time": 0, "at": 2}}]
+                }),
+            },
+        });
+    }
+    ops.push(ModuleOp {
+        ns: SmolStr::new(NS),
+        op: ModuleWrite::JsonSet {
+            key: SmolStr::new_static("meta"),
+            value: serde_json::json!({ "next_scene_uid": total }),
+        },
+    });
+    let store = store_from(ops);
+
+    let (booted, boot_ops) = try_reboot_with_ops(&store).expect("boot prunes excess scenes");
+    assert_eq!(
+        scenes(&booted).scenes.closed_count(),
+        mush_scenes::MAX_RETAINED_CLOSED_SCENES
+    );
+    // Evicted scenes 0 and 1 must have neither resident tails nor closed-log guards.
+    for evicted in ["0", "1"] {
+        assert!(!scenes(&booted).events.has_tail(evicted));
+        assert!(!scenes(&booted).events.is_closed(evicted));
+    }
+    apply_ops(&store, 2, boot_ops);
+
+    let keys: std::collections::BTreeSet<String> = futures::executor::block_on(async {
+        store
+            .module_json_list(NS)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    });
+    for evicted in [0u64, 1] {
+        assert!(!keys.contains(&format!("scene:{evicted}")));
+        assert!(!keys.contains(&format!("log:{evicted}:0")));
+        assert!(!keys.contains(&format!("log:{evicted}:1")));
+    }
+    assert!(keys.contains("scene:2"));
+    assert!(keys.contains("log:2:0"));
+    assert!(keys.contains("log:2:1"));
+
+    let (_booted2, boot_ops2) = try_reboot_with_ops(&store).expect("subsequent boot clean");
+    assert!(boot_ops2.is_empty());
+}

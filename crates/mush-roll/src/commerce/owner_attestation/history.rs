@@ -97,7 +97,9 @@ pub(crate) fn current(
         })
         .transpose()?;
     check(roll, licence, term, birth, op, previous)?;
-    if let Some(op) = op {
+    if let Some(op) = op
+        && op.house.is_none()
+    {
         super::super::charter_transfer::history::require_captured(
             ctx,
             f,
@@ -154,7 +156,9 @@ pub(crate) fn current_in_txn(
         .ok_or(PublicationError::Unavailable)?;
     roll.commerce_ready().map_err(unavailable)?;
     check(roll, licence, &term, &birth, op.as_ref(), previous.as_ref())?;
-    if let Some(op) = &op {
+    if let Some(op) = &op
+        && op.house.is_none()
+    {
         super::super::charter_transfer::history::require_captured_in_txn(
             txn,
             world,
@@ -199,7 +203,9 @@ pub(crate) fn historical(
         return Err(PublicationError::Mismatch);
     }
     check_generation(roll, term, birth, op, previous)?;
-    if let Some(op) = op {
+    if let Some(op) = op
+        && op.house.is_none()
+    {
         super::super::charter_transfer::history::require_captured(
             ctx,
             f,
@@ -253,7 +259,9 @@ pub(crate) fn historical_in_txn(
         return Err(PublicationError::Mismatch);
     }
     check_generation(roll, &term, birth, op.as_ref(), previous.as_ref())?;
-    if let Some(op) = &op {
+    if let Some(op) = &op
+        && op.house.is_none()
+    {
         super::super::charter_transfer::history::require_captured_in_txn(
             txn,
             world,
@@ -280,13 +288,15 @@ pub(crate) fn verify(
         OwnerTerm::encoded_key(op.licence, op.predecessor),
     )?;
     op.follows(previous, birth)?;
-    super::super::charter_transfer::history::require_captured(
-        ctx,
-        f,
-        birth,
-        op.charter_ownership.as_ref(),
-        op.owner,
-    )?;
+    if op.house.is_none() {
+        super::super::charter_transfer::history::require_captured(
+            ctx,
+            f,
+            birth,
+            op.charter_ownership.as_ref(),
+            op.owner,
+        )?;
+    }
     let term = read(ctx, &f.terms, op.next.key())?;
     let filed = read(ctx, &f.filed, op.filed.key())?;
     let rating =

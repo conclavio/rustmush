@@ -1847,8 +1847,9 @@ impl InventoryFamilies {
         if actual != expected {
             return Err(InventoryError::NoLot);
         }
-        // Doc 39 cut IN.2: a held lot is consumed by its holder alone (`consume_held`).
-        self.require_no_hold(txn, expected.id())?;
+        // Doc 39 cut IN.2 / P2-MOD-18: a lot held by a lot hold, exact core input,
+        // or bay part custody must not be consumed via ordinary product consumption.
+        self.require_unheld_lot(txn, expected.id())?;
         self.move_lots(txn, expected.endpoint(), -1)?;
         self.tally_lots(
             txn,
@@ -1888,7 +1889,7 @@ impl InventoryFamilies {
             if actual != lot {
                 return Err(InventoryError::NoLot);
             }
-            self.require_no_hold(txn, lot.id())?;
+            self.require_unheld_lot(txn, lot.id())?;
             *census.entry(lot.endpoint()).or_insert(0) -= 1;
             *tallies
                 .entry((lot.endpoint(), lot.commodity().clone()))

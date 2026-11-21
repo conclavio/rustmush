@@ -1157,6 +1157,17 @@ pub struct ScenesState {
     pub(crate) creation_history: HashMap<ObjId, VecDeque<i64>>,
     /// Transient last-activity wall timestamp per active scene (speech/rolls/turns).
     pub(crate) last_activity: HashMap<SceneUid, i64>,
+    /// Closed scenes loaded at boot whose transcripts are served through the
+    /// H1 archive commands (`+timestop/log/archive`, `+recap/archive`) even
+    /// when their open tail is kept resident for post-restart `+scene/outcome`
+    /// sealing. Transient.
+    pub(crate) archived_on_boot: BTreeSet<SceneUid>,
+    /// Exact highest persisted ledger chunk index known for each scene,
+    /// populated from `LedgerHistory` at boot and updated on every
+    /// `record_scene_event` write. Used when pruning closed scenes to emit
+    /// exact `ModuleWrite::Del` ops for `log:{uid}:0..=hi` without trusting
+    /// an unbounded persisted `log_chunks` value. Transient.
+    pub(crate) known_log_max_chunk: HashMap<SceneUid, u64>,
 }
 
 impl PartialEq for ScenesState {
@@ -1268,10 +1279,20 @@ impl ScenesState {
             .max(rec.created_at)
     }
 
-    /// Evict the oldest closed scenes past `max_closed`, returning their ids
-    /// so callers can delete their persisted documents. Active/paused scenes
-    /// and scenes with in-flight archive reads are never evicted.
-    pub fn prune_closed_scenes(&mut self, max_closed: usize) -> Vec<SceneUid> {
+    /// Record the highest persisted ledger chunk index written for `scene`.
+    pub(crate) fn note_written_chunk(&mut self, scene: SceneUid, chunk: u64) {
+        let entry = self.known_log_max_chunk.entry(scene).or_insert(chunk);
+        if chunk > *entry {
+            *entry = chunk;
+        }
+    }
+
+    /// Evict the oldest closed scenes past `max_closed`, returning each
+    /// victim's id and highest persisted ledger chunk index so callers can
+    /// delete both `scene:{uid}` and `log:{uid}:0..=hi` from module KV.
+    /// Active/paused scenes and scenes with in-flight archive reads are never
+    /// evicted.
+    pub(crate) fn prune_closed_scenes_detailed(&mut self, max_closed: usize) -> Vec<PrunedScene> {
         let closed = self.scenes.closed_count();
         let excess = closed.saturating_sub(max_closed);
         if excess == 0 {
@@ -1285,12 +1306,50 @@ impl ScenesState {
             .map(|s| s.id)
             .take(excess)
             .collect();
-        for id in &victims {
-            self.scenes.remove(id);
-            self.last_activity.remove(id);
-            self.events.evict_log(&id.to_string());
+        let mut pruned = Vec::with_capacity(victims.len());
+        for id in victims {
+            let removed = self.scenes.remove(&id);
+            self.last_activity.remove(&id);
+            self.archived_on_boot.remove(&id);
+            let known_max = self.known_log_max_chunk.remove(&id);
+            let log_id = id.to_string();
+            let tail_max = if self.events.has_tail(&log_id) {
+                let open = self.events.open_chunk(&log_id);
+                if !self.events.open_entries(&log_id).is_empty() {
+                    Some(open)
+                } else if open > 0 {
+                    Some(open - 1)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            // Every caller that persists pruned evictions also deletes all
+            // `log:{uid}:0..=hi` chunks from KV, so purging clears both the
+            // open tail and any closed-log marker without growing RAM over time.
+            self.events.purge_log(&log_id);
+            let max_chunk = match (known_max, tail_max) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => removed
+                    .and_then(|rec| rec.log_chunks)
+                    .map(|bound| bound.min(MAX_FALLBACK_PRUNE_CHUNKS)),
+            };
+            pruned.push(PrunedScene { id, max_chunk });
         }
-        victims
+        pruned
+    }
+
+    /// Evict the oldest closed scenes past `max_closed`, returning their ids
+    /// so callers can delete their persisted documents. Active/paused scenes
+    /// and scenes with in-flight archive reads are never evicted.
+    pub fn prune_closed_scenes(&mut self, max_closed: usize) -> Vec<SceneUid> {
+        self.prune_closed_scenes_detailed(max_closed)
+            .into_iter()
+            .map(|victim| victim.id)
+            .collect()
     }
 
     /// Every object that any non-closed scene currently holds — the set the
@@ -1306,6 +1365,18 @@ impl ScenesState {
         }
         set
     }
+}
+
+/// Hard safety bound on fallback chunk deletions when a synthetic closed scene
+/// record carries `log_chunks` without boot history or a resident ledger tail.
+const MAX_FALLBACK_PRUNE_CHUNKS: u64 = 65_536;
+
+/// One evicted closed scene and the inclusive upper chunk index of its
+/// persisted `log:{uid}:0..=hi` chunk documents, if any exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrunedScene {
+    pub(crate) id: SceneUid,
+    pub(crate) max_chunk: Option<u64>,
 }
 
 // ----------------------------------------------------------------------
@@ -1324,6 +1395,30 @@ pub(crate) fn push_op(out: &mut Outbox, op: ModuleWrite) {
         ns: SmolStr::new_static(NS),
         op,
     }));
+}
+
+/// Emit `ModuleWrite::Del` for every evicted closed scene (`scene:{uid}`) and
+/// every one of its persisted ledger chunks (`log:{uid}:0..=hi`).
+pub(crate) fn emit_pruned_scene_deletes(out: &mut Outbox, pruned: &[PrunedScene]) {
+    for victim in pruned {
+        push_op(
+            out,
+            ModuleWrite::Del {
+                key: scene_key(victim.id),
+            },
+        );
+        if let Some(hi) = victim.max_chunk {
+            let log_id = victim.id.to_string();
+            for chunk in 0..=hi {
+                push_op(
+                    out,
+                    ModuleWrite::Del {
+                        key: mush_core::chunk_key(&log_id, chunk),
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// Mirror a scene document (plain data; serialization cannot fail).

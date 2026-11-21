@@ -10,7 +10,7 @@ description = "Rhai sandbox for unit minds: the engine builder, the op-and-fee b
 # `thiserror` or `sha2`: the memory codec is hand-written (D-UM-30), the digest
 # arrives as bytes from the caller, and the crate names no game type.
 [dependencies]
-rhai.workspace = true
+rhai = { workspace = true, features = ["internals"] }
 
 [lints]
 workspace = true

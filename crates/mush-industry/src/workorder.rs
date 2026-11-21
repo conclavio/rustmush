@@ -1302,6 +1302,10 @@ pub const TERMINAL_RING_DRAFT_CANCELS: u8 = 0;
 /// Bucket key for funded/completed/failed terminal orders.
 pub const TERMINAL_RING_SETTLED_ORDERS: u8 = 1;
 
+/// Bucket key for funded terminal orders evicted from bucket `1` before their
+/// economy hold cleared (P2-MOD-15), drained first on subsequent commits.
+pub const TERMINAL_RING_OVERFLOW_ORDERS: u8 = 2;
+
 /// Durable per-requester index of non-terminal work order IDs (`industry_requester_orders`),
 /// maintained atomically alongside `industry.work_orders` so open-order checks, submit
 /// bindings, and deliver/cancel checks are O(1) point lookups rather than truncated scans.
@@ -1366,6 +1370,12 @@ impl RequesterOrders {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.orders.is_empty()
+    }
+
+    /// Whether `order` is present in this ring.
+    #[must_use]
+    pub fn contains(&self, order: WorkOrderId) -> bool {
+        self.orders.contains(&order)
     }
 
     /// Return the post-image with `order` inserted.
@@ -1452,6 +1462,12 @@ impl TerminalWorkOrderRing {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.orders.is_empty()
+    }
+
+    /// Whether `order` is present in this ring.
+    #[must_use]
+    pub fn contains(&self, order: WorkOrderId) -> bool {
+        self.orders.contains(&order)
     }
 
     /// Append `order` (deduplicating if already present), evicting the oldest entry

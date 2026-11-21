@@ -561,21 +561,9 @@ impl Provider {
             (None, None) => None,
             _ => return Err(Error::Integrity),
         };
-        if let Some(slot_rec) = r
-            .industry
-            .slot_reservation(txn, row.intent.offer.facility, row.capacity)
-            .map_err(bad)?
-            && slot_rec.state() == mush_core::ReservationState::Held
-        {
-            r.industry
-                .release_slot(
-                    txn,
-                    row.intent.offer.facility,
-                    row.capacity,
-                    slot_rec.revision(),
-                )
-                .map_err(bad)?;
-        }
+        r.industry
+            .release_slot(txn, row.intent.offer.facility, row.capacity, 1)
+            .map_err(bad)?;
         f.terminal_heads(txn, &row)?;
         r.parts()?
             .install(
@@ -622,21 +610,9 @@ impl Provider {
             },
         )?;
         let row = *out.order.ok_or(Error::Integrity)?;
-        if let Some(slot_rec) = r
-            .industry
-            .slot_reservation(txn, row.intent.offer.facility, row.capacity)
-            .map_err(bad)?
-            && slot_rec.state() == mush_core::ReservationState::Held
-        {
-            r.industry
-                .release_slot(
-                    txn,
-                    row.intent.offer.facility,
-                    row.capacity,
-                    slot_rec.revision(),
-                )
-                .map_err(bad)?;
-        }
+        r.industry
+            .release_slot(txn, row.intent.offer.facility, row.capacity, 1)
+            .map_err(bad)?;
         f.terminal_heads(txn, &row)?;
         if row.intent.offer.part.is_some() {
             r.parts()?.release(txn, id.0, commit).map_err(bad)?;

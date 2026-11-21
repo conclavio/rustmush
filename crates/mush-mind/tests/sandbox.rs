@@ -1844,3 +1844,308 @@ fn high16_sort_order_and_dedup_abort_immediately_on_budget_overrun_and_stay_corr
         );
     }
 }
+
+/// P2-CORE-1: `LexMode::Interp` + `#{}` map-literal desync, verbatim backtick
+/// escapes, raw strings, doubled quotes, nested comments, and user-defined
+/// `contains` must never bypass compile-time container/self-nesting guards.
+#[test]
+fn p2_core_1_template_map_lexer_desync_and_ast_guards_block_every_bypass() {
+    let sandbox = sandbox();
+
+    let must_reject = [
+        // Exact P2-CORE-1 map-in-interpolation lexer desync payloads
+        "fn think(a, b) { let s = `${ #{}; \"`\" }`; loop { this = [this]; } }",
+        "fn think(a, b) { let s = `${ #{}; \"`\" }`; this.k = 1; loop { this.k = [this.k]; } }",
+        "fn think(a, b) { let s = `${ #{}; \"`\" }`; let x = [[[[[[[[[1]]]]]]]]]; }",
+        "fn think(a, b) { let s = `${ #{}; \"`\" }`; loop { this = [[[[[[[[[[[[[[[[[[this]]]]]]]]]]]]]]]]]]; } }",
+        // Verbatim backtick + trailing backslash desync
+        "fn think(a, b) { let s = `\\` + \"`\"; loop { this = [this]; } }",
+        "fn think(a, b) { let s = `\\` + \"`\"; let x = [[[[[[[[[1]]]]]]]]]; }",
+        // Doubled quotes/backticks, raw strings, and nested comments before payload
+        "fn think(a, b) { let s = \"\"\"\"; loop { this = [this]; } }",
+        "fn think(a, b) { let s = ```\"```; loop { this = [this]; } }",
+        "fn think(a, b) { let s = ##\" \"# \"##; let x = [[[[[[[[[1]]]]]]]]]; }",
+        "fn think(a, b) { let s = `${ /* outer /* \"`\" */ */ #{ a: 1 } }`; loop { this = [this]; } }",
+        "fn think(a, b) { let s = `outer ${ `inner ${ #{ k: 1 }; \"`\" }` }`; loop { this = [this]; } }",
+        // User-defined `fn contains` cannot smuggle `this` via `"k" in this`
+        "fn contains(m, k) { m } fn think(a, b) { this.a = \"x\" in this; }",
+    ];
+    for src in must_reject {
+        assert!(
+            matches!(compile(&sandbox, src), Err(CompileError::Parse(_))),
+            "P2-CORE-1 expected compile-time Parse refusal for: {src}"
+        );
+    }
+
+    // Benign complex template/raw-string/map/comment syntax compiles and runs cleanly.
+    let (res, _) = think(
+        &sandbox,
+        "fn think(a, b) { \
+           let t = `${ #{ k: 1 }; \"ok\" }`; \
+           let nested = `a-${ `b-${ #{ x: [2] }.x[0] }` }`; \
+           let raw = ##\"hello \"# world\"##; \
+           let dbl = \"a\"\"b\"; \
+           let vb = `\\${lit} ``bt`` \\`; \
+           this.ok = t == \"ok\" && nested == \"a-b-2\" && raw == \"hello \\\"# world\" && dbl == \"a\\\"b\" && vb == \"${lit} `bt` \\\\\"; \
+         }",
+    );
+    assert_eq!(wrote(&res), r#"{"ok":true}"#);
+}
+
+/// P2-CORE-2: `Map::values()` / container methods on `this`, `switch`-arm
+/// `this` nesting, `Array +=` (both on `this` and locals), nested `this`
+/// writes, and iterative teardown of deep `ErrorRuntime` payloads on a 2 MiB stack.
+#[test]
+fn p2_core_2_container_methods_switch_arms_array_plus_assign_and_error_teardown() {
+    std::thread::Builder::new()
+        .name("mind-p2-core-2".to_owned())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let sandbox = sandbox();
+
+            // 1. Compile-time rejections: switch arms, nested `this` writes, and
+            //    `this`-referencing op-assignments (`Array +=`).
+            let compile_rejected = [
+                // `switch`-arm desync vectors
+                "fn think(a, b) { this.a = 1; loop { switch 1 { 1 => this.a = [this.a] } } }",
+                "fn think(a, b) { this.a = 1; loop { switch 1 { 1 => this.a = this } } }",
+                "fn think(a, b) { loop { switch 1 { 1 => this = [this] } } }",
+                "fn think(a, b) { this.a = [0]; loop { switch 1 { 1 => this.a[0] = this.a } } }",
+                "fn think(a, b) { this.a = []; this.b = #{}; loop { switch 1 { 1 => this.a += this.b } } }",
+                "fn think(a, b) { this.a = 1; loop { switch 1 { 1 => { let x = 1; this.a = [this.a]; } } } }",
+                // Nested `this` writes without container literals
+                "fn think(a, b) { this.a = [0]; loop { this.a[0] = this.a; } }",
+                "fn think(a, b) { this.a = #{k: 0}; loop { this.a.k = this.a; } }",
+                // Direct `Array +=` on `this` under `fast_operators = true`
+                "fn think(a, b) { this.a = []; this.b = #{}; loop { this.a += this.b; this.b.k = this.a; } }",
+                // Helper callback embedding bare `this`
+                "fn grow() { this = [this]; } fn think(a, b) { let v = [1]; for i in 0..20 { v.for_each(grow); } }",
+            ];
+            for src in compile_rejected {
+                assert!(
+                    matches!(compile(&sandbox, src), Err(CompileError::Parse(_))),
+                    "P2-CORE-2 expected compile-time Parse refusal for: {src}"
+                );
+            }
+
+            // 2. Runtime depth enforcement on 2 MiB stack: `Map::values()`,
+            //    indirect `Array +=` on `this` and locals, and container methods.
+            let runtime_limit_cases = [
+                // Exact P2-CORE-2 `Map::values()` 1-element depth growth on `this` and locals
+                "fn think(a, b) { this.a = 1; loop { this.a = this.values(); } }",
+                "fn think(a, b) { let m = #{k: 1}; for i in 0..20 { m = #{k: m.values()}; } }",
+                // Indirect `Array +=` on `this` via local variable (coordinator #376)
+                "fn think(a, b) { \
+                   this.a = []; this.b = #{}; \
+                   for i in 0..20 { let t = this.b; this.a += t; let u = this.a; this.b.k = u; } \
+                 }",
+                // Local `Array +=` alternating map/array (coordinator #376)
+                "fn think(a, b) { \
+                   let a = #{k: 1}; \
+                   for i in 0..20 { let b = []; b += a; a = #{k: b}; } \
+                 }",
+                // Local `Array += [a]` (coordinator #376)
+                "fn think(a, b) { \
+                   let a = [1]; \
+                   for i in 0..20 { let b = []; b += [a]; a = b; } \
+                 }",
+                // `Map::map` growing depth
+                "fn wrap(k, v) { [v] } \
+                 fn think(a, b) { let m = #{k: 1}; for i in 0..20 { m = m.map(wrap); } }",
+                // `Array::zip` growing depth
+                "fn pair(a, b) { [a, b] } \
+                 fn think(a, b) { let v = [1]; for i in 0..20 { v = v.zip([0], pair); } }",
+                // `Array::for_each` mutating element container deeper in place
+                "fn grow() { let copy = this; this.push(copy); } \
+                 fn think(a, b) { let v = [[1]]; for i in 0..20 { v.for_each(grow); } }",
+                // `Array::extract` / `split` / `drain` / `retain` / `order` / `order_desc`
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let r = [x].extract(0, 1); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = [x]; let r = y.split(0); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = [x]; let r = y.drain(0..1); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let y = [x]; let r = y.retain(0..1); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let r = [x].order(); }",
+                "fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let r = [x].order_desc(); }",
+                "fn keep(v) { true } \
+                 fn think(a, b) { let x = [1]; for i in 0..7 { x = [x]; } let r = [x].filter(keep); }",
+                "fn keep_m(k, v) { true } \
+                 fn think(a, b) { let m = #{k: 1}; for i in 0..7 { m = #{k: m}; } let r = (#{k: m}).filter(keep_m); }",
+            ];
+            for src in runtime_limit_cases {
+                let (res, _) = think(&sandbox, src);
+                assert_eq!(
+                    res,
+                    Err(Fault::Limit),
+                    "P2-CORE-2 expected Fault::Limit for: {src}"
+                );
+            }
+
+            // 3. Legitimate `switch`, nested index write with non-`this` RHS,
+            //    and container methods work accurately.
+            let (legit, _) = think(
+                &sandbox,
+                "fn double(x) { x * 2 } \
+                 fn gt2(x) { x > 2 } \
+                 fn add_pair(a, b) { a + b } \
+                 fn keep_a(k, v) { k == \"a\" } \
+                 fn inc_m(k, v) { v + 1 } \
+                 fn think(a, b) { \
+                   switch 1 { 1 => this.sw = 42, _ => this.sw = 0 } \
+                   this.marks_x = [0, 0]; this.mark_index = 1; \
+                   let mark = [7]; \
+                   this.marks_x[this.mark_index] = mark[0]; \
+                   let v = [3, 1, 2]; \
+                   let o_asc = v.order(); \
+                   let o_desc = v.order_desc(); \
+                   let m_arr = v.map(double); \
+                   let f_arr = m_arr.filter(gt2); \
+                   let z_arr = [1, 2].zip([10, 20], add_pair); \
+                   let ex = v.extract(1, 2); \
+                   let sp_src = [1, 2, 3, 4]; \
+                   let sp_tail = sp_src.split(2); \
+                   let mp = #{a: 1, b: 2}; \
+                   let mp2 = mp.map(inc_m).filter(keep_a); \
+                   this.o_asc = o_asc; \
+                   this.o_desc = o_desc; \
+                   this.f_arr = f_arr; \
+                   this.z_arr = z_arr; \
+                   this.ex = ex; \
+                   this.sp_head = sp_src; \
+                   this.sp_tail = sp_tail; \
+                   this.mp_a = mp2.a; \
+                   this.has_gt2 = v.some(gt2); \
+                   this.all_gt2 = v.all(gt2); \
+                   this.idx_gt2 = v.index_of(gt2); \
+                   this.keys_n = mp.keys().len(); \
+                   this.vals_n = mp.values().len(); \
+                 }",
+            );
+            assert_eq!(
+                wrote(&legit),
+                r#"{"all_gt2":false,"ex":[1,2],"f_arr":[6,4],"has_gt2":true,"idx_gt2":0,"keys_n":2,"mark_index":1,"marks_x":[0,7],"mp_a":2,"o_asc":[1,2,3],"o_desc":[3,2,1],"sp_head":[1,2],"sp_tail":[3,4],"sw":42,"vals_n":2,"z_arr":[11,22]}"#
+            );
+
+            // 4. Throwing a 5,000-deep `EvalAltResult::ErrorRuntime` from a
+            //    native host function must not overflow the 2 MiB stack during
+            //    either `Display` formatting or `Drop` teardown.
+            let deep_err_sandbox = Sandbox::new(
+                &EngineLimits {
+                    max_ops_backstop: ROOMY,
+                },
+                |engine| {
+                    engine.register_fn(
+                        "throw_deep",
+                        || -> Result<(), Box<mush_mind::rhai::EvalAltResult>> {
+                            let mut deep = Dynamic::from_int(99);
+                            for _ in 0..5_000 {
+                                deep = Dynamic::from_array(vec![deep]);
+                            }
+                            Err(Box::new(mush_mind::rhai::EvalAltResult::ErrorRuntime(
+                                deep,
+                                mush_mind::rhai::Position::NONE,
+                            )))
+                        },
+                    );
+                },
+            );
+            let (err_res, _) = think(&deep_err_sandbox, "fn think(a, b) { throw_deep(); }");
+            assert!(
+                matches!(err_res, Err(Fault::Type(ref msg)) if msg.contains("container nesting depth")),
+                "expected bounded Fault::Type on deep ErrorRuntime, got {err_res:?}"
+            );
+        })
+        .expect("spawn")
+        .join()
+        .expect("p2_core_2 thread must not overflow stack or panic");
+}
+
+/// P2-CORE-3: Map key-size accounting, pre-mutation in-place mutator bounds,
+/// per-iteration `Array::map`/`Array::zip`/`Map::map` bounds, and latched
+/// uncatchable `ErrorDataTooLarge` in `mush-mind`.
+#[test]
+fn p2_core_3_map_key_bytes_in_place_mutators_map_zip_bounds_and_latched_limit() {
+    let sandbox = sandbox();
+
+    // 1. Map key bytes count toward `max_string_size` (8 KiB) via both
+    //    `map.set(k, v)` and index assignment `m[k] = v` / `this[k] = v`.
+    let key_bloat_cases = [
+        "fn think(a, b) { \
+           let s = \"a\"; for i in 0..12 { s += s; } \
+           let m = #{}; \
+           for i in 0..20 { print(\"step\"); m.set(`${s}${i}`, 1); } \
+         }",
+        "fn think(a, b) { \
+           let s = \"a\"; for i in 0..12 { s += s; } \
+           let m = #{}; \
+           for i in 0..20 { print(\"step\"); m[`${s}${i}`] = 1; } \
+         }",
+        "fn think(a, b) { \
+           let s = \"a\"; for i in 0..12 { s += s; } \
+           for i in 0..20 { print(\"step\"); this[`${s}${i}`] = 1; } \
+         }",
+    ];
+    for src in key_bloat_cases {
+        let (res, trace) = think(&sandbox, src);
+        assert_eq!(
+            res,
+            Err(Fault::Limit),
+            "P2-CORE-3 expected Fault::Limit on map key bloat: {src}"
+        );
+        assert!(
+            !trace.is_empty() && trace.len() <= 4,
+            "P2-CORE-3 map key bloat must fail early (1..=4 steps), got {} steps for: {src}",
+            trace.len()
+        );
+    }
+
+    // 2. Pre-mutation mutators (`push`, `insert`, `set`, `map.set`) reject
+    //    oversized payloads BEFORE mutating, and catching inside `try`/`catch`
+    //    (including through a callback) cannot swallow the latched limit.
+    let catch_limit_cases = [
+        "fn blow(x) { print(\"entered\"); let s = \"a\"; for i in 0..12 { s += s; } let a = []; a.push(s); a.push(s); a.push(s); } \
+         fn think(a, b) { try { [1].for_each(blow); } catch {} this.escaped = true; }",
+        "fn blow(x) { print(\"entered\"); let s = \"a\"; for i in 0..12 { s += s; } let a = []; a.insert(0, s); a.insert(0, s); a.insert(0, s); } \
+         fn think(a, b) { try { [1].for_each(blow); } catch {} this.escaped = true; }",
+        "fn blow(x) { print(\"entered\"); let s = \"a\"; for i in 0..12 { s += s; } let a = [s, s, 0]; a.set(2, s); } \
+         fn think(a, b) { try { [1].for_each(blow); } catch {} this.escaped = true; }",
+        "fn blow(x) { print(\"entered\"); let s = \"a\"; for i in 0..12 { s += s; } let m = #{}; m.set(\"a\", s); m.set(\"b\", s); m.set(\"c\", s); } \
+         fn think(a, b) { try { [1].for_each(blow); } catch {} this.escaped = true; }",
+    ];
+    for src in catch_limit_cases {
+        let (res, trace) = think(&sandbox, src);
+        assert_eq!(
+            res,
+            Err(Fault::Limit),
+            "P2-CORE-3 expected uncatchable Fault::Limit for: {src}"
+        );
+        assert_eq!(
+            trace,
+            vec!["entered".to_owned()],
+            "P2-CORE-3 callback must have actually executed: {src}"
+        );
+    }
+
+    // 3. `Array::map`, `Array::zip`, and `Map::map` enforce cumulative output
+    //    size on EVERY iteration (aborting at iter ~5 instead of allocating
+    //    200 * 2 KiB = 400 KiB before returning).
+    let spike_cases = [
+        "fn big(x) { print(\"step\"); let s = \"a\"; for i in 0..11 { s += s; } s } \
+         fn think(a, b) { let v = []; v.pad(200, 0); try { let r = v.map(big); } catch {} this.escaped = true; }",
+        "fn big2(a, b) { print(\"step\"); let s = \"a\"; for i in 0..11 { s += s; } s } \
+         fn think(a, b) { let v = []; v.pad(200, 0); try { let r = v.zip(v, big2); } catch {} this.escaped = true; }",
+        "fn big_m(k, v) { print(\"step\"); let s = \"a\"; for i in 0..11 { s += s; } s } \
+         fn think(a, b) { let m = #{}; for i in 0..64 { m[`k${i}`] = i; } try { let r = m.map(big_m); } catch {} this.escaped = true; }",
+    ];
+    for src in spike_cases {
+        let (res, trace) = think(&sandbox, src);
+        assert_eq!(
+            res,
+            Err(Fault::Limit),
+            "P2-CORE-3 expected Fault::Limit on intermediate spike: {src}"
+        );
+        assert!(
+            !trace.is_empty() && trace.len() <= 6,
+            "P2-CORE-3 expected early per-iteration abort (1..=6 steps), got {} steps for: {src}",
+            trace.len()
+        );
+    }
+}

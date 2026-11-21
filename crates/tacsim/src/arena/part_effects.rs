@@ -244,6 +244,8 @@ impl Arena {
         }
         if derived.core_down {
             self.truncate_slots(unit);
+        } else if self.lease_period_mismatches_live_core(unit) {
+            self.invalidate_rule_sample(unit);
         }
         self.jam_radius_cm = crate::arena::state::jam_radius_cm(&self.units);
         self.jam_fold.clear();

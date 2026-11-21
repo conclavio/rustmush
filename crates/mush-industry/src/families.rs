@@ -1061,30 +1061,7 @@ impl IndustryFamilies {
         };
         let resource = crate::facility::facility_resource(object)?;
         let id = ReservationId::derive(holder, &resource).map_err(|_| IndustryError::Identity)?;
-        let mut book = retire_terminal_capacity(book, scalar, id)?;
-        // HIGH-33: if no slot is currently free, opportunistically expire elapsed
-        // `Held` records in the book so an abandoned reservation past its deadline
-        // cannot permanently brick the facility. When slots are available, no extra
-        // work or writes occur.
-        if book.checked_available(scalar)? == 0 {
-            let elapsed: Vec<(ReservationId, u64)> = book
-                .records()
-                .iter()
-                .filter(|record| {
-                    record.state() == ReservationState::Held
-                        && record.expires().checked_cmp(now) != Ok(std::cmp::Ordering::Greater)
-                        && record.expires().checked_cmp(now).is_ok()
-                })
-                .map(|record| (record.id(), record.revision()))
-                .collect();
-            for (rid, rrev) in elapsed {
-                if let Ok(next_book) = book.checked_expire(book.revision(), scalar, rid, rrev, now)
-                {
-                    book = next_book;
-                }
-            }
-            book = retire_terminal_capacity(book, scalar, id)?;
-        }
+        let book = retire_terminal_capacity(book, scalar, id)?;
         let record = ReservationRecord::held(
             id,
             resource,
@@ -1130,7 +1107,12 @@ impl IndustryFamilies {
         self.write_capacity_pair(txn, key, true, scalar, book)
     }
 
-    /// Expire one elapsed slot hold.
+    /// Expire one elapsed slot hold belonging to an existing non-terminal
+    /// standard work order at `object` (P2-MOD-2).
+    ///
+    /// Kernel-bound `bay_refit`, `core_integration`, and `core_refit` orders
+    /// share the facility book and require exact `Held -> Released`
+    /// transitions; their slots are never eligible for expiry.
     ///
     /// # Errors
     /// [`IndustryError`] on any refusal.
@@ -1146,6 +1128,18 @@ impl IndustryFamilies {
         let Some((scalar, book)) = pair else {
             return Err(IndustryError::NoCapacity);
         };
+        let Some(record) = book.records().iter().find(|r| r.id() == reservation) else {
+            return Err(IndustryError::NoCapacity);
+        };
+        let Some(wo_id) = crate::workorder::parse_wo_holder(record.holder()) else {
+            return Err(IndustryError::NoWorkOrder);
+        };
+        let Some(order) = self.work_order(txn, wo_id)? else {
+            return Err(IndustryError::NoWorkOrder);
+        };
+        if order.state().is_terminal() || order.facility() != object {
+            return Err(IndustryError::NoWorkOrder);
+        }
         let book = book.checked_expire(
             book.revision(),
             scalar,
@@ -1175,7 +1169,12 @@ impl IndustryFamilies {
         }))
     }
 
-    /// First elapsed `Held` slot reservation at `object` as of `now` (HIGH-33).
+    /// First elapsed `Held` slot reservation at `object` as of `now` whose holder
+    /// resolves to an existing non-terminal standard work order at `object`
+    /// (HIGH-33 / P2-MOD-2).
+    ///
+    /// Kernel-bound `bay_refit`, `core_integration`, and `core_refit` slots are
+    /// skipped so they can never be expired out from under their orders.
     ///
     /// # Errors
     /// [`IndustryError`] on a half pair or an unreadable family.
@@ -1186,18 +1185,29 @@ impl IndustryFamilies {
         now: &ClockStamp,
     ) -> Result<Option<ReservationRecord>, IndustryError> {
         let (_, pair) = self.load_capacity_pair(txn, object)?;
-        Ok(pair.and_then(|(_, book)| {
-            book.records()
-                .iter()
-                .find(|record| {
-                    record.state() == ReservationState::Held
-                        && matches!(
-                            record.expires().checked_cmp(now),
-                            Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-                        )
-                })
-                .cloned()
-        }))
+        let Some((_, book)) = pair else {
+            return Ok(None);
+        };
+        for record in book.records() {
+            if record.state() != ReservationState::Held
+                || !matches!(
+                    record.expires().checked_cmp(now),
+                    Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                )
+            {
+                continue;
+            }
+            let Some(wo_id) = crate::workorder::parse_wo_holder(record.holder()) else {
+                continue;
+            };
+            if let Some(order) = self.work_order(txn, wo_id)?
+                && !order.state().is_terminal()
+                && order.facility() == object
+            {
+                return Ok(Some(record.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// Tear down one slot-expiry schedule and its job sidecar (HIGH-33).
@@ -1289,13 +1299,17 @@ impl IndustryFamilies {
 
     /// Remove one already-terminal work order from `industry.work_orders` (the
     /// single removal site for `industry.work_orders`, CRIT-14).
+    ///
+    /// Returns `Ok(true)` if the row is now absent (either newly removed or
+    /// already gone) so ring cleanup can drop stale entries, and `Ok(false)` if
+    /// the row still exists in a non-terminal state.
     fn prune_work_order(
         &self,
         txn: &mut ActionTxn<'_>,
         id: crate::workorder::WorkOrderId,
     ) -> Result<bool, IndustryError> {
         let Some(existing) = txn.get(&self.work_orders, &id)? else {
-            return Ok(false);
+            return Ok(true);
         };
         if !existing.state().is_terminal() {
             return Ok(false);
@@ -1304,9 +1318,9 @@ impl IndustryFamilies {
         Ok(true)
     }
 
-    /// Prune server-verified settled terminal work orders from bucket 1 of
-    /// `industry_wo_terminal_ring` and `industry.work_orders` (for actions like
-    /// `WoDraft` that do not themselves push onto the terminal ring).
+    /// Prune server-verified settled terminal work orders from buckets `1` and `2`
+    /// of `industry_wo_terminal_ring` and `industry.work_orders` (for actions like
+    /// `WoDraft` that do not themselves push onto the settled terminal ring).
     ///
     /// # Errors
     /// [`IndustryError::State`] if a family read/write fails.
@@ -1318,21 +1332,45 @@ impl IndustryFamilies {
         if prunable.is_empty() {
             return Ok(());
         }
-        let bucket = crate::workorder::TERMINAL_RING_SETTLED_ORDERS;
-        let existed = txn.get(&self.wo_terminal_ring, &bucket)?.is_some();
-        let mut ring = txn
-            .get(&self.wo_terminal_ring, &bucket)?
+        let settled_bucket = crate::workorder::TERMINAL_RING_SETTLED_ORDERS;
+        let overflow_bucket = crate::workorder::TERMINAL_RING_OVERFLOW_ORDERS;
+        let settled_existed = txn.get(&self.wo_terminal_ring, &settled_bucket)?.is_some();
+        let mut settled_ring = txn
+            .get(&self.wo_terminal_ring, &settled_bucket)?
             .cloned()
             .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
-        let mut changed = false;
+        let overflow_existed = txn.get(&self.wo_terminal_ring, &overflow_bucket)?.is_some();
+        let mut overflow_ring = txn
+            .get(&self.wo_terminal_ring, &overflow_bucket)?
+            .cloned()
+            .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
+        let mut settled_changed = false;
+        let mut overflow_changed = false;
+        let mut seen = std::collections::BTreeSet::new();
         for &old_id in prunable {
+            if !seen.insert(old_id) {
+                continue;
+            }
             if self.prune_work_order(txn, old_id)? {
-                ring = ring.without(old_id);
-                changed = true;
+                if settled_ring.contains(old_id) {
+                    settled_ring = settled_ring.without(old_id);
+                    settled_changed = true;
+                }
+                if overflow_ring.contains(old_id) {
+                    overflow_ring = overflow_ring.without(old_id);
+                    overflow_changed = true;
+                }
             }
         }
-        if changed && existed {
-            txn.replace(&self.wo_terminal_ring, &bucket, ring)?;
+        if settled_changed && settled_existed {
+            txn.replace(&self.wo_terminal_ring, &settled_bucket, settled_ring)?;
+        }
+        if overflow_changed && overflow_existed {
+            if overflow_ring.is_empty() {
+                txn.remove(&self.wo_terminal_ring, &overflow_bucket)?;
+            } else {
+                txn.replace(&self.wo_terminal_ring, &overflow_bucket, overflow_ring)?;
+            }
         }
         Ok(())
     }
@@ -1353,9 +1391,12 @@ impl IndustryFamilies {
 
     /// Replace one work order under a checked revision, updating the durable
     /// per-requester index and bounded terminal work-order rings atomically
-    /// (CRIT-14). Draft cancellations past [`crate::workorder::MAX_RETAINED_TERMINAL_DRAFT_CANCELS`]
-    /// are pruned immediately; settled funded terminal IDs passed in `prunable`
-    /// are pruned in the same transaction without double-mutating any key.
+    /// (CRIT-14 / P2-MOD-15). Draft cancellations past
+    /// [`crate::workorder::MAX_RETAINED_TERMINAL_DRAFT_CANCELS`] are pruned
+    /// immediately; settled funded terminal IDs passed in `prunable` are pruned
+    /// in the same transaction without double-mutating any key, and bucket-1
+    /// evictions are preserved in the overflow ring (bucket `2`) rather than
+    /// discarded.
     ///
     /// # Errors
     /// [`IndustryError::NoWorkOrder`] on a missing order,
@@ -1399,10 +1440,12 @@ impl IndustryFamilies {
                     order_id,
                     crate::workorder::MAX_RETAINED_TERMINAL_DRAFT_CANCELS,
                 );
+                let mut evicted_pruned = None;
                 if let Some(old_id) = evicted
                     && old_id != order_id
                 {
                     let _ = self.prune_work_order(txn, old_id)?;
+                    evicted_pruned = Some(old_id);
                 }
                 if existed {
                     txn.replace(&self.wo_terminal_ring, &bucket, next_ring)?;
@@ -1413,29 +1456,65 @@ impl IndustryFamilies {
                 let filtered: Vec<_> = prunable
                     .iter()
                     .copied()
-                    .filter(|id| *id != order_id)
+                    .filter(|id| *id != order_id && Some(*id) != evicted_pruned)
                     .collect();
                 self.prune_terminal_work_orders(txn, &filtered)?;
             } else {
-                let bucket = crate::workorder::TERMINAL_RING_SETTLED_ORDERS;
-                let existed = txn.get(&self.wo_terminal_ring, &bucket)?.is_some();
-                let mut ring = txn
-                    .get(&self.wo_terminal_ring, &bucket)?
+                let settled_bucket = crate::workorder::TERMINAL_RING_SETTLED_ORDERS;
+                let overflow_bucket = crate::workorder::TERMINAL_RING_OVERFLOW_ORDERS;
+                let settled_existed = txn.get(&self.wo_terminal_ring, &settled_bucket)?.is_some();
+                let mut settled_ring = txn
+                    .get(&self.wo_terminal_ring, &settled_bucket)?
                     .cloned()
                     .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
+                let overflow_existed = txn.get(&self.wo_terminal_ring, &overflow_bucket)?.is_some();
+                let mut overflow_ring = txn
+                    .get(&self.wo_terminal_ring, &overflow_bucket)?
+                    .cloned()
+                    .unwrap_or_else(crate::workorder::TerminalWorkOrderRing::empty);
+                let mut overflow_changed = false;
+                let mut seen = std::collections::BTreeSet::new();
                 for &old_id in prunable {
-                    if old_id != order_id && self.prune_work_order(txn, old_id)? {
-                        ring = ring.without(old_id);
+                    if old_id == order_id || !seen.insert(old_id) {
+                        continue;
+                    }
+                    if self.prune_work_order(txn, old_id)? {
+                        settled_ring = settled_ring.without(old_id);
+                        if overflow_ring.contains(old_id) {
+                            overflow_ring = overflow_ring.without(old_id);
+                            overflow_changed = true;
+                        }
                     }
                 }
-                let (next_ring, _evicted) = ring.push(
+                let (next_settled, evicted) = settled_ring.push(
                     order_id,
                     crate::workorder::MAX_RETAINED_TERMINAL_WORK_ORDERS,
                 );
-                if existed {
-                    txn.replace(&self.wo_terminal_ring, &bucket, next_ring)?;
+                if let Some(evicted_id) = evicted
+                    && evicted_id != order_id
+                {
+                    let (next_overflow, _overflow_evicted) = overflow_ring.push(
+                        evicted_id,
+                        crate::workorder::MAX_RETAINED_TERMINAL_WORK_ORDERS,
+                    );
+                    overflow_ring = next_overflow;
+                    overflow_changed = true;
+                }
+                if settled_existed {
+                    txn.replace(&self.wo_terminal_ring, &settled_bucket, next_settled)?;
                 } else {
-                    txn.insert(&self.wo_terminal_ring, &bucket, next_ring)?;
+                    txn.insert(&self.wo_terminal_ring, &settled_bucket, next_settled)?;
+                }
+                if overflow_changed {
+                    if overflow_ring.is_empty() {
+                        if overflow_existed {
+                            txn.remove(&self.wo_terminal_ring, &overflow_bucket)?;
+                        }
+                    } else if overflow_existed {
+                        txn.replace(&self.wo_terminal_ring, &overflow_bucket, overflow_ring)?;
+                    } else {
+                        txn.insert(&self.wo_terminal_ring, &overflow_bucket, overflow_ring)?;
+                    }
                 }
             }
         } else {

@@ -1248,29 +1248,132 @@ fn open_orders_for(
     Ok(out)
 }
 
-/// CRIT-14: settled terminal work orders beyond the recent retention floor (64)
-/// in `wo_terminal_ring[1]` whose economy budget hold has already cleared.
+/// CRIT-14 / P2-MOD-15: settled terminal work orders beyond the recent retention
+/// floor (64) whose economy budget hold has already cleared.
+///
+/// Drains in oldest-first priority:
+/// 1. Overflow bucket `2` (`wo_terminal_ring[2]`), holding orders evicted from
+///    bucket `1` before their holds cleared.
+/// 2. Settled bucket `1` (`wo_terminal_ring[1]`) past the newest 64 entries.
+/// 3. Bounded scan over `families.work_orders` for any untracked terminal order
+///    outside the recent retention sets, guaranteeing bursts past 256/512 or
+///    pre-ring rows still prune cleanly.
+///
+/// Emits canonical `WorkOrderId::to_string()` (`wo#<16hex>`) matching
+/// [`WorkOrderId::parse`].
 fn prunable_terminal_work_orders(engine: &Engine, families: &IndustryFamilies) -> Vec<String> {
     const KEEP_RECENT_FUNDED: usize = 64;
     const MAX_PRUNE_PER_COMMIT: usize = 16;
     let state = engine.action_state();
-    let Ok(Some(ring)) = state.get(
-        &families.wo_terminal_ring,
-        &crate::workorder::TERMINAL_RING_SETTLED_ORDERS,
-    ) else {
-        return Vec::new();
-    };
-    let overflow = ring.len().saturating_sub(KEEP_RECENT_FUNDED);
-    if overflow == 0 {
-        return Vec::new();
+
+    let draft_ring = state
+        .get(
+            &families.wo_terminal_ring,
+            &crate::workorder::TERMINAL_RING_DRAFT_CANCELS,
+        )
+        .ok()
+        .flatten();
+    let settled_ring = state
+        .get(
+            &families.wo_terminal_ring,
+            &crate::workorder::TERMINAL_RING_SETTLED_ORDERS,
+        )
+        .ok()
+        .flatten();
+    let overflow_ring = state
+        .get(
+            &families.wo_terminal_ring,
+            &crate::workorder::TERMINAL_RING_OVERFLOW_ORDERS,
+        )
+        .ok()
+        .flatten();
+
+    let mut keep: std::collections::BTreeSet<WorkOrderId> = std::collections::BTreeSet::new();
+    if let Some(ring) = draft_ring {
+        keep.extend(ring.orders().iter().copied());
     }
-    ring.orders()
-        .iter()
-        .take(overflow)
-        .filter(|id| crate::money::live_hold_in(&engine.world, **id).is_none())
-        .take(MAX_PRUNE_PER_COMMIT)
-        .map(|id| id.0.to_string())
-        .collect()
+    let settled_kept = settled_ring.map_or(0, |ring| {
+        let keep_from = ring.len().saturating_sub(KEEP_RECENT_FUNDED);
+        let slice = &ring.orders()[keep_from..];
+        keep.extend(slice.iter().copied());
+        slice.len()
+    });
+
+    let mut out: Vec<WorkOrderId> = Vec::with_capacity(MAX_PRUNE_PER_COMMIT);
+    let mut seen: std::collections::BTreeSet<WorkOrderId> = std::collections::BTreeSet::new();
+
+    if let Some(ring) = overflow_ring {
+        for &id in ring.orders() {
+            if out.len() >= MAX_PRUNE_PER_COMMIT {
+                break;
+            }
+            if keep.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            if crate::money::live_hold_in(&engine.world, id).is_none() {
+                out.push(id);
+            }
+        }
+    }
+
+    if out.len() < MAX_PRUNE_PER_COMMIT
+        && let Some(ring) = settled_ring
+    {
+        let overflow = ring.len().saturating_sub(KEEP_RECENT_FUNDED);
+        for &id in ring.orders().iter().take(overflow) {
+            if out.len() >= MAX_PRUNE_PER_COMMIT {
+                break;
+            }
+            if keep.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            if crate::money::live_hold_in(&engine.world, id).is_none() {
+                out.push(id);
+            }
+        }
+    }
+
+    if out.len() < MAX_PRUNE_PER_COMMIT {
+        let mut untracked_grace = KEEP_RECENT_FUNDED.saturating_sub(settled_kept);
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            if out.len() >= MAX_PRUNE_PER_COMMIT || pages >= crate::record::MAX_LIST_PAGES {
+                break;
+            }
+            pages += 1;
+            let Ok(page) = state.scan_family(
+                &families.work_orders,
+                cursor.as_deref(),
+                crate::record::INDUSTRY_PAGE,
+            ) else {
+                break;
+            };
+            for entry in page.entries() {
+                if out.len() >= MAX_PRUNE_PER_COMMIT {
+                    break;
+                }
+                let order = entry.value();
+                let id = order.id();
+                if !order.state().is_terminal() || keep.contains(&id) || seen.contains(&id) {
+                    continue;
+                }
+                if untracked_grace > 0 {
+                    untracked_grace -= 1;
+                    continue;
+                }
+                if crate::money::live_hold_in(&engine.world, id).is_none() && seen.insert(id) {
+                    out.push(id);
+                }
+            }
+            match page.next_after() {
+                Some(next) => cursor = Some(next.to_string()),
+                None => break,
+            }
+        }
+    }
+
+    out.into_iter().map(|id| id.to_string()).collect()
 }
 
 /// Parse server-authored `WO_PRUNABLE` terminal work order IDs.
@@ -1456,6 +1559,15 @@ fn reclaimable_facilities(
                     rec.expires().checked_cmp(&now),
                     Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
                 )
+                && crate::workorder::parse_wo_holder(rec.holder()).is_some_and(|wo_id| {
+                    state
+                        .get(&families.work_orders, &wo_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|order| {
+                            !order.state().is_terminal() && order.facility() == facility.object()
+                        })
+                })
         });
         if has_elapsed {
             out.push(facility.object());
@@ -4763,7 +4875,7 @@ impl IndustryProvider {
                 if *owner == crate::record::owner() && class.as_str() == "scheduler"
         );
         let facility = obj_field(parameters, "facility")?;
-        let (slot_rec, order_id) = if is_scheduler {
+        let (slot_rec, order) = if is_scheduler {
             let hex = text_field(parameters, "reservation")?;
             let hash = CanonicalHash::from_hex(&hex)
                 .map_err(|_| error(ActionErrorCode::InvalidRequest, WO_REFUSED))?;
@@ -4776,18 +4888,26 @@ impl IndustryProvider {
             if slot_rec.state() != mush_core::ReservationState::Held {
                 return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
             }
+            let order_id = crate::workorder::parse_wo_holder(slot_rec.holder())
+                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+            if let Some(param_order) = parameters.get("order").and_then(Value::as_str)
+                && WorkOrderId::parse(param_order) != Some(order_id)
+            {
+                return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+            }
+            let order = self
+                .families
+                .work_order(txn, order_id)
+                .map_err(|source| refuse(&source))?
+                .filter(|order| !order.state().is_terminal() && order.facility() == facility)
+                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
             self.families
                 .expire_slot(txn, facility, reservation, slot_rec.revision(), now)
                 .map_err(|source| refuse(&source))?;
             self.families
                 .tear_down_slot_expiry(txn, slot_expiry_schedule_id(facility, reservation)?, true)
                 .map_err(|source| refuse(&source))?;
-            let order_id = parameters
-                .get("order")
-                .and_then(Value::as_str)
-                .and_then(WorkOrderId::parse)
-                .or_else(|| crate::workorder::parse_wo_holder(slot_rec.holder()));
-            (slot_rec, order_id)
+            (slot_rec, order)
         } else {
             let by = parameters
                 .get(WO_RECLAIM_BY)
@@ -4818,6 +4938,14 @@ impl IndustryProvider {
                         "no elapsed slot reservation to reclaim",
                     )
                 })?;
+            let order_id = crate::workorder::parse_wo_holder(slot_rec.holder())
+                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
+            let order = self
+                .families
+                .work_order(txn, order_id)
+                .map_err(|source| refuse(&source))?
+                .filter(|order| !order.state().is_terminal() && order.facility() == facility)
+                .ok_or_else(|| error(ActionErrorCode::ProviderRejected, WO_REFUSED))?;
             let reservation = slot_rec.id();
             self.families
                 .expire_slot(txn, facility, reservation, slot_rec.revision(), now)
@@ -4825,57 +4953,45 @@ impl IndustryProvider {
             self.families
                 .tear_down_slot_expiry(txn, slot_expiry_schedule_id(facility, reservation)?, false)
                 .map_err(|source| refuse(&source))?;
-            let order_id = crate::workorder::parse_wo_holder(slot_rec.holder());
-            (slot_rec, order_id)
+            (slot_rec, order)
         };
+        let id = order.id();
         let prunable = prunable_ids_field(parameters);
-        if let Some(id) = order_id
-            && let Some(order) = self
-                .families
-                .work_order(txn, id)
-                .map_err(|source| refuse(&source))?
-            && !order.state().is_terminal()
+        let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+        if !order.pinned().inputs().is_empty()
+            && let Some(source) = order.material_source()
         {
-            let holder = wo_holder(id).map_err(|source| refuse(&source))?;
-            if !order.pinned().inputs().is_empty()
-                && let Some(source) = order.material_source()
-            {
-                for line in order.pinned().inputs() {
-                    let resource = mush_inventory::pool_resource(source, line.commodity())
-                        .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
-                    let rid = ReservationId::derive(&holder, &resource)
-                        .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
-                    let Some(record) = self
-                        .families
+            for line in order.pinned().inputs() {
+                let resource = mush_inventory::pool_resource(source, line.commodity())
+                    .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+                let rid = ReservationId::derive(&holder, &resource)
+                    .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+                let Some(record) = self
+                    .families
+                    .inventory
+                    .reservation(txn, source, line.commodity(), rid)
+                    .map_err(|error| refuse(&IndustryError::Inventory(error)))?
+                else {
+                    continue;
+                };
+                if record.state() == mush_core::ReservationState::Held {
+                    self.families
                         .inventory
-                        .reservation(txn, source, line.commodity(), rid)
-                        .map_err(|error| refuse(&IndustryError::Inventory(error)))?
-                    else {
-                        continue;
-                    };
-                    if record.state() == mush_core::ReservationState::Held {
-                        self.families
-                            .inventory
-                            .release(txn, source, line.commodity(), rid, record.revision())
-                            .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
-                    }
+                        .release(txn, source, line.commodity(), rid, record.revision())
+                        .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
                 }
             }
-            self.families
-                .tear_down_production(txn, production_schedule_id(id)?)
-                .map_err(|source| refuse(&source))?;
-            let next = order
-                .with_state(WorkOrderState::Failed)
-                .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
-            self.families
-                .put_work_order_pruning(txn, order.revision(), next, &prunable)
-                .map_err(|source| refuse(&source))?;
-            data.insert("order".to_owned(), json!(id.to_string()));
-        } else if !prunable.is_empty() {
-            self.families
-                .prune_terminal_work_orders(txn, &prunable)
-                .map_err(|source| refuse(&source))?;
         }
+        self.families
+            .tear_down_production(txn, production_schedule_id(id)?)
+            .map_err(|source| refuse(&source))?;
+        let next = order
+            .with_state(WorkOrderState::Failed)
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        self.families
+            .put_work_order_pruning(txn, order.revision(), next, &prunable)
+            .map_err(|source| refuse(&source))?;
+        data.insert("order".to_owned(), json!(id.to_string()));
         data.insert("facility".to_owned(), json!(facility.0));
         data.insert("reservation".to_owned(), json!(slot_rec.id().0.to_hex()));
         Ok(format!(
@@ -5277,19 +5393,22 @@ pub(crate) fn register_with_core_origins(
             schedules: families.slot_expiry_schedules.clone(),
             jobs: families.slot_expiry_jobs.clone(),
             facility_books: families.facility_books.clone(),
+            work_orders: families.work_orders.clone(),
         },
     )?;
     Ok(())
 }
 
-/// HIGH-33: schedule adapter for one-shot facility slot expiry. Re-derives the
-/// candidate from stored state, verifies the slot reservation is still `Held`
-/// and elapsed, and emits a `WoReclaim` draft invoking `expire_slot`.
+/// HIGH-33 / P2-MOD-2: schedule adapter for one-shot facility slot expiry.
+/// Re-derives the candidate from stored state, verifies the slot reservation is
+/// still `Held` for an existing non-terminal standard work order, and emits a
+/// `WoReclaim` draft invoking `expire_slot`.
 #[derive(Clone)]
 struct SlotExpiryScheduleAdapter {
     schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
     jobs: StateFamilyHandle<ScheduleId, crate::workorder::SlotExpiryJob>,
     facility_books: StateFamilyHandle<mush_core::ReservationBookId, mush_core::ReservationBook>,
+    work_orders: StateFamilyHandle<WorkOrderId, WorkOrder>,
 }
 
 impl ScheduleActionAdapter for SlotExpiryScheduleAdapter {
@@ -5340,15 +5459,39 @@ impl ScheduleActionAdapter for SlotExpiryScheduleAdapter {
             .action_state()
             .get(&self.facility_books, &key)
             .map_err(|_| error(ActionErrorCode::Integrity, "facility book is unavailable"))?;
-        let still_held = book.is_some_and(|book| {
-            book.records().iter().any(|rec| {
+        let held_rec = book.and_then(|book| {
+            book.records().iter().find(|rec| {
                 rec.id() == job.reservation() && rec.state() == mush_core::ReservationState::Held
             })
         });
-        if !still_held {
+        let Some(held_rec) = held_rec else {
             return Err(error(
                 ActionErrorCode::Stale,
                 "slot reservation is no longer held",
+            ));
+        };
+        let Some(wo_id) = crate::workorder::parse_wo_holder(held_rec.holder()) else {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "slot reservation does not belong to a standard work order",
+            ));
+        };
+        let order_live = engine
+            .action_state()
+            .get(&self.work_orders, &wo_id)
+            .map_err(|_| {
+                error(
+                    ActionErrorCode::Integrity,
+                    "work order family is unavailable",
+                )
+            })?
+            .is_some_and(|order| {
+                !order.state().is_terminal() && order.facility() == job.facility()
+            });
+        if !order_live {
+            return Err(error(
+                ActionErrorCode::Stale,
+                "slot reservation work order is missing or already terminal",
             ));
         }
         let definitions = engine.registry.definitions().ok_or_else(|| {

@@ -410,6 +410,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
             new_facilitator: Option<ObjId>,
         },
     }
+    let now = ctx.w.now();
     let mut plans: Vec<Plan> = Vec::new();
     for mut rec in affected {
         let was_facilitator = rec.facilitator == obj;
@@ -417,6 +418,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         if rec.participants.is_empty() {
             rec.status = SceneStatus::Closed;
             rec.pause_reason = None;
+            rec.ended_at = Some(now);
             let release_all: Vec<ObjId> = rec.members().collect();
             plans.push(Plan::Close {
                 record: rec,
@@ -450,29 +452,24 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     for plan in plans {
         match plan {
             Plan::Close {
-                record,
+                mut record,
                 release_all,
             } => {
-                let evicted = if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
+                if let Some(st) = ctx.w.module_state_mut::<ScenesState>() {
+                    let log_id = record.id.to_string();
+                    if st.events.has_tail(&log_id) {
+                        record.log_chunks = Some(st.events.open_chunk(&log_id));
+                    } else if let Some(hi) = st.known_log_max_chunk.get(&record.id).copied() {
+                        record.log_chunks = Some(hi);
+                    }
                     st.scenes.insert(record.id, record.clone());
                     st.last_activity.remove(&record.id);
-                    st.prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES)
-                } else {
-                    Vec::new()
-                };
+                }
                 for m in release_all {
                     ctx.w.clear_exclusive_scene_member(m);
                 }
                 ctx.w.clear_exclusive_scene_member(obj);
                 persist_scene(ctx.out, &record);
-                for uid in evicted {
-                    data::push_op(
-                        ctx.out,
-                        mush_core::ModuleWrite::Del {
-                            key: scene_key(uid),
-                        },
-                    );
-                }
                 announce_scene(
                     ctx,
                     record.anchor,
@@ -483,6 +480,12 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
                 );
                 emit_scene_concluded(ctx, &record);
                 fire_ended(ctx, &record);
+                let evicted = ctx
+                    .w
+                    .module_state_mut::<ScenesState>()
+                    .map(|st| st.prune_closed_scenes_detailed(MAX_RETAINED_CLOSED_SCENES))
+                    .unwrap_or_default();
+                data::emit_pruned_scene_deletes(ctx.out, &evicted);
             }
             Plan::Shrink {
                 record,
@@ -697,17 +700,41 @@ pub(crate) fn record_scene_event(ctx: &mut Ctx<'_>, scene: SceneUid, ev: SceneEv
         let Some(st) = ctx.w.module_state_mut::<ScenesState>() else {
             return;
         };
-        let prepared = match st.events.prepare_append(&scene.to_string(), value) {
+        let log_id = scene.to_string();
+        // Fail closed before touching the ledger: a closed or already-chunked
+        // scene whose open tail is not resident in RAM must never fall back to
+        // `LogTail::fresh()` and overwrite persisted chunk `0`.
+        if !st.events.has_tail(&log_id) {
+            let Some(rec) = st.scenes.get(&scene) else {
+                tracing::error!(
+                    scene = %scene,
+                    "scene: refusing event-ledger append for unknown or evicted scene without resident tail"
+                );
+                return;
+            };
+            if rec.log_chunks.is_some() || rec.status == SceneStatus::Closed {
+                tracing::error!(
+                    scene = %scene,
+                    status = ?rec.status,
+                    log_chunks = ?rec.log_chunks,
+                    "scene: refusing event-ledger append for closed or archived scene without resident tail"
+                );
+                return;
+            }
+        }
+        let prepared = match st.events.prepare_append(&log_id, value) {
             Ok(prepared) => prepared,
             Err(error) => {
                 tracing::error!(scene = %scene, %error, "scene: unsafe event-ledger append refused without ledger mutation");
                 return;
             }
         };
+        let written_chunk = prepared.chunk();
         let (_seq, op) = st
             .events
             .apply_prepared(prepared)
             .expect("scene ledger cannot change during one exclusive state borrow");
+        st.note_written_chunk(scene, written_chunk);
         op
     };
     ctx.persist(ModuleOp {
@@ -1006,32 +1033,48 @@ fn load_boot(
         }
     }
 
-    let next_scene_uid = next_from_meta
-        .unwrap_or_else(|| scenes.keys().last().map_or(0, |id| id.0 + 1))
-        .max(scenes.keys().last().map_or(0, |id| id.0 + 1));
-
-    // Validate every authoritative scene-history document (a Closed scene's log
-    // is immutable history on disk that nothing in RAM appends to or reads, but
-    // corruption there is still an integrity breach and may not be hidden by the
-    // memory optimization below), then rehydrate the event-log open tail only
-    // for scenes that still hold members — restoring a Closed scene's tail would
-    // be permanent dead RAM that grows with every finished scene. J1: one
-    // inspection serves validation and restoration.
+    // Validate every authoritative scene-history document (corruption in any
+    // closed or orphaned log is still an integrity breach and may not be hidden
+    // by the memory optimization below). J1: one inspection serves validation
+    // and restoration.
     if !history.is_clean() {
         return Err(ModError::msg(format!(
             "scene ledger history validation failed: {:?}",
             history.breaches()
         )));
     }
-    let live_uids: std::collections::BTreeSet<String> = scenes
+    let mut known_log_max_chunk: std::collections::HashMap<SceneUid, u64> =
+        std::collections::HashMap::new();
+    let mut orphan_logs: Vec<(SmolStr, Vec<u64>)> = Vec::new();
+    let mut max_orphan_uid: Option<u64> = None;
+    for log_id in history.logs() {
+        let Ok(uid) = log_id.parse::<u64>() else {
+            continue;
+        };
+        let scene_uid = SceneUid(uid);
+        if scenes.contains_key(&scene_uid) {
+            if let Some(max_chunk) = history.chunk_docs(log_id).map(|(idx, _)| idx).max() {
+                known_log_max_chunk.insert(scene_uid, max_chunk);
+            }
+        } else {
+            let chunks: Vec<u64> = history.chunk_docs(log_id).map(|(idx, _)| idx).collect();
+            if !chunks.is_empty() {
+                max_orphan_uid = Some(max_orphan_uid.map_or(uid, |prev| prev.max(uid)));
+                orphan_logs.push((log_id.clone(), chunks));
+            }
+        }
+    }
+
+    let next_scene_uid = next_from_meta
+        .unwrap_or_else(|| scenes.keys().last().map_or(0, |id| id.0 + 1))
+        .max(scenes.keys().last().map_or(0, |id| id.0 + 1))
+        .max(max_orphan_uid.map_or(0, |id| id.saturating_add(1)));
+
+    let archived_on_boot: std::collections::BTreeSet<SceneUid> = scenes
         .values()
-        .filter(|s| s.status.holds_members())
-        .map(|s| s.id.0.to_string())
+        .filter(|s| s.status == SceneStatus::Closed)
+        .map(|s| s.id)
         .collect();
-    let mut events = mush_core::Ledger::new();
-    events
-        .restore_logs_from_history(history, |log_id| live_uids.contains(log_id))
-        .map_err(|error| ModError::msg(format!("scene ledger restore failed: {error}")))?;
     // The gate is wiring, not boot data: it is installed at registration and must
     // survive `on_world_loaded` replacing the state slot wholesale.
     let sealer_gate = ctx
@@ -1045,11 +1088,39 @@ fn load_boot(
         sealer_gate,
         scenes: SceneMap::from_records(scenes),
         next_scene_uid,
-        events,
+        events: mush_core::Ledger::new(),
         creation_history: Default::default(),
         last_activity: Default::default(),
+        archived_on_boot,
+        known_log_max_chunk,
     };
-    let evicted = st.prune_closed_scenes(MAX_RETAINED_CLOSED_SCENES);
+    // Prune excess closed scenes BEFORE restoring tails so evicted scenes never
+    // load dead tails into RAM, while capturing their exact on-disk chunk bounds
+    // from `known_log_max_chunk`.
+    let evicted = st.prune_closed_scenes_detailed(MAX_RETAINED_CLOSED_SCENES);
+    // Restore tails for every live scene AND every retained unsealed closed
+    // scene (`outcome.is_none()`), because `+scene/outcome` (and
+    // `@scene/facilitate` + `+scene/outcome`) may legally append a `Sealed`
+    // event post-restart. Already-sealed closed scenes (`outcome.is_some()`)
+    // stay out of RAM and are marked closed in `Ledger`, refusing any accidental
+    // append.
+    let restore_uids: std::collections::BTreeSet<String> = st
+        .scenes
+        .values()
+        .filter(|s| s.status.holds_members() || s.outcome.is_none())
+        .map(|s| s.id.0.to_string())
+        .collect();
+    st.events
+        .restore_logs_from_history(history, |log_id| restore_uids.contains(log_id))
+        .map_err(|error| ModError::msg(format!("scene ledger restore failed: {error}")))?;
+    // Evicted and orphaned logs have all persisted `log:{uid}:*` chunks deleted
+    // below, so clear their closed-log markers from RAM too.
+    for victim in &evicted {
+        st.events.purge_log(&victim.id.to_string());
+    }
+    for (orphan_log_id, _) in &orphan_logs {
+        st.events.purge_log(orphan_log_id);
+    }
     // Re-persist any scene we paused for the restart, and re-publish every held
     // member to the core exclusive-scene index so the room stays frozen.
     let changed: Vec<SceneRecord> = st
@@ -1069,13 +1140,16 @@ fn load_boot(
     for s in &changed {
         persist_scene(ctx.out, s);
     }
-    for uid in evicted {
-        data::push_op(
-            ctx.out,
-            mush_core::ModuleWrite::Del {
-                key: scene_key(uid),
-            },
-        );
+    data::emit_pruned_scene_deletes(ctx.out, &evicted);
+    for (orphan_log_id, chunks) in orphan_logs {
+        for chunk in chunks {
+            data::push_op(
+                ctx.out,
+                mush_core::ModuleWrite::Del {
+                    key: mush_core::chunk_key(&orphan_log_id, chunk),
+                },
+            );
+        }
     }
     Ok(())
 }

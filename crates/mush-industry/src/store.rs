@@ -930,7 +930,17 @@ pub fn reconcile(
     let mut pages = 0;
     loop {
         if pages >= crate::record::MAX_LIST_PAGES {
-            complete = false;
+            // P2-MOD-15: work-order scan truncation flips `orders_truncated`
+            // (failing closed work-order cap/delivery paths) without flipping
+            // `complete` (the completion-marker mirror completeness flag), so
+            // retained terminal work orders cannot brick `IndustryFactProvider`
+            // or kernel-bound refit/integration operations.
+            tracing::error!(
+                target: "industry",
+                pages,
+                "industry: the work-order walk hit its page budget; work-order caps \
+                 fail closed until terminal orders prune"
+            );
             orders_complete = false;
             break;
         }

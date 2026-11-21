@@ -138,7 +138,9 @@ impl Sandbox {
             .engine
             .compile(source)
             .map_err(|error| CompileError::Parse(error.to_string()))?;
-        crate::guards::validate_source(source).map_err(CompileError::Parse)?;
+        crate::guards::validate_source(source)
+            .and_then(|()| crate::guards::validate_ast(&ast))
+            .map_err(CompileError::Parse)?;
         if !ast
             .iter_functions()
             .any(|function| function.name == "think" && function.params.len() == 2)

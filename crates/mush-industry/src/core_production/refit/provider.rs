@@ -451,17 +451,9 @@ impl Provider {
                 .exchange_core_component(&r.exchanges, txn, id.0)
                 .map_err(bad)?;
             let row = before.install(&payment, &tactics, &physical)?;
-            let factory = row.intent.offer.site()?.factory;
-            if let Some(slot_rec) = r
-                .industry
-                .slot_reservation(txn, factory, row.capacity)
-                .map_err(bad)?
-                && slot_rec.state() == mush_core::ReservationState::Held
-            {
-                r.industry
-                    .release_slot(txn, factory, row.capacity, slot_rec.revision())
-                    .map_err(bad)?;
-            }
+            r.industry
+                .release_slot(txn, row.intent.offer.site()?.factory, row.capacity, 1)
+                .map_err(bad)?;
             r.families.terminal_heads(txn, &row)?;
             txn.replace(&r.families.orders, &id, row).map_err(bad)?;
             ctx.advance_core_refit_completion(txn, id.0).map_err(bad)?;
@@ -502,17 +494,9 @@ impl Provider {
                 },
             )?;
             let row = out.order.ok_or(Error::Integrity)?;
-            let factory = row.intent.offer.site()?.factory;
-            if let Some(slot_rec) = r
-                .industry
-                .slot_reservation(txn, factory, row.capacity)
-                .map_err(bad)?
-                && slot_rec.state() == mush_core::ReservationState::Held
-            {
-                r.industry
-                    .release_slot(txn, factory, row.capacity, slot_rec.revision())
-                    .map_err(bad)?;
-            }
+            r.industry
+                .release_slot(txn, row.intent.offer.site()?.factory, row.capacity, 1)
+                .map_err(bad)?;
             r.families.terminal_heads(txn, &row)?;
             txn.replace(&r.families.orders, &id, row).map_err(bad)?;
             ctx.advance_core_refit_completion(txn, id.0).map_err(bad)?;

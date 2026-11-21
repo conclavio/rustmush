@@ -95,6 +95,10 @@ pub struct ScriptConfig {
     pub max_map_size: usize,
     /// Maximum expression nesting depth (parse-time guard).
     pub max_expr_depth: usize,
+    /// Maximum local variables in scope at once (memory & scope-bloat guard, P2-CORE-3).
+    pub max_variables: usize,
+    /// Maximum script-defined functions / anonymous closures per script (parse-time guard, P2-CORE-3).
+    pub max_functions: usize,
     /// Total script invocations allowed per originating world event.
     pub max_total_invocations: u32,
     /// Maximum cascade depth (A emits → B hears → …) per originating event.
@@ -125,6 +129,8 @@ impl Default for ScriptConfig {
             max_array_size: 4_096,
             max_map_size: 4_096,
             max_expr_depth: 64,
+            max_variables: 128,
+            max_functions: 64,
             max_total_invocations: 64,
             max_depth: 8,
             strikes_to_halt: 3,
@@ -500,8 +506,8 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
         return;
     };
 
-    let mut scope = Scope::new();
-    inject_scope(&mut scope, &trigger.payload);
+    let mut scope = SafeScope(Scope::new());
+    inject_scope(&mut scope.0, &trigger.payload);
     set_budget(&cfg);
     fatal_begin();
     guards::limit_begin();
@@ -514,10 +520,10 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
     // this call, so catching keeps the loop alive and downgrades a panic to a
     // single failed script.
     let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        engine.run_ast_with_scope(&mut scope, &ast)
+        engine.run_ast_with_scope(&mut scope.0, &ast)
     }))
     .unwrap_or_else(|_| Err(err("script aborted (internal panic)")));
-    let limit_hit = guards::limit_take();
+    let limit_hit = guards::limit_take_reason();
     let overrun_reason = budget_tripped();
     let fatal_msg = fatal_take();
     clear_budget();
@@ -531,8 +537,19 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
     // Reconcile latched sandbox faults even if a script caught a callback's
     // wrapped `ErrorInFunctionCall` in `try`/`catch` and returned cleanly (or
     // threw a different catchable error afterward).
-    if limit_hit {
-        result = Err(guards::depth_exceeded_err());
+    if let Some(reason) = limit_hit {
+        if !matches!(
+            result.as_ref().err().map(|e| e.unwrap_inner()),
+            Some(EvalAltResult::ErrorDataTooLarge(..))
+        ) {
+            if let Err(old) = result {
+                guards::drop_eval_error_iteratively(old);
+            }
+            result = Err(Box::new(EvalAltResult::ErrorDataTooLarge(
+                reason.to_owned(),
+                Position::NONE,
+            )));
+        }
     } else if let Some(reason) = overrun_reason
         && result.is_ok()
     {
@@ -541,12 +558,18 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
             Position::NONE,
         )));
     } else if let Some(msg) = fatal_msg {
+        if let Err(old) = result {
+            guards::drop_eval_error_iteratively(old);
+        }
         result = Err(fatal_error_unlatched(&msg));
     }
-    let tripped = limit_hit || overrun_reason.is_some();
+    let tripped = limit_hit.is_some() || overrun_reason.is_some();
 
     match result {
-        Err(e) => handle_error(trigger, &e, tripped, cfg),
+        Err(e) => {
+            handle_error(trigger, &e, tripped, cfg);
+            guards::drop_eval_error_iteratively(e);
+        }
         // A clean run clears the object's accumulated overrun strikes, so
         // `strikes_to_halt` counts *consecutive* overruns — a successful run
         // in between resets the tally, matching the documented behavior and
@@ -561,6 +584,17 @@ fn run_one(trigger: &Trigger, cfg: ScriptConfig) {
                 }
             });
         }
+    }
+}
+
+/// RAII guard that iteratively dismantles every `Dynamic` variable in a
+/// `Scope` on drop (normal return, error, or panic unwind) so deeply nested
+/// containers or shared closure graphs never overflow the stack (P2-CORE-3).
+struct SafeScope(Scope<'static>);
+
+impl Drop for SafeScope {
+    fn drop(&mut self) {
+        guards::drop_scope_iteratively(std::mem::take(&mut self.0));
     }
 }
 
@@ -606,6 +640,9 @@ fn is_budget_overrun(err: &EvalAltResult, tripped: bool) -> bool {
 /// Format an error message up to a bounded character budget so thrown large or
 /// nested values cannot flood the outbox or deeply recurse during `Display`.
 fn bounded_error_text(err: &EvalAltResult) -> String {
+    if guards::eval_error_has_deep_payload(err) {
+        return "Runtime error: container nesting depth exceeded".to_owned();
+    }
     const MAX_ERR_CHARS: usize = 512;
     struct Bounded {
         text: String,
@@ -701,8 +738,8 @@ fn clear_budget() {
 /// Whether the active invocation's op or wall-clock budget has tripped (latches
 /// newly detected overruns so later checks see the same cause).
 pub(crate) fn budget_tripped() -> Option<&'static str> {
-    if guards::limit_tripped() {
-        return Some("container limit exceeded");
+    if let Some(reason) = guards::limit_reason() {
+        return Some(reason);
     }
     BUDGET.with(|b| {
         let mut bud = b.get();
@@ -864,6 +901,8 @@ fn build_engine(cfg: &ScriptConfig) -> RhaiEngine {
     engine.set_max_array_size(cfg.max_array_size);
     engine.set_max_map_size(cfg.max_map_size);
     engine.set_max_expr_depths(cfg.max_expr_depth, cfg.max_expr_depth);
+    engine.set_max_variables(cfg.max_variables);
+    engine.set_max_functions(cfg.max_functions);
     engine.set_max_modules(0);
     // Route `+=` through our depth-guarded shadows instead of built-in fast
     // operators that bypass registered `Array +=` overrides.
@@ -902,8 +941,8 @@ fn build_engine(cfg: &ScriptConfig) -> RhaiEngine {
     // Monotonic op counter + wall-clock deadline + latched overrun (CRIT-8):
     // ignores Rhai's `_reported` counter, which resets inside package callbacks.
     engine.on_progress(|_reported| {
-        if guards::limit_tripped() {
-            return Some(Dynamic::from("container limit exceeded"));
+        if let Some(reason) = guards::limit_reason() {
+            return Some(Dynamic::from(reason));
         }
         BUDGET.with(|b| {
             let mut bud = b.get();
@@ -2102,7 +2141,9 @@ fn recompile_script_attrs(
                     Some(src) => {
                         compiled_n = compiled_n.saturating_add(1);
                         match engine.compile(src) {
-                            Ok(ast) => match guards::validate_source(src) {
+                            Ok(ast) => match guards::validate_source(src)
+                                .and_then(|()| guards::validate_ast(&ast))
+                            {
                                 Ok(()) => updates.push((
                                     key,
                                     Update::Compiled {
@@ -2234,7 +2275,9 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
             Some(src) => {
                 compiled_n = compiled_n.saturating_add(1);
                 match engine.compile(&src) {
-                    Ok(ast) => match guards::validate_source(&src) {
+                    Ok(ast) => match guards::validate_source(&src)
+                        .and_then(|()| guards::validate_ast(&ast))
+                    {
                         Ok(()) => {
                             compiled.insert(key, Arc::new(ast));
                         }

@@ -204,16 +204,17 @@ impl Sandbox {
         );
 
         // Container padding, nesting depth, formatting/equality, and fallible
-        // comparator sort/dedup shadows (CRIT-6, CRIT-7, HIGH-16).
+        // comparator sort/dedup shadows (CRIT-6, CRIT-7, HIGH-16, P2-CORE-2/3).
         //
         // Note: `fast_operators` stays at Rhai's default (`true`) so per-think
         // operation counts remain bit-for-bit identical under `RHAI_ABI` (as
         // pinned by `tacsim`'s C4 trial hashes and D-UM-28 corpus). The only
         // container fast-operator path in `rhai 1.26.0` is `Array += ...`,
         // which cannot build unbounded nesting because `guards::validate_source`
-        // caps static literals at `MAX_CONTAINER_DEPTH` and blocks `this`
-        // self-nesting `+=`, while `on_var` and `guards` reject any read/op
-        // past depth 8.
+        // + `guards::validate_ast` cap static literals at `MAX_CONTAINER_DEPTH`
+        // and reject `this`-referencing op-assignments and nested `this` writes,
+        // while `on_var` validates both local variables and `this_ptr` and
+        // `guards` shadows every container-returning/mutating package method.
         guards::register(&mut engine);
 
         // D-UM-25 as amended 2026-10-04.

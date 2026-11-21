@@ -5518,4 +5518,302 @@ mod tests {
         let _ = Snapshot::decode(&snap2.document, (*arena.definition).clone())
             .expect("hydrate after ungoverned profile switch");
     }
+
+    #[test]
+    fn p2_tsc_9_degrade_core_during_in_flight_pending_think_preserves_snapshot_decode() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::motor::MotorCounters;
+        use crate::arena::resolution::Consequence;
+        use crate::arena::snapshot::Snapshot;
+        use mush_tactics::UnitMutationPlan;
+
+        let mut arena = locked();
+        arena.unit_mut(RED).expect("red").seal.class = CoreClass::II;
+        assert_eq!(arena.mind_class(RED), CoreClass::II);
+        let old_period = arena.mind_profile(RED).think_ms;
+        assert_eq!(old_period, 500);
+        m6_install_program(
+            &mut arena,
+            vec![
+                m6_authored(Rule::fire_rule(slot("cannon", 100), Vec::new()), true),
+                m6_authored(Rule::hold_rule("cannon".into(), Vec::new()), true),
+            ],
+        );
+
+        let boundary = 2_000;
+        m6_pending(&mut arena, boundary, Some(vec![true, false]));
+        {
+            let mind = arena.minds.get_mut(&RED).expect("mind");
+            mind.memory = b"{\"m\":0}".to_vec();
+            mind.pending.as_mut().expect("pending").memory = b"{\"m\":1}".to_vec();
+        }
+        arena.now_ms = boundary - arena.substep_len_ms();
+
+        // Core degrades II -> I (500 ms -> 1000 ms) while PendingThink with RuleSample is in flight.
+        let ops = arena.core_ops(RED, &[Consequence::DegradeCore]);
+        assert!(!ops.is_empty(), "Class II core must degrade");
+        let plan = UnitMutationPlan::new(ops, None, None).expect("DegradeCore plan");
+        let (post, _) = mush_tactics::apply(&arena.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DegradeCore cell drop");
+        arena.set_unit(RED, post, false);
+        arena.truncate_slots(RED);
+        assert_eq!(arena.mind_class(RED), CoreClass::I);
+        assert_eq!(arena.mind_profile(RED).think_ms, 1_000);
+
+        // Snapshot taken between degradation and mind_land must decode cleanly.
+        let mid_snap = Snapshot::encode(&arena).expect("encode before mind_land");
+        let mut arena = Snapshot::decode(&mid_snap.document, (*arena.definition).clone())
+            .expect("decode before mind_land after DegradeCore");
+
+        // mind_land discards the stale 500 ms RuleSample without faulting the mind (D-UM-9).
+        arena.now_ms = boundary;
+        arena.mind_land(RED, 9, boundary, &mut MotorCounters::default());
+        let mind = arena.minds.get(&RED).expect("mind");
+        assert_eq!(mind.strikes, 0, "core degradation must not fault the mind");
+        assert!(!mind.dropped());
+        assert_eq!(
+            mind.memory, b"{\"m\":1}",
+            "valid in-flight memory still lands"
+        );
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none(),
+            "stale pre-degradation RuleSample must not be persisted"
+        );
+        assert!(
+            !arena.due.iter().any(|event| matches!(
+                event.kind,
+                crate::arena::state::DueKind::RuleLeaseExpired { unit, .. } if unit == RED
+            )),
+            "no dangling RuleLeaseExpired event after clearing stale sample"
+        );
+
+        // Snapshot taken after mind_land must decode cleanly with identical state hash.
+        let post_snap = Snapshot::encode(&arena).expect("encode after mind_land");
+        let mut restored = Snapshot::decode(&post_snap.document, (*arena.definition).clone())
+            .expect("decode after mind_land following DegradeCore");
+        assert_eq!(
+            crate::arena::hash::state_hash(&restored),
+            crate::arena::hash::state_hash(&arena)
+        );
+
+        // Subsequent think under degraded Class I (1000 ms) lands a valid RuleSample and round-trips.
+        let next_boundary = boundary + 1_000;
+        let runtime = restored.profiles.get(&RED).expect("runtime");
+        let generation = runtime.generation;
+        let program_digest = runtime.program.digest;
+        let sampled_ms = next_boundary - restored.substep_len_ms();
+        let fresh_sample = crate::arena::profile_rules::RuleSample {
+            program: program_digest,
+            generation,
+            sampled_ms,
+            lands_ms: next_boundary,
+            expires_ms: next_boundary + 1_000,
+            truth: vec![true, false],
+        };
+        restored.now_ms = next_boundary;
+        restored
+            .land_rule_sample(RED, Some(fresh_sample), next_boundary, 1_000)
+            .expect("degraded Class I sample lands");
+        let next_snap = Snapshot::encode(&restored).expect("encode after degraded sample");
+        let decoded = Snapshot::decode(&next_snap.document, (*restored.definition).clone())
+            .expect("decode after degraded Class I sample");
+        assert!(
+            decoded
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn p2_tsc_9_apply_part_effects_core_jam_and_unjam_preserve_snapshot_decode() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::motor::MotorCounters;
+        use crate::arena::snapshot::Snapshot;
+        use mush_tactics::{ComponentId, ConditionId, UnitMutationOp, UnitMutationPlan};
+
+        let mut arena = locked();
+        arena.unit_mut(RED).expect("red").seal.class = CoreClass::II;
+        assert_eq!(arena.mind_class(RED), CoreClass::II);
+        let core_component = arena.core_of(RED).expect("core").component.to_string();
+        let set_core_word = |arena: &mut Arena, word: &str| {
+            let plan = UnitMutationPlan::new(
+                vec![UnitMutationOp::SetComponentCondition {
+                    component: ComponentId::new(&core_component).expect("core"),
+                    condition: ConditionId::new(word).expect("condition"),
+                }],
+                None,
+                None,
+            )
+            .expect("core condition plan");
+            let (post, _) = mush_tactics::apply(&arena.unit(RED).expect("red").unit, &plan, 0)
+                .expect("set core condition");
+            arena.set_unit(RED, post, false);
+            arena.apply_part_effects(RED);
+        };
+        m6_install_program(
+            &mut arena,
+            vec![m6_authored(
+                Rule::fire_rule(slot("cannon", 100), Vec::new()),
+                true,
+            )],
+        );
+
+        // 1. Survivable core hit (`jammed`: II -> I) during in-flight PendingThink with RuleSample.
+        let boundary = 2_000;
+        m6_pending(&mut arena, boundary, Some(vec![true]));
+        {
+            let mind = arena.minds.get_mut(&RED).expect("mind");
+            mind.memory = b"{\"m\":0}".to_vec();
+            mind.pending.as_mut().expect("pending").memory = b"{\"m\":1}".to_vec();
+        }
+        arena.now_ms = boundary - arena.substep_len_ms();
+        set_core_word(&mut arena, "jammed");
+        assert_eq!(arena.mind_class(RED), CoreClass::I);
+        assert_eq!(arena.mind_profile(RED).think_ms, 1_000);
+
+        let snap_mid = Snapshot::encode(&arena).expect("encode after core jam mid-think");
+        let mut arena = Snapshot::decode(&snap_mid.document, (*arena.definition).clone())
+            .expect("decode after core jam mid-think");
+        arena.now_ms = boundary;
+        arena.mind_land(RED, 9, boundary, &mut MotorCounters::default());
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none()
+        );
+        let snap_post = Snapshot::encode(&arena).expect("encode after landing on jammed core");
+        let mut arena = Snapshot::decode(&snap_post.document, (*arena.definition).clone())
+            .expect("decode after landing on jammed core");
+
+        // 2. Active Class I lease (1000 ms), then core unjams back to Class II (500 ms):
+        // apply_part_effects must invalidate the mismatched lease so Snapshot::decode succeeds.
+        let lands_ms = 3_000;
+        let runtime = arena.profiles.get(&RED).expect("runtime");
+        let sample = crate::arena::profile_rules::RuleSample {
+            program: runtime.program.digest,
+            generation: runtime.generation,
+            sampled_ms: lands_ms - arena.substep_len_ms(),
+            lands_ms,
+            expires_ms: lands_ms + 1_000,
+            truth: vec![true],
+        };
+        arena.now_ms = lands_ms;
+        arena
+            .land_rule_sample(RED, Some(sample), lands_ms, 1_000)
+            .expect("Class I lease lands");
+        set_core_word(&mut arena, "intact");
+        assert_eq!(arena.mind_class(RED), CoreClass::II);
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none(),
+            "unjamming core must invalidate mismatched Class I lease"
+        );
+        let snap_unjam = Snapshot::encode(&arena).expect("encode after core unjam");
+        let _ = Snapshot::decode(&snap_unjam.document, (*arena.definition).clone())
+            .expect("decode after core unjam");
+    }
+
+    #[test]
+    fn p2_tsc_9_destroy_core_during_in_flight_pending_think_and_land_guard() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::motor::MotorCounters;
+        use crate::arena::resolution::Consequence;
+        use crate::arena::snapshot::Snapshot;
+        use mush_tactics::UnitMutationPlan;
+
+        let mut arena = locked();
+        arena.unit_mut(RED).expect("red").seal.class = CoreClass::II;
+        assert_eq!(arena.mind_class(RED), CoreClass::II);
+        m6_install_program(
+            &mut arena,
+            vec![m6_authored(
+                Rule::fire_rule(slot("cannon", 100), Vec::new()),
+                true,
+            )],
+        );
+
+        let boundary = 2_000;
+        m6_pending(&mut arena, boundary, Some(vec![true]));
+        {
+            let mind = arena.minds.get_mut(&RED).expect("mind");
+            mind.memory = b"{\"m\":0}".to_vec();
+            mind.pending.as_mut().expect("pending").memory = b"{\"m\":1}".to_vec();
+        }
+        arena.now_ms = boundary - arena.substep_len_ms();
+
+        // Direct guard: land_rule_sample refuses mismatched period against live core cadence.
+        let runtime = arena.profiles.get(&RED).expect("runtime");
+        let bogus_sample = crate::arena::profile_rules::RuleSample {
+            program: runtime.program.digest,
+            generation: runtime.generation,
+            sampled_ms: boundary - arena.substep_len_ms(),
+            lands_ms: boundary,
+            expires_ms: boundary + 1_000,
+            truth: vec![true],
+        };
+        assert!(
+            arena
+                .land_rule_sample(RED, Some(bogus_sample), boundary, 1_000)
+                .is_err()
+        );
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none()
+        );
+
+        // DestroyCore while PendingThink with RuleSample is in flight.
+        let ops = arena.core_ops(RED, &[Consequence::DestroyCore]);
+        assert!(!ops.is_empty(), "Class II core must revoke on DestroyCore");
+        let plan = UnitMutationPlan::new(ops, None, None).expect("DestroyCore plan");
+        let (post, _) = mush_tactics::apply(&arena.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DestroyCore");
+        arena.set_unit(RED, post, false);
+        arena.truncate_slots(RED);
+        assert_eq!(arena.mind_class(RED), CoreClass::Zero);
+
+        let mid_snap = Snapshot::encode(&arena).expect("encode after DestroyCore mid-think");
+        let mut arena = Snapshot::decode(&mid_snap.document, (*arena.definition).clone())
+            .expect("decode after DestroyCore mid-think");
+
+        arena.now_ms = boundary;
+        arena.mind_land(RED, 9, boundary, &mut MotorCounters::default());
+        assert!(arena.minds.get(&RED).expect("mind").dropped());
+        assert!(arena.profiles.get(&RED).expect("runtime").dropped);
+        assert!(
+            arena
+                .profiles
+                .get(&RED)
+                .expect("runtime")
+                .lease
+                .sample()
+                .is_none()
+        );
+        let post_snap = Snapshot::encode(&arena).expect("encode after DestroyCore landing");
+        let _ = Snapshot::decode(&post_snap.document, (*arena.definition).clone())
+            .expect("decode after DestroyCore landing");
+    }
 }
