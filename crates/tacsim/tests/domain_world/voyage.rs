@@ -13904,8 +13904,9 @@ fn cr_burning_past_the_picket_is_a_run_ruled_with_the_pilot_as_its_officer() {
     for _ in 0..900 {
         let (_, submitted) = one_second(&mut rig, pilot);
         for submit in &submitted {
-            if is_customs(submit) {
-                assert_eq!(submit.actor, pilot, "the ruling is the pilot's");
+            // Doc 50 cut OP.8: Ceres' house hull waits at home for the Freeport arm's haul, and
+            // may meet the picket on the same run; her house mind's ruling is her own.
+            if is_customs(submit) && submit.actor == pilot {
                 land(&mut rig, submit).expect("the run's ruling lands");
                 landed = true;
             } else {

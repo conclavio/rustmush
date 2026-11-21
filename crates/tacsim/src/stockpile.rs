@@ -17,9 +17,9 @@
 //! - **The Freeport arm** (Q-50-22, procurement's pattern): an agent object of Occator's, a `DARK`
 //!   Thing standing at Ceres' exchange with [`crate::services::JOBS_POST_CAPABILITY`] on Occator's
 //!   root compartment, posts through the players' own verbs, once an IC day while the farm is
-//!   under its threshold: a haul of [`ARM_HAUL_T`] t from Occator's vault at Ceres into the tank
-//!   farm's at Isidis (`+haul/post ... as=occator into=isidis_tank_farm`), and an escort for it
-//!   (`+escort/post haul=<job> ... as=occator`). Its money is Occator's treasury: a month's posts
+//!   under its threshold plus [`ARM_RESERVE_T`]: a haul of [`ARM_HAUL_T`] t from Occator's
+//!   vault at Ceres into the tank farm's at Isidis
+//!   (`+haul/post ... as=occator into=isidis_tank_farm`), and an escort for it (`+escort/post haul=<job> ... as=occator`). Its money is Occator's treasury: a month's posts
 //!   are capped at [`ARM_MONTHLY_CAP_CR`], counted from its own rows ([`ArmPost`]), and posting
 //!   stops when the cap or the treasury runs out. No money is minted. The farm's standing bid,
 //!   refreshed by the lane (v49), is the third arm Q-50-22 names.
@@ -50,9 +50,11 @@ pub const TANK_FARM_ORG: &str = "isidis_tank_farm";
 pub const TANK_FARM_ENTRY: &str = "isidis_port";
 /// The stockpile's one good (Q-50-58: propellant only in the first operation).
 pub const STOCKPILE_GOOD: &str = "propellant";
-/// The level the farm must stand at, whole tonnes (provisional): a thousand tonnes over the 3,000
-/// it is stocked with, so a fresh world starts short.
-pub const STOCKPILE_THRESHOLD_T: u64 = 4_000;
+/// The level the farm must stand at, whole tonnes (provisional; doc 50 cut OP.8 retune: 2,960,
+/// was 4,000). A fresh world is stocked 40 t over it (3,000 t) and draws it down a tonne an IC
+/// day; Ceres' house lands 30 t about every 35 days, so the house holds the farm at its threshold
+/// for some four months and the drain wins by the close, unless players carry more.
+pub const STOCKPILE_THRESHOLD_T: u64 = 2_960;
 /// The close probe's name (doc 50 cut OP.0's `CLOSE_PROBES`): met when the farm is at its
 /// threshold, the defenders' success.
 pub const TANK_FARM_PROBE: &str = "isidis.tank_farm";
@@ -64,8 +66,13 @@ pub const ARM_ORG: &str = "occator";
 pub const ARM_ENTRY: &str = "ceres_port";
 /// The room its agent stands in.
 pub const ARM_ROOM: &str = "exchange";
-/// One haul's size, whole tonnes (provisional).
-pub const ARM_HAUL_T: u64 = 20;
+/// One haul's size, whole tonnes (provisional; doc 50 cut OP.8 retune: 30, was 20, the most a
+/// house Dray carries in her tankage and still makes the direct run).
+pub const ARM_HAUL_T: u64 = 30;
+/// **The arm's reserve over the threshold**, whole tonnes (provisional; doc 50 cut OP.8 retune):
+/// it posts while the farm stands short of its threshold plus two hauls, so a player's delivery
+/// adds to the house's rather than standing in for it.
+pub const ARM_RESERVE_T: u64 = 2 * ARM_HAUL_T;
 /// One haul's fee, whole credits (provisional).
 pub const ARM_HAUL_FEE_CR: i64 = 600;
 /// One escort's fee, whole credits (provisional).
@@ -522,7 +529,7 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
     }
     if doc
         .level
-        .is_some_and(|level| level >= STOCKPILE_THRESHOLD_T)
+        .is_some_and(|level| level >= STOCKPILE_THRESHOLD_T.saturating_add(ARM_RESERVE_T))
     {
         return;
     }
