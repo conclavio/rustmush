@@ -1273,7 +1273,9 @@ pub struct VendorDef {
     pub org: CanonicalId,
     /// `<area>.<entry>` of an `item` in the port's `spine` room: the container
     /// its storefront vault is backed by. **Doc 39 cut IN.5**: or the port's works room
-    /// itself, when it is the spine, so the vendor's stock is the works' stores.
+    /// itself, when it is the spine, so the vendor's stock is the works' stores. **Doc 50 cut
+    /// OP.7b**: or `clerk` (`crate::port::vendor::CLERK_STOREFRONT`): the port's stock clerk keeps
+    /// the store, for a vendor the area authors no item for (at most one vendor a port).
     pub storefront: String,
     /// **The port's stock clerk** (doc 18 cut IC8, lead ruling L2; D-18-26 "a
     /// per-port clerk actor"): every vendor of one port names the same agent
@@ -1305,6 +1307,11 @@ pub struct VendorDef {
     /// Skipped when empty, so a vendor that consumes nothing re-encodes byte-identically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consume: Vec<ConsumeDef>,
+    /// **Doc 50 cut OP.7**: the row's own note, for its reader (a provisional figure named as
+    /// such, and why). Read by nothing; skipped when absent, so a row without one re-encodes
+    /// byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// **One consumption row** (doc 48 unit EX.9; Q-48-19, Q-48-36, Q-48-40): the house uses up
@@ -1847,6 +1854,17 @@ impl PortDef {
                 crate::port::stock::MAX_CLERK_ROWS
             ));
         }
+        // Doc 50 cut OP.7b: one object backs one vault, so the clerk keeps one vendor's store.
+        let kept = self
+            .vendors
+            .iter()
+            .filter(|v| crate::port::vendor::clerk_storefront(v))
+            .count();
+        if kept > 1 {
+            return Err(format!(
+                "vendors: the port's clerk keeps at most one vendor's store, not {kept}"
+            ));
+        }
         for vendor in &self.vendors {
             if !ids.contains(&vendor.org) {
                 return Err(format!(
@@ -1854,8 +1872,11 @@ impl PortDef {
                     vendor.org
                 ));
             }
-            room_key(&self.area, &vendor.storefront)
-                .map_err(|detail| format!("vendor {}: storefront: {detail}", vendor.org))?;
+            // Doc 50 cut OP.7b: a store the clerk keeps names no authored item.
+            if !crate::port::vendor::clerk_storefront(vendor) {
+                room_key(&self.area, &vendor.storefront)
+                    .map_err(|detail| format!("vendor {}: storefront: {detail}", vendor.org))?;
+            }
             if vendor.signatory.trim().is_empty() {
                 return Err(format!(
                     "vendor {}: signatory must be non-blank",
@@ -3708,6 +3729,7 @@ mod tests {
             bids: Vec::new(),
             mill: Vec::new(),
             consume: Vec::new(),
+            note: None,
         };
         let mut def = port();
         def.vendors.push(vendor.clone());
@@ -3741,6 +3763,7 @@ mod tests {
             bids: Vec::new(),
             mill: Vec::new(),
             consume: Vec::new(),
+            note: None,
         };
         let mut def = port();
         def.vendors.push(vendor(
@@ -3979,6 +4002,7 @@ mod tests {
             bids,
             mill: Vec::new(),
             consume: Vec::new(),
+            note: None,
         }
     }
 

@@ -78,6 +78,10 @@ pub struct IsidisOp {
     /// their result), at most `crate::op_page::MAX_PAST`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub past: Vec<PastOp>,
+    /// **The Republic's bid** at Stickney while the operation runs (doc 50 cut OP.7, Q-50-27),
+    /// `ListingId.0`: posted at the declaration, withdrawn at the resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid: Option<u64>,
 }
 
 /// **One finished operation** (doc 50 cut OP.7).
@@ -183,7 +187,10 @@ fn step(ctx: &mut Ctx<'_>, doc: &mut IsidisOp) {
                     outcome: None,
                     refused: None,
                     past: std::mem::take(&mut doc.past),
+                    bid: None,
                 };
+                // Doc 50 cut OP.7 (Q-50-27): the Republic's bid at Stickney, for the window.
+                doc.bid = crate::op_page::post_republic_bid(ctx);
                 // Doc 50 cut OP.7 (Q-50-30): the lane hears of it at once.
                 if let Some(status) = frame.status(ctx.w, operation) {
                     crate::op_page::tell_declared(ctx, &status);
@@ -220,6 +227,10 @@ fn step(ctx: &mut Ctx<'_>, doc: &mut IsidisOp) {
         OperationOutcome::Partial | OperationOutcome::Abandoned => "none",
     };
     doc.outcome = Some(word.to_owned());
+    // Doc 50 cut OP.7 (Q-50-27): the Republic's bid ends with the operation.
+    if let Some(listing) = doc.bid.take() {
+        crate::op_page::withdraw_republic_bid(ctx, listing);
+    }
     // Doc 50 cut OP.7 (Q-50-30): the lane hears who won at once.
     crate::op_page::tell_resolved(ctx, word);
 }
