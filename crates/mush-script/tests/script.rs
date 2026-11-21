@@ -2326,3 +2326,282 @@ fn ext_p2_8_bounded_trigger_collection_caps_hear_move_and_command_fanout() {
         "combined leave+enter fanout must stop at cap"
     );
 }
+
+// ----------------------------------------------------------------------
+// Pass 2 Tier 0 security regressions: P2-CORE-1 & P2-CORE-3
+// ----------------------------------------------------------------------
+
+#[test]
+fn p2_core_1_template_map_lexer_desync_and_ast_validation() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+    let obj = f.thing("lexbox", nick, LIMBO);
+
+    let deep50 = format!(
+        "let s = `${{ #{{}}; \"`\" }}`; fn f(n) {{ if n == 0 {{ 1 }} else {{ {}f(n - 1){} }} }} f(30);",
+        "[".repeat(50),
+        "]".repeat(50)
+    );
+    let must_reject = [
+        // Exact P2-CORE-1 map-literal-in-interpolation lexer desync payloads
+        r#"let s = `${ #{}; "`" }`; let x = [[[[[[[[[1]]]]]]]]];"#,
+        r#"let s = `${ #{}; "`" }`; let m = #{a:#{a:#{a:#{a:#{a:#{a:#{a:#{a:#{a:1}}}}}}}}};"#,
+        deep50.as_str(),
+        // Verbatim backtick + trailing backslash desync
+        r#"let s = `\` + "`"; let x = [[[[[[[[[1]]]]]]]]];"#,
+        // Doubled quotes/backticks, raw strings, and nested comments before deep literal
+        r#"let s = """"; let x = [[[[[[[[[1]]]]]]]]];"#,
+        r#"let s = ```"```; let x = [[[[[[[[[1]]]]]]]]];"#,
+        r###"let s = ##" "# "##; let x = [[[[[[[[[1]]]]]]]]];"###,
+        r#"let s = `${ /* outer /* "`" */ */ #{ a: 1 } }`; let x = [[[[[[[[[1]]]]]]]]];"#,
+        r#"let s = `outer ${ `inner ${ #{ k: 1 }; "`" }` }`; let x = [[[[[[[[[1]]]]]]]]];"#,
+        // Deep static literal hidden inside an anonymous closure body
+        r#"let f = || [[[[[[[[[1]]]]]]]]];"#,
+    ];
+    for (idx, src) in must_reject.into_iter().enumerate() {
+        let out = f.run_classified(GOD, &format!("@set {obj}/script:command:p2c1_{idx}={src}"));
+        assert!(
+            classified_actor_saw(&out, DeliveryClass::OnCommit, nick, "failed to compile"),
+            "P2-CORE-1 expected compile refusal for `{src}`: {out:?}"
+        );
+    }
+
+    // Benign complex template/raw-string/map/comment syntax compiles and runs cleanly.
+    f.seed_script(
+        obj,
+        "script:command:lexok",
+        r###"let t = `${ #{ k: 1 }; "ok" }`;
+             let nested = `a-${ `b-${ #{ x: [2] }.x[0] }` }`;
+             let raw = ##"hello "# world"##;
+             let dbl = "a""b";
+             let vb = `\${lit} ``bt`` \`;
+             if t.len() > 0 && nested == "a-b-2" && raw.len() > 0 && dbl.len() == 3 && vb.len() > 0 {
+                 mush::pemit(mush::caller(), "LEX-OK");
+             }"###,
+    );
+    let out = f.run(nick, "lexok");
+    assert!(actor_saw(&out, nick, "LEX-OK"), "{:?}", all_text(&out));
+}
+
+#[test]
+fn p2_core_3_key_size_mutators_map_zip_latched_limit_and_var_fn_caps() {
+    std::thread::Builder::new()
+        .name("script-p2-core-3".to_owned())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            // 1. Map key-size accounting (`map.set` and `m[k] = v`): fails fast
+            //    without allocating 256 MiB, accrues strikes, and HALTs after 3 runs.
+            let mut f = Fixture::new();
+            let nick = f.builder("Nick");
+            let key_cases = [
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   let m = #{};
+                   for i in 0..20 { m.set(`${s}${i}`, 1); }"#,
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   let m = #{};
+                   for i in 0..20 { m[`${s}${i}`] = 1; }"#,
+            ];
+            for (idx, src) in key_cases.into_iter().enumerate() {
+                let obj = f.thing(&format!("keybloat{idx}"), nick, LIMBO);
+                let word = format!("kb{idx}");
+                f.seed_script(obj, &format!("script:command:{word}"), src);
+                for _ in 0..3 {
+                    let out = f.run(nick, &word);
+                    assert!(
+                        actor_saw(&out, nick, "failed"),
+                        "expected key-size failure for `{src}`: {:?}",
+                        all_text(&out)
+                    );
+                }
+                assert!(
+                    f.flag(obj, Flags::HALTED),
+                    "key-size overruns must accrue strikes and HALT: `{src}`"
+                );
+            }
+
+            // 2. Pre-mutation in-place mutators (`push`, `insert`, `set`,
+            //    `map.set`) + latched uncatchable `ErrorDataTooLarge` inside
+            //    `try`/`catch` and callback `ErrorInFunctionCall`.
+            let latch_cases = [
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   try { [1].for_each(|x| { let a = []; a.push(s); a.push(s); a.push(s); }); } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   try { [1].for_each(|x| { let a = []; a.insert(0, s); a.insert(0, s); a.insert(0, s); }); } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   try { [1].for_each(|x| { let a = [s, s, 0]; a.set(2, s); }); } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   try { [1].for_each(|x| { let m = #{}; m.set("a", s); m.set("b", s); m.set("c", s); }); } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+                r#"let s = "a"; for i in 0..15 { s += s; }
+                   try { [1].for_each(|x| { let big = s + s + s; }); } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+            ];
+            for (idx, src) in latch_cases.into_iter().enumerate() {
+                let obj = f.thing(&format!("latch{idx}"), nick, LIMBO);
+                let word = format!("lt{idx}");
+                f.seed_script(obj, &format!("script:command:{word}"), src);
+                for _ in 0..3 {
+                    let out = f.run(nick, &word);
+                    assert!(!saw(&out, "ESCAPED"), "escaped on `{src}`");
+                    assert!(
+                        actor_saw(&out, nick, "failed"),
+                        "expected uncatchable size limit failure for `{src}`: {:?}",
+                        all_text(&out)
+                    );
+                }
+                assert!(
+                    f.flag(obj, Flags::HALTED),
+                    "caught size limit must still accrue strikes and HALT: `{src}`"
+                );
+            }
+
+            // 3. `Array::map`, `Array::zip`, and `Map::map` intermediate
+            //    allocation spikes abort on iteration 5 (NOT after allocating
+            //    2,000 * 16 KiB = 32 MiB!), even inside `try`/`catch`.
+            let spike_cases = [
+                r#"let s = "a"; for i in 0..14 { s += s; }
+                   let v = []; v.pad(2000, 0);
+                   let steps = 0;
+                   try {
+                       let r = v.map(|x| { steps += 1; if steps > 6 { mush::pemit(mush::caller(), "TOO-MANY-STEPS"); } s });
+                   } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+                r#"let s = "a"; for i in 0..14 { s += s; }
+                   let v = []; v.pad(2000, 0);
+                   let steps = 0;
+                   try {
+                       let r = v.zip(v, |a, b| { steps += 1; if steps > 6 { mush::pemit(mush::caller(), "TOO-MANY-STEPS"); } s });
+                   } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+                r#"let s = "a"; for i in 0..14 { s += s; }
+                   let m = #{}; for i in 0..200 { m[`k${i}`] = i; }
+                   let steps = 0;
+                   try {
+                       let r = m.map(|k, v| { steps += 1; if steps > 6 { mush::pemit(mush::caller(), "TOO-MANY-STEPS"); } s });
+                   } catch {}
+                   mush::pemit(mush::caller(), "ESCAPED");"#,
+            ];
+            for (idx, src) in spike_cases.into_iter().enumerate() {
+                let obj = f.thing(&format!("spike{idx}"), nick, LIMBO);
+                let word = format!("sp{idx}");
+                f.seed_script(obj, &format!("script:command:{word}"), src);
+                let out = f.run(nick, &word);
+                assert!(!saw(&out, "ESCAPED"), "escaped on `{src}`");
+                assert!(
+                    !saw(&out, "TOO-MANY-STEPS"),
+                    "did not abort per-iteration on `{src}`: {:?}",
+                    all_text(&out)
+                );
+                assert!(
+                    actor_saw(&out, nick, "failed"),
+                    "expected intermediate allocation cap failure for `{src}`: {:?}",
+                    all_text(&out)
+                );
+            }
+
+            // 4. Nested closure captures and cyclic closure self-reference fail
+            //    cleanly on a 2 MiB stack without stack overflow or deadlock.
+            for (idx, src) in [
+                "let f = || 1; for i in 0..20 { let g = f; f = || g; }",
+                "let a = [1]; let f = || a; a.push(f);",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let obj = f.thing(&format!("closure{idx}"), nick, LIMBO);
+                let word = format!("cl{idx}");
+                f.seed_script(obj, &format!("script:command:{word}"), src);
+                let out = f.run(nick, &word);
+                assert!(
+                    actor_saw(&out, nick, "failed"),
+                    "expected closure depth/cycle failure for `{src}`: {:?}",
+                    all_text(&out)
+                );
+            }
+
+            // 5. `max_variables` and `max_functions` caps are enforced cleanly.
+            let small_cfg = ScriptConfig {
+                max_variables: 16,
+                max_functions: 6,
+                ..ScriptConfig::default()
+            };
+            let mut f_caps = Fixture::with_config(small_cfg);
+            let nick_caps = f_caps.builder("NickCaps");
+
+            let too_many_vars = (0..25)
+                .map(|i| format!("let v{i} = {i};"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let var_obj = f_caps.thing("varcap", nick_caps, LIMBO);
+            f_caps.seed_script(var_obj, "script:command:varcap", &too_many_vars);
+            for _ in 0..3 {
+                let out = f_caps.run(nick_caps, "varcap");
+                assert!(
+                    actor_saw(&out, nick_caps, "failed"),
+                    "exceeding max_variables must fail: {:?}",
+                    all_text(&out)
+                );
+            }
+            assert!(
+                f_caps.flag(var_obj, Flags::HALTED),
+                "max_variables overruns must accrue strikes and HALT"
+            );
+
+            let too_many_fns = (0..10)
+                .map(|i| format!("fn f{i}() {{ {i} }}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let fn_obj = f_caps.thing("fncap", nick_caps, LIMBO);
+            let out = f_caps.run_classified(
+                GOD,
+                &format!("@set {fn_obj}/script:command:fncap={too_many_fns}"),
+            );
+            assert!(
+                classified_actor_saw(&out, DeliveryClass::OnCommit, nick_caps, "failed to compile"),
+                "exceeding max_functions must fail to compile: {out:?}"
+            );
+
+            // 6. Legitimate shadowed container methods preserve full functionality.
+            let ok_obj = f.thing("methodsok", nick, LIMBO);
+            f.seed_script(
+                ok_obj,
+                "script:command:mok",
+                r#"let v = [3, 1, 2];
+                   let oa = v.order();
+                   let od = v.order_desc();
+                   let ex = v.extract(1, 2);
+                   let sp = [1, 2, 3, 4];
+                   let tail = sp.split(2);
+                   let mp = #{a: 1, b: 2};
+                   let mp2 = mp.map(|k, val| val * 10).filter(|k, val| k == "b");
+                   let dr = [1, 2, 3, 4];
+                   let removed = dr.drain(|x| x % 2 == 0);
+                   let rt = [1, 2, 3, 4];
+                   let dropped = rt.retain(|x| x > 2);
+                   let z = [1, 2].zip([10, 20], |a, b| a + b);
+                   mush::pemit(
+                       mush::caller(),
+                       oa.to_string() + "|" + od.to_string() + "|" + ex.to_string() + "|"
+                       + sp.to_string() + "|" + tail.to_string() + "|" + mp2.b.to_string() + "|"
+                       + dr.to_string() + "|" + removed.to_string() + "|"
+                       + rt.to_string() + "|" + dropped.to_string() + "|" + z.to_string()
+                   );"#,
+            );
+            let out = f.run(nick, "mok");
+            assert!(
+                actor_saw(
+                    &out,
+                    nick,
+                    "[1, 2, 3]|[3, 2, 1]|[1, 2]|[1, 2]|[3, 4]|20|[1, 3]|[2, 4]|[3, 4]|[1, 2]|[11, 22]"
+                ),
+                "{:?}",
+                all_text(&out)
+            );
+        })
+        .expect("spawn")
+        .join()
+        .expect("script p2_core_3 thread must not overflow stack or panic");
+}

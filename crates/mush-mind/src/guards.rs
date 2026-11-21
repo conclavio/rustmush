@@ -1,20 +1,33 @@
-//! **Container, padding, and comparator guards** (CRIT-6, CRIT-7, HIGH-16).
+//! **Container, padding, and comparator guards** (CRIT-6, CRIT-7, HIGH-16,
+//! P2-CORE-1, P2-CORE-2, P2-CORE-3).
 //!
 //! Shadows `rhai 1.26.0` package methods whose unchecked arithmetic, unbounded
-//! native recursion, or swallowed callback errors could otherwise abort the
-//! process or bypass the op budget:
+//! native recursion, intermediate heap spikes, missing map-key byte accounting,
+//! or swallowed callback errors could otherwise abort the process or bypass
+//! the op/memory budgets:
 //!
 //! * **`Array::pad`** (CRIT-6): rejects `len > max_array_size` up front, treats
 //!   `len <= 0` as a no-op, enforces container depth, and uses checked
 //!   arithmetic before resizing.
-//! * **Container nesting depth** (CRIT-7): enforces [`MAX_CONTAINER_DEPTH`]
-//!   across container mutators/builders (`push`, `insert`, `set`, `append`,
-//!   `+=`, `+`, `splice`, `mixin`, `fill_with`), equality (`==`, `!=`),
-//!   formatting (`print`, `debug`, `to_string`, `to_debug`, `to_json`), and
-//!   variable reads (`on_var`). `to_string`/`to_debug` latch the thread-local
-//!   limit flag rather than returning `Err` into Rhai's `print_with_func`
-//!   (which swallows `Err` and falls back to unbounded recursive `Display`/
-//!   `Debug`).
+//! * **Container nesting depth & pre-mutation size caps** (CRIT-7, P2-CORE-2,
+//!   P2-CORE-3): enforces [`MAX_CONTAINER_DEPTH`] and key-aware cumulative
+//!   `(array, map, string)` size limits across all `BasicArrayPackage` and
+//!   `BasicMapPackage` mutators, builders, container-returning methods
+//!   (`push`, `insert`, `set`, `append`, `+=`, `+`, `splice`, `extract`,
+//!   `split`, `drain`, `retain`, `filter`, `map`, `zip`, `for_each`, `reduce`,
+//!   `reduce_rev`, `find`, `find_map`, `some`, `all`, `index_of`, `order`,
+//!   `order_desc`, `mixin`, `fill_with`, `keys`, `values`), equality (`==`,
+//!   `!=`), formatting (`print`, `debug`, `to_string`, `to_debug`, `to_json`),
+//!   and variable reads (`on_var`, checking both local variables and `this`).
+//! * **Uncatchable limit & system-exception latching** (P2-CORE-3): latches
+//!   `ErrorDataTooLarge` and unwraps system exceptions out of callback
+//!   `ErrorInFunctionCall` wrappers so `try`/`catch` cannot swallow limit or
+//!   budget violations.
+//! * **Compile-time source & AST validation** (P2-CORE-1, P2-CORE-2): validates
+//!   both tokenized source (matching Rhai's lexer, rejecting unclosed strings,
+//!   templates, interpolations, comments, and delimiters) and the compiled
+//!   `rhai::AST` directly (`validate_ast`), eliminating lexer/parser desync
+//!   and closing `switch`-arm, nested `this`, and `Array +=` bypasses.
 //! * **Comparator `sort`/`order`/`dedup`** (HIGH-16): replaces `slice::sort_by`
 //!   and `Vec::dedup_by` (which swallow callback `ErrorTerminated` via `.ok()`
 //!   / `.unwrap_or`) with fallible iterative implementations that abort
@@ -26,8 +39,8 @@ use std::fmt::Write as _;
 use std::ops::{Range, RangeInclusive};
 
 use rhai::{
-    Array, Dynamic, Engine, EvalAltResult, FnPtr, FuncRegistration, INT, ImmutableString, Map,
-    NativeCallContext, Position,
+    AST, ASTFlags, ASTNode, Array, Dynamic, Engine, EvalAltResult, Expr, FnPtr, FuncRegistration,
+    INT, ImmutableString, Map, NativeCallContext, Position, Scope, Stmt, Token as RhaiToken,
 };
 
 type ExclusiveRange = Range<INT>;
@@ -45,9 +58,9 @@ pub const MAX_CONTAINER_DEPTH: usize = 8;
 const FALLBACK_MAX_FORMAT_BYTES: usize = 64 * 1024;
 
 thread_local! {
-    /// Latched when a depth- or size-bounded formatting shadow hits a limit
-    /// inside a Rhai path (`print_with_func` / string interpolation) that would
-    /// swallow `Err(_)` and fall back to unbounded recursive `Display`/`Debug`.
+    /// Latched when any depth- or size-limit guard trips (including inside
+    /// `print_with_func` / string interpolation or callback paths that might
+    /// otherwise wrap or swallow `ErrorDataTooLarge`).
     static LIMIT_TRIPPED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -74,6 +87,7 @@ fn latch_limit() {
 }
 
 fn depth_exceeded_err() -> Box<EvalAltResult> {
+    latch_limit();
     Box::new(EvalAltResult::ErrorDataTooLarge(
         "Container nesting depth".to_owned(),
         Position::NONE,
@@ -81,6 +95,7 @@ fn depth_exceeded_err() -> Box<EvalAltResult> {
 }
 
 fn size_exceeded_err(what: &str) -> Box<EvalAltResult> {
+    latch_limit();
     Box::new(EvalAltResult::ErrorDataTooLarge(
         what.to_owned(),
         Position::NONE,
@@ -94,6 +109,17 @@ fn ops_terminated_err() -> Box<EvalAltResult> {
     ))
 }
 
+/// Abort immediately if either the limit latch or the op budget has tripped.
+fn check_budget() -> Result<(), Box<EvalAltResult>> {
+    if limit_tripped() {
+        return Err(size_exceeded_err("Data size limit exceeded"));
+    }
+    if budget::tripped() {
+        return Err(ops_terminated_err());
+    }
+    Ok(())
+}
+
 /// Register all container, padding, equality, formatting, variable-read, and
 /// comparator shadows in the engine's global namespace (searched ahead of all
 /// standard packages).
@@ -101,7 +127,8 @@ pub(crate) fn register(engine: &mut Engine) {
     // CRIT-6 + CRIT-7: safe `Array::pad` with checked arithmetic & depth cap.
     register_mut(engine, "pad", array_pad);
 
-    // CRIT-7: container builders and mutators with depth (and checked size) caps.
+    // CRIT-7 + P2-CORE-2 + P2-CORE-3: container builders and mutators with
+    // pre-mutation depth and key-aware size caps.
     register_mut(engine, "push", array_push);
     register_mut(engine, "insert", array_insert);
     register_mut(engine, "set", array_set);
@@ -113,11 +140,54 @@ pub(crate) fn register(engine: &mut Engine) {
     register_mut(engine, "splice", array_splice_range);
     register_mut(engine, "splice", array_splice_inclusive_range);
 
+    // P2-CORE-2 + P2-CORE-3: container-returning and callback `BasicArrayPackage`
+    // methods shadowed with depth/size checks and uncatchable system-exception
+    // propagation.
+    register_pure(engine, "extract", array_extract);
+    register_pure(engine, "extract", array_extract_tail);
+    register_pure(engine, "extract", array_extract_range);
+    register_pure(engine, "extract", array_extract_inclusive_range);
+    register_mut(engine, "split", array_split_at);
+    register_mut(engine, "for_each", array_for_each);
+    register_pure(engine, "map", array_map);
+    register_pure(engine, "filter", array_filter);
+    register_pure(engine, "zip", array_zip);
+    register_pure(engine, "reduce", array_reduce);
+    register_pure(engine, "reduce", array_reduce_with_initial);
+    register_pure(engine, "reduce_rev", array_reduce_rev);
+    register_pure(engine, "reduce_rev", array_reduce_rev_with_initial);
+    register_mut(engine, "drain", array_drain_filter);
+    register_mut(engine, "drain", array_drain_range);
+    register_mut(engine, "drain", array_drain_exclusive_range);
+    register_mut(engine, "drain", array_drain_inclusive_range);
+    register_mut(engine, "retain", array_retain_filter);
+    register_mut(engine, "retain", array_retain_range);
+    register_mut(engine, "retain", array_retain_exclusive_range);
+    register_mut(engine, "retain", array_retain_inclusive_range);
+    register_pure(engine, "find", array_find);
+    register_pure(engine, "find", array_find_starting_from);
+    register_pure(engine, "find_map", array_find_map);
+    register_pure(engine, "find_map", array_find_map_starting_from);
+    register_pure(engine, "some", array_some);
+    register_pure(engine, "all", array_all);
+    register_pure(engine, "index_of", array_index_of_filter);
+    register_pure(engine, "index_of", array_index_of_filter_starting_from);
+    register_pure(engine, "order", array_order_builtin);
+    register_pure(engine, "order_desc", array_order_builtin_desc);
+
+    // CRIT-7 + P2-CORE-2 + P2-CORE-3: `BasicMapPackage` mutators, builders,
+    // container-returning methods, and callbacks.
     register_mut(engine, "set", map_set);
     register_mut(engine, "mixin", map_mixin);
     register_mut(engine, "+=", map_mixin);
     register_pure(engine, "+", map_merge);
     register_mut(engine, "fill_with", map_fill_with);
+    register_pure(engine, "keys", map_keys);
+    register_pure(engine, "values", map_values);
+    register_pure(engine, "map", map_map);
+    register_pure(engine, "filter", map_filter);
+    register_mut(engine, "drain", map_drain);
+    register_mut(engine, "retain", map_retain);
 
     // CRIT-7: depth-bounded equality without recursive `exec_native_fn_call`.
     register_pure(engine, "==", array_eq);
@@ -139,14 +209,21 @@ pub(crate) fn register(engine: &mut Engine) {
 
     register_pure(engine, "to_json", map_to_json);
 
-    // CRIT-7: guard literal/index-assignment nesting (`a = [a]`, `m = #{k: m}`,
-    // `b[0] = a`, `n.k = m`, `a += [a]`) on every variable access.
+    // CRIT-7 + P2-CORE-2 + P2-CORE-3: guard literal/index-assignment nesting
+    // and map-key byte limits on every variable access (for both the variable
+    // itself and `this`).
     #[allow(deprecated)]
     engine.on_var(|name, _index, ctx| {
+        check_budget()?;
         if let Some(val) = ctx.scope().get(name)
             && (val.is_array() || val.is_map())
         {
-            check_depth(val, MAX_CONTAINER_DEPTH)?;
+            check_value_limits(ctx.engine(), val)?;
+        }
+        if let Some(this_val) = ctx.this_ptr()
+            && (this_val.is_array() || this_val.is_map())
+        {
+            check_value_limits(ctx.engine(), this_val)?;
         }
         Ok(None)
     });
@@ -195,6 +272,49 @@ fn register_mut<A: 'static, const N: usize, const X: bool, R, const F: bool, FUN
 // Depth and checked-size accounting (bounded strictly by MAX_CONTAINER_DEPTH)
 // ---------------------------------------------------------------------------
 
+/// Side-effect-free depth predicate (does not latch `LIMIT_TRIPPED`).
+///
+/// Used for compile-time AST validation and safe error formatting so pure
+/// inspection never mutates thread-local execution state.
+pub(crate) fn exceeds_depth(value: &Dynamic, max_depth: usize) -> bool {
+    if let Some(arr) = value.read_lock::<Array>() {
+        if max_depth == 0 {
+            return true;
+        }
+        return arr.iter().any(|item| exceeds_depth(item, max_depth - 1));
+    }
+    if let Some(map) = value.read_lock::<Map>() {
+        if max_depth == 0 {
+            return true;
+        }
+        return map.values().any(|val| exceeds_depth(val, max_depth - 1));
+    }
+    false
+}
+
+/// Whether `error` carries any `Dynamic` payload nested deeper than
+/// [`MAX_CONTAINER_DEPTH`].
+#[must_use]
+pub(crate) fn eval_error_has_deep_payload(mut error: &EvalAltResult) -> bool {
+    loop {
+        match error {
+            EvalAltResult::ErrorInFunctionCall(_, _, inner, _)
+            | EvalAltResult::ErrorInModule(_, inner, _) => {
+                error = inner;
+            }
+            EvalAltResult::ErrorRuntime(val, _)
+            | EvalAltResult::ErrorIndexNotFound(val, _)
+            | EvalAltResult::ErrorTerminated(val, _)
+            | EvalAltResult::LoopBreak(_, val, _)
+            | EvalAltResult::Return(val, _)
+            | EvalAltResult::Exit(val, _) => {
+                return exceeds_depth(val, MAX_CONTAINER_DEPTH);
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// Verify `value` has container nesting depth at most `max_depth`.
 ///
 /// Bounded to at most `MAX_CONTAINER_DEPTH` (8) frames with zero cloning, so
@@ -229,7 +349,15 @@ fn check_map_depth(map: &Map, max_depth: usize) -> Result<(), Box<EvalAltResult>
     Ok(())
 }
 
-/// Depth-bounded, overflow-checked `(array_elems, map_entries, string_bytes)`.
+/// Verify both container nesting depth and key-aware cumulative sizes in one
+/// pass.
+fn check_value_limits(engine: &Engine, value: &Dynamic) -> Result<(), Box<EvalAltResult>> {
+    let sizes = calc_sizes_bounded(value, MAX_CONTAINER_DEPTH)?;
+    check_sizes(engine, sizes)
+}
+
+/// Depth-bounded, overflow-checked `(array_elems, map_entries, string_bytes)`,
+/// accounting for map key bytes as well as values.
 fn calc_sizes_bounded(
     value: &Dynamic,
     max_depth: usize,
@@ -287,10 +415,13 @@ fn calc_map_sizes_bounded(
     let mut ax: usize = 0;
     let mut mx: usize = 0;
     let mut sx: usize = 0;
-    for val in map.values() {
+    for (key, val) in map {
         mx = mx
             .checked_add(1)
             .ok_or_else(|| size_exceeded_err("Size of object map"))?;
+        sx = sx
+            .checked_add(key.len())
+            .ok_or_else(|| size_exceeded_err("Length of string"))?;
         let (a, m, s) = calc_sizes_bounded(val, max_depth - 1)?;
         ax = ax
             .checked_add(a)
@@ -322,6 +453,14 @@ fn add_sizes(
         .checked_add(rhs.2)
         .ok_or_else(|| size_exceeded_err("Length of string"))?;
     Ok((a, m, s))
+}
+
+fn sub_sizes(lhs: (usize, usize, usize), rhs: (usize, usize, usize)) -> (usize, usize, usize) {
+    (
+        lhs.0.saturating_sub(rhs.0),
+        lhs.1.saturating_sub(rhs.1),
+        lhs.2.saturating_sub(rhs.2),
+    )
 }
 
 fn check_sizes(
@@ -365,8 +504,63 @@ fn calc_offset_len(length: usize, start: INT, len: INT) -> (usize, usize) {
     (start, len)
 }
 
+/// Unwrap `ErrorInFunctionCall`/`ErrorInModule` layers around a system
+/// exception so `try`/`catch` cannot catch `ErrorDataTooLarge`,
+/// `ErrorTerminated`, `ErrorSystem`, `ErrorStackOverflow`, etc.
+fn unwrap_system_exception(mut err: Box<EvalAltResult>) -> Box<EvalAltResult> {
+    loop {
+        match *err {
+            EvalAltResult::ErrorInFunctionCall(_, _, inner, _)
+            | EvalAltResult::ErrorInModule(_, inner, _) => {
+                err = inner;
+            }
+            _ => return err,
+        }
+    }
+}
+
+/// Normalize callback errors: latch `ErrorDataTooLarge` and unwrap any system
+/// exception so `try`/`catch` cannot swallow sandbox limits or refusals.
+fn handle_callback_err(err: Box<EvalAltResult>) -> Box<EvalAltResult> {
+    let inner = err.unwrap_inner();
+    if matches!(inner, EvalAltResult::ErrorDataTooLarge(..)) {
+        latch_limit();
+        return unwrap_system_exception(err);
+    }
+    if inner.is_system_exception() {
+        return unwrap_system_exception(err);
+    }
+    err
+}
+
+/// Invoke a `FnPtr` callback with Rhai's exact arity dispatch while checking
+/// the budget and preventing `try`/`catch` from swallowing system exceptions.
+fn call_callback<const N: usize, const E: usize>(
+    fp: &FnPtr,
+    caller_fn: &str,
+    ctx: &NativeCallContext,
+    this_ptr: Option<&mut Dynamic>,
+    args: [Dynamic; N],
+    extras: [Dynamic; E],
+    move_this_ptr_to_args: Option<usize>,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    check_budget()?;
+    let val = fp
+        .call_raw_with_extra_args(
+            caller_fn,
+            ctx,
+            this_ptr,
+            args,
+            extras,
+            move_this_ptr_to_args,
+        )
+        .map_err(handle_callback_err)?;
+    check_budget()?;
+    Ok(val)
+}
+
 // ---------------------------------------------------------------------------
-// CRIT-6 + CRIT-7: Array and Map mutators/builders
+// CRIT-6 + CRIT-7 + P2-CORE-2 + P2-CORE-3: Array and Map mutators/builders
 // ---------------------------------------------------------------------------
 
 fn array_pad(
@@ -375,6 +569,7 @@ fn array_pad(
     len: INT,
     item: Dynamic,
 ) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     if len <= 0 {
         return Ok(());
     }
@@ -412,16 +607,31 @@ fn array_pad(
     Ok(())
 }
 
-fn array_push(array: &mut Array, item: Dynamic) -> Result<(), Box<EvalAltResult>> {
-    check_array_depth(array, MAX_CONTAINER_DEPTH)?;
-    check_depth(&item, MAX_CONTAINER_DEPTH - 1)?;
+fn array_push(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    item: Dynamic,
+) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
+    let s1 = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    let s2 = calc_sizes_bounded(&item, MAX_CONTAINER_DEPTH - 1)?;
+    let total = add_sizes(add_sizes(s1, s2)?, (1, 0, 0))?;
+    check_sizes(ctx.engine(), total)?;
     array.push(item);
     Ok(())
 }
 
-fn array_insert(array: &mut Array, index: INT, item: Dynamic) -> Result<(), Box<EvalAltResult>> {
-    check_array_depth(array, MAX_CONTAINER_DEPTH)?;
-    check_depth(&item, MAX_CONTAINER_DEPTH - 1)?;
+fn array_insert(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    index: INT,
+    item: Dynamic,
+) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
+    let s1 = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    let s2 = calc_sizes_bounded(&item, MAX_CONTAINER_DEPTH - 1)?;
+    let total = add_sizes(add_sizes(s1, s2)?, (1, 0, 0))?;
+    check_sizes(ctx.engine(), total)?;
     if array.is_empty() {
         array.push(item);
         return Ok(());
@@ -435,13 +645,26 @@ fn array_insert(array: &mut Array, index: INT, item: Dynamic) -> Result<(), Box<
     Ok(())
 }
 
-fn array_set(array: &mut Array, index: INT, value: Dynamic) -> Result<(), Box<EvalAltResult>> {
-    check_array_depth(array, MAX_CONTAINER_DEPTH)?;
-    check_depth(&value, MAX_CONTAINER_DEPTH - 1)?;
+fn array_set(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    index: INT,
+    value: Dynamic,
+) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
+    let s1 = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    let s2 = calc_sizes_bounded(&value, MAX_CONTAINER_DEPTH - 1)?;
     if array.is_empty() {
+        check_sizes(ctx.engine(), s1)?;
         return Ok(());
     }
     let (idx, _) = calc_offset_len(array.len(), index, 0);
+    let Some(existing) = array.get(idx) else {
+        return Ok(());
+    };
+    let old = calc_sizes_bounded(existing, MAX_CONTAINER_DEPTH - 1)?;
+    let total = add_sizes(sub_sizes(s1, old), s2)?;
+    check_sizes(ctx.engine(), total)?;
     if let Some(slot) = array.get_mut(idx) {
         *slot = value;
     }
@@ -453,6 +676,7 @@ fn array_append(
     array: &mut Array,
     new_array: Array,
 ) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     check_array_depth(array, MAX_CONTAINER_DEPTH)?;
     if new_array.is_empty() {
         return Ok(());
@@ -473,6 +697,7 @@ fn array_concat(
     mut array1: Array,
     array2: Array,
 ) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
     let s1 = calc_array_sizes_bounded(&array1, MAX_CONTAINER_DEPTH)?;
     let s2 = calc_array_sizes_bounded(&array2, MAX_CONTAINER_DEPTH)?;
     check_sizes(ctx.engine(), add_sizes(s1, s2)?)?;
@@ -493,18 +718,28 @@ fn array_splice(
     len: INT,
     replace: Array,
 ) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     let s1 = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
     let s2 = calc_array_sizes_bounded(&replace, MAX_CONTAINER_DEPTH)?;
-    check_sizes(ctx.engine(), add_sizes(s1, s2)?)?;
     if array.is_empty() {
+        check_sizes(ctx.engine(), s2)?;
         *array = replace;
         return Ok(());
     }
-    let (start, len) = calc_offset_len(array.len(), start, len);
-    if start >= array.len() {
+    let (start_idx, remove_len) = calc_offset_len(array.len(), start, len);
+    let mut removed = (0usize, 0usize, 0usize);
+    if let Some(slice) = array.get(start_idx..start_idx.saturating_add(remove_len)) {
+        for item in slice {
+            let item_sz = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+            removed = add_sizes(add_sizes(removed, item_sz)?, (1, 0, 0))?;
+        }
+    }
+    let total = add_sizes(sub_sizes(s1, removed), s2)?;
+    check_sizes(ctx.engine(), total)?;
+    if start_idx >= array.len() {
         array.extend(replace);
     } else {
-        array.splice(start..start.saturating_add(len), replace);
+        array.splice(start_idx..start_idx.saturating_add(remove_len), replace);
     }
     Ok(())
 }
@@ -537,9 +772,633 @@ fn array_splice_inclusive_range(
     )
 }
 
-fn map_set(map: &mut Map, property: &str, value: Dynamic) -> Result<(), Box<EvalAltResult>> {
-    check_map_depth(map, MAX_CONTAINER_DEPTH)?;
-    check_depth(&value, MAX_CONTAINER_DEPTH - 1)?;
+fn array_extract(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    start: INT,
+    len: INT,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    if array.is_empty() || len <= 0 {
+        return Ok(Array::new());
+    }
+    let (start_idx, slice_len) = calc_offset_len(array.len(), start, len);
+    if slice_len == 0 {
+        return Ok(Array::new());
+    }
+    Ok(array
+        .get(start_idx..start_idx.saturating_add(slice_len))
+        .map_or_else(Array::new, <[Dynamic]>::to_vec))
+}
+
+fn array_extract_tail(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    start: INT,
+) -> Result<Array, Box<EvalAltResult>> {
+    array_extract(ctx, array, start, INT::MAX)
+}
+
+fn array_extract_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    range: ExclusiveRange,
+) -> Result<Array, Box<EvalAltResult>> {
+    let start = range.start.max(0);
+    let end = range.end.max(start);
+    array_extract(ctx, array, start, end.saturating_sub(start))
+}
+
+fn array_extract_inclusive_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    range: InclusiveRange,
+) -> Result<Array, Box<EvalAltResult>> {
+    let start = (*range.start()).max(0);
+    let end = (*range.end()).max(start).min(INT::MAX - 1);
+    array_extract(
+        ctx,
+        array,
+        start,
+        end.saturating_sub(start).saturating_add(1),
+    )
+}
+
+fn array_split_at(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    index: INT,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    if array.is_empty() {
+        return Ok(Array::new());
+    }
+    let (start, len) = calc_offset_len(array.len(), index, INT::MAX);
+    if start >= array.len() {
+        return Ok(Array::new());
+    }
+    if start == 0 {
+        if len >= array.len() {
+            return Ok(std::mem::take(array));
+        }
+        let cut = array.len().saturating_sub(len);
+        return Ok(array.drain(cut..).collect());
+    }
+    Ok(array.drain(start..).collect())
+}
+
+fn array_for_each(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    cb: FnPtr,
+) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(());
+    }
+    for (i, item) in array.iter_mut().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let _ = call_callback(&cb, "for_each", &ctx, Some(item), [], ex, None)?;
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+    }
+    Ok(())
+}
+
+fn array_map(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    mapper: FnPtr,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut src_total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), src_total)?;
+    if array.is_empty() {
+        return Ok(Array::new());
+    }
+    let mut out = Array::new();
+    let mut out_total = (0usize, 0usize, 0usize);
+    for (i, item) in array.iter_mut().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let mapped = call_callback(&mapper, "map", &ctx, Some(item), [], ex, Some(0))?;
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        src_total = add_sizes(sub_sizes(src_total, before), after)?;
+        check_sizes(ctx.engine(), src_total)?;
+
+        let item_sz = calc_sizes_bounded(&mapped, MAX_CONTAINER_DEPTH - 1)?;
+        out_total = add_sizes(add_sizes(out_total, item_sz)?, (1, 0, 0))?;
+        check_sizes(ctx.engine(), out_total)?;
+        out.push(mapped);
+    }
+    Ok(out)
+}
+
+fn array_filter(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut src_total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), src_total)?;
+    if array.is_empty() {
+        return Ok(Array::new());
+    }
+    let mut out = Array::new();
+    let mut out_total = (0usize, 0usize, 0usize);
+    for (i, item) in array.iter_mut().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let keep = call_callback(&filter, "filter", &ctx, Some(item), [], ex, Some(0))?
+            .as_bool()
+            .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        src_total = add_sizes(sub_sizes(src_total, before), after)?;
+        check_sizes(ctx.engine(), src_total)?;
+        if keep {
+            out_total = add_sizes(add_sizes(out_total, after)?, (1, 0, 0))?;
+            check_sizes(ctx.engine(), out_total)?;
+            out.push(item.clone());
+        }
+    }
+    Ok(out)
+}
+
+fn array_zip(
+    ctx: NativeCallContext,
+    array1: &mut Array,
+    array2: Array,
+    mapper: FnPtr,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let s1 = calc_array_sizes_bounded(array1, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), s1)?;
+    let s2 = calc_array_sizes_bounded(&array2, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), s2)?;
+    if array1.is_empty() || array2.is_empty() {
+        return Ok(Array::new());
+    }
+    let mut out = Array::new();
+    let mut out_total = (0usize, 0usize, 0usize);
+    for (i, (x, y)) in array1.iter_mut().zip(array2).enumerate() {
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let mapped = call_callback(&mapper, "zip", &ctx, None, [x.clone(), y], ex, None)?;
+        let item_sz = calc_sizes_bounded(&mapped, MAX_CONTAINER_DEPTH - 1)?;
+        out_total = add_sizes(add_sizes(out_total, item_sz)?, (1, 0, 0))?;
+        check_sizes(ctx.engine(), out_total)?;
+        out.push(mapped);
+    }
+    Ok(out)
+}
+
+fn array_reduce(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    reducer: FnPtr,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    array_reduce_with_initial(ctx, array, reducer, Dynamic::UNIT)
+}
+
+fn array_reduce_with_initial(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    reducer: FnPtr,
+    initial: Dynamic,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut src_total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), src_total)?;
+    check_value_limits(ctx.engine(), &initial)?;
+    if array.is_empty() {
+        return Ok(initial);
+    }
+    let mut acc = initial;
+    for (i, item) in array.iter_mut().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        acc = call_callback(&reducer, "reduce", &ctx, Some(item), [acc], ex, Some(1))?;
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        src_total = add_sizes(sub_sizes(src_total, before), after)?;
+        check_sizes(ctx.engine(), src_total)?;
+        check_value_limits(ctx.engine(), &acc)?;
+    }
+    Ok(acc)
+}
+
+fn array_reduce_rev(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    reducer: FnPtr,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    array_reduce_rev_with_initial(ctx, array, reducer, Dynamic::UNIT)
+}
+
+fn array_reduce_rev_with_initial(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    reducer: FnPtr,
+    initial: Dynamic,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut src_total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), src_total)?;
+    check_value_limits(ctx.engine(), &initial)?;
+    if array.is_empty() {
+        return Ok(initial);
+    }
+    let len = array.len();
+    let mut acc = initial;
+    for (i, item) in array.iter_mut().rev().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let rev_idx = len.saturating_sub(1).saturating_sub(i);
+        let ex = [INT::try_from(rev_idx).unwrap_or(INT::MAX).into()];
+        acc = call_callback(&reducer, "reduce_rev", &ctx, Some(item), [acc], ex, Some(1))?;
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        src_total = add_sizes(sub_sizes(src_total, before), after)?;
+        check_sizes(ctx.engine(), src_total)?;
+        check_value_limits(ctx.engine(), &acc)?;
+    }
+    Ok(acc)
+}
+
+fn array_drain_filter(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(Array::new());
+    }
+    let mut drained = Array::new();
+    let mut drained_total = (0usize, 0usize, 0usize);
+    let mut i: usize = 0;
+    let mut x: usize = 0;
+    while x < array.len() {
+        let Some(item) = array.get_mut(x) else {
+            break;
+        };
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let take = call_callback(&filter, "drain", &ctx, Some(item), [], ex, Some(0))?
+            .as_bool()
+            .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+        if take {
+            drained_total = add_sizes(add_sizes(drained_total, after)?, (1, 0, 0))?;
+            check_sizes(ctx.engine(), drained_total)?;
+            let removed = array.remove(x);
+            total = sub_sizes(total, add_sizes(after, (1, 0, 0))?);
+            drained.push(removed);
+        } else {
+            x += 1;
+        }
+        i += 1;
+    }
+    Ok(drained)
+}
+
+fn array_drain_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    start: INT,
+    len: INT,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    if array.is_empty() || len <= 0 {
+        return Ok(Array::new());
+    }
+    let (start_idx, slice_len) = calc_offset_len(array.len(), start, len);
+    if slice_len == 0 {
+        return Ok(Array::new());
+    }
+    Ok(array
+        .drain(start_idx..start_idx.saturating_add(slice_len))
+        .collect())
+}
+
+fn array_drain_exclusive_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    range: ExclusiveRange,
+) -> Result<Array, Box<EvalAltResult>> {
+    let start = range.start.max(0);
+    let end = range.end.max(start);
+    array_drain_range(ctx, array, start, end.saturating_sub(start))
+}
+
+fn array_drain_inclusive_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    range: InclusiveRange,
+) -> Result<Array, Box<EvalAltResult>> {
+    let start = (*range.start()).max(0);
+    let end = (*range.end()).max(start).min(INT::MAX - 1);
+    array_drain_range(
+        ctx,
+        array,
+        start,
+        end.saturating_sub(start).saturating_add(1),
+    )
+}
+
+fn array_retain_filter(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(Array::new());
+    }
+    let mut drained = Array::new();
+    let mut drained_total = (0usize, 0usize, 0usize);
+    let mut i: usize = 0;
+    let mut x: usize = 0;
+    while x < array.len() {
+        let Some(item) = array.get_mut(x) else {
+            break;
+        };
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let keep = call_callback(&filter, "retain", &ctx, Some(item), [], ex, Some(0))?
+            .as_bool()
+            .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+        if keep {
+            x += 1;
+        } else {
+            drained_total = add_sizes(add_sizes(drained_total, after)?, (1, 0, 0))?;
+            check_sizes(ctx.engine(), drained_total)?;
+            let removed = array.remove(x);
+            total = sub_sizes(total, add_sizes(after, (1, 0, 0))?);
+            drained.push(removed);
+        }
+        i += 1;
+    }
+    Ok(drained)
+}
+
+fn array_retain_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    start: INT,
+    len: INT,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    if array.is_empty() || len <= 0 {
+        return Ok(Array::new());
+    }
+    let (start_idx, slice_len) = calc_offset_len(array.len(), start, len);
+    if slice_len == 0 {
+        return Ok(Array::new());
+    }
+    let mut drained: Array = array.drain(..start_idx).collect();
+    drained.extend(array.drain(slice_len..));
+    Ok(drained)
+}
+
+fn array_retain_exclusive_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    range: ExclusiveRange,
+) -> Result<Array, Box<EvalAltResult>> {
+    let start = range.start.max(0);
+    let end = range.end.max(start);
+    array_retain_range(ctx, array, start, end.saturating_sub(start))
+}
+
+fn array_retain_inclusive_range(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    range: InclusiveRange,
+) -> Result<Array, Box<EvalAltResult>> {
+    let start = (*range.start()).max(0);
+    let end = (*range.end()).max(start).min(INT::MAX - 1);
+    array_retain_range(
+        ctx,
+        array,
+        start,
+        end.saturating_sub(start).saturating_add(1),
+    )
+}
+
+fn array_index_of_filter(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<INT, Box<EvalAltResult>> {
+    array_index_of_filter_starting_from(ctx, array, filter, 0)
+}
+
+fn array_index_of_filter_starting_from(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+    start: INT,
+) -> Result<INT, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(-1);
+    }
+    let (start_idx, _) = calc_offset_len(array.len(), start, 0);
+    for (i, item) in array.iter_mut().enumerate().skip(start_idx) {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let matched = call_callback(&filter, "index_of", &ctx, Some(item), [], ex, Some(0))?
+            .as_bool()
+            .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+        if matched {
+            return Ok(INT::try_from(i).unwrap_or(INT::MAX));
+        }
+    }
+    Ok(-1)
+}
+
+fn array_find(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    array_find_starting_from(ctx, array, filter, 0)
+}
+
+fn array_find_starting_from(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+    start: INT,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    let idx = array_index_of_filter_starting_from(ctx, array, filter, start)?;
+    if idx < 0 {
+        return Ok(Dynamic::UNIT);
+    }
+    let Ok(i) = usize::try_from(idx) else {
+        return Ok(Dynamic::UNIT);
+    };
+    Ok(array.get(i).cloned().unwrap_or(Dynamic::UNIT))
+}
+
+fn array_find_map(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    array_find_map_starting_from(ctx, array, filter, 0)
+}
+
+fn array_find_map_starting_from(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+    start: INT,
+) -> Result<Dynamic, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(Dynamic::UNIT);
+    }
+    let (start_idx, _) = calc_offset_len(array.len(), start, 0);
+    for (i, item) in array.iter_mut().enumerate().skip(start_idx) {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let val = call_callback(&filter, "find_map", &ctx, Some(item), [], ex, Some(0))?;
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+        if !val.is_unit() {
+            check_value_limits(ctx.engine(), &val)?;
+            return Ok(val);
+        }
+    }
+    Ok(Dynamic::UNIT)
+}
+
+fn array_some(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<bool, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(false);
+    }
+    for (i, item) in array.iter_mut().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let matched = call_callback(&filter, "some", &ctx, Some(item), [], ex, Some(0))?
+            .as_bool()
+            .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+        if matched {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn array_all(
+    ctx: NativeCallContext,
+    array: &mut Array,
+    filter: FnPtr,
+) -> Result<bool, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut total = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), total)?;
+    if array.is_empty() {
+        return Ok(true);
+    }
+    for (i, item) in array.iter_mut().enumerate() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let ex = [INT::try_from(i).unwrap_or(INT::MAX).into()];
+        let matched = call_callback(&filter, "all", &ctx, Some(item), [], ex, Some(0))?
+            .as_bool()
+            .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        total = add_sizes(sub_sizes(total, before), after)?;
+        check_sizes(ctx.engine(), total)?;
+        if !matched {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn array_order_builtin(
+    ctx: NativeCallContext,
+    array: &mut Array,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    let mut copy = Dynamic::from_array(array.clone());
+    let _ = ctx.call_native_fn_raw("sort", false, &mut [&mut copy])?;
+    Ok(copy.try_cast::<Array>().unwrap_or_default())
+}
+
+fn array_order_builtin_desc(
+    ctx: NativeCallContext,
+    array: &mut Array,
+) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    let mut copy = Dynamic::from_array(array.clone());
+    let _ = ctx.call_native_fn_raw("sort_desc", false, &mut [&mut copy])?;
+    Ok(copy.try_cast::<Array>().unwrap_or_default())
+}
+
+fn map_set(
+    ctx: NativeCallContext,
+    map: &mut Map,
+    property: &str,
+    value: Dynamic,
+) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
+    let max_str = ctx.engine().max_string_size();
+    if max_str > 0 && property.len() > max_str {
+        return Err(size_exceeded_err("Length of string"));
+    }
+    let s1 = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
+    let s2 = calc_sizes_bounded(&value, MAX_CONTAINER_DEPTH - 1)?;
+    let total = if let Some(existing) = map.get(property) {
+        let old = calc_sizes_bounded(existing, MAX_CONTAINER_DEPTH - 1)?;
+        add_sizes(sub_sizes(s1, old), s2)?
+    } else {
+        add_sizes(add_sizes(s1, s2)?, (0, 1, property.len()))?
+    };
+    check_sizes(ctx.engine(), total)?;
     match map.get_mut(property) {
         Some(slot) => *slot = value,
         None => {
@@ -549,22 +1408,42 @@ fn map_set(map: &mut Map, property: &str, value: Dynamic) -> Result<(), Box<Eval
     Ok(())
 }
 
+fn calc_map_union_sizes(
+    base: &Map,
+    overlay: &Map,
+    overwrite: bool,
+) -> Result<(usize, usize, usize), Box<EvalAltResult>> {
+    let mut total = calc_map_sizes_bounded(base, MAX_CONTAINER_DEPTH)?;
+    for (k, v) in overlay {
+        let v_sz = calc_sizes_bounded(v, MAX_CONTAINER_DEPTH - 1)?;
+        if let Some(existing) = base.get(k) {
+            if overwrite {
+                let old_sz = calc_sizes_bounded(existing, MAX_CONTAINER_DEPTH - 1)?;
+                total = add_sizes(sub_sizes(total, old_sz), v_sz)?;
+            }
+        } else {
+            total = add_sizes(add_sizes(total, v_sz)?, (0, 1, k.len()))?;
+        }
+    }
+    Ok(total)
+}
+
 fn map_mixin(ctx: NativeCallContext, map: &mut Map, map2: Map) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     check_map_depth(map, MAX_CONTAINER_DEPTH)?;
     if map2.is_empty() {
         return Ok(());
     }
-    let s1 = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
-    let s2 = calc_map_sizes_bounded(&map2, MAX_CONTAINER_DEPTH)?;
-    check_sizes(ctx.engine(), add_sizes(s1, s2)?)?;
+    let total = calc_map_union_sizes(map, &map2, true)?;
+    check_sizes(ctx.engine(), total)?;
     map.extend(map2);
     Ok(())
 }
 
 fn map_merge(ctx: NativeCallContext, mut map1: Map, map2: Map) -> Result<Map, Box<EvalAltResult>> {
-    let s1 = calc_map_sizes_bounded(&map1, MAX_CONTAINER_DEPTH)?;
-    let s2 = calc_map_sizes_bounded(&map2, MAX_CONTAINER_DEPTH)?;
-    check_sizes(ctx.engine(), add_sizes(s1, s2)?)?;
+    check_budget()?;
+    let total = calc_map_union_sizes(&map1, &map2, true)?;
+    check_sizes(ctx.engine(), total)?;
     if map2.is_empty() {
         return Ok(map1);
     }
@@ -580,13 +1459,13 @@ fn map_fill_with(
     map: &mut Map,
     map2: Map,
 ) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     check_map_depth(map, MAX_CONTAINER_DEPTH)?;
     if map2.is_empty() {
         return Ok(());
     }
-    let s1 = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
-    let s2 = calc_map_sizes_bounded(&map2, MAX_CONTAINER_DEPTH)?;
-    check_sizes(ctx.engine(), add_sizes(s1, s2)?)?;
+    let total = calc_map_union_sizes(map, &map2, false)?;
+    check_sizes(ctx.engine(), total)?;
     if map.is_empty() {
         *map = map2;
         return Ok(());
@@ -595,6 +1474,209 @@ fn map_fill_with(
         map.entry(k).or_insert(v);
     }
     Ok(())
+}
+
+fn map_keys(ctx: NativeCallContext, map: &mut Map) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    if map.is_empty() {
+        return Ok(Array::new());
+    }
+    let mut key_bytes: usize = 0;
+    for key in map.keys() {
+        key_bytes = key_bytes
+            .checked_add(key.len())
+            .ok_or_else(|| size_exceeded_err("Length of string"))?;
+    }
+    check_sizes(ctx.engine(), (map.len(), 0, key_bytes))?;
+    Ok(map.keys().cloned().map(Into::into).collect())
+}
+
+fn map_values(ctx: NativeCallContext, map: &mut Map) -> Result<Array, Box<EvalAltResult>> {
+    check_budget()?;
+    let (ax, mx, sx) = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), (ax, mx, sx))?;
+    if map.is_empty() {
+        return Ok(Array::new());
+    }
+    let out_ax = ax
+        .checked_add(map.len())
+        .ok_or_else(|| size_exceeded_err("Size of array/BLOB"))?;
+    check_sizes(ctx.engine(), (out_ax, mx, sx))?;
+    Ok(map.values().cloned().collect())
+}
+
+fn map_map(
+    ctx: NativeCallContext,
+    map: &mut Map,
+    mapper: FnPtr,
+) -> Result<Map, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut src_total = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), src_total)?;
+    if map.is_empty() {
+        return Ok(Map::new());
+    }
+    let mut out = Map::new();
+    let mut out_total = (0usize, 0usize, 0usize);
+    for (key, item) in map.iter_mut() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let mapped = call_callback(&mapper, "map", &ctx, Some(item), [key.into()], [], Some(1))?;
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        src_total = add_sizes(sub_sizes(src_total, before), after)?;
+        check_sizes(ctx.engine(), src_total)?;
+
+        let val_sz = calc_sizes_bounded(&mapped, MAX_CONTAINER_DEPTH - 1)?;
+        out_total = add_sizes(add_sizes(out_total, val_sz)?, (0, 1, key.len()))?;
+        check_sizes(ctx.engine(), out_total)?;
+        out.insert(key.clone(), mapped);
+    }
+    Ok(out)
+}
+
+fn map_filter(
+    ctx: NativeCallContext,
+    map: &mut Map,
+    filter: FnPtr,
+) -> Result<Map, Box<EvalAltResult>> {
+    check_budget()?;
+    let mut src_total = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), src_total)?;
+    if map.is_empty() {
+        return Ok(Map::new());
+    }
+    let mut out = Map::new();
+    let mut out_total = (0usize, 0usize, 0usize);
+    for (key, item) in map.iter_mut() {
+        let before = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        let keep = call_callback(
+            &filter,
+            "filter",
+            &ctx,
+            Some(item),
+            [key.into()],
+            [],
+            Some(1),
+        )?
+        .as_bool()
+        .unwrap_or(false);
+        let after = calc_sizes_bounded(item, MAX_CONTAINER_DEPTH - 1)?;
+        src_total = add_sizes(sub_sizes(src_total, before), after)?;
+        check_sizes(ctx.engine(), src_total)?;
+        if keep {
+            out_total = add_sizes(add_sizes(out_total, after)?, (0, 1, key.len()))?;
+            check_sizes(ctx.engine(), out_total)?;
+            out.insert(key.clone(), item.clone());
+        }
+    }
+    Ok(out)
+}
+
+fn map_drain_or_retain(
+    ctx: NativeCallContext,
+    map: &mut Map,
+    filter: FnPtr,
+    retain_matching: bool,
+) -> Result<Map, Box<EvalAltResult>> {
+    check_budget()?;
+    let sizes = calc_map_sizes_bounded(map, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
+    if map.is_empty() {
+        return Ok(Map::new());
+    }
+    let caller = if retain_matching { "retain" } else { "drain" };
+    let mut drained = Map::new();
+    let mut retained = Map::new();
+    let mut drained_total = (0usize, 0usize, 0usize);
+    let mut retained_total = (0usize, 0usize, 0usize);
+    let mut error: Option<Box<EvalAltResult>> = None;
+
+    for (key, mut value) in std::mem::take(map) {
+        if error.is_some() {
+            retained.insert(key, value);
+            continue;
+        }
+        match call_callback(
+            &filter,
+            caller,
+            &ctx,
+            Some(&mut value),
+            [key.clone().into()],
+            [],
+            Some(1),
+        ) {
+            Ok(res) => match calc_sizes_bounded(&value, MAX_CONTAINER_DEPTH - 1) {
+                Ok(val_sz) => {
+                    let keep = res.as_bool().unwrap_or(false) == retain_matching;
+                    if keep {
+                        match add_sizes(add_sizes(retained_total, val_sz)?, (0, 1, key.len()))
+                            .and_then(|next| {
+                                check_sizes(ctx.engine(), next)?;
+                                Ok(next)
+                            }) {
+                            Ok(next) => {
+                                retained_total = next;
+                                retained.insert(key, value);
+                            }
+                            Err(err) => {
+                                drop_dynamic_iteratively(value);
+                                error = Some(err);
+                            }
+                        }
+                    } else {
+                        match add_sizes(add_sizes(drained_total, val_sz)?, (0, 1, key.len()))
+                            .and_then(|next| {
+                                check_sizes(ctx.engine(), next)?;
+                                Ok(next)
+                            }) {
+                            Ok(next) => {
+                                drained_total = next;
+                                drained.insert(key, value);
+                            }
+                            Err(err) => {
+                                drop_dynamic_iteratively(value);
+                                error = Some(err);
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    drop_dynamic_iteratively(value);
+                    error = Some(err);
+                }
+            },
+            Err(err) => {
+                drop_dynamic_iteratively(value);
+                error = Some(err);
+            }
+        }
+    }
+
+    *map = retained;
+    match error {
+        Some(err) => {
+            drop_map_iteratively(drained);
+            Err(err)
+        }
+        None => Ok(drained),
+    }
+}
+
+fn map_drain(
+    ctx: NativeCallContext,
+    map: &mut Map,
+    filter: FnPtr,
+) -> Result<Map, Box<EvalAltResult>> {
+    map_drain_or_retain(ctx, map, filter, false)
+}
+
+fn map_retain(
+    ctx: NativeCallContext,
+    map: &mut Map,
+    filter: FnPtr,
+) -> Result<Map, Box<EvalAltResult>> {
+    map_drain_or_retain(ctx, map, filter, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +1688,7 @@ fn array_eq(
     array1: &mut Array,
     array2: Array,
 ) -> Result<bool, Box<EvalAltResult>> {
+    check_budget()?;
     check_array_depth(array1, MAX_CONTAINER_DEPTH)?;
     check_array_depth(&array2, MAX_CONTAINER_DEPTH)?;
     array_slice_eq(&ctx, array1, &array2, 1)
@@ -620,6 +1703,7 @@ fn array_ne(
 }
 
 fn map_eq(ctx: NativeCallContext, map1: &mut Map, map2: Map) -> Result<bool, Box<EvalAltResult>> {
+    check_budget()?;
     check_map_depth(map1, MAX_CONTAINER_DEPTH)?;
     check_map_depth(&map2, MAX_CONTAINER_DEPTH)?;
     map_ref_eq(&ctx, map1, &map2, 1)
@@ -678,9 +1762,7 @@ fn dynamic_equals(
     rhs: &Dynamic,
     depth: usize,
 ) -> Result<bool, Box<EvalAltResult>> {
-    if budget::tripped() {
-        return Err(ops_terminated_err());
-    }
+    check_budget()?;
     if let (Some(a1), Some(a2)) = (lhs.read_lock::<Array>(), rhs.read_lock::<Array>()) {
         return array_slice_eq(ctx, &a1, &a2, depth + 1);
     }
@@ -775,9 +1857,7 @@ fn format_dynamic_into(
     value: &Dynamic,
     depth: usize,
 ) -> Result<(), Box<EvalAltResult>> {
-    if budget::tripped() {
-        return Err(ops_terminated_err());
-    }
+    check_budget()?;
     if let Some(arr) = value.read_lock::<Array>() {
         return format_array_into(ctx, buf, &arr, depth);
     }
@@ -889,9 +1969,7 @@ fn format_json_value_into(
     value: &Dynamic,
     depth: usize,
 ) -> Result<(), Box<EvalAltResult>> {
-    if budget::tripped() {
-        return Err(ops_terminated_err());
-    }
+    check_budget()?;
     if value.is_unit() {
         return buf.push_str("null");
     }
@@ -978,13 +2056,11 @@ fn compare_with_fn_ptr(
     x: &Dynamic,
     y: &Dynamic,
 ) -> Result<Ordering, Box<EvalAltResult>> {
-    if budget::tripped() {
-        return Err(ops_terminated_err());
-    }
-    let val = comparer.call_raw(ctx, None, [x.clone(), y.clone()])?;
-    if budget::tripped() {
-        return Err(ops_terminated_err());
-    }
+    check_budget()?;
+    let val = comparer
+        .call_raw(ctx, None, [x.clone(), y.clone()])
+        .map_err(handle_callback_err)?;
+    check_budget()?;
     if let Ok(n) = val.as_int() {
         return Ok(n.cmp(&0));
     }
@@ -1001,6 +2077,7 @@ fn merge_sort_by(
     array: &mut Array,
     comparer: &FnPtr,
 ) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     check_array_depth(array, MAX_CONTAINER_DEPTH)?;
     let n = array.len();
     if n <= 1 {
@@ -1074,7 +2151,9 @@ fn array_order_by(
     array: &mut Array,
     comparer: FnPtr,
 ) -> Result<Array, Box<EvalAltResult>> {
-    check_array_depth(array, MAX_CONTAINER_DEPTH)?;
+    check_budget()?;
+    let sizes = calc_array_sizes_bounded(array, MAX_CONTAINER_DEPTH)?;
+    check_sizes(ctx.engine(), sizes)?;
     let mut copy = array.clone();
     merge_sort_by(&ctx, &mut copy, &comparer)?;
     Ok(copy)
@@ -1084,6 +2163,7 @@ fn dedup_with(
     array: &mut Array,
     mut is_dup: impl FnMut(&Dynamic, &Dynamic) -> Result<bool, Box<EvalAltResult>>,
 ) -> Result<(), Box<EvalAltResult>> {
+    check_budget()?;
     check_array_depth(array, MAX_CONTAINER_DEPTH)?;
     if array.len() <= 1 {
         return Ok(());
@@ -1094,11 +2174,11 @@ fn dedup_with(
         kept.push(first);
     }
     while let Some(curr) = iter.next() {
-        if budget::tripped() {
+        if let Err(err) = check_budget() {
             kept.push(curr);
             kept.extend(iter);
             *array = kept;
-            return Err(ops_terminated_err());
+            return Err(err);
         }
         let Some(prev) = kept.last() else {
             kept.push(curr);
@@ -1106,11 +2186,11 @@ fn dedup_with(
         };
         let dup = match is_dup(prev, &curr) {
             Ok(d) => {
-                if budget::tripped() {
+                if let Err(err) = check_budget() {
                     kept.push(curr);
                     kept.extend(iter);
                     *array = kept;
-                    return Err(ops_terminated_err());
+                    return Err(err);
                 }
                 d
             }
@@ -1142,7 +2222,9 @@ fn array_dedup_by(
     comparer: FnPtr,
 ) -> Result<(), Box<EvalAltResult>> {
     dedup_with(array, |prev, curr| {
-        let res = comparer.call_raw(&ctx, None, [prev.clone(), curr.clone()])?;
+        let res = comparer
+            .call_raw(&ctx, None, [prev.clone(), curr.clone()])
+            .map_err(handle_callback_err)?;
         Ok(res.as_bool().unwrap_or(false))
     })
 }
@@ -1157,22 +2239,40 @@ fn array_dedup_by_name(
 }
 
 // ---------------------------------------------------------------------------
-// CRIT-7: Iterative teardown & compile-time source validation
+// CRIT-7 + P2-CORE-2: Iterative teardown
 // ---------------------------------------------------------------------------
 
-/// Iteratively dismantle any nested `Array`/`Map` tree inside `root` so
-/// dropping `this` on return, fault, or panic unwind never overflows the stack.
+/// Iteratively dismantle any nested `Array`/`Map` tree (including `Shared`
+/// wrappers) inside `root` so dropping `this`, `Scope` variables, return
+/// values, or error payloads never overflows the stack.
 pub(crate) fn drop_dynamic_iteratively(root: Dynamic) {
     let mut stack = vec![root];
-    while let Some(val) = stack.pop() {
-        if val.is_array() {
+    while let Some(mut val) = stack.pop() {
+        if val.is_shared() {
+            if let Some(mut guard) = val.write_lock::<Dynamic>() {
+                let inner = std::mem::take(&mut *guard);
+                drop(guard);
+                if !inner.is_unit() {
+                    stack.push(inner);
+                }
+            }
+        } else if val.is_array() {
             if let Some(arr) = val.try_cast::<Array>() {
                 stack.extend(arr);
             }
-        } else if val.is_map()
-            && let Some(map) = val.try_cast::<Map>()
+        } else if val.is_map() {
+            if let Some(map) = val.try_cast::<Map>() {
+                stack.extend(map.into_values());
+            }
+        } else if val.is_fnptr()
+            && let Some(mut fp) = val.try_cast::<FnPtr>()
         {
-            stack.extend(map.into_values());
+            for arg in fp.iter_curry_mut() {
+                let inner = std::mem::take(arg);
+                if !inner.is_unit() {
+                    stack.push(inner);
+                }
+            }
         }
     }
 }
@@ -1181,17 +2281,44 @@ pub(crate) fn drop_dynamic_iteratively(root: Dynamic) {
 pub(crate) fn drop_map_iteratively(map: Map) {
     let mut stack: Vec<Dynamic> = map.into_values().collect();
     while let Some(val) = stack.pop() {
-        if val.is_array() {
-            if let Some(arr) = val.try_cast::<Array>() {
-                stack.extend(arr);
+        drop_dynamic_iteratively(val);
+    }
+}
+
+/// Iteratively dismantle every variable stored inside a `Scope`.
+pub(crate) fn drop_scope_iteratively(scope: Scope<'_>) {
+    for (_name, val, _aliases) in scope {
+        drop_dynamic_iteratively(val);
+    }
+}
+
+/// Iteratively dismantle any `Dynamic` payload (and nested `ErrorInFunctionCall`
+/// / `ErrorInModule` wrappers) inside an `EvalAltResult`.
+#[allow(clippy::boxed_local)]
+pub(crate) fn drop_eval_error_iteratively(mut err: Box<EvalAltResult>) {
+    loop {
+        match *err {
+            EvalAltResult::ErrorInFunctionCall(_, _, inner, _)
+            | EvalAltResult::ErrorInModule(_, inner, _) => {
+                err = inner;
             }
-        } else if val.is_map()
-            && let Some(inner) = val.try_cast::<Map>()
-        {
-            stack.extend(inner.into_values());
+            EvalAltResult::ErrorRuntime(val, _)
+            | EvalAltResult::ErrorIndexNotFound(val, _)
+            | EvalAltResult::ErrorTerminated(val, _)
+            | EvalAltResult::LoopBreak(_, val, _)
+            | EvalAltResult::Return(val, _)
+            | EvalAltResult::Exit(val, _) => {
+                drop_dynamic_iteratively(val);
+                return;
+            }
+            _ => return,
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// P2-CORE-1 + P2-CORE-2: Compile-time lexer/source & AST structural guards
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Token<'a> {
@@ -1206,6 +2333,7 @@ enum Token<'a> {
     Dot,
     Assign,
     EqEq,
+    FatArrow,
     Semi,
     Comma,
     Colon,
@@ -1229,7 +2357,12 @@ fn next_char_len(source: &str, idx: usize) -> usize {
         .map_or(1, char::len_utf8)
 }
 
-fn lex_tokens(source: &str) -> Vec<Token<'_>> {
+/// Tokenize `source` faithfully following Rhai 1.26's lexer rules (verbatim
+/// backtick templates with `\${` and `` `` `` escapes, double-quote `""`
+/// escapes, raw strings `#"..."#`, char literals with `''`, nested `/* */`
+/// comments, and `#{` inside `${...}` interpolations). Fails closed on any
+/// unclosed literal, comment, template, or interpolation at EOF.
+fn lex_tokens(source: &str) -> Result<Vec<Token<'_>>, String> {
     let bytes = source.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -1241,17 +2374,24 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
         if mode == LexMode::TemplateString {
             match bytes.get(i).copied() {
                 Some(b'`') => {
-                    i += 1;
-                    if modes.len() > 1 {
-                        modes.pop();
+                    // Rhai `parse_string_literal`: double backtick `` `` `` is
+                    // an escaped literal backtick inside a template string.
+                    if bytes.get(i + 1) == Some(&b'`') {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        if modes.len() > 1 {
+                            modes.pop();
+                        }
+                        out.push(Token::Value);
                     }
-                    out.push(Token::Value);
                 }
-                Some(b'\\') => {
-                    i += 1;
-                    if i < len {
-                        i += next_char_len(source, i);
-                    }
+                // Template strings are verbatim in Rhai (`verbatim = true`):
+                // `\` does NOT escape `` ` ``; only `\${` escapes `$`.
+                Some(b'\\')
+                    if bytes.get(i + 1) == Some(&b'$') && bytes.get(i + 2) == Some(&b'{') =>
+                {
+                    i += 2;
                 }
                 Some(b'$') if bytes.get(i + 1) == Some(&b'{') => {
                     i += 2;
@@ -1301,24 +2441,40 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
                     i += 1;
                 }
             }
+            if depth != 0 {
+                return Err("Unterminated block comment".to_owned());
+            }
             continue;
         }
 
-        // Double-quoted string literal
+        // Double-quoted string literal (`\"`, `\\`, line continuation, and `""`).
         if b == b'"' {
             i += 1;
+            let mut closed = false;
             while let Some(c) = bytes.get(i).copied() {
                 if c == b'\\' {
                     i += 1;
                     if i < len {
-                        i += next_char_len(source, i);
+                        if bytes.get(i) == Some(&b'\r') && bytes.get(i + 1) == Some(&b'\n') {
+                            i += 2;
+                        } else {
+                            i += next_char_len(source, i);
+                        }
                     }
                 } else if c == b'"' {
-                    i += 1;
-                    break;
+                    if bytes.get(i + 1) == Some(&b'"') {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        closed = true;
+                        break;
+                    }
                 } else {
                     i += next_char_len(source, i);
                 }
+            }
+            if !closed {
+                return Err("Unterminated string literal".to_owned());
             }
             out.push(Token::Value);
             continue;
@@ -1327,6 +2483,9 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
         // Map literal `#{` or raw string `#"..."#`
         if b == b'#' {
             if bytes.get(i + 1) == Some(&b'{') {
+                if let Some(LexMode::Interp { brace_depth }) = modes.last_mut() {
+                    *brace_depth += 1;
+                }
                 i += 2;
                 out.push(Token::HashLBrace);
                 continue;
@@ -1337,6 +2496,7 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
             }
             if bytes.get(i + hashes) == Some(&b'"') {
                 i += hashes + 1;
+                let mut closed = false;
                 while i < len {
                     if bytes.get(i) == Some(&b'"') {
                         let mut closing = 0;
@@ -1345,10 +2505,14 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
                         }
                         if closing == hashes {
                             i += 1 + hashes;
+                            closed = true;
                             break;
                         }
                     }
                     i += 1;
+                }
+                if !closed {
+                    return Err("Unterminated raw string literal".to_owned());
                 }
                 out.push(Token::Value);
                 continue;
@@ -1358,9 +2522,10 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
             continue;
         }
 
-        // Char literal `'...'`
+        // Char literal `'...'` (with `\'` and `''` escapes).
         if b == b'\'' {
             i += 1;
+            let mut closed = false;
             while let Some(c) = bytes.get(i).copied() {
                 if c == b'\\' {
                     i += 1;
@@ -1368,11 +2533,19 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
                         i += next_char_len(source, i);
                     }
                 } else if c == b'\'' {
-                    i += 1;
-                    break;
+                    if bytes.get(i + 1) == Some(&b'\'') {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        closed = true;
+                        break;
+                    }
                 } else {
                     i += next_char_len(source, i);
                 }
+            }
+            if !closed {
+                return Err("Unterminated character literal".to_owned());
             }
             out.push(Token::Value);
             continue;
@@ -1477,7 +2650,7 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
                 }
                 Some(b'>') => {
                     i += 2;
-                    out.push(Token::Op);
+                    out.push(Token::FatArrow);
                 }
                 _ => {
                     i += 1;
@@ -1567,7 +2740,11 @@ fn lex_tokens(source: &str) -> Vec<Token<'_>> {
         out.push(Token::Op);
     }
 
-    out
+    if modes.len() != 1 || modes.first() != Some(&LexMode::Code) {
+        return Err("Unterminated template string or interpolation".to_owned());
+    }
+
+    Ok(out)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1643,19 +2820,17 @@ fn is_stmt_starter_keyword(word: &str) -> bool {
     )
 }
 
-/// Compile-time structural guard (CRIT-7) run after Rhai's parser succeeds:
+/// Compile-time structural source guard (CRIT-7, P2-CORE-1, P2-CORE-2) paired
+/// with [`validate_ast`]:
 ///
 /// 1. Caps static container-literal (`[` / `#{`) nesting depth at
 ///    [`MAX_CONTAINER_DEPTH`] (8).
-/// 2. Rejects `this` self-nesting container constructs (bare `this` in any
-///    container literal, bare `this` assigned into `this.*` or returned
-///    directly, and `this.*` inside container literals except depth-1 inside a
-///    local-variable RHS or function-call argument outside `this... =` RHS),
-///    closing `on_var` bypasses via `Expr::ThisPtr` while keeping legitimate
-///    mind patterns (`this = 5`, `this = stock::think(v, c, this)`,
-///    `"k" in this`, `let at = [this.last[0], this.last[1]]`).
+/// 2. Rejects unclosed literals, comments, templates, interpolations, and
+///    unmatched delimiters.
+/// 3. Rejects `this` self-nesting container constructs across all statements
+///    (including `switch` arm bodies).
 pub(crate) fn validate_source(source: &str) -> Result<(), String> {
-    let tokens = lex_tokens(source);
+    let tokens = lex_tokens(source)?;
     let mut delims: Vec<Delim> = Vec::new();
     let mut container_depth: usize = 0;
     let mut stmt_stack: Vec<StmtFrame> = vec![StmtFrame {
@@ -1725,10 +2900,13 @@ pub(crate) fn validate_source(source: &str) -> Result<(), String> {
                 prev_is_value_end = false;
             }
             Token::RBracket => {
-                if let Some(d) = delims.pop()
-                    && d == Delim::ArrayLit
-                {
+                let Some(d) = delims.pop() else {
+                    return Err("Unmatched closing bracket".to_owned());
+                };
+                if d == Delim::ArrayLit {
                     container_depth = container_depth.saturating_sub(1);
+                } else if d != Delim::Index {
+                    return Err("Mismatched closing bracket".to_owned());
                 }
                 prev_is_value_end = true;
             }
@@ -1740,36 +2918,30 @@ pub(crate) fn validate_source(source: &str) -> Result<(), String> {
                 });
                 prev_is_value_end = false;
             }
-            Token::RBrace => {
-                match delims.pop() {
-                    Some(Delim::MapLit) => {
-                        container_depth = container_depth.saturating_sub(1);
-                        prev_is_value_end = true;
-                    }
-                    Some(Delim::Block) => {
-                        if stmt_stack.len() > 1 {
-                            stmt_stack.pop();
-                        }
-                        // A block ending a non-assignment statement (`if {}`,
-                        // `loop {}`, `fn {}`) opens a fresh statement without `;`.
-                        if let Some(frame) = stmt_stack.last_mut()
-                            && delims.len() == frame.base_delim_depth
-                            && !matches!(
-                                frame.state,
-                                StmtState::RhsLocal
-                                    | StmtState::RhsThisBare
-                                    | StmtState::RhsThisMember
-                            )
-                        {
-                            frame.state = StmtState::Start;
-                        }
-                        prev_is_value_end = false;
-                    }
-                    _ => {
-                        prev_is_value_end = false;
-                    }
+            Token::RBrace => match delims.pop() {
+                Some(Delim::MapLit) => {
+                    container_depth = container_depth.saturating_sub(1);
+                    prev_is_value_end = true;
                 }
-            }
+                Some(Delim::Block) => {
+                    if stmt_stack.len() > 1 {
+                        stmt_stack.pop();
+                    }
+                    if let Some(frame) = stmt_stack.last_mut()
+                        && delims.len() == frame.base_delim_depth
+                        && !matches!(
+                            frame.state,
+                            StmtState::RhsLocal | StmtState::RhsThisBare | StmtState::RhsThisMember
+                        )
+                    {
+                        frame.state = StmtState::Start;
+                    }
+                    prev_is_value_end = false;
+                }
+                _ => {
+                    return Err("Unmatched closing brace".to_owned());
+                }
+            },
             Token::LParen => {
                 let is_call = matches!(prev, Some(Token::Ident(word)) if !is_prefix_keyword(word));
                 if at_base
@@ -1792,18 +2964,37 @@ pub(crate) fn validate_source(source: &str) -> Result<(), String> {
                 prev_is_value_end = false;
             }
             Token::RParen => {
-                let _ = delims.pop();
+                if !matches!(delims.pop(), Some(Delim::CallParen | Delim::GroupParen)) {
+                    return Err("Unmatched closing parenthesis".to_owned());
+                }
                 prev_is_value_end = true;
             }
             Token::InterpStart => {
                 delims.push(Delim::Interp);
+                stmt_stack.push(StmtFrame {
+                    state: StmtState::Start,
+                    base_delim_depth: delims.len(),
+                });
                 prev_is_value_end = false;
             }
             Token::InterpEnd => {
-                let _ = delims.pop();
+                if delims.pop() != Some(Delim::Interp) {
+                    return Err("Unmatched interpolation closing brace".to_owned());
+                }
+                if stmt_stack.len() > 1 {
+                    stmt_stack.pop();
+                }
                 prev_is_value_end = false;
             }
-            Token::Semi => {
+            Token::Semi | Token::FatArrow => {
+                if at_base && let Some(frame) = stmt_stack.last_mut() {
+                    frame.state = StmtState::Start;
+                }
+                prev_is_value_end = false;
+            }
+            Token::Comma => {
+                // At block base, `,` separates `switch` arms; reset to `Start`
+                // so the next arm pattern/body tracks `this` assignments cleanly.
                 if at_base && let Some(frame) = stmt_stack.last_mut() {
                     frame.state = StmtState::Start;
                 }
@@ -1913,7 +3104,7 @@ pub(crate) fn validate_source(source: &str) -> Result<(), String> {
                 }
                 prev_is_value_end = true;
             }
-            Token::EqEq | Token::Comma | Token::Colon | Token::Op => {
+            Token::EqEq | Token::Colon | Token::Op => {
                 if at_base
                     && let Some(frame) = stmt_stack.last_mut()
                     && matches!(
@@ -1931,5 +3122,428 @@ pub(crate) fn validate_source(source: &str) -> Result<(), String> {
         }
     }
 
+    if !delims.is_empty() {
+        return Err("Unclosed delimiter in source".to_owned());
+    }
+
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Authoritative compiled-AST structural validator (P2-CORE-1, P2-CORE-2)
+// ---------------------------------------------------------------------------
+
+/// Unwrap trivial single-expression `Expr::Stmt([Stmt::Expr(e)])` wrappers
+/// produced by parenthesized expressions like `(this)` or `([this.k])`.
+fn unwrap_paren_expr(mut expr: &Expr) -> &Expr {
+    while let Expr::Stmt(block) = expr {
+        let stmts = block.statements();
+        if stmts.len() == 1
+            && let Some(Stmt::Expr(inner)) = stmts.first()
+        {
+            expr = inner;
+        } else {
+            break;
+        }
+    }
+    expr
+}
+
+fn rhs_chain_steps(expr: &Expr) -> usize {
+    match expr {
+        Expr::Dot(x, options, ..) | Expr::Index(x, options, ..) => {
+            if options.contains(ASTFlags::BREAK) {
+                1
+            } else {
+                1 + rhs_chain_steps(&x.rhs)
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// If `expr` is `this` or a dot/index chain rooted at `this`, returns its
+/// nesting depth (`0` for bare `this`, `1` for `this.k` / `this["k"]`,
+/// `>= 2` for `this.a[0]` / `this.a.k` / `this["a"]["k"]`, etc.).
+fn this_chain_depth(expr: &Expr) -> Option<usize> {
+    match unwrap_paren_expr(expr) {
+        Expr::ThisPtr(..) => Some(0),
+        Expr::Dot(x, options, ..) | Expr::Index(x, options, ..) => {
+            let lhs_depth = this_chain_depth(&x.lhs)?;
+            if options.contains(ASTFlags::BREAK) {
+                Some(lhs_depth + 1)
+            } else {
+                Some(lhs_depth + 1 + rhs_chain_steps(&x.rhs))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether `call` is a safe scalar-producing predicate (`in`, `!in`, `==`, `!=`).
+///
+/// `==` and `!=` are native-only operators (`op_token` set). `in` and `!in`
+/// lower to a 2-arg call to `contains`, which can resolve to a user script
+/// function if the script defines `fn contains(...)` — so we only treat
+/// `contains` as safe when the AST defines no script function named `contains`.
+fn is_safe_this_predicate_call(call: &rhai::FnCallExpr, has_script_contains: bool) -> bool {
+    if matches!(
+        call.op_token,
+        Some(RhaiToken::EqualsTo | RhaiToken::NotEqualsTo)
+    ) {
+        return true;
+    }
+    !has_script_contains
+        && call.namespace.is_empty()
+        && call.name == "contains"
+        && call.args.len() == 2
+}
+
+/// Whether `expr` references `this` (bare or member/method) anywhere outside a
+/// safe scalar predicate (`"k" in this`, `this == x`, `this != x`).
+fn expr_contains_value_this(expr: &Expr, has_script_contains: bool) -> bool {
+    let mut found = false;
+    let mut path = Vec::new();
+    let _ = expr.walk(&mut path, &mut |nodes| {
+        if let Some(ASTNode::Expr(Expr::ThisPtr(..))) = nodes.last() {
+            // Allow bare `this` only as a direct operand of `in`, `==`, `!=`.
+            let direct_safe_pred = nodes.len() >= 2
+                && matches!(
+                    nodes.get(nodes.len() - 2),
+                    Some(ASTNode::Expr(Expr::FnCall(f, ..)))
+                        if is_safe_this_predicate_call(f, has_script_contains)
+                );
+            if !direct_safe_pred {
+                found = true;
+                return false;
+            }
+        }
+        true
+    });
+    found
+}
+
+/// Whether `expr` contains a bare `this` (i.e. `Expr::ThisPtr` NOT directly
+/// accessed as `this.prop` / `this[idx]` / `this.method(...)` and NOT a direct
+/// operand of `in` / `==` / `!=`).
+fn expr_contains_bare_this(expr: &Expr, has_script_contains: bool) -> bool {
+    let mut found = false;
+    let mut path = Vec::new();
+    let _ = expr.walk(&mut path, &mut |nodes| {
+        if let Some(ASTNode::Expr(cur @ Expr::ThisPtr(..))) = nodes.last() {
+            let parent = nodes.len().checked_sub(2).and_then(|i| nodes.get(i));
+            let is_member_lhs = matches!(
+                parent,
+                Some(ASTNode::Expr(Expr::Dot(x, ..) | Expr::Index(x, ..)))
+                    if std::ptr::eq(&x.lhs, *cur)
+            );
+            let is_safe_pred = matches!(
+                parent,
+                Some(ASTNode::Expr(Expr::FnCall(f, ..)))
+                    if is_safe_this_predicate_call(f, has_script_contains)
+            );
+            if !is_member_lhs && !is_safe_pred {
+                found = true;
+                return false;
+            }
+        }
+        true
+    });
+    found
+}
+
+/// Authoritative compile-time structural validator run directly over Rhai's
+/// compiled [`AST`] (covering top-level statements and every function body,
+/// including `switch` arms, interpolations, and optimizer-folded constants):
+///
+/// 1. Enforces static container-literal nesting depth `<= MAX_CONTAINER_DEPTH`
+///    across `Expr::Array`, `Expr::Map`, and `Expr::DynamicConstant`.
+/// 2. Rejects all `this` self-nesting paths (`this = [this]`, `this.k = [this.k]`,
+///    `this.k = this`, `this.a[0] = this.a`, `this.a.k = this.b`,
+///    `this.a += this.b`, `this.a += [this.a]`, `fn wrap() { this }`,
+///    `fn make() { [this.k] }`, and `switch`-arm equivalents) while preserving
+///    legitimate mind patterns (`this = pass_mem(this)`, `"k" in this`,
+///    `this.before = this.last`, `this.hits += 1`,
+///    `let at = [this.last[0], this.last[1]]`,
+///    `this.marks_x[this.mark_index] = mark[0]`).
+pub(crate) fn validate_ast(ast: &AST) -> Result<(), String> {
+    let has_script_contains = ast.iter_functions().any(|f| f.name == "contains");
+    let mut error: Option<String> = None;
+
+    let _ = ast.walk(&mut |path| {
+        let Some(&last) = path.last() else {
+            return true;
+        };
+
+        let container_depth = path
+            .iter()
+            .filter(|node| matches!(node, ASTNode::Expr(Expr::Array(..) | Expr::Map(..))))
+            .count();
+
+        if container_depth > MAX_CONTAINER_DEPTH {
+            error = Some(format!(
+                "Container literal nesting exceeds maximum complexity (limit {MAX_CONTAINER_DEPTH})"
+            ));
+            return false;
+        }
+
+        match last {
+            ASTNode::Expr(Expr::DynamicConstant(val, ..)) => {
+                let allowed = MAX_CONTAINER_DEPTH.saturating_sub(container_depth);
+                if exceeds_depth(val, allowed) {
+                    error = Some(format!(
+                        "Container literal nesting exceeds maximum complexity (limit {MAX_CONTAINER_DEPTH})"
+                    ));
+                    return false;
+                }
+            }
+            ASTNode::Expr(Expr::Map(x, ..)) => {
+                let allowed = MAX_CONTAINER_DEPTH.saturating_sub(container_depth);
+                for val in x.1.values() {
+                    if exceeds_depth(val, allowed) {
+                        error = Some(format!(
+                            "Container literal nesting exceeds maximum complexity (limit {MAX_CONTAINER_DEPTH})"
+                        ));
+                        return false;
+                    }
+                }
+            }
+            ASTNode::Stmt(Stmt::Assignment(x)) => {
+                let (op_info, bin_expr) = x.as_ref();
+                if let Some(lhs_depth) = this_chain_depth(&bin_expr.lhs) {
+                    if lhs_depth >= 1 && expr_contains_bare_this(&bin_expr.rhs, has_script_contains)
+                    {
+                        error = Some("Cannot assign `this` into a member of `this`".to_owned());
+                        return false;
+                    }
+                    // Op-assignments on `this` / `this.*` (`+=`, etc.) bypass
+                    // `array_push` under `fast_operators = true`: forbid any
+                    // `this`-referencing RHS (e.g. `this.a += this.b`,
+                    // `this.a += [this.a]`) while keeping `this.hits += 1`.
+                    if op_info.is_op_assignment()
+                        && expr_contains_value_this(&bin_expr.rhs, has_script_contains)
+                    {
+                        error = Some(
+                            "Cannot op-assign a `this`-derived value into `this`".to_owned(),
+                        );
+                        return false;
+                    }
+                    // Nested member/index writes into `this` (`this.a[0] = ...`,
+                    // `this.a.k = ...`) mutate containers in place without
+                    // `on_var`: forbid any `this`-derived RHS (`this.a[0] = this.a`,
+                    // `this.a.k = this.b`) while allowing `this.marks_x[this.mark_index] = mark[0]`.
+                    if lhs_depth >= 2
+                        && expr_contains_value_this(&bin_expr.rhs, has_script_contains)
+                    {
+                        error = Some(
+                            "Cannot assign a `this`-derived value into a nested member of `this`"
+                                .to_owned(),
+                        );
+                        return false;
+                    }
+                }
+            }
+            ASTNode::Expr(cur @ Expr::ThisPtr(..)) => {
+                let parent = path.len().checked_sub(2).and_then(|i| path.get(i).copied());
+                let is_member_lhs = matches!(
+                    parent,
+                    Some(ASTNode::Expr(Expr::Dot(x, ..) | Expr::Index(x, ..)))
+                        if std::ptr::eq(&x.lhs, cur)
+                );
+                let is_assign_lhs = is_inside_this_assignment_lhs(path);
+                let is_in_this_assign_rhs = is_inside_this_assignment_rhs(path);
+                let is_in_local_rhs = is_inside_local_assignment_rhs(path) && !is_in_this_assign_rhs;
+
+                if !is_member_lhs {
+                    // Bare `this`
+                    if container_depth > 0 {
+                        error = Some("Container literal cannot embed bare `this`".to_owned());
+                        return false;
+                    }
+                    let is_safe_pred = matches!(
+                        parent,
+                        Some(ASTNode::Expr(Expr::FnCall(f, ..)))
+                            if is_safe_this_predicate_call(f, has_script_contains)
+                    );
+                    let is_call_arg = matches!(
+                        parent,
+                        Some(
+                            ASTNode::Expr(Expr::FnCall(..) | Expr::MethodCall(..))
+                                | ASTNode::Stmt(Stmt::FnCall(..))
+                        )
+                    );
+                    if is_safe_pred || is_assign_lhs {
+                        // Safe `"k" in this`, `this == x`, or `this = ...` LHS.
+                    } else if is_in_this_assign_rhs {
+                        // Allow `this = pass_mem(this)` (bare `this` LHS, call arg RHS),
+                        // refuse assigning bare `this` into `this.member` (handled above too).
+                        let lhs_is_bare_this = enclosing_this_assignment_lhs_depth(path) == Some(0);
+                        if !(lhs_is_bare_this && is_call_arg) {
+                            error = Some("Cannot assign `this` into a member of `this`".to_owned());
+                            return false;
+                        }
+                    } else if is_call_arg || is_in_local_rhs {
+                        // Call argument (`pass_mem(this)`) or local-variable RHS (`let m = this`).
+                    } else {
+                        error = Some("Bare `this` cannot be returned directly".to_owned());
+                        return false;
+                    }
+                } else {
+                    // Member or method access on `this` (`this.k`, `this["k"]`, `this.m()`).
+                    if container_depth > 0
+                        && (is_in_this_assign_rhs || container_depth > 1 || !is_in_local_rhs)
+                    {
+                        error =
+                            Some("Cannot nest `this` member inside a container literal".to_owned());
+                        return false;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        true
+    });
+
+    match error {
+        Some(msg) => Err(msg),
+        None => Ok(()),
+    }
+}
+
+/// Whether the node at the end of `path` lies inside the `lhs` of an enclosing
+/// `Stmt::Assignment` whose `lhs` is rooted at `this`.
+fn is_inside_this_assignment_lhs(path: &[ASTNode<'_>]) -> bool {
+    for (idx, node) in path.iter().enumerate() {
+        if let ASTNode::Stmt(Stmt::Assignment(x)) = node
+            && this_chain_depth(&x.1.lhs).is_some()
+            && let Some(ASTNode::Expr(child)) = path.get(idx + 1)
+            && std::ptr::eq(*child, &x.1.lhs)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the node at the end of `path` lies inside the `rhs` of an enclosing
+/// `Stmt::Assignment` whose `lhs` is rooted at `this`.
+fn is_inside_this_assignment_rhs(path: &[ASTNode<'_>]) -> bool {
+    enclosing_this_assignment_lhs_depth(path).is_some()
+}
+
+/// Returns the `lhs` `this`-chain depth of the innermost enclosing
+/// `Stmt::Assignment` whose `rhs` contains the end of `path`.
+fn enclosing_this_assignment_lhs_depth(path: &[ASTNode<'_>]) -> Option<usize> {
+    for (idx, node) in path.iter().enumerate().rev() {
+        if let ASTNode::Stmt(Stmt::Assignment(x)) = node
+            && let Some(depth) = this_chain_depth(&x.1.lhs)
+            && let Some(ASTNode::Expr(child)) = path.get(idx + 1)
+            && std::ptr::eq(*child, &x.1.rhs)
+        {
+            return Some(depth);
+        }
+    }
+    None
+}
+
+/// Whether the node at the end of `path` lies inside the RHS of a local
+/// `Stmt::Var` (`let x = ...`) or a non-`this` `Stmt::Assignment` (`x = ...`).
+fn is_inside_local_assignment_rhs(path: &[ASTNode<'_>]) -> bool {
+    for (idx, node) in path.iter().enumerate().rev() {
+        match node {
+            ASTNode::Stmt(Stmt::Var(..)) => return true,
+            ASTNode::Stmt(Stmt::Assignment(x)) => {
+                if this_chain_depth(&x.1.lhs).is_none()
+                    && let Some(ASTNode::Expr(child)) = path.get(idx + 1)
+                    && std::ptr::eq(*child, &x.1.rhs)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p2_core_1_validate_source_fails_closed_on_unclosed_forms_and_interp_maps() {
+        let must_reject = [
+            // Unclosed strings, raw strings, char literals, comments, templates, interps, delims
+            "fn think(a, b) { let s = \"unterminated; }",
+            "fn think(a, b) { let s = #\"unterminated; }",
+            "fn think(a, b) { let c = 'a; }",
+            "fn think(a, b) { /* unclosed comment }",
+            "fn think(a, b) { /* outer /* inner */ }",
+            "fn think(a, b) { let s = `unclosed template; }",
+            "fn think(a, b) { let s = `${ 1; }",
+            "fn think(a, b) { let s = [1, 2; }",
+            // Exact P2-CORE-1 map-literal-in-interpolation desync payloads
+            "fn think(a, b) { let s = `${ #{}; \"`\" }`; loop { this = [this]; } }",
+            "fn think(a, b) { let s = `${ #{}; \"`\" }`; let x = [[[[[[[[[1]]]]]]]]]; }",
+            // Verbatim backtick backslash desync
+            "fn think(a, b) { let s = `\\` + \"`\"; loop { this = [this]; } }",
+        ];
+        for src in must_reject {
+            assert!(
+                validate_source(src).is_err(),
+                "expected validate_source refusal for: {src}"
+            );
+        }
+
+        let must_accept = [
+            "fn think(a, b) { let s = `${ #{ k: 1 }; \"`\" }`; }",
+            "fn think(a, b) { let s = `hello ${ `nested ${ #{ a: [1] } }` }`; }",
+            "fn think(a, b) { let s = #\"raw \" quote\"#; let q = \"a\"\"b\"; }",
+            "fn think(a, b) { let s = `\\${not_interp} ``escaped`` \\`; }",
+        ];
+        for src in must_accept {
+            assert!(
+                validate_source(src).is_ok(),
+                "expected validate_source acceptance for: {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn p2_core_2_iterative_teardown_handles_deep_scope_and_error_runtime_on_small_stack() {
+        let handle = std::thread::Builder::new()
+            .name("mind-p2-core-2-teardown".to_owned())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut deep_scope_val = Dynamic::from_int(1);
+                let mut deep_err_val = Dynamic::from_int(2);
+                for _ in 0..5_000 {
+                    deep_scope_val = Dynamic::from_array(vec![deep_scope_val]);
+                    let mut m = Map::new();
+                    m.insert("k".into(), deep_err_val);
+                    deep_err_val = Dynamic::from_map(m);
+                }
+
+                let mut scope = Scope::new();
+                scope.push_dynamic("deep", deep_scope_val);
+                drop_scope_iteratively(scope);
+
+                let err = Box::new(EvalAltResult::ErrorInFunctionCall(
+                    "inner".to_owned(),
+                    String::new(),
+                    Box::new(EvalAltResult::ErrorRuntime(deep_err_val, Position::NONE)),
+                    Position::NONE,
+                ));
+                assert!(eval_error_has_deep_payload(&err));
+                drop_eval_error_iteratively(err);
+            });
+        assert!(handle.is_ok(), "failed to spawn teardown thread");
+        if let Ok(h) = handle {
+            assert!(
+                h.join().is_ok(),
+                "iterative teardown panicked or overflowed"
+            );
+        }
+    }
 }

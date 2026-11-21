@@ -129,7 +129,15 @@ fn ended(error: &EvalAltResult) -> Ended {
         | EvalAltResult::ErrorTooManyModules(..)
         | EvalAltResult::ErrorStackOverflow(..)
         | EvalAltResult::ErrorDataTooLarge(..) => Ended::Faulted(Fault::Limit),
-        _ => Ended::Faulted(Fault::Type(trace::line(error))),
+        _ => {
+            if guards::eval_error_has_deep_payload(error) {
+                Ended::Faulted(Fault::Type(
+                    "Runtime error: container nesting depth exceeded".to_owned(),
+                ))
+            } else {
+                Ended::Faulted(Fault::Type(trace::line(error)))
+            }
+        }
     }
 }
 
@@ -208,6 +216,7 @@ impl Sandbox {
         let held: BTreeSet<String> = decoded.keys().cloned().collect();
         let map = memory::to_map(&decoded);
         let mut this = SafeThis(Dynamic::from_map(map));
+        let mut scope = SafeScope(Scope::new());
         let ast = &think.compiled.ast;
         let args = think.args;
         let called = catch_unwind(AssertUnwindSafe(|| {
@@ -215,7 +224,7 @@ impl Sandbox {
                 CallFnOptions::new()
                     .bind_this_ptr(&mut this.0)
                     .eval_ast(false),
-                &mut Scope::new(),
+                &mut scope.0,
                 ast,
                 "think",
                 args,
@@ -223,8 +232,15 @@ impl Sandbox {
         }));
         let returned = match called {
             Err(_panic) => return Err(Fault::Panic),
-            Ok(Ok(_returned)) => Ended::Returned,
-            Ok(Err(error)) => ended(&error),
+            Ok(Ok(val)) => {
+                guards::drop_dynamic_iteratively(val);
+                Ended::Returned
+            }
+            Ok(Err(error)) => {
+                let outcome = ended(&error);
+                guards::drop_eval_error_iteratively(error);
+                outcome
+            }
         };
         // The think's first refusal ends it, caught or not (the latch,
         // `system_error`): it came before whatever the script did after.
@@ -280,5 +296,16 @@ struct SafeThis(Dynamic);
 impl Drop for SafeThis {
     fn drop(&mut self) {
         guards::drop_dynamic_iteratively(std::mem::take(&mut self.0));
+    }
+}
+
+/// RAII guard that iteratively dismantles every `Dynamic` variable in a
+/// `Scope` on drop (normal return, fault, or panic unwind) so deep values
+/// never overflow the call stack during scope teardown (P2-CORE-2).
+struct SafeScope(Scope<'static>);
+
+impl Drop for SafeScope {
+    fn drop(&mut self) {
+        guards::drop_scope_iteratively(std::mem::take(&mut self.0));
     }
 }
