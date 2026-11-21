@@ -3804,8 +3804,31 @@ fn owed_interdicted_leg(
         Some(ids) => first_interdicted(ids),
         // Doc 50 cut KC.2 (Q-50-55): a destination the port of departure lays no route to (Ceres
         // to Deimos, the free-flight shortcut) flies none of the lane's lawful legs, so it owes
-        // the picket's leg: the first interdicted leg of any route out of that port.
-        None => def.routes.values().find_map(|ids| first_interdicted(ids)),
+        // the picket's leg: the first interdicted leg of a route out of that port.
+        //
+        // Doc 50b: only a destination past the approach owes it. The port's own venue (a Ceres
+        // halo's return home) never does, and a destination owes the leg of a route out of the
+        // port only when a lane route with no interdicted leg joins it to that route's far end
+        // (Deimos and Isidis to Stickney, not Titan).
+        None if def.venue == *dest_venue => None,
+        None => {
+            let ports = crate::port::voyage::lane_ports(w);
+            let clean = |from: &mush_core::CanonicalId, to: &mush_core::CanonicalId| {
+                ports
+                    .iter()
+                    .find(|(port, _)| port.venue == *from)
+                    .and_then(|(port, _)| port.routes.get(to))
+                    .is_some_and(|ids| {
+                        ids.iter()
+                            .filter_map(|id| store.route_in_world(w, id))
+                            .any(|route| !route.legs().iter().any(|leg| leg.is_interdicted()))
+                    })
+            };
+            def.routes
+                .iter()
+                .filter(|(far, _)| clean(dest_venue, far) || clean(far, dest_venue))
+                .find_map(|(_, ids)| first_interdicted(ids))
+        }
     }
 }
 
@@ -5200,8 +5223,6 @@ fn helm_submit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// No picket is hailing her, she is cleared or has run already, she is not hove to, or the
 /// seizure could not be taken.
 pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(), CmdError> {
-    let now_ic = ctx.w.world_ic_now().at;
-
     let (corvette_ship_id, carrier_ship_id, rel_speed_mmps, status) = {
         let book = ctx
             .w
@@ -5264,6 +5285,55 @@ pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(
     }
 
     let customs_principal = super::picket::resolve_hull_customs_principal(ctx.w, hull, ctx.actor);
+    let (finding, found) = customs_finding(ctx, hull, customs_principal)?;
+    let reserve = match &finding {
+        super::customs::CustomsFinding::Fined { fine_minor, .. } => *fine_minor,
+        _ => 0,
+    };
+    super::customs::file_ruling(
+        ctx,
+        hull,
+        customs_principal,
+        finding,
+        (corvette_ship_id.clone(), carrier_ship_id.clone()),
+    )?;
+    // Doc 50 cut KC.2 (Q-50-6, Q-50-54): the transit duty on a laden hull, under the terms
+    // pinned on her passage: paid now, or owed with 28 IC days of grace. It never changes the
+    // finding: lawful cargo is never seized for a duty.
+    //
+    // Doc 50b: the fine comes first. The duty is paid only from what the fine leaves (else it is
+    // owed), and it is charged once a crossing, so a resubmission on the same crossing pays none.
+    let crossing = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .and_then(|book| book.active_for_hull(hull))
+        .map(|active| (hull, active.carrier_leg_cursor_for(hull)));
+    let levied = super::duty::levy_once(ctx, hull, customs_principal, crossing, reserve);
+    let duty = super::duty::duty_line(ctx, hull, levied.as_ref());
+
+    let line = format!(
+        "[PICKET] Republic Customs Corvette `{corvette_ship_id}` is inspecting `{carrier_ship_id}` manifest ({found}).{duty} Hold your heave-to: the ruling follows once it is recorded."
+    );
+    crate::port::voyage::narrate_hull(ctx, hull, &line);
+    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
+    push_space_panels(ctx, hull);
+    Ok(())
+}
+
+/// **What customs finds aboard `hull`, answered for by `customs_principal`**: the manifest read,
+/// and a clearance, a fine the principal can pay, or a seizure when no credit covers the fine,
+/// with the words for the inspection line. `+helm/submit` and the absent hull's assessment
+/// (doc 50b, Q-50-54 "assessed the same way") both come here.
+///
+/// # Errors
+///
+/// A seizure is due and the hull has no hold to take it from.
+pub(crate) fn customs_finding(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    customs_principal: ObjId,
+) -> Result<(super::customs::CustomsFinding, String), CmdError> {
+    let now_ic = ctx.w.world_ic_now().at;
     let manifest = super::picket::inspect_hull_manifest(ctx, hull, Some(customs_principal), now_ic);
     // `SF.R30` (doc 35d §6.7): a hold with no strategic ore left in it has nothing to trace to
     // a block. The record of the blocks she mined goes, so ore sold long ago cannot mark a
@@ -5279,7 +5349,7 @@ pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(
     // ruling (and takes a seizure's ore from the hold in the same transaction); the space tick
     // levies the fine, advances the front and clears the ship on the committed row.
     let unlicensed_kg = manifest.unlicensed_strategic_ore_kg;
-    let (finding, found) = if unlicensed_kg == 0 {
+    Ok(if unlicensed_kg == 0 {
         (
             super::customs::CustomsFinding::Cleared {
                 strategic_ore_kg: manifest.strategic_ore_kg,
@@ -5327,27 +5397,7 @@ pub(crate) fn submit_hull_to_customs(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<(
                 ),
             )
         }
-    };
-    super::customs::file_ruling(
-        ctx,
-        hull,
-        customs_principal,
-        finding,
-        (corvette_ship_id.clone(), carrier_ship_id.clone()),
-    )?;
-    // Doc 50 cut KC.2 (Q-50-6, Q-50-54): the transit duty on a laden hull, under the terms
-    // pinned on her passage: paid now, or owed with 28 IC days of grace. It never changes the
-    // finding: lawful cargo is never seized for a duty.
-    let levied = super::duty::levy_transit_duty(ctx, hull, customs_principal);
-    let duty = super::duty::duty_line(ctx, hull, levied.as_ref());
-
-    let line = format!(
-        "[PICKET] Republic Customs Corvette `{corvette_ship_id}` is inspecting `{carrier_ship_id}` manifest ({found}).{duty} Hold your heave-to: the ruling follows once it is recorded."
-    );
-    crate::port::voyage::narrate_hull(ctx, hull, &line);
-    ctx.out.sys_to_actor(ctx.actor, "tacsim.space", line);
-    push_space_panels(ctx, hull);
-    Ok(())
+    })
 }
 
 fn helm_run(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {

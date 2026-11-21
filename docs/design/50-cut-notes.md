@@ -121,6 +121,27 @@ the haul; the 35 km breach records the pilot, not the hull, and writes a ruling.
 - The fill check's switch to the reading has no story of its own. It calls the same function the
   picket's story mutation-checks.
 
+**Fixes from doc 50b** (the outside review's CR finding; PR "50b customs P1").
+- **A seizure takes the whole quantity before clearance.** One ruling takes at most
+  `MAX_SEIZED_ROWS` (16) lots. A ruling that lands having taken less than it was filed for
+  clears nothing: the rest is filed as a new ruling carrying `taken_before_t`, the ship stays
+  uncleared, and the clearance names the whole total. Story:
+  `kc2b_seventeen_lots_of_ore_are_all_seized_before_clearance` (seventeen 3 t lots end with 0 t
+  aboard).
+- **The seizure's lots are filtered inside the walk.** `works::unheld_lots_of` scans the lot
+  family for unheld lots of the good, so lots of other goods, or held ones, no longer crowd the
+  ore out of the 32 a walk returned.
+- Still not built: a lot larger than what is left to take is skipped (no lot is split), and a
+  held lot is still not taken.
+
+**Fixes from doc 50b, the rest** (PR "50b customs P2").
+- **The picket's run incident names its officer.** The canon incident names the officer who
+  flew the run as `pilot`, as the standing loss does, and the principal who answers for the
+  hull as its own field, `liable`, named among the entities when it is someone else.
+- **Seized lots are offered.** `seized::offer_lots` lists each unheld lot of the good in the
+  authority's vault as an exact-lot ask of its whole quantity at the seized price; the pool's
+  ask never sold a lot.
+
 ## KC.0a
 
 The faction engine that the Kirkwood chain and the Isidis operation stand on (Q-50-50, Q-50-51,
@@ -318,6 +339,10 @@ branch**; the next lane bump (KC.2, KC.4 or OP.1) starts from v45.
   `FactionId`; it did not fall out of this unit (KC.1).
 - No polity has a backing organization or a treasury (KC.2, Q-50-14).
 - No compiled caller reads `control_at` yet (KC.2 on).
+
+**Fixes from doc 50b** (PR "50b customs P2").
+- **One regions block a pack.** The decode refuses a second block, which every read would have
+  ignored. Story: `kc0b_a_second_regions_block_is_refused`.
 
 ## KC.1
 
@@ -535,6 +560,48 @@ must land after OP.1's.
 - The import duty and the restricted goods (LW.1, OP.5).
 - The penalties past the grace.
 
+**Fixes from doc 50b** (the outside review's KC.2 findings; PR "50b customs P1").
+- **The shortcut rule is narrowed (Q-50-55).** The fallback leg is never owed for the departure
+  port's own venue (a Ceres halo's way home, autopilot or the link-dead return), and is owed for
+  a destination only when a lane route with no interdicted leg joins it to that route's far end
+  (from Ceres: Deimos and Isidis, not Titan). Story:
+  `kc2b_the_return_from_the_ceres_halo_meets_no_picket`.
+- **The fine before the duty, one duty a crossing.** `levy_transit_duty` pays the duty only from
+  what a fine found on the same crossing leaves (`reserve_minor`), else it is owed. `levy_once`
+  charges it once a crossing, keyed by hull and journey cursor (`SpaceBubbleBook::duty_crossings`),
+  so a resubmission pays none. Story:
+  `kc2b_the_fine_is_paid_before_the_duty_and_the_ore_is_not_seized` (1,100 cr, a 1,000 cr fine:
+  the fine paid, one duty owed, the ore not seized).
+- **An absent hull is assessed the same way (Q-50-54).** `assess_absent` reads the manifest
+  through `customs_finding`, the helper `+helm/submit` now uses too, and files a fine or a
+  seizure as a ruling with the principal as its officer. A clean hold is cleared at once. Story:
+  `kc2b_an_away_pilots_hull_is_fined_for_unlicensed_ore`.
+- **An absent crossing's leg is marked cleared** at the boundary, so another carrier's open
+  picket never takes her in as awaiting heave-to.
+- **A restart.** The live hook records each Kirkwood crossing (`picket_crossings`). Before any
+  interdiction is promoted, the space tick queues every crossing a journey's cursor has passed
+  that the hook never saw (boot recovery skips it) as an absent one, its leg marked cleared.
+  Story: `kc2b_a_restart_across_the_picket_leg_still_charges_the_duty_once`.
+- **Divergences** (the smallest choice where the review is silent):
+  - The far-side test looks one route hop from the picket route's far end.
+  - A passage that arrives during an outage leaves no journey to read, and is not assessed.
+  - An absent hull's ruling lines name the "Kirkwood picket" where a corvette would be named.
+
+**Fixes from doc 50b, the rest** (PR "50b customs P2").
+- **A duty past its grace binds (Q-50-54).** An owed duty writes an offense row
+  (`OffenseKind::UnpaidDuty`, `Evidence::Duty`) of the payee's polity against whoever answers
+  for the hull, carrying the duty's debt. The departure hold reads it as a fine, and the trade
+  restriction counts it only once the debt is past its grace. Story:
+  `kc2b_a_past_due_duty_holds_the_hull_and_restricts_trade`.
+- **The seizing authority follows the terms payee (Q-50-14, Q-50-44).**
+  `seized::seizing_authority_for` routes a seizure through the payee of the hull's terms row,
+  at the lane port that lists it, else the Registry. Story:
+  `kc2b_after_the_flip_a_seized_lot_goes_to_the_customs_office_and_is_offered`.
+- **A hauling house's fine is the house's (Q-50-56).** The contraband fine is checked and paid
+  from `house_account_of_helm`, as the duty is.
+- **Lane content, not built here:** the customs office's org row gains `"roles": ["acceptor"]`
+  in OP.7b's v51, without which a fine after the flip cannot be accepted by its payee.
+
 ## KC.3
 
 The duty line on `+ship/plan`, the filing and the job board, and the reason clause; the first
@@ -612,6 +679,17 @@ on KC.2. No lane bump.
 - The Co-op's share by control (KC.4).
 - A duty line on a queued departure's filing. It files through the executor, which writes no
   reply.
+
+**Fixes from doc 50b** (PR "50b customs P2").
+- **The board walks the haul (Q-50-8).** `haul_clause` reads the fewest hops of listed routes
+  between the two venues, port to port, so a Ceres to Isidis haul, flown by Stickney, carries the
+  duty clause. Story: `kc3b_the_boards_duty_walks_a_haul_port_to_port`.
+- **A queued order names the duty.** The queued-order projection adds the estimate under the
+  live terms, and the order's filing tells the pilot the estimate under the terms it pinned.
+- **The acceptance story (Q-50-47).** `kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why`
+  gains a second account that files the same run before the flip: no duty line, the Co-op's
+  terms pinned, and the flip leaves them so.
+- **Divergence (the owner's ruling of 2026-11-20):** the story stays at 3,600:1, not 24:1.
 
 ## KC.4
 
@@ -1581,6 +1659,37 @@ Q-50-63; doc 50a A-8, A-8b). Stacked on OP.2. **No lane bump.**
 - The NPC arm's use of the organization path (OP.4).
 - The untaken haul carried by EX.10's house (Q-50-24, OP.4).
 
+### Fixes from doc 50b
+
+Doc 50b (the outside code review of 2026-11-20) found four defects on OP.3's paths. Fixed together
+with OP.6's two, below; no lane bump.
+- **A haul taken in its escort's own hull** (P2). Acceptance compared the escort's hull with a
+  protected hull still unbound, and binding never looked again, so a hull could escort herself
+  and the record then failed its own check on reload. Now, when the haul is taken in the escort's
+  hull, whichever contract was taken first, the escort is called off through `cancel_job` and
+  both parties are told (`escort::TOLD_SAME_HULL`).
+- **A delivered haul stuck aboard** (P2). The arm looked for a wreck or capture before
+  acknowledging a delivery the ledger had committed, so a hull lost after docking owed a lost leg
+  the ledger refused for ever. The committed delivery is acknowledged first.
+- **Hold capacity** (doc 50 §7's cargo reading). Mining's hold reading
+  (`mining::hull_hold_used_tonnes`) counted the four ores only; it now counts, by mass, every good
+  the ore compartments take, bulk trade goods included, and rounds up. The haul's admission read
+  pools only; it reads what the hold holds (`port_tick::read_held`, `haul::hold_has_room`), and the
+  load re-reads the room before each try, calling the haul off with `haul::TOLD_NO_ROOM` when
+  there is none.
+- **The escort's grace at a test rate** (P3). The proximity test compared departures against
+  `TOGETHER_IC` alone, so at 3,600:1 an escort inside the launch grace failed the passage. Both
+  now read `escort::together_ic`: `TOGETHER_IC`, or the IC seconds `LAUNCH_GRACE_WALL_S` make at
+  the clock rate, whichever is longer. At 24:1 nothing changes.
+- **Tests** (`domain_economy::op3_hauls`): `op50b_a_haul_taken_in_its_escorts_own_hull_calls_the_escort_off`;
+  `op50b_a_delivery_committed_before_the_hull_is_lost_stays_delivered` (two hops to Isidis, the
+  delivery lands, then the hull is wrecked: the contract settles);
+  `op50b_a_full_dray_p_can_neither_mine_more_nor_take_a_haul` (alloys held as a lot fill the hold:
+  the haul refuses her and `+mine/status` reads the ore hold full); and the unit test
+  `escort::op50b_the_together_gap_follows_the_clock_rate`. Mutations, each caught: no self-escort
+  check; the delivery acknowledged after the loss check; the ore reading of ores only; the
+  admission reading pools only; no rate in the gap.
+
 ## OP.4
 
 The stockpile, its drain and the Freeport arm's budget; NPC hulls at the picket (Q-50-21, Q-50-22,
@@ -1746,6 +1855,48 @@ v48 with the lead's word.
 - **The Belt Raider taking a house hull at the picket** was not exercised by a story here; the
   bubble promotes her, as EX.10 showed.
 
+**Fixes from doc 50b** (the outside review of 2026-11-20; items by its numbering in the lead's
+brief):
+- **Item 1, the stranded house hull (P1).** Isidis sells no stores, so a house hull that delivered
+  there could price no passage home and retried every fire.
+  - A departure for a port whose houses author no ask for reaction mass or for provisions now
+    fills for the leg home too, as one for a site does. Only the fill is sized so: the departure
+    is not refused for it. This applies to a player's fill as well.
+  - The house prices a passage from a port that sells no stores out of what is aboard, valued at
+    the lowest ask the lane posts, and a look there that finds nothing waits a day.
+  - A carried haul that ends away from the port she took it at sails her back there hop by hop
+    before the trip ends, so she can carry the arm's next haul. A hop whose plan holds ends the
+    trip where she lies.
+  - The OP.4 story runs on past the delivery: home by Stickney to Ceres, and a second haul taken.
+- **Item 3, the stale close probe (P2).** The probe answered from the cached reading, which a
+  delivery or a drain since could have changed, and a failed read kept the old answer.
+  - The probe reads only `&World`, and the vault's pools are read through a module's `Ctx`, so the
+    probe cannot read the vault itself. Instead, on the first fire at or after the operation's
+    close, the port tick reads the vault once for that operation (`FreeportArm::close_read`). The
+    probe answers from that reading alone, and is `None` (the verdict waits) until it is taken.
+    A failed read keeps nothing.
+  - A delivery that lands between the close and that first fire counts. One fire at 24:1 is some
+    12 IC minutes.
+- **Item 7, the fuel fill (P2).** The executor's `fill` now counts reaction mass held for a haul
+  aboard as weighing but not burning: the tank's target is the burn over it. The house's buy-back
+  is gone. The same fill serves a player's `+ship/order`.
+  - The held units are read from the hull's hauls of propellant aboard, not from the pool's
+    reservation book, which the planner (a `&World` reader) cannot reach. Nothing else holds a
+    tank's pool today.
+- **Item 8, Q-50-22 (P2).** The tank farm's standing bid spent the farm's own money, outside
+  Occator's cap.
+  - A sale into the bid past the month's cap, or past what Occator's account holds, is refused
+    (`FARM_BUDGET_SPENT`).
+  - Each settled sale is kept once under its quote (`FreeportArm::fills`), counted in the month's
+    spend beside the posts, and paid back to the farm from Occator on the port tick. The market's
+    `SettledSale` now names the house (the quote's buyer), since the bid's listing may no longer
+    stand when the policy is told.
+  - A sale quoted but not yet settled is not counted, so two sales at once can overshoot the cap
+    by one sale. The figures stay provisional.
+  - The story (`op5_occator_funds_the_tank_farms_bid`) shows the refusal while Occator's account
+    is empty and a funded sale counted and paid back; the cap's arithmetic, the fills beside the
+    posts, is `stockpile`'s unit test.
+
 ## OP.5
 
 The declaring arm, the operation frame and the resolution into control and the import duty
@@ -1855,6 +2006,36 @@ The declaring arm, the operation frame and the resolution into control and the i
 - `+operation`, the notices and the Republic's bid (OP.7); legal targets in a bubble and breaking
   off (OP.6).
 
+**Fixes from doc 50b** (the outside review of 2026-11-20; items by its numbering in the lead's
+brief):
+- **Item 2, organization listings paid no import duty (P1).** The market asked the proceeds
+  policy only for a person's lot ask, so an `as=<org>` listing at Isidis sold duty-free.
+  - `SaleTerms::seller` is now the seller principal, a person or an organization. The import duty
+    reads no seller, so it falls on every listing.
+  - The Co-op's share reads the seller only where it needs a person. An organization selling out
+    of a chartered hold is refused as another's, as it is at posting.
+  - The story: under the Republic an officer lists 10 t of propellant from her locker at Isidis
+    for her organization. The buyer's quote shows the duty, and Republic Customs is paid it out
+    of the organization's proceeds.
+- **Item 4, an outcome before it is final (P2).** The declaring arm acted on any outcome the frame
+  showed, and the campaign's frame shows its root's outcome while the operation settles, when it
+  can still be aborted. The arm now acts only in `Settled`. The fake frame can show an outcome
+  while settling: nothing is written then, and an abort that follows takes nothing.
+- **Item 5, the quote omitted the duty (P2; Q-50-59).** `ProceedsPolicy::venue_cuts`, empty by
+  default, names each cut a venue takes from any sale of a good there, with its reason.
+  `+market/quote` on a lot ask shows each ("Out of it the seller pays …"). A bid is sold into and
+  never quoted; a house bid's sale line already names the duty and its reason (OP.5). The Co-op's
+  share hangs on the hold the goods leave, which a quote does not know, so it stays the sale
+  line's to show.
+- **Item 6, the shares counter (P3).** The enrollment's `shares_minor` folds only the Trust's
+  share, never the duty.
+
+**Owner rulings, 2026-11-20.**
+- Hold the Concession keeps advancing once each IC month the farm stands at the threshold, as
+  built.
+- The repeat-cycle guard (the declaring arm keeps the Review clock's id) stays latent, out of
+  scope until the repeat cut.
+
 ## OP.6
 
 Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-50-62). On OP.5
@@ -1918,12 +2099,13 @@ Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-5
   - rustdoc `-D warnings` in both modes.
 
 **Divergences.**
-- **Foes are fixed when a carrier joins.** A carrier already in a bubble when the window opens
-  stays friendly to the others there; the window is 28 IC days, and every passage after it opens
-  meets its foes as foes.
+- **Foes were fixed when a carrier joined.** Replaced by doc 50b's fix (below): the foes are
+  reconciled on every bubble step.
 - **Breaking off frees her only from her operation foes.** Q-50-62 reads "every hostile hull";
   read that way a raider or an interdictor could be escaped by distance, which would change every
   bubble outside the operation. Q-50-26 rules that outside the operation today's rule stands.
+  **Confirmed by the owner (2026-11-20, Q-50-62):** the break-off stays as built, timed from
+  operation hostiles only.
 - **The reach and the time are provisional**: 25,000 m (past the interdiction standoff of
   18,000 m) and 60 s of wall time, so a player at 24:1 is not held by a foe who logged off.
 - **A side's polity is its commanding organization's**: the Republic's customs office is the
@@ -1933,8 +2115,37 @@ Legal targets in the operation's bubble, and breaking off (Q-50-26, Q-50-61, Q-5
 
 **Not built.**
 - `+operation`, the notices and the Republic's bid (OP.7).
-- The other side's clock moving when a hull flying for a side is lost (Q-50-25's last half).
+- The other side's clock moving when a hull flying for a side is lost (Q-50-25's last half): built
+  by doc 50b's fixes (below).
 - A line telling a carrier she has broken off; she resumes with the resume's own lines.
+
+### Fixes from doc 50b
+
+Doc 50b's two findings on OP.6's ground, fixed with OP.3's (above).
+- **Operation hostility set once, at join** (P1). The foes were read when a carrier joined a
+  bubble and never again, so two carriers stayed hostile after the window closed or a job ended,
+  and carriers already sharing a bubble when it opened stayed friendly. Every bubble step now
+  reads `op_sides::foes` for each pair of its carriers (`ActiveInterdictionBubble::
+  reconcile_op_foes`, before the break-off is timed): a pair newly qualified turns hostile both
+  ways and names each other; one no longer qualified turns friendly again and drops them; a
+  carrier left with no foes is no longer timed or broken off. Only carrier-to-carrier relations
+  move, so an NPC's hostility stands (Q-50-26).
+- **A side's loss moves the other side's clock** (Q-50-25 as corrected, Q-50-51). When a haul's
+  cargo is seized or lost in a hull flying for a side inside the window
+  (`op_sides::side_of`), the other side's front clock advances one segment by a typed cause,
+  `haul.loss/<contract>`, so a retry counts once (`haul::loss_moves_the_other_side`). The
+  Republic's clock is the Concession Review and the Freeport's is Hold the Concession. The
+  Review's flagged-seizure path is left as it is.
+  - **A divergence:** in the first operation the Review is full once the window opens, so a
+    Freeport-side loss moves nothing; only a Republic-side loss moves Hold.
+- **Tests**: `space::tick::op50b_operation_foes_are_reconciled_each_step` (the window closing and
+  opening; an NPC's hostility left standing) and
+  `domain_world::op6_sides::op50b_a_sides_loss_moves_the_other_sides_clock_once`. Mutations, each
+  caught: the reconcile changing nothing; no loss moving a clock.
+- **On conclav.dev, green**: all of tacsim, mush-server `split_boundary` and
+  `commerce_composition`, mush-contract-tests, mush-composition and the bot's library (its census
+  gains the two new lines); fmt; clippy `-D warnings` on tacsim and mush-server; the M7 pass;
+  rustdoc in both modes.
 
 ## OP.7
 
@@ -2034,9 +2245,87 @@ hull.
 
 ### OP.7b
 
-The Republic's bid at Stickney (Q-50-27), with lane v51 and the Stickney pack cascade.
+The Republic's bid at Stickney (Q-50-27). Stacked on OP.7 (#738). **Lane v51 (relay v42)**,
+taken on OP.5's v50 with the lead's word.
 
-Not built.
+**Survey.**
+- **The Republic Customs Office** (KC.2) is a Stickney organization with an account and no
+  storefront, so nothing can receive what a bid buys. Its capital is 10,000 cr, and OP.5's bond
+  holds 5,000 of it.
+- **A personal bid** (`mush_market::seller::post_bid`) is the actor's own and refuses `as=`; a
+  storefront bid is a vendor's (`post_wanted`), and a vendor's storefront is an authored item in
+  the port's staff spine that backs no vault yet (`port::vendor`).
+- **Stickney's spine holds three items**, and each backs a vendor's vault. Its works room is
+  the spine, and backs the works' vault.
+- **A new item** in `neighborhood.stickney_yards` bumps it to v5. Nine packs require v4 exactly
+  (`check_requires` is exact): the Stickney cast pack, `neighborhood.phobos_exchange`, both
+  passenger packs, four quest packs (`survey_work` through `first_steps`) and the relay. The
+  immutable `passengers.stickney` v1 fixture, which `domain_world::knowing` boots as an old
+  binary's world, requires v4 too.
+- **A new boot object** renumbers every later one. Tried first (a `DARK` Thing the applier
+  made in the spine), it moved the dice of two field stories
+  (`field_director::lane3_…` and `gc11_…`), both green on main twice and red here twice.
+
+**Built.**
+- **The store the clerk keeps** (`port::vendor::CLERK_STOREFRONT`). A vendor row whose
+  `storefront` is `clerk` names no authored item: its storefront vault is backed by the port's
+  stock clerk, the `DARK` Thing the applier makes once in the staff spine.
+  - No object is made, so nothing renumbers, and no atlas pack changes.
+  - The map row records the clerk as its storefront, so a re-apply or a restart keeps it.
+  - A recorded clerk that is gone is refused, as every recorded storefront is ("never
+    re-created — repair the map by hand").
+  - At most one vendor of a port names it (`check_ports`), since one object backs one vault.
+- **Lane v51**: Stickney's `vendors` gains the Republic Customs Office's row, `clerk`, with no
+  standing bid, its signatory Ilunga-Brandt of the customs detail. The office's capital rises from
+  10,000 to 20,000 cr (provisional): the 5,000 cr bond and the bid's 11,200 cr, with room. The
+  row's `note` says why, and `VendorDef` gains `note`, read by nothing. The strip chain's new head
+  is `lane_chain::strip_customs_store`. The office gains the `acceptor` role, without which a
+  contraband fine after the Republic's flip failed its acceptance ("Registry customs fine
+  acceptance failed") and the ship was never cleared (found by KC's doc 50b story).
+- **The Republic's bid** (`op_page::post_republic_bid`, Q-50-27 as corrected): when the arm
+  declares, it posts a standing bid through `mush_market::post_wanted` for `BID_T` (200 t) of
+  propellant at `BID_CR` (56 cr, provisional) into the office's store, and records the listing
+  (`IsidisOp::bid`). At the resolution it withdraws it (`withdraw_republic_bid`).
+  - 56 cr is over the tank farm's 50 at Isidis, so a hauler has a second buyer, and under
+    Kasei's 60 ask at Stickney, so nobody buys propellant there to sell it back.
+  - Every tonne sold to the Republic is one not landed at Isidis.
+- **`+operation`** lists the bid among the work while it stands, with `+market/sell`.
+
+**Tests.**
+- `domain_economy::op7_operation::op7b_the_republic_bids_at_stickney_while_the_operation_runs`:
+  - the clerk keeps the store, in the spine, `DARK`, the vendor registered;
+  - a restart keeps the same store and vault;
+  - the Review fills, the Republic declares, and its bid stands at Stickney: 200 t at 56 cr, the
+    office able to fund all of it beside its bond;
+  - `+operation` shows the bid with its `+market/sell` line;
+  - the defenders hold, and the bid is withdrawn.
+- `domain_economy::commerce::op7b_the_clerk_keeps_the_customs_store_and_a_reapply_keeps_it`: the
+  store's vault is backed by the clerk. A later lane version, applied by the shelf, re-runs the
+  applier over the recorded row: the same store and vault, and no object made.
+- `domain_economy::lane::op7b_strip_customs_store_rebuilds_the_published_v50`.
+- **Pins moved** with the lane: v51 and relay v42 everywhere OP.5's v50 stood; the shipped
+  lane's digest; Stickney's four vendors (`commerce::ic8_…`, `ports::ic3_…`), its vendor line
+  in the readiness report, the treasury's 17,471,000 cr and the office's 20,000 cr base
+  (`plumbing::sm5_…`).
+- **Mutations**, each caught: no bid posted; the bid never withdrawn; a re-apply re-keeping the
+  clerk's store (the applier refuses a second vault on it, "that item already backs vault #…",
+  and the shelf's apply stops part way).
+- **On conclav.dev, green** (main with OP.6 and OP.7 merged in): all of tacsim; mush-server
+  `split_boundary` and `commerce_composition`; mush-contract-tests; mush-composition; the bot's
+  library; fmt; clippy `-D warnings` on tacsim and mush-server; the M7 pass; rustdoc in both
+  modes.
+
+**Divergences.**
+- **The clerk keeps the store, not a new item or Thing.** The cascade (nine packs, and the
+  immutable passengers v1 fixture), and then a new boot object, were each worse; the lead ruled
+  between them. The vault is what the economy holds, and a container is only its backing.
+- **The bid is the arm's, not a lane row**: posted at the declaration and withdrawn at the
+  resolution, so it stands only while the operation runs (Q-50-27: "in the first operation").
+- **The figures are provisional**: 56 cr, 200 t and the 20,000 cr capital.
+
+**Not built.** Escorts for the Republic's own supply hulls (Q-50-27 as corrected): the Republic
+posts no haul in the first operation, so there is no hull to escort. Salvage of interdicted hulls,
+which waits for a contract of its own.
 
 ## OP.8
 

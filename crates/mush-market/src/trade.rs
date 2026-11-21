@@ -2864,8 +2864,9 @@ pub fn sell_into_bid(ctx: &mut Ctx<'_>, req: &BidSaleRequest) -> Result<BidSale,
     let proceeds = match crate::module::proceeds_policy(ctx.w) {
         None => crate::module::Proceeds::default(),
         Some(policy) => {
+            let seller = PrincipalId::Object(actor);
             let terms = crate::module::SaleTerms {
-                seller: actor,
+                seller: &seller,
                 source,
                 house: &listing.seller,
                 market: &listing.market,
@@ -3597,6 +3598,7 @@ pub(crate) fn settled_sale(ctx: &mut Ctx<'_>, q: &Quote, contract: ContractId) {
         ctx,
         &crate::module::SettledSale {
             quote: q.id,
+            house: &q.buyer,
             contract,
             seller: &q.seller,
             source: lot.source.0,

@@ -169,8 +169,8 @@ pub use module::{
     CapacityRefusal, CatalogSource, DeliveryOrder, DeliveryProvider, DrawReceipts,
     MAX_CAPACITY_PLAN_BYTES, MAX_PROCEEDS_MEMO_BYTES, MAX_SALE_LINE_BYTES, MarketModule,
     MarketObserver, Presence, PrivateSale, Proceeds, ProceedsPolicy, ProceedsRefusal,
-    SWEEP_PERIOD_SECS, SWEEP_TAG, SaleTerms, SettledSale, VenueGate, VenueRefusal, asset_sale,
-    draw_receipts, lot_supply, venue_gate,
+    SWEEP_PERIOD_SECS, SWEEP_TAG, SaleTerms, SettledSale, VenueCut, VenueGate, VenueRefusal,
+    asset_sale, draw_receipts, lot_supply, venue_gate,
 };
 pub use projection::{
     DEPTH_BUCKETS, DEPTH_QUANTITY_STEP, DepthBucket, PROJECTION_VISIT, PROJECTION_WINDOW_SECS,

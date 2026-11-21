@@ -568,6 +568,50 @@ impl ActiveInterdictionBubble {
         }
     }
 
+    /// **Reconcile the operation's foes each step** (doc 50b; Q-50-26): `want` is every pair of
+    /// this bubble's carriers that fly for opposite sides now (`super::op_sides::foes`), lower
+    /// hull first. A pair newly qualified (the window opened, a job began) turns hostile both ways
+    /// and names each other as foes; a pair no longer qualified (the window closed, a job ended)
+    /// turns friendly again and drops them. Only carrier-to-carrier relations move, so an NPC
+    /// hostile's stands. A carrier left with no foes is no longer timed or broken off.
+    pub fn reconcile_op_foes(&mut self, want: &std::collections::BTreeSet<(ObjId, ObjId)>) {
+        let hulls: Vec<ObjId> = self.carriers.keys().copied().collect();
+        for (i, &a) in hulls.iter().enumerate() {
+            for &b in &hulls[i + 1..] {
+                let (Some(ea), Some(eb)) = (self.carriers.get(&a), self.carriers.get(&b)) else {
+                    continue;
+                };
+                let (pa, pb) = (ea.party, eb.party);
+                let has = ea.op_foes.contains(&b.0) || eb.op_foes.contains(&a.0);
+                let wanted = want.contains(&(a, b)) || want.contains(&(b, a));
+                if wanted == has {
+                    continue;
+                }
+                let mark = if wanted {
+                    Mark::Hostile
+                } else {
+                    Mark::Friendly
+                };
+                self.bubble.set_party_relation(pa, pb, Some(mark));
+                self.bubble.set_party_relation(pb, pa, Some(mark));
+                for (me, other) in [(a, b), (b, a)] {
+                    if let Some(entry) = self.carriers.get_mut(&me) {
+                        entry.op_foes.retain(|f| *f != other.0);
+                        if wanted {
+                            entry.op_foes.push(other.0);
+                        }
+                    }
+                }
+            }
+        }
+        for entry in self.carriers.values_mut() {
+            if entry.op_foes.is_empty() {
+                entry.apart_since_wall_s = None;
+                entry.broken_off = false;
+            }
+        }
+    }
+
     /// The ship ids of `hull`'s operation foes, when it has broken off from them (doc 50 cut OP.6).
     fn broken_off_foe_ships(&self, hull: ObjId) -> std::collections::BTreeSet<&str> {
         let Some(entry) = self.carriers.get(&hull).filter(|e| e.broken_off) else {
@@ -1218,10 +1262,20 @@ pub struct SpaceBubbleBook {
     /// Waypoint domains explicitly configured as 3-party Kirkwood Customs Pickets (`SF.R6`, `D-35-11`).
     #[serde(default)]
     pub kirkwood_picket_domains: std::collections::BTreeSet<DomainId>,
-    /// **Doc 50 cut KC.2 (Q-50-54)**: hulls that crossed the Kirkwood picket's leg with nobody
-    /// aboard, awaiting the space tick's transit-duty assessment. Skipped when empty.
+    /// **Doc 50 cut KC.2 (Q-50-54)**: crossings of the Kirkwood picket's leg made with nobody
+    /// aboard, `(hull, cursor)`, awaiting the space tick's assessment (the manifest and the
+    /// transit duty). Skipped when empty.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub absent_duty: std::collections::BTreeSet<ObjId>,
+    pub absent_duty: std::collections::BTreeSet<(ObjId, u32)>,
+    /// **Doc 50b**: the Kirkwood crossings, `(hull, cursor)`, whose boundary the live hook saw. A
+    /// crossing a journey's cursor holds and this does not was caught up at boot, where the hook
+    /// never runs, and is assessed as an absent one. Skipped when empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub picket_crossings: std::collections::BTreeSet<(ObjId, u32)>,
+    /// **Doc 50b**: the Kirkwood crossings, `(hull, cursor)`, whose transit duty has been
+    /// levied, so a resubmission on the same crossing is never charged again. Skipped when empty.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub duty_crossings: std::collections::BTreeSet<(ObjId, u32)>,
     /// Active 6-DOF docking sessions keyed by carrier hull [`ObjId`] (`SF.R7`, `Q-35-5`, `D-35-14`).
     #[serde(default, with = "super::bubble::vec_tuple_map")]
     pub docking_sessions: BTreeMap<ObjId, super::docking::DockingSession>,
@@ -3371,6 +3425,9 @@ pub fn space_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     step_active_bubbles(ctx, &now);
     step_free_flight_records(ctx, &now);
     super::mining::step_clusters_on_tick(ctx, now.clone());
+    // Doc 50b: a Kirkwood crossing a restart caught up is queued, and its leg marked cleared,
+    // before any interdiction is promoted.
+    super::duty::catch_up_crossings(ctx);
     promote_due_interdictions(ctx, &now);
     step_delivered_tows_at_port(ctx, &now);
     crate::surface::claim::tick(ctx);
@@ -3677,6 +3734,12 @@ fn prune_space_book_collections(ctx: &mut Ctx<'_>) {
     book.cleared_interdiction_legs.retain(|&(hull, _)| {
         active_journey_hulls.contains(&hull) || active_bubble_hulls.contains(&hull)
     });
+    // Doc 50b: a crossing's records go with its journey.
+    for crossings in [&mut book.picket_crossings, &mut book.duty_crossings] {
+        crossings.retain(|&(hull, _)| {
+            active_journey_hulls.contains(&hull) || active_bubble_hulls.contains(&hull)
+        });
+    }
 
     book.propellant_ledgers
         .retain(|hull, _| existing_hulls.contains(hull));
@@ -4029,6 +4092,28 @@ fn any_bubble_journey_promoted_in(w: &World, domain: DomainId) -> bool {
 
 fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
     let wall_now_s = ctx.w.now();
+    // Doc 50b (Q-50-26): the operation's foes, read fresh each step, per bubble.
+    let op_foes: BTreeMap<mush_sim::DomainId, std::collections::BTreeSet<(ObjId, ObjId)>> = ctx
+        .w
+        .module_state::<SpaceBubbleBook>()
+        .map(|book| {
+            book.by_domain
+                .iter()
+                .map(|(domain, active)| {
+                    let hulls: Vec<ObjId> = active.carriers.keys().copied().collect();
+                    let mut pairs = std::collections::BTreeSet::new();
+                    for (i, &a) in hulls.iter().enumerate() {
+                        for &b in &hulls[i + 1..] {
+                            if super::op_sides::foes(ctx.w, a, b) {
+                                pairs.insert((a, b));
+                            }
+                        }
+                    }
+                    (*domain, pairs)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut detached_carriers: Vec<(ObjId, Option<SpaceShipState>)> = Vec::new();
     let mut lapsed_clamps: Vec<ObjId> = Vec::new();
     if let Some(book) = ctx.w.module_state_mut::<SpaceBubbleBook>() {
@@ -4044,8 +4129,12 @@ fn clear_resolved_bubbles(ctx: &mut Ctx<'_>, now: &ClockStamp) {
             .copied()
             .filter(|tug| !book.active_tows.contains_key(tug))
             .collect();
-        for active in book.by_domain.values_mut() {
-            // Doc 50 cut OP.6 (Q-50-62): who has held apart from their operation foes long enough.
+        for (domain, active) in &mut book.by_domain {
+            // Doc 50b (Q-50-26): the operation's foes as they stand now, then (doc 50 cut OP.6,
+            // Q-50-62) who has held apart from them long enough.
+            if let Some(want) = op_foes.get(domain) {
+                active.reconcile_op_foes(want);
+            }
             active.track_break_off(wall_now_s);
             for entry in active.carriers.values_mut() {
                 if entry.holding_for_salvage
@@ -6574,6 +6663,43 @@ mod interdictor_tests {
         entry.op_foes = vec![ESCORT.0];
         active.carriers.insert(RUNNER, entry);
         active
+    }
+
+    /// **Doc 50b (Q-50-26): the operation's foes are reconciled each step.** The window closing
+    /// turns two foes friendly again and frees them; the window opening on carriers already here
+    /// makes them foes; an NPC's hostility is left as it stood.
+    #[test]
+    fn op50b_operation_foes_are_reconciled_each_step() {
+        let mut active = foes_at([0, 1_000, 0]);
+        let runner_party = active.carrier_party_for(RUNNER);
+        active
+            .bubble
+            .set_party_relation(INTERDICTOR_PARTY, CARRIER_PARTY, Some(Mark::Hostile));
+        // The window closes: no pair qualifies.
+        active.reconcile_op_foes(&std::collections::BTreeSet::new());
+        for (a, b) in [(CARRIER_PARTY, runner_party), (runner_party, CARRIER_PARTY)] {
+            assert_eq!(active.bubble.party_relation(a, b), Relation::Friend);
+        }
+        assert!(active.carriers[&ESCORT].op_foes.is_empty());
+        assert!(active.carriers[&RUNNER].op_foes.is_empty());
+        assert_eq!(
+            active
+                .bubble
+                .party_relation(INTERDICTOR_PARTY, CARRIER_PARTY),
+            Relation::Hostile,
+            "an NPC's hostility stands"
+        );
+        // The window opens on carriers already sharing the bubble.
+        let want: std::collections::BTreeSet<(ObjId, ObjId)> = [(ESCORT, RUNNER)].into();
+        active.reconcile_op_foes(&want);
+        for (a, b) in [(CARRIER_PARTY, runner_party), (runner_party, CARRIER_PARTY)] {
+            assert_eq!(active.bubble.party_relation(a, b), Relation::Hostile);
+        }
+        assert_eq!(active.carriers[&ESCORT].op_foes, vec![RUNNER.0]);
+        assert_eq!(active.carriers[&RUNNER].op_foes, vec![ESCORT.0]);
+        // Reconciling again changes nothing.
+        active.reconcile_op_foes(&want);
+        assert_eq!(active.carriers[&ESCORT].op_foes, vec![RUNNER.0]);
     }
 
     /// **Doc 50 cut OP.6 (Q-50-26): a carrier joining her foes is hostile to them both ways**,

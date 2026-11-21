@@ -35,6 +35,9 @@ const OP: u64 = 7;
 struct FakeFrame {
     declared: Mutex<Vec<OperationRequest>>,
     outcome: Mutex<Option<OperationOutcome>>,
+    /// Doc 50b item 4: the outcome is shown while the operation still settles, as the campaign's
+    /// frame shows its root's outcome in `Resolving`.
+    settling: Mutex<bool>,
 }
 
 impl OperationFrame for FakeFrame {
@@ -52,8 +55,11 @@ impl OperationFrame for FakeFrame {
         }
         let request = self.declared.lock().ok()?.first()?.clone();
         let outcome = *self.outcome.lock().ok()?;
+        let settling = *self.settling.lock().ok()?;
         Some(OperationStatus {
-            phase: if outcome.is_some() {
+            phase: if settling {
+                OperationPhase::Settling
+            } else if outcome.is_some() {
                 OperationPhase::Settled
             } else {
                 OperationPhase::Notice
@@ -225,6 +231,48 @@ fn op5_when_the_defenders_hold_the_freeport_keeps_isidis() {
             .and_then(|r| r.outcome.clone())
             .as_deref(),
         Some("freeport")
+    );
+}
+
+/// **Doc 50b item 4: an outcome shown while the operation settles decides nothing.** The
+/// campaign's frame shows its root's outcome in `Resolving`, and a stuck settlement can still be
+/// aborted. The Republic's success is shown while it settles: Isidis does not change hands and no
+/// winner is recorded. The settlement is aborted (abandoned, settled): nobody takes Isidis.
+#[test]
+fn op5_an_outcome_still_settling_writes_nothing_and_an_abort_takes_nothing() {
+    let frame = Arc::new(FakeFrame::default());
+    let mut tw = booted(Some(&frame));
+    let freeport = polity(&tw, "freeport");
+    fill_the_review(&mut tw);
+    tick(&mut tw);
+    *frame.settling.lock().expect("lock") = true;
+    *frame.outcome.lock().expect("lock") = Some(OperationOutcome::DeclarerSucceeded);
+    tick(&mut tw);
+    tick(&mut tw);
+    assert_eq!(
+        isidis_holder(&tw),
+        Some(freeport),
+        "nothing changes hands while it settles"
+    );
+    assert_eq!(
+        tacsim::isidis_op::record(tw.world()).and_then(|r| r.outcome.clone()),
+        None,
+        "no winner is recorded while it settles"
+    );
+    // The settlement is aborted: the campaign records it abandoned, and settled.
+    *frame.outcome.lock().expect("lock") = Some(OperationOutcome::Abandoned);
+    *frame.settling.lock().expect("lock") = false;
+    tick(&mut tw);
+    assert_eq!(
+        isidis_holder(&tw),
+        Some(freeport),
+        "the Freeport keeps Isidis"
+    );
+    assert_eq!(
+        tacsim::isidis_op::record(tw.world())
+            .and_then(|r| r.outcome.clone())
+            .as_deref(),
+        Some("none")
     );
 }
 

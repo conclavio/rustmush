@@ -56,6 +56,47 @@ pub fn seizing_authority(w: &World) -> Option<SeizingAuthority> {
     })
 }
 
+/// **The enforcing authority for a seizure on `hull`** (doc 50b; Q-50-14, Q-50-44): the payee
+/// of the terms row her crossing is assessed under, as the fine's is ([`crate::space::duty::fine_payee`]),
+/// at the lane port whose organizations it is one of; else, with no row, the Registry
+/// ([`seizing_authority`]).
+#[must_use]
+pub fn seizing_authority_for(w: &World, hull: ObjId) -> Option<SeizingAuthority> {
+    match crate::space::duty::hull_terms(w, hull).and_then(|terms| terms.row) {
+        Some(row) => payee_authority(w, &row.payee).or_else(|| seizing_authority(w)),
+        None => seizing_authority(w),
+    }
+}
+
+/// **The terms payee `payee` as a seizing authority**: the lane organization and the port whose
+/// organizations it is one of.
+fn payee_authority(w: &World, payee: &CanonicalId) -> Option<SeizingAuthority> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find_map(|(entry, def, map)| {
+            let row = map?.orgs.get(payee)?;
+            Some(SeizingAuthority {
+                org: OrgId(row.org),
+                entry: entry.clone(),
+                venue: MarketId::new(def.venue.as_str())?,
+                account: row.account.map(AccountId),
+            })
+        })
+}
+
+/// Every authority that may take seized goods: the Registry, and each terms row's payee.
+fn authorities(w: &World) -> Vec<SeizingAuthority> {
+    let mut out: Vec<SeizingAuthority> = seizing_authority(w).into_iter().collect();
+    for payee in crate::polity::terms_payees(w) {
+        if let Some(authority) = payee_authority(w, &payee)
+            && !out.iter().any(|a| a.org == authority.org)
+        {
+            out.push(authority);
+        }
+    }
+    out
+}
+
 /// **A port's governing authority as a seizing authority** (doc 50 unit LW.3): the port's
 /// `authority` organization at `entry`, which takes a reporting buyer's goods (Q-50-67).
 #[must_use]
@@ -172,7 +213,9 @@ pub fn ensure_vault(ctx: &mut Ctx<'_>, authority: &SeizingAuthority) -> Result<V
 /// seizing authority there and the market's vendor in that venue.
 #[must_use]
 pub fn sells_at(w: &World, venue: &MarketId, org: OrgId) -> bool {
-    seizing_authority(w).is_some_and(|a| a.org == org && &a.venue == venue)
+    authorities(w)
+        .iter()
+        .any(|a| a.org == org && &a.venue == venue)
         && w.module_state::<MarketStore>()
             .and_then(|s| s.vendor_of_org(org))
             .is_some_and(|v| &v.market == venue)
@@ -277,6 +320,87 @@ pub fn offer(
         }
         Err(error) => {
             tracing::warn!(vault = vault.0, good = %good, %error, "tacsim: seized goods could not be offered now");
+        }
+    }
+}
+
+/// The most seized lots one offer lists.
+const MAX_OFFERED_LOTS: usize = 32;
+
+/// **Offer the seized lots of `good` in `vault`** (doc 50b; Q-50-44): a seizure that took exact
+/// lots relocates them whole, and the pool's ask ([`offer`]) never sells a lot. Each unheld lot
+/// there is listed as an exact-lot ask of its whole quantity at the seized price, posted as the
+/// authority's port's stock clerk. A listed lot is held, so a later offer passes it over.
+pub fn offer_lots(
+    ctx: &mut Ctx<'_>,
+    authority: &SeizingAuthority,
+    vault: VaultId,
+    good: &CanonicalId,
+) {
+    let endpoint = mush_inventory::record::EndpointRef(vault);
+    let lots = crate::port::works::unheld_lots_of(ctx, endpoint, good, MAX_OFFERED_LOTS);
+    if lots.is_empty() {
+        return;
+    }
+    let Some(vendor) = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|store| store.vendor_of_org(authority.org))
+        .map(|v| v.id)
+    else {
+        tracing::warn!(
+            vault = vault.0,
+            "tacsim: seized lots with no vendor to offer them"
+        );
+        return;
+    };
+    let Some(clerk) = port_clerk(ctx.w, &authority.entry) else {
+        tracing::warn!(entry = %authority.entry, "tacsim: the authority's port has no clerk to offer seized lots");
+        return;
+    };
+    let Some(price) = price_minor(ctx.w, good) else {
+        tracing::warn!(good = %good, "tacsim: a seized good has no reference price; its lots are not offered");
+        return;
+    };
+    let mut fire = crate::port_tick::Fire::new(std::collections::BTreeMap::new());
+    for (lot, quantity, grade) in lots {
+        let spec = mush_market::ListingSpec {
+            vendor,
+            catalog: CatalogRef {
+                ruleset: SmolStr::new_static(crate::NS),
+                code: SmolStr::new(good.as_str()),
+            },
+            price: mush_economy::Amount::from_minor(price),
+            quantity: quantity.min(mush_market::MAX_QUANTITY),
+            source: Supply::Lot {
+                endpoint: mush_market::LotEndpoint(endpoint),
+                commodity: mush_market::LotCommodity(good.clone()),
+                grade,
+                lot: Some(lot),
+            },
+            object: None,
+            visibility: MarketVisibility::Public,
+            ttl_secs: mush_market::MAX_LISTING_TTL_SECS,
+            private_to: None,
+        };
+        let outcome = fire
+            .as_principal(ctx, clerk, clerk, |ctx| {
+                mush_market::list_goods(ctx, spec).map(|_| ())
+            })
+            .map_err(|e| format!("{e:?}"));
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    vault = vault.0,
+                    lot = lot.0,
+                    ?error,
+                    "tacsim: a seized lot could not be offered"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(vault = vault.0, lot = lot.0, %error, "tacsim: a seized lot could not be offered now");
+            }
         }
     }
 }

@@ -15,6 +15,8 @@
 //!   inspection; a hull whose pilot is away is assessed the same way with no submission
 //!   ([`assess_absent`]).
 
+use std::collections::BTreeMap;
+
 use mush_core::{CanonicalId, Ctx, ObjId, World};
 use mush_economy::{AccountId, Amount};
 use mush_org::{OrgId, PrincipalId};
@@ -178,17 +180,7 @@ pub fn estimate_line(
 /// terms: ` (Kirkwood duty ~400 cr)`. Empty otherwise.
 #[must_use]
 pub fn haul_clause(w: &World, origin: &str, destination: &str, value_major: u64) -> String {
-    let crosses = crate::port::voyage::lane_ports(w)
-        .into_iter()
-        .any(|(def, _)| {
-            def.venue.as_str() == origin
-                && def
-                    .routes
-                    .iter()
-                    .filter(|(venue, _)| venue.as_str() == destination)
-                    .flat_map(|(_, ids)| ids.iter())
-                    .any(|id| route_crosses_picket(w, id))
-        });
+    let crosses = haul_crosses_picket(w, origin, destination);
     let duty = crosses
         .then(|| live_terms(w).and_then(|t| t.row))
         .flatten()
@@ -198,6 +190,46 @@ pub fn haul_clause(w: &World, origin: &str, destination: &str, value_major: u64)
     };
     let unit = 10_i64.pow(u32::from(crate::port::apply::credit_scale(w)));
     format!(" (Kirkwood duty ~{} cr)", (minor + unit - 1) / unit)
+}
+
+/// **Whether a haul from `origin` to `destination` crosses the picket** (Q-50-8; doc 50b): the
+/// fewest hops of listed lane routes that join the two venues, as a hauler flies them port to
+/// port (Ceres to Isidis by Stickney), any hop of which may cross. A venue pair no chain of
+/// listed routes joins crosses nothing.
+fn haul_crosses_picket(w: &World, origin: &str, destination: &str) -> bool {
+    let ports = crate::port::voyage::lane_ports(w);
+    let routes_from = |venue: &str| {
+        ports
+            .iter()
+            .find(|(def, _)| def.venue.as_str() == venue)
+            .map(|(def, _)| &def.routes)
+    };
+    // Breadth first over venues: each reached venue keeps whether its path so far crossed.
+    let mut reached: BTreeMap<String, bool> = BTreeMap::new();
+    reached.insert(origin.to_owned(), false);
+    let mut frontier = vec![origin.to_owned()];
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for venue in &frontier {
+            let crossed = reached.get(venue).copied().unwrap_or(false);
+            let Some(routes) = routes_from(venue) else {
+                continue;
+            };
+            for (to, ids) in routes {
+                if reached.contains_key(to.as_str()) {
+                    continue;
+                }
+                let hop = ids.iter().any(|id| route_crosses_picket(w, id));
+                reached.insert(to.to_string(), crossed || hop);
+                next.push(to.to_string());
+            }
+        }
+        if let Some(&crossed) = reached.get(destination) {
+            return crossed;
+        }
+        frontier = next;
+    }
+    false
 }
 
 /// How a duty was met.
@@ -211,12 +243,14 @@ pub enum DutyOutcome {
 
 /// **Levy the transit duty on `hull`, owed by `debtor`** (Q-50-6, Q-50-54): under the hull's
 /// terms ([`hull_terms`]), open a debt to the payee due in 28 IC days and pay it at once when
-/// the debtor's account covers it. `None` when no duty is owed, or when the debtor or the payee
-/// has no account (logged).
+/// the debtor's account covers it beyond `reserve_minor` (doc 50b: a contraband fine found on the
+/// same crossing, which is settled first). `None` when no duty is owed, or when the debtor or the
+/// payee has no account (logged).
 pub fn levy_transit_duty(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
     debtor: ObjId,
+    reserve_minor: i64,
 ) -> Option<(DutyQuote, DutyOutcome)> {
     let row = hull_terms(ctx.w, hull)?.row?;
     let quote = quote_duty(ctx, hull, &row)?;
@@ -236,10 +270,70 @@ pub fn levy_transit_duty(
     };
     let saved = ctx.actor;
     ctx.actor = debtor;
-    let outcome = open_and_pay(ctx, account, payee_account, quote.duty_minor);
+    let outcome = open_and_pay(ctx, account, payee_account, quote.duty_minor, reserve_minor);
     ctx.actor = saved;
     ctx.out.pin_deferred();
     outcome.map(|o| (quote, o))
+}
+
+/// **[`levy_transit_duty`] once a crossing** (doc 50b): `crossing`, the hull and the journey
+/// cursor of the Kirkwood leg she crossed, is recorded once a duty is levied on it, and a crossing
+/// already recorded is charged nothing. With no crossing to key it to, the duty is levied.
+pub fn levy_once(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    debtor: ObjId,
+    crossing: Option<(ObjId, u32)>,
+    reserve_minor: i64,
+) -> Option<(DutyQuote, DutyOutcome)> {
+    if let Some(key) = crossing
+        && ctx
+            .w
+            .module_state::<super::SpaceBubbleBook>()
+            .is_some_and(|book| book.duty_crossings.contains(&key))
+    {
+        return None;
+    }
+    let levied = levy_transit_duty(ctx, hull, debtor, reserve_minor)?;
+    if let Some(key) = crossing
+        && let Some(book) = ctx.w.module_state_mut::<super::SpaceBubbleBook>()
+    {
+        book.duty_crossings.insert(key);
+    }
+    if let (Some((_, cursor)), DutyOutcome::Owed(debt)) = (crossing, levied.1) {
+        record_owed_duty(ctx, hull, cursor, &levied.0, debt);
+    }
+    Some(levied)
+}
+
+/// **An owed duty on the hull's record** (doc 50b; Q-50-54): an offense row of the payee's polity
+/// against whoever answers for the hull, carrying the duty's debt, so once the debt is past its
+/// grace the departure hold and the trade restriction read it as they read a fine.
+fn record_owed_duty(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, quote: &DutyQuote, debt: u64) {
+    let Some(polity) = crate::polity::lane_org_account(ctx.w, &quote.payee)
+        .and_then(|(org, _)| crate::polity::polity_of_org(ctx.w, org))
+    else {
+        tracing::warn!(payee = %quote.payee, "tacsim: an owed duty's payee answers to no polity; no record is kept");
+        return;
+    };
+    let Some(offender) = crate::offense::answerer_for_hull(ctx.w, hull) else {
+        return;
+    };
+    let at_ic = ctx.w.world_ic_now().at;
+    let offense = crate::offense::ProvenOffense {
+        kind: crate::offense::OffenseKind::UnpaidDuty,
+        evidence: crate::offense::Evidence::Duty {
+            hull,
+            cursor,
+            at_ic,
+        },
+        proof: crate::offense::Proof::Audit,
+        proven_ic: at_ic,
+        debt: Some(debt),
+        payout: None,
+    };
+    let key = crate::offense::OffenseKey { offender, polity };
+    let _ = crate::offense::record_offense(ctx, key, offense, |_, row| row.debt.is_some());
 }
 
 fn open_and_pay(
@@ -247,6 +341,7 @@ fn open_and_pay(
     from: AccountId,
     to: AccountId,
     minor: i64,
+    reserve_minor: i64,
 ) -> Option<DutyOutcome> {
     use crate::surface::retrieval::{DEBT_NAMESPACE, debt_due};
     let due = debt_due(ctx.w);
@@ -267,7 +362,7 @@ fn open_and_pay(
         .w
         .module_state::<mush_economy::EconomyStore>()
         .and_then(|e| e.snapshot().account(from).and_then(|a| a.available()))
-        .is_some_and(|a| a.minor() >= minor);
+        .is_some_and(|a| a.minor().saturating_sub(reserve_minor.max(0)) >= minor);
     let paid = covers
         && matches!(
             mush_economy::pay_debt(ctx, id, DEBT_NAMESPACE),
@@ -303,10 +398,16 @@ pub fn duty_line(ctx: &Ctx<'_>, hull: ObjId, levied: Option<&(DutyQuote, DutyOut
     }
 }
 
+/// The picket's name in an absent hull's ruling lines, where no corvette is in a bubble.
+const ABSENT_PICKET: &str = "Kirkwood picket";
+
 /// **A hull whose pilot is away crosses the picket** (Q-50-54): assessed the same way with no
-/// submission, and cleared. The debtor is the hull's customs principal (its helm holder, else
-/// the passage's pilot). Answers the line told to the hull's absent tenant.
-pub fn assess_absent(ctx: &mut Ctx<'_>, hull: ObjId) -> Option<String> {
+/// submission. The debtor is the hull's customs principal (its helm holder, else the passage's
+/// pilot). Doc 50b: the manifest is read as at a submission, and a fine or a seizure is filed as
+/// a ruling with the principal as its officer (a clean hold is cleared at once); the transit
+/// duty, once for `cursor`'s crossing, is paid only from what a fine leaves. Answers the line told
+/// to the hull's absent tenant, or nothing when there is nothing to tell.
+pub fn assess_absent(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32) -> Option<String> {
     let pilot = ctx
         .w
         .module_state::<crate::store::TacsimStore>()
@@ -316,11 +417,41 @@ pub fn assess_absent(ctx: &mut Ctx<'_>, hull: ObjId) -> Option<String> {
             | crate::port::voyage::VoyageState::Unreadable => None,
         })?;
     let debtor = super::picket::resolve_hull_customs_principal(ctx.w, hull, pilot);
-    let levied = levy_transit_duty(ctx, hull, debtor)?;
-    Some(format!(
-        "[PICKET] Republic Customs assessed the hull at Kirkwood in her pilot's absence and cleared her.{}",
-        duty_line(ctx, hull, Some(&levied))
-    ))
+    let (verdict, reserve) = match super::commands::customs_finding(ctx, hull, debtor) {
+        Ok((super::customs::CustomsFinding::Cleared { .. }, _)) => (None, 0),
+        Ok((finding, found)) => {
+            let reserve = match &finding {
+                super::customs::CustomsFinding::Fined { fine_minor, .. } => *fine_minor,
+                _ => 0,
+            };
+            let names = (
+                ABSENT_PICKET.to_owned(),
+                crate::port::coop::name_of(ctx.w, hull),
+            );
+            match super::customs::file_ruling_as(ctx, debtor, hull, debtor, finding, names, 0) {
+                Ok(seq) => super::customs::mark_unattended(ctx, hull, seq),
+                Err(error) => {
+                    tracing::warn!(hull = hull.0, %error, "tacsim: an absent hull's customs ruling was not filed");
+                }
+            }
+            (Some(found), reserve)
+        }
+        Err(error) => {
+            tracing::warn!(hull = hull.0, %error, "tacsim: an absent hull's manifest could not be ruled on");
+            (None, 0)
+        }
+    };
+    let levied = levy_once(ctx, hull, debtor, Some((hull, cursor)), reserve);
+    let duty = duty_line(ctx, hull, levied.as_ref());
+    Some(match verdict {
+        Some(found) => format!(
+            "[PICKET] Republic Customs assessed the hull at Kirkwood in her pilot's absence ({found}); the ruling follows once it is recorded.{duty}"
+        ),
+        None if levied.is_some() => format!(
+            "[PICKET] Republic Customs assessed the hull at Kirkwood in her pilot's absence and cleared her.{duty}"
+        ),
+        None => return None,
+    })
 }
 
 /// **The space tick settles the duty of every hull that crossed the picket with nobody aboard**
@@ -330,13 +461,13 @@ pub fn assess_absent(ctx: &mut Ctx<'_>, hull: ObjId) -> Option<String> {
 ///
 /// [`SpaceBubbleBook::absent_duty`]: super::SpaceBubbleBook::absent_duty
 pub(crate) fn settle_absent(ctx: &mut Ctx<'_>) {
-    let due: Vec<ObjId> = ctx
+    let due: Vec<(ObjId, u32)> = ctx
         .w
         .module_state_mut::<super::SpaceBubbleBook>()
         .map(|book| std::mem::take(&mut book.absent_duty).into_iter().collect())
         .unwrap_or_default();
-    for hull in due {
-        if let Some(line) = assess_absent(ctx, hull) {
+    for (hull, cursor) in due {
+        if let Some(line) = assess_absent(ctx, hull, cursor) {
             crate::port::voyage::narrate_hull(ctx, hull, &line);
             let queued = format!("{}{line}", crate::port::voyage::utc_prefix(ctx.w));
             crate::port::voyage::tell_absent_tenant(ctx, hull, &queued);
@@ -353,4 +484,49 @@ pub fn fine_payee(w: &World, hull: ObjId) -> Option<(OrgId, PrincipalId, Account
         return Some((org, PrincipalId::Organization(org), account));
     }
     super::picket::resolve_registry_principal_and_account(w)
+}
+
+/// **The Kirkwood crossings a restart caught up** (doc 50b): boot recovery advances an overdue
+/// journey's cursor past its boundaries without the live hook, so a crossing of the picket's leg
+/// there is neither noted nor assessed. Every leg a journey's cursor has passed that ends at the
+/// picket, that the live hook never saw, and that no bubble holds and no clearance names, is
+/// queued as an absent crossing and its leg marked cleared. A passage that arrived during the
+/// outage has no journey left to read, and is not assessed.
+pub(crate) fn catch_up_crossings(ctx: &mut Ctx<'_>) {
+    let Some(journeys) = ctx.w.module_state::<mush_sim::JourneyBook>() else {
+        return;
+    };
+    let Some(book) = ctx.w.module_state::<super::SpaceBubbleBook>() else {
+        return;
+    };
+    let mut missed: Vec<(ObjId, u32)> = Vec::new();
+    for (&hull, journey) in &journeys.journeys {
+        if book.active_for_hull(hull).is_some() {
+            continue;
+        }
+        let passed = usize::try_from(journey.cursor()).unwrap_or(0);
+        for (index, leg) in journey.route().legs().iter().enumerate().take(passed) {
+            let Ok(reached) = u32::try_from(index + 1) else {
+                continue;
+            };
+            let key = (hull, reached);
+            if leg.is_interdicted()
+                && super::picket::is_kirkwood_picket_host(ctx.w, leg.to())
+                && !book.picket_crossings.contains(&key)
+                && !book.cleared_interdiction_legs.contains(&key)
+            {
+                missed.push(key);
+            }
+        }
+    }
+    if missed.is_empty() {
+        return;
+    }
+    if let Some(book) = ctx.w.module_state_mut::<super::SpaceBubbleBook>() {
+        for key in missed {
+            book.picket_crossings.insert(key);
+            book.absent_duty.insert(key);
+            book.cleared_interdiction_legs.insert(key);
+        }
+    }
 }

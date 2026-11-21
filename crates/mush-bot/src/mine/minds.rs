@@ -900,6 +900,8 @@ pub mod haul {
     pub const TOLD_LOST: &str = "was lost on the way with its hull;";
     /// `tacsim::services::haul::TOLD_HAULER_LOST`.
     pub const TOLD_HAULER_LOST: &str = "is lost with your hull; its goods are part of the wreck";
+    /// `tacsim::services::haul::TOLD_NO_ROOM`.
+    pub const TOLD_NO_ROOM: &str = "is called off: your hold has no room for its goods";
     /// `tacsim::services::haul::NO_ORG_VAULT`.
     pub const NO_ORG_VAULT: &str = "That organization keeps no vault at";
     /// `tacsim::services::haul::NOT_WITHDRAWABLE`.
@@ -990,6 +992,8 @@ pub mod escort {
     pub const NO_HAUL: &str = "of yours still on its way to escort.";
     /// `tacsim::services::escort::TOLD_HAUL_GONE`.
     pub const TOLD_HAUL_GONE: &str = "is called off: the haul it was posted for closed";
+    /// `tacsim::services::escort::TOLD_SAME_HULL`.
+    pub const TOLD_SAME_HULL: &str = "was taken in the escort's own hull";
 }
 
 pub mod core_resale {
@@ -1467,6 +1471,7 @@ mod tests {
             TOLD_HAULER_SEIZED,
             TOLD_LOST,
             TOLD_HAULER_LOST,
+            TOLD_NO_ROOM,
             NO_ORG_VAULT,
             NOT_WITHDRAWABLE,
             WITHDRAWN,
@@ -1485,6 +1490,7 @@ mod tests {
             "HAUL_HELP",
             "the verb's help, read through help, not answered",
         ),
+        ("LOSS_CAUSE", "the clock's cause-id prefix, never printed"),
         ("CHANNEL", "the channel lines go out on, never printed"),
     ];
 
@@ -1528,6 +1534,7 @@ mod tests {
             ROW,
             NO_HAUL,
             TOLD_HAUL_GONE,
+            TOLD_SAME_HULL,
         )
     }
     const ESCORT_EXCLUDED: &[(&str, &str)] = &[

@@ -2202,8 +2202,9 @@ fn ic10_the_books_fold_by_pilot_and_hold() {
     ));
     let venue = mush_market::MarketId::new("stickney").expect("venue");
     let metals = cid("metals");
+    let seller = PrincipalId::Object(b);
     let terms = SaleTerms {
-        seller: b,
+        seller: &seller,
         source: EndpointRef(hold_a),
         house: &house,
         market: &venue,

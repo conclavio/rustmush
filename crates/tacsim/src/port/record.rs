@@ -60,8 +60,16 @@ fn score(w: &World, polity: FactionId, who: ObjId) -> i16 {
     mush_faction::public_standing(w, polity, who).map_or(0, |v| v.score)
 }
 
-/// Whether a row's fine stands unpaid.
+/// Whether a row's fine stands unpaid. Doc 50b: an owed transit duty counts only once it is past
+/// its grace (Q-50-54: within it the duty is owed and listed, and binds nothing).
 fn unpaid(w: &World, row: &ProvenOffense) -> bool {
+    if row.kind == OffenseKind::UnpaidDuty {
+        return row.debt.is_some_and(|id| {
+            w.module_state::<mush_economy::EconomyStore>()
+                .and_then(|e| e.snapshot().obligation(ObligationId(id)).cloned())
+                .is_some_and(|o| crate::surface::retrieval::past_due(&o))
+        });
+    }
     row.debt.is_some_and(|id| {
         w.module_state::<mush_economy::EconomyStore>()
             .and_then(|e| {
@@ -225,6 +233,11 @@ pub fn offense_cause(polity: FactionId, who: ObjId, row: &ProvenOffense) -> Stri
             format!("audit/{}/{entry}/{good}/{at_ic}", hull.0)
         }
         Evidence::Receipt { quote, .. } => format!("receipt/{quote}"),
+        Evidence::Duty {
+            hull,
+            cursor,
+            at_ic,
+        } => format!("duty/{}/{cursor}/{at_ic}", hull.0),
     };
     format!("tacsim.law/{}/{}/{evidence}", polity.0, who.0)
 }
@@ -239,7 +252,10 @@ fn proven_by(row: &ProvenOffense) -> &'static str {
             Evidence::Receipt { .. } => "a party's report of the sale's receipt",
             _ => "a witness's report to the registry",
         },
-        Proof::Audit => "a port audit",
+        Proof::Audit => match row.evidence {
+            Evidence::Duty { .. } => "the customs picket's assessment",
+            _ => "a port audit",
+        },
     }
 }
 
@@ -407,6 +423,7 @@ pub fn standing_for(kind: OffenseKind, paid_at_once: bool) -> i16 {
         OffenseKind::RestrictedSale | OffenseKind::RestrictedPurchase => SALE_STANDING,
         OffenseKind::UnlicensedPossession if !paid_at_once => UNPAID_AUDIT_STANDING,
         OffenseKind::UnlicensedPossession
+        | OffenseKind::UnpaidDuty
         | OffenseKind::SalvagePickup
         | OffenseKind::SalvageScrap
         | OffenseKind::SalvageRecovery => 0,

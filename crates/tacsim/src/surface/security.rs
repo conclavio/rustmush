@@ -217,7 +217,8 @@ pub const fn fine_major(kind: OffenseKind) -> Option<u64> {
         OffenseKind::SalvageRecovery => Some(FINE_RECOVERY_MAJOR),
         OffenseKind::UnlicensedPossession
         | OffenseKind::RestrictedSale
-        | OffenseKind::RestrictedPurchase => None,
+        | OffenseKind::RestrictedPurchase
+        | OffenseKind::UnpaidDuty => None,
     }
 }
 

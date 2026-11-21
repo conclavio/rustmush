@@ -556,6 +556,21 @@ fn regions_of(pack: &RulesPack) -> Option<&RegionsDef> {
     })
 }
 
+/// **Every terms row's payee** in the latched lane's regions block, in row order, repeats kept
+/// (doc 50b: the organizations that may take seized goods).
+#[must_use]
+pub fn terms_payees(w: &World) -> Vec<CanonicalId> {
+    lane(w)
+        .and_then(regions_of)
+        .map(|def| {
+            def.rows
+                .iter()
+                .flat_map(|row| row.terms.values().map(|terms| terms.payee.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// **A polity's faction, by tag** (Q-50-2), once the lane has made it.
 #[must_use]
 pub fn polity(w: &World, tag: &str) -> Option<FactionId> {

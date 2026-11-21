@@ -535,9 +535,14 @@ fn pilot(rig: &mut Rig, who: &str, seed: i64) -> ObjId {
 
 /// An enrolled pilot (`Salt Moth`), standing at C07.
 fn chartered(rig: &mut Rig, who: &str, seed: i64) -> (ObjId, HullRow) {
+    chartered_as(rig, who, seed, "Salt Moth")
+}
+
+/// [`chartered`], her hull named `ship`.
+fn chartered_as(rig: &mut Rig, who: &str, seed: i64, ship: &str) -> (ObjId, HullRow) {
     let pilot = pilot(rig, who, seed);
-    let out = run(&mut rig.tw, pilot, "+coop/enroll Salt Moth");
-    assert!(out.contains("now the Salt Moth"), "{out}");
+    let out = run(&mut rig.tw, pilot, &format!("+coop/enroll {ship}"));
+    assert!(out.contains(&format!("now the {ship}")), "{out}");
     let charter = tacsim::port::live_charter(rig.tw.world(), pilot).expect("a charter");
     let row = port_map(&rig.tw, "ceres_port")
         .hulls
@@ -664,11 +669,16 @@ fn load(rig: &mut Rig, row: &HullRow, tank: u64, locker: u64) {
 
 /// Board from C01.
 fn board(rig: &mut Rig, pilot: ObjId) {
+    board_as(rig, pilot, "Salt Moth");
+}
+
+/// [`board`] the hull named `ship`.
+fn board_as(rig: &mut Rig, pilot: ObjId, ship: &str) {
     let gallery = c01(&rig.tw);
     teleport(&mut rig.tw, pilot, gallery);
     let out = run(&mut rig.tw, pilot, "+ship/board");
     assert!(
-        out.contains("You cycle the lock into the Salt Moth."),
+        out.contains(&format!("You cycle the lock into the {ship}.")),
         "{out}"
     );
 }
@@ -17078,6 +17088,363 @@ fn kc2_the_free_flight_shortcut_to_deimos_owes_the_picket_leg() {
     );
 }
 
+/// **Doc 50b: the way home from the halo meets no picket.** A hull that left Ceres for its halo
+/// and engages the autopilot for Ceres (the port's own venue, which it lays no route to) flies
+/// straight home: her recoupled journey carries no interdicted leg.
+#[test]
+fn kc2b_the_return_from_the_ceres_halo_meets_no_picket() {
+    let (mut rig, pilot, hull) = prospector_bound_for("ceres_halo", "HomeAgain", 75, 0);
+    arrive_at_cluster(&mut rig, hull);
+    let auto = run(&mut rig.tw, pilot, "+helm/autopilot ceres");
+    assert!(auto.contains("Autopilot engaged for"), "{auto}");
+    let burn = drain_space_and_industry(&mut rig.tw);
+    land_quietly(&mut rig, &burn);
+    let recoupled = journey(&rig.tw, hull).expect("the recoupled journey");
+    assert!(
+        !recoupled
+            .route()
+            .legs()
+            .iter()
+            .any(|leg| leg.is_interdicted()),
+        "the way home owes no Kirkwood leg: {:?}",
+        recoupled.route().legs()
+    );
+}
+
+/// Leave `pilot` with `keep` minor credit units, the rest paid to the Ceres treasury.
+fn kc2b_leave_credit(rig: &mut Rig, pilot: ObjId, keep: i64) {
+    let treasury = port_map(&rig.tw, "ceres_port")
+        .treasury
+        .expect("a treasury");
+    let account = tacsim::port::credit::own_account(rig.tw.world(), pilot)
+        .expect("an account")
+        .id;
+    let surplus = credit_of(&rig.tw, pilot) - keep;
+    if surplus > 0 {
+        let out = run(
+            &mut rig.tw,
+            GOD,
+            &format!("@econ/pay #{}=#{treasury} {surplus}", account.0),
+        );
+        assert!(out.contains("Paid: transaction #"), "{out}");
+    }
+    assert_eq!(credit_of(&rig.tw, pilot), keep);
+}
+
+/// The `strategic_ore` in `vault`, in tonnes: its pool, and those of `lots` still in it.
+fn kc2b_ore_aboard(rig: &mut Rig, vault: VaultId, lots: &[LotId]) -> u64 {
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    let in_lots: u64 = lots
+        .iter()
+        .filter_map(|id| typed(&mut rig.tw, &families.lots, id))
+        .filter(|lot| lot.endpoint() == EndpointRef(vault))
+        .map(|lot| lot.quantity())
+        .sum();
+    in_lots + pool(&mut rig.tw, vault, "strategic_ore")
+}
+
+/// **Doc 50b: a seizure takes every lot, however many** (doc 50b's CR finding). An indigent pilot
+/// carries 51 t of unlicensed `strategic_ore` as seventeen 3 t lots and none pooled. One ruling
+/// takes at most sixteen lots; before the fix the first ruling's 48 t cleared her with 3 t still
+/// aboard. Now the rest is filed as a further ruling, she stays uncleared until it lands, and she
+/// is cleared with no ore aboard, the line naming all 51 t.
+#[test]
+fn kc2b_seventeen_lots_of_ore_are_all_seized_before_clearance() {
+    use tacsim::space::PicketInspectionStatus;
+    let lots: Vec<LotId> = (0..17_u64).map(|n| LotId(0x50b0_0000 + n)).collect();
+    let seeded = lots.clone();
+    let (mut rig, pilot, hull, vault) =
+        hove_to_at_the_picket_with("Seventeen", 0, move |rig, _, vault| {
+            for lot in seeded {
+                seed_lot(rig, vault, "strategic_ore", 3, lot);
+            }
+        });
+    assert_eq!(kc2b_ore_aboard(&mut rig, vault, &lots), 51);
+    let mut heard = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        heard.contains("51000 kg unlicensed `strategic_ore`")
+            && heard.contains("48 t of the unlicensed `strategic_ore`")
+            && heard.contains("not cleared yet"),
+        "the first ruling takes sixteen lots and clears nothing: {heard}"
+    );
+    assert!(
+        !matches!(
+            picket_status(&rig.tw, hull),
+            Some(PicketInspectionStatus::ClearedAfterSeizure)
+        ),
+        "3 t still aboard, so she is not cleared"
+    );
+    for _ in 0..4 {
+        if picket_status(&rig.tw, hull) == Some(PicketInspectionStatus::ClearedAfterSeizure) {
+            break;
+        }
+        let (said_now, submits) = one_second(&mut rig, pilot);
+        heard.push_str(&said_now);
+        land_quietly(&mut rig, &submits);
+    }
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure),
+        "{heard}"
+    );
+    assert!(
+        heard.contains("51 t confiscated in lieu of fine"),
+        "the clearance names the whole seizure: {heard}"
+    );
+    assert_eq!(
+        kc2b_ore_aboard(&mut rig, vault, &lots),
+        0,
+        "no ore is left aboard"
+    );
+}
+
+/// **Doc 50b: the fine before the duty, one duty a crossing** (doc 50b's first KC.2 finding).
+/// Under the Republic's hold a pilot with 1,100 cr carries 1 t of unlicensed `strategic_ore`
+/// (a 1,000 cr fine) and 50 t of `metals`. Her credit covers the fine, and the duty, but not
+/// both. Before the fix the duty was paid first, the fine then failed, and the resubmission
+/// charged the duty again and seized the ore. Now the fine is paid, the duty is owed once, and
+/// the ore stays aboard.
+#[test]
+fn kc2b_the_fine_is_paid_before_the_duty_and_the_ore_is_not_seized() {
+    use tacsim::space::PicketInspectionStatus;
+    let (mut rig, pilot, hull, vault) =
+        hove_to_at_the_picket_with("FineFirst", 1, |rig, pilot, vault| {
+            seed_pool(rig, vault, "metals", 50, LotId(0x50b1));
+            republic_holds_kirkwood(&mut rig.tw);
+            kc2b_leave_credit(rig, pilot, 110_000);
+        });
+    let office = customs_office_credit(&rig.tw);
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(
+        ruled.contains("contraband fine of 1000.00cr is assessed") && ruled.contains("is owed"),
+        "the fine is assessed and the duty is owed: {ruled}"
+    );
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterFine),
+        "the fine is collected: {ruled}"
+    );
+    assert_eq!(credit_of(&rig.tw, pilot), 10_000, "the fine is paid");
+    assert_eq!(duty_debts(&rig.tw, pilot).len(), 1, "one duty, owed");
+    assert_eq!(
+        customs_office_credit(&rig.tw),
+        office,
+        "no duty is paid from the fine's money"
+    );
+    assert_eq!(
+        pool(&mut rig.tw, vault, "strategic_ore"),
+        1,
+        "the ore is not seized"
+    );
+}
+
+/// The Dray-P `who` flies from Ceres onto the Kirkwood leg and steps off before it ends, with
+/// `cargo` seeded in her hold while docked: the rig, the pilot, the hull, and the leg's end.
+fn kc2b_away_on_the_leg(
+    who: &str,
+    cargo: impl FnOnce(&mut Rig, ObjId, VaultId),
+) -> (Rig, ObjId, ObjId, i64) {
+    let mut rig = stocked();
+    let (pilot, row) = chartered(&mut rig, who, 1);
+    let hull = ObjId(row.hull);
+    let vault = hold_vault(&rig.tw, &row);
+    let desk = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    teleport(&mut rig.tw, pilot, desk);
+    let refit = run(&mut rig.tw, pilot, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, vault, "propellant", 75, LotId(2_621));
+    seed_pool(&mut rig, vault, "provisions", 25, LotId(2_622));
+    cargo(&mut rig, pilot, vault);
+    set_rate(&mut rig.tw, 3_600);
+    board(&mut rig, pilot);
+    let pending = undock_and_burn(&mut rig, pilot, hull);
+    let _ = fire_quietly(&mut rig);
+    rig.tw
+        .world_mut()
+        .move_to(pilot, desk)
+        .expect("she steps off");
+    let leg1_due = pending.plan.depart_ic + i64::from(pending.plan.legs[0].secs);
+    (rig, pilot, hull, leg1_due)
+}
+
+/// **Doc 50b: an away pilot's hull is inspected, not only charged** (Q-50-54 "assessed the same
+/// way"). A hull flies the Kirkwood leg with nobody aboard and 2 t of unlicensed `strategic_ore`
+/// in her hold. Before the fix the absent assessment levied only the duty. Now the manifest is
+/// read and a fine is filed as a ruling with her principal as its officer, and paid.
+#[test]
+fn kc2b_an_away_pilots_hull_is_fined_for_unlicensed_ore() {
+    use tacsim::space::CustomsFinding;
+    let (mut rig, pilot, hull, leg1_due) = kc2b_away_on_the_leg("AwayFined", |rig, _, vault| {
+        seed_pool(rig, vault, "strategic_ore", 2, LotId(0x50b2));
+    });
+    let before = credit_of(&rig.tw, pilot);
+    for step in 0..4 {
+        let _ = to_ic(&mut rig, leg1_due + 10 + step * 3_600);
+    }
+    let landed = landed_rulings(&rig, hull);
+    assert_eq!(
+        landed.first().map(|ruling| (&ruling.finding, ruling.actor)),
+        Some((
+            &CustomsFinding::Fined {
+                unlicensed_strategic_ore_kg: 2_000,
+                fine_minor: 100_000,
+            },
+            pilot
+        )),
+        "a fine is ruled with her principal as its officer: {landed:?}"
+    );
+    assert_eq!(
+        credit_of(&rig.tw, pilot),
+        before - 100_000,
+        "and the fine is collected"
+    );
+}
+
+/// **Doc 50b: a restart across the picket's leg still assesses the crossing**. A hull flies the
+/// Kirkwood leg with nobody aboard and 50 t of `metals` under the Republic's hold, and the
+/// server is down when the leg ends. Boot recovery moves her cursor past the boundary without
+/// the live hook. Before the fix she crossed duty-free. Now the space tick finds the crossing
+/// the hook never saw and assesses it, once.
+#[test]
+fn kc2b_a_restart_across_the_picket_leg_still_charges_the_duty_once() {
+    let (mut rig, pilot, hull, leg1_due) = kc2b_away_on_the_leg("Rebooted", |rig, _, vault| {
+        seed_pool(rig, vault, "metals", 50, LotId(0x50b3));
+        republic_holds_kirkwood(&mut rig.tw);
+    });
+    let (before, office) = (credit_of(&rig.tw, pilot), customs_office_credit(&rig.tw));
+    // Down past the leg's end: the clock moves without a fire, and the reboot catches her up.
+    let rate = i64::from(world_rate(&rig.tw).max(1));
+    let ahead = (leg1_due + 10 - ic_now(&rig.tw)).max(0);
+    let t = rig.tw.world().now() + (ahead + rate - 1) / rate;
+    rig.tw.set_now(t);
+    let mut rig = reboot_with(rig, Roster::default());
+    assert!(
+        journey(&rig.tw, hull).is_some_and(|j| j.cursor() >= 1),
+        "the boot moved her past the boundary"
+    );
+    for _ in 0..3 {
+        let _ = fire_quietly(&mut rig);
+    }
+    assert_eq!(
+        credit_of(&rig.tw, pilot),
+        before - 20_000,
+        "the duty is charged once"
+    );
+    assert_eq!(customs_office_credit(&rig.tw), office + 20_000);
+    assert_eq!(picket_status(&rig.tw, hull), None, "no picket holds her");
+}
+
+/// **Doc 50b: a duty past its grace holds the hull and restricts trade** (Q-50-54). Under the
+/// Republic's hold a pilot with no credit is cleared at the picket and owes the duty. Within its
+/// 28 IC days of grace it binds nothing; once past it, the Republic holds her hull at its ports
+/// and restricts her trade, as an unpaid fine does, and `+record` names it.
+#[test]
+fn kc2b_a_past_due_duty_holds_the_hull_and_restricts_trade() {
+    let (mut rig, pilot, hull, _vault) =
+        hove_to_at_the_picket_with("Overdue", 0, |rig, pilot, vault| {
+            seed_pool(rig, vault, "metals", 50, LotId(0x50b4));
+            republic_holds_kirkwood(&mut rig.tw);
+            kc2b_leave_credit(rig, pilot, 0);
+        });
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert!(ruled.contains("is owed, due in 28 IC days"), "{ruled}");
+    let republic = tacsim::polity::polity(rig.tw.world(), "republic").expect("the Republic");
+    let stickney = cid("stickney_port");
+    assert!(
+        !tacsim::port::record::restricted(rig.tw.world(), pilot, republic)
+            && !tacsim::surface::security::holds_at(rig.tw.world(), hull, &stickney),
+        "within its grace the duty binds nothing"
+    );
+    let due = ic_now(&rig.tw) + tacsim::surface::retrieval::DEBT_GRACE_IC_DAYS * 86_400;
+    for step in 0..3 {
+        let _ = to_ic(&mut rig, due + 3_600 * (step + 1));
+    }
+    assert!(
+        tacsim::port::record::restricted(rig.tw.world(), pilot, republic),
+        "past its grace the duty restricts her trade"
+    );
+    assert!(
+        tacsim::surface::security::holds_at(rig.tw.world(), hull, &stickney),
+        "and holds her hull at the Republic's port"
+    );
+    let record = run(&mut rig.tw, pilot, "+record");
+    assert!(record.contains("a transit duty owed"), "{record}");
+}
+
+/// **Doc 50b: after the flip a seizure goes to the customs office, and its lot is offered**
+/// (Q-50-14, Q-50-44). Under the Republic's hold an indigent pilot's 51 t of unlicensed
+/// `strategic_ore`, one exact lot, is seized. Before the fix the Registry took it whoever held the
+/// approach, and a lot was never offered. Now it goes to the Republic Customs Office's vault, and
+/// the office offers the lot as an exact-lot ask.
+#[test]
+fn kc2b_after_the_flip_a_seized_lot_goes_to_the_customs_office_and_is_offered() {
+    use tacsim::space::PicketInspectionStatus;
+    const LOT: LotId = LotId(0x50b5);
+    let (mut rig, pilot, hull, _vault) =
+        hove_to_at_the_picket_with("SeizedAfter", 0, |rig, _, vault| {
+            seed_lot(rig, vault, "strategic_ore", 51, LOT);
+            republic_holds_kirkwood(&mut rig.tw);
+        });
+    let ruled = customs_ruling(&mut rig, pilot, "+helm/submit");
+    assert_eq!(
+        picket_status(&rig.tw, hull),
+        Some(PicketInspectionStatus::ClearedAfterSeizure),
+        "{ruled}"
+    );
+    let (office, _) = tacsim::polity::lane_org_account(rig.tw.world(), &cid("republic_customs"))
+        .expect("the customs office");
+    let office_vault = market(&rig.tw)
+        .vendor_of_org(office)
+        .map(|vendor| vendor.vault)
+        .expect("the customs office is a vendor once it has seized");
+    let families = rig
+        .tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    assert_eq!(
+        typed(&mut rig.tw, &families.lots, &LOT).map(|lot| lot.endpoint()),
+        Some(EndpointRef(office_vault)),
+        "the lot is the customs office's"
+    );
+    assert!(
+        market(&rig.tw)
+            .lot_listings()
+            .any(|listing| listing.source.exact_lot() == Some(LOT)),
+        "and it is offered as an exact-lot ask"
+    );
+}
+
+/// **Doc 50b: the job board's duty follows the haul port to port** (Q-50-8). A haul from Ceres to
+/// Isidis flies by Stickney, through the picket, so under the Republic's hold it carries the duty
+/// clause though Ceres lays no route to Isidis. Stickney to Ceres crosses nothing.
+#[test]
+fn kc3b_the_boards_duty_walks_a_haul_port_to_port() {
+    let mut rig = stocked();
+    republic_holds_kirkwood(&mut rig.tw);
+    let w = rig.tw.world();
+    assert_eq!(
+        tacsim::space::duty::haul_clause(w, "ceres", "isidis", 10_000),
+        " (Kirkwood duty ~200 cr)"
+    );
+    assert_eq!(
+        tacsim::space::duty::haul_clause(w, "ceres", "stickney", 10_000),
+        " (Kirkwood duty ~200 cr)"
+    );
+    assert_eq!(
+        tacsim::space::duty::haul_clause(w, "stickney", "ceres", 10_000),
+        ""
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Doc 50 cut OP.1: the Isidis Concession
 // ---------------------------------------------------------------------------
@@ -17315,7 +17682,12 @@ fn duty_lines(text: &str) -> Vec<&str> {
 ///   holds the approach and since when, within 120 columns;
 /// - the filing shows the duty it pinned, with the same reason;
 /// - at the picket the charge carries the same clause.
+///
+/// Doc 50b (Q-50-47): a second account files the same run before the flip, and its filing names
+/// no duty and pins the Co-op's terms, which the flip leaves as they were. The story stays at
+/// 3,600:1 (the owner's ruling of 2026-11-20, recorded as a divergence).
 #[test]
+#[allow(clippy::too_many_lines)] // two accounts' filings, then one run through the picket
 fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
     let mut rig = stocked();
     let (pilot, row) = chartered(&mut rig, "SameRun", 1);
@@ -17338,7 +17710,42 @@ fn kc3_the_same_run_before_and_after_the_flip_names_the_duty_and_why() {
         "no duty under the Co-op: {before}"
     );
 
+    // The second account files the same run before the flip.
+    let (early, early_row) = chartered_as(&mut rig, "EarlyRun", 2, "Grey Heron");
+    let early_hull = ObjId(early_row.hull);
+    let early_vault = hold_vault(&rig.tw, &early_row);
+    teleport(&mut rig.tw, early, desk);
+    let refit = run(&mut rig.tw, early, "+coop/refit prospector");
+    assert!(refit.contains("Dray-P"), "{refit}");
+    seed_pool(&mut rig, early_vault, "propellant", 75, LotId(2_631));
+    seed_pool(&mut rig, early_vault, "provisions", 25, LotId(2_632));
+    seed_pool(&mut rig, early_vault, "metals", 50, LotId(2_633));
+    board_as(&mut rig, early, "Grey Heron");
+    let (early_filed, _) = undock(&mut rig, early, "+ship/undock stickney");
+    assert!(
+        early_filed.contains("Clearance filed for "),
+        "{early_filed}"
+    );
+    assert!(
+        duty_lines(&early_filed).is_empty(),
+        "filed under the Co-op, no duty: {early_filed}"
+    );
+    let pinned = voyage(&rig.tw, early_hull)
+        .and_then(|v| v.pending)
+        .and_then(|p| p.terms);
+    assert!(
+        pinned.as_ref().is_some_and(|t| t.row.is_none()),
+        "the Co-op's terms are pinned: {pinned:?}"
+    );
+
     republic_holds_kirkwood(&mut rig.tw);
+    assert_eq!(
+        voyage(&rig.tw, early_hull)
+            .and_then(|v| v.pending)
+            .and_then(|p| p.terms),
+        pinned,
+        "the flip leaves the earlier filing's terms as they were"
+    );
     let held = tacsim::polity::control_at(rig.tw.world(), &cid("kirkwood_depot"))
         .and_then(|c| c.de_facto_since_ic)
         .expect("the Republic's hold");
