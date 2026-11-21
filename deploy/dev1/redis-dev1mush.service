@@ -1,5 +1,5 @@
 [Unit]
-Description=Redis for rustmush dev1 (127.0.0.1:6788)
+Description=Redis for rustmush dev1 (/run/redis-dev1mush/redis.sock)
 After=network.target
 Documentation=file:/opt/rustmush/dev1/build/deploy/dev1/README.md
 
@@ -7,9 +7,12 @@ Documentation=file:/opt/rustmush/dev1/build/deploy/dev1/README.md
 Type=notify
 ExecStart=/usr/bin/redis-server /etc/redis/redis-dev1mush.conf
 User=redis
-Group=redis
+Group=mush
+SupplementaryGroups=redis
 RuntimeDirectory=redis-dev1mush
+RuntimeDirectoryMode=0750
 StateDirectory=redis-dev1mush
+StateDirectoryMode=0700
 UMask=007
 Restart=on-failure
 RestartSec=3

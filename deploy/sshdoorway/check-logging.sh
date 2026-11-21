@@ -18,7 +18,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 conf=/etc/sshdoorway/logrotate.conf
-state=/var/lib/sshdoorway/logrotate.status
+state=/var/lib/logrotate/sshdoorway.status
 logdir=/var/log/sshdoorway
 fail=0
 ok()   { echo "  ok    $*"; }

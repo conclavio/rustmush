@@ -13,6 +13,11 @@
 # Usage:
 #   render.sh <instance.env> <mushd.toml.tmpl> <out.toml> [binary ...]
 #
+# Environment:
+#   RENDER_CHECK_USER  when set and running as root, execute each trailing
+#                      `binary --check-config` unprivileged via `runuser -u`
+#                      so root never executes service binaries directly.
+#
 # Each trailing `binary` is preflighted with its own `--check-config` over the
 # rendered file — `mush-gateway` and `mush-server` for the split deployment,
 # `mushd` for the all-in-one. A binary that is named but not built fails the
@@ -24,9 +29,9 @@
 #
 # Nothing is installed until every check has passed: the render must carry no
 # unsubstituted `__TOKEN__` and no unresolved `EXTERNAL_IP=auto` marker, it must
-# satisfy every binary named, and only then is it moved into place from
-# `<out>.new`. A redeploy whose instance.env has gone wrong therefore leaves the
-# live config alone.
+# satisfy every binary named, and only then is it moved into place from a
+# uniquely created sibling staging file (`mktemp`). A redeploy whose
+# instance.env has gone wrong therefore leaves the live config alone.
 #
 # Two instance.env keys are not tokens: MINDS_LAUNCH and REGISTRY_PULSE_MS
 # decide whether lines of the template's commented `[tacsim.minds]` block are
@@ -46,26 +51,62 @@ OUT="$3"
 shift 3
 
 for required in "$ENV_FILE" "$TEMPLATE"; do
-  if [ ! -f "$required" ]; then
-    echo "$0: no such file: $required" >&2
+  if [ ! -f "$required" ] || [ -L "$required" ]; then
+    echo "$0: missing or symlinked input file: $required" >&2
     exit 1
   fi
 done
 
-STAGED="$OUT.new"
-SED_SCRIPT="$STAGED.sed"
-trap 'rm -f "$SED_SCRIPT" "$STAGED.minds"' EXIT
+if [ -L "$OUT" ]; then
+  echo "$0: refusing to overwrite symlink output path: $OUT" >&2
+  exit 1
+fi
 
-# The loop READS instance.env; it never sources it. A value there is a sed
-# replacement, not a shell word, so `INSTANCE_TITLE=rustmush dev1 (TacSim)` is a
-# good line in it and a syntax error to `.` — which would leave every key after
-# it unset and render a config with empty ports and an empty start room.
-while IFS='=' read -r k v; do
-  case "$k" in '' | '#'*) continue ;; esac
-  printf 's|__%s__|%s|g\n' "$k" "$v"
-done <"$ENV_FILE" >"$SED_SCRIPT"
+OUT_DIR="$(dirname "$OUT")"
+OUT_BASE="$(basename "$OUT")"
+STAGED="$(mktemp "$OUT_DIR/.${OUT_BASE}.new.XXXXXX")"
+MINDS_TMP=""
+cleanup() {
+  rm -f "$STAGED" ${MINDS_TMP:+"$MINDS_TMP"}
+}
+trap cleanup EXIT
 
-sed -f "$SED_SCRIPT" "$TEMPLATE" >"$STAGED"
+# Pure literal string substitution via awk `index()`/`substr()` — never
+# `source`d and never fed into GNU `sed -f` (where `|`, `&`, `\`, `e`, or `w`
+# in instance.env values can inject commands or file writes). Every `__KEY__`
+# token is replaced literally with the value on the first `KEY=value` line.
+awk '
+  FNR == NR {
+    line = $0
+    sub(/\r$/, "", line)
+    eq = index(line, "=")
+    if (eq == 0) next
+    k = substr(line, 1, eq - 1)
+    if (k == "" || substr(k, 1, 1) == "#") next
+    if (!(k in seen)) {
+      seen[k] = 1
+      n++
+      keys[n] = "__" k "__"
+      vals[n] = substr(line, eq + 1)
+    }
+    next
+  }
+  {
+    line = $0
+    for (i = 1; i <= n; i++) {
+      pat = keys[i]
+      rep = vals[i]
+      plen = length(pat)
+      out = ""
+      while ((pos = index(line, pat)) > 0) {
+        out = out substr(line, 1, pos - 1) rep
+        line = substr(line, pos + plen)
+      }
+      line = out line
+    }
+    print line
+  }
+' "$ENV_FILE" "$TEMPLATE" >"$STAGED"
 
 # Doc 44 cut MW.1: the two keys this script reads for ITSELF. Neither is a
 # `__TOKEN__`, because what each one decides is whether a line of the
@@ -80,15 +121,6 @@ sed -f "$SED_SCRIPT" "$TEMPLATE" >"$STAGED"
 #   REGISTRY_PULSE_MS  empty, or a number: the `registry_pulse_ms` line
 #                      rendered live with it (a dev box sets 50, Q-44-41).
 #
-# Why the document must exist first: a live `launch_path` whose file is
-# missing refuses `--check-config`, `--bootstrap-staff` and the boot, and the
-# document names ids that only a booted world has printed. So a deploy onto a
-# fresh or wiped store renders the line commented whatever the switch says,
-# deploy/instance/launch-bringup.py writes the document and renders again, and
-# scripts/reset-instance.sh takes the line out again when it wipes the data
-# directory the document lives in. An empty path is never written: there is no
-# value of either key that renders `launch_path = ""`.
-#
 # With MINDS_LAUNCH off and REGISTRY_PULSE_MS empty nothing below touches the
 # staged file: it is the plain substitution, byte for byte.
 env_value() {
@@ -97,7 +129,7 @@ env_value() {
     case "$key" in '' | '#'*) continue ;; esac
     if [ "$key" = "$wanted" ]; then
       # Leading spaces and the CR a Windows-edited instance.env leaves on the
-      # line: harmless inside a sed replacement, wrong in a comparison.
+      # line.
       value="${value#"${value%%[![:space:]]*}"}"
       value="${value%"${value##*[![:space:]]}"}"
       printf '%s\n' "$value"
@@ -107,19 +139,49 @@ env_value() {
   return 0
 }
 
-# Make the ONE line matching `$1` (a basic regular expression, anchored by the
-# caller) read `$2`. Exactly one line must match: a template whose minds block
-# was reworded is a refusal here, not a silently commented launch.
+# Make the ONE line matching `$2` (by exact equality or literal prefix, per
+# `$1`) read `$3` literally. Passes strings via ENVIRON (not `awk -v` or `sed`)
+# so backslashes, `&`, `|`, and regex metacharacters are never interpreted.
+# Exactly one line must match: a template whose minds block was reworded is a
+# refusal here, not a silently commented launch.
 uncomment_line() {
-  local pattern="$1" replacement="$2" count
-  count="$(grep -c -- "$pattern" "$STAGED" || true)"
-  if [ "$count" != 1 ]; then
-    echo "$0: $TEMPLATE has $count lines matching '$pattern', expected 1; $OUT is untouched" >&2
-    rm -f "$STAGED"
+  local mode="$1" needle="$2" replacement="$3"
+  MINDS_TMP="$(mktemp "$OUT_DIR/.${OUT_BASE}.minds.XXXXXX")"
+  if ! RENDER_MODE="$mode" RENDER_NEEDLE="$needle" RENDER_REP="$replacement" \
+    awk '
+      BEGIN {
+        mode = ENVIRON["RENDER_MODE"]
+        needle = ENVIRON["RENDER_NEEDLE"]
+        rep = ENVIRON["RENDER_REP"]
+        nlen = length(needle)
+        hits = 0
+      }
+      {
+        matched = 0
+        if (mode == "exact") {
+          matched = ($0 == needle)
+        } else if (mode == "prefix") {
+          matched = (substr($0, 1, nlen) == needle)
+        }
+        if (matched) {
+          hits++
+          print rep
+        } else {
+          print $0
+        }
+      }
+      END {
+        if (hits != 1) {
+          print hits > "/dev/stderr"
+          exit 3
+        }
+      }
+    ' "$STAGED" >"$MINDS_TMP" 2>/dev/null; then
+    echo "$0: $TEMPLATE does not have exactly 1 line matching '$needle'; $OUT is untouched" >&2
     exit 1
   fi
-  sed "s|$pattern|$replacement|" "$STAGED" >"$STAGED.minds"
-  mv "$STAGED.minds" "$STAGED"
+  mv "$MINDS_TMP" "$STAGED"
+  MINDS_TMP=""
 }
 
 minds_launch="$(env_value MINDS_LAUNCH)"
@@ -131,10 +193,15 @@ on)
   data_dir="$(env_value DATA_DIR)"
   if [ -z "$data_dir" ]; then
     echo "$0: MINDS_LAUNCH=on needs DATA_DIR in $ENV_FILE (the launch document is <DATA_DIR>/launch.json)" >&2
-    rm -f "$STAGED"
     exit 1
   fi
-  if [ -f "$data_dir/launch.json" ]; then
+  case "$data_dir" in
+  *\"* | *\\*)
+    echo "$0: DATA_DIR contains unsafe TOML string characters: $data_dir" >&2
+    exit 1
+    ;;
+  esac
+  if [ -f "$data_dir/launch.json" ] && [ ! -L "$data_dir/launch.json" ]; then
     launch_live=1
   else
     echo "$0: MINDS_LAUNCH=on, but $data_dir/launch.json does not exist yet: launch_path stays commented (deploy/instance/launch-bringup.py writes it)" >&2
@@ -142,60 +209,43 @@ on)
   ;;
 *)
   echo "$0: MINDS_LAUNCH must be 'on' or 'off' in $ENV_FILE, got '$minds_launch'" >&2
-  rm -f "$STAGED"
   exit 1
   ;;
 esac
 case "$registry_pulse" in
 *[!0-9]*)
   echo "$0: REGISTRY_PULSE_MS must be empty or a number of milliseconds in $ENV_FILE, got '$registry_pulse'" >&2
-  rm -f "$STAGED"
   exit 1
   ;;
 esac
 if [ "$launch_live" = 1 ] || [ -n "$registry_pulse" ]; then
-  uncomment_line '^# \[tacsim\.minds\]$' '[tacsim.minds]'
+  uncomment_line exact '# [tacsim.minds]' '[tacsim.minds]'
 fi
 if [ "$launch_live" = 1 ]; then
-  uncomment_line '^# launch_path = .*$' "launch_path = \"$data_dir/launch.json\""
+  uncomment_line prefix '# launch_path = ' "launch_path = \"$data_dir/launch.json\""
 fi
 if [ -n "$registry_pulse" ]; then
-  uncomment_line '^# registry_pulse_ms = .*$' "registry_pulse_ms = $registry_pulse"
+  uncomment_line prefix '# registry_pulse_ms = ' "registry_pulse_ms = $registry_pulse"
 fi
 
 # deploy/README.md's completeness check: a token left in a LIVE (non-comment)
 # line means a key with no line in instance.env, and the config it would install
-# holds the literal `__START_ROOM__`. Comment lines are exempt because the
-# template's own header spells the mechanism out with `__KEY__` tokens — and
-# `crates/mush-config/tests/shipped_configs.rs` applies the same rule to the
-# same lines, so the shell and the test cannot disagree about what a complete
-# render is. Spelled as an `if` rather than `grep ... && { ...; }` because this
-# script runs under `set -e`, where a grep that correctly finds nothing would
-# end the script.
+# holds the literal `__START_ROOM__`.
 if grep -n '^[^#]*__' "$STAGED"; then
   echo "$0: INCOMPLETE $ENV_FILE — the lines above still carry a token" >&2
-  rm -f "$STAGED"
   exit 1
 fi
 
-# The OTHER incomplete render, and the one the grep above cannot see. A
-# committed instance.env that resolves its address at deploy time writes
-# `EXTERNAL_IP=auto` — a marker, not an address — and the deploy script replaces
-# that whole line before it calls this script. Rendered unresolved it produces
-# `[ssh].listen = "auto:6789"` (the web listener's address is its own key,
-# WEB_BIND, since the boxes went behind Caddy), which no `--check-config` below
-# refuses (`[ssh].listen` is on no preflight list), so the
-# symptom would be a box that boots clean, logs nothing wrong, and answers on no
-# port. That refusal belongs HERE, with the completeness rule it is a case of,
-# and not only in CI and in crates/mush-config/tests/shipped_configs.rs — an
-# operator re-rendering by hand from the COMMITTED env runs neither of those.
-# Whole-word, and live lines only, exactly as those two spell it.
+# Unresolved deploy-time marker check: `EXTERNAL_IP=auto` must be replaced by
+# deploy.sh before rendering. Whole-word, live lines only.
 if grep -n '^[^#]*\bauto\b' "$STAGED"; then
   echo "$0: UNRESOLVED $ENV_FILE — the lines above carry the deploy-time marker" >&2
   echo "$0: 'auto' is not an address; the deploy resolves EXTERNAL_IP before rendering" >&2
-  rm -f "$STAGED"
   exit 1
 fi
+
+# Readable by the unprivileged check user (and installed config is 0644).
+chmod 0644 "$STAGED"
 
 # The binaries' own preflight (WS04-S3). `--check-config` opens neither the
 # store, nor a socket, nor the quarantine spool's lifetime lock, so it is safe
@@ -203,21 +253,25 @@ fi
 #
 # A trailing argument may carry the binary's own flags after its path, split
 # on whitespace ("<path>/mush-gateway --generation a"): the split deploys
-# preflight the gateway AS a generation (doc 33 §4.4), because without
-# `--generation` a symlinked [ssh].trusted_socket — the generations' handoff
-# link — is a refusal. No path under /opt/rustmush has a space.
+# preflight the gateway AS a generation (doc 33 §4.4). No path under
+# /opt/rustmush has a space.
 for spec in "$@"; do
   read -r -a words <<<"$spec"
   binary="${words[0]}"
   if [ ! -x "$binary" ]; then
     echo "$0: $binary is not built (no executable at that path); $OUT is untouched and nothing was started" >&2
-    rm -f "$STAGED"
     exit 1
   fi
-  if ! "${words[@]}" --check-config --config "$STAGED"; then
-    echo "$0: $binary refuses the render; $OUT is untouched and nothing was started" >&2
-    rm -f "$STAGED"
-    exit 1
+  if [ -n "${RENDER_CHECK_USER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+    if ! runuser -u "$RENDER_CHECK_USER" -- "${words[@]}" --check-config --config "$STAGED"; then
+      echo "$0: $binary refuses the render; $OUT is untouched and nothing was started" >&2
+      exit 1
+    fi
+  else
+    if ! "${words[@]}" --check-config --config "$STAGED"; then
+      echo "$0: $binary refuses the render; $OUT is untouched and nothing was started" >&2
+      exit 1
+    fi
   fi
 done
 

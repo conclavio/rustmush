@@ -916,19 +916,47 @@ fn the_template_never_points_the_boundary_at_the_store() {
             Err(e) => panic!("{env_file}: the rendered boundary is not usable: {e}"),
         }
 
-        // The bypass: put the boundary back on the store's own port, the way an
-        // instance that never wrote an [ipc] section would have inherited it,
-        // and the load path must refuse. This is the WS08-S13 refusal driven by
-        // the template's OWN store URL rather than a fixture, so an instance.env
-        // whose REDIS_PORT drifts onto the boundary is caught here.
-        let authority = cfg
-            .store
-            .redis_url
-            .rsplit_once("//")
-            .expect("the template's redis_url is a URL")
-            .1;
+        // Verify every shipped instance's `[store].redis_url` is a well-formed
+        // Redis URL (Unix socket `redis+unix:///...` on hardened Linux deploys,
+        // or TCP `redis://` / `rediss://`).
+        let redis_url = &cfg.store.redis_url;
+        assert!(
+            redis_url.starts_with("redis+unix:///")
+                || redis_url.starts_with("redis://")
+                || redis_url.starts_with("rediss://"),
+            "{env_file}: unexpected [store].redis_url scheme: {redis_url:?}"
+        );
+
+        // The bypass: put the boundary back on a TCP store's own port, the way
+        // an instance that never wrote an [ipc] section would have inherited it,
+        // and the load path must refuse. When the shipped instance uses a TCP
+        // `redis_url`, drive the check with its own authority; when it uses a
+        // Unix socket (`redis+unix:///...`, which has no TCP port to collide
+        // with), also exercise the WS08-S13 refusal explicitly over a TCP store
+        // URL on the rendered config so the check stays live.
         let mut collided = cfg.clone();
-        collided.ipc.listen = authority.to_string();
+        if let Some(authority) = redis_url
+            .strip_prefix("redis://")
+            .or_else(|| redis_url.strip_prefix("rediss://"))
+        {
+            collided.ipc.listen = authority
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or(authority)
+                .to_string();
+        } else {
+            // Unix-socket Redis has no TCP port, so binding a loopback TCP IPC
+            // address must not falsely collide with it...
+            let mut tcp_ipc = cfg.clone();
+            tcp_ipc.ipc.listen = "127.0.0.1:6791".to_string();
+            tcp_ipc
+                .ipc_endpoint()
+                .expect("a Unix-socket redis_url has no TCP port to collide with");
+
+            // ...while a TCP store URL on the same loopback port must still refuse.
+            collided.store.redis_url = "redis://127.0.0.1:6791".to_string();
+            collided.ipc.listen = "127.0.0.1:6791".to_string();
+        }
         let err = collided
             .ipc_endpoint()
             .expect_err("the boundary must never be allowed to bind the store's port");

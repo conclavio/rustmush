@@ -115,7 +115,7 @@ jobs:
       # CARGO_BUILD_JOBS and the test threads are per box: the "Sized for the
       # box" step below, through GITHUB_ENV.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain (pinned by rust-toolchain.toml) and cargo-nextest
         run: |
           rustup toolchain install
@@ -154,11 +154,9 @@ jobs:
           echo "$RUNNER_NAME: $(nproc) cores; CARGO_BUILD_JOBS=$jobs; test threads ${threads:-num-cpus (the ci profile)}"
       # The `env` input (doc 43 TS.2), through GITHUB_ENV. The value reaches
       # the script as an environment variable, never as interpolated text,
-      # and is split on whitespace with globbing off, so a pair cannot carry
-      # a newline into GITHUB_ENV. A name the workflow or the toolchain owns
-      # is refused: REDIS_URL is the `redis` input's, the CARGO_*/RUST*/
-      # NEXTEST_* sizing is the box's, and the runner's own are not a test's
-      # configuration.
+      # and is split on whitespace with globbing off. Only explicitly
+      # allowlisted test/harness configuration names and prefixes are accepted
+      # (blocking toolchain, dynamic-linker, shell, git, Python, and runner vars).
       - name: The dispatch's configuration
         if: inputs.env != ''
         env:
@@ -171,9 +169,15 @@ jobs:
               echo "::error::env: '$pair' is not NAME=VALUE with an upper-case NAME"
               exit 1
             fi
+            if [[ "$pair" == *$'\n'* || "$pair" == *$'\r'* ]]; then
+              echo "::error::env: '$name' contains a disallowed newline"
+              exit 1
+            fi
             case "$name" in
-              PATH|HOME|SHELL|TMPDIR|REDIS_URL|RUSTFLAGS|RUSTDOCFLAGS|CARGO_*|RUSTUP_*|RUSTC*|NEXTEST_*|GITHUB_*|RUNNER_*|ACTIONS_*|LD_*|BASH_*)
-                echo "::error::env: $name is the workflow's or the toolchain's, not a configuration"
+              TACSIM_*|MUSH_*|MINE_RATE|FIELD_RAID|FIELD_IDLE_S|MIND_PULSE_MS|GC12_*|MW20_*|M6_*|RUN_LLM_SMOKE|RELIEF_PREVIEW|RUST_LOG|RUST_BACKTRACE)
+                ;;
+              *)
+                echo "::error::env: $name is not on the gate.yml test-configuration allowlist"
                 exit 1
                 ;;
             esac
@@ -196,16 +200,82 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           EXTRA: ${{ inputs.extra }}
         run: |
-          set -uo pipefail
+          set -uo pipefail -f
           # REDIS_URL set only when asked: an empty one is not "unset" to
           # every gate in the tree.
           if [ -n "$GATE_REDIS_URL" ]; then export REDIS_URL="$GATE_REDIS_URL"; fi
-          # The dispatch's extra arguments, shell-split as typed (a dispatch
-          # needs write access, so this is the owner's own command line).
-          eval "extra_args=($EXTRA)"
+          # Parse `inputs.extra` safely without `eval`: shlex.split + strict
+          # allowlist of cargo-nextest flags (no `--config`, `--manifest-path`,
+          # `--target-dir`, or shell command substitution).
+          extra_args=()
+          if [ -n "$EXTRA" ]; then
+            extra_tmp="$(mktemp "$RUNNER_TEMP/extra-args.XXXXXX")"
+            if ! python3 -c '
+          import os, re, shlex, sys
+
+          tokens = shlex.split(os.environ["EXTRA"])
+          valued_flags = {
+              "-E", "--filterset", "--run-ignored", "--test", "--bin",
+              "--retries", "--test-threads", "--status-level", "--final-status-level",
+              "--failure-output", "--success-output", "--features", "-j", "--build-jobs",
+          }
+          bare_flags = {
+              "--lib", "--bins", "--tests", "--all-targets", "--no-fail-fast",
+              "--fail-fast", "--no-capture", "--nocapture", "--no-default-features",
+              "--all-features", "--release", "--exact", "--ignored", "--include-ignored",
+              "--show-output",
+          }
+          i = 0
+          passthrough = False
+          while i < len(tokens):
+              tok = tokens[i]
+              if passthrough:
+                  if tok not in {"--exact", "--ignored", "--include-ignored", "--nocapture", "--show-output"} and not re.fullmatch(r"[A-Za-z0-9_.:/-]+", tok):
+                      sys.exit(f"disallowed passthrough arg in extra: {tok!r}")
+                  i += 1
+                  continue
+              if tok == "--":
+                  passthrough = True
+                  i += 1
+                  continue
+              if tok in bare_flags:
+                  i += 1
+                  continue
+              if tok in valued_flags:
+                  if i + 1 >= len(tokens):
+                      sys.exit(f"missing value for {tok!r} in extra")
+                  i += 2
+                  continue
+              if tok.startswith("-"):
+                  flag, eq, _ = tok.partition("=")
+                  if eq and flag in valued_flags:
+                      i += 1
+                      continue
+                  if tok.startswith("-E") and len(tok) > 2:
+                      i += 1
+                      continue
+                  sys.exit(f"disallowed flag in extra: {tok!r}")
+              if not re.fullmatch(r"[A-Za-z0-9_.:/-]+", tok):
+                  sys.exit(f"disallowed positional arg in extra: {tok!r}")
+              i += 1
+
+          for tok in tokens:
+              sys.stdout.write(tok + "\0")
+          ' > "$extra_tmp"; then
+              rm -f "$extra_tmp"
+              echo "::error::extra: invalid or disallowed cargo-nextest arguments"
+              exit 1
+            fi
+            mapfile -d '' -t extra_args < "$extra_tmp"
+            rm -f "$extra_tmp"
+          fi
           engine=()
           bot=0
           for p in $PACKAGES; do
+            if ! [[ "$p" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+              echo "::error::packages: invalid package name '$p'"
+              exit 1
+            fi
             if [ "$p" = mush-bot ]; then bot=1; else engine+=(-p "$p"); fi
           done
           status=0
@@ -284,7 +354,7 @@ jobs:
           # <flakyFailure> for a pass on retry), one per nextest invocation,
           # moved out of the store by the sweep step; the scripts' JSON.
           ls -la gate-junit-*.xml harness*.json cost-lane.json 2>/dev/null || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: gate-${{ inputs.kind }}

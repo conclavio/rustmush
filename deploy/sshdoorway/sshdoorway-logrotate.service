@@ -3,4 +3,5 @@ Description=Rotate and compress the sshdoorway logs (doc 29 §8.1)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/logrotate -s /var/lib/sshdoorway/logrotate.status /etc/sshdoorway/logrotate.conf
+ExecStartPre=/usr/bin/install -d -m 0755 -o root -g root /var/lib/logrotate
+ExecStart=/usr/sbin/logrotate -s /var/lib/logrotate/sshdoorway.status /etc/sshdoorway/logrotate.conf
