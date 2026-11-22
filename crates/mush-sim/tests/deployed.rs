@@ -457,5 +457,102 @@ fn p2_mod_23_transitions_and_commands_refuse_deployed_units() {
             .parent_of(left),
         SpatialParent::Attached { host, .. } if host == right
     ));
-    let _ = domain;
+
+    // 5. `depart_ineligible_after_field_exit` excuses ONLY the carrier root's
+    //    own IC-field mark during a pre-exit dry run; OOC arena match marks,
+    //    deployed subtree children, and strict `depart_ineligible` all refuse.
+    mush_sim::deployed::clear(tw.world_mut(), left);
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", left.0, bay.0),
+    );
+    let origin = tw
+        .world()
+        .module_state::<SpatialState>()
+        .unwrap()
+        .domains
+        .get(&domain)
+        .unwrap()
+        .presentation_location;
+    let route = mush_sim::RouteDef::new(
+        mush_core::CanonicalId::new("test_route").expect("route id"),
+        (origin, dest),
+        vec![mush_sim::LegDef::new(dest, 60).expect("valid leg")],
+        mush_core::CanonicalId::new("drive.test").expect("drive class"),
+        0,
+    )
+    .expect("valid route");
+    // Root has OOC match mark: both strict and pre-exit dry run refuse.
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        right,
+        DeployedMark::new(57, "tacsim.arena.proving_ground"),
+    );
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(mush_sim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            mush_sim::depart_ineligible(&ctx, right, &route).is_some(),
+            "strict depart_ineligible must refuse OOC match mark"
+        );
+        assert!(
+            mush_sim::depart_ineligible_after_field_exit(&ctx, right, &route).is_some(),
+            "pre-exit dry run must still refuse OOC match mark"
+        );
+    }
+    // Root has IC-field mark, no deployed children: strict refuses, pre-exit allows.
+    mush_sim::deployed::mark(tw.world_mut(), right, DeployedMark::field("site.alpha", 1));
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(mush_sim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            mush_sim::depart_ineligible(&ctx, right, &route).is_some(),
+            "strict depart_ineligible must still refuse IC-field mark on root"
+        );
+        assert_eq!(
+            mush_sim::depart_ineligible_after_field_exit(&ctx, right, &route),
+            None,
+            "pre-exit dry run must excuse only the root carrier's own IC-field mark"
+        );
+    }
+    // Subtree child inside bay also deployed (even with a field mark): pre-exit still refuses.
+    mush_sim::deployed::mark(tw.world_mut(), left, DeployedMark::field("site.alpha", 1));
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(mush_sim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            mush_sim::depart_ineligible_after_field_exit(&ctx, right, &route).is_some(),
+            "pre-exit dry run must still refuse when a subtree child is deployed"
+        );
+    }
 }

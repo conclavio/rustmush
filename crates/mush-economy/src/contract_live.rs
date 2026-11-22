@@ -3670,9 +3670,8 @@ fn has_no_economic_history(c: &EconomicContract, snap: &crate::snapshot::Economy
 }
 
 /// A terminal unmanaged tombstone (`Cancelled`, `Expired`, or zero-value/no-tx
-/// `Settled`) with no economic history that may be evicted past the retention
-/// cap or collected by `sweep::collect_garbage` (HIGH-22 + P2-MOD-14).
-pub(crate) fn is_prunable_cancelled_draft(
+/// `Settled`) with no economic history (HIGH-22 + P2-MOD-14).
+fn is_prunable_zero_history_terminal(
     c: &EconomicContract,
     snap: &crate::snapshot::EconomySnapshot,
 ) -> bool {
@@ -3692,9 +3691,71 @@ pub(crate) fn is_prunable_cancelled_draft(
     terminal_prunable && has_no_economic_history(c, snap)
 }
 
-/// Evict oldest zero-history `Cancelled` draft/offer tombstones past the
-/// per-issuer and global retention caps (HIGH-22), always keeping `keep`
-/// (the contract just canceled in this call) immediately visible.
+/// A terminal unmanaged, non-scoped tombstone (`Cancelled`, `Expired`, or
+/// zero-value/no-tx `Settled`) with no economic history that may be collected
+/// outright by `sweep::collect_prunable_contracts` (HIGH-22 + P2-MOD-14).
+///
+/// Contracts carrying a provider-authorized `fact_consent` marker (e.g. survey
+/// commissions and passenger bookings) are excluded from full sweep wipe-to-zero
+/// so their game-layer records can inspect the terminal `Cancelled`/`Expired`
+/// state across sweeps and restarts to reopen/replace slots; they remain
+/// strictly bounded under their own per-issuer (8) and global (64) retention
+/// caps via [`prune_excess_cancelled_drafts`] and
+/// [`excess_scoped_fact_tombstones`].
+pub(crate) fn is_prunable_cancelled_draft(
+    c: &EconomicContract,
+    snap: &crate::snapshot::EconomySnapshot,
+) -> bool {
+    c.consent.fact_consent.is_none() && is_prunable_zero_history_terminal(c, snap)
+}
+
+/// Oldest zero-history terminal `fact_consent` contracts past the per-issuer
+/// and global retention caps, for sweep enforcement.
+pub(crate) fn excess_scoped_fact_tombstones(
+    snap: &crate::snapshot::EconomySnapshot,
+) -> Vec<ContractId> {
+    let mut global: Vec<ContractId> = Vec::new();
+    let mut by_issuer: std::collections::BTreeMap<_, Vec<ContractId>> =
+        std::collections::BTreeMap::new();
+    for c in snap.contracts() {
+        if c.consent.fact_consent.is_none() || !is_prunable_zero_history_terminal(c, snap) {
+            continue;
+        }
+        global.push(c.id);
+        by_issuer
+            .entry(principal_key(&c.issuer))
+            .or_default()
+            .push(c.id);
+    }
+    let mut evict: std::collections::BTreeSet<ContractId> = std::collections::BTreeSet::new();
+    for ids in by_issuer.into_values() {
+        let excess = ids
+            .len()
+            .saturating_sub(MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER);
+        for id in ids.into_iter().take(excess) {
+            evict.insert(id);
+        }
+    }
+    let remaining_global = global.len().saturating_sub(evict.len());
+    let mut needed = remaining_global.saturating_sub(MAX_RETAINED_CANCELLED_DRAFTS);
+    for id in global {
+        if needed == 0 {
+            break;
+        }
+        if evict.insert(id) {
+            needed = needed.saturating_sub(1);
+        }
+    }
+    evict.into_iter().collect()
+}
+
+/// Evict oldest zero-history terminal tombstones past the per-issuer and
+/// global retention caps (HIGH-22 + P2-MOD-14), always keeping `keep` (the
+/// contract just transitioned in this call) immediately visible.
+///
+/// Ordinary drafts (`fact_consent.is_none()`) and provider-authorized scoped
+/// contracts (`fact_consent.is_some()`) enforce their caps in separate pools so
+/// ordinary draft spam can never evict a retained survey/passenger tombstone.
 fn prune_excess_cancelled_drafts(ctx: &mut Ctx<'_>, keep: ContractId) {
     let victims: Vec<ContractId> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
@@ -3704,15 +3765,18 @@ fn prune_excess_cancelled_drafts(ctx: &mut Ctx<'_>, keep: ContractId) {
         let Some(just_cancelled) = snap.contract(keep) else {
             return;
         };
-        if !is_prunable_cancelled_draft(just_cancelled, snap) {
+        if !is_prunable_zero_history_terminal(just_cancelled, snap) {
             return;
         }
+        let scoped = just_cancelled.consent.fact_consent.is_some();
         let issuer = &just_cancelled.issuer;
         // `snap.contracts()` yields in ascending `ContractId` order (oldest first).
         let mut global: Vec<ContractId> = Vec::new();
         let mut by_issuer: Vec<ContractId> = Vec::new();
         for c in snap.contracts() {
-            if !is_prunable_cancelled_draft(c, snap) {
+            if c.consent.fact_consent.is_some() != scoped
+                || !is_prunable_zero_history_terminal(c, snap)
+            {
                 continue;
             }
             global.push(c.id);

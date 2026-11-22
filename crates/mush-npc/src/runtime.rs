@@ -688,19 +688,6 @@ impl NpcHostState {
             NonPoke,
         }
 
-        let classify = |stim: &Stimulus| -> BatchPartition {
-            if matches!(stim, Stimulus::StaffPoke { .. }) {
-                return BatchPartition::StaffPoke;
-            }
-            if !isolate_speakers {
-                return BatchPartition::NonPoke;
-            }
-            match stim {
-                Stimulus::SpokenTo { by, .. } => BatchPartition::Direct(*by),
-                _ => BatchPartition::Ambient,
-            }
-        };
-
         let rt = self.runtime_mut(npc);
         rt.in_flight = true;
         rt.correlation = Some(correlation);
@@ -712,6 +699,42 @@ impl NpcHostState {
         rt.pending_since = None;
 
         let queued = std::mem::take(&mut rt.mailbox);
+        // Same-speaker `HeardInRoom` / arrival / departure stimuli in the same
+        // coalescing window as that speaker's direct `SpokenTo` stay in that
+        // speaker's own `Direct(speaker)` partition (never split into a
+        // separate ambient turn), while any other speaker's speech and all
+        // `StaffPoke` stimuli remain strictly isolated (`P2-CORE-8`).
+        let direct_speakers: std::collections::BTreeSet<ObjId> = if isolate_speakers {
+            queued
+                .iter()
+                .filter_map(|stim| match stim {
+                    Stimulus::SpokenTo { by, .. } => Some(*by),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        let classify = |stim: &Stimulus| -> BatchPartition {
+            if matches!(stim, Stimulus::StaffPoke { .. }) {
+                return BatchPartition::StaffPoke;
+            }
+            if !isolate_speakers {
+                return BatchPartition::NonPoke;
+            }
+            match stim {
+                Stimulus::SpokenTo { by, .. } => BatchPartition::Direct(*by),
+                Stimulus::HeardInRoom { by, .. } if direct_speakers.contains(by) => {
+                    BatchPartition::Direct(*by)
+                }
+                Stimulus::PlayerArrived { who } | Stimulus::PlayerLeft { who }
+                    if direct_speakers.contains(who) =>
+                {
+                    BatchPartition::Direct(*who)
+                }
+                _ => BatchPartition::Ambient,
+            }
+        };
         let target_partition = queued.first().map(classify);
         let mut batch = Vec::new();
         let mut remaining = Vec::new();

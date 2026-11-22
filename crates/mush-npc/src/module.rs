@@ -3647,26 +3647,39 @@ fn parse_opt_u64(value: &str) -> Result<Option<u64>, CmdError> {
 
 #[allow(clippy::too_many_arguments)]
 /// Determine the sole player who directly addressed this NPC in `batch` with no
-/// conflicting speakers, `StaffPoke`, or ambient `HeardInRoom` speech mixed in.
-/// Returns `None` whenever authority would be ambiguous or derived from an
-/// out-of-band staff prod or undirected room speech (`P2-CORE-8`).
+/// conflicting speakers, `StaffPoke`, or another player's ambient `HeardInRoom`
+/// speech mixed in. Returns `None` whenever authority would be ambiguous or
+/// derived from an out-of-band staff prod or undirected room speech without a
+/// direct address by that same speaker (`P2-CORE-8`).
 fn strict_interface_asker(batch: &[Stimulus]) -> Option<ObjId> {
-    let mut sole: Option<ObjId> = None;
+    let mut direct: Option<ObjId> = None;
+    let mut overheard: Option<ObjId> = None;
     for stim in batch {
         match stim {
-            Stimulus::SpokenTo { by, .. } => match sole {
-                None => sole = Some(*by),
+            Stimulus::SpokenTo { by, .. } => match direct {
+                None => direct = Some(*by),
                 Some(prev) if prev == *by => {}
                 Some(_) => return None,
             },
-            Stimulus::StaffPoke { .. } | Stimulus::HeardInRoom { .. } => return None,
+            Stimulus::HeardInRoom { by, .. } => match overheard {
+                None => overheard = Some(*by),
+                Some(prev) if prev == *by => {}
+                Some(_) => return None,
+            },
+            Stimulus::StaffPoke { .. } => return None,
             Stimulus::PlayerArrived { .. }
             | Stimulus::PlayerLeft { .. }
             | Stimulus::AmbientTimer
             | Stimulus::GameEvent { .. } => {}
         }
     }
-    sole
+    let asker = direct?;
+    if let Some(other) = overheard
+        && other != asker
+    {
+        return None;
+    }
+    Some(asker)
 }
 
 struct DialogueSnapshotInput<'a> {

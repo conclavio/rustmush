@@ -1705,3 +1705,140 @@ fn p2_mod_14_salvage_claims_survive_gc_while_spoofed_drafts_prune_and_leases_all
         ),
     );
 }
+
+#[test]
+fn p2_mod_14_scoped_fact_tombstones_survive_sweep_and_stay_bounded_independently() {
+    #[derive(Debug)]
+    struct ScopedTestProvider;
+    impl mush_economy::FactProvider for ScopedTestProvider {
+        fn provider(&self) -> &str {
+            "scoped_test"
+        }
+        fn requires_scope(&self, _fact: &mush_economy::ExternalRef) -> bool {
+            true
+        }
+        fn resolve(
+            &self,
+            _: &mush_core::World,
+            _: &str,
+            _: &str,
+            _: Option<u64>,
+        ) -> Option<mush_economy::FactState> {
+            None
+        }
+        fn authorize_scope(
+            &self,
+            _ctx: &mush_economy::ScopedFactContext<'_>,
+            _fact: &mush_economy::ExternalRef,
+        ) -> bool {
+            true
+        }
+        fn resolve_scoped(
+            &self,
+            _ctx: &mush_economy::ScopedFactContext<'_>,
+            _fact: &mush_economy::ExternalRef,
+        ) -> Option<mush_economy::FactState> {
+            None
+        }
+    }
+
+    let vocab: std::collections::BTreeSet<mush_org::CapabilityId> = mush_economy::CAPABILITIES
+        .iter()
+        .map(|s| mush_org::CapabilityId::new(*s).expect("capability"))
+        .collect();
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocab)
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![])
+                .with_facts(vec![Arc::new(ScopedTestProvider)]),
+        ),
+    ]);
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    let pilot = player(&mut tw, "Pilot");
+    let spammer = player(&mut tw, "Spammer");
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", pilot.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", spammer.0));
+    let pilot_acct = account_of(&tw, &PrincipalId::Object(pilot), "cr");
+    let spammer_acct = account_of(&tw, &PrincipalId::Object(spammer), "cr");
+
+    let offer_scoped =
+        |tw: &mut TestWorld, who: ObjId, acct: AccountId, idx: usize| -> ContractId {
+            ok(tw, who, &format!("@contract/draft Scoped{idx}"));
+            let id = latest_contract(tw);
+            ok(tw, who, &format!("@contract/party {id}=#{}", GOD.0));
+            ok(tw, who, &format!("@contract/remainder {id}={acct}"));
+            ok(
+                tw,
+                who,
+                &format!("@contract/condition {id}=fact scoped_test done item-{idx}"),
+            );
+            ok(tw, who, &format!("@contract/deadline {id}=60"));
+            ok(tw, who, &format!("@contract/offer {id}"));
+            ContractId(id)
+        };
+
+    // 1. A cancelled zero-history scoped contract survives economy sweeps, and
+    //    ordinary `@contract/draft` spam cannot evict it from its separate pool.
+    let kept_cancelled = offer_scoped(&mut tw, pilot, pilot_acct, 0);
+    assert!(
+        snap(&tw)
+            .contract(kept_cancelled)
+            .expect("offered")
+            .consent
+            .fact_consent
+            .is_some()
+    );
+    ok(
+        &mut tw,
+        pilot,
+        &format!("@contract/cancel #{}", kept_cancelled.0),
+    );
+    for i in 0..(mush_economy::MAX_RETAINED_CANCELLED_DRAFTS + 4) {
+        ok(&mut tw, spammer, &format!("@contract/draft Plain{i}"));
+        let id = latest_contract(&tw);
+        ok(&mut tw, spammer, &format!("@contract/cancel {id}"));
+    }
+    sweep_at(&mut tw, 1_030);
+    sweep_at(&mut tw, 1_050);
+    assert_eq!(
+        snap(&tw).contract(kept_cancelled).map(|c| c.state),
+        Some(ContractState::Cancelled),
+        "scoped fact_consent cancelled contract must survive sweeps and ordinary draft spam"
+    );
+
+    // 2. An expired zero-history scoped contract also survives subsequent sweeps.
+    let kept_expired = offer_scoped(&mut tw, pilot, pilot_acct, 1);
+    sweep_at(&mut tw, 1_100);
+    sweep_at(&mut tw, 1_200);
+    assert_eq!(
+        snap(&tw).contract(kept_expired).map(|c| c.state),
+        Some(ContractState::Expired),
+        "scoped fact_consent expired contract must survive sweeps"
+    );
+
+    // 3. Repeated cancellation of scoped contracts stays bounded per issuer.
+    let cap = mush_economy::MAX_RETAINED_CANCELLED_DRAFTS_PER_ISSUER;
+    for i in 2..(cap + 6) {
+        let id = offer_scoped(&mut tw, spammer, spammer_acct, i);
+        ok(&mut tw, spammer, &format!("@contract/cancel #{}", id.0));
+    }
+    sweep_at(&mut tw, 1_300);
+    let spammer_scoped_count = snap(&tw)
+        .contracts()
+        .filter(|c| c.issuer == PrincipalId::Object(spammer) && c.consent.fact_consent.is_some())
+        .count();
+    assert!(
+        spammer_scoped_count <= cap,
+        "scoped fact_consent tombstones must stay bounded per issuer ({spammer_scoped_count} > {cap})"
+    );
+    assert_eq!(
+        snap(&tw).contract(kept_cancelled).map(|c| c.state),
+        Some(ContractState::Cancelled),
+        "other issuer's scoped tombstones remain intact"
+    );
+}

@@ -2085,7 +2085,9 @@ fn renotify(ctx: &mut Ctx<'_>, now: i64) {
 /// the journal, the approval and escalation allocators from every parsable key plus
 /// `meta`'s high-water mark, which boot persists on every boot.
 /// Collect retained zero-history terminal contracts (`Cancelled`, `Expired`, or
-/// zero-value/no-tx `Settled`) from RAM and KV (HIGH-22 + P2-MOD-14).
+/// zero-value/no-tx `Settled`) from RAM and KV (HIGH-22 + P2-MOD-14), plus any
+/// provider-authorized scoped `fact_consent` tombstones past their bounded
+/// per-issuer/global retention caps.
 fn collect_prunable_contracts(ctx: &mut Ctx<'_>) {
     let prunable: Vec<_> = {
         let Some(store) = ctx.w.module_state::<EconomyStore>() else {
@@ -2094,8 +2096,9 @@ fn collect_prunable_contracts(ctx: &mut Ctx<'_>) {
         let snap = store.snapshot();
         snap.contracts()
             .filter(|c| crate::contract_live::is_prunable_cancelled_draft(c, snap))
-            .take(MAX_GC_PER_SWEEP)
             .map(|c| c.id)
+            .chain(crate::contract_live::excess_scoped_fact_tombstones(snap))
+            .take(MAX_GC_PER_SWEEP)
             .collect()
     };
     if prunable.is_empty() {

@@ -74,6 +74,7 @@ use mush_proto::RichText;
 
 pub use commands::{
     Departure, MANUAL_ROUTE_STAFF_ONLY, ROUTE_NOT_FROM_HERE, depart, depart_ineligible,
+    depart_ineligible_after_field_exit,
 };
 pub use custody::InteriorCustodyProvider;
 pub use data::{

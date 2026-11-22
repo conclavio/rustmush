@@ -3696,7 +3696,19 @@ pub(crate) fn prepare_departure(
         tracing::warn!(hull = hull.0, route = %plan.route, version = basis.version, "tacsim: a departure: the route does not materialize at the plan's lane version");
         return Err(dark());
     }
-    if let Some(why) = mush_sim::depart_ineligible(ctx, hull, &def_route) {
+    // Doc 32 F-6 (cut CF.7) × P2-MOD-23: a live departure of a carrier currently held by
+    // a running IC field is only a pre-exit dry run here (`undock_as` requests the field
+    // host to break the carrier off first and re-runs `prepare_departure` once it is out).
+    // Excuse only the carrier root's own IC-field deployment mark during that pre-exit dry
+    // run; queued orders, non-field deployments, IC custody holds, deployed subtree nodes,
+    // and the post-exit filing/launch itself all run strict `mush_sim::depart_ineligible`.
+    let live_field_exit = queued == Queued::Live && crate::field::field_of_unit(w, hull).is_some();
+    let launch_refusal = if live_field_exit {
+        mush_sim::depart_ineligible_after_field_exit(ctx, hull, &def_route)
+    } else {
+        mush_sim::depart_ineligible(ctx, hull, &def_route)
+    };
+    if let Some(why) = launch_refusal {
         tracing::info!(hull = hull.0, %why, "tacsim: a departure: the launch dry run refused");
         return Err(refusal(
             K::PortClosed,

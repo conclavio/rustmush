@@ -1891,7 +1891,7 @@ async fn settle_surface(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
     Err("surface work did not settle".into())
 }
 
-async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> TestResult {
+async fn drain_submits(world: &mut TestWorld, store: &InMemoryStore) -> TestResult {
     // Keep background site opening bounded to this story's Ahuna site. Other
     // clerks verify by pull and retry later; every landed act uses the coordinator.
     let other_sites: std::collections::BTreeSet<_> = world
@@ -1902,16 +1902,21 @@ async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> Te
         .filter(|m| m.entry.as_str() != story().site)
         .filter_map(|m| m.site.as_ref().and_then(|s| s.clerk).map(ObjId))
         .collect();
-    let now = world.world().now() + seconds;
-    world.set_now(now);
-    world.fire_due(now * 1000);
-    persist_legacy(world, store).await?;
     while let Some(request) = world.engine_mut().take_authoritative_submit() {
         if other_sites.contains(&request.actor) {
             continue;
         }
         land_request(world, store, &request).await?;
     }
+    Ok(())
+}
+
+async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> TestResult {
+    let now = world.world().now() + seconds;
+    world.set_now(now);
+    world.fire_due(now * 1000);
+    persist_legacy(world, store).await?;
+    drain_submits(world, store).await?;
     Ok(())
 }
 
@@ -4366,6 +4371,11 @@ async fn field_second(
     pulse(world, store, 1).await?;
     pump_arena(world, rx);
     persist_legacy(world, store).await?;
+    // Land any authoritative submission queued by the trailing arena egress
+    // (such as `on_withdrawn -> submit_owed` for `tacsim_field op=exit`)
+    // before returning, matching the server world loop so it cannot dangle
+    // past a subsequent `exit::forget`.
+    drain_submits(world, store).await?;
     Ok(())
 }
 

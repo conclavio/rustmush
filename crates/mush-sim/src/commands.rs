@@ -2512,6 +2512,14 @@ fn mush_sim_under_way_root_of(ctx: &Ctx<'_>, obj: ObjId) -> Option<ObjId> {
 /// Why a carrier may not set out. One predicate, shared by `/plan`, `/depart`
 /// and `/divert`, so the dry run and the commit can never disagree.
 fn journey_ineligible(ctx: &Ctx<'_>, carrier: ObjId) -> Option<String> {
+    journey_ineligible_inner(ctx, carrier, false)
+}
+
+fn journey_ineligible_inner(
+    ctx: &Ctx<'_>,
+    carrier: ObjId,
+    allow_root_field_mark: bool,
+) -> Option<String> {
     let name = display_name(ctx.w, carrier);
     match ctx.w.get(carrier) {
         None => return Some("No such object.".into()),
@@ -2561,13 +2569,23 @@ fn journey_ineligible(ctx: &Ctx<'_>, carrier: ObjId) -> Option<String> {
     if s.is_quarantined(carrier) {
         return Some(format!("{name} is quarantined; @spatial/recover it first."));
     }
-    if let Err(deployed) = crate::deployed::refuse_if_deployed(ctx.w, carrier) {
+    // Dry-running a confirmed IC-field breakoff (`depart_ineligible_after_field_exit`)
+    // excuses ONLY the carrier root's own IC-field deployment mark (never an OOC
+    // arena match mark, never an IC exclusion hold, and never a deployed subtree
+    // descendant). Actual departure (`depart`) always runs with
+    // `allow_root_field_mark = false` once the field host has checked the carrier in.
+    let root_excused = allow_root_field_mark
+        && crate::deployed::mark_of(ctx.w, carrier).is_some_and(|mark| mark.field.is_some());
+    if !root_excused && let Err(deployed) = crate::deployed::refuse_if_deployed(ctx.w, carrier) {
         return Some(deployed.to_string());
     }
     if let Some(why) = crate::ic_exclusion::forbids_journey(ctx.w, carrier) {
         return Some(why);
     }
     for node in s.subtree(carrier) {
+        if node == carrier && root_excused {
+            continue;
+        }
         if let Err(deployed) = crate::deployed::refuse_if_deployed(ctx.w, node) {
             return Some(deployed.to_string());
         }
@@ -2860,7 +2878,33 @@ pub struct Departure {
 /// carrier under way). `None` means `depart` will not refuse on any of them.
 #[must_use]
 pub fn depart_ineligible(ctx: &Ctx<'_>, carrier: ObjId, route: &RouteDef) -> Option<String> {
-    if let Some(why) = journey_ineligible(ctx, carrier) {
+    depart_ineligible_inner(ctx, carrier, route, false)
+}
+
+/// Pre-exit dry run for a carrier whose live departure will first ask its
+/// running IC field host to remove it from the field (doc 32 F-6 × P2-MOD-23).
+///
+/// Runs every check of [`depart_ineligible`] except the carrier root's own
+/// IC-field [`crate::DeployedMark`] (`mark.field.is_some()`). An OOC arena
+/// match mark on the carrier, an IC custody hold forbidding departure, or any
+/// deployed descendant in the carrier's subtree still refuses. Actual departure
+/// ([`depart`]) always enforces strict [`depart_ineligible`] after check-in.
+#[must_use]
+pub fn depart_ineligible_after_field_exit(
+    ctx: &Ctx<'_>,
+    carrier: ObjId,
+    route: &RouteDef,
+) -> Option<String> {
+    depart_ineligible_inner(ctx, carrier, route, true)
+}
+
+fn depart_ineligible_inner(
+    ctx: &Ctx<'_>,
+    carrier: ObjId,
+    route: &RouteDef,
+    allow_root_field_mark: bool,
+) -> Option<String> {
+    if let Some(why) = journey_ineligible_inner(ctx, carrier, allow_root_field_mark) {
         return Some(why);
     }
     let (from, to) = route.endpoints();
