@@ -16,16 +16,16 @@
     6. Optionally also uploads to a GitHub Release when `-Upload` is passed.
 
 .EXAMPLE
-    .\scripts\release-unity-client.ps1 -DeployTarget "root@conclav.io:/opt/rustmush/clients"
+    .\scripts\release-unity-client.ps1 -DeployTarget "root@conclav.io:/opt/rustmush/clients" -SshPort 2222 -IdentityFile "C:\Users\faeni\antigravity\rustmush\hostinger"
     Builds the Windows x64 player, writes its sidecar manifest, and deploys it atomically to conclav.io.
 
 .EXAMPLE
-    .\scripts\release-unity-client.ps1 -OnlyIfChanged -DeployTarget "root@conclav.io:/opt/rustmush/clients" -KeepLast 5
+    .\scripts\release-unity-client.ps1 -OnlyIfChanged -DeployTarget "root@conclav.io:/opt/rustmush/clients" -SshPort 2222 -KeepLast 5
     Skips the build if nothing under `unity/` or `crates/tacsim/content/` changed since the last
     local build; otherwise rebuilds, deploys to conclav.io, and keeps the 5 newest zips per platform.
 
 .EXAMPLE
-    .\scripts\release-unity-client.ps1 -Targets Windows64,Linux64 -DryRun -DeployTarget "root@conclav.io:/opt/rustmush/clients"
+    .\scripts\release-unity-client.ps1 -Targets Windows64,Linux64 -DryRun -DeployTarget "root@conclav.io:/opt/rustmush/clients" -SshPort 2222
     Previews exact Unity, scp, and ssh commands without building or uploading.
 #>
 [CmdletBinding()]
@@ -42,6 +42,8 @@ param(
     [string]$DeployTarget = "",
 
     [int]$SshPort = 22,
+
+    [string]$IdentityFile = "",
 
     [int]$KeepLast = 5,
 
@@ -346,14 +348,25 @@ if ($ParsedDeploy) {
     $rDir = $ParsedDeploy.Dir
     Write-Host "`n[4/5] Deploying atomically to ${rHost}:${rDir}..." -ForegroundColor Cyan
 
+    $sshBaseArgs = @("-p", "$SshPort")
+    $scpBaseArgs = @("-P", "$SshPort")
+    if (-not [string]::IsNullOrWhiteSpace($IdentityFile)) {
+        if (-not (Test-Path $IdentityFile)) {
+            throw "SSH -IdentityFile not found: $IdentityFile"
+        }
+        $resolvedKey = (Resolve-Path $IdentityFile).Path
+        $sshBaseArgs += @("-i", $resolvedKey)
+        $scpBaseArgs += @("-i", $resolvedKey)
+    }
+
     if (-not $DryRun) {
         if (-not (Get-Command ssh -ErrorAction SilentlyContinue) -or -not (Get-Command scp -ErrorAction SilentlyContinue)) {
             throw "OpenSSH 'ssh' and 'scp' are required in PATH for -DeployTarget."
         }
-        & ssh -p $SshPort $rHost "mkdir -p '$rDir' && chmod 755 '$rDir'"
+        & ssh @sshBaseArgs $rHost "mkdir -p '$rDir' && chmod 755 '$rDir'"
         if ($LASTEXITCODE -ne 0) { throw "Failed to prepare remote directory $rDir on $rHost." }
     } else {
-        Write-Host "  [DryRun] ssh -p $SshPort $rHost `"mkdir -p '$rDir' && chmod 755 '$rDir'`""
+        Write-Host "  [DryRun] ssh $($sshBaseArgs -join ' ') $rHost `"mkdir -p '$rDir' && chmod 755 '$rDir'`""
     }
 
     foreach ($entry in $BuiltEntries) {
@@ -365,18 +378,18 @@ if ($ParsedDeploy) {
         $mFinal = "$rDir/$mName"
 
         if ($DryRun) {
-            Write-Host "  [DryRun] scp -P $SshPort `"$($entry.ZipPath)`" `"${rHost}:${zPart}`""
-            Write-Host "  [DryRun] scp -P $SshPort `"$($entry.SidecarPath)`" `"${rHost}:${mPart}`""
-            Write-Host "  [DryRun] ssh -p $SshPort $rHost `"chmod 644 '$zPart' '$mPart' && mv -f '$mPart' '$mFinal' && mv -f '$zPart' '$zFinal'`""
+            Write-Host "  [DryRun] scp $($scpBaseArgs -join ' ') `"$($entry.ZipPath)`" `"${rHost}:${zPart}`""
+            Write-Host "  [DryRun] scp $($scpBaseArgs -join ' ') `"$($entry.SidecarPath)`" `"${rHost}:${mPart}`""
+            Write-Host "  [DryRun] ssh $($sshBaseArgs -join ' ') $rHost `"chmod 644 '$zPart' '$mPart' && mv -f '$mPart' '$mFinal' && mv -f '$zPart' '$zFinal'`""
         } else {
-            & scp -P $SshPort $entry.ZipPath "${rHost}:${zPart}"
+            & scp @scpBaseArgs $entry.ZipPath "${rHost}:${zPart}"
             if ($LASTEXITCODE -ne 0) { throw "scp failed for $($entry.ZipPath)" }
 
-            & scp -P $SshPort $entry.SidecarPath "${rHost}:${mPart}"
+            & scp @scpBaseArgs $entry.SidecarPath "${rHost}:${mPart}"
             if ($LASTEXITCODE -ne 0) { throw "scp failed for $($entry.SidecarPath)" }
 
             # Move manifest first, then archive into place atomically so readers never see a zip without its manifest
-            & ssh -p $SshPort $rHost "chmod 644 '$zPart' '$mPart' && mv -f '$mPart' '$mFinal' && mv -f '$zPart' '$zFinal'"
+            & ssh @sshBaseArgs $rHost "chmod 644 '$zPart' '$mPart' && mv -f '$mPart' '$mFinal' && mv -f '$zPart' '$zFinal'"
             if ($LASTEXITCODE -ne 0) { throw "Remote atomic finalize failed for $zName" }
         }
 
@@ -384,9 +397,9 @@ if ($ParsedDeploy) {
             $slug = $entry.Slug
             $pruneCmd = "cd '$rDir' && ls -1t RustMUSH_TacSim-$slug-*.zip 2>/dev/null | tail -n +$($KeepLast + 1) | while read -r old; do [ `"`$old`" = '$zName' ] || rm -f `"`$old`" `"`$old.json`"; done"
             if ($DryRun) {
-                Write-Host "  [DryRun] ssh -p $SshPort $rHost `"$pruneCmd`""
+                Write-Host "  [DryRun] ssh $($sshBaseArgs -join ' ') $rHost `"$pruneCmd`""
             } else {
-                & ssh -p $SshPort $rHost $pruneCmd
+                & ssh @sshBaseArgs $rHost $pruneCmd
             }
         }
     }

@@ -1,5 +1,5 @@
 //! `GET /api/client-downloads` — advertises matching standalone 3D client
-//! archives stored in [`WebConfig::client_downloads_dir`] and served directly
+//! archives stored in [`crate::WebConfig::client_downloads_dir`] and served directly
 //! by the front-end static file server (e.g. Caddy `file_server`).
 //!
 //! For each platform target (`windows-x64`, `linux-x64`, `macos-universal`)
