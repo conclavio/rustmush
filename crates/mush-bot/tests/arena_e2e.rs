@@ -5,7 +5,7 @@
 //! The pilot walks from Limbo to the centre, claims red, leads the side (it is
 //! first on it), starts the match, boards, powers up and fights one AI-filled
 //! machine to the match's end over its own SSH line session, then reports. Staff
-//! re-pose both tanks 500 m apart on the east-west road before anyone claims
+//! re-pose both tanks 200 m apart on the east-west road before anyone claims
 //! (the stock muster is 2 430 m apart against a 600 m sight); the override
 //! survives the claim's reset to muster and is consumed by the match.
 //!
@@ -165,13 +165,17 @@ async fn fly_alone() {
     cfg.match_.max_duration_ms = 60_000;
     let rig = arena_rig::boot(cfg, &[("pilot", "Pilot")]).await;
 
-    // Staff pose both tanks 500 m apart on the road, on the idle centre, before
-    // anyone claims.
+    // Staff pose both tanks 200 m apart on the road, on the idle centre, before
+    // anyone claims. Not the other flights' 500 m: since doc 49 cut CC.2 the cannon
+    // cycles in 15 s, so the 60 s match holds about four rounds, and at 500 m about
+    // one match in ten ended with none landed and failed `the pilot hit` (3 of 32 on
+    // conclav.dev; `docs/flaky-tests.md`). At 200 m the bot fired nine or ten and
+    // landed six or more in each of 32 matches.
     let mut god =
         arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
             .await;
     arena_rig::pose(&mut god, "RA=100 97 90").await;
-    arena_rig::pose(&mut god, "BA=150 97 270").await;
+    arena_rig::pose(&mut god, "BA=120 97 270").await;
 
     let config = arena_rig::bot_config(&rig, "pilot+Pilot", "");
     let transcript = rig.dir.join("bot").join("solo.jsonl");
@@ -1397,7 +1401,7 @@ async fn type_at_prompt(stdin: &mut tokio::process::ChildStdin, line: &str) {
 
 /// **The prompt pauses and resumes a flight** (cut AM.2; wall clock,
 /// generously bounded at 126 s: AM.2's 120 and cut AO.2's pause of its own).
-/// The bot flies alone against one machine posed 500 m off (as [`fly_alone`])
+/// The bot flies alone against one machine posed 500 m off
 /// at its prompt, not headless, with `[agent] settle_ms = 15000` and
 /// `observation_ms = 20000`: a command's output is finished only once quiet
 /// for 15 s or at 20 s, and the lane's own polls never let it go quiet — so
