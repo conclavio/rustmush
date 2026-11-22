@@ -2782,9 +2782,16 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
         );
         return Ok(());
     }
-    // P2-TSW-1: reject upfront if this actor already has an authoritative submission in flight so
-    // back-pressure cannot drop ClaimOrder::File after opening an Active economy contract.
-    if ctx.authoritative_pending(ctx.actor) {
+    // P2-TSW-1: reject surface claims upfront if this actor already has an authoritative
+    // submission in flight so back-pressure cannot drop ClaimOrder::File after opening an Active
+    // economy contract. Space custody commits synchronously via `submit_space_claim_order`
+    // (without enqueuing on the authoritative actor slot) and rolls back the economy contract
+    // immediately if attachment fails, so unrelated in-flight space burns must not block `+helm/tow`.
+    let is_space = ctx
+        .w
+        .module_state::<crate::space::tick::SpaceBubbleBook>()
+        .is_some_and(|b| b.space_custody.contains_key(&row.hull));
+    if !is_space && ctx.authoritative_pending(ctx.actor) {
         return Err(CmdError::msg(crate::port::claims::CLAIMS_FAILED));
     }
     let remainder = crate::port::credit::own_account(ctx.w, ctx.actor)
