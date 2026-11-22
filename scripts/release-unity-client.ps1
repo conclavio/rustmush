@@ -165,10 +165,21 @@ if ($OnlyIfChanged -and (Test-Path $LastBuildShaFile)) {
     }
 }
 
-# Guard against Unity GUI lockfile before starting batchmode
+# Guard against a live Unity GUI lockfile before starting batchmode (stale lockfiles
+# left behind by an aborted batchmode run are unlocked and safe to remove).
 $Lockfile = Join-Path $UnityProject "Temp\UnityLockfile"
 if (-not $DryRun -and (Test-Path $Lockfile)) {
-    throw "Unity Editor currently has '$UnityProject' open (found $Lockfile). Close the Unity Editor before running a batchmode build."
+    $lockHeld = $false
+    try {
+        $fs = [System.IO.File]::Open($Lockfile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $fs.Close()
+    } catch {
+        $lockHeld = $true
+    }
+    if ($lockHeld) {
+        throw "Unity Editor currently has '$UnityProject' open (locked $Lockfile). Close the Unity Editor before running a batchmode build."
+    }
+    Remove-Item -Force $Lockfile -ErrorAction SilentlyContinue
 }
 
 # 1. Fast .NET CI compile & NUnit preflight
