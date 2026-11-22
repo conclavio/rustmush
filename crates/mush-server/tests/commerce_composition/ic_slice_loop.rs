@@ -1462,7 +1462,12 @@ async fn ic12_part_one_a_leg_by_hand() {
     let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
     let (days, locker) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
     assert_eq!((tank, locker), (fuel, food), "{plan}");
+    assert_eq!(burn, fuel, "the burn is the bunkered fixed point: {plan}");
     assert!(tank >= burn && locker >= days, "{plan}");
+    // P2-TSW-7: a connected pilot crossing Kirkwood meets the Republic customs picket even from
+    // the Crew Compartment; bunker 1 t maneuvering reserve so she can heave-to (`+helm/thrust`).
+    costs += buy(&mut rig, pilot, fuel_ask, 1).await;
+    fuel += 1;
     // `+ship/hold`: the hold at both limits, the tank and the locker at what was bought.
     let held = run(&mut rig, pilot, "+ship/hold").await;
     let cargo = cargo_compartment();
@@ -1583,17 +1588,17 @@ async fn ic12_part_one_a_leg_by_hand() {
     );
 
     // Step 9: the plan, as the planner prints it. The tank was bunkered to the
-    // planner's own burn, so the burn is that fixed point with nothing left (doc 18 §2
-    // step 9's 41 t was the burn of a 42 t tank under the coast law; since doc 19 cut
-    // A.2 the flip law's fixed point is about 52 t), and the stores are 19 crew-days.
+    // planner's own burn plus 1 t maneuvering reserve for the Kirkwood picket heave-to
+    // (doc 18 §2 step 9's 41 t was the burn of a 42 t tank under the coast law; since doc 19
+    // cut A.2 the flip law's fixed point is about 52 t), and the stores are 19 crew-days.
     let plan = run(&mut rig, pilot, "+ship/plan stickney").await;
     assert!(plan.starts_with("Plan for Stickney Yards"), "{plan}");
     let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
     let (days, locker) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
     assert_eq!(
         (burn, tank),
-        (fuel, fuel),
-        "the burn is the bunkered fixed point: {plan}"
+        (fuel - 1, fuel),
+        "the burn is the bunkered fixed point with 1 t maneuvering reserve: {plan}"
     );
     assert_eq!(
         (days, locker),
@@ -1707,7 +1712,6 @@ async fn ic12_part_one_a_leg_by_hand() {
     // heard AT its instant: not by the fire a few real seconds before it (7 s at
     // 3600), and by the fire at it — as part 2 pins the return's docking.
     let boundary = ticket.plan.depart_ic + i64::from(ticket.plan.legs[0].secs);
-    let arrival = ticket.plan.depart_ic + ticket.plan.total_s;
     let kirkwood = "Kirkwood Depot slides past";
     let docks = "Salt Moth docks at Stickney Yards.";
     assert!(!granted.contains(kirkwood), "not at the launch: {granted}");
@@ -1725,6 +1729,58 @@ async fn ic12_part_one_a_leg_by_hand() {
         "at the boundary (IC {}, due {boundary}): {at_boundary}",
         ic_now(&rig.tw)
     );
+    // P2-TSW-7: a connected pilot standing in the Crew Compartment still meets the Kirkwood
+    // picket (no room-based evasion). Brake to heave-to, submit to customs inspection, wait for
+    // the picket corvette to finish the raider, and let leg 2 resume to Stickney.
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|book| book.active_for_hull(hull))
+            .and_then(|active| active.picket.as_ref())
+            .is_some(),
+        "connected pilot in Crew Compartment still opens Kirkwood picket"
+    );
+    let _ = run(&mut rig, pilot, "+helm/thrust 600 -1000 0 0").await;
+    for _ in 0..6 {
+        let _ = sweep(&mut rig, 1).await;
+        let queued = drain_players(&mut rig).await;
+        land_quietly(&mut rig, &queued).await;
+    }
+    let _ = run(&mut rig, pilot, "+helm/thrust 0").await;
+    let brake = drain_players(&mut rig).await;
+    land_quietly(&mut rig, &brake).await;
+    let mut ruling = run(&mut rig, pilot, "+helm/submit").await;
+    let submitted = drain_players(&mut rig).await;
+    land_quietly(&mut rig, &submitted).await;
+    let tick_events = sweep(&mut rig, 1).await;
+    let tick_queued = drain_players(&mut rig).await;
+    land_quietly(&mut rig, &tick_queued).await;
+    ruling.push('\n');
+    ruling.push_str(&said(&rig.tw, &tick_events, pilot));
+    assert!(ruling.contains("customs clearance granted"), "{ruling}");
+    let _ = run(&mut rig, pilot, "+tac/pdc auto").await;
+    for _ in 0..180 {
+        if matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ) {
+            break;
+        }
+        let _ = sweep(&mut rig, 1).await;
+        let queued = drain_players(&mut rig).await;
+        land_quietly(&mut rig, &queued).await;
+    }
+    assert!(
+        matches!(
+            journey(&rig.tw, hull).map(|j| j.state().clone()),
+            Some(mush_sim::JourneyState::Cruising)
+        ),
+        "leg 2 resumed after clearing Kirkwood picket"
+    );
+    let arrival = journey(&rig.tw, hull)
+        .and_then(|j| j.arrival_at())
+        .expect("resumed arrival instant");
     let events = to_ic(&mut rig, arrival - 7 * 3_600).await;
     let early = said(&rig.tw, &events, pilot);
     assert!(

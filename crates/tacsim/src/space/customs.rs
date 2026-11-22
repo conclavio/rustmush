@@ -1013,10 +1013,162 @@ pub(crate) fn reconcile_customs_rulings(ctx: &mut Ctx<'_>) {
             hull = pending.hull.0,
             seq = pending.seq,
             ruling = pending.finding.word(),
+            unattended = pending.unattended,
             "tacsim: a filed customs ruling never landed and is given up"
         );
+        if !held_in_live_picket(ctx.w, &pending) {
+            // P2-TSW-7: fail closed when an unattended ruling (or one whose ship is no longer
+            // held inside an active picket bubble) lapses, so contraband or evasion never clears
+            // silently.
+            fail_closed_unattended_lapse(ctx, &pending);
+        }
         say(ctx, &pending, CUSTOMS_RULING_LAPSED);
     }
+}
+
+/// Whether `pending` belongs to a ship currently held inside a live picket bubble (not an
+/// unattended / absent crossing).
+fn held_in_live_picket(w: &mush_core::World, pending: &PendingCustomsRuling) -> bool {
+    !pending.unattended
+        && w.module_state::<SpaceBubbleBook>().is_some_and(|book| {
+            book.active_for_hull(pending.hull)
+                .and_then(|active| active.picket.as_ref())
+                .is_some()
+        })
+}
+
+/// Fail-closed enforcement when an unattended ruling lapses without landing (`P2-TSW-7`).
+fn fail_closed_unattended_lapse(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling) {
+    match &pending.finding {
+        CustomsFinding::Fined {
+            unlicensed_strategic_ore_kg,
+            fine_minor,
+        } => {
+            if super::duty::record_uncollected_contraband(
+                ctx,
+                pending.hull,
+                pending.principal,
+                *unlicensed_strategic_ore_kg,
+                Some(*fine_minor),
+            ) {
+                let notice = format!(
+                    "{}[PICKET] Republic Customs recorded an unpaid contraband fine against {} ({} kg unlicensed `strategic_ore`); see +record and +debts.",
+                    crate::port::voyage::utc_prefix(ctx.w),
+                    pending.carrier,
+                    unlicensed_strategic_ore_kg
+                );
+                crate::port::voyage::tell_absent_tenant(ctx, pending.hull, &notice);
+            }
+        }
+        CustomsFinding::Seized { seize_t, .. } => {
+            let unseized_kg = u64::from(*seize_t).saturating_mul(1_000);
+            if super::duty::record_uncollected_contraband(
+                ctx,
+                pending.hull,
+                pending.principal,
+                unseized_kg,
+                None,
+            ) {
+                let notice = format!(
+                    "{}[PICKET] Republic Customs could not complete confiscation of {} t unlicensed `strategic_ore` aboard {} and recorded the contraband fine against your record (+record, +debts).",
+                    crate::port::voyage::utc_prefix(ctx.w),
+                    seize_t,
+                    pending.carrier
+                );
+                crate::port::voyage::tell_absent_tenant(ctx, pending.hull, &notice);
+            }
+        }
+        CustomsFinding::Ran => {
+            if let Some(polity) = super::duty::fine_payee(ctx.w, pending.hull)
+                .and_then(|(org, _, _)| crate::polity::polity_of_org(ctx.w, org))
+            {
+                crate::port::record::standing_loss(
+                    ctx,
+                    pending.actor,
+                    polity,
+                    crate::port::record::RUN_STANDING,
+                    &format!(
+                        "tacsim.law/{}/{}/run/{}/{}",
+                        polity.0, pending.actor.0, pending.hull.0, pending.seq
+                    ),
+                    "ran the picket",
+                );
+            }
+            let _ = super::picket::record_ran_the_picket_incident(
+                ctx,
+                pending.actor,
+                pending.principal,
+                pending.hull,
+            );
+        }
+        CustomsFinding::Cleared { .. } => {}
+    }
+}
+
+/// Fail-closed fallback when an unattended `CustomsFinding::Fined` cannot be collected at
+/// `apply_landed` (`P2-TSW-7`): attempt to confiscate remaining unlicensed `strategic_ore` from
+/// the hold; if no ore remains or the seizure cannot be filed, immediately record the fine debt
+/// and proven offense so contraband never clears silently.
+fn fail_closed_uncollected_fine(
+    ctx: &mut Ctx<'_>,
+    pending: &PendingCustomsRuling,
+    ruling: &CustomsRuling,
+    unlicensed_strategic_ore_kg: u64,
+    fine_minor: i64,
+    reason: &str,
+) -> String {
+    let hull = pending.hull;
+    let ore_tonnes = CanonicalId::new("strategic_ore")
+        .ok()
+        .and_then(|good| crate::port::ship::hold_reading(ctx, hull, &good).ok())
+        .unwrap_or(0);
+    let hold_vault = crate::port::ship::hull_view(ctx.w, hull)
+        .and_then(|view| crate::port::ship::hold_vault(ctx.w, &view));
+    if ore_tonnes > 0
+        && let Some(vault) = hold_vault
+    {
+        let seize_t =
+            u32::try_from(ore_tonnes.min(unlicensed_strategic_ore_kg.div_ceil(1_000).max(1)))
+                .unwrap_or(1)
+                .max(1);
+        let fallback = CustomsFinding::Seized {
+            unlicensed_strategic_ore_kg,
+            seize_t,
+            vault: vault.0,
+        };
+        if let Ok(seq) = file_ruling_as(
+            ctx,
+            pending.actor,
+            hull,
+            ruling.principal,
+            fallback,
+            (pending.corvette.clone(), pending.carrier.clone()),
+            0,
+        ) {
+            mark_unattended(ctx, hull, seq);
+            let line = format!(
+                "[PICKET] Republic Customs could not collect the contraband fine on `{}` ({reason}); seizing {seize_t} t of unlicensed `strategic_ore` in lieu of fine.",
+                pending.carrier
+            );
+            let queued = format!("{}{line}", crate::port::voyage::utc_prefix(ctx.w));
+            crate::port::voyage::tell_absent_tenant(ctx, hull, &queued);
+            return line;
+        }
+    }
+    let _ = super::duty::record_uncollected_contraband(
+        ctx,
+        hull,
+        ruling.principal,
+        unlicensed_strategic_ore_kg,
+        Some(fine_minor),
+    );
+    let line = format!(
+        "[PICKET] Republic Customs could not collect the contraband fine on `{}` ({reason}) and recorded the unpaid fine against your record (+record, +debts).",
+        pending.carrier
+    );
+    let queued = format!("{}{line}", crate::port::voyage::utc_prefix(ctx.w));
+    crate::port::voyage::tell_absent_tenant(ctx, hull, &queued);
+    line
 }
 
 /// Tell the hull's crew, and the officer who filed the ruling.
@@ -1116,10 +1268,24 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
                     tracing::warn!(
                         hull = hull.0,
                         seq = ruling.seq,
+                        unattended = pending.unattended,
                         %reason,
                         "tacsim: a landed customs fine was not collected"
                     );
-                    CUSTOMS_FINE_UNCOLLECTED.replace("{reason}", &reason)
+                    if held_in_live_picket(ctx.w, pending) {
+                        CUSTOMS_FINE_UNCOLLECTED.replace("{reason}", &reason)
+                    } else {
+                        // P2-TSW-7: unattended crossing (or hull already out of bubble) must fail
+                        // closed by seizing remaining contraband or recording an unpaid fine debt.
+                        fail_closed_uncollected_fine(
+                            ctx,
+                            pending,
+                            ruling,
+                            unlicensed_strategic_ore_kg,
+                            fine_minor,
+                            &reason,
+                        )
+                    }
                 }
             }
         }
@@ -1161,6 +1327,16 @@ fn apply_landed(ctx: &mut Ctx<'_>, pending: &PendingCustomsRuling, ruling: &Cust
                     }
                     Err(error) => {
                         tracing::warn!(hull = hull.0, %error, "tacsim: the rest of a seizure could not be filed");
+                        if !held_in_live_picket(ctx.w, pending) {
+                            let rest_kg = u64::from(filed_t - seize_t).saturating_mul(1_000);
+                            let _ = super::duty::record_uncollected_contraband(
+                                ctx,
+                                hull,
+                                ruling.principal,
+                                rest_kg,
+                                None,
+                            );
+                        }
                         CUSTOMS_RULING_LAPSED.to_owned()
                     }
                 };

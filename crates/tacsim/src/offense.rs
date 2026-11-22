@@ -438,11 +438,38 @@ pub fn answerer_for_hull(w: &World, hull: ObjId) -> Option<Offender> {
     crate::port::coop::helm_holder(w, hull).map(Offender::Character)
 }
 
+/// Whether a fined row's obligation is still owed (or suspended / unreadable).
+#[must_use]
+pub(crate) fn debt_owed(w: &World, row: &ProvenOffense) -> bool {
+    let Some(id) = row.debt else {
+        return false;
+    };
+    let status = w
+        .module_state::<mush_economy::EconomyStore>()
+        .and_then(|e| {
+            e.snapshot()
+                .obligation(mush_economy::ObligationId(id))
+                .map(|o| o.status.clone())
+        });
+    !matches!(
+        status,
+        Some(mush_economy::ObligationStatus::Satisfied | mush_economy::ObligationStatus::Cancelled)
+    )
+}
+
+/// **Whether a proven offense row is fully settled and eligible for eviction** (`P2-TSW-4`):
+/// fined (`debt.is_some()`), its debt is no longer owed (`Satisfied` or `Cancelled`), and any
+/// reporter payout on the row has been paid.
+#[must_use]
+pub(crate) fn is_settled(w: &World, row: &ProvenOffense) -> bool {
+    row.debt.is_some() && !debt_owed(w, row) && row.payout.as_ref().is_none_or(|p| p.paid)
+}
+
 /// **Write one proven offense** (Q-50-37): the one function every prover calls. It is added to
 /// the record of `key` unless that record holds it already, and answers whether it was added.
 /// A record that will not read takes nothing until staff repair it (logged). A full record drops
-/// its oldest settled offense (`settled` decides); a record full of unsettled ones takes no more
-/// (logged).
+/// its oldest settled offense (`is_settled` and `settled` decide); a record full of unsettled
+/// ones takes no more (logged).
 pub fn record_offense(
     ctx: &mut Ctx<'_>,
     key: OffenseKey,
@@ -465,7 +492,11 @@ pub fn record_offense(
     }
     if record.rows.len() >= MAX_OFFENSE_ROWS {
         let w = &*ctx.w;
-        if let Some(i) = record.rows.iter().position(|row| settled(w, row)) {
+        if let Some(i) = record
+            .rows
+            .iter()
+            .position(|row| is_settled(w, row) && settled(w, row))
+        {
             record.rows.remove(i);
         } else {
             tracing::error!(
@@ -588,5 +619,286 @@ mod tests {
         assert!(!record.rows[0].same_as(&row(8)));
         record.rows.push(row(8));
         assert!(record.check().is_err(), "a row naming another actor");
+    }
+
+    /// **P2-TSW-4**: `is_settled` and `record_offense` never evict unpaid fines, past-due
+    /// transit duties, suspended obligations, unknown obligations, or satisfied fines with unpaid
+    /// reporter payouts — even when a caller supplies a permissive `|_, row| row.debt.is_some()`
+    /// predicate at `MAX_OFFENSE_ROWS`.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn p2_tsw4_is_settled_and_record_offense_never_evict_unpaid_or_unpaid_payout() {
+        use mush_economy::{
+            AccountId, Amount, EconomyModule, EconomyStore, ObligationId, ObligationStatus,
+            SuspensionKey,
+        };
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(EconomyModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let offender = tw.spawn_player("Smuggler");
+        let reporter = tw.spawn_player("Witness");
+        let _ = tw.run(mush_core::GOD, "@instrument/register cr=2");
+        let _ = tw.run(mush_core::GOD, "@account/system mint=cr");
+        let _ = tw.run(mush_core::GOD, &format!("@account/open #{}=cr", offender.0));
+        let _ = tw.run(mush_core::GOD, &format!("@account/open #{}=cr", reporter.0));
+        let mint_acct: AccountId = tw
+            .world()
+            .module_state::<EconomyStore>()
+            .expect("econ")
+            .snapshot()
+            .accounts_of(&PrincipalId::System(
+                mush_org::SystemPrincipalId::new("mint").expect("mint"),
+            ))
+            .next()
+            .expect("mint account")
+            .id;
+        let offender_acct: AccountId = tw
+            .world()
+            .module_state::<EconomyStore>()
+            .expect("econ")
+            .snapshot()
+            .accounts_of(&PrincipalId::Object(offender))
+            .next()
+            .expect("offender account")
+            .id;
+        let reporter_acct: AccountId = tw
+            .world()
+            .module_state::<EconomyStore>()
+            .expect("econ")
+            .snapshot()
+            .accounts_of(&PrincipalId::Object(reporter))
+            .next()
+            .expect("reporter account")
+            .id;
+        // Fund offender enough to pay one debt (satisfied), leaving another unpaid.
+        let minted = tw.run(
+            mush_core::GOD,
+            &format!("@econ/mint {}={} 10000", mint_acct.0, offender_acct.0),
+        );
+        assert!(!minted.is_empty());
+
+        let ns = crate::surface::retrieval::DEBT_NAMESPACE;
+        let reg = mush_core::Registry::new();
+        let (active_id, suspended_id, satisfied_id, cancelled_id) = {
+            let mut out = mush_core::Outbox::new();
+            let mut ctx = Ctx {
+                w: tw.world_mut(),
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &reg,
+                module: None,
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let due = ctx.w.world_ic_now().at + 86_400;
+            let active = mush_economy::create_debt_due(
+                &mut ctx,
+                (offender_acct, reporter_acct),
+                Amount::from_minor(50_000),
+                ns,
+                due,
+            )
+            .expect("active debt");
+            let suspended = mush_economy::create_debt_due(
+                &mut ctx,
+                (offender_acct, reporter_acct),
+                Amount::from_minor(50_000),
+                ns,
+                due,
+            )
+            .expect("suspended debt");
+            mush_economy::suspend_obligation(
+                &mut ctx,
+                suspended,
+                SuspensionKey::new("audit_hold").expect("key"),
+            )
+            .expect("suspend");
+            let satisfied = mush_economy::create_debt_due(
+                &mut ctx,
+                (offender_acct, reporter_acct),
+                Amount::from_minor(5_000),
+                ns,
+                due,
+            )
+            .expect("satisfied debt");
+            mush_economy::pay_debt(&mut ctx, satisfied, ns).expect("pay");
+            let cancelled = mush_economy::create_debt_due(
+                &mut ctx,
+                (offender_acct, reporter_acct),
+                Amount::from_minor(50_000),
+                ns,
+                due,
+            )
+            .expect("cancelled debt");
+            mush_economy::cancel_obligation(&mut ctx, cancelled, ns).expect("cancel");
+            (active.0, suspended.0, satisfied.0, cancelled.0)
+        };
+        assert_eq!(
+            tw.world()
+                .module_state::<EconomyStore>()
+                .and_then(|e| e.snapshot().obligation(ObligationId(satisfied_id)))
+                .map(|o| &o.status),
+            Some(&ObligationStatus::Satisfied)
+        );
+        assert_eq!(
+            tw.world()
+                .module_state::<EconomyStore>()
+                .and_then(|e| e.snapshot().obligation(ObligationId(cancelled_id)))
+                .map(|o| &o.status),
+            Some(&ObligationStatus::Cancelled)
+        );
+
+        let polity = FactionId(3);
+        let key = OffenseKey {
+            offender: Offender::Character(offender),
+            polity,
+        };
+        let make_duty_row =
+            |cursor: u32, debt: Option<u64>, payout: Option<Payout>| ProvenOffense {
+                kind: OffenseKind::UnpaidDuty,
+                evidence: Evidence::Duty {
+                    hull: ObjId(99),
+                    cursor,
+                    at_ic: i64::from(cursor),
+                },
+                proof: Proof::Audit,
+                proven_ic: i64::from(cursor),
+                debt,
+                payout,
+            };
+
+        // Check `is_settled` across every obligation & payout state.
+        let w = tw.world();
+        assert!(!is_settled(w, &make_duty_row(0, None, None)));
+        assert!(!is_settled(w, &make_duty_row(1, Some(active_id), None)));
+        assert!(!is_settled(w, &make_duty_row(2, Some(suspended_id), None)));
+        assert!(
+            !is_settled(w, &make_duty_row(3, Some(999_999), None)),
+            "missing obligation must fail closed"
+        );
+        assert!(
+            !is_settled(
+                w,
+                &make_duty_row(
+                    4,
+                    Some(satisfied_id),
+                    Some(Payout {
+                        to: reporter,
+                        repay_minor: 5_000,
+                        paid: false,
+                    }),
+                )
+            ),
+            "satisfied fine with unpaid reporter payout must not be settled"
+        );
+        assert!(is_settled(w, &make_duty_row(5, Some(satisfied_id), None)));
+        assert!(is_settled(
+            w,
+            &make_duty_row(
+                6,
+                Some(satisfied_id),
+                Some(Payout {
+                    to: reporter,
+                    repay_minor: 5_000,
+                    paid: true,
+                }),
+            )
+        ));
+        assert!(is_settled(w, &make_duty_row(7, Some(cancelled_id), None)));
+
+        // Fill the record to MAX_OFFENSE_ROWS with unsettled rows: unpaid active duty, suspended
+        // fine, and satisfied fine with unpaid reporter payout.
+        let mut initial = OffenseRecord::new(key);
+        initial.rows.push(make_duty_row(100, Some(active_id), None));
+        initial.rows.push(make_duty_row(
+            101,
+            Some(satisfied_id),
+            Some(Payout {
+                to: reporter,
+                repay_minor: 5_000,
+                paid: false,
+            }),
+        ));
+        for c in 102..(100 + MAX_OFFENSE_ROWS as u32) {
+            initial
+                .rows
+                .push(make_duty_row(c, Some(suspended_id), None));
+        }
+        assert_eq!(initial.rows.len(), MAX_OFFENSE_ROWS);
+        tw.world_mut()
+            .module_state_mut::<TacsimStore>()
+            .expect("store")
+            .offenses
+            .insert(key, OffenseSlot::Present(Box::new(initial)));
+
+        // A 65th offense must NOT evict any unpaid or unpaid-payout row, even when the caller
+        // passes the old broken `|_, row| row.debt.is_some()` closure.
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = Ctx {
+            w: tw.world_mut(),
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &reg,
+            module: None,
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            !record_offense(
+                &mut ctx,
+                key,
+                make_duty_row(999, Some(active_id), None),
+                |_, row| row.debt.is_some()
+            ),
+            "full record of unsettled fines/payouts must refuse eviction"
+        );
+        let kept = record_of(ctx.w, &key).expect("record survives");
+        assert_eq!(kept.rows.len(), MAX_OFFENSE_ROWS);
+        assert_eq!(kept.rows[0].debt, Some(active_id));
+        assert_eq!(kept.rows[1].payout.as_ref().map(|p| p.paid), Some(false));
+
+        // Once row 1's payout is marked paid, ONLY that truly settled row is evicted.
+        if let Some(OffenseSlot::Present(rec)) = ctx
+            .w
+            .module_state_mut::<TacsimStore>()
+            .expect("store")
+            .offenses
+            .get_mut(&key)
+        {
+            rec.rows[1].payout.as_mut().expect("payout").paid = true;
+        }
+        assert!(
+            record_offense(
+                &mut ctx,
+                key,
+                make_duty_row(999, Some(active_id), None),
+                is_settled
+            ),
+            "a truly settled row is evicted cleanly"
+        );
+        let after = record_of(ctx.w, &key).expect("record survives");
+        assert_eq!(after.rows.len(), MAX_OFFENSE_ROWS);
+        assert_eq!(
+            after.rows[0].debt,
+            Some(active_id),
+            "unpaid row 0 was NOT evicted"
+        );
+        assert!(
+            after
+                .rows
+                .iter()
+                .all(|r| !matches!(r.evidence, Evidence::Duty { cursor: 101, .. })),
+            "settled row 101 was evicted"
+        );
+        assert!(
+            after
+                .rows
+                .iter()
+                .any(|r| matches!(r.evidence, Evidence::Duty { cursor: 999, .. })),
+            "new row 999 was recorded"
+        );
     }
 }

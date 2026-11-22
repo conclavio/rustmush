@@ -561,3 +561,243 @@ async fn op50b_a_full_dray_p_can_neither_mine_more_nor_take_a_haul() {
     );
     let _ = hull;
 }
+
+/// **P2-TSW-10**: a space passage escort refuses a leased ground rig (`with=<tv>`), never grants
+/// `within_grace` without prior verified proximity (or from decoupled free-flight), and enforces
+/// a non-renewable cumulative grace cap across linkdead-reconnect cycles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn p2_tsw_10_passage_escort_rejects_ground_rig_and_bounds_linkdead_grace() {
+    let mut rig = stocked();
+    set_rate(&mut rig.tw, 24);
+    let (poster, poster_row) = prospector(&mut rig, "Principal", 91, "Lantern");
+    let (guard, guard_row) = prospector(&mut rig, "Guard", 92, "Vigil");
+    let (hull, guard_hull) = (ObjId(poster_row.hull), ObjId(guard_row.hull));
+
+    // Guard leases a ground TV at Ceres exchange and tries to take a space passage escort with it.
+    crate::driving_rig::lease_one(&mut rig, guard);
+    let tv = crate::driving_rig::rigs_of(&rig.tw, guard)[0];
+
+    let posted = run(
+        &mut rig.tw,
+        poster,
+        &format!("+escort/post #{} to=stickney fee=300 go", hull.0),
+    );
+    assert!(posted.contains("posted"), "{posted}");
+    let contract = escort::escorts(rig.tw.world())
+        .into_iter()
+        .filter(|j| j.poster == poster)
+        .map(|j| j.contract)
+        .max()
+        .expect("the escort");
+
+    // (1) Cross-mode ground rig must be refused for a space passage escort.
+    let refused_tv = run(
+        &mut rig.tw,
+        guard,
+        &format!("+escort/accept {contract} with=#{} go", tv.0),
+    );
+    assert!(
+        refused_tv.contains("The escort could not be taken:") && refused_tv.contains("ship hull"),
+        "a leased ground rig cannot accept a space passage escort: {refused_tv}"
+    );
+    assert_eq!(escort_job(&rig, contract).stage, EscortStage::Posted);
+
+    // (2) Accept with a real ship hull, decouple into free-flight outside Ceres without ever
+    // flying with the principal, and cycle real `ConnDown`/`ConnUp` linkdead drops while the
+    // principal flies Ceres -> Stickney. Zero `within_grace` credit is awarded and the escort
+    // fails on arrival.
+    let took = run(
+        &mut rig.tw,
+        guard,
+        &format!("+escort/accept {contract} with=#{} go", guard_hull.0),
+    );
+    assert!(took.contains("You take escort"), "{took}");
+    settle(&mut rig, 1);
+
+    load(&mut rig, &guard_row, 60, 40, 0x0b73);
+    board(&mut rig, guard);
+    let _guard_ticket = file_and_launch(&mut rig, guard, guard_hull, "+ship/undock stickney");
+    let decoupled = run(&mut rig.tw, guard, "+helm/decouple");
+    assert!(
+        !decoupled.contains("Usage"),
+        "guard decouples into free-flight: {decoupled}"
+    );
+    let guard_conns: Vec<u64> = (1..=64)
+        .filter(|conn| rig.tw.engine().actor_of(*conn) == Some(guard))
+        .collect();
+    assert!(!guard_conns.is_empty(), "guard holds a live connection");
+    for &conn in &guard_conns {
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: guard,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut mush_core::Outbox::new(),
+            &mut mush_core::Effects::new(),
+        );
+    }
+    assert!(
+        rig.tw
+            .world()
+            .module_state::<tacsim::space::SpaceBubbleBook>()
+            .and_then(|b| b.linkdead_state(guard_hull))
+            .is_some(),
+        "guard has a genuine SpaceLinkdeadState in free-flight"
+    );
+
+    load(&mut rig, &poster_row, 60, 40, 0x0b71);
+    board(&mut rig, poster);
+    let ticket = file_and_launch(&mut rig, poster, hull, "+ship/undock stickney");
+    // Wait for watch to start while guard is linkdead in free-flight.
+    for _ in 0..10 {
+        if escort_job(&rig, contract).stage == EscortStage::Watching {
+            break;
+        }
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    assert_eq!(escort_job(&rig, contract).stage, EscortStage::Watching);
+    assert!(
+        !escort::within_grace(rig.tw.world(), &escort_job(&rig, contract), guard_hull),
+        "within_grace must deny a decoupled free-flight linkdead escort with no prior proximity"
+    );
+
+    // Cycle real reconnect -> drop link across several port fires while principal is in transit.
+    let conn = guard_conns[0];
+    for _ in 0..4 {
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnUp {
+                conn,
+                actor: guard,
+                caps_structured: true,
+                from_linkdead: true,
+            },
+            &mut mush_core::Outbox::new(),
+            &mut mush_core::Effects::new(),
+        );
+        rig.tw.engine_mut().step(
+            mush_core::Inbound::ConnDown {
+                conn,
+                actor: guard,
+                reason: mush_core::DisconnectKind::Lost,
+            },
+            &mut mush_core::Outbox::new(),
+            &mut mush_core::Effects::new(),
+        );
+        let (_, queued) = fire(&mut rig);
+        land_quietly(&mut rig, &queued);
+    }
+    let mid = escort_job(&rig, contract);
+    assert_eq!(
+        mid.watch.as_ref().map_or(-1, |w| w.near_ic),
+        0,
+        "linkdead-reconnect cycling in free-flight must credit zero near_ic: {mid:?}"
+    );
+
+    // Advance principal to arrival at Stickney: escort fails with WHY_FAR, never Kept.
+    let (_, queued) = advance_to(
+        &mut rig,
+        ticket.plan.depart_ic + ticket.plan.total_s + 3_600,
+    );
+    land_quietly(&mut rig, &queued);
+    settle(&mut rig, 3);
+    let ended = escort_job(&rig, contract);
+    assert_eq!(ended.stage, EscortStage::Failed, "{ended:?}");
+    assert!(
+        ended.why.as_deref().is_some_and(|w| w.contains("only 0%")),
+        "failed for 0% proximity: {ended:?}"
+    );
+}
+
+/// **P2-TSW-22**: when a haul is cancelled before loading (`no_room` during `HaulStage::Taken`),
+/// a paired escort does not bind prematurely to the hauler's hull and is called off cleanly
+/// (`TOLD_HAUL_GONE`, contract cancelled) instead of staying live for an empty hull.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn p2_tsw_22_escort_cancels_when_haul_cancels_before_load() {
+    let mut rig = stocked();
+    set_rate(&mut rig.tw, 24);
+    let (factor, haul_contract) = org_haul(&mut rig);
+    let occator = org_of(&rig, "ceres_port", "occator");
+    let occator_before_escort = balance(&rig, org_account(&rig, occator));
+
+    let posted = run(
+        &mut rig.tw,
+        factor,
+        &format!("+escort/post haul={haul_contract} fee=300 as=#{occator} go"),
+    );
+    assert!(posted.contains("posted"), "{posted}");
+    let escort_contract = escort::escorts(rig.tw.world())
+        .into_iter()
+        .find(|j| j.haul == Some(haul_contract))
+        .map(|j| j.contract)
+        .expect("the escort for the haul");
+    assert_eq!(
+        balance(&rig, org_account(&rig, occator)),
+        occator_before_escort - 30_000,
+        "escort fee escrowed"
+    );
+
+    let (guard, guard_row) = prospector(&mut rig, "Guard", 93, "Sentry");
+    let (hauler, hauler_row) = prospector(&mut rig, "Hauler", 94, "Shell");
+    let (guard_hull, hull) = (ObjId(guard_row.hull), ObjId(hauler_row.hull));
+    let took_escort = run(
+        &mut rig.tw,
+        guard,
+        &format!("+escort/accept {escort_contract} with=#{} go", guard_hull.0),
+    );
+    assert!(took_escort.contains("You take escort"), "{took_escort}");
+
+    // Hauler accepts the haul -> stage is `Taken`, `Load` leg is queued but NOT landed yet.
+    let took_haul = run(
+        &mut rig.tw,
+        hauler,
+        &format!("+haul/accept {haul_contract} go"),
+    );
+    assert!(took_haul.contains("You take haul"), "{took_haul}");
+    assert_eq!(haul_job(&rig, haul_contract).stage, HaulStage::Taken);
+
+    // Discard the unlanded initial Load submission (simulating authoritative back-pressure so Load
+    // is delayed to a later tick) and step one port fire: escort must remain UNBOUND while Taken.
+    let _dropped_load = crate::driving_rig::drain(&mut rig.tw);
+    let (_, queued) = fire(&mut rig);
+    assert_eq!(
+        escort_job(&rig, escort_contract).protected,
+        escort::UNBOUND,
+        "escort must not bind before Load lands (HaulStage::Aboard)"
+    );
+    let _ = queued;
+
+    // Now fill the hauler's hold to capacity so `haul::step` cancels the haul with `no_room`.
+    let cap = tacsim::space::mining::hull_hold_capacity_tonnes(rig.tw.world(), hull);
+    crate::driving_rig::seed_hold(&mut rig, &hauler_row, "structural_alloys", cap, 0x0b81);
+
+    settle(&mut rig, 3);
+    assert_eq!(
+        haul_job(&rig, haul_contract).stage,
+        HaulStage::Closed,
+        "haul cancelled on no_room before load"
+    );
+    let cancelled_escort = escort_job(&rig, escort_contract);
+    assert_eq!(
+        cancelled_escort.stage,
+        EscortStage::Closed,
+        "paired escort called off with the cancelled haul: {cancelled_escort:?}"
+    );
+    assert_eq!(
+        cancelled_escort.protected,
+        escort::UNBOUND,
+        "never bound to the empty hull"
+    );
+    assert!(
+        matches!(state(&rig, escort_contract), ContractState::Cancelled),
+        "escort contract cancelled: {:?}",
+        state(&rig, escort_contract)
+    );
+    assert_eq!(
+        balance(&rig, org_account(&rig, occator)),
+        occator_before_escort + 50_000,
+        "both the cancelled haul fee (500 cr) and escort fee (300 cr) returned to Occator in full"
+    );
+}

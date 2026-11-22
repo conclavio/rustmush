@@ -268,6 +268,24 @@ pub(crate) fn in_flight_on(
     in_flight_for(w, hull, &PrincipalId::Object(pilot), hold, name)
 }
 
+/// **Whether any non-lapsed standing bid targets `hold`** (P2-TSW-3): an open `Supply::Wanted`
+/// bid targeting a hull's hold blocks title transfers and charter releases until withdrawn or
+/// lapsed so no third-party delivery races a hull handover.
+pub(crate) fn open_bid_into(w: &World, hold: mush_economy::VaultId) -> bool {
+    let Some(market) = w.module_state::<MarketStore>() else {
+        return false;
+    };
+    let now = w.now();
+    market.live_listings().any(|listing| {
+        listing.quantity > 0
+            && !mush_market::listing_lapsed(listing, now)
+            && matches!(
+                listing.source,
+                mush_market::Supply::Wanted { vault, .. } if vault == hold
+            )
+    })
+}
+
 /// The same flight and settlement guards for any selling principal (character or organization, M6).
 pub(crate) fn in_flight_for(
     w: &World,
@@ -289,7 +307,10 @@ pub(crate) fn in_flight_for(
         }
         OrdersState::Present(_) | OrdersState::Absent => {}
     }
-    if goods_pending_aboard(w, EndpointRef(hold)).is_some() || seller_quote_open(w, seller) {
+    if goods_pending_aboard(w, EndpointRef(hold)).is_some()
+        || open_bid_into(w, hold)
+        || seller_quote_open(w, seller)
+    {
         return Some((Busy::Goods, line(GOODS_WAIT)));
     }
     None

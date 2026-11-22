@@ -32,6 +32,8 @@
 //! decision is re-read from the record, the hauls and the economy, so a restart posts nothing
 //! twice. A post is at most once an IC day ([`FreeportArm::posted_day`]).
 
+use std::collections::BTreeMap;
+
 use mush_core::{CanonicalId, Ctx, ObjId, World};
 use mush_economy::AccountId;
 use mush_faction::ClockAdvance;
@@ -89,6 +91,21 @@ pub const ARM_MAX_OPEN: usize = 3;
 pub const FALLBACK_IC_DAYS: i64 = 7;
 /// Posts the record keeps (the oldest drop off; a month's cap needs a month's rows).
 pub const MAX_POSTS: usize = 128;
+/// Maximum concurrent unpaid tank-farm fills (recorded unpaid fills plus in-flight quotes)
+/// accepted before Occator reimburses the backlog on the next port tick.
+pub const MAX_UNPAID_FILLS: usize = 64;
+
+/// Whether `n` is zero (for serde `skip_serializing_if`).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
+}
+
+/// Whether `n` is zero (for serde `skip_serializing_if`).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
+}
 
 /// **The arm's record**, written whole when it changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +144,18 @@ pub struct FreeportArm {
     /// (at most [`MAX_POSTS`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fills: Vec<ArmFill>,
+    /// Persistent cumulative spend per IC month (minor units, covering both posts and fills),
+    /// retained independently of [`Self::posts`]/[`Self::fills`] ring eviction so evicting paid
+    /// fills never reduces [`Self::spent_in`]. Pruned for months older than the preceding month.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub spent_by_month: BTreeMap<i64, i64>,
+    /// Unpaid reimbursement carried forward (minor units) if [`Self::fills`] ever overflows
+    /// [`MAX_POSTS`] with no paid rows left to evict; reimbursed by Occator before per-quote rows.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub unpaid_carry_minor: i64,
+    /// Monotonic idempotency counter for [`Self::unpaid_carry_minor`] reimbursement transfers.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub unpaid_carry_seq: u64,
 }
 
 /// **One sale into the tank farm's bid** (doc 50b item 8): its ledger row.
@@ -173,7 +202,7 @@ pub struct ArmPost {
 
 impl FreeportArm {
     /// What the arm committed in IC month `month`, minor units: its posts, and (doc 50b item 8)
-    /// the tank farm's bid's fills.
+    /// the tank farm's bid's fills, preserved across ring eviction via [`Self::spent_by_month`].
     #[must_use]
     pub fn spent_in(&self, month: i64) -> i64 {
         let posts: i64 = self
@@ -188,14 +217,84 @@ impl FreeportArm {
             .filter(|f| f.month == month)
             .map(|f| f.spent_minor)
             .sum();
-        posts.saturating_add(fills)
+        let rows = posts.saturating_add(fills);
+        self.spent_by_month
+            .get(&month)
+            .copied()
+            .map_or(rows, |recorded| recorded.max(rows))
+    }
+
+    /// Total unpaid tank-farm fill reimbursements still owed by Occator (minor units), including
+    /// any carried overflow.
+    #[must_use]
+    pub fn unpaid_fills_minor(&self) -> i64 {
+        let rows: i64 = self
+            .fills
+            .iter()
+            .filter(|f| !f.paid)
+            .fold(0_i64, |acc, f| acc.saturating_add(f.spent_minor.max(0)));
+        rows.saturating_add(self.unpaid_carry_minor.max(0))
+    }
+
+    /// Number of recorded tank-farm fills not yet reimbursed by Occator.
+    #[must_use]
+    pub fn unpaid_fill_count(&self) -> usize {
+        self.fills.iter().filter(|f| !f.paid).count()
+    }
+
+    /// Add `amount_minor` to persistent monthly accounting for `month`, pruning months older than
+    /// the preceding IC month. Must be called before pushing the corresponding post/fill row.
+    fn record_month_spend(&mut self, month: i64, amount_minor: i64) {
+        if amount_minor <= 0 {
+            return;
+        }
+        let next = self.spent_in(month).saturating_add(amount_minor);
+        self.spent_by_month.insert(month, next);
+        self.prune_spent_months(month);
+    }
+
+    /// Drop monthly spend entries older than `current_month - 1` to keep the KV document O(1).
+    fn prune_spent_months(&mut self, current_month: i64) {
+        let floor = current_month.saturating_sub(1);
+        self.spent_by_month.retain(|&m, _| m >= floor);
+    }
+
+    /// Record a settled tank-farm fill, preserving monthly spend and strictly bounding
+    /// [`Self::fills`] to [`MAX_POSTS`]. Returns `false` if `quote` was already recorded.
+    fn record_fill(&mut self, quote: u64, month: i64, gross: i64) -> bool {
+        if gross <= 0 || self.fills.iter().any(|f| f.quote == quote) {
+            return false;
+        }
+        self.record_month_spend(month, gross);
+        self.fills.push(ArmFill {
+            quote,
+            month,
+            spent_minor: gross,
+            paid: false,
+        });
+        while self.fills.len() > MAX_POSTS {
+            // The oldest paid fills go first; if all retained fills are unpaid, carry the oldest
+            // amount forward into `unpaid_carry_minor` so KV growth stays bounded without losing
+            // reimbursement or monthly accounting.
+            if let Some(at) = self.fills.iter().position(|f| f.paid) {
+                self.fills.remove(at);
+            } else {
+                let evicted = self.fills.remove(0);
+                self.unpaid_carry_minor = self
+                    .unpaid_carry_minor
+                    .saturating_add(evicted.spent_minor.max(0));
+            }
+        }
+        true
     }
 
     /// **Whether a post costing `cost_minor` fits month `month`'s cap** (Q-50-22): what the
     /// month's rows committed, and it, no more than [`ARM_MONTHLY_CAP_CR`].
     #[must_use]
     pub fn within_cap(&self, month: i64, cost_minor: i64) -> bool {
-        self.spent_in(month).saturating_add(cost_minor) <= ARM_MONTHLY_CAP_CR.saturating_mul(100)
+        cost_minor >= 0
+            && self.spent_in(month).saturating_add(cost_minor)
+                <= ARM_MONTHLY_CAP_CR.saturating_mul(100)
     }
 }
 
@@ -229,9 +328,59 @@ fn is_farm_fill(w: &World, house: &PrincipalId, commodity: &CanonicalId) -> bool
             .is_some_and(|farm| house == &PrincipalId::Organization(farm))
 }
 
+/// Active (not yet settled into [`FreeportArm::fills`]) sales of [`STOCKPILE_GOOD`] into the tank
+/// farm's standing bid: `(gross_minor, count)`.
+fn pending_farm_quotes(w: &World, doc: Option<&FreeportArm>, house: &PrincipalId) -> (i64, usize) {
+    let Some(market) = w.module_state::<mush_market::MarketStore>() else {
+        return (0, 0);
+    };
+    let economy = w.module_state::<mush_economy::EconomyStore>();
+    let mut gross_total: i64 = 0;
+    let mut count: usize = 0;
+    for q in market.quotes_of_buyer(house) {
+        if q.settled.is_some() {
+            continue;
+        }
+        if doc.is_some_and(|d| d.fills.iter().any(|f| f.quote == q.id.0)) {
+            continue;
+        }
+        let is_stockpile = q
+            .lot
+            .as_ref()
+            .is_some_and(|l| l.commodity.0.as_str() == STOCKPILE_GOOD);
+        if !is_stockpile {
+            continue;
+        }
+        let Some(contract) = q.contract else {
+            continue;
+        };
+        // Exclude only cancelled/expired contracts; keep Draft/Offered/Active/ReadyToSettle/
+        // Disputed and Settled-not-yet-stamped quotes so there is no TOCTOU gap.
+        let still_live = economy.is_none_or(|store| {
+            store.snapshot().contract(contract).is_some_and(|k| {
+                !matches!(
+                    k.state,
+                    mush_economy::ContractState::Cancelled | mush_economy::ContractState::Expired
+                )
+            })
+        });
+        if !still_live {
+            continue;
+        }
+        let quote_gross = i64::try_from(q.quantity)
+            .ok()
+            .and_then(|qty| q.price.minor().checked_mul(qty))
+            .unwrap_or(i64::MAX);
+        gross_total = gross_total.saturating_add(quote_gross.max(0));
+        count = count.saturating_add(1);
+    }
+    (gross_total, count)
+}
+
 /// **Whether a sale of `gross` into the tank farm's bid is refused** (doc 50b item 8; Q-50-22):
-/// Occator funds the bid, so a sale past its month's cap, or past what its account holds, is
-/// refused with [`FARM_BUDGET_SPENT`]. Any other bid, or a world with no arm, is not.
+/// Occator funds the bid, so a sale past its month's cap, past what its account holds (net of
+/// unpaid fills and in-flight quotes), or past the unpaid fill backlog cap is refused with
+/// [`FARM_BUDGET_SPENT`]. Any other bid is not.
 #[must_use]
 pub fn refuse_fill(
     w: &World,
@@ -246,15 +395,43 @@ pub fn refuse_fill(
     let occator = org_of(w, ARM_ENTRY, ARM_ORG)
         .and_then(|occator| org_account(w, occator))
         .map(|account| available(w, account));
-    fill_refused(arm(w), month, gross, occator).then_some(FARM_BUDGET_SPENT)
+    let doc = arm(w);
+    let (pending_minor, pending_count) = pending_farm_quotes(w, doc, house);
+    fill_refused(doc, month, gross, occator, pending_minor, pending_count)
+        .then_some(FARM_BUDGET_SPENT)
 }
 
 /// **Whether Occator cannot fund a fill of `gross` in IC month `month`** (doc 50b item 8): past
-/// the arm's month's cap, or past what Occator's account holds (`None`: no account).
-fn fill_refused(doc: Option<&FreeportArm>, month: i64, gross: i64, occator: Option<i64>) -> bool {
-    let within = doc.is_none_or(|doc| doc.within_cap(month, gross));
-    let funded = occator.is_some_and(|held| held >= gross);
-    !within || !funded
+/// the arm's month's cap (counting persistent monthly spend plus `pending_minor`), past what
+/// Occator's account holds net of unpaid fills and `pending_minor` (`None`: no account), or with
+/// an unpaid backlog at or past [`MAX_UNPAID_FILLS`].
+fn fill_refused(
+    doc: Option<&FreeportArm>,
+    month: i64,
+    gross: i64,
+    occator: Option<i64>,
+    pending_minor: i64,
+    pending_count: usize,
+) -> bool {
+    if gross <= 0 {
+        return true;
+    }
+    let pending_minor = pending_minor.max(0);
+    let cap = ARM_MONTHLY_CAP_CR.saturating_mul(100);
+    let month_committed = doc
+        .map_or(0, |d| d.spent_in(month))
+        .saturating_add(pending_minor);
+    let within = month_committed.saturating_add(gross) <= cap;
+    let unpaid_committed = doc
+        .map_or(0, FreeportArm::unpaid_fills_minor)
+        .saturating_add(pending_minor);
+    let funded = occator.is_some_and(|held| held.saturating_sub(unpaid_committed) >= gross);
+    let has_carry = doc.is_some_and(|d| d.unpaid_carry_minor > 0);
+    let unpaid_open = doc
+        .map_or(0, FreeportArm::unpaid_fill_count)
+        .saturating_add(pending_count);
+    let backlog_ok = !has_carry && unpaid_open < MAX_UNPAID_FILLS;
+    !within || !funded || !backlog_ok
 }
 
 /// **A sale into the tank farm's bid settled** (doc 50b item 8): its fill, kept once under its
@@ -270,20 +447,9 @@ pub(crate) fn on_fill(
         return;
     }
     let mut doc = arm(ctx.w).cloned().unwrap_or_default();
-    if doc.fills.iter().any(|f| f.quote == quote) {
+    let month = crate::concession::ic_month(ctx.w.world_ic_now().at);
+    if !doc.record_fill(quote, month, gross) {
         return;
-    }
-    doc.fills.push(ArmFill {
-        quote,
-        month: crate::concession::ic_month(ctx.w.world_ic_now().at),
-        spent_minor: gross,
-        paid: false,
-    });
-    if doc.fills.len() > MAX_POSTS {
-        // The oldest paid fills go first; an unpaid one is kept until it is paid.
-        if let Some(at) = doc.fills.iter().position(|f| f.paid) {
-            doc.fills.remove(at);
-        }
     }
     put(ctx, &doc);
 }
@@ -292,7 +458,7 @@ pub(crate) fn on_fill(
 /// fill, from Occator's account to the farm's, keyed by its quote so a retry pays once. One the
 /// account cannot cover waits for the next fire.
 fn fund_fills(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
-    if doc.fills.iter().all(|f| f.paid) {
+    if doc.unpaid_carry_minor <= 0 && doc.fills.iter().all(|f| f.paid) {
         return;
     }
     let (Some(from), Some(to)) = (
@@ -301,6 +467,26 @@ fn fund_fills(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
     ) else {
         return;
     };
+    if doc.unpaid_carry_minor > 0 {
+        let pay = available(ctx.w, from).min(doc.unpaid_carry_minor);
+        if pay <= 0 {
+            return;
+        }
+        if crate::port::hauler::pay_in(
+            ctx,
+            ARM_KEY,
+            format!("fill-carry/{}", doc.unpaid_carry_seq),
+            (from, to),
+            pay,
+            "Occator funds the Isidis tank farm's bid".to_owned(),
+        ) {
+            doc.unpaid_carry_minor = doc.unpaid_carry_minor.saturating_sub(pay);
+            doc.unpaid_carry_seq = doc.unpaid_carry_seq.saturating_add(1);
+        }
+        if doc.unpaid_carry_minor > 0 {
+            return;
+        }
+    }
     for fill in doc.fills.iter_mut().filter(|f| !f.paid) {
         if available(ctx.w, from) < fill.spent_minor {
             return;
@@ -514,6 +700,7 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         let _ = threshold_news(ctx, level);
     }
     read_at_close(ctx, &mut doc);
+    doc.prune_spent_months(crate::concession::ic_month(ctx.w.world_ic_now().at));
     fund_fills(ctx, occator, &mut doc);
     if !doc.laid_up {
         step(ctx, occator, &mut doc);
@@ -579,17 +766,22 @@ fn step(ctx: &mut Ctx<'_>, occator: OrgId, doc: &mut FreeportArm) {
     }
     let month = crate::concession::ic_month(now);
     let cost = (ARM_HAUL_FEE_CR + ARM_ESCORT_FEE_CR).saturating_mul(100);
-    if !doc.within_cap(month, cost) {
+    let pending_minor = org_of(ctx.w, TANK_FARM_ENTRY, TANK_FARM_ORG).map_or(0, |farm| {
+        pending_farm_quotes(ctx.w, Some(doc), &PrincipalId::Organization(farm)).0
+    });
+    if !doc.within_cap(month, cost.saturating_add(pending_minor)) {
         return;
     }
     let Some(account) = org_account(ctx.w, occator) else {
         return;
     };
-    if available(ctx.w, account) < cost {
+    let committed_unpaid = doc.unpaid_fills_minor().saturating_add(pending_minor);
+    if available(ctx.w, account).saturating_sub(committed_unpaid) < cost {
         return;
     }
     if let Some(post) = post(ctx, agent, occator, month) {
         doc.posted_day = Some(today);
+        doc.record_month_spend(month, post.spent_minor);
         doc.posts.push(post);
         if doc.posts.len() > MAX_POSTS {
             let drop = doc.posts.len() - MAX_POSTS;
@@ -719,7 +911,10 @@ fn grant(ctx: &mut Ctx<'_>, org: OrgId, agent: ObjId) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARM_MONTHLY_CAP_CR, ArmFill, ArmPost, FreeportArm, fill_refused};
+    use super::{
+        ARM_MONTHLY_CAP_CR, ArmFill, ArmPost, FreeportArm, MAX_POSTS, MAX_UNPAID_FILLS,
+        fill_refused,
+    };
 
     fn post(month: i64, spent_minor: i64) -> ArmPost {
         ArmPost {
@@ -759,21 +954,142 @@ mod tests {
         });
         assert_eq!(arm.spent_in(3), cap - 100_000, "the fill is in the month");
         assert!(
-            !fill_refused(Some(&arm), 3, 100_000, Some(cap)),
+            !fill_refused(Some(&arm), 3, 100_000, Some(cap), 0, 0),
             "at the cap fits"
         );
         assert!(
-            fill_refused(Some(&arm), 3, 100_001, Some(cap)),
+            fill_refused(Some(&arm), 3, 100_001, Some(cap), 0, 0),
             "past the cap is refused"
         );
         assert!(
-            fill_refused(Some(&arm), 4, 100_000, Some(99_999)),
+            fill_refused(Some(&arm), 4, 100_000, Some(99_999), 0, 0),
             "past Occator's money"
         );
-        assert!(fill_refused(Some(&arm), 4, 1, None), "no account, no fill");
         assert!(
-            !fill_refused(None, 4, 100_000, Some(100_000)),
-            "no arm yet: the money decides"
+            fill_refused(Some(&arm), 4, 1, None, 0, 0),
+            "no account, no fill"
+        );
+        assert!(
+            !fill_refused(None, 4, 100_000, Some(100_000), 0, 0),
+            "no arm yet: the money decides within cap"
+        );
+        assert!(
+            fill_refused(None, 4, cap + 1, Some(cap + 1), 0, 0),
+            "no arm yet: single fill past monthly cap is still refused"
+        );
+    }
+
+    /// **P2-TSW-8**: evicting paid fills from the 128-entry ring never reduces `spent_in` for the
+    /// active month, and older months are pruned once the month advances.
+    #[test]
+    fn p2_tsw_8_paid_fill_eviction_never_drops_monthly_spend() {
+        let cap = ARM_MONTHLY_CAP_CR * 100;
+        let mut arm = FreeportArm::default();
+        assert!(arm.record_fill(1, 5, 1_350_000));
+        arm.fills[0].paid = true;
+        // 128 × 50 cr = 6,400 cr (640_000 minor): evicts quote 1 from `fills`.
+        for q in 2..=(MAX_POSTS as u64 + 1) {
+            assert!(arm.record_fill(q, 5, 5_000));
+            arm.fills.last_mut().expect("pushed").paid = true;
+        }
+        assert_eq!(arm.fills.len(), MAX_POSTS);
+        assert!(
+            !arm.fills.iter().any(|f| f.quote == 1),
+            "quote 1 was evicted from the ring"
+        );
+        let expected = 1_350_000 + (MAX_POSTS as i64) * 5_000;
+        assert_eq!(expected, 1_990_000);
+        assert_eq!(
+            arm.spent_in(5),
+            expected,
+            "persistent monthly counter retains evicted same-month spend"
+        );
+        assert!(!fill_refused(Some(&arm), 5, 10_000, Some(cap), 0, 0));
+        assert!(
+            fill_refused(Some(&arm), 5, 10_001, Some(cap), 0, 0),
+            "cannot exceed 20,000 cr/month after ring eviction"
+        );
+
+        // Two months later, month 5 is pruned while month 7 is tracked.
+        assert!(arm.record_fill(1_000, 7, 50_000));
+        assert!(!arm.spent_by_month.contains_key(&5));
+        assert_eq!(arm.spent_in(7), 50_000);
+        assert!(arm.spent_by_month.len() <= 2);
+
+        // Serde JSON round-trip preserves `spent_by_month` with integer keys.
+        let json = serde_json::to_value(&arm).expect("serialize");
+        let decoded: FreeportArm = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(decoded, arm);
+    }
+
+    /// **P2-TSW-8**: unpaid fills and in-flight quotes both reduce remaining monthly cap headroom
+    /// and Occator's available balance, and unpaid fills are strictly bounded in `doc.fills`.
+    #[test]
+    fn p2_tsw_8_unpaid_fills_and_in_flight_quotes_are_counted_and_bounded() {
+        let cap = ARM_MONTHLY_CAP_CR * 100;
+        let mut arm = FreeportArm::default();
+        // One unpaid fill of 800_000 minor in month 5.
+        assert!(arm.record_fill(10, 5, 800_000));
+        assert_eq!(arm.unpaid_fills_minor(), 800_000);
+        // Occator has 1_200_000 available -> net after 800_000 unpaid is 400_000.
+        assert!(!fill_refused(Some(&arm), 5, 400_000, Some(1_200_000), 0, 0));
+        assert!(
+            fill_refused(Some(&arm), 5, 400_001, Some(1_200_000), 0, 0),
+            "unpaid fill counts against Occator available balance"
+        );
+        // Add an in-flight quote of 300_000 -> net balance headroom drops to 100_000,
+        // and monthly cap headroom drops to cap - 800_000 - 300_000 = 900_000.
+        assert!(!fill_refused(
+            Some(&arm),
+            5,
+            100_000,
+            Some(1_200_000),
+            300_000,
+            1
+        ));
+        assert!(
+            fill_refused(Some(&arm), 5, 100_001, Some(1_200_000), 300_000, 1),
+            "in-flight quote counts against Occator available balance"
+        );
+        assert!(
+            fill_refused(
+                Some(&arm),
+                5,
+                cap - 1_100_000 + 1,
+                Some(cap * 2),
+                300_000,
+                1
+            ),
+            "in-flight quote counts against monthly cap"
+        );
+        // Unpaid fill from previous month still counts against Occator balance in month 6.
+        assert!(
+            fill_refused(Some(&arm), 6, 400_001, Some(1_200_000), 0, 0),
+            "prior-month unpaid fill still encumbers Occator's balance"
+        );
+
+        // Backlog cap refuses once open unpaid + pending hits MAX_UNPAID_FILLS.
+        assert!(
+            fill_refused(Some(&arm), 6, 5_000, Some(cap * 2), 0, MAX_UNPAID_FILLS - 1),
+            "at MAX_UNPAID_FILLS total unpaid+pending, new fills are refused"
+        );
+
+        // Even if `record_fill` is called > MAX_POSTS times without paying, `doc.fills` stays
+        // strictly bounded at MAX_POSTS and overflow moves to `unpaid_carry_minor`.
+        let mut flooded = FreeportArm::default();
+        for q in 1..=(MAX_POSTS as u64 + 10) {
+            assert!(flooded.record_fill(q, 8, 1_000));
+        }
+        assert_eq!(flooded.fills.len(), MAX_POSTS);
+        assert_eq!(flooded.unpaid_carry_minor, 10_000);
+        assert_eq!(
+            flooded.unpaid_fills_minor(),
+            (MAX_POSTS as i64 + 10) * 1_000
+        );
+        assert_eq!(flooded.spent_in(8), (MAX_POSTS as i64 + 10) * 1_000);
+        assert!(
+            fill_refused(Some(&flooded), 8, 1_000, Some(cap * 10), 0, 0),
+            "carried unpaid overflow blocks new fills until reimbursed"
         );
     }
 }

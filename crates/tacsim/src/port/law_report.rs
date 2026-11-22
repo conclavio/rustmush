@@ -22,12 +22,14 @@
 
 use std::collections::BTreeMap;
 
+use mush_core::mechanics::OwnerId;
 use mush_core::{
     ActionErrorCode, ActionInvocation, ActionProvider, ActionTxn, AuthoritativeActionOutput,
-    CanonicalId, CmdError, Ctx, DefinitionDescriptor, DefinitionId, DefinitionKind, DefinitionRef,
-    IdempotencyKeyText, ModError, ObjId, PerceivedRef, ProjectedParameter, ProjectedParameterKind,
-    ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft, Registrar, RevisionSet,
-    RulesValue, StateFamilyHandle, SubjectKey, World,
+    CanonicalHash, CanonicalId, CmdError, Ctx, DefinitionDescriptor, DefinitionId, DefinitionKind,
+    DefinitionRef, IdempotencyKeyText, ModError, ObjId, PerceivedRef, ProjectedParameter,
+    ProjectedParameterKind, ProjectedParameterSchema, ProjectedTargetSchema, ProviderOfferDraft,
+    Registrar, RevisionKey, RevisionKind, RevisionSet, RevisionStamp, RevisionValidator,
+    RevisionValidatorContext, RulesValue, StateFamilyHandle, SubjectKey, World,
 };
 use mush_economy::VaultId;
 use mush_inventory::InventoryFamilies;
@@ -57,6 +59,9 @@ pub const REPORT_ACTION: &str = "tacsim_law_report";
 pub const REPORT_OUTCOME: &str = "tacsim_law_report_result";
 /// The family of landed reports, keyed by the sale's quote.
 pub const REPORT_FAMILY: &str = "tacsim.law_report";
+/// The revision kind guarding projected law-report offers against live ownership/locality changes
+/// (P2-TSW-9).
+const REPORT_REVISION: &str = "tacsim.law_report.v1";
 /// The most reports one offer carries.
 const MAX_OFFER_ROWS: usize = 16;
 
@@ -83,6 +88,10 @@ pub const REPORT_NOTHING: &str =
     "The other party held the papers at that sale; there is nothing to report.";
 /// Already reported.
 pub const REPORT_ALREADY: &str = "That sale has already been reported.";
+/// Reporter is not at the port where the sale took place (P2-TSW-9).
+pub const REPORT_NOT_HERE: &str = "You must be at that port to file a report with its authority.";
+/// Reporting buyer no longer controls the receiving vault (P2-TSW-9).
+pub const REPORT_NO_GOODS: &str = "You no longer control the vault that received those goods.";
 /// The preview (`{who}`, `{goods}`).
 pub const REPORT_PREVIEW: &str =
     "Report {who} for that sale. {goods}+law/report <quote> go reports it.";
@@ -365,6 +374,37 @@ fn refusal(w: &World, who: ObjId, r: &SaleReceipt) -> Option<String> {
     if !r.other_lacked(who) {
         return Some(REPORT_NOTHING.to_owned());
     }
+    // P2-TSW-9: the reporter must stand at the sale's port, and a reporting buyer must still
+    // control the receiving vault while it (and any governing hull) is present/docked there.
+    let Some(venue) = mush_market::MarketId::new(r.venue.as_str()) else {
+        return Some(REPORT_NOT_HERE.to_owned());
+    };
+    let gate = crate::port::market::PortVenueGate;
+    let here = w
+        .get(who)
+        .and_then(|o| o.location)
+        .and_then(|room| mush_market::VenueGate::venue_of_room(&gate, w, room));
+    if here.as_ref() != Some(&venue) {
+        return Some(REPORT_NOT_HERE.to_owned());
+    }
+    if r.buyer == who {
+        let from = EndpointRef(VaultId(r.destination));
+        if !mush_inventory::may_take(w, who, from)
+            || !mush_market::seller::bidder_holds_vault(w, &PrincipalId::Object(who), from.vault())
+        {
+            return Some(REPORT_NO_GOODS.to_owned());
+        }
+        if let Err(why) = mush_market::VenueGate::admit(
+            &gate,
+            w,
+            who,
+            &venue,
+            Some(from),
+            mush_market::Presence::Here,
+        ) {
+            return Some(why.line);
+        }
+    }
     None
 }
 
@@ -487,6 +527,9 @@ fn rows_for(w: &World, actor: ObjId) -> Map<String, Value> {
             else {
                 continue;
             };
+            if vault == r.destination {
+                continue;
+            }
             Some(vault)
         } else {
             None
@@ -497,6 +540,79 @@ fn rows_for(w: &World, actor: ObjId) -> Map<String, Value> {
         }
     }
     rows
+}
+
+fn report_revision_key(actor: ObjId) -> Result<RevisionKey, mush_core::ActionError> {
+    let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+    let owner = OwnerId::new(crate::NS).map_err(|_| integrity("the report's owner is invalid"))?;
+    let kind = RevisionKind::new(
+        CanonicalId::new(REPORT_REVISION)
+            .map_err(|_| integrity("the report's revision kind is invalid"))?,
+    );
+    Ok(RevisionKey {
+        owner,
+        kind,
+        subject: SubjectKey::Object { id: actor },
+        facet: None,
+    })
+}
+
+/// Canonical digest of the actor's currently reportable receipts and live destination-vault
+/// authority/revisions (P2-TSW-9): any post-projection change to actor presence, vault ownership,
+/// hull berth, clearance, or on-sale state invalidates the offer's revision guard before commit.
+fn report_generation(w: &World, actor: ObjId) -> Result<u64, mush_core::ActionError> {
+    let integrity = |message: &'static str| port_error(ActionErrorCode::Integrity, message);
+    let rows = rows_for(w, actor);
+    let mut vaults = Map::new();
+    if let Some(economy) = w.module_state::<mush_economy::EconomyStore>() {
+        let snapshot = economy.snapshot();
+        for (quote, row_val) in &rows {
+            if let Ok(row) = serde_json::from_value::<ReportRow>(row_val.clone())
+                && row.receipt.buyer == actor
+            {
+                let stamp = snapshot.vault(VaultId(row.receipt.destination)).map(|v| {
+                    json!({
+                        "owner": v.owner,
+                        "scope": v.scope,
+                        "status": v.status,
+                        "revision": v.revision,
+                    })
+                });
+                vaults.insert(quote.clone(), json!(stamp));
+            }
+        }
+    }
+    let payload = json!({
+        "actor": actor.0,
+        "rows": Value::Object(rows),
+        "vaults": Value::Object(vaults),
+    });
+    let hash = CanonicalHash::for_canonical_value("tacsim.law_report_world.v1", 1, &payload, 32768)
+        .map_err(|_| integrity("the report's revision digest could not be encoded"))?;
+    let hex = hash.to_hex();
+    let prefix = hex
+        .get(..16)
+        .ok_or_else(|| integrity("the report's revision digest is malformed"))?;
+    u64::from_str_radix(prefix, 16)
+        .map_err(|_| integrity("the report's revision digest is malformed"))
+}
+
+struct LawReportValidator;
+
+impl RevisionValidator for LawReportValidator {
+    fn current_generation(
+        &self,
+        ctx: &RevisionValidatorContext<'_>,
+        key: &RevisionKey,
+    ) -> Result<Option<u64>, mush_core::ActionError> {
+        let SubjectKey::Object { id: actor } = key.subject else {
+            return Ok(None);
+        };
+        if key.facet.is_some() {
+            return Ok(None);
+        }
+        report_generation(ctx.world(), actor).map(Some)
+    }
 }
 
 impl ActionProvider for ReportProvider {
@@ -531,9 +647,14 @@ impl ActionProvider for ReportProvider {
             .registry
             .definitions()
             .ok_or_else(|| integrity("the report's definition registry is unavailable"))?;
+        let revisions = RevisionSet::from_stamps([RevisionStamp {
+            key: report_revision_key(query.actor())?,
+            generation: report_generation(&engine.world, query.actor())?,
+        }])
+        .map_err(|_| integrity("the report's revision guard is invalid"))?;
         let mut guards = engine
             .registry
-            .server_guard_set_builder(RevisionSet::default())
+            .server_guard_set_builder(revisions)
             .map_err(|_| integrity("the report's guard registry is unavailable"))?;
         guards
             .add_definition(action.clone(), definitions)
@@ -581,7 +702,7 @@ impl ActionProvider for ReportProvider {
             .ok_or_else(invalid)?;
         let actor = invocation.actor();
         let r = &row.receipt;
-        if r.other(actor).is_none() {
+        if r.other(actor).is_none() || !r.other_lacked(actor) {
             return Err(port_error(
                 ActionErrorCode::Unauthorized,
                 "that sale is not yours to report",
@@ -589,10 +710,11 @@ impl ActionProvider for ReportProvider {
         }
         let refused =
             |message: &'static str| port_error(ActionErrorCode::ProviderRejected, message);
-        if txn
-            .get(&self.reports, &quote)
-            .map_err(|_| port_error(ActionErrorCode::Integrity, "the reports are unavailable"))?
-            .is_some()
+        if r.reported
+            || txn
+                .get(&self.reports, &quote)
+                .map_err(|_| port_error(ActionErrorCode::Integrity, "the reports are unavailable"))?
+                .is_some()
         {
             return Err(refused("that sale has already been reported"));
         }
@@ -600,6 +722,9 @@ impl ActionProvider for ReportProvider {
         let handed = if r.buyer == actor {
             let into = EndpointRef(VaultId(row.into.ok_or_else(invalid)?));
             let from = EndpointRef(VaultId(r.destination));
+            if from == into {
+                return Err(invalid());
+            }
             match r.lot {
                 Some(lot) => {
                     self.inventory
@@ -607,6 +732,9 @@ impl ActionProvider for ReportProvider {
                         .map_err(|_| refused("you no longer hold the goods you bought"))?;
                 }
                 None => {
+                    if r.units == 0 {
+                        return Err(invalid());
+                    }
                     let taken = self
                         .inventory
                         .seize(txn, from, &r.good, r.units, &[], Some(into))
@@ -752,7 +880,7 @@ fn apply(ctx: &mut Ctx<'_>, row: &ReportLanded, r: &SaleReceipt) {
             paid: false,
         }),
     };
-    if !crate::offense::record_offense(ctx, key, offense, |_, row| row.debt.is_some()) {
+    if !crate::offense::record_offense(ctx, key, offense, crate::offense::is_settled) {
         return;
     }
     let entry = mush_market::MarketId::new(r.venue.as_str())
@@ -838,6 +966,12 @@ pub(crate) fn register(
             }
         },
         |value: &ReportLanded| serde_json::to_value(value).map_err(|e| e.to_string()),
+    )?;
+    reg.revision_validator(
+        RevisionKind::new(
+            CanonicalId::new(REPORT_REVISION).map_err(|e| ModError::msg(e.to_string()))?,
+        ),
+        LawReportValidator,
     )?;
     let action = match (actions.get(REPORT_ACTION), inventory) {
         (Some(action), Some(inventory)) => {

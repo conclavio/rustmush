@@ -268,6 +268,11 @@ pub fn admit(
         if is_storefront(w, vault) {
             return Some(Err(line(FACILITY_STOREFRONT)));
         }
+        if crate::port::voyage::goods_pending_aboard(w, EndpointRef(vault)).is_some()
+            || crate::port::buyout::open_bid_into(w, vault)
+        {
+            return Some(Err(line(FACILITY_BUSY)));
+        }
         match laden(ctx, vault) {
             Some(false) => {}
             Some(true) => return Some(Err(line(FACILITY_STORES_LADEN))),

@@ -115,6 +115,7 @@ fn s2_ceres_to_stickney_opens_and_closes() {
     let ceres = host(&rig, "ceres_port");
     let stickney = host(&rig, "stickney_port");
     let v = voyage(&rig.tw, hull).expect("the sailing plan");
+    let t = ticket(&mut rig.tw, hull, 1).expect("the departure ticket");
     assert_eq!(
         v.departed,
         Some(Departed {
@@ -125,6 +126,8 @@ fn s2_ceres_to_stickney_opens_and_closes() {
             from: CanonicalId::new("ceres_port").expect("an entry"),
             // Doc 50 cut KC.2 (Q-50-10): and the picket's terms pinned at filing.
             terms: tacsim::space::duty::live_terms(rig.tw.world()),
+            burn_t: Some(t.plan.burn_t),
+            crew_days: Some(t.plan.crew_days),
         }),
         "the launch records the departure (V5)"
     );

@@ -2338,3 +2338,280 @@ fn ext_p2_9_withdrawn_exact_lot_survives_reboot_and_delayed_release_without_stra
         "sweep must emit KV Del for market:withdrawn:{id} once Gone: {prune_ops:?}"
     );
 }
+
+/// **P2-TSW-3**: `sell_into_bid` and `bid_take` re-verify that `listing.seller` still controls
+/// the bid's receiving vault so a bid targeting a re-homed hold or facility stores vault cannot
+/// inject cargo into the new owner's vault after `+hull/sell` or `+coop/release`.
+#[test]
+fn p2_tsw_3_sell_into_bid_refuses_when_bidder_lost_vault_control() {
+    let mut r = rig();
+    let (sal, bea, cy) = (r.sal, r.bea, r.cy);
+    seed_pool(&mut r.tw, &r.families, sal.vault, "iron", 5, LotId(0x9301));
+
+    let said = ok(
+        &mut r.tw,
+        bea.who,
+        &format!(
+            "+market/bid ex1a:iron qty=5 price=500 into={} market=luna",
+            bea.vault.vault().0
+        ),
+    );
+    let bid = listed_id(&said, "Bid #");
+
+    // Re-home Bea's vault to Cy (simulating +hull/sell or +coop/release).
+    {
+        let engine = r.tw.engine_mut();
+        let mut out = mush_core::Outbox::new();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: Default::default(),
+            args: Default::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(mush_market::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(mush_economy::rehome_vault(
+            &mut ctx,
+            bea.vault.vault(),
+            PrincipalId::Object(cy.who),
+            None,
+            smol_str::SmolStr::new("Rehomed Hold"),
+        ));
+    }
+
+    // Both `=all` preview (`bid_take`) and sale (`sell_into_bid`) must refuse with `BIDDER_NOT_BUYING`.
+    let preview = err(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/sell {bid}=all from={}", sal.vault.vault().0),
+    );
+    assert!(
+        preview.contains(mush_market::seller::BIDDER_NOT_BUYING),
+        "bid_take must refuse re-homed bid vault: {preview}"
+    );
+
+    let sold = err(
+        &mut r.tw,
+        sal.who,
+        &format!("+market/sell {bid}=1 from={}", sal.vault.vault().0),
+    );
+    assert!(
+        sold.contains(mush_market::seller::BIDDER_NOT_BUYING),
+        "sell_into_bid must refuse re-homed bid vault: {sold}"
+    );
+    assert!(
+        r.tw.engine_mut().take_authoritative_submit().is_none(),
+        "nothing queued"
+    );
+    assert_eq!(pool(&mut r.tw, &r.families, sal.vault, "iron"), 5);
+    assert_eq!(pool(&mut r.tw, &r.families, bea.vault, "iron"), 0);
+}
+
+/// **P2-MOD-30**: `trade::accept_at` re-checks `ProceedsPolicy::may_trade` so a buyer who became
+/// trade-restricted or lost papers after receiving a quote cannot still execute a public purchase,
+/// while a private offer remains unaffected.
+#[test]
+fn p2_mod_30_accept_at_rechecks_law_of_trade_after_quote() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Debug)]
+    struct ToggleLaw(Arc<AtomicBool>);
+
+    const DENIED: &str = "Trade law now refuses this buyer on the public board.";
+
+    impl mush_market::ProceedsPolicy for ToggleLaw {
+        fn proceeds(
+            &self,
+            _w: &mush_core::World,
+            _terms: &mush_market::SaleTerms<'_>,
+        ) -> Result<mush_market::Proceeds, mush_market::ProceedsRefusal> {
+            Ok(mush_market::Proceeds::default())
+        }
+
+        fn may_trade(
+            &self,
+            _w: &mush_core::World,
+            _trader: &PrincipalId,
+            _market: &mush_market::MarketId,
+            _commodity: &mush_core::CanonicalId,
+        ) -> Result<(), mush_market::ProceedsRefusal> {
+            if self.0.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(mush_market::ProceedsRefusal {
+                    line: DENIED.to_owned(),
+                })
+            }
+        }
+    }
+
+    let allowed = Arc::new(AtomicBool::new(true));
+    let cell: InventoryHandleCell = Arc::default();
+    let facts: Vec<Arc<dyn FactProvider>> = vec![
+        Arc::new(MarketFactProvider),
+        Arc::new(InventoryFactProvider),
+    ];
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::new()
+                .with_party_caps(vec![(
+                    PrincipalId::Organization(VENDOR_ORG),
+                    PartyCap::Accept,
+                )])
+                .with_observers(vec![Arc::new(mush_market::MarketObserver)])
+                .with_dispute_guard(Arc::new(mush_market::SaleDisputeGuard))
+                .with_standing_acceptance(Arc::new(ListingAcceptance))
+                .with_facts(facts),
+        ),
+        Box::new(
+            InventoryModule::new()
+                .with_quantity_delegates(["market"])
+                .with_handle_cell(Arc::clone(&cell)),
+        ),
+        Box::new(
+            mush_market::MarketModule::new()
+                .with_inventory(Arc::clone(&cell))
+                .with_catalog_sources(vec![Arc::new(TestCatalog)])
+                .with_proceeds_policy(Arc::new(ToggleLaw(Arc::clone(&allowed)))),
+        ),
+    ]);
+    let families = tw
+        .world()
+        .module_state::<InventoryHandles>()
+        .expect("inventory handles")
+        .0
+        .clone();
+    tw.engine_mut().set_offer_keys(
+        mush_core::OfferKeyRing::new(
+            mush_core::OfferSecret::new(1, [0x41; 32]).expect("secret"),
+            [],
+        )
+        .expect("ring"),
+    );
+    tw.set_now(T0);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@instrument/register {CREDIT}=2 display=cr:suffix"),
+    );
+    ok(&mut tw, GOD, &format!("@account/system faucet={CREDIT}"));
+    let faucet = economy(&tw)
+        .snapshot()
+        .accounts()
+        .find(|a| matches!(a.owner, PrincipalId::System(_)))
+        .expect("faucet")
+        .id;
+    ok(&mut tw, GOD, "@org/create Ares");
+    let shop = PrincipalId::Organization(VENDOR_ORG);
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:#{}={CREDIT}", VENDOR_ORG.0),
+    );
+    let shop_box = tw
+        .world_mut()
+        .create(ObjKind::Thing, "Shop crate", GOD, None)
+        .expect("crate");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@vault/create Shop=container:#{} owner=org:#{}",
+            shop_box.0, VENDOR_ORG.0
+        ),
+    );
+    let shop_vault = economy(&tw)
+        .snapshot()
+        .vaults()
+        .find(|v| v.owner == shop)
+        .expect("shop vault")
+        .id;
+    ok(&mut tw, GOD, &format!("@market/catalog load {PACK}"));
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@market/vendor create #{}=#{} name=Ares market=luna",
+            VENDOR_ORG.0, shop_vault.0
+        ),
+    );
+
+    let sal = trader(&mut tw, "Sal", faucet);
+    let bea = trader(&mut tw, "Bea", faucet);
+    let public_lot = LotId(0x9401);
+    let private_lot = LotId(0x9402);
+    mint_lot(&mut tw, &families, sal.vault, "iron", 2, public_lot);
+    mint_lot(&mut tw, &families, sal.vault, "iron", 2, private_lot);
+
+    let pub_out = ok(
+        &mut tw,
+        sal.who,
+        &format!("+market/post {public_lot} price=500 market=luna"),
+    );
+    let pub_listing = listed_id(&pub_out, "Listed for sale as #");
+    let pub_hold = take(&mut tw);
+    land_submit(&mut tw, &pub_hold, 0xb1).expect("public hold");
+
+    let priv_out = ok(
+        &mut tw,
+        sal.who,
+        &format!("+market/post {private_lot} price=500 market=luna to=Bea"),
+    );
+    let priv_listing = listed_id(&priv_out, "Listed for sale as #");
+    let priv_hold = take(&mut tw);
+    land_submit(&mut tw, &priv_hold, 0xb2).expect("private hold");
+
+    // While allowed, Bea obtains remote quotes on both the public and private asks.
+    let pub_quote_out = ok(
+        &mut tw,
+        bea.who,
+        &format!("+market/quote {pub_listing}=2 remote"),
+    );
+    let pub_quote = QuoteId(listed_id(&pub_quote_out, "Quote #").0);
+    let priv_quote_out = ok(
+        &mut tw,
+        bea.who,
+        &format!("+market/quote {priv_listing}=2 remote"),
+    );
+    let priv_quote = QuoteId(listed_id(&priv_quote_out, "Quote #").0);
+
+    // Buyer becomes sanctioned/restricted before accepting!
+    allowed.store(false, Ordering::SeqCst);
+    let held_before = held(&tw, bea.account);
+    let refused = err(
+        &mut tw,
+        bea.who,
+        &format!("+market/accept {pub_quote}={}", bea.vault.vault().0),
+    );
+    assert!(
+        refused.contains(DENIED),
+        "accept_at must re-check law_of_trade for public quotes: {refused}"
+    );
+    assert!(
+        market(&tw)
+            .quote(pub_quote)
+            .is_some_and(|q| q.contract.is_none()),
+        "no contract offered when trade law refuses at accept"
+    );
+    assert_eq!(held(&tw, bea.account), held_before, "nothing escrowed");
+    assert!(
+        tw.engine_mut().take_authoritative_submit().is_none(),
+        "no lot action staged"
+    );
+
+    // Private offer still accepts despite public board restriction.
+    let accepted = ok(
+        &mut tw,
+        bea.who,
+        &format!("+market/accept {priv_quote}={}", bea.vault.vault().0),
+    );
+    assert!(
+        market(&tw)
+            .quote(priv_quote)
+            .is_some_and(|q| q.contract.is_some()),
+        "private offer must still be accepted: {accepted}"
+    );
+}

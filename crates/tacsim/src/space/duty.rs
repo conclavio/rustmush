@@ -241,11 +241,51 @@ pub enum DutyOutcome {
     Owed(u64),
 }
 
-/// **Levy the transit duty on `hull`, owed by `debtor`** (Q-50-6, Q-50-54): under the hull's
-/// terms ([`hull_terms`]), open a debt to the payee due in 28 IC days and pay it at once when
-/// the debtor's account covers it beyond `reserve_minor` (doc 50b: a contraband fine found on the
-/// same crossing, which is settled first). `None` when no duty is owed, or when the debtor or the
-/// payee has no account (logged).
+/// **Resolve the debit account and acting principal for a hull's transit duty or customs fine
+/// debt** (`P2-TSW-5`):
+/// 1. A hauling house's hull pays from the house's own account (acted by its helm Thing).
+/// 2. An organization's commissioned hull (`answerer_for_hull == Offender::Organization(org)`)
+///    pays from the organization's own account (acted with staff authority `GOD`, matching
+///    `surface/security.rs`), aligning `Obligation.debtor` with `OffenseKey.offender`.
+/// 3. Any other hull (or an organization without a credit account) falls back to `debtor`'s own
+///    account.
+fn resolve_duty_account(w: &World, hull: ObjId, debtor: ObjId) -> Option<(AccountId, ObjId)> {
+    if let Some(account) = crate::port::hauler::house_account_of_helm(w, debtor) {
+        return Some((account, debtor));
+    }
+    if let Some(crate::offense::Offender::Organization(org)) =
+        crate::offense::answerer_for_hull(w, hull)
+        && let Some(account) = crate::port::berth::org_account(w, org)
+    {
+        return Some((account, mush_core::GOD));
+    }
+    crate::port::credit::own_account(w, debtor).map(|a| (a.id, debtor))
+}
+
+/// Resolve the [`crate::offense::Offender`] matching the actual debtor of obligation `debt`,
+/// falling back to [`crate::offense::answerer_for_hull`] (`P2-TSW-5`).
+fn offender_of_debt(w: &World, hull: ObjId, debt: Option<u64>) -> Option<crate::offense::Offender> {
+    debt.and_then(|id| {
+        w.module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| {
+                e.snapshot()
+                    .obligation(mush_economy::ObligationId(id))
+                    .map(|o| o.debtor.clone())
+            })
+            .and_then(|principal| match principal {
+                PrincipalId::Object(who) => Some(crate::offense::Offender::Character(who)),
+                PrincipalId::Organization(org) => Some(crate::offense::Offender::Organization(org)),
+                PrincipalId::System(_) => None,
+            })
+    })
+    .or_else(|| crate::offense::answerer_for_hull(w, hull))
+}
+
+/// **Levy the transit duty on `hull`, owed by `debtor`** (Q-50-6, Q-50-54, `P2-TSW-5`): under the
+/// hull's terms ([`hull_terms`]), open a debt to the payee due in 28 IC days and pay it at once
+/// when the debtor's account covers it beyond `reserve_minor` (doc 50b: a contraband fine found on
+/// the same crossing, which is settled first when drawn from the same account). `None` when no
+/// duty is owed, or when the debtor or the payee has no account (logged).
 pub fn levy_transit_duty(
     ctx: &mut Ctx<'_>,
     hull: ObjId,
@@ -258,19 +298,28 @@ pub fn levy_transit_duty(
         tracing::warn!(payee = %quote.payee, "tacsim: the transit duty has no payee account; nothing is levied");
         return None;
     };
-    // Doc 50 cut OP.4 (Q-50-56): a hauling house's hull pays from the house's own account.
-    let account = crate::port::hauler::house_account_of_helm(ctx.w, debtor)
-        .or_else(|| crate::port::credit::own_account(ctx.w, debtor).map(|a| a.id));
-    let Some(account) = account else {
+    let Some((account, acting)) = resolve_duty_account(ctx.w, hull, debtor) else {
         tracing::warn!(
             debtor = debtor.0,
             "tacsim: the transit duty meets a debtor with no account"
         );
         return None;
     };
+    // Only withhold `reserve_minor` when the contraband fine draws from the same account.
+    let effective_reserve = if super::picket::fine_account(ctx.w, debtor) == Some(account) {
+        reserve_minor
+    } else {
+        0
+    };
     let saved = ctx.actor;
-    ctx.actor = debtor;
-    let outcome = open_and_pay(ctx, account, payee_account, quote.duty_minor, reserve_minor);
+    ctx.actor = acting;
+    let outcome = open_and_pay(
+        ctx,
+        account,
+        payee_account,
+        quote.duty_minor,
+        effective_reserve,
+    );
     ctx.actor = saved;
     ctx.out.pin_deferred();
     outcome.map(|o| (quote, o))
@@ -306,9 +355,10 @@ pub fn levy_once(
     Some(levied)
 }
 
-/// **An owed duty on the hull's record** (doc 50b; Q-50-54): an offense row of the payee's polity
-/// against whoever answers for the hull, carrying the duty's debt, so once the debt is past its
-/// grace the departure hold and the trade restriction read it as they read a fine.
+/// **An owed duty on the hull's record** (doc 50b; Q-50-54, `P2-TSW-4`, `P2-TSW-5`): an offense
+/// row of the payee's polity against the debt's actual debtor principal (aligned with
+/// `Obligation.debtor`), carrying the duty's debt, so once the debt is past its grace the
+/// departure hold and the trade restriction read it as they read a fine.
 fn record_owed_duty(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, quote: &DutyQuote, debt: u64) {
     let Some(polity) = crate::polity::lane_org_account(ctx.w, &quote.payee)
         .and_then(|(org, _)| crate::polity::polity_of_org(ctx.w, org))
@@ -316,7 +366,7 @@ fn record_owed_duty(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, quote: &DutyQuo
         tracing::warn!(payee = %quote.payee, "tacsim: an owed duty's payee answers to no polity; no record is kept");
         return;
     };
-    let Some(offender) = crate::offense::answerer_for_hull(ctx.w, hull) else {
+    let Some(offender) = offender_of_debt(ctx.w, hull, Some(debt)) else {
         return;
     };
     let at_ic = ctx.w.world_ic_now().at;
@@ -333,16 +383,97 @@ fn record_owed_duty(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32, quote: &DutyQuo
         payout: None,
     };
     let key = crate::offense::OffenseKey { offender, polity };
-    let _ = crate::offense::record_offense(ctx, key, offense, |_, row| row.debt.is_some());
+    let _ = crate::offense::record_offense(ctx, key, offense, crate::offense::is_settled);
 }
 
-fn open_and_pay(
+/// **Fail-closed contraband enforcement when an unattended fine cannot be collected or an
+/// unattended customs ruling/seizure lapses** (`P2-TSW-7`): opens a one-term fine debt on the
+/// hull's accountable principal (paying it immediately if covered) and records a proven
+/// [`crate::offense::OffenseKind::UnlicensedPossession`] offense carrying that debt (or `None`
+/// if no account exists, so docking security fines it), plus standing loss. Never clears
+/// silently. Answers whether an offense row or debt was recorded.
+pub(crate) fn record_uncollected_contraband(
+    ctx: &mut Ctx<'_>,
+    hull: ObjId,
+    principal: ObjId,
+    unlicensed_kg: u64,
+    explicit_fine_minor: Option<i64>,
+) -> bool {
+    let Some((org, _, payee_account)) = fine_payee(ctx.w, hull) else {
+        tracing::warn!(
+            hull = hull.0,
+            "tacsim: uncollected contraband has no payee; cannot record debt"
+        );
+        return false;
+    };
+    let Some(polity) = crate::polity::polity_of_org(ctx.w, org) else {
+        tracing::warn!(
+            hull = hull.0,
+            org = org.0,
+            "tacsim: uncollected contraband payee has no polity; cannot record offense"
+        );
+        return false;
+    };
+    let fine_minor = explicit_fine_minor
+        .filter(|&m| m > 0)
+        .or_else(|| super::picket::customs_fine_minor(ctx.w, unlicensed_kg));
+    let debt = fine_minor.and_then(|minor| {
+        let (account, acting) = resolve_duty_account(ctx.w, hull, principal)?;
+        let saved = ctx.actor;
+        ctx.actor = acting;
+        let opened = open_and_pay_with_id(ctx, account, payee_account, minor, 0);
+        ctx.actor = saved;
+        ctx.out.pin_deferred();
+        opened.map(|(id, _)| id)
+    });
+    let offender = offender_of_debt(ctx.w, hull, debt)
+        .unwrap_or(crate::offense::Offender::Character(principal));
+    let entry =
+        crate::polity::picket_place(ctx.w).or_else(|| CanonicalId::new("kirkwood_depot").ok());
+    let good = CanonicalId::new("strategic_ore").ok();
+    let (Some(entry), Some(good)) = (entry, good) else {
+        return debt.is_some();
+    };
+    let units = unlicensed_kg.div_ceil(1_000).max(1);
+    let at_ic = ctx.w.world_ic_now().at;
+    let offense = crate::offense::ProvenOffense {
+        kind: crate::offense::OffenseKind::UnlicensedPossession,
+        evidence: crate::offense::Evidence::Audit {
+            hull,
+            entry,
+            good,
+            units,
+            at_ic,
+        },
+        proof: crate::offense::Proof::Audit,
+        proven_ic: at_ic,
+        debt,
+        payout: None,
+    };
+    let key = crate::offense::OffenseKey { offender, polity };
+    let recorded = crate::offense::record_offense(ctx, key, offense, crate::offense::is_settled);
+    if recorded {
+        crate::port::record::lose_standing(ctx, &key, |row| {
+            matches!(
+                &row.evidence,
+                crate::offense::Evidence::Audit {
+                    hull: h,
+                    at_ic: t,
+                    ..
+                } if *h == hull && *t == at_ic
+            )
+        });
+    }
+    recorded || debt.is_some()
+}
+
+fn open_and_pay_with_id(
     ctx: &mut Ctx<'_>,
     from: AccountId,
     to: AccountId,
     minor: i64,
     reserve_minor: i64,
-) -> Option<DutyOutcome> {
+) -> Option<(u64, bool)> {
     use crate::surface::retrieval::{DEBT_NAMESPACE, debt_due};
     let due = debt_due(ctx.w);
     let id = match mush_economy::create_debt_due(
@@ -368,10 +499,21 @@ fn open_and_pay(
             mush_economy::pay_debt(ctx, id, DEBT_NAMESPACE),
             Ok(mush_economy::PostOutcome::Posted(_))
         );
+    Some((id.0, paid))
+}
+
+fn open_and_pay(
+    ctx: &mut Ctx<'_>,
+    from: AccountId,
+    to: AccountId,
+    minor: i64,
+    reserve_minor: i64,
+) -> Option<DutyOutcome> {
+    let (id, paid) = open_and_pay_with_id(ctx, from, to, minor, reserve_minor)?;
     Some(if paid {
         DutyOutcome::Paid
     } else {
-        DutyOutcome::Owed(id.0)
+        DutyOutcome::Owed(id)
     })
 }
 
@@ -428,10 +570,48 @@ pub fn assess_absent(ctx: &mut Ctx<'_>, hull: ObjId, cursor: u32) -> Option<Stri
                 ABSENT_PICKET.to_owned(),
                 crate::port::coop::name_of(ctx.w, hull),
             );
-            match super::customs::file_ruling_as(ctx, debtor, hull, debtor, finding, names, 0) {
+            match super::customs::file_ruling_as(
+                ctx,
+                debtor,
+                hull,
+                debtor,
+                finding.clone(),
+                names,
+                0,
+            ) {
                 Ok(seq) => super::customs::mark_unattended(ctx, hull, seq),
                 Err(error) => {
-                    tracing::warn!(hull = hull.0, %error, "tacsim: an absent hull's customs ruling was not filed");
+                    tracing::warn!(hull = hull.0, %error, "tacsim: an absent hull's customs ruling was not filed; recording contraband offense fail-closed");
+                    // P2-TSW-7: never fail open on an absent contraband crossing when the
+                    // authoritative ruling queue rejects or is busy.
+                    match finding {
+                        super::customs::CustomsFinding::Fined {
+                            unlicensed_strategic_ore_kg,
+                            fine_minor,
+                        } => {
+                            let _ = record_uncollected_contraband(
+                                ctx,
+                                hull,
+                                debtor,
+                                unlicensed_strategic_ore_kg,
+                                Some(fine_minor),
+                            );
+                        }
+                        super::customs::CustomsFinding::Seized {
+                            unlicensed_strategic_ore_kg,
+                            ..
+                        } => {
+                            let _ = record_uncollected_contraband(
+                                ctx,
+                                hull,
+                                debtor,
+                                unlicensed_strategic_ore_kg,
+                                None,
+                            );
+                        }
+                        super::customs::CustomsFinding::Cleared { .. }
+                        | super::customs::CustomsFinding::Ran => {}
+                    }
                 }
             }
             (Some(found), reserve)

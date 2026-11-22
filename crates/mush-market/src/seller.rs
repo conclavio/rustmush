@@ -744,7 +744,9 @@ pub fn post_bid(ctx: &mut Ctx<'_>, spec: PersonalBid) -> Result<ListingId, Marke
     let Ok(commodity) = mush_core::CanonicalId::new(spec.catalog.code.as_str()) else {
         return Err(MarketError::bad("That catalog code is not a commodity id."));
     };
-    if !mush_inventory::may_take(ctx.w, actor, spec.into) {
+    if !mush_inventory::may_take(ctx.w, actor, spec.into)
+        || !bidder_holds_vault(ctx.w, &spec.bidder, spec.into.vault())
+    {
         return Err(MarketError::NoStanding(NO_SUCH_VAULT));
     }
     if spec.price.minor() <= 0 {
@@ -939,6 +941,58 @@ pub fn bid_funds(w: &World, listing: &Listing, quantity: u64) -> bool {
     w.module_state::<EconomyStore>()
         .and_then(|s| s.snapshot().hold(escrow).cloned())
         .is_some_and(|h| h.status.is_held() && h.account == account && h.amount >= need)
+}
+
+/// **Whether `bidder` still holds live control of `vault`** (P2-TSW-3, P2-TSW-9): the vault
+/// exists, is [`mush_economy::VaultStatus::Active`], and either belongs directly to `bidder`
+/// (never via a staff wildcard over a re-homed personal vault) or is an active org-scoped vault
+/// where the bidder character still holds `vault.withdraw`.
+#[must_use]
+pub fn bidder_holds_vault(w: &World, bidder: &PrincipalId, vault: mush_economy::VaultId) -> bool {
+    let Some(record) = w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().vault(vault))
+    else {
+        return false;
+    };
+    if record.status != mush_economy::VaultStatus::Active {
+        return false;
+    }
+    if &record.owner == bidder {
+        return true;
+    }
+    let (PrincipalId::Object(actor), PrincipalId::Organization(org), Some(scope)) =
+        (bidder, &record.owner, record.scope)
+    else {
+        return false;
+    };
+    let Some(org_store) = w.module_state::<mush_org::OrgStore>() else {
+        return false;
+    };
+    let state = org_store.state();
+    if state
+        .org(*org)
+        .is_none_or(|o| o.status != mush_org::OrgStatus::Active)
+        || state
+            .scope(scope)
+            .is_none_or(|s| s.org != *org || s.status != mush_org::ScopeStatus::Active)
+    {
+        return false;
+    }
+    let Some(capability) = mush_org::CapabilityId::new("vault.withdraw") else {
+        return false;
+    };
+    mush_org::authorize_in_world(
+        w,
+        &mush_org::AuthRequest {
+            actor: *actor,
+            capability,
+            scope,
+            now: w.now(),
+            amount: None,
+        },
+    )
+    .is_allow()
 }
 
 // ---- withdrawal --------------------------------------------------------------------
