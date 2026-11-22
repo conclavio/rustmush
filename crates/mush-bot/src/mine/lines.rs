@@ -50,9 +50,17 @@ pub const TRANSIENT_TAILS: [&str; 2] = ["please retry in a moment.", "please try
 /// lane answers its own line — the command's filed sentence may stand above
 /// it, but nothing was queued (CI run 41503257303: a `+tv/1 recover go` the
 /// tick's own submission had pushed back, never typed again).
-pub const ENGINE_BUSY: [&str; 2] = [
+///
+/// The third is the same back-pressure, refused one step earlier by the module that would
+/// queue the line (`tacsim::detachment::sortie::runtime::enqueue`, `planning`, `activation`,
+/// `crew`; `mush_sim::physical`): the actor has a submission queued, a commit is in flight or
+/// the queue is full, so nothing was queued. A `+sortie/refresh` typed while the launch's own
+/// submission was still landing drew it and was never typed again, which failed the
+/// detachment mining story now and then (`docs/flaky-tests.md`).
+pub const ENGINE_BUSY: [&str; 3] = [
     "Your earlier action is still committing; try again in a moment.",
     "Too many actions are committing right now; try again in a moment.",
+    "An authoritative request is already pending.",
 ];
 
 /// **A line the world refused as transient**: it ends with one of
@@ -1152,6 +1160,8 @@ mod tests {
             // The engine's back-pressure (`drain_authoritative_submit`).
             "Your earlier action is still committing; try again in a moment.",
             "Too many actions are committing right now; try again in a moment.",
+            // The same back-pressure from the module that would queue the line.
+            "An authoritative request is already pending.",
         ] {
             assert!(is_transient(refusal), "{refusal}");
         }
