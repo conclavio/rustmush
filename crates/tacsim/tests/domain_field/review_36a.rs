@@ -919,3 +919,273 @@ fn p2_2_a_crate_the_hopper_cannot_take_is_refused_and_the_landholder_is_named() 
         "the crate is still on the ground"
     );
 }
+
+/// **P2-TSW-1**:
+/// 1. Dropping an uncommitted `ClaimOrder::File` must NOT send IC mail and must clean up the
+///    orphaned unattached economy contract on the next surface tick.
+/// 2. A stale/expired unattached economy salvage contract must be closed and replaced with a fresh
+///    full-window contract instead of copying an expired `window_end` into a zero-second claim.
+/// 3. Once `ClaimOrder::File` commits, `claim::tick` delivers the deferred IC mail exactly once.
+/// 4. If the actor already has an authoritative submission pending (`authoritative_pending`),
+///    `+salvage/claim <hull> go` rejects upfront without creating an economy contract.
+#[test]
+fn p2_tsw_1_stale_unattached_contract_replaced_and_claim_mail_deferred() {
+    use std::sync::{Arc, Mutex};
+
+    let mut stage = Stage::build();
+    let (o, t, far) = (stage.o, stage.t, stage.far);
+    stage.attach(far);
+    stage.load(far);
+
+    let posted: Arc<Mutex<Vec<Vec<ObjId>>>> = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&posted);
+    assert!(tacsim::surface::claim::install_claim_mail(
+        stage.rig.tw.world_mut(),
+        Arc::new(move |_ctx, _from, to, _subject, _body| {
+            log.lock().expect("mail log").push(to.to_vec());
+            Ok(())
+        }),
+    ));
+
+    // (1) Uncommitted ClaimOrder::File: mail is NOT delivered before commit, and if the submission
+    //     never commits, the next surface tick discards the notice and closes the orphaned
+    //     economy contract.
+    let (out, queued) = command(&mut stage.rig, o, &format!("+salvage/claim #{} go", far.0));
+    assert!(out.contains("You file a salvage claim"), "{out}");
+    assert_eq!(queued.len(), 1, "one ClaimOrder::File queued");
+    assert!(
+        posted.lock().expect("mail log").is_empty(),
+        "IC mail must be deferred until ClaimOrder::File commits"
+    );
+    assert!(
+        mush_economy::live_salvage_claim(stage.rig.tw.world(), o, far).is_some(),
+        "economy contract was opened for the filing"
+    );
+    // Drop `queued` without landing it; next surface tick sees ClaimSeam::Owed with no pending
+    // submission, drops the mail, and closes the orphaned unattached economy contract.
+    let _ = second(&mut stage.rig);
+    assert!(
+        posted.lock().expect("mail log").is_empty(),
+        "uncommitted filing must never spam IC mail"
+    );
+    assert!(
+        mush_economy::live_salvage_claim(stage.rig.tw.world(), o, far).is_none(),
+        "orphaned unattached economy contract must be closed after dropped filing"
+    );
+
+    // (2) Stale/expired unattached economy contract: even if an unattached contract exists and
+    //     time advances past its deadline, `+salvage/claim <hull> go` closes & recreates it with
+    //     a fresh full contest window instead of copying the expired `window_end`.
+    let stale_id = crate::driving_rig::staff_hand(&mut stage.rig, |ctx| {
+        let remainder = tacsim::port::credit::own_account(ctx.w, o)
+            .expect("O's account")
+            .id;
+        mush_economy::file_salvage_claim(
+            ctx,
+            mush_economy::SalvageClaimSpec {
+                name: smol_str::SmolStr::new("Stale salvage claim"),
+                claimant: o,
+                hull: far,
+                audience: vec![PrincipalId::Object(t)],
+                window_secs: WINDOW,
+                remainder_to: remainder,
+            },
+        )
+        .expect("stale unattached contract")
+    });
+    let expired_at = stage.rig.tw.world().now() + WINDOW + 120;
+    stage.rig.tw.set_now(expired_at);
+
+    // (4) While `o` already has an authoritative submission pending in the engine queue,
+    //     `+salvage/claim` rejects upfront without touching the stale contract or opening a new
+    //     one.
+    let inspected = run(
+        &mut stage.rig.tw,
+        o,
+        &format!("+salvage/inspect #{}", far.0),
+    );
+    assert!(
+        inspected.contains("black box"),
+        "inspect queued an authoritative submission: {inspected}"
+    );
+    let blocked = run(
+        &mut stage.rig.tw,
+        o,
+        &format!("+salvage/claim #{} go", far.0),
+    );
+    assert!(
+        !blocked.contains("You file a salvage claim"),
+        "pending authoritative submission must block claim_cmd upfront: {blocked}"
+    );
+    // Drain the inspect submission without landing it so `o` is idle again.
+    let drained = crate::driving_rig::drain(&mut stage.rig.tw);
+    assert_eq!(
+        drained.len(),
+        1,
+        "only the pending inspect submission was queued; blocked claim queued nothing"
+    );
+
+    // Now file cleanly: stale contract is replaced with a fresh full-window contract.
+    let filed_now = stage.rig.tw.world().now();
+    let out = go(&mut stage.rig, o, &format!("+salvage/claim #{} go", far.0));
+    assert!(out.contains("You file a salvage claim"), "{out}");
+    let row = custody(&mut stage.rig, far).expect("custody row");
+    let ClaimSeam::Filed { contract: fresh_id } = row.claim else {
+        panic!("expected Filed claim: {row:?}");
+    };
+    assert_ne!(
+        fresh_id, stale_id.0,
+        "stale unattached economy contract must be closed and replaced"
+    );
+    let file = row.file.as_deref().expect("claim file");
+    let remaining = file.deadline_real_s.saturating_sub(filed_now);
+    assert!(
+        remaining >= WINDOW - 60,
+        "attached claim must carry a full contest window, got remaining={remaining}s"
+    );
+
+    // (3) Next surface tick flushes the deferred IC mail once.
+    let _ = second(&mut stage.rig);
+    assert_eq!(
+        *posted.lock().expect("mail log"),
+        vec![vec![t]],
+        "committed filing delivers IC mail exactly once"
+    );
+}
+
+/// **P2-TSW-13**: filling `documented_repairs_at_risk` to `MAX_AT_RISK` (16) while a 17th
+/// completed bay repair exists on the hull must NOT wedge `claim::tick` in an infinite
+/// `ClaimOrder::AtRisk` loop ahead of `Settlement::Vacate`.
+#[test]
+fn p2_tsw_13_saturated_at_risk_tick_vacates_without_deadlock() {
+    use tacsim::port::bay_work::{BayHullState, OrderStatus};
+    use tacsim::surface::claim::MAX_AT_RISK;
+    use tacsim::surface::site_record::SiteKey;
+
+    let mut stage = Stage::build();
+    let (o, t, near, o_carrier) = (stage.o, stage.t, stage.near, stage.o_carrier);
+    stage.attach(near);
+    let _ = stage.load(near);
+
+    // Jam a component on `near`, stand O in O's carrier bay, and complete a real salvor bay
+    // unjam order BEFORE filing the claim (so its IC duration does not expire the short 10-minute
+    // test contest window), giving `at_risk_of` a fresh completed repair entry on every tick.
+    let comp_id = mush_tactics::module::unit_of(stage.rig.tw.world(), near)
+        .expect("near unit")
+        .components()
+        .next()
+        .map(|(id, _)| id.clone())
+        .expect("at least one component");
+    crate::driving_rig::staff_hand(&mut stage.rig, |ctx| {
+        let plan = mush_tactics::UnitMutationPlan::new(
+            vec![mush_tactics::UnitMutationOp::SetComponentCondition {
+                component: comp_id,
+                condition: mush_tactics::ConditionId::new("jammed").expect("jammed"),
+            }],
+            None,
+            Some(smol_str::SmolStr::new_static("test:p2-tsw-13-jam")),
+        )
+        .expect("jam plan");
+        mush_tactics::module::apply_plan(ctx, near, &plan).expect("jam applied");
+    });
+    for step in ["inner", "hold"] {
+        let _ = run(&mut stage.rig.tw, o, step);
+    }
+    let entered = run(&mut stage.rig.tw, o, "+tv/bay in");
+    assert!(entered.contains("entered vehicle bay"), "{entered}");
+    let _ = o_carrier;
+    let ordered = run(
+        &mut stage.rig.tw,
+        o,
+        &format!("+bay/order #{}=unjam", near.0),
+    );
+    assert!(ordered.contains("taken"), "bay order taken: {ordered}");
+    let due_ic = match stage
+        .rig
+        .tw
+        .world()
+        .module_state::<tacsim::TacsimStore>()
+        .and_then(|store| store.bay_hull(near))
+    {
+        Some(BayHullState::Present(bay)) => bay.order.as_ref().expect("bay order").due_ic,
+        other => panic!("expected bay order: {other:?}"),
+    };
+    let _ = crate::driving_rig::to_ic(&mut stage.rig, due_ic + 60);
+    let done = matches!(
+        stage
+            .rig
+            .tw
+            .world()
+            .module_state::<tacsim::TacsimStore>()
+            .and_then(|store| store.bay_hull(near)),
+        Some(BayHullState::Present(bay))
+            if bay.order.as_ref().is_some_and(|ord| ord.status == OrderStatus::Done)
+    );
+    assert!(done, "bay unjam order completed");
+
+    // File the salvage claim now, then replace its `documented_repairs_at_risk` with MAX_AT_RISK
+    // (16) distinct earlier entries so the completed bay unjam order above is a 17th entry past
+    // `MAX_AT_RISK`.
+    let out = go(&mut stage.rig, o, &format!("+salvage/claim #{} go", near.0));
+    assert!(out.contains("You file a salvage claim"), "{out}");
+    let row = custody(&mut stage.rig, near).expect("still in custody");
+    let ClaimSeam::Filed { contract: claim_id } = row.claim else {
+        panic!("filed: {row:?}");
+    };
+    let mut rec = record(&mut stage.rig);
+    let site_id = cid(URVARA);
+    {
+        let file = rec
+            .custody
+            .iter_mut()
+            .find(|row| row.hull == near)
+            .expect("custody")
+            .file
+            .as_deref_mut()
+            .expect("filed claim");
+        file.documented_repairs_at_risk.clear();
+        for i in 0..MAX_AT_RISK {
+            file.documented_repairs_at_risk
+                .push(tacsim::field_ops::AtRiskRepairEntry {
+                    description: smol_str::SmolStr::new(format!("prior patch #{i}")),
+                    cost_incurred: 1_000,
+                    performed_at_ic: 1_000 + i64::try_from(i).expect("small"),
+                });
+        }
+    }
+    let handles = stage
+        .rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::PortHandles>()
+        .cloned()
+        .expect("port handles");
+    crate::driving_rig::reseed_typed(
+        &mut stage.rig,
+        &handles.families.sites,
+        &SiteKey(site_id),
+        rec,
+    );
+
+    // Title owner T (who holds sensor witness evidence of the unlawful recovery on L's block)
+    // contests the claim.
+    let contested = go(
+        &mut stage.rig,
+        t,
+        &format!("+salvage/contest #{} go", near.0),
+    );
+    assert!(contested.contains("You file your contest"), "{contested}");
+
+    // Drive surface ticks: claim::tick must settle Settlement::Vacate cleanly rather than
+    // looping on a doomed 17th ClaimOrder::AtRisk.
+    assert!(
+        seconds_until(&mut stage.rig, 10, |rig| custody(rig, near).is_none()),
+        "saturated MAX_AT_RISK must not deadlock Settlement::Vacate; contract={:?}",
+        contract(&stage.rig, claim_id).state
+    );
+    assert_eq!(
+        contract(&stage.rig, claim_id).state,
+        mush_economy::ContractState::Cancelled,
+        "vacated salvage contract must settle to Cancelled"
+    );
+}

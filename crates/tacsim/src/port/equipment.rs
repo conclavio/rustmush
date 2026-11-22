@@ -6,8 +6,8 @@ use mush_org::unit_authority::reader::{
     UnitAuthorityRequest, UnitAuthorityResponse, UnitGrantDraft, UnitGrantMutation,
 };
 use mush_org::unit_authority::{
-    RecoveryPolicy, UnitCapability, UnitGrant, UnitGrantParent, UnitGrantee, UnitLeaseBinding,
-    UnitScope,
+    RecoveryPolicy, UnitCapability, UnitGrant, UnitGrantParent, UnitGrantStatus, UnitGrantee,
+    UnitLeaseBinding, UnitScope,
 };
 use mush_org::{
     CapabilityGrant, CapabilityId, GrantId, OrgAction, OrgId, OrgMutationOp, OrgMutationPlan,
@@ -139,7 +139,12 @@ fn reader(
         .ok_or_else(|| "Unit authority unavailable.".into())
 }
 
-fn loans(ctx: &Ctx<'_>, lease: &UnitLeaseBinding) -> Result<Vec<UnitGrant>, String> {
+/// Minimum real-time duration for a rig operational loan (`P2-TSW-18`).
+const MIN_LOAN_REAL_SECS: i64 = 60;
+/// Maximum real-time duration for a single rig operational loan window (`P2-TSW-18`: 30 real days).
+const MAX_LOAN_REAL_SECS: i64 = 30 * 86_400;
+
+fn all_grants(ctx: &Ctx<'_>) -> Result<Vec<UnitGrant>, String> {
     let reader = reader(ctx)?;
     let mut out = Vec::new();
     let mut after = 0;
@@ -152,7 +157,7 @@ fn loans(ctx: &Ctx<'_>, lease: &UnitLeaseBinding) -> Result<Vec<UnitGrant>, Stri
             return Err("Unit loans unavailable.".into());
         };
         let next = grants.last().map(|g| g.id.0);
-        out.extend(grants.into_iter().filter(|g|matches!(&g.parent,UnitGrantParent::LeasedOrganizationGrant{lease:bound,..} if bound==lease)));
+        out.extend(grants);
         if !more {
             return Ok(out);
         }
@@ -162,6 +167,267 @@ fn loans(ctx: &Ctx<'_>, lease: &UnitLeaseBinding) -> Result<Vec<UnitGrant>, Stri
         after = next;
     }
     Err("Unit loan history is too large.".into())
+}
+
+/// Maximum leases tracked in `TacsimStore::rig_loan_grants` (`P2-TSW-18`).
+const MAX_TRACKED_LOAN_LEASES: usize = 512;
+/// Maximum dead-lease grant revocations queued in `TacsimStore::pending_loan_revokes` (`P2-TSW-18`).
+const MAX_PENDING_LOAN_REVOKES: usize = 1_024;
+
+/// Record any active Occator rig operational loans visible to the current command caller into
+/// `TacsimStore::rig_loan_grants`, queuing dead-lease grants into `pending_loan_revokes`
+/// (`P2-TSW-18`).
+pub(crate) fn observe_actor_loans(ctx: &mut Ctx<'_>) {
+    let Some((_, organization)) = lessor_lender(ctx.w) else {
+        return;
+    };
+    let Ok(grants) = all_grants(ctx) else {
+        return;
+    };
+    let now = ctx.w.now();
+    let mut alive: Vec<(u64, u64)> = Vec::new();
+    let mut dead: Vec<u64> = Vec::new();
+    for g in grants {
+        if g.status != UnitGrantStatus::Active || g.valid_until.is_some_and(|end| now >= end) {
+            continue;
+        }
+        if let UnitGrantParent::LeasedOrganizationGrant {
+            organization: org,
+            lease: bound,
+            ..
+        } = &g.parent
+            && *org == organization
+        {
+            if lease_is_dead(ctx.w, organization, bound) {
+                dead.push(g.id.0);
+            } else {
+                alive.push((bound.contract, g.id.0));
+            }
+        }
+    }
+    let Some(store) = ctx.w.module_state_mut::<crate::TacsimStore>() else {
+        return;
+    };
+    for (lease_id, grant_id) in alive {
+        if !store.rig_loan_grants.contains_key(&lease_id)
+            && store.rig_loan_grants.len() >= MAX_TRACKED_LOAN_LEASES
+        {
+            continue;
+        }
+        let ids = store.rig_loan_grants.entry(lease_id).or_default();
+        if !ids.contains(&grant_id) && ids.len() < 8 {
+            ids.push(grant_id);
+        }
+    }
+    for grant_id in dead {
+        queue_revoke(store, grant_id);
+    }
+}
+
+fn queue_revoke(store: &mut crate::TacsimStore, grant_id: u64) {
+    if store.pending_loan_revokes.len() < MAX_PENDING_LOAN_REVOKES
+        && !store.pending_loan_revokes.contains(&grant_id)
+    {
+        store.pending_loan_revokes.push_back(grant_id);
+    }
+}
+
+fn drain_one_pending_revoke(ctx: &mut Ctx<'_>) {
+    let Some((roots, _)) = lessor_lender(ctx.w) else {
+        return;
+    };
+    if ctx.authoritative_pending(roots.agent)
+        || ctx.authoritative_commit_pending()
+        || ctx.authoritative_queue_full()
+    {
+        return;
+    }
+    let Some(next) = ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .and_then(|store| store.pending_loan_revokes.front().copied())
+    else {
+        return;
+    };
+    match submit_revoke(
+        ctx,
+        roots.agent,
+        mush_org::unit_authority::UnitGrantId(next),
+    ) {
+        Ok(()) => {
+            if let Some(store) = ctx.w.module_state_mut::<crate::TacsimStore>() {
+                let _ = store.pending_loan_revokes.pop_front();
+            }
+        }
+        Err(error) => {
+            if !error.contains("pending")
+                && !error.contains("retry shortly")
+                && let Some(store) = ctx.w.module_state_mut::<crate::TacsimStore>()
+            {
+                let _ = store.pending_loan_revokes.pop_front();
+            }
+            tracing::debug!(grant = next, %error, "tacsim: rig loan revoke deferred");
+        }
+    }
+}
+
+fn loans(ctx: &Ctx<'_>, lease: &UnitLeaseBinding) -> Result<Vec<UnitGrant>, String> {
+    Ok(all_grants(ctx)?
+        .into_iter()
+        .filter(|g| matches!(&g.parent, UnitGrantParent::LeasedOrganizationGrant { lease: bound, .. } if bound == lease))
+        .collect())
+}
+
+/// Compute a bounded real-UTC expiry (`valid_until`) matching the rig lease's current term end
+/// (`P2-TSW-18`), so operational loans are always finite and prunable by `UnitGrantRegistry::pruned`.
+fn loan_valid_until(w: &mush_core::World, rental: &super::tv::TvLease) -> i64 {
+    let now_real = w.now();
+    let now_ic = w.world_ic_now().at;
+    let remaining_ic = rental
+        .term_ends_ic
+        .saturating_sub(now_ic)
+        .max(rental.term_secs.max(1));
+    let rate = i64::from(w.world_timeline().current().rate.max(1));
+    let remaining_real = remaining_ic.saturating_add(rate - 1) / rate;
+    let span = remaining_real.clamp(MIN_LOAN_REAL_SECS, MAX_LOAN_REAL_SECS);
+    now_real.saturating_add(span)
+}
+
+/// Resolve Occator's equipment lender (`LoanRoots`) and lessor `OrgId` from the programme port.
+fn lessor_lender(w: &mush_core::World) -> Option<(LoanRoots, OrgId)> {
+    let port = super::coop::programme_port(w)?;
+    let def = port
+        .def
+        .vehicles
+        .as_deref()
+        .filter(|d| d.id.as_str() == POOL)?;
+    let roots = port.map.vehicles.as_ref()?.loan_roots.as_deref()?.clone();
+    let org = port.map.orgs.get(&def.org)?;
+    Some((roots, OrgId(org.org)))
+}
+
+/// Whether a `LeasedOrganizationGrant`'s economic/store rig lease is no longer active (`P2-TSW-18`).
+fn lease_is_dead(w: &mush_core::World, organization: OrgId, bound: &UnitLeaseBinding) -> bool {
+    let store_active = w
+        .module_state::<crate::TacsimStore>()
+        .and_then(|store| match store.tv_lease(bound.contract) {
+            Some(super::tv::TvLeaseState::Present(r)) => Some(r),
+            _ => None,
+        })
+        .is_some_and(|r| {
+            r.status == super::tv::TvLeaseStatus::Active
+                && r.tv == bound.unit
+                && r.pilot == bound.tenant
+        });
+    if !store_active {
+        return true;
+    }
+    use mush_org::unit_authority::UnitAuthorityFacts;
+    !mush_economy::unit_authority::EconomyUnitAuthorityFacts::new(w)
+        .equipment_lease(organization, bound)
+}
+
+fn submit_revoke(
+    ctx: &mut Ctx<'_>,
+    agent: ObjId,
+    grant: mush_org::unit_authority::UnitGrantId,
+) -> Result<(), String> {
+    if ctx.authoritative_pending(agent) {
+        return Err("Occator's lender has an action pending; retry shortly.".into());
+    }
+    let reader = reader(ctx)?;
+    let mut fire = crate::port_tick::Fire::new(BTreeMap::new());
+    fire.as_principal(ctx, agent, agent, |ctx| {
+        mush_org::unit_authority::runtime::submit_from(
+            ctx,
+            &reader,
+            UnitGrantMutation::Revoke { grant },
+        )
+    })
+    .map_err(|_| "Occator's lender has an action pending; retry shortly.".to_owned())?
+}
+
+/// **Explicitly begin revoking operational loans for a terminated/forfeited rig lease**
+/// (`P2-TSW-18`): observes any grants visible to the caller, queues all tracked grants for
+/// `lease_id` into `pending_loan_revokes`, and submits revocation for the first immediately as
+/// Occator's lender agent; remaining grants are drained one per tick by [`sweep_stale_loans`].
+pub(crate) fn revoke_lease_loans(ctx: &mut Ctx<'_>, lease_id: u64, unit: ObjId, pilot: ObjId) {
+    let Some((_, organization)) = lessor_lender(ctx.w) else {
+        return;
+    };
+    observe_actor_loans(ctx);
+    // Also capture any matching grants directly visible to the current caller (even if the
+    // caller's lease record just transitioned to Returned/Forfeited).
+    let mut found: Vec<u64> = Vec::new();
+    if let Ok(grants) = all_grants(ctx) {
+        let now = ctx.w.now();
+        for g in grants {
+            if g.status == UnitGrantStatus::Active
+                && g.valid_until.is_none_or(|end| now < end)
+                && matches!(
+                    &g.parent,
+                    UnitGrantParent::LeasedOrganizationGrant {
+                        organization: org,
+                        lease: bound,
+                        ..
+                    } if *org == organization
+                        && bound.contract == lease_id
+                        && bound.unit == unit
+                        && bound.tenant == pilot
+                )
+            {
+                found.push(g.id.0);
+            }
+        }
+    }
+    if let Some(store) = ctx.w.module_state_mut::<crate::TacsimStore>() {
+        if let Some(tracked) = store.rig_loan_grants.remove(&lease_id) {
+            for id in tracked {
+                queue_revoke(store, id);
+            }
+        }
+        for id in found {
+            queue_revoke(store, id);
+        }
+    }
+    drain_one_pending_revoke(ctx);
+}
+
+/// **Background sweep of stale rig operational loans** (`P2-TSW-18`), called on the surface tick:
+/// moves tracked grants of any now-dead rig lease into `pending_loan_revokes` and submits one
+/// revocation per tick as Occator's lender agent so terminated leases never exhaust
+/// `MAX_UNIT_GRANTS = 1024`.
+pub(crate) fn sweep_stale_loans(ctx: &mut Ctx<'_>) {
+    let dead_leases: Vec<u64> = ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .map(|store| {
+            store
+                .rig_loan_grants
+                .keys()
+                .copied()
+                .filter(|lease_id| {
+                    !matches!(
+                        store.tv_lease(*lease_id),
+                        Some(super::tv::TvLeaseState::Present(r))
+                            if r.status == super::tv::TvLeaseStatus::Active
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !dead_leases.is_empty()
+        && let Some(store) = ctx.w.module_state_mut::<crate::TacsimStore>()
+    {
+        for lease_id in dead_leases {
+            if let Some(ids) = store.rig_loan_grants.remove(&lease_id) {
+                for id in ids {
+                    queue_revoke(store, id);
+                }
+            }
+        }
+    }
+    drain_one_pending_revoke(ctx);
 }
 
 fn selected(
@@ -260,8 +526,17 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
     }
     let (rental, roots, organization, counter) = selected(ctx, named)?;
+    observe_actor_loans(ctx);
     let lease = binding(ctx, &rental, organization)?;
-    let current = loans(ctx, &lease)?;
+    let now = ctx.w.now();
+    // P2-TSW-18: expired loans from an earlier term of a renewed lease are pruned on re-issue,
+    // while explicitly revoked loans on this lease remain visible and block self-renewal.
+    let current: Vec<UnitGrant> = loans(ctx, &lease)?
+        .into_iter()
+        .filter(|g| {
+            g.status == UnitGrantStatus::Revoked || g.valid_until.is_none_or(|end| now < end)
+        })
+        .collect();
     if !current.is_empty() {
         for grant in &current {
             let UnitAuthorityResponse::Authority { allowed } = ctx
@@ -345,6 +620,19 @@ fn issue(
             "The current lessee and Occator's lender must be at the actual counter.".into(),
         );
     }
+    // P2-TSW-18: prevent rapid lease/return cycles faster than the tick sweep from accumulating
+    // unrevoked dead-lease loans. Observe any grants visible to this tenant, queue dead ones,
+    // and revoke one immediately if any dead-lease revocation is queued.
+    observe_actor_loans(ctx);
+    let has_pending = ctx
+        .w
+        .module_state::<crate::TacsimStore>()
+        .is_some_and(|store| !store.pending_loan_revokes.is_empty());
+    if has_pending {
+        drain_one_pending_revoke(ctx);
+        return Err("Occator's lender is closing an earlier rig loan; retry shortly.".into());
+    }
+    let valid_until = Some(loan_valid_until(ctx.w, rental));
     let drafts = CAPS
         .into_iter()
         .map(|capability| {
@@ -354,7 +642,7 @@ fn issue(
                 scope: UnitScope::Units {
                     units: BTreeSet::from([lease.unit]),
                 },
-                valid_until: None,
+                valid_until,
                 delegable: matches!(
                     capability,
                     UnitCapability::OperateCrew | UnitCapability::CommandAssignedAi

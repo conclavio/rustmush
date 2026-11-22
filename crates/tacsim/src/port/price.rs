@@ -31,14 +31,86 @@
 //! The emergency Wanted bids of doc 19 §6 (life-support goods at the cap when
 //! reach crosses a ratio) are **not** in this cut (A.4b).
 
-use mush_core::{CanonicalId, World};
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
+use mush_core::{CanonicalId, DefinitionDigest, World};
+
+use crate::config::EphemerisConfig;
 use crate::definitions::GoodsTable;
+use crate::pack::RulesPack;
 use crate::port::def::{BidDef, PortDef};
-use crate::port::passage::{DEFAULT_THROTTLE_PERMILLE, RoutePolicy, choose_route};
+use crate::port::passage::{DEFAULT_THROTTLE_PERMILLE, RoutePolicy, choose_route_with_rev};
 use crate::port::readiness::report_ports;
 use crate::sky::Sky;
 use crate::store::TacsimStore;
+
+/// Cached `(Sky, Option<DefinitionDigest>)` built once per `(pack_digest, epoch, rate)`
+/// (`P2-TSW-19`) so repeated `+chart`, `sky.chart`, and `reach_for` queries never re-parse
+/// Kepler element tables or re-hash SHA-256 sky revisions on every call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SkyCacheKey {
+    pack_digest: DefinitionDigest,
+    epoch: i64,
+    rate: u32,
+}
+
+/// Cached `(Sky, Option<DefinitionDigest>)` handle.
+pub(crate) type CachedSky = Arc<(Sky, Option<DefinitionDigest>)>;
+
+const MAX_SKY_CACHE: usize = 16;
+
+static SKY_CACHE: LazyLock<Mutex<Vec<(SkyCacheKey, CachedSky)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Build or fetch a cached `(Sky, Option<DefinitionDigest>)` for `(pack, cfg)` (`P2-TSW-19`).
+#[must_use]
+pub(crate) fn cached_sky(pack: &RulesPack, cfg: &EphemerisConfig) -> CachedSky {
+    let key = SkyCacheKey {
+        pack_digest: pack.manifest().digest(),
+        epoch: cfg.epoch,
+        rate: cfg.rate,
+    };
+    {
+        let cache = SKY_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, entry)) = cache.iter().find(|(k, _)| *k == key) {
+            return Arc::clone(entry);
+        }
+    }
+    let sky = Sky::from_pack(pack, cfg);
+    let rev = sky.revision().ok();
+    let entry = Arc::new((sky, rev));
+    let mut cache = SKY_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, existing)) = cache.iter().find(|(k, _)| *k == key) {
+        return Arc::clone(existing);
+    }
+    if cache.len() >= MAX_SKY_CACHE {
+        cache.remove(0);
+    }
+    cache.push((key, Arc::clone(&entry)));
+    entry
+}
+
+/// Cache key for the expensive synodic-period median reach scan (`P2-TSW-19`): keyed on the
+/// pack digest, ephemeris parameters, destination venue, good, and quantized IC day bucket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReachMedianKey {
+    pack_digest: DefinitionDigest,
+    epoch: i64,
+    rate: u32,
+    venue: CanonicalId,
+    good: CanonicalId,
+    ic_day_bucket: i64,
+}
+
+const MAX_REACH_MEDIAN_CACHE: usize = 256;
+
+static REACH_MEDIAN_CACHE: LazyLock<Mutex<Vec<(ReachMedianKey, i64)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// One IC day, the scan's unit.
 pub const DAY_S: i64 = 86_400;
@@ -138,9 +210,26 @@ pub fn reach_for(w: &World, def: &PortDef, good: &CanonicalId) -> Option<Reach> 
     let store = w.module_state::<TacsimStore>()?;
     let (pack, ports) = report_ports(store, w);
     let pack = pack?;
+    let cached = cached_sky(pack, &store.config().time.ephemeris);
+    let sky_rev = cached.1.as_ref()?;
+    reach_for_with_sky(w, pack, &ports, &cached.0, sky_rev, def, good)
+}
+
+/// [`reach_for`] reusing a caller-hoisted `(Sky, DefinitionDigest)` and caching the synodic
+/// median by quantized `(pack, ephemeris, venue, good, ic_day_bucket)` (`P2-TSW-19`).
+#[must_use]
+pub(crate) fn reach_for_with_sky(
+    w: &World,
+    pack: &RulesPack,
+    ports: &[(CanonicalId, &PortDef)],
+    sky: &Sky,
+    sky_rev: &DefinitionDigest,
+    def: &PortDef,
+    good: &CanonicalId,
+) -> Option<Reach> {
+    let store = w.module_state::<TacsimStore>()?;
     let goods = store.goods()?;
     let ephemeris = &store.config().time.ephemeris;
-    let sky = Sky::from_pack(pack, ephemeris);
     let dray = CanonicalId::new(crate::definitions::content::DRAY).ok()?;
     let (_, spec) = crate::port::burn::hull_spec_of(store.definitions(), goods, &dray).ok()?;
     let drive = spec.drive.clone().at_throttle(DEFAULT_THROTTLE_PERMILLE);
@@ -175,13 +264,14 @@ pub fn reach_for(w: &World, def: &PortDef, good: &CanonicalId) -> Option<Reach> 
     if suppliers.is_empty() {
         return None;
     }
-    // The least passage over the suppliers at an instant.
+    // The least passage over the suppliers at an instant (uses precomputed sky_rev: zero SHA-256).
     let reach_at = |depart_ic: i64| -> Option<i64> {
         suppliers
             .iter()
             .filter_map(|(routes, _)| {
-                choose_route(
-                    &sky,
+                choose_route_with_rev(
+                    sky,
+                    sky_rev,
                     pack,
                     routes,
                     &drive,
@@ -198,17 +288,41 @@ pub fn reach_for(w: &World, def: &PortDef, good: &CanonicalId) -> Option<Reach> 
             .min()
     };
     let now_s = reach_at(now)?;
-    // The scan: the longest synodic period over the suppliers, at most
-    // MAX_SCAN_SAMPLES samples; one under the constant sky.
-    let days = if ephemeris.rate == 0 {
-        1
-    } else {
-        suppliers
-            .iter()
-            .map(|(_, body)| scan_days(&sky, &port_body, body, now))
-            .max()
-            .unwrap_or(1)
+    // Constant sky: every day is today — no scan needed.
+    if ephemeris.rate == 0 {
+        return Some(Reach {
+            now_s,
+            median_s: now_s,
+        });
+    }
+    // Check quantized synodic-median cache (one IC day bucket).
+    let bucket = now.div_euclid(DAY_S);
+    let cache_key = ReachMedianKey {
+        pack_digest: pack.manifest().digest(),
+        epoch: ephemeris.epoch,
+        rate: ephemeris.rate,
+        venue: def.venue.clone(),
+        good: good.clone(),
+        ic_day_bucket: bucket,
     };
+    {
+        let cache = REACH_MEDIAN_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, median_s)) = cache.iter().find(|(k, _)| *k == cache_key) {
+            return Some(Reach {
+                now_s,
+                median_s: *median_s,
+            });
+        }
+    }
+    // Cache miss: compute the synodic median over at most MAX_SCAN_SAMPLES samples at the bucket's
+    // anchor epoch (deterministic within the IC day bucket, matching `now` on day boundaries).
+    let days = suppliers
+        .iter()
+        .map(|(_, body)| scan_days(sky, &port_body, body, now))
+        .max()
+        .unwrap_or(1);
     let step_days = days.div_ceil(MAX_SCAN_SAMPLES).max(1);
     let mut samples = vec![now_s];
     let mut day = step_days;
@@ -219,6 +333,17 @@ pub fn reach_for(w: &World, def: &PortDef, good: &CanonicalId) -> Option<Reach> 
         day += step_days;
     }
     let median_s = median_of(&samples)?;
+    {
+        let mut cache = REACH_MEDIAN_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cache.iter().any(|(k, _)| *k == cache_key) {
+            if cache.len() >= MAX_REACH_MEDIAN_CACHE {
+                cache.remove(0);
+            }
+            cache.push((cache_key, median_s));
+        }
+    }
     Some(Reach { now_s, median_s })
 }
 
@@ -336,6 +461,34 @@ pub struct EmergencyReading {
 /// when the port has no emergency block or no premium to take the cap from.
 #[must_use]
 pub fn emergency_readings(w: &World, def: &PortDef) -> Vec<EmergencyReading> {
+    let Some(store) = w.module_state::<TacsimStore>() else {
+        return Vec::new();
+    };
+    let (pack, ports) = report_ports(store, w);
+    let Some(pack) = pack else {
+        return Vec::new();
+    };
+    let cached = cached_sky(pack, &store.config().time.ephemeris);
+    let Some(sky_rev) = cached.1.as_ref() else {
+        return Vec::new();
+    };
+    let mut seen = BTreeMap::new();
+    emergency_readings_with_sky(w, pack, &ports, &cached.0, sky_rev, def, &mut seen)
+}
+
+/// [`emergency_readings`] reusing a caller-hoisted `(Sky, DefinitionDigest)` and per-good
+/// reach memo map (`P2-TSW-19`) so emergency goods already queried as standing bids are never
+/// recomputed.
+#[must_use]
+pub(crate) fn emergency_readings_with_sky(
+    w: &World,
+    pack: &RulesPack,
+    ports: &[(CanonicalId, &PortDef)],
+    sky: &Sky,
+    sky_rev: &DefinitionDigest,
+    def: &PortDef,
+    reaches: &mut BTreeMap<CanonicalId, Option<Reach>>,
+) -> Vec<EmergencyReading> {
     let (Some(emergency), Some(premium)) = (&def.emergency, &def.premium) else {
         return Vec::new();
     };
@@ -344,7 +497,9 @@ pub fn emergency_readings(w: &World, def: &PortDef) -> Vec<EmergencyReading> {
         .goods
         .iter()
         .map(|good| {
-            let reach = reach_for(w, def, good);
+            let reach = *reaches
+                .entry(good.clone())
+                .or_insert_with(|| reach_for_with_sky(w, pack, ports, sky, sky_rev, def, good));
             let crossed =
                 reach.is_some_and(|reach| emergency_crossed(reach, emergency.ratio_permille));
             let price_major = goods

@@ -24,7 +24,7 @@
 //! sky moves by the IC day, so a client asks again when it wants a newer one.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use mush_core::module::{ModError, Registrar};
 use mush_core::{CanonicalId, ObjId, QueryHandler, World};
@@ -34,16 +34,12 @@ use smol_str::SmolStr;
 
 use crate::ephemeris::AU_KM;
 use crate::port::chart::{
-    Vantage, WINDOW_DAYS, body_of, direct_at, hours_text, plan_at, sky_lines, vantage_for_world,
+    CHART_RATE_LIMITED, ChartRateLimiter, Vantage, WindowDay, body_of, cached_window_summary,
+    direct_at, format_window_lines_with, plan_at, sky_lines, vantage_for_world,
 };
 use crate::port::coop::port_name;
-use crate::port::price::{
-    emergency_readings, premium_permille, priced, reach_for, reach_ratio_permille,
-};
-use crate::port::readiness::report_ports;
-use crate::port::voyage::{Destination, destinations};
+use crate::port::voyage::destinations;
 use crate::sky::epoch_date;
-use crate::store::TacsimStore;
 
 /// The feed. Registered by the tacsim layer whether or not it is enabled, as
 /// every tacsim feed is: a disabled layer answers with the reason.
@@ -95,23 +91,37 @@ const LETTERS: &[(&str, char)] = &[
 /// The registrar's, for a feed or query name already taken.
 pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     drop(reg.panel_feed(SKY_CHART_FEED)?);
-    reg.query_handler(SKY_CHART_FEED, Arc::new(ChartQuery))?;
+    reg.state(ChartRateLimiter::default());
+    reg.query_handler(SKY_CHART_FEED, Arc::new(ChartQuery::default()))?;
     Ok(())
 }
 
 /// **`sky.chart`'s handler**: the asker's chart, or a frame with no grid and the
 /// reason as its title (no lane, nowhere the lane knows), which the grid printer
-/// prints as that one line and the web shows as its sentence.
-struct ChartQuery;
+/// prints as that one line and the web shows as its sentence. Carries a per-actor
+/// rate limiter (`P2-TSW-19`) scoped to the registered world.
+#[derive(Default)]
+struct ChartQuery {
+    limiter: Mutex<ChartRateLimiter>,
+}
 
 impl ChartQuery {
     /// The frame, or the reason frame; `reads` reads the sites' block records for their tenure
     /// lines (doc 20 cut SM.10, lead note 0a), the authored tenure without.
     fn answer(
+        &self,
         w: &World,
         reads: Option<&dyn crate::port::site_map::SurfaceReads>,
         actor: ObjId,
-    ) -> OutputEvent {
+    ) -> Result<OutputEvent, RichText> {
+        let admitted = self
+            .limiter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .admit(actor, w.now());
+        if !admitted {
+            return Err(RichText::plain(CHART_RATE_LIMITED));
+        }
         let data = chart_frame_reading(w, reads, actor).unwrap_or_else(|why| {
             json!({
                 "schema": { "id": SKY_CHART_FEED, "shape": "grid", "version": SCHEMA_VERSION },
@@ -125,17 +135,17 @@ impl ChartQuery {
                 "you": null,
             })
         });
-        OutputEvent::Panel {
+        Ok(OutputEvent::Panel {
             feed: SmolStr::new_static(SKY_CHART_FEED),
             kind: PanelFrameKind::Keyframe,
             data,
-        }
+        })
     }
 }
 
 impl QueryHandler for ChartQuery {
     fn query(&self, w: &World, actor: ObjId, _params: &Value) -> Result<OutputEvent, RichText> {
-        Ok(Self::answer(w, None, actor))
+        self.answer(w, None, actor)
     }
 
     fn query_with_context(
@@ -144,7 +154,7 @@ impl QueryHandler for ChartQuery {
         actor: ObjId,
         _params: &Value,
     ) -> Result<OutputEvent, RichText> {
-        Ok(Self::answer(context.world(), Some(context), actor))
+        self.answer(context.world(), Some(context), actor)
     }
 }
 
@@ -414,217 +424,6 @@ pub fn chart_frame(w: &World, actor: ObjId) -> Result<Value, String> {
     chart_frame_reading(w, None, actor)
 }
 
-/// Seconds in an IC day (matches `chart.rs`).
-const IC_DAY_S: i64 = 86_400;
-
-/// Single-day entry produced by a [`scan_window_summary`] sweep over `0..=WINDOW_DAYS`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WindowDay {
-    offset: i64,
-    total_s: i64,
-    burn_t: u64,
-}
-
-/// Summary of the `0..=WINDOW_DAYS` scan for one destination, computed once per request and
-/// reused for both the structured `chart.window` block and the pre-rendered `chart.lines.window`
-/// text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WindowSummary {
-    fastest: WindowDay,
-    cheapest: WindowDay,
-    worst: WindowDay,
-}
-
-fn summarize_window_days(days: &[WindowDay]) -> Option<WindowSummary> {
-    let fastest = *days.iter().min_by_key(|d| (d.total_s, d.offset))?;
-    let cheapest = days
-        .iter()
-        .copied()
-        .min_by_key(|d| (d.burn_t, d.total_s, d.offset))
-        .unwrap_or(fastest);
-    let worst = days
-        .iter()
-        .copied()
-        .max_by_key(|d| (d.total_s, d.burn_t))
-        .unwrap_or(fastest);
-    Some(WindowSummary {
-        fastest,
-        cheapest,
-        worst,
-    })
-}
-
-fn scan_window_summary(
-    v: &Vantage<'_>,
-    dest: &Destination,
-    now: i64,
-    today: &crate::port::families::PassagePlan,
-) -> Option<WindowSummary> {
-    let mut days = Vec::with_capacity(usize::try_from(WINDOW_DAYS).unwrap_or(0) + 1);
-    days.push(WindowDay {
-        offset: 0,
-        total_s: today.total_s,
-        burn_t: today.burn_t,
-    });
-    for offset in 1..=WINDOW_DAYS {
-        let depart = now.saturating_add(offset.saturating_mul(IC_DAY_S));
-        if let Ok(plan) = plan_at(v, dest, v.payload_kg, depart) {
-            days.push(WindowDay {
-                offset,
-                total_s: plan.total_s,
-                burn_t: plan.burn_t,
-            });
-        }
-    }
-    summarize_window_days(&days)
-}
-
-fn demand_lines_for_venue(w: &World, venue: &CanonicalId) -> Vec<String> {
-    let Some(store) = w.module_state::<TacsimStore>() else {
-        return Vec::new();
-    };
-    let (_, ports) = report_ports(store, w);
-    let Some((_, def)) = ports.iter().find(|(_, def)| &def.venue == venue) else {
-        return Vec::new();
-    };
-    if def.site.is_some() {
-        return Vec::new();
-    }
-    let name = port_name(def);
-    let mut lines = Vec::new();
-    let Some(premium) = def.premium else {
-        lines.push(format!(
-            "  {name} posts its list prices whatever the season."
-        ));
-        return lines;
-    };
-    let org_name = |org: &CanonicalId| -> String {
-        def.orgs
-            .iter()
-            .find(|o| &o.id == org)
-            .map_or_else(|| org.to_string(), |o| o.name.clone())
-    };
-    for vendor in &def.vendors {
-        for bid in &vendor.bids {
-            let line = match reach_for(w, def, &bid.good) {
-                Some(reach) => {
-                    let p = premium_permille(premium.k_permille, premium.cap_permille, reach);
-                    format!(
-                        "  {} bids {}: list {}, posts {} (+{p} permille; reach {} now against a \
-                         median of {}).",
-                        org_name(&vendor.org),
-                        bid.good,
-                        bid.price_major,
-                        priced(bid.price_major, p),
-                        hours_text(w, reach.now_s),
-                        hours_text(w, reach.median_s)
-                    )
-                }
-                None => format!(
-                    "  {} bids {}: list {}, posts {} (no port supplies it).",
-                    org_name(&vendor.org),
-                    bid.good,
-                    bid.price_major,
-                    bid.price_major
-                ),
-            };
-            lines.push(line);
-        }
-    }
-    if let Some(emergency) = &def.emergency {
-        let readings = emergency_readings(w, def);
-        let ratio = readings
-            .iter()
-            .filter_map(|r| r.reach)
-            .filter_map(reach_ratio_permille)
-            .max();
-        let where_it_stands = ratio.map_or_else(
-            || "no port supplies them".to_owned(),
-            |ratio| format!("reach is {ratio} permille of the median"),
-        );
-        let due: Vec<String> = readings
-            .iter()
-            .filter(|r| r.crossed)
-            .map(|r| match r.price_major {
-                Some(price) => format!("{} at {price}", r.good),
-                None => r.good.to_string(),
-            })
-            .collect();
-        if due.is_empty() {
-            lines.push(format!(
-                "  emergency bids (at {} permille of the median): none due; {where_it_stands}.",
-                emergency.ratio_permille
-            ));
-        } else {
-            lines.push(format!(
-                "  emergency bids (at {} permille of the median; {where_it_stands}): {} — {} each, \
-                 at the cap (+{} permille), posted by {}.",
-                emergency.ratio_permille,
-                due.join(", "),
-                emergency.intake,
-                premium.cap_permille,
-                org_name(&emergency.org)
-            ));
-        }
-    }
-    lines
-}
-
-fn format_window_lines(
-    w: &World,
-    v: &Vantage<'_>,
-    dest: &Destination,
-    now: i64,
-    today: &crate::port::families::PassagePlan,
-    summary: Option<WindowSummary>,
-) -> Vec<String> {
-    let mut lines = vec![format!(
-        "The window for {} from {}, the {} at {} t, scanned a day at a time over the next {} IC days:",
-        dest.port,
-        port_name(v.def),
-        v.hull,
-        v.payload_kg / 1_000,
-        WINDOW_DAYS
-    )];
-    lines.push(format!(
-        "  now ({}): {}, burn {} t, {} crew-days.",
-        epoch_date(now),
-        hours_text(w, today.total_s),
-        today.burn_t,
-        today.crew_days
-    ));
-    lines.extend(demand_lines_for_venue(w, &dest.venue));
-    if v.sky.ephemeris().rate_permille() == 0 {
-        lines.push("  The sky is constant on this server: every day is today.".to_owned());
-        return lines;
-    }
-    let Some(summary) = summary else {
-        return lines;
-    };
-    let describe = |label: &str, day: WindowDay| -> String {
-        let date = epoch_date(now.saturating_add(day.offset.saturating_mul(IC_DAY_S)));
-        let dh = day.total_s - today.total_s;
-        let sign = if dh < 0 { "-" } else { "+" };
-        #[allow(clippy::cast_possible_wrap)]
-        let dt = day.burn_t as i64 - today.burn_t as i64;
-        let tsign = if dt < 0 { "-" } else { "+" };
-        format!(
-            "  {label}: {date} (in {} IC days): {}, burn {} t ({sign}{} and {tsign}{} t against now).",
-            day.offset,
-            hours_text(w, day.total_s),
-            day.burn_t,
-            hours_text(w, dh.abs()),
-            dt.abs()
-        )
-    };
-    lines.push(describe("fastest", summary.fastest));
-    if summary.cheapest.offset != summary.fastest.offset {
-        lines.push(describe("cheapest", summary.cheapest));
-    }
-    lines.push(describe("worst", summary.worst));
-    lines
-}
-
 /// **[`chart_frame`] with the sites' block records read** through `reads` (doc 20 cut SM.10,
 /// lead note 0a: a site's tenure line counts its live claims): the `sky.chart` feed's own
 /// answer and `+chart/map`'s; `None` prints the authored tenure, as [`chart_frame`] does.
@@ -648,37 +447,37 @@ fn chart_frame_inner(
     include_windows: bool,
 ) -> Result<Value, String> {
     let v: Vantage<'_> = vantage_for_world(w, actor)?;
+    let sky = v.sky();
     let now = w.world_ic_now().at;
-    let rate = v.sky.ephemeris().rate_permille();
+    let rate = sky.ephemeris().rate_permille();
     // The bodies, nearest the Sun first.
     let mut taken: BTreeSet<char> = BTreeSet::from([SUN_GLYPH, ORBIT_GLYPH, ROUTE_GLYPH, '@']);
-    let mut bodies: Vec<ChartBody> = v
-        .sky
+    let mut bodies: Vec<ChartBody> = sky
         .ephemeris()
         .bodies()
         .filter_map(|(id, _)| {
-            let (r_km, lon, lat) = v.sky.heliocentric(id, now)?;
-            let at = v.sky.position_km(id, now)?;
+            let (r_km, lon, lat) = sky.heliocentric(id, now)?;
+            let at = sky.position_km(id, now)?;
             let here = id == &v.body;
             let (from_here_km, lag_s) = if here {
                 (None, None)
             } else {
                 (
-                    v.sky.distance_km(&v.body, now, id, now),
-                    v.sky.light_lag_s(&v.body, now, id, now),
+                    sky.distance_km(&v.body, now, id, now),
+                    sky.light_lag_s(&v.body, now, id, now),
                 )
             };
             Some(ChartBody {
                 id: id.clone(),
                 glyph: ' ',
-                parent: v.sky.parent_of(id).cloned(),
+                parent: sky.parent_of(id).cloned(),
                 r_au: r_km / AU_KM as f64,
                 lon_deg: lon,
                 lat_deg: lat,
                 x_au: at.x as f64 / AU_KM as f64,
                 y_au: at.y as f64 / AU_KM as f64,
                 z_au: at.z as f64 / AU_KM as f64,
-                period_days: v.sky.period_days(id, now),
+                period_days: sky.period_days(id, now),
                 here,
                 from_here_km,
                 lag_s,
@@ -716,12 +515,12 @@ fn chart_frame_inner(
             && rate != 0
             && let Some(today) = loaded.as_ref()
         {
-            scan_window_summary(&v, dest, now, today)
+            cached_window_summary(&v, dest, now, today)
         } else {
             None
         };
         if include_windows && let Some(today) = loaded.as_ref() {
-            window_text.extend(format_window_lines(w, &v, dest, now, today, summary));
+            window_text.extend(format_window_lines_with(w, &v, dest, now, today, summary));
         }
         let Some(to) = to else {
             continue;
@@ -800,7 +599,7 @@ fn chart_frame_inner(
     let title = format!(
         "The sky on {} ({}; {}), from {} on {}",
         epoch_date(now),
-        v.sky.model(),
+        v.sky().model(),
         motion,
         port_name(v.def),
         v.body
@@ -860,7 +659,7 @@ fn chart_frame_inner(
         "chart": {
             "date": epoch_date(now),
             "ic_now": now,
-            "model": v.sky.model(),
+            "model": v.sky().model(),
             "rate_permille": rate,
             "vantage": {
                 "port": port_name(v.def),
@@ -952,6 +751,7 @@ pub(crate) fn flat_lines_reading(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::port::chart::summarize_window_days;
 
     fn body(id: &str, r_au: f64, lon_deg: f64, parent: Option<&str>) -> ChartBody {
         ChartBody {
@@ -1115,5 +915,34 @@ mod tests {
         assert_eq!(summary.cheapest, days[2]);
         assert_eq!(summary.worst, days[3]);
         assert!(summarize_window_days(&[]).is_none());
+    }
+
+    /// **P2-TSW-19**: `sky.chart` panel queries are per-actor rate-limited on `ChartQuery` so a
+    /// client cannot flood single-threaded chart recomputations.
+    #[test]
+    fn p2_tsw_19_sky_chart_query_rate_limits_per_actor() {
+        let world = World::new_minimal();
+        let query = ChartQuery::default();
+        let attacker = ObjId(42);
+        let bystander = ObjId(43);
+        let empty = Value::Null;
+        for i in 0..8 {
+            assert!(
+                query.query(&world, attacker, &empty).is_ok(),
+                "burst call {i} must succeed"
+            );
+        }
+        let err = query
+            .query(&world, attacker, &empty)
+            .expect_err("9th rapid sky.chart query must be rate-limited");
+        assert_eq!(
+            err.to_plain_text(),
+            CHART_RATE_LIMITED,
+            "unexpected error text"
+        );
+        assert!(
+            query.query(&world, bystander, &empty).is_ok(),
+            "rate limit is per-actor and must not block bystander"
+        );
     }
 }

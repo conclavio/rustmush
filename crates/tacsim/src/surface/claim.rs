@@ -1236,6 +1236,11 @@ pub fn procedure_defect(
     if pin.casualty != custody.hull || pin.tug != custody.recovered_by {
         return Some("pin_replaced".to_owned());
     }
+    // P2-TSW-12: an owner's recovery grant binds only the recoverer it was issued to; handing
+    // the casualty off into another custodian's bay is a procedural defect.
+    if pin.owner_grant.is_some() && pin.recoverer != custody.holder {
+        return Some("pin_recoverer".to_owned());
+    }
     let owed = pin
         .answering
         .into_iter()
@@ -1274,6 +1279,10 @@ fn defect_words(w: &World, code: &str) -> String {
         _ => match code {
             "pin_missing" => "no tenure was pinned when her recovery began".to_owned(),
             "pin_replaced" => "the pin is another tug's than the one that recovered her".to_owned(),
+            "pin_recoverer" => {
+                "the owner's recovery authorization belonged to another recoverer than the claimant"
+                    .to_owned()
+            }
             "box_recoverer" => "her black box names another tug than the custody does".to_owned(),
             "box_base" => "her black box names another carrier than the custody does".to_owned(),
             other => other.to_owned(),
@@ -1306,14 +1315,22 @@ fn open_claim(
     contract: u64,
     (now_real, window_end): (i64, i64),
 ) -> Result<SalvageClaim, &'static str> {
+    // P2-TSW-1: never attach an already-expired or zero-second contest window.
+    if window_end <= now_real {
+        return Err("claim_window_short");
+    }
     let pin = custody.pin.as_ref();
     let prior = pin.and_then(|pin| pin.answering).ok_or("claim_no_title")?;
     let tenure = pin.map_or(GroundTenure::Unclaimed, |pin| pin.tenure.clone());
+    // P2-TSW-12: owner-grant and landholder authorizations pinned at attach belong strictly to
+    // `pin.recoverer` and must never transfer to a different custodian principal.
+    let same_principal = pin.is_some_and(|pin| pin.recoverer == custody.holder);
     let entitlement = evaluate_recovery_entitlement(&RecoveryAuthorityContext {
         recoverer: custody.holder,
         unit_title_holder: prior,
-        has_owner_authorization: pin.is_some_and(|pin| pin.owner_grant.is_some()),
-        has_landholder_authorization: pin.is_some_and(|pin| pin.landholder_authorized),
+        has_owner_authorization: same_principal && pin.is_some_and(|pin| pin.owner_grant.is_some()),
+        has_landholder_authorization: same_principal
+            && pin.is_some_and(|pin| pin.landholder_authorized),
         ground_tenure_at_attach: tenure.clone(),
     })
     .map_err(|_| "claim_no_title")?;
@@ -1951,6 +1968,19 @@ fn window_secs(w: &World) -> i64 {
     claim_window_real_secs(w)
 }
 
+/// Clock slack tolerated between opening an economy salvage contract and committing
+/// [`ClaimOrder::File`] on the site record (`P2-TSW-1`).
+const CLAIM_WINDOW_SLACK_SECS: i64 = 60;
+
+/// Minimum remaining real-time contest window required when attaching a salvage claim contract
+/// (`P2-TSW-1`): enforces the full configured contest window minus bounded clock slack (at most
+/// 60s and at most 10% of the configured window, never below 1s).
+#[must_use]
+pub(crate) fn min_claim_window_secs(configured_secs: i64) -> i64 {
+    let slack = CLAIM_WINDOW_SLACK_SECS.min(configured_secs / 10);
+    configured_secs.saturating_sub(slack).max(1)
+}
+
 /// **A salvage claim's contest window, real seconds** (the owner's 2026-11-04 rule: any wait on a
 /// player's response is at least 28 IC days): the configured window, IC seconds
 /// (`[tacsim.recovery].claim_window_ic_days`, 48), divided by the world's rate now, rounded up —
@@ -2011,6 +2041,13 @@ fn apply_space_claim_order(ctx: &mut Ctx<'_>, actor: ObjId, order: &ClaimOrder) 
             told,
             ..
         } => {
+            let min_window = min_claim_window_secs(window_secs(ctx.w));
+            let live_now = ctx.w.now();
+            if window_end.saturating_sub(*now_real) < min_window
+                || window_end.saturating_sub(live_now) < min_window
+            {
+                return Some(false);
+            }
             let book = ctx
                 .w
                 .module_state_mut::<crate::space::tick::SpaceBubbleBook>()?;
@@ -2188,10 +2225,23 @@ enum SubmitOutcome {
 /// Maximum queued post-commit claim notices retained in RAM.
 const MAX_PENDING_CLAIM_NOTICES: usize = 256;
 
+/// Deferred filing IC mail payload (`P2-TSW-1`), boxed to keep [`PendingClaimNotice`] compact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingFileNotice {
+    site: CanonicalId,
+    hull: ObjId,
+    contract: u64,
+    submitter: ObjId,
+    told: Vec<ObjId>,
+    subject: String,
+    body: String,
+}
+
 /// A claim IC mail or registry notice deferred until its `tacsim_surface_tow` order commits on
-/// the site record (M16).
+/// the site record (M16, `P2-TSW-1`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PendingClaimNotice {
+    File(Box<PendingFileNotice>),
     Report {
         site: CanonicalId,
         hull: ObjId,
@@ -2224,6 +2274,7 @@ enum PendingClaimNotice {
 impl PendingClaimNotice {
     fn submitter(&self) -> ObjId {
         match self {
+            Self::File(file) => file.submitter,
             Self::Report { submitter, .. } => *submitter,
             Self::Refuse { landholder, .. } => *landholder,
             Self::Ask { asker, .. } => *asker,
@@ -2232,6 +2283,9 @@ impl PendingClaimNotice {
 
     fn same_target(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::File(a), Self::File(b)) => {
+                a.site == b.site && a.hull == b.hull && a.contract == b.contract
+            }
             (
                 Self::Report {
                     site: s1,
@@ -2318,6 +2372,16 @@ fn flush_pending_notices(ctx: &mut Ctx<'_>) {
     let mut keep = Vec::new();
     for item in pending {
         let committed = match &item {
+            PendingClaimNotice::File(file) => crate::surface::tow::record_of(ctx, &file.site)
+                .is_some_and(|record| {
+                    record.custody.iter().any(|row| {
+                        row.hull == file.hull
+                            && row.claim
+                                == ClaimSeam::Filed {
+                                    contract: file.contract,
+                                }
+                    })
+                }),
             PendingClaimNotice::Report {
                 site,
                 hull,
@@ -2372,6 +2436,9 @@ fn flush_pending_notices(ctx: &mut Ctx<'_>) {
         };
         if committed {
             match item {
+                PendingClaimNotice::File(file) => {
+                    tell(ctx, &file.site, &file.told, &file.subject, &file.body);
+                }
                 PendingClaimNotice::Report {
                     site,
                     to,
@@ -2390,6 +2457,24 @@ fn flush_pending_notices(ctx: &mut Ctx<'_>) {
             }
         } else if ctx.authoritative_pending(item.submitter()) {
             keep.push(item);
+        } else if let PendingClaimNotice::File(file) = item {
+            // P2-TSW-1: the queued ClaimOrder::File did not commit; close its unattached economy
+            // contract if custody still reads ClaimSeam::Owed so its contest clock cannot tick down.
+            let still_owed =
+                crate::surface::tow::record_of(ctx, &file.site).is_some_and(|record| {
+                    record
+                        .custody
+                        .iter()
+                        .any(|row| row.hull == file.hull && row.claim == ClaimSeam::Owed)
+                });
+            if still_owed {
+                let _ = mush_economy::close_salvage_claim(
+                    ctx,
+                    ContractId(file.contract),
+                    file.submitter,
+                    file.hull,
+                );
+            }
         }
     }
     if !keep.is_empty()
@@ -2697,9 +2782,33 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
         );
         return Ok(());
     }
+    // P2-TSW-1: reject upfront if this actor already has an authoritative submission in flight so
+    // back-pressure cannot drop ClaimOrder::File after opening an Active economy contract.
+    if ctx.authoritative_pending(ctx.actor) {
+        return Err(CmdError::msg(crate::port::claims::CLAIMS_FAILED));
+    }
     let remainder = crate::port::credit::own_account(ctx.w, ctx.actor)
         .map(|account| account.id)
         .ok_or_else(|| CmdError::msg(crate::port::claims::CLAIMS_FAILED))?;
+    let now_real = ctx.w.now();
+    let min_window = min_claim_window_secs(secs);
+    // P2-TSW-1: if an unattached economy contract already exists for this hull while custody is
+    // still ClaimSeam::Owed, never copy a stale or expired window_end; close and recreate it so
+    // every attached claim carries the full contest window.
+    if let Some(existing) = mush_economy::live_salvage_claim(ctx.w, ctx.actor, row.hull) {
+        let stale = match window(ctx.w, existing.0) {
+            Some((end, false)) => end <= now_real || end.saturating_sub(now_real) < min_window,
+            Some((end, true)) => end <= now_real,
+            None => true,
+        };
+        if stale {
+            let closed = mush_economy::close_salvage_claim(ctx, existing, ctx.actor, row.hull)
+                .unwrap_or(false);
+            if !closed {
+                return Err(CmdError::msg(crate::port::claims::CLAIMS_FAILED));
+            }
+        }
+    }
     let audience: Vec<PrincipalId> = told.iter().map(|who| PrincipalId::Object(*who)).collect();
     let contract = mush_economy::file_salvage_claim(
         ctx,
@@ -2721,19 +2830,52 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
             _ => CmdError::msg(crate::port::claims::CLAIMS_FAILED),
         }
     })?;
-    let window_end =
-        window(ctx.w, contract.0).map_or(ctx.w.now().saturating_add(secs), |(end, _)| end);
+    let (window_end, paused) =
+        window(ctx.w, contract.0).unwrap_or((now_real.saturating_add(secs), false));
+    if window_end <= now_real || (!paused && window_end.saturating_sub(now_real) < min_window) {
+        let _ = mush_economy::close_salvage_claim(ctx, contract, ctx.actor, row.hull);
+        return Err(CmdError::msg(crate::port::claims::CLAIMS_FAILED));
+    }
     let actor = ctx.actor;
     let order = ClaimOrder::File {
         site: site.clone(),
         hull: row.hull,
         contract: contract.0,
         window_end,
-        now_real: ctx.w.now(),
+        now_real,
         told: told.clone(),
     };
-    if !submit(ctx, actor, order, 1) {
-        return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
+    let subject = NOTICE_SUBJECT.replace("{name}", &label);
+    let body = NOTICE_BODY
+        .replace("{claimant}", &name(ctx.w, actor))
+        .replace("{name}", &label)
+        .replace("{site}", &site_name(ctx.w, &site))
+        .replace("{registry}", &registry)
+        .replace("{contract}", &contract.0.to_string())
+        .replace("{window}", &window_text)
+        .replace("{hull}", &hull_arg);
+    match submit_outcome(ctx, actor, order, 1) {
+        SubmitOutcome::Failed => {
+            let _ = mush_economy::close_salvage_claim(ctx, contract, actor, row.hull);
+            return Err(CmdError::msg(crate::port::tv::TV_UNWIRED));
+        }
+        SubmitOutcome::Committed => {
+            tell(ctx, &site, &told, &subject, &body);
+        }
+        SubmitOutcome::Queued => {
+            queue_pending_notice(
+                ctx,
+                PendingClaimNotice::File(Box::new(PendingFileNotice {
+                    site: site.clone(),
+                    hull: row.hull,
+                    contract: contract.0,
+                    submitter: actor,
+                    told,
+                    subject,
+                    body,
+                })),
+            );
+        }
     }
     ctx.out.sys_to_actor(
         actor,
@@ -2743,21 +2885,6 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
             .replace("{registry}", &registry)
             .replace("{contract}", &contract.0.to_string())
             .replace("{window}", &window_text),
-    );
-    let body = NOTICE_BODY
-        .replace("{claimant}", &name(ctx.w, actor))
-        .replace("{name}", &label)
-        .replace("{site}", &site_name(ctx.w, &site))
-        .replace("{registry}", &registry)
-        .replace("{contract}", &contract.0.to_string())
-        .replace("{window}", &window_text)
-        .replace("{hull}", &hull_arg);
-    tell(
-        ctx,
-        &site,
-        &told,
-        &NOTICE_SUBJECT.replace("{name}", &label),
-        &body,
     );
     Ok(())
 }
@@ -3624,27 +3751,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if ctx.authoritative_pending(row.holder) || promoted(ctx, &site) {
             continue;
         }
-        // Doc 41 Q-41-20: a repair the salvor finished is written before anything settles.
-        if !crate::port::tv::written_off(ctx.w, row.hull)
-            && let Some(entry) = at_risk_of(ctx.w, &row)
-        {
-            let kept = row
-                .file
-                .as_ref()
-                .map_or(&row.at_risk, |file| &file.documented_repairs_at_risk);
-            if !kept.contains(&entry) {
-                let order = ClaimOrder::AtRisk {
-                    site: site.clone(),
-                    hull: row.hull,
-                    entry,
-                };
-                let _ = submit(ctx, row.holder, order, 7);
-                continue;
-            }
-        }
         // Doc 36a P0-3 (Q-36-29, Q-36-22): a hull written off while in custody is Occator's
         // alone — the write-off already handed it back to the shed. Its claim's contract is
-        // closed and the custody row goes; the title never moves.
+        // closed and the custody row goes; the title never moves. Checked before AtRisk so
+        // at-risk recording can never block written-off handback (P2-TSW-13).
         if crate::port::tv::written_off(ctx.w, row.hull) {
             let closed = match row.claim {
                 ClaimSeam::Owed => true,
@@ -3672,6 +3782,38 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                 let _ = submit(ctx, row.holder, order, 5);
             }
             continue;
+        }
+        // P2-TSW-13: never let AtRisk recording (or a saturated MAX_AT_RISK = 16 list) wedge
+        // ahead of a due terminal settlement (Vacate, Award, or Withdrawn).
+        let terminal_due = match (&row.claim, row.file.as_deref()) {
+            (ClaimSeam::Filed { contract }, Some(file)) if file.state.is_pending() => {
+                let state = contract_state(ctx.w, *contract);
+                let (end, paused) =
+                    effective_window(ctx.w, &row).unwrap_or((file.deadline_real_s, false));
+                file.has_vacating_contest()
+                    || matches!(state, Some(ContractState::Cancelled) | None)
+                    || matches!(state, Some(ContractState::Expired))
+                    || (!paused && now_real >= end)
+            }
+            _ => false,
+        };
+        // Doc 41 Q-41-20: a repair the salvor finished is written while below MAX_AT_RISK and
+        // before settlement comes due.
+        if !terminal_due && let Some(entry) = at_risk_of(ctx.w, &row) {
+            let kept = row
+                .file
+                .as_ref()
+                .map_or(&row.at_risk, |file| &file.documented_repairs_at_risk);
+            if kept.len() < MAX_AT_RISK && !kept.contains(&entry) {
+                let order = ClaimOrder::AtRisk {
+                    site: site.clone(),
+                    hull: row.hull,
+                    entry,
+                };
+                if submit(ctx, row.holder, order, 7) {
+                    continue;
+                }
+            }
         }
         let ClaimSeam::Filed { contract } = row.claim else {
             continue;
@@ -4989,5 +5131,203 @@ mod tests {
         }
         assert!(record.custody[0].evidence.len() <= MAX_EVIDENCE);
         assert!(record.check().is_ok());
+    }
+
+    /// **P2-TSW-1**: `min_claim_window_secs` enforces the configured contest window minus bounded
+    /// clock slack, and `open_claim` / `prepare(ClaimOrder::File)` rejects expired or zero-second
+    /// windows.
+    #[test]
+    fn p2_tsw_1_min_window_and_open_claim_reject_zero_second_window() {
+        // 48h window (172_800s) permits at most 60s slack.
+        assert_eq!(min_claim_window_secs(172_800), 172_740);
+        // Short test windows cap slack at 10% (floor 1s).
+        assert_eq!(min_claim_window_secs(100), 90);
+        assert_eq!(min_claim_window_secs(5), 5);
+        assert_eq!(min_claim_window_secs(1), 1);
+
+        let site = CanonicalId::new("urvara_port").expect("site");
+        let mut record = SiteRecord::new(site.clone());
+        let pin = pin_on(GroundTenure::Unclaimed);
+        record.custody.push(custody(pin));
+        let hull = record.custody[0].hull;
+        let holder = record.custody[0].holder;
+
+        // Zero-second (window_end == now_real) and expired (window_end < now_real) fail closed.
+        for window_end in [1_000, 999] {
+            let order = ClaimOrder::File {
+                site: site.clone(),
+                hull,
+                contract: 42,
+                window_end,
+                now_real: 1_000,
+                told: vec![ObjId(30)],
+            };
+            assert_eq!(
+                prepare(&mut record, holder, &order, 100),
+                Err("claim_window_short"),
+                "window_end={window_end} at now_real=1000 must be rejected"
+            );
+        }
+    }
+
+    /// **P2-TSW-12**: an owner-grant or landholder authorization pinned to `pin.recoverer` must
+    /// NOT confer authorization immunity on a different custodian `custody.holder`, and open-ground
+    /// owner-grant split recovery must flag `"pin_recoverer"` as a procedural defect.
+    #[test]
+    fn p2_tsw_12_mismatched_pin_recoverer_gets_no_immunity_and_flags_defect() {
+        let site = CanonicalId::new("urvara_port").expect("site");
+        let recoverer_a = ObjId(19);
+        let custodian_b = ObjId(20);
+        let landholder = ObjId(50);
+
+        let mut split_pin = pin_on(GroundTenure::Owned {
+            landholder,
+            claim_id: Some(smol_str::SmolStr::new("urvara/A")),
+        });
+        split_pin.recoverer = recoverer_a;
+        split_pin.owner_grant = Some(PinnedGrant {
+            grant: 7,
+            grantor: ObjId(30),
+        });
+        split_pin.landholder_authorized = true;
+
+        let mut record = SiteRecord::new(site.clone());
+        let mut row = custody(split_pin);
+        row.holder = custodian_b;
+        let hull = row.hull;
+        record.custody.push(row);
+
+        let order = ClaimOrder::File {
+            site: site.clone(),
+            hull,
+            contract: 99,
+            window_end: 200_000,
+            now_real: 1_000,
+            told: vec![ObjId(30), landholder],
+        };
+        assert_eq!(
+            prepare(&mut record, custodian_b, &order, 100).as_deref(),
+            Ok("filed")
+        );
+        let file = record.custody[0]
+            .file
+            .as_deref()
+            .expect("salvage claim file");
+        assert!(
+            !file.entitlement_at_attach.is_lawful(),
+            "mismatched pin.recoverer must not grant lawful entitlement to custodian_b: {:?}",
+            file.entitlement_at_attach
+        );
+        assert_eq!(
+            right_of_grantor(&record.custody[0], ObjId(30)),
+            None,
+            "right_of_grantor stays bound to pin.recoverer == custody.holder"
+        );
+        assert_eq!(
+            procedure_defect(&record.custody[0], None).as_deref(),
+            Some("pin_recoverer"),
+            "owner_grant pinned to a different recoverer must surface a procedural defect"
+        );
+
+        // Matching recoverer == holder retains authorization with zero defect.
+        let mut matched_pin = pin_on(GroundTenure::Owned {
+            landholder,
+            claim_id: Some(smol_str::SmolStr::new("urvara/A")),
+        });
+        matched_pin.recoverer = custodian_b;
+        matched_pin.owner_grant = Some(PinnedGrant {
+            grant: 8,
+            grantor: ObjId(30),
+        });
+        matched_pin.landholder_authorized = true;
+        let mut matched_rec = SiteRecord::new(site.clone());
+        let mut matched_row = custody(matched_pin);
+        matched_row.holder = custodian_b;
+        matched_rec.custody.push(matched_row);
+        assert_eq!(
+            prepare(&mut matched_rec, custodian_b, &order, 100).as_deref(),
+            Ok("filed")
+        );
+        let matched_file = matched_rec.custody[0]
+            .file
+            .as_deref()
+            .expect("matched salvage claim file");
+        assert!(
+            matched_file.entitlement_at_attach.is_lawful(),
+            "matching pin.recoverer == holder keeps lawful entitlement: {:?}",
+            matched_file.entitlement_at_attach
+        );
+        assert_eq!(procedure_defect(&matched_rec.custody[0], None), None);
+    }
+
+    /// **P2-TSW-13**: saturating all `MAX_AT_RISK` (16) entries must NOT deadlock claim
+    /// settlement (`Settlement::Vacate`, `Settlement::Award`, or `Settlement::HandedBack`).
+    #[test]
+    fn p2_tsw_13_full_at_risk_list_never_blocks_settlement() {
+        let site = CanonicalId::new("urvara_port").expect("site");
+        let landholder = ObjId(50);
+        let pin = pin_on(GroundTenure::Owned {
+            landholder,
+            claim_id: Some(smol_str::SmolStr::new("urvara/A")),
+        });
+        let mut record = filed_record(pin, vec![ObjId(30), landholder]);
+        let hull = record.custody[0].hull;
+        let holder = record.custody[0].holder;
+
+        for i in 0..MAX_AT_RISK {
+            let order = ClaimOrder::AtRisk {
+                site: site.clone(),
+                hull,
+                entry: AtRiskRepairEntry {
+                    description: smol_str::SmolStr::new(format!("repair #{i}")),
+                    cost_incurred: 1_000,
+                    performed_at_ic: 100 + i64::try_from(i).expect("small"),
+                },
+            };
+            assert_eq!(
+                prepare(&mut record, holder, &order, 100).as_deref(),
+                Ok("recorded")
+            );
+        }
+        // 17th distinct repair fails closed with claim_at_risk_full.
+        let extra = ClaimOrder::AtRisk {
+            site: site.clone(),
+            hull,
+            entry: AtRiskRepairEntry {
+                description: smol_str::SmolStr::new("repair #16"),
+                cost_incurred: 1_000,
+                performed_at_ic: 200,
+            },
+        };
+        assert_eq!(
+            prepare(&mut record, holder, &extra, 100),
+            Err("claim_at_risk_full")
+        );
+        // Contested vacate still settles cleanly despite full documented_repairs_at_risk.
+        let ev = evidence_of(&record.custody[0], ObjId(30)).expect("witness evidence");
+        let contest = ClaimOrder::Contest {
+            site: site.clone(),
+            hull,
+            ground: ContestGround::UnlawfulRecovery { evidence: ev },
+            window_end: 200_000,
+            now_real: 1_500,
+        };
+        assert_eq!(
+            prepare(&mut record, ObjId(30), &contest, 120).as_deref(),
+            Ok("contested")
+        );
+        let vacate = ClaimOrder::Settle {
+            site: site.clone(),
+            hull,
+            settlement: Settlement::Vacate,
+            window_end: 200_000,
+            now_real: 1_600,
+        };
+        assert_eq!(
+            prepare(&mut record, holder, &vacate, 130).as_deref(),
+            Ok("vacated"),
+            "saturated at-risk list must never prevent Settlement::Vacate"
+        );
+        assert!(record.custody.is_empty());
     }
 }

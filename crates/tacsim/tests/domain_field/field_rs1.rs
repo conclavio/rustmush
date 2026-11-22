@@ -449,3 +449,167 @@ async fn rs1_ahuna_the_tender_works_through_fields_and_the_tow_counts_her_laden(
 async fn rs1_urvara_the_tender_works_through_fields_and_the_tow_counts_her_laden() {
     tender_on(&URVARA_REACH).await;
 }
+
+/// **P2-TSW-15**: field repair/rearm MUST NOT apply `apply_plan` before `TowOrder::Tended(Finish)`
+/// commits and debits tender stores/bale, and once `paid == true` commits, `Release` is refused
+/// while the next tick applies the repair once and retires the act.
+#[test]
+fn p2_tsw_15_tend_pays_before_apply_and_refuses_precommit_or_paid_release() {
+    let ground = &AHUNA_FLANK;
+    let mut rig = stocked_tuned(|cfg| {
+        tune(cfg);
+        cfg.field.idle_demote_s = 3_600;
+        cfg.recovery.inspect_s = 30;
+        cfg.recovery.attach_s = 30;
+    });
+    let (a, row, tvs) = on_pad_with_at(
+        &mut rig,
+        ("Pilot", 1, "Salt Moth"),
+        ground.site(),
+        |rig, pilot| {
+            mint(rig, pilot);
+            crate::driving_rig::at_counter(rig, pilot);
+            let escort = run(&mut rig.tw, pilot, "+tv/lease escort go");
+            assert!(escort.contains("leases you"), "{escort}");
+            let tender = run(&mut rig.tw, pilot, "+tv/lease tender go");
+            assert!(tender.contains("leases you"), "{tender}");
+        },
+    );
+    let (escort, tender) = (tvs[0], tvs[1]);
+    seed_hold(&mut rig, &row, "structural_alloys", 2, 9_701);
+    seed_hold(&mut rig, &row, "industrial_parts", 2, 9_702);
+    for line in [
+        "+tv/2 stores load 1 structural_alloys go",
+        "+tv/2 stores load 1 industrial_parts go",
+        "+tv/2 stores open go",
+    ] {
+        let (out, queued) = command(&mut rig, a, line);
+        assert_eq!(queued.len(), 1, "{line}: {out}");
+        land(&mut rig, &queued[0]).unwrap_or_else(|e| panic!("{line}: {e}"));
+    }
+    let _ = act_go(&mut rig, a, "+tv/1 launch go");
+    let _ = finish(&mut rig, escort, a);
+    let _ = act_go(&mut rig, a, "+tv/2 launch go");
+    let _ = finish(&mut rig, tender, a);
+    let (rx, ry, _) = ramp_at(&rig.tw, ground.entry);
+    let ramp = (rx.div_euclid(1_000), ry.div_euclid(1_000));
+    to_cell_on(&mut rig, ground.entry, escort, (ramp.0 + 4, ramp.1));
+    to_cell_on(&mut rig, ground.entry, tender, (ramp.0 + 5, ramp.1));
+
+    let internals = mush_tactics::CellAddr::Section {
+        section: mush_tactics::SectionId::new("hull").expect("hull"),
+        cell: mush_tactics::CellId::new(tacsim::definitions::unit::INTERNALS_CELL).expect("cell"),
+    };
+    let full = cell(&rig, escort, &internals);
+    let damaged = full - 40;
+    mutate(
+        &mut rig,
+        escort,
+        vec![mush_tactics::UnitMutationOp::SetCell {
+            addr: internals.clone(),
+            value: damaged,
+        }],
+    );
+    assert_eq!(cell(&rig, escort, &internals), damaged);
+
+    let skip_to_ic = |rig: &mut Rig, target: i64| {
+        let w = rig.tw.world();
+        let rate = i64::from(w.world_timeline().current().rate.max(1));
+        let ahead = target.saturating_sub(w.world_ic_now().at).max(0);
+        let t = w.now().saturating_add((ahead + rate - 1) / rate);
+        rig.tw.set_now(t);
+    };
+
+    // Phase 1: Start stabilize, advance to due_ic WITHOUT landing ticks, run `fire` WITHOUT
+    // landing `TendStep::Finish`. Target must remain damaged and releasing must leave target
+    // damaged & bale untouched!
+    let (out, queued) = command(
+        &mut rig,
+        a,
+        &format!("+tv/2 stabilize #{}=hull 40 go", escort.0),
+    );
+    assert_eq!(queued.len(), 1, "{out}");
+    land(&mut rig, &queued[0]).expect("tend start");
+    let act = act_of(&mut rig, ground, tender).expect("tend act");
+    skip_to_ic(&mut rig, act.due_ic);
+    let (_, pending_finish) = crate::driving_rig::fire(&mut rig);
+    assert!(
+        pending_finish
+            .iter()
+            .any(|s| s.action.key().id.as_str() == tacsim::surface::tow::TOW_ACTION),
+        "tick queued TendStep::Finish"
+    );
+    assert_eq!(
+        cell(&rig, escort, &internals),
+        damaged,
+        "P2-TSW-15: target MUST NOT be repaired before TendStep::Finish commits"
+    );
+    // Drop `pending_finish` and release the unpaid tend act.
+    let (rel_out, rel_q) = command(&mut rig, a, "+tv/2 release go");
+    assert_eq!(rel_q.len(), 1, "unpaid tend release queues: {rel_out}");
+    land(&mut rig, &rel_q[0]).expect("unpaid tend release lands");
+    assert!(act_of(&mut rig, ground, tender).is_none());
+    assert_eq!(
+        cell(&rig, escort, &internals),
+        damaged,
+        "released unpaid tend must not have repaired target"
+    );
+    let stores_before = run(&mut rig.tw, a, "+tv/2 stores");
+    assert!(
+        stores_before.contains("1000 kg of structural alloys")
+            && stores_before.contains("1000 kg of yard fittings"),
+        "uncommitted/released tend must not have debited the open bale: {stores_before}"
+    );
+
+    // Phase 2: Start stabilize again, land Tick 1 (Finish -> paid: true, bale debited, target not
+    // yet mutated, Release refused!), then land Tick 2 (apply_paid + Applied -> target repaired
+    // once and act retired!).
+    let (out, queued) = command(
+        &mut rig,
+        a,
+        &format!("+tv/2 stabilize #{}=hull 40 go", escort.0),
+    );
+    assert_eq!(queued.len(), 1, "{out}");
+    land(&mut rig, &queued[0]).expect("second tend start");
+    let act = act_of(&mut rig, ground, tender).expect("second tend act");
+    skip_to_ic(&mut rig, act.due_ic);
+    let (_, tick1) = crate::driving_rig::fire(&mut rig);
+    for sub in &tick1 {
+        land(&mut rig, sub).expect("Tick 1 Finish commits payment");
+    }
+    let paid_act = act_of(&mut rig, ground, tender).expect("paid tend act stays until applied");
+    assert!(
+        matches!(paid_act.stage, TowStage::Tend { paid: true, .. }),
+        "expected paid: true after Finish commit, got {:?}",
+        paid_act.stage
+    );
+    let stores_after = run(&mut rig.tw, a, "+tv/2 stores");
+    assert!(
+        !stores_after.contains("1000 kg of structural alloys"),
+        "bale must be debited on Finish commit: {stores_after}"
+    );
+    assert_eq!(
+        cell(&rig, escort, &internals),
+        damaged,
+        "apply_plan runs on the post-commit Tick 2, not during Tick 1"
+    );
+    let refused_release = run(&mut rig.tw, a, "+tv/2 release go");
+    assert!(
+        refused_release.contains("busy"),
+        "Release must be refused once tend is paid: {refused_release}"
+    );
+
+    let (_, tick2) = crate::driving_rig::fire(&mut rig);
+    for sub in &tick2 {
+        land(&mut rig, sub).expect("Tick 2 Applied commits retirement");
+    }
+    assert!(
+        act_of(&mut rig, ground, tender).is_none(),
+        "act retired after apply_paid"
+    );
+    assert_eq!(
+        cell(&rig, escort, &internals),
+        full,
+        "target repaired once after durable debit commit"
+    );
+}

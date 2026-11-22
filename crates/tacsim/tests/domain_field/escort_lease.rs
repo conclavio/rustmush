@@ -783,3 +783,92 @@ async fn lane3_a_delegate_with_operate_crew_boards_the_lessees_rig() {
         .expect("the live lease");
     assert_eq!(lease.pilot, lessee, "the lessee stays the principal");
 }
+
+/// **P2-TSW-18**: rig operational loans issued by Occator carry finite `valid_until` bounded by
+/// the lease term, and returning the rig revokes all four operational loans (immediately plus via
+/// `sweep_stale_loans`) so `UnitGrantRegistry` capacity (`MAX_UNIT_GRANTS = 1024`) can never be
+/// permanently exhausted across lease cycles.
+#[test]
+fn p2_tsw_18_rig_operational_loans_are_bounded_and_revoked_on_return() {
+    let mut rig = stocked_tuned(tune);
+    let registry_handle = rig
+        .tw
+        .world()
+        .module_state::<mush_org::unit_authority::runtime::UnitAuthorityHandles>()
+        .cloned()
+        .expect("unit authority handles")
+        .registry;
+
+    let (pilot, _) = crate::driving_rig::prospector(&mut rig, "Pilot", 1, "Salt Moth");
+    at_counter(&mut rig, pilot);
+    let signed = run(&mut rig.tw, pilot, "+tv/lease escort go");
+    assert!(signed.contains("leases you OWP-ES-01"), "{signed}");
+    let loan = run(&mut rig.tw, pilot, "+tv/1/permissions go");
+    let grants = loan_submissions(&mut rig);
+    assert!(!grants.is_empty(), "loans submitted: {loan}");
+    for grant in &grants {
+        land_composed(&mut rig, grant).expect("composed prepare lands loans");
+    }
+    let reg = typed(&mut rig.tw, &registry_handle, &()).expect("grant registry");
+    let issued: Vec<_> = reg
+        .grants
+        .values()
+        .filter(|g| g.grantee == UnitGrantee::Character(pilot))
+        .collect();
+    assert_eq!(issued.len(), 4, "four operational loans issued: {issued:?}");
+    for g in &issued {
+        assert_eq!(g.status, mush_org::unit_authority::UnitGrantStatus::Active);
+        assert!(
+            g.valid_until.is_some(),
+            "P2-TSW-18: rig operational loan {:?} must have finite valid_until",
+            g.id
+        );
+    }
+
+    // Return the escort at the counter: triggers immediate revocation of the first loan,
+    // and subsequent surface ticks sweep-revoke the remaining three dead-lease loans.
+    let returned = run(&mut rig.tw, pilot, "+tv/1 lease return go");
+    assert!(
+        returned.contains("hand") || returned.contains("returned") || returned.contains("takes"),
+        "{returned}"
+    );
+    for _ in 0..8 {
+        let mut queued = Vec::new();
+        while let Some(submit) = rig.tw.engine_mut().take_authoritative_submit() {
+            queued.push(*submit);
+        }
+        for submit in &queued {
+            if submit.action.key().id.as_str() == "unitgrant_revoke" {
+                land_composed(&mut rig, submit).expect("composed prepare lands revoke");
+            }
+        }
+        let reg_now = typed(&mut rig.tw, &registry_handle, &()).expect("grant registry");
+        let active_left = reg_now
+            .grants
+            .values()
+            .filter(|g| {
+                g.grantee == UnitGrantee::Character(pilot)
+                    && g.status == mush_org::unit_authority::UnitGrantStatus::Active
+            })
+            .count();
+        if active_left == 0 {
+            break;
+        }
+        let t = rig.tw.world().now().saturating_add(6);
+        rig.tw.set_now(t);
+        let _ = rig.tw.fire_due(t.saturating_mul(1_000));
+    }
+    let reg_after = typed(&mut rig.tw, &registry_handle, &()).expect("grant registry");
+    let after: Vec<_> = reg_after
+        .grants
+        .values()
+        .filter(|g| g.grantee == UnitGrantee::Character(pilot))
+        .collect();
+    assert_eq!(after.len(), 4);
+    assert!(
+        after
+            .iter()
+            .all(|g| g.status == mush_org::unit_authority::UnitGrantStatus::Revoked),
+        "all four dead-lease operational loans must be revoked after return: {after:?}"
+    );
+}

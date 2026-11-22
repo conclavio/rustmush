@@ -284,6 +284,12 @@ pub struct TacsimStore {
     /// to look. Like `loaded` it is **not persisted**: it is a pure function of
     /// the pack files, and a world remembers a pack by its ledger row.
     pub(crate) definitions: std::sync::Arc<crate::definitions::Catalog>,
+    /// **Fitted game definitions** (`P2-TSW-16`): [`Self::definitions`] extended with the
+    /// finite cored-hull families (`fitted_catalog`, carrying specs, parts, and mass budgets
+    /// for all 17 cored roots), kept alongside the strictly fielded catalog so lobby
+    /// `fieldable_ids` continues to exclude `_ungoverned` roots (G11) while live hull reads
+    /// (`carrier_damage::spec_of`, `mass::hull_budget`) resolve every cored chassis.
+    pub(crate) fitted_definitions: std::sync::Arc<crate::definitions::Catalog>,
     /// **16b cut AH.1** — `tacsim:tutorial:{account}`: each account's first-time
     /// hints, whether they are switched off and which points it has read
     /// ([`crate::match_::tutorial`]). Keyed by the immutable account id, never by a
@@ -515,6 +521,13 @@ pub struct TacsimStore {
     /// programme's `dormancy_real_days`, set only by `lower_dormancy_floor_for_test` (test roots). `None`
     /// in every shipped binary.
     pub(crate) dormancy_span_override_s: Option<i64>,
+    /// **P2-TSW-18** — RAM-only index of observed rig operational loan `UnitGrantId`s keyed by
+    /// `TvLease::lease`, so background ticks can revoke dead-lease grants without relying on
+    /// `UnitAuthorityRequest::List` under `GOD`.
+    pub(crate) rig_loan_grants: BTreeMap<u64, Vec<u64>>,
+    /// **P2-TSW-18** — RAM-only bounded queue of dead-lease `UnitGrantId`s awaiting revocation
+    /// by Occator's lender agent.
+    pub(crate) pending_loan_revokes: std::collections::VecDeque<u64>,
 }
 
 /// Maximum bytes one staffer's `@ground/stage` chunk buffer may hold in RAM (2 MiB).
@@ -1636,6 +1649,33 @@ impl TacsimStore {
         })
     }
 
+    /// Build both the strictly fielded catalog (which lobby `fieldable_ids` reads, preserving G11)
+    /// and the fitted catalog extending it with all 17 cored-hull roots (`P2-TSW-16`), merging
+    /// cored budgets into the fielded catalog's `budgets` table as well.
+    fn bind_catalogs(
+        packs: &[LoadedPack],
+    ) -> Result<
+        (
+            std::sync::Arc<crate::definitions::Catalog>,
+            std::sync::Arc<crate::definitions::Catalog>,
+        ),
+        crate::definitions::DefinitionError,
+    > {
+        let mut fielded = crate::definitions::Catalog::build_fielded(packs, crate::NS)?;
+        let fitted = crate::definitions::core_replacement::fitted_catalog(fielded.clone())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "tacsim: fitted cored-hull catalog fell back to fielded");
+                fielded.clone()
+            });
+        for (id, budget) in &fitted.budgets {
+            fielded
+                .budgets
+                .entry(id.clone())
+                .or_insert_with(|| budget.clone());
+        }
+        Ok((std::sync::Arc::new(fielded), std::sync::Arc::new(fitted)))
+    }
+
     /// Install the packs the host read and this module verified.
     pub(crate) fn install_packs(&mut self, packs: Vec<LoadedPack>) {
         self.loaded.clear();
@@ -1648,11 +1688,15 @@ impl TacsimStore {
         // §9's five extension items — which is what `SIM UNIT` lists, what the
         // arena applier binds through and what the stock-tank reset compares
         // against.
-        match crate::definitions::Catalog::build_fielded(&packs, crate::NS) {
-            Ok(catalog) => self.definitions = std::sync::Arc::new(catalog),
+        match Self::bind_catalogs(&packs) {
+            Ok((fielded, fitted)) => {
+                self.definitions = fielded;
+                self.fitted_definitions = fitted;
+            }
             Err(error) => {
                 tracing::error!(%error, "tacsim: the loaded packs' definitions did not bind");
                 self.definitions = std::sync::Arc::default();
+                self.fitted_definitions = std::sync::Arc::default();
             }
         }
         for loaded in packs {
@@ -1690,8 +1734,9 @@ impl TacsimStore {
             let kb = (b.pack.manifest().id(), b.pack.manifest().version());
             ka.cmp(&kb)
         });
-        let catalog = crate::definitions::Catalog::build_fielded(&candidate, crate::NS)?;
-        self.definitions = std::sync::Arc::new(catalog);
+        let (fielded, fitted) = Self::bind_catalogs(&candidate)?;
+        self.definitions = fielded;
+        self.fitted_definitions = fitted;
         self.loaded.insert(key, loaded);
         self.reindex();
         Ok(())
@@ -1701,6 +1746,13 @@ impl TacsimStore {
     #[must_use]
     pub fn definitions(&self) -> &crate::definitions::Catalog {
         &self.definitions
+    }
+
+    /// **Fitted game definitions** (`P2-TSW-16`) — [`Self::definitions`] extended with all 17
+    /// cored-hull roots (specs, parts, and mass budgets).
+    #[must_use]
+    pub fn fitted_definitions(&self) -> &crate::definitions::Catalog {
+        &self.fitted_definitions
     }
 
     /// **16b cut K.1** — one arena's roster: the object behind every authored

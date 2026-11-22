@@ -9984,6 +9984,10 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
     assert!(posted.contains("Retrieval job"), "{posted}");
     let jobs = run(&mut rig.tw, pilot_a, "+salvage/jobs");
     assert!(jobs.contains(&format!("#{}", raider_hull.0)), "{jobs}");
+    let credit_before = credit_of(&rig.tw, pilot_a);
+    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
+    let credit_before_berth =
+        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot_a));
     let taken = run(
         &mut rig.tw,
         pilot_a,
@@ -9993,6 +9997,10 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
     let fee = tacsim::surface::retrieval::order_of(rig.tw.world(), raider_hull)
         .expect("the job")
         .fee_minor;
+    assert!(
+        credit_of(&rig.tw, pilot_a) < credit_before,
+        "P2-TSW-14: accepting a retrieval job escrows a performance bond"
+    );
 
     let clamp = clamp_derelict(&mut rig, pilot_a, hull_a, "derelict");
     assert!(
@@ -10016,10 +10024,6 @@ fn rs8_a_space_retrieval_job_is_delivered_by_the_tug_that_docks_her() {
         "a retrieval tow is no salvage custody"
     );
 
-    let credit_before = credit_of(&rig.tw, pilot_a);
-    // Doc 48 cut EX.4: the berth her hull owes while the story waits is paid from this wallet.
-    let credit_before_berth =
-        crate::driving_rig::berth_paid(rig.tw.world(), &mush_org::PrincipalId::Object(pilot_a));
     fly_on_to_stickney(&mut rig, hull_a, total_secs);
     let order = tacsim::surface::retrieval::order_of(rig.tw.world(), raider_hull).expect("the job");
     let delivery = order.delivered.as_ref().expect("the dock delivered her");

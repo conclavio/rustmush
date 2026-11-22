@@ -353,6 +353,7 @@ impl CoreFamily {
             .get(&base_id)
             .ok_or_else(|| bad("authored chassis missing"))?
             .clone();
+        let goods = super::goods::goods_table()?;
         let mut added = Vec::new();
         let mut named = Vec::new();
         for (class, governed, root) in chassis.roots {
@@ -496,6 +497,18 @@ impl CoreFamily {
             catalog
                 .references
                 .insert(root_id.clone(), reference.clone());
+            // P2-TSW-16: index parts and partition the mass budget for every fitted cored root
+            // so cored Drays, rigs, and line tanks have accurate repair/salvage/resale budgets.
+            catalog.index_parts(&root_id, &authored_variant)?;
+            if let Some(budget) = super::mass::partition(
+                &root_id,
+                &authored_variant,
+                &goods,
+                &catalog.cores,
+                &catalog.parts,
+            )? {
+                catalog.budgets.insert(root_id.clone(), budget);
+            }
             catalog.specs.insert(root_id.clone(), authored_variant);
             catalog.bindings.insert(
                 root_id,
@@ -846,5 +859,83 @@ mod tests {
             fielded.units.len() + 5 + 6 + 6,
             "the line family's five roots, the rig's six and the ship's six"
         );
+    }
+
+    /// **P2-TSW-16**: all 17 cored hull roots (5 line tanks + 6 surface rigs + 6 ships) carry
+    /// populated `specs` and `MassBudget` entries in the fitted catalog, `TacsimStore` exposes them
+    /// through `fitted_definitions()` and `mass::hull_budget` / `mass::reference_price_minor`,
+    /// while `Catalog::build_fielded` and `TacsimStore::definitions().specs` remain G11-clean
+    /// (zero `_ungoverned` roots).
+    #[test]
+    fn p2_tsw_16_all_17_cored_roots_have_specs_and_budgets_preserving_g11() {
+        let fielded = Catalog::build_fielded(&[], crate::NS).expect("fielded");
+        let line = GovernedLineCores::build(fielded.clone()).expect("line");
+        let rig = SurfaceRigCores::build(line.catalog().clone()).expect("rig");
+        let ship = ShipCores::build(rig.catalog().clone()).expect("ship");
+        let fitted = ship.catalog();
+
+        let mut cored_roots = Vec::new();
+        for (class, governed) in [
+            (CoreClass::I, true),
+            (CoreClass::II, true),
+            (CoreClass::I, false),
+            (CoreClass::II, false),
+            (CoreClass::III, false),
+        ] {
+            cored_roots.push(line.root(class, governed).expect("line root").clone());
+        }
+        for class in [CoreClass::I, CoreClass::II, CoreClass::III] {
+            for governed in [true, false] {
+                cored_roots.push(rig.root(class, governed).expect("rig root").clone());
+                cored_roots.push(ship.root(class, governed).expect("ship root").clone());
+            }
+        }
+        assert_eq!(cored_roots.len(), 17);
+
+        let tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let store = tw
+            .world()
+            .module_state::<crate::store::TacsimStore>()
+            .expect("store");
+        assert!(
+            store
+                .definitions()
+                .specs
+                .keys()
+                .all(|id| !id.as_str().ends_with("_ungoverned")),
+            "G11: TacsimStore::definitions().specs must never expose ungoverned roots"
+        );
+        for reference in &cored_roots {
+            let id = CanonicalId::new(reference.key().id.as_str()).expect("canonical id");
+            assert!(
+                fitted.specs.contains_key(&id),
+                "{id} missing from fitted.specs"
+            );
+            let budget = fitted
+                .budgets
+                .get(&id)
+                .unwrap_or_else(|| panic!("{id} missing from fitted.budgets"));
+            assert!(budget.dry_mass_kg > 0, "{id} dry_mass_kg");
+            assert!(budget.core_kg > 0, "{id} core_kg");
+            assert!(budget.core_minor > 0, "{id} core_minor");
+            let unit = instance(fitted, reference);
+            assert_eq!(
+                crate::definitions::mass::budget_of_schema(
+                    tw.world(),
+                    unit.schema().key().id.as_str(),
+                ),
+                Some((id.clone(), budget.clone())),
+                "mass::budget_of_schema must resolve cored root {id}"
+            );
+            assert!(
+                store.fitted_definitions().specs.contains_key(&id),
+                "TacsimStore::fitted_definitions().specs must contain {id}"
+            );
+            assert!(
+                crate::definitions::mass::reference_price_minor(tw.world(), &id, budget) > 0,
+                "mass::reference_price_minor must resolve cored root {id}"
+            );
+        }
     }
 }
