@@ -252,6 +252,28 @@ impl Tickets {
             Err(BulkError::Stale)
         }
     }
+    /// Discard an ungranted `Grant` ticket whose attempt was never submitted or
+    /// received a `NoIntent` proof, releasing turn custody or pivoting to
+    /// `Cancel` without dropping any paid worker receipt.
+    pub(super) fn discard_ungranted(
+        &mut self,
+        id: TicketId,
+        binding: Binding,
+    ) -> Result<(), BulkError> {
+        let ticket = self.rows.get(&id.get()).ok_or(BulkError::Missing)?;
+        if !matches!(ticket.kind, TicketKind::Grant { binding: actual, .. } if actual == binding)
+            || self.acknowledged.iter().any(|ack| ack.ticket == id)
+        {
+            return Err(BulkError::Stale);
+        }
+        let retained = self
+            .bytes
+            .checked_sub(ticket.bytes)
+            .ok_or_else(|| invalid("Conduct ticket byte accounting"))?;
+        self.rows.remove(&id.get());
+        self.bytes = retained;
+        Ok(())
+    }
     pub(super) fn acknowledge_checked(&mut self, ticket: &Arc<Ticket>, ack: Acknowledged) {
         self.rows.remove(&ack.ticket.get());
         self.bytes -= ticket.bytes;

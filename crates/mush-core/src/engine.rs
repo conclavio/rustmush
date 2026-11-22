@@ -66,6 +66,11 @@ const WAIT_MIN_SECONDS: u64 = 1;
 /// without it any player could grow the scheduler heap without bound.
 const WAIT_QUEUE_MAX: u32 = 100;
 
+/// Separate cap on *pending* internal [`ScheduledKind::CommandContinuation`]
+/// entries per actor so mortal `@wait` saturation cannot starve module
+/// continuations such as `@registry/continue` or `@conduct/continue`.
+const CONTINUATION_QUEUE_MAX: u32 = 100;
+
 /// Maximum `WaitCmd` dispatches executed for any single live actor during one
 /// [`Engine::fire_due`] step (CORE-M2). Excess due entries for the same actor
 /// are re-queued with `WAIT_BURST_DEFER_MS` spacing so a 100-entry burst
@@ -748,6 +753,9 @@ pub struct Engine {
     conn_count: HashMap<ObjId, u32>,
     /// Pending `@wait` entries per actor (capped at [`WAIT_QUEUE_MAX`]).
     pending_waits: HashMap<ObjId, u32>,
+    /// Pending internal command continuations per actor (capped separately at
+    /// [`CONTINUATION_QUEUE_MAX`] so mortal `@wait` queues cannot drop them).
+    pending_continuations: HashMap<ObjId, u32>,
     /// Most recent loop-iteration lag reported by the driver (ms).
     lag_last_ms: u64,
     /// Worst loop-iteration lag reported since boot (ms).
@@ -834,6 +842,7 @@ impl Engine {
             conns: HashMap::new(),
             conn_count: HashMap::new(),
             pending_waits: HashMap::new(),
+            pending_continuations: HashMap::new(),
             lag_last_ms: 0,
             lag_max_ms: 0,
             authoritative_submits: BTreeMap::new(),
@@ -4136,7 +4145,7 @@ impl Engine {
                     );
                 }
                 ScheduledKind::CommandContinuation(request) => {
-                    self.dec_pending_waits(request.actor());
+                    self.dec_pending_continuations(request.actor());
                     if request.typed() {
                         self.typed_actors.insert(request.actor());
                     }
@@ -5048,19 +5057,34 @@ impl Engine {
                     fx.push_classified(class, effect);
                 }
                 Deferred::ScheduleIn { delay_ms, kind } => {
-                    let queued_actor = match &kind {
-                        ScheduledKind::WaitCmd { actor, .. } => Some(*actor),
-                        ScheduledKind::CommandContinuation(request) => Some(request.actor()),
-                        ScheduledKind::ConnectionCompletion(request) => Some(request.actor()),
-                        _ => None,
-                    };
-                    if let Some(actor) = queued_actor {
-                        let n = self.pending_waits.entry(actor).or_insert(0);
-                        if *n >= WAIT_QUEUE_MAX {
-                            out.best_effort_error(actor, "Too many commands queued.");
-                            continue;
+                    match &kind {
+                        ScheduledKind::CommandContinuation(request) => {
+                            let actor = request.actor();
+                            let n = self.pending_continuations.entry(actor).or_insert(0);
+                            if *n >= CONTINUATION_QUEUE_MAX {
+                                out.best_effort_error(actor, "Too many commands queued.");
+                                continue;
+                            }
+                            *n += 1;
                         }
-                        *n += 1;
+                        ScheduledKind::WaitCmd { actor, .. } => {
+                            let n = self.pending_waits.entry(*actor).or_insert(0);
+                            if *n >= WAIT_QUEUE_MAX {
+                                out.best_effort_error(*actor, "Too many commands queued.");
+                                continue;
+                            }
+                            *n += 1;
+                        }
+                        ScheduledKind::ConnectionCompletion(request) => {
+                            let actor = request.actor();
+                            let n = self.pending_waits.entry(actor).or_insert(0);
+                            if *n >= WAIT_QUEUE_MAX {
+                                out.best_effort_error(actor, "Too many commands queued.");
+                                continue;
+                            }
+                            *n += 1;
+                        }
+                        _ => {}
                     }
                     let due = self
                         .world
@@ -5451,6 +5475,17 @@ impl Engine {
             Some(n) if *n > 1 => *n -= 1,
             Some(_) => {
                 self.pending_waits.remove(&actor);
+            }
+            None => {}
+        }
+    }
+
+    /// Release one pending internal command-continuation slot for an actor.
+    fn dec_pending_continuations(&mut self, actor: ObjId) {
+        match self.pending_continuations.get_mut(&actor) {
+            Some(n) if *n > 1 => *n -= 1,
+            Some(_) => {
+                self.pending_continuations.remove(&actor);
             }
             None => {}
         }
@@ -8070,6 +8105,113 @@ mod tests {
         );
         assert!(out.events().is_empty(), "slots must free after firing");
         assert_eq!(engine.sched.len(), 1);
+    }
+
+    #[test]
+    fn p2_tsc_5_wait_saturation_does_not_drop_command_continuation() {
+        struct ContMod {
+            nick: ObjId,
+            fired: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl crate::GameModule for ContMod {
+            fn name(&self) -> &'static str {
+                "bulk"
+            }
+            fn register(&mut self, reg: &mut crate::Registrar<'_>) -> Result<(), crate::ModError> {
+                reg.classify_commands(crate::CommandCompatibility::Authoritative);
+                let fired_ref = Arc::clone(&self.fired);
+                reg.command(
+                    CommandSpec {
+                        name: "@resume".into(),
+                        switches: vec!["continue".into()],
+                        shape: ArgShape::Raw,
+                        help: "continuation target".into(),
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(move |_ctx: &mut Ctx<'_>| {
+                        fired_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    }),
+                )?;
+                let handle = reg.command_continuation("@resume", &["continue"])?;
+                let nick = self.nick;
+                reg.command(
+                    CommandSpec {
+                        name: "@trigger".into(),
+                        shape: ArgShape::None,
+                        help: "enqueue continuation".into(),
+                        ..CommandSpec::default()
+                    },
+                    Arc::new(move |ctx: &mut Ctx<'_>| {
+                        ctx.schedule_continuation(&handle, nick, "1", 0)
+                            .map_err(|_| CmdError::msg("continuation refused"))
+                    }),
+                )
+            }
+        }
+
+        let mut w = World::new_minimal();
+        w.set_now(1_000);
+        let nick = w
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .expect("create nick");
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).expect("core");
+        register_engine_commands(&mut reg).expect("engine");
+        let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut engine = Box::new(
+            Engine::with_modules(
+                w,
+                reg,
+                vec![Box::new(ContMod {
+                    nick,
+                    fired: Arc::clone(&fired),
+                })],
+            )
+            .expect("engine with continuation module"),
+        );
+
+        // Saturate nick's mortal @wait queue to WAIT_QUEUE_MAX (100).
+        for _ in 0..WAIT_QUEUE_MAX {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.step(
+                Inbound::Cmd {
+                    conn: 2,
+                    actor: nick,
+                    line: "@wait 60=say flood".into(),
+                },
+                &mut out,
+                &mut fx,
+            );
+            assert!(out.events().is_empty());
+        }
+        assert_eq!(engine.pending_waits.get(&nick), Some(&WAIT_QUEUE_MAX));
+
+        // Internal CommandContinuation uses its own lane and is NOT dropped.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 1,
+                actor: GOD,
+                line: "@trigger".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            !texts(&out)
+                .iter()
+                .any(|t| t.contains("Too many commands queued.")),
+            "saturated mortal @wait queue must not drop CommandContinuation"
+        );
+        assert_eq!(engine.pending_continuations.get(&nick), Some(&1));
+
+        // Fire the due continuation immediately (before the 60s @waits).
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.fire_due(engine.world.now() * 1000, &mut out, &mut fx);
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!engine.pending_continuations.contains_key(&nick));
+        assert_eq!(engine.pending_waits.get(&nick), Some(&WAIT_QUEUE_MAX));
     }
 
     #[test]

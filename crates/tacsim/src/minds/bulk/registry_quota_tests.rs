@@ -687,3 +687,84 @@ fn partial_maximum_class_rejection_finishes_and_recovers_actual_quota_without_ce
     check!(denied.accounts.is_empty());
     Ok(())
 }
+
+#[test]
+fn p2_tsc_7_registry_archival_avoids_proving_trim_deadlock_and_document_bloat() -> TestResult {
+    let cfg = BulkConfig {
+        completed_per_character: 2,
+        ..BulkConfig::default()
+    };
+    let mut store = BulkStore::new(cfg.clone())?;
+    let id = AccountId::mint("p2-tsc-7-registry-archive", 1)?;
+    let actor = ObjId(7);
+
+    // Run 25 sequential Registry jobs (far exceeding completed_per_character = 2
+    // and MAX_INLINE_TERMINAL_REGISTRY = 16).
+    let mut nonce = 1_u64;
+    for i in 1..=25_u8 {
+        let job = CommitToken::from_bytes([i; 16]);
+        let (run, admitted) =
+            store.prepare_registry_admit(id, actor, nonce, plan()?, job, i64::from(i))?;
+        nonce += 1;
+        check!(admitted.evicted().is_empty());
+        check!(admitted.changes_registry());
+        publish(&mut store, admitted)?;
+        let cancelled = store.prepare_cancel(id, actor, run, i64::from(i) + 100)?;
+        publish(&mut store, cancelled)?;
+    }
+
+    let account = store.account(id)?;
+    let inline_registry = account
+        .runs
+        .values()
+        .filter(|r| r.plan.kind == WorkKind::Registry)
+        .count();
+    check!(
+        inline_registry <= 17,
+        "inline Registry rows stay bounded via archival"
+    );
+    check!(!account.archived_registry.is_empty());
+    check_eq!(
+        inline_registry + account.archived_registry.len(),
+        25,
+        "all 25 Registry runs accounted for without loss"
+    );
+    check_eq!(
+        store.archived_registry_runs(id, actor)?.len(),
+        account.archived_registry.len()
+    );
+
+    // Account document round-trips cleanly through BulkStore::load.
+    let bytes = serde_json::to_vec(account)?;
+    let mut reloaded = BulkStore::new(cfg)?;
+    reloaded.load(id, &bytes)?;
+    check_eq!(reloaded.account(id)?, account);
+
+    // Admitting Proving runs on the exact same character succeeds without
+    // deadlocking on or touching Registry history (and never sets changes_registry).
+    let mut proving = plan()?;
+    proving.registry = None;
+    proving.kind = WorkKind::Proving;
+    proving.per_side = 1;
+    proving.unit_count = 2;
+    proving.games = 10;
+    proving.seeds = vec![1, 2, 3, 4, 5];
+    proving.limit_ms = 10_000;
+    proving.native_substep_ms = 250;
+    for step in 0..4_u64 {
+        let (run, p) = store.prepare_admit(id, actor, nonce, proving.clone(), 500 + step as i64)?;
+        nonce += 1;
+        check!(
+            !p.changes_registry(),
+            "Proving trim must never touch Registry runs"
+        );
+        check!(
+            p.evicted().iter().all(|r| r.plan.kind == WorkKind::Proving),
+            "Proving trim evicts only Proving runs"
+        );
+        publish(&mut store, p)?;
+        let c = store.prepare_cancel(id, actor, run, 600 + step as i64)?;
+        publish(&mut store, c)?;
+    }
+    Ok(())
+}

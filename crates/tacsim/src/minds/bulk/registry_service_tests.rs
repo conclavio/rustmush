@@ -206,14 +206,18 @@ fn exact_admission_no_intent_releases_ticket_machine_and_shared_hold_only_once()
     let mut preparing = std::collections::BTreeSet::from([binding.account]);
     entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(false)?);
     for _ in 0..3 {
-        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check_eq!(
+            consume_attempt(&mut entry, &mut tickets, &mut preparing, 0)?,
+            ConsumeOutcome::Continue
+        );
         tickets.check(ticket, &exact)?;
         check!(preparing.contains(&binding.account));
         check_eq!(drops.load(Ordering::SeqCst), 0);
     }
     let proof = harness.drive()?;
-    check!(
-        !consume_attempt(&mut entry, &mut tickets, &mut preparing)?,
+    check_eq!(
+        consume_attempt(&mut entry, &mut tickets, &mut preparing, 0)?,
+        ConsumeOutcome::Continue,
         "driver drop is unresolved"
     );
     check!(matches!(
@@ -228,7 +232,7 @@ fn exact_admission_no_intent_releases_ticket_machine_and_shared_hold_only_once()
     tickets.check(ticket, &exact)?;
     proof.store(true, Ordering::Release);
     entry.actor = ObjId(8);
-    check!(consume_attempt(&mut entry, &mut tickets, &mut preparing).is_err());
+    check!(consume_attempt(&mut entry, &mut tickets, &mut preparing, 0).is_err());
     check!(matches!(
         entry.pending.as_ref().ok_or("retained proof")?.attempt,
         Attempt::NoIntent
@@ -237,13 +241,19 @@ fn exact_admission_no_intent_releases_ticket_machine_and_shared_hold_only_once()
     check_eq!(drops.load(Ordering::SeqCst), 0);
     check!(preparing.contains(&binding.account));
     entry.actor = binding.character;
-    check!(consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+    check_eq!(
+        consume_attempt(&mut entry, &mut tickets, &mut preparing, 0)?,
+        ConsumeOutcome::AdmittedAborted
+    );
     check!(entry.pending.is_none());
     check!(matches!(entry.phase, Phase::Finished));
     check!(preparing.is_empty());
     check!(tickets.get(ticket).is_err());
     check_eq!(drops.load(Ordering::SeqCst), 1);
-    check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+    check_eq!(
+        consume_attempt(&mut entry, &mut tickets, &mut preparing, 0)?,
+        ConsumeOutcome::Continue
+    );
     check_eq!(drops.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -259,7 +269,10 @@ fn not_dispatched_retries_but_new_unresolved_attempt_keeps_custody() -> TestResu
     let mut entry = entry(binding, ticket, drops.clone());
     let mut preparing = std::collections::BTreeSet::from([binding.account]);
     entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(true)?);
-    check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+    check_eq!(
+        consume_attempt(&mut entry, &mut tickets, &mut preparing, 0)?,
+        ConsumeOutcome::Continue
+    );
     check!(matches!(
         entry.pending.as_ref().ok_or("pending")?.attempt,
         Attempt::Unsubmitted
@@ -267,7 +280,10 @@ fn not_dispatched_retries_but_new_unresolved_attempt_keeps_custody() -> TestResu
     entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(false)?);
     let _unresolved = harness.drive()?;
     for _ in 0..3 {
-        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
+        check_eq!(
+            consume_attempt(&mut entry, &mut tickets, &mut preparing, 0)?,
+            ConsumeOutcome::Continue
+        );
     }
     tickets.check(ticket, &exact)?;
     check!(matches!(
@@ -345,38 +361,59 @@ fn admitted_transition_no_intent_preserves_exact_machine_ticket_and_paid_receipt
             phase,
             cancel: false,
             schedule_after: 0,
+            grant_after: 0,
+            grant_failures: 0,
         };
         let proof = harness.drive()?;
         let mut preparing = std::collections::BTreeSet::new();
-        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-        proof.store(true, Ordering::Release);
-        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-        check!(matches!(
-            entry.pending.as_ref().ok_or("pending")?.attempt,
-            Attempt::Unsubmitted
-        ));
-        tickets.check(ticket, &exact)?;
-        check!(
-            tickets
-                .discard_unadmitted(ticket, binding.character, binding.account)
-                .is_err()
+        check_eq!(
+            consume_attempt(&mut entry, &mut tickets, &mut preparing, 100)?,
+            ConsumeOutcome::Continue
         );
+        proof.store(true, Ordering::Release);
+        let outcome = consume_attempt(&mut entry, &mut tickets, &mut preparing, 100)?;
         check_eq!(
             serde_json::to_value(quota.account_run(binding.account, binding.run)?)?,
             before
         );
         check_eq!(drops.load(Ordering::SeqCst), 0);
-        entry.pending.as_mut().ok_or("pending")?.attempt = Attempt::Observed(harness.queue(false)?);
-        let _new_unresolved = harness.drive()?;
-        check!(!consume_attempt(&mut entry, &mut tickets, &mut preparing)?);
-        check!(
-            matches!(
+        if transition == Transition::Grant {
+            // Unadmitted Grant NoIntent discards only the ungranted ticket,
+            // retains the exact Machine (0 drops), yields to Ready with backoff.
+            check_eq!(outcome, ConsumeOutcome::GrantYielded);
+            check!(entry.pending.is_none());
+            check!(tickets.get(ticket).is_err());
+            check!(matches!(entry.phase, Phase::Ready(Some(_))));
+            check!(entry.grant_after > 100);
+            check_eq!(entry.grant_failures, 1);
+        } else {
+            check_eq!(outcome, ConsumeOutcome::Continue);
+            check!(matches!(
                 entry.pending.as_ref().ok_or("pending")?.attempt,
-                Attempt::Observed(_)
-            ),
-            "old NoIntent cannot complete the replacement attempt"
-        );
-        check_eq!(drops.load(Ordering::SeqCst), 0);
+                Attempt::Unsubmitted
+            ));
+            tickets.check(ticket, &exact)?;
+            check!(
+                tickets
+                    .discard_unadmitted(ticket, binding.character, binding.account)
+                    .is_err()
+            );
+            entry.pending.as_mut().ok_or("pending")?.attempt =
+                Attempt::Observed(harness.queue(false)?);
+            let _new_unresolved = harness.drive()?;
+            check_eq!(
+                consume_attempt(&mut entry, &mut tickets, &mut preparing, 100)?,
+                ConsumeOutcome::Continue
+            );
+            check!(
+                matches!(
+                    entry.pending.as_ref().ok_or("pending")?.attempt,
+                    Attempt::Observed(_)
+                ),
+                "old NoIntent cannot complete the replacement attempt"
+            );
+            check_eq!(drops.load(Ordering::SeqCst), 0);
+        }
     }
     Ok(())
 }
@@ -427,6 +464,8 @@ fn entry(binding: Binding, ticket: TicketId, drops: Arc<AtomicUsize>) -> Entry {
         },
         cancel: false,
         schedule_after: 0,
+        grant_after: 0,
+        grant_failures: 0,
     }
 }
 fn plan() -> TestResult<Plan> {
@@ -614,9 +653,9 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
             ))
             .map_err(|(e, _)| e)?;
     }
-    lane.take_fair_turn(queue.pop().ok_or("A fair head")?)
+    lane.take_fair_turn(queue.pop().ok_or("A fair head")?, 0)
         .map_err(|_| "take A")?;
-    check_eq!(lane.pending_turn, Some(a.character));
+    check_eq!(lane.pending_turn.map(|turn| turn.actor), Some(a.character));
     let head = lane.entries.get_mut(&a.character).ok_or("A entry")?;
     check!(
         head.continuation(1, true).is_none(),
@@ -642,57 +681,17 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         Phase::Grant(ready) => ready,
         _ => return Err("A granted phase".into()),
     };
-    lane.take_fair_turn(queue.pop().ok_or("B fair head")?)
-        .map_err(|_| "take B")?;
-    check_eq!(lane.pending_turn, Some(b.character));
-    check_eq!(
-        lane.entries
-            .get_mut(&b.character)
-            .ok_or("B entry")?
-            .continuation(2, false),
-        Some((b.character, "18".into()))
-    );
-    let mut harness = ObservedHarness::new()?;
-    let mut tickets = Tickets::default();
-    let ticket = tickets.grant(b, 2_000)?;
-    lane.entries.get_mut(&b.character).ok_or("B entry")?.pending = Some(Pending {
-        ticket,
-        transition: Transition::Grant,
-        ack: None,
-        attempt: Attempt::Unsubmitted,
-    });
-    for _ in 0..3 {
-        check!(matches!(
-            store.prepare_grant(b.account, b.run, 0, 2_000),
-            Err(BulkError::Busy)
-        ));
-        let entry = lane.entries.get_mut(&b.character).ok_or("B entry")?;
-        check!(matches!(
-            entry.pending.as_ref().ok_or("B pending")?.attempt,
-            Attempt::Unsubmitted
-        ));
-        entry.pending.as_mut().ok_or("B pending")?.attempt =
-            Attempt::Observed(harness.queue(false)?);
-        let proof = harness.drive()?;
-        check!(!consume_attempt(
-            entry,
-            &mut tickets,
-            &mut std::collections::BTreeSet::new()
-        )?);
-        // The server proof producer is covered separately; this drives the
-        // same consumer after each actual quota Busy refusal in this fixture.
-        proof.store(true, Ordering::Release);
-        check!(!consume_attempt(
-            entry,
-            &mut tickets,
-            &mut std::collections::BTreeSet::new()
-        )?);
-        check_eq!(
-            lane.pending_turn,
-            Some(b.character),
-            "Busy does not lose the fair head"
-        );
-    }
+    // While A holds the single worker slot, `can_grant` pre-check reports Busy
+    // so B stays at the front of `FairQueue` without locking `pending_turn`.
+    check!(matches!(
+        store.can_grant(b.account, b.run, 0, 2_000),
+        Err(BulkError::Busy)
+    ));
+    let head_b = queue.pop().ok_or("B fair head")?;
+    check_eq!(head_b.account(), b.account);
+    queue.push_front(head_b).map_err(|(e, _)| e)?;
+    check!(lane.pending_turn.is_none());
+    // Settle A and return A to the tail of `FairQueue`; B remains at the head.
     let receipt = Receipt {
         conduct: None,
         registry: Some(RegistryProgress {
@@ -713,6 +712,18 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
     queue
         .push(ready_a.take().ok_or("A real retained machine")?)
         .map_err(|(e, _)| e)?;
+    // B now takes the fair turn ahead of A.
+    let head_b = queue.pop().ok_or("B keeps fair head")?;
+    check_eq!(head_b.account(), b.account);
+    lane.take_fair_turn(head_b, 2).map_err(|_| "take B")?;
+    check_eq!(lane.pending_turn.map(|turn| turn.actor), Some(b.character));
+    check_eq!(
+        lane.entries
+            .get_mut(&b.character)
+            .ok_or("B entry")?
+            .continuation(2, false),
+        Some((b.character, "18".into()))
+    );
     let next_a = queue.pop().ok_or("A returned queue tail")?;
     let previous_deadline = lane
         .entries
@@ -720,7 +731,7 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         .ok_or("A entry")?
         .schedule_after;
     let next_a = lane
-        .take_fair_turn(next_a)
+        .take_fair_turn(next_a, 2)
         .err()
         .ok_or("B must still own turn")?;
     check_eq!(
@@ -743,9 +754,9 @@ fn two_accounts_keep_shared_fair_turn_across_real_busy_grant_and_paid_settlement
         b.account
     );
     lane.pending_turn = None;
-    lane.take_fair_turn(queue.pop().ok_or("A follows B")?)
+    lane.take_fair_turn(queue.pop().ok_or("A follows B")?, 3)
         .map_err(|_| "next A")?;
-    check_eq!(lane.pending_turn, Some(a.character));
+    check_eq!(lane.pending_turn.map(|turn| turn.actor), Some(a.character));
     check_eq!(
         lane.entries
             .get_mut(&a.character)
@@ -1155,5 +1166,197 @@ fn real_scheduler_preserves_the_actor_and_projection_refuses_foreign_principal()
         QuotaParticipant::project_selector(world.engine(), &wrong_subject, Transition::Cancel)?
             .is_none()
     );
+    Ok(())
+}
+
+#[test]
+fn p2_tsc_5_quota_exhausted_rotates_cancel_pivots_and_turn_lease_unblocks() -> TestResult {
+    let cfg = BulkConfig {
+        proving_workers: 1,
+        queued: 2,
+        daily_unit_minutes: 1,
+        ..BulkConfig::default()
+    };
+    let mut store = BulkStore::new(cfg.clone())?;
+    let a = binding(7)?;
+    let b = binding(3)?;
+    let mut long_plan = plan()?;
+    let hash = DefinitionDigest::from_bytes([1; 32]);
+    long_plan.registry = Some(RegistryBudget::prepare(
+        hash,
+        hash,
+        hash,
+        vec![RegistryCase {
+            key: CaseKey::new(
+                RatingClass::I,
+                CaseKind::Probe {
+                    pair: 0,
+                    name: ProbeName::EmptyArmed,
+                },
+            )?,
+            units: 2,
+            native_ms: 250,
+            maximum_ms: 35_000,
+        }],
+    )?);
+    let (run_a, change_a) =
+        store.prepare_registry_admit(a.account, a.character, 1, long_plan, a.job, 0)?;
+    check_eq!(run_a, a.run);
+    install(&mut store, change_a, a.job)?;
+    admit(&mut store, b)?;
+
+    // Exhaust account A's daily quota (60_000 unit-ms = 15 * 2_000ms * 2 units)
+    // while leaving account B funded.
+    for step in 0..15_u8 {
+        let change = store.prepare_grant(a.account, a.run, 0, 2_000)?;
+        let op = CommitToken::from_bytes([step + 1; 16]);
+        install(&mut store, change, op)?;
+        let lease = store.take_registry_lease(op).ok_or("lease")?;
+        let receipt = Receipt {
+            conduct: None,
+            registry: Some(RegistryProgress {
+                cursor: RegistryCursor {
+                    index: 0,
+                    simulated_ms: u64::from(step + 1) * 2_000,
+                },
+                ending: RegistryEnding::Continue,
+            }),
+            actual_unit_ms: 2_000 * lease.units(),
+            lease,
+            result: None,
+            terminal: None,
+        };
+        let done = store.prepare_finish(receipt, 0)?;
+        install(&mut store, done, CommitToken::from_bytes([step + 50; 16]))?;
+    }
+    check!(matches!(
+        store.can_grant(a.account, a.run, 0, 2_000),
+        Err(BulkError::Quota)
+    ));
+    check!(store.can_grant(b.account, b.run, 0, 2_000).is_ok());
+
+    // 1. Grant cancel pivot: if `@registry/cancel` arrives while a Grant ticket
+    //    is pending and receives NoIntent (or is still Unsubmitted), the
+    //    ungranted ticket is discarded immediately and the entry stays ready to
+    //    pivot straight to Cancel without dropping the Machine.
+    let mut harness = ObservedHarness::new()?;
+    let mut tickets = Tickets::default();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let grant_ticket = tickets.grant(a, 2_000)?;
+    let mut cancel_entry = Entry {
+        reconformance: false,
+        id: grant_ticket.get(),
+        account: a.account,
+        actor: a.character,
+        binding: Some(a),
+        pending: Some(Pending {
+            ticket: grant_ticket,
+            transition: Transition::Grant,
+            ack: None,
+            attempt: Attempt::Observed(harness.queue(false)?),
+        }),
+        phase: Phase::Grant(Some(Ready::registry(
+            a,
+            [1; 32],
+            Box::new(Kept(drops.clone())),
+        ))),
+        cancel: true,
+        schedule_after: 99_999,
+        grant_after: 0,
+        grant_failures: 0,
+    };
+    let proof = harness.drive()?;
+    proof.store(true, Ordering::Release);
+    check_eq!(
+        consume_attempt(
+            &mut cancel_entry,
+            &mut tickets,
+            &mut std::collections::BTreeSet::new(),
+            500,
+        )?,
+        ConsumeOutcome::GrantCancelled
+    );
+    check!(cancel_entry.pending.is_none());
+    check!(tickets.get(grant_ticket).is_err());
+    check!(matches!(cancel_entry.phase, Phase::Grant(Some(_))));
+    check_eq!(cancel_entry.schedule_after, 0);
+    check_eq!(drops.load(Ordering::SeqCst), 0);
+
+    // Also discards an Unsubmitted Grant ticket immediately when cancel is set.
+    let unsub_ticket = tickets.grant(a, 2_000)?;
+    cancel_entry.pending = Some(Pending {
+        ticket: unsub_ticket,
+        transition: Transition::Grant,
+        ack: None,
+        attempt: Attempt::Unsubmitted,
+    });
+    check_eq!(
+        consume_attempt(
+            &mut cancel_entry,
+            &mut tickets,
+            &mut std::collections::BTreeSet::new(),
+            600,
+        )?,
+        ConsumeOutcome::GrantCancelled
+    );
+    check!(cancel_entry.pending.is_none());
+    check!(tickets.get(unsub_ticket).is_err());
+
+    // 2. Turn-lease timeout releases a stalled `pending_turn`, discards any
+    //    unsubmitted Grant ticket, re-queues the Ready entry with backoff, and
+    //    lets Account B proceed cleanly.
+    let mut lane = Lane::default();
+    let mut queue = FairQueue::new(&cfg)?;
+    let mut entry_a = entry(a, TicketId::new(11)?, drops.clone());
+    entry_a.phase = Phase::Queued;
+    entry_a.pending = None;
+    entry_a.binding = Some(a);
+    let mut entry_b = entry(b, TicketId::new(12)?, drops.clone());
+    entry_b.phase = Phase::Queued;
+    entry_b.pending = None;
+    entry_b.binding = Some(b);
+    lane.entries.insert(a.character, entry_a);
+    lane.entries.insert(b.character, entry_b);
+    drops.store(0, Ordering::SeqCst);
+    queue
+        .push(Ready::registry(a, [1; 32], Box::new(Kept(drops.clone()))))
+        .map_err(|(e, _)| e)?;
+    queue
+        .push(Ready::registry(b, [1; 32], Box::new(Kept(drops.clone()))))
+        .map_err(|(e, _)| e)?;
+    lane.take_fair_turn(queue.pop().ok_or("A head")?, 1_000)
+        .map_err(|_| "take A")?;
+    let stalled_ticket = tickets.grant(a, 2_000)?;
+    lane.entries.get_mut(&a.character).ok_or("A")?.pending = Some(Pending {
+        ticket: stalled_ticket,
+        transition: Transition::Grant,
+        ack: None,
+        attempt: Attempt::Unsubmitted,
+    });
+    // Before timeout: turn stays held.
+    lane.release_expired_turn(
+        1_000 + TURN_LEASE_TIMEOUT_MS - 1,
+        Some(&mut tickets),
+        &mut queue,
+    );
+    check!(lane.has_pending_turn());
+    // At timeout: turn releases, unsubmitted Grant ticket discarded, A re-queued behind B.
+    lane.release_expired_turn(
+        1_000 + TURN_LEASE_TIMEOUT_MS,
+        Some(&mut tickets),
+        &mut queue,
+    );
+    check!(!lane.has_pending_turn());
+    check!(tickets.get(stalled_ticket).is_err());
+    let a_row = lane.entries.get(&a.character).ok_or("A")?;
+    check!(a_row.pending.is_none());
+    check!(matches!(a_row.phase, Phase::Queued));
+    check!(a_row.grant_after > 1_000 + TURN_LEASE_TIMEOUT_MS);
+    let next_head = queue.pop().ok_or("B next")?;
+    check_eq!(next_head.account(), b.account);
+    lane.take_fair_turn(next_head, 1_000 + TURN_LEASE_TIMEOUT_MS)
+        .map_err(|_| "B takes turn")?;
+    check_eq!(lane.pending_turn.map(|turn| turn.actor), Some(b.character));
+    check_eq!(drops.load(Ordering::SeqCst), 0);
     Ok(())
 }

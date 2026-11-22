@@ -4,9 +4,9 @@ use super::{
     artifacts::Artifacts,
     conduct_projection,
     conduct_tickets::{Ticket, TicketKind},
-    model::{Account, RunId, utc_day},
+    model::{Account, ArchivedConductRun, CONDUCT_ARCHIVE_FORMAT, RunId, utc_day},
     owner::{BulkStore, Prepared},
-    publication::account_key,
+    publication::{account_key, conduct_run_key},
 };
 use mush_core::action::{PerceivedRef, PrincipalId};
 use mush_core::authoritative::{AuthoritativeKey, ReplayWrite};
@@ -291,12 +291,29 @@ impl OwnerParticipant for QuotaParticipant {
         {
             return Err(ParticipantError::Authority);
         }
-        let write = ReplayWrite::ModuleJsonSet {
+        let mut writes = vec![ReplayWrite::ModuleJsonSet {
             namespace: OwnerId::new(crate::NS).map_err(refuse)?,
             key: AuthoritativeKey::parse_canonical(account_key(change.account()))
                 .map_err(refuse)?,
             value: change.document().map_err(refuse)?,
-        };
+        }];
+        for (archived_account, archived_run) in change.archived_conduct() {
+            let archived = ArchivedConductRun {
+                format: CONDUCT_ARCHIVE_FORMAT,
+                account: *archived_account,
+                run: Box::new(archived_run.clone()),
+            };
+            let value = serde_json::to_value(&archived).map_err(refuse)?;
+            writes.push(ReplayWrite::ModuleJsonSet {
+                namespace: OwnerId::new(crate::NS).map_err(refuse)?,
+                key: AuthoritativeKey::parse_canonical(conduct_run_key(
+                    *archived_account,
+                    archived_run.id,
+                ))
+                .map_err(refuse)?,
+                value,
+            });
+        }
         Ok(OwnerPreparation::new(
             output.clone(),
             QuotaPatch {
@@ -305,7 +322,7 @@ impl OwnerParticipant for QuotaParticipant {
                 ticket,
                 proof,
             },
-            vec![write],
+            writes,
         ))
     }
     fn recheck(
@@ -368,8 +385,12 @@ impl OwnerParticipant for QuotaParticipant {
             return false;
         };
         namespace.as_str() == crate::NS
-            && serde_json::from_value::<Account>(value.clone())
+            && (serde_json::from_value::<Account>(value.clone())
                 .is_ok_and(|a| key.as_str() == account_key(a.id).as_str())
+                || serde_json::from_value::<ArchivedConductRun>(value.clone()).is_ok_and(|a| {
+                    a.validate().is_ok()
+                        && key.as_str() == conduct_run_key(a.account, a.run.id).as_str()
+                }))
     }
 }
 

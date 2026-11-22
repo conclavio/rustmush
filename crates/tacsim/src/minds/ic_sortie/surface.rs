@@ -41,10 +41,10 @@ pub fn claim_of(world: &World, unit: ObjId) -> ClaimRead {
         .active
         .get(&unit)
         .and_then(|open| state.rows.get(open))
-        .filter(|row| row.closed.is_none())
+        .filter(|row| row.closed().is_none())
         .map_or(ClaimRead::None, |row| ClaimRead::Active {
-            open: row.open.operation,
-            dispatcher: row.open.dispatcher,
+            open: row.open_operation(),
+            dispatcher: row.open_dispatcher(),
         })
 }
 
@@ -55,24 +55,32 @@ pub fn claim_seal(world: &World, open: CommitToken) -> Option<crate::arena::Mind
     world
         .module_state::<IcSorties>()?
         .rows
-        .get(&open)
+        .get(&open)?
+        .as_full()
         .map(|row| row.open.execution.seal.clone())
 }
 
 /// **The active claim on `unit`, with what it retains** (doc 44 unit MW.13): its open token,
 /// its dispatcher, its seal and its source, borrowed from the book. What a host that thinks
 /// with a claimed mind outside an arena reads (`crate::port::ship_mind::sealed`); `None`
-/// where the claim path is not composed or the unit has no active claim.
+/// where the claim path is not composed, the unit has no active claim, or the unit's fitted
+/// core is impounded.
 #[must_use]
 pub fn claim_execution(
     world: &World,
     unit: ObjId,
 ) -> Option<(CommitToken, ObjId, &crate::arena::MindSeal, &str)> {
+    if mush_tactics::module::unit_of(world, unit)
+        .is_some_and(|physical| crate::match_::seal::core_impounded(world, physical))
+    {
+        return None;
+    }
     let state = world.module_state::<IcSorties>()?;
     state
         .active
         .get(&unit)
         .and_then(|open| state.rows.get(open))
+        .and_then(|row| row.as_full())
         .filter(|row| row.closed.is_none())
         .map(|row| {
             (
@@ -93,7 +101,7 @@ pub fn retained_source<'w>(world: &'w World, sha256: &[u8; 32]) -> Option<&'w st
     state
         .active
         .values()
-        .filter_map(|open| state.rows.get(open))
+        .filter_map(|open| state.rows.get(open).and_then(|row| row.as_full()))
         .find(|row| row.open.execution.seal.source_sha256 == *sha256)
         .map(|row| row.open.execution.source.as_str())
 }
@@ -109,12 +117,35 @@ pub fn active_under_licence(world: &World, licence: u64) -> usize {
     state
         .active
         .values()
-        .filter_map(|open| state.rows.get(open))
+        .filter_map(|open| state.rows.get(open).and_then(|row| row.as_full()))
         .filter(|row| {
             matches!(
                 &row.open.execution.seal.requested.origin,
                 crate::arena::profile_seal::MindOrigin::Filed { licence, .. } if licence.as_str() == word
             )
+        })
+        .count()
+}
+
+/// **How many IC claims `dispatcher` opened on `clock` at or after `since_ic`** (P2-TSC-6):
+/// durable restart-proof rate-limit accounting over the retained claim book.
+#[must_use]
+pub fn opens_by_dispatcher_since(
+    world: &World,
+    dispatcher: ObjId,
+    clock: mush_core::ClockRef,
+    since_ic: i64,
+) -> usize {
+    let Some(state) = world.module_state::<IcSorties>() else {
+        return 0;
+    };
+    state
+        .rows
+        .values()
+        .filter(|row| {
+            row.open_dispatcher() == dispatcher
+                && row.open_at_ic().clock == clock
+                && row.open_at_ic().at >= since_ic
         })
         .count()
 }
@@ -126,8 +157,7 @@ pub fn claim_closed(world: &World, open: CommitToken) -> Option<CommitToken> {
         .module_state::<IcSorties>()?
         .rows
         .get(&open)?
-        .closed
-        .as_ref()
+        .closed()
         .map(|closed| closed.operation)
 }
 
@@ -143,7 +173,8 @@ pub fn claim_closed(world: &World, open: CommitToken) -> Option<CommitToken> {
 ///
 /// # Errors
 ///
-/// The rig has no tactical unit, or it lies on a domain that is not a hangar port's berth.
+/// The rig has no tactical unit, its core is impounded, or it lies on a domain that is not a
+/// hangar port's berth.
 pub(crate) fn surface_start(
     world: &World,
     operator: ObjId,
@@ -153,10 +184,14 @@ pub(crate) fn surface_start(
     if on_a_domain_without_a_berth(world, tv) {
         return Err(bad("a claim opens in a bay or at a hangar port's berth"));
     }
+    let unit = mush_tactics::module::unit_of(world, tv)
+        .ok_or_else(|| bad("surface unit"))?
+        .clone();
+    if crate::match_::seal::core_impounded(world, &unit) {
+        return Err(bad("impounded core"));
+    }
     Ok(Arc::new(StartPermit {
-        unit: mush_tactics::module::unit_of(world, tv)
-            .ok_or_else(|| bad("surface unit"))?
-            .clone(),
+        unit,
         actor: operator,
         sortie: Some(SortieId::ic(tv, launch_ic)),
         _transition: HostTransition::surface(),
@@ -208,7 +243,11 @@ pub(crate) fn surface_close(
     let state = world
         .module_state::<IcSorties>()
         .ok_or_else(|| bad("claim book"))?;
-    let record = state.rows.get(&open).ok_or_else(|| bad("surface open"))?;
+    let record = state
+        .rows
+        .get(&open)
+        .and_then(|row| row.as_full())
+        .ok_or_else(|| bad("surface open"))?;
     if record.closed.is_some() {
         return Err(bad("surface closed"));
     }

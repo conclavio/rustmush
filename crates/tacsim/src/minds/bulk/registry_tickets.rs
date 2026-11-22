@@ -345,6 +345,28 @@ impl Tickets {
         self.bytes = retained;
         Ok(())
     }
+    /// Discard an ungranted `Grant` ticket whose attempt was never submitted or
+    /// received a `NoIntent` proof, so the service can release its fair turn or
+    /// immediately pivot to `Cancel` without stranding a ticket or receipt.
+    pub(super) fn discard_ungranted(
+        &mut self,
+        id: TicketId,
+        binding: Binding,
+    ) -> Result<(), BulkError> {
+        let ticket = self.rows.get(&id.get()).ok_or(BulkError::Missing)?;
+        if !matches!(ticket.kind, TicketKind::Grant { binding: actual, .. } if actual == binding)
+            || self.acknowledged.iter().any(|ack| ack.ticket == id)
+        {
+            return Err(BulkError::Stale);
+        }
+        let retained = self
+            .bytes
+            .checked_sub(ticket.bytes)
+            .ok_or_else(|| invalid("Registry ticket byte accounting"))?;
+        self.rows.remove(&id.get());
+        self.bytes = retained;
+        Ok(())
+    }
     /// Bind has checked exact Arc identity and capacity. No authority lookup,
     /// encoding or fallible operation remains in this owner image installation.
     pub(super) fn acknowledge_checked(&mut self, expected: &Arc<Ticket>, ack: Acknowledged) {

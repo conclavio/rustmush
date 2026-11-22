@@ -92,11 +92,15 @@ impl Receipt {
         self.lease.run
     }
 }
+const MAX_INLINE_TERMINAL_REGISTRY: usize = 16;
+const MAX_INLINE_TERMINAL_CONDUCT: usize = 4;
+
 pub(crate) struct Prepared {
     account: Account,
     expected: u64,
     encoded: Vec<u8>,
     evicted: Vec<Run>,
+    archived_conduct: Vec<(AccountId, Run)>,
     lease: Option<Lease>,
     registry_changed: bool,
     conduct_changed: bool,
@@ -104,6 +108,9 @@ pub(crate) struct Prepared {
 impl Prepared {
     pub(super) fn changes_conduct(&self) -> bool {
         self.conduct_changed
+    }
+    pub(super) fn archived_conduct(&self) -> &[(AccountId, Run)] {
+        &self.archived_conduct
     }
     pub(super) fn conduct_run(&self, job: CommitToken) -> Option<RunId> {
         self.account
@@ -146,6 +153,10 @@ pub(crate) struct BulkStore {
     cfg: BulkConfig,
     generation: u64,
     accounts: BTreeMap<AccountId, Account>,
+    /// Permanent terminal Conduct runs archived into per-run KV documents
+    /// (`tacsim:conduct:run:<account_hash>:<run_id>`) so `Account` documents
+    /// never grow beyond `MAX_ACCOUNT_DOCUMENT`.
+    archived_conduct: BTreeMap<(AccountId, RunId), Run>,
     quarantined: BTreeSet<AccountId>,
     unreadable_quota_key: bool,
     // Volatile post-ack handoff only. The durable flight remains authoritative;
@@ -160,6 +171,7 @@ impl BulkStore {
             cfg,
             generation: 0,
             accounts: BTreeMap::new(),
+            archived_conduct: BTreeMap::new(),
             quarantined: BTreeSet::new(),
             unreadable_quota_key: false,
             registry_handoffs: BTreeMap::new(),
@@ -172,6 +184,7 @@ impl BulkStore {
     pub(super) fn fresh_for_hydration(&self) -> bool {
         self.generation == 0
             && self.accounts.is_empty()
+            && self.archived_conduct.is_empty()
             && self.quarantined.is_empty()
             && !self.unreadable_quota_key
             && self.registry_handoffs.is_empty()
@@ -242,25 +255,36 @@ impl BulkStore {
     /// Refusal-only detection among successfully decoded accounts. This does
     /// not certify completeness when an unrelated account is quarantined.
     pub(super) fn has_known_conduct(&self) -> bool {
-        self.accounts
-            .values()
-            .any(|a| a.runs.values().any(|r| r.plan.kind == WorkKind::Conduct))
+        !self.archived_conduct.is_empty()
+            || self
+                .accounts
+                .values()
+                .any(|a| a.runs.values().any(|r| r.plan.kind == WorkKind::Conduct))
     }
-    /// Complete permanent Conduct inventory, including terminal rows. A missing
-    /// account cannot be treated as an empty inventory after quarantine.
+    /// Complete permanent Conduct inventory, including terminal and archived
+    /// rows. A missing account cannot be treated as an empty inventory after
+    /// quarantine.
     pub(super) fn conduct_runs(
         &self,
     ) -> Result<impl Iterator<Item = (AccountId, &Run)>, BulkError> {
         if self.unreadable_quota_key || !self.quarantined.is_empty() {
             return Err(BulkError::Quarantined);
         }
-        Ok(self.accounts.values().flat_map(|account| {
-            account
-                .runs
-                .values()
-                .filter(|run| run.plan.kind == WorkKind::Conduct)
-                .map(move |run| (account.id, run))
-        }))
+        Ok(self
+            .accounts
+            .values()
+            .flat_map(|account| {
+                account
+                    .runs
+                    .values()
+                    .filter(|run| run.plan.kind == WorkKind::Conduct)
+                    .map(move |run| (account.id, run))
+            })
+            .chain(
+                self.archived_conduct
+                    .iter()
+                    .map(|((account, _), run)| (*account, run)),
+            ))
     }
 
     pub(super) fn active_count(&self) -> usize {
@@ -273,7 +297,72 @@ impl BulkStore {
         self.accounts.get(&id).and_then(|a| a.active)
     }
     pub(super) fn account_run(&self, id: AccountId, run: RunId) -> Result<&Run, BulkError> {
-        self.account(id)?.runs.get(&run).ok_or(BulkError::Missing)
+        let account = self.account(id)?;
+        account
+            .runs
+            .get(&run)
+            .or_else(|| self.archived_conduct.get(&(id, run)))
+            .ok_or(BulkError::Missing)
+    }
+    pub(super) fn archived_registry_runs(
+        &self,
+        account: AccountId,
+        character: ObjId,
+    ) -> Result<Vec<&ArchivedRegistryRun>, BulkError> {
+        Ok(self
+            .account(account)?
+            .archived_registry
+            .iter()
+            .filter(|entry| entry.character == character)
+            .collect())
+    }
+    pub(super) fn load_archived_conduct(
+        &mut self,
+        id: AccountId,
+        run_id: RunId,
+        bytes: &[u8],
+    ) -> Result<(), BulkError> {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| invalid("generation exhausted"))?;
+        let parsed = if bytes.len() <= MAX_CONDUCT_ARCHIVE_DOCUMENT {
+            serde_json::from_slice::<ArchivedConductRun>(bytes).ok()
+        } else {
+            None
+        };
+        let valid = parsed.filter(|archived| {
+            archived.account == id
+                && archived.run.id == run_id
+                && archived.validate().is_ok()
+                && !self.quarantined.contains(&id)
+                && self.accounts.get(&id).is_some_and(|account| {
+                    !account.runs.contains_key(&run_id)
+                        && run_id.0 < account.next_run
+                        && archived.run.nonce <= account.request_watermark
+                })
+                && !self.archived_conduct.contains_key(&(id, run_id))
+                && self.archived_conduct.len() < mush_roll::commerce::conduct::MAX_TRIALS
+                && archived.run.conduct_job.is_some_and(|job| {
+                    !self
+                        .archived_conduct
+                        .values()
+                        .any(|row| row.conduct_job == Some(job))
+                        && !self
+                            .accounts
+                            .values()
+                            .flat_map(|a| a.runs.values())
+                            .any(|row| row.conduct_job == Some(job))
+                })
+        });
+        if let Some(archived) = valid {
+            self.archived_conduct.insert((id, run_id), *archived.run);
+            Ok(())
+        } else {
+            self.unreadable_quota_key = true;
+            self.quarantined.insert(id);
+            Err(BulkError::Quarantined)
+        }
     }
     pub fn next_nonce(&self, id: AccountId) -> Result<u64, BulkError> {
         match self.account(id) {
@@ -366,6 +455,15 @@ impl BulkStore {
         evicted: Vec<Run>,
         lease: Option<Lease>,
     ) -> Result<Prepared, BulkError> {
+        self.prepared_with_archive(account, evicted, Vec::new(), lease)
+    }
+    fn prepared_with_archive(
+        &self,
+        account: Account,
+        evicted: Vec<Run>,
+        archived_conduct: Vec<(AccountId, Run)>,
+        lease: Option<Lease>,
+    ) -> Result<Prepared, BulkError> {
         account.validate(&self.cfg)?;
         let encoded = serde_json::to_vec(&account).map_err(|e| invalid(e.to_string()))?;
         if encoded.len() > MAX_ACCOUNT_DOCUMENT
@@ -374,6 +472,19 @@ impl BulkStore {
                 .is_some_and(|n| n > MAX_ACCOUNT_DOCUMENT)
         {
             return Err(invalid("account document bound"));
+        }
+        for (archived_account, run) in &archived_conduct {
+            let doc = ArchivedConductRun {
+                format: CONDUCT_ARCHIVE_FORMAT,
+                account: *archived_account,
+                run: Box::new(run.clone()),
+            };
+            doc.validate()?;
+            let archive_bytes = serde_json::to_vec(&doc).map_err(|e| invalid(e.to_string()))?;
+            if *archived_account != account.id || archive_bytes.len() > MAX_CONDUCT_ARCHIVE_DOCUMENT
+            {
+                return Err(invalid("archived Conduct document bound"));
+            }
         }
         self.generation
             .checked_add(1)
@@ -386,12 +497,13 @@ impl BulkStore {
                 .map(|(id, run)| (*id, run.clone()))
                 .collect::<BTreeMap<_, _>>()
         };
-        let before = self
-            .accounts
-            .get(&account.id)
-            .map(registry_rows)
-            .unwrap_or_default();
-        let registry_changed = before != registry_rows(&account);
+        let before_account = self.accounts.get(&account.id);
+        let before = before_account.map(registry_rows).unwrap_or_default();
+        let before_archived_registry = before_account
+            .map(|a| a.archived_registry.as_slice())
+            .unwrap_or(&[]);
+        let registry_changed = before != registry_rows(&account)
+            || before_archived_registry != account.archived_registry.as_slice();
         let conduct_rows = |account: &Account| {
             account
                 .runs
@@ -400,12 +512,8 @@ impl BulkStore {
                 .map(|(id, run)| (*id, run.clone()))
                 .collect::<BTreeMap<_, _>>()
         };
-        let conduct_changed = self
-            .accounts
-            .get(&account.id)
-            .map(conduct_rows)
-            .unwrap_or_default()
-            != conduct_rows(&account);
+        let conduct_changed = !archived_conduct.is_empty()
+            || before_account.map(conduct_rows).unwrap_or_default() != conduct_rows(&account);
         Ok(Prepared {
             conduct_changed,
             registry_changed,
@@ -413,6 +521,7 @@ impl BulkStore {
             expected: self.generation,
             encoded,
             evicted,
+            archived_conduct,
             lease,
         })
     }
@@ -458,6 +567,18 @@ impl BulkStore {
         if !change.changes_conduct() || change.changes_registry() || !change.evicted.is_empty() {
             return Err(invalid("Conduct change requires exact retained rows"));
         }
+        if self
+            .archived_conduct
+            .len()
+            .saturating_add(change.archived_conduct.len())
+            > mush_roll::commerce::conduct::MAX_TRIALS
+            || change
+                .archived_conduct
+                .iter()
+                .any(|(account, run)| self.archived_conduct.contains_key(&(*account, run.id)))
+        {
+            return Err(invalid("Conduct archive capacity or identity conflict"));
+        }
         if change.lease.is_some()
             && (self.conduct_handoffs.contains_key(&operation)
                 || self.conduct_handoffs.len() >= self.cfg.proving_workers)
@@ -481,15 +602,19 @@ impl BulkStore {
     /// checked. No fallible work may follow the publisher's first mutation.
     pub fn apply_checked(&mut self, change: Prepared) -> Option<Lease> {
         self.generation = self.generation.saturating_add(1);
+        for (account, run) in change.archived_conduct {
+            self.archived_conduct.insert((account, run.id), run);
+        }
         self.accounts.insert(change.account.id, change.account);
         change.lease
     }
     pub fn run(&self, account: AccountId, character: ObjId, id: RunId) -> Result<&Run, BulkError> {
-        self.account(account)?
-            .runs
-            .get(&id)
-            .filter(|r| r.character == character)
-            .ok_or(BulkError::Missing)
+        let row = self.account_run(account, id)?;
+        if row.character == character {
+            Ok(row)
+        } else {
+            Err(BulkError::Missing)
+        }
     }
     pub fn runs(&self, account: AccountId, character: ObjId) -> Result<Vec<&Run>, BulkError> {
         Ok(self
@@ -508,10 +633,13 @@ impl BulkStore {
     ) -> Result<Vec<Run>, BulkError> {
         let mut removed = Vec::new();
         loop {
+            // Proving retention counts and evicts strictly `WorkKind::Proving`
+            // rows. Registry and Conduct have separate archival retention and
+            // must never consume or deadlock Proving slots.
             let rows: Vec<_> = account
                 .runs
                 .values()
-                .filter(|r| r.character == character && r.plan.kind != WorkKind::Bench)
+                .filter(|r| r.character == character && r.plan.kind == WorkKind::Proving)
                 .collect();
             let count = rows.len() + extra_count;
             let bytes = rows
@@ -522,12 +650,77 @@ impl BulkStore {
             }
             let oldest = rows
                 .iter()
-                .filter(|r| r.status.terminal() && r.pins == 0 && r.plan.kind != WorkKind::Conduct)
+                .filter(|r| r.status.terminal() && r.pins == 0)
                 .min_by_key(|r| (r.finished_ms, r.id))
                 .map(|r| r.id)
                 .ok_or(BulkError::Retention)?;
             if let Some(run) = account.runs.remove(&oldest) {
                 removed.push(run)
+            }
+        }
+    }
+    fn archive_terminal_registry(account: &mut Account) -> Result<(), BulkError> {
+        loop {
+            let inline_terminal = account
+                .runs
+                .values()
+                .filter(|r| r.plan.kind == WorkKind::Registry && r.status.terminal() && r.pins == 0)
+                .count();
+            let over_ceiling = account
+                .registry_document_ceiling()?
+                .is_some_and(|n| n > MAX_ACCOUNT_DOCUMENT);
+            if inline_terminal <= MAX_INLINE_TERMINAL_REGISTRY && !over_ceiling {
+                return Ok(());
+            }
+            let Some(oldest) = account
+                .runs
+                .values()
+                .filter(|r| r.plan.kind == WorkKind::Registry && r.status.terminal() && r.pins == 0)
+                .min_by_key(|r| (r.finished_ms, r.id))
+                .map(|r| r.id)
+            else {
+                return Ok(());
+            };
+            if let Some(row) = account.runs.remove(&oldest)
+                && let (Some(job), Some(finished_ms)) = (row.registry_job, row.finished_ms)
+            {
+                if account.archived_registry.len() >= MAX_ARCHIVED_REGISTRY {
+                    account.archived_registry.remove(0);
+                }
+                account.archived_registry.push(ArchivedRegistryRun {
+                    run: row.id,
+                    character: row.character,
+                    job,
+                    finished_ms,
+                });
+            }
+        }
+    }
+    fn archive_terminal_conduct(account: &mut Account) -> Result<Vec<(AccountId, Run)>, BulkError> {
+        let mut archived = Vec::new();
+        loop {
+            let inline_terminal = account
+                .runs
+                .values()
+                .filter(|r| r.plan.kind == WorkKind::Conduct && r.status.terminal())
+                .count();
+            let over_ceiling = account
+                .registry_document_ceiling()?
+                .is_some_and(|n| n > MAX_ACCOUNT_DOCUMENT);
+            if inline_terminal <= MAX_INLINE_TERMINAL_CONDUCT && !over_ceiling {
+                return Ok(archived);
+            }
+            let Some(oldest) = account
+                .runs
+                .values()
+                .filter(|r| r.plan.kind == WorkKind::Conduct && r.status.terminal())
+                .min_by_key(|r| (r.finished_ms, r.id))
+                .map(|r| r.id)
+            else {
+                return Ok(archived);
+            };
+            if let Some(row) = account.runs.remove(&oldest) {
+                archived.push((account.id, row));
             }
         }
     }
@@ -631,26 +824,29 @@ impl BulkStore {
         if available < initial_units * u64::from(initial_native) {
             return Err(BulkError::Quota);
         }
-        let old_benches = account
-            .runs
-            .values()
-            .filter(|r| r.plan.kind == WorkKind::Bench && r.status.terminal())
-            .map(|r| r.id)
-            .collect::<Vec<_>>();
-        let mut evicted = old_benches
-            .into_iter()
-            .filter_map(|id| account.runs.remove(&id))
-            .collect::<Vec<_>>();
-        evicted.extend(self.trim(
-            &mut account,
-            character,
-            if plan.kind != WorkKind::Bench {
-                plan.start.bytes + plan.result_reservation_bytes
-            } else {
-                0
-            },
-            usize::from(plan.kind != WorkKind::Bench),
-        )?);
+        let mut evicted = Vec::new();
+        if matches!(plan.kind, WorkKind::Proving | WorkKind::Bench) {
+            let old_benches = account
+                .runs
+                .values()
+                .filter(|r| r.plan.kind == WorkKind::Bench && r.status.terminal())
+                .map(|r| r.id)
+                .collect::<Vec<_>>();
+            evicted.extend(
+                old_benches
+                    .into_iter()
+                    .filter_map(|id| account.runs.remove(&id)),
+            );
+            if plan.kind == WorkKind::Proving {
+                evicted.extend(self.trim(
+                    &mut account,
+                    character,
+                    plan.start.bytes + plan.result_reservation_bytes,
+                    1,
+                )?);
+            }
+        }
+        let kind = plan.kind;
         let run = RunId(account.next_run);
         account.next_run = account
             .next_run
@@ -680,7 +876,96 @@ impl BulkStore {
                 pins: 0,
             },
         );
-        Ok((run, self.prepared(account, evicted, None)?))
+        let archived_conduct = match kind {
+            WorkKind::Registry => {
+                Self::archive_terminal_registry(&mut account)?;
+                Vec::new()
+            }
+            WorkKind::Conduct => Self::archive_terminal_conduct(&mut account)?,
+            WorkKind::Proving | WorkKind::Bench => Vec::new(),
+        };
+        Ok((
+            run,
+            self.prepared_with_archive(account, evicted, archived_conduct, None)?,
+        ))
+    }
+    pub(super) fn workers_busy(&self) -> bool {
+        self.accounts
+            .values()
+            .flat_map(|a| a.runs.values())
+            .filter(|r| r.flight.is_some())
+            .count()
+            >= self.cfg.proving_workers
+    }
+    /// Read-only eligibility check mirroring [`Self::prepare_grant`] without
+    /// cloning or mutating account state. Used by the shared bulk drain loop so
+    /// ungrantable entries rotate to the tail instead of stalling global turns.
+    pub(super) fn can_grant(
+        &self,
+        id: AccountId,
+        run: RunId,
+        now: i64,
+        sim_ms: u64,
+    ) -> Result<(), BulkError> {
+        if self.workers_busy() {
+            return Err(BulkError::Busy);
+        }
+        let account = self.account(id)?;
+        let day = utc_day(now);
+        if day < account.utc_day {
+            return Err(invalid("UTC clock moved backwards"));
+        }
+        if account.active != Some(run) {
+            return Err(BulkError::Missing);
+        }
+        let row = account.runs.get(&run).ok_or(BulkError::Missing)?;
+        if day > account.utc_day && account.runs.values().any(|r| r.flight.is_some()) {
+            return Err(BulkError::Busy);
+        }
+        let (units, native, case_remaining) = row.charge()?;
+        if sim_ms == 0 || sim_ms > u64::from(native) * LEASE_STEPS {
+            return Err(invalid("quantum exceeds its frozen work-kind bound"));
+        }
+        if row.flight.is_some() || row.status == Status::CancelRequested {
+            return Err(BulkError::Busy);
+        }
+        let (spent_unit_ms, reserved_unit_ms) = if day > account.utc_day {
+            (
+                0_u64,
+                row.plan
+                    .maximum_unit_ms()
+                    .saturating_sub(row.charged_unit_ms)
+                    .min(self.cfg.daily_ms()),
+            )
+        } else {
+            (account.spent_unit_ms, account.reserved_unit_ms)
+        };
+        let available = reserved_unit_ms
+            .min(self.cfg.daily_ms().saturating_sub(spent_unit_ms))
+            .min(
+                row.plan
+                    .maximum_unit_ms()
+                    .saturating_sub(row.charged_unit_ms),
+            )
+            / units;
+        let sim_ms = sim_ms.min(available).min(case_remaining);
+        if sim_ms < u64::from(native) {
+            return Err(BulkError::Quota);
+        }
+        let cost = sim_ms
+            .checked_mul(units)
+            .ok_or_else(|| invalid("cost overflow"))?;
+        if cost > reserved_unit_ms
+            || spent_unit_ms.saturating_add(cost) > self.cfg.daily_ms()
+            || cost
+                > row
+                    .plan
+                    .maximum_unit_ms()
+                    .saturating_sub(row.charged_unit_ms)
+        {
+            return Err(BulkError::Quota);
+        }
+        Ok(())
     }
     pub fn prepare_grant(
         &self,
@@ -1045,7 +1330,10 @@ impl BulkStore {
         run: RunId,
     ) -> Result<Prepared, BulkError> {
         let row = self.run(id, character, run)?;
-        if !row.status.terminal() || row.pins != 0 || row.plan.kind == WorkKind::Conduct {
+        if !row.status.terminal()
+            || row.pins != 0
+            || matches!(row.plan.kind, WorkKind::Registry | WorkKind::Conduct)
+        {
             return Err(BulkError::Retention);
         }
         let mut account = self.account(id)?.clone();
@@ -1472,5 +1760,64 @@ mod tests {
             assert_eq!(s.account(a).unwrap().runs.len(), 2);
         }
         assert_eq!(s.account(a).unwrap().spent_unit_ms, 1000);
+    }
+    #[test]
+    fn p2_tsc_7_terminal_failed_and_cancelled_proving_release_result_reservation() {
+        let cfg = BulkConfig {
+            completed_per_character: 10,
+            bytes_per_character: MAX_ARTIFACT_BYTES, // 16 MiB
+            ..Default::default()
+        };
+        let mut s = BulkStore::new(cfg).expect("store");
+        let a = id("p2-tsc-7-reservation");
+        let actor = ObjId(1);
+        let mut big = plan();
+        big.result_reservation_bytes = 8 * 1024 * 1024; // 8 MiB reservation per run
+
+        // Cancel two pinned Proving runs (each had 8 MiB reservation, result == None).
+        for nonce in 1..=2 {
+            let (run, p) = s
+                .prepare_admit(a, actor, nonce, big.clone(), nonce as i64)
+                .expect("admit");
+            publish(&mut s, p);
+            let p = s
+                .prepare_cancel(a, actor, run, nonce as i64 + 10)
+                .expect("cancel");
+            publish(&mut s, p);
+            assert_eq!(
+                s.run(a, actor, run).expect("run").retained_bytes(),
+                big.start.bytes,
+                "cancelled run with no result must not retain 8 MiB reservation"
+            );
+            let p = s.prepare_pin(a, actor, run, true).expect("pin");
+            publish(&mut s, p);
+        }
+        // Admitting a 3rd run (8 MiB + 100 B) fits cleanly under the 16 MiB cap
+        // because the 2 pinned cancelled runs charge only 200 B total, not 16 MiB.
+        let (third, p) = s
+            .prepare_admit(a, actor, 3, big.clone(), 30)
+            .expect("third run must not deadlock on phantom reservations");
+        publish(&mut s, p);
+        let p = s.prepare_grant(a, third, 31, 250).expect("grant");
+        let lease = publish(&mut s, p).expect("lease");
+        let p = s
+            .prepare_finish(
+                Receipt {
+                    registry: None,
+                    conduct: None,
+                    lease,
+                    actual_unit_ms: 500,
+                    result: None,
+                    terminal: Some(Status::Failed),
+                },
+                32,
+            )
+            .expect("fail");
+        publish(&mut s, p);
+        assert_eq!(
+            s.run(a, actor, third).expect("failed run").retained_bytes(),
+            big.start.bytes,
+            "failed run with no result must not retain 8 MiB reservation"
+        );
     }
 }

@@ -18,6 +18,14 @@ pub(crate) fn account_key(account: AccountId) -> SmolStr {
     )
     .into()
 }
+pub(crate) fn conduct_run_key(account: AccountId, run: RunId) -> SmolStr {
+    format!(
+        "tacsim:conduct:run:{}:{}",
+        account.canonical_hash().to_hex(),
+        run.0
+    )
+    .into()
+}
 fn root(account: AccountId, run: RunId) -> ReferenceKey {
     ReferenceKey {
         owner: crate::store::NS.into(),
@@ -236,6 +244,30 @@ pub(crate) fn hydrate(
         } else {
             store.quarantine_unreadable_key();
             tracing::error!("proving quota document key is unreadable");
+        }
+    }
+    for (suffix, value) in docs.iter().filter_map(|(key, value)| {
+        key.strip_prefix("tacsim:conduct:run:")
+            .map(|suffix| (suffix, value))
+    }) {
+        let parsed = suffix.split_once(':').and_then(|(acct, run)| {
+            let account =
+                serde_json::from_value::<AccountId>(serde_json::Value::String(acct.into())).ok()?;
+            let run_id = run.parse::<u64>().ok().filter(|n| *n > 0)?;
+            Some((account, RunId(run_id)))
+        });
+        if let Some((account, run_id)) = parsed {
+            let bytes = super::encoding::encode(value, super::model::MAX_CONDUCT_ARCHIVE_DOCUMENT)
+                .unwrap_or_default();
+            if store
+                .load_archived_conduct(account, run_id, &bytes)
+                .is_err()
+            {
+                tracing::error!("archived Conduct quota document is quarantined");
+            }
+        } else {
+            store.quarantine_unreadable_key();
+            tracing::error!("archived Conduct quota document key is unreadable");
         }
     }
     artifacts.load(docs);

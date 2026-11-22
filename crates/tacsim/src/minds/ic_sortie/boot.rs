@@ -1,5 +1,5 @@
 use super::{
-    records::{HEAD, Head, PREFIX, Record},
+    records::{HEAD, Head, PREFIX, StoredRecord},
     registration::Registration,
     state::IcSorties,
 };
@@ -32,7 +32,7 @@ pub(crate) fn load(
             if rows.len() >= super::protocol::MAX_HISTORY {
                 return Err(bad("history bound"));
             }
-            let row = Record::decode(value).map_err(bad)?;
+            let row = StoredRecord::decode(value).map_err(bad)?;
             if key.as_str() != row.key() {
                 return Err(bad("record key"));
             }
@@ -52,6 +52,8 @@ pub(crate) fn load(
     let head = head.unwrap_or(Head {
         format: 1,
         next_transition: 1,
+        pruned_count: 0,
+        pruned_digest: None,
     });
     let state = IcSorties::reconstruct(head.clone(), rows).map_err(bad)?;
     registration.loaded(ctx)?;

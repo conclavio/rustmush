@@ -41,7 +41,7 @@
 //! seal that `sealed` no longer answers, and the arm closes its claim on its next fire
 //! (`void`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use mush_core::{
@@ -55,7 +55,7 @@ use smol_str::SmolStr;
 use crate::arena::mind::MindSeal;
 use crate::minds::ic_sortie::{
     ClaimRead, IcHostTicket, SurfaceClose, active_under_licence, claim_closed, claim_execution,
-    claim_of, claim_seal,
+    claim_of, claim_seal, opens_by_dispatcher_since,
 };
 use crate::port::coop::{helm_of, name_of, say};
 use crate::port::epoch::{EPOCH_KEY_PREFIX, EpochKey, EpochProvider, ShipEpochRecord};
@@ -135,6 +135,20 @@ pub const MIND_UNWIRED: &str = "Minds cannot be sealed aboard a ship here.";
 /// Submissions an Open is given before the arm gives the claim up (the Roll refused it on
 /// each: a seat already held, a holding gone, a hull changed).
 pub const MAX_OPEN_TRIES: u8 = 5;
+
+/// Per-principal ship-mind seal limit per rolling window (P2-TSC-6): keeps legitimate fitting
+/// and test cycles unobstructed while preventing zero-cost claim-book cycling.
+const MAX_SEALS_PER_PRINCIPAL_WINDOW: usize = 8;
+/// Real-time window (seconds) enforced in-memory on [`MindArm`].
+const SEAL_REAL_WINDOW_SECS: i64 = 3_600;
+/// IC-time window (seconds) enforced durably against [`crate::minds::ic_sortie::IcSorties`].
+const SEAL_IC_WINDOW_SECS: i64 = 86_400;
+/// Maximum tracked principals in [`MindArm::seal_history`] before pruning stale entries.
+const MAX_SEAL_HISTORY_PRINCIPALS: usize = 4_096;
+/// Private refusal sentence (kept non-public so the `mush-bot` sentence census stays exact).
+fn rate_limit_msg() -> &'static str {
+    "You have sealed too many ship minds recently; try again later."
+}
 
 /// **The four acts on a hull's mind claim**, each an `op` of the ship's epoch action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -224,9 +238,11 @@ pub(crate) fn fits(
     seal: &MindSeal,
     dispatcher: ObjId,
 ) -> Result<(), Unfit> {
-    let core = mush_tactics::module::unit_of(w, hull)
-        .and_then(crate::arena::core::read_core)
-        .ok_or(Unfit::NoCore)?;
+    let unit = mush_tactics::module::unit_of(w, hull).ok_or(Unfit::NoCore)?;
+    let core = crate::arena::core::read_core(unit).ok_or(Unfit::NoCore)?;
+    if crate::match_::seal::core_impounded(w, unit) {
+        return Err(Unfit::NoCore);
+    }
     if seal.core.is_none() || core.class != seal.core_class || core.governed != seal.governed {
         return Err(Unfit::Core);
     }
@@ -236,6 +252,25 @@ pub(crate) fn fits(
         Ok(_) | Err(HullRefusal::Unavailable) => Ok(()),
         Err(HullRefusal::Untitled | HullRefusal::Anothers { .. }) => Err(Unfit::Holder),
     }
+}
+
+/// Whether `actor` has hit the per-principal ship-mind seal quota in either the volatile
+/// real-time window (`MindArm::seal_history`) or the durable IC-time claim book.
+fn seal_rate_limited(w: &World, actor: ObjId) -> bool {
+    let real_recent = w
+        .module_state::<PortTickState>()
+        .map_or(0, |state| state.mind_arm.recent_seals(actor, w.now()));
+    if real_recent >= MAX_SEALS_PER_PRINCIPAL_WINDOW {
+        return true;
+    }
+    let now_ic = w.world_ic_now();
+    let ic_recent = opens_by_dispatcher_since(
+        w,
+        actor,
+        now_ic.clock,
+        now_ic.at.saturating_sub(SEAL_IC_WINDOW_SECS),
+    );
+    ic_recent >= MAX_SEALS_PER_PRINCIPAL_WINDOW
 }
 
 /// **A mind sealed aboard a hull, as the space seat reads it**, borrowed from the claim book.
@@ -555,11 +590,16 @@ pub(crate) fn prepare(
                 if record.open.is_some() {
                     return Err(refuse(MIND_PASSAGE.replace("{name}", &name)));
                 }
-                if mush_tactics::module::unit_of(world, hull)
-                    .and_then(crate::arena::core::read_core)
-                    .is_none()
+                let Some(unit) = mush_tactics::module::unit_of(world, hull) else {
+                    return Err(refuse(MIND_NO_CORE.replace("{name}", &name)));
+                };
+                if crate::arena::core::read_core(unit).is_none()
+                    || crate::match_::seal::core_impounded(world, unit)
                 {
                     return Err(refuse(MIND_NO_CORE.replace("{name}", &name)));
+                }
+                if seal_rate_limited(world, actor) {
+                    return Err(refuse(rate_limit_msg()));
                 }
                 world.world_ic_now().at
             };
@@ -788,6 +828,44 @@ pub(crate) struct MindArm {
     closes: BTreeMap<ObjId, (CommitToken, Arc<IcHostTicket>)>,
     /// Submissions made this boot.
     tries: BTreeMap<ObjId, MindTry>,
+    /// Recent real-UTC seal open timestamps per principal (P2-TSC-6 rate limiting).
+    seal_history: BTreeMap<ObjId, VecDeque<i64>>,
+}
+
+impl MindArm {
+    fn recent_seals(&self, actor: ObjId, now_real: i64) -> usize {
+        let cutoff = now_real.saturating_sub(SEAL_REAL_WINDOW_SECS);
+        self.seal_history
+            .get(&actor)
+            .map_or(0, |times| times.iter().filter(|&&ts| ts >= cutoff).count())
+    }
+
+    fn record_seal_open(&mut self, actor: ObjId, now_real: i64) {
+        let cutoff = now_real.saturating_sub(SEAL_REAL_WINDOW_SECS);
+        if self.seal_history.len() >= MAX_SEAL_HISTORY_PRINCIPALS
+            && !self.seal_history.contains_key(&actor)
+        {
+            self.seal_history.retain(|_, times| {
+                while times.front().is_some_and(|&ts| ts < cutoff) {
+                    times.pop_front();
+                }
+                !times.is_empty()
+            });
+            if self.seal_history.len() >= MAX_SEAL_HISTORY_PRINCIPALS
+                && let Some(first) = self.seal_history.keys().next().copied()
+            {
+                self.seal_history.remove(&first);
+            }
+        }
+        let times = self.seal_history.entry(actor).or_default();
+        while times.front().is_some_and(|&ts| ts < cutoff) {
+            times.pop_front();
+        }
+        if times.len() >= MAX_SEALS_PER_PRINCIPAL_WINDOW * 2 {
+            times.pop_front();
+        }
+        times.push_back(now_real);
+    }
 }
 
 impl std::fmt::Debug for MindArm {
@@ -1078,6 +1156,7 @@ pub(crate) fn step(
                     match minted {
                         Ok(ticket) => {
                             let ticket = Arc::new(ticket);
+                            state.mind_arm.record_seal_open(operator, ctx.w.now());
                             state
                                 .mind_arm
                                 .opens
@@ -1364,8 +1443,12 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if record.as_ref().is_some_and(|record| record.open.is_some()) {
         return Err(CmdError::msg(MIND_PASSAGE.replace("{name}", &name)));
     }
-    let core = mush_tactics::module::unit_of(ctx.w, hull).and_then(crate::arena::core::read_core);
-    let Some(core) = core else {
+    let Some(unit) = mush_tactics::module::unit_of(ctx.w, hull) else {
+        return Err(CmdError::msg(MIND_NO_CORE.replace("{name}", &name)));
+    };
+    let Some(core) = crate::arena::core::read_core(unit)
+        .filter(|_| !crate::match_::seal::core_impounded(ctx.w, unit))
+    else {
         return Err(CmdError::msg(MIND_NO_CORE.replace("{name}", &name)));
     };
     let licence = match &parsed {
@@ -1378,6 +1461,9 @@ pub(crate) fn mind_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let action = action.ok_or_else(|| CmdError::msg(MIND_UNWIRED))?;
     if let Some(line) = crate::surface::dispatch::untitled_refusal(ctx.w, actor, hull) {
         return Err(CmdError::msg(line));
+    }
+    if seal_rate_limited(ctx.w, actor) {
+        return Err(CmdError::msg(rate_limit_msg()));
     }
     if !go {
         say(
@@ -1570,6 +1656,33 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ShipEpochRecord::fresh(hull)).expect("encodes"),
             json!({"hull": 5011, "attempts": 0})
+        );
+    }
+
+    #[test]
+    fn p2_tsc_6_principal_seal_rate_limit_caps_rapid_seals_within_window() {
+        let mut arm = MindArm::default();
+        let spammer = ObjId(101);
+        let innocent = ObjId(102);
+        let t0 = 10_000_i64;
+        for i in 0..MAX_SEALS_PER_PRINCIPAL_WINDOW {
+            assert_eq!(arm.recent_seals(spammer, t0 + i as i64), i);
+            arm.record_seal_open(spammer, t0 + i as i64);
+        }
+        assert_eq!(
+            arm.recent_seals(spammer, t0 + 100),
+            MAX_SEALS_PER_PRINCIPAL_WINDOW,
+            "9th rapid seal within the window must hit per-principal cap"
+        );
+        assert_eq!(
+            arm.recent_seals(innocent, t0 + 100),
+            0,
+            "rate limit is per-principal and does not affect other operators"
+        );
+        // Once the window elapses, the principal can seal again.
+        assert_eq!(
+            arm.recent_seals(spammer, t0 + SEAL_REAL_WINDOW_SECS + 100),
+            0
         );
     }
 }

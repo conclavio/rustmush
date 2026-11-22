@@ -178,6 +178,7 @@ impl IcRetainedExecution {
         let actual = state
             .rows
             .get(&self.open())
+            .and_then(|row| row.as_full())
             .ok_or_else(|| bad("retained open"))?;
         if actual.closed.is_some()
             || actual.open != self.record.open
@@ -218,7 +219,11 @@ impl IcHost {
         open: CommitToken,
     ) -> Result<IcRetainedExecution, ParticipantError> {
         let state = audited_state(world, &self.writer)?;
-        let record = state.rows.get(&open).ok_or_else(|| bad("retained open"))?;
+        let record = state
+            .rows
+            .get(&open)
+            .and_then(|row| row.as_full())
+            .ok_or_else(|| bad("retained open"))?;
         if record.closed.is_some()
             || state.active.get(&record.open.execution.seal.unit) != Some(&open)
         {
@@ -227,7 +232,7 @@ impl IcHost {
         record.open.execution.validate()?;
         Ok(IcRetainedExecution {
             writer: self.writer.clone(),
-            record: Arc::clone(record),
+            record: Arc::new(record.clone()),
         })
     }
     pub(super) fn new(writer: IcWriter, actions: [DefinitionRef; 2]) -> Self {
@@ -585,22 +590,26 @@ impl IcHost {
             .get(&ticket.request)
             .ok_or_else(|| bad("pending"))?;
         self.check_ticket(pending, ticket)?;
-        let completion = state.rows.values().find_map(|r| {
-            if r.open.request == ticket.request && !pending.intent.closing() {
-                Some(IcHostCompletion {
-                    open: r.open.operation,
-                    closed: None,
-                })
-            } else {
-                r.closed
-                    .as_ref()
-                    .filter(|c| c.request == ticket.request && pending.intent.closing())
-                    .map(|c| IcHostCompletion {
-                        open: r.open.operation,
+        let completion = state
+            .requests
+            .get(&ticket.request)
+            .and_then(|&(open_token, is_close)| {
+                if is_close != pending.intent.closing() {
+                    return None;
+                }
+                let row = state.rows.get(&open_token)?;
+                if !is_close {
+                    Some(IcHostCompletion {
+                        open: row.open_operation(),
+                        closed: None,
+                    })
+                } else {
+                    row.closed().map(|c| IcHostCompletion {
+                        open: row.open_operation(),
                         closed: Some(c.operation),
                     })
-            }
-        });
+                }
+            });
         if completion.is_some() {
             let removed = inbox
                 .rows

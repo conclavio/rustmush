@@ -6,10 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub(crate) const FORMAT: u16 = 1;
+pub(crate) const CONDUCT_ARCHIVE_FORMAT: u16 = 1;
 pub(crate) const DAY_MS: i64 = 86_400_000;
 pub(crate) const UNIT_MINUTE: u64 = 60_000;
 pub(crate) const MAX_CHARACTERS: usize = 64;
 pub(crate) const MAX_ACCOUNT_DOCUMENT: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_CONDUCT_ARCHIVE_DOCUMENT: usize = 64 * 1024;
+pub(crate) const MAX_ARCHIVED_REGISTRY: usize = 256;
 pub(crate) const MAX_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_REFERENCE_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const LEASE_STEPS: u64 = 8;
@@ -316,16 +319,104 @@ impl Run {
         }
     }
     pub fn retained_bytes(&self) -> u64 {
-        // Bench references belong to TapeStore and its independently bounded
-        // session budget. Only private proving artifacts consume this owner.
-        if self.plan.kind == WorkKind::Bench {
+        // Only private Proving artifacts consume the per-character Proving byte
+        // budget. Bench belongs to TapeStore; Registry and Conduct have separate
+        // bounded archival/history retention. Terminal runs without a result
+        // (failed/cancelled/interrupted) never keep their unused reservation.
+        if self.plan.kind != WorkKind::Proving {
             return 0;
         }
-        self.plan.start.bytes
-            + self
-                .result
-                .as_ref()
-                .map_or(self.plan.result_reservation_bytes, |r| r.bytes)
+        let result_bytes = match (&self.result, self.status.terminal()) {
+            (Some(result), _) => result.bytes,
+            (None, true) => 0,
+            (None, false) => self.plan.result_reservation_bytes,
+        };
+        self.plan.start.bytes.saturating_add(result_bytes)
+    }
+    pub(super) fn validate_standalone(&self) -> Result<(), BulkError> {
+        self.plan.validate()?;
+        let (units, native, remaining) = self.charge()?;
+        if self.status == Status::Complete {
+            if let (Some(budget), Some(cursor)) = (&self.plan.conduct, self.conduct)
+                && !budget.complete(cursor)?
+            {
+                return Err(invalid("Conduct completion at a partial trial"));
+            }
+            if let (Some(budget), Some(cursor)) = (&self.plan.registry, self.registry)
+                && !budget.can_certify(cursor)?
+                && !budget.can_reject(cursor)?
+            {
+                return Err(invalid("Registry completion at a partial class cursor"));
+            }
+        }
+        if (self.plan.kind == WorkKind::Conduct) != self.conduct_job.is_some()
+            || (self.plan.kind == WorkKind::Registry) != self.registry_job.is_some()
+            || self.id.0 == 0
+            || self.nonce == 0
+            || self.status.terminal() != self.finished_ms.is_some()
+            || (self.status == Status::Complete
+                && self.plan.kind != WorkKind::Bench
+                && self.result.is_none())
+            || self.next_sequence == 0
+            || self.charged_unit_ms > self.plan.maximum_unit_ms()
+            || self.pins > 1
+            || (self.status.terminal() && self.flight.is_some())
+        {
+            return Err(invalid("run identity/state"));
+        }
+        if let Some(result) = &self.result {
+            result.validate()?;
+            if result.bytes > self.plan.result_reservation_bytes {
+                return Err(invalid("result exceeded reservation"));
+            }
+        }
+        if let Some(flight) = &self.flight
+            && (flight.sequence.checked_add(1) != Some(self.next_sequence)
+                || flight.allowance_unit_ms == 0
+                || flight.registry != self.registry
+                || flight.conduct != self.conduct
+                || flight.allowance_unit_ms > units * u64::from(native) * LEASE_STEPS
+                || flight.allowance_unit_ms / units > remaining
+                || flight.allowance_unit_ms > self.charged_unit_ms)
+        {
+            return Err(invalid("flight allowance or cursor"));
+        }
+        Ok(())
+    }
+}
+/// Compact retained metadata for terminal Registry runs archived out of
+/// `Account::runs` so per-account JSON stays strictly bounded while completed
+/// ratings remain discoverable by `@mind/file` and `@mind/update`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ArchivedRegistryRun {
+    pub run: RunId,
+    pub character: ObjId,
+    pub job: CommitToken,
+    pub finished_ms: i64,
+}
+/// Terminal Conduct run archived to its own KV document
+/// (`tacsim:conduct:run:<account_hash>:<run_id>`) so permanent Conduct history
+/// never bloats `GOD`'s `Account` document beyond `MAX_ACCOUNT_DOCUMENT`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ArchivedConductRun {
+    pub format: u16,
+    pub account: AccountId,
+    pub run: Box<Run>,
+}
+impl ArchivedConductRun {
+    pub(crate) fn validate(&self) -> Result<(), BulkError> {
+        if self.format != CONDUCT_ARCHIVE_FORMAT
+            || self.run.plan.kind != WorkKind::Conduct
+            || self.run.conduct_job.is_none()
+            || self.run.registry_job.is_some()
+            || !self.run.status.terminal()
+            || self.run.flight.is_some()
+        {
+            return Err(invalid("archived Conduct run state"));
+        }
+        self.run.validate_standalone()
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,6 +431,8 @@ pub(crate) struct Account {
     pub next_run: u64,
     pub active: Option<RunId>,
     pub runs: BTreeMap<RunId, Run>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived_registry: Vec<ArchivedRegistryRun>,
 }
 impl Account {
     pub fn empty(id: AccountId, day: i64) -> Self {
@@ -353,6 +446,7 @@ impl Account {
             next_run: 1,
             active: None,
             runs: BTreeMap::new(),
+            archived_registry: Vec::new(),
         }
     }
     /// The complete future document bound for an admitted Registry run. Every
@@ -417,85 +511,61 @@ impl Account {
         if self.format != FORMAT
             || self.next_run == 0
             || self.runs.len() > MAX_CHARACTERS * 101
+            || self.archived_registry.len() > MAX_ARCHIVED_REGISTRY
             || self.spent_unit_ms.saturating_add(self.reserved_unit_ms) > 100_000 * UNIT_MINUTE
         {
             return Err(invalid("account quota/record dimensions"));
         }
         let mut active = None;
-        let mut totals = BTreeMap::<ObjId, (usize, u64)>::new();
+        let mut characters = std::collections::BTreeSet::new();
+        let mut proving_totals = BTreeMap::<ObjId, (usize, u64)>::new();
         let mut nonces = std::collections::BTreeSet::new();
         let mut registry_jobs = std::collections::BTreeSet::new();
         let mut conduct_jobs = std::collections::BTreeSet::new();
         for (id, run) in &self.runs {
-            run.plan.validate()?;
-            let (units, native, remaining) = run.charge()?;
-            if run.status == Status::Complete {
-                if let (Some(budget), Some(cursor)) = (&run.plan.conduct, run.conduct)
-                    && !budget.complete(cursor)?
-                {
-                    return Err(invalid("Conduct completion at a partial trial"));
-                }
-                if let (Some(budget), Some(cursor)) = (&run.plan.registry, run.registry) {
-                    // Complete is a quota-terminal result. Certification and
-                    // measured rejection are distinguished by the actual
-                    // artifact/Registry owners, including on paired recovery.
-                    if !budget.can_certify(cursor)? && !budget.can_reject(cursor)? {
-                        return Err(invalid("Registry completion at a partial class cursor"));
-                    }
-                }
-            }
-            if (run.plan.kind == WorkKind::Conduct) != run.conduct_job.is_some()
-                || run.conduct_job.is_some_and(|job| !conduct_jobs.insert(job))
-                || (run.plan.kind == WorkKind::Registry) != run.registry_job.is_some()
+            run.validate_standalone()?;
+            if run.conduct_job.is_some_and(|job| !conduct_jobs.insert(job))
                 || run
                     .registry_job
                     .is_some_and(|job| !registry_jobs.insert(job))
                 || *id != run.id
-                || id.0 == 0
-                || run.nonce == 0
                 || !nonces.insert(run.nonce)
-                || run.status.terminal() != run.finished_ms.is_some()
-                || (run.status == Status::Complete
-                    && run.plan.kind != WorkKind::Bench
-                    && run.result.is_none())
                 || id.0 >= self.next_run
                 || run.nonce > self.request_watermark
-                || run.next_sequence == 0
-                || run.charged_unit_ms > run.plan.maximum_unit_ms()
-                || run.pins > 1
-                || (run.status.terminal() && run.flight.is_some())
             {
                 return Err(invalid("run identity/state"));
             }
-            if let Some(result) = &run.result {
-                result.validate()?;
-                if result.bytes > run.plan.result_reservation_bytes {
-                    return Err(invalid("result exceeded reservation"));
-                }
-            }
             if let Some(flight) = &run.flight
-                && (flight.sequence.checked_add(1) != Some(run.next_sequence)
-                    || flight.allowance_unit_ms == 0
-                    || flight.registry != run.registry
-                    || flight.conduct != run.conduct
-                    || flight.allowance_unit_ms > units * u64::from(native) * LEASE_STEPS
-                    || flight.allowance_unit_ms / units > remaining
-                    || flight.allowance_unit_ms > run.charged_unit_ms
-                    || flight.utc_day != self.utc_day)
+                && flight.utc_day != self.utc_day
             {
                 return Err(invalid("flight allowance or cursor"));
             }
             if !run.status.terminal() && active.replace(*id).is_some() {
                 return Err(invalid("multiple active runs"));
             }
-            let total = totals.entry(run.character).or_default();
-            total.0 += 1;
-            total.1 = total.1.saturating_add(run.retained_bytes());
+            characters.insert(run.character);
+            if run.plan.kind == WorkKind::Proving {
+                let total = proving_totals.entry(run.character).or_default();
+                total.0 += 1;
+                total.1 = total.1.saturating_add(run.retained_bytes());
+            }
+        }
+        let mut archived_runs = std::collections::BTreeSet::new();
+        for entry in &self.archived_registry {
+            if entry.run.0 == 0
+                || entry.run.0 >= self.next_run
+                || entry.character.0 == 0
+                || self.runs.contains_key(&entry.run)
+                || !archived_runs.insert(entry.run)
+                || !registry_jobs.insert(entry.job)
+            {
+                return Err(invalid("archived Registry identity/state"));
+            }
         }
         if active != self.active
             || (active.is_none() && self.reserved_unit_ms != 0)
-            || totals.len() > MAX_CHARACTERS
-            || totals
+            || characters.len() > MAX_CHARACTERS
+            || proving_totals
                 .values()
                 .any(|(count, bytes)| *count > 101 || *bytes > 256 * 1024 * 1024)
         {

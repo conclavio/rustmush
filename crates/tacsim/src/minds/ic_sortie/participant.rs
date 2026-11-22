@@ -1,8 +1,10 @@
 //! The actual Tacsim seal owner. No public data constructor mints the host
 //! capabilities below. The absent region producer remains an explicit boundary.
 use super::execution::Execution;
-use super::records::{CapturedProtocol, Closing, EventKind, HEAD, Head, Opening, Record, bad};
-use super::state::IcSorties;
+use super::records::{
+    CapturedProtocol, Closing, EventKind, HEAD, Head, Opening, PREFIX, Record, StoredRecord, bad,
+};
+use super::state::{IcSortieDelta, IcSorties};
 use mush_core::action::PrincipalId;
 use mush_core::authoritative::{AuthoritativeKey, ReplayWrite};
 use mush_core::mechanics::DefinitionRegistry;
@@ -253,15 +255,15 @@ pub struct IcSortiePatch {
     close: bool,
     before_generation: u64,
     unit: TacticalUnit,
-    post: IcSorties,
+    delta: IcSortieDelta,
 }
 pub struct BoundIcSortie<'a> {
     state: &'a mut IcSorties,
-    post: IcSorties,
+    delta: IcSortieDelta,
 }
 impl BoundParticipant for BoundIcSortie<'_> {
     fn apply(self) {
-        *self.state = self.post;
+        self.state.apply_delta(self.delta);
     }
 }
 fn current_unit(world: &World, expected: &TacticalUnit) -> Result<(), ParticipantError> {
@@ -343,6 +345,7 @@ impl IcSortieParticipant {
                 let before = state
                     .rows
                     .get(&event.open)
+                    .and_then(|row| row.as_full())
                     .ok_or_else(|| bad("open missing"))?;
                 // Doc 23 cut S.4b-2 (D-23-15): the Close's hull is the live one (its object and
                 // definition the Open's), which the epoch's hosts may have written since.
@@ -395,7 +398,7 @@ impl IcSortieParticipant {
                         .transpose()?,
                 };
                 close.event_digest = close.event_digest(&before.open)?;
-                let mut row = (**before).clone();
+                let mut row = before.clone();
                 row.closed = Some(close);
                 (row, Some(event.conditions.clone()), event.unit.clone())
             }
@@ -420,32 +423,36 @@ impl OwnerParticipant for IcSortieParticipant {
         let (row, conditions, unit) = *self.prepare_record(state, ctx, request.operation)?;
         row.validate()?;
         let close = row.closed.is_some();
-        let post = if close {
-            state.closing(row.clone())?
+        let delta = if close {
+            state.prepare_close(row.clone())?
         } else {
-            state.opening(row.clone())?
+            state.prepare_open(row.clone())?
         };
-        let head = Head {
-            format: 1,
-            next_transition: post.next_transition,
-        };
+        let head = state.head_for_delta(&delta);
         head.validate()?;
         let event = row.closed.as_ref().map(|c| IcEventRef {
             sequence: c.sequence,
             digest: c.event_digest,
         });
-        let writes = vec![
-            ReplayWrite::ModuleJsonSet {
-                namespace: OwnerId::new(crate::NS).map_err(bad)?,
-                key: AuthoritativeKey::parse_canonical(row.key()).map_err(bad)?,
-                value: serde_json::to_value(&row).map_err(bad)?,
-            },
-            ReplayWrite::ModuleJsonSet {
-                namespace: OwnerId::new(crate::NS).map_err(bad)?,
-                key: AuthoritativeKey::parse_canonical(HEAD).map_err(bad)?,
-                value: serde_json::to_value(head).map_err(bad)?,
-            },
-        ];
+        let ns = OwnerId::new(crate::NS).map_err(bad)?;
+        let mut writes = Vec::with_capacity(delta.pruned().len() + 2);
+        for pruned_open in delta.pruned() {
+            writes.push(ReplayWrite::ModuleDelete {
+                namespace: ns.clone(),
+                key: AuthoritativeKey::parse_canonical(format!("{PREFIX}{}", pruned_open.to_hex()))
+                    .map_err(bad)?,
+            });
+        }
+        writes.push(ReplayWrite::ModuleJsonSet {
+            namespace: ns.clone(),
+            key: AuthoritativeKey::parse_canonical(delta.row().key()).map_err(bad)?,
+            value: delta.row().to_value()?,
+        });
+        writes.push(ReplayWrite::ModuleJsonSet {
+            namespace: ns,
+            key: AuthoritativeKey::parse_canonical(HEAD).map_err(bad)?,
+            value: serde_json::to_value(head).map_err(bad)?,
+        });
         Ok(OwnerPreparation::new(
             IcSortieOutput {
                 action: ctx.action().clone(),
@@ -461,7 +468,7 @@ impl OwnerParticipant for IcSortieParticipant {
                 close,
                 before_generation: state.generation,
                 unit,
-                post,
+                delta,
             },
             writes,
         ))
@@ -481,7 +488,11 @@ impl OwnerParticipant for IcSortieParticipant {
         {
             return Err(bad("stale preparation"));
         }
-        current_unit(ctx.world(), &patch.unit)
+        current_unit(ctx.world(), &patch.unit)?;
+        if !patch.close && crate::match_::seal::core_impounded(ctx.world(), &patch.unit) {
+            return Err(bad("impounded core"));
+        }
+        Ok(())
     }
     fn bind<'a>(
         self: Arc<Self>,
@@ -494,44 +505,50 @@ impl OwnerParticipant for IcSortieParticipant {
         }
         Ok(BoundIcSortie {
             state,
-            post: patch.post,
+            delta: patch.delta,
         })
     }
     fn accepts_write(&self, write: &ReplayWrite) -> bool {
-        let ReplayWrite::ModuleJsonSet {
-            namespace,
-            key,
-            value,
-        } = write
-        else {
-            return false;
-        };
-        if namespace.as_str() != crate::NS {
-            return false;
+        match write {
+            ReplayWrite::ModuleDelete { namespace, key } => {
+                namespace.as_str() == crate::NS
+                    && key
+                        .as_str()
+                        .strip_prefix(PREFIX)
+                        .is_some_and(|hex| CommitToken::from_hex(hex).is_ok())
+            }
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } => {
+                if namespace.as_str() != crate::NS {
+                    return false;
+                }
+                if key.as_str() == HEAD {
+                    let Ok(head) = serde_json::from_value::<Head>(value.clone()) else {
+                        return false;
+                    };
+                    return head.validate().is_ok()
+                        && serde_json::to_value(head).ok().as_ref() == Some(value);
+                }
+                let Ok(row) = StoredRecord::decode(value) else {
+                    return false;
+                };
+                key.as_str() == row.key()
+                    && self
+                        .config
+                        .claims
+                        .actions()
+                        .ok()
+                        .and_then(|a| a.get(usize::from(row.closed().is_some())).cloned())
+                        == Some(
+                            row.closed()
+                                .map_or_else(|| row.open_action().clone(), |c| c.action.clone()),
+                        )
+            }
+            _ => false,
         }
-        if key.as_str() == HEAD {
-            let Ok(head) = serde_json::from_value::<Head>(value.clone()) else {
-                return false;
-            };
-            return head.validate().is_ok()
-                && serde_json::to_value(head).ok().as_ref() == Some(value);
-        }
-        let Ok(row) = Record::decode(value) else {
-            return false;
-        };
-        key.as_str() == row.key()
-            && self
-                .config
-                .claims
-                .actions()
-                .ok()
-                .and_then(|a| a.get(usize::from(row.closed.is_some())).cloned())
-                == Some(
-                    row.closed
-                        .as_ref()
-                        .map_or(&row.open.action, |c| &c.action)
-                        .clone(),
-                )
     }
 }
 
@@ -582,6 +599,7 @@ pub(crate) fn fixture_close(
     let record = state
         .rows
         .get(&open)
+        .and_then(|row| row.as_full())
         .ok_or_else(|| bad("fixture actual open"))?;
     if record.closed.is_some() {
         return Err(bad("fixture closed"));
