@@ -79,6 +79,10 @@ pub struct CommerceConfig {
     /// delegated to tacsim) where the ring is registered with the owner attestation; the tacsim
     /// layer holds the same cell for the surface finish ([`CommerceConfig::seal_mark_writer`]).
     seal_marks: super::seal_marks::SealMarkWriter,
+    /// Explicit Registry `(organization, scope)` authorities bound for seal-mark writes
+    /// when configured directly (e.g. on format-1 Active launches without full format-2
+    /// Registry policies, `P2-MOD-80`).
+    seal_mark_authorities: Vec<(mush_org::OrgId, mush_org::OrgScopeId)>,
 }
 #[derive(Clone, Debug)]
 struct CoverageRegistration {
@@ -183,7 +187,32 @@ impl CommerceConfig {
             ic: None,
             conduct: None,
             seal_marks: super::seal_marks::SealMarkWriter::new(),
+            seal_mark_authorities: Vec::new(),
         })
+    }
+
+    /// Bind an explicit Registry `(organization, scope)` authority for the seal-mark
+    /// action (`P2-MOD-80`), allowing format-1 Active launches without full format-2
+    /// Registry policies to authorize a specific Registry org/scope rather than falling
+    /// back to any active organization.
+    ///
+    /// # Errors
+    /// A configuration that is not Active or a duplicate `(organization, scope)` binding.
+    pub fn with_seal_mark_authority(
+        mut self,
+        organization: mush_org::OrgId,
+        scope: mush_org::OrgScopeId,
+    ) -> Result<Self, ModError> {
+        if self.mode != CommerceMode::Active {
+            return Err(ModError::msg(
+                "seal-mark authority binding requires Active commerce",
+            ));
+        }
+        if self.seal_mark_authorities.contains(&(organization, scope)) {
+            return Err(ModError::msg("seal-mark authority is already configured"));
+        }
+        self.seal_mark_authorities.push((organization, scope));
+        Ok(self)
     }
 
     /// **The seal-mark ring's writer cell** (doc 17h cut M8e E4): the one the Roll installs at
@@ -2088,7 +2117,7 @@ fn register_owner_paths(
             config.terms.clone(),
             personal,
         )?;
-        let mut seal_authorities = Vec::new();
+        let mut seal_authorities = config.seal_mark_authorities.clone();
         if let Some(inspection) = config.registry_inspection.as_deref() {
             seal_authorities.push((inspection.0.organization, inspection.0.scope));
         }

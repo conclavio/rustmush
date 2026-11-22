@@ -161,9 +161,20 @@ fn holding(
         }
         (None, Some(paid)) => {
             paid.validate()?;
-            // M8c B1: a notice reaches a character: the holder's acting one.
-            if paid.id() != licence || paid.holder().acting_character() != actor {
+            if paid.id() != licence {
                 return Err(PublicationError::Missing);
+            }
+            // P2-MOD-55: re-verify live authority (`org_holder::reads_as`) rather than trusting
+            // the historical `acting_character` stamped at purchase/renewal time, so revoked
+            // former org officers lose status access and live officers retain it.
+            match super::super::org_holder::reads_as(ctx.world(), paid.holder(), actor) {
+                Ok(()) => {}
+                Err(super::super::org_holder::OrgActorError::NotForOrg) => {
+                    return Err(PublicationError::Missing);
+                }
+                Err(super::super::org_holder::OrgActorError::Unavailable) => {
+                    return Err(PublicationError::Unavailable);
+                }
             }
             let term = read(
                 ctx,
@@ -318,10 +329,19 @@ fn page(
             let mut rows = Vec::with_capacity(p.entries().len());
             for entry in p.entries() {
                 let row = entry.value();
-                let recipient = row
-                    .validate()
-                    .is_ok()
-                    .then(|| row.holder().acting_character());
+                // P2-MOD-55: re-verify live org officer authority before targeting push notices.
+                let recipient = if row.validate().is_ok() {
+                    let actor = row.holder().acting_character();
+                    match super::super::org_holder::reads_as(ctx.w, row.holder(), actor) {
+                        Ok(()) => Some(actor),
+                        Err(super::super::org_holder::OrgActorError::NotForOrg) => None,
+                        Err(super::super::org_holder::OrgActorError::Unavailable) => {
+                            return Err(PublicationError::Unavailable);
+                        }
+                    }
+                } else {
+                    None
+                };
                 rows.push((entry.encoded_key().to_string(), row.id(), recipient));
             }
             Ok(Page {
@@ -477,6 +497,293 @@ mod tests {
                 .seen
                 .iter()
                 .any(|n| n.licence.get() == (REMEMBERED + 1) as u64)
+        );
+    }
+
+    /// **P2-MOD-55**: revoking a former org officer's `roll.holder.org` grant immediately
+    /// revokes both `@mindrecall/status` (`holding`) and push-notice targeting (`page`) for
+    /// org-held paid licences, while another currently authorized officer retains status access.
+    #[test]
+    fn p2_mod_55_revoked_former_org_officer_loses_recall_status_and_push_notices() {
+        use super::super::super::{
+            Holder, TermGeneration, TermWindow, WorldIcSeconds,
+            paid::{PaidForm, PaidTermRecord, PaidTerms, PersonalPaidLicence},
+            rating::RatingClass,
+        };
+        use mush_core::{GOD, GameModule, Outbox, Registry};
+        use mush_testkit::fixtures::boxed_engine as boxed_test_engine;
+
+        type ProbeOut = Arc<
+            Mutex<(
+                Option<Result<(FiledRevisionId, CharterId, LineId), PublicationError>>,
+                Option<Result<Vec<(LicenceId, Option<ObjId>)>, PublicationError>>,
+            )>,
+        >;
+        struct Harness {
+            families: Arc<Mutex<Option<CommerceFamilies>>>,
+            probe: ProbeOut,
+        }
+        impl GameModule for Harness {
+            fn name(&self) -> &'static str {
+                crate::NS
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                reg.state(crate::RollStore::default());
+                let f = CommerceFamilies::register(reg)?;
+                let ratings = RatingFamilies::register(reg)?;
+                *self.families.lock().unwrap() = Some(f.clone());
+                let service = Service {
+                    f,
+                    ratings,
+                    ready: Readback::default(),
+                    runtime: Arc::new(Mutex::new(Runtime::default())),
+                };
+                let probe = self.probe.clone();
+                reg.classify_commands(CommandCompatibility::ReadOnly);
+                reg.command(
+                    CommandSpec {
+                        name: "@test_recall_probe".into(),
+                        shape: ArgShape::Raw,
+                        ..Default::default()
+                    },
+                    Arc::new(move |ctx: &mut Ctx<'_>| {
+                        let licence = LicenceId::new(10).unwrap();
+                        let h = holding(ctx, &service, ctx.actor, licence);
+                        let p = page(ctx, &service, Inventory::Paid, None).map(|pg| {
+                            pg.rows
+                                .into_iter()
+                                .map(|(_, id, actor)| (id, actor))
+                                .collect()
+                        });
+                        *probe.lock().unwrap() = (Some(h), Some(p));
+                        Ok(())
+                    }),
+                )
+            }
+        }
+
+        struct TestOrg {
+            inner: mush_org::OrgModule,
+            revoke: Arc<Mutex<Option<mush_org::GrantId>>>,
+        }
+        impl GameModule for TestOrg {
+            fn name(&self) -> &'static str {
+                "org"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                self.inner.register(reg)?;
+                let revoke = self.revoke.clone();
+                reg.command(
+                    CommandSpec {
+                        name: "@test_revoke_grant".into(),
+                        shape: ArgShape::Raw,
+                        ..Default::default()
+                    },
+                    Arc::new(move |ctx: &mut Ctx<'_>| {
+                        let grant = revoke.lock().unwrap().take().unwrap();
+                        mush_org::submit(
+                            ctx,
+                            &mush_org::OrgMutationPlan::of(vec![
+                                mush_org::OrgMutationOp::RevokeGrant { grant },
+                            ]),
+                            mush_org::OrgAction {
+                                action: "test.revoke_grant".into(),
+                                org: None,
+                                detail: serde_json::json!({"test":true}),
+                            },
+                        )
+                        .map_err(|_| CmdError::msg("revoke failed"))
+                    }),
+                )
+            }
+            fn on_world_loaded(
+                &mut self,
+                ctx: &mut ModuleCtx<'_>,
+                data: mush_core::ModuleBootData,
+            ) -> Result<(), ModError> {
+                self.inner.on_world_loaded(ctx, data)
+            }
+        }
+
+        let families = Arc::new(Mutex::new(None));
+        let probe: ProbeOut = Arc::new(Mutex::new((None, None)));
+        let revoke_slot: Arc<Mutex<Option<mush_org::GrantId>>> = Arc::new(Mutex::new(None));
+        let mut engine = boxed_test_engine(
+            World::new_minimal(),
+            Registry::new(),
+            vec![
+                Box::new(TestOrg {
+                    inner: mush_org::OrgModule::new(),
+                    revoke: revoke_slot.clone(),
+                }),
+                Box::new(Harness {
+                    families: families.clone(),
+                    probe: probe.clone(),
+                }),
+            ],
+        )
+        .unwrap();
+        let boot = mush_testkit::cold::Boot::new();
+        mush_testkit::cold::load(&mut engine, boot).unwrap();
+        let f = families.lock().unwrap().clone().unwrap();
+
+        let officer_a = engine
+            .world
+            .create(ObjKind::Player, "OfficerA", GOD, Some(mush_core::LIMBO))
+            .unwrap();
+        let officer_b = engine
+            .world
+            .create(ObjKind::Player, "OfficerB", GOD, Some(mush_core::LIMBO))
+            .unwrap();
+        let outsider = engine
+            .world
+            .create(ObjKind::Player, "Outsider", GOD, Some(mush_core::LIMBO))
+            .unwrap();
+        let run = |engine: &mut mush_core::Engine, actor: ObjId, line: &str| {
+            let mut out = Outbox::new();
+            let mut eff = mush_core::engine::Effects::new();
+            engine.step(
+                mush_core::Inbound::Cmd {
+                    conn: 1,
+                    actor,
+                    line: line.into(),
+                },
+                &mut out,
+                &mut eff,
+            );
+        };
+        run(&mut engine, GOD, "@org/create Guild");
+        let guild = engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .unwrap()
+            .state()
+            .orgs()
+            .find(|o| o.name.as_str() == "Guild")
+            .unwrap()
+            .id;
+        for who in [officer_a, officer_b] {
+            run(
+                &mut engine,
+                GOD,
+                &format!(
+                    "@org/grant #{}=Guild {}",
+                    who.0,
+                    crate::commerce::org_holder::HOLDER_ORG_CAPABILITY
+                ),
+            );
+        }
+
+        // Seed an org-held paid licence (stamped with `acting: officer_a`) and a paid_terms
+        // row with a distinct Follow line so passing `reads_as` hits `matches_current` and
+        // yields `Err(Mismatch)` (distinct from both `Missing` on refusal and `Unavailable`).
+        let licence = LicenceId::new(10).unwrap();
+        let one = TermGeneration::new(1).unwrap();
+        let now = engine.world.world_ic_now().at;
+        let window = TermWindow::new(
+            WorldIcSeconds(now),
+            WorldIcSeconds(now),
+            WorldIcSeconds(now + 1_000),
+            WorldIcSeconds(now + 1_200),
+        )
+        .unwrap();
+        let pointer = PersonalPaidLicence::original(
+            licence,
+            CharterId::new(1).unwrap(),
+            LineId::new(1).unwrap(),
+            Holder::Organization {
+                org: guild,
+                acting: officer_a,
+            },
+            one,
+            CommitToken::from_bytes([1; 16]),
+        )
+        .unwrap();
+        let term = PaidTermRecord::original(
+            licence,
+            one,
+            window,
+            PaidTerms::original_personal_form(RatingClass::I, PaidForm::Sealed {}, false).unwrap(),
+            RevisionPolicy::Follow {
+                line: LineId::new(2).unwrap(),
+            },
+            CommitToken::from_bytes([1; 16]),
+        )
+        .unwrap();
+        let mut txn = engine.action_transaction(&f.paid_licences).unwrap();
+        txn.insert(&f.paid_licences, &licence.key(), pointer)
+            .unwrap();
+        txn.insert(
+            &f.paid_terms,
+            &format!("{}/{}", licence.key(), one.key()),
+            term,
+        )
+        .unwrap();
+        let (_, install) = txn.prepare().unwrap().into_parts();
+        engine.install_prepared_action(install).unwrap();
+
+        let call_probe = |engine: &mut mush_core::Engine, actor: ObjId| {
+            run(engine, actor, "@test_recall_probe");
+            let mut guard = probe.lock().unwrap();
+            (guard.0.take().unwrap(), guard.1.take().unwrap())
+        };
+
+        // Before revocation: officer_a and officer_b pass `reads_as`; outsider is refused;
+        // push-notice scan targets officer_a.
+        let (h_a, p_before) = call_probe(&mut engine, officer_a);
+        assert!(
+            matches!(h_a, Err(PublicationError::Mismatch)),
+            "active officer_a passes reads_as gate, got {h_a:?}"
+        );
+        assert_eq!(p_before.unwrap(), vec![(licence, Some(officer_a))]);
+        let (h_b, _) = call_probe(&mut engine, officer_b);
+        assert!(
+            matches!(h_b, Err(PublicationError::Mismatch)),
+            "active second officer_b passes reads_as gate, got {h_b:?}"
+        );
+        let (h_out, _) = call_probe(&mut engine, outsider);
+        assert!(
+            matches!(h_out, Err(PublicationError::Missing)),
+            "outsider must be refused, got {h_out:?}"
+        );
+
+        // Revoke officer_a's `roll.holder.org` grant.
+        let grant_a = engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .unwrap()
+            .state()
+            .grants_in(guild)
+            .find(|g| g.grantee == officer_a)
+            .unwrap()
+            .id;
+        *revoke_slot.lock().unwrap() = Some(grant_a);
+        run(&mut engine, GOD, "@test_revoke_grant");
+
+        // After revocation: officer_a is refused status access AND receives no push notice;
+        // officer_b still retains status access.
+        let (h_a_after, p_after) = call_probe(&mut engine, officer_a);
+        assert!(
+            matches!(h_a_after, Err(PublicationError::Missing)),
+            "revoked former officer_a must lose recall status access, got {h_a_after:?}"
+        );
+        assert_eq!(
+            p_after.unwrap(),
+            vec![(licence, None)],
+            "revoked former officer_a must not receive recall push notices"
+        );
+        let (h_b_after, _) = call_probe(&mut engine, officer_b);
+        assert!(
+            matches!(h_b_after, Err(PublicationError::Mismatch)),
+            "live second officer_b keeps recall status access, got {h_b_after:?}"
+        );
+
+        // Suspend Guild: officer_b also loses status access immediately.
+        run(&mut engine, GOD, "@org/status Guild=suspended");
+        let (h_b_revoked, _) = call_probe(&mut engine, officer_b);
+        assert!(
+            matches!(h_b_revoked, Err(PublicationError::Missing)),
+            "suspended org officer_b must also lose recall status access, got {h_b_revoked:?}"
         );
     }
 }

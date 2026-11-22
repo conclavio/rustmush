@@ -328,13 +328,13 @@ struct Request {
     governed: bool,
     sortie: String,
 }
-/// Whether `actor` may write seal marks (M8c F7): GOD, or a live character
-/// granted [`SEAL_MARK_CAPABILITY`] LIVE with no amount.
+/// Whether `actor` may write seal marks (M8c F7 / `P2-MOD-80`): GOD, or a live
+/// character granted [`SEAL_MARK_CAPABILITY`] LIVE with no amount on an
+/// explicitly bound Registry `(organization, scope)` authority.
 ///
-/// When explicit Registry policies are configured on the Roll, authorization
-/// is strictly bound to those configured Registry `(organization, scope)`
-/// authorities so a grant on a non-Registry organization cannot authorize
-/// Registry seal marks.
+/// When no Registry authority is bound (`bound.is_empty()`, e.g. a format-1
+/// Active launch without Registry org policies), non-GOD actors fail closed
+/// rather than trusting any active organization in `OrgStore`.
 pub(crate) fn authorized(
     world: &World,
     actor: ObjId,
@@ -343,7 +343,8 @@ pub(crate) fn authorized(
     if actor == GOD {
         return true;
     }
-    if actor.0 == 0
+    if bound.is_empty()
+        || actor.0 == 0
         || world
             .get(actor)
             .is_none_or(|o| o.flags.contains(Flags::GOING))
@@ -360,53 +361,29 @@ pub(crate) fn authorized(
         return false;
     };
     let state = store.state();
-    if !bound.is_empty() {
-        return bound.iter().any(|&(org_id, scope_id)| {
-            let Some(org) = state.org(org_id) else {
-                return false;
-            };
-            let Some(scope) = state.scope(scope_id) else {
-                return false;
-            };
-            org.status == mush_org::OrgStatus::Active
-                && scope.status == mush_org::ScopeStatus::Active
-                && scope.org == org_id
-                && matches!(
-                    mush_org::authorize_in_world(
-                        world,
-                        &mush_org::AuthRequest {
-                            actor,
-                            capability: capability.clone(),
-                            scope: scope_id,
-                            now: world.now(),
-                            amount: None,
-                        },
-                    ),
-                    mush_org::Decision::Allow(_)
-                )
-        });
-    }
-    let orgs: std::collections::BTreeSet<mush_org::OrgId> = state.grant_orgs(actor).collect();
-    orgs.into_iter().any(|org| {
-        state.org(org).is_some_and(|o| {
-            o.status == mush_org::OrgStatus::Active
-                && state
-                    .scope(o.root_scope)
-                    .is_some_and(|s| s.status == mush_org::ScopeStatus::Active && s.org == org)
-                && matches!(
-                    mush_org::authorize_in_world(
-                        world,
-                        &mush_org::AuthRequest {
-                            actor,
-                            capability: capability.clone(),
-                            scope: o.root_scope,
-                            now: world.now(),
-                            amount: None,
-                        },
-                    ),
-                    mush_org::Decision::Allow(_)
-                )
-        })
+    bound.iter().any(|&(org_id, scope_id)| {
+        let Some(org) = state.org(org_id) else {
+            return false;
+        };
+        let Some(scope) = state.scope(scope_id) else {
+            return false;
+        };
+        org.status == mush_org::OrgStatus::Active
+            && scope.status == mush_org::ScopeStatus::Active
+            && scope.org == org_id
+            && matches!(
+                mush_org::authorize_in_world(
+                    world,
+                    &mush_org::AuthRequest {
+                        actor,
+                        capability: capability.clone(),
+                        scope: scope_id,
+                        now: world.now(),
+                        amount: None,
+                    },
+                ),
+                mush_org::Decision::Allow(_)
+            )
     })
 }
 impl Request {
@@ -950,9 +927,18 @@ mod tests {
         );
         assert!(!authorized(&engine.world, outsider, &bound));
 
-        // Unbound minimal composition preserves fallback for active org grants.
-        assert!(authorized(&engine.world, reg_op, &[]));
-        assert!(authorized(&engine.world, rogue_op, &[]));
+        // P2-MOD-80: unbound composition (e.g. format-1 Active launch without explicit
+        // Registry policies) fails closed for all non-GOD org grantees rather than trusting
+        // any active org.
+        assert!(authorized(&engine.world, GOD, &[]));
+        assert!(
+            !authorized(&engine.world, reg_op, &[]),
+            "unbound seal-mark authorization must not trust arbitrary org grants"
+        );
+        assert!(
+            !authorized(&engine.world, rogue_op, &[]),
+            "unbound seal-mark authorization must reject rogue org grants"
+        );
         assert!(!authorized(&engine.world, outsider, &[]));
 
         // Retiring the Registry scope revokes authorization even for Registry grantees.

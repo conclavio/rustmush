@@ -55,7 +55,7 @@ use serde_json::{Value, json};
 use smol_str::SmolStr;
 
 use crate::pool::InventoryFamilies;
-use crate::provider::may_take;
+use crate::provider::{PoolCapacity, PoolReadFailed, may_take};
 use crate::record::{AppliedMarker, EndpointRef, FACT_SALVAGE_RECOVERED, LotId};
 
 /// The one salvage action this crate registers. It is **not** an
@@ -331,9 +331,45 @@ pub(crate) struct SalvageProvider {
     outcome: DefinitionRef,
     families: InventoryFamilies,
     source: Arc<dyn SalvageSource>,
+    capacity: Option<Arc<dyn PoolCapacity>>,
 }
 
 impl SalvageProvider {
+    /// **The destination's room for a recovered lot** (`P2-MOD-79`): enforces the
+    /// same `PoolCapacity` plan as `inv_move` and `inv_dissolve` before relocating
+    /// recovered stock into `to`.
+    fn room_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        parameters: &serde_json::Map<String, Value>,
+        to: EndpointRef,
+        commodity: &CanonicalId,
+        quantity: u64,
+    ) -> Result<(), ActionError> {
+        let plan = parameters
+            .get("capacity")
+            .and_then(Value::as_object)
+            .and_then(|plans| plans.get(&to.vault().0.to_string()));
+        let (Some(capacity), Some(plan)) = (&self.capacity, plan) else {
+            return Ok(());
+        };
+        let mut read = |good: &CanonicalId| {
+            let pooled = self
+                .families
+                .pool(txn, to, good)
+                .map(|pool| pool.map_or(0, |pool| pool.quantity))
+                .map_err(|_| PoolReadFailed)?;
+            let lots = self
+                .families
+                .lot_quantity(txn, to, good)
+                .map_err(|_| PoolReadFailed)?;
+            Ok(pooled.saturating_add(lots))
+        };
+        capacity
+            .check(plan, commodity, quantity, &mut read)
+            .map_err(|line| error(ActionErrorCode::ProviderRejected, line))
+    }
+
     fn parameters<'i>(
         &self,
         invocation: &'i ActionInvocation,
@@ -434,13 +470,29 @@ impl ActionProvider for SalvageProvider {
                     "inventory definition guard is unavailable",
                 )
             })?;
+        // Doc 18 cut IC14 row 1: the real second rides beside the IC stamp,
+        // for the marker ring's age (`InventoryFamilies::retain_marker`).
+        // P2-MOD-79: carry each governed live destination's capacity plan so
+        // `prepare_authoritative` refuses a recovered lot that exceeds capacity.
+        let mut fixed = json!({
+            "now": engine.world.world_ic_now(),
+            "wall": engine.world.now(),
+        });
+        if let Some(capacity) = &self.capacity {
+            let plans: serde_json::Map<String, Value> = destinations
+                .iter()
+                .filter_map(|vault| {
+                    capacity
+                        .plan(&engine.world, EndpointRef(*vault))
+                        .map(|plan| (vault.0.to_string(), plan))
+                })
+                .collect();
+            if !plans.is_empty() {
+                fixed["capacity"] = Value::Object(plans);
+            }
+        }
         Ok(Some(ProviderOfferDraft {
-            // Doc 18 cut IC14 row 1: the real second rides beside the IC stamp,
-            // for the marker ring's age (`InventoryFamilies::retain_marker`).
-            fixed_parameters: json!({
-                "now": engine.world.world_ic_now(),
-                "wall": engine.world.now(),
-            }),
+            fixed_parameters: fixed,
             parameters: ProjectedParameterSchema::new(parameters).map_err(|_| {
                 error(
                     ActionErrorCode::Integrity,
@@ -500,6 +552,21 @@ impl ActionProvider for SalvageProvider {
                 "that request has already been applied",
             ));
         }
+        // P2-MOD-79: verify the lot exists at the authorized wreck endpoint `from`
+        // (and `from != to`) before checking `PoolCapacity` on `to`, preventing both
+        // capacity bypasses and cross-endpoint lot existence/mass oracles.
+        if from == to {
+            return Err(refuse());
+        }
+        let record = txn
+            .get(&self.families.lots, &lot)
+            .map_err(|_| error(ActionErrorCode::Integrity, NO_SUCH_WRECK))?
+            .cloned()
+            .ok_or_else(refuse)?;
+        if record.endpoint() != from {
+            return Err(refuse());
+        }
+        self.room_for(txn, &parameters, to, record.commodity(), record.quantity())?;
         // *A recovered lot is the SAME lot.* `relocate` is `Lot::checked_relocate`'s
         // one caller: `id`, `commodity`, `quantity`, `grade`, `lineage` and `depth` are
         // carried through untouched and only `endpoint` and `revision` move. Nothing
@@ -580,12 +647,14 @@ pub(crate) fn provider_for(
     outcome: DefinitionRef,
     families: &InventoryFamilies,
     source: Option<&Arc<dyn SalvageSource>>,
+    capacity: Option<&Arc<dyn PoolCapacity>>,
 ) -> Option<SalvageProvider> {
     source.map(|source| SalvageProvider {
         action,
         outcome,
         families: families.clone(),
         source: Arc::clone(source),
+        capacity: capacity.cloned(),
     })
 }
 

@@ -44,16 +44,23 @@ use mush_core::{Ctx, IdempotencyKeyText, SubjectKey};
 use smol_str::SmolStr;
 
 use crate::pool::InventoryFamilies;
-use crate::record::{
-    AppliedMarker, EndpointRef, INV_PAGE, MAX_APPLIED_MARKERS, MAX_POOLS_PER_ENDPOINT,
-};
+use crate::record::{AppliedMarker, EndpointRef, MAX_APPLIED_MARKERS, MAX_POOLS_PER_ENDPOINT};
+
+/// Records visited per page during boot and sweep reconciliation.
+///
+/// Uses the kernel's full scan-page ceiling (`MAX_STATE_FAMILY_SCAN_RECORDS`, 1,024)
+/// rather than the player listing page size (`INV_PAGE`, 32), so normal multi-endpoint
+/// pool counts (`MAX_POOLS_PER_ENDPOINT = 256`) and applied-marker churn cannot exhaust
+/// `MAX_BOOT_PAGES` or `MAX_MARKER_PAGES` into a server-wide `complete = false` blackout
+/// (`P2-MOD-52`).
+pub const BOOT_SCAN_PAGE: usize = mush_core::MAX_STATE_FAMILY_SCAN_RECORDS;
 
 /// How many family pages one reconciliation walks. Bounded on records
 /// **visited**, never on records matched (D-LBK-5).
 pub const MAX_BOOT_PAGES: usize = 128;
 
 /// How many pages the applied-marker walk visits. Deliberately wider than
-/// [`MAX_APPLIED_MARKERS`] / [`INV_PAGE`] so the mirror can *see* past its own
+/// [`MAX_APPLIED_MARKERS`] / [`BOOT_SCAN_PAGE`] so the mirror can *see* past its own
 /// capacity and keep the **newest** markers rather than the lexicographically
 /// first ones (fold R3).
 pub const MAX_MARKER_PAGES: usize = 256;
@@ -110,6 +117,10 @@ pub struct InventoryStore {
     /// truncated walk leaves the store **fail-closed**: it does not claim the
     /// mirror is complete, and `facts::resolve` answers nothing at all.
     complete: bool,
+    /// Whether the applied-marker mirror slid past [`MAX_APPLIED_MARKERS`] during
+    /// a complete scan (retaining the newest [`MAX_APPLIED_MARKERS`] in time order
+    /// without disabling `complete`, `P2-MOD-52`).
+    markers_truncated: bool,
     /// How many reconciliations have run. E7c2 fold B4 dropped the
     /// per-command rebuild; this counter is what pins that it stays dropped.
     reconciliations: u64,
@@ -127,6 +138,7 @@ impl Default for InventoryStore {
             quarantined_keys: BTreeSet::new(),
             applied: BTreeMap::new(),
             complete: false,
+            markers_truncated: false,
             reconciliations: 0,
             // A sentinel no IC second equals, so the first submission of any
             // second is ordinal zero.
@@ -175,6 +187,13 @@ impl InventoryStore {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// Whether the applied-marker mirror slid past [`MAX_APPLIED_MARKERS`]
+    /// during the last reconciliation (keeping the newest window).
+    #[must_use]
+    pub const fn markers_truncated(&self) -> bool {
+        self.markers_truncated
     }
 
     /// How many reconciliations have run in this process.
@@ -244,7 +263,8 @@ pub fn reconcile(ctx: &mut Ctx<'_>, families: &InventoryFamilies) {
     let mut after: Option<SmolStr> = None;
     let mut pages = 0_usize;
     loop {
-        let Ok(page) = ctx.scan_action_state(&families.books, after.as_deref(), INV_PAGE) else {
+        let Ok(page) = ctx.scan_action_state(&families.books, after.as_deref(), BOOT_SCAN_PAGE)
+        else {
             complete = false;
             break;
         };
@@ -275,7 +295,8 @@ pub fn reconcile(ctx: &mut Ctx<'_>, families: &InventoryFamilies) {
     let mut after: Option<SmolStr> = None;
     let mut pages = 0_usize;
     loop {
-        let Ok(page) = ctx.scan_action_state(&families.pools, after.as_deref(), INV_PAGE) else {
+        let Ok(page) = ctx.scan_action_state(&families.pools, after.as_deref(), BOOT_SCAN_PAGE)
+        else {
             complete = false;
             break;
         };
@@ -320,7 +341,8 @@ pub fn reconcile(ctx: &mut Ctx<'_>, families: &InventoryFamilies) {
     let mut pages = 0_usize;
     let mut truncated_markers = false;
     'markers: loop {
-        let Ok(page) = ctx.scan_action_state(&families.applied, after.as_deref(), INV_PAGE) else {
+        let Ok(page) = ctx.scan_action_state(&families.applied, after.as_deref(), BOOT_SCAN_PAGE)
+        else {
             complete = false;
             break;
         };
@@ -384,16 +406,28 @@ pub fn reconcile(ctx: &mut Ctx<'_>, families: &InventoryFamilies) {
             );
         }
     }
-    if truncated_markers || !complete {
-        // Fold R3: a truncated mirror is not "behind by one sweep", it is a
-        // mirror that answers nothing — so it is an operator event, not a note.
+    if !complete {
+        // A scan failure or page-budget overflow means reconciliation could not see the
+        // tail of the family, so fail closed until the condition is resolved.
         tracing::error!(
             markers = applied.len(),
-            complete,
-            "inventory: the applied-marker mirror is truncated; every inventory fact \
-             answers unsatisfied until the family is pruned"
+            truncated_markers,
+            "inventory: reconciliation did not finish inside its page budget; every \
+             inventory fact answers unsatisfied"
         );
-        complete = false;
+    } else if truncated_markers {
+        // P2-MOD-52: normal applied-marker churn across many endpoints can exceed
+        // `MAX_APPLIED_MARKERS` while the full family still scans inside
+        // `MAX_MARKER_PAGES * BOOT_SCAN_PAGE`. Because keys are time-ordered
+        // (`{at}{request}`), retaining the newest `MAX_APPLIED_MARKERS` keeps recent
+        // facts answerable and leaves evicted older markers fail-closed (`None`)
+        // without triggering a global server-wide `complete = false` blackout.
+        tracing::warn!(
+            markers = applied.len(),
+            cap = MAX_APPLIED_MARKERS,
+            "inventory: applied-marker mirror slid past its newest-window cap; keeping \
+             newest markers and failing closed on evicted older ones"
+        );
     }
 
     // Never let an ordinary pool/marker sweep erase an exact-input refusal.
@@ -416,6 +450,7 @@ pub fn reconcile(ctx: &mut Ctx<'_>, families: &InventoryFamilies) {
             quarantined_keys,
             applied,
             complete,
+            markers_truncated: truncated_markers,
             reconciliations: reconciliations.saturating_add(1),
             attempt_at,
             attempt_seq,

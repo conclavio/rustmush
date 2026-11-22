@@ -490,6 +490,12 @@ impl InventoryProvider {
             })?
             .cloned()
             .ok_or_else(|| error(ActionErrorCode::ProviderRejected, "no such lot"))?;
+        // P2-MOD-50: authorize the lot against the offer's validated endpoint before consulting
+        // PoolCapacity, so a cross-endpoint lot returns the exact same missing-lot refusal
+        // without disclosing existence, commodity, or mass.
+        if record.endpoint() != endpoint {
+            return Err(error(ActionErrorCode::ProviderRejected, "no such lot"));
+        }
         // Doc 48e (48c #6, 48d C-03): the endpoint holds its pools and its lots, every good's; the
         // lot dissolving is already in its tally, so it is counted once, as the incoming units.
         let dissolving = (record.commodity().clone(), record.quantity());
@@ -1309,7 +1315,7 @@ pub fn register(
     if let Some(descriptor) = salvage_descriptor {
         let action = reg.definition(descriptor)?;
         if let Some(provider) =
-            crate::salvage::provider_for(action.clone(), outcome, families, salvage)
+            crate::salvage::provider_for(action.clone(), outcome, families, salvage, capacity)
         {
             reg.action_provider(action, provider)?;
         }

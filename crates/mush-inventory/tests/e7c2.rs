@@ -2225,21 +2225,37 @@ fn vf_r3_a_marker_written_past_the_mirror_cap_still_answers_its_fact() {
         store.marker(&newest).is_some(),
         "the mirror keeps the NEWEST markers, not the first by hash"
     );
-    // Truncation is fail-closed for the whole mirror, which is what makes
-    // "unknown is unsatisfied" a property of the code rather than of key order.
+    assert!(
+        store.markers_truncated(),
+        "sliding past MAX_APPLIED_MARKERS records marker-window truncation"
+    );
+    assert!(
+        store.is_complete(),
+        "P2-MOD-52: normal applied-marker churn past MAX_APPLIED_MARKERS inside the scan budget \
+         must not globally flip InventoryStore::complete to false"
+    );
     let provider = mush_inventory::InventoryFactProvider;
+    let resolved = provider
+        .resolve(
+            world.world(),
+            mush_inventory::FACT_TRANSFERRED,
+            &newest,
+            None,
+        )
+        .expect("newest marker in the retained window still resolves");
+    assert!(resolved.satisfied);
+    let oldest = format!("{:016x}{:064x}", 0_usize, 0_usize);
     assert!(
         provider
             .resolve(
                 world.world(),
                 mush_inventory::FACT_TRANSFERRED,
-                &newest,
+                &oldest,
                 None
             )
             .is_none(),
-        "a truncated mirror answers no fact at all"
+        "an evicted older marker fails closed as unsatisfied"
     );
-    assert!(!store.is_complete());
 }
 
 #[test]

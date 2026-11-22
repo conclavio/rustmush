@@ -107,12 +107,27 @@ pub(crate) fn refuse(
     families: &super::super::families::CommerceFamilies,
     holder: mush_economy::Holder,
 ) -> Result<(), PublicationError> {
+    refuse_principal(ctx, txn, families, &holder.principal())
+}
+
+/// **The refusal for any principal (character or organization)** (`P2-MOD-54`):
+/// `Err(Unavailable)` while `principal` is barred at the world's IC now; `Ok`
+/// for one never revoked or past its term.
+///
+/// # Errors
+/// `Unavailable` for a barred principal, an unreadable world, or an unreadable row.
+pub(crate) fn refuse_principal(
+    ctx: &PrepareCtx<'_>,
+    txn: &mut ActionTxn<'_>,
+    families: &super::super::families::CommerceFamilies,
+    principal: &PrincipalId,
+) -> Result<(), PublicationError> {
     let now = ctx
         .world()
         .map_err(|_| PublicationError::Unavailable)?
         .world_ic_now()
         .at;
-    if barred(txn, families, holder, now)? {
+    if barred_principal(txn, families, principal, now)? {
         return Err(PublicationError::Unavailable);
     }
     Ok(())
@@ -128,14 +143,27 @@ pub(crate) fn barred_read(
     families: &super::super::families::CommerceFamilies,
     holder: mush_economy::Holder,
 ) -> Result<bool, PublicationError> {
-    let Some(key) = principal_key(&holder.principal()) else {
+    barred_principal_read(ctx, families, &holder.principal())
+}
+
+/// **The read-side principal bar** (`P2-MOD-54`): whether `principal` (character or
+/// organization) is barred now, read through any [`CommerceRead`](super::super::read::CommerceRead).
+///
+/// # Errors
+/// `Unavailable` when the row cannot be read.
+pub(crate) fn barred_principal_read(
+    ctx: &impl super::super::read::CommerceRead,
+    families: &super::super::families::CommerceFamilies,
+    principal: &PrincipalId,
+) -> Result<bool, PublicationError> {
+    let Some(key) = principal_key(principal) else {
         return Ok(false);
     };
     let now = ctx.world().world_ic_now().at;
     Ok(ctx
         .get(&families.revoked_principals, &key)
         .map_err(|_| PublicationError::Unavailable)?
-        .is_some_and(|record| record.principal == holder.principal() && record.bars(now)))
+        .is_some_and(|record| &record.principal == principal && record.bars(now)))
 }
 
 /// **The move bar** (D4): `Err(Unavailable)` when any character party to a sale, resale,
@@ -221,19 +249,33 @@ pub(crate) fn any_party_barred_engine(
 ///
 /// # Errors
 /// `Unavailable` when the row cannot be read.
+#[cfg(test)]
 pub(crate) fn barred(
     txn: &mut ActionTxn<'_>,
     families: &super::super::families::CommerceFamilies,
     holder: mush_economy::Holder,
     now: i64,
 ) -> Result<bool, PublicationError> {
-    let Some(key) = principal_key(&holder.principal()) else {
+    barred_principal(txn, families, &holder.principal(), now)
+}
+
+/// Whether `principal` (character or organization) is barred at World IC second `now`.
+///
+/// # Errors
+/// `Unavailable` when the row cannot be read.
+pub(crate) fn barred_principal(
+    txn: &mut ActionTxn<'_>,
+    families: &super::super::families::CommerceFamilies,
+    principal: &PrincipalId,
+    now: i64,
+) -> Result<bool, PublicationError> {
+    let Some(key) = principal_key(principal) else {
         return Ok(false);
     };
     Ok(txn
         .get(&families.revoked_principals, &key)
         .map_err(|_| PublicationError::Unavailable)?
-        .is_some_and(|record| record.principal == holder.principal() && record.bars(now)))
+        .is_some_and(|record| &record.principal == principal && record.bars(now)))
 }
 
 /// The key shape the family admits: `{character:020}` or `org/{org:020}`.
@@ -339,5 +381,36 @@ mod tests {
                 "{holder:?} at {now}"
             );
         }
+    }
+
+    /// **P2-MOD-54**: `barred_principal` enforces a `RevokedPrincipal` bar on an
+    /// organization principal (`PrincipalId::Organization`, as used by House issuers)
+    /// across `[from_ic, until_ic)`, without barring other organizations, characters
+    /// with the same numeric ID, or instants outside the bar window.
+    #[test]
+    fn p2_mod_54_barred_principal_enforces_house_org_bar_boundaries() {
+        let mut f = super::super::super::filing_tests::Fixture::new(true);
+        let family = f.families.revoked_principals.clone();
+        let house = PrincipalId::Organization(mush_org::OrgId(5));
+        let row = record(house.clone());
+        let mut txn = f.engine.action_transaction(&family).unwrap();
+        txn.insert(&family, &row.key(), row.clone()).unwrap();
+        let end = row.until_ic;
+        assert!(!barred_principal(&mut txn, &f.families, &house, 99).unwrap());
+        assert!(barred_principal(&mut txn, &f.families, &house, 100).unwrap());
+        assert!(barred_principal(&mut txn, &f.families, &house, end - 1).unwrap());
+        assert!(!barred_principal(&mut txn, &f.families, &house, end).unwrap());
+        assert!(
+            !barred_principal(
+                &mut txn,
+                &f.families,
+                &PrincipalId::Organization(mush_org::OrgId(6)),
+                150
+            )
+            .unwrap()
+        );
+        assert!(
+            !barred_principal(&mut txn, &f.families, &PrincipalId::Object(ObjId(5)), 150).unwrap()
+        );
     }
 }
