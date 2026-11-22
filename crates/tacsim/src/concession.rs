@@ -352,11 +352,27 @@ mod tests {
         let boundary = 28_636 * IC_MONTH_S;
         for before in [15, 25] {
             let seeded = boundary - before * DAY;
-            assert_eq!(ic_month(seeded) + 1, ic_month(boundary), "part-way into a month");
-            assert_eq!(votes_due(seeded, boundary), 0, "{before} days: none at the boundary");
-            assert_eq!(votes_due(seeded, seeded + IC_MONTH_S - 1), 0, "{before} days");
+            assert_eq!(
+                ic_month(seeded) + 1,
+                ic_month(boundary),
+                "part-way into a month"
+            );
+            assert_eq!(
+                votes_due(seeded, boundary),
+                0,
+                "{before} days: none at the boundary"
+            );
+            assert_eq!(
+                votes_due(seeded, seeded + IC_MONTH_S - 1),
+                0,
+                "{before} days"
+            );
             assert_eq!(votes_due(seeded, seeded + IC_MONTH_S), 1, "{before} days");
-            assert_eq!(votes_due(seeded, seeded + 4 * IC_MONTH_S), 4, "{before} days");
+            assert_eq!(
+                votes_due(seeded, seeded + 4 * IC_MONTH_S),
+                4,
+                "{before} days"
+            );
         }
     }
 
@@ -366,7 +382,11 @@ mod tests {
         let seeded = 28_636 * IC_MONTH_S - 15 * DAY;
         assert_eq!(votes_due(seeded, seeded + 95 * DAY), 3);
         assert_eq!(votes_due(seeded, seeded + 5 * IC_MONTH_S), 5);
-        assert_eq!(votes_due(seeded, seeded - DAY), 0, "never before the seeding");
+        assert_eq!(
+            votes_due(seeded, seeded - DAY),
+            0,
+            "never before the seeding"
+        );
     }
 
     /// The seeding instant is read back from the seed vote's cause, which persists with the
@@ -381,6 +401,9 @@ mod tests {
         ]);
         assert_eq!(seed_cause(seeded), format!("assembly.vote/0@{seeded}"));
         assert_eq!(seeded_at(&clock), Some(seeded));
-        assert_eq!(seeded_at(&review_with(&[format!("{ASSEMBLY_CAUSE}1")])), None);
+        assert_eq!(
+            seeded_at(&review_with(&[format!("{ASSEMBLY_CAUSE}1")])),
+            None
+        );
     }
 }

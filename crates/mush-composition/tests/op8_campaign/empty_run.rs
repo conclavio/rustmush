@@ -163,8 +163,8 @@ fn the_empty_run(ic_phase: i64) {
     let first_vote = first_vote.expect("a vote");
     assert!(
         (seeded + IC_MONTH_S..seeded + IC_MONTH_S + DAY).contains(&first_vote),
-        "the first vote 30 IC days after the seeding ({seeded}), not at the calendar's boundary:          {first_vote}
-{report}"
+        "the first vote 30 IC days after the seeding ({seeded}), not at the calendar's \
+         boundary: {first_vote}\n{report}"
     );
 
     // The arm declared, the campaign ran it to its close and settled it, and the arm wrote it.
