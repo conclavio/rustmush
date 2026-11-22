@@ -19,7 +19,19 @@
 
 (game) {
 	tls internal
-	reverse_proxy http://127.0.0.1:{args[0]}
+	# Serve standalone 3D client archives straight from disk (zero-copy sendfile,
+	# HTTP Range resume, ETag) so large downloads never touch the game gateway's
+	# request timeout or connection budget. The gateway's GET /api/client-downloads
+	# advertises the commit-matching (or newest) archive from this same folder.
+	handle_path /downloads/clients/* {
+		@blocked path *.part *.json .*
+		respond @blocked 404
+		root * /opt/rustmush/clients
+		file_server
+	}
+	handle {
+		reverse_proxy http://127.0.0.1:{args[0]}
+	}
 }
 
 dev1.conclav.io {

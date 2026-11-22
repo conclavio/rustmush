@@ -161,6 +161,7 @@ WEB_PORT=$((ssh_port + 1))
 WEB_BIND=127.0.0.1
 WEB_TLS=# no native tls on the acceptance instance
 WEB_TRUSTED_PROXIES=[]
+WEB_CLIENT_DOWNLOADS_DIR=
 IPC_SOCKET=$inst/ipc.sock
 TRUSTED_SOCKET=
 LOG_LEVEL=info
