@@ -1142,6 +1142,59 @@ impl IndustryFamilies {
         self.write_capacity_pair(txn, key, true, scalar, book)
     }
 
+    /// Re-anchor one held standard work-order facility slot reservation to `now`
+    /// for `lead_secs` of remaining work plus the TTL (P2-MOD-77).
+    ///
+    /// Preserves the `P2-MOD-2` invariant: only reservations whose holder parses
+    /// as an existing non-terminal standard work order at `object` may be renewed
+    /// here; kernel-bound `bay_refit`, `core_integration`, and `core_refit` slots
+    /// are never touched.
+    ///
+    /// # Errors
+    /// [`IndustryError`] on any refusal; **nothing is written on an error**.
+    pub fn renew_slot_for(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        object: ObjId,
+        reservation: ReservationId,
+        expected_reservation_revision: u64,
+        now: &ClockStamp,
+        lead_secs: i64,
+    ) -> Result<ClockStamp, IndustryError> {
+        let (key, pair) = self.load_capacity_pair(txn, object)?;
+        let Some((scalar, book)) = pair else {
+            return Err(IndustryError::NoCapacity);
+        };
+        let Some(record) = book.records().iter().find(|r| r.id() == reservation) else {
+            return Err(IndustryError::NoCapacity);
+        };
+        let Some(wo_id) = crate::workorder::parse_wo_holder(record.holder()) else {
+            return Err(IndustryError::NoWorkOrder);
+        };
+        let Some(order) = self.work_order(txn, wo_id)? else {
+            return Err(IndustryError::NoWorkOrder);
+        };
+        if order.state().is_terminal() || order.facility() != object {
+            return Err(IndustryError::NoWorkOrder);
+        }
+        let amount = record.amount();
+        let expires = mush_inventory::reservation_deadline_after(now, lead_secs)
+            .map_err(IndustryError::Inventory)?;
+        let book = book.checked_replace(
+            book.revision(),
+            scalar,
+            mush_core::ReservationReplacement {
+                reservation,
+                expected_revision: expected_reservation_revision,
+                amount,
+                expires: expires.clone(),
+            },
+            now,
+        )?;
+        self.write_capacity_pair(txn, key, true, scalar, book)?;
+        Ok(expires)
+    }
+
     /// Expire one elapsed slot hold belonging to an existing non-terminal
     /// standard work order at `object` (P2-MOD-2).
     ///
