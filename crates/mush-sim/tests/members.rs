@@ -1078,3 +1078,77 @@ fn ic14_members_refuse_a_vault_backing_room() {
     members(&mut tw, &mut log, fx.lock, &[fx.lock, fx.spine]).expect("accepted");
     check_invariants(&tw);
 }
+
+/// **P2-MOD-4 (multi-room boundary)**: `InteriorCustodyProvider` stops its
+/// traversal at a nested multi-room interior and refuses withdrawing items
+/// inside a multi-room space through an outer vault or depositing a carrier
+/// that hosts a multi-room interior.
+#[test]
+fn p2_mod_4_multi_room_interior_stopped_by_interior_custody() {
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(SimulationModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![
+            std::sync::Arc::new(InteriorCustodyProvider),
+        ])),
+    ]);
+    let fx = objects(&mut tw);
+    records(&mut tw, &fx);
+    let mut log = Vec::new();
+    drain(&mut tw, &mut log);
+
+    // Make `fx.lock` (anchored to `fx.hull`) a multi-room interior `{lock, spine}`.
+    members(&mut tw, &mut log, fx.lock, &[fx.lock, fx.spine]).expect("multi-room lock");
+
+    let hangar = tw
+        .world_mut()
+        .create(ObjKind::Room, "OuterHangar", GOD, None)
+        .unwrap();
+    bind(&mut tw, hangar, "sim.interior");
+    ok(&mut tw, &format!("@spatial/space #{}=fixed:0", hangar.0));
+    ok(
+        &mut tw,
+        &format!("@vault/create outer=interior:#{}", hangar.0),
+    );
+
+    let gear = tw
+        .world_mut()
+        .create(ObjKind::Thing, "BridgeGear", GOD, Some(LIMBO))
+        .unwrap();
+    bind(&mut tw, gear, "sim.participant");
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", gear.0, fx.lock.0),
+    );
+
+    // Even when `fx.hull` is parked inside `hangar` by staff, the outer vault
+    // must stop at the nested multi-room interior `fx.lock`.
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", fx.hull.0, hangar.0),
+    );
+    let provider = InteriorCustodyProvider;
+    let outer_ref = CustodyRef::SpatialInterior(hangar);
+    let contents = provider.contents(tw.world(), &outer_ref).expect("contents");
+    assert!(
+        !contents.contains(&gear),
+        "outer vault must not claim items inside a nested multi-room interior"
+    );
+    assert_eq!(
+        provider.holds(tw.world(), &outer_ref, gear),
+        Some(false),
+        "outer vault must not report containment of multi-room interior occupant"
+    );
+    refused(&mut tw, &format!("@vault/withdraw #{}=0", gear.0));
+    assert!(matches!(
+        state(&tw).parent_of(gear),
+        SpatialParent::Interior { space, .. } if space == fx.lock
+    ));
+
+    // Unplacing `fx.hull` and attempting to deposit it into the outer vault
+    // must also be refused because `fx.hull` hosts anchored multi-room space `fx.lock`.
+    ok(&mut tw, &format!("@spatial/unplace #{}", fx.hull.0));
+    refused(&mut tw, &format!("@vault/deposit #{}=0", fx.hull.0));
+    assert!(!state(&tw).is_placed(fx.hull));
+    check_invariants(&tw);
+}

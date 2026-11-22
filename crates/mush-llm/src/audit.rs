@@ -222,7 +222,7 @@ impl AuditSink {
             }
             entry.input_tokens = entry.input_tokens.saturating_add(rec.input_tokens);
             entry.output_tokens = entry.output_tokens.saturating_add(rec.output_tokens);
-            if let Some(c) = rec.cost_usd {
+            if let Some(c) = rec.cost_usd.and_then(crate::budget::sanitize_cost_usd) {
                 entry.cost_usd += c;
             }
         }
@@ -300,7 +300,7 @@ impl AuditSink {
                 }
                 slice.input_tokens = slice.input_tokens.saturating_add(r.input_tokens);
                 slice.output_tokens = slice.output_tokens.saturating_add(r.output_tokens);
-                if let Some(c) = r.cost_usd {
+                if let Some(c) = r.cost_usd.and_then(crate::budget::sanitize_cost_usd) {
                     slice.cost_usd += c;
                 }
             }

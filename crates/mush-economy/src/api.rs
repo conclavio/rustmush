@@ -180,12 +180,26 @@ pub(crate) fn persist_cadence(out: &mut Outbox, c: &crate::clock::CadenceClock) 
         },
     );
 }
-pub(crate) fn persist_contract(out: &mut Outbox, c: &crate::contract::EconomicContract) {
+pub(crate) fn persist_contract(
+    out: &mut Outbox,
+    c: &crate::contract::EconomicContract,
+    created_by: Option<ObjId>,
+    filed_salvage_claim: bool,
+) {
+    let mut value = serde_json::to_value(c).expect("contract serializes");
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(creator) = created_by {
+            obj.insert("created_by".to_string(), serde_json::json!(creator.0));
+        }
+        if filed_salvage_claim {
+            obj.insert("salvage_claim".to_string(), serde_json::json!(true));
+        }
+    }
     push_op(
         out,
         ModuleWrite::JsonSet {
             key: contract_key(c.id),
-            value: serde_json::to_value(c).expect("contract serializes"),
+            value,
         },
     );
 }
@@ -798,6 +812,10 @@ impl AuthEval for WorldAuth<'_> {
             crate::AttestorSet::Canon { .. } => false,
         }
     }
+
+    fn scope_coherent(&self, scope: Option<OrgScopeId>, owner: &PrincipalId) -> bool {
+        scope_coherent(self.w, scope, owner)
+    }
 }
 
 impl WorldAuth<'_> {
@@ -812,6 +830,60 @@ impl WorldAuth<'_> {
         let Some(scope) = scope else { return false };
         scope_coherent(self.w, Some(scope), owner)
             && holds_capability(self.w, actor, capability, scope)
+    }
+
+    /// Whether `actor` may commit `asset` to a contract's `TitleTransfer`
+    /// deliverable against `asset`'s actual compartment (P2-MOD-1).
+    ///
+    /// - A wiring-authorized `Organization` actor (`accept_contract_as` /
+    ///   `accept_contract_standing`) acts for its own assets on live, coherent
+    ///   compartments (or unscoped org assets it directly owns).
+    /// - An `Object` actor must be staff, the personal `title_owner`, or hold
+    ///   `asset.title.transfer` on `asset.scope` — never a sibling or child
+    ///   compartment's `contract.accept` grant.
+    pub(crate) fn authorize_title_transfer(
+        &self,
+        actor: &PrincipalId,
+        asset: &EconomicAsset,
+        to: &PrincipalId,
+    ) -> bool {
+        let op = AssetOp::TransferTitle {
+            object: asset.object,
+            to: to.clone(),
+            to_scope: None,
+        };
+        match actor {
+            PrincipalId::Organization(_) => {
+                asset.title_owner == *actor
+                    && scope_coherent(self.w, asset.scope, &asset.title_owner)
+            }
+            PrincipalId::Object(_) => self.authorize_asset(actor, Some(asset), &op),
+            PrincipalId::System(_) => false,
+        }
+    }
+
+    /// Whether `actor` may pledge `asset` as a contract's `Collateral` (or
+    /// lease) deliverable against `asset`'s actual compartment (P2-MOD-1).
+    ///
+    /// Mirrors title-disposal authority on `asset.scope` (`asset.title.transfer`
+    /// on the asset's live compartment, personal title owner, staff, or a
+    /// wiring-authorized org actor for its own live asset), preventing a
+    /// sub-compartment `contract.accept` grant from encumbering assets in
+    /// another compartment or root treasury.
+    pub(crate) fn authorize_collateral(&self, actor: &PrincipalId, asset: &EconomicAsset) -> bool {
+        match actor {
+            PrincipalId::Organization(_) => {
+                asset.title_owner == *actor
+                    && scope_coherent(self.w, asset.scope, &asset.title_owner)
+            }
+            PrincipalId::Object(a) => {
+                if is_staff(self.w, *a) || asset.title_owner == *actor {
+                    return true;
+                }
+                self.scoped_capability(asset.scope, &asset.title_owner, "asset.title.transfer", *a)
+            }
+            PrincipalId::System(_) => false,
+        }
     }
 
     /// Whether `actor` acts **for** `who` — the beneficiary question a capture asks,
@@ -1375,6 +1447,22 @@ pub(crate) fn post_with_companions(
             .any(|c| !crate::contract::managed::legacy_contract(c, store.snapshot()))
         {
             return Err(EconomyError::ManagedContract);
+        }
+        // P2-MOD-10 / Invariant 18 seam guard: enforce live org/scope ownership
+        // on every title creation and transfer regardless of whether `auth` is
+        // `WorldAuth` or an injected authority like `ContractAuth`.
+        for op in &plan.asset_ops {
+            match op {
+                AssetOp::Title { owner, scope, .. } if !scope_coherent(ctx.w, *scope, owner) => {
+                    return Err(EconomyError::ScopeOwnerMismatch);
+                }
+                AssetOp::TransferTitle { to, to_scope, .. }
+                    if !scope_coherent(ctx.w, *to_scope, to) =>
+                {
+                    return Err(EconomyError::ScopeOwnerMismatch);
+                }
+                _ => {}
+            }
         }
         let providers = store.providers();
         let world_auth = WorldAuth { w: ctx.w };
@@ -3443,7 +3531,7 @@ pub(crate) fn put_contract(
 /// Install the already-admitted document and publish its normal legacy event.
 pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContractWrite) {
     let c = prepared.contract;
-    let changed = {
+    let (changed, created_by, filed_salvage_claim) = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
             return;
         };
@@ -3452,10 +3540,18 @@ pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContract
         // attempt; publishing all of those would make the canon bridge a firehose.
         let before = store.snapshot.contract(c.id).map(|p| p.state.kind());
         let after = c.state.kind();
+        // P2-MOD-11: stamp the immutable creator on initial contract creation.
+        if before.is_none() {
+            store.snapshot.set_contract_creator(c.id, ctx.actor);
+        }
         store.snapshot.put_contract(c.clone());
-        before != Some(after)
+        (
+            before != Some(after),
+            store.snapshot.contract_creator(c.id),
+            store.snapshot.is_filed_salvage_claim(c.id),
+        )
     };
-    persist_contract(ctx.out, &c);
+    persist_contract(ctx.out, &c, created_by, filed_salvage_claim);
     if changed {
         // The **landed transaction id** is the event's dedupe key (§6.1): a
         // settlement finished a second time — by the sweep's `AlreadyPosted` retry,
@@ -4144,49 +4240,64 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         hold_docs,
         contract_docs,
     } = commit;
-    let (journal_op, meta, key_doc, approval_doc) =
-        {
-            let store = ctx
-                .w
-                .module_state_mut::<EconomyStore>()
-                .expect("economy store");
-            assert_eq!(
-                store.peek_next_transaction(),
-                txid.0,
-                "economy: the transaction allocator moved between prepare and install — \
+    let (journal_op, meta, key_doc, approval_doc, contract_creators) = {
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .expect("economy store");
+        assert_eq!(
+            store.peek_next_transaction(),
+            txid.0,
+            "economy: the transaction allocator moved between prepare and install — \
              something re-entered post() after the custody move (see install_commit)"
-            );
-            // J2: the entry goes into the chunk that is open now (a seal, if this
-            // append causes one, happens after the entry is in).
-            let chunk_now = store.journal.open_chunk(JOURNAL_LOG);
-            let (applied_seq, journal_op) = store.journal.apply_prepared(journal).unwrap_or_else(
-                |error| {
+        );
+        // J2: the entry goes into the chunk that is open now (a seal, if this
+        // append causes one, happens after the entry is in).
+        let chunk_now = store.journal.open_chunk(JOURNAL_LOG);
+        let (applied_seq, journal_op) =
+            store
+                .journal
+                .apply_prepared(journal)
+                .unwrap_or_else(|error| {
                     panic!(
                         "economy: the journal tail moved between prepare and install ({error}) — \
                  something re-entered post() after the custody move (see install_commit)"
                     )
-                },
-            );
-            assert_eq!(
-                journal_seq, applied_seq,
-                "economy: prepared journal seq is exact"
-            );
-            store.next_transaction = next_transaction;
-            // W1-F1: the delta lands on the live snapshot, the companion docs
-            // with it (B2), and the consumed approval's post-image is read back
-            // for its own doc.
-            let consumed = delta.consumed_approval;
-            delta.apply_to(&mut store.snapshot);
-            for c in &contract_docs {
-                store.snapshot.put_contract(c.clone());
+                });
+        assert_eq!(
+            journal_seq, applied_seq,
+            "economy: prepared journal seq is exact"
+        );
+        store.next_transaction = next_transaction;
+        // W1-F1: the delta lands on the live snapshot, the companion docs
+        // with it (B2), and the consumed approval's post-image is read back
+        // for its own doc.
+        let consumed = delta.consumed_approval;
+        delta.apply_to(&mut store.snapshot);
+        let mut contract_meta: Vec<(Option<ObjId>, bool)> = Vec::with_capacity(contract_docs.len());
+        for c in &contract_docs {
+            if store.snapshot.contract(c.id).is_none() {
+                store.snapshot.set_contract_creator(c.id, ctx.actor);
             }
-            let approval_doc = consumed.and_then(|(id, _)| store.snapshot.approval(id).cloned());
-            store.note_chunk(chunk_now, applied_seq, txid);
-            // Doc 13 (W-D4): the key document rides in the same batch as the entry.
-            let key_doc = crate::keys::IdemDoc::of(&transaction);
-            store.index_transaction(transaction);
-            (journal_op, store.meta_doc(), key_doc, approval_doc)
-        };
+            store.snapshot.put_contract(c.clone());
+            contract_meta.push((
+                store.snapshot.contract_creator(c.id),
+                store.snapshot.is_filed_salvage_claim(c.id),
+            ));
+        }
+        let approval_doc = consumed.and_then(|(id, _)| store.snapshot.approval(id).cloned());
+        store.note_chunk(chunk_now, applied_seq, txid);
+        // Doc 13 (W-D4): the key document rides in the same batch as the entry.
+        let key_doc = crate::keys::IdemDoc::of(&transaction);
+        store.index_transaction(transaction);
+        (
+            journal_op,
+            store.meta_doc(),
+            key_doc,
+            approval_doc,
+            contract_meta,
+        )
+    };
     persist_journal(ctx.out, journal_op);
     crate::keys::persist_idem(ctx.out, &key_doc);
     for a in &account_docs {
@@ -4201,8 +4312,8 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
     if let Some(r) = &approval_doc {
         persist_approval(ctx.out, r);
     }
-    for c in &contract_docs {
-        persist_contract(ctx.out, c);
+    for (c, (created_by, filed_salvage_claim)) in contract_docs.iter().zip(contract_creators) {
+        persist_contract(ctx.out, c, created_by, filed_salvage_claim);
     }
     persist_meta(ctx.out, meta);
     // E6a step 1 verify fold (R1): **a landed post is a terminal commit.**

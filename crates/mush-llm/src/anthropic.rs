@@ -56,6 +56,18 @@ impl AnthropicProvider {
         cfg: &ProviderConfig,
         api_key: String,
     ) -> Result<AnthropicProvider, LlmError> {
+        for (label, price) in [
+            ("price_input_per_mtok", cfg.price_input_per_mtok),
+            ("price_output_per_mtok", cfg.price_output_per_mtok),
+        ] {
+            if let Some(p) = price
+                && (!p.is_finite() || p < 0.0)
+            {
+                return Err(LlmError::InvalidRequest(format!(
+                    "provider {label} must be finite and non-negative"
+                )));
+            }
+        }
         Ok(AnthropicProvider {
             id: id.into(),
             client: http::client()?,
@@ -80,7 +92,7 @@ impl AnthropicProvider {
             (pin, pout) => {
                 let i = pin.unwrap_or(0.0) * (input as f64) / 1_000_000.0;
                 let o = pout.unwrap_or(0.0) * (output as f64) / 1_000_000.0;
-                Some(i + o)
+                crate::budget::sanitize_cost_usd(i + o)
             }
         }
     }

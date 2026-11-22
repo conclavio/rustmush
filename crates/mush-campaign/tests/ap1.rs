@@ -335,7 +335,7 @@ fn high30_defender_notices_filter_non_players_and_rate_limit_repeat_spam() {
         let id = declared(tw, attacker, targets, "audience");
         ok(tw, attacker, &format!("@op/activate {}", id.0));
         let _ = fire(tw);
-        ok(tw, attacker, &format!("@op/resolve {}=success", id.0));
+        ok(tw, attacker, &format!("@op/resolve {}=failure", id.0));
         for _ in 0..8 {
             let _ = fire(tw);
         }

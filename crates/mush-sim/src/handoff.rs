@@ -374,6 +374,12 @@ struct ApplyParameters {
     handoff: RequestUid,
     expected_revision: u64,
     observed_at: ClockStamp,
+    /// Scheduler-owned stale cancellation: when the requester's grant witness is
+    /// no longer current, the requester is restrained, or the seated NPC left
+    /// its station, the scheduled apply cancels the pending handoff instead of
+    /// returning `Stale` and spinning forever (P2-MOD-25).
+    #[serde(default)]
+    cancel_stale: bool,
 }
 
 impl HandoffProvider {
@@ -783,19 +789,27 @@ impl HandoffProvider {
             .cloned()
             .ok_or_else(|| Self::integrity("scheduled control lease is missing"))?;
         let witnesses = Self::witnesses(invocation, &lease);
-        let next = lease
-            .checked_apply_handoff(
-                parameters.expected_revision,
-                parameters.handoff,
-                parameters.observed_at,
-            )
-            .map_err(|error| Self::transition_error(&error))?;
+        let (operation, next) = if parameters.cancel_stale {
+            let cancelled = lease
+                .checked_cancel_handoff(parameters.expected_revision, parameters.handoff)
+                .map_err(|error| Self::transition_error(&error))?;
+            ("cancelled", cancelled)
+        } else {
+            let applied = lease
+                .checked_apply_handoff(
+                    parameters.expected_revision,
+                    parameters.handoff,
+                    parameters.observed_at,
+                )
+                .map_err(|error| Self::transition_error(&error))?;
+            ("applied", applied)
+        };
         txn.replace(&self.families.leases, &parameters.lease, next.clone())
             .map_err(|error| Self::state_error(&error))?;
         txn.remove(&self.families.jobs, &parameters.schedule)
             .map_err(|error| Self::state_error(&error))?;
         Ok(
-            AuthoritativeActionOutput::new(self.outcome("applied", &next, parameters.handoff)?)
+            AuthoritativeActionOutput::new(self.outcome(operation, &next, parameters.handoff)?)
                 .with_eligible_witnesses(witnesses),
         )
     }
@@ -826,6 +840,11 @@ impl HandoffProvider {
         };
         let unit = *unit;
         let actor = query.actor();
+        // Doc 42 CR.0 (P2-MOD-22): a restrained operator (captive or ejectee
+        // awaiting pickup) receives no station handoff, release, or cancel offer.
+        if crate::journey::operator_restraint(&engine.world, actor).is_some() {
+            return Ok(None);
+        }
         let actor_principal = PrincipalId::Object { id: actor };
         // The station this offer projects for, and whether the actor is currently
         // DRIVING it (focused). A focused billet-holder rides the manual
@@ -833,7 +852,8 @@ impl HandoffProvider {
         // by the same release/switch that fired the fallback — C1/C2) re-sources
         // the relief offer from the surviving billet grant, not the transient
         // `FocusState` the release tore down. The departed path exists only for the
-        // `request` verb (the fallback fire); `cancel` still requires focus.
+        // `request` verb (the fallback fire); `cancel` uses the focused path first
+        // and falls back to staff/requester pending-handoff lookup (P2-MOD-25).
         let focused_here = engine
             .world
             .module_state::<FocusState>()
@@ -857,7 +877,7 @@ impl HandoffProvider {
                 Some(station) => (station, false),
                 None => return Ok(None),
             },
-            None => return Ok(None),
+            None => return self.project_fallback_cancel_offer(action, engine, unit, actor),
         };
         let Some(spatial) = engine.world.module_state::<SpatialState>() else {
             return Ok(None);
@@ -872,13 +892,25 @@ impl HandoffProvider {
                 .and_then(|stations| stations.stations.get(&station))
                 .is_some_and(|spec| spec.channels.len() > 1)
         {
-            return self.project_npc_console_offer(action, engine, unit, actor, &station);
+            return if !request {
+                self.project_fallback_cancel_offer(action, engine, unit, actor)
+            } else {
+                self.project_npc_console_offer(action, engine, unit, actor, &station)
+            };
         }
         let Some(channel) = station_channel(spatial, unit, &station) else {
-            return Ok(None);
+            return if !request {
+                self.project_fallback_cancel_offer(action, engine, unit, actor)
+            } else {
+                Ok(None)
+            };
         };
         let Some(epoch) = requester_grant_epoch(engine, actor, unit, station.as_str()) else {
-            return Ok(None);
+            return if !request {
+                self.project_fallback_cancel_offer(action, engine, unit, actor)
+            } else {
+                Ok(None)
+            };
         };
         let key = ControlLeaseKey::new(unit, channel.clone());
         let lease = engine
@@ -971,12 +1003,14 @@ impl HandoffProvider {
                 "grant_epoch": epoch,
             })
         } else {
-            // Cancel is offered only while the actor's own request is still pending.
+            // Cancel is offered while the actor's own request is pending; if this
+            // focused channel has none (e.g. staff clearing another channel, or
+            // actor cancelling an unfocused billet's pending request), fall back.
             let Some(pending) = lease.and_then(ControlLeaseState::pending) else {
-                return Ok(None);
+                return self.project_fallback_cancel_offer(action, engine, unit, actor);
             };
             if pending.requested_by() != &actor_principal {
-                return Ok(None);
+                return self.project_fallback_cancel_offer(action, engine, unit, actor);
             }
             json!({
                 "channel": channel,
@@ -985,6 +1019,66 @@ impl HandoffProvider {
             })
         };
         self.offer_draft(action, engine, fixed).map(Some)
+    }
+
+    /// Fallback cancel projection (P2-MOD-25): allows staff (`is_admin`) to
+    /// cancel any pending handoff across `unit`'s declared stations, and allows
+    /// an unfocused billet-holder (or multi-channel console operator) to cancel
+    /// their own pending handoff. Bounded by the unit's station/channel caps.
+    fn project_fallback_cancel_offer(
+        &self,
+        action: &DefinitionRef,
+        engine: &Engine,
+        unit: ObjId,
+        actor: ObjId,
+    ) -> Result<Option<mush_core::ProviderOfferDraft>, ActionError> {
+        if !matches!(self.operation, HandoffOperation::Cancel) {
+            return Ok(None);
+        }
+        let Some(spatial) = engine.world.module_state::<SpatialState>() else {
+            return Ok(None);
+        };
+        let Some(stations) = spatial.stations.get(&unit) else {
+            return Ok(None);
+        };
+        let admin = crate::commands::is_admin(&engine.world, actor);
+        let actor_principal = PrincipalId::Object { id: actor };
+        let mut channels = std::collections::BTreeSet::new();
+        for (station_id, spec) in &stations.stations {
+            if admin {
+                channels.extend(spec.channels.iter().cloned());
+            } else if let Some(seat) = spatial
+                .assignments
+                .get(&unit)
+                .and_then(|ha| ha.seats.get(station_id))
+                && seat.actor == actor
+            {
+                channels.extend(seat.granted_channels(spec));
+            }
+        }
+        for channel in channels {
+            let key = ControlLeaseKey::new(unit, channel.clone());
+            let Some(lease) = engine
+                .action_state()
+                .get(&self.families.leases, &key)
+                .map_err(|error| Self::state_error(&error))?
+            else {
+                continue;
+            };
+            let Some(pending) = lease.pending() else {
+                continue;
+            };
+            if !admin && pending.requested_by() != &actor_principal {
+                continue;
+            }
+            let fixed = json!({
+                "channel": channel,
+                "handoff": pending.request(),
+                "expected_revision": lease.revision(),
+            });
+            return self.offer_draft(action, engine, fixed).map(Some);
+        }
+        Ok(None)
     }
 
     /// **A physically seated NPC's offer at a console of several channels** (doc 47 unit CO.5).
@@ -1233,41 +1327,41 @@ impl ScheduleActionAdapter for HandoffScheduleAdapter {
                 "active control-handoff schedule and job disagree",
             ));
         }
-        // E7c5 B5 (candidate (iii)): the epoch binding is enforced HERE, at apply.
-        // The request pinned the requester's control-generation on the named station
-        // as a fixed parameter; re-check it against the kernel's existing
-        // `World::channel_grant_is_current`. A focus change between request and apply
-        // bumps the unit's control generation (B4's `apply_control_generation`), so
-        // the witness is stale and the in-flight handoff is refused rather than
-        // applied under authority that has since moved.
-        if let Some(witness) = &job.witness
-            && !engine.world.channel_grant_is_current(
+        // E7c5 B5 (candidate (iii)) & P2-MOD-22/25: re-check the requester's
+        // control-generation witness, operator restraint, and physical NPC
+        // station presence at apply time. When stale, plan a scheduler-owned
+        // stale-cancel transition (`cancel_stale: true`) that atomically clears
+        // `leases.pending`, completes `schedules[sid]`, and removes `jobs[sid]`
+        // instead of returning `Err(Stale)` and spinning forever.
+        let witness_stale = job.witness.as_ref().is_some_and(|witness| {
+            !engine.world.channel_grant_is_current(
                 witness.actor,
                 job.lease.subject(),
                 job.owner.as_str(),
                 witness.station.as_str(),
                 witness.epoch,
                 job.lease.channel(),
-            )
-        {
-            return Err(HandoffProvider::stale(
-                "control-handoff requester's station grant is no longer current",
-            ));
-        }
+            ) || crate::journey::operator_restraint(&engine.world, witness.actor).is_some()
+        });
+        let npc_witness = (!witness_stale)
+            .then(|| job.witness.as_ref().filter(|w| w.physical_npc))
+            .flatten();
+        let npc_generation = npc_witness.and_then(|witness| {
+            npc_station_generation(&engine.world, witness.actor, job.lease.subject())
+        });
+        let cancel_stale = witness_stale || (npc_witness.is_some() && npc_generation.is_none());
         let definitions = engine.registry.definitions().ok_or_else(|| {
             HandoffProvider::integrity("control-handoff definition registry is unavailable")
         })?;
-        let revisions = if let Some(witness) = job.witness.as_ref().filter(|w| w.physical_npc) {
-            let generation =
-                npc_station_generation(&engine.world, witness.actor, job.lease.subject())
-                    .ok_or_else(|| HandoffProvider::stale("NPC left its physical station"))?;
-            RevisionSet::from_stamps([RevisionStamp {
-                key: npc_station_key(witness.actor, job.lease.subject())?,
-                generation,
-            }])
-            .map_err(|_| HandoffProvider::integrity("NPC station guards unavailable"))?
-        } else {
-            RevisionSet::default()
+        let revisions = match (npc_witness, npc_generation) {
+            (Some(witness), Some(generation)) if !cancel_stale => {
+                RevisionSet::from_stamps([RevisionStamp {
+                    key: npc_station_key(witness.actor, job.lease.subject())?,
+                    generation,
+                }])
+                .map_err(|_| HandoffProvider::integrity("NPC station guards unavailable"))?
+            }
+            _ => RevisionSet::default(),
         };
         let mut guards = engine
             .registry
@@ -1280,17 +1374,21 @@ impl ScheduleActionAdapter for HandoffScheduleAdapter {
             .map_err(|_| {
                 HandoffProvider::integrity("control-handoff definition guard is unavailable")
             })?;
+        let mut parameters = json!({
+            "schedule": job.schedule,
+            "lease": job.lease,
+            "handoff": job.request,
+            "expected_revision": job.pending_revision,
+            "observed_at": advance.observed_at(),
+        });
+        if cancel_stale && let Some(map) = parameters.as_object_mut() {
+            map.insert("cancel_stale".to_owned(), Value::Bool(true));
+        }
         Ok(ScheduleActionDraft {
             actor: job.lease.subject(),
             subject: PerceivedRef::SelfActor,
             targets: Vec::new(),
-            parameters: json!({
-                "schedule": job.schedule,
-                "lease": job.lease,
-                "handoff": job.request,
-                "expected_revision": job.pending_revision,
-                "observed_at": advance.observed_at(),
-            }),
+            parameters,
             guards: guards
                 .finish()
                 .map_err(|_| HandoffProvider::integrity("control-handoff guards are invalid"))?,

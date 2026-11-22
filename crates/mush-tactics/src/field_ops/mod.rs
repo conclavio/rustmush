@@ -53,10 +53,10 @@ pub use salvage::{
     BlackBoxFlightEntry, BlackBoxForensicReport, CONTEST_WINDOW_AVAILABLE_REAL_SECS, ContestGround,
     ContestSuccessReason, CustodyAction, CustodyTitleStatus, GroundTenure,
     MAX_AUTHORITATIVE_RECOVERY_RECORDS, MAX_BLACK_BOX_ENTRIES_PER_HULL, MAX_CLAIM_ENTRIES,
-    MAX_SALVAGE_CLAIMS, RecoveryAuthorityContext, RecoveryEntitlement, SalvageClaim,
-    SalvageClaimBook, SalvageClaimId, SalvageClaimState, SalvageContest, SalvageError,
-    SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject, check_custody_action_allowed,
-    evaluate_recovery_entitlement,
+    MAX_NON_VACATING_CONTESTS, MAX_SALVAGE_CLAIMS, RecoveryAuthorityContext, RecoveryEntitlement,
+    SalvageClaim, SalvageClaimBook, SalvageClaimId, SalvageClaimState, SalvageContest,
+    SalvageError, SalvageEvidenceKind, SalvageEvidenceRecord, SalvageSubject,
+    check_custody_action_allowed, evaluate_recovery_entitlement,
 };
 pub use workshop::{
     ComponentProvenance, ContrabandReason, MAX_STRIPPED_COMPONENTS, MAX_WORKSHOP_ORDERS,

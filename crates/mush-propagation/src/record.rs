@@ -839,6 +839,7 @@ impl Envelope {
         )
         .map(|mut next| {
             next.kind = self.kind;
+            next.representation = self.representation;
             next.transit = self.transit.clone();
             next.dispatch = self.dispatch.clone();
             next
@@ -1736,5 +1737,22 @@ mod tests {
         let again = expired.in_state(EnvelopeState::Expired, stamp(9));
         assert_eq!(expired, again, "expiry is idempotent");
         assert_eq!(again.advanced().at, 5, "and it does not re-stamp");
+    }
+
+    #[test]
+    fn p2_core_9_relayed_preserves_representation_across_hops() {
+        let rep = mush_core::RelayRepresentation {
+            organization: 77,
+            scope: 3,
+        };
+        let env = Envelope::issue(1, ObjId(10), ObjId(20), "orders".into(), 1, stamp(0))
+            .unwrap()
+            .with_representation(Some(rep));
+        let hop1 = env.relayed(ObjId(300), stamp(1)).unwrap();
+        assert_eq!(hop1.representation(), Some(rep));
+        let hop2 = hop1.relayed(ObjId(302), stamp(2)).unwrap();
+        assert_eq!(hop2.representation(), Some(rep));
+        let hop3 = hop2.relayed(ObjId(304), stamp(3)).unwrap();
+        assert_eq!(hop3.representation(), Some(rep));
     }
 }

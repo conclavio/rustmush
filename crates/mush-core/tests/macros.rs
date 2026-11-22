@@ -202,7 +202,7 @@ fn the_document_is_one_json_attribute_written_on_the_ordinary_path() {
     assert_eq!(map.len(), 1);
     assert_eq!(map.get("lk").and_then(|v| v.as_str()), Some("lock $1"));
     assert_eq!(attr.owner, ann);
-    assert!(attr.flags.is_empty());
+    assert_eq!(attr.flags, mush_core::AttrFlags::SELF_ONLY);
 }
 
 #[test]

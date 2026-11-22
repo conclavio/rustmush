@@ -2593,3 +2593,87 @@ fn ext_p1_1_delegated_builder_cannot_set_script_on_higher_role_or_escalate_via_c
         ann
     );
 }
+
+#[test]
+fn p2_core_5_find_caps_pattern_length_and_handles_adversarial_globs_fast() {
+    let mut g = Game::new();
+    let ann = g.ann;
+    g.w.set_flag(ann, Flags::BUILDER, true).unwrap();
+
+    // Oversized pattern is refused cleanly.
+    let too_long = "a".repeat(mush_core::lock::MAX_LOCK_GLOB_LEN + 1);
+    let out = g.run(ann, &format!("@find {too_long}"));
+    assert_error_contains(&out, ann, "too long");
+
+    // Hostile backtracking glob against long object names finishes fast.
+    let long_name = "a".repeat(4_096);
+    g.w.create(ObjKind::Thing, &long_name, ann, Some(LIMBO))
+        .unwrap();
+    let hostile = format!("*{}b*", "a".repeat(120));
+    let start = std::time::Instant::now();
+    let out = g.run(ann, &format!("@find {hostile}"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(200),
+        "@find took too long on adversarial glob: {:?}",
+        start.elapsed()
+    );
+    assert_error_contains(&out, ann, "(0 found)");
+}
+
+#[test]
+fn p2_core_6_ignore_macros_and_sheet_cannot_be_exfiltrated_via_examine_or_lock() {
+    let mut g = Game::new();
+    let (ann, bob) = (g.ann, g.bob);
+
+    // 1. `@ignore` and `@macro` write SELF_ONLY attributes; `@lock/page` cannot
+    //    probe whether Ann ignored Bob or read Ann's macros (even negated!).
+    g.run(ann, "@ignore Bob");
+    assert_eq!(attr_flags(&g, ann, "ignore"), AttrFlags::SELF_ONLY);
+    g.run(ann, "@macro hi=say secret-phrase");
+    assert_eq!(attr_flags(&g, ann, "macros"), AttrFlags::SELF_ONLY);
+
+    // Also plant an unflagged legacy `sheet:tacsim` and `script:on_use` on Ann.
+    g.w.set_attr(
+        ann,
+        "sheet:tacsim",
+        Attr::json(serde_json::json!({"staff_secret": "mole"}), GOD),
+    )
+    .unwrap();
+    g.w.set_attr(ann, "script:on_use", Attr::text("let secret = 1;", GOD))
+        .unwrap();
+
+    // `examine me` hides `sheet:*` from non-Wizard players (even unflagged
+    // legacy sheets), while Wizard+ can still inspect them.
+    let ann_ex = actor_texts(&g.run(ann, "examine me"), ann).join("\n");
+    assert!(
+        !ann_ex.contains("sheet:tacsim") && !ann_ex.contains("mole"),
+        "examine me must hide sheet:* from non-Wizard players: {ann_ex}"
+    );
+    let god_ex = actor_texts(&g.run(GOD, "examine Ann"), GOD).join("\n");
+    assert!(
+        god_ex.contains("sheet:tacsim") && god_ex.contains("mole"),
+        "Wizards must still see sheet:* in examine: {god_ex}"
+    );
+
+    // Bob tries `@lock/page me=<restricted>:*` and `!<restricted>:*` to probe
+    // Ann's private/internal attrs; all must refuse identically (fail closed).
+    for key in [
+        "ignore:*",
+        "!ignore:*",
+        "macros:*secret*",
+        "!macros:*secret*",
+        "sheet:tacsim:*mole*",
+        "!sheet:tacsim:*mole*",
+        "script:on_use:*secret*",
+        "!script:on_use:*secret*",
+    ] {
+        g.run(bob, &format!("@lock/page me={key}"));
+        let out = g.run(ann, "page Bob=ping");
+        assert_error_contains(&out, ann, "does not wish to be disturbed");
+        assert!(
+            out.events().iter().all(|(a, _)| *a != Audience::Actor(bob)),
+            "restricted lock {key} must fail closed: {:?}",
+            out.events()
+        );
+    }
+}

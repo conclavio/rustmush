@@ -266,6 +266,13 @@ pub trait AuthEval {
     fn authorize_vault_home(&self, _object: ObjId, _to: ObjId) -> bool {
         false
     }
+    /// `true` if `scope` belongs to `owner` (and is active in the live org
+    /// registry when the authority has world access; P2-MOD-10). Pure engine
+    /// callers keep the structural default (`scope.is_none() || matches!(owner, Organization(_))`);
+    /// live authorities (`WorldAuth`, `ContractAuth`) verify org ownership.
+    fn scope_coherent(&self, scope: Option<OrgScopeId>, owner: &PrincipalId) -> bool {
+        scope_owner_coherent(scope, owner)
+    }
 }
 
 /// An [`AuthEval`] that authorizes everything — for tests and trusted internal posts.
@@ -1332,9 +1339,9 @@ fn apply_asset_op(
             if !post.encumbrances.is_empty() {
                 return Err(EconomyError::Encumbered(*object));
             }
-            // Invariant 18 (A4: an attacker-chosen `to_scope` must not smuggle an
-            // asset into an org compartment).
-            if !scope_owner_coherent(*to_scope, to) {
+            // Invariant 18 (A4 + P2-MOD-10: an attacker-chosen or cross-org
+            // `to_scope` must not smuggle an asset into another org's compartment).
+            if !scope_owner_coherent(*to_scope, to) || !env.auth.scope_coherent(*to_scope, to) {
                 return Err(EconomyError::ScopeOwnerMismatch);
             }
             // Invariant 20 / D-E3-12: BOTH sides. `authorize_asset` covered the

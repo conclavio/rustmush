@@ -670,3 +670,361 @@ async fn dashboard_attributes_uncapped_feature_and_spenders() {
         dash.top_npcs
     );
 }
+
+#[tokio::test]
+async fn p2_core_11_concurrent_burst_cannot_bypass_token_or_cost_caps() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    struct BarrierProvider {
+        calls: AtomicUsize,
+        release: Arc<Notify>,
+        entered: Arc<Notify>,
+        usage: mush_llm::Usage,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for BarrierProvider {
+        fn id(&self) -> &mush_llm::ProviderId {
+            static ID: std::sync::OnceLock<mush_llm::ProviderId> = std::sync::OnceLock::new();
+            ID.get_or_init(|| mush_llm::ProviderId::from("openrouter"))
+        }
+        fn caps(&self) -> mush_llm::ProviderCaps {
+            mush_llm::ProviderCaps::default()
+        }
+        async fn complete(
+            &self,
+            _req: &mush_llm::CompletionRequest,
+            _timeout: Duration,
+        ) -> Result<mush_llm::CompletionResponse, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.entered.notify_waiters();
+            self.release.notified().await;
+            if self.fail {
+                return Err(LlmError::Timeout);
+            }
+            Ok(mock::ok_response("ok", self.usage))
+        }
+        async fn stream(
+            &self,
+            req: &mush_llm::CompletionRequest,
+            timeout: Duration,
+        ) -> Result<mush_llm::LlmStream, LlmError> {
+            let resp = self.complete(req, timeout).await?;
+            Ok(Box::pin(futures::stream::iter(vec![Ok(
+                mush_llm::StreamEvent::Done(resp),
+            )])))
+        }
+    }
+
+    // 1. Token ceiling: 20 concurrent calls with max_tokens = 100 each against
+    //    a daily cap of 250 tokens -> at most 2 calls may enter the provider!
+    let release = Arc::new(Notify::new());
+    let entered = Arc::new(Notify::new());
+    let provider = Arc::new(BarrierProvider {
+        calls: AtomicUsize::new(0),
+        release: Arc::clone(&release),
+        entered: Arc::clone(&entered),
+        usage: mock::usage(20, 80, Some(0.01)),
+        fail: false,
+    });
+    let svc = Arc::new(
+        LlmService::builder()
+            .global_enabled(true)
+            .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+            .route("worldgen_room", route("z-ai/glm-5.3", 100))
+            .concurrency(mush_llm::ConcurrencyConfig {
+                max_interactive: 8,
+                max_interactive_queued: 32,
+                max_background: 3,
+                max_background_queued: 12,
+            })
+            .budgets(BudgetConfig {
+                global: Some(BudgetLimit::tokens(250)),
+                ..Default::default()
+            })
+            .build(),
+    );
+
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let s = Arc::clone(&svc);
+        handles.push(tokio::spawn(async move {
+            s.call(ctx(LlmFeature::WorldgenRoom), req()).await
+        }));
+    }
+
+    // Wait until the admitted calls enter the provider, then release all.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        provider.calls.load(Ordering::SeqCst) <= 2,
+        "at most 2 concurrent calls may reserve against a 250-token cap, saw {}",
+        provider.calls.load(Ordering::SeqCst)
+    );
+    release.notify_waiters();
+
+    let mut ok_count = 0usize;
+    let mut budget_err_count = 0usize;
+    for h in handles {
+        match h.await.unwrap() {
+            Ok(_) => ok_count += 1,
+            Err(LlmError::BudgetExceeded { .. }) => budget_err_count += 1,
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+    assert_eq!(ok_count, 2);
+    assert_eq!(budget_err_count, 18);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(svc.ledger().global().total_tokens(), 200);
+
+    // 2. Cost ceiling with provider pricing: 10 concurrent calls each costing
+    //    worst-case $0.10 (1000 max_tokens at $100/MTok) against a $0.25 cap
+    //    admits at most 2 calls!
+    let release2 = Arc::new(Notify::new());
+    let entered2 = Arc::new(Notify::new());
+    let provider2 = Arc::new(BarrierProvider {
+        calls: AtomicUsize::new(0),
+        release: Arc::clone(&release2),
+        entered: Arc::clone(&entered2),
+        usage: mock::usage(10, 1000, Some(0.10)),
+        fail: false,
+    });
+    let svc2 = Arc::new(
+        LlmService::builder()
+            .global_enabled(true)
+            .provider("openrouter", provider2.clone() as Arc<dyn LlmProvider>)
+            .provider_pricing("openrouter", 0.0, 100.0)
+            .route("worldgen_room", route("z-ai/glm-5.3", 1000))
+            .budgets(BudgetConfig {
+                global: Some(BudgetLimit {
+                    tokens: None,
+                    cost_usd: Some(0.25),
+                }),
+                ..Default::default()
+            })
+            .build(),
+    );
+    let mut handles2 = Vec::new();
+    for _ in 0..10 {
+        let s = Arc::clone(&svc2);
+        handles2.push(tokio::spawn(async move {
+            s.call(ctx(LlmFeature::WorldgenRoom), req()).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(provider2.calls.load(Ordering::SeqCst) <= 2);
+    release2.notify_waiters();
+    let mut ok2 = 0usize;
+    for h in handles2 {
+        if h.await.unwrap().is_ok() {
+            ok2 += 1;
+        }
+    }
+    assert_eq!(ok2, 2);
+    assert_eq!(provider2.calls.load(Ordering::SeqCst), 2);
+
+    // 3. Failed call releases its RAII reservation so a subsequent call passes.
+    let provider3 = Arc::new(MockProvider::new("openrouter"));
+    provider3.push_error(LlmError::Timeout);
+    provider3.push_ok("recovered", mock::usage(10, 20, Some(0.01)));
+    let svc3 = LlmService::builder()
+        .global_enabled(true)
+        .provider("openrouter", provider3.clone() as Arc<dyn LlmProvider>)
+        .route("worldgen_room", route("z-ai/glm-5.3", 100))
+        .retry(mush_llm::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        })
+        .budgets(BudgetConfig {
+            global: Some(BudgetLimit::tokens(150)),
+            ..Default::default()
+        })
+        .build();
+    assert!(
+        svc3.call(ctx(LlmFeature::WorldgenRoom), req())
+            .await
+            .is_err()
+    );
+    assert!(
+        svc3.call(ctx(LlmFeature::WorldgenRoom), req())
+            .await
+            .is_ok(),
+        "reservation must release on error"
+    );
+}
+
+#[tokio::test]
+async fn p2_core_11_queued_calls_recheck_kill_switch_after_semaphore() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    struct HoldingProvider {
+        calls: AtomicUsize,
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for HoldingProvider {
+        fn id(&self) -> &mush_llm::ProviderId {
+            static ID: std::sync::OnceLock<mush_llm::ProviderId> = std::sync::OnceLock::new();
+            ID.get_or_init(|| mush_llm::ProviderId::from("openrouter"))
+        }
+        fn caps(&self) -> mush_llm::ProviderCaps {
+            mush_llm::ProviderCaps::default()
+        }
+        async fn complete(
+            &self,
+            _req: &mush_llm::CompletionRequest,
+            _timeout: Duration,
+        ) -> Result<mush_llm::CompletionResponse, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(mock::ok_response("ok", mock::usage(5, 5, Some(0.001))))
+        }
+        async fn stream(
+            &self,
+            req: &mush_llm::CompletionRequest,
+            timeout: Duration,
+        ) -> Result<mush_llm::LlmStream, LlmError> {
+            let resp = self.complete(req, timeout).await?;
+            Ok(Box::pin(futures::stream::iter(vec![Ok(
+                mush_llm::StreamEvent::Done(resp),
+            )])))
+        }
+    }
+
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let provider = Arc::new(HoldingProvider {
+        calls: AtomicUsize::new(0),
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    });
+    let svc = Arc::new(
+        LlmService::builder()
+            .global_enabled(true)
+            .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+            .route("worldgen_room", route("z-ai/glm-5.3", 64))
+            .concurrency(mush_llm::ConcurrencyConfig {
+                max_interactive: 1,
+                max_interactive_queued: 8,
+                max_background: 1,
+                max_background_queued: 2,
+            })
+            .build(),
+    );
+
+    // First call acquires the sole interactive slot and pauses inside provider.
+    let s0 = Arc::clone(&svc);
+    let first = tokio::spawn(async move { s0.call(ctx(LlmFeature::WorldgenRoom), req()).await });
+    entered.notified().await;
+
+    // Queue 3 calls and 1 streaming call behind the semaphore while enabled.
+    let mut queued = Vec::new();
+    for _ in 0..3 {
+        let s = Arc::clone(&svc);
+        queued.push(tokio::spawn(async move {
+            s.call(ctx(LlmFeature::WorldgenRoom), req())
+                .await
+                .map(|_| ())
+        }));
+    }
+    let s_stream = Arc::clone(&svc);
+    queued.push(tokio::spawn(async move {
+        s_stream
+            .call_streaming(ctx(LlmFeature::WorldgenRoom), req())
+            .await
+            .map(|_| ())
+    }));
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    // Trip the global kill switch while all 4 calls are queued behind `sem`.
+    svc.kill_switch().set_global(true);
+    release.notify_waiters();
+
+    assert!(first.await.unwrap().is_ok());
+    for h in queued {
+        assert!(
+            matches!(h.await.unwrap(), Err(LlmError::Disabled)),
+            "queued callers must re-check kill switch after semaphore wakeup"
+        );
+    }
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        1,
+        "no queued call may dispatch HTTP after kill switch is tripped"
+    );
+}
+
+#[tokio::test]
+async fn p2_core_11_nan_inf_and_negative_cost_usd_rejected_and_never_poison_caps() {
+    let provider = Arc::new(MockProvider::new("openrouter"));
+    provider.push_ok("nan", mock::usage(10, 10, Some(f64::NAN)));
+    provider.push_ok("inf", mock::usage(10, 10, Some(f64::INFINITY)));
+    provider.push_ok("neg", mock::usage(10, 10, Some(-5.0)));
+    provider.push_ok("real", mock::usage(10, 10, Some(1.0)));
+    provider.push_ok("blocked", mock::usage(10, 10, Some(0.1)));
+
+    let svc = LlmService::builder()
+        .global_enabled(true)
+        .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+        .route("worldgen_room", route("z-ai/glm-5.3", 64))
+        .budgets(BudgetConfig {
+            global: Some(BudgetLimit {
+                tokens: None,
+                cost_usd: Some(0.50),
+            }),
+            ..Default::default()
+        })
+        .build();
+
+    // NaN, +Inf, and negative cost_usd are rejected as MalformedOutput while
+    // never poisoning the ledger's cost_usd accumulator.
+    for _ in 0..3 {
+        let err = svc
+            .call(ctx(LlmFeature::WorldgenRoom), req())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, LlmError::MalformedOutput(_)),
+            "invalid cost_usd must fail with MalformedOutput, got {err:?}"
+        );
+        let g = svc.ledger().global();
+        assert!(g.cost_usd.is_finite() && g.cost_usd == 0.0);
+    }
+    // Tokens from those 3 responses were still metered (60 tokens total).
+    assert_eq!(svc.ledger().global().total_tokens(), 60);
+
+    // Real cost settles cleanly and enforces the $0.50 cost cap on the next call.
+    svc.call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .unwrap();
+    let err = svc
+        .call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        LlmError::BudgetExceeded {
+            scope: mush_llm::provider::BudgetScope::Global
+        }
+    ));
+
+    // Config validation rejects negative and NaN cost ceilings and pricing.
+    let mut bad_cfg = mush_llm::LlmConfig::default();
+    bad_cfg.budgets.global = Some(BudgetLimit {
+        tokens: None,
+        cost_usd: Some(f64::NAN),
+    });
+    assert!(LlmService::from_config(&bad_cfg).is_err());
+    bad_cfg.budgets.global = Some(BudgetLimit {
+        tokens: None,
+        cost_usd: Some(-1.0),
+    });
+    assert!(LlmService::from_config(&bad_cfg).is_err());
+}

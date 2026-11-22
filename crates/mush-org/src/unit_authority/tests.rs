@@ -1110,3 +1110,242 @@ fn crit12_per_grantor_per_unit_caps_and_deduplication_are_enforced() {
         Err(UnitGrantError::Capacity)
     );
 }
+
+#[test]
+fn p2_mod_8_self_loans_cycle_bombs_and_unsolicited_dag_bombs_never_dos_victims() {
+    let mut orgs = orgs();
+    orgs.put_grant(org_grant(1, CAP, true));
+    let attacker = ObjId(40);
+    let victim_org = OrgId(2);
+    let victim_scope = OrgScopeId(20);
+    let attacker_orgs = [
+        (OrgId(10), OrgScopeId(100), GrantId(100)),
+        (OrgId(11), OrgScopeId(110), GrantId(110)),
+        (OrgId(12), OrgScopeId(120), GrantId(120)),
+        (OrgId(13), OrgScopeId(130), GrantId(130)),
+    ];
+    for &(org_id, scope_id, grant_id) in &attacker_orgs {
+        orgs.put_org(Organization {
+            id: org_id,
+            name: format!("AttackerOrg{}", org_id.0).into(),
+            aliases: vec![],
+            status: OrgStatus::Active,
+            hidden: false,
+            charter: String::new(),
+            root_scope: scope_id,
+            revision: 1,
+            ruleset_ext: RulesValue::default(),
+        });
+        orgs.put_scope(OrgScope {
+            id: scope_id,
+            org: org_id,
+            name: "root".into(),
+            parent: None,
+            status: ScopeStatus::Active,
+            depth: 0,
+            created_rev: 1,
+            revision: 1,
+        });
+        orgs.put_grant(CapabilityGrant {
+            id: grant_id,
+            org: org_id,
+            grantee: attacker,
+            capability: CAP.capability_id().expect("cap"),
+            scope: ScopeSelector::Exact(scope_id),
+            delegable: true,
+            limit: None,
+            valid_from: None,
+            valid_until: None,
+            revision: 1,
+        });
+    }
+    orgs.put_grant(CapabilityGrant {
+        id: GrantId(200),
+        org: victim_org,
+        grantee: PILOT,
+        capability: CAP.capability_id().expect("cap"),
+        scope: ScopeSelector::Exact(victim_scope),
+        delegable: true,
+        limit: None,
+        valid_from: None,
+        valid_until: None,
+        revision: 1,
+    });
+
+    let mut facts = facts();
+    facts.people.insert(attacker);
+    org_owned(&mut facts, UNIT, 11);
+
+    // 1. Self-loan (`grantee.organization == scope.organization`) is rejected at validation.
+    let self_loan = UnitGrant {
+        id: UnitGrantId(1),
+        revision: 1,
+        grantor: attacker,
+        grantee: UnitGrantee::Organization {
+            organization: attacker_orgs[0].0,
+            scope: attacker_orgs[0].1,
+        },
+        capability: CAP,
+        scope: UnitScope::OrganizationControlled {
+            organization: attacker_orgs[0].0,
+            scope: ScopeSelector::Exact(attacker_orgs[0].1),
+            excluded: BTreeSet::new(),
+        },
+        valid_from: Some(0),
+        valid_until: Some(100),
+        delegable: true,
+        recovery: RecoveryPolicy::None,
+        parent: UnitGrantParent::OrganizationGrant {
+            organization: attacker_orgs[0].0,
+            grant: attacker_orgs[0].2,
+        },
+        status: UnitGrantStatus::Active,
+    };
+    assert_eq!(
+        validate_unit_grant(
+            &orgs,
+            &BTreeMap::new(),
+            &facts,
+            &NoPredicates,
+            &self_loan,
+            10
+        ),
+        Err(UnitGrantError::Cycle),
+        "organization self-loan must be rejected at validation"
+    );
+
+    // 2. Even if 4 legacy self-loans + unsolicited trigger grant are present ahead of
+    // PILOT's legitimate grant, PILOT's legitimate grant still succeeds.
+    let mut legacy_bomb = BTreeMap::new();
+    for i in 1..=4u64 {
+        let mut l = self_loan.clone();
+        l.id = UnitGrantId(i);
+        l.valid_until = Some(100 + i64::try_from(i).expect("i"));
+        legacy_bomb.insert(l.id, l);
+    }
+    let trigger_pilot = UnitGrant {
+        id: UnitGrantId(5),
+        grantee: UnitGrantee::Character(PILOT),
+        ..self_loan.clone()
+    };
+    legacy_bomb.insert(trigger_pilot.id, trigger_pilot);
+    let legit_pilot = wildcard(50, PILOT);
+    legacy_bomb.insert(legit_pilot.id, legit_pilot.clone());
+    assert!(
+        allowed(&orgs, &legacy_bomb, &facts, &request(PILOT, UNIT)),
+        "legacy self-loan cycle bomb must never block legitimate higher-ID grant"
+    );
+
+    // 3. Multi-org cycle bomb (`Org10 <-> Org11`) + non-cyclic DAG bomb
+    // (`Org10 -> Org11 -> Org12 -> Org13`) targeting both `Character(PILOT)` and
+    // `Organization(victim_org)` must never starve legitimate grants or `direct_org`.
+    let mut dag_bomb = BTreeMap::new();
+    let mut next_id = 1u64;
+    let mut add_wild_loan = |from_idx: usize, to: UnitGrantee| {
+        let id = UnitGrantId(next_id);
+        next_id += 1;
+        let g = UnitGrant {
+            id,
+            revision: 1,
+            grantor: attacker,
+            grantee: to,
+            capability: CAP,
+            scope: UnitScope::OrganizationControlled {
+                organization: attacker_orgs[from_idx].0,
+                scope: ScopeSelector::Exact(attacker_orgs[from_idx].1),
+                excluded: BTreeSet::new(),
+            },
+            valid_from: Some(0),
+            valid_until: Some(100 + i64::try_from(next_id).expect("id")),
+            delegable: true,
+            recovery: RecoveryPolicy::None,
+            parent: UnitGrantParent::OrganizationGrant {
+                organization: attacker_orgs[from_idx].0,
+                grant: attacker_orgs[from_idx].2,
+            },
+            status: UnitGrantStatus::Active,
+        };
+        dag_bomb.insert(id, g);
+    };
+    for _ in 0..4 {
+        add_wild_loan(
+            0,
+            UnitGrantee::Organization {
+                organization: attacker_orgs[1].0,
+                scope: attacker_orgs[1].1,
+            },
+        );
+        add_wild_loan(
+            1,
+            UnitGrantee::Organization {
+                organization: attacker_orgs[0].0,
+                scope: attacker_orgs[0].1,
+            },
+        );
+        add_wild_loan(
+            1,
+            UnitGrantee::Organization {
+                organization: attacker_orgs[2].0,
+                scope: attacker_orgs[2].1,
+            },
+        );
+        add_wild_loan(
+            2,
+            UnitGrantee::Organization {
+                organization: attacker_orgs[3].0,
+                scope: attacker_orgs[3].1,
+            },
+        );
+    }
+    // Unsolicited trigger to PILOT at low ID before PILOT's real grant.
+    add_wild_loan(3, UnitGrantee::Character(PILOT));
+    // Unsolicited trigger to victim_org at low ID before victim_org's real loan from Org(1).
+    add_wild_loan(
+        3,
+        UnitGrantee::Organization {
+            organization: victim_org,
+            scope: victim_scope,
+        },
+    );
+
+    // (a) PILOT with legitimate higher-ID grant succeeds despite low-ID DAG trigger.
+    let mut with_pilot_grant = dag_bomb.clone();
+    with_pilot_grant.insert(legit_pilot.id, legit_pilot);
+    assert!(
+        allowed(&orgs, &with_pilot_grant, &facts, &request(PILOT, UNIT)),
+        "unsolicited DAG bomb must never abort legitimate higher-ID grant for PILOT"
+    );
+
+    // (b) PILOT with direct_org on victim_org + legitimate higher-ID loan from Org(1)
+    // to victim_org succeeds despite unsolicited DAG bomb targeting victim_org.
+    let mut with_org_loan = dag_bomb;
+    let legit_org_loan = UnitGrant {
+        id: UnitGrantId(99),
+        revision: 1,
+        grantor: OWNER,
+        grantee: UnitGrantee::Organization {
+            organization: victim_org,
+            scope: victim_scope,
+        },
+        capability: CAP,
+        scope: UnitScope::OrganizationControlled {
+            organization: OrgId(1),
+            scope: ScopeSelector::SubtreeLive(OrgScopeId(10)),
+            excluded: BTreeSet::new(),
+        },
+        valid_from: Some(0),
+        valid_until: Some(100),
+        delegable: true,
+        recovery: RecoveryPolicy::None,
+        parent: UnitGrantParent::OrganizationGrant {
+            organization: OrgId(1),
+            grant: GrantId(1),
+        },
+        status: UnitGrantStatus::Active,
+    };
+    with_org_loan.insert(legit_org_loan.id, legit_org_loan);
+    assert!(
+        allowed(&orgs, &with_org_loan, &facts, &request(PILOT, UNIT)),
+        "unsolicited DAG bomb targeting victim_org must never block legitimate org loan in direct_org"
+    );
+}

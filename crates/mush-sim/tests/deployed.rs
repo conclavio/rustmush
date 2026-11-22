@@ -310,3 +310,249 @@ fn find_omits_a_deployed_unit_for_its_owner_and_for_god_and_counts_it_out() {
         );
     }
 }
+
+/// **P2-MOD-23**: `transition::plan`/`apply`, `@spatial/egress`, `@spatial/detach`,
+/// and `@journey/plan`/`@journey/depart` all enforce `refuse_if_deployed`.
+#[test]
+fn p2_mod_23_transitions_and_commands_refuse_deployed_units() {
+    let mut tw = mush_testkit::authoritative::AcknowledgedWorld::with_modules(vec![Box::new(
+        SimulationModule::new(),
+    )]);
+    let (domain, left, right) = fixture(&mut tw);
+
+    // Prepare a bay anchored to `right` and a mount on `right` for egress/detach tests.
+    let bay = tw
+        .world_mut()
+        .create(ObjKind::Room, "Bay", GOD, None)
+        .expect("room");
+    ok(&mut tw, &format!("@behavior/add #{}=sim.interior", bay.0));
+    let space_out = texts(&tw.run_and_commit_one(
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", bay.0, right.0),
+        "sim",
+        mush_core::physical_transition::ACTION,
+    ));
+    assert!(
+        !space_out.contains("Huh?") && !space_out.to_lowercase().contains("usage:"),
+        "@spatial/space refused: {space_out}"
+    );
+    ok(&mut tw, &format!("@spatial/mount #{}=rack,2", right.0));
+
+    // 1. Direct `transition::plan` and retained-plan `transition::apply` refuse deployed units.
+    let retained_unplace = {
+        let st = tw.world().module_state::<SpatialState>().unwrap();
+        mush_sim::plan(
+            st,
+            tw.world(),
+            &mush_sim::Transition::Unplace {
+                obj: left,
+                reason: "retained".into(),
+                by: Some(GOD),
+                keep: true,
+            },
+        )
+        .expect("plan before deploy succeeds")
+    };
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        left,
+        DeployedMark::new(55, "tacsim.arena.proving_ground"),
+    );
+    {
+        let st = tw.world().module_state::<SpatialState>().unwrap();
+        let err = mush_sim::plan(
+            st,
+            tw.world(),
+            &mush_sim::Transition::Place {
+                obj: left,
+                parent: SpatialParent::Interior {
+                    space: bay,
+                    slot: None,
+                },
+            },
+        )
+        .expect_err("Transition::Place must refuse deployed unit");
+        assert!(matches!(err, mush_sim::SpatialError::Deployed(_)));
+
+        let err = mush_sim::plan(
+            st,
+            tw.world(),
+            &mush_sim::Transition::Unplace {
+                obj: left,
+                reason: "test".into(),
+                by: Some(GOD),
+                keep: true,
+            },
+        )
+        .expect_err("Transition::Unplace must refuse deployed unit");
+        assert!(matches!(err, mush_sim::SpatialError::Deployed(_)));
+    }
+    // Retained plan applied after mark must also refuse.
+    {
+        let mut st = tw.world().module_state::<SpatialState>().unwrap().clone();
+        let mut out = mush_core::Outbox::new();
+        let err = mush_sim::apply(&mut st, tw.world_mut(), &mut out, retained_unplace)
+            .expect_err("retained Unplace plan must refuse after deploy");
+        assert!(matches!(err, mush_sim::SpatialError::Deployed(_)));
+    }
+
+    // 2. `@journey/plan` and `@journey/depart` refuse deployed carriers.
+    let dest = tw
+        .world_mut()
+        .create(ObjKind::Room, "Dest", GOD, None)
+        .expect("dest room");
+    ok(&mut tw, &format!("@behavior/add #{}=sim.domain", dest.0));
+    ok(&mut tw, &format!("@domain/create #{}=sim.passive", dest.0));
+    for verb in ["@journey/plan", "@journey/depart"] {
+        let out = texts(&tw.run(
+            GOD,
+            &format!("{verb} #{}=test_route #{}:60", left.0, dest.0),
+        ));
+        assert!(
+            out.contains("deployed in arena match 55"),
+            "{verb} must refuse deployed carrier: {out}"
+        );
+    }
+
+    // 3. `@spatial/egress` refuses a deployed interior occupant.
+    mush_sim::deployed::clear(tw.world_mut(), left);
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", left.0, bay.0),
+    );
+    mush_sim::deployed::mark(tw.world_mut(), left, DeployedMark::field("site.beta", 3));
+    let out = texts(&tw.run(GOD, &format!("@spatial/egress #{}", left.0)));
+    assert!(
+        out.contains("in field 3 on site.beta"),
+        "@spatial/egress must refuse deployed unit: {out}"
+    );
+    assert!(matches!(
+        tw.world()
+            .module_state::<SpatialState>()
+            .unwrap()
+            .parent_of(left),
+        SpatialParent::Interior { space, .. } if space == bay
+    ));
+
+    // 4. `@spatial/detach` refuses a deployed attached unit.
+    mush_sim::deployed::clear(tw.world_mut(), left);
+    ok(
+        &mut tw,
+        &format!("@spatial/place/attached #{}=#{},rack", left.0, right.0),
+    );
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        left,
+        DeployedMark::new(56, "tacsim.arena.proving_ground"),
+    );
+    let out = texts(&tw.run(GOD, &format!("@spatial/detach #{}", left.0)));
+    assert!(
+        out.contains("deployed in arena match 56"),
+        "@spatial/detach must refuse deployed unit: {out}"
+    );
+    assert!(matches!(
+        tw.world()
+            .module_state::<SpatialState>()
+            .unwrap()
+            .parent_of(left),
+        SpatialParent::Attached { host, .. } if host == right
+    ));
+
+    // 5. `depart_ineligible_after_field_exit` excuses ONLY the carrier root's
+    //    own IC-field mark during a pre-exit dry run; OOC arena match marks,
+    //    deployed subtree children, and strict `depart_ineligible` all refuse.
+    mush_sim::deployed::clear(tw.world_mut(), left);
+    ok(
+        &mut tw,
+        &format!("@spatial/place/interior #{}=#{}", left.0, bay.0),
+    );
+    let origin = tw
+        .world()
+        .module_state::<SpatialState>()
+        .unwrap()
+        .domains
+        .get(&domain)
+        .unwrap()
+        .presentation_location;
+    let route = mush_sim::RouteDef::new(
+        mush_core::CanonicalId::new("test_route").expect("route id"),
+        (origin, dest),
+        vec![mush_sim::LegDef::new(dest, 60).expect("valid leg")],
+        mush_core::CanonicalId::new("drive.test").expect("drive class"),
+        0,
+    )
+    .expect("valid route");
+    // Root has OOC match mark: both strict and pre-exit dry run refuse.
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        right,
+        DeployedMark::new(57, "tacsim.arena.proving_ground"),
+    );
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(mush_sim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            mush_sim::depart_ineligible(&ctx, right, &route).is_some(),
+            "strict depart_ineligible must refuse OOC match mark"
+        );
+        assert!(
+            mush_sim::depart_ineligible_after_field_exit(&ctx, right, &route).is_some(),
+            "pre-exit dry run must still refuse OOC match mark"
+        );
+    }
+    // Root has IC-field mark, no deployed children: strict refuses, pre-exit allows.
+    mush_sim::deployed::mark(tw.world_mut(), right, DeployedMark::field("site.alpha", 1));
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(mush_sim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            mush_sim::depart_ineligible(&ctx, right, &route).is_some(),
+            "strict depart_ineligible must still refuse IC-field mark on root"
+        );
+        assert_eq!(
+            mush_sim::depart_ineligible_after_field_exit(&ctx, right, &route),
+            None,
+            "pre-exit dry run must excuse only the root carrier's own IC-field mark"
+        );
+    }
+    // Subtree child inside bay also deployed (even with a field mark): pre-exit still refuses.
+    mush_sim::deployed::mark(tw.world_mut(), left, DeployedMark::field("site.alpha", 1));
+    {
+        let mut sink = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(smol_str::SmolStr::new(mush_sim::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        assert!(
+            mush_sim::depart_ineligible_after_field_exit(&ctx, right, &route).is_some(),
+            "pre-exit dry run must still refuse when a subtree child is deployed"
+        );
+    }
+}

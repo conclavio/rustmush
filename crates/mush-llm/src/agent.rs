@@ -192,7 +192,10 @@ pub async fn run<H: ToolHost + Send + ?Sized>(
             return report;
         }
         if let Some(cap) = limits.budget.cap_usd
-            && report.cost_usd >= cap
+            && (!cap.is_finite()
+                || cap < 0.0
+                || !report.cost_usd.is_finite()
+                || report.cost_usd >= cap)
         {
             report.stopped = StopCause::Cap;
             return report;
@@ -221,7 +224,16 @@ pub async fn run<H: ToolHost + Send + ?Sized>(
             .output_tokens
             .saturating_add(reply.usage.output_tokens);
         if let Some(cost) = reply.usage.cost_usd {
-            report.cost_usd += cost;
+            let Some(clean) = crate::budget::sanitize_cost_usd(cost) else {
+                report.stopped = StopCause::Error(LlmError::MalformedOutput(
+                    "provider returned non-finite or negative cost_usd".to_string(),
+                ));
+                return report;
+            };
+            report.cost_usd += clean;
+            if !report.cost_usd.is_finite() {
+                report.cost_usd = f64::MAX;
+            }
         }
         report.model = reply.model.clone();
         report.last_text = reply.text();

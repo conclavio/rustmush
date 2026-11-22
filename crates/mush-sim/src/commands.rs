@@ -2103,6 +2103,7 @@ fn egress_parent(
 
 fn spatial_egress(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let unit = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    refuse_deployed(ctx, unit)?;
     let egress_id = ctx
         .args
         .rhs()
@@ -2126,6 +2127,7 @@ fn detach_parent(ctx: &Ctx<'_>, host: ObjId) -> Result<SpatialParent, CmdError> 
 
 fn spatial_detach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let child = match_object(ctx.w, ctx.actor, ctx.args.lhs())?;
+    refuse_deployed(ctx, child)?;
     let SpatialParent::Attached { host, .. } = st(ctx).parent_of(child) else {
         return Err(CmdError::msg(format!(
             "{} is not attached to anything.",
@@ -2140,9 +2142,13 @@ fn spatial_detach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 /// Player-facing `egress` / `disembark`: leave the interior you are in.
 pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let SpatialParent::Interior { space, .. } = st(ctx).parent_of(ctx.actor) else {
+    let actor = ctx.actor;
+    let SpatialParent::Interior { space, .. } = st(ctx).parent_of(actor) else {
         return Err(CmdError::msg("You are not inside anything."));
     };
+    if let Some(why) = crate::journey::operator_restraint(ctx.w, actor) {
+        return Err(CmdError::msg(why));
+    }
     // Cut IC4 (doc 18 §4.2 (d)): egress from a multi-room interior would
     // strand the actor on the carrier's passive domain; the ship's own verb
     // puts them out through the lock. Staff `@spatial/egress` is recovery
@@ -2154,8 +2160,74 @@ pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             display_name(ctx.w, space)
         )));
     }
-    let actor = ctx.actor;
+    refuse_deployed(ctx, actor)?;
+    refuse_deployed(ctx, space)?;
+    let host = crate::aboard_host(st(ctx), space);
+    if host != space {
+        refuse_deployed(ctx, host)?;
+    }
+    let anc = crate::graph::ancestors(st(ctx), space).map_err(sim_err)?;
+    for ancestor in anc {
+        refuse_deployed(ctx, ancestor)?;
+    }
+    let restricted_interior = {
+        let s = st(ctx);
+        let has_compartments = s
+            .spaces
+            .get(&space)
+            .is_some_and(|rec| !rec.compartments.is_empty());
+        let has_console = host != space
+            && s.stations
+                .get(&host)
+                .is_some_and(|hs| hs.stations.values().any(|spec| spec.space == Some(space)));
+        let holds_host_billet = host != space
+            && s.assignments
+                .get(&host)
+                .is_some_and(|ha| ha.seats.values().any(|seat| seat.actor == actor));
+        let focused_on_host = host != space
+            && ctx
+                .w
+                .module_state::<FocusState>()
+                .and_then(|focus| focus.focus_of_actor(actor))
+                .is_some_and(|focus| focus.unit == host);
+        let nested_host =
+            host != space && matches!(s.parent_of(host), SpatialParent::Interior { .. });
+        crate::is_vault_backing(ctx.w, space)
+            || has_compartments
+            || has_console
+            || holds_host_billet
+            || focused_on_host
+            || nested_host
+    };
+    if restricted_interior {
+        let host_name = display_name(ctx.w, host);
+        return Err(CmdError::msg(format!(
+            "You cannot egress directly from {host_name}; leave through its boarding verb."
+        )));
+    }
+    if let Some(hooks) = journey::carrier_hooks(ctx.w)
+        && let Some(why) = hooks.refuse_egress(ctx.w, actor, space)
+    {
+        return Err(CmdError::msg(why));
+    }
     let parent = egress_parent(ctx, actor, None)?;
+    let dest = match &parent {
+        SpatialParent::Direct { domain, .. } => st(ctx)
+            .domains
+            .get(domain)
+            .map(|d| d.presentation_location)
+            .ok_or_else(|| CmdError::msg("That space's domain no longer exists."))?,
+        _ => return Err(CmdError::msg("That space has no domain to egress onto.")),
+    };
+    for h in ctx.reg.hooks(mush_core::HookPoint::MoveAttempt).to_vec() {
+        if crate::is_placement_gate(&h.hook) {
+            continue;
+        }
+        let hook_ctx = ctx.hook_read_context(&h.module);
+        h.hook
+            .move_attempt(&hook_ctx, actor, None, dest)
+            .map_err(|rt| CmdError::msg(rt.to_plain_text()))?;
+    }
     run(ctx, &Transition::Place { obj: actor, parent }).map_err(sim_err)?;
     info(ctx, "You egress.");
     Ok(())
@@ -2440,6 +2512,14 @@ fn mush_sim_under_way_root_of(ctx: &Ctx<'_>, obj: ObjId) -> Option<ObjId> {
 /// Why a carrier may not set out. One predicate, shared by `/plan`, `/depart`
 /// and `/divert`, so the dry run and the commit can never disagree.
 fn journey_ineligible(ctx: &Ctx<'_>, carrier: ObjId) -> Option<String> {
+    journey_ineligible_inner(ctx, carrier, false)
+}
+
+fn journey_ineligible_inner(
+    ctx: &Ctx<'_>,
+    carrier: ObjId,
+    allow_root_field_mark: bool,
+) -> Option<String> {
     let name = display_name(ctx.w, carrier);
     match ctx.w.get(carrier) {
         None => return Some("No such object.".into()),
@@ -2489,6 +2569,27 @@ fn journey_ineligible(ctx: &Ctx<'_>, carrier: ObjId) -> Option<String> {
     if s.is_quarantined(carrier) {
         return Some(format!("{name} is quarantined; @spatial/recover it first."));
     }
+    // Dry-running a confirmed IC-field breakoff (`depart_ineligible_after_field_exit`)
+    // excuses ONLY the carrier root's own IC-field deployment mark (never an OOC
+    // arena match mark, never an IC exclusion hold, and never a deployed subtree
+    // descendant). Actual departure (`depart`) always runs with
+    // `allow_root_field_mark = false` once the field host has checked the carrier in.
+    let root_excused = allow_root_field_mark
+        && crate::deployed::mark_of(ctx.w, carrier).is_some_and(|mark| mark.field.is_some());
+    if !root_excused && let Err(deployed) = crate::deployed::refuse_if_deployed(ctx.w, carrier) {
+        return Some(deployed.to_string());
+    }
+    if let Some(why) = crate::ic_exclusion::forbids_journey(ctx.w, carrier) {
+        return Some(why);
+    }
+    for node in s.subtree(carrier) {
+        if node == carrier && root_excused {
+            continue;
+        }
+        if let Err(deployed) = crate::deployed::refuse_if_deployed(ctx.w, node) {
+            return Some(deployed.to_string());
+        }
+    }
     None
 }
 
@@ -2507,6 +2608,26 @@ fn crews(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId) -> bool {
 /// The read gate: staff, or an actor who holds a billet on that carrier.
 fn may_read_journey(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
     is_admin(ctx.w, ctx.actor) || crews(ctx, ctx.actor, carrier)
+}
+
+fn check_journey_switches(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+    let modes = ["depart", "divert", "plan", "show"]
+        .into_iter()
+        .filter(|sw| ctx.switches.has(sw))
+        .count();
+    if modes > 1 {
+        return Err(CmdError::msg(
+            "Use only one @journey switch at a time (/depart, /divert, /plan, or /show).",
+        ));
+    }
+    Ok(())
+}
+
+fn check_operator_restraint(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+    if let Some(why) = crate::journey::operator_restraint(ctx.w, ctx.actor) {
+        return Err(CmdError::msg(why));
+    }
+    Ok(())
 }
 
 fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
@@ -2536,7 +2657,9 @@ fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // the *seat*, so a staff member driving a proxy stands down first and
     // departs as themselves — and it runs before that gate so the refusal names
     // the blocker a driver can act on.
+    check_journey_switches(ctx)?;
     if ctx.switches.has("depart") {
+        check_operator_restraint(ctx)?;
         crate::focus::seat_restriction(
             ctx.w,
             ctx.actor,
@@ -2548,6 +2671,7 @@ fn cmd_journey(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         // of it, so widening who may depart never widens what a proxy seat may do.
         journey_depart(ctx)
     } else if ctx.switches.has("divert") {
+        check_operator_restraint(ctx)?;
         crate::focus::seat_restriction(
             ctx.w,
             ctx.actor,
@@ -2754,7 +2878,33 @@ pub struct Departure {
 /// carrier under way). `None` means `depart` will not refuse on any of them.
 #[must_use]
 pub fn depart_ineligible(ctx: &Ctx<'_>, carrier: ObjId, route: &RouteDef) -> Option<String> {
-    if let Some(why) = journey_ineligible(ctx, carrier) {
+    depart_ineligible_inner(ctx, carrier, route, false)
+}
+
+/// Pre-exit dry run for a carrier whose live departure will first ask its
+/// running IC field host to remove it from the field (doc 32 F-6 × P2-MOD-23).
+///
+/// Runs every check of [`depart_ineligible`] except the carrier root's own
+/// IC-field [`crate::DeployedMark`] (`mark.field.is_some()`). An OOC arena
+/// match mark on the carrier, an IC custody hold forbidding departure, or any
+/// deployed descendant in the carrier's subtree still refuses. Actual departure
+/// ([`depart`]) always enforces strict [`depart_ineligible`] after check-in.
+#[must_use]
+pub fn depart_ineligible_after_field_exit(
+    ctx: &Ctx<'_>,
+    carrier: ObjId,
+    route: &RouteDef,
+) -> Option<String> {
+    depart_ineligible_inner(ctx, carrier, route, true)
+}
+
+fn depart_ineligible_inner(
+    ctx: &Ctx<'_>,
+    carrier: ObjId,
+    route: &RouteDef,
+    allow_root_field_mark: bool,
+) -> Option<String> {
+    if let Some(why) = journey_ineligible_inner(ctx, carrier, allow_root_field_mark) {
         return Some(why);
     }
     let (from, to) = route.endpoints();

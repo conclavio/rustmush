@@ -10,13 +10,24 @@
 //! `.await` held.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use mush_core::ObjId;
 use serde::{Deserialize, Serialize};
 
 use crate::provider::BudgetScope;
 use crate::types::Usage;
+
+/// Validate a USD cost value (non-negative and finite). Returns `None` for
+/// `NaN`, `±inf`, or negative values so malformed provider output can never
+/// poison or neutralize budget ceilings.
+#[must_use]
+pub(crate) fn sanitize_cost_usd(cost: f64) -> Option<f64> {
+    if !cost.is_finite() || cost < 0.0 {
+        return None;
+    }
+    Some(if cost == 0.0 { 0.0 } else { cost })
+}
 
 /// A single budget ceiling. Either field may be `None` (unlimited on that
 /// axis); both `None` is an unlimited budget.
@@ -60,8 +71,11 @@ impl Counters {
     fn add(&mut self, usage: &Usage) {
         self.input_tokens = self.input_tokens.saturating_add(usage.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(usage.output_tokens);
-        if let Some(c) = usage.cost_usd {
+        if let Some(c) = usage.cost_usd.and_then(sanitize_cost_usd) {
             self.cost_usd += c;
+            if !self.cost_usd.is_finite() {
+                self.cost_usd = f64::MAX;
+            }
         }
     }
 }
@@ -140,6 +154,129 @@ pub struct BudgetLedger {
 struct Inner {
     day: u64,
     counters: HashMap<ScopeKey, Counters>,
+    /// Tokens reserved by currently in-flight calls (not yet settled), keyed
+    /// by scope. Cleared on UTC day rollover alongside `counters`.
+    reserved_tokens: HashMap<ScopeKey, u64>,
+    /// Worst-case USD cost reserved by currently in-flight calls, keyed by scope.
+    reserved_cost_usd: HashMap<ScopeKey, f64>,
+    /// Active reservation count per scope so floating-point cost sums reset to
+    /// exact zero when the last in-flight call on a scope drains.
+    reserved_count: HashMap<ScopeKey, usize>,
+}
+
+/// RAII guard holding an atomic in-flight token and estimated-cost reservation
+/// inside a [`BudgetLedger`].
+///
+/// Calling [`BudgetReservation::settle`] atomically releases the reservation
+/// and adds authoritative [`Usage`] under a single lock acquisition. Dropping
+/// the guard without settling (on transport error, cancellation, or abandoned
+/// stream) releases the reservation automatically so budget capacity never leaks.
+#[derive(Debug)]
+pub struct BudgetReservation {
+    ledger: Arc<BudgetLedger>,
+    limits: ScopeLimits,
+    reserved_day: u64,
+    tokens: u64,
+    cost_usd: f64,
+    active: bool,
+}
+
+impl BudgetReservation {
+    /// Atomically release this reservation and record the call's authoritative
+    /// `usage` in one lock acquisition.
+    pub fn settle(mut self, usage: &Usage) {
+        let mut g = self.ledger.lock_inner();
+        self.ledger.roll(&mut g);
+        if self.active {
+            self.active = false;
+            if g.day == self.reserved_day {
+                release_locked(&mut g, &self.limits, self.tokens, self.cost_usd);
+            }
+        }
+        for (key, _limit) in self.limits.entries() {
+            g.counters.entry(key).or_default().add(usage);
+        }
+    }
+}
+
+impl Drop for BudgetReservation {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        if let Ok(mut g) = self.ledger.inner.lock() {
+            self.ledger.roll(&mut g);
+            if g.day == self.reserved_day {
+                release_locked(&mut g, &self.limits, self.tokens, self.cost_usd);
+            }
+        }
+    }
+}
+
+fn release_locked(g: &mut Inner, limits: &ScopeLimits, tokens: u64, cost_usd: f64) {
+    for (key, _limit) in limits.entries() {
+        let next_count = g
+            .reserved_count
+            .get(&key)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        if next_count == 0 {
+            g.reserved_count.remove(&key);
+            g.reserved_tokens.remove(&key);
+            g.reserved_cost_usd.remove(&key);
+        } else {
+            g.reserved_count.insert(key.clone(), next_count);
+            if let Some(t) = g.reserved_tokens.get_mut(&key) {
+                *t = t.saturating_sub(tokens);
+            }
+            if cost_usd > 0.0
+                && let Some(c) = g.reserved_cost_usd.get_mut(&key)
+            {
+                *c = (*c - cost_usd).max(0.0);
+            }
+        }
+    }
+}
+
+fn check_limits_locked(
+    g: &Inner,
+    entries: &[(ScopeKey, BudgetLimit)],
+    estimated_tokens: u64,
+    estimated_cost_usd: f64,
+) -> Result<(), BudgetScope> {
+    if !estimated_cost_usd.is_finite() || estimated_cost_usd < 0.0 {
+        return Err(BudgetScope::Global);
+    }
+    for (key, limit) in entries {
+        let used = g.counters.get(key).copied().unwrap_or_default();
+        let res_tokens = g.reserved_tokens.get(key).copied().unwrap_or(0);
+        let res_cost = g.reserved_cost_usd.get(key).copied().unwrap_or(0.0);
+        if let Some(cap) = limit.tokens
+            && used
+                .total_tokens()
+                .saturating_add(res_tokens)
+                .saturating_add(estimated_tokens)
+                > cap
+        {
+            return Err(key.scope());
+        }
+        if let Some(cap) = limit.cost_usd {
+            let committed = used.cost_usd + res_cost;
+            if !cap.is_finite()
+                || cap < 0.0
+                || !used.cost_usd.is_finite()
+                || !res_cost.is_finite()
+                || !committed.is_finite()
+                || committed >= cap
+                || (estimated_cost_usd > 0.0 && committed + estimated_cost_usd > cap)
+            {
+                return Err(key.scope());
+            }
+        }
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for BudgetLedger {
@@ -175,8 +312,18 @@ impl BudgetLedger {
             inner: Mutex::new(Inner {
                 day,
                 counters: HashMap::new(),
+                reserved_tokens: HashMap::new(),
+                reserved_cost_usd: HashMap::new(),
+                reserved_count: HashMap::new(),
             }),
             day_of,
+        }
+    }
+
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
+        match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
         }
     }
 
@@ -185,36 +332,72 @@ impl BudgetLedger {
         if today != g.day {
             g.day = today;
             g.counters.clear();
+            g.reserved_tokens.clear();
+            g.reserved_cost_usd.clear();
+            g.reserved_count.clear();
         }
     }
 
     /// Pre-flight check: would adding `estimated_tokens` push any applicable
-    /// scope past its **token** ceiling, or is any scope already at/over its
-    /// **cost** ceiling? Returns the tripped scope on refusal.
-    ///
-    /// Cost is checked as already-consumed vs ceiling (it can't be estimated
-    /// pre-call); tokens are checked as (consumed + estimate) vs ceiling.
+    /// scope past its **token** ceiling (counting both settled spend and
+    /// in-flight reservations), or is any scope already at/over its **cost**
+    /// ceiling? Returns the tripped scope on refusal.
     pub fn pre_check(
         &self,
         limits: &ScopeLimits,
         estimated_tokens: u64,
     ) -> Result<(), BudgetScope> {
+        self.pre_check_with_cost(limits, estimated_tokens, 0.0)
+    }
+
+    /// Pre-flight check including an optional worst-case `estimated_cost_usd`
+    /// (0.0 when per-token pricing is not configured for the provider).
+    pub fn pre_check_with_cost(
+        &self,
+        limits: &ScopeLimits,
+        estimated_tokens: u64,
+        estimated_cost_usd: f64,
+    ) -> Result<(), BudgetScope> {
         let mut g = self.inner.lock().expect("budget lock");
         self.roll(&mut g);
-        for (key, limit) in limits.entries() {
-            let used = g.counters.get(&key).copied().unwrap_or_default();
-            if let Some(cap) = limit.tokens
-                && used.total_tokens().saturating_add(estimated_tokens) > cap
-            {
-                return Err(key.scope());
-            }
-            if let Some(cap) = limit.cost_usd
-                && used.cost_usd >= cap
-            {
-                return Err(key.scope());
+        let entries = limits.entries();
+        check_limits_locked(&g, &entries, estimated_tokens, estimated_cost_usd)
+    }
+
+    /// Atomically verify ceilings (counting settled spend + all active
+    /// in-flight reservations) and reserve `estimated_tokens` and
+    /// `estimated_cost_usd` across every applicable scope. Returns an RAII
+    /// [`BudgetReservation`] guard that releases the reservation on settle or
+    /// drop, eliminating concurrent TOCTOU budget overspend.
+    pub fn reserve(
+        self: &Arc<Self>,
+        limits: ScopeLimits,
+        estimated_tokens: u64,
+        estimated_cost_usd: f64,
+    ) -> Result<BudgetReservation, BudgetScope> {
+        let mut g = self.lock_inner();
+        self.roll(&mut g);
+        let entries = limits.entries();
+        check_limits_locked(&g, &entries, estimated_tokens, estimated_cost_usd)?;
+        let clean_cost = sanitize_cost_usd(estimated_cost_usd).unwrap_or(0.0);
+        for (key, _limit) in entries {
+            let count = g.reserved_count.entry(key.clone()).or_insert(0);
+            *count = count.saturating_add(1);
+            let tok = g.reserved_tokens.entry(key.clone()).or_insert(0);
+            *tok = tok.saturating_add(estimated_tokens);
+            if clean_cost > 0.0 {
+                let cost = g.reserved_cost_usd.entry(key).or_insert(0.0);
+                *cost += clean_cost;
             }
         }
-        Ok(())
+        Ok(BudgetReservation {
+            ledger: Arc::clone(self),
+            limits,
+            reserved_day: g.day,
+            tokens: estimated_tokens,
+            cost_usd: clean_cost,
+            active: true,
+        })
     }
 
     /// Settle a completed call: add authoritative `usage` to every applicable
@@ -353,8 +536,14 @@ impl BudgetLedger {
         if g.day != day {
             return;
         }
-        for (wire, counters) in rows {
+        for (wire, mut counters) in rows {
             if let Some(key) = parse_wire(&wire) {
+                if counters.cost_usd.is_nan() {
+                    // Fail closed if a corrupted snapshot carried NaN.
+                    counters.cost_usd = f64::INFINITY;
+                } else if counters.cost_usd < 0.0 {
+                    counters.cost_usd = 0.0;
+                }
                 g.counters.insert(key, counters);
             }
         }
@@ -495,5 +684,74 @@ mod tests {
 
         // `n` truncates.
         assert_eq!(led.top_actors(1).len(), 1);
+    }
+
+    #[test]
+    fn p2_core_11_reservation_raii_rollover_and_nan_cost_hardening() {
+        let day = Arc::new(AtomicU64::new(10));
+        let d = Arc::clone(&day);
+        let led = Arc::new(BudgetLedger::with_day_source(Box::new(move || {
+            d.load(Ordering::Relaxed)
+        })));
+        let limits = ScopeLimits {
+            global: Some(BudgetLimit {
+                tokens: Some(300),
+                cost_usd: Some(1.0),
+            }),
+            ..Default::default()
+        };
+
+        // Two reservations consume 250 tokens / $0.80 -> third refused.
+        let r1 = led.reserve(limits.clone(), 150, 0.40).unwrap();
+        let r2 = led.reserve(limits.clone(), 100, 0.40).unwrap();
+        assert_eq!(
+            led.reserve(limits.clone(), 100, 0.10).unwrap_err(),
+            BudgetScope::Global
+        );
+        assert_eq!(
+            led.reserve(limits.clone(), 10, 0.30).unwrap_err(),
+            BudgetScope::Global
+        );
+
+        // Dropping r2 releases its reservation cleanly.
+        drop(r2);
+        let r3 = led.reserve(limits.clone(), 100, 0.40).unwrap();
+
+        // Settling r1 replaces its reservation with authoritative usage.
+        r1.settle(&usage(25, 25, Some(0.10)));
+        assert_eq!(led.global().total_tokens(), 50);
+
+        // UTC day rollover clears old reservations; dropping r3 from the old
+        // day must not corrupt the new day's counters or reservations.
+        day.store(11, Ordering::Relaxed);
+        let r_next_day = led.reserve(limits.clone(), 200, 0.50).unwrap();
+        drop(r3);
+        assert_eq!(
+            led.reserve(limits.clone(), 150, 0.10).unwrap_err(),
+            BudgetScope::Global
+        );
+        drop(r_next_day);
+
+        // NaN and negative costs passed directly to settle never poison cost_usd.
+        led.settle(&limits, &usage(10, 10, Some(f64::NAN)));
+        led.settle(&limits, &usage(10, 10, Some(-10.0)));
+        assert_eq!(led.global().cost_usd, 0.0);
+        led.settle(&limits, &usage(10, 10, Some(1.0)));
+        assert_eq!(led.pre_check(&limits, 1), Err(BudgetScope::Global));
+
+        // Restoring a NaN snapshot fails closed on cost checks.
+        let led2 = BudgetLedger::with_day_source(Box::new(|| 42));
+        led2.restore(
+            42,
+            vec![(
+                "global".to_string(),
+                Counters {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: f64::NAN,
+                },
+            )],
+        );
+        assert_eq!(led2.pre_check(&limits, 1), Err(BudgetScope::Global));
     }
 }

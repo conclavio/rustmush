@@ -196,9 +196,10 @@ pub fn extraction_authorized(
             continue;
         }
         // K4a: a stamp on another clock generation **refuses comparison rather
-        // than expiring early**. Never `<`, never `partial_cmp`.
+        // than expiring early**. Never `<`, never `partial_cmp`. Aligned with
+        // `families::claim_is_expired` (`term <= now` is expired).
         match claim.term().checked_cmp(now) {
-            Ok(std::cmp::Ordering::Less) => {
+            Ok(std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => {
                 best = Some(best.unwrap_or(ExtractionRefusal::ClaimExpired));
                 continue;
             }
@@ -206,7 +207,7 @@ pub fn extraction_authorized(
                 best = Some(best.unwrap_or(ExtractionRefusal::ClaimUncomparable));
                 continue;
             }
-            Ok(_) => {}
+            Ok(std::cmp::Ordering::Greater) => {}
         }
         // HIGH-34: when a deposit records a governing jurisdiction, only a claim
         // issued by that jurisdiction authorizes extraction.

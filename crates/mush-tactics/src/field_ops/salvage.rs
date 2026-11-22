@@ -26,6 +26,11 @@ pub const MAX_SALVAGE_CLAIMS: usize = 1_024;
 /// Maximum contests or at-risk repair entries on a single [`SalvageClaim`].
 pub const MAX_CLAIM_ENTRIES: usize = 64;
 
+/// Maximum non-vacating contests stored on a single [`SalvageClaim`], leaving
+/// the rest of [`MAX_CLAIM_ENTRIES`] strictly reserved for vacating contests
+/// (`P2-MOD-26`).
+pub const MAX_NON_VACATING_CONTESTS: usize = MAX_CLAIM_ENTRIES / 2;
+
 /// Maximum forensic flight/combat recorder entries retained per hull (`P-3`, `Q-H6`, `Q-S4`).
 pub const MAX_BLACK_BOX_ENTRIES_PER_HULL: usize = 256;
 
@@ -381,6 +386,27 @@ pub enum ContestGround {
     },
 }
 
+/// Discriminant of [`ContestGround`] used to deduplicate contests per
+/// `(challenger, ground_kind)` (`P2-MOD-26`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContestGroundKind {
+    BarePriorTitle,
+    UnlawfulRecovery,
+    DefectiveProcedure,
+    SuperiorSpecificRight,
+}
+
+impl ContestGround {
+    const fn kind(&self) -> ContestGroundKind {
+        match self {
+            Self::BarePriorTitle => ContestGroundKind::BarePriorTitle,
+            Self::UnlawfulRecovery { .. } => ContestGroundKind::UnlawfulRecovery,
+            Self::DefectiveProcedure { .. } => ContestGroundKind::DefectiveProcedure,
+            Self::SuperiorSpecificRight { .. } => ContestGroundKind::SuperiorSpecificRight,
+        }
+    }
+}
+
 /// Reason a contest succeeded in vacating a [`SalvageClaim`] (`Q-S13`, `Q-R1`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -493,21 +519,62 @@ pub struct SalvageClaim {
 }
 
 impl SalvageClaim {
+    /// Recognized landholder on owned ground at attach, if any.
+    fn landholder(&self) -> Option<ObjId> {
+        if let GroundTenure::Owned { landholder, .. } = &self.ground_tenure_at_attach {
+            return Some(*landholder);
+        }
+        match &self.entitlement_at_attach {
+            RecoveryEntitlement::LawfulLandholderOrAgent { landholder, .. }
+            | RecoveryEntitlement::UnlawfulOnOwnedGround { landholder, .. } => Some(*landholder),
+            RecoveryEntitlement::LawfulSelfOrAgent { .. }
+            | RecoveryEntitlement::LawfulOpenGround { .. } => None,
+        }
+    }
+
+    /// Prior unit owner recorded in `entitlement_at_attach`.
+    const fn entitlement_unit_owner(&self) -> ObjId {
+        match self.entitlement_at_attach {
+            RecoveryEntitlement::LawfulSelfOrAgent { unit_owner }
+            | RecoveryEntitlement::LawfulLandholderOrAgent { unit_owner, .. }
+            | RecoveryEntitlement::LawfulOpenGround { unit_owner }
+            | RecoveryEntitlement::UnlawfulOnOwnedGround { unit_owner, .. } => unit_owner,
+        }
+    }
+
+    /// Whether `actor` holds direct party standing on this claim (prior unit
+    /// owner or recognized landholder of the violated ground tenure, `P2-MOD-27`).
+    fn has_party_standing(&self, actor: ObjId) -> bool {
+        actor == self.prior_owner
+            || actor == self.entitlement_unit_owner()
+            || self.landholder() == Some(actor)
+    }
+
     /// **Submit a contest against this claim** within its contest window (`Q-S13`, `Q-S15`,
     /// `Q-R1`): the rules [`SalvageClaimBook::submit_contest`] applies, on a claim a host keeps
     /// in its own durable record (doc 36 cut GC.6: the ground keeps each claim on its site's
     /// record and its window on the economy's contract).
     ///
+    /// - The claim's own `claimant` may never contest their own claim (`P2-MOD-26`).
+    /// - Contests are deduplicated per `(challenger, ground_kind)`, and non-vacating
+    ///   contests (`valid_to_vacate == None`) are capped at [`MAX_NON_VACATING_CONTESTS`]
+    ///   and may be displaced by vacating contests so they can never exhaust vacating
+    ///   contest capacity (`P2-MOD-26`).
     /// - [`ContestGround::BarePriorTitle`] is **always rejected** (`valid_to_vacate = None`)
     ///   per explicit owner ruling `Q-R1`.
     /// - [`ContestGround::UnlawfulRecovery`] is validated against the claim's
-    ///   `entitlement_at_attach` and the supplied [`SalvageEvidenceRecord`] (`Q-S4`, `Q-S13`).
-    /// - [`ContestGround::DefectiveProcedure`] is valid if `defect_code` is non-empty.
-    /// - [`ContestGround::SuperiorSpecificRight`] is valid if `obligor == claimant`.
+    ///   `entitlement_at_attach` and the supplied [`SalvageEvidenceRecord`] (`Q-S4`, `Q-S13`);
+    ///   vacating an unlawful recovery requires party standing (`prior_owner`, `unit_owner`,
+    ///   or `landholder`, `P2-MOD-27`).
+    /// - [`ContestGround::DefectiveProcedure`] requires party standing (or an unnotified
+    ///   answerer filing their own `unnotified:<id>` defect) and a non-empty `defect_code`.
+    /// - [`ContestGround::SuperiorSpecificRight`] requires party standing and is valid if
+    ///   `obligor == claimant` and `contract_id` is non-empty.
     ///
     /// # Errors
     /// Returns [`SalvageError`] if the claim is already settled, paused for an outage, past
-    /// `deadline_real_s`, full, or if evidence does not match the recovery.
+    /// `deadline_real_s`, full, duplicate, submitted by the claimant, lacking standing, or
+    /// if evidence does not match the recovery.
     pub fn contest(
         &mut self,
         challenger: ObjId,
@@ -517,6 +584,12 @@ impl SalvageClaim {
         let claim_id = self.id;
         if challenger.0 == 0 {
             return Err(SalvageError::InvalidObjectId("challenger"));
+        }
+        if challenger == self.claimant {
+            return Err(SalvageError::ClaimantCannotContestOwnClaim {
+                claim_id,
+                claimant: self.claimant,
+            });
         }
         if !self.state.is_pending() {
             return Err(SalvageError::ClaimAlreadySettled(claim_id));
@@ -529,12 +602,6 @@ impl SalvageClaim {
                 claim_id,
                 filed_at_real_s,
                 deadline_real_s: self.deadline_real_s,
-            });
-        }
-        if self.contests.len() >= MAX_CLAIM_ENTRIES {
-            return Err(SalvageError::MaxClaimEntriesReached {
-                claim_id,
-                max: MAX_CLAIM_ENTRIES,
             });
         }
 
@@ -557,12 +624,29 @@ impl SalvageClaim {
                     });
                 }
                 if !self.entitlement_at_attach.is_lawful() {
+                    if !self.has_party_standing(challenger) {
+                        return Err(SalvageError::ChallengerLacksStanding {
+                            claim_id,
+                            challenger,
+                        });
+                    }
                     Some(ContestSuccessReason::ProvenUnlawfulRecovery)
                 } else {
                     None
                 }
             }
             ContestGround::DefectiveProcedure { defect_code } => {
+                let self_unnotified = defect_code
+                    .trim()
+                    .strip_prefix("unnotified:")
+                    .and_then(|id| id.parse::<u32>().ok())
+                    == Some(challenger.0);
+                if !self.has_party_standing(challenger) && !self_unnotified {
+                    return Err(SalvageError::ChallengerLacksStanding {
+                        claim_id,
+                        challenger,
+                    });
+                }
                 if !defect_code.trim().is_empty() {
                     Some(ContestSuccessReason::DefectiveProcedure)
                 } else {
@@ -573,6 +657,12 @@ impl SalvageClaim {
                 contract_id,
                 obligor,
             } => {
+                if !self.has_party_standing(challenger) {
+                    return Err(SalvageError::ChallengerLacksStanding {
+                        claim_id,
+                        challenger,
+                    });
+                }
                 if !contract_id.trim().is_empty() && *obligor == self.claimant {
                     Some(ContestSuccessReason::SuperiorSpecificRight)
                 } else {
@@ -580,6 +670,62 @@ impl SalvageClaim {
                 }
             }
         };
+
+        let kind = ground.kind();
+        if let Some(idx) = self
+            .contests
+            .iter()
+            .position(|c| c.challenger == challenger && c.ground.kind() == kind)
+        {
+            if self.contests[idx].valid_to_vacate.is_none() && valid_to_vacate.is_some() {
+                self.contests[idx] = SalvageContest {
+                    challenger,
+                    ground,
+                    filed_at_real_s,
+                    valid_to_vacate,
+                };
+                self.state = SalvageClaimState::Contested;
+                return self
+                    .contests
+                    .get(idx)
+                    .ok_or(SalvageError::UnknownClaim(claim_id));
+            }
+            return Err(SalvageError::DuplicateContest {
+                claim_id,
+                challenger,
+            });
+        }
+
+        if valid_to_vacate.is_none() {
+            let non_vacating = self
+                .contests
+                .iter()
+                .filter(|c| c.valid_to_vacate.is_none())
+                .count();
+            if non_vacating >= MAX_NON_VACATING_CONTESTS || self.contests.len() >= MAX_CLAIM_ENTRIES
+            {
+                return Err(SalvageError::MaxClaimEntriesReached {
+                    claim_id,
+                    max: MAX_CLAIM_ENTRIES,
+                });
+            }
+        } else if self.contests.len() >= MAX_CLAIM_ENTRIES {
+            // Even on a legacy claim already holding MAX_CLAIM_ENTRIES non-vacating
+            // entries, displace one non-vacating entry so a valid vacating contest is
+            // never locked out.
+            if let Some(evict) = self
+                .contests
+                .iter()
+                .position(|c| c.valid_to_vacate.is_none())
+            {
+                self.contests.remove(evict);
+            } else {
+                return Err(SalvageError::MaxClaimEntriesReached {
+                    claim_id,
+                    max: MAX_CLAIM_ENTRIES,
+                });
+            }
+        }
 
         self.contests.push(SalvageContest {
             challenger,
@@ -597,9 +743,9 @@ impl SalvageClaim {
     /// [`SalvageClaimBook::adjudicate_claim`] applies, on a claim a host keeps itself.
     ///
     /// - If any submitted contest has `valid_to_vacate == Some(reason)`, the claim is vacated
-    ///   at once (even before `deadline_real_s`), restoring title/custody right to the winning
-    ///   challenger (`SalvageClaimState::Vacated`) without reimbursing at-risk repairs
-    ///   (`Q-S14`).
+    ///   at once (even before `deadline_real_s`), restoring title/custody right to
+    ///   `self.prior_owner` (`SalvageClaimState::Vacated`, `P2-MOD-27`) without reimbursing
+    ///   at-risk repairs (`Q-S14`).
     /// - Otherwise (uncontested, or only invalid contests such as
     ///   [`ContestGround::BarePriorTitle`]), once `now_real_s >= deadline_real_s` (and not
     ///   paused for an outage), the claim settles as [`SalvageClaimState::AwardedToClaimant`]
@@ -622,7 +768,10 @@ impl SalvageClaim {
                 .valid_to_vacate
                 .clone()
                 .unwrap_or(ContestSuccessReason::ProvenUnlawfulRecovery);
-            let restored_to = winning_contest.challenger;
+            // P2-MOD-27: vacating a salvage claim always restores title/custody to
+            // `self.prior_owner`, never to `winning_contest.challenger` (e.g., a
+            // landholder or org officer filing the contest on behalf of the title).
+            let restored_to = self.prior_owner;
             self.state = SalvageClaimState::Vacated {
                 restored_to,
                 reason,
@@ -1486,8 +1635,8 @@ impl SalvageClaimBook {
     ///
     /// - If any submitted contest has `valid_to_vacate == Some(reason)`, the claim can be
     ///   vacated immediately (even before `deadline_real_s`), restoring title/custody right
-    ///   to the winning challenger / `prior_owner` (`SalvageClaimState::Vacated`) without
-    ///   reimbursing at-risk repairs (`Q-S14`).
+    ///   to `claim.prior_owner` (`SalvageClaimState::Vacated`) without reimbursing at-risk
+    ///   repairs (`Q-S14`).
     /// - Otherwise (uncontested, or only invalid contests such as [`ContestGround::BarePriorTitle`]
     ///   were submitted), once `now_real_s >= deadline_real_s` (and not paused for outage),
     ///   the claim deterministically settles as [`SalvageClaimState::AwardedToClaimant`],
@@ -1621,6 +1770,27 @@ pub enum SalvageError {
         /// Maximum entries per hull.
         max: usize,
     },
+    /// Claimant attempted to file a contest against their own salvage claim (`P2-MOD-26`).
+    ClaimantCannotContestOwnClaim {
+        /// Claim id.
+        claim_id: SalvageClaimId,
+        /// Claimant object id.
+        claimant: ObjId,
+    },
+    /// Challenger already filed a contest on the same ground kind for this claim (`P2-MOD-26`).
+    DuplicateContest {
+        /// Claim id.
+        claim_id: SalvageClaimId,
+        /// Challenger object id.
+        challenger: ObjId,
+    },
+    /// Challenger lacks standing to file this contest ground on this claim (`P2-MOD-27`).
+    ChallengerLacksStanding {
+        /// Claim id.
+        claim_id: SalvageClaimId,
+        /// Challenger object id.
+        challenger: ObjId,
+    },
 }
 
 impl fmt::Display for SalvageError {
@@ -1702,6 +1872,30 @@ impl fmt::Display for SalvageError {
             }
             Self::BlackBoxTapeFull { hull, max } => {
                 write!(f, "black box tape for hull {hull} reached limit ({max})")
+            }
+            Self::ClaimantCannotContestOwnClaim { claim_id, claimant } => {
+                write!(
+                    f,
+                    "claimant {claimant} cannot contest own salvage claim {claim_id}"
+                )
+            }
+            Self::DuplicateContest {
+                claim_id,
+                challenger,
+            } => {
+                write!(
+                    f,
+                    "challenger {challenger} already filed a contest of that kind on {claim_id}"
+                )
+            }
+            Self::ChallengerLacksStanding {
+                claim_id,
+                challenger,
+            } => {
+                write!(
+                    f,
+                    "challenger {challenger} lacks standing to contest salvage claim {claim_id}"
+                )
             }
         }
     }
@@ -1945,6 +2139,390 @@ mod tests {
             }
         );
 
+        Ok(())
+    }
+
+    /// **P2-MOD-26**: Claimants cannot contest their own claim, duplicate
+    /// `(challenger, ground_kind)` contests are rejected, and non-vacating
+    /// contests can never exhaust vacating contest capacity (including on
+    /// legacy claims already saturated with non-vacating entries).
+    #[test]
+    fn p2_mod_26_claimant_and_non_vacating_contests_cannot_exhaust_vacating_capacity() -> TestResult
+    {
+        let mut book = SalvageClaimBook::new();
+        let op_id = RecoveryOpId::new(26)?;
+        let unit_owner = ObjId(10);
+        let landholder = ObjId(20);
+        let casualty = ObjId(260);
+        let tug = ObjId(261);
+        let carrier = ObjId(926);
+
+        let ctx = RecoveryAuthorityContext {
+            recoverer: landholder,
+            unit_title_holder: unit_owner,
+            has_owner_authorization: false,
+            has_landholder_authorization: true,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder,
+                claim_id: Some(SmolStr::new("deed.p2_mod_26")),
+            },
+        };
+        book.record_physical_attach(op_id, casualty, tug, &ctx, 1_000)?;
+        book.record_bay_load(op_id, carrier, 1_100)?;
+        let filed_at = 20_000;
+        let claim_id = match book.resolve_hull_recovery_custody(op_id, filed_at)? {
+            CustodyTitleStatus::PendingSalvageClaim { claim_id, .. } => claim_id,
+            CustodyTitleStatus::ResolvedTitle { .. } => {
+                return Err("expected PendingSalvageClaim".into());
+            }
+        };
+
+        // 1. Claimant cannot contest their own claim on any ground.
+        let claimant_ev = SalvageEvidenceRecord {
+            operation_id: op_id,
+            casualty,
+            holder: landholder,
+            kind: SalvageEvidenceKind::RecoveredBlackBox {
+                hull: casualty,
+                read_at_ic: 1_200,
+            },
+        };
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                landholder,
+                ContestGround::UnlawfulRecovery {
+                    evidence: claimant_ev,
+                },
+                filed_at + 10,
+            ),
+            Err(SalvageError::ClaimantCannotContestOwnClaim { claimant, .. })
+                if claimant == landholder
+        ));
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                landholder,
+                ContestGround::BarePriorTitle,
+                filed_at + 10,
+            ),
+            Err(SalvageError::ClaimantCannotContestOwnClaim { .. })
+        ));
+
+        // 2. Duplicate `(challenger, ground_kind)` is rejected without consuming a slot.
+        let first_bystander = ObjId(1_000);
+        let first_ev = SalvageEvidenceRecord {
+            operation_id: op_id,
+            casualty,
+            holder: first_bystander,
+            kind: SalvageEvidenceKind::RecoveredBlackBox {
+                hull: casualty,
+                read_at_ic: 1_210,
+            },
+        };
+        let c0 = book.submit_contest(
+            claim_id,
+            first_bystander,
+            ContestGround::UnlawfulRecovery {
+                evidence: first_ev.clone(),
+            },
+            filed_at + 20,
+        )?;
+        check_eq!(c0.valid_to_vacate, None);
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                first_bystander,
+                ContestGround::UnlawfulRecovery { evidence: first_ev },
+                filed_at + 25,
+            ),
+            Err(SalvageError::DuplicateContest { challenger, .. }) if challenger == first_bystander
+        ));
+
+        // 3. Even distinct sockpuppets flooding non-vacating contests stop at
+        //    MAX_NON_VACATING_CONTESTS and cannot block a legitimate vacating contest.
+        for i in 1..MAX_NON_VACATING_CONTESTS {
+            let sock = ObjId(1_000 + u32::try_from(i).unwrap_or(0));
+            let ev = SalvageEvidenceRecord {
+                operation_id: op_id,
+                casualty,
+                holder: sock,
+                kind: SalvageEvidenceKind::RecoveredBlackBox {
+                    hull: casualty,
+                    read_at_ic: 1_250,
+                },
+            };
+            let entry = book.submit_contest(
+                claim_id,
+                sock,
+                ContestGround::UnlawfulRecovery { evidence: ev },
+                filed_at + 30,
+            )?;
+            check_eq!(entry.valid_to_vacate, None);
+        }
+        let extra_sock = ObjId(9_999);
+        let extra_ev = SalvageEvidenceRecord {
+            operation_id: op_id,
+            casualty,
+            holder: extra_sock,
+            kind: SalvageEvidenceKind::RecoveredBlackBox {
+                hull: casualty,
+                read_at_ic: 1_260,
+            },
+        };
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                extra_sock,
+                ContestGround::UnlawfulRecovery { evidence: extra_ev },
+                filed_at + 40,
+            ),
+            Err(SalvageError::MaxClaimEntriesReached { .. })
+        ));
+
+        // Prior owner's legitimate vacating contest still fits and vacates the claim.
+        let vacating = book.submit_contest(
+            claim_id,
+            unit_owner,
+            ContestGround::SuperiorSpecificRight {
+                contract_id: SmolStr::new("grant/42"),
+                obligor: landholder,
+            },
+            filed_at + 50,
+        )?;
+        check_eq!(
+            vacating.valid_to_vacate,
+            Some(ContestSuccessReason::SuperiorSpecificRight)
+        );
+        let (status, claim) = book.adjudicate_claim(claim_id, filed_at + 60)?;
+        check_eq!(
+            status,
+            CustodyTitleStatus::ResolvedTitle { owner: unit_owner }
+        );
+        check!(matches!(
+            claim.state,
+            SalvageClaimState::Vacated {
+                restored_to,
+                reason: ContestSuccessReason::SuperiorSpecificRight,
+                ..
+            } if restored_to == unit_owner
+        ));
+
+        // 4. Legacy claim pre-saturated with MAX_CLAIM_ENTRIES non-vacating contests
+        //    still admits a valid vacating contest by displacing one non-vacating row.
+        let mut legacy = SalvageClaim {
+            id: SalvageClaimId::new(99)?,
+            subject: SalvageSubject::Hull { unit: casualty },
+            excluded_components: BTreeSet::new(),
+            claimant: landholder,
+            prior_owner: unit_owner,
+            operation_id: op_id,
+            entitlement_at_attach: RecoveryEntitlement::LawfulLandholderOrAgent {
+                landholder,
+                unit_owner,
+            },
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder,
+                claim_id: None,
+            },
+            filed_at_real_s: filed_at,
+            deadline_real_s: filed_at + CONTEST_WINDOW_AVAILABLE_REAL_SECS,
+            paused_at_real_s: None,
+            total_paused_real_s: 0,
+            contests: (0..MAX_CLAIM_ENTRIES)
+                .map(|i| SalvageContest {
+                    challenger: ObjId(2_000 + u32::try_from(i).unwrap_or(0)),
+                    ground: ContestGround::BarePriorTitle,
+                    filed_at_real_s: filed_at + 1,
+                    valid_to_vacate: None,
+                })
+                .collect(),
+            documented_repairs_at_risk: Vec::new(),
+            state: SalvageClaimState::Contested,
+        };
+        let displaced = legacy.contest(
+            unit_owner,
+            ContestGround::DefectiveProcedure {
+                defect_code: SmolStr::new("pin_missing"),
+            },
+            filed_at + 100,
+        )?;
+        check_eq!(
+            displaced.valid_to_vacate,
+            Some(ContestSuccessReason::DefectiveProcedure)
+        );
+        check_eq!(legacy.contests.len(), MAX_CLAIM_ENTRIES);
+        check!(legacy.has_vacating_contest());
+        Ok(())
+    }
+
+    /// **P2-MOD-27**: Standing is enforced on vacating contest grounds and
+    /// `SalvageClaim::adjudicate` always restores vacated title/custody to
+    /// `self.prior_owner` rather than `winning_contest.challenger`.
+    #[test]
+    fn p2_mod_27_standing_enforced_and_vacated_claim_always_restores_to_prior_owner() -> TestResult
+    {
+        let mut book = SalvageClaimBook::new();
+        let op_id = RecoveryOpId::new(27)?;
+        let unit_owner = ObjId(10);
+        let landholder = ObjId(20);
+        let pirate = ObjId(30);
+        let bystander = ObjId(99);
+        let org_officer = ObjId(33);
+        let casualty = ObjId(270);
+        let tug = ObjId(271);
+        let pirate_carrier = ObjId(927);
+
+        let ctx = RecoveryAuthorityContext {
+            recoverer: pirate,
+            unit_title_holder: unit_owner,
+            has_owner_authorization: false,
+            has_landholder_authorization: false,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder,
+                claim_id: Some(SmolStr::new("deed.p2_mod_27")),
+            },
+        };
+        book.record_physical_attach(op_id, casualty, tug, &ctx, 3_000)?;
+        book.record_bay_load(op_id, pirate_carrier, 3_100)?;
+        let filed_at = 30_000;
+        let claim_id = match book.resolve_hull_recovery_custody(op_id, filed_at)? {
+            CustodyTitleStatus::PendingSalvageClaim { claim_id, .. } => claim_id,
+            CustodyTitleStatus::ResolvedTitle { .. } => {
+                return Err("expected PendingSalvageClaim".into());
+            }
+        };
+
+        // 1. Arbitrary bystander lacks standing on all vacating grounds.
+        let bystander_ev = SalvageEvidenceRecord {
+            operation_id: op_id,
+            casualty,
+            holder: bystander,
+            kind: SalvageEvidenceKind::DirectWitness {
+                witness: bystander,
+                observed_at_ic: 3_005,
+            },
+        };
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                bystander,
+                ContestGround::UnlawfulRecovery {
+                    evidence: bystander_ev,
+                },
+                filed_at + 10,
+            ),
+            Err(SalvageError::ChallengerLacksStanding { challenger, .. })
+                if challenger == bystander
+        ));
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                bystander,
+                ContestGround::DefectiveProcedure {
+                    defect_code: SmolStr::new("pin_missing"),
+                },
+                filed_at + 10,
+            ),
+            Err(SalvageError::ChallengerLacksStanding { challenger, .. })
+                if challenger == bystander
+        ));
+        check!(matches!(
+            book.submit_contest(
+                claim_id,
+                bystander,
+                ContestGround::SuperiorSpecificRight {
+                    contract_id: SmolStr::new("fake"),
+                    obligor: pirate,
+                },
+                filed_at + 10,
+            ),
+            Err(SalvageError::ChallengerLacksStanding { challenger, .. })
+                if challenger == bystander
+        ));
+
+        // 2. Landholder (`!= unit_owner`) DOES have standing to vacate an unlawful
+        //    recovery on their owned ground, and adjudicate MUST restore title to
+        //    `unit_owner` (`self.prior_owner`), NEVER to `landholder`!
+        let landholder_ev = SalvageEvidenceRecord {
+            operation_id: op_id,
+            casualty,
+            holder: landholder,
+            kind: SalvageEvidenceKind::DirectWitness {
+                witness: landholder,
+                observed_at_ic: 3_010,
+            },
+        };
+        let contest = book.submit_contest(
+            claim_id,
+            landholder,
+            ContestGround::UnlawfulRecovery {
+                evidence: landholder_ev,
+            },
+            filed_at + 20,
+        )?;
+        check_eq!(
+            contest.valid_to_vacate,
+            Some(ContestSuccessReason::ProvenUnlawfulRecovery)
+        );
+        let (status, vacated) = book.adjudicate_claim(claim_id, filed_at + 30)?;
+        check_eq!(
+            status,
+            CustodyTitleStatus::ResolvedTitle { owner: unit_owner }
+        );
+        check_eq!(
+            vacated.state,
+            SalvageClaimState::Vacated {
+                restored_to: unit_owner,
+                reason: ContestSuccessReason::ProvenUnlawfulRecovery,
+                settled_at_real_s: filed_at + 30,
+            }
+        );
+
+        // 3. Unnotified org officer (`!= prior_owner`) filing `unnotified:<self>`
+        //    vacates cleanly and ALSO restores title to `prior_owner` (`unit_owner`),
+        //    never to `org_officer`.
+        let mut org_claim = SalvageClaim {
+            id: SalvageClaimId::new(100)?,
+            subject: SalvageSubject::Hull { unit: casualty },
+            excluded_components: BTreeSet::new(),
+            claimant: pirate,
+            prior_owner: unit_owner,
+            operation_id: op_id,
+            entitlement_at_attach: RecoveryEntitlement::LawfulOpenGround { unit_owner },
+            ground_tenure_at_attach: GroundTenure::Unclaimed,
+            filed_at_real_s: filed_at,
+            deadline_real_s: filed_at + CONTEST_WINDOW_AVAILABLE_REAL_SECS,
+            paused_at_real_s: None,
+            total_paused_real_s: 0,
+            contests: Vec::new(),
+            documented_repairs_at_risk: Vec::new(),
+            state: SalvageClaimState::Open,
+        };
+        let officer_contest = org_claim.contest(
+            org_officer,
+            ContestGround::DefectiveProcedure {
+                defect_code: SmolStr::new("unnotified:33"),
+            },
+            filed_at + 40,
+        )?;
+        check_eq!(
+            officer_contest.valid_to_vacate,
+            Some(ContestSuccessReason::DefectiveProcedure)
+        );
+        let org_status = org_claim.adjudicate(filed_at + 50)?;
+        check_eq!(
+            org_status,
+            CustodyTitleStatus::ResolvedTitle { owner: unit_owner }
+        );
+        check_eq!(
+            org_claim.state,
+            SalvageClaimState::Vacated {
+                restored_to: unit_owner,
+                reason: ContestSuccessReason::DefectiveProcedure,
+                settled_at_real_s: filed_at + 50,
+            }
+        );
         Ok(())
     }
 }

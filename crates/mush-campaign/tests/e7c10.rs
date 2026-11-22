@@ -3080,7 +3080,7 @@ fn high31_seat_offer_enforces_plan_lens_may_roster_live_state_and_unit_membershi
     ok(
         &mut tw,
         fx.commander,
-        &format!("@op/resolve {}=success", op.0),
+        &format!("@op/resolve {}=failure", op.0),
     );
     for _ in 0..8 {
         fire(&mut tw);

@@ -123,8 +123,8 @@ pub use seat::{
 pub use seatcmd::{NO_SUCH_CREW, NO_SUCH_SEAT};
 pub use seatstate::SeatAuditHolder;
 pub use settle::{
-    KIND_OPERATION_ABANDONED, KIND_OPERATION_RESOLVED, abandon, advance_one, canon_source,
-    enter_resolving, outcome_abandons, outcome_forfeits, scope_for,
+    KIND_OPERATION_ABANDONED, KIND_OPERATION_FAILED, KIND_OPERATION_RESOLVED, abandon, advance_one,
+    canon_source, enter_resolving, outcome_abandons, outcome_forfeits, scope_for,
 };
 pub use store::{
     CampaignStore, DECLARATION_WINDOW_SECS, HeldDoc, MAX_DECLARATIONS_PER_ISSUER_WINDOW,

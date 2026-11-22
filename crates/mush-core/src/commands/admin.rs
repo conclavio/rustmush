@@ -114,11 +114,9 @@ fn save_ignore_list(ctx: &mut Ctx<'_>, mut ids: Vec<ObjId>) -> Result<(), CmdErr
             .iter()
             .map(|id| serde_json::Value::from(u64::from(id.0)))
             .collect();
-        ctx.w.set_attr(
-            ctx.actor,
-            IGNORE_ATTR,
-            crate::attr::Attr::json(serde_json::Value::Array(arr), ctx.actor),
-        )?;
+        let mut attr = crate::attr::Attr::json(serde_json::Value::Array(arr), ctx.actor);
+        attr.flags = crate::attr::AttrFlags::SELF_ONLY;
+        ctx.w.set_attr(ctx.actor, IGNORE_ATTR, attr)?;
     }
     Ok(())
 }

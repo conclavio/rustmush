@@ -274,6 +274,20 @@ fn examine_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if attr.flags.contains(AttrFlags::WIZARD_ONLY) && !examiner_is_wizard {
             continue;
         }
+        // Module-owned namespaces (and internal `sheet:*` documents even on
+        // worlds where no ruleset has registered the `sheet` namespace) hold
+        // structured state and staff-only fields: withhold them from examiners
+        // who lack that namespace's write role (`Builder+` for `script:`,
+        // `Wizard+` for all other module namespaces).
+        let name_str = name.as_str();
+        if !examiner_is_wizard
+            && (!ctx.reg.may_write_attr(w, ctx.actor, None, name_str)
+                || name_str
+                    .split_once(':')
+                    .is_some_and(|(ns, _)| ns.eq_ignore_ascii_case("sheet")))
+        {
+            continue;
+        }
         // SELF_ONLY: readable only by the object itself and staff.
         if attr.flags.contains(AttrFlags::SELF_ONLY) && ctx.actor != target && !examiner_is_wizard {
             continue;

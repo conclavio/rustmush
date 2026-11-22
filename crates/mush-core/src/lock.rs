@@ -37,6 +37,7 @@
 //! because nothing outside this file builds a compound node, which
 //! `tests/lock_construction_ratchet.rs` holds in place.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -46,7 +47,7 @@ use smol_str::SmolStr;
 use crate::attr::{Attr, AttrFlags, AttrValue, UncasedName};
 use crate::flags::Flags;
 use crate::obj::ObjId;
-use crate::object_read::{ObjectRead, PlainRead};
+use crate::object_read::{BoundedRead, ObjectRead};
 use crate::world::World;
 
 /// The kinds of lock an object can carry (`@lock/<type>`).
@@ -164,6 +165,15 @@ pub const MAX_LOCK_DEPTH: u8 = 10;
 /// [`parse_lock`].
 pub const MAX_LOCK_STEPS: u32 = 512;
 
+/// Maximum metered work units [`eval_lock`] will spend on a single evaluation
+/// (attribute/JSON inspection, glob matching, marker scans, inventory walks)
+/// before failing closed to `false`.
+pub const MAX_LOCK_WORK: usize = 512_000;
+
+/// Maximum byte length of a glob pattern accepted in [`LockExpr::AttrMatch`]
+/// (enforced in [`parse_lock`] and re-checked in [`eval_lock`]) and `@find`.
+pub const MAX_LOCK_GLOB_LEN: usize = 256;
+
 /// Does this node own children — and so cost a level of every walk over the
 /// tree, `Drop` included?
 fn compound(e: &LockExpr) -> bool {
@@ -212,10 +222,7 @@ const MAX_LOCK_STRUCTURAL_DEPTH: u32 = 1024;
 /// bound instead of overflowing the world task's stack.
 #[must_use]
 pub fn eval_lock(w: &World, expr: &LockExpr, who: ObjId, depth: u8) -> bool {
-    match eval_lock_with(&mut PlainRead::new(w), expr, who, depth) {
-        Ok(value) => value,
-        Err(never) => match never {},
-    }
+    eval_lock_with(&mut BoundedRead::new(w, MAX_LOCK_WORK), expr, who, depth).unwrap_or(false)
 }
 
 /// Resource errors propagate through every evaluated operator, including
@@ -236,6 +243,7 @@ pub(crate) fn eval_lock_with<'w, R: ObjectRead<'w>>(
     // closed even through `!`.
     let mut steps = MAX_LOCK_STEPS;
     let mut active: Vec<(ObjId, LockType)> = Vec::new();
+    let mut memo: HashMap<(ObjId, LockType), (bool, u8)> = HashMap::new();
     Ok(eval_with(
         read,
         expr,
@@ -244,7 +252,9 @@ pub(crate) fn eval_lock_with<'w, R: ObjectRead<'w>>(
         MAX_LOCK_STRUCTURAL_DEPTH,
         &mut steps,
         &mut active,
+        &mut memo,
     )?
+    .0
     .unwrap_or(false))
 }
 
@@ -269,6 +279,27 @@ fn unreadable(a: &Attr) -> bool {
         .intersects(AttrFlags::WIZARD_ONLY | AttrFlags::SELF_ONLY)
 }
 
+/// Is this attribute name an internal core or module-owned attribute that
+/// `@lock` `AttrMatch` must never read (nor even probe for existence)?
+///
+/// Checking the name **before** reading the attribute closes both value leaks
+/// (on legacy unflagged records or module-written records without explicit
+/// `WIZARD_ONLY`/`SELF_ONLY` flags) and presence oracles (e.g. `!ignore:*`
+/// revealing whether a player has muted anyone at all).
+fn is_restricted_lock_attr(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("ignore") || name.eq_ignore_ascii_case("macros") {
+        return true;
+    }
+    let Some((ns, _)) = name.split_once(':') else {
+        return false;
+    };
+    ns.eq_ignore_ascii_case("sheet")
+        || ns.eq_ignore_ascii_case("agent")
+        || ns.eq_ignore_ascii_case("tacsim")
+        || ns.eq_ignore_ascii_case("script")
+        || ns.eq_ignore_ascii_case("atlas")
+}
+
 /// [`eval_lock`] with both budgets explicit, and with the third answer.
 ///
 /// `indirect` is the public `depth`: it counts [`LockExpr::Indirect`] hops and
@@ -278,9 +309,10 @@ fn unreadable(a: &Attr) -> bool {
 /// budgets multiply into the true stack ceiling, which is why the indirect
 /// budget stays small.
 ///
-/// `Some(b)` is the key's answer; `None` is the fail-closed poison produced
-/// when the key tries to read an attribute it may not (`unreadable`), detects
-/// an indirect cycle, or exhausts its indirect, structural, or step budget.
+/// Returns `(outcome, indirect_hops_used)` where `Some(b)` is the key's answer
+/// and `None` is the fail-closed poison produced when the key tries to read an
+/// attribute it may not (`unreadable` / `is_restricted_lock_attr`), detects an
+/// indirect cycle, or exhausts its indirect, structural, or step budget.
 /// `None` is not `Some(false)`: it **absorbs** through every operator,
 /// including `!`, so neither a restricted-attribute probe nor a cycle/budget
 /// cutoff can be negated into a pass. For restricted attributes, `None` does
@@ -290,6 +322,12 @@ fn unreadable(a: &Attr) -> bool {
 /// indistinguishable, or the refusal is itself the leaked bit. The one thing
 /// that does not poison is a branch never taken: `&`/`|` keep their
 /// short-circuit, so a term that is never evaluated is never read either.
+///
+/// Visited `(ObjId, LockType)` outcomes are memoized alongside the number of
+/// nested indirect hops they required so diamond DAGs across an object's lock
+/// slots evaluate each node at most once while preserving exact `indirect`
+/// depth-cutoff semantics.
+#[allow(clippy::too_many_arguments)]
 fn eval_with<'w, R: ObjectRead<'w>>(
     read: &mut R,
     expr: &LockExpr,
@@ -298,46 +336,53 @@ fn eval_with<'w, R: ObjectRead<'w>>(
     structural: u32,
     steps: &mut u32,
     active: &mut Vec<(ObjId, LockType)>,
-) -> Result<Option<bool>, R::Error> {
+    memo: &mut HashMap<(ObjId, LockType), (bool, u8)>,
+) -> Result<(Option<bool>, u8), R::Error> {
     if *steps == 0 {
         // Total evaluation step budget exhausted: poison so enclosing `!`
         // cannot invert the refusal into a pass (fail closed).
-        return Ok(None);
+        return Ok((None, 0));
     }
     *steps -= 1;
     read.charge_work(1)?;
     Ok(match expr {
-        LockExpr::Const(b) => Some(*b),
-        LockExpr::Is(id) => Some(who == *id),
+        LockExpr::Const(b) => (Some(*b), 0),
+        LockExpr::Is(id) => (Some(who == *id), 0),
         LockExpr::Carry(id) => {
             let contents = read
                 .object(who)?
                 .map_or(&[][..], |object| object.contents.as_slice());
             read.charge_work(contents.len())?;
-            Some(contents.contains(id))
+            (Some(contents.contains(id)), 0)
         }
-        LockExpr::OwnedBy(id) => Some(read.object(who)?.is_some_and(|o| o.owner == *id)),
-        LockExpr::HasFlag(name) => Some(eval_flag_with(read, who, name)?),
-        LockExpr::AttrMatch { name, glob } => eval_attr_with(read, who, name, glob)?,
+        LockExpr::OwnedBy(id) => (Some(read.object(who)?.is_some_and(|o| o.owner == *id)), 0),
+        LockExpr::HasFlag(name) => (Some(eval_flag_with(read, who, name)?), 0),
+        LockExpr::AttrMatch { name, glob } => (eval_attr_with(read, who, name, glob)?, 0),
         LockExpr::Indirect(obj, lt) => {
             if indirect == 0 {
                 // Indirect-depth budget exhausted: poison so enclosing `!`
                 // cannot invert the refusal into permission (EXT-P2-16).
-                return Ok(None);
+                return Ok((None, 0));
             }
             let key = (*obj, *lt);
             if active.contains(&key) {
                 // Active recursion cycle detected: poison so enclosing `!`
                 // cannot turn a cyclic lock into permission (EXT-P2-16).
-                return Ok(None);
+                return Ok((None, 0));
+            }
+            if let Some(&(cached, body_hops)) = memo.get(&key) {
+                if indirect - 1 < body_hops {
+                    return Ok((None, 0));
+                }
+                return Ok((Some(cached), body_hops.saturating_add(1)));
             }
             match read.object(*obj)? {
-                None => Some(false),
+                None => (Some(false), 1),
                 Some(o) => match o.locks.get(lt) {
-                    None => Some(true),
+                    None => (Some(true), 1),
                     // A fresh tree: the structural budget starts over, while
-                    // the indirect budget, total step budget, and active cycle
-                    // set carry through.
+                    // the indirect budget, total step budget, active cycle
+                    // set, and DAG memo carry through.
                     Some(inner) => {
                         active.push(key);
                         let res = eval_with(
@@ -348,35 +393,52 @@ fn eval_with<'w, R: ObjectRead<'w>>(
                             MAX_LOCK_STRUCTURAL_DEPTH,
                             steps,
                             active,
+                            memo,
                         );
                         active.pop();
-                        res?
+                        let (val, body_hops) = res?;
+                        if let Some(b) = val {
+                            memo.insert(key, (b, body_hops));
+                        }
+                        (val, body_hops.saturating_add(1))
                     }
                 },
             }
         }
         LockExpr::Not(e) => {
             if structural == 0 {
-                return Ok(None);
+                return Ok((None, 0));
             }
-            eval_with(read, e, who, indirect, structural - 1, steps, active)?.map(|v| !v)
+            let (val, hops) =
+                eval_with(read, e, who, indirect, structural - 1, steps, active, memo)?;
+            (val.map(|v| !v), hops)
         }
         LockExpr::And(a, b) => {
             if structural == 0 {
-                return Ok(None);
+                return Ok((None, 0));
             }
-            match eval_with(read, a, who, indirect, structural - 1, steps, active)? {
-                Some(true) => eval_with(read, b, who, indirect, structural - 1, steps, active)?,
-                short => short,
+            let (va, ha) = eval_with(read, a, who, indirect, structural - 1, steps, active, memo)?;
+            match va {
+                Some(true) => {
+                    let (vb, hb) =
+                        eval_with(read, b, who, indirect, structural - 1, steps, active, memo)?;
+                    (vb, ha.max(hb))
+                }
+                short => (short, ha),
             }
         }
         LockExpr::Or(a, b) => {
             if structural == 0 {
-                return Ok(None);
+                return Ok((None, 0));
             }
-            match eval_with(read, a, who, indirect, structural - 1, steps, active)? {
-                Some(false) => eval_with(read, b, who, indirect, structural - 1, steps, active)?,
-                short => short,
+            let (va, ha) = eval_with(read, a, who, indirect, structural - 1, steps, active, memo)?;
+            match va {
+                Some(false) => {
+                    let (vb, hb) =
+                        eval_with(read, b, who, indirect, structural - 1, steps, active, memo)?;
+                    (vb, ha.max(hb))
+                }
+                short => (short, ha),
             }
         }
     })
@@ -411,6 +473,12 @@ fn eval_attr_with<'w, R: ObjectRead<'w>>(
     name: &UncasedName,
     glob: &str,
 ) -> Result<Option<bool>, R::Error> {
+    // Fail closed before even checking existence on restricted internal/module
+    // attributes (closing presence oracles such as `!ignore:*`) and on
+    // unparsed oversized globs.
+    if is_restricted_lock_attr(name.as_str()) || glob.len() > MAX_LOCK_GLOB_LEN {
+        return Ok(None);
+    }
     Ok(match crate::world::attr_with(read, who, name.as_str())? {
         // Checked before the value is so much as looked at.
         Some(attr) if unreadable(attr) => None,
@@ -484,6 +552,203 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     }
 }
 
+/// Case-insensitive glob match with an explicit work budget. Returns `None`
+/// if `budget` is exhausted before matching finishes.
+pub(crate) fn glob_match_bounded(pattern: &str, text: &str, budget: &mut usize) -> Option<bool> {
+    glob_with(pattern, text, |units| match budget.checked_sub(units) {
+        Some(left) => {
+            *budget = left;
+            Ok(())
+        }
+        None => {
+            *budget = 0;
+            Err(())
+        }
+    })
+    .ok()
+}
+
+fn chars_match_fixed<E>(
+    seg: &[char],
+    slice: &[char],
+    charge: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<bool, E> {
+    if seg.len() != slice.len() {
+        return Ok(false);
+    }
+    for (&pc, &tc) in seg.iter().zip(slice.iter()) {
+        charge(1)?;
+        if pc != '?' && pc != tc {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn kmp_lps<E>(
+    needle: &[char],
+    charge: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<Vec<usize>, E> {
+    let mut lps = vec![0usize; needle.len()];
+    let mut len = 0usize;
+    let mut i = 1usize;
+    while i < needle.len() {
+        charge(1)?;
+        if needle.get(i) == needle.get(len) {
+            len += 1;
+            if let Some(slot) = lps.get_mut(i) {
+                *slot = len;
+            }
+            i += 1;
+        } else if len > 0 {
+            len = lps.get(len - 1).copied().unwrap_or(0);
+        } else {
+            i += 1;
+        }
+    }
+    Ok(lps)
+}
+
+/// Linear-time KMP search for a `?`-free literal segment `needle` in `haystack`.
+fn find_literal_kmp<E>(
+    needle: &[char],
+    haystack: &[char],
+    charge: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<Option<usize>, E> {
+    if needle.is_empty() {
+        return Ok(Some(0));
+    }
+    if needle.len() > haystack.len() {
+        return Ok(None);
+    }
+    let lps = kmp_lps(needle, charge)?;
+    let mut hi = 0usize;
+    let mut ni = 0usize;
+    while hi < haystack.len() {
+        charge(1)?;
+        if haystack.get(hi) == needle.get(ni) {
+            hi += 1;
+            ni += 1;
+            if ni == needle.len() {
+                return Ok(Some(hi - ni));
+            }
+        } else if ni > 0 {
+            ni = lps.get(ni - 1).copied().unwrap_or(0);
+        } else {
+            hi += 1;
+        }
+    }
+    Ok(None)
+}
+
+/// Earliest occurrence of a `?`-containing segment `seg` inside `haystack`.
+/// Streams KMP over the longest literal run inside `seg` (never backtracking
+/// `hi`) and caches the last mismatch position so adversarial patterns such as
+/// `a?a?...?b` against `aaaa...a` reject each candidate in O(1), with every
+/// comparison metered via `charge`.
+fn find_wildcard_segment<E>(
+    seg: &[char],
+    haystack: &[char],
+    charge: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<Option<usize>, E> {
+    if seg.len() > haystack.len() {
+        return Ok(None);
+    }
+    let (mut best_start, mut best_len) = (0usize, 0usize);
+    let mut run_start = 0usize;
+    for (idx, &c) in seg.iter().enumerate() {
+        if c == '?' {
+            if idx - run_start > best_len {
+                best_start = run_start;
+                best_len = idx - run_start;
+            }
+            run_start = idx + 1;
+        }
+    }
+    if seg.len() - run_start > best_len {
+        best_start = run_start;
+        best_len = seg.len() - run_start;
+    }
+    if best_len == 0 {
+        charge(seg.len())?;
+        return Ok(Some(0));
+    }
+
+    let mut probe = seg.iter().rposition(|&c| c != '?').unwrap_or(best_start);
+
+    if best_len >= 2
+        && let Some(anchor) = seg.get(best_start..best_start + best_len)
+    {
+        let tail_after_anchor = seg.len() - (best_start + best_len);
+        let search_end = haystack.len() - tail_after_anchor;
+        let lps = kmp_lps(anchor, charge)?;
+        let mut hi = best_start;
+        let mut ni = 0usize;
+        while hi < search_end {
+            charge(1)?;
+            if haystack.get(hi) == anchor.get(ni) {
+                hi += 1;
+                ni += 1;
+                if ni == anchor.len() {
+                    let cand = (hi - ni) - best_start;
+                    if let Some(window) = haystack.get(cand..cand + seg.len()) {
+                        charge(1)?;
+                        let probe_ok = seg.get(probe).copied() == Some('?')
+                            || seg.get(probe) == window.get(probe);
+                        if probe_ok {
+                            let mut matched = true;
+                            for (j, (&pc, &tc)) in seg.iter().zip(window.iter()).enumerate() {
+                                if j >= best_start && j < best_start + best_len {
+                                    continue;
+                                }
+                                charge(1)?;
+                                if pc != '?' && pc != tc {
+                                    probe = j;
+                                    matched = false;
+                                    break;
+                                }
+                            }
+                            if matched {
+                                return Ok(Some(cand));
+                            }
+                        }
+                    }
+                    ni = lps.get(ni - 1).copied().unwrap_or(0);
+                }
+            } else if ni > 0 {
+                ni = lps.get(ni - 1).copied().unwrap_or(0);
+            } else {
+                hi += 1;
+            }
+        }
+        return Ok(None);
+    }
+
+    let max_cand = haystack.len() - seg.len();
+    for cand in 0..=max_cand {
+        let Some(window) = haystack.get(cand..cand + seg.len()) else {
+            break;
+        };
+        charge(1)?;
+        if seg.get(probe).copied() != Some('?') && seg.get(probe) != window.get(probe) {
+            continue;
+        }
+        let mut matched = true;
+        for (j, (&pc, &tc)) in seg.iter().zip(window.iter()).enumerate() {
+            charge(1)?;
+            if pc != '?' && pc != tc {
+                probe = j;
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            return Ok(Some(cand));
+        }
+    }
+    Ok(None)
+}
+
 fn glob_with<E>(
     pattern: &str,
     text: &str,
@@ -499,32 +764,47 @@ fn glob_with<E>(
     )?;
     let p: Vec<char> = pattern.to_lowercase().chars().collect();
     let t: Vec<char> = text.to_lowercase().chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut mark = 0usize;
-    while ti < t.len() {
-        charge(1)?;
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            // Backtrack: let the last '*' swallow one more character.
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return Ok(false);
+
+    let Some(first_star) = p.iter().position(|&c| c == '*') else {
+        return chars_match_fixed(&p, &t, &mut charge);
+    };
+    let last_star = p.iter().rposition(|&c| c == '*').unwrap_or(first_star);
+    let prefix = p.get(..first_star).unwrap_or(&[]);
+    let suffix = p.get(last_star + 1..).unwrap_or(&[]);
+    if prefix.len().saturating_add(suffix.len()) > t.len() {
+        return Ok(false);
+    }
+    let Some(t_prefix) = t.get(..prefix.len()) else {
+        return Ok(false);
+    };
+    if !chars_match_fixed(prefix, t_prefix, &mut charge)? {
+        return Ok(false);
+    }
+    let suffix_start = t.len() - suffix.len();
+    let Some(t_suffix) = t.get(suffix_start..) else {
+        return Ok(false);
+    };
+    if !chars_match_fixed(suffix, t_suffix, &mut charge)? {
+        return Ok(false);
+    }
+
+    let mut rem = t.get(prefix.len()..suffix_start).unwrap_or(&[]);
+    if last_star > first_star
+        && let Some(mid) = p.get(first_star + 1..last_star)
+    {
+        for seg in mid.split(|&c| c == '*').filter(|s| !s.is_empty()) {
+            let found = if seg.contains(&'?') {
+                find_wildcard_segment(seg, rem, &mut charge)?
+            } else {
+                find_literal_kmp(seg, rem, &mut charge)?
+            };
+            let Some(pos) = found else {
+                return Ok(false);
+            };
+            rem = rem.get(pos + seg.len()..).unwrap_or(&[]);
         }
     }
-    while pi < p.len() && p[pi] == '*' {
-        charge(1)?;
-        pi += 1;
-    }
-    Ok(pi == p.len())
+    Ok(true)
 }
 
 /// Errors from [`parse_lock`].
@@ -575,6 +855,12 @@ pub enum LockParseError {
     TooManyIndirects {
         /// The limit that was exceeded.
         max: u32,
+    },
+    /// An attribute lock glob pattern exceeds [`MAX_LOCK_GLOB_LEN`].
+    #[error("attribute lock glob pattern is too long (limit {max} bytes)")]
+    GlobTooLong {
+        /// The limit that was exceeded.
+        max: usize,
     },
 }
 
@@ -909,9 +1195,15 @@ impl<R: FnMut(&str) -> Option<ObjId>> Parser<'_, R> {
             if name.is_empty() {
                 return Err(LockParseError::EmptyTerm);
             }
+            let glob = glob.trim();
+            if glob.len() > MAX_LOCK_GLOB_LEN {
+                return Err(LockParseError::GlobTooLong {
+                    max: MAX_LOCK_GLOB_LEN,
+                });
+            }
             return Ok(LockExpr::AttrMatch {
                 name: UncasedName::from(name),
-                glob: glob.trim().to_string(),
+                glob: glob.to_string(),
             });
         }
         Ok(LockExpr::Is(self.objref(raw)?))
@@ -1164,6 +1456,7 @@ mod tests {
     use super::*;
     use crate::attr::Attr;
     use crate::obj::{GOD, LIMBO, ObjKind};
+    use crate::object_read::PlainRead;
 
     /// Resolver used by parser-only tests: me → #2, Nick → #2, Bob → #7.
     fn fake_resolver(name: &str) -> Option<ObjId> {
@@ -1831,9 +2124,10 @@ mod tests {
     }
 
     #[test]
-    fn exponential_indirect_dag_hits_step_budget_and_fails_closed_even_under_not() {
-        // Non-cyclic 10-level binary-branching DAG (each level references the
-        // next 4 times -> 4^10 > 1M evaluations without MAX_LOCK_STEPS).
+    fn exponential_indirect_dag_memoizes_and_step_budget_fails_closed_even_under_not() {
+        // Non-cyclic 10-level 4-way diamond DAG (4^10 > 1M paths without
+        // memoization). With `(ObjId, LockType)` memoization each node evaluates
+        // once, so the DAG finishes in microseconds and returns its true value.
         let mut w = World::new_minimal();
         let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
         let nodes: Vec<ObjId> = (0..10)
@@ -1863,13 +2157,22 @@ mod tests {
 
         let start = std::time::Instant::now();
         assert!(!eval_lock(&w, &root, nick, MAX_LOCK_DEPTH));
-        // Exhausted step budget must fail closed even when wrapped in `!`.
-        assert!(!eval_lock(&w, &negated_root, nick, MAX_LOCK_DEPTH));
+        assert!(eval_lock(&w, &negated_root, nick, MAX_LOCK_DEPTH));
         assert!(
             start.elapsed() < std::time::Duration::from_millis(200),
-            "exponential DAG must hit MAX_LOCK_STEPS fast: {:?}",
+            "diamond DAG must memoize and finish fast: {:?}",
             start.elapsed()
         );
+
+        // Exhausting MAX_LOCK_STEPS on a genuinely oversized AST (bypassing
+        // parse_lock) must still poison evaluation and fail closed even under `!`.
+        let mut wide = LockExpr::Const(false);
+        for _ in 0..MAX_LOCK_STEPS {
+            wide = LockExpr::Or(Box::new(wide), Box::new(LockExpr::Const(false)));
+        }
+        let negated_wide = LockExpr::Not(Box::new(wide.clone()));
+        assert!(!eval_lock(&w, &wide, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(&w, &negated_wide, nick, MAX_LOCK_DEPTH));
     }
 
     #[test]
@@ -2010,7 +2313,8 @@ mod tests {
             let mut read = PlainRead::new(&w);
             let mut steps = MAX_LOCK_STEPS;
             let mut active = Vec::new();
-            let res = eval_with(
+            let mut memo = HashMap::new();
+            let (res, _) = eval_with(
                 &mut read,
                 expr,
                 nick,
@@ -2018,6 +2322,7 @@ mod tests {
                 1,
                 &mut steps,
                 &mut active,
+                &mut memo,
             )
             .unwrap();
             assert_eq!(
@@ -2037,6 +2342,273 @@ mod tests {
                 assert!(
                     !eval_lock(&w, &e, nick, MAX_LOCK_DEPTH),
                     "deeply nested Not chain (depth {depth}) must fail closed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn p2_core_5_linear_glob_and_dag_memoization_prevent_cpu_dos() {
+        // 1. parse_lock caps glob pattern length at MAX_LOCK_GLOB_LEN.
+        let ok_glob = "a".repeat(MAX_LOCK_GLOB_LEN);
+        assert!(parse_lock(&format!("bio:{ok_glob}"), fake_resolver).is_ok());
+        let too_long = "a".repeat(MAX_LOCK_GLOB_LEN + 1);
+        assert_eq!(
+            parse_lock(&format!("bio:{too_long}"), fake_resolver),
+            Err(LockParseError::GlobTooLong {
+                max: MAX_LOCK_GLOB_LEN,
+            })
+        );
+
+        // 2. Classic quadratic backtracking patterns complete fast in linear time.
+        let big_text = "a".repeat(65_536);
+        let hostile_literal = format!("*{}b*", "a".repeat(120));
+        let hostile_qmark = format!("*{}b*", "a?".repeat(60));
+        let start = std::time::Instant::now();
+        assert!(!glob_match(&hostile_literal, &big_text));
+        assert!(!glob_match(&hostile_qmark, &big_text));
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "adversarial glob patterns must not trigger quadratic stalls: {:?}",
+            start.elapsed()
+        );
+
+        // 3. Diamond indirect DAG across a single object's 10 LockTypes with a
+        // 64 KiB JSON attribute leaf evaluates the leaf glob only ONCE and
+        // stays fast under `eval_lock`'s metered `BoundedRead`.
+        let mut w = World::new_minimal();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(LIMBO)).unwrap();
+        let big_val = serde_json::json!({ "blob": big_text });
+        w.set_attr(nick, "bio", Attr::json(big_val, nick)).unwrap();
+
+        let lock_types = [
+            LockType::Basic,
+            LockType::Enter,
+            LockType::Use,
+            LockType::Page,
+            LockType::Teleport,
+            LockType::Speech,
+            LockType::Zone,
+            LockType::Drop,
+            LockType::Give,
+            LockType::Mail,
+        ];
+        w.get_mut(nick).unwrap().locks.insert(
+            lock_types[9],
+            LockExpr::AttrMatch {
+                name: "bio".into(),
+                glob: hostile_literal.clone(),
+            },
+        );
+        for pair in lock_types.windows(2) {
+            let (curr, next) = (pair[0], pair[1]);
+            let dag_step = LockExpr::Or(
+                Box::new(LockExpr::Indirect(nick, next)),
+                Box::new(LockExpr::Indirect(nick, next)),
+            );
+            w.get_mut(nick).unwrap().locks.insert(curr, dag_step);
+        }
+
+        struct CountingRead<'w> {
+            world: &'w World,
+            work: usize,
+            nick_reads: usize,
+        }
+        impl<'w> ObjectRead<'w> for CountingRead<'w> {
+            type Error = std::convert::Infallible;
+            fn object(&mut self, id: ObjId) -> Result<Option<&'w crate::Obj>, Self::Error> {
+                if self.world.get(id).is_some_and(|o| o.name == "Nick") {
+                    self.nick_reads += 1;
+                }
+                Ok(self.world.get(id))
+            }
+            fn charge_work(&mut self, units: usize) -> Result<(), Self::Error> {
+                self.work = self.work.saturating_add(units);
+                Ok(())
+            }
+            fn object_slots(&mut self) -> Result<usize, Self::Error> {
+                Ok(self.world.object_slot_count())
+            }
+        }
+
+        let root = LockExpr::Indirect(nick, lock_types[0]);
+        let mut counting = CountingRead {
+            world: &w,
+            work: 0,
+            nick_reads: 0,
+        };
+        let start = std::time::Instant::now();
+        assert!(!eval_lock_with(&mut counting, &root, nick, MAX_LOCK_DEPTH).unwrap());
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "10-level single-object LockType diamond DAG took too long: {:?}",
+            start.elapsed()
+        );
+        // Without memoization, 2^9 = 512 leaf visits would read `nick` hundreds
+        // of times and spend hundreds of millions of work units.
+        assert!(
+            counting.nick_reads <= 20,
+            "memoization must visit each (obj, lock_type) once, saw {} reads",
+            counting.nick_reads
+        );
+
+        // 4. Exhausting BoundedRead's work budget fails closed even under `!`.
+        let mut huge_attr = String::with_capacity(200_000);
+        for _ in 0..200_000 {
+            huge_attr.push('a');
+        }
+        w.set_attr(nick, "huge", Attr::text(huge_attr, nick))
+            .unwrap();
+        let over_budget = LockExpr::AttrMatch {
+            name: "huge".into(),
+            glob: "*b*".into(),
+        };
+        assert!(!eval_lock(&w, &over_budget, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(
+            &w,
+            &LockExpr::Not(Box::new(over_budget)),
+            nick,
+            MAX_LOCK_DEPTH
+        ));
+
+        // 5. Programmatic oversized glob fails closed even under `!`.
+        let oversized = LockExpr::AttrMatch {
+            name: "bio".into(),
+            glob: format!("*{}*", "a".repeat(MAX_LOCK_GLOB_LEN)),
+        };
+        assert!(!eval_lock(&w, &oversized, nick, MAX_LOCK_DEPTH));
+        assert!(!eval_lock(
+            &w,
+            &LockExpr::Not(Box::new(oversized)),
+            nick,
+            MAX_LOCK_DEPTH
+        ));
+    }
+
+    #[test]
+    fn p2_core_5_glob_matches_dp_reference_on_tricky_cases() {
+        fn dp_glob(pattern: &str, text: &str) -> bool {
+            let p: Vec<char> = pattern.to_lowercase().chars().collect();
+            let t: Vec<char> = text.to_lowercase().chars().collect();
+            let mut dp = vec![vec![false; t.len() + 1]; p.len() + 1];
+            dp[0][0] = true;
+            for i in 1..=p.len() {
+                if p[i - 1] == '*' {
+                    dp[i][0] = dp[i - 1][0];
+                }
+            }
+            for i in 1..=p.len() {
+                for j in 1..=t.len() {
+                    dp[i][j] = if p[i - 1] == '*' {
+                        dp[i - 1][j] || dp[i][j - 1]
+                    } else if p[i - 1] == '?' || p[i - 1] == t[j - 1] {
+                        dp[i - 1][j - 1]
+                    } else {
+                        false
+                    };
+                }
+            }
+            dp[p.len()][t.len()]
+        }
+
+        let patterns = [
+            "",
+            "*",
+            "**",
+            "?",
+            "??",
+            "*?",
+            "?*",
+            "*?*",
+            "a*a",
+            "a**a",
+            "*a*b*c*",
+            "*a?a*b?b*",
+            "*aa?a*b*",
+            "*a?b*b?a*",
+            "ab*cd*ef",
+            "?*a*?b*?",
+            "aa?aa",
+            "*aa?b*",
+            "*a?a?a*",
+        ];
+        let texts = [
+            "",
+            "a",
+            "aa",
+            "aaa",
+            "ab",
+            "aba",
+            "aab",
+            "aaba",
+            "aaab",
+            "ababab",
+            "aabbcc",
+            "aaabbbccc",
+            "xaaaxbbb",
+            "aaxaab",
+            "abxxcdxxef",
+            "axbxbxa",
+            "AABAA",
+        ];
+        for p in patterns {
+            for t in texts {
+                assert_eq!(
+                    glob_match(p, t),
+                    dp_glob(p, t),
+                    "mismatch for pattern={p:?} text={t:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn p2_core_6_restricted_internal_and_module_attrs_fail_closed_even_under_not() {
+        let mut w = World::new_minimal();
+        let alice = w
+            .create(ObjKind::Player, "Alice", GOD, Some(LIMBO))
+            .unwrap();
+        let bob = w.create(ObjKind::Player, "Bob", GOD, Some(LIMBO)).unwrap();
+
+        // Populate unflagged attributes on Alice (simulating legacy data) while
+        // leaving them absent on Bob so presence-oracle resistance is tested too.
+        for (name, val) in [
+            ("ignore", Attr::json(serde_json::json!([bob.0]), alice)),
+            (
+                "macros",
+                Attr::json(serde_json::json!({"hi": "say secret"}), alice),
+            ),
+            (
+                "sheet:tacsim",
+                Attr::json(serde_json::json!({"staff_secret": "mole"}), alice),
+            ),
+            (
+                "agent:knowledge",
+                Attr::json(serde_json::json!({"secret": "vault"}), alice),
+            ),
+            ("tacsim:raider", Attr::text("hidden", GOD)),
+            ("script:on_look", Attr::text("return 42;", GOD)),
+            ("atlas:node", Attr::text("secret-sector", GOD)),
+        ] {
+            w.set_attr(alice, name, val).unwrap();
+            let pos = LockExpr::AttrMatch {
+                name: name.into(),
+                glob: "*".into(),
+            };
+            let neg = LockExpr::Not(Box::new(pos.clone()));
+            let dis = LockExpr::Or(Box::new(pos.clone()), Box::new(LockExpr::Const(true)));
+            for who in [alice, bob] {
+                assert!(
+                    !eval_lock(&w, &pos, who, MAX_LOCK_DEPTH),
+                    "{name} must not match for {who}"
+                );
+                assert!(
+                    !eval_lock(&w, &neg, who, MAX_LOCK_DEPTH),
+                    "!{name} must fail closed for {who} (no presence oracle)"
+                );
+                assert!(
+                    !eval_lock(&w, &dis, who, MAX_LOCK_DEPTH),
+                    "{name}|#TRUE must poison for {who}"
                 );
             }
         }

@@ -114,7 +114,11 @@ struct Fx {
 /// oracle installed post-boot. `pilot` holds `pilot` on Atlas; `gunner` holds
 /// `gunner` on Atlas. Both crew stand in the presentation room `field`.
 fn scene() -> (TestWorld, Fx, AccountId, AccountId) {
-    let mut tw = TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+    scene_with_sim(SimulationModule::new())
+}
+
+fn scene_with_sim(sim: SimulationModule) -> (TestWorld, Fx, AccountId, AccountId) {
+    let mut tw = TestWorld::with_modules(vec![Box::new(sim)]);
     let field = tw
         .world_mut()
         .create(ObjKind::Room, "Field", GOD, None)
@@ -732,28 +736,58 @@ fn apply_due(tw: &mut TestWorld, at: i64, token: u8) -> Vec<ModuleOp> {
     ops
 }
 
-/// Discover the due handoff at `at` and assert it is now STALE (a focus change
-/// bumped the requester's control-generation between request and apply).
-fn apply_is_stale(tw: &mut TestWorld, at: i64) {
+/// Discover the due stale handoff at `at` and assert the scheduler plans and
+/// commits a stale-cancel transition (P2-MOD-25): `pending` is cleared, holder
+/// and epoch are unchanged, and no due schedule candidate remains to spin on.
+fn apply_cancels_stale(tw: &mut TestWorld, at: i64, token: u8) -> ControlLeaseState {
     tw.world_mut().set_now(at);
     let page = tw
         .engine_mut()
         .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
         .unwrap();
+    assert_eq!(
+        page.candidates().len(),
+        1,
+        "stale pending handoff should surface once for cleanup"
+    );
     let candidate = page.candidates()[0].clone();
     let ingress = scheduled_action_ingress(candidate.action(), candidate.advance(), 1).unwrap();
-    let error = tw
+    let plan = tw
         .engine_mut()
         .plan_scheduled_action(&candidate, &ingress)
-        .expect_err("a focus change must stale the in-flight apply");
-    assert!(
-        matches!(
-            &error,
-            mush_core::ScheduleActionPlanError::Adapter { source, .. }
-                if source.code() == mush_core::ActionErrorCode::Stale
-        ),
-        "expected a stale apply, got {error:?}"
+        .expect("stale handoff must plan a scheduler-owned stale-cancel");
+    let (_, scheduled_inv, _) = plan.into_parts();
+    assert_eq!(
+        scheduled_inv.parameters().get("cancel_stale"),
+        Some(&Value::Bool(true)),
+        "stale handoff must request cancel_stale"
     );
+    let (prepared, output) = tw
+        .engine_mut()
+        .prepare_registered_scheduled_authoritative_action(
+            &candidate,
+            &scheduled_inv,
+            CommitToken::from_bytes([token; 16]),
+        )
+        .expect("stale-cancel prepares atomically");
+    assert_eq!(
+        output.outcome().data().get("operation"),
+        Some(&json!("cancelled")),
+        "stale-cancel emits cancelled outcome"
+    );
+    let (ops, installation) = prepared.into_parts();
+    tw.engine_mut()
+        .install_prepared_action(installation)
+        .expect("stale-cancel installs");
+    assert!(
+        tw.engine_mut()
+            .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+            .unwrap()
+            .candidates()
+            .is_empty(),
+        "stale-cancel must drain the schedule so the driver never spins"
+    );
+    lease_post_image(&ops)
 }
 
 fn lease_post_image(ops: &[ModuleOp]) -> ControlLeaseState {
@@ -907,8 +941,10 @@ fn e7c5_h_a_non_holder_cannot_relieve() {
     );
 }
 
-// The epoch binding (candidate (iii)): a focus change between request and apply
-// bumps the requester's control generation, so the in-flight apply is STALE.
+// The epoch binding (candidate (iii)) & P2-MOD-25: a focus change between
+// request and apply bumps the requester's control generation, so the scheduled
+// action cancels the stale pending handoff without transferring control and
+// unblocks the channel for subsequent handoffs.
 #[test]
 fn e7c5_h_focus_change_between_request_and_apply_invalidates_it() {
     let (mut tw, fx, _, _) = scene();
@@ -926,7 +962,40 @@ fn e7c5_h_focus_change_between_request_and_apply_invalidates_it() {
         grant_epoch(&tw, fx.pilot, fx.atlas, "pilot") != Some(epoch),
         "the focus change bumped the requester's grant epoch"
     );
-    apply_is_stale(&mut tw, 500);
+    let cancelled = apply_cancels_stale(&mut tw, 500, 2);
+    assert_eq!(
+        cancelled.holder(),
+        None,
+        "stale handoff must not transfer lease"
+    );
+    assert_eq!(cancelled.epoch(), 0, "stale cancel must not advance epoch");
+    assert!(
+        cancelled.pending().is_none(),
+        "pending handoff must be cleared"
+    );
+
+    // A fresh handoff on the same (unit, channel) must now succeed cleanly.
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let new_epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let fresh = request_invocation(
+        &request,
+        2,
+        fx.pilot,
+        fx.atlas,
+        "movement",
+        fx.pilot,
+        cancelled.revision(),
+        "pilot",
+        new_epoch,
+        600,
+    );
+    install_request(&mut tw, &request, &fresh, 3);
+    let applied = lease_post_image(&apply_due(&mut tw, 600, 4));
+    assert_eq!(
+        applied.holder(),
+        Some(&PrincipalId::Object { id: fx.pilot })
+    );
+    assert_eq!(applied.epoch(), 1);
 }
 
 // Apply advances the lease epoch, so the OLD holder's captured control-lease
@@ -1634,5 +1703,368 @@ fn f4_a_destroyed_character_is_forgotten_by_the_account_oracle() {
         oracle(&tw, alt),
         Some(nick),
         "and the account's other character is untouched"
+    );
+}
+
+// ======================================================================
+// Pass 2 security regressions (P2-MOD-22, P2-MOD-25)
+// ======================================================================
+
+/// **P2-MOD-22**: A restrained/captive operator cannot bypass `operator_restraint`
+/// via `@station/.../show` switch combinations, direct `LegalActions` offer
+/// projection, scheduled handoff apply, or `@journey/depart`.
+#[test]
+fn p2_mod_22_restrained_operator_cannot_bypass_station_offers_apply_or_journey() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct RestraintHook {
+        who: Arc<Mutex<Option<ObjId>>>,
+        active: Arc<AtomicBool>,
+    }
+    impl mush_sim::CarrierHooks for RestraintHook {
+        fn restrains_operator(&self, _w: &mush_core::World, actor: ObjId) -> Option<String> {
+            (self.active.load(Ordering::SeqCst)
+                && self.who.lock().ok().and_then(|g| *g) == Some(actor))
+            .then(|| "You are held captive and cannot operate controls.".to_owned())
+        }
+    }
+
+    let active = Arc::new(AtomicBool::new(false));
+    let who = Arc::new(Mutex::new(None));
+    let (mut tw, fx, _, _) = scene_with_sim(SimulationModule::new().with_carrier_hooks(Arc::new(
+        RestraintHook {
+            who: Arc::clone(&who),
+            active: Arc::clone(&active),
+        },
+    )));
+    arm_offer_keys(&mut tw);
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+
+    *who.lock().unwrap() = Some(fx.pilot);
+    active.store(true, Ordering::SeqCst);
+
+    // 1. Conflicting mutating + `/show` switch combos on `@station` are all refused.
+    for cmd in [
+        format!("@station/handoff/show #{}/pilot", fx.atlas.0),
+        format!("@station/release/show #{}/pilot", fx.atlas.0),
+        format!("@station/cancel/show #{}/pilot", fx.atlas.0),
+        format!(
+            "@station/fallback/show #{}/pilot=#{}",
+            fx.atlas.0, fx.gunner.0
+        ),
+        format!("@station/handoff #{}/pilot", fx.atlas.0),
+        format!("@station/release #{}/pilot", fx.atlas.0),
+        format!("@station/cancel #{}/pilot", fx.atlas.0),
+    ] {
+        let out = err(&mut tw, fx.pilot, &cmd);
+        assert!(
+            out.contains("held captive") || out.contains("only one @station switch"),
+            "{cmd} must be refused while restrained: {out}"
+        );
+    }
+
+    // Pure `/show` read still succeeds while restrained.
+    let shown = ok(&mut tw, fx.pilot, "@station/show");
+    assert!(shown.contains("driving `pilot`"), "{shown}");
+
+    // 2. Direct `LegalActions` projection offers NO station actions while restrained.
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let query = tw
+        .engine()
+        .legal_action_query(
+            PrincipalId::Object { id: fx.pilot },
+            fx.pilot,
+            PerceivedRef::KnownObject {
+                id: fx.atlas,
+                revision: epoch,
+            },
+        )
+        .expect("legal query");
+    let offers = tw.engine().project_legal_actions(&query).unwrap();
+    for action_id in [
+        REQUEST_ACTION,
+        "control_handoff_release",
+        "control_handoff_cancel",
+    ] {
+        let action = action_ref(&tw, action_id);
+        assert!(
+            offers.projected_for_action(&action).is_none(),
+            "{action_id} must not be offered to a restrained operator"
+        );
+    }
+
+    // 3. `@journey/depart` and `@journey/depart/show` are refused while restrained.
+    let dest = tw
+        .world_mut()
+        .create(ObjKind::Room, "FarPort", GOD, None)
+        .unwrap();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@behavior/add #{}=sim.domain", dest.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@domain/create #{}=sim.passive", dest.0),
+    );
+    let dep = err(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/depart #{}=r1", fx.atlas.0),
+    );
+    assert!(dep.contains("held captive"), "{dep}");
+    let dep_combo = err(
+        &mut tw,
+        fx.pilot,
+        &format!("@journey/depart/show #{}=r1", fx.atlas.0),
+    );
+    assert!(
+        dep_combo.contains("only one @journey switch"),
+        "{dep_combo}"
+    );
+
+    // 4. A handoff staged BEFORE restraint becomes stale-cancelled at apply when
+    // the requester is restrained before the boundary arrives.
+    active.store(false, Ordering::SeqCst);
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let inv = request_invocation(
+        &request, 9, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 500,
+    );
+    install_request(&mut tw, &request, &inv, 9);
+
+    active.store(true, Ordering::SeqCst);
+    let cancelled = apply_cancels_stale(&mut tw, 500, 10);
+    assert_eq!(
+        cancelled.holder(),
+        None,
+        "restraint before apply must cancel rather than grant control"
+    );
+    assert!(cancelled.pending().is_none());
+}
+
+/// **P2-MOD-25**: Stale multi-channel NPC handoffs cancel cleanly via the
+/// scheduler without spinning, and staff / unfocused requesters have a clean
+/// cancel path for future-boundary pending handoffs.
+#[test]
+fn p2_mod_25_stale_npc_handoff_auto_cancels_and_staff_or_unfocused_cancel_unblocks() {
+    let (mut tw, fx, _, _) = scene();
+    arm_offer_keys(&mut tw);
+
+    // Part A: Unfocused requester & staff cancel for a future-boundary pending handoff.
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let request = action_ref(&tw, REQUEST_ACTION);
+    let cancel_action = action_ref(&tw, "control_handoff_cancel");
+    let inv = request_invocation(
+        &request, 11, fx.pilot, fx.atlas, "movement", fx.pilot, 0, "pilot", epoch, 9000,
+    );
+    install_request(&mut tw, &request, &inv, 11);
+
+    // Pilot drops focus, losing focused_station — yet cancel must still be offered
+    // to both the unfocused billet-holding requester AND staff (GOD).
+    ok(&mut tw, fx.pilot, "+focus/release");
+    let pilot_epoch_after = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let pilot_query = tw
+        .engine()
+        .legal_action_query(
+            PrincipalId::Object { id: fx.pilot },
+            fx.pilot,
+            PerceivedRef::KnownObject {
+                id: fx.atlas,
+                revision: pilot_epoch_after,
+            },
+        )
+        .expect("unfocused billet holder query");
+    let pilot_offers = tw.engine().project_legal_actions(&pilot_query).unwrap();
+    assert!(
+        pilot_offers.projected_for_action(&cancel_action).is_some(),
+        "unfocused billet-holder should still be able to cancel their own pending handoff"
+    );
+
+    // Staff (GOD) without any billet can run `@station/cancel` and drive it through
+    // the full offer -> resolve -> prepare -> install pipeline to unblock the channel!
+    let staff_submit = {
+        while tw.engine_mut().take_authoritative_submit().is_some() {}
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@station/cancel #{}/pilot", fx.atlas.0),
+        );
+        *tw.engine_mut()
+            .take_authoritative_submit()
+            .expect("staff @station/cancel stages an authoritative submit")
+    };
+    let ops = drive_fire_submit(&mut tw, &staff_submit, 12);
+    let cancelled = lease_post_image(&ops);
+    assert!(cancelled.pending().is_none(), "staff cancel clears pending");
+
+    // Unfocused billet-holder can also run `@station/cancel` directly and drive it!
+    ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
+    let epoch2 = grant_epoch_of(&tw, fx.pilot, fx.atlas, "pilot");
+    let inv2 = request_invocation(
+        &request,
+        13,
+        fx.pilot,
+        fx.atlas,
+        "movement",
+        fx.pilot,
+        cancelled.revision(),
+        "pilot",
+        epoch2,
+        9500,
+    );
+    install_request(&mut tw, &request, &inv2, 13);
+    ok(&mut tw, fx.pilot, "+focus/release");
+    let pilot_submit = {
+        while tw.engine_mut().take_authoritative_submit().is_some() {}
+        ok(
+            &mut tw,
+            fx.pilot,
+            &format!("@station/cancel #{}/pilot", fx.atlas.0),
+        );
+        *tw.engine_mut()
+            .take_authoritative_submit()
+            .expect("unfocused billet-holder @station/cancel stages an authoritative submit")
+    };
+    let ops2 = drive_fire_submit(&mut tw, &pilot_submit, 15);
+    assert!(
+        lease_post_image(&ops2).pending().is_none(),
+        "unfocused requester cancel clears pending"
+    );
+
+    // Part B: Multi-channel physically seated NPC leaves console before apply ->
+    // all stale pending channels auto-cancel cleanly with zero spin!
+    let mut tw_b = mush_testkit::authoritative::AcknowledgedWorld::with_modules(vec![Box::new(
+        SimulationModule::new(),
+    )]);
+    let field_b = tw_b
+        .world_mut()
+        .create(ObjKind::Room, "FieldB", GOD, None)
+        .unwrap();
+    let rig = tw_b
+        .world_mut()
+        .create(ObjKind::Thing, "ArmedRig", GOD, Some(field_b))
+        .unwrap();
+    let cab = tw_b
+        .world_mut()
+        .create(ObjKind::Room, "RigCab", GOD, None)
+        .unwrap();
+    let npc = tw_b
+        .world_mut()
+        .create(ObjKind::Npc, "Hireling", GOD, Some(cab))
+        .unwrap();
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!("@behavior/add #{}=sim.domain", field_b.0),
+    );
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!("@behavior/add #{}=sim.participant", rig.0),
+    );
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!("@behavior/add #{}=sim.interior", cab.0),
+    );
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!("@domain/create #{}=sim.passive", field_b.0),
+    );
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!("@spatial/place/domain #{}=0", rig.0),
+    );
+    let space_ev = tw_b.run_and_commit_one(
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", cab.0, rig.0),
+        "sim",
+        mush_core::physical_transition::ACTION,
+    );
+    assert!(!has_error(&space_ev), "{}", texts(&space_ev));
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!(
+            "@spatial/station #{}=console,pilot,channels:helm+sensors,space:#{}",
+            rig.0, cab.0
+        ),
+    );
+    ok(
+        &mut tw_b,
+        GOD,
+        &format!("@spatial/assign #{}=console,#{}", rig.0, npc.0),
+    );
+    let npc_epoch = grant_epoch_of(&tw_b, npc, rig, "console");
+    let npc_req = invocation(
+        &request,
+        14,
+        npc,
+        rig,
+        json!({
+            "channel": "helm",
+            "next_holder": PrincipalId::Object { id: npc },
+            "requested_at": utc(1000),
+            "boundary": utc(1100),
+            "reason": "crew.station_seat",
+            "expected_revision": 0,
+            "station": "console",
+            "grant_epoch": npc_epoch,
+            "also": [{ "channel": "sensors", "expected_revision": 0 }],
+        }),
+    );
+    install_request(&mut tw_b, &request, &npc_req, 14);
+
+    // NPC walks out of the cab before boundary 1100!
+    tw_b.world_mut().move_to(npc, field_b).unwrap();
+    tw_b.world_mut().set_now(1100);
+    let page = tw_b
+        .engine_mut()
+        .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+        .unwrap();
+    assert_eq!(page.candidates().len(), 2, "both channels are due");
+    for (idx, candidate) in page.candidates().iter().enumerate() {
+        let ingress = scheduled_action_ingress(candidate.action(), candidate.advance(), 1).unwrap();
+        let plan = tw_b
+            .engine_mut()
+            .plan_scheduled_action(candidate, &ingress)
+            .expect("NPC-left stale handoff plans cancel_stale");
+        let (_, scheduled_inv, _) = plan.into_parts();
+        assert_eq!(
+            scheduled_inv.parameters().get("cancel_stale"),
+            Some(&Value::Bool(true))
+        );
+        let (prepared, output) = tw_b
+            .engine_mut()
+            .prepare_registered_scheduled_authoritative_action(
+                candidate,
+                &scheduled_inv,
+                CommitToken::from_bytes([20 + u8::try_from(idx).unwrap(); 16]),
+            )
+            .expect("NPC stale-cancel prepares");
+        assert_eq!(
+            output.outcome().data().get("operation"),
+            Some(&json!("cancelled"))
+        );
+        let (ops, installation) = prepared.into_parts();
+        tw_b.engine_mut()
+            .install_prepared_action(installation)
+            .expect("NPC stale-cancel installs");
+        let lease = lease_post_image(&ops);
+        assert_eq!(lease.holder(), None);
+        assert!(lease.pending().is_none());
+    }
+    assert!(
+        tw_b.engine_mut()
+            .discover_scheduled_actions(ScheduleDriveCause::Live, None, 32)
+            .unwrap()
+            .candidates()
+            .is_empty(),
+        "both NPC schedules drained with zero spin"
     );
 }

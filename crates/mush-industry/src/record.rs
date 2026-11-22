@@ -66,6 +66,10 @@ pub const MAX_EXTRACTION_CYCLES: u64 = 1_000_000;
 pub const MAX_BAND_BYTES: usize = 32;
 /// Largest claim priority.
 pub const MAX_CLAIM_PRIORITY: u32 = 1_000;
+/// Largest claim term duration (IC seconds) a non-staff filer may request (10 IC years).
+pub const MAX_CLAIM_TERM_SECS: i64 = 10 * 365 * 86_400;
+/// Largest claim term duration (IC seconds) staff may request (1,000 IC years).
+pub const MAX_STAFF_CLAIM_TERM_SECS: i64 = 1_000 * 365 * 86_400;
 /// Largest dispute/seizure reason, in bytes.
 pub const MAX_REASON_BYTES: usize = 240;
 /// Records one bounded page visits.

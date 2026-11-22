@@ -466,7 +466,7 @@ fn save_macros(ctx: &mut Ctx<'_>, map: BTreeMap<String, String>) -> Result<(), C
             Attr {
                 value: AttrValue::Json(Value::Object(doc)),
                 owner: ctx.actor,
-                flags: AttrFlags::empty(),
+                flags: AttrFlags::SELF_ONLY,
             },
         )?;
     }

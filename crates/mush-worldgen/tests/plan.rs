@@ -65,6 +65,10 @@ fn region() -> Pack {
 }
 
 fn block() -> Pack {
+    block_with(true, 4)
+}
+
+fn block_with(enabled: bool, max_player_sites: u32) -> Pack {
     signed(json!({
         "manifest": { "id": "neighborhood.block", "version": 1, "kind": "neighborhood", "digest": "",
                       "requires": [{ "id": "region.town", "version": 1 }] },
@@ -73,7 +77,7 @@ fn block() -> Pack {
                 "region": "region.town", "locality": "locality.town", "name": "The Block",
                 "setting": "suburban", "footprint": [[0, 0], [200, 0], [200, 200], [0, 200]],
                 "room_budget": { "target": 3, "maximum": 12 },
-                "hydration": { "enabled": true, "max_player_sites": 4 } } },
+                "hydration": { "enabled": enabled, "max_player_sites": max_player_sites } } },
             "room.green": { "kind": "room", "def": { "name": "The Green", "surface": "ground",
                 "footprint": { "rect": [[10, 10], [60, 60]] }, "desc": "A wide green." } },
             "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
@@ -113,7 +117,7 @@ fn config() -> WorldgenConfig {
 
 /// The town with the atlas, the content module, jobs, canon, the NPC host and the
 /// worldgen module on `llm`; the block is on the shelf too.
-fn town(llm: &Arc<LlmService>) -> TestWorld {
+fn town_with_block(llm: &Arc<LlmService>, nb_pack: Pack) -> TestWorld {
     let mut appliers = Appliers::new();
     mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
     mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
@@ -127,12 +131,12 @@ fn town(llm: &Arc<LlmService>) -> TestWorld {
                 hydration_strikes_to_zero: 3,
                 ..AtlasConfig::default()
             })
-            .with_shelf(vec![block()]),
+            .with_shelf(vec![nb_pack.clone()]),
         ),
         Box::new(
             ContentModule::new()
                 .with_appliers(appliers)
-                .with_boot_packs(vec![region(), block()]),
+                .with_boot_packs(vec![region(), nb_pack]),
         ),
         Box::new(WorldgenModule::with_config(Arc::clone(llm), config())),
     ];
@@ -140,9 +144,13 @@ fn town(llm: &Arc<LlmService>) -> TestWorld {
 }
 
 fn rig() -> (TestWorld, Arc<MockProvider>, Arc<LlmService>) {
+    rig_with_block(block())
+}
+
+fn rig_with_block(nb_pack: Pack) -> (TestWorld, Arc<MockProvider>, Arc<LlmService>) {
     let mock = Arc::new(MockProvider::new("openrouter"));
     let llm = service(&mock);
-    let tw = town(&llm);
+    let tw = town_with_block(&llm, nb_pack);
     (tw, mock, llm)
 }
 
@@ -961,8 +969,8 @@ fn invoke_interface(
 #[test]
 fn the_set_designer_drafts_in_the_askers_name_and_never_applies() {
     let (mut tw, _mock, _llm) = rig();
-    let alice = tw.spawn_player("Alice");
-    let bob = tw.spawn_player("Bob");
+    let alice = green_player(&mut tw, "Alice");
+    let bob = green_player(&mut tw, "Bob");
     // Nothing on the desk yet: a read, and nothing written.
     let _ = tw.engine_mut().take_module_ops();
     let reply =
@@ -1234,5 +1242,234 @@ async fn strag_m9_withdraw_cancels_inflight_llm_prunes_proposals_and_enforces_ra
         sys_to(&cooled_ev, rae).contains("after withdrawing"),
         "expected withdrawal cooldown refusal: {}",
         sys_to(&cooled_ev, rae)
+    );
+}
+
+/// **P2-MOD-28**: `BuildInterface::invoke("build.propose")` routes non-staff
+/// players through `proposal::place` / `mush_atlas::hydrate::request` (enforcing
+/// neighborhood presence, `nb.hydration.enabled`, strike suspension `cap == 0`,
+/// slot caps, and footprints), `proposal::create` enforces
+/// `MAX_OPEN_PROPOSALS_PER_PLAYER`, and stale/idle open proposals (`Failed`,
+/// `Capped`, `Ready`, etc.) are pruned so global `MAX_PROPOSALS` can never be
+/// permanently exhausted.
+#[test]
+fn p2_mod_28_build_propose_enforces_hydration_gates_open_cap_and_stale_pruning() {
+    let (mut tw, _mock, _llm) = rig_with_block(block_with(true, 32));
+
+    // 1. Non-staff player outside any neighborhood (LIMBO) cannot bypass into
+    //    `ProposeScope::World` via `build.propose`.
+    let drifter = tw.spawn_player("Drifter");
+    let err = invoke_interface(
+        &mut tw,
+        "build",
+        drifter,
+        "build.propose",
+        json!({ "brief": "A rogue continent." }),
+    )
+    .expect_err("off-neighborhood non-staff build.propose must be refused");
+    assert!(
+        matches!(err, mush_core::InterfaceError::Refused(ref msg) if msg.contains("no neighborhood")),
+        "{err:?}"
+    );
+    assert!(
+        tw.world()
+            .module_state::<mush_worldgen::WorldgenState>()
+            .expect("wg")
+            .proposals
+            .is_empty(),
+        "refused build.propose must create zero proposals"
+    );
+
+    // 2. Strike-suspended player (`cap == 0`) in an enabled neighborhood is refused.
+    let suspended = green_player(&mut tw, "Suspended");
+    let _ = step(&mut tw, GOD, &format!("@atlas/cap #{}=0", suspended.0));
+    let err = invoke_interface(
+        &mut tw,
+        "build",
+        suspended,
+        "build.propose",
+        json!({ "brief": "A banned tavern." }),
+    )
+    .expect_err("strike-suspended player must be refused by build.propose");
+    assert!(
+        matches!(err, mush_core::InterfaceError::Refused(ref msg) if msg.contains("allows no requests")),
+        "{err:?}"
+    );
+
+    // 3. Per-player hydration slot cap (`hydration_cap == 2`) is enforced through `build.propose`.
+    let builder = green_player(&mut tw, "Builder");
+    for i in 0..2 {
+        let reply = invoke_interface(
+            &mut tw,
+            "build",
+            builder,
+            "build.propose",
+            json!({ "brief": format!("Shop number {i} on the square."), "kind": format!("shop_{i}") }),
+        )
+        .expect("within slot cap");
+        assert!(reply.text.contains("is being planned"), "{}", reply.text);
+    }
+    let over_slots = invoke_interface(
+        &mut tw,
+        "build",
+        builder,
+        "build.propose",
+        json!({ "brief": "Third shop past hydration slot cap.", "kind": "shop_2" }),
+    )
+    .expect_err("3rd concurrent build.propose must hit hydration slot cap");
+    assert!(
+        matches!(over_slots, mush_core::InterfaceError::Refused(ref msg) if msg.contains("standing allows 2")),
+        "{over_slots:?}"
+    );
+
+    // 4. Neighborhood with `hydration.enabled == false` refuses `build.propose`.
+    {
+        let (mut locked_tw, _m, _l) = rig_with_block(block_with(false, 0));
+        let newcomer = green_player(&mut locked_tw, "Newcomer");
+        let disabled_err = invoke_interface(
+            &mut locked_tw,
+            "build",
+            newcomer,
+            "build.propose",
+            json!({ "brief": "A stall in a locked district." }),
+        )
+        .expect_err("disabled neighborhood must refuse build.propose");
+        assert!(
+            matches!(disabled_err, mush_core::InterfaceError::Refused(ref msg) if msg.contains("does not take player-built sites")),
+            "{disabled_err:?}"
+        );
+    }
+
+    // 5. Per-player open-proposal cap (`MAX_OPEN_PROPOSALS_PER_PLAYER`) blocks a
+    //    player even if their hydration slot cap is raised higher.
+    let capped = green_player(&mut tw, "CappedPlayer");
+    let _ = step(&mut tw, GOD, &format!("@atlas/cap #{}=10", capped.0));
+    for i in 0..mush_worldgen::MAX_OPEN_PROPOSALS_PER_PLAYER {
+        let reply = invoke_interface(
+            &mut tw,
+            "build",
+            capped,
+            "build.propose",
+            json!({ "brief": format!("Bench {i}."), "kind": format!("bench_{i}") }),
+        )
+        .expect("within MAX_OPEN_PROPOSALS_PER_PLAYER");
+        assert!(reply.text.contains("is being planned"), "{}", reply.text);
+    }
+    let over_open = invoke_interface(
+        &mut tw,
+        "build",
+        capped,
+        "build.propose",
+        json!({ "brief": "One too many open proposals.", "kind": "bench_extra" }),
+    )
+    .expect_err("exceeding MAX_OPEN_PROPOSALS_PER_PLAYER must refuse");
+    assert!(
+        matches!(over_open, mush_core::InterfaceError::Refused(ref msg) if msg.contains("open proposals")),
+        "{over_open:?}"
+    );
+
+    // 6. Global MAX_PROPOSALS saturated with open Failed/Capped/Ready proposals
+    //    never permanently blocks new staff or player proposals: oldest/lowest-tier
+    //    idle open proposals are pruned with disk deletion and monotonic ids.
+    let template = tw
+        .world()
+        .module_state::<mush_worldgen::WorldgenState>()
+        .expect("wg")
+        .proposals
+        .values()
+        .next()
+        .expect("sample proposal")
+        .clone();
+    let now = tw.world().now();
+    let ops = tw.take_module_ops();
+    let mut boot: HashMap<SmolStr, ModuleBootData> = HashMap::new();
+    for op in ops {
+        let data = boot.entry(op.ns.clone()).or_default();
+        match op.op {
+            ModuleWrite::JsonSet { key, value } => {
+                data.kv.retain(|(k, _)| *k != key);
+                data.kv.push((key, value));
+            }
+            ModuleWrite::Del { key } => data.kv.retain(|(k, _)| *k != key),
+            ModuleWrite::StreamAppend { .. } => {}
+        }
+    }
+    let wg_boot = boot.entry(SmolStr::new_static("worldgen")).or_default();
+    wg_boot.kv.retain(|(k, _)| !k.starts_with("proposal:"));
+    for i in 1..=(u64::try_from(mush_worldgen::MAX_PROPOSALS).unwrap_or(1024)) {
+        let mut p = template.clone();
+        p.id = i;
+        p.author = ObjId(500 + u32::try_from(i % 200).unwrap_or(0));
+        p.staff = false;
+        p.source = mush_worldgen::ProposalSource::Prose {
+            text: format!("Abandoned {i}"),
+        };
+        p.updated = now.saturating_sub(i64::try_from(i).unwrap_or(0));
+        p.status = match i % 3 {
+            0 => ProposalStatus::Failed {
+                message: "model error".to_string(),
+                retryable: false,
+            },
+            1 => ProposalStatus::Capped,
+            _ => ProposalStatus::Ready,
+        };
+        wg_boot.kv.push((
+            mush_worldgen::proposal_key(i),
+            serde_json::to_value(&p).expect("json"),
+        ));
+    }
+    tw.modules_loaded(boot);
+    assert_eq!(
+        tw.world()
+            .module_state::<mush_worldgen::WorldgenState>()
+            .expect("wg")
+            .proposals
+            .len(),
+        mush_worldgen::MAX_PROPOSALS,
+        "reboot must load all MAX_PROPOSALS open records"
+    );
+    let _ = tw.take_module_ops();
+    let (staff_ev, _) = step(&mut tw, GOD, "@atlas/propose The Block=Fresh staff plaza.");
+    let staff_text = sys_to(&staff_ev, GOD);
+    assert!(
+        staff_text.contains("is being planned"),
+        "full book of Failed/Capped/Ready proposals must prune and admit new work: {staff_text}"
+    );
+    let ops = tw.take_module_ops();
+    assert!(
+        ops.iter().any(|op| {
+            op.ns.as_str() == "worldgen"
+                && matches!(&op.op, ModuleWrite::Del { key } if key.starts_with("proposal:"))
+        }),
+        "capacity eviction must emit ModuleWrite::Del for pruned open proposal"
+    );
+    assert!(
+        tw.world()
+            .module_state::<mush_worldgen::WorldgenState>()
+            .expect("wg")
+            .proposals
+            .len()
+            <= mush_worldgen::MAX_PROPOSALS
+    );
+
+    // 7. Advancing past STALE_PROPOSAL_TTL_SECS automatically prunes stale open proposals.
+    let stale_now = now + mush_worldgen::STALE_PROPOSAL_TTL_SECS + 10;
+    tw.set_now(stale_now);
+    let _ = tw.take_module_ops();
+    let (after_stale, _) = step(&mut tw, GOD, "@atlas/propose The Block=After TTL.");
+    assert!(
+        sys_to(&after_stale, GOD).contains("is being planned"),
+        "{}",
+        sys_to(&after_stale, GOD)
+    );
+    let remaining = tw
+        .world()
+        .module_state::<mush_worldgen::WorldgenState>()
+        .expect("wg")
+        .proposals
+        .len();
+    assert_eq!(
+        remaining, 1,
+        "all stale open proposals past STALE_PROPOSAL_TTL_SECS must be pruned"
     );
 }

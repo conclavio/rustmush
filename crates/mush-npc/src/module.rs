@@ -13,10 +13,10 @@ use std::sync::Arc;
 use mush_core::commands::movement::{find_exit, traverse_exit};
 use mush_core::module::{AsyncCompletion, WorldEvent};
 use mush_core::{
-    ArgShape, Attr, CmdError, CommandSpec, Ctx, Deferred, Effect, EventHook, Flags, GameModule,
-    HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx, ModuleOp, ModuleWrite, ObjId,
-    ObjKind, Powers, Registrar, Role, TickCadence, World, WorldEventKind, WorldObserver, obj_ref,
-    perm,
+    ArgShape, Attr, AttrFlags, CmdError, CommandSpec, Ctx, Deferred, Effect, EventHook, Flags,
+    GameModule, HookPoint, HookReadContext, ModError, ModuleBootData, ModuleCtx, ModuleOp,
+    ModuleWrite, ObjId, ObjKind, Powers, Registrar, Role, TickCadence, World, WorldEventKind,
+    WorldObserver, obj_ref, perm,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use smol_str::SmolStr;
@@ -292,7 +292,7 @@ impl GameModule for NpcModule {
             CommandSpec {
                 name: "@lore".into(),
                 shape: ArgShape::EqPair,
-                min_role: Role::Builder,
+                min_role: Role::Royalty,
                 help: "@lore -- list every shared lore pool with its entry count.\n\
                        @lore <tag> -- list one pool's entries.\n\
                        @lore <tag>=<public|guarded|secret> [subject:] <fact> -- add an entry \
@@ -1617,22 +1617,29 @@ impl NpcTick {
         now: i64,
     ) {
         let correlation = ctx.w.next_correlation_id();
+        let isolate_speakers = !profile.interfaces.is_empty();
         let batch = match ctx.state_mut::<NpcHostState>() {
-            Some(h) => h.begin_turn(npc, now, correlation),
+            Some(h) => h.begin_turn_partitioned(npc, now, correlation, isolate_speakers),
             None => return,
         };
+        let interface_asker = (!profile.interfaces.is_empty())
+            .then(|| strict_interface_asker(&batch))
+            .flatten();
         let snap = build_dialogue_snapshot(
             ctx,
             self.grounding.as_ref(),
-            npc,
-            profile,
-            room,
-            present,
-            &batch,
-            correlation,
+            DialogueSnapshotInput {
+                npc,
+                profile,
+                room,
+                present,
+                batch: &batch,
+                correlation,
+            },
         );
         if let Some(h) = ctx.state_mut::<NpcHostState>() {
             h.capture_memory_references(npc, correlation, &snap.recalled);
+            h.capture_interface_asker(npc, correlation, interface_asker);
             h.note_decision_context(npc, correlation, snap.knowledge.len(), snap.recalled.len());
         }
         if defer_turn(ctx, npc, correlation, &snap) {
@@ -1690,6 +1697,9 @@ impl AsyncCompletion for NpcCompletion {
             .state::<NpcHostState>()
             .map(|h| h.memory_references_for(npc, correlation))
             .unwrap_or_default();
+        let captured_interface_asker = ctx
+            .state::<NpcHostState>()
+            .and_then(|h| h.interface_asker_for(npc, correlation));
         let was_fold = ctx
             .state::<NpcHostState>()
             .and_then(|h| h.runtime(npc))
@@ -1728,10 +1738,11 @@ impl AsyncCompletion for NpcCompletion {
             };
             let installed = !summary.trim().is_empty()
                 && ctx.w.get(npc).is_some_and(|o| o.kind == ObjKind::Npc)
-                && ctx
-                    .w
-                    .set_attr(npc, SUMMARY_ATTR, Attr::text(&summary, npc))
-                    .is_ok();
+                && {
+                    let mut attr = Attr::text(&summary, npc);
+                    attr.flags = AttrFlags::WIZARD_ONLY;
+                    ctx.w.set_attr(npc, SUMMARY_ATTR, attr).is_ok()
+                };
             if let Some(h) = ctx.state_mut::<NpcHostState>() {
                 if installed {
                     h.runtime_mut(npc).memory.summary = summary;
@@ -1815,6 +1826,15 @@ impl AsyncCompletion for NpcCompletion {
             // A summary without the exact captured batch is stale or invalid.
             TurnOutcome::Summary { .. } | TurnOutcome::SummaryFailed { .. } => {}
             TurnOutcome::Ok { actions, asker, .. } => {
+                // Enforce the world-captured interface asker (P2-CORE-8):
+                // turns started from `StaffPoke`, ambient stimuli, or
+                // multi-speaker batches never grant any player's authority to
+                // `invoke_interface`.
+                let interface_asker = match captured_interface_asker {
+                    Some(Some(expected)) if asker == Some(expected) => Some(expected),
+                    Some(_) => None,
+                    None => asker,
+                };
                 for aa in actions {
                     if let NpcAction::Remember {
                         evidence, replaces, ..
@@ -1839,6 +1859,7 @@ impl AsyncCompletion for NpcCompletion {
                         &aa,
                         correlation,
                         asker,
+                        interface_asker,
                     );
                 }
             }
@@ -1874,6 +1895,7 @@ pub fn ability_submit_key(
         .expect("a bounded lowercase key")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_action(
     grounding: &dyn AgentGrounding,
     ctx: &mut Ctx<'_>,
@@ -1882,6 +1904,7 @@ fn apply_action(
     aa: &AppliedAction,
     correlation: u64,
     asker: Option<ObjId>,
+    interface_asker: Option<ObjId>,
 ) {
     match &aa.action {
         NpcAction::Say { text } => say_as_npc_to(ctx, npc, room, NarrativeKind::Say, text, asker),
@@ -1948,7 +1971,15 @@ fn apply_action(
             let fronted = read_profile_raw(ctx.w, npc)
                 .and_then(|p| crate::interface::provider_for(ctx.reg, &p, name));
             if let Some((_provider_id, provider, _def)) = fronted {
-                invoke_interface(ctx, npc, room, asker, provider.as_ref(), name, input);
+                invoke_interface(
+                    ctx,
+                    npc,
+                    room,
+                    interface_asker,
+                    provider.as_ref(),
+                    name,
+                    input,
+                );
                 return;
             }
             // H2c: an ability with a projected legal action is an **immediate
@@ -2209,7 +2240,9 @@ pub fn set_public_faction(
         .ok_or("NPC unavailable")?;
     let mut attr = Attr::json(value, owner);
     if let Some(old) = ctx.w.attr(npc, PROFILE_ATTR) {
-        attr.flags = old.flags;
+        attr.flags = old.flags | AttrFlags::WIZARD_ONLY;
+    } else {
+        attr.flags = AttrFlags::WIZARD_ONLY;
     }
     ctx.w
         .set_attr(npc, PROFILE_ATTR, attr)
@@ -2403,7 +2436,22 @@ fn persist_relationship(ctx: &mut Ctx<'_>, record: &crate::relationships::Relati
     }
 }
 
+/// Whether `who` clears the NPC staff administration bar (`Role::Royalty`+).
+/// Required for global `@lore` pools, `@agent/audit`, `@agent/relationship`
+/// staff trust receipts, `Secrecy::Secret` lore, and privileged profile
+/// capability/budget/informant fields (`P2-CORE-7`).
+fn is_npc_staff(w: &World, who: ObjId) -> bool {
+    perm::has_role(w, who, Role::Royalty)
+}
+
+fn npc_perm_denied() -> CmdError {
+    CmdError::msg("Permission denied.")
+}
+
 fn agent_relationship(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
+    if !is_npc_staff(ctx.w, ctx.actor) {
+        return Err(npc_perm_denied());
+    }
     let target = lhs.split_once('/').map(|(_, target)| target.trim()).filter(|target| !target.is_empty())
         .ok_or_else(|| CmdError::msg("Usage: @agent/relationship <npc>/<character>[=trust:<delta>; disposition:<delta>; cause:<receipt>; reason:<reason>]."))?;
     let character = mush_core::match_object(ctx.w, ctx.actor, target)?;
@@ -2414,6 +2462,9 @@ fn agent_relationship(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), Cm
         .map(str::to_owned)
         .filter(|value| !value.trim().is_empty())
     {
+        if !perm::can_modify(ctx.w, ctx.actor, npc) {
+            return Err(npc_perm_denied());
+        }
         let mut fields = std::collections::BTreeMap::new();
         for part in rhs.split(';') {
             let (key, value) = part
@@ -2530,12 +2581,21 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     if ctx.w.get(npc).is_none_or(|o| o.kind != ObjKind::Npc) {
         return Err(CmdError::msg("That is not an NPC."));
     }
+    if !perm::controls(ctx.w, ctx.actor, npc) {
+        return Err(npc_perm_denied());
+    }
 
     if ctx.switches.has("set") {
+        if !perm::can_modify(ctx.w, ctx.actor, npc) {
+            return Err(npc_perm_denied());
+        }
         return agent_set(ctx, npc, &lhs);
     }
 
     if ctx.switches.has("sheet") {
+        if !perm::can_modify(ctx.w, ctx.actor, npc) {
+            return Err(npc_perm_denied());
+        }
         return agent_sheet(grounding, ctx, npc);
     }
 
@@ -2547,6 +2607,9 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     }
 
     if ctx.switches.has("poke") {
+        if !perm::can_modify(ctx.w, ctx.actor, npc) {
+            return Err(npc_perm_denied());
+        }
         let note = ctx
             .args
             .rhs()
@@ -2563,6 +2626,9 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     }
 
     if ctx.switches.has("enable") || ctx.switches.has("disable") {
+        if !perm::can_modify(ctx.w, ctx.actor, npc) {
+            return Err(npc_perm_denied());
+        }
         let enable = ctx.switches.has("enable");
         let mut profile = read_profile_raw(ctx.w, npc).unwrap_or_default();
         profile.enabled = enable;
@@ -2708,6 +2774,7 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
     }
     // World / semantic knowledge (design: M10d): per-NPC lore + shared-pool tags.
     let knowledge = read_knowledge(ctx.w, npc);
+    let viewer_is_staff = is_npc_staff(ctx.w, ctx.actor);
     if !knowledge.lore.is_empty() || !knowledge.tags.is_empty() {
         let (mut public, mut guarded, mut secret) = (0usize, 0usize, 0usize);
         for e in &knowledge.lore {
@@ -2717,39 +2784,52 @@ fn cmd_agent(grounding: &dyn AgentGrounding, ctx: &mut Ctx<'_>) -> Result<(), Cm
                 Secrecy::Secret => secret += 1,
             }
         }
-        let total = knowledge.lore.len();
         let tags = if knowledge.tags.is_empty() {
             "none".to_string()
         } else {
             knowledge.tags.join(", ")
         };
-        ctx.out.info(
-            ctx.actor,
-            format!(
-                "  World knowledge: {total} {} ({public} public, {guarded} guarded, {secret} \
-                 secret); tags: {tags}.",
-                entries_word(total)
-            ),
-        );
-        if !knowledge.tags.is_empty() {
-            let pools: Vec<String> = ctx
-                .state::<NpcHostState>()
-                .map(|h| {
-                    knowledge
-                        .tags
-                        .iter()
-                        .filter_map(|t| {
-                            h.lore_pools
-                                .get(t)
-                                .map(|p| format!("{t} ({})", p.entries.len()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            if !pools.is_empty() {
+        if viewer_is_staff {
+            let total = knowledge.lore.len();
+            ctx.out.info(
+                ctx.actor,
+                format!(
+                    "  World knowledge: {total} {} ({public} public, {guarded} guarded, {secret} \
+                     secret); tags: {tags}.",
+                    entries_word(total)
+                ),
+            );
+            if !knowledge.tags.is_empty() {
+                let pools: Vec<String> = ctx
+                    .state::<NpcHostState>()
+                    .map(|h| {
+                        knowledge
+                            .tags
+                            .iter()
+                            .filter_map(|t| {
+                                h.lore_pools
+                                    .get(t)
+                                    .map(|p| format!("{t} ({})", p.entries.len()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !pools.is_empty() {
+                    ctx.out.info(
+                        ctx.actor,
+                        format!("  Shared lore: draws on pools {}.", pools.join(", ")),
+                    );
+                }
+            }
+        } else {
+            let visible_total = public + guarded;
+            if visible_total > 0 {
                 ctx.out.info(
                     ctx.actor,
-                    format!("  Shared lore: draws on pools {}.", pools.join(", ")),
+                    format!(
+                        "  World knowledge: {visible_total} {} ({public} public, {guarded} guarded).",
+                        entries_word(visible_total)
+                    ),
                 );
             }
         }
@@ -2776,6 +2856,9 @@ fn agent_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .get(ctx.actor)
         .and_then(|o| o.location)
         .ok_or_else(|| CmdError::msg("You are nowhere; go somewhere before creating an NPC."))?;
+    if !perm::controls(ctx.w, ctx.actor, room) {
+        return Err(npc_perm_denied());
+    }
     let npc = ctx
         .w
         .create(ObjKind::Npc, &name, ctx.actor, Some(room))
@@ -2798,6 +2881,9 @@ fn agent_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// `@agent/audit [<npc>]` (S6, rule 4): the last interface-ability calls —
 /// who fronted, who asked, what — newest last.
 fn agent_audit(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_npc_staff(ctx.w, ctx.actor) {
+        return Err(npc_perm_denied());
+    }
     let actor = ctx.actor;
     let raw = ctx.args.raw().trim().to_string();
     let only = if raw.is_empty() {
@@ -2849,6 +2935,13 @@ fn agent_set(ctx: &mut Ctx<'_>, npc: ObjId, lhs: &str) -> Result<(), CmdError> {
     let value = ctx.args.rhs().unwrap_or("").trim().to_string();
     let mut profile = read_profile_raw(ctx.w, npc).unwrap_or_default();
     let field_l = field.to_ascii_lowercase();
+    if matches!(
+        field_l.as_str(),
+        "tier" | "daily_tokens" | "budget" | "interfaces" | "principal" | "loyal" | "watch"
+    ) && !is_npc_staff(ctx.w, ctx.actor)
+    {
+        return Err(npc_perm_denied());
+    }
     match field_l.as_str() {
         "persona" => profile.persona = value.clone(),
         "background" => profile.background = value.clone(),
@@ -3020,6 +3113,9 @@ fn agent_lore(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
     if rhs.is_empty() {
         return agent_lore_list(ctx, npc);
     }
+    if !perm::can_modify(ctx.w, ctx.actor, npc) {
+        return Err(npc_perm_denied());
+    }
     if rhs.eq_ignore_ascii_case("clear") {
         return agent_lore_clear(ctx, npc);
     }
@@ -3037,8 +3133,15 @@ fn agent_lore(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
 /// tags, and a one-line note of how many pool entries those tags resolve.
 fn agent_lore_list(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
     let knowledge = read_knowledge(ctx.w, npc);
+    let viewer_is_staff = is_npc_staff(ctx.w, ctx.actor);
     let name = display_name(ctx.w, npc);
-    if knowledge.lore.is_empty() && knowledge.tags.is_empty() {
+    let visible_entries: Vec<(usize, &LoreEntry)> = knowledge
+        .lore
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| viewer_is_staff || e.secrecy != Secrecy::Secret)
+        .collect();
+    if visible_entries.is_empty() && (!viewer_is_staff || knowledge.tags.is_empty()) {
         ctx.out.info(
             ctx.actor,
             format!(
@@ -3050,30 +3153,32 @@ fn agent_lore_list(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
     }
     ctx.out
         .info(ctx.actor, format!("World knowledge for {name}:"));
-    if knowledge.lore.is_empty() {
+    if visible_entries.is_empty() {
         ctx.out.info(ctx.actor, "  (no direct entries)");
     } else {
-        for (i, e) in knowledge.lore.iter().enumerate() {
+        for (i, e) in visible_entries {
             ctx.out
                 .info(ctx.actor, format!("  {}. {}", i + 1, render_lore_entry(e)));
         }
     }
-    if knowledge.tags.is_empty() {
-        ctx.out.info(ctx.actor, "  Tags: (none)");
-    } else {
-        ctx.out
-            .info(ctx.actor, format!("  Tags: {}", knowledge.tags.join(", ")));
-        let resolved = ctx
-            .state::<NpcHostState>()
-            .map(|h| h.lore_pools.resolve(&knowledge.tags).len())
-            .unwrap_or(0);
-        ctx.out.info(
-            ctx.actor,
-            format!(
-                "  Shared lore: {resolved} {} resolved from tagged pools.",
-                entries_word(resolved)
-            ),
-        );
+    if viewer_is_staff {
+        if knowledge.tags.is_empty() {
+            ctx.out.info(ctx.actor, "  Tags: (none)");
+        } else {
+            ctx.out
+                .info(ctx.actor, format!("  Tags: {}", knowledge.tags.join(", ")));
+            let resolved = ctx
+                .state::<NpcHostState>()
+                .map(|h| h.lore_pools.resolve(&knowledge.tags).len())
+                .unwrap_or(0);
+            ctx.out.info(
+                ctx.actor,
+                format!(
+                    "  Shared lore: {resolved} {} resolved from tagged pools.",
+                    entries_word(resolved)
+                ),
+            );
+        }
     }
     Ok(())
 }
@@ -3082,6 +3187,9 @@ fn agent_lore_list(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
 /// `SECRET` add that it will never reach the LLM.
 fn agent_lore_add(ctx: &mut Ctx<'_>, npc: ObjId, entry: LoreEntry) -> Result<(), CmdError> {
     let secret = entry.secrecy == Secrecy::Secret;
+    if secret && !is_npc_staff(ctx.w, ctx.actor) {
+        return Err(npc_perm_denied());
+    }
     let mut knowledge = read_knowledge(ctx.w, npc);
     knowledge.lore.push(entry);
     let idx = knowledge.lore.len();
@@ -3100,6 +3208,9 @@ fn agent_lore_add(ctx: &mut Ctx<'_>, npc: ObjId, entry: LoreEntry) -> Result<(),
 /// Set `npc`'s shared-pool tags (an empty list clears them), confirming which
 /// tags resolve to a defined pool and warning about any that do not.
 fn agent_lore_tags(ctx: &mut Ctx<'_>, npc: ObjId, list: &str) -> Result<(), CmdError> {
+    if !is_npc_staff(ctx.w, ctx.actor) {
+        return Err(npc_perm_denied());
+    }
     let tags = split_list(list);
     let mut knowledge = read_knowledge(ctx.w, npc);
     knowledge.tags = tags.clone();
@@ -3155,6 +3266,14 @@ fn agent_lore_del(ctx: &mut Ctx<'_>, npc: ObjId, arg: &str) -> Result<(), CmdErr
             entries_word(count)
         )));
     }
+    if knowledge
+        .lore
+        .get(n - 1)
+        .is_some_and(|e| e.secrecy == Secrecy::Secret)
+        && !is_npc_staff(ctx.w, ctx.actor)
+    {
+        return Err(npc_perm_denied());
+    }
     let removed = knowledge.lore.remove(n - 1);
     store_knowledge(ctx, npc, &knowledge)?;
     ctx.out.info(
@@ -3171,6 +3290,11 @@ fn agent_lore_del(ctx: &mut Ctx<'_>, npc: ObjId, arg: &str) -> Result<(), CmdErr
 /// Clear all of `npc`'s per-NPC lore entries, leaving its shared-pool tags.
 fn agent_lore_clear(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
     let mut knowledge = read_knowledge(ctx.w, npc);
+    if knowledge.lore.iter().any(|e| e.secrecy == Secrecy::Secret)
+        && !is_npc_staff(ctx.w, ctx.actor)
+    {
+        return Err(npc_perm_denied());
+    }
     let count = knowledge.lore.len();
     knowledge.lore.clear();
     store_knowledge(ctx, npc, &knowledge)?;
@@ -3188,6 +3312,9 @@ fn agent_lore_clear(ctx: &mut Ctx<'_>, npc: ObjId) -> Result<(), CmdError> {
 /// `@lore [<tag>[=<op>]]` — the shared lore-pool surface: list all pools, list
 /// one, add an entry (creating the pool), delete an entry, or delete the pool.
 fn cmd_lore(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    if !is_npc_staff(ctx.w, ctx.actor) {
+        return Err(npc_perm_denied());
+    }
     let tag = ctx.args.lhs().trim().to_string();
     if tag.is_empty() {
         return lore_list_all(ctx);
@@ -3519,16 +3646,64 @@ fn parse_opt_u64(value: &str) -> Result<Option<u64>, CmdError> {
 // ----------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+/// Determine the sole player who directly addressed this NPC in `batch` with no
+/// conflicting speakers, `StaffPoke`, or another player's ambient `HeardInRoom`
+/// speech mixed in. Returns `None` whenever authority would be ambiguous or
+/// derived from an out-of-band staff prod or undirected room speech without a
+/// direct address by that same speaker (`P2-CORE-8`).
+fn strict_interface_asker(batch: &[Stimulus]) -> Option<ObjId> {
+    let mut direct: Option<ObjId> = None;
+    let mut overheard: Option<ObjId> = None;
+    for stim in batch {
+        match stim {
+            Stimulus::SpokenTo { by, .. } => match direct {
+                None => direct = Some(*by),
+                Some(prev) if prev == *by => {}
+                Some(_) => return None,
+            },
+            Stimulus::HeardInRoom { by, .. } => match overheard {
+                None => overheard = Some(*by),
+                Some(prev) if prev == *by => {}
+                Some(_) => return None,
+            },
+            Stimulus::StaffPoke { .. } => return None,
+            Stimulus::PlayerArrived { .. }
+            | Stimulus::PlayerLeft { .. }
+            | Stimulus::AmbientTimer
+            | Stimulus::GameEvent { .. } => {}
+        }
+    }
+    let asker = direct?;
+    if let Some(other) = overheard
+        && other != asker
+    {
+        return None;
+    }
+    Some(asker)
+}
+
+struct DialogueSnapshotInput<'a> {
+    npc: ObjId,
+    profile: &'a AgentProfile,
+    room: ObjId,
+    present: &'a [ObjId],
+    batch: &'a [Stimulus],
+    correlation: u64,
+}
+
 fn build_dialogue_snapshot(
     ctx: &Ctx<'_>,
     grounding: &dyn AgentGrounding,
-    npc: ObjId,
-    profile: &AgentProfile,
-    room: ObjId,
-    present: &[ObjId],
-    batch: &[Stimulus],
-    correlation: u64,
+    input: DialogueSnapshotInput<'_>,
 ) -> TurnSnapshot {
+    let DialogueSnapshotInput {
+        npc,
+        profile,
+        room,
+        present,
+        batch,
+        correlation,
+    } = input;
     // A crowded room is projected through a fixed-size view, but the players
     // responsible for this exact batch must win admission over unrelated
     // occupants. Otherwise crowding could make direct speech appear to come
@@ -3591,23 +3766,26 @@ fn build_dialogue_snapshot(
         .join(" ");
     let (summary, transcript, recalled) = memory_context(ctx, npc, &prioritized_present, &cue);
     let stimuli = batch.iter().map(|s| render_line(ctx.w, s)).collect();
-    // Attribution follows the latest speaker in the active exchange. Presence
-    // events do not give an interface turn anyone's authority.
-    let actor = batch
-        .iter()
-        .rev()
-        .find_map(|stim| match stim {
-            Stimulus::SpokenTo { by, .. } | Stimulus::StaffPoke { by, .. } => Some(*by),
+    // Attribution (P2-CORE-8): never derive `actor` from `StaffPoke` or
+    // undirected `HeardInRoom`. For NPCs fronting interfaces, require a single
+    // unambiguous `SpokenTo` speaker (`strict_interface_asker`) and withhold
+    // interface tools whenever no unambiguous asker exists.
+    let interface_asker = strict_interface_asker(batch);
+    let actor = if !profile.interfaces.is_empty() {
+        interface_asker
+    } else {
+        batch.iter().rev().find_map(|stim| match stim {
+            Stimulus::SpokenTo { by, .. } => Some(*by),
             _ => None,
         })
-        .or_else(|| {
-            batch.iter().rev().find_map(|stim| match stim {
-                Stimulus::HeardInRoom { by, .. } => Some(*by),
-                _ => None,
-            })
-        });
-    // S6: the interface abilities the profile names, from the registry.
-    let interfaces = crate::interface::tools_for(ctx.reg, profile);
+    };
+    // S6: the interface abilities the profile names, offered ONLY when a single
+    // unambiguous player directly addressed the NPC.
+    let interfaces = if interface_asker.is_some() {
+        crate::interface::tools_for(ctx.reg, profile)
+    } else {
+        Vec::new()
+    };
     let mut guidance_profile = profile.clone();
     if profile.public_faction.is_some()
         && guidance_profile.command_refs.len() < crate::profile::MAX_PROFILE_COMMAND_REFS
@@ -4213,8 +4391,9 @@ fn store_profile(ctx: &mut Ctx<'_>, npc: ObjId, profile: &AgentProfile) -> Resul
         .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(profile)
         .map_err(|e| CmdError::msg(format!("Could not serialize the profile: {e}")))?;
-    ctx.w
-        .set_attr(npc, PROFILE_ATTR, Attr::json(value, ctx.actor))?;
+    let mut attr = Attr::json(value, ctx.actor);
+    attr.flags = AttrFlags::WIZARD_ONLY;
+    ctx.w.set_attr(npc, PROFILE_ATTR, attr)?;
     Ok(())
 }
 
@@ -4241,8 +4420,9 @@ fn store_knowledge(
         .map_err(|error| CmdError::msg(error.to_string()))?;
     let value = serde_json::to_value(knowledge)
         .map_err(|e| CmdError::msg(format!("Could not serialize the knowledge: {e}")))?;
-    ctx.w
-        .set_attr(npc, KNOWLEDGE_ATTR, Attr::json(value, ctx.actor))?;
+    let mut attr = Attr::json(value, ctx.actor);
+    attr.flags = AttrFlags::WIZARD_ONLY;
+    ctx.w.set_attr(npc, KNOWLEDGE_ATTR, attr)?;
     Ok(())
 }
 

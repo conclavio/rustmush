@@ -73,7 +73,7 @@ pub use agent::{
     RunBudget, RunLimits, RunReport, RunSpec, StopCause, TextVerdict, ToolHost, ToolReply,
 };
 pub use audit::{AuditRecord, AuditSink, DaySlice, FeatureTotals, Outcome};
-pub use budget::{BudgetLedger, BudgetLimit, Counters, ScopeLimits};
+pub use budget::{BudgetLedger, BudgetLimit, BudgetReservation, Counters, ScopeLimits};
 pub use config::{
     BudgetConfig, CircuitBreakerConfig, ConcurrencyConfig, DEFAULT_DECISION_WORKERS, LlmConfig,
     ProviderConfig, ProviderKind, RetryConfig, RouteConfig,

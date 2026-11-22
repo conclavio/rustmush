@@ -398,7 +398,7 @@ fn e7c9_a1_declare_activate_and_resolve_leave_the_ledger_total_unchanged() {
         &format!("@econ/pay {acct}={other_acct} 500 fine"),
     );
 
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 7);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     assert_eq!(held(&tw, acct), 0, "the bond came back");
@@ -484,7 +484,7 @@ fn e7c9_a4_the_bond_settles_exactly_once_across_a_restart() {
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 250);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 7);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     let after_first = (bal(&tw, acct), held(&tw, acct), ledger_total(&tw));
@@ -658,7 +658,7 @@ fn e7c9_a7_funds_exhausted_mid_run_pauses_only_the_subject_and_never_goes_negati
     // operation. With the economy's verbs closed, it is reached the way a lost or
     // repaired document would produce it: the reservation really is settled, and the
     // operation document says it is still activated.
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", a.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", a.0));
     fire_n(&mut tw, 9);
     assert_eq!(held(&tw, acct), 100, "only b's bond is still reserved");
     let mut kv = Kv::new();
@@ -719,7 +719,7 @@ fn e7c9_i1_the_campaign_tick_fires_twice_and_the_second_fire_stages() {
         &format!("@op/terms {}/stake.outcome={contract}:success", id.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let required = pending_of(&tw, id).len();
     assert_eq!(required, 5, "every consumer arm must be required here");
 
@@ -753,7 +753,7 @@ fn e7c9_i2_a_rerun_is_a_no_op_and_resolved_is_unreachable_while_a_consumer_pends
     money(&mut tw, &[(attacker, 1_000)]);
     let id = declare(&mut tw, attacker, 100);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     // Every fire but the last leaves at least one consumer pending, and the state
     // is `Resolving` for every one of them.
     let mut t = 1;
@@ -788,7 +788,7 @@ fn e7c9_i3_a_crash_after_part_of_the_fan_out_resumes_and_does_not_double_pay() {
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 350);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     // Two consumers, then the process dies.
     fire(&mut tw);
     fire(&mut tw);
@@ -834,7 +834,7 @@ fn e7c9_i4_the_visited_and_worked_budgets_are_independent_and_the_cursor_resumes
     for _ in 0..mush_campaign::MAX_WORKED_PER_FIRE + 4 {
         let id = declare(&mut tw, attacker, 1);
         ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-        ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+        ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
         ids.push(id);
     }
     let full: usize = pending_of(&tw, ids[0]).len();
@@ -895,11 +895,7 @@ fn e7c9_i5_a_permanently_failing_consumer_starves_nobody_else() {
     for id in [doomed, healthy] {
         ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
     }
-    ok(
-        &mut tw,
-        attacker,
-        &format!("@op/resolve {}=success", doomed.0),
-    );
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", doomed.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     // Drop the canon ledger entirely AND the durable marker that names the record:
@@ -916,11 +912,7 @@ fn e7c9_i5_a_permanently_failing_consumer_starves_nobody_else() {
         }
     }
     reboot(&mut tw, &kv);
-    ok(
-        &mut tw,
-        attacker,
-        &format!("@op/resolve {}=success", healthy.0),
-    );
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", healthy.0));
 
     fire_n(&mut tw, 24);
     // The doomed one is paused, with the reason and the command in the page.
@@ -965,7 +957,7 @@ fn e7c9_i6_a_resolution_advances_a_front_once_and_a_rerun_writes_nothing() {
         commander,
         &format!("@op/join {}=#{}", id.0, commander.0),
     );
-    ok(&mut tw, commander, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 9);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     let after = ok(&mut tw, GOD, "+territory");
@@ -1072,7 +1064,7 @@ fn e7c9_x3_a_leak_scan_over_every_player_facing_render_finds_nothing() {
         &format!("@op/terms {}/visibility=covert", id.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 9);
 
     let mut seen = String::new();
@@ -1166,11 +1158,7 @@ fn e7c9_x5_a_covert_resolution_is_secret_canon_and_a_public_one_is_not() {
         &format!("@op/terms {}/visibility=covert", covert.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", covert.0));
-    ok(
-        &mut tw,
-        attacker,
-        &format!("@op/resolve {}=success", covert.0),
-    );
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", covert.0));
     fire_n(&mut tw, 7);
     let chronicle = texts(&tw.run(stranger, "+chronicle"));
     assert!(
@@ -1188,11 +1176,7 @@ fn e7c9_x5_a_covert_resolution_is_secret_canon_and_a_public_one_is_not() {
         &format!("@op/terms {}/visibility=public", public.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", public.0));
-    ok(
-        &mut tw,
-        attacker,
-        &format!("@op/resolve {}=success", public.0),
-    );
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", public.0));
     fire_n(&mut tw, 8);
     let chronicle = texts(&tw.run(stranger, "+chronicle"));
     assert!(
@@ -1286,7 +1270,7 @@ fn e7c9_z2_a_mutated_surface_disputes_and_pages_rather_than_settling() {
 
     // It refuses to settle: neither the command nor the tick moves it, and the
     // money stays exactly where it is.
-    err(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    err(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 9);
     assert!(!matches!(state_of(&tw, id), OperationState::Resolved));
     assert_eq!(
@@ -1625,7 +1609,7 @@ fn e7c9_p2_the_campaign_fact_answers_from_the_applied_marker_never_a_status() {
     assert!(ask(&tw).is_none());
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
     assert!(ask(&tw).is_none());
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     // Entering `Resolving` writes the applied root marker, so the fact holds from
     // there — the marker, not the terminal status.
     assert!(matches!(
@@ -1720,7 +1704,7 @@ fn e7c9_p4_an_unknown_stored_consumer_pages_rather_than_completing() {
     money(&mut tw, &[(attacker, 1_000)]);
     let id = declare(&mut tw, attacker, 100);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     let entry = kv
@@ -1766,7 +1750,7 @@ fn e7c9_p5_a_resolved_operation_never_reopens() {
     money(&mut tw, &[(attacker, 1_000)]);
     let id = declare(&mut tw, attacker, 100);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 9);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     // Every route back in refuses.
@@ -1826,11 +1810,7 @@ fn e7c9_p6_force_retirement_releases_every_unit_for_another_operation() {
         "the index did not see the join"
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", first.0));
-    ok(
-        &mut tw,
-        attacker,
-        &format!("@op/resolve {}=success", first.0),
-    );
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", first.0));
     fire_n(&mut tw, 9);
     assert_eq!(state_of(&tw, first), OperationState::Resolved);
     // The OBSERVABLE outcome: the unit can now join a different operation, which
@@ -1862,7 +1842,7 @@ fn e7c9_a8_the_bond_settles_once_even_with_the_idempotency_key_evicted() {
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 250);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 8);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     let settled = (bal(&tw, acct), held(&tw, acct), ledger_total(&tw));
@@ -2392,7 +2372,7 @@ fn vf_c2b_a_bond_settled_outside_this_operation_pauses_and_pages_instead_of_ackn
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 250);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 8);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     assert_eq!(held(&tw, acct), 0, "the bond really was released");
@@ -2578,7 +2558,7 @@ fn vf_c3c_force_retirement_of_a_full_roster_writes_a_document_the_wire_accepts()
         ok(&mut tw, attacker, &format!("@op/join {}=#{}", id.0, unit.0));
     }
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 10);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     let mut kv = Kv::new();
@@ -2604,7 +2584,7 @@ fn vf_c4a_an_unknown_consumer_stranding_a_bond_in_resolving_can_be_abandoned_and
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 400);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     edit_op(&mut kv, id, |v| {
@@ -2657,7 +2637,7 @@ fn vf_c4b_a_terms_break_found_mid_drain_can_be_abandoned_and_the_fan_out_complet
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 400);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     edit_op(&mut kv, id, |v| {
@@ -2690,7 +2670,7 @@ fn vf_c4c_the_unknown_consumer_page_names_a_command_that_runs() {
     money(&mut tw, &[(attacker, 1_000)]);
     let id = declare(&mut tw, attacker, 100);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     edit_op(&mut kv, id, |v| {
@@ -2881,7 +2861,7 @@ fn vf_c7c_a_surface_broken_after_any_other_outcome_pauses_terms_broken_mid_drain
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 300);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     edit_op(&mut kv, id, |v| {
@@ -2915,7 +2895,14 @@ fn vf_c8a_a_forfeit_account_that_does_not_exist_is_refused_at_the_terms_edit() {
         attacker,
         &format!("@op/terms {}/bond.forfeit=#{}:99999", id.0, defender.0),
     );
-    assert!(refusal.contains("does not exist"), "{refusal}");
+    assert!(refusal.contains("cannot be used"), "{refusal}");
+    // Staff still see the detailed diagnostic reason.
+    let staff_refusal = err(
+        &mut tw,
+        GOD,
+        &format!("@op/terms {}/bond.forfeit=#{}:99999", id.0, defender.0),
+    );
+    assert!(staff_refusal.contains("does not exist"), "{staff_refusal}");
     // The observable: the terms never took it, so nothing can ever strand on it.
     assert!(
         camp(&tw)
@@ -2957,7 +2944,16 @@ fn vf_c8b_a_forfeit_account_on_a_different_instrument_is_refused_at_the_terms_ed
         attacker,
         &format!("@op/terms {}/bond.forfeit=#{}:{silver}", id.0, defender.0),
     );
-    assert!(refusal.contains("different instrument"), "{refusal}");
+    assert!(refusal.contains("cannot be used"), "{refusal}");
+    let staff_refusal = err(
+        &mut tw,
+        GOD,
+        &format!("@op/terms {}/bond.forfeit=#{}:{silver}", id.0, defender.0),
+    );
+    assert!(
+        staff_refusal.contains("different instrument"),
+        "{staff_refusal}"
+    );
 }
 
 /// **C8c. A bond on an account the issuer does not own is refused at the edit**,
@@ -2981,7 +2977,7 @@ fn vf_c8c_a_bond_account_the_issuer_does_not_own_is_refused_at_the_terms_edit_no
         attacker,
         &format!("@op/terms {}/bond={theirs}:100", id.0),
     );
-    assert!(refusal.contains("issuer's own account"), "{refusal}");
+    assert!(refusal.contains("cannot be used"), "{refusal}");
     assert!(camp(&tw).operation(id).expect("op").terms.bond.is_none());
     assert_eq!(held(&tw, theirs), 0);
 }
@@ -3000,7 +2996,13 @@ fn vf_c9a_a_stake_naming_a_contract_that_does_not_exist_is_refused_at_the_terms_
         attacker,
         &format!("@op/terms {}/stake.outcome=4242:success", id.0),
     );
-    assert!(refusal.contains("does not exist"), "{refusal}");
+    assert!(refusal.contains("cannot be bound"), "{refusal}");
+    let staff_refusal = err(
+        &mut tw,
+        GOD,
+        &format!("@op/terms {}/stake.outcome=4242:success", id.0),
+    );
+    assert!(staff_refusal.contains("does not exist"), "{staff_refusal}");
     assert!(camp(&tw).operation(id).expect("op").terms.stakes.is_empty());
 }
 
@@ -3020,9 +3022,15 @@ fn vf_c9b_a_stake_whose_contract_carries_no_matching_canon_attestor_is_refused()
         attacker,
         &format!("@op/terms {}/stake.outcome={contract}:success", mine.0),
     );
+    assert!(refusal.contains("cannot be bound"), "{refusal}");
+    let staff_refusal = err(
+        &mut tw,
+        GOD,
+        &format!("@op/terms {}/stake.outcome={contract}:success", mine.0),
+    );
     assert!(
-        refusal.contains("no `campaign.operation.resolved` attestor"),
-        "{refusal}"
+        staff_refusal.contains("no `campaign.operation.resolved` attestor"),
+        "{staff_refusal}"
     );
     // …and the correctly bound one IS accepted.
     ok(
@@ -3071,7 +3079,7 @@ fn vf_c9c_a_correctly_bound_contract_settles_and_the_consumer_reruns_twenty_time
         &format!("@op/terms {}/side=defend:#{}", id.0, payee.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 10);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     assert_eq!(bal(&tw, theirs), 10, "the bound contract did not settle");
@@ -3099,7 +3107,7 @@ fn vf_d1a_a_root_record_canon_can_no_longer_answer_for_still_discharges_front_co
         &format!("@op/terms {}/stake.front=7:orbit", id.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     assert!(pending_of(&tw, id).contains(&ConsumerId::FrontControl));
 
     // The record is committed and the marker carries its id…
@@ -3143,7 +3151,7 @@ fn vf_d1b_ordinary_canon_traffic_after_the_resolution_still_reaches_resolved() {
         &format!("@op/terms {}/stake.front=7:orbit", id.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     // Staff traffic: thirty further operations, each resolving into canon.
     for _ in 0..30 {
         let other = declare(&mut tw, GOD, 0);
@@ -3203,7 +3211,7 @@ fn vf_d6a_a_canon_less_composition_refuses_to_enter_resolving_and_the_fact_answe
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 300);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    let refusal = err(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    let refusal = err(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     assert!(refusal.contains("cannot resolve right now"), "{refusal}");
 
     // No marker, no boundary fact, and the bond is exactly where it was.
@@ -3256,11 +3264,7 @@ fn vf_d6c_every_stamped_marker_carries_a_canon_id_and_it_survives_a_reboot() {
     for outcome in ["success", "failure", "partial"] {
         let id = declare(&mut tw, attacker, 10);
         ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-        ok(
-            &mut tw,
-            attacker,
-            &format!("@op/resolve {}={outcome}", id.0),
-        );
+        ok(&mut tw, GOD, &format!("@op/resolve {}={outcome}", id.0));
         ids.push(id);
     }
     let abandoned = declare(&mut tw, attacker, 10);
@@ -3359,7 +3363,7 @@ fn vf_d7b_a_successful_operation_settles_that_same_contract() {
         &format!("@op/terms {}/side=defend:#{}", id.0, party.0),
     );
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 12);
     assert_eq!(bal(&tw, theirs), 10, "the completion did not settle it");
 }
@@ -3409,7 +3413,7 @@ fn vf_d8a_a_frozen_economy_defers_the_bond_consumer_without_counting_an_attempt(
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 200);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     ok(&mut tw, GOD, "@econfreeze");
     // Four times `MAX_CONSUMER_ATTEMPTS`, and it neither pauses nor counts.
     fire_n(&mut tw, 12);
@@ -3438,7 +3442,7 @@ fn vf_d8b_a_zero_window_key_lookup_never_pauses_the_operation() {
     let acct = account_of(&tw, attacker);
     let id = declare(&mut tw, attacker, 150);
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     fire_n(&mut tw, 12);
     assert_eq!(state_of(&tw, id), OperationState::Resolved);
     assert!(
@@ -3719,7 +3723,7 @@ fn vf_b7a_a_4000_byte_outcome_is_refused_at_the_command_and_a_stored_one_is_held
 
     // …and one that reached the store some other way refuses on load and is HELD,
     // never truncated and never deleted.
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let mut kv = Kv::new();
     fold_into(&mut tw, &mut kv);
     edit_op(&mut kv, id, |v| {
@@ -3813,7 +3817,7 @@ fn vf_b8a_one_player_past_the_per_issuer_cap_is_refused_while_a_second_player_ma
     ok(&mut tw, GOD, "@op/declare staff are not counted");
     // …and a terminal operation frees the slot, which cut 9's global cap never did.
     ok(&mut tw, hog, &format!("@op/activate {}", ids[0].0));
-    ok(&mut tw, hog, &format!("@op/resolve {}=success", ids[0].0));
+    ok(&mut tw, hog, &format!("@op/resolve {}=failure", ids[0].0));
     fire_n(&mut tw, 10);
     assert_eq!(state_of(&tw, ids[0]), OperationState::Resolved);
     ok(&mut tw, hog, "@op/declare room again");
@@ -3832,7 +3836,7 @@ fn vf_b9a_seventy_participants_record_the_entity_overflow_in_the_canon_detail() 
         ok(&mut tw, attacker, &format!("@op/join {}=#{}", id.0, unit.0));
     }
     ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-    ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     let state = tw
         .world()
         .module_state::<mush_canon::CanonState>()
@@ -3878,7 +3882,7 @@ fn vf_b12a_a_covert_operations_resolution_leaves_a_fact_condition_unsatisfied() 
     );
     for id in [covert, public] {
         ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
-        ok(&mut tw, attacker, &format!("@op/resolve {}=success", id.0));
+        ok(&mut tw, GOD, &format!("@op/resolve {}=success", id.0));
     }
     fire_n(&mut tw, 12);
     let ask = |tw: &TestWorld, id: OperationId| {
@@ -4009,11 +4013,7 @@ fn high30_resolving_from_declared_is_refused_while_staff_abort_still_works() {
     money(&mut tw, &[(attacker, 1_000)]);
     let id = declare(&mut tw, attacker, 50);
 
-    for (actor, outcome) in [
-        (attacker, "success"),
-        (attacker, "failure"),
-        (GOD, "forfeit"),
-    ] {
+    for (actor, outcome) in [(GOD, "success"), (attacker, "failure"), (GOD, "forfeit")] {
         let refusal = err(&mut tw, actor, &format!("@op/resolve {}={outcome}", id.0));
         assert!(
             refusal.contains("not been activated"),
@@ -4021,19 +4021,24 @@ fn high30_resolving_from_declared_is_refused_while_staff_abort_still_works() {
         );
         assert_eq!(state_of(&tw, id), OperationState::Declared);
     }
+    // Non-staff manual `success` is refused outright (P2-MOD-3).
+    assert!(
+        err(&mut tw, attacker, &format!("@op/resolve {}=success", id.0))
+            .contains("Permission denied")
+    );
 
     // Staff abort from Declared still succeeds and drains cleanly to Aborted.
     ok(&mut tw, GOD, &format!("@op/resolve {}=abort", id.0));
     fire_n(&mut tw, 8);
     assert_eq!(state_of(&tw, id), OperationState::Aborted);
 
-    // Once activated, normal resolution succeeds.
+    // Once activated, issuer concession (`failure`) and staff resolution succeed.
     let live = declare(&mut tw, attacker, 50);
     ok(&mut tw, attacker, &format!("@op/activate {}", live.0));
     ok(
         &mut tw,
         attacker,
-        &format!("@op/resolve {}=success", live.0),
+        &format!("@op/resolve {}=failure", live.0),
     );
     fire_n(&mut tw, 8);
     assert_eq!(state_of(&tw, live), OperationState::Resolved);
@@ -4099,7 +4104,7 @@ fn high30_terminal_pruning_prevents_global_exhaustion_and_enforces_declaration_r
         for _ in 0..batch {
             let id = declare(&mut tw, spammer, 0);
             ok(&mut tw, spammer, &format!("@op/activate {}", id.0));
-            ok(&mut tw, spammer, &format!("@op/resolve {}=success", id.0));
+            ok(&mut tw, spammer, &format!("@op/resolve {}=failure", id.0));
         }
         fire_n(&mut tw, 12);
         declared_count += batch;
@@ -4193,4 +4198,416 @@ fn force_attach_rejects_unauthorized_and_cross_org_parents() {
         );
         assert_eq!(camp(&tw).formation(fm_a).expect("a").parent, None);
     }
+}
+
+// ===========================================================================
+// Pass 2 Tier 1C security hardening — P2-MOD-3 & P2-MOD-20
+// ===========================================================================
+
+/// **P2-MOD-3a.** Non-staff `@op/resolve` is strictly restricted to conceding
+/// (`failure`): `success` (explicit or default), `partial`, `forfeit`, `abort`,
+/// and `retry` are refused in both `Activated` and `Running` states, blocking
+/// bond-forfeit evasion and premature E4 contract attestation. Conceding
+/// (`failure`) forfeits the bond to its beneficiary and emits
+/// `KIND_OPERATION_FAILED` without settling `campaign.operation.resolved`
+/// contracts or satisfying `CampaignFactProvider`.
+#[test]
+fn p2_mod_3_non_staff_resolve_is_restricted_to_failure_and_blocks_bond_evasion() {
+    use mush_economy::FactProvider;
+
+    let mut tw = boot();
+    let attacker = tw.spawn_player("Attacker");
+    let defender = tw.spawn_player("Defender");
+    money(&mut tw, &[(attacker, 1_000), (defender, 0)]);
+    let mine = account_of(&tw, attacker);
+    let theirs = account_of(&tw, defender);
+
+    let id = declare(&mut tw, attacker, 300);
+    let contract = contract_attesting(&mut tw, attacker, id);
+    let payee = snap(&tw)
+        .contract(mush_economy::ContractId(contract))
+        .expect("contract")
+        .consent
+        .parties
+        .iter()
+        .find_map(|p| match p {
+            PrincipalId::Object(o) if *o != attacker => Some(*o),
+            _ => None,
+        })
+        .expect("payee");
+    let payee_acct = account_of(&tw, payee);
+
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/bond.forfeit=#{}:{theirs}", id.0, defender.0),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/stake.outcome={contract}:success", id.0),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/side=defend:#{}", id.0, payee.0),
+    );
+    ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
+
+    // In Activated state: every non-`failure` outcome (including empty rhs = success)
+    // is refused for the non-staff issuer.
+    for cmd in [
+        format!("@op/resolve {}", id.0),
+        format!("@op/resolve {}=success", id.0),
+        format!("@op/resolve {}=partial", id.0),
+        format!("@op/resolve {}=forfeit", id.0),
+        format!("@op/resolve {}=abort", id.0),
+        format!("@op/resolve {}=retry", id.0),
+    ] {
+        let refusal = err(&mut tw, attacker, &cmd);
+        assert!(refusal.contains("Permission denied"), "{cmd}: {refusal}");
+    }
+    assert_eq!(state_of(&tw, id), OperationState::Activated);
+    assert_eq!(held(&tw, mine), 310, "300 bond hold + 10 contract escrow");
+    assert_eq!(bal(&tw, theirs), 0);
+    assert_eq!(bal(&tw, payee_acct), 0);
+
+    // Advance into Running state: manual non-staff `success`/`partial` remain refused.
+    jump_to(&mut tw, 673 * HOUR);
+    assert_eq!(state_of(&tw, id), OperationState::Running);
+    for cmd in [
+        format!("@op/resolve {}=success", id.0),
+        format!("@op/resolve {}=partial", id.0),
+    ] {
+        let refusal = err(&mut tw, attacker, &cmd);
+        assert!(refusal.contains("Permission denied"), "{cmd}: {refusal}");
+    }
+    assert_eq!(state_of(&tw, id), OperationState::Running);
+
+    // Non-staff issuer MAY concede with `failure`, which forfeits the bond to
+    // defender, commits `KIND_OPERATION_FAILED`, and does NOT attest the contract
+    // or satisfy `CampaignFactProvider`.
+    ok(&mut tw, attacker, &format!("@op/resolve {}=failure", id.0));
+    fire_n(&mut tw, 12);
+    assert_eq!(state_of(&tw, id), OperationState::Resolved);
+    assert_eq!(
+        held(&tw, mine),
+        10,
+        "300 bond captured; only 10 unsettled contract escrow remains held"
+    );
+    assert_eq!(
+        bal(&tw, mine),
+        700,
+        "300 bond forfeited; 10 contract escrow still held, not debited"
+    );
+    assert_eq!(
+        bal(&tw, theirs),
+        300,
+        "defender must receive forfeited bond"
+    );
+    assert_eq!(
+        bal(&tw, payee_acct),
+        0,
+        "concession must not attest a campaign.operation.resolved contract"
+    );
+    assert!(
+        mush_campaign::CampaignFactProvider
+            .resolve(
+                tw.world(),
+                mush_campaign::KIND_OPERATION_RESOLVED,
+                &id.0.to_string(),
+                None,
+            )
+            .is_none(),
+        "concession must not satisfy campaign.operation.resolved fact"
+    );
+    let canon = tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .expect("canon");
+    let rec = mush_canon::records_for_source(canon, &mush_campaign::canon_source(id), 8)
+        .into_iter()
+        .next()
+        .expect("root canon line");
+    assert_eq!(rec.kind.as_str(), mush_campaign::KIND_OPERATION_FAILED);
+}
+
+/// **P2-MOD-3b.** Unchecked `terms.sides` entries are excluded from
+/// `CanonDraft::entities`, so an unprivileged player cannot name a third-party
+/// faction member to flip `mush-faction` territory clocks — neither by
+/// conceding (`failure`) nor by letting `WindowElapsed` or staff resolve
+/// `success`. Conceding as a member of that faction also never advances an
+/// `on:campaign.operation.resolved` clock.
+#[test]
+fn p2_mod_3_unchecked_terms_sides_cannot_flip_faction_territory_clocks() {
+    let mut tw = boot();
+    let attacker = tw.spawn_player("Outsider");
+    let victim = tw.spawn_player("TargetMember");
+    money(&mut tw, &[(attacker, 1_000), (victim, 1_000)]);
+
+    ok(&mut tw, GOD, "@faction/create Ironworks");
+    ok(&mut tw, GOD, "@faction/add Ironworks=TargetMember");
+    ok(&mut tw, GOD, "@region/create Iron Basin");
+    ok(&mut tw, GOD, "@front/create Ironworks=Claim Iron Basin");
+    ok(&mut tw, GOD, "@clock/create 0=Iron Basin falls/1");
+    ok(&mut tw, GOD, "@clock/set 0=on:campaign.operation.resolved");
+    ok(&mut tw, GOD, "@clock/set 0=control:Iron Basin/defacto");
+    let before = ok(&mut tw, GOD, "+territory");
+    assert!(!before.contains("Ironworks"), "{before}");
+
+    // 1. Outsider names TargetMember in `terms.sides`, activates, tries `=success`
+    //    (refused), then concedes `=failure` -> zero territory flip.
+    let op1 = declare(&mut tw, attacker, 0);
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/side=target:#{}", op1.0, victim.0),
+    );
+    ok(&mut tw, attacker, &format!("@op/activate {}", op1.0));
+    err(&mut tw, attacker, &format!("@op/resolve {}=success", op1.0));
+    ok(&mut tw, attacker, &format!("@op/resolve {}=failure", op1.0));
+    fire_n(&mut tw, 8);
+    assert_eq!(ok(&mut tw, GOD, "+territory"), before);
+
+    // 2. Even if an op with an unverified `terms.sides` entry resolves `success`
+    //    (via staff or WindowElapsed), TargetMember is excluded from CanonDraft::entities
+    //    and Ironworks's clock does NOT advance.
+    let op2 = declare(&mut tw, attacker, 0);
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/side=target:#{}", op2.0, victim.0),
+    );
+    ok(&mut tw, attacker, &format!("@op/activate {}", op2.0));
+    ok(&mut tw, GOD, &format!("@op/resolve {}=success", op2.0));
+    fire_n(&mut tw, 8);
+    assert_eq!(
+        ok(&mut tw, GOD, "+territory"),
+        before,
+        "unverified terms.sides entry flipped third-party faction territory"
+    );
+    let canon = tw
+        .world()
+        .module_state::<mush_canon::CanonState>()
+        .expect("canon");
+    let rec2 = mush_canon::records_for_source(canon, &mush_campaign::canon_source(op2), 8)
+        .into_iter()
+        .next()
+        .expect("op2 canon record");
+    assert!(
+        !rec2.entities.contains(&victim),
+        "unverified side leaked into CanonDraft::entities: {:?}",
+        rec2.entities
+    );
+
+    // 3. Even TargetMember themselves conceding a 0-bond op (`=failure`) does not
+    //    advance their own faction's `on:campaign.operation.resolved` clock.
+    let op3 = declare(&mut tw, victim, 0);
+    ok(
+        &mut tw,
+        victim,
+        &format!("@op/join {}=#{}", op3.0, victim.0),
+    );
+    ok(&mut tw, victim, &format!("@op/activate {}", op3.0));
+    ok(&mut tw, victim, &format!("@op/resolve {}=failure", op3.0));
+    fire_n(&mut tw, 8);
+    assert_eq!(
+        ok(&mut tw, GOD, "+territory"),
+        before,
+        "conceding with failure must not advance on:campaign.operation.resolved clocks"
+    );
+}
+
+/// **P2-MOD-20.** Forfeit beneficiary accounts must belong to the named
+/// beneficiary principal and differ from `bond.account` (enforced both at
+/// `@op/terms` and at `bond::capture`); non-staff bond, forfeit, and outcome
+/// stake errors collapse into byte-identical existence-hiding refusals so
+/// callers cannot enumerate private accounts or contracts.
+#[test]
+fn p2_mod_20_beneficiary_ownership_distinct_account_and_existence_hiding_oracles() {
+    let mut tw = boot();
+    let attacker = tw.spawn_player("Attacker");
+    let defender = tw.spawn_player("Defender");
+    let third = tw.spawn_player("Third");
+    money(&mut tw, &[(attacker, 1_000), (defender, 0), (third, 100)]);
+    ok(&mut tw, GOD, "@instrument/register silver=0");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open #{}=silver", defender.0),
+    );
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", defender.0));
+    let attacker_acct = account_of(&tw, attacker);
+    let defender_gold = snap(&tw)
+        .accounts()
+        .find(|a| a.owner == PrincipalId::Object(defender) && a.instrument.as_str() == "gold")
+        .expect("defender gold")
+        .id;
+    let defender_closed = snap(&tw)
+        .accounts()
+        .filter(|a| a.owner == PrincipalId::Object(defender) && a.instrument.as_str() == "gold")
+        .map(|a| a.id)
+        .max()
+        .expect("second defender gold");
+    ok(&mut tw, GOD, &format!("@account/close {defender_closed}"));
+    let defender_silver = snap(&tw)
+        .accounts()
+        .find(|a| a.owner == PrincipalId::Object(defender) && a.instrument.as_str() == "silver")
+        .expect("defender silver")
+        .id;
+    let third_acct = account_of(&tw, third);
+
+    // 1. Bond account existence/status/owner oracle collapsed for non-staff.
+    let probe_op = declare(&mut tw, attacker, 0);
+    let bond_missing = err(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/bond=99999:100", probe_op.0),
+    );
+    let bond_closed = err(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/bond={defender_closed}:100", probe_op.0),
+    );
+    let bond_foreign = err(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/bond={third_acct}:100", probe_op.0),
+    );
+    assert_eq!(bond_missing, bond_closed, "bond status oracle leaked");
+    assert_eq!(bond_missing, bond_foreign, "bond ownership oracle leaked");
+
+    // 2. Forfeit beneficiary ownership + distinct account + oracle collapse.
+    let id = declare(&mut tw, attacker, 300);
+    let forfeit_self_divert = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/bond.forfeit=#{}:{attacker_acct}",
+            id.0, defender.0
+        ),
+    );
+    let forfeit_same_acct = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/bond.forfeit=#{}:{attacker_acct}",
+            id.0, attacker.0
+        ),
+    );
+    let forfeit_wrong_owner = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/bond.forfeit=#{}:{third_acct}",
+            id.0, defender.0
+        ),
+    );
+    let forfeit_missing = err(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/bond.forfeit=#{}:99999", id.0, defender.0),
+    );
+    let forfeit_closed = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/bond.forfeit=#{}:{defender_closed}",
+            id.0, defender.0
+        ),
+    );
+    let forfeit_wrong_inst = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/bond.forfeit=#{}:{defender_silver}",
+            id.0, defender.0
+        ),
+    );
+    for (label, msg) in [
+        ("same_acct", &forfeit_same_acct),
+        ("wrong_owner", &forfeit_wrong_owner),
+        ("missing", &forfeit_missing),
+        ("closed", &forfeit_closed),
+        ("wrong_inst", &forfeit_wrong_inst),
+    ] {
+        assert_eq!(
+            &forfeit_self_divert, msg,
+            "forfeit oracle diverged for {label}"
+        );
+    }
+    // Legitimate defender gold account IS accepted.
+    ok(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/bond.forfeit=#{}:{defender_gold}",
+            id.0, defender.0
+        ),
+    );
+
+    // 3. Outcome stake contract existence/attestor oracle collapsed for non-staff.
+    let other_op = declare(&mut tw, third, 0);
+    let foreign_contract = contract_attesting(&mut tw, third, id);
+    let own_wrong_contract = contract_attesting(&mut tw, attacker, other_op);
+    let stake_missing = err(
+        &mut tw,
+        attacker,
+        &format!("@op/terms {}/stake.outcome=99999:success", id.0),
+    );
+    let stake_wrong_op = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/stake.outcome={own_wrong_contract}:success",
+            id.0
+        ),
+    );
+    let stake_foreign = err(
+        &mut tw,
+        attacker,
+        &format!(
+            "@op/terms {}/stake.outcome={foreign_contract}:success",
+            id.0
+        ),
+    );
+    assert_eq!(
+        stake_missing, stake_wrong_op,
+        "contract existence oracle leaked"
+    );
+    assert_eq!(
+        stake_missing, stake_foreign,
+        "foreign contract oracle leaked"
+    );
+
+    // 4. Defense-in-depth in `bond::capture`: even if a legacy persisted operation
+    //    stored `forfeit_to = (#defender, attacker_acct)` with a valid consent hash,
+    //    capture refuses to divert the bond back to `attacker_acct`.
+    ok(&mut tw, attacker, &format!("@op/activate {}", id.0));
+    let mut kv = Kv::new();
+    fold_into(&mut tw, &mut kv);
+    // Re-point the stored forfeit account to `attacker_acct` and recompute hash to
+    // simulate a pre-fix legacy document on disk.
+    let mut tampered = camp(&tw).operation(id).expect("op").clone();
+    tampered.terms.bond.as_mut().expect("bond").forfeit_to =
+        Some((PrincipalId::Object(defender), attacker_acct));
+    tampered.terms.consent_hash = mush_campaign::operation_consent_hash(&tampered.terms);
+    let tampered_json = serde_json::to_value(&tampered).expect("json");
+    edit_op(&mut kv, id, |v| {
+        *v = tampered_json.clone();
+    });
+    reboot(&mut tw, &kv);
+
+    ok(&mut tw, GOD, &format!("@op/resolve {}=forfeit", id.0));
+    fire_n(&mut tw, 12);
+    // Bond capture must have refused rather than paying `attacker_acct`, pausing
+    // the operation on `consumer-failed` with the hold still intact.
+    assert!(!matches!(state_of(&tw, id), OperationState::Resolved));
+    let shown = ok(&mut tw, GOD, &format!("@op/consumers {}", id.0));
+    assert!(shown.contains("paused: consumer-failed"), "{shown}");
+    assert_eq!(
+        held(&tw, attacker_acct),
+        310,
+        "300 bond hold + 10 contract escrow must remain intact"
+    );
 }

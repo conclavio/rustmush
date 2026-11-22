@@ -1891,7 +1891,7 @@ async fn settle_surface(rig: &mut Rig, store: &InMemoryStore) -> TestResult {
     Err("surface work did not settle".into())
 }
 
-async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> TestResult {
+async fn drain_submits(world: &mut TestWorld, store: &InMemoryStore) -> TestResult {
     // Keep background site opening bounded to this story's Ahuna site. Other
     // clerks verify by pull and retry later; every landed act uses the coordinator.
     let other_sites: std::collections::BTreeSet<_> = world
@@ -1902,16 +1902,21 @@ async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> Te
         .filter(|m| m.entry.as_str() != story().site)
         .filter_map(|m| m.site.as_ref().and_then(|s| s.clerk).map(ObjId))
         .collect();
-    let now = world.world().now() + seconds;
-    world.set_now(now);
-    world.fire_due(now * 1000);
-    persist_legacy(world, store).await?;
     while let Some(request) = world.engine_mut().take_authoritative_submit() {
         if other_sites.contains(&request.actor) {
             continue;
         }
         land_request(world, store, &request).await?;
     }
+    Ok(())
+}
+
+async fn pulse(world: &mut TestWorld, store: &InMemoryStore, seconds: i64) -> TestResult {
+    let now = world.world().now() + seconds;
+    world.set_now(now);
+    world.fire_due(now * 1000);
+    persist_legacy(world, store).await?;
+    drain_submits(world, store).await?;
     Ok(())
 }
 
@@ -2425,14 +2430,28 @@ async fn hired_npc_station_request_and_apply_recheck_current_physical_console() 
         &format!("@spatial/place/interior #{}=#{}", rig.invitee.0, crew.0),
     )?;
     persist_legacy(&mut rig.world, &store).await?;
-    assert!(install_due_handoff(&mut rig.world, &store).await.is_err());
+    // P2-MOD-25: once the NPC leaves the physical console, the due handoff
+    // installs a scheduler-owned stale-cancel action (`Ok(())`) instead of
+    // returning `Err(Stale)` and spinning forever, leaving helm ungranted.
+    install_due_handoff(&mut rig.world, &store).await?;
     assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    assert!(
+        install_due_handoff(&mut rig.world, &store).await.is_err(),
+        "stale pending handoff must be cleared rather than staying due"
+    );
     ordinary(
         &mut rig.world,
         GOD,
         &format!("@spatial/place/interior #{}=#{}", rig.invitee.0, cab.0),
     )?;
     persist_legacy(&mut rig.world, &store).await?;
+    // Returning to the console must not revive the cancelled handoff; a fresh
+    // seat request is required and succeeds cleanly.
+    assert!(!actual_helm(&rig.world, rig.unit, rig.invitee)?);
+    rig.world.set_now(rig.world.world().now() + 1);
+    let request = submit(&mut rig.world, organizer, "+sortie/seat 1:1=1")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    land_request(&mut rig.world, &store, &request).await?;
     install_due_handoff(&mut rig.world, &store).await?;
     assert!(actual_helm(&rig.world, rig.unit, rig.invitee)?);
     Ok(())
@@ -4352,6 +4371,11 @@ async fn field_second(
     pulse(world, store, 1).await?;
     pump_arena(world, rx);
     persist_legacy(world, store).await?;
+    // Land any authoritative submission queued by the trailing arena egress
+    // (such as `on_withdrawn -> submit_owed` for `tacsim_field op=exit`)
+    // before returning, matching the server world loop so it cannot dangle
+    // past a subsequent `exit::forget`.
+    drain_submits(world, store).await?;
     Ok(())
 }
 
@@ -5634,6 +5658,10 @@ async fn ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field
             module: Some(smol_str::SmolStr::new(tacsim::NS)),
             typed_state: mush_core::ModuleActionState::unavailable(),
         };
+        // P2-MOD-5: Transition::Unplace refuses units still marked deployed in
+        // a live field; clear the carrier's deployment mark first to simulate
+        // it leaving custody before unplacing it from the site.
+        mush_sim::deployed::clear(ctx.w, rig.carrier);
         mush_sim::unplace(&mut ctx, rig.carrier, "test: the carrier is gone")?;
     }
     let flies = |world: &TestWorld| {

@@ -39,6 +39,15 @@ pub const MAX_PROPOSALS: usize = 1024;
 /// The most terminal (`Withdrawn` / `Applied`) proposals retained before the
 /// oldest terminal entries are pruned from RAM and disk (STRAG-M9).
 pub const MAX_RETAINED_TERMINAL_PROPOSALS: usize = 64;
+/// Maximum simultaneously open proposals one non-staff author may hold
+/// (`P2-MOD-28`).
+pub const MAX_OPEN_PROPOSALS_PER_PLAYER: usize = 4;
+/// Age in real seconds after which idle open/`Failed`/`Ready`/`Capped` proposals
+/// are considered stale and eligible for automatic pruning (`P2-MOD-28`).
+pub const STALE_PROPOSAL_TTL_SECS: i64 = 7 * 24 * 3_600;
+/// Age in real seconds after which an in-flight `Planning` proposal is treated
+/// as stale if capacity eviction is required (`P2-MOD-28`).
+pub const STALE_PLANNING_TTL_SECS: i64 = 3_600;
 /// Maximum new non-staff proposals one author may create within
 /// [`PROPOSAL_WINDOW_SECS`] (STRAG-M9).
 pub const MAX_PROPOSALS_PER_PLAYER_WINDOW: usize = 8;
@@ -468,6 +477,79 @@ pub struct PlanOutcome {
 // Boot
 // ---------------------------------------------------------------------------
 
+/// Priority rank for evicting an open proposal when the proposal book is at
+/// [`MAX_PROPOSALS`] (smaller tuple is evicted first): non-retryable failures,
+/// retryable failures / cost-capped, idle work/answers/ready proposals, and
+/// finally stale in-flight planning runs (`>= STALE_PLANNING_TTL_SECS`). Within
+/// each tier, non-staff proposals are evicted before staff proposals, oldest
+/// `updated` first (`P2-MOD-28`).
+fn open_eviction_key(rec: &ProposalRec, now: i64) -> Option<(u8, u8, i64, u64)> {
+    let tier = match rec.status {
+        ProposalStatus::Failed {
+            retryable: false, ..
+        } => 0,
+        ProposalStatus::Failed {
+            retryable: true, ..
+        }
+        | ProposalStatus::Capped => 1,
+        ProposalStatus::NeedsWork { .. } | ProposalStatus::NeedsAnswers | ProposalStatus::Ready => {
+            2
+        }
+        ProposalStatus::Planning => {
+            if now.saturating_sub(rec.updated) >= STALE_PLANNING_TTL_SECS {
+                3
+            } else {
+                return None;
+            }
+        }
+        ProposalStatus::Applied { .. } | ProposalStatus::Withdrawn => return None,
+    };
+    let staff_rank = u8::from(rec.staff);
+    Some((tier, staff_rank, rec.updated, rec.id))
+}
+
+/// Evict stale open proposals (`now - updated >= STALE_PROPOSAL_TTL_SECS`) from
+/// `proposals` and return the removed records.
+fn prune_stale_open_map(proposals: &mut BTreeMap<u64, ProposalRec>, now: i64) -> Vec<ProposalRec> {
+    let stale_ids: Vec<u64> = proposals
+        .values()
+        .filter(|r| r.status.open() && now.saturating_sub(r.updated) >= STALE_PROPOSAL_TTL_SECS)
+        .map(|r| r.id)
+        .collect();
+    let mut removed = Vec::with_capacity(stale_ids.len());
+    for id in stale_ids {
+        if let Some(rec) = proposals.remove(&id) {
+            removed.push(rec);
+        }
+    }
+    removed
+}
+
+/// Evict lowest-priority open proposals (`Failed`, `Capped`, `NeedsWork`,
+/// `NeedsAnswers`, `Ready`, and stale `Planning`) until `proposals.len() <= target_len`.
+fn prune_open_to_capacity_map(
+    proposals: &mut BTreeMap<u64, ProposalRec>,
+    now: i64,
+    target_len: usize,
+) -> Vec<ProposalRec> {
+    if proposals.len() <= target_len {
+        return Vec::new();
+    }
+    let mut candidates: Vec<(u8, u8, i64, u64)> = proposals
+        .values()
+        .filter_map(|r| open_eviction_key(r, now))
+        .collect();
+    candidates.sort_unstable();
+    let need = proposals.len().saturating_sub(target_len);
+    let mut removed = Vec::with_capacity(need);
+    for (_, _, _, id) in candidates.into_iter().take(need) {
+        if let Some(rec) = proposals.remove(&id) {
+            removed.push(rec);
+        }
+    }
+    removed
+}
+
 /// Prune excess terminal (`Withdrawn` / `Applied`) proposals from `proposals`
 /// down to at most `max_retained`, evicting `Withdrawn` before `Applied` and
 /// oldest `updated` first. Returns the pruned proposal ids.
@@ -584,16 +666,30 @@ pub(crate) fn hydrate_boot_full(kv: &[(SmolStr, serde_json::Value)]) -> BootProp
         }
     }
     if proposals.len() > MAX_PROPOSALS {
-        let mut overflow: Vec<(u8, i64, u64)> = proposals
+        let mut overflow: Vec<(u8, u8, i64, u64)> = proposals
             .values()
             .map(|r| {
-                let rank = if r.status.open() { 1 } else { 0 };
-                (rank, r.updated, r.id)
+                let tier = match r.status {
+                    ProposalStatus::Withdrawn => 0,
+                    ProposalStatus::Applied { .. } => 1,
+                    ProposalStatus::Failed {
+                        retryable: false, ..
+                    } => 2,
+                    ProposalStatus::Failed {
+                        retryable: true, ..
+                    }
+                    | ProposalStatus::Capped => 3,
+                    ProposalStatus::NeedsWork { .. }
+                    | ProposalStatus::NeedsAnswers
+                    | ProposalStatus::Ready => 4,
+                    ProposalStatus::Planning => 5,
+                };
+                (tier, u8::from(r.staff), r.updated, r.id)
             })
             .collect();
         overflow.sort_unstable();
         let excess = proposals.len().saturating_sub(MAX_PROPOSALS);
-        for (_, _, id) in overflow.into_iter().take(excess) {
+        for (_, _, _, id) in overflow.into_iter().take(excess) {
             if proposals.remove(&id).is_some() {
                 tracing::warn!(
                     id,
@@ -704,6 +800,61 @@ fn prune_proposals(ctx: &mut Ctx<'_>, max_retained: usize) {
     del_proposal_keys(ctx, &evicted);
 }
 
+fn finish_evicted_open(ctx: &mut Ctx<'_>, evicted: Vec<ProposalRec>) {
+    if evicted.is_empty() {
+        return;
+    }
+    let ids: Vec<u64> = evicted.iter().map(|r| r.id).collect();
+    if let Ok(st) = state_mut(ctx) {
+        for &id in &ids {
+            if let Some(token) = st.active_plan_runs.remove(&id) {
+                cancel_run_token(token);
+            }
+        }
+    }
+    del_proposal_keys(ctx, &ids);
+    for rec in &evicted {
+        if let Some(req_id) = rec.request_id() {
+            // Release any backing hydration request slot/footprint using staff
+            // identity (`GOD`) so automatic stale pruning never penalizes the
+            // author's player withdrawal cooldown.
+            let _ = hydrate::withdraw(ctx, req_id, mush_core::GOD, "stale proposal pruned");
+        }
+    }
+}
+
+fn prune_stale_open(ctx: &mut Ctx<'_>, now: i64) {
+    let evicted = state_mut(ctx)
+        .map(|st| prune_stale_open_map(&mut st.proposals, now))
+        .unwrap_or_default();
+    finish_evicted_open(ctx, evicted);
+}
+
+fn prune_open_for_capacity(ctx: &mut Ctx<'_>, now: i64, target_len: usize) {
+    let evicted = state_mut(ctx)
+        .map(|st| prune_open_to_capacity_map(&mut st.proposals, now, target_len))
+        .unwrap_or_default();
+    finish_evicted_open(ctx, evicted);
+}
+
+fn open_proposals_for(st: &WorldgenState, author: ObjId) -> usize {
+    st.proposals
+        .values()
+        .filter(|p| p.author == author && p.status.open())
+        .count()
+}
+
+fn check_player_create_gates(st: &WorldgenState, author: ObjId, now: i64) -> Result<(), String> {
+    check_create_rate(st, author, now)?;
+    let open = open_proposals_for(st, author);
+    if open >= MAX_OPEN_PROPOSALS_PER_PLAYER {
+        return Err(format!(
+            "You already have {open} open proposals (limit {MAX_OPEN_PROPOSALS_PER_PLAYER}). Finish (+build/go) or withdraw (+build/withdraw) one first."
+        ));
+    }
+    Ok(())
+}
+
 fn recent_times(history: &[i64], now: i64, window: i64) -> Vec<i64> {
     let cutoff = now.saturating_sub(window);
     history
@@ -775,17 +926,24 @@ pub fn create(
     source: ProposalSource,
 ) -> Result<ProposalRec, String> {
     let now = ctx.w.now();
+    // P2-MOD-28: expire stale open proposals before checking per-player or global caps.
+    prune_stale_open(ctx, now);
     let is_staff = staff || mush_atlas::is_staff(ctx.w, author);
     if !is_staff {
         let st = state(ctx)?;
-        check_create_rate(st, author, now)?;
+        check_player_create_gates(st, author, now)?;
     }
-    // STRAG-M9: prune terminal proposals before enforcing MAX_PROPOSALS so
-    // withdrawn/applied proposals cannot permanently exhaust the proposal book.
+    // STRAG-M9 + P2-MOD-28: prune terminal proposals first, then stale/idle open
+    // (`Failed`, `Capped`, `NeedsWork`, `NeedsAnswers`, `Ready`, stale `Planning`)
+    // proposals before enforcing `MAX_PROPOSALS` so the global book can never be
+    // permanently exhausted.
     if state(ctx)?.proposals.len() >= MAX_PROPOSALS {
         prune_proposals(ctx, MAX_RETAINED_TERMINAL_PROPOSALS);
         if state(ctx)?.proposals.len() >= MAX_PROPOSALS {
             prune_proposals(ctx, 0);
+        }
+        if state(ctx)?.proposals.len() >= MAX_PROPOSALS {
+            prune_open_for_capacity(ctx, now, MAX_PROPOSALS.saturating_sub(1));
         }
     }
     let rec = {
@@ -1547,6 +1705,16 @@ pub fn place(
             }
         }
     };
+    let now = ctx.w.now();
+    let staff = mush_atlas::is_staff(ctx.w, actor);
+    // P2-MOD-28: prune stale open proposals and check worldgen non-staff rate &
+    // open-proposal caps before reserving ground in `mush-atlas` so refused
+    // requests never strand orphan hydration slots.
+    prune_stale_open(ctx, now);
+    if !staff {
+        let st = state(ctx)?;
+        check_player_create_gates(st, actor, now)?;
+    }
     let requested = hydrate::request(
         ctx,
         actor,
@@ -1573,9 +1741,9 @@ pub fn place(
             p.id
         ));
     }
+    let is_new_request = matches!(&requested, Requested::New(_));
     let request = requested.record().clone();
-    let staff = mush_atlas::is_staff(ctx.w, actor);
-    let rec = create(
+    let rec = match create(
         ctx,
         actor,
         staff,
@@ -1585,7 +1753,15 @@ pub fn place(
             kind,
             prose: prose.to_string(),
         },
-    )?;
+    ) {
+        Ok(rec) => rec,
+        Err(err) => {
+            if is_new_request {
+                let _ = hydrate::withdraw(ctx, &request.id, mush_core::GOD, "proposal refused");
+            }
+            return Err(err);
+        }
+    };
     start_run(ctx, rec.id)?;
     Ok(format!(
         "Request {} reserved; proposal {} is being planned. The game never blocks; you will be told when it is ready or asks.",
@@ -1599,15 +1775,27 @@ pub fn place(
 ///
 /// A message.
 pub fn propose_hook(ctx: &mut Ctx<'_>, req: ProposeRequest) -> Result<String, String> {
+    let staff = mush_atlas::is_staff(ctx.w, req.author);
     let scope = ProposalScope::from_propose(req.scope);
     let source = match req.source {
         ProposeSource::Prose(text) => {
+            if !staff {
+                return Err(
+                    "Only staff can propose directly without a build request; use +build/place."
+                        .to_string(),
+                );
+            }
             if text.len() > MAX_BRIEF_BYTES {
                 return Err(format!("Keep the brief under {MAX_BRIEF_BYTES} bytes."));
             }
             ProposalSource::Prose { text }
         }
         ProposeSource::FromPack(id) => {
+            if !staff {
+                return Err(
+                    "Only staff can reconceptualize shelf packs; use +build/place.".to_string(),
+                );
+            }
             let version = ctx
                 .state::<AtlasState>()
                 .and_then(|a| a.shelf.get(&id))
@@ -1619,12 +1807,21 @@ pub fn propose_hook(ctx: &mut Ctx<'_>, req: ProposeRequest) -> Result<String, St
             let (kind, prose) = ctx
                 .state::<AtlasState>()
                 .and_then(|a| a.hydration.requests.get(&id))
+                .filter(|r| staff || (r.character == req.author && r.status.outstanding()))
                 .map(|r| (r.kind.clone(), r.prose.clone()))
                 .ok_or_else(|| format!("No request {id}."))?;
+            if let Some(p) = state(ctx)?.proposals.values().find(|p| {
+                p.status.open()
+                    && matches!(&p.source, ProposalSource::Request { id: rid, .. } if *rid == id)
+            }) {
+                return Ok(format!(
+                    "You already have an open proposal ({}) for request {}.",
+                    p.id, id
+                ));
+            }
             ProposalSource::Request { id, kind, prose }
         }
     };
-    let staff = mush_atlas::is_staff(ctx.w, req.author);
     let rec = create(ctx, req.author, staff, scope, source)?;
     start_run(ctx, rec.id)?;
     Ok(format!(
@@ -1771,7 +1968,14 @@ pub fn status_lines(ctx: &Ctx<'_>, actor: ObjId) -> Vec<String> {
                 let what = match &p.source {
                     ProposalSource::Prose { text } => text.chars().take(40).collect::<String>(),
                     ProposalSource::Pack { id, .. } => format!("reconceptualize {id}"),
-                    ProposalSource::Request { kind, .. } => format!("a {kind}"),
+                    ProposalSource::Request { kind, prose, .. } => {
+                        let preview: String = prose.chars().take(40).collect();
+                        if preview.is_empty() {
+                            format!("a {kind}")
+                        } else {
+                            format!("a {kind} ({preview})")
+                        }
+                    }
                 };
                 lines.push(format!("  {} — {} — {what}", p.id, p.status.label()));
             }

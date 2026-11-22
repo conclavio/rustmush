@@ -65,6 +65,19 @@ pub const KIND_OPERATION_RESOLVED: &str = "campaign.operation.resolved";
 /// consequence.
 pub const KIND_OPERATION_ABANDONED: &str = "campaign.operation.abandoned";
 
+/// The canon kind a **failed or forfeited** operation records (P2-MOD-3).
+///
+/// Like [`KIND_OPERATION_ABANDONED`], it records a durable chronicle line (so
+/// `RootFact.canon` is stamped and bond-forfeit settlement drains to `Resolved`)
+/// without firing `on:campaign.operation.resolved` faction territory clocks or
+/// attesting `campaign.operation.resolved` contracts when an issuer concedes
+/// (`failure`) or forfeits (`forfeit`).
+pub const KIND_OPERATION_FAILED: &str = "campaign.operation.failed";
+
+/// Maximum live contracts scanned when verifying whether a named side principal
+/// explicitly consented to a contract attesting on this operation (D-LBK-5).
+const MAX_SIDE_CONTRACT_SCAN: usize = 256;
+
 /// The `source` every campaign root record names — the specific operation, never a
 /// wildcard (E4c verify fold E2's rule).
 #[must_use]
@@ -191,6 +204,95 @@ pub fn enter_resolving(ctx: &mut Ctx<'_>, id: OperationId, outcome: &str) -> boo
     settle_root(ctx, doc, outcome, false)
 }
 
+/// Whether an object principal listed in `doc.terms.sides` has verified,
+/// consenting participation in `doc` and may be recorded on `CanonDraft::entities`
+/// (P2-MOD-3).
+///
+/// Unchecked `terms.sides` entries let any unprivileged issuer name an arbitrary
+/// third-party faction member on a `campaign.operation.resolved` canon record and
+/// trip `mush-faction`'s `on_canon_recorded` relevance gate to flip territory.
+/// Only objects with verified standing are admitted:
+/// 1. the operation's own issuer (`doc.terms.attacker`);
+/// 2. a committed participant in `doc.runtime.participants` (or direct owner of one,
+///    since joining required `may_commit_unit`); or
+/// 3. an accepting party on a live, unmanaged E4 contract whose `AttestorSet::Canon`
+///    explicitly names `(KIND_OPERATION_RESOLVED, op:<id>)`.
+fn verified_side_obj(ctx: &Ctx<'_>, doc: &OperationDoc, obj: mush_core::ObjId) -> bool {
+    let principal = mush_org::PrincipalId::Object(obj);
+    if doc.terms.attacker == principal {
+        return true;
+    }
+    if doc
+        .runtime
+        .participants
+        .iter()
+        .any(|p| p.unit.0 == obj || ctx.w.get(p.unit.0).is_some_and(|u| u.owner == obj))
+    {
+        return true;
+    }
+    let source = SmolStr::new(canon_source(doc.id()));
+    let contract_verifies = |c: &mush_economy::EconomicContract| {
+        if c.consent.managed.is_some()
+            || !matches!(
+                c.state,
+                mush_economy::ContractState::Active
+                    | mush_economy::ContractState::ReadyToSettle
+                    | mush_economy::ContractState::Disputed
+            )
+        {
+            return false;
+        }
+        let attests = c
+            .consent
+            .conditions
+            .iter()
+            .filter_map(|cond| match cond {
+                mush_economy::TypedCondition::Attestation { by } => Some(by),
+                _ => None,
+            })
+            .chain(c.consent.adjudicator.iter())
+            .any(|set| match set {
+                mush_economy::AttestorSet::Canon {
+                    kind,
+                    source: named,
+                } => kind == KIND_OPERATION_RESOLVED && named.as_ref() == Some(&source),
+                _ => false,
+            });
+        attests
+            && c.acceptances
+                .iter()
+                .any(|acc| acc.party == principal && acc.consent_hash == c.consent_hash)
+    };
+    ctx.w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_some_and(|store| {
+            let snapshot = store.snapshot();
+            // Check contracts explicitly declared as outcome stakes first (O(1) lookup).
+            let staked = doc.terms.stakes.iter().any(|stake| {
+                let crate::Consequence::Outcome { contract, .. } = stake else {
+                    return false;
+                };
+                snapshot
+                    .contract(mush_economy::ContractId(*contract))
+                    .is_some_and(contract_verifies)
+            });
+            staked
+                || snapshot
+                    .contracts()
+                    .filter(|c| {
+                        c.consent.managed.is_none()
+                            && matches!(
+                                c.state,
+                                mush_economy::ContractState::Active
+                                    | mush_economy::ContractState::ReadyToSettle
+                                    | mush_economy::ContractState::Disputed
+                            )
+                    })
+                    .take(MAX_SIDE_CONTRACT_SCAN)
+                    .any(contract_verifies)
+        })
+}
+
 /// The root write, shared by `enter_resolving` and by [`abandon`].
 ///
 /// **The commit's answer is the gate** (E7 cut 9 fold, D6; decision E4(a)). Cut 9
@@ -211,20 +313,24 @@ fn settle_root(ctx: &mut Ctx<'_>, doc: OperationDoc, outcome: &str, abandoning: 
         // second record.
         return true;
     }
-    // B9: the producer's cap and the consumer's must be one number. The campaign
-    // built up to 128 participants plus 8 side principals and handed them to
-    // `mush_canon::commit`, which `truncate`s at `MAX_ENTITIES_PER_EVENT` 64 in
-    // SILENCE — so on a `Restricted` resolution every participant past the 64th lost
-    // its `visible_to` entitlement to the record and nothing said so. The list is
-    // capped here, deliberately, sides first, and the overflow is recorded in
-    // `detail`, which makes the truncation a stated choice rather than a surprise.
-    let sides = doc.terms.sides.iter().filter_map(|s| match &s.principal {
-        mush_org::PrincipalId::Object(o) => Some(*o),
-        _ => None,
-    });
-    let all: Vec<mush_core::ObjId> = sides
-        .chain(doc.runtime.participants.iter().map(|p| p.unit.0))
-        .collect();
+    // B9 + P2-MOD-3: the producer's cap and the consumer's must be one number, and
+    // only verified, consenting participants enter `CanonDraft::entities`. Verified
+    // sides come first, followed by committed units, deduplicated; any overflow past
+    // `MAX_ENTITIES_PER_EVENT` is recorded in `detail`.
+    let mut all: Vec<mush_core::ObjId> = Vec::new();
+    for s in &doc.terms.sides {
+        if let mush_org::PrincipalId::Object(o) = s.principal
+            && verified_side_obj(ctx, &doc, o)
+            && !all.contains(&o)
+        {
+            all.push(o);
+        }
+    }
+    for p in &doc.runtime.participants {
+        if !all.contains(&p.unit.0) {
+            all.push(p.unit.0);
+        }
+    }
     let overflow = all.len().saturating_sub(mush_canon::MAX_ENTITIES_PER_EVENT);
     let entities: Vec<mush_core::ObjId> = all
         .into_iter()
@@ -239,6 +345,8 @@ fn settle_root(ctx: &mut Ctx<'_>, doc: OperationDoc, outcome: &str, abandoning: 
     };
     let kind = if abandoning {
         KIND_OPERATION_ABANDONED
+    } else if outcome_forfeits(outcome) {
+        KIND_OPERATION_FAILED
     } else {
         KIND_OPERATION_RESOLVED
     };

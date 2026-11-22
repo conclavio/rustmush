@@ -895,12 +895,23 @@ fn destroy_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Total matching work units `@find` will spend across one command before
+/// failing cleanly instead of stalling the world task.
+const MAX_FIND_WORK: usize = 2_000_000;
+
 fn find_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let pattern = ctx.args.raw().trim().to_lowercase();
+    if pattern.len() > crate::lock::MAX_LOCK_GLOB_LEN {
+        return Err(CmdError::msg(format!(
+            "Search pattern is too long (limit {} bytes).",
+            crate::lock::MAX_LOCK_GLOB_LEN
+        )));
+    }
     let staff = perm::has_role(ctx.w, ctx.actor, Role::Wizard)
         || perm::has_power(ctx.w, ctx.actor, Powers::EXAMINE_ALL);
     let my_owner = ctx.w.get(ctx.actor).map(|o| o.owner);
     let use_glob = pattern.contains('*') || pattern.contains('?');
+    let mut work_budget = MAX_FIND_WORK;
     let mut count = 0usize;
     let mut lines: Vec<RichText> = Vec::new();
     for o in ctx.w.iter() {
@@ -921,12 +932,27 @@ fn find_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if !ctx.can_perceive(ctx.actor, o.id) {
             continue;
         }
-        let hit = pattern.is_empty()
-            || if use_glob {
-                crate::lock::glob_match(&pattern, &o.name)
-            } else {
-                o.name.to_lowercase().contains(&pattern)
+        let hit = if pattern.is_empty() {
+            true
+        } else if use_glob {
+            let Some(matched) =
+                crate::lock::glob_match_bounded(&pattern, &o.name, &mut work_budget)
+            else {
+                return Err(CmdError::msg(
+                    "Search budget exceeded; use a more specific pattern.",
+                ));
             };
+            matched
+        } else {
+            let cost = o.name.len().saturating_add(pattern.len()).saturating_add(1);
+            let Some(left) = work_budget.checked_sub(cost) else {
+                return Err(CmdError::msg(
+                    "Search budget exceeded; use a more specific pattern.",
+                ));
+            };
+            work_budget = left;
+            o.name.to_lowercase().contains(&pattern)
+        };
         if hit {
             count += 1;
             lines.push(
