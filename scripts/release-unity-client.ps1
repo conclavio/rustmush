@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     One-command local builder, packager, and server/release deployer for the
     RustMUSH Unity 3D standalone client (Windows x64, Linux x64, macOS Universal).
@@ -316,17 +316,33 @@ foreach ($t in $Targets) {
     if (Test-Path $zipPath) {
         Remove-Item -Force $zipPath
     }
-    # Use Windows bsdtar (`tar.exe -a -c -f`) for streaming Zip64 support: PowerShell 5.1's
-    # Compress-Archive fails with "Stream was too long" once data.unity3d exceeds 2 GiB.
-    Write-Host "     Compressing (Zip64) -> $zipPath"
-    $tarExe = Get-Command tar.exe -ErrorAction SilentlyContinue
-    if ($tarExe) {
-        & $tarExe.Source -a -c -f $zipPath -C $stageDir .
-        if ($LASTEXITCODE -ne 0) {
-            throw "tar.exe failed while creating $zipPath (exit $LASTEXITCODE)."
+    # Use .NET ZipFile::CreateFromDirectory directly (streams in Create mode with Zip64 support
+    # and clean root-relative entry paths — avoids PowerShell 5.1 Compress-Archive's 2 GiB
+    # Update-mode MemoryStream cap AND avoids bsdtar's leading `./` entries that break Windows
+    # Explorer's Extract All).
+    Write-Host "     Compressing -> $zipPath"
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $stageDir,
+        $zipPath,
+        [System.IO.Compression.CompressionLevel]::Optimal,
+        $false
+    )
+
+    # Sanity-check the archive so Windows Explorer / unzip can always open and extract it
+    $checkZip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        if ($checkZip.Entries.Count -eq 0) {
+            throw "Generated archive $zipPath has 0 entries."
         }
-    } else {
-        Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+        foreach ($ze in $checkZip.Entries) {
+            if ($ze.FullName.StartsWith("./") -or $ze.FullName.StartsWith("/") -or $ze.FullName.Contains("..")) {
+                throw "Generated archive $zipPath contains unsafe or Explorer-incompatible entry path '$($ze.FullName)'."
+            }
+        }
+    } finally {
+        $checkZip.Dispose()
     }
 
     $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

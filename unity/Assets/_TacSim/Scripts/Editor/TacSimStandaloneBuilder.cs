@@ -126,12 +126,13 @@ namespace TacSim.Editor
         public static int OptimizePackTextureImportSettings()
         {
 #if UNITY_5_3_OR_NEWER
-            string[] roots =
-            {
-                VerticalSliceSceneBuilder.ScenePath,
-                AssetPackImporter.CatalogAssetPath
-            };
-            string[] deps = AssetDatabase.GetDependencies(roots, true);
+            var rootList = new List<string>();
+            if (!string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(VerticalSliceSceneBuilder.StandaloneScenePath)))
+                rootList.Add(VerticalSliceSceneBuilder.StandaloneScenePath);
+            else if (!string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(VerticalSliceSceneBuilder.ScenePath)))
+                rootList.Add(VerticalSliceSceneBuilder.ScenePath);
+            rootList.Add(AssetPackImporter.CatalogAssetPath);
+            string[] deps = AssetDatabase.GetDependencies(rootList.ToArray(), true);
             var toReimport = new System.Collections.Generic.List<string>();
 
             AssetDatabase.StartAssetEditing();
@@ -235,12 +236,12 @@ namespace TacSim.Editor
             AssetPackImporter.EnsureIdaFaberHumanoidRigs();
             AssetPackImporter.PopulateOrRefreshCatalog();
             StageEmbeddedFallbackPacks();
-            VerticalSliceSceneBuilder.BuildVerticalSliceScene();
+            VerticalSliceSceneBuilder.BuildStandaloneBootstrapScene();
             OptimizePackTextureImportSettings();
 
             EditorBuildSettings.scenes = new[]
             {
-                new EditorBuildSettingsScene(VerticalSliceSceneBuilder.ScenePath, true)
+                new EditorBuildSettingsScene(VerticalSliceSceneBuilder.StandaloneScenePath, true)
             };
 
             string parentDir = Path.GetDirectoryName(outputFilePath);
@@ -249,10 +250,10 @@ namespace TacSim.Editor
 
             var opts = new BuildPlayerOptions
             {
-                scenes = new[] { VerticalSliceSceneBuilder.ScenePath },
+                scenes = new[] { VerticalSliceSceneBuilder.StandaloneScenePath },
                 locationPathName = outputFilePath,
                 target = target,
-                options = BuildOptions.CompressWithLz4
+                options = BuildOptions.None
             };
 
             Debug.Log($"[TacSim Builder] Building {target} standalone player -> {outputFilePath}...");
