@@ -20,17 +20,22 @@
 //! **What is a fixture.** The rig's setup alone: the stock rig's world, the Freeport arm and Ceres'
 //! house opened again (the stock rig lays them up; a production world has both open) and the rate
 //! set to 24:1.
+//!
+//! **Where in the calendar it boots** (doc 50's Isidis bring-up): the stock rig boots on an IC
+//! month's boundary. The Assembly counts its votes from the instant the Review was seeded, so a
+//! world booted 15 or 25 IC days before a boundary runs the same contest: its first vote falls 30
+//! IC days after the seeding, and the farm still reads short at the close.
 
 use std::collections::BTreeSet;
 
 use mush_core::{GOD, ObjId};
-use tacsim::concession::{ASSEMBLY_CAUSE, hold_clock, review_clock};
+use tacsim::concession::{ASSEMBLY_CAUSE, IC_MONTH_S, hold_clock, review_clock, seeded_at};
 use tacsim::operations::{OperationOutcome, OperationPhase};
 use tacsim::services::haul::{self, HaulStage};
 use tacsim::stockpile;
 
 use crate::driving_rig::ic_now;
-use crate::rig::{DAY, cid, composed, house_hulls, status, step};
+use crate::rig::{DAY, cid, composed_phased, house_hulls, status, step};
 
 /// The longest the run may take, IC days: four votes, the notice and the window are 176.
 const MAX_DAYS: i64 = 240;
@@ -39,9 +44,26 @@ const STEP: i64 = 6 * 3_600;
 
 /// **Doc 50 cut OP.8: the empty run** (this module's head).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)] // one run from the first vote to the control write
 async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves() {
-    let mut rig = composed();
+    the_empty_run(0);
+}
+
+/// **The empty run booted 15 IC days before a month's boundary** (doc 50's Isidis bring-up).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op8_booted_15_days_before_a_month_boundary_the_empty_run_is_the_same_contest() {
+    the_empty_run(IC_MONTH_S - 15 * DAY);
+}
+
+/// **The empty run booted 25 IC days before a month's boundary** (doc 50's Isidis bring-up).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op8_booted_25_days_before_a_month_boundary_the_empty_run_is_the_same_contest() {
+    the_empty_run(IC_MONTH_S - 25 * DAY);
+}
+
+/// **The empty run, its first boot `ic_phase` IC seconds into an IC month** (this module's head).
+#[allow(clippy::too_many_lines)] // one run from the first vote to the control write
+fn the_empty_run(ic_phase: i64) {
+    let mut rig = composed_phased(ic_phase);
     let w = rig.tw.world();
     assert!(
         w.iter().all(|o| o.id == GOD || !w.is_connected(o.id)),
@@ -51,6 +73,8 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
     let review0 = review_clock(w).expect("the Review");
     let hold0 = hold_clock(w).expect("Hold the Concession");
     assert_eq!(review0.filled, 2, "the Review at two");
+    let seeded = seeded_at(&review0).expect("the Review's seeding instant");
+    let mut first_vote: Option<i64> = None;
     // The farm is stocked over its threshold, so the first reading may already have moved Hold.
     assert!(
         hold0.filled <= 3,
@@ -72,6 +96,7 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
         let review = review_clock(w).expect("the Review");
         if review.filled != review_filled {
             review_filled = review.filled;
+            first_vote.get_or_insert(ic_now(&rig.tw));
             timeline.push(format!("day {day}: the Review at {}", review.filled));
         }
         let hold = hold_clock(w).expect("Hold the Concession");
@@ -131,6 +156,15 @@ async fn op8_with_nobody_connected_the_review_fills_and_the_operation_resolves()
             .all(|cause| cause.starts_with(ASSEMBLY_CAUSE)),
         "every segment an Assembly vote: {:?}",
         review.causes
+    );
+
+    // The first vote fell a month after the seeding, wherever in the calendar the world booted:
+    // seen within the step it landed in (six IC hours, and a picket's bubble at most).
+    let first_vote = first_vote.expect("a vote");
+    assert!(
+        (seeded + IC_MONTH_S..seeded + IC_MONTH_S + DAY).contains(&first_vote),
+        "the first vote 30 IC days after the seeding ({seeded}), not at the calendar's boundary:          {first_vote}
+{report}"
     );
 
     // The arm declared, the campaign ran it to its close and settled it, and the arm wrote it.

@@ -12,8 +12,8 @@ use tacsim::operations::OperationStatus;
 use tacsim::space::SpaceBubbleBook;
 
 use crate::driving_rig::{
-    EXTRA_MODULES, ExtraModules, Rig, drain, ic_now, land, land_quietly, run, said, set_rate,
-    stocked, sweep, to_ic,
+    EXTRA_MODULES, ExtraModules, Rig, drain, ic_now, land, land_quietly, rig_config, run, said,
+    set_rate, stocked_phased, sweep, to_ic,
 };
 
 /// An IC day.
@@ -35,8 +35,14 @@ fn campaign() -> Vec<Box<dyn GameModule>> {
 /// stock rig lays up opened again: Ceres' hauling house and the Freeport arm, both open on a
 /// production world. Staff's two lines are the rig's setup, before the run starts.
 pub(crate) fn composed() -> Rig {
+    composed_phased(0)
+}
+
+/// **[`composed`], its first boot `ic_phase` IC seconds into an IC month** (doc 50's Isidis
+/// bring-up): a production world boots wherever in the calendar its wipe lands.
+pub(crate) fn composed_phased(ic_phase: i64) -> Rig {
     let _ = EXTRA_MODULES.set(campaign as ExtraModules);
-    let mut rig = stocked();
+    let mut rig = stocked_phased(true, rig_config(), ic_phase);
     assert!(
         tacsim::operations::frame(rig.tw.world()).is_some(),
         "the campaign seats TacSim's operation frame"

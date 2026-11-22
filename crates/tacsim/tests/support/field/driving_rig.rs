@@ -271,7 +271,21 @@ pub(crate) fn stocked_tuned(tune: impl FnOnce(&mut TacsimConfig)) -> Rig {
 }
 
 pub(crate) fn stocked_under(keyed: bool, cfg: TacsimConfig) -> Rig {
-    let (world, _) = mush_testkit::boot_world();
+    stocked_phased(keyed, cfg, 0)
+}
+
+/// **[`stocked_under`] booted `ic_phase` IC seconds into the calendar** (doc 50's Isidis
+/// bring-up): the world's first boot falls part-way into an IC month, as a production world's
+/// does wherever its wipe lands. Zero is the stock rig's boot, on a month's boundary. A
+/// [`reboot`] does not keep the phase.
+pub(crate) fn stocked_phased(keyed: bool, cfg: TacsimConfig, ic_phase: i64) -> Rig {
+    let (mut world, _) = mush_testkit::boot_world();
+    if ic_phase != 0 {
+        world.set_game_clock(mush_core::GameClock {
+            ic_ratio: 1,
+            epoch_offset: ic_phase,
+        });
+    }
     let mut tw = boot_over(world, HashMap::new(), keyed, &cfg);
     with_offer_keys(&mut tw);
     let oracle = Arc::new(MapOracle::default());
