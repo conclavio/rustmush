@@ -1886,6 +1886,10 @@ async fn all_hold(flights: &[(&arena::Flight, &str)], limit: Duration) -> bool {
     false
 }
 
+/// The captain story's whole budget: 18 minutes, under nextest's 20-minute terminate, so a
+/// stalled wait fails with its transcripts rather than being killed silently.
+const STORY_BUDGET: Duration = Duration::from_secs(18 * 60);
+
 /// **The captain and its escort in an IC field** (doc 32 G-4, Q-CF-47's bot run): two actual
 /// `mush-bot` executables over public SSH on the production root, at Ahuna Flank.
 ///
@@ -1934,7 +1938,17 @@ async fn all_hold(flights: &[(&arena::Flight, &str)], limit: Duration) -> bool {
 #[allow(clippy::too_many_lines)] // one story, two lanes, in order
 async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
     let director = std::env::var("FIELD_RAID").is_ok_and(|raid| raid == "director");
-    tokio::time::timeout(Duration::from_secs(35 * 60), async {
+    // Every wait below is held inside one story budget that ends before nextest's 20-minute
+    // terminate (`.config/nextest.toml`, the `ci` and `ci-bot` profiles). The story takes about
+    // 575 s. Its waits were bounded at 600, 1,200 and 900 s apiece, so a stall in any of them
+    // was killed by nextest before its assertion could print the two transcripts: six CI runs
+    // ended in a bare `TIMEOUT [1200 s]` (2026-11-16..21, `docs/flaky-tests.md`). Now a stall
+    // fails with the bots' own last lines.
+    let budget_ends = std::time::Instant::now() + STORY_BUDGET;
+    let within = |bound: Duration| {
+        bound.min(budget_ends.saturating_duration_since(std::time::Instant::now()))
+    };
+    tokio::time::timeout(STORY_BUDGET + Duration::from_secs(30), async {
         let captain = Miner {
             account: "fieldcap",
             character: "Fieldcap",
@@ -2037,7 +2051,7 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
                     (&flight, "+coop/refit prospector"),
                     (&escort_flight, "+coop/refit prospector")
                 ],
-                Duration::from_secs(600)
+                within(Duration::from_secs(600))
             )
             .await,
             "both bots enroll; the captain's ends:\n{}\nthe escort's ends:\n{}",
@@ -2055,7 +2069,7 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
                     (&flight, "Rig 1, cycle 1 of"),
                     (&escort_flight, "Rig 1 arrives at ")
                 ],
-                Duration::from_secs(1200)
+                within(Duration::from_secs(1200))
             )
             .await,
             "the captain's run and the escort's launch; the captain's ends:\n{}\nthe escort's \
@@ -2080,8 +2094,12 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
             }
         } else {
             // The director's raid lands and its leader declares on its own.
-            opened =
-                transcript_holds(&flight, "is open on Ahuna Flank", Duration::from_secs(900)).await;
+            opened = transcript_holds(
+                &flight,
+                "is open on Ahuna Flank",
+                within(Duration::from_secs(900)),
+            )
+            .await;
         }
         assert!(
             opened,
@@ -2097,7 +2115,7 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
                     (&flight, " 1 WITHDRAW"),
                     (&escort_flight, "+tv/1 recover go")
                 ],
-                Duration::from_secs(900)
+                within(Duration::from_secs(900))
             )
             .await,
             "both withdraw; the captain's ends:\n{}\nthe escort's ends:\n{}",
@@ -2110,8 +2128,8 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
             god.pump(Duration::from_secs(3)).await;
         }
 
-        let landed = arena::land(flight, Duration::from_secs(25 * 60)).await;
-        let landed_escort = arena::land(escort_flight, Duration::from_secs(10 * 60)).await;
+        let landed = arena::land(flight, within(Duration::from_secs(25 * 60))).await;
+        let landed_escort = arena::land(escort_flight, within(Duration::from_secs(10 * 60))).await;
 
         // -- The escort -------------------------------------------------------------------
         let report = &landed_escort.report["mine"];
@@ -2263,5 +2281,5 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
         god.close().await;
     })
     .await
-    .expect("the captain and its escort finish within 35 minutes");
+    .expect("the captain and its escort finish inside the story budget");
 }
