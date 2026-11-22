@@ -12,15 +12,32 @@
 #     (Q-33-6): the idle generation starts on the same ports, the serving one
 #     is told to drain (warnings on the doorway's schedule, closes when empty
 #     or at 24 h) — nobody is dropped either (doc 33 §4.5–§4.7).
-# It reuses dev2's Redis (6791), instance.env, TLS, and env from ../dev2.
+# It reuses dev2's Redis (Unix socket only: /run/redis-dev2mush/redis.sock),
+# instance.env, TLS, and env from ../dev2.
 #
 # Idempotent: safe to re-run for a redeploy. Knobs (environment, or --force):
 #   SERVER_RESTART=1  restart the server unit even if its binary is unchanged
 #   GATEWAY_SWAP=1    swap the gateway generation even if its binary is unchanged
-#   SERVER_HOLD=1     do not START a server unit that is not running (a running
-#                     one is restarted as usual): the step between a wipe and
-#                     deploy/instance/launch-bringup.py, which starts the world
-#                     itself once the named launch is Active (doc 44 cut MW.1)
+#   SERVER_HOLD=1     HOLD the world down (doc 44 cut MW.1): when dev2mush-server
+#                     is not running, write /opt/rustmush/dev2/server.hold before
+#                     anything below can start it. The server unit's
+#                     `AssertPathExists=!` then refuses EVERY start while the
+#                     file exists: this script's, the one the gateway
+#                     generation's `Wants=` pulls in, boot's, a hand `systemctl
+#                     start`. deploy/instance/launch-bringup.py lifts it when it
+#                     starts the world on an Active launch. A RUNNING server is
+#                     restarted as usual and no hold is set. A hold that is
+#                     already set (reset-instance.sh --no-start, a bring-up that
+#                     stopped) is KEPT with or without this knob: the deploy says
+#                     so and starts nothing. By hand: rm /opt/rustmush/dev2/server.hold
+#   REDIS_RESTART=1   accept that a changed redis-dev2mush.conf/.service restarts
+#                     Redis while the server or a gateway generation runs: every
+#                     unit that `Requires=` Redis is restarted with it, the
+#                     serving generation included, so every connection drops
+#                     once and a draining generation's sessions end. Without it
+#                     that deploy is refused before anything is installed. Not
+#                     needed when nothing of the instance runs (a wipe stops both
+#                     halves first)
 #   FORCE=1 / --force finish a still-draining generation now (SIGTERM, one 30 s
 #                     warning) where the deploy would otherwise refuse: a swap
 #                     while the idle generation still drains, or a server deploy
@@ -50,11 +67,21 @@ GW_UNIT=dev2mush-gateway                  # the template: $GW_UNIT@a, $GW_UNIT@b
 GW_STATE=/var/lib/$GW_UNIT                # its StateDirectory: draining-<gen> markers
 SINGLE_UNIT=/etc/systemd/system/dev2mush-gateway.service   # pre-GG.4
 REDIS_SOCK=/run/redis-dev2mush/redis.sock
+HOLD=$ROOT/server.hold                    # the server unit's AssertPathExists=!
+# The units a Redis restart reaches (each Requires= Redis), and the ones the
+# deploy waits on before it reads which generation serves.
+REDIS_DEPENDENTS=(dev2mush-server.service "$GW_UNIT@a.service" "$GW_UNIT@b.service" dev2mush-gateway.service dev2mush.service)
+SETTLE_UNITS=(redis-dev2mush.service dev2mush-server.service "$GW_UNIT@a.service" "$GW_UNIT@b.service")
+# gen_*, serving_gen, draining_gen, running_exe, gen_first_start,
+# gens_one_enabled, units_settle, server_hold_set, server_held.
+# (shellcheck checks deploy/drain/units.sh on its own)
+# shellcheck source=/dev/null
+. "$DRAIN_DIR/units.sh"
 
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
-    *) echo "usage: deploy.sh [--force]  (knobs: SERVER_RESTART=1 GATEWAY_SWAP=1 FORCE=1 GATEWAY_MIGRATE=1)" >&2; exit 2 ;;
+    *) echo "usage: deploy.sh [--force]  (knobs: SERVER_RESTART=1 GATEWAY_SWAP=1 SERVER_HOLD=1 REDIS_RESTART=1 FORCE=1 GATEWAY_MIGRATE=1)" >&2; exit 2 ;;
   esac
 done
 
@@ -114,6 +141,34 @@ REDIS_CHANGED=0
 if ! cmp -s "$DEV2/redis-dev2mush.conf" /etc/redis/redis-dev2mush.conf 2>/dev/null || \
    ! cmp -s "$DEV2/redis-dev2mush.service" /etc/systemd/system/redis-dev2mush.service 2>/dev/null; then
   REDIS_CHANGED=1
+fi
+# A Redis restart is not Redis's alone: the server unit and every gateway
+# generation `Requires=` it, so systemd stops them with it and starts them
+# again, and `systemctl restart` returns before those starts are done (seen on
+# both boxes 2026-11-22). The serving generation's restart drops every
+# connection. So while anything of the instance runs, a deploy that would
+# restart Redis is refused HERE, before a file is installed (a re-run must
+# still see the change), unless REDIS_RESTART=1 says the drop is meant.
+REDIS_RESTART_NEEDED=0
+if [ "$REDIS_CHANGED" = "1" ] || ! systemctl is-active --quiet redis-dev2mush.service || [ ! -S "$REDIS_SOCK" ]; then
+  REDIS_RESTART_NEEDED=1
+fi
+REDIS_REACHES=()
+if [ "$REDIS_RESTART_NEEDED" = "1" ] && systemctl is-active --quiet redis-dev2mush.service; then
+  if ! units_settle 600 "${SETTLE_UNITS[@]}"; then
+    echo "FATAL: systemd is still moving dev2's units; nothing was changed" >&2
+    exit 1
+  fi
+  mapfile -t REDIS_REACHES < <(units_active "${REDIS_DEPENDENTS[@]}")
+fi
+if [ "${#REDIS_REACHES[@]}" -gt 0 ] && [ "${REDIS_RESTART:-0}" != "1" ]; then
+  echo "REFUSED: this deploy restarts redis-dev2mush (its config or unit changed, or its socket is missing)," >&2
+  echo "and every unit that Requires= it is restarted with it: ${REDIS_REACHES[*]}." >&2
+  echo "The serving gateway generation's restart drops every connection once, and a draining one's" >&2
+  echo "sessions end. Nothing was installed or restarted. To go ahead (with the owner):" >&2
+  echo "  REDIS_RESTART=1 bash $0" >&2
+  echo "or stop both halves first, as a wipe does (deploy/README.md, \"Wipe and redeploy\")." >&2
+  exit 1
 fi
 install -m 640 -o redis -g redis "$DEV2/redis-dev2mush.conf" /etc/redis/redis-dev2mush.conf
 install -m 644 -o root -g root "$DEV2/redis-dev2mush.service" /etc/systemd/system/redis-dev2mush.service
@@ -224,10 +279,30 @@ install -m 644 -o root -g root "$SELF/dev2mush-gateway@.service" /etc/systemd/sy
 #
 #    Neither half's restart touches the other (doc 33 GG.2): the server is
 #    left alone by a swap, and a server restart never restarts a gateway.
+#
+#    Redis is another matter: both halves `Requires=` it, so its restart (step
+#    3 refused one under a running instance unless REDIS_RESTART=1) restarts
+#    them too, and its propagated jobs are still running when `systemctl
+#    restart` returns. Everything below reads the units only after systemd has
+#    finished with them (units_settle), so a generation in the middle of its
+#    restart is never taken for "no generation serves".
 systemctl daemon-reload
+# The hold first, before the Redis restart or a generation's start can pull
+# the server in through the gateway's Wants= (doc 44 cut MW.1).
+if [ "${SERVER_HOLD:-0}" = "1" ] && ! systemctl is-active --quiet dev2mush-server.service; then
+  server_hold_set "$HOLD" "SERVER_HOLD=1 deploy.sh"
+  echo "SERVER_HOLD=1 — the world is HELD: $HOLD (every start of dev2mush-server is refused until it goes)"
+fi
 systemctl enable redis-dev2mush.service
-if [ "$REDIS_CHANGED" = "1" ] || ! systemctl is-active --quiet redis-dev2mush.service || [ ! -S "$REDIS_SOCK" ]; then
+if [ "$REDIS_RESTART_NEEDED" = "1" ]; then
+  if [ "${#REDIS_REACHES[@]}" -gt 0 ]; then
+    echo "REDIS_RESTART=1 — restarting redis-dev2mush restarts ${REDIS_REACHES[*]} with it: connections drop once"
+  fi
   systemctl restart redis-dev2mush.service
+fi
+if ! units_settle 600 "${SETTLE_UNITS[@]}"; then
+  echo "FATAL: systemd is still moving dev2's units 600 s after the Redis step; see systemctl list-jobs" >&2
+  exit 1
 fi
 sleep 1
 redis-cli -s "$REDIS_SOCK" ping >/dev/null && echo "redis-dev2mush: PONG on $REDIS_SOCK"
@@ -256,20 +331,21 @@ if [ "$(cat /proc/sys/net/ipv4/tcp_migrate_req 2>/dev/null || echo 0)" != "1" ];
   echo "WARNING: net.ipv4.tcp_migrate_req is not 1 — connections queued at the moment of a swap are reset, not moved" >&2
 fi
 
-# The helpers of a two-generation unit. A drain does not change the unit's
-# state (it stays `active`): the generation that serves is the active one
-# WITHOUT a draining-<gen> marker in the StateDirectory.
-gen_active()   { systemctl is-active --quiet "$GW_UNIT@$1.service" 2>/dev/null; }
-gen_draining() { gen_active "$1" && [ -f "$GW_STATE/draining-$1" ]; }
-serving_gen()  { local g; for g in a b; do if gen_active "$g" && [ ! -f "$GW_STATE/draining-$g" ]; then echo "$g"; return 0; fi; done; return 1; }
-draining_gen() { local g; for g in a b; do if gen_draining "$g"; then echo "$g"; return 0; fi; done; return 1; }
-# What a unit is executing: /proc/<MainPID>/exe reads (and runs) the binary the
-# unit was started with even after the build replaced the file on disk.
-running_exe()  { local pid; pid="$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)"; if [ -n "$pid" ] && [ "$pid" != 0 ]; then echo "/proc/$pid/exe"; else echo "/proc/0/exe"; fi; }
+# The helpers of a two-generation unit (gen_active, serving_gen, draining_gen,
+# running_exe, gen_first_start, gens_one_enabled) are ../drain/units.sh's,
+# sourced above. A drain does not change the unit's state (it stays `active`):
+# the generation that serves is the active one WITHOUT a draining-<gen> marker
+# in the StateDirectory.
 
 # 9b. The server.
 systemctl enable dev2mush-server.service
-if systemctl is-active --quiet dev2mush-server.service; then
+if systemctl is-active --quiet dev2mush-server.service && server_held "$HOLD"; then
+  # A hold set while the world ran: a restart would stop it and the hold would
+  # refuse the start (the deploy would die there with the world down).
+  echo "WARNING: dev2mush-server runs but is HELD ($HOLD): a restart would stop it and leave it" >&2
+  echo "         down. It is NOT restarted. Lift the hold (rm $HOLD) and re-run to restart it, or" >&2
+  echo "         stop it to keep it held." >&2
+elif systemctl is-active --quiet dev2mush-server.service; then
   SERVER_EXE="$(running_exe dev2mush-server.service)"
   SERVER_CHANGED="$(bash "$DRAIN_DIR/binary-changed.sh" "$BUILD/target/release/mush-server" "$SERVER_EXE")"
   if [ "${SERVER_RESTART:-0}" = "1" ] || [ "$SERVER_CHANGED" = "changed" ]; then
@@ -300,13 +376,16 @@ if systemctl is-active --quiet dev2mush-server.service; then
   else
     echo "server binary unchanged — dev2mush-server is left running (SERVER_RESTART=1 restarts it anyway)"
   fi
-elif [ "${SERVER_HOLD:-0}" = "1" ]; then
+elif server_held "$HOLD"; then
   # Doc 44 cut MW.1: a wiped box that is about to take the named launch. The
   # world stays down, so nobody can log in or register on a store that is
-  # still being brought up; the gateway below starts and holds the front door.
-  echo "SERVER_HOLD=1 — dev2mush-server is installed and enabled but NOT started."
-  echo "Bring the launch up, which starts it when the Active boot is ready:"
+  # still being brought up; the gateway below starts and holds the front door,
+  # and the start its Wants= pulls in is refused by the hold.
+  echo "dev2mush-server is installed and enabled, and HELD: NOT started. $HOLD says:"
+  echo "  $(head -c 300 "$HOLD" 2>/dev/null || true)"
+  echo "Bring the launch up, which lifts the hold and starts the world when the Active boot is ready:"
   echo "  python3 $INSTANCE_DIR/launch-bringup.py $ROOT/instance.env"
+  echo "(to start the world without the launch instead: rm $HOLD && systemctl start dev2mush-server)"
 else
   # A unit that exhausted its start limit (Q-33-5: 5 starts in 60 s) stays
   # failed until this is cleared; a fresh deploy is the moment to clear it.
@@ -363,15 +442,15 @@ if [ "$GATEWAY_SKIP" != "1" ]; then
     # the trusted link the doorway dials (doc 33 §4.4): the configured
     # [ssh].trusted_socket is a symlink to the serving generation's own
     # socket beside it, which only the swap script re-points from here on.
+    # The units were read after units_settle, so a generation that is in the
+    # middle of a restart is not "no generation"; and the one started is the
+    # only one left enabled (gen_first_start disables the other).
     START=a
     if gen_draining a; then START=b; fi
     if DRAINING="$(draining_gen)"; then
       echo "WARNING: $GW_UNIT@$DRAINING is draining and no generation serves — starting $GW_UNIT@$START" >&2
     fi
-    rm -f "$GW_STATE/draining-$START"
-    systemctl reset-failed "$GW_UNIT@$START.service" 2>/dev/null || true
-    systemctl enable "$GW_UNIT@$START.service"
-    systemctl start "$GW_UNIT@$START.service"
+    gen_first_start "$START"
     TRUSTED="$(sed -n 's/^[[:space:]]*trusted_socket[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/mushd.toml" | head -1)"
     if [ -n "$TRUSTED" ]; then
       if ! [[ "$TRUSTED" =~ ^/run/rustmush-ssh/[A-Za-z0-9._-]+$ ]]; then
@@ -401,7 +480,16 @@ if [ "$GATEWAY_SKIP" != "1" ]; then
   fi
 fi
 
+# Exactly one generation is enabled, or a reboot starts both side by side.
+if ! gens_one_enabled; then
+  echo "FATAL: disable the generation that does not serve (systemctl disable $GW_UNIT@<gen>)" >&2
+  exit 1
+fi
+
 sleep 2
+if server_held "$HOLD"; then
+  echo "dev2mush-server: HELD ($HOLD) — launch-bringup.py lifts it when it starts the world"
+fi
 systemctl --no-pager --lines=0 status dev2mush-server.service | head -4 || true
 for g in a b; do
   if gen_active "$g"; then

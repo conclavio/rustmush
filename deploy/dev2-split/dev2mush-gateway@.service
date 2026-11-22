@@ -16,7 +16,10 @@ Description=rustmush dev2 (TacSim) — the GATEWAY half (SSH 6792 + web 6793), g
 # The server unit is WANTED, never required (doc 33 §4.2): a server that is
 # down or crash-looping must not take the gateway — and every player
 # connection it holds — down with it. The gateway serves its "restarting"
-# notice and keeps dialing until the server is back.
+# notice and keeps dialing until the server is back. A start this `Wants=`
+# pulls in is refused while the server is HELD (/opt/rustmush/dev2/server.hold,
+# the server unit's `AssertPathExists=!`, doc 44 cut MW.1), and this generation
+# starts regardless: it holds the front door of a world that is not up yet.
 After=network-online.target redis-dev2mush.service dev2mush-server.service
 Wants=network-online.target dev2mush-server.service
 Requires=redis-dev2mush.service

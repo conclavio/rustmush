@@ -29,7 +29,12 @@
 # --no-start leaves the unit stopped after the wipe (and the bootstrap, when
 # asked for): the first step of a bring-up that must keep players off until
 # the named launch is Active (doc 44 cut MW.1; deploy/instance/launch-bringup.py
-# starts the unit when it is).
+# starts the unit when it is). It also HOLDS the world down: before the unit is
+# stopped it writes `server.hold` beside the instance.env, and the split's
+# server unit (`AssertPathExists=!`) refuses every start while that file
+# exists, the one a gateway generation's `Wants=` pulls in included. The
+# bring-up lifts the hold when it starts the world. A reset WITHOUT --no-start
+# starts the unit, so it lifts a hold it finds first, and says so.
 #
 # <instance.env> is the file the instance's mushd.toml was rendered from (see
 # deploy/instance/). It is READ, never sourced — a value here is a sed
@@ -304,6 +309,22 @@ fi
 # required it above.
 rendered="$(dirname "$env_file")/mushd.toml"
 
+# The world's hold (doc 44 cut MW.1), beside the instance.env too: the split's
+# server unit names <instance root>/server.hold in its AssertPathExists=!.
+hold_file="$(dirname "$env_file")/server.hold"
+if [ -L "$hold_file" ]; then
+	echo "$0: refusing a symlinked hold file: $hold_file" >&2
+	exit 1
+fi
+set_hold() {
+	local tmp
+	tmp="$(mktemp "$hold_file.XXXXXX")"
+	printf 'held by reset-instance.sh --no-start at %s; deploy/instance/launch-bringup.py lifts it when it starts the world\n' \
+		"$(date -u +%FT%TZ)" >"$tmp"
+	chmod 0644 "$tmp"
+	mv -fT -- "$tmp" "$hold_file"
+}
+
 echo "resetting instance '$instance': unit $unit, redis $redis_desc, data $data_dir"
 echo "preserving SSH host identity: $host_key (if present)"
 
@@ -312,6 +333,14 @@ echo "preserving SSH host identity: $host_key (if present)"
 if ! redis-cli "${redis_cli_args[@]}" PING >/dev/null 2>&1; then
 	echo "$0: no Redis answering at $redis_desc (REDIS_URL/REDIS_PORT in $env_file)" >&2
 	exit 1
+fi
+
+# 0. --no-start: hold the world down BEFORE it is stopped, so nothing (a
+#    gateway generation's restart pulling the server in through its Wants=)
+#    starts it again between here and the bring-up.
+if [ "$start" -eq 0 ]; then
+	set_hold
+	echo "the world is HELD: $hold_file (the server unit refuses every start until it goes)"
 fi
 
 # 1. Stop first. Flushing the store under a running world would have the world
@@ -355,9 +384,16 @@ if [ -n "$staff" ]; then
 	unset staff_password
 fi
 if [ "$start" -eq 1 ]; then
+	# A hold left by an earlier --no-start or a bring-up that stopped: this
+	# reset was asked to start the world, which the hold would refuse.
+	if [ -e "$hold_file" ]; then
+		rm -f -- "$hold_file"
+		echo "lifted the hold $hold_file: this reset starts the world (--no-start keeps it held)"
+	fi
 	systemctl start "$unit"
 	echo "instance '$instance' reset; configured boot packs are applied on startup."
 else
-	echo "instance '$instance' reset and left STOPPED (--no-start); configured boot packs are applied when $unit starts."
+	echo "instance '$instance' reset and left STOPPED and HELD (--no-start); configured boot packs are applied when $unit starts."
+	echo "deploy/instance/launch-bringup.py lifts the hold when it starts the world (by hand: rm $hold_file)."
 fi
 echo "Check START_ROOM / START_ROOM_UNAPPROVED before letting anyone connect."

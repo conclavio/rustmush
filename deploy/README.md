@@ -5,14 +5,17 @@ Each instance `<name>` gets:
 
 - systemd services `<name>mush.service` + `redis-<name>mush.service`
 - working tree `/opt/rustmush/<name>` (build under `.../build`)
-- its own Redis on its own localhost port (dev1 = **6788**)
+- its own Redis, on a **Unix socket only** (`port 0`; dev1 =
+  `/run/redis-dev1mush/redis.sock`, so `redis-cli -s /run/redis-dev1mush/redis.sock`;
+  the TCP port 6788 dev1 had before 2026-11-22 is gone)
 - its own SSH port (dev1 = **6789**), bound to the box's **external IPv4 only**
   (not `0.0.0.0`, not the tailscale address)
 - its own web port (dev1 = **6790**), bound to **loopback** behind Caddy, which
   terminates TLS for `dev1.conclav.io` on 443 (see *Behind Caddy* below); an
   instance without a proxy binds it on the external IPv4 with native TLS instead
 
-The reference instance is **dev1** ([`dev1/`](dev1/)) — ports **6788/6789/6790**.
+The reference instance is **dev1** ([`dev1/`](dev1/)) — ports **6789/6790**, Redis
+on `/run/redis-dev1mush/redis.sock`.
 The unused dev2 deployment lane has been removed. A second testing instance can
 be provisioned from the shared template with its own data directory, Redis,
 ports, unit and IPC socket; no live instance is changed by this repository edit.
@@ -368,14 +371,17 @@ any more; it is left for an env that renders the native-TLS shape.
 ## Operate
 
 ```bash
-systemctl status dev1mush-server dev1mush-gateway redis-dev1mush
-journalctl -u dev1mush-server -f         # the world; -u dev1mush-gateway for the front door
-redis-cli -p 6788 info keyspace          # prod data (NOT the dev 6379)
+systemctl status dev1mush-server 'dev1mush-gateway@*' redis-dev1mush
+journalctl -u dev1mush-server -f         # the world; -u 'dev1mush-gateway@*' for the front door
+redis-cli -s /run/redis-dev1mush/redis.sock info keyspace   # prod data (NOT the dev 6379)
 ```
 
-Prod data lives in the **6788** instance; the box's **6379** Redis is the
-port-forwarded development instance whose namespaces the gated test suite
-wipes — never point a live server at 6379. See [`../docs/ops.md`](../docs/ops.md).
+Prod data lives in each instance's own Redis, reached only through its Unix
+socket (`/run/redis-dev1mush/redis.sock`, dev2's `/run/redis-dev2mush/redis.sock`;
+the socket's directory is `redis:mush` 0750, so root or the `mush` user); the
+box's **6379** Redis is the port-forwarded development instance whose
+namespaces the gated test suite wipes — never point a live server at 6379. See
+[`../docs/ops.md`](../docs/ops.md).
 
 ## Reset an instance (flush and rebuild)
 
@@ -405,7 +411,11 @@ The script reads the installed `instance.env`; it never sources it.
 
 Add `--no-start` to leave the unit stopped after the wipe (and the bootstrap).
 It is the first step of a bring-up that keeps players off until the named
-launch is Active: the bring-up script starts the unit itself.
+launch is Active: the bring-up script starts the unit itself. It also **holds**
+the world down: before it stops the unit it writes `server.hold` beside the
+`instance.env`, which the split's server unit refuses every start under
+(*Wipe and redeploy*, below, says how). A reset without `--no-start` starts the
+unit, so it lifts a hold it finds first.
 
 Add `--staff keeper` to create the first staff account before the service starts.
 The script prompts without echo on a terminal, or reads one password line from
@@ -435,6 +445,158 @@ three binaries' `--check-config` over what it produced, boots the reference one
 against a throwaway store, and proves a typo'd `receipt_policy` is refused — so
 the templates cannot drift past the binaries that read them
 (`crates/mush-server/tests/split_boundary/provisioning_smoke.rs`).
+
+## Wipe and redeploy
+
+A new commit on a **fresh store**, with the named launch brought up on it: the
+whole procedure, in the order it was run on dev1 and dev2 on 2026-11-22 (main
+`ebe5840f`, the first wipe since the named launch). A routine redeploy keeps
+the store (*Redeploy*, above); this one flushes it, for a delta the old store
+cannot take or a world that is to start again. Every player is disconnected and
+the world is gone, so it is run only on the owner's word, each time.
+
+The three on-box steps are scripts in [`redeploy/`](redeploy/), run as root and
+named by the instance (`dev1`, `dev2`, ...: `/opt/rustmush/<n>`,
+`deploy/<n>-split/`): [`stage-build.sh`](redeploy/stage-build.sh),
+[`wipe-cutover.sh`](redeploy/wipe-cutover.sh) and
+[`launch-bringup-run.sh`](redeploy/launch-bringup-run.sh). Each says at its head
+what it does; the order, and why, is here.
+
+**1. On the dev box: the web bundle and two tars, at the commit.** `web/dist` is
+git-ignored and the release build embeds it, so it is built at the same commit
+(its `.commit` stamp must equal the tree's `.source-commit`; the deploy refuses
+otherwise) and shipped beside `git archive`'s tree. One copy of each tar serves
+both instances.
+
+```bash
+git fetch origin ; VPS=root@conclav.io ; KEY=./hostinger ; SHA=$(git rev-parse origin/main) ; S8=${SHA:0:8}
+git worktree add --detach "../wipe-$S8" "$SHA"
+(cd "../wipe-$S8/web" && npm ci && CARGO_BUILD_JOBS=4 npm run build)   # ~1 min; Node 22 + the wasm32 target
+git archive --format=tar "$SHA" | ssh -p 2222 -i $KEY $VPS "cat > /root/dev1-tree-$S8.tar"
+tar -cf "/tmp/dist-$S8.tar" -C "../wipe-$S8/web" dist                  # a LOCAL file, then scp (below)
+scp -P 2222 -i $KEY "/tmp/dist-$S8.tar" $VPS:/root/dev1-dist-$S8.tar
+ssh -p 2222 -i $KEY $VPS "cp /root/dev1-tree-$S8.tar /root/dev2-tree-$S8.tar && cp /root/dev1-dist-$S8.tar /root/dev2-dist-$S8.tar"
+```
+
+From Git Bash on the Windows box: give `tar` a path with no drive colon
+(`/tmp/...` or `/c/...`; it reads `C:/...` as a remote host), and write the
+dist tar to a file and `scp` it, since `tar -cf - dist | ssh` shipped 0 bytes
+there. The `git archive` pipe works.
+
+**2. On the box: the scripts, out of the tree tar** (the recipe is always the
+commit's own):
+
+```bash
+mkdir -p /root/redeploy-$S8 && tar -xf /root/dev1-tree-$S8.tar -C /root/redeploy-$S8 --strip-components=2 deploy/redeploy
+```
+
+**3. Stage and build both halves beside the live tree.** Nothing live changes,
+so both instances run at once while they serve. On 2026-11-22: about 6 minutes
+of staging (two `cp -a` of a ~10 GB target dir side by side), then
+`mush-server` in 1,407 s and `mush-gateway` in 388 s each, in parallel at -j 4,
+no warnings. Watch the log for its `BUILT` line; never `pgrep -f` (the pattern
+matches the ssh command line that carries it).
+
+```bash
+(COMMIT=$S8 JOBS=4 setsid nohup bash /root/redeploy-$S8/stage-build.sh dev1 > /root/dev1-stage-$S8.log 2>&1 < /dev/null &)
+(COMMIT=$S8 JOBS=4 setsid nohup bash /root/redeploy-$S8/stage-build.sh dev2 > /root/dev2-stage-$S8.log 2>&1 < /dev/null &)
+```
+
+**4. Cut each instance over: stop, snapshot, swap, wipe, deploy held.** About
+25 s each (a gateway generation's stop is its 30 s finish).
+
+```bash
+COMMIT=$S8 bash /root/redeploy-$S8/wipe-cutover.sh dev1 --yes
+```
+
+In order: preflight the staged tree; make the staff password file
+`/root/<n>-keeper.pw` (random, root 0600, never printed; `STAFF=<name>` names
+another account) unless it exists; **stop both halves** (the server, and both
+gateway generations, disabled); **snapshot** the store, the data dir,
+`mushd.toml` and `instance.env` to `/root/backups/<n>-<UTC>-pre-<sha8>`, through
+the Redis the live `instance.env` names; **swap the trees** (the old one stays as
+`build.old-<UTC>`); **`reset-instance.sh --yes --no-start`**, which wipes and
+holds; **`SERVER_HOLD=1 deploy.sh`**. It prints the units, the hold and the
+store after.
+
+**5. The bring-up**, after a look at what step 4 printed:
+
+```bash
+(setsid nohup bash /root/redeploy-$S8/launch-bringup-run.sh dev1 > /root/dev1-bringup-$S8.log 2>&1 < /dev/null &)
+```
+
+That is `launch-bringup.py /opt/rustmush/dev1/instance.env --staff keeper
+--password-file /root/dev1-keeper.pw` (*Named launch and the player market*,
+below), with its options passed through. On 2026-11-22: three private boots,
+the unit's start and the LLM check in about 2.5 minutes, then the seed line's
+rating and a House's purchase (half an hour or more). Wait for `BRINGUP EXIT`.
+
+**Why this order.** Each step is there because a run went wrong, or nearly did,
+without it:
+
+- **The wipe comes BEFORE `deploy.sh`.** A new server refuses an old store
+  whose delta it cannot take; on 2026-11-06 `deploy.sh` died at the hot restart
+  with the unit restart-looping, and the gateway never swapped. Wiped first, the
+  deploy only ever starts a server on a fresh store.
+- **The trees are swapped before the reset**, so the reset is the new tree's:
+  the old one's `reset-instance.sh` may have no `--no-start` (2026-11-22's did
+  not), and only the new one sets the hold.
+- **Both halves are stopped first.** A wipe ends every session anyway, and a
+  deploy that changes the instance's Redis config or unit restarts Redis, which
+  restarts every unit that `Requires=` it. `deploy.sh` refuses that under a
+  running instance unless `REDIS_RESTART=1` (*The two deploy knobs*, below);
+  with nothing running it needs no knob.
+- **The world is held from the reset to the bring-up's start.** Without the
+  hold, starting a gateway generation starts the world (next paragraph).
+
+**The hold.** `/opt/rustmush/<n>/server.hold`. While it exists, the server unit's
+`AssertPathExists=!/opt/rustmush/<n>/server.hold` refuses every start of
+`<n>mush-server`: the deploy's, the one a gateway generation's `Wants=` pulls in
+when the generation starts or restarts (and a Redis restart restarts it), boot's,
+and a hand `systemctl start`, which fails with `Assertion failed on job for
+<n>mush-server.service` (`systemctl status` shows the line that was not met). A
+refused start changes no unit state and costs no start-limit token; a `restart`
+of a running unit while held stops it and leaves it down, which is why the
+deploy will not restart a running server it finds held. `reset-instance.sh
+--no-start` sets it before it stops the unit, `SERVER_HOLD=1 deploy.sh` sets it
+when the server is not running, and `launch-bringup.py` sets it before it stops
+the unit and lifts it once the Active boot has passed, just before it starts the
+world. A bring-up that stops leaves it, and so does every deploy, with or
+without the knob. The file is root's (`/opt/rustmush/<n>` is root:root 0755), so
+the service user can neither set nor lift it. To start the world without the
+launch, lift it by hand: `rm /opt/rustmush/<n>/server.hold && systemctl start
+<n>mush-server`. Before the hold, `SERVER_HOLD=1` only kept `deploy.sh` from
+calling `systemctl start` on the server, and the gateway generation's start a
+few lines later started it anyway: on both boxes on 2026-11-22 the deploy said
+"NOT started" and the unit was `active (running)` two seconds later. It was
+harmless only because the store had been wiped first and the bring-up stops a
+running unit. The gateway still only `Wants=` the server (doc 33 section 4.2: a
+server stop must leave the gateway holding its connections); the hold is the
+server unit's own.
+
+**The two deploy knobs.** `SERVER_HOLD=1` is the hold above. `REDIS_RESTART=1`
+is the acceptance of a Redis restart under a running instance: a deploy whose
+`redis-<n>mush.conf` or `.service` changed restarts Redis, and systemd stops and
+starts the server and every gateway generation with it (they `Requires=` it),
+the serving generation's restart dropping every connection once and a draining
+generation's ending its sessions. `systemctl restart` returns before those
+starts are done, which on 2026-11-22 would have let the deploy read the serving
+generation as stopped and start the other beside it, both enabled. So the deploy
+refuses that restart while anything of the instance runs, before it installs a
+file, unless the knob is set; it waits for every job systemd still has for the
+instance's units before it reads which generation serves; a first start leaves
+only the generation it starts enabled; and it ends with an error if both are
+enabled. `scripts/tests/deploy-units.sh` drives those helpers
+([`drain/units.sh`](drain/units.sh)) against a stub `systemctl` that restarts
+the way systemd does.
+
+**Redis is a Unix socket only** on both instances since 2026-11-22 (this
+wipe moved it off TCP): `redis-cli -s /run/redis-dev1mush/redis.sock` (dev2:
+`/run/redis-dev2mush/redis.sock`). There is no `-p 6788` or `-p 6791` any more.
+
+**What it leaves**, for pruning with the owner: `/opt/rustmush/<n>/build.old-<UTC>`
+for each run, the two tars per instance in `/root`, and the snapshot under
+`/root/backups` (24 MB and 48 MB on 2026-11-22).
 
 ## The simulator centre
 
@@ -843,9 +1005,13 @@ passed its checks. While it is stopped nothing answers on the instance's own
 IPC socket, so the public gateway generations, which stay up, have no world to
 log anybody in to or register anybody on; the private gateway listens on
 loopback only. (A private `--ipc` socket alone would lock the operator out too;
-that is why the script brings its own gateway.) If the script stops on a
-refusal it leaves the unit stopped. For a box that must never be reachable
-without its market, start from a stopped unit:
+that is why the script brings its own gateway.) The world is **held** meanwhile:
+before the stop the script writes `server.hold` beside the `instance.env`, so a
+gateway generation that starts or restarts cannot pull the world in through its
+`Wants=` (*Wipe and redeploy*, above, says how the hold works), and it lifts the
+hold only once the Active boot has passed. If the script stops on a refusal it
+leaves the unit stopped and held. For a box that must never be reachable
+without its market, start from a held unit:
 
 ```bash
 sudo scripts/reset-instance.sh /opt/rustmush/dev1/instance.env --yes --staff keeper --no-start
@@ -859,10 +1025,12 @@ sudo SERVER_HOLD=1 bash /opt/rustmush/dev1/build/deploy/dev1-split/deploy.sh
 sudo python3 /opt/rustmush/dev1/build/deploy/instance/launch-bringup.py /opt/rustmush/dev1/instance.env
 ```
 
-`SERVER_HOLD=1` has the deploy install and enable the server unit without
-starting it; the gateway generation starts and holds the front door. Without
-those two knobs the world is reachable, with no market, between the deploy's
-start of the unit and the bring-up's stop of it.
+The reset's `--no-start` holds the world; `SERVER_HOLD=1` has the deploy install
+and enable the server unit and hold it (the reset's hold is kept with or without
+the knob); the gateway generation starts and holds the front door, and the start
+its `Wants=` pulls in is refused. Without those two knobs the world is
+reachable, with no market, between the deploy's start of the unit and the
+bring-up's stop of it. The whole wipe, in order, is *Wipe and redeploy*, above.
 
 **Safe to interrupt and run again.** Where the bring-up stands is read from the
 world and from the document, never assumed: every identity is looked up by name
