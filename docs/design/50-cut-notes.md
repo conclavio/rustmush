@@ -2710,30 +2710,48 @@ command. The checks above belong there as a last step after the Active boot, onc
 is done.
 
 **What could make a redeployed world misbehave.**
-- **The Assembly votes on absolute IC month boundaries, and the house runs from boot.**
-  `concession::ic_month` divides the world's IC clock by 30 IC days. The first vote after seeding
-  comes at the next boundary, 0 to 30 IC days later. The stories boot on a boundary, so their
-  votes fall on days 30, 60, 90 and 120. The house's hauls are counted from the first boot
-  (deliveries about days 26, 61, 96 and 131). The tuned contest assumes the window opens on
-  day 148, after the fourth delivery. With the first vote `d` IC days after boot, the close is on
-  day `d + 146`. These figures are estimated from the v54 timeline, not measured:
-  - `d` from about 22 to 30 (the stories' case): four deliveries, and the close reads about
-    `2,948 − 2d` t, so the Republic wins the empty run and one player haul holds.
-  - `d` from about 14 to 21: four deliveries and an earlier close, so the farm reads over 2,905 t
-    and **the Freeport holds with nobody playing**.
-  - `d` up to about 13: the fourth delivery falls in the window, and the Republic wins by more.
-  At 24:1 an IC day is a real hour, so `d` is the real hours from the first boot to the next IC
-  month boundary. With `IC_EPOCH=0987-04-20 06:00` the boundaries fall every 30 real hours:
-  2026-11-22 19:45Z, 2026-11-24 01:45Z, 2026-11-25 07:45Z, 2026-11-26 13:45Z. A first boot
-  within about eight real hours after a boundary matches the stories. The fix is to count the
-  votes from the seeding instant instead. That is a code change and not made here.
+- **The Assembly's votes, fixed below.** Before the fix they fell on absolute IC month
+  boundaries while the house ran from boot, so where in the calendar the first boot landed moved
+  the tuned contest. By the v54 timeline (an estimate), a first boot about 14 to 21 IC days before
+  a boundary let the Freeport hold the empty run. They now count from the instant the Review was
+  seeded (*The Assembly counts from the seeding*, below), so any wipe time runs the stories'
+  contest.
 - **Downtime.** IC time runs on wall time, so it passes while the server is stopped. The
-  Assembly catches up every month it missed, while the farm drains at most once a fire's day and
-  the house's hulls don't move. A long stop during the run moves the contest off its tuned
-  figures.
+  Assembly catches up every month it missed, counted from the seeding. The farm drains at most
+  once a fire's day, and the house's hulls don't move. A long stop during the run moves the
+  contest off its tuned figures.
 - **The launch's Houses are not in the stories.** The bring-up seeds their Drays at Ceres
   (`launch-bringup.py:1525`). Nothing in the minds or procurement takes `+haul/accept`, but the
   stories have never run beside them.
 - **Hold the Concession's completion changes nothing**, as noted under OP.8's retune.
 - The sky's tables run to IC 2400. The IC year is about 2353.6 today, so they last about two
   real years at 24:1.
+
+### The Assembly counts from the seeding (the bring-up's fix)
+
+The owner's word on the boot-timing risk (2026-11-22): "Fix it in code". **No lane bump.**
+
+**Built.**
+- **The seeding instant is the seed vote's cause.** The Review's seeding vote, which takes it
+  from one to two of six, is now cause id `assembly.vote/0@<IC seconds>`
+  (`concession::seed_cause`), the world's IC instant at the seeding. The cause list persists with
+  the faction clock, so a restart keeps it. It is what anchored the votes before, so nothing new
+  is stored and no state slot is added.
+- **Vote `n` falls `n` IC months after it** (`concession::votes_due`, `seeded_at`), cause id
+  `assembly.vote/<n>`. The tick votes once for each whole month since the seeding that the clock
+  has not counted. Downtime is caught up from the seeding, and a cause already counted moves
+  nothing.
+- **What stays on the calendar's months:** the threshold news on Hold the Concession and the
+  arm's monthly cap. Neither decides the operation, and the cap never binds at three posts.
+
+**Tests.**
+- `concession::tests`: the first vote of a world seeded 15 or 25 IC days before a boundary falls
+  30 days after the seeding, with none at the boundary. Missed months are counted from the
+  seeding. The instant is read back from the seed vote's cause, and neither a later vote nor a
+  seizure is taken for it.
+- `op8_campaign::empty_run`: the run is now `the_empty_run(ic_phase)`, booted on a boundary as
+  before and also 15 and 25 IC days before one (`rig::composed_phased`,
+  `driving_rig::stocked_phased`). Each run checks that the first vote falls within a day of 30 IC
+  days after the seeding, and that the farm still reads short at the close.
+- `domain_world::polities::op2_…`: the anchor cause is the seed's, at the boot's IC instant.
+

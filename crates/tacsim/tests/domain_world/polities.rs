@@ -430,7 +430,8 @@ fn a_month_later(tw: &mut TestWorld) {
 /// doc 11 §6). On a fresh production world:
 /// - the Concession Review stands on the Republic's board and Hold the Concession on the
 ///   Freeport's, each at two of six, with no flip of their own, both on `+clocks`;
-/// - the Assembly's monthly tick moves the Review once an IC month, never twice for one month;
+/// - the Assembly's monthly tick moves the Review once an IC month counted from its seeding, never
+///   twice for one month;
 /// - a Co-op pool hull flies the Freeport's flag and an untitled object none;
 /// - a seizure ruling on the Freeport-flagged hull moves the Review once for its cause, and one on
 ///   any other hull moves nothing;
@@ -440,9 +441,9 @@ fn a_month_later(tw: &mut TestWorld) {
 #[allow(clippy::too_many_lines)]
 fn op2_the_concession_review_moves_by_the_assembly_and_by_a_flagged_seizure() {
     use tacsim::concession::{
-        ASSEMBLY_CAUSE, CONCESSION_REVIEW_CONSEQUENCE, CONCESSION_REVIEW_TITLE,
-        HOLD_THE_CONCESSION_TITLE, assembly_votes, hold_clock, hull_flag, ic_month,
-        record_flagged_seizure, review_clock,
+        CONCESSION_REVIEW_CONSEQUENCE, CONCESSION_REVIEW_TITLE, HOLD_THE_CONCESSION_TITLE,
+        IC_MONTH_S, assembly_votes, hold_clock, hull_flag, record_flagged_seizure, review_clock,
+        seed_cause, seeded_at,
     };
 
     let mut tw = booted_at_month(5);
@@ -468,12 +469,14 @@ fn op2_the_concession_review_moves_by_the_assembly_and_by_a_flagged_seizure() {
         "the operation flips, not the clock"
     );
     assert_eq!(hold.on_complete_control, None);
-    let start = ic_month(tw.world().world_ic_now().at);
-    assert!(start >= 5, "booted at month {start}");
+    // The seed's vote records the instant the Review was seeded (doc 50's Isidis bring-up): the
+    // boot's, an IC hour into month 5, which every later vote counts from.
+    let seeded = seeded_at(&review).expect("the seeding instant");
+    assert_eq!(seeded, 5 * IC_MONTH_S + 3_600, "seeded at the boot");
     assert_eq!(
         review.causes,
-        vec![smol_str::SmolStr::new(format!("{ASSEMBLY_CAUSE}{start}"))],
-        "the seeding month's vote is the anchor"
+        vec![smol_str::SmolStr::new(seed_cause(seeded))],
+        "the seed's vote is the anchor"
     );
     let player = tw.spawn_player("Hauler");
     let clocks = seen(&mut tw, player, "+clocks");

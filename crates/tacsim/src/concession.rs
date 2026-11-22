@@ -10,13 +10,15 @@
 //!     stockpile at its threshold moves it once an IC month (doc 50 cut OP.4,
 //!     `crate::stockpile`); a loss on the run lands with OP.5.
 //! - **The scheduled tick, a typed cause** ([`ASSEMBLY_TICK`]): the Assembly votes once an IC month
-//!   ([`IC_MONTH_S`]). Each vote moves the Review one segment through
-//!   `mush_faction::advance_clock_by_cause` with the cause id `assembly.vote/<month>`, the
-//!   month counted on the world's IC clock. The seed's own vote is the anchor: the Review opens
-//!   at one and the seeding month's vote takes it to two, so the clock's persisted cause list
-//!   records the month it began, and every later fire moves it once for each whole month since.
-//!   A restart, a missed fire or a paused world moves it no more and no less; a cause id already
-//!   counted writes nothing.
+//!   ([`IC_MONTH_S`]), **counted from the instant the Review was seeded** (the Isidis bring-up's
+//!   fix): vote `n` falls `n` IC months after it, wherever in the calendar the world first booted.
+//!   Each vote moves the Review one segment through `mush_faction::advance_clock_by_cause` with
+//!   the cause id `assembly.vote/<n>`. The seed's own vote is the anchor: the Review opens at one,
+//!   and the seed's vote, cause id `assembly.vote/0@<IC seconds>` ([`seed_cause`]), takes it to
+//!   two and records the seeding instant in the clock's persisted cause list. Every later fire
+//!   moves it once for each whole IC month since that instant that it has not counted
+//!   ([`votes_due`]). A restart, a missed fire, downtime or a paused world moves it no more and no
+//!   less; a cause id already counted writes nothing.
 //! - **A seized Freeport-flagged hauler** ([`record_flagged_seizure`]): a seizure ruling at the
 //!   Kirkwood picket on a hull whose flag ([`hull_flag`]) is the Freeport's moves the Review one
 //!   segment, the picket incident's own `source` its cause id (Q-50-20 as corrected).
@@ -51,8 +53,10 @@ pub const HOLD_THE_CONCESSION_CONSEQUENCE: &str = "The Freeport holds the Isidis
 pub const ISIDIS_ROW: &str = "isidis";
 /// One IC month, for the Assembly's vote (Q-50-20: one an IC month).
 pub const IC_MONTH_S: i64 = 30 * 86_400;
-/// The vote's cause-id prefix; the IC month index follows it.
+/// The vote's cause-id prefix; the vote's number since the seeding follows it.
 pub const ASSEMBLY_CAUSE: &str = "assembly.vote/";
+/// The seed vote's marker after [`ASSEMBLY_CAUSE`]: vote zero, at the IC instant that follows.
+const SEED_MARK: &str = "0@";
 /// The tick's tag.
 pub const ASSEMBLY_TICK: &str = "tacsim.assembly";
 /// How often it fires (Coarse). A month is 30 real hours at 24:1, so a minute is plenty.
@@ -62,6 +66,33 @@ pub const ASSEMBLY_TICK_PERIOD: Duration = Duration::from_secs(60);
 #[must_use]
 pub fn ic_month(ic: i64) -> i64 {
     ic.div_euclid(IC_MONTH_S)
+}
+
+/// **The seed vote's cause id**: `assembly.vote/0@<IC seconds>`, the instant the Review was
+/// seeded, which every later vote counts from.
+#[must_use]
+pub fn seed_cause(seeded_ic: i64) -> String {
+    format!("{ASSEMBLY_CAUSE}{SEED_MARK}{seeded_ic}")
+}
+
+/// **The instant the Review was seeded**, read from its seed vote's cause ([`seed_cause`]).
+#[must_use]
+pub fn seeded_at(clock: &mush_faction::Clock) -> Option<i64> {
+    clock.causes.iter().find_map(|cause| {
+        cause
+            .strip_prefix(ASSEMBLY_CAUSE)?
+            .strip_prefix(SEED_MARK)?
+            .parse::<i64>()
+            .ok()
+    })
+}
+
+/// **The Assembly's votes due by `now`** for a Review seeded at `seeded_ic`: one for each whole
+/// IC month since the seeding, whatever the calendar's phase. Vote `n` is due at
+/// `seeded_ic + n * IC_MONTH_S`.
+#[must_use]
+pub fn votes_due(seeded_ic: i64, now: i64) -> i64 {
+    now.saturating_sub(seeded_ic).div_euclid(IC_MONTH_S).max(0)
 }
 
 /// **A hull's flag** (Q-50-61): the polity of the organization that holds its title, or none.
@@ -112,15 +143,15 @@ pub(crate) fn draft(
     }
 }
 
-/// The Assembly's vote of IC month `month` on the Review.
-fn vote(ctx: &mut Ctx<'_>, clock: ClockId, month: i64) -> Result<ClockAdvance, String> {
+/// The Assembly's vote on the Review, under the cause id `cause`.
+fn vote(ctx: &mut Ctx<'_>, clock: ClockId, cause: String) -> Result<ClockAdvance, String> {
     let line = draft(
         ctx,
         "op.concession_review",
         format!(
             "The Assembly at Coprates votes on the Concession Review; {CONCESSION_REVIEW_TITLE} advances."
         ),
-        format!("{ASSEMBLY_CAUSE}{month}"),
+        cause,
     );
     mush_faction::advance_clock_by_cause(ctx, clock, 1, line)
 }
@@ -163,10 +194,10 @@ pub(crate) fn seed_isidis_fronts(ctx: &mut Ctx<'_>, def: &RegionsDef) -> Result<
             },
             opening,
         )?;
-        // The seeding month's vote: two of six, and the anchor the tick counts from.
+        // The seed's vote: two of six, and the instant the tick counts from.
         let clock = review_clock(ctx.w).ok_or("the Concession Review's clock is missing")?;
-        let month = ic_month(ctx.w.world_ic_now().at);
-        vote(ctx, clock.id, month)?;
+        let seeded = ctx.w.world_ic_now().at;
+        vote(ctx, clock.id, seed_cause(seeded))?;
     }
     if hold_clock(ctx.w).is_none() {
         let opening = draft(
@@ -196,17 +227,9 @@ pub(crate) fn seed_isidis_fronts(ctx: &mut Ctx<'_>, def: &RegionsDef) -> Result<
     Ok(())
 }
 
-/// The month the Review began: the least `assembly.vote/<month>` its clock counted.
-fn anchor(clock: &mush_faction::Clock) -> Option<i64> {
-    clock
-        .causes
-        .iter()
-        .filter_map(|cause| cause.strip_prefix(ASSEMBLY_CAUSE)?.parse::<i64>().ok())
-        .min()
-}
-
 /// **The Assembly's votes due now** (this module's head, "The scheduled tick"): one for each
-/// whole IC month since the anchor that the clock has not counted. Answers how many moved it.
+/// whole IC month since the Review was seeded ([`votes_due`]) that the clock has not counted.
+/// Answers how many moved it.
 pub fn assembly_votes(ctx: &mut Ctx<'_>) -> usize {
     let Some(clock) = review_clock(ctx.w) else {
         return 0;
@@ -214,13 +237,13 @@ pub fn assembly_votes(ctx: &mut Ctx<'_>) -> usize {
     if clock.completed {
         return 0;
     }
-    let Some(first) = anchor(&clock) else {
+    let Some(seeded) = seeded_at(&clock) else {
         return 0;
     };
-    let now = ic_month(ctx.w.world_ic_now().at);
+    let due = votes_due(seeded, ctx.w.world_ic_now().at);
     let mut moved = 0;
-    for month in first.saturating_add(1)..=now {
-        match vote(ctx, clock.id, month) {
+    for n in 1..=due {
+        match vote(ctx, clock.id, format!("{ASSEMBLY_CAUSE}{n}")) {
             Ok(ClockAdvance::Advanced { completed, .. }) => {
                 moved += 1;
                 if completed {
@@ -229,7 +252,7 @@ pub fn assembly_votes(ctx: &mut Ctx<'_>) -> usize {
             }
             Ok(_) => {}
             Err(why) => {
-                tracing::warn!(target: "tacsim", month, why, "tacsim: the Assembly's vote did not land");
+                tracing::warn!(target: "tacsim", vote = n, why, "tacsim: the Assembly's vote did not land");
                 break;
             }
         }
@@ -296,4 +319,91 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
         TickCadence::Coarse(ASSEMBLY_TICK_PERIOD),
         Arc::new(assembly_tick),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: i64 = 86_400;
+
+    /// A Review clock that counted `causes`.
+    fn review_with(causes: &[String]) -> mush_faction::Clock {
+        mush_faction::Clock {
+            id: ClockId(1),
+            front: mush_faction::FrontId(1),
+            faction: FactionId(1),
+            title: "Assembly votes & seized Freeport haulers".to_owned(),
+            segments: CONCESSION_SEGMENTS,
+            filled: CONCESSION_STARTS_AT,
+            visibility: Visibility::Public,
+            advance_on: None,
+            consequence: String::new(),
+            on_complete_control: None,
+            completed: false,
+            causes: causes.iter().map(|c| c.as_str().into()).collect(),
+        }
+    }
+
+    /// **The Isidis bring-up's fix**: a world seeded 15 or 25 IC days before a calendar month's
+    /// boundary has its first vote 30 IC days after the seeding, not at the boundary.
+    #[test]
+    fn the_first_vote_falls_a_month_after_the_seeding_not_at_the_calendars_boundary() {
+        let boundary = 28_636 * IC_MONTH_S;
+        for before in [15, 25] {
+            let seeded = boundary - before * DAY;
+            assert_eq!(
+                ic_month(seeded) + 1,
+                ic_month(boundary),
+                "part-way into a month"
+            );
+            assert_eq!(
+                votes_due(seeded, boundary),
+                0,
+                "{before} days: none at the boundary"
+            );
+            assert_eq!(
+                votes_due(seeded, seeded + IC_MONTH_S - 1),
+                0,
+                "{before} days"
+            );
+            assert_eq!(votes_due(seeded, seeded + IC_MONTH_S), 1, "{before} days");
+            assert_eq!(
+                votes_due(seeded, seeded + 4 * IC_MONTH_S),
+                4,
+                "{before} days"
+            );
+        }
+    }
+
+    /// **Downtime**: the months missed are counted from the seeding, and only whole ones.
+    #[test]
+    fn missed_months_are_caught_up_from_the_seeding() {
+        let seeded = 28_636 * IC_MONTH_S - 15 * DAY;
+        assert_eq!(votes_due(seeded, seeded + 95 * DAY), 3);
+        assert_eq!(votes_due(seeded, seeded + 5 * IC_MONTH_S), 5);
+        assert_eq!(
+            votes_due(seeded, seeded - DAY),
+            0,
+            "never before the seeding"
+        );
+    }
+
+    /// The seeding instant is read back from the seed vote's cause, which persists with the
+    /// clock, and neither a later vote nor a seizure is taken for it.
+    #[test]
+    fn the_seeding_instant_is_read_back_from_the_seed_votes_cause() {
+        let seeded = 28_636 * IC_MONTH_S - 25 * DAY;
+        let clock = review_with(&[
+            seed_cause(seeded),
+            format!("{ASSEMBLY_CAUSE}1"),
+            "picket.incident/7".to_owned(),
+        ]);
+        assert_eq!(seed_cause(seeded), format!("assembly.vote/0@{seeded}"));
+        assert_eq!(seeded_at(&clock), Some(seeded));
+        assert_eq!(
+            seeded_at(&review_with(&[format!("{ASSEMBLY_CAUSE}1")])),
+            None
+        );
+    }
 }
