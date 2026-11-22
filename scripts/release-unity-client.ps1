@@ -39,6 +39,8 @@ param(
 
     [switch]$SkipTests,
 
+    [switch]$SkipBuild,
+
     [string]$DeployTarget = "",
 
     [int]$SshPort = 22,
@@ -253,36 +255,40 @@ foreach ($t in $Targets) {
         continue
     }
 
-    if (Test-Path $stageDir) {
-        Remove-Item -Recurse -Force $stageDir
-    }
-    New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-
-    $prevEnv = $env:TACSIM_BUILD_OUTPUT
-    try {
-        $env:TACSIM_BUILD_OUTPUT = $outExe
-        $unityArgs = @(
-            "-batchmode",
-            "-quit",
-            "-nographics",
-            "-projectPath", $UnityProject,
-            "-executeMethod", $meta.Method,
-            "-logFile", $logFile
-        )
-        $proc = Start-Process -FilePath $UnityExe -ArgumentList $unityArgs -Wait -PassThru -NoNewWindow
-        if ($proc.ExitCode -ne 0) {
-            Write-Host "`nUnity build failed for $t (exit $($proc.ExitCode)). Last 40 lines of ${logFile}:" -ForegroundColor Red
-            if (Test-Path $logFile) {
-                Get-Content $logFile -Tail 40 | ForEach-Object { Write-Host "  $_" }
-            }
-            throw "Unity standalone build failed for $t."
+    if ($SkipBuild) {
+        Write-Host "     Skipping Unity build (-SkipBuild); packaging existing $stageDir..."
+    } else {
+        if (Test-Path $stageDir) {
+            Remove-Item -Recurse -Force $stageDir
         }
-    } finally {
-        $env:TACSIM_BUILD_OUTPUT = $prevEnv
+        New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+
+        $prevEnv = $env:TACSIM_BUILD_OUTPUT
+        try {
+            $env:TACSIM_BUILD_OUTPUT = $outExe
+            $unityArgs = @(
+                "-batchmode",
+                "-quit",
+                "-nographics",
+                "-projectPath", $UnityProject,
+                "-executeMethod", $meta.Method,
+                "-logFile", $logFile
+            )
+            $proc = Start-Process -FilePath $UnityExe -ArgumentList $unityArgs -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -ne 0) {
+                Write-Host "`nUnity build failed for $t (exit $($proc.ExitCode)). Last 40 lines of ${logFile}:" -ForegroundColor Red
+                if (Test-Path $logFile) {
+                    Get-Content $logFile -Tail 40 | ForEach-Object { Write-Host "  $_" }
+                }
+                throw "Unity standalone build failed for $t."
+            }
+        } finally {
+            $env:TACSIM_BUILD_OUTPUT = $prevEnv
+        }
     }
 
     if (-not (Test-Path $outExe)) {
-        throw "Unity exited 0 but expected output was not found: $outExe"
+        throw "Expected standalone build output was not found: $outExe"
     }
 
     # Remove Unity "DoNotShip" / backup artifacts before zipping
@@ -305,8 +311,18 @@ foreach ($t in $Targets) {
     if (Test-Path $zipPath) {
         Remove-Item -Force $zipPath
     }
-    Write-Host "     Compressing -> $zipPath"
-    Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+    # Use Windows bsdtar (`tar.exe -a -c -f`) for streaming Zip64 support: PowerShell 5.1's
+    # Compress-Archive fails with "Stream was too long" once data.unity3d exceeds 2 GiB.
+    Write-Host "     Compressing (Zip64) -> $zipPath"
+    $tarExe = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if ($tarExe) {
+        & $tarExe.Source -a -c -f $zipPath -C $stageDir .
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar.exe failed while creating $zipPath (exit $LASTEXITCODE)."
+        }
+    } else {
+        Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+    }
 
     $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $sizeBytes = (Get-Item $zipPath).Length
