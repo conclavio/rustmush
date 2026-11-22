@@ -6888,8 +6888,13 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
     let (hit_on, miss_on) = (format!("Hit on {ba}"), format!("Miss on {ba}"));
     let mut hit = false;
     for _ in 0..20 {
+        // One whole cannon cycle and the round's flight, with a margin: the stock
+        // cannon cycles in 15,000 ms (its content pack, doc 49 cut CC.2),
+        // so a miss leaves the next round a whole cycle away. The 12 s this wait
+        // had from the 1 s-cycle palette failed now and then (`docs/flaky-tests.md`);
+        // `sim_range`'s same wait was widened in c7b639a8f.
         wait_until(
-            Duration::from_secs(12),
+            Duration::from_secs(21),
             "the cannon to be ready",
             async || {
                 ask_whole(&mut ada, "WEAPONSTATUS")
@@ -7040,10 +7045,17 @@ async fn a_taken_name_is_refused_the_same_way_whatever_it_collided_with() {
 // ---------------------------------------------------------------------------
 
 /// Where the missile witnesses stand (16b cut AE.2): Bo's heavy at (160, 140)
-/// facing south, Ada's stock tank 200 m south of it at (160, 120) facing east,
-/// so it shows the heavy its whole left side.
+/// facing south, Ada's stock tank 60 m south of it at (160, 134) facing east,
+/// so it shows the heavy its whole left side. At 60 m a round at a standing
+/// broadside tank lands, so the test's phase 1 is not left to chance. It stood
+/// 200 m off until doc 49 cut CC.2 cut the rack's load to four; a first hit as
+/// late as the fourth round then left phase 2 an empty rack, a retried pass
+/// about one run in twenty (`docs/flaky-tests.md`).
 const AE2_SHOOTER_POSE: &str = "@arena/pose BA=160 140 180";
-const AE2_TARGET_POSE: &str = "@arena/pose RA=160 120 90";
+const AE2_TARGET_POSE: &str = "@arena/pose RA=160 134 90";
+/// The rack's load (`heavy_mk1`'s four, doc 49 Q-49-22) less the one round
+/// phase 2 fires: what phase 1 may spend looking for its hit.
+const AE2_PHASE_ONE_ROUNDS: usize = 3;
 
 /// **Where staff puts Ada's tank for the lost-contact shot** (16b cut AE.2):
 /// 110 cells south of Bo's heavy, behind the compound at columns 150 to 170 and
@@ -7051,6 +7063,22 @@ const AE2_TARGET_POSE: &str = "@arena/pose RA=160 120 90";
 /// in the air and Bo's contact on the tank (last refreshed before the place, at
 /// the same wake) expires three sensor passes into the flight.
 const AE2_BEHIND_THE_COMPOUND: (u16, u16) = (160, 30);
+
+/// Match `id`'s frame count, off `@arena/status`'s `match N: …, frames F` row (which the
+/// terminal wraps, so it is read across lines): it moves once a pulse's frame has reached the
+/// world.
+async fn ae2_frames(god: &mut Term, id: u64) -> u64 {
+    let status = ask(god, "@arena/status", "ledger writes awaiting").await;
+    let head = format!("match {id}:");
+    status
+        .split_once(head.as_str())
+        .and_then(|(_, row)| row.split_once("frames "))
+        .and_then(|(_, tail)| {
+            let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .unwrap_or_else(|| panic!("no frames on match {id}'s row in:\n{status}"))
+}
 
 /// The lines of `seen` a pilot was told, without the sentinel's echo and its
 /// refusal — what [`o1_drain`] adds to a transcript to prove it complete.
@@ -7066,7 +7094,7 @@ fn ae2_told(seen: &str) -> Vec<String> {
 /// the contact reads `Miss.` and no reason** (16b cut AE.2; doc 16 §1, §5 and
 /// §3.5; 16c N2), over the production composition and real SSH.
 ///
-/// Bo flies the heavy and Ada a stock tank 200 m off, broadside to him; each
+/// Bo flies the heavy and Ada a stock tank 60 m off, broadside to him; each
 /// holds the other, told apart, before anything is fired.
 ///
 /// 1. **In flight, nothing.** Bo fires his rack at Ada until a round lands. For
@@ -7111,7 +7139,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     say(
         &mut god,
         AE2_TARGET_POSE,
-        "RA opens at cell (160, 120) heading 90 for the next match.",
+        "RA opens at cell (160, 134) heading 90 for the next match.",
     )
     .await;
     say(&mut ada, "SIM START", "is boarding").await;
@@ -7154,7 +7182,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     // still a failure.
     let mut shots = 0;
     let mut cycling = 0;
-    while shots < 4 {
+    while shots < AE2_PHASE_ONE_ROUNDS {
         wait_until(STEP_TIMEOUT, "the rack to be ready", async || {
             ask_whole(&mut bo, "WEAPONSTATUS")
                 .await
@@ -7237,7 +7265,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     }
     assert!(
         hit,
-        "four missiles at a broadside tank 200 m off and not one hit"
+        "{AE2_PHASE_ONE_ROUNDS} missiles at a broadside tank 60 m off and not one hit"
     );
 
     // ---- (2) the contact lost in flight -------------------------------------
@@ -7275,6 +7303,28 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     )
     .await;
     o1_drain(&mut ada).await;
+    // Both lines must wait in the task's buffer for the same wake, so they are sent just
+    // after a wake the test has seen, a whole floor before the next. The ready read above
+    // can come at any point of a 5,000 ms floored period (its frame may be one the floor
+    // set's pulled-in pulse delivered, seconds back), and a wake falling between the
+    // `FIRE` and the place's arrival flew the round at the tank where it stood: `Hit on`,
+    // about one run in fifty (`docs/flaky-tests.md`). Setting the floor again pulls the
+    // next wake in to now (`arena_task`'s `TempoFloor`); once the world's mirror counts
+    // its frame, the floor stands between the two lines and the next wake.
+    let frames = ae2_frames(&mut god, id).await;
+    assert!(
+        ask(
+            &mut god,
+            &format!("@arena/tempo {id}=5000"),
+            "under a floor"
+        )
+        .await
+        .contains("under a floor of 5000 ms")
+    );
+    wait_until(STEP_TIMEOUT, "the pulled-in wake", async || {
+        ae2_frames(&mut god, id).await > frames
+    })
+    .await;
     let from = ada.mark();
     let fire_mark = bo.mark();
     let god_mark = god.mark();
