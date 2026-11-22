@@ -10,6 +10,7 @@
     type ClientDownloadEntry,
   } from "$lib/client-downloads";
   import type { GameApp } from "$lib/game.svelte";
+  import GuideView from "./GuideView.svelte";
 
   let { app }: { app: GameApp } = $props();
 
@@ -22,6 +23,8 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let clientDownloads = $state<ClientDownloadEntry[]>([]);
+  // The playtest guide opens from a link here or from `#guide` in the URL.
+  let showGuide = $state(typeof location !== "undefined" && location.hash === "#guide");
 
   $effect(() => {
     if (typeof fetch !== "function") return;
@@ -170,8 +173,16 @@
     <p class="hint alt">
       Prefer a terminal? <code>ssh play@&lt;host&gt;</code> works too.
     </p>
+
+    <button type="button" class="guide-link" onclick={() => (showGuide = true)}>
+      New here? Read the playtest guide
+    </button>
   </form>
 </div>
+
+{#if showGuide}
+  <GuideView onclose={() => (showGuide = false)} />
+{/if}
 
 <style>
   .screen {
@@ -293,6 +304,21 @@
 
   .alt {
     text-align: center;
+  }
+
+  .guide-link {
+    align-self: center;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    padding: 0.1rem;
+  }
+
+  .guide-link:hover {
+    text-decoration: underline;
   }
 
   .client-box {
