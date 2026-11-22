@@ -137,11 +137,17 @@ pub const DISPUTE_TTL_SECS: i64 = 3 * 86_400;
 pub const STALE_CONTRACT_AGE_SECS: i64 = 7 * 86_400;
 /// Permille denominator — a `Share::Permille` is out of this.
 pub const PERMILLE: u32 = 1000;
-/// Minimum recurring cadence (in seconds) for a real-time or IC-clocked
-/// contract `Deliverable::Obligation` (P2-MOD-1). Prevents 1-second recurring
-/// drain bombs while preserving standard lease and test cadences (>= 60s) and
-/// manual-clocked leases (`cadence: None`).
+/// Minimum recurring cadence (in seconds) for a player-authored real-time or
+/// IC-clocked contract `Deliverable::Obligation` (P2-MOD-1). Prevents 1-second
+/// recurring drain bombs on `@contract/deliver` while preserving standard
+/// player cadences (>= 60s) and manual-clocked leases (`cadence: None`).
 pub const MIN_PLAYER_OBLIGATION_EVERY_SECS: i64 = 60;
+/// Minimum recurring cadence (in seconds) for a real-time or IC-clocked
+/// lease-shaped contract `Deliverable::Obligation` (matching the 15-second
+/// campaign/economy tick cadence used by module-offered leases such as
+/// `mush-campaign`'s recovery loaners, while still blocking sub-tick drain
+/// bombs at offer/accept time).
+pub const MIN_LEASE_OBLIGATION_EVERY_SECS: i64 = 15;
 
 // ---- the consent surface --------------------------------------------------
 
@@ -2127,11 +2133,16 @@ pub fn check_offerable(
                         "a contract's obligation amount must be positive",
                     ));
                 }
+                let min_every = if is_lease_shaped(c) {
+                    MIN_LEASE_OBLIGATION_EVERY_SECS
+                } else {
+                    MIN_PLAYER_OBLIGATION_EVERY_SECS
+                };
                 if matches!(
                     template.schedule.clock,
                     EconomicClock::RealUtc | EconomicClock::WorldIc
                 ) && let Some(every) = template.schedule.cadence
-                    && every < MIN_PLAYER_OBLIGATION_EVERY_SECS
+                    && every < min_every
                 {
                     return Err(ContractError::Infeasible(
                         "a contract's recurring obligation cadence is too short",

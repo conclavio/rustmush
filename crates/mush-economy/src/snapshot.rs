@@ -84,6 +84,11 @@ pub struct EconomySnapshot {
     /// (P2-MOD-11). Persisted alongside `contract:{id}` and never mutated by
     /// `@contract/role author`.
     contract_creators: BTreeMap<ContractId, ObjId>,
+    /// Contracts filed through [`crate::file_salvage_claim`] (never player
+    /// `@contract/draft`). Persisted alongside `contract:{id}` so expired
+    /// salvage claims stay intact for downstream award/write-off handling
+    /// without letting player drafts evade P2-MOD-14 tombstone GC.
+    filed_salvage_claims: BTreeSet<ContractId>,
     /// Derived: the `(object, vault)` pairs a **live** contract's `DepositInto`
     /// condition holds, and which contract holds each. Only that contract's own
     /// settlement or refund may withdraw the object (§3.5).
@@ -326,6 +331,19 @@ impl EconomySnapshot {
     pub(crate) fn set_contract_creator(&mut self, id: ContractId, creator: ObjId) {
         self.contract_creators.entry(id).or_insert(creator);
     }
+    /// Whether `id` was filed through [`crate::file_salvage_claim`].
+    #[must_use]
+    pub(crate) fn is_filed_salvage_claim(&self, id: ContractId) -> bool {
+        self.filed_salvage_claims.contains(&id)
+    }
+    /// Mark `id` as filed through [`crate::file_salvage_claim`].
+    pub(crate) fn mark_filed_salvage_claim(&mut self, id: ContractId) {
+        self.filed_salvage_claims.insert(id);
+    }
+    /// Clear the salvage-claim marker for `id` (used only on failed creation rollback).
+    pub(crate) fn unmark_filed_salvage_claim(&mut self, id: ContractId) {
+        self.filed_salvage_claims.remove(&id);
+    }
     /// Every `(object, vault)` pair a live contract holds (§3.5). Re-derived at boot
     /// from the `Active`/`ReadyToSettle` contracts' `DepositInto` conditions.
     #[must_use]
@@ -542,6 +560,7 @@ impl EconomySnapshot {
         self.contract_locks.retain(|_, c| *c != id);
         self.live_contracts.remove(&id);
         self.contract_creators.remove(&id);
+        self.filed_salvage_claims.remove(&id);
         self.contracts.remove(&id);
     }
     /// Drop a dead approval request (the sweep's GC — the same rule boot applies).

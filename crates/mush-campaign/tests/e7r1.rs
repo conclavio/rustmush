@@ -1373,10 +1373,12 @@ fn vf_d7a_an_unaccepted_grant_expires_and_the_hull_returns_to_the_motor_pool() {
     tw.set_now(then);
     fire(&mut tw);
 
+    // P2-MOD-14: an unwound unaccepted offer has zero economic history and may
+    // already be garbage-collected by the economy sweep in the same tick fire.
     assert!(
         snap(&tw)
             .contract(mush_economy::ContractId(grant.contract()))
-            .is_some_and(|c| c.state.is_terminal()),
+            .is_none_or(|c| c.state.is_terminal()),
         "the unaccepted lease was unwound"
     );
     // **Forgotten, not ended**: an offer nobody took must not leave an `ended_at`

@@ -2436,11 +2436,16 @@ fn authorize_accept_deliverables(
                         "a contract's obligation amount must be positive",
                     ));
                 }
+                let min_every = if crate::contract::is_lease_shaped(c) {
+                    crate::contract::MIN_LEASE_OBLIGATION_EVERY_SECS
+                } else {
+                    crate::contract::MIN_PLAYER_OBLIGATION_EVERY_SECS
+                };
                 if matches!(
                     template.schedule.clock,
                     EconomicClock::RealUtc | EconomicClock::WorldIc
                 ) && let Some(every) = template.schedule.cadence
-                    && every < crate::contract::MIN_PLAYER_OBLIGATION_EVERY_SECS
+                    && every < min_every
                 {
                     return Err(ContractError::Infeasible(
                         "a contract's recurring obligation cadence is too short",
@@ -3629,16 +3634,18 @@ fn apply_resolution(ctx: &mut Ctx<'_>, id: ContractId, resolution: Resolution) {
 
 // ---- cancellation, amendment, refunds --------------------------------------
 
-/// Whether an unmanaged contract has no posted economic history — no escrow,
-/// deposits, pending unwinds, canon output, live or settled-period obligations,
-/// or live collateral/lease encumbrances — and can therefore be pruned outright
-/// once terminal instead of accumulating as a permanent tombstone (P2-MOD-14).
+/// Whether an unmanaged contract has no posted economic history — not a
+/// Rust-API-filed salvage claim, no escrow, deposits, pending unwinds, canon
+/// output, referencing obligations (including ended leases), or live
+/// collateral/lease encumbrances — and can therefore be pruned outright once
+/// terminal instead of accumulating as a permanent tombstone (P2-MOD-14).
 ///
 /// Deliberately ignores `acceptances` and `amendments`: a zero-consideration
 /// contract that was self-accepted or amended before cancellation/expiry still
 /// moved zero value and must not become an uncollectable tombstone.
 fn has_no_economic_history(c: &EconomicContract, snap: &crate::snapshot::EconomySnapshot) -> bool {
     c.consent.managed.is_none()
+        && !snap.is_filed_salvage_claim(c.id)
         && c.escrow.is_empty()
         && c.deposits.is_empty()
         && c.pending.is_none()
@@ -3647,13 +3654,9 @@ fn has_no_economic_history(c: &EconomicContract, snap: &crate::snapshot::Economy
         && !snap
             .holds()
             .any(|h| h.purpose == HoldPurpose::Escrow { contract: c.id })
-        && !snap.obligations().any(|o| {
-            o.cause == ObligationCause::Contract(c.id)
-                && (!matches!(
-                    o.status,
-                    ObligationStatus::Cancelled | ObligationStatus::Satisfied
-                ) || o.periods_settled > 0)
-        })
+        && !snap
+            .obligations()
+            .any(|o| o.cause == ObligationCause::Contract(c.id))
         && !snap.assets().any(|a| {
             a.encumbrances.iter().any(|e| {
                 matches!(
@@ -6960,7 +6963,15 @@ pub fn file_salvage_claim(
         at: now,
         consent_hash: c.consent_hash,
     });
-    api::put_contract(ctx, c).map_err(ContractError::Refused)?;
+    if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+        store.snapshot.mark_filed_salvage_claim(id);
+    }
+    if let Err(err) = api::put_contract(ctx, c) {
+        if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+            store.snapshot.unmark_filed_salvage_claim(id);
+        }
+        return Err(ContractError::Refused(err));
+    }
     let meta = ctx
         .w
         .module_state::<EconomyStore>()

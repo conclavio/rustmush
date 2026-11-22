@@ -1538,3 +1538,170 @@ fn p2_mod_43_canon_attestation_names_a_party_blocks_staff_wildcard() {
         "canon naming an active member of org party must settle the contract"
     );
 }
+
+#[test]
+fn p2_mod_14_salvage_claims_survive_gc_while_spoofed_drafts_prune_and_leases_allow_15s_cadence() {
+    let mut tw = boot_full();
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    let owner = player(&mut tw, "Owner");
+    let salvor = player(&mut tw, "Salvor");
+    let spammer = player(&mut tw, "Spammer");
+    let hull = thing(&mut tw, "Derelict");
+    let loaner = thing(&mut tw, "Loaner");
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", owner.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", salvor.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", spammer.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", hull.0, owner.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", loaner.0, owner.0),
+    );
+    let owner_acct = account_of(&tw, &PrincipalId::Object(owner), "cr");
+    let salvor_acct = account_of(&tw, &PrincipalId::Object(salvor), "cr");
+    let spammer_acct = account_of(&tw, &PrincipalId::Object(spammer), "cr");
+
+    // 1. A real Rust-API `file_salvage_claim` survives expiry and subsequent sweeps.
+    let claim_id = {
+        let mut sink = Outbox::new();
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: salvor,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(SmolStr::new_static(mush_economy::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_economy::file_salvage_claim(
+            &mut ctx,
+            mush_economy::SalvageClaimSpec {
+                name: SmolStr::new_static("salvage claim"),
+                claimant: salvor,
+                hull,
+                audience: vec![PrincipalId::Object(owner)],
+                window_secs: 60,
+                remainder_to: salvor_acct,
+            },
+        )
+        .expect("file_salvage_claim")
+    };
+
+    // 2. A player-drafted contract mimicking salvage-claim shape must STILL be pruned.
+    ok(&mut tw, spammer, "@contract/draft FakeSalvage");
+    let fake_id = latest_contract(&tw);
+    ok(
+        &mut tw,
+        spammer,
+        &format!("@contract/remainder {fake_id}={spammer_acct}"),
+    );
+    ok(
+        &mut tw,
+        spammer,
+        &format!("@contract/condition {fake_id}=attest staff"),
+    );
+    ok(
+        &mut tw,
+        spammer,
+        &format!(
+            "@contract/condition {fake_id}=title #{} #{}",
+            hull.0, spammer.0
+        ),
+    );
+    ok(
+        &mut tw,
+        spammer,
+        &format!("@contract/deadline {fake_id}=60"),
+    );
+    // 2. A player-drafted contract mimicking salvage-claim shape is refused at
+    //    `@contract/offer` and pruned by P2-MOD-14 GC once expired/cancelled.
+    let offer_err = err(&mut tw, spammer, &format!("@contract/offer {fake_id}"));
+    assert!(
+        offer_err.contains("salvage claim"),
+        "expected salvage-claim offer refusal, got: {offer_err}"
+    );
+    ok(&mut tw, GOD, &format!("@contract/cancel {fake_id}"));
+
+    // Expire the filed salvage claim, then sweep again to trigger `collect_prunable_contracts`.
+    sweep_at(&mut tw, 1_100);
+    sweep_at(&mut tw, 1_200);
+    assert_eq!(
+        snap(&tw).contract(claim_id).map(|c| c.state),
+        Some(ContractState::Expired),
+        "Rust-API filed salvage claim must survive sweep GC after expiry"
+    );
+    assert!(
+        snap(&tw).contract(ContractId(fake_id)).is_none(),
+        "player-drafted salvage-shaped contract must still be pruned by P2-MOD-14 GC"
+    );
+
+    // 3. Module `offer_lease` with 15s cadence succeeds while `@contract/deliver`
+    //    still enforces MIN_PLAYER_OBLIGATION_EVERY_SECS (60s) on player drafts.
+    let lease_id = {
+        let mut sink = Outbox::new();
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut sink,
+            reg: &engine.registry,
+            module: Some(SmolStr::new_static(mush_economy::NS)),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_economy::offer_lease(
+            &mut ctx,
+            mush_economy::LeaseSpec {
+                name: SmolStr::new_static("recovery loaner"),
+                lessor: PrincipalId::Object(owner),
+                scope: None,
+                tenants: vec![PrincipalId::Object(salvor)],
+                premises: loaner,
+                rent: mush_economy::ObligationTemplate {
+                    debtor: PrincipalId::Object(salvor),
+                    creditor: PrincipalId::Object(owner),
+                    debit_account: salvor_acct,
+                    credit_account: owner_acct,
+                    amount: mush_economy::Amount::from_minor(10),
+                    schedule: mush_economy::EconomicSchedule::new(
+                        mush_economy::EconomicClock::RealUtc,
+                        1_230,
+                        Some(mush_economy::MIN_LEASE_OBLIGATION_EVERY_SECS),
+                        1,
+                    ),
+                    grace: mush_economy::GracePolicy::default(),
+                    notify_on_success: false,
+                },
+            },
+        )
+        .expect("15s module lease offer")
+    };
+    ok(&mut tw, salvor, &format!("@contract/accept {}", lease_id.0));
+    assert_eq!(
+        snap(&tw).contract(lease_id).map(|c| c.state),
+        Some(ContractState::Active)
+    );
+
+    ok(&mut tw, spammer, "@contract/draft TooFastPlayer");
+    let too_fast = latest_contract(&tw);
+    ok(
+        &mut tw,
+        spammer,
+        &format!("@contract/party {too_fast}=#{}", salvor.0),
+    );
+    err(
+        &mut tw,
+        spammer,
+        &format!(
+            "@contract/deliver {too_fast}=obligation {salvor_acct} {spammer_acct} 10 every=15"
+        ),
+    );
+}

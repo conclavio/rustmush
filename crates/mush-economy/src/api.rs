@@ -184,10 +184,16 @@ pub(crate) fn persist_contract(
     out: &mut Outbox,
     c: &crate::contract::EconomicContract,
     created_by: Option<ObjId>,
+    filed_salvage_claim: bool,
 ) {
     let mut value = serde_json::to_value(c).expect("contract serializes");
-    if let (Some(creator), Some(obj)) = (created_by, value.as_object_mut()) {
-        obj.insert("created_by".to_string(), serde_json::json!(creator.0));
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(creator) = created_by {
+            obj.insert("created_by".to_string(), serde_json::json!(creator.0));
+        }
+        if filed_salvage_claim {
+            obj.insert("salvage_claim".to_string(), serde_json::json!(true));
+        }
     }
     push_op(
         out,
@@ -3525,7 +3531,7 @@ pub(crate) fn put_contract(
 /// Install the already-admitted document and publish its normal legacy event.
 pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContractWrite) {
     let c = prepared.contract;
-    let (changed, created_by) = {
+    let (changed, created_by, filed_salvage_claim) = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
             return;
         };
@@ -3539,9 +3545,13 @@ pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContract
             store.snapshot.set_contract_creator(c.id, ctx.actor);
         }
         store.snapshot.put_contract(c.clone());
-        (before != Some(after), store.snapshot.contract_creator(c.id))
+        (
+            before != Some(after),
+            store.snapshot.contract_creator(c.id),
+            store.snapshot.is_filed_salvage_claim(c.id),
+        )
     };
-    persist_contract(ctx.out, &c, created_by);
+    persist_contract(ctx.out, &c, created_by, filed_salvage_claim);
     if changed {
         // The **landed transaction id** is the event's dedupe key (§6.1): a
         // settlement finished a second time — by the sweep's `AlreadyPosted` retry,
@@ -4230,60 +4240,64 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
         hold_docs,
         contract_docs,
     } = commit;
-    let (journal_op, meta, key_doc, approval_doc, contract_creators) =
-        {
-            let store = ctx
-                .w
-                .module_state_mut::<EconomyStore>()
-                .expect("economy store");
-            assert_eq!(
-                store.peek_next_transaction(),
-                txid.0,
-                "economy: the transaction allocator moved between prepare and install — \
+    let (journal_op, meta, key_doc, approval_doc, contract_creators) = {
+        let store = ctx
+            .w
+            .module_state_mut::<EconomyStore>()
+            .expect("economy store");
+        assert_eq!(
+            store.peek_next_transaction(),
+            txid.0,
+            "economy: the transaction allocator moved between prepare and install — \
              something re-entered post() after the custody move (see install_commit)"
-            );
-            // J2: the entry goes into the chunk that is open now (a seal, if this
-            // append causes one, happens after the entry is in).
-            let chunk_now = store.journal.open_chunk(JOURNAL_LOG);
-            let (applied_seq, journal_op) = store.journal.apply_prepared(journal).unwrap_or_else(
-                |error| {
+        );
+        // J2: the entry goes into the chunk that is open now (a seal, if this
+        // append causes one, happens after the entry is in).
+        let chunk_now = store.journal.open_chunk(JOURNAL_LOG);
+        let (applied_seq, journal_op) =
+            store
+                .journal
+                .apply_prepared(journal)
+                .unwrap_or_else(|error| {
                     panic!(
                         "economy: the journal tail moved between prepare and install ({error}) — \
                  something re-entered post() after the custody move (see install_commit)"
                     )
-                },
-            );
-            assert_eq!(
-                journal_seq, applied_seq,
-                "economy: prepared journal seq is exact"
-            );
-            store.next_transaction = next_transaction;
-            // W1-F1: the delta lands on the live snapshot, the companion docs
-            // with it (B2), and the consumed approval's post-image is read back
-            // for its own doc.
-            let consumed = delta.consumed_approval;
-            delta.apply_to(&mut store.snapshot);
-            let mut contract_creators: Vec<Option<ObjId>> = Vec::with_capacity(contract_docs.len());
-            for c in &contract_docs {
-                if store.snapshot.contract(c.id).is_none() {
-                    store.snapshot.set_contract_creator(c.id, ctx.actor);
-                }
-                store.snapshot.put_contract(c.clone());
-                contract_creators.push(store.snapshot.contract_creator(c.id));
+                });
+        assert_eq!(
+            journal_seq, applied_seq,
+            "economy: prepared journal seq is exact"
+        );
+        store.next_transaction = next_transaction;
+        // W1-F1: the delta lands on the live snapshot, the companion docs
+        // with it (B2), and the consumed approval's post-image is read back
+        // for its own doc.
+        let consumed = delta.consumed_approval;
+        delta.apply_to(&mut store.snapshot);
+        let mut contract_meta: Vec<(Option<ObjId>, bool)> = Vec::with_capacity(contract_docs.len());
+        for c in &contract_docs {
+            if store.snapshot.contract(c.id).is_none() {
+                store.snapshot.set_contract_creator(c.id, ctx.actor);
             }
-            let approval_doc = consumed.and_then(|(id, _)| store.snapshot.approval(id).cloned());
-            store.note_chunk(chunk_now, applied_seq, txid);
-            // Doc 13 (W-D4): the key document rides in the same batch as the entry.
-            let key_doc = crate::keys::IdemDoc::of(&transaction);
-            store.index_transaction(transaction);
-            (
-                journal_op,
-                store.meta_doc(),
-                key_doc,
-                approval_doc,
-                contract_creators,
-            )
-        };
+            store.snapshot.put_contract(c.clone());
+            contract_meta.push((
+                store.snapshot.contract_creator(c.id),
+                store.snapshot.is_filed_salvage_claim(c.id),
+            ));
+        }
+        let approval_doc = consumed.and_then(|(id, _)| store.snapshot.approval(id).cloned());
+        store.note_chunk(chunk_now, applied_seq, txid);
+        // Doc 13 (W-D4): the key document rides in the same batch as the entry.
+        let key_doc = crate::keys::IdemDoc::of(&transaction);
+        store.index_transaction(transaction);
+        (
+            journal_op,
+            store.meta_doc(),
+            key_doc,
+            approval_doc,
+            contract_meta,
+        )
+    };
     persist_journal(ctx.out, journal_op);
     crate::keys::persist_idem(ctx.out, &key_doc);
     for a in &account_docs {
@@ -4298,8 +4312,8 @@ fn install_commit(ctx: &mut Ctx<'_>, commit: PreparedEconomyCommit) -> Transacti
     if let Some(r) = &approval_doc {
         persist_approval(ctx.out, r);
     }
-    for (c, created_by) in contract_docs.iter().zip(contract_creators) {
-        persist_contract(ctx.out, c, created_by);
+    for (c, (created_by, filed_salvage_claim)) in contract_docs.iter().zip(contract_creators) {
+        persist_contract(ctx.out, c, created_by, filed_salvage_claim);
     }
     persist_meta(ctx.out, meta);
     // E6a step 1 verify fold (R1): **a landed post is a terminal commit.**
