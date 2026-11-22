@@ -2,7 +2,15 @@
   // Login / register card. Calls /api/auth/* via $lib/auth; the token lands
   // in localStorage (GameApp) and the flow moves to character select.
   import { AuthError } from "$lib/auth";
+  import {
+    detectClientTarget,
+    fetchClientDownloads,
+    formatClientBytes,
+    orderClientDownloads,
+    type ClientDownloadEntry,
+  } from "$lib/client-downloads";
   import type { GameApp } from "$lib/game.svelte";
+  import GuideView from "./GuideView.svelte";
 
   let { app }: { app: GameApp } = $props();
 
@@ -14,6 +22,30 @@
   let charName = $state("");
   let error = $state<string | null>(null);
   let busy = $state(false);
+  let clientDownloads = $state<ClientDownloadEntry[]>([]);
+  // The playtest guide opens from a link here or from `#guide` in the URL.
+  let showGuide = $state(typeof location !== "undefined" && location.hash === "#guide");
+
+  $effect(() => {
+    if (typeof fetch !== "function") return;
+    let active = true;
+    const preferred =
+      typeof navigator !== "undefined" ? detectClientTarget(navigator.userAgent ?? "") : null;
+    void fetchClientDownloads().then((res) => {
+      if (active) {
+        clientDownloads = orderClientDownloads(res.clients, preferred);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  });
+
+  const primaryClient = $derived(clientDownloads[0] ?? null);
+  const otherClients = $derived(clientDownloads.slice(1));
+  const serverOrigin = $derived(
+    typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
+  );
 
   async function submit(ev: SubmitEvent): Promise<void> {
     ev.preventDefault();
@@ -100,11 +132,57 @@
       {busy ? "…" : mode === "login" ? "Sign in" : "Create account"}
     </button>
 
+    {#if primaryClient}
+      <section class="client-box" aria-label="Standalone 3D client downloads">
+        <div class="client-head">
+          <span class="client-title">Desktop 3D Client</span>
+          <span class="client-badge" class:matched={primaryClient.exact_match}>
+            {#if primaryClient.exact_match}
+              Matches server{primaryClient.commit ? ` · ${primaryClient.commit}` : ""}
+            {:else}
+              Latest build{primaryClient.commit ? ` · ${primaryClient.commit}` : ""}
+            {/if}
+          </span>
+        </div>
+        <a
+          class="client-btn"
+          href={primaryClient.url}
+          download={primaryClient.filename}
+        >
+          Download for {primaryClient.label} ({formatClientBytes(primaryClient.size_bytes)})
+        </a>
+        {#if otherClients.length > 0}
+          <div class="client-others">
+            Other platforms:
+            {#each otherClients as alt, i (alt.target)}
+              {#if i > 0} · {/if}
+              <a href={alt.url} download={alt.filename}
+                >{alt.label} ({formatClientBytes(alt.size_bytes)})</a
+              >
+            {/each}
+          </div>
+        {/if}
+        {#if serverOrigin}
+          <p class="hint">
+            Connect to <code>{serverOrigin}</code> on the client login screen.
+          </p>
+        {/if}
+      </section>
+    {/if}
+
     <p class="hint alt">
       Prefer a terminal? <code>ssh play@&lt;host&gt;</code> works too.
     </p>
+
+    <button type="button" class="guide-link" onclick={() => (showGuide = true)}>
+      New here? Read the playtest guide
+    </button>
   </form>
 </div>
+
+{#if showGuide}
+  <GuideView onclose={() => (showGuide = false)} />
+{/if}
 
 <style>
   .screen {
@@ -226,6 +304,87 @@
 
   .alt {
     text-align: center;
+  }
+
+  .guide-link {
+    align-self: center;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    padding: 0.1rem;
+  }
+
+  .guide-link:hover {
+    text-decoration: underline;
+  }
+
+  .client-box {
+    margin-top: 0.25rem;
+    padding: 0.7rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-input);
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .client-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+  }
+
+  .client-title {
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .client-badge {
+    font-size: 0.7rem;
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+  }
+
+  .client-badge.matched {
+    color: var(--accent);
+  }
+
+  .client-btn {
+    display: block;
+    text-align: center;
+    text-decoration: none;
+    background: none;
+    border: 1px solid var(--accent-dim);
+    border-radius: 6px;
+    color: var(--accent);
+    padding: 0.42rem 0.6rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .client-btn:hover {
+    border-color: var(--accent);
+    filter: brightness(1.12);
+  }
+
+  .client-others {
+    font-size: 0.74rem;
+    color: var(--fg-muted);
+  }
+
+  .client-others a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .client-others a:hover {
+    text-decoration: underline;
   }
 
   code {

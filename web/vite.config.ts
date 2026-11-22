@@ -48,6 +48,9 @@ export default defineConfig({
   server: {
     fs: {
       strict: true,
+      // The playtest guide is bundled from the repo's docs (`?raw` import in
+      // GuideView.svelte); allow that one file beside the web root.
+      allow: [".", "../docs/playthrough.md"],
     },
     proxy: {
       "/api": { target: backend },

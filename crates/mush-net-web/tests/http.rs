@@ -829,3 +829,78 @@ async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_w
         assert_eq!(resp.status(), 403, "blocked IP must get 403 on {path}");
     }
 }
+
+#[tokio::test]
+async fn client_downloads_matches_server_commit_and_falls_back_to_latest() {
+    let dir = std::env::temp_dir().join(format!(
+        "rustmush-web-http-client-dl-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("RustMUSH_TacSim-windows-x64-abcdef123.zip"),
+        b"exact-match-zip",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("RustMUSH_TacSim-windows-x64-abcdef123.zip.json"),
+        r#"{"target":"windows-x64","commit":"abcdef1234567890abcdef1234567890abcdef12","short_commit":"abcdef123","built_at_utc":"2026-11-20T08:00:00Z"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("RustMUSH_TacSim-windows-x64-999999999.zip"),
+        b"newer-other-commit-zip",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("RustMUSH_TacSim-windows-x64-999999999.zip.json"),
+        r#"{"target":"windows-x64","commit":"9999999999999999999999999999999999999999","short_commit":"999999999","built_at_utc":"2026-11-22T08:00:00Z"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("RustMUSH_TacSim-linux-x64-888888888.zip"),
+        b"linux-latest",
+    )
+    .unwrap();
+
+    let hooks = Arc::new(MockWebHooks::new());
+    let cfg = WebConfig {
+        client_downloads_dir: Some(dir.clone()),
+        server_commit: Some("abcdef1234567890abcdef1234567890abcdef12".into()),
+        ..test_config()
+    };
+    let addr = spawn_server(hooks, cfg).await;
+
+    let resp = client()
+        .get(format!("http://{addr}/api/client-downloads"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-cache")
+    );
+    let body: Value = resp.json().await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(body["server_commit"], "abcdef123");
+    let clients = body["clients"].as_array().unwrap();
+    assert_eq!(clients.len(), 2);
+    assert_eq!(clients[0]["target"], "windows-x64");
+    assert_eq!(clients[0]["exact_match"], true);
+    assert_eq!(
+        clients[0]["url"],
+        "/downloads/clients/RustMUSH_TacSim-windows-x64-abcdef123.zip"
+    );
+    assert_eq!(clients[1]["target"], "linux-x64");
+    assert_eq!(clients[1]["exact_match"], false);
+    assert_eq!(
+        clients[1]["url"],
+        "/downloads/clients/RustMUSH_TacSim-linux-x64-888888888.zip"
+    );
+}

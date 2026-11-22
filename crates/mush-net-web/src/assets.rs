@@ -21,6 +21,18 @@ use rust_embed::RustEmbed;
 #[folder = "../../web/dist"]
 struct WebDist;
 
+/// Returns the git source commit stamped into `web/dist/.commit` by
+/// `web/scripts/stamp-commit.mjs` when present and well-formed hex.
+pub(crate) fn embedded_bundle_commit() -> Option<String> {
+    let file = WebDist::get(".commit")?;
+    let raw = std::str::from_utf8(file.data.as_ref()).ok()?.trim();
+    if (7..=64).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(raw.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
 /// Cache-Control for content-hashed assets.
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// Cache-Control for everything else (index.html above all).

@@ -104,6 +104,7 @@ WEB_PORT=$web_port
 WEB_BIND=127.0.0.1
 WEB_TLS=tls = { cert = "$work/cert.pem", key = "$work/key.pem" }
 WEB_TRUSTED_PROXIES=[]
+WEB_CLIENT_DOWNLOADS_DIR=
 IPC_SOCKET=$socket
 TRUSTED_SOCKET=
 LOG_LEVEL=info

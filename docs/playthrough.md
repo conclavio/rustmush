@@ -1,14 +1,18 @@
-# Your first run on dev1: mining and trading
+# Your first run on dev1: mining, trading and the Isidis Concession
 
 A step-by-step guide for someone who has never played. You will connect, sign on with the Miners'
 Co-op, take a ship down to an asteroid to mine ore, sell it, and then start a trade run between
-ports. Type exactly what is shown; the lines you should see back follow each command.
+ports. Later parts cover the law at Ceres and the contest over the Isidis Concession, where your
+hauls can change who runs a port. Type exactly what is shown; the lines you should see back follow
+each command.
 
 | | |
 |---|---|
 | Connect and sign on | about 10 minutes |
 | A mining run, start to sale | about 45 minutes |
 | A trade voyage | about one real day (you can log off) |
+| A haul for the Isidis operation | about one real day (you can log off) |
+| The Isidis operation, start to finish | about a real week from a fresh world |
 | The game clock | 24× real time: 1 real hour is 1 game day |
 
 In the command blocks, lines starting `>` are what you type; the others are what the game answers,
@@ -19,7 +23,7 @@ abbreviated with `…`. Ship and rig names will differ for you.
 - **An SSH client.** Any terminal works (Windows Terminal, macOS Terminal, PuTTY). A window at
   least 120 columns wide makes the maps readable.
 - **A fresh account of your own.** Each account can join the Co-op only once, ever.
-- **Every action previews first.** Commands for rigs, licences and leases show what they would do
+- **Every action previews first.** Commands for rigs, licenses and leases show what they would do
   and end with "… `go` starts it." Repeat the command with `go` on the end to do it.
 - **Lost?** `help`, `help mining`, `help ports` and `help orders` explain everything here in more
   depth. `look` redraws where you are.
@@ -56,18 +60,18 @@ abbreviated with `…`. Ship and rig names will differ for you.
 4. Join the Co-op and name your ship. This charters you a Dray, a small freighter.
 
    ```
-   > +coop/enrol Salt Moth
+   > +coop/enroll Salt Moth
    The Co-op charters you …, laid up as the …, now the Salt Moth, cradled at the …
    > +ship
    > +credit
    ```
 
    If it refuses: "not enrolling yet" means the world is still starting up (wait a minute and
-   retry). "No Dray free to charter" means all eight ships are taken; tell the organiser.
+   retry). "No Dray free to charter" means all eight ships are taken; tell the organizer.
 
 ## Part 2: A mining run
 
-You will convert your ship to carry a mining rig, buy a prospecting licence, lease a rig, fly down
+You will convert your ship to carry a mining rig, buy a prospecting license, lease a rig, fly down
 to an asteroid site, find a good pocket of ore, drill it, and bring the ore home to sell. Do these
 steps in this order: the conversion needs an empty hold.
 
@@ -80,17 +84,17 @@ steps in this order: the conversion needs an empty hold.
    … as a Dray-P: a two-rig vehicle bay aft of the hold, which now takes 86 t …
    ```
 
-2. Buy a prospecting licence (2,500cr for 168 game days).
+2. Buy a prospecting license (2,500cr for 168 game days).
 
    ```
-   > +licence/buy
-   … +licence/buy go buys it.
-   > +licence/buy go
-   > +licence
+   > +license/buy
+   … +license/buy go buys it.
+   > +license/buy go
+   > +license
    … in force until …
    ```
 
-   If `+licence` still says "You hold no prospecting licence", wait five seconds and check again.
+   If `+license` still says "You hold no prospecting license", wait five seconds and check again.
 
 3. Lease a mining rig at the Exchange Hall (1,400cr plus a 5,000cr deposit you get back).
 
@@ -246,8 +250,11 @@ Trading is buying goods where they are cheap and selling them where they are dea
 long: the game clock runs at one game day per real hour, and a leg between ports takes many game
 days. **Start the voyage, then log off**; the ship flies itself and you come back to sell.
 
-> **Avoid Kirkwood.** Ceres's direct lane to Stickney passes Kirkwood Depot, where customs may stop
-> your ship and demand manoeuvres a new player has not learned. Sail to Luna instead, as below.
+> **Kirkwood customs.** Ceres's direct route to Stickney crosses the Kirkwood picket. The route by
+> Luna and Deimos never meets it, so your first trade below goes to Luna. If you take the direct
+> route, the easy way through is to undock and then `QUIT`. While you are away, your ship's backup
+> mind stops for customs and submits for you, and a clean hold is cleared. Part 4 covers what
+> happens if you are connected when you cross.
 
 | Good | Buy at Ceres | Sells at |
 |---|---|---|
@@ -308,18 +315,162 @@ days. **Start the voyage, then log off**; the ship flies itself and you come bac
    > +coop/statement
    ```
 
+## Part 4: Customs and the law
+
+Two authorities can stop you: Republic Customs at the Kirkwood picket, and the Freeport Registry at
+Ceres. Both keep a record of what you did, and you can read it with `+record`.
+
+### The Kirkwood picket
+
+If you are connected when your ship crosses Kirkwood on the direct route, a corvette hails you:
+
+```
+Republic Customs Corvette … Heave-to under 10 m/s … and run +helm/submit for Freeport Registry
+manifest & claim inspection.
+```
+
+1. Match the corvette's speed with `+helm/thrust` until you are within 10 m/s of it. `help space`
+   explains the helm. This is real flying, and a Belt Raider usually turns up at the picket too.
+   If it goes badly, `QUIT` hands the ship to its backup mind, which stops and submits for you.
+2. Submit your manifest. The corvette tells you what it found, and its ruling follows a moment
+   later.
+
+   ```
+   > +helm/submit
+   [PICKET] Republic Customs Corvette … is inspecting … manifest (…). Hold your heave-to: …
+   … customs clearance granted.
+   ```
+
+- **What gets you fined:** strategic ore without a Registry license. The fine is 500cr a tonne,
+  1,000cr at least. If you can't pay it, the ore is taken instead.
+- **Running** (`+helm/run`, or burning more than 35 km away) turns the corvette hostile and costs
+  you standing with the Republic. Don't.
+- **Fresh worlds charge no duty.** The Co-op holds Kirkwood at the start. If the Republic takes it,
+  which happens as fines and runs fill its "Customs Assertion" front, a transit duty applies on the
+  direct route. You see it before you commit: `+ship/plan` and your clearance show "Kirkwood duty
+  ~… cr", and haul jobs show it in their listing. A duty you can't pay at the picket is owed, due
+  in 28 game days; see `+debts`. New Co-op members also sign at a 30% share instead of 25% once
+  the Republic holds Kirkwood.
+
+### Strategic ore at Ceres
+
+Strategic ore is restricted at Ceres. To buy, hold or sell it there you need both a Registry
+prospecting license and a registered claim on a strategic rock. Without them, the Exchange refuses
+the trade:
+
+```
+The … board trades … only with a holder of a Freeport Registry prospecting license and a
+registered claim on a strategic rock; nothing was traded.
+```
+
+- **Port audits.** Each time you dock at Ceres the port may audit your hold, about one docking in
+  four for a newcomer. Ore you hold without papers is fined on the spot.
+- **Private sales.** A sale made outside the board leaves a receipt with the buyer, who can report
+  it within one game day (`+law`, `+law/report`). The seller is fined and the buyer is repaid from
+  the fine.
+- **Standing and restrictions.** An offense costs standing (5 for a reported sale or an unpaid
+  fine, 10 for running the picket). While a fine is unpaid, or your standing is at −10 or lower,
+  that authority's boards and licenses refuse you.
+
+```
+> +record
+… Your standing where an offense is proven (paying a fine restores none of it): …
+> +debts
+> +debts/pay <id>
+```
+
+Paying a fine lifts the restriction it caused. The standing you lost stays on your record.
+
+## Part 5: The Isidis Concession
+
+Isidis, a small port beyond Stickney, is contested. The Ceres Freeport administers it, and the
+Republic wants it. The Freeport holds only if its tank farm at Isidis is stocked when the
+operation closes. **Hauls by players decide it:** with no player help the farm falls short by a
+little and the Republic wins, and one extra haul is enough for the Freeport to hold.
+
+### Follow the operation
+
+`+operation` works from anywhere. It shows who declared the operation and who defends, the
+notice period and the window with their real times, the tank-farm level the Freeport needs, open
+work with the exact `+haul/accept` line, and who runs Isidis now.
+
+```
+> +operation
+… How it is decided: the Freeport holds if Occator's tank farm … stands at … t …
+```
+
+On a fresh world the Assembly's Concession Review fills over about four game months, so the
+operation is declared about four to five real days after the world starts. A 28-game-day notice
+and a 28-day window follow, and it settles about seven real days in. Every player with a ship on
+the lane gets an "Official notice" when it is declared and when it is decided.
+
+### Haul for the Freeport
+
+The Freeport's agent at Ceres, Occator, posts 30 t propellant hauls from Ceres to the Isidis tank
+farm. Each pays 600cr, and an escort job beside it pays 400cr. While the operation runs, these
+jobs are tagged as work for the Isidis operation.
+
+1. At Ceres, list the hauls and take one. Taking a haul bonds a quarter of the cargo's declared
+   value, which you get back on delivery. You have 28 game days to deliver.
+
+   ```
+   > +market/jobs haul
+   > +haul/accept <job>
+   (a preview of the haul, the bond and the deadline)
+   > +haul/accept <job> go
+   You take haul …
+   ```
+
+2. Plan the trip. No passage goes straight from Ceres to Isidis: fly to Stickney (`stickney`)
+   first, then on to `isidis`. Check that the passage fits inside the 28 days. **Isidis sells no
+   fuel or provisions**, so buy enough at Ceres for the whole round trip.
+
+   ```
+   > +ship/plan stickney
+   ```
+
+3. Fly to Stickney, then undock for Isidis. On the direct route from Ceres you meet the Kirkwood
+   picket (Part 4); a clean hold with a cargo of propellant is cleared.
+
+   ```
+   > +ship/undock isidis
+   ```
+
+4. At Isidis, deliver the haul. The fee is paid and your bond is returned.
+
+   ```
+   > +haul/deliver <job> go
+   ```
+
+### Or sell to the Republic
+
+While the operation runs, the Republic Customs Office at Stickney buys propellant at a premium,
+up to 200 t. `+operation` gives the `+market/sell` line. Every tonne sold there is a tonne not
+landed at Isidis: that's the choice.
+
+### After it is decided
+
+`+operation` and the market at Isidis show the result. If the Republic won, a sale of ores,
+volatiles or propellant at Isidis pays a 5% import duty to Republic Customs. If the Freeport held,
+Isidis stays duty-free. A player who arrives later can tell who won from the terms they are
+offered.
+
 ## If something goes wrong
 
 | You see | What to do |
 |---|---|
 | "The Co-op is not enrolling yet" | The world is still starting. Wait a minute and retry. |
-| "No Dray free to charter" | All eight ships are out. Tell the organiser. |
+| "No Dray free to charter" | All eight ships are out. Tell the organizer. |
 | A site "is closed: its pad is not ready" | Normal for about 8 minutes after a restart. Wait and retry. |
 | The refit is refused | Your hold isn't empty. Refit before buying anything. |
 | The lift is refused | Not enough fuel for out and back, or a rig is still out or its hopper not empty. |
 | "That quote no longer stands" | Prices moved. Quote again. |
 | A rig is stuck and won't come back | Note the rig and site, and ask staff; only staff can recover it. |
-| Customs hails you near Kirkwood | Note what it says and ask staff. Then use the Luna route. |
+| Customs hails you near Kirkwood | Match its speed and `+helm/submit` (Part 4), or `QUIT` and let the backup mind submit. |
+| The board refuses strategic ore | You need a license and a registered claim on a strategic rock (Part 4). |
+| A board or license desk refuses you | An unpaid fine or low standing. Check `+record` and `+debts`. |
+| "No passage leaves … for that port" | Isidis is reached from Stickney. Fly there first (Part 5). |
+| You're stuck at Isidis with no fuel | Isidis sells no stores. Ask staff, and buy for the round trip next time. |
 
 ## Please tell us
 
@@ -329,13 +480,25 @@ days. **Start the voyage, then log off**; the ship flies itself and you come bac
 - Did the money feel right: could you afford what you needed, and did the sale feel worth it?
 - What did you want to do that the game didn't let you?
 
-## For the organiser
+## For the organizer
 
 - Run this against a freshly deployed dev1. Allow 10 minutes after boot before testers lift for a
   site.
-- The Co-op has eight Drays. More than eight testers on one world will be turned away at enrolment.
-- Give each tester their own new account: enrolment and the licence are one per account.
+- The Co-op has eight Drays. More than eight testers on one world will be turned away at enrollment.
+- Give each tester their own new account: enrollment and the license are one per account.
 - The refining and works chain (Kasei, `+works`) is not in this script: it needs days of voyages and
   more money than a new player has.
-- Kirkwood customs is not covered by player help yet, which is why the trade route goes by Luna.
+- Kirkwood customs: `help space` covers `+helm/submit` and `+helm/run`, but nothing yet teaches
+  matching the corvette's speed, and no help topic explains the transit duty. The first trade
+  still goes by Luna for that reason.
+- The Isidis operation needs no staff setup: boot seeds both fronts, the Freeport's budget, the
+  tank farm and the hauling house. After a wipe, `@tacsim/time`, `@tacsim/port arm`,
+  `@tacsim/port haulers ceres_port` and `+operation` confirm it (doc 50 cut notes, "Isidis
+  bring-up").
+- The operation's timing depends on when the world first boots, against the game's monthly
+  boundaries. A boot well before a boundary can let the Freeport hold with nobody playing (the
+  same notes give the safe windows). The game clock also runs while the server is stopped, so a
+  long outage during the operation throws off its balance.
+- The Isidis figures (the threshold, drain, haul size and fees) are provisional and may change
+  between deploys.
 - Market list numbers and quote numbers in the examples are illustrative; they vary by world.

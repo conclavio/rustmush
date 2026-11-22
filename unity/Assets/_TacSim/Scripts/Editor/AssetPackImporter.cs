@@ -527,16 +527,16 @@ namespace TacSim.Editor
                 "Assets/IdaFaber/Prefabs/Girl/SK_CYBER_SF_F_01 Variant.prefab",
                 "SK_CYBER_SF_F");
 
-            // Female NPC Cast (Techwear Girls, Stellar Girl Astra, Stellar Girl Celeste — excluding Lingerie variants)
+            // Female NPC Cast (Techwear Girls, Stellar Girl Astra, Stellar Girl Celeste — excluding Lingerie & AllPartsTogether masters)
             catalog.npcCharacterPrefabs.Clear();
-            CollectMatchingPrefabs(catalog.npcCharacterPrefabs, "SK_TWG_");
-            CollectMatchingPrefabs(catalog.npcCharacterPrefabs, "SK_StellarGirl_");
-            CollectMatchingPrefabs(catalog.npcCharacterPrefabs, "SK_Celeste_");
+            CollectMatchingPrefabs(catalog.npcCharacterPrefabs, "SK_TWG_", maxAdded: 3);
+            CollectMatchingPrefabs(catalog.npcCharacterPrefabs, "SK_StellarGirl_", maxAdded: 3);
+            CollectMatchingPrefabs(catalog.npcCharacterPrefabs, "SK_Celeste_", maxAdded: 3);
 
-            // Male NPC Cast (Cyberpunk SF Boys & Stellar Male Troopers — excluding Lingerie variants)
+            // Male NPC Cast (Cyberpunk SF Boys & Stellar Male Troopers — excluding Lingerie & AllPartsTogether masters)
             catalog.maleNpcCharacterPrefabs.Clear();
-            CollectMatchingPrefabs(catalog.maleNpcCharacterPrefabs, "SK_CYBER_SF_M_");
-            CollectMatchingPrefabs(catalog.maleNpcCharacterPrefabs, "SK_M_TROOPER_");
+            CollectMatchingPrefabs(catalog.maleNpcCharacterPrefabs, "SK_CYBER_SF_M_", maxAdded: 3);
+            CollectMatchingPrefabs(catalog.maleNpcCharacterPrefabs, "SK_M_TROOPER_", maxAdded: 3);
 
             // DOTTEAM Heavy Station Kit (BASE + HANGARS)
             catalog.stationFloorTile = LoadFirstExistingPrefab("Assets/Heavy Station Kit/BASE/Prefabs/Floors/Floor Base 1.prefab", "Floor Base 1");
@@ -589,7 +589,7 @@ namespace TacSim.Editor
                 "flames_flame_blue");
 
             catalog.asteroidPrefabs.Clear();
-            CollectMatchingPrefabs(catalog.asteroidPrefabs, "Asteroid", maxCount: 6);
+            CollectMatchingPrefabs(catalog.asteroidPrefabs, "Asteroid", maxAdded: 6);
 
             // Staged Gllow3D Ambient Static Dockworkers (when present in gitignored Assets/Gllow3D/)
             catalog.ambientWorkerModels.Clear();
@@ -630,16 +630,24 @@ namespace TacSim.Editor
             return null;
         }
 
-        private static void CollectMatchingPrefabs(List<GameObject> target, string substring, int maxCount = 20)
+        private static void CollectMatchingPrefabs(List<GameObject> target, string substring, int maxAdded = 20)
         {
+            int added = 0;
             string[] guids = AssetDatabase.FindAssets($"{substring} t:Prefab");
+            Array.Sort(guids, StringComparer.Ordinal);
             foreach (string guid in guids)
             {
-                if (target.Count >= maxCount) break;
+                if (added >= maxAdded) break;
                 string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (path.IndexOf("AllPartsTogether", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    path.IndexOf("Modular", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (TacSimAssetCatalog.IsAppropriateNpcPrefab(prefab) && !target.Contains(prefab))
+                {
                     target.Add(prefab);
+                    added++;
+                }
             }
         }
 

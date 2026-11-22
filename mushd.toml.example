@@ -95,6 +95,8 @@ listen = "127.0.0.1:8080"          # (M4) bind a public address or reverse-proxy
 #                                  #      Exposes ONLY aggregate counters/gauges — never per-player
 #                                  #      data or keys. GET /healthz is always served (ok/uptime/
 #                                  #      version/connections/loop_lag_ms/world_loop_unixtime/store_ok).
+# client_downloads_dir = "/opt/rustmush/clients"  # Optional folder of standalone 3D client zips
+# client_downloads_url_base = "/downloads/clients" # URL prefix served by Caddy/static server
 # Note: `features` / `panels` are filled from the module registry at boot —
 # do not set them here.
 

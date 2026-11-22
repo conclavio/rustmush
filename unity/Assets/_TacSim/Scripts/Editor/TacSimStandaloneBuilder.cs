@@ -71,6 +71,146 @@ namespace TacSim.Editor
             return staged;
         }
 
+        [MenuItem("TacSim/Utilities/Optimize Pack Textures for Standalone", priority = 46)]
+        public static int OptimizePackTexturesMenu()
+        {
+            int updated = OptimizePackTextureImportSettings();
+            Debug.Log($"[TacSim] Optimized {updated} third-party pack texture importer(s) for standalone builds.");
+            return updated;
+        }
+
+        /// <summary>
+        /// Computes the standalone max texture resolution for a third-party asset pack texture,
+        /// or returns 0 for first-party <c>Assets/_TacSim/</c> assets (never resized).
+        /// </summary>
+        public static int ResolveStandalonePackMaxTextureSize(string assetPath)
+        {
+            if (string.IsNullOrWhiteSpace(assetPath))
+                return 0;
+            string norm = assetPath.Replace('\\', '/');
+            if (!norm.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) ||
+                norm.StartsWith("Assets/_TacSim/", StringComparison.OrdinalIgnoreCase))
+                return 0;
+
+            string file = Path.GetFileName(norm).ToLowerInvariant();
+            if (file.Contains("teeth") ||
+                file.Contains("eye") ||
+                file.Contains("lash") ||
+                file.Contains("brow") ||
+                file.Contains("cornea") ||
+                file.Contains("tongue") ||
+                file.Contains("mouth") ||
+                file.Contains("wind") ||
+                file.Contains("specular") ||
+                file.Contains("roughness") ||
+                file.Contains("metallic") ||
+                file.Contains("smoothness") ||
+                file.Contains("maskmap") ||
+                file.Contains("occlusion") ||
+                file.Contains("_ao") ||
+                file.Contains("alpha") ||
+                file.Contains("emissive") ||
+                file.Contains("emission"))
+            {
+                return 512;
+            }
+
+            return 1024;
+        }
+
+        /// <summary>
+        /// Ensures every third-party texture actually referenced by the build scene or asset catalog
+        /// uses GPU-compressed formats (DXT/BC7) capped at 1024 px (512 px for secondary/detail maps)
+        /// instead of 4K uncompressed RGBA32 textures (85 MB each). Subsequent runs are near-instant no-ops.
+        /// </summary>
+        public static int OptimizePackTextureImportSettings()
+        {
+#if UNITY_5_3_OR_NEWER
+            string[] roots =
+            {
+                VerticalSliceSceneBuilder.ScenePath,
+                AssetPackImporter.CatalogAssetPath
+            };
+            string[] deps = AssetDatabase.GetDependencies(roots, true);
+            var toReimport = new System.Collections.Generic.List<string>();
+
+            AssetDatabase.StartAssetEditing();
+            try
+            {
+                for (int i = 0; i < deps.Length; i++)
+                {
+                    string dep = deps[i];
+                    int desiredMax = ResolveStandalonePackMaxTextureSize(dep);
+                    if (desiredMax <= 0)
+                        continue;
+
+                    var importer = AssetImporter.GetAtPath(dep) as TextureImporter;
+                    if (importer == null)
+                        continue;
+
+                    bool changed = false;
+                    if (importer.maxTextureSize > desiredMax)
+                    {
+                        importer.maxTextureSize = desiredMax;
+                        changed = true;
+                    }
+                    if (importer.textureCompression != TextureImporterCompression.Compressed)
+                    {
+                        importer.textureCompression = TextureImporterCompression.Compressed;
+                        changed = true;
+                    }
+
+                    TextureImporterPlatformSettings standalone = importer.GetPlatformTextureSettings("Standalone");
+                    if (standalone.overridden)
+                    {
+                        bool platChanged = false;
+                        if (standalone.maxTextureSize > desiredMax)
+                        {
+                            standalone.maxTextureSize = desiredMax;
+                            platChanged = true;
+                        }
+                        if (standalone.textureCompression != TextureImporterCompression.Compressed)
+                        {
+                            standalone.textureCompression = TextureImporterCompression.Compressed;
+                            platChanged = true;
+                        }
+                        if (standalone.format == TextureImporterFormat.RGBA32 ||
+                            standalone.format == TextureImporterFormat.RGB24 ||
+                            standalone.format == TextureImporterFormat.ARGB32)
+                        {
+                            standalone.format = TextureImporterFormat.Automatic;
+                            platChanged = true;
+                        }
+                        if (platChanged)
+                        {
+                            importer.SetPlatformTextureSettings(standalone);
+                            changed = true;
+                        }
+                    }
+
+                    if (changed)
+                    {
+                        importer.SaveAndReimport();
+                        toReimport.Add(dep);
+                    }
+                }
+            }
+            finally
+            {
+                AssetDatabase.StopAssetEditing();
+            }
+
+            if (toReimport.Count > 0)
+            {
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                Debug.Log($"[TacSim Builder] Compressed & capped {toReimport.Count} third-party build texture(s) to <= 1024/512 px.");
+            }
+            return toReimport.Count;
+#else
+            return 0;
+#endif
+        }
+
         public static void BuildWindows64Batch()
         {
             string outPath = ResolveBatchOutputPath("Windows64", "RustMUSH_TacSim.exe");
@@ -93,8 +233,10 @@ namespace TacSim.Editor
         {
             UrpBootstrap.EnsureUrpAssigned();
             AssetPackImporter.EnsureIdaFaberHumanoidRigs();
+            AssetPackImporter.PopulateOrRefreshCatalog();
             StageEmbeddedFallbackPacks();
             VerticalSliceSceneBuilder.BuildVerticalSliceScene();
+            OptimizePackTextureImportSettings();
 
             EditorBuildSettings.scenes = new[]
             {

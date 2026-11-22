@@ -3802,7 +3802,8 @@ namespace TacSim.Tests
                 Assert.AreSame(handler, req.downloadHandler);
                 Assert.AreEqual(MushAuthClient.MaxAuthResponseBytes, handler.MaxBytes);
 
-                // 3xx redirect status must be rejected cleanly.
+#if !UNITY_5_3_OR_NEWER
+                // 3xx redirect status must be rejected cleanly (uses writable UnityWebRequest stubs in CI).
                 req.responseCode = 307;
                 req.result = UnityEngine.Networking.UnityWebRequest.Result.Success;
                 Assert.Throws<System.InvalidOperationException>(() =>
@@ -3826,6 +3827,7 @@ namespace TacSim.Tests
                 Assert.AreEqual("tok_123", session.Token);
                 Assert.AreEqual("ada", session.Account);
                 Assert.AreEqual(1, session.Characters.Count);
+#endif
             }
 
             // 3. ProjectSettings.asset must set insecureHttpOption: 1 (DevelopmentOnly), not 2 (AlwaysAllowed).
@@ -3872,9 +3874,12 @@ namespace TacSim.Tests
             {
                 handler.FeedContentLengthHeaderForTest((ulong)MushAuthClient.MaxAuthResponseBytes + 1UL);
                 Assert.IsTrue(handler.Overflowed);
+#if !UNITY_5_3_OR_NEWER
                 Assert.IsTrue(req.aborted, "Oversized Content-Length must abort UnityWebRequest immediately");
+#endif
                 Assert.IsFalse(handler.FeedChunkForTest(new byte[] { (byte)'x' }, 1));
 
+#if !UNITY_5_3_OR_NEWER
                 // Both 200 success and 500 error responses must reject cleanly on overflow.
                 req.responseCode = 200;
                 req.result = UnityEngine.Networking.UnityWebRequest.Result.Success;
@@ -3887,6 +3892,7 @@ namespace TacSim.Tests
                 var ex500 = Assert.Throws<System.InvalidOperationException>(() =>
                     MushAuthClient.ProcessAuthResponse("https://dev1.conclav.io", httpsUri, req, handler, allowInsecureNonLoopback: false));
                 StringAssert.Contains("exceeded maximum allowed size", ex500.Message);
+#endif
             }
 
             // 3. Chunked response without Content-Length that exceeds 64 KiB aborts request and rejects.
@@ -3895,10 +3901,14 @@ namespace TacSim.Tests
                 byte[] chunk = new byte[16 * 1024];
                 for (int c = 0; c < 4; c++)
                     Assert.IsTrue(handler.FeedChunkForTest(chunk, chunk.Length));
+#if !UNITY_5_3_OR_NEWER
                 Assert.IsFalse(req.aborted);
+#endif
                 Assert.IsFalse(handler.FeedChunkForTest(new byte[] { (byte)'z' }, 1));
                 Assert.IsTrue(handler.Overflowed);
+#if !UNITY_5_3_OR_NEWER
                 Assert.IsTrue(req.aborted, "Chunked overflow without Content-Length must abort UnityWebRequest");
+#endif
             }
         }
 
@@ -4076,48 +4086,64 @@ namespace TacSim.Tests
                     MushProtocol.ParseRoomView(JsonNode.Parse(
                         $@"{{""id"":""{id}"",""name"":""{name}"",""ambient"":{{""atlas"":{{""pack"":""neighborhood.ceres_freeport"",""entry"":""{entry}"",""surface"":""station""}}}}}}"));
 
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 100f;
+#endif
                 onRoom.Invoke(coord, new object[] { MakeStationRoom("#101", "Visiting Berth Gallery", "room.c01_berth_gallery") });
 
                 // Walk 2 hops north (c01_berth_gallery -> c02_pressure -> c03_arrivals) and call Flush twice before RoomView.
                 coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c03_arrivals"), 0f);
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 101f;
+#endif
                 onFlush.Invoke(coord, null);
                 onFlush.Invoke(coord, null);
                 Assert.AreEqual(1, dispatched.Count, "Multi-hop flush must send ONLY ONE hop before RoomView confirmation");
                 Assert.AreEqual("goto n", dispatched[0]);
 
                 // Authoritative RoomView confirming c02_pressure advances ONLY hop 2 (`goto n`).
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 101.5f;
+#endif
                 onRoom.Invoke(coord, new object[] { MakeStationRoom("#102", "Pressure Lobby", "room.c02_pressure") });
                 Assert.AreEqual(2, dispatched.Count);
                 Assert.AreEqual("goto n", dispatched[1]);
 
                 // Authoritative RoomView confirming c03_arrivals completes with no extra commands.
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 102f;
+#endif
                 onRoom.Invoke(coord, new object[] { MakeStationRoom("#103", "Port Watch Arrivals", "room.c03_arrivals") });
                 Assert.AreEqual(2, dispatched.Count);
 
                 // Mismatch cancellation: walk 2 hops back south, flush hop 1, then receive RoomView STILL in c03_arrivals -> hop 2 canceled!
                 dispatched.Clear();
                 coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c01_berth_gallery"), 180f);
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 105f;
+#endif
                 onFlush.Invoke(coord, null);
                 Assert.AreEqual(1, dispatched.Count);
                 Assert.AreEqual("goto s", dispatched[0]);
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 105.5f;
+#endif
                 onRoom.Invoke(coord, new object[] { MakeStationRoom("#103", "Port Watch Arrivals", "room.c03_arrivals") });
                 Assert.AreEqual(1, dispatched.Count, "Mismatched RoomView must cancel remaining queued hops");
 
                 // Unrelated explicit command cancels remaining queued hops!
                 dispatched.Clear();
                 coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c01_berth_gallery"), 180f);
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 110f;
+#endif
                 onFlush.Invoke(coord, null);
                 Assert.AreEqual(1, dispatched.Count);
                 coord.ExecutePlayerCommand("look");
                 dispatched.Clear();
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 110.5f;
+#endif
                 onRoom.Invoke(coord, new object[] { MakeStationRoom("#102", "Pressure Lobby", "room.c02_pressure") });
                 Assert.AreEqual(0, dispatched.Count, "Explicit command must cancel queued multi-hop navigation");
             }
@@ -4740,7 +4766,9 @@ namespace TacSim.Tests
                 //    subsequently entering a non-atlas room with a "Ceres Freeport" exit must NOT auto-transit!
                 var normalStationRoom = MushProtocol.ParseRoomView(JsonNode.Parse(
                     @"{""id"":""#101"",""name"":""Visiting Berth Gallery"",""ambient"":{""atlas"":{""pack"":""neighborhood.ceres_freeport"",""entry"":""room.c01_berth_gallery"",""surface"":""station""}}}"));
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 200f;
+#endif
                 onRoom.Invoke(coord, new object[] { normalStationRoom });
                 Assert.AreEqual(0, dispatched.Count);
 
@@ -4753,7 +4781,9 @@ namespace TacSim.Tests
                         new MushExitRef { Name = "Ceres Freeport", Aliases = new List<string> { "ceres" } }
                     }
                 };
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 201f;
+#endif
                 onRoom.Invoke(coord, new object[] { trapNonAtlasRoom });
                 Assert.AreEqual(0, dispatched.Count, "Visiting a non-atlas room after initial sync must never trigger Limbo auto-transit");
 
@@ -4783,7 +4813,9 @@ namespace TacSim.Tests
                 dispatched.Clear();
                 onRoom.Invoke(coord, new object[] { normalStationRoom });
                 coord.Player.TeleportTo(coord.StationWorld.GetRoomSpawnPosition("room.c03_arrivals"), 0f);
+#if !UNITY_5_3_OR_NEWER
                 UnityEngine.Time.time = 210f;
+#endif
                 onFlush.Invoke(coord, null);
                 var walker = (RoomBoundNavWalker)navWalkerField.GetValue(coord);
                 Assert.IsTrue(walker.InFlight.HasValue, "Expected an in-flight navigation hop before pack rebuild");

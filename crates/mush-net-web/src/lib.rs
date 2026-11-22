@@ -73,6 +73,7 @@ mod app;
 mod assets;
 mod auth;
 mod config;
+mod downloads;
 mod hooks;
 mod ip;
 mod ws;

@@ -4,6 +4,7 @@
   "references": [
     "TacSim.Client",
     "TacSim.Client.Editor",
+    "Unity.TextMeshPro",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],
