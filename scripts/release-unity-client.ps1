@@ -77,6 +77,11 @@ $WatchPaths = @(
     "crates/tacsim/content"
 )
 
+function Write-Utf8NoBom([string]$Path, [string]$Text) {
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $enc)
+}
+
 function Get-GitOutput([string[]]$GitArgs) {
     $out = & git -C $RepoRoot @GitArgs 2>$null
     if ($LASTEXITCODE -ne 0) { return "" }
@@ -306,7 +311,7 @@ foreach ($t in $Targets) {
         unity_version = $UnityVersion
         built_at_utc  = $TimestampUtc
     } | ConvertTo-Json -Depth 3
-    Set-Content -Path (Join-Path $stageDir "build-manifest.json") -Value $innerManifest -Encoding UTF8
+    Write-Utf8NoBom -Path (Join-Path $stageDir "build-manifest.json") -Text ($innerManifest + "`n")
 
     if (Test-Path $zipPath) {
         Remove-Item -Force $zipPath
@@ -340,7 +345,7 @@ foreach ($t in $Targets) {
         sha256        = $hash
         size_bytes    = $sizeBytes
     } | ConvertTo-Json -Depth 3
-    Set-Content -Path $sidecarPath -Value $sidecarManifest -Encoding UTF8
+    Write-Utf8NoBom -Path $sidecarPath -Text ($sidecarManifest + "`n")
 
     $BuiltEntries.Add(@{
         Target      = $t
@@ -362,8 +367,8 @@ if ($DryRun) {
     $sumLines = foreach ($entry in $BuiltEntries) {
         "$($entry.Sha256)  $($entry.ZipName)"
     }
-    Set-Content -Path $ChecksumFile -Value $sumLines -Encoding UTF8
-    Set-Content -Path $LastBuildShaFile -Value $HeadFullSha -Encoding UTF8
+    Write-Utf8NoBom -Path $ChecksumFile -Text (($sumLines -join "`n") + "`n")
+    Write-Utf8NoBom -Path $LastBuildShaFile -Text ($HeadFullSha + "`n")
     foreach ($line in $sumLines) {
         Write-Host "  $line" -ForegroundColor Gray
     }

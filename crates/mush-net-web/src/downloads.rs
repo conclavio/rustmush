@@ -223,7 +223,8 @@ fn read_sidecar_manifest(archive_path: &Path) -> Option<SidecarManifest> {
         return None;
     }
     let bytes = fs::read(&manifest_path).ok()?;
-    serde_json::from_slice::<SidecarManifest>(&bytes).ok()
+    let trimmed = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    serde_json::from_slice::<SidecarManifest>(trimmed).ok()
 }
 
 fn clean_optional_field(raw: Option<String>, max_len: usize) -> Option<String> {
