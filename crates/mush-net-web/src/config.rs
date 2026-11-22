@@ -97,6 +97,19 @@ pub struct WebConfig {
     /// proxy. It exposes only non-sensitive aggregates (never per-player data
     /// or keys). `/healthz` is always served.
     pub metrics_enabled: bool,
+    /// Optional directory containing downloadable standalone 3D client archives
+    /// (`.zip` plus optional `<archive>.zip.json` sidecar manifests) served by
+    /// the reverse proxy (Caddy `file_server`). When set, `GET /api/client-downloads`
+    /// advertises the archive matching the running instance's commit (or the most
+    /// recent archive per platform if no exact commit match exists).
+    pub client_downloads_dir: Option<PathBuf>,
+    /// Public URL prefix under which `client_downloads_dir` is served by the
+    /// reverse proxy or static file server (default `"/downloads/clients"`).
+    pub client_downloads_url_base: String,
+    /// Optional explicit commit SHA override for `/api/client-downloads` matching
+    /// (primarily for tests; production reads the embedded `web/dist/.commit`).
+    #[serde(skip)]
+    pub server_commit: Option<String>,
     /// The asset pack the `hello` frame names (doc 21 cut G.11): filled by
     /// the binary from the pack the SSH server serves, never from TOML.
     #[serde(skip)]
@@ -128,6 +141,9 @@ impl Default for WebConfig {
             max_http_conn_age_ms: 120_000,
             request_timeout_ms: 30_000,
             metrics_enabled: false,
+            client_downloads_dir: None,
+            client_downloads_url_base: "/downloads/clients".to_string(),
+            server_commit: None,
             asset_pack: None,
         }
     }

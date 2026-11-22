@@ -31,7 +31,7 @@ use crate::config::WebConfig;
 use crate::hooks::{WEB_CONN_ID_BASE, WebHooks};
 use crate::ip::{client_ip, fold_network_key};
 use crate::metrics::Metrics;
-use crate::{assets, auth, ws};
+use crate::{assets, auth, downloads, ws};
 
 /// Hard body limit for `/api/auth/*` endpoints (HIGH-3): login, register, and
 /// logout payloads are small credential JSON objects and never need Axum's
@@ -86,7 +86,9 @@ pub(crate) fn build(hooks: Arc<dyn WebHooks>, config: WebConfig) -> (Router, Opt
         .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT_BYTES));
     let (auth_routes, limiter_gc) = rate_limit(auth_routes, &state.config);
 
-    let mut http_ops = Router::new().route("/healthz", get(healthz));
+    let mut http_ops = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/api/client-downloads", get(downloads::client_downloads));
     if metrics_enabled {
         // Gated behind `web.metrics_enabled` (opt-in, default off). Public-safe:
         // non-sensitive aggregates only (see `metrics.rs`).
