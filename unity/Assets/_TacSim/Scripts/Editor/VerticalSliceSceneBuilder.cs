@@ -23,6 +23,7 @@ namespace TacSim.Editor
     public static class VerticalSliceSceneBuilder
     {
         public const string ScenePath = "Assets/_TacSim/Scenes/VerticalSlice1.unity";
+        public const string StandaloneScenePath = "Assets/_TacSim/Scenes/StandaloneBootstrap.unity";
 
         [MenuItem("TacSim/2. Build Vertical Slice Scene", priority = 20)]
         public static void BuildFromMenu()
@@ -34,6 +35,72 @@ namespace TacSim.Editor
         public static void BuildFromCli()
         {
             BuildVerticalSliceScene();
+        }
+
+        /// <summary>
+        /// Builds a clean, minimal bootstrap scene for standalone player builds.
+        /// Keeps only Lighting, Global PostProcess Volume, Main Camera + TacSimCameraRig, and
+        /// TacSimGameCoordinator referencing TacSimAssetCatalog so no batchmode <c>-nographics</c>
+        /// procedural meshes or nested private MonoBehaviours are serialized into <c>level0</c>.
+        /// All 5 stages, the player character, and the diegetic HUD are built cleanly on the
+        /// player's real GPU during <see cref="TacSimGameCoordinator.EnsureSubsystems"/>.
+        /// </summary>
+        public static void BuildStandaloneBootstrapScene()
+        {
+            UrpBootstrap.EnsureUrpAssigned();
+            EnsureFolder("Assets/_TacSim", "Scenes");
+
+            AssetPackImporter.EnsureIdaFaberHumanoidRigs();
+            var controller = HumanoidAnimatorBuilder.BuildOrRefreshController();
+            var catalog = AssetPackImporter.PopulateOrRefreshCatalog(controller);
+
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+
+            // 1. Lighting & Sky / Volume
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = new Color(0.24f, 0.30f, 0.38f);
+            RenderSettings.ambientEquatorColor = new Color(0.16f, 0.20f, 0.26f);
+            RenderSettings.ambientGroundColor = new Color(0.08f, 0.10f, 0.14f);
+
+            var keyLightGo = new GameObject("DirectionalKeyLight");
+            keyLightGo.transform.rotation = Quaternion.Euler(46f, -38f, 0f);
+            var dirLight = keyLightGo.AddComponent<Light>();
+            dirLight.type = LightType.Directional;
+            dirLight.color = new Color(0.95f, 0.97f, 1.0f);
+            dirLight.intensity = 1.15f;
+            dirLight.shadows = LightShadows.Soft;
+
+            var volumeProfile = AssetDatabase.LoadAssetAtPath<VolumeProfile>("Assets/_TacSim/Settings/SampleSceneProfile.asset");
+            if (volumeProfile != null)
+            {
+                var volGo = new GameObject("GlobalPostProcessVolume");
+                var vol = volGo.AddComponent<Volume>();
+                vol.isGlobal = true;
+                vol.sharedProfile = volumeProfile;
+            }
+
+            // 2. Main Camera + TacSimCameraRig
+            var camGo = new GameObject("Main Camera");
+            camGo.tag = "MainCamera";
+            var cam = camGo.AddComponent<Camera>();
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0.02f, 0.03f, 0.06f);
+            camGo.AddComponent<AudioListener>();
+            var camRig = camGo.AddComponent<TacSimCameraRig>();
+            camRig.ControlledCamera = cam;
+
+            // 3. Top-Level Game Coordinator (builds stages, player, and HUD on Start)
+            var coordGo = new GameObject("TacSimGameCoordinator");
+            var coord = coordGo.AddComponent<TacSimGameCoordinator>();
+            coord.AssetCatalog = catalog;
+            coord.CameraRig = camRig;
+
+            EditorSceneManager.SaveScene(scene, StandaloneScenePath);
+            EditorBuildSettings.scenes = new[]
+            {
+                new EditorBuildSettingsScene(StandaloneScenePath, enabled: true)
+            };
+            AssetDatabase.SaveAssets();
         }
 
         public static void BuildVerticalSliceScene()

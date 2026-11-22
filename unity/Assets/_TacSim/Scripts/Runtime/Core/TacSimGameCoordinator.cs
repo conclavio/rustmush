@@ -168,6 +168,7 @@ namespace TacSim.Core
                 }
             }
 
+            bool playerCreated = false;
             if (Player == null)
             {
                 Player = FindAnyObjectByType<ThirdPersonPlayerController>();
@@ -181,6 +182,7 @@ namespace TacSim.Core
                     Player.VisualSpawner = vis;
                     vis.BuildPlayerVisual(AssetCatalog, PlayerAvatarPreset.StellarTrooperFemale);
                     Player.TeleportTo(StationWorld.GetRoomSpawnPosition("room.c03_arrivals"), 90f);
+                    playerCreated = true;
                 }
             }
 
@@ -197,6 +199,8 @@ namespace TacSim.Core
             CameraRig.BridgeViewAnchor = ShipInterior.BridgeCameraAnchor;
             CameraRig.OrbitalShipTarget = SpaceStage.PlayerShipTransform;
             CameraRig.BowDockingAnchor = SpaceStage.BowDockingCameraAnchor;
+            if (playerCreated)
+                CameraRig.SnapBehindTarget(90f);
 
             if (Hud == null)
             {
