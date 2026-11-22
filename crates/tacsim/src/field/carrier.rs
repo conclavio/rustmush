@@ -206,19 +206,35 @@ pub(crate) use crate::arena::join::ring_cells;
 
 /// **The departure gate** (Q-H10): `Some(line)` when `hull` is held by a running field. The
 /// gate of a queued departure, which never presumes the confirmation; a live one takes the
-/// carrier out of the field instead (doc 32 F-6). The line names the units it would leave.
+/// carrier out of the field instead (doc 32 F-6). The line names only the units belonging to
+/// `hull` or `hull`'s own party that it would leave — never other parties' units (fog of war).
 #[must_use]
 pub fn departure_refusal(w: &World, hull: ObjId) -> Option<String> {
     let site = super::field_of_unit(w, hull)?;
+    let own_rigs: std::collections::BTreeSet<ObjId> = crate::port::tv::live_on_hull(w, hull)
+        .into_iter()
+        .map(|record| record.tv)
+        .collect();
     let left: Vec<String> = w
         .module_state::<FieldBook>()
         .and_then(|book| book.hosted(&site))
         .map(|hosted| {
+            let own_party = hosted
+                .live
+                .units
+                .iter()
+                .find(|row| row.unit == hull)
+                .map(|row| row.party);
             hosted
                 .live
                 .units
                 .iter()
-                .filter(|row| row.unit != hull)
+                .filter(|row| {
+                    row.unit != hull
+                        && (own_party.is_some_and(|party| row.party == party)
+                            || own_rigs.contains(&row.unit)
+                            || super::raiders::carrier_of(w, row.unit) == Some(hull))
+                })
                 .map(|row| crate::port::coop::name_of(w, row.unit))
                 .collect()
         })
@@ -1184,6 +1200,199 @@ mod review_72h_tests {
                 .and_then(|book| book.rejoining.get(&site))
                 .is_none_or(|hulls| !hulls.contains(&unit)),
             "the refused join is no longer with the kernel, so the next pass asks again"
+        );
+    }
+
+    /// **P2-TSC-2**: `departure_refusal` must restrict listed units strictly to `hull`'s own
+    /// party and `hull`'s own rigs — never leaking names of undetected enemy or other-party
+    /// units in the running field (fog of war).
+    #[test]
+    fn p2_tsc_2_departure_refusal_hides_other_parties_and_enemies() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(crate::TacsimRuleset::with_config(crate::TacsimConfig {
+                enabled: true,
+                ..Default::default()
+            })),
+        ]);
+        let world = tw.world_mut();
+        let make = |w: &mut World, name: &str| {
+            w.create(mush_core::ObjKind::Thing, name, mush_core::GOD, None)
+                .expect("object")
+        };
+        let carrier = make(world, "Salt Moth");
+        let wingman = make(world, "Red Wingman");
+        let own_rig = make(world, "Salt Rig");
+        let enemy = make(world, "Shadow Raider");
+        let bystander = make(world, "Quiet Prospector");
+        let pilot = world
+            .create(
+                mush_core::ObjKind::Player,
+                "Captain",
+                mush_core::GOD,
+                Some(mush_core::LIMBO),
+            )
+            .expect("pilot");
+
+        let site = CanonicalId::new("tacsim.port.ahuna_flank").expect("site");
+        let party_a = crate::arena::PartyId::nth(0).expect("A");
+        let party_b = crate::arena::PartyId::nth(1).expect("B");
+        let party_c = crate::arena::PartyId::nth(2).expect("C");
+        let party_d = crate::arena::PartyId::nth(3).expect("D");
+
+        // Lease `own_rig` onto `carrier` (different party from `carrier`, owned by `carrier`).
+        world
+            .module_state_mut::<crate::TacsimStore>()
+            .expect("tacsim store")
+            .tv_leases
+            .insert(
+                1,
+                crate::port::tv::TvLeaseState::Present(crate::port::tv::TvLease {
+                    schema: 1,
+                    lease: 1,
+                    tv: own_rig,
+                    mark: "OWP-TV-01".to_owned(),
+                    pilot,
+                    hull: carrier,
+                    slot: 1,
+                    hold: 1,
+                    fee_minor: 1_000,
+                    deposit_minor: 5_000,
+                    term_secs: 86_400,
+                    leased_at_ic: 0,
+                    term_ends_ic: 86_400,
+                    terms_paid: 1,
+                    status: crate::port::tv::TvLeaseStatus::Active,
+                    ended_at_ic: None,
+                    repossessed: false,
+                    written_off: false,
+                    wreck_aboard_ic: None,
+                }),
+            );
+
+        let row_of = |unit: ObjId, party: crate::arena::PartyId| super::super::FieldUnit {
+            unit,
+            party,
+            pilot: None,
+            epoch: None,
+            aboard: vec![],
+            arrived: false,
+            away: None,
+        };
+        let live = super::super::FieldLive {
+            format: super::super::record::FIELD_LIVE_FORMAT,
+            field: crate::surface::site_record::FieldId {
+                site: site.clone(),
+                ordinal: 1,
+            },
+            opened_ic: 0,
+            segment: 1,
+            at_ms: 0,
+            parties: vec![
+                super::super::FieldParty {
+                    party: party_a,
+                    key: super::super::PartyKey::Unit { unit: carrier },
+                    leader: Some(pilot),
+                    stance_hostile: vec![],
+                    director: false,
+                },
+                super::super::FieldParty {
+                    party: party_b,
+                    key: super::super::PartyKey::Unit { unit: own_rig },
+                    leader: Some(pilot),
+                    stance_hostile: vec![],
+                    director: false,
+                },
+                super::super::FieldParty {
+                    party: party_c,
+                    key: super::super::PartyKey::Unit { unit: enemy },
+                    leader: None,
+                    stance_hostile: vec![],
+                    director: false,
+                },
+                super::super::FieldParty {
+                    party: party_d,
+                    key: super::super::PartyKey::Unit { unit: bystander },
+                    leader: None,
+                    stance_hostile: vec![],
+                    director: false,
+                },
+            ],
+            units: vec![
+                row_of(carrier, party_a),
+                row_of(wingman, party_a),
+                row_of(own_rig, party_b),
+                row_of(enemy, party_c),
+                row_of(bystander, party_d),
+            ],
+            homes: vec![],
+            fire: None,
+            owed_exits: vec![],
+            held: vec![],
+            tally: vec![],
+            carried: vec![],
+        };
+        let task = crate::arena_task::MatchId(u64::MAX);
+        world
+            .module_state_mut::<FieldBook>()
+            .expect("field book")
+            .live
+            .insert(
+                site.clone(),
+                super::super::Hosted {
+                    task,
+                    live: live.clone(),
+                },
+            );
+        mush_sim::deployed::mark(
+            world,
+            carrier,
+            mush_sim::deployed::DeployedMark::field(site.as_str(), 1),
+        );
+
+        let refusal = departure_refusal(world, carrier).expect("carrier in field refuses");
+        assert!(refusal.contains("Salt Moth"), "{refusal}");
+        assert!(
+            refusal.contains("Red Wingman"),
+            "own-party wingman must be listed: {refusal}"
+        );
+        assert!(
+            refusal.contains("Salt Rig"),
+            "carrier's own leased rig must be listed: {refusal}"
+        );
+        assert!(
+            !refusal.contains("Shadow Raider"),
+            "undetected enemy must never leak via departure_refusal: {refusal}"
+        );
+        assert!(
+            !refusal.contains("Quiet Prospector"),
+            "other-party bystander must never leak via departure_refusal: {refusal}"
+        );
+
+        // When only enemy/other-party units remain beside `carrier`, report "nobody".
+        let mut enemies_only = live;
+        enemies_only
+            .units
+            .retain(|row| row.unit == carrier || row.unit == enemy || row.unit == bystander);
+        world
+            .module_state_mut::<FieldBook>()
+            .expect("field book")
+            .live
+            .insert(
+                site,
+                super::super::Hosted {
+                    task,
+                    live: enemies_only,
+                },
+            );
+        let alone = departure_refusal(world, carrier).expect("carrier in field refuses");
+        assert!(
+            alone.contains("leaves nobody on the ground"),
+            "no own units out should say nobody: {alone}"
+        );
+        assert!(
+            !alone.contains("Shadow Raider") && !alone.contains("Quiet Prospector"),
+            "other parties must still never leak: {alone}"
         );
     }
 }

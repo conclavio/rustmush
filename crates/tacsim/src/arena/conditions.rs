@@ -1086,6 +1086,10 @@ impl Arena {
         if state.limits.wreck || state.weapon(&slot.weapon).is_none() {
             return Err(Held::Idle);
         }
+        if !self.floor_lifted(unit) && condition_is_lawful(slot, self.odds_floor_permille).is_err()
+        {
+            return Err(Held::Idle);
+        }
         let Some(lock) = state.lock else {
             return Err(Held::Idle);
         };
@@ -1397,6 +1401,7 @@ impl Arena {
 
     fn first_fire_rule_with(&self, unit: ObjId, at_ms: i64, memo: &mut EvalMemo) -> Option<u8> {
         let lock = self.unit(unit).and_then(|state| state.lock);
+        let floor_lifted = self.floor_lifted(unit);
         self.conditions
             .slots(unit)
             .iter()
@@ -1407,6 +1412,7 @@ impl Arena {
                 let condition = rule.fire()?;
                 if !self.runtime_permits(unit, slot, rule, at_ms)
                     || rule.independent()
+                    || (!floor_lifted && self.rule_breaks_floor(rule))
                     || self.rule_vetoed_with(unit, &condition.weapon, at_ms, memo)
                     || !self.rule_predicates_hold_with(unit, rule, lock, at_ms, None, memo)
                     || self.warrant(unit, condition, at_ms).is_err()
@@ -1443,6 +1449,7 @@ impl Arena {
             .ok_or(Held::Idle)?;
         let condition = rule.fire().ok_or(Held::Idle)?;
         if !self.runtime_permits(unit, slot, rule, at_ms)
+            || (!self.floor_lifted(unit) && self.rule_breaks_floor(rule))
             || self.rule_vetoed(unit, &condition.weapon, at_ms)
         {
             return Err(Held::Idle);
@@ -1465,7 +1472,10 @@ impl Arena {
     /// weapon or missing readings remain idle rather than naming a false cause.
     fn rejected_rule_reason(&self, unit: ObjId, rule: &Rule, at_ms: i64) -> Option<HeldWhy> {
         let condition = rule.fire()?;
-        if self.holds_fire(unit) || self.rule_vetoed(unit, &condition.weapon, at_ms) {
+        if (!self.floor_lifted(unit) && self.rule_breaks_floor(rule))
+            || self.holds_fire(unit)
+            || self.rule_vetoed(unit, &condition.weapon, at_ms)
+        {
             return None;
         }
         match self.warrant(unit, condition, at_ms) {
@@ -1712,6 +1722,7 @@ impl Arena {
         // and lock resolver. One matching rule wins, even if its lock is already
         // held. A ready gun never invents an extra sensor event.
         if trigger != ConditionTrigger::WeaponReady {
+            let floor_lifted = self.floor_lifted(unit);
             let target =
                 self.conditions
                     .slots(unit)
@@ -1720,9 +1731,10 @@ impl Arena {
                     .find_map(|(index, rule)| {
                         let rule = rule.as_ref()?;
                         let slot = u8::try_from(index.saturating_add(1)).ok()?;
-                        self.runtime_permits(unit, slot, rule, t_ms)
-                            .then(|| self.rule_lock_target_with(unit, rule, t_ms, &mut memo))
-                            .flatten()
+                        (self.runtime_permits(unit, slot, rule, t_ms)
+                            && (floor_lifted || !self.rule_breaks_floor(rule)))
+                        .then(|| self.rule_lock_target_with(unit, rule, t_ms, &mut memo))
+                        .flatten()
                     });
             if let Some(contact) = target
                 && self
@@ -2166,29 +2178,62 @@ impl Arena {
     }
 
     /// **Whether `unit`'s floor is lifted** (doc 17h cut M8b C4; D-UM-17 "an ungoverned core
-    /// alone skips it", D-UM-42): its seal is ungoverned AND the hull still carries a core —
-    /// once `destroy_core` takes it the hull flies the ROM and the floor is back (G6). The one
-    /// definition of the rule. Every pod core is governed (D-UM-41), so in play this is false.
+    /// alone skips it", D-UM-42; P2-TSC-8): its seal is ungoverned, neither its runtime nor its
+    /// mind has dropped to the ROM, AND its live core (under [`Arena::core_of`], including
+    /// component damage/jamming effects) is present above Class 0. Once `destroy_core`, core
+    /// degradation/jamming to Class 0, or a strike drop sends the hull onto the ROM, the floor is
+    /// back (G6). Every pod core is governed (D-UM-41), so in play this is false.
     #[must_use]
     pub fn floor_lifted(&self, unit: ObjId) -> bool {
-        self.unit(unit).is_some_and(|state| {
-            !state.seal.governed && crate::arena::core::read_core(&state.unit).is_some()
+        let Some(state) = self.unit(unit) else {
+            return false;
+        };
+        if state.seal.governed {
+            return false;
+        }
+        if self
+            .profiles
+            .get(&unit)
+            .is_some_and(|runtime| runtime.dropped)
+        {
+            return false;
+        }
+        if self
+            .minds
+            .get(&unit)
+            .is_some_and(crate::arena::mind::MindState::dropped)
+        {
+            return false;
+        }
+        self.core_of(unit)
+            .is_some_and(|core| core.class != crate::arena::core::CoreClass::Zero)
+    }
+
+    /// Whether `rule` violates the arena's Compact odds floor via either its fire condition or an
+    /// `Odds` predicate.
+    #[must_use]
+    pub(crate) fn rule_breaks_floor(&self, rule: &Rule) -> bool {
+        rule.predicates().iter().any(|predicate| {
+            matches!(
+                predicate,
+                RulePredicate::Odds { min_permille, .. }
+                    if u32::from(*min_permille) < self.odds_floor_permille
+            )
+        }) || rule.fire().is_some_and(|condition| {
+            condition_is_lawful(condition, self.odds_floor_permille).is_err()
         })
     }
 
     /// **Whether `rule` breaks the law it would be held to** (doc 17h cut M8b C5, G7): an odds
     /// predicate under the arena's floor, or its fire condition's odds under the floor, or a
     /// contact target the hull has not classified. The one rule for the record, at the arming
-    /// and at the fire; asked only where the floor is lifted.
+    /// and at the fire.
     #[must_use]
     pub fn rule_unlawful(&self, unit: ObjId, rule: &Rule) -> bool {
-        rule.predicates().iter().any(|predicate| {
-            matches!(predicate, RulePredicate::Odds { min_permille, .. }
-                if u32::from(*min_permille) < self.odds_floor_permille)
-        }) || rule.fire().is_some_and(|condition| {
-            condition_is_lawful(condition, self.odds_floor_permille).is_err()
-                || self.rule_contact_is_lawful(unit, condition).is_err()
-        })
+        self.rule_breaks_floor(rule)
+            || rule
+                .fire()
+                .is_some_and(|condition| self.rule_contact_is_lawful(unit, condition).is_err())
     }
 
     /// **Journal an unlawful arming** (doc 17h cut M8b C5): one `armed` line, the record and
@@ -2370,6 +2415,46 @@ impl Arena {
         let cleared = self.conditions.truncate(unit, capacity);
         self.disable_profile_slots(unit, cleared.iter().copied());
         self.forget_held_said(unit, &cleared);
+        if !self.floor_lifted(unit) {
+            self.disarm_unlawful_slots(unit);
+        }
+    }
+
+    /// Disarm every condition slot on `unit` that violates the Compact odds floor (and, on a
+    /// formerly-lifted ungoverned seal, any slot whose rule is currently unlawful), recording
+    /// profile slot overrides and clearing held-shot stamps so snapshots remain valid (P2-TSC-8).
+    pub(crate) fn disarm_unlawful_slots(&mut self, unit: ObjId) {
+        let seal_ungoverned = self.unit(unit).is_some_and(|state| !state.seal.governed);
+        let unlawful: Vec<(u8, Channel)> = self
+            .conditions
+            .slots(unit)
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let rule = slot.as_ref()?;
+                let bad = self.rule_breaks_floor(rule)
+                    || (seal_ungoverned && self.rule_unlawful(unit, rule));
+                bad.then(|| {
+                    u8::try_from(index.saturating_add(1))
+                        .ok()
+                        .map(|n| (n, rule.channel()))
+                })
+                .flatten()
+            })
+            .collect();
+        if unlawful.is_empty() {
+            return;
+        }
+        let mut freed = Vec::with_capacity(unlawful.len());
+        for (slot, channel) in unlawful {
+            if self.conditions.remove_slot(unit, slot, channel).is_ok() {
+                freed.push(slot);
+            }
+        }
+        if !freed.is_empty() {
+            self.disable_profile_slots(unit, freed.iter().copied());
+            self.forget_held_said(unit, &freed);
+        }
     }
 
     /// **`unit`'s condition row cut to its core's slots NOW** (17b cut M3.4;
@@ -5815,5 +5900,403 @@ mod tests {
         let post_snap = Snapshot::encode(&arena).expect("encode after DestroyCore landing");
         let _ = Snapshot::decode(&post_snap.document, (*arena.definition).clone())
             .expect("decode after DestroyCore landing");
+    }
+
+    /// Helper for P2-TSC-8: build a two-unit arena where `RED` has an ungoverned Class I core
+    /// sealed with `[Alpha (under_floor), Bravo (standard_floor)]`, online, and locked on `BLUE`.
+    fn p2_tsc_8_ungoverned_arena(
+        under_floor: Rule,
+        standard_floor: Rule,
+    ) -> (Arena, crate::arena::state::ContactId) {
+        use crate::arena::core::{ClassTable, CoreClass};
+        use crate::arena::party::FieldHost;
+        use crate::arena::profile_seal::SealedCards;
+        use crate::arena::runtime_card::stock_definition;
+        use crate::arena::state::{Controller, CustodyOut, MatchMode, Power};
+        use crate::arena::test_support::{
+            cannon, definition, line_tank, pose, resolution, tactical_unit_cored,
+        };
+
+        let reflex = crate::config::ReflexConfig::default();
+        let alpha = crate::arena::card::preset("Line", &reflex).expect("Line preset");
+        let bravo = crate::arena::card::preset("Sniper", &reflex).expect("Sniper preset");
+        let mut def = stock_definition(
+            &[("Alpha".into(), alpha), ("Bravo".into(), bravo)],
+            CoreClass::I,
+        )
+        .expect("definition");
+        def.profiles[0].rules = vec![m6_authored(under_floor, false)];
+        def.profiles[1].rules = vec![m6_authored(standard_floor, false)];
+
+        let mut red = line_tank(RED, PartyId::RED, pose(1_500, 1_500));
+        red.controller = Controller::Mind;
+        red.unit = tactical_unit_cored(RED, CoreClass::I);
+        red.weapons = vec![cannon()];
+        red.reseal(&crate::match_::SealTerms::fixture())
+            .expect("reseal");
+        red.seal.core = Some(SmolStr::new_static("core"));
+        red.seal.core_class = CoreClass::I;
+        red.seal.class = CoreClass::I;
+        red.seal.governed = false;
+        let cards = SealedCards::prepare(
+            def,
+            &[SmolStr::new_static("Alpha"), SmolStr::new_static("Bravo")],
+            &ClassTable::STOCK.row(CoreClass::I),
+            &red.seal.weapons,
+            &red.seal.channels,
+            red.seal.effective_floor(),
+        )
+        .expect("ungoverned cards seal");
+        red.seal.card = cards.opening_card.clone();
+        red.seal.card_digest = cards.opening_digest;
+        red.seal.cards = cards;
+
+        let blue = line_tank(BLUE, PartyId::BLUE, pose(1_500, 5_500));
+        let mut arena = Arena::new(
+            CustodyOut {
+                definition: definition(),
+                units: vec![red, blue],
+                pilots: Vec::new(),
+                resolution: resolution(),
+                seed: 2_358,
+                mode: MatchMode::Skirmish,
+                host: FieldHost::all_hostile(),
+            },
+            &crate::config::ArenaConfig::default(),
+            &crate::config::MatchConfig::default(),
+            &crate::config::SensorsConfig::default(),
+        )
+        .expect("ungoverned arena admits");
+        arena.resolution.p_min = 50;
+        arena.resolution.p_max = 50;
+        arena.unit_mut(RED).expect("red").power = Power::Online;
+        let contact = id_of(RED, BLUE);
+        let plot = crate::arena::state::SeenPose::of(arena.unit(BLUE).expect("blue"));
+        arena.contacts.insert(
+            RED,
+            contact,
+            crate::arena::state::ShadowContact::sighted(
+                BLUE,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                plot,
+            ),
+        );
+        assert_eq!(arena.resolve_lock(RED, contact, 0), Ok(()));
+        (arena, contact)
+    }
+
+    /// **P2-TSC-8 (2)**: `floor_lifted` must return `false` once an ungoverned hull's core is
+    /// degraded/jammed to Class 0, destroyed, or dropped to ROM (via either `runtime.dropped` or
+    /// `mind.dropped()`).
+    #[test]
+    fn p2_tsc_8_floor_lifted_closes_on_class0_jam_rom_drop_and_core_loss() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::mind::DropCause;
+        use crate::arena::resolution::Consequence;
+        use mush_tactics::{ComponentId, ConditionId, UnitMutationOp, UnitMutationPlan};
+
+        let (base, _) = p2_tsc_8_ungoverned_arena(
+            Rule::fire_rule(slot("cannon", 0), Vec::new()),
+            Rule::fire_rule(slot("cannon", 100), Vec::new()),
+        );
+        assert!(base.floor_lifted(RED));
+
+        // 1. DegradeCore (I -> 0): core still physically present at Class 0 -> floor returns!
+        let mut degraded = base.clone();
+        let ops = degraded.core_ops(RED, &[Consequence::DegradeCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("degrade plan");
+        let (post, _) = mush_tactics::apply(&degraded.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DegradeCore");
+        degraded.set_unit(RED, post, false);
+        assert_eq!(
+            degraded.core_of(RED).map(|c| c.class),
+            Some(CoreClass::Zero)
+        );
+        assert!(
+            !degraded.floor_lifted(RED),
+            "Class 0 degraded core must not lift the Compact floor"
+        );
+
+        // 2. Core component jammed via ComponentEffects (I -> 0) -> floor returns!
+        let mut jammed = base.clone();
+        let core_comp = jammed.core_of(RED).expect("core").component.to_string();
+        let jam_plan = UnitMutationPlan::new(
+            vec![UnitMutationOp::SetComponentCondition {
+                component: ComponentId::new(&core_comp).expect("core"),
+                condition: ConditionId::new("jammed").expect("jammed"),
+            }],
+            None,
+            None,
+        )
+        .expect("jam plan");
+        let (post, _) = mush_tactics::apply(&jammed.unit(RED).expect("red").unit, &jam_plan, 0)
+            .expect("apply jam");
+        jammed.set_unit(RED, post, false);
+        jammed.apply_part_effects(RED);
+        assert_eq!(jammed.core_of(RED).map(|c| c.class), Some(CoreClass::Zero));
+        assert!(
+            !jammed.floor_lifted(RED),
+            "jammed Class 0 core must not lift the Compact floor"
+        );
+
+        // 3. Mind dropped to ROM (strikes) -> floor returns even with intact Class I core!
+        let mut struck = base.clone();
+        struck.minds.get_mut(&RED).expect("mind").dropped = Some(DropCause::Strikes);
+        assert!(
+            !struck.floor_lifted(RED),
+            "mind dropped to ROM must not lift the Compact floor"
+        );
+        let mut rt_dropped = base.clone();
+        rt_dropped.profiles.get_mut(&RED).expect("runtime").dropped = true;
+        assert!(
+            !rt_dropped.floor_lifted(RED),
+            "runtime dropped to ROM must not lift the Compact floor"
+        );
+
+        // 4. DestroyCore -> floor returns!
+        let mut destroyed = base;
+        let ops = destroyed.core_ops(RED, &[Consequence::DestroyCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("destroy plan");
+        let (post, _) = mush_tactics::apply(&destroyed.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DestroyCore");
+        destroyed.set_unit(RED, post, false);
+        assert_eq!(destroyed.core_of(RED), None);
+        assert!(!destroyed.floor_lifted(RED));
+    }
+
+    /// **P2-TSC-8 (1)**: `warrant`, `first_fire_rule`, `rule_warrant`, `evaluate_conditions`,
+    /// `FiredBy::Cond`, and `truncate_slots` must all enforce the Compact odds floor (and
+    /// sub-floor `RulePredicate::Odds`) once `!floor_lifted(unit)`, disarming Slot 1 on
+    /// `truncate_slots` while preserving snapshot encode/decode.
+    #[test]
+    fn p2_tsc_8_cond_warrant_and_truncate_slots_block_and_disarm_sub_floor_slot1() {
+        use crate::arena::motor::MotorCounters;
+        use crate::arena::resolution::Consequence;
+        use crate::arena::snapshot::Snapshot;
+        use crate::arena::weapons::FiredBy;
+        use mush_tactics::UnitMutationPlan;
+
+        let sub_floor_cond = slot("cannon", 0);
+        let sub_floor_rule = Rule::fire_rule(sub_floor_cond.clone(), Vec::new());
+        let (mut arena, _) =
+            p2_tsc_8_ungoverned_arena(sub_floor_rule, Rule::fire_rule(slot("cannon", 100), vec![]));
+
+        // While lifted: warrant succeeds and evaluate_conditions fires at 50‰ (< 100‰ floor).
+        assert!(arena.warrant(RED, &sub_floor_cond, 0).is_ok());
+        assert_eq!(arena.first_fire_rule(RED, 0), Some(1));
+
+        // Destroy the core (without calling truncate_slots yet): direct warrant/first_fire/Cond
+        // must ALL refuse immediately.
+        let ops = arena.core_ops(RED, &[Consequence::DestroyCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("destroy plan");
+        let (post, _) = mush_tactics::apply(&arena.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DestroyCore");
+        arena.set_unit(RED, post, false);
+        assert!(!arena.floor_lifted(RED));
+        assert_eq!(arena.warrant(RED, &sub_floor_cond, 0), Err(Held::Idle));
+        assert_eq!(arena.first_fire_rule(RED, 0), None);
+        assert_eq!(arena.rule_warrant(RED, 1, 0), Err(Held::Idle));
+        assert_eq!(
+            arena
+                .clone()
+                .resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 }),
+            Err(Refusal::Unlawful)
+        );
+        let ammo_before = arena.unit(RED).expect("red").weapon_ammo("cannon");
+        let mut counters = MotorCounters::default();
+        let answers =
+            arena.evaluate_conditions(RED, 0, ConditionTrigger::Pass, None, &mut counters);
+        assert!(answers.iter().all(|(_, res)| res.is_err()));
+        assert_eq!(
+            arena.unit(RED).expect("red").weapon_ammo("cannon"),
+            ammo_before
+        );
+
+        // Now run `truncate_slots` (what `damage.rs` calls on DestroyCore/DegradeCore): Slot 1
+        // must be disarmed despite Class 0 capacity == 1, and snapshot decode must stay valid.
+        arena.truncate_slots(RED);
+        assert!(
+            arena.conditions.is_empty_for(RED),
+            "truncate_slots must disarm sub-floor Slot 1 once floor returns"
+        );
+        let snap = Snapshot::encode(&arena).expect("encode after disarming unlawful slot 1");
+        let _ = Snapshot::decode(&snap.document, (*arena.definition).clone())
+            .expect("decode after disarming unlawful slot 1");
+
+        // Also check sub-floor `RulePredicate::Odds` on a lawful-min_permille fire rule
+        // armed via `Arming::Rules` while ungoverned, then degraded to Class 0.
+        let (mut pred_arena, _) = p2_tsc_8_ungoverned_arena(
+            Rule::fire_rule(slot("cannon", 100), Vec::new()),
+            Rule::fire_rule(slot("cannon", 100), Vec::new()),
+        );
+        pred_arena.resolution.p_min = 500;
+        pred_arena.resolution.p_max = 500;
+        let pred_rule = Rule::fire_rule(
+            slot("cannon", 300),
+            vec![RulePredicate::Odds {
+                weapon: None,
+                min_permille: 20,
+            }],
+        );
+        assert!(
+            pred_arena
+                .resolve_manual_arming(
+                    RED,
+                    &Arming::Rules {
+                        slot: Some(1),
+                        rules: vec![pred_rule],
+                    },
+                    0,
+                )
+                .is_ok()
+        );
+        assert_eq!(pred_arena.first_fire_rule(RED, 0), Some(1));
+        let ops = pred_arena.core_ops(RED, &[Consequence::DegradeCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("degrade plan");
+        let (post, _) = mush_tactics::apply(&pred_arena.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DegradeCore");
+        pred_arena.set_unit(RED, post, false);
+        assert!(!pred_arena.floor_lifted(RED));
+        assert_eq!(pred_arena.first_fire_rule(RED, 0), None);
+        assert_eq!(pred_arena.rule_warrant(RED, 1, 0), Err(Held::Idle));
+        assert_eq!(
+            pred_arena
+                .clone()
+                .resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 }),
+            Err(Refusal::Unlawful)
+        );
+        pred_arena.truncate_slots(RED);
+        assert!(pred_arena.conditions.is_empty_for(RED));
+    }
+
+    /// **P2-TSC-8 (3)**: `Pilot -> Mind` handback (`set_controller` / `restore_profile_bindings`)
+    /// must drop a coreless hull to ROM immediately and must never restore sub-floor Slot 1 when
+    /// the core is lost or degraded to Class 0.
+    #[test]
+    fn p2_tsc_8_pilot_to_mind_handback_blocks_sub_floor_on_core_loss_and_class0() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::doctrine::MachineState;
+        use crate::arena::mind::DropCause;
+        use crate::arena::motor::MotorCounters;
+        use crate::arena::resolution::Consequence;
+        use crate::arena::snapshot::Snapshot;
+        use crate::arena::state::Controller;
+        use mush_tactics::UnitMutationPlan;
+
+        let (base, _) = p2_tsc_8_ungoverned_arena(
+            Rule::fire_rule(slot("cannon", 0), Vec::new()),
+            Rule::fire_rule(slot("cannon", 100), Vec::new()),
+        );
+
+        // Branch A: core destroyed while piloted, then released back to Mind.
+        let mut lost = base.clone();
+        lost.set_controller(RED, Controller::Pilot, MachineState::Withdraw);
+        let ops = lost.core_ops(RED, &[Consequence::DestroyCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("destroy plan");
+        let (post, _) = mush_tactics::apply(&lost.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DestroyCore while piloted");
+        lost.set_unit(RED, post, false);
+        lost.set_controller(RED, Controller::Mind, MachineState::Withdraw);
+        assert!(
+            lost.conditions.is_empty_for(RED),
+            "handback on coreless hull must never re-arm sub-floor Slot 1"
+        );
+        assert_eq!(
+            lost.minds.get(&RED).and_then(|m| m.dropped),
+            Some(DropCause::Core)
+        );
+        assert!(lost.profiles.get(&RED).is_some_and(|r| r.dropped));
+        assert!(!lost.floor_lifted(RED));
+        let ammo_before = lost.unit(RED).expect("red").weapon_ammo("cannon");
+        let _ = lost.evaluate_conditions(
+            RED,
+            0,
+            ConditionTrigger::Pass,
+            None,
+            &mut MotorCounters::default(),
+        );
+        assert_eq!(
+            lost.unit(RED).expect("red").weapon_ammo("cannon"),
+            ammo_before
+        );
+        let snap = Snapshot::encode(&lost).expect("encode after coreless handback");
+        let _ = Snapshot::decode(&snap.document, (*lost.definition).clone())
+            .expect("decode after coreless handback");
+
+        // Branch B: core degraded to Class 0 while piloted, then released back to Mind.
+        let mut degraded = base;
+        degraded.set_controller(RED, Controller::Pilot, MachineState::Withdraw);
+        let ops = degraded.core_ops(RED, &[Consequence::DegradeCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("degrade plan");
+        let (post, _) = mush_tactics::apply(&degraded.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DegradeCore while piloted");
+        degraded.set_unit(RED, post, false);
+        assert_eq!(
+            degraded.core_of(RED).map(|c| c.class),
+            Some(CoreClass::Zero)
+        );
+        degraded.set_controller(RED, Controller::Mind, MachineState::Withdraw);
+        assert!(
+            degraded.conditions.is_empty_for(RED),
+            "handback on Class 0 degraded hull must not restore sub-floor Slot 1"
+        );
+        assert!(!degraded.floor_lifted(RED));
+        let snap = Snapshot::encode(&degraded).expect("encode after Class 0 handback");
+        let _ = Snapshot::decode(&snap.document, (*degraded.definition).clone())
+            .expect("decode after Class 0 handback");
+    }
+
+    /// **P2-TSC-8 (4)**: `apply_profile` must enforce live core class (`mind_class`) and reject
+    /// profile switches once degraded to Class 0 or after core loss.
+    #[test]
+    fn p2_tsc_8_apply_profile_rejects_switch_when_degraded_to_class0_or_core_lost() {
+        use crate::arena::intents::{
+            Intent, IntentKind, IntentOutcome, IntentSource, apply_intent,
+        };
+        use crate::arena::resolution::Consequence;
+        use crate::arena::state::Channel;
+        use mush_tactics::UnitMutationPlan;
+
+        let (mut arena, _) = p2_tsc_8_ungoverned_arena(
+            Rule::fire_rule(slot("cannon", 100), Vec::new()),
+            Rule::fire_rule(slot("cannon", 0), Vec::new()),
+        );
+        arena.epochs.raise(RED, Channel::Helm, 1);
+
+        // Degrade Class I -> Class 0: switching to Profile 1 (carrying sub-floor Slot 1) refused!
+        let mut degraded = arena.clone();
+        let ops = degraded.core_ops(RED, &[Consequence::DegradeCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("degrade plan");
+        let (post, _) = mush_tactics::apply(&degraded.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DegradeCore");
+        degraded.set_unit(RED, post, false);
+        let switch = Intent {
+            unit: RED,
+            channel: Channel::Helm,
+            epoch: 1,
+            kind: IntentKind::Profile { index: 1 },
+            seq: 1,
+        };
+        assert_eq!(
+            apply_intent(&mut degraded, &switch, IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Profile),
+            "Class 0 degraded hull must refuse profile switch"
+        );
+        assert_eq!(degraded.profiles.get(&RED).map(|p| p.index), Some(0));
+
+        // DestroyCore: profile switch also refused!
+        let ops = arena.core_ops(RED, &[Consequence::DestroyCore]);
+        let plan = UnitMutationPlan::new(ops, None, None).expect("destroy plan");
+        let (post, _) = mush_tactics::apply(&arena.unit(RED).expect("red").unit, &plan, 0)
+            .expect("apply DestroyCore");
+        arena.set_unit(RED, post, false);
+        assert_eq!(
+            apply_intent(&mut arena, &switch, IntentSource::Seat),
+            IntentOutcome::Refused(Refusal::Profile),
+            "coreless hull must refuse profile switch"
+        );
     }
 }
