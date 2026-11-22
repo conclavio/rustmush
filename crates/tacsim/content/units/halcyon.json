@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.halcyon",
-    "version": 1,
+    "version": 2,
     "kind": "rules_definition",
-    "digest": "264d6e0c09aeebec5356aad3a9210708cb83f9544314212e0c9756e9c2895480",
+    "digest": "5d3ae5e898742e7fcc2d9db499020538dda7a8540b6deea885c32c89f90fb4c3",
     "requires": [
       {
         "id": "tacsim.pack.plants",
@@ -294,8 +294,8 @@
               "from": "airlock",
               "to": "passage",
               "names": [
-                "Inner Hatch <I>;inner;in;passage",
-                "Airlock <A>;airlock;forward"
+                "Inner Hatch <IN>;in;inner;passage",
+                "Airlock <AL>;al;airlock;forward"
               ]
             },
             {
@@ -310,15 +310,15 @@
               "from": "passage",
               "to": "crew",
               "names": [
-                "Crew Compartment <C>;crew;galley;bunks;aft",
-                "Passage <P>;passage;out;forward"
+                "Crew Compartment <C>;c;crew;galley;bunks;aft",
+                "Passage <O>;o;passage;out;forward"
               ]
             },
             {
               "from": "passage",
               "to": "hold",
               "names": [
-                "Cargo Hold <H>;hold;down;d",
+                "Cargo Hold <H>;h;hold;down;d",
                 "Passage <U>;passage;up;u"
               ]
             },
@@ -326,16 +326,16 @@
               "from": "hold",
               "to": "engineering",
               "names": [
-                "Engineering <E>;engineering;eng;down;d",
-                "Hold <H>;hold;up;u"
+                "Engineering <E>;e;engineering;eng;down;d",
+                "Hold <H>;h;hold;up;u"
               ]
             },
             {
               "from": "passage",
               "to": "relay",
               "names": [
-                "Relay Compartment <R>;relay",
-                "Service Trunk <P>;passage;out"
+                "Relay Compartment <R>;r;relay",
+                "Service Trunk <O>;o;passage;out"
               ]
             }
           ],

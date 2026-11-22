@@ -81,30 +81,32 @@ fn shipped_exit_segments() -> Vec<(String, String)> {
         }
     }
     // Doc 18 cut IC8 (IC4 C7): the Dray's interior exits, laid up in every programme
-    // hull, as `tacsim.unit.dray/<from>-<to>`.
-    let dray = tacsim::pack::load_pack(tacsim::definitions::content::DRAY_JSON)
-        .expect("the Dray pack loads");
-    let unit = mush_core::CanonicalId::new(tacsim::definitions::content::DRAY).expect("the id");
-    let Some(tacsim::pack::PackEntry::Unit(spec)) = dray.entry(&unit) else {
-        panic!("the Dray pack carries the Dray unit");
-    };
-    let interior = spec
-        .interior
-        .as_ref()
-        .expect("the Dray authors an interior");
-    for exit in &interior.exits {
-        let id = format!(
-            "{}/{}-{}",
-            tacsim::definitions::content::DRAY,
-            exit.from,
-            exit.to
-        );
-        for name in &exit.names {
-            for segment in name.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-                rows.push((id.clone(), segment.to_lowercase()));
+    // hull, as `tacsim.unit.dray/<from>-<to>`. Since 2026-11-22 every fielded hull that
+    // authors an interior is walked the same way (the Dray-P, the corvette, the Halcyon,
+    // the heavy raider and the Tycho lifter beside it): that day each interior exit's
+    // label became one of its aliases, so the hulls carry one-letter segments (`c`, `h`,
+    // `e`, `o`, `r`) that this gate must see.
+    let fielded = tacsim::definitions::Catalog::build_fielded(&[], tacsim::NS)
+        .expect("the fielded content binds");
+    let mut hulls = BTreeSet::new();
+    for (unit, spec) in &fielded.specs {
+        let Some(interior) = spec.interior.as_ref() else {
+            continue;
+        };
+        for exit in &interior.exits {
+            hulls.insert(unit.to_string());
+            let id = format!("{unit}/{}-{}", exit.from, exit.to);
+            for name in &exit.names {
+                for segment in name.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                    rows.push((id.clone(), segment.to_lowercase()));
+                }
             }
         }
     }
+    assert!(
+        hulls.contains(tacsim::definitions::content::DRAY) && hulls.len() >= 6,
+        "the Dray and the five other hulls with interior exits are fielded: {hulls:?}"
+    );
     rows
 }
 

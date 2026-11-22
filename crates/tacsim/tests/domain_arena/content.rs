@@ -172,10 +172,11 @@ const DIGESTS: [(&str, &str); 18] = [
         "tacsim.mars_canyon",
         "993a507ffe1211ddb5e3811f4aaef1529970858f95c460e149280cad13424108",
     ),
-    // Doc 49 unit CC.6 (Q-49-11): space content as data.
+    // Doc 49 unit CC.6 (Q-49-11): space content as data. The raider moved to version 2 on
+    // 2026-11-22 (every interior exit's label one of its aliases; was `d124c6d9…` at v1).
     (
         "tacsim.pack.raider_heavy",
-        "d124c6d940d387576e1d69e9088127ead173ccd2599a0d4cb412c02e2b4a7c31",
+        "213491a97346ca9724ecee039aa2b4fbfc9662c6acd18c5335cf63b7d98c70df",
     ),
     (
         "tacsim.pack.space_mounts",
@@ -349,6 +350,9 @@ const RETIRED_PINS: &[(&str, u32, &str, bool)] = &[
     ("tacsim.pack.he_105", 1, "c377ca63", true),
     ("tacsim.pack.mg_coax", 1, "d5a24fd7", true),
     ("tacsim.pack.ball_762", 1, "59f3da8f", true),
+    // 2026-11-22: every interior exit's label became one of its aliases, and the pack moved to
+    // version 2 with it.
+    ("tacsim.pack.raider_heavy", 1, "d124c6d9", false),
 ];
 
 /// Every shipped pack's `(id, version, digest)`.
@@ -2916,8 +2920,9 @@ fn m3_the_stock_class_table_is_the_doc_17_table() {
 // ---------------------------------------------------------------------------
 
 /// **The Dray's pin** (doc 18 cut IC2; doc 18 §4.2, D-18-29). Re-signed in
-/// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_DIGEST: &str = "29251cd41240e93b151230fb76840673a8e678144273675883e4d8c2f6d24a85";
+/// place under `TACSIM_WRITE_CONTENT=1` and copied here by hand. 2026-11-22: v4, every
+/// interior exit's label one of its aliases (was `29251cd4…` at v3).
+const DRAY_DIGEST: &str = "a4d618e81654b970d9f80a48d88bb048f8a68e71f4e9e56ef894bcf3866e82db";
 
 /// **The goods table's pin** (doc 18 cut IC2; doc 18 §4.3): the canonical digest
 /// of `content/market/goods.json` under `tacsim.goods.v1`. Printed under
@@ -2982,8 +2987,9 @@ fn ic2_the_dray_is_pinned_and_checks() {
     assert_eq!(pack.manifest().id().as_str(), content::DRAY_PACK);
     assert_eq!(
         pack.manifest().version(),
-        3,
-        "doc 19 cut A.2 re-published the Dray at v3 (the flip law); doc 18 cut IC8's was v2"
+        4,
+        "v4 made every interior exit's label one of its aliases (2026-11-22); doc 19 cut A.2's \
+         was v3 (the flip law), doc 18 cut IC8's v2"
     );
     assert!(
         pack.manifest()
@@ -3146,8 +3152,8 @@ fn ic2_the_dray_is_pinned_and_checks() {
                 "airlock",
                 "passage",
                 vec![
-                    "Inner Hatch <I>;inner;in;passage",
-                    "Airlock <A>;airlock;forward"
+                    "Inner Hatch <IN>;in;inner;passage",
+                    "Airlock <AL>;al;airlock;forward"
                 ]
             ),
             (
@@ -3159,25 +3165,25 @@ fn ic2_the_dray_is_pinned_and_checks() {
                 "passage",
                 "crew",
                 vec![
-                    "Crew Compartment <C>;crew;galley;bunks;aft",
-                    "Passage <P>;passage;out;forward"
+                    "Crew Compartment <C>;c;crew;galley;bunks;aft",
+                    "Passage <O>;o;passage;out;forward"
                 ]
             ),
             (
                 "passage",
                 "hold",
-                vec!["Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u"]
+                vec!["Cargo Hold <H>;h;hold;down;d", "Passage <U>;passage;up;u"]
             ),
             (
                 "hold",
                 "engineering",
                 vec![
-                    "Engineering <E>;engineering;eng;down;d",
-                    "Hold <H>;hold;up;u"
+                    "Engineering <E>;e;engineering;eng;down;d",
+                    "Hold <H>;h;hold;up;u"
                 ]
             ),
         ],
-        "doc 18's five exit pairs, name for name"
+        "doc 18's five exit pairs, each label one of its own aliases since Dray v4"
     );
     let gauges: Vec<(&str, Vec<&str>)> = interior
         .gauges
@@ -4227,8 +4233,9 @@ fn ic2_the_goods_table_is_pinned() {
 const TV_DIGEST: &str = "10fd633345f7680498024544fb18faaa6249f42cb302e80579bc1b1a5c87444e";
 
 /// **The Dray-P's pin** (doc 20 cut SM.3a; §4.3, D-20-7). Re-signed in place
-/// under `TACSIM_WRITE_CONTENT=1` and copied here by hand.
-const DRAY_P_DIGEST: &str = "ed4c6a7e620560b6b656d9acf54db7e6bea7b56a8ae16192c7b6649e435b622c";
+/// under `TACSIM_WRITE_CONTENT=1` and copied here by hand. 2026-11-22: v2, every interior
+/// exit's label one of its aliases (was `ed4c6a7e…` at v1).
+const DRAY_P_DIGEST: &str = "751dcfa8e3f44f898ed3252681dea138da7656cecbd78fb424b172ba63dff91c";
 
 /// **The tools' pins** (doc 20 cut SM.3a; §4.1): each tool's canonical digest
 /// under `tacsim.tools.v1`. Printed under `TACSIM_WRITE_CONTENT=1` and copied here
@@ -4534,6 +4541,57 @@ fn sm3a_the_terrain_vehicle_is_pinned_and_checks() {
         .expect("the goods table fits the hopper");
 }
 
+/// **Every interior exit's bracketed label is one of its own aliases** (2026-11-22, from the
+/// owner's dev1 playtest). A typed label works only as an alias, and both clients bind an exit to
+/// a key only when its name or an alias is one letter (D-I-19), so `Crew Compartment <C>;crew;aft`
+/// showed a `C` that walked nowhere. The station packs have always written the label as the first
+/// alias (`Hatch <H>;h;hatch`); this holds every fielded hull's interior to the same rule. A
+/// kernel command's word (`i`, `p`) cannot be an exit's alias at all (16c `B-75`), so such a
+/// letter is not written as a label either.
+#[test]
+fn every_interior_exit_label_is_one_of_its_aliases() {
+    let fielded = Catalog::build_fielded(&[], tacsim::NS).expect("the fielded content binds");
+    let mut hulls = 0;
+    let mut stray = Vec::new();
+    for (id, spec) in &fielded.specs {
+        let Some(interior) = spec.interior.as_ref() else {
+            continue;
+        };
+        if interior.exits.is_empty() {
+            continue;
+        }
+        hulls += 1;
+        for exit in &interior.exits {
+            for name in &exit.names {
+                let mut segments = name.split(';').map(str::trim);
+                let display = segments.next().unwrap_or_default();
+                let label = display
+                    .rsplit_once('<')
+                    .and_then(|(_, rest)| rest.strip_suffix('>'));
+                let Some(label) = label else {
+                    stray.push(format!("{id}: `{name}` shows no <label>"));
+                    continue;
+                };
+                if !segments.any(|alias| alias.eq_ignore_ascii_case(label)) {
+                    stray.push(format!(
+                        "{id}: `{name}` shows <{label}> and has no alias `{}`",
+                        label.to_lowercase()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        hulls >= 6,
+        "the six hulls that author interior exits are fielded (read {hulls})"
+    );
+    assert!(
+        stray.is_empty(),
+        "an interior exit's label is not one of its aliases, so the key it shows walks nowhere:\n{}",
+        stray.join("\n")
+    );
+}
+
 /// **The Dray-P is the Dray with a bay** (doc 20 cut SM.3a; §4.3, D-20-7, §11):
 /// its digest; `refit_compatible(Dray, Dray-P)`; its hold, bay and egress; the
 /// goods table fits it; and the payload floor with two empty rigs stays under
@@ -4545,12 +4603,20 @@ fn sm3a_the_dray_p_is_the_dray_with_a_bay() {
     if writing() {
         resign(relative, "DRAY_P_DIGEST");
         resign("units/corvette.json", "CORVETTE_DIGEST");
+        // The other hulls that author an interior, so one writing run re-signs all six.
+        resign("units/halcyon.json", "HALCYON_DIGEST");
+        resign("units/raider_heavy.json", "RAIDER_HEAVY_DIGEST");
+        resign("units/tycho_lifter.json", "TYCHO_LIFTER_DIGEST");
         return;
     }
     let pack = tacsim::pack::load_pack(content::DRAY_P_JSON)
         .unwrap_or_else(|error| panic!("{relative} does not verify: {error}"));
     assert_eq!(pack.manifest().id().as_str(), content::DRAY_P_PACK);
-    assert_eq!(pack.manifest().version(), 1);
+    assert_eq!(
+        pack.manifest().version(),
+        2,
+        "v2 made every interior exit's label one of its aliases (2026-11-22)"
+    );
     assert!(
         pack.manifest()
             .requires()

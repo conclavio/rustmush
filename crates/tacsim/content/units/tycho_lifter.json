@@ -113,8 +113,8 @@
             {
               "from": "airlock",
               "names": [
-                "Inner Hatch <I>;inner;in;passage",
-                "Airlock <A>;airlock;forward"
+                "Inner Hatch <IN>;in;inner;passage",
+                "Airlock <AL>;al;airlock;forward"
               ],
               "to": "passage"
             },
@@ -129,15 +129,15 @@
             {
               "from": "passage",
               "names": [
-                "Crew Compartment <C>;crew;galley;bunks;aft",
-                "Passage <P>;passage;out;forward"
+                "Crew Compartment <C>;c;crew;galley;bunks;aft",
+                "Passage <O>;o;passage;out;forward"
               ],
               "to": "crew"
             },
             {
               "from": "passage",
               "names": [
-                "Cargo Hold <H>;hold;down;d",
+                "Cargo Hold <H>;h;hold;down;d",
                 "Passage <U>;passage;up;u"
               ],
               "to": "hold"
@@ -145,8 +145,8 @@
             {
               "from": "hold",
               "names": [
-                "Engineering <E>;engineering;eng;down;d",
-                "Hold <H>;hold;up;u"
+                "Engineering <E>;e;engineering;eng;down;d",
+                "Hold <H>;h;hold;up;u"
               ],
               "to": "engineering"
             }
@@ -423,7 +423,7 @@
     }
   },
   "manifest": {
-    "digest": "2b34e5359bf5cd38c8e90f32cede59779ed9455d31a378fc71953030f877b2ad",
+    "digest": "ba16cb70b9fe835580fcf780b9ff2f67ed779fe8af25ee132065e1dd533e5aad",
     "id": "tacsim.pack.tycho_lifter",
     "kind": "rules_definition",
     "requires": [
@@ -432,6 +432,6 @@
         "version": 1
       }
     ],
-    "version": 1
+    "version": 2
   }
 }

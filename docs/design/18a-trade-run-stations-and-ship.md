@@ -1653,6 +1653,30 @@ Station-normal, ship-normal, and a hand-painted line between them that somebody 
 **As built (IC8):** the return is `Airlock <A>;airlock;forward` (`lock` dropped); the detail `builder's plate`
 ships as `builders plate`.
 
+**As built (2026-11-22, Dray v4; from the owner's dev1 playtest):** every interior exit's bracketed label
+is one of its own aliases, as the station packs have always written theirs. A label works when typed only
+as an alias, and both clients bind an exit to a key only when an alias is one letter (D-I-19), so the
+labels below showed keys that walked nowhere. Three labels moved, because their letter is taken: `i` is
+`inventory` and `p` is `page` (no exit may take a kernel command's word, 16c `B-75`), and `a` is the scene
+screen's `act` key. The exits of this section now read, on all six hulls that author this interior (the
+Dray, the Dray-P, the corvette, the Halcyon, the heavy raider and the Tycho lifter, each one version on):
+
+| was | is |
+|---|---|
+| `Inner Hatch <I>;inner;in;passage` | `Inner Hatch <IN>;in;inner;passage` |
+| `Airlock <A>;airlock;forward` | `Airlock <AL>;al;airlock;forward` |
+| `Crew Compartment <C>;crew;galley;bunks;aft` | `Crew Compartment <C>;c;crew;galley;bunks;aft` |
+| `Passage <P>;passage;out;forward` | `Passage <O>;o;passage;out;forward` |
+| `Cargo Hold <H>;hold;down;d` | `Cargo Hold <H>;h;hold;down;d` |
+| `Hold <H>;hold;up;u` | `Hold <H>;h;hold;up;u` |
+| `Engineering <E>;engineering;eng;down;d` | `Engineering <E>;e;engineering;eng;down;d` |
+| `Relay Compartment <R>;relay` (the Halcyon) | `Relay Compartment <R>;r;relay` |
+| `Service Trunk <P>;passage;out` (the Halcyon) | `Service Trunk <O>;o;passage;out` |
+
+`Bridge <U>`, `Passage <D>` and `Passage <U>` already carried their letter. In the passage `c` now walks
+to the crew compartment, so `Alt+c` there is the exit and not the sky chart (an exit outranks a lettered
+screen's key, D-I-19); the choice is provisional. A hull laid up before v4 keeps its old exit names.
+
 #### Central Passage
 
 *Purpose.* The spine; ladders up to the Bridge and down to the Hold, a hatch aft to the Crew
