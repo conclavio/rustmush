@@ -1939,6 +1939,26 @@ fn required_approvals(policy: &ApprovalPolicy) -> Option<usize> {
     }
 }
 
+/// Evaluate whether a single source account's approval rule fires for `debit` (negative)
+/// without validating any destination account (P2-MOD-42), returning `Ok(None)` when no
+/// approval is required or an existing approval satisfies the rule, `Ok(Some(need))` when
+/// approval is still needed, or `Err(e)` for a non-recoverable approval refusal.
+pub(crate) fn evaluate_source_approval(
+    snapshot: &EconomySnapshot,
+    env: &ValidateEnv<'_>,
+    hash: [u8; 32],
+    from: AccountId,
+    debit: Amount,
+) -> Result<Option<ApprovalNeed>, EconomyError> {
+    let mut balance_deltas = BTreeMap::new();
+    balance_deltas.insert(from, debit);
+    match evaluate_approvals(snapshot, env, hash, &balance_deltas) {
+        Ok(_) => Ok(None),
+        Err(Fail::NeedsApproval(need)) => Ok(Some(need)),
+        Err(Fail::Refused(e)) => Err(e),
+    }
+}
+
 fn evaluate_approvals(
     snapshot: &EconomySnapshot,
     env: &ValidateEnv<'_>,

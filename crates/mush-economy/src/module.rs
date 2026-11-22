@@ -485,7 +485,24 @@ pub struct EconomyStore {
     /// E6b (C16): bounded per-actor refusal counters, RAM-only, surfaced by
     /// `@econ/alerts`. Telemetry, never authority.
     pub(crate) refusals: BTreeMap<ObjId, RefusalTally>,
+    /// P2-MOD-12: bounded per-`(actor, target_org)` sliding-window timestamps of
+    /// external-org contract offers so `Offer -> Cancel`/`Amend` churn cannot flood
+    /// an organization's officer inboxes or evict offline notices. RAM-only.
+    pub(crate) ext_org_offer_window: BTreeMap<(ObjId, mush_org::OrgId), Vec<i64>>,
+    /// P2-MOD-12: transient set of external organizations whose notice fan-out is
+    /// suppressed during the current synchronous self-cancel/amend `ContractChanged`
+    /// emission. Always empty outside that emission. RAM-only.
+    pub(crate) suppressed_notice_orgs: std::collections::BTreeSet<mush_org::OrgId>,
 }
+
+/// P2-MOD-12: sliding window length (seconds) for per-actor/per-target-org external
+/// contract offer rate limiting.
+pub const EXTERNAL_ORG_OFFER_WINDOW_SECS: i64 = 3_600;
+/// P2-MOD-12: maximum external-org offers a non-staff actor may issue to a single
+/// organization they do not act for within [`EXTERNAL_ORG_OFFER_WINDOW_SECS`].
+pub const MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW: usize = 4;
+/// Maximum `(actor, org)` entries retained in `EconomyStore::ext_org_offer_window`.
+const MAX_EXT_ORG_WINDOW_KEYS: usize = 4_096;
 
 /// How many canon records the economy remembers seeing (E4c verify fold, E4a).
 pub const CANON_TAIL: usize = 64;
@@ -821,7 +838,49 @@ impl EconomyStore {
             canon_boot_scan_done: false,
             canon_rescanning: false,
             refusals: BTreeMap::new(),
+            ext_org_offer_window: BTreeMap::new(),
+            suppressed_notice_orgs: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Count how many external-org offers `actor` has sent to `org` inside the active
+    /// sliding window at `now` (P2-MOD-12).
+    pub(crate) fn ext_org_offers_in_window(
+        &self,
+        actor: ObjId,
+        org: mush_org::OrgId,
+        now: i64,
+    ) -> usize {
+        let cutoff = now.saturating_sub(EXTERNAL_ORG_OFFER_WINDOW_SECS);
+        self.ext_org_offer_window
+            .get(&(actor, org))
+            .map_or(0, |stamps| stamps.iter().filter(|&&t| t > cutoff).count())
+    }
+
+    /// Record one external-org offer from `actor` to `org` at `now` (P2-MOD-12),
+    /// pruning expired timestamps and keeping the map strictly bounded.
+    pub(crate) fn note_ext_org_offer(&mut self, actor: ObjId, org: mush_org::OrgId, now: i64) {
+        let cutoff = now.saturating_sub(EXTERNAL_ORG_OFFER_WINDOW_SECS);
+        if self.ext_org_offer_window.len() >= MAX_EXT_ORG_WINDOW_KEYS
+            && !self.ext_org_offer_window.contains_key(&(actor, org))
+        {
+            self.ext_org_offer_window.retain(|_, stamps| {
+                stamps.retain(|&t| t > cutoff);
+                !stamps.is_empty()
+            });
+            if self.ext_org_offer_window.len() >= MAX_EXT_ORG_WINDOW_KEYS
+                && let Some(oldest_key) = self
+                    .ext_org_offer_window
+                    .iter()
+                    .min_by_key(|(_, stamps)| stamps.last().copied().unwrap_or(i64::MIN))
+                    .map(|(k, _)| *k)
+            {
+                self.ext_org_offer_window.remove(&oldest_key);
+            }
+        }
+        let stamps = self.ext_org_offer_window.entry((actor, org)).or_default();
+        stamps.retain(|&t| t > cutoff);
+        stamps.push(now);
     }
 
     /// The authoritative snapshot (read seam).

@@ -40,9 +40,9 @@ use crate::api::{self, PostAuth, PostOutcome};
 use crate::clock::{EconomicClock, EconomicDeadline, EconomicSchedule};
 use crate::commands::{
     asset_target, cmd_key, emit_list, info, is_admin, is_hidden, mask_account, may_view_account,
-    may_view_vault, money_on, money_on_or, parse_account, parse_amount, parse_deadline, parse_opts,
-    parse_principal, parse_scope, parse_vault_id, refuse, refuse_if_frozen, refuse_named,
-    render_principal,
+    may_view_asset, may_view_vault, money_on, money_on_or, parse_account, parse_amount,
+    parse_deadline, parse_opts, parse_principal, parse_scope, parse_vault_id, refuse,
+    refuse_if_frozen, refuse_named, render_principal,
 };
 use crate::contract::{
     Acceptance, Attestation, AttestorRef, AttestorSet, ConsentSurface, Consideration, ContractAuth,
@@ -62,12 +62,15 @@ use crate::engine::ValidateEnv;
 use crate::escalation::{EscalationKind, EscalationSubject};
 use crate::facts::scoped;
 use crate::ids::{AccountId, ContractId, HoldId, InstrumentId};
-use crate::module::EconomyStore;
+use crate::module::{
+    EXTERNAL_ORG_OFFER_WINDOW_SECS, EconomyStore, MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW,
+};
 use crate::obligation::{GracePolicy, Obligation, ObligationCause, ObligationStatus};
 use crate::plan::{EconomyError, EconomyPlan, HoldOp, NamedResource};
 use crate::record::{
-    AccountStatus, EconomicCause, EconomicVisibility, ExternalRef, HoldEffectKind, HoldPurpose,
-    MAX_AUDIENCE, MAX_EXTERNAL_REF_FIELD_BYTES, MAX_EXTERNAL_REF_ID_BYTES,
+    AccountStatus, AssetLifecycle, EconomicCause, EconomicVisibility, ExternalRef, HoldEffectKind,
+    HoldPurpose, InstrumentStatus, MAX_AUDIENCE, MAX_EXTERNAL_REF_FIELD_BYTES,
+    MAX_EXTERNAL_REF_ID_BYTES,
 };
 
 /// The refusal text every unviewable contract renders as (§4.5's existence hiding):
@@ -694,6 +697,107 @@ fn contract_draft(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 
 // ---- the consent-surface builders -----------------------------------------
 
+/// Whether `ctx.actor` stands for organization principal `p` (by `acts_for` or
+/// `contract.accept`/`contract.draft` on the organization's live root compartment).
+fn actor_stands_for_org(ctx: &Ctx<'_>, p: &PrincipalId) -> bool {
+    let me = PrincipalId::Object(ctx.actor);
+    if (api::WorldAuth { w: ctx.w }).acts_for(&me, p) {
+        return true;
+    }
+    let PrincipalId::Organization(org) = p else {
+        return false;
+    };
+    let Some(org_store) = ctx.w.module_state::<mush_org::OrgStore>() else {
+        return false;
+    };
+    let Some(root) = org_store.state().org(*org).map(|o| o.root_scope) else {
+        return false;
+    };
+    api::scope_coherent(ctx.w, Some(root), p)
+        && (api::holds_capability(ctx.w, ctx.actor, "contract.accept", root)
+            || api::holds_capability(ctx.w, ctx.actor, "contract.draft", root))
+}
+
+/// External organizations on `c` that `ctx.actor` does not stand for and that have not
+/// accepted `c` (P2-MOD-12).
+fn unconsented_external_orgs(ctx: &Ctx<'_>, c: &EconomicContract) -> Vec<mush_org::OrgId> {
+    if is_admin(ctx.w, ctx.actor) {
+        return Vec::new();
+    }
+    let mut out: Vec<mush_org::OrgId> = Vec::new();
+    for p in &c.consent.parties {
+        let PrincipalId::Organization(org) = p else {
+            continue;
+        };
+        if out.contains(org) {
+            continue;
+        }
+        if actor_stands_for_org(ctx, p) {
+            continue;
+        }
+        let accepted = c
+            .acceptances
+            .iter()
+            .any(|a| principal_key(&a.party) == principal_key(p));
+        if !accepted {
+            out.push(*org);
+        }
+    }
+    out
+}
+
+/// P2-MOD-12: external organizations whose officer notice fan-out should be suppressed
+/// when a non-staff actor self-cancels (`Draft`/`Offered` -> `Cancelled`) or self-amends
+/// (`Offered` -> `Draft`) an unmanaged contract that those external orgs never accepted.
+pub(crate) fn suppressed_external_orgs_for_transition(
+    ctx: &Ctx<'_>,
+    before: Option<&EconomicContract>,
+    after: &EconomicContract,
+) -> Vec<mush_org::OrgId> {
+    if is_admin(ctx.w, ctx.actor) || after.consent.managed.is_some() {
+        return Vec::new();
+    }
+    let Some(before) = before else {
+        return Vec::new();
+    };
+    let is_self_cancel_or_amend =
+        matches!(before.state, ContractState::Draft | ContractState::Offered)
+            && matches!(after.state, ContractState::Cancelled | ContractState::Draft);
+    if !is_self_cancel_or_amend {
+        return Vec::new();
+    }
+    unconsented_external_orgs(ctx, before)
+}
+
+/// P2-MOD-12: enforce the per-actor/per-target-org sliding-window offer rate limit so
+/// `Draft -> Offer -> Cancel`/`Amend` churn cannot flood external org officer inboxes or
+/// FIFO-evict offline notice queues.
+fn check_external_org_offer_rate_limit(
+    ctx: &Ctx<'_>,
+    c: &EconomicContract,
+) -> Result<Vec<mush_org::OrgId>, CmdError> {
+    let targets = unconsented_external_orgs(ctx, c);
+    if targets.is_empty() {
+        return Ok(targets);
+    }
+    let now = ctx.w.now();
+    if let Some(store) = ctx.w.module_state::<EconomyStore>() {
+        for &org in &targets {
+            if store.ext_org_offers_in_window(ctx.actor, org, now)
+                >= MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW
+            {
+                return Err(CmdError::msg(format!(
+                    "You have offered too many contracts to that organization recently (limit \
+                     {MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW} per {} minutes); wait before offering \
+                     another.",
+                    EXTERNAL_ORG_OFFER_WINDOW_SECS / 60
+                )));
+            }
+        }
+    }
+    Ok(targets)
+}
+
 /// Bound unconsented organization fan-out on non-staff contracts.
 ///
 /// Every organization party on a contract can fan out `ContractChanged`
@@ -720,8 +824,6 @@ fn check_org_party_caps(
     if is_admin(ctx.w, ctx.actor) {
         return Ok(());
     }
-    let me = PrincipalId::Object(ctx.actor);
-    let auth = api::WorldAuth { w: ctx.w };
     let mut org_parties: Vec<&PrincipalId> = c
         .consent
         .parties
@@ -741,25 +843,8 @@ fn check_org_party_caps(
             "A contract may name at most {MAX_ORG_PARTIES_PER_CONTRACT} organizations as parties."
         )));
     }
-    let stands_for_org = |p: &PrincipalId| {
-        if auth.acts_for(&me, p) {
-            return true;
-        }
-        let PrincipalId::Organization(org) = p else {
-            return false;
-        };
-        let Some(org_store) = ctx.w.module_state::<mush_org::OrgStore>() else {
-            return false;
-        };
-        let Some(root) = org_store.state().org(*org).map(|o| o.root_scope) else {
-            return false;
-        };
-        api::scope_coherent(ctx.w, Some(root), p)
-            && (api::holds_capability(ctx.w, ctx.actor, "contract.accept", root)
-                || api::holds_capability(ctx.w, ctx.actor, "contract.draft", root))
-    };
     let is_unconsented = |p: &PrincipalId| {
-        !stands_for_org(p)
+        !actor_stands_for_org(ctx, p)
             && !c
                 .acceptances
                 .iter()
@@ -988,11 +1073,67 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Whether `ctx.actor` has standing to name account `a` in a contract builder
+/// (`@contract/deliver obligation`, `/split`, `/remainder`, `/deadline forfeit=`,
+/// `/outcome pay=`) without creating an existence oracle (E4c D1 + P2-MOD-13).
+///
+/// Admits:
+/// - any account the actor satisfies [`may_view_account`] on (staff, owner, or
+///   `economy.account.view` on its live scope); OR
+/// - an `Active` personal (`Object`) account owned by a party already named on `c`.
+///
+/// Hidden organization compartments, `System` faucets/sinks, inactive/closed accounts,
+/// and non-party stranger accounts are all refused uniformly with `"No such account."`.
+fn known_contract_account(ctx: &Ctx<'_>, c: &EconomicContract, a: AccountId) -> bool {
+    if may_view_account(ctx.w, ctx.actor, a) {
+        return true;
+    }
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(acct) = store.snapshot().account(a) else {
+        return false;
+    };
+    if acct.status != AccountStatus::Active || !matches!(acct.owner, PrincipalId::Object(_)) {
+        return false;
+    }
+    c.consent
+        .parties
+        .iter()
+        .chain(std::iter::once(&c.issuer))
+        .any(|p| principal_key(p) == principal_key(&acct.owner))
+}
+
+/// P2-MOD-13: standing/viewability check for `title` and `collateral` deliverables.
+/// Non-staff must be able to view the asset (`may_view_asset`) AND the asset must be
+/// `Active` and currently titled to `from`; any failure returns uniform `"No such asset."`.
+fn require_viewable_deliver_asset(
+    ctx: &mut Ctx<'_>,
+    object: ObjId,
+    from: &PrincipalId,
+) -> Result<(), CmdError> {
+    if is_admin(ctx.w, ctx.actor) {
+        return Ok(());
+    }
+    let ok = may_view_asset(ctx.w, ctx.actor, object)
+        && ctx.w.module_state::<EconomyStore>().is_some_and(|store| {
+            store.snapshot().asset(object).is_some_and(|a| {
+                a.lifecycle == AssetLifecycle::Active
+                    && principal_key(&a.title_owner) == principal_key(from)
+            })
+        });
+    if !ok {
+        crate::commands::note_refusal(ctx, true);
+        return Err(CmdError::msg("No such asset."));
+    }
+    Ok(())
+}
+
 fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @contract/deliver <id>=title <obj> <from>-><to> | deposit <obj> \
                          <vault> | collateral <obj> <from> | obligation <debit> <credit> <amount> \
                          every=<secs>";
-    let mut c = editable(ctx, ctx.args.lhs())?;
+    let seen = contract_of(ctx, ctx.args.lhs())?;
     let rhs = ctx
         .args
         .rhs()
@@ -1001,7 +1142,7 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (rest, opts) = parse_opts(&rhs, &["every", "grace"]);
     let mut words = rest.split_whitespace();
     let kind = words.next().unwrap_or("").to_ascii_lowercase();
-    let deliverable = match kind.as_str() {
+    let (mut c, deliverable) = match kind.as_str() {
         "title" => {
             let object = asset_target(ctx, words.next().unwrap_or(""))?;
             let pair: String = words.collect::<Vec<_>>().join(" ");
@@ -1010,9 +1151,28 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 parse_principal(ctx, &from).ok_or_else(|| CmdError::msg("No such principal."))?;
             let to =
                 parse_principal(ctx, &to).ok_or_else(|| CmdError::msg("No such principal."))?;
-            Deliverable::TitleTransfer { object, from, to }
+            require_viewable_deliver_asset(ctx, object, &from)?;
+            let c = if is_issuer(ctx, &seen) {
+                editable(ctx, ctx.args.lhs())?
+            } else {
+                // Mirror `build_pay`'s listed-party self-contribution rule so a listed
+                // seller can attach their own titled asset to a buyer-drafted `Draft`
+                // without granting the buyer an asset existence oracle.
+                acting_party(ctx, &seen, "contract.accept")
+                    .filter(|p| principal_key(p) == principal_key(&from))
+                    .ok_or_else(|| CmdError::msg(NO_SUCH))?;
+                if seen.state != ContractState::Draft {
+                    return Err(CmdError::msg(format!(
+                        "Contract #{} is no longer being drafted; ask its issuer to amend it.",
+                        seen.id
+                    )));
+                }
+                seen
+            };
+            (c, Deliverable::TitleTransfer { object, from, to })
         }
         "deposit" => {
+            let c = editable(ctx, ctx.args.lhs())?;
             let object = asset_target(ctx, words.next().unwrap_or(""))?;
             // The same draft-time viewability gate `/condition deposit` runs (A2).
             let Some(vault) = words.next().and_then(parse_vault_id) else {
@@ -1022,7 +1182,7 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 crate::commands::note_refusal(ctx, true);
                 return Err(CmdError::msg("No such vault."));
             }
-            Deliverable::DepositInto { object, vault }
+            (c, Deliverable::DepositInto { object, vault })
         }
         "collateral" => {
             let object = asset_target(ctx, words.next().unwrap_or(""))?;
@@ -1030,9 +1190,25 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .next()
                 .and_then(|s| parse_principal(ctx, s))
                 .ok_or_else(|| CmdError::msg("No such principal."))?;
-            Deliverable::Collateral { object, from }
+            require_viewable_deliver_asset(ctx, object, &from)?;
+            let c = if is_issuer(ctx, &seen) {
+                editable(ctx, ctx.args.lhs())?
+            } else {
+                acting_party(ctx, &seen, "contract.accept")
+                    .filter(|p| principal_key(p) == principal_key(&from))
+                    .ok_or_else(|| CmdError::msg(NO_SUCH))?;
+                if seen.state != ContractState::Draft {
+                    return Err(CmdError::msg(format!(
+                        "Contract #{} is no longer being drafted; ask its issuer to amend it.",
+                        seen.id
+                    )));
+                }
+                seen
+            };
+            (c, Deliverable::Collateral { object, from })
         }
         "obligation" => {
+            let c = editable(ctx, ctx.args.lhs())?;
             let debit = words
                 .next()
                 .and_then(parse_account)
@@ -1060,49 +1236,6 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 .get("grace")
                 .and_then(|s| s.parse::<u8>().ok())
                 .unwrap_or(crate::DEFAULT_GRACE_PERIODS);
-            // **Standing first, through the same `hidden_text` loop the escrow
-            // builder runs** (E4c verify fold, D1).
-            //
-            // Before the fold this branch answered with three distinguishable
-            // messages — "No such account.", the system source/sink text, and
-            // silence on success — so naming an id and reading the reply told you
-            // whether the account existed and whether it was a faucet, one command
-            // at a time, from a draft nobody else ever sees.
-            //
-            // The standing an obligation deliverable needs is `@contract/pay`'s plus
-            // one clause: **an account owned by a party of this contract**. A lease's
-            // rent debits the tenant's wallet, which the landlord may not view, and
-            // credits the landlord's, which the tenant may not view — so a bare
-            // viewability gate would make the canonical lease undraftable by anybody
-            // but staff. A party's name is already on the surface; a stranger's is
-            // not, and a stranger's account is exactly what the oracle was probing
-            // for.
-            let known = |ctx: &Ctx<'_>, a: AccountId| -> bool {
-                if may_view_account(ctx.w, ctx.actor, a) {
-                    return true;
-                }
-                let Some(store) = ctx.w.module_state::<EconomyStore>() else {
-                    return false;
-                };
-                let Some(acct) = store.snapshot().account(a) else {
-                    return false;
-                };
-                // Only active personal (`Object`) accounts of a named party are
-                // accepted without view standing. Organization compartments and
-                // inactive/closed accounts require `may_view_account`, preventing
-                // an outsider from naming an organization on a throwaway draft to
-                // enumerate hidden treasury/compartment or closed account IDs.
-                if acct.status != AccountStatus::Active
-                    || !matches!(acct.owner, PrincipalId::Object(_))
-                {
-                    return false;
-                }
-                c.consent
-                    .parties
-                    .iter()
-                    .chain(std::iter::once(&c.issuer))
-                    .any(|p| principal_key(p) == principal_key(&acct.owner))
-            };
             let hidden = |ctx: &mut Ctx<'_>, detail: &str| -> CmdError {
                 refuse_named(
                     ctx,
@@ -1111,7 +1244,7 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     detail.to_string(),
                 )
             };
-            if !known(ctx, debit) || !known(ctx, credit) {
+            if !known_contract_account(ctx, &c, debit) || !known_contract_account(ctx, &c, credit) {
                 crate::commands::note_refusal(ctx, true);
                 return Err(CmdError::msg("No such account."));
             }
@@ -1136,18 +1269,21 @@ fn build_deliver(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 (d.owner.clone(), cr.owner.clone())
             };
             let now = ctx.w.now();
-            Deliverable::Obligation {
-                template: Box::new(ObligationTemplate {
-                    debtor,
-                    creditor,
-                    debit_account: debit,
-                    credit_account: credit,
-                    amount,
-                    schedule: EconomicSchedule::every(now.saturating_add(every), every),
-                    grace: GracePolicy::new(grace),
-                    notify_on_success: false,
-                }),
-            }
+            (
+                c,
+                Deliverable::Obligation {
+                    template: Box::new(ObligationTemplate {
+                        debtor,
+                        creditor,
+                        debit_account: debit,
+                        credit_account: credit,
+                        amount,
+                        schedule: EconomicSchedule::every(now.saturating_add(every), every),
+                        grace: GracePolicy::new(grace),
+                        notify_on_success: false,
+                    }),
+                },
+            )
         }
         _ => return Err(CmdError::msg(USAGE)),
     };
@@ -1207,6 +1343,13 @@ fn build_split(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if shares.is_empty() || shares.len() > MAX_SHARES {
         return Err(CmdError::msg(USAGE));
     }
+    // P2-MOD-13: standing/viewability gate on every split account BEFORE `save_open`.
+    for s in &shares {
+        if !known_contract_account(ctx, &c, s.to) {
+            crate::commands::note_refusal(ctx, true);
+            return Err(CmdError::msg("No such account."));
+        }
+    }
     c.consent.terms.split = shares;
     let n = c.consent.terms.split.len();
     let id = save_open(ctx, c)?;
@@ -1248,6 +1391,11 @@ fn build_remainder(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let mut c = editable(ctx, ctx.args.lhs())?;
     let rhs = ctx.args.rhs().unwrap_or("").to_string();
     let account = parse_account(&rhs).ok_or_else(|| CmdError::msg("No such account."))?;
+    // P2-MOD-13: standing/viewability gate on remainder account BEFORE `save_open`.
+    if !known_contract_account(ctx, &c, account) {
+        crate::commands::note_refusal(ctx, true);
+        return Err(CmdError::msg("No such account."));
+    }
     c.consent.terms.remainder_to = account;
     let id = save_open(ctx, c)?;
     info(
@@ -1461,6 +1609,11 @@ fn build_deadline(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     ) {
         (_, Some(acct)) => {
             let to = parse_account(acct).ok_or_else(|| CmdError::msg("No such account."))?;
+            // P2-MOD-13: standing/viewability gate on forfeit destination BEFORE `save_open`.
+            if !known_contract_account(ctx, &c, to) {
+                crate::commands::note_refusal(ctx, true);
+                return Err(CmdError::msg("No such account."));
+            }
             Expiry::Forfeit { to }
         }
         (Some("dispute"), _) => Expiry::Dispute,
@@ -1692,6 +1845,13 @@ fn build_outcome(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "An outcome must name between 1 and {MAX_SHARES} payout shares."
         )));
     }
+    // P2-MOD-13: standing/viewability gate on every outcome payout account BEFORE `save_open`.
+    for s in &payouts {
+        if !known_contract_account(ctx, &c, s.to) {
+            crate::commands::note_refusal(ctx, true);
+            return Err(CmdError::msg("No such account."));
+        }
+    }
     let asset_consequences = match opts.get("titles") {
         None => Vec::new(),
         Some(s) => parse_indexes(s).ok_or_else(|| CmdError::msg(USAGE))?,
@@ -1831,12 +1991,22 @@ fn contract_offer(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg(format!("Contract #{} is not a draft.", c.id)));
     }
     check_org_party_caps(ctx, &c, None)?;
+    // P2-MOD-12: enforce per-actor/per-target-org sliding-window offer rate limit.
+    let external_orgs = check_external_org_offer_rate_limit(ctx, &c)?;
     // The satisfaction vector is parallel to the conditions, always.
     c.satisfied.resize(c.consent.conditions.len(), None);
     if let Err(e) = check_offer(ctx, &c) {
         return Err(offer_refusal(ctx, &c, &e));
     }
     let id = freeze_and_offer(ctx, c).map_err(|error| CmdError::msg(error.to_string()))?;
+    if !external_orgs.is_empty() {
+        let now = ctx.w.now();
+        if let Some(store) = ctx.w.module_state_mut::<EconomyStore>() {
+            for org in external_orgs {
+                store.note_ext_org_offer(ctx.actor, org, now);
+            }
+        }
+    }
     info(
         ctx,
         format!("Contract #{id} is offered; its consent surface is frozen."),
@@ -4184,14 +4354,17 @@ pub(crate) fn amend_core(
             match posted {
                 Ok(PostOutcome::Posted(_)) => {
                     // The companion bypassed `put_contract`'s transition event; the
-                    // transition is real, so say so.
-                    crate::observer::emit(
+                    // transition is real, so say so (suppressing unaccepted external
+                    // orgs on non-staff self-amend per P2-MOD-12).
+                    let suppressed = suppressed_external_orgs_for_transition(ctx, Some(&c), &back);
+                    api::emit_contract_changed_with_suppression(
                         ctx,
                         &crate::record::EconomicEvent::ContractChanged {
                             id,
                             state: back.state.kind(),
                             transaction: None,
                         },
+                        &suppressed,
                     );
                 }
                 // The refund landed on an earlier attempt and only the state write
@@ -7649,9 +7822,14 @@ pub const JOB_BOND_PERMILLE: i64 = 200;
 /// above 10,000 cr, rounded down, and `None` at or under it.
 #[must_use]
 pub fn job_bond(fee: Amount) -> Option<Amount> {
-    (fee.minor() > JOB_BOND_ABOVE_MINOR)
-        .then(|| Amount::from_minor(fee.minor().saturating_mul(JOB_BOND_PERMILLE) / 1_000))
-        .filter(|bond| bond.minor() > 0)
+    if fee.minor() <= JOB_BOND_ABOVE_MINOR {
+        return None;
+    }
+    // P2-MOD-76: widen to `i128` so large fees never saturate on `* 200` and
+    // under-compute the 20% bond by up to 200x.
+    let bond = i128::from(fee.minor()).checked_mul(i128::from(JOB_BOND_PERMILLE))? / 1_000;
+    let minor = i64::try_from(bond).ok()?;
+    (minor > 0).then(|| Amount::from_minor(minor))
 }
 
 /// Whether `principal` is already on [`MAX_LIVE_JOBS_PER_PRINCIPAL`] live jobs.
@@ -7772,17 +7950,16 @@ pub fn join_job(ctx: &mut Ctx<'_>, id: ContractId, terms: JoinTerms) -> Result<(
     if !standing {
         return Err(ContractError::NoStanding);
     }
-    let owns = ctx
+    let acceptor_instrument = ctx
         .w
         .module_state::<EconomyStore>()
         .and_then(|store| store.snapshot().account(account).cloned())
-        .is_some_and(|row| {
+        .filter(|row| {
             principal_key(&row.owner) == principal_key(&acceptor)
                 && row.status == AccountStatus::Active
-        });
-    if !owns {
-        return Err(ContractError::NoStanding);
-    }
+        })
+        .map(|row| row.instrument)
+        .ok_or(ContractError::NoStanding)?;
     let mut c = live_contract(ctx, id)
         .filter(|c| job_shape(c).is_some())
         .ok_or(ContractError::NoStanding)?;
@@ -7827,6 +8004,29 @@ pub fn join_job(ctx: &mut Ctx<'_>, id: ContractId, terms: JoinTerms) -> Result<(
     let fee_account = job_shape(&c)
         .map(|j| j.fee_account)
         .ok_or(ContractError::NoStanding)?;
+    // P2-MOD-45: verify `acceptor`'s account matches the posted job's fee instrument
+    // (and that the instrument is active) BEFORE mutating the contract or placing bond
+    // escrow, preventing permanently un-settleable / un-forfeitable mixed-instrument jobs.
+    {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(ContractError::Infeasible("the economy is frozen"))?;
+        let snap = store.snapshot();
+        let fee_row = snap
+            .account(fee_account)
+            .filter(|row| row.status == AccountStatus::Active)
+            .ok_or(ContractError::NoSuchAccount(fee_account))?;
+        if acceptor_instrument != fee_row.instrument {
+            return Err(ContractError::InstrumentMismatch);
+        }
+        let inst_active = snap
+            .instrument(&fee_row.instrument)
+            .is_some_and(|i| i.status == InstrumentStatus::Active);
+        if !inst_active {
+            return Err(ContractError::Infeasible("instrument is not active"));
+        }
+    }
     c.consent.parties.push(acceptor.clone());
     c.consent.terms.remainder_to = account;
     if let Some(bond) = bond {

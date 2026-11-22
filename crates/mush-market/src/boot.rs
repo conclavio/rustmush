@@ -655,6 +655,24 @@ fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
         store
             .withdrawn_release_staged
             .retain(|id, _| store.withdrawn_holds.contains_key(id));
+        store.release_stage_order.retain(|id, _| {
+            store.withdrawn_holds.contains_key(id) || store.listings.contains_key(id)
+        });
+        // P2-MOD-29: rotate the unstaged withdrawn-hold cursor across sweeps so large
+        // backlogs beyond `MAX_LISTING_LEGS_PER_KIND` still rotate into projected offers.
+        if !store.withdrawn_holds.is_empty() {
+            let step = crate::lot::MAX_LISTING_LEGS_PER_KIND.div_ceil(2);
+            let next_cursor = store
+                .withdrawn_holds
+                .keys()
+                .copied()
+                .filter(|id| store.withdrawn_release_cursor.is_none_or(|c| *id > c))
+                .take(step)
+                .last();
+            store.withdrawn_release_cursor = next_cursor;
+        } else {
+            store.withdrawn_release_cursor = None;
+        }
     }
     let swept = listings
         .len()
@@ -722,11 +740,11 @@ fn reconcile_contracts(ctx: &mut Ctx<'_>) {
                      the trade row and delivering"
                 );
                 crate::trade::stamp_settlement(ctx, &q, transaction);
-                // Doc 18 cut IC14 row 9: a sale into a bid is folded into the game's
-                // books on the first sweep (`fold_healed_sales`), once.
-                if q.lot
-                    .as_ref()
-                    .is_some_and(|l| l.kind == crate::record::PaidKind::Deliver)
+                // Doc 18 cut IC14 row 9 + P2-MOD-71: every settled quote that `trade::settled_sale`
+                // would notify the proceeds policy about (sales into bids, personal lot asks with
+                // cuts/basis, and private hidden lot sales) is folded on the first sweep
+                // (`fold_healed_sales`), once.
+                if crate::trade::needs_proceeds_notification(&q)
                     && let Some(store) = ctx.w.module_state_mut::<MarketStore>()
                 {
                     store.healed_sales.push(q.id);

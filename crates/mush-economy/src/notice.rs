@@ -139,6 +139,16 @@ pub fn deliver_notice_for(
     about: &PrincipalId,
     msg: impl Into<String>,
 ) {
+    // P2-MOD-12: suppress officer notice fan-out for unaccepted external orgs during
+    // self-cancel/amend transitions.
+    if let PrincipalId::Organization(org) = about
+        && ctx
+            .w
+            .module_state::<EconomyStore>()
+            .is_some_and(|s| s.suppressed_notice_orgs.contains(org))
+    {
+        return;
+    }
     deliver_notice_about(ctx, who, Some(about.clone()), msg);
 }
 
@@ -358,6 +368,14 @@ pub fn principal_holders(w: &World, who: &PrincipalId) -> Vec<ObjId> {
         PrincipalId::Object(o) => vec![*o],
         PrincipalId::System(_) => Vec::new(),
         PrincipalId::Organization(org) => {
+            // P2-MOD-12: when notice fan-out for `org` is suppressed on the current
+            // self-cancel/amend transition, return no holders so observers emit neither
+            // queued offline notices nor live inbox toasts.
+            if w.module_state::<EconomyStore>()
+                .is_some_and(|s| s.suppressed_notice_orgs.contains(org))
+            {
+                return Vec::new();
+            }
             let Some(store) = w.module_state::<mush_org::OrgStore>() else {
                 return Vec::new();
             };

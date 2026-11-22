@@ -1,15 +1,33 @@
-//! Tier 2A security regression tests for `mush-economy`:
+//! Tier 2A & Tier 2B security regression tests for `mush-economy`:
 //! - Unconsented `@contract/party` multi-org officer fan-out caps.
 //! - Existence oracles across `@econ/pay`, `@contract/deliver`, and `@hold`.
+//! - P2-MOD-12: external-org offer sliding-window rate limit & unaccepted self-cancel/amend
+//!   notice suppression.
+//! - P2-MOD-13: `@contract/split`, `/remainder`, `/deadline forfeit=`, `/outcome pay=`, and
+//!   `/deliver collateral|title` existence oracles closed.
+//! - P2-MOD-42: `@econ/pay` masks unviewable destinations behind approval rules and masks
+//!   `InactiveInstrument`.
+//! - P2-MOD-44: `@asset/list` post-filter pagination hides foreign `ObjId`s and bounds scan.
+//! - P2-MOD-45: `join_job` / `accept_retrieval` reject mismatched acceptor instrument.
+//! - P2-MOD-75: `@asset/release` indexes only visible encumbrances, hiding covert stolen reports.
+//! - P2-MOD-76: `reprice_player_obligation` checks `WorldAuth` against the new amount, and
+//!   `job_bond` uses exact `i128` arithmetic without `i64` saturation under-computation.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use mush_core::module::{ModuleBootData, WorldEvent};
-use mush_core::{Deferred, Effects, GOD, LIMBO, ModuleOp, ModuleWrite, ObjId, ObjKind, Outbox};
+use mush_core::module::{GameModule, ModuleBootData, Registrar, WorldEvent};
+use mush_core::{
+    ArgShape, CmdError, CommandSpec, Ctx, Deferred, Effects, GOD, LIMBO, ModuleOp, ModuleWrite,
+    ObjId, ObjKind, Outbox,
+};
 use mush_economy::{
-    AccountId, AuthEval, ContractAuth, ContractId, ContractState, EconomySnapshot, EconomyStore,
-    HoldId, ObligationCause, ObligationStatus,
+    ASSET_PAGE_VISIT, AccountId, Amount, AuthEval, ContractAuth, ContractError, ContractId,
+    ContractState, ContractStateKind, EXTERNAL_ORG_OFFER_WINDOW_SECS, EconomicClock, EconomicEvent,
+    EconomicSchedule, EconomyError, EconomyObserver, EconomySnapshot, EconomyStore, ExternalRef,
+    FactProvider, FactState, GracePolicy, HoldId, JobSpec, JoinTerms,
+    MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW, MAX_PENDING_NOTICES, ObligationCause, ObligationSpec,
+    ObligationStatus, RetrievalSpec,
 };
 use mush_org::PrincipalId;
 use mush_testkit::TestWorld;
@@ -826,6 +844,16 @@ fn p2_mod_1_contract_accept_enforces_deliverable_authority_cadence_and_non_lease
             amender.0, root_scope.0
         ),
     );
+    // Grant `asset.assign` (view standing, NOT `asset.title.transfer`) so `build_deliver`
+    // passes P2-MOD-13's view gate and still exercises P2-MOD-1's re-offer transfer gate.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=VaultCorp asset.assign scope=#{}",
+            amender.0, root_scope.0
+        ),
+    );
     ok(
         &mut tw,
         amender,
@@ -1502,12 +1530,12 @@ fn p2_mod_43_canon_attestation_names_a_party_blocks_staff_wildcard() {
     ok(
         &mut tw,
         alice,
-        &format!("@contract/split {c2}={bob_acct} 1000‰"),
+        &format!("@contract/split {c2}={alice_acct} 1000‰"),
     );
     ok(
         &mut tw,
         alice,
-        &format!("@contract/remainder {c2}={bob_acct}"),
+        &format!("@contract/remainder {c2}={alice_acct}"),
     );
     ok(
         &mut tw,
@@ -1841,4 +1869,1290 @@ fn p2_mod_14_scoped_fact_tombstones_survive_sweep_and_stay_bounded_independently
         Some(ContractState::Cancelled),
         "other issuer's scoped tombstones remain intact"
     );
+}
+
+// ---- Tier 2B security regression tests (P2-MOD-12/13/42/44/45/75/76) -------
+
+type ProbeFn = Box<dyn FnOnce(&mut Ctx<'_>) + Send>;
+
+#[derive(Clone, Default)]
+struct ProbeQueue(Arc<Mutex<Vec<ProbeFn>>>);
+
+struct ProbeModule;
+
+impl GameModule for ProbeModule {
+    fn name(&self) -> &'static str {
+        "econ_t2b_probe"
+    }
+
+    fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), mush_core::module::ModError> {
+        reg.state(ProbeQueue::default());
+        reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+        reg.command(
+            CommandSpec {
+                name: "+t2bprobe".into(),
+                shape: ArgShape::Raw,
+                help: "internal test probe".into(),
+                ..CommandSpec::default()
+            },
+            Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                let job = ctx
+                    .w
+                    .module_state::<ProbeQueue>()
+                    .and_then(|q| q.0.lock().unwrap().pop());
+                if let Some(f) = job {
+                    f(ctx);
+                }
+                Ok(())
+            }),
+        )?;
+        reg.classify_commands(mush_core::CommandCompatibility::LegacyPostImage);
+        Ok(())
+    }
+}
+
+fn with_probe<T: Send + 'static>(
+    tw: &mut TestWorld,
+    actor: ObjId,
+    f: impl FnOnce(&mut Ctx<'_>) -> T + Send + 'static,
+) -> T {
+    let slot: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+    let sink = Arc::clone(&slot);
+    let queue = tw
+        .world()
+        .module_state::<ProbeQueue>()
+        .expect("ProbeModule installed")
+        .clone();
+    queue.0.lock().unwrap().push(Box::new(move |ctx| {
+        *sink.lock().unwrap() = Some(f(ctx));
+    }));
+    ok(tw, actor, "+t2bprobe");
+    slot.lock().unwrap().take().expect("probe executed")
+}
+
+/// **P2-MOD-12**:
+/// 1. Sliding-window rate limit caps per-actor/per-external-org offers at
+///    `MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW` per `EXTERNAL_ORG_OFFER_WINDOW_SECS`,
+///    preventing `Offer -> Cancel` churn from evicting an offline officer's 32-slot queue.
+/// 2. Self-cancel and amend on contracts where an external org has not accepted suppress
+///    notice fan-out (both `deliver_notice_for` offline queue and `principal_holders` live toasts),
+///    while cancelling after the external org HAS accepted still delivers the notice.
+#[test]
+fn p2_mod_12_external_org_offer_rate_limit_and_self_cancel_amend_notice_suppression() {
+    #[derive(Debug)]
+    struct TestOrgInbox {
+        live_toasts: Arc<Mutex<Vec<(ObjId, ContractId, ContractStateKind)>>>,
+    }
+
+    impl EconomyObserver for TestOrgInbox {
+        fn on_economic_event(&self, ctx: &mut Ctx<'_>, event: &EconomicEvent) {
+            let EconomicEvent::ContractChanged {
+                id: contract,
+                state,
+                ..
+            } = *event
+            else {
+                return;
+            };
+            let parties: Vec<PrincipalId> = ctx
+                .w
+                .module_state::<EconomyStore>()
+                .and_then(|s| s.snapshot().contract(contract))
+                .map(|c| c.consent.parties.clone())
+                .unwrap_or_default();
+            for party in parties {
+                if !matches!(party, PrincipalId::Organization(_)) {
+                    continue;
+                }
+                for holder in mush_economy::principal_holders(ctx.w, &party) {
+                    self.live_toasts
+                        .lock()
+                        .unwrap()
+                        .push((holder, contract, state));
+                    mush_economy::deliver_notice_for(
+                        ctx,
+                        holder,
+                        &party,
+                        format!("Contract #{contract} -> {state:?}"),
+                    );
+                }
+            }
+        }
+    }
+
+    let live_toasts = Arc::new(Mutex::new(Vec::new()));
+    let vocab: std::collections::BTreeSet<mush_org::CapabilityId> = mush_economy::CAPABILITIES
+        .iter()
+        .map(|s| mush_org::CapabilityId::new(*s).expect("capability"))
+        .collect();
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocab)
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![]).with_observers(vec![Arc::new(
+                TestOrgInbox {
+                    live_toasts: Arc::clone(&live_toasts),
+                },
+            )]),
+        ),
+    ]);
+    tw.set_now(10_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+
+    let spammer = player(&mut tw, "Spammer");
+    let officer = player(&mut tw, "TargetOfficer");
+    ok(&mut tw, GOD, "@org/create TargetOrg");
+    let target_org = org_id(&tw, "TargetOrg");
+    for cap in ["contract.accept", "economy.account.post"] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@org/grant #{}=TargetOrg {cap}", officer.0),
+        );
+    }
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", spammer.0));
+    ok(&mut tw, GOD, "@account/open org:TargetOrg=cr");
+    let spammer_acct = account_of(&tw, &PrincipalId::Object(spammer), "cr");
+
+    let pending_for_officer = |tw: &TestWorld| -> usize {
+        tw.world()
+            .module_state::<EconomyStore>()
+            .unwrap()
+            .pending_notices(officer)
+            .len()
+    };
+
+    // 1. Draft -> Party org:TargetOrg -> Cancel emits ZERO notices (unaccepted external org).
+    ok(&mut tw, spammer, "@contract/draft DraftOnly");
+    let d0 = latest_contract(&tw);
+    ok(
+        &mut tw,
+        spammer,
+        &format!("@contract/party {d0}=org:TargetOrg"),
+    );
+    ok(&mut tw, spammer, &format!("@contract/cancel {d0}"));
+    assert_eq!(pending_for_officer(&tw), 0);
+    assert!(live_toasts.lock().unwrap().is_empty());
+
+    // 2. Offer -> Cancel emits ONLY 1 notice (for Offer), ZERO for self-cancel!
+    //    Offer -> Amend emits ONLY 1 notice (for Offer), ZERO for amend!
+    let make_draft = |tw: &mut TestWorld, name: &str| -> u64 {
+        ok(tw, spammer, &format!("@contract/draft {name}"));
+        let id = latest_contract(tw);
+        ok(tw, spammer, &format!("@contract/party {id}=org:TargetOrg"));
+        ok(
+            tw,
+            spammer,
+            &format!("@contract/remainder {id}={spammer_acct}"),
+        );
+        id
+    };
+
+    // Offer #1 -> Cancel: 1 notice total (Offer only).
+    let c1 = make_draft(&mut tw, "Spam1");
+    ok(&mut tw, spammer, &format!("@contract/offer {c1}"));
+    assert_eq!(pending_for_officer(&tw), 1);
+    assert_eq!(live_toasts.lock().unwrap().len(), 1);
+    ok(&mut tw, spammer, &format!("@contract/cancel {c1}"));
+    assert_eq!(
+        pending_for_officer(&tw),
+        1,
+        "self-cancel on unaccepted external org must not enqueue a notice"
+    );
+    assert_eq!(
+        live_toasts.lock().unwrap().len(),
+        1,
+        "self-cancel on unaccepted external org must not emit a live toast"
+    );
+
+    // Offer #2 -> Amend (back to Draft) -> Cancel: 1 notice total (Offer only, 0 for Amend/Cancel).
+    let c2 = make_draft(&mut tw, "Spam2");
+    ok(&mut tw, spammer, &format!("@contract/offer {c2}"));
+    assert_eq!(pending_for_officer(&tw), 2);
+    ok(&mut tw, spammer, &format!("@contract/amend {c2}"));
+    assert_eq!(
+        pending_for_officer(&tw),
+        2,
+        "amend on unaccepted external org must not enqueue a notice"
+    );
+    assert_eq!(
+        live_toasts.lock().unwrap().len(),
+        2,
+        "amend on unaccepted external org must not emit a live toast"
+    );
+    ok(&mut tw, spammer, &format!("@contract/cancel {c2}"));
+    assert_eq!(pending_for_officer(&tw), 2);
+
+    // Offers #3 and #4 succeed up to MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW (4).
+    assert_eq!(MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW, 4);
+    for idx in 3..=MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW {
+        let cid = make_draft(&mut tw, &format!("Spam{idx}"));
+        ok(&mut tw, spammer, &format!("@contract/offer {cid}"));
+        ok(&mut tw, spammer, &format!("@contract/cancel {cid}"));
+    }
+    assert_eq!(pending_for_officer(&tw), MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW);
+    assert!(pending_for_officer(&tw) < MAX_PENDING_NOTICES);
+
+    // 5th offer within EXTERNAL_ORG_OFFER_WINDOW_SECS is rate-limited!
+    let c5 = make_draft(&mut tw, "Spam5");
+    let rate_err = err(&mut tw, spammer, &format!("@contract/offer {c5}"));
+    assert!(
+        rate_err.contains("recently offered") || rate_err.contains("wait"),
+        "expected external-org sliding-window rate limit refusal, got: {rate_err}"
+    );
+    assert_eq!(
+        pending_for_officer(&tw),
+        MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW,
+        "rate-limited offer must not deliver any notice"
+    );
+
+    // 3. After EXTERNAL_ORG_OFFER_WINDOW_SECS elapses, offering succeeds again; and if
+    //    TargetOrg ACCEPTS before spammer cancels, the cancellation notice IS delivered!
+    tw.set_now(10_000 + EXTERNAL_ORG_OFFER_WINDOW_SECS + 1);
+    ok(&mut tw, spammer, &format!("@contract/offer {c5}"));
+    let after_offer = pending_for_officer(&tw);
+    assert_eq!(after_offer, MAX_EXTERNAL_ORG_OFFERS_PER_WINDOW + 1);
+    ok(&mut tw, officer, &format!("@contract/accept {c5}"));
+    assert!(
+        snap(&tw)
+            .contract(ContractId(c5))
+            .unwrap()
+            .accepted_by(&PrincipalId::Organization(target_org))
+    );
+    // Spammer cancels while TargetOrg has already accepted -> TargetOrg MUST be notified!
+    let before_cancel = pending_for_officer(&tw);
+    let toasts_before_cancel = live_toasts.lock().unwrap().len();
+    ok(&mut tw, spammer, &format!("@contract/cancel {c5}"));
+    assert_eq!(
+        pending_for_officer(&tw),
+        before_cancel + 1,
+        "cancellation AFTER external org accepted must still deliver notice"
+    );
+    assert_eq!(
+        live_toasts.lock().unwrap().len(),
+        toasts_before_cancel + 1,
+        "cancellation AFTER external org accepted must still emit live toast"
+    );
+}
+
+/// **P2-MOD-13**: `@contract/split`, `/remainder`, `/deadline forfeit=`, `/outcome pay=`,
+/// and `/deliver collateral|title` must enforce account/asset viewability and title ownership
+/// with uniform existence-hiding errors for non-staff, while preserving legitimate party
+/// accounts and buyer-drafted two-party asset delivery.
+#[test]
+fn p2_mod_13_contract_builders_close_account_and_asset_existence_oracles() {
+    let mut tw = boot_full();
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    ok(&mut tw, GOD, "@account/system mint=cr");
+    let mint = account_of(
+        &tw,
+        &PrincipalId::System(mush_org::SystemPrincipalId::new("mint").unwrap()),
+        "cr",
+    );
+
+    let attacker = player(&mut tw, "Attacker");
+    let victim = player(&mut tw, "Victim");
+    let bystander = player(&mut tw, "Bystander");
+    ok(&mut tw, GOD, "@org/create SecretCorp");
+    let corp = org_id(&tw, "SecretCorp");
+    let corp_root = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .org(corp)
+        .unwrap()
+        .root_scope;
+
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", attacker.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", victim.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", bystander.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:SecretCorp/{}=cr", corp_root.0),
+    );
+    // Also create a closed account to verify closed vs nonexistent uniformity.
+    let ghost = player(&mut tw, "Ghost");
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", ghost.0));
+    let closed_acct = account_of(&tw, &PrincipalId::Object(ghost), "cr");
+    ok(&mut tw, GOD, &format!("@account/close {closed_acct}"));
+
+    let attacker_acct = account_of(&tw, &PrincipalId::Object(attacker), "cr");
+    let victim_acct = account_of(&tw, &PrincipalId::Object(victim), "cr");
+    let bystander_acct = account_of(&tw, &PrincipalId::Object(bystander), "cr");
+    let corp_acct = account_of(&tw, &PrincipalId::Organization(corp), "cr");
+
+    let victim_asset = thing(&mut tw, "VictimShip");
+    let corp_asset = thing(&mut tw, "CorpShip");
+    let attacker_asset = thing(&mut tw, "AttackerShip");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", victim_asset.0, victim.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@asset/title #{}=org:SecretCorp scope=#{}",
+            corp_asset.0, corp_root.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", attacker_asset.0, attacker.0),
+    );
+
+    ok(&mut tw, attacker, "@contract/draft OracleProbe");
+    let cid = latest_contract(&tw);
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/party {cid}=#{}", victim.0),
+    );
+
+    let missing_acct = AccountId(99_999);
+    let hidden_targets = [corp_acct, mint, bystander_acct, closed_acct, missing_acct];
+
+    // 1. `@contract/split`
+    let base_split = err(
+        &mut tw,
+        attacker,
+        &format!("@contract/split {cid}={missing_acct} 500‰"),
+    );
+    assert_eq!(base_split, "No such account.");
+    for acct in hidden_targets {
+        let got = err(
+            &mut tw,
+            attacker,
+            &format!("@contract/split {cid}={acct} 500‰"),
+        );
+        assert_eq!(
+            got, base_split,
+            "@contract/split leaked account {acct:?}: {got}"
+        );
+    }
+
+    // 2. `@contract/remainder`
+    let base_rem = err(
+        &mut tw,
+        attacker,
+        &format!("@contract/remainder {cid}={missing_acct}"),
+    );
+    assert_eq!(base_rem, "No such account.");
+    for acct in hidden_targets {
+        let got = err(
+            &mut tw,
+            attacker,
+            &format!("@contract/remainder {cid}={acct}"),
+        );
+        assert_eq!(
+            got, base_rem,
+            "@contract/remainder leaked account {acct:?}: {got}"
+        );
+    }
+
+    // 3. `@contract/deadline ... forfeit=`
+    let base_forfeit = err(
+        &mut tw,
+        attacker,
+        &format!("@contract/deadline {cid}=60 forfeit={missing_acct}"),
+    );
+    assert_eq!(base_forfeit, "No such account.");
+    for acct in hidden_targets {
+        let got = err(
+            &mut tw,
+            attacker,
+            &format!("@contract/deadline {cid}=60 forfeit={acct}"),
+        );
+        assert_eq!(
+            got, base_forfeit,
+            "@contract/deadline forfeit= leaked account {acct:?}: {got}"
+        );
+    }
+
+    // 4. `@contract/outcome ... pay=`
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/condition {cid}=before 9999"),
+    );
+    let base_outcome = err(
+        &mut tw,
+        attacker,
+        &format!("@contract/outcome {cid}=win when=0 pay={missing_acct}:1000‰"),
+    );
+    assert_eq!(base_outcome, "No such account.");
+    for acct in hidden_targets {
+        let got = err(
+            &mut tw,
+            attacker,
+            &format!("@contract/outcome {cid}=win when=0 pay={acct}:1000‰"),
+        );
+        assert_eq!(
+            got, base_outcome,
+            "@contract/outcome pay= leaked account {acct:?}: {got}"
+        );
+    }
+
+    // 5. `@contract/deliver collateral` & `@contract/deliver title`
+    let base_col = err(
+        &mut tw,
+        attacker,
+        &format!("@contract/deliver {cid}=collateral #99999 #{}", attacker.0),
+    );
+    assert_eq!(base_col, "No such asset.");
+    for cmd in [
+        format!(
+            "@contract/deliver {cid}=collateral #{} #{}",
+            victim_asset.0, victim.0
+        ),
+        format!(
+            "@contract/deliver {cid}=collateral #{} #{}",
+            victim_asset.0, attacker.0
+        ),
+        format!(
+            "@contract/deliver {cid}=collateral #{} org:SecretCorp",
+            corp_asset.0
+        ),
+        format!(
+            "@contract/deliver {cid}=collateral #{} #{}",
+            attacker_asset.0, victim.0
+        ),
+        format!(
+            "@contract/deliver {cid}=title #{} #{}->#{}",
+            victim_asset.0, victim.0, attacker.0
+        ),
+        format!(
+            "@contract/deliver {cid}=title #{} #{}->#{}",
+            victim_asset.0, attacker.0, victim.0
+        ),
+        format!(
+            "@contract/deliver {cid}=title #{} org:SecretCorp->#{}",
+            corp_asset.0, attacker.0
+        ),
+        format!(
+            "@contract/deliver {cid}=title #99999 #{}->#{}",
+            attacker.0, victim.0
+        ),
+    ] {
+        let got = err(&mut tw, attacker, &cmd);
+        assert_eq!(
+            got, base_col,
+            "deliver command `{cmd}` leaked asset/owner existence: {got}"
+        );
+    }
+
+    // 6. Legitimate flows still work: own/party accounts + own asset + listed-party self-delivery!
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/split {cid}={victim_acct} 500‰"),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/remainder {cid}={attacker_acct}"),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/deadline {cid}=60 forfeit={victim_acct}"),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/outcome {cid}=win when=0 pay={victim_acct}:1000‰"),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!(
+            "@contract/deliver {cid}=collateral #{} #{}",
+            attacker_asset.0, attacker.0
+        ),
+    );
+    // Listed party `victim` adds their own asset delivery on `attacker`'s draft (buyer-drafted sale).
+    ok(
+        &mut tw,
+        victim,
+        &format!(
+            "@contract/deliver {cid}=title #{} #{}->#{}",
+            victim_asset.0, victim.0, attacker.0
+        ),
+    );
+}
+
+/// **P2-MOD-42**:
+/// 1. With an approval-ruled source account, `@econ/pay` (plain and `asset=`) must return an
+///    identical `"Approval required"` response for every unviewable destination (nonexistent,
+///    closed, cross-instrument, inactive-instrument, valid personal, hidden org, System),
+///    and still post cleanly once approved for a valid destination.
+/// 2. Without an approval rule, `@econ/pay` to a foreign account on an inactive/retired
+///    instrument must mask `InactiveInstrument` identically to `"No such account."`.
+#[test]
+fn p2_mod_42_econ_pay_masks_unviewable_destinations_behind_approval_and_inactive_instrument() {
+    let mut tw = boot_full();
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    ok(&mut tw, GOD, "@instrument/register au=0");
+    ok(&mut tw, GOD, "@instrument/register old=0");
+    ok(&mut tw, GOD, "@account/system mint=cr");
+    let mint = account_of(
+        &tw,
+        &PrincipalId::System(mush_org::SystemPrincipalId::new("mint").unwrap()),
+        "cr",
+    );
+
+    let prober = player(&mut tw, "Prober");
+    let approver = player(&mut tw, "Approver");
+    let victim = player(&mut tw, "Victim");
+    let ghost = player(&mut tw, "Ghost");
+    ok(&mut tw, GOD, "@org/create ProberOrg");
+    ok(&mut tw, GOD, "@org/create SecretCorp");
+    let prober_org = org_id(&tw, "ProberOrg");
+    let secret_corp = org_id(&tw, "SecretCorp");
+    let (p_root, s_root) = {
+        let orgs = tw.world().module_state::<mush_org::OrgStore>().unwrap();
+        (
+            orgs.state().org(prober_org).unwrap().root_scope,
+            orgs.state().org(secret_corp).unwrap().root_scope,
+        )
+    };
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:ProberOrg/{}=cr", p_root.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:SecretCorp/{}=cr", s_root.0),
+    );
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", prober.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", victim.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=au", victim.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=old", victim.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", ghost.0));
+
+    let src_org_acct = account_of(&tw, &PrincipalId::Organization(prober_org), "cr");
+    let prober_cr = account_of(&tw, &PrincipalId::Object(prober), "cr");
+    let victim_cr = account_of(&tw, &PrincipalId::Object(victim), "cr");
+    let victim_au = account_of(&tw, &PrincipalId::Object(victim), "au");
+    let victim_old = account_of(&tw, &PrincipalId::Object(victim), "old");
+    let secret_corp_cr = account_of(&tw, &PrincipalId::Organization(secret_corp), "cr");
+    let closed_acct = account_of(&tw, &PrincipalId::Object(ghost), "cr");
+    ok(&mut tw, GOD, &format!("@account/close {closed_acct}"));
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {mint}={src_org_acct} 5000"),
+    );
+    ok(&mut tw, GOD, &format!("@econ/mint {mint}={prober_cr} 5000"));
+
+    // Grant prober posting+view+title.transfer on ProberOrg, approver approval on ProberOrg.
+    for cap in [
+        "economy.account.post",
+        "economy.account.view",
+        "asset.title.transfer",
+    ] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!(
+                "@org/grant #{}=ProberOrg {cap} scope=#{}",
+                prober.0, p_root.0
+            ),
+        );
+    }
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=ProberOrg economy.account.approve scope=#{}",
+            approver.0, p_root.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@account/approval {src_org_acct}=100 named:1:#{}",
+            approver.0
+        ),
+    );
+
+    let prober_asset = thing(&mut tw, "ProberCargo");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@asset/title #{}=org:ProberOrg scope=#{}",
+            prober_asset.0, p_root.0
+        ),
+    );
+
+    // Retire `old` instrument in persisted boot data and reboot so `victim_old` sits on an
+    // inactive instrument.
+    let mut boot = mush_testkit::fold_module_ops(tw.take_module_ops());
+    let econ_boot = boot.get_mut(mush_economy::NS).expect("economy boot");
+    let old_key = mush_economy::instrument_key(&mush_economy::InstrumentId::new("old").unwrap());
+    let (_, old_val) = econ_boot
+        .kv
+        .iter_mut()
+        .find(|(k, _)| k == &old_key)
+        .expect("old instrument in KV");
+    old_val["status"] = serde_json::json!("Retired");
+    tw.modules_loaded(boot);
+
+    // 1. Without approval rule (`prober_cr`), probing `victim_old` (retired instrument) must
+    //    return the exact same `"No such account."` as nonexistent `99999` (never expose
+    //    `InactiveInstrument`).
+    let e_missing = err(&mut tw, prober, &format!("@econ/pay {prober_cr}=99999 10"));
+    let e_retired = err(
+        &mut tw,
+        prober,
+        &format!("@econ/pay {prober_cr}={victim_old} 10"),
+    );
+    assert_eq!(e_missing, "No such account.");
+    assert_eq!(
+        e_retired, e_missing,
+        "@econ/pay leaked InactiveInstrument on foreign account: {e_retired}"
+    );
+
+    // 2. Behind an approval rule (`src_org_acct`, threshold 100), `@econ/pay` of 200 to EVERY
+    //    unviewable destination (nonexistent, closed, cross-instrument, inactive-instrument,
+    //    valid personal, hidden org, System) returns `"Approval required"` identically!
+    //    Strip the sequential request id before comparing the response shape.
+    let normalize = |line: &str| -> String {
+        line.split_whitespace()
+            .map(|w| {
+                let core = w.trim_end_matches('.');
+                if core.starts_with('#') && core[1..].chars().all(|c| c.is_ascii_digit()) {
+                    if w.ends_with('.') { "#<id>." } else { "#<id>" }
+                } else {
+                    w
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let extract_req_id = |out: &str| -> u64 {
+        let digits: String = out
+            .split("request #")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no request id in: {out}"))
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse::<u64>().unwrap()
+    };
+    let targets = [
+        AccountId(99_999),
+        closed_acct,
+        victim_au,
+        victim_old,
+        secret_corp_cr,
+        mint,
+        victim_cr,
+    ];
+    let mut shapes = Vec::new();
+    let mut victim_req_id = None;
+    for target in targets {
+        let out = ok(
+            &mut tw,
+            prober,
+            &format!("@econ/pay {src_org_acct}={target} 200"),
+        );
+        assert!(
+            out.contains("Approval required"),
+            "expected Approval required for target {target}, got: {out}"
+        );
+        let req_id = extract_req_id(&out);
+        if target == victim_cr {
+            victim_req_id = Some(req_id);
+        } else {
+            // Clear pending slot so we can probe all 7 targets without hitting
+            // `MAX_PENDING_PER_REQUESTER`.
+            ok(&mut tw, approver, &format!("@econ/deny {req_id}"));
+        }
+        shapes.push((target, normalize(&out)));
+    }
+    let baseline = &shapes[0].1;
+    for (target, shape) in &shapes {
+        assert_eq!(
+            shape, baseline,
+            "approval-ruled @econ/pay differentiated target {target:?}: {shape} vs {baseline}"
+        );
+    }
+
+    // 3. Same with `asset=` on an approval-ruled source: nonexistent vs real foreign target
+    //    return identical `"Approval required"`!
+    let asset_missing = ok(
+        &mut tw,
+        prober,
+        &format!(
+            "@econ/pay {src_org_acct}=99999 200 asset=#{}",
+            prober_asset.0
+        ),
+    );
+    let r_am = extract_req_id(&asset_missing);
+    ok(&mut tw, approver, &format!("@econ/deny {r_am}"));
+    let asset_real = ok(
+        &mut tw,
+        prober,
+        &format!(
+            "@econ/pay {src_org_acct}={victim_cr} 200 asset=#{}",
+            prober_asset.0
+        ),
+    );
+    let r_ar = extract_req_id(&asset_real);
+    ok(&mut tw, approver, &format!("@econ/deny {r_ar}"));
+    assert!(asset_missing.contains("Approval required"));
+    assert_eq!(normalize(&asset_missing), normalize(&asset_real));
+
+    // 4. Legitimate approval still posts cleanly to `victim_cr` when re-submitted!
+    let req_id = victim_req_id.expect("victim approval request id");
+    ok(&mut tw, approver, &format!("@econ/approve {req_id}"));
+    ok(
+        &mut tw,
+        prober,
+        &format!("@econ/pay {src_org_acct}={victim_cr} 200"),
+    );
+    assert_eq!(bal(&tw, victim_cr), 200);
+}
+
+/// **P2-MOD-44**: `@asset/list` must filter visibility BEFORE computing pagination cursors
+/// (never emitting `after=#<hidden_obj_id>`) and bound total scanned records per call.
+#[test]
+fn p2_mod_44_asset_list_hides_cursor_for_hidden_assets_and_bounds_scan() {
+    let mut tw = boot_full();
+    let victim = player(&mut tw, "Victim");
+    let alice = player(&mut tw, "Alice");
+    let bob = player(&mut tw, "Bob");
+    ok(&mut tw, GOD, "@org/create SecretOrg");
+    let secret_org = org_id(&tw, "SecretOrg");
+    let secret_scope = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .org(secret_org)
+        .unwrap()
+        .root_scope;
+
+    // Create `ASSET_PAGE_VISIT + 20` (276) hidden assets owned by SecretOrg in secret_scope
+    // (> ASSET_PAGE_VISIT = 256, within ASSET_PAGE_SCAN = 1024), then 1 asset owned by Alice!
+    let mut hidden_ids = Vec::new();
+    for i in 0..(ASSET_PAGE_VISIT + 20) {
+        let obj = thing(&mut tw, &format!("SecretAsset{i}"));
+        ok(
+            &mut tw,
+            GOD,
+            &format!(
+                "@asset/title #{}=org:SecretOrg scope=#{}",
+                obj.0, secret_scope.0
+            ),
+        );
+        hidden_ids.push(obj);
+    }
+    let alice_asset = thing(&mut tw, "AliceAsset");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", alice_asset.0, alice.0),
+    );
+
+    // 1. Alice sees her own asset and NO `after=#` cursor leaking any SecretAsset ObjId
+    //    (previously pre-filter pagination emitted `after=#<256th hidden SecretAsset>`!).
+    let alice_out = ok(&mut tw, alice, "@asset/list");
+    assert!(
+        alice_out.contains(&format!("#{}", alice_asset.0)),
+        "Alice should see her own asset: {alice_out}"
+    );
+    assert!(
+        !alice_out.contains("after=#"),
+        "Alice must not receive a pagination cursor for hidden assets: {alice_out}"
+    );
+    for hid in &hidden_ids {
+        assert!(
+            !alice_out.contains(&format!("#{} ", hid.0)),
+            "hidden asset #{} leaked to Alice: {alice_out}",
+            hid.0
+        );
+    }
+
+    // 2. Add `ASSET_PAGE_VISIT + 10` more hidden victim assets (total > 2 * ASSET_PAGE_VISIT):
+    //    Bob (0 visible assets) gets "No assets." with NO cursor for bare, owner=, and scope=.
+    for i in 0..(ASSET_PAGE_VISIT + 10) {
+        let obj = thing(&mut tw, &format!("VictimAsset{i}"));
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@asset/title #{}=#{}", obj.0, victim.0),
+        );
+    }
+    for cmd in [
+        "@asset/list".to_owned(),
+        format!("@asset/list owner=#{}", victim.0),
+        format!("@asset/list scope=#{}", secret_scope.0),
+    ] {
+        let bob_out = ok(&mut tw, bob, &cmd);
+        assert_eq!(
+            bob_out.trim(),
+            "No assets.",
+            "`{cmd}` leaked hidden assets or cursor to Bob: {bob_out}"
+        );
+    }
+
+    // 3. Staff (`GOD`) still paginates cleanly with `(more — @asset/list after=#<256th>)`.
+    let god_p1 = ok(&mut tw, GOD, "@asset/list");
+    assert!(
+        god_p1.contains("(more — @asset/list after=#"),
+        "staff should get a pagination cursor: {god_p1}"
+    );
+    let cursor: String = god_p1
+        .split("after=#")
+        .nth(1)
+        .unwrap()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    assert_eq!(
+        cursor.parse::<u32>().unwrap(),
+        hidden_ids[ASSET_PAGE_VISIT - 1].0,
+        "staff page 1 cursor must point at the 256th visible asset"
+    );
+    let god_p2 = ok(&mut tw, GOD, &format!("@asset/list after=#{cursor}"));
+    assert!(
+        god_p2.contains("(more — @asset/list after=#"),
+        "staff page 2 should continue paginating: {god_p2}"
+    );
+}
+
+/// **P2-MOD-45**: `join_job` and `accept_retrieval` must reject an acceptor account whose
+/// instrument does not match the job's fee account (`ContractError::InstrumentMismatch`) before
+/// mutating contract state or placing a bond hold, while accepting a matching-instrument account.
+#[test]
+fn p2_mod_45_join_job_and_accept_retrieval_reject_mismatched_instrument() {
+    #[derive(Debug)]
+    struct ToggleFact(Arc<std::sync::atomic::AtomicBool>);
+
+    impl FactProvider for ToggleFact {
+        fn provider(&self) -> &str {
+            "jobtest"
+        }
+        fn resolve(
+            &self,
+            _: &mush_core::World,
+            _: &str,
+            _: &str,
+            _: Option<u64>,
+        ) -> Option<FactState> {
+            Some(FactState {
+                satisfied: self.0.load(std::sync::atomic::Ordering::Relaxed),
+                actor: None,
+                at: 0,
+            })
+        }
+    }
+
+    let done_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(
+            mush_economy::EconomyModule::with_custody(vec![])
+                .with_facts(vec![Arc::new(ToggleFact(Arc::clone(&done_flag)))]),
+        ),
+        Box::new(ProbeModule),
+    ]);
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    ok(&mut tw, GOD, "@instrument/register au=0");
+    ok(&mut tw, GOD, "@account/system mint_cr=cr");
+    ok(&mut tw, GOD, "@account/system mint_au=au");
+    let mint_cr = account_of(
+        &tw,
+        &PrincipalId::System(mush_org::SystemPrincipalId::new("mint_cr").unwrap()),
+        "cr",
+    );
+    let mint_au = account_of(
+        &tw,
+        &PrincipalId::System(mush_org::SystemPrincipalId::new("mint_au").unwrap()),
+        "au",
+    );
+
+    let poster = player(&mut tw, "Poster");
+    let acceptor = player(&mut tw, "Acceptor");
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", poster.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=cr", acceptor.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=au", acceptor.0));
+    let poster_cr = account_of(&tw, &PrincipalId::Object(poster), "cr");
+    let acceptor_cr = account_of(&tw, &PrincipalId::Object(acceptor), "cr");
+    let acceptor_au = account_of(&tw, &PrincipalId::Object(acceptor), "au");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {mint_cr}={poster_cr} 5000000"),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {mint_cr}={acceptor_cr} 1000000"),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {mint_au}={acceptor_au} 1000000"),
+    );
+
+    let hull = thing(&mut tw, "DerelictHull");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", hull.0, poster.0),
+    );
+
+    let deadline_ic = tw.world().world_ic_now().at + 86_400;
+
+    // 1. Bonded `join_job`: fee 2_000_000 cr -> bond 400_000 cr. Joining with `au` account
+    //    must fail with `ContractError::InstrumentMismatch` without mutating or holding!
+    let job_id = with_probe(&mut tw, poster, move |ctx| {
+        mush_economy::post_job(
+            ctx,
+            JobSpec {
+                name: SmolStr::new_static("Haul"),
+                poster: PrincipalId::Object(poster),
+                poster_account: poster_cr,
+                fee: Amount::from_minor(2_000_000),
+                fact: ExternalRef {
+                    provider: SmolStr::new_static("jobtest"),
+                    kind: SmolStr::new_static("done"),
+                    id: SmolStr::new_static("haul-1"),
+                    revision: None,
+                },
+                deadline_ic,
+            },
+        )
+        .expect("post_job")
+    });
+    let bond = mush_economy::job_bond(Amount::from_minor(2_000_000));
+    assert_eq!(bond, Some(Amount::from_minor(400_000)));
+
+    let wrong_join = with_probe(&mut tw, acceptor, move |ctx| {
+        mush_economy::join_job(
+            ctx,
+            job_id,
+            JoinTerms {
+                acceptor: PrincipalId::Object(acceptor),
+                account: acceptor_au,
+                bond,
+                term_ic: None,
+            },
+        )
+    });
+    assert!(
+        matches!(wrong_join, Err(ContractError::InstrumentMismatch)),
+        "join_job with mismatched instrument must return InstrumentMismatch, got: {wrong_join:?}"
+    );
+    assert!(
+        mush_economy::job_acceptor(snap(&tw).contract(job_id).unwrap()).is_none(),
+        "rejected join_job must leave job unaccepted"
+    );
+    assert_eq!(
+        snap(&tw).account(acceptor_au).unwrap().held_amount.minor(),
+        0,
+        "rejected join_job must not place bond hold on mismatched account"
+    );
+
+    // Retry with matching `cr` account succeeds and settles cleanly when fact turns true!
+    with_probe(&mut tw, acceptor, move |ctx| {
+        mush_economy::join_job(
+            ctx,
+            job_id,
+            JoinTerms {
+                acceptor: PrincipalId::Object(acceptor),
+                account: acceptor_cr,
+                bond,
+                term_ic: None,
+            },
+        )
+        .expect("join_job with matching instrument")
+    });
+    assert_eq!(
+        snap(&tw).account(acceptor_cr).unwrap().held_amount.minor(),
+        400_000
+    );
+    done_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    sweep_at(&mut tw, 1_100);
+    assert!(matches!(
+        snap(&tw).contract(job_id).unwrap().state,
+        ContractState::Settled { .. }
+    ));
+
+    // 2. `accept_retrieval` with mismatched `au` account must fail with `InstrumentMismatch`.
+    done_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+    let ret_id = with_probe(&mut tw, poster, move |ctx| {
+        mush_economy::post_retrieval(
+            ctx,
+            RetrievalSpec {
+                name: SmolStr::new_static("Retrieve"),
+                poster: PrincipalId::Object(poster),
+                title_holder: None,
+                poster_account: poster_cr,
+                hull,
+                fee: Amount::from_minor(5_000),
+                delivered: ExternalRef {
+                    provider: SmolStr::new_static("jobtest"),
+                    kind: SmolStr::new_static("done"),
+                    id: SmolStr::new_static("ret-1"),
+                    revision: None,
+                },
+                deadline_ic,
+            },
+        )
+        .expect("post_retrieval")
+    });
+    let wrong_ret = with_probe(&mut tw, acceptor, move |ctx| {
+        mush_economy::accept_retrieval(ctx, ret_id, &PrincipalId::Object(acceptor), acceptor_au)
+    });
+    assert!(
+        matches!(wrong_ret, Err(ContractError::InstrumentMismatch)),
+        "accept_retrieval with mismatched instrument must return InstrumentMismatch, got: {wrong_ret:?}"
+    );
+    assert!(
+        mush_economy::retrieval_acceptor(snap(&tw).contract(ret_id).unwrap()).is_none(),
+        "rejected accept_retrieval must leave retrieval unaccepted"
+    );
+    // Matching `cr` account succeeds!
+    with_probe(&mut tw, acceptor, move |ctx| {
+        mush_economy::accept_retrieval(ctx, ret_id, &PrincipalId::Object(acceptor), acceptor_cr)
+            .expect("accept_retrieval with matching instrument")
+    });
+    assert_eq!(
+        mush_economy::retrieval_acceptor(snap(&tw).contract(ret_id).unwrap()),
+        Some(&PrincipalId::Object(acceptor))
+    );
+}
+
+/// **P2-MOD-75**: `@asset/release` must index only visible encumbrances (consistently with
+/// `@asset/show`) so a covert stolen report at raw index 0 neither leaks via index shift nor
+/// prevents a creditor from releasing their visible lien at visible index 1.
+#[test]
+fn p2_mod_75_asset_release_indexes_only_visible_encumbrances_hiding_covert_stolen() {
+    let mut tw = boot_full();
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    let owner = player(&mut tw, "Owner");
+    let assignee = player(&mut tw, "Assignee");
+    let hull = thing(&mut tw, "StolenHull");
+
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", hull.0, owner.0),
+    );
+    ok(
+        &mut tw,
+        owner,
+        &format!("@asset/assign #{}=#{}", hull.0, assignee.0),
+    );
+    // Place a COVERT stolen report at raw index 0, then a visible lien held by Assignee at raw
+    // index 1 (Assignee passes `may_view_asset` and holds standing to release their own lien).
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/stolen #{}=covert silent tracking", hull.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/lien #{}=#{} 500 cr", hull.0, assignee.0),
+    );
+    assert_eq!(
+        snap(&tw).asset(hull).unwrap().encumbrances.len(),
+        2,
+        "raw encumbrances holds [Stolen(Covert), Lien(Assignee)]"
+    );
+
+    // 1. Assignee (cannot view covert stolen report) sees `encumbrances: 1` (covert hidden).
+    let show_assignee = ok(&mut tw, assignee, &format!("@asset/show #{}", hull.0));
+    assert!(
+        show_assignee.contains("encumbrances: 1"),
+        "assignee should see 1 visible encumbrance: {show_assignee}"
+    );
+    assert!(
+        !show_assignee.to_lowercase().contains("stolen"),
+        "covert stolen report must not appear in @asset/show: {show_assignee}"
+    );
+
+    // 2. `@asset/release <hull>=2` by assignee must return `"No such encumbrance."`
+    //    (cannot probe raw index 1 to discover the hidden covert stolen report at raw index 0!).
+    let probe_assignee = err(&mut tw, assignee, &format!("@asset/release #{}=2", hull.0));
+    assert_eq!(probe_assignee, "No such encumbrance.");
+    // Owner (who CAN view their own covert stolen report) sees `encumbrances: 2`.
+    let show_owner = ok(&mut tw, owner, &format!("@asset/show #{}", hull.0));
+    assert!(
+        show_owner.contains("encumbrances: 2") && show_owner.to_lowercase().contains("stolen"),
+        "owner should still see both encumbrances including covert stolen report: {show_owner}"
+    );
+
+    // 3. Assignee releases their visible lien using visible index `1` -> removes raw index 1
+    //    (the lien) while leaving the covert stolen report at raw index 0 completely intact!
+    ok(&mut tw, assignee, &format!("@asset/release #{}=1", hull.0));
+    let remaining = &snap(&tw).asset(hull).unwrap().encumbrances;
+    assert_eq!(remaining.len(), 1);
+    assert!(
+        matches!(remaining[0], mush_economy::Encumbrance::Disputed { .. })
+            && snap(&tw).asset(hull).unwrap().stolen.is_some(),
+        "covert stolen report must remain intact after creditor releases visible index 1"
+    );
+
+    // 4. Staff (`GOD`) still sees the covert stolen report and can release it at index 1.
+    let show_god = ok(&mut tw, GOD, &format!("@asset/show #{}", hull.0));
+    assert!(
+        show_god.contains("encumbrances: 1") && show_god.to_lowercase().contains("stolen"),
+        "staff should see covert stolen report: {show_god}"
+    );
+    ok(&mut tw, GOD, &format!("@asset/release #{}=1", hull.0));
+    assert!(snap(&tw).asset(hull).unwrap().encumbrances.is_empty());
+}
+
+/// **P2-MOD-76**:
+/// 1. `reprice_player_obligation` must authorize `WorldAuth` against the NEW amount (not the old
+///    amount), blocking a `GrantLimit`-capped org officer from escalating an obligation past their
+///    spending cap.
+/// 2. `job_bond` must use exact `i128` arithmetic so large fees never saturate `i64` on `* 200`
+///    and under-compute the 20% bond.
+#[test]
+fn p2_mod_76_reprice_player_obligation_checks_new_amount_and_job_bond_exact_i128() {
+    // 1. Exact `job_bond` arithmetic across threshold boundaries and near `i64::MAX`.
+    assert_eq!(
+        mush_economy::job_bond(Amount::from_minor(mush_economy::JOB_BOND_ABOVE_MINOR)),
+        None
+    );
+    assert_eq!(
+        mush_economy::job_bond(Amount::from_minor(mush_economy::JOB_BOND_ABOVE_MINOR + 1)),
+        Some(Amount::from_minor(200_000))
+    );
+    assert_eq!(
+        mush_economy::job_bond(Amount::from_minor(100_000_000_000_000_000)),
+        Some(Amount::from_minor(20_000_000_000_000_000)),
+        "1e17 fee must yield exact 2e16 bond (old saturating i64 collapsed to ~9.22e15)"
+    );
+    assert_eq!(
+        mush_economy::job_bond(Amount::from_minor(i64::MAX)),
+        Some(Amount::from_minor(1_844_674_407_370_955_161)),
+        "i64::MAX fee must yield exact floor(i64::MAX * 200 / 1000)"
+    );
+
+    // 2. `reprice_player_obligation` checks `WorldAuth` against NEW amount.
+    let vocab: std::collections::BTreeSet<mush_org::CapabilityId> = mush_economy::CAPABILITIES
+        .iter()
+        .map(|s| mush_org::CapabilityId::new(*s).expect("capability"))
+        .collect();
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            mush_org::OrgModule::new()
+                .with_capabilities(vocab)
+                .with_scope_use(vec![Arc::new(mush_economy::EconomyScopeUse)]),
+        ),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![])),
+        Box::new(ProbeModule),
+    ]);
+    tw.set_now(1_000);
+    ok(&mut tw, GOD, "@instrument/register cr=0");
+    ok(&mut tw, GOD, "@org/create TenantOrg");
+    ok(&mut tw, GOD, "@org/create PortOrg");
+    let tenant_org = org_id(&tw, "TenantOrg");
+    let port_org = org_id(&tw, "PortOrg");
+    let tenant_root = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .org(tenant_org)
+        .unwrap()
+        .root_scope;
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open org:TenantOrg/{}=cr", tenant_root.0),
+    );
+    ok(&mut tw, GOD, "@account/open org:PortOrg=cr");
+    let debit_acct = account_of(&tw, &PrincipalId::Organization(tenant_org), "cr");
+    let credit_acct = account_of(&tw, &PrincipalId::Organization(port_org), "cr");
+
+    let officer = player(&mut tw, "CappedOfficer");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@org/grant #{}=TenantOrg economy.account.post scope=#{} limit=100",
+            officer.0, tenant_root.0
+        ),
+    );
+
+    let ob_id = with_probe(&mut tw, officer, move |ctx| {
+        mush_economy::create_player_obligation(
+            ctx,
+            ObligationSpec {
+                debit_account: debit_acct,
+                credit_account: credit_acct,
+                amount: Amount::from_minor(50),
+                schedule: EconomicSchedule {
+                    clock: EconomicClock::WorldIc,
+                    next_due: 4_600,
+                    cadence: Some(3_600),
+                    maximum_catch_up: 1,
+                    manual_now: 0,
+                },
+                grace: GracePolicy::new(2),
+                notify_on_success: false,
+                cause: ObligationCause::Ruleset {
+                    namespace: SmolStr::new_static("test.locker"),
+                },
+            },
+            "test.locker",
+        )
+        .expect("create_player_obligation within cap 100")
+    });
+    assert_eq!(snap(&tw).obligation(ob_id).unwrap().amount.minor(), 50);
+
+    // Reprice 50 -> 80 (within officer's limit=100): allowed!
+    let within_cap = with_probe(&mut tw, officer, move |ctx| {
+        mush_economy::reprice_player_obligation(ctx, ob_id, "test.locker", Amount::from_minor(80))
+    });
+    assert!(
+        within_cap.is_ok(),
+        "reprice within limit=100 should pass: {within_cap:?}"
+    );
+    assert_eq!(snap(&tw).obligation(ob_id).unwrap().amount.minor(), 80);
+
+    // Reprice 80 -> 500 (ABOVE officer's limit=100): MUST fail with Unauthorized!
+    let over_cap = with_probe(&mut tw, officer, move |ctx| {
+        mush_economy::reprice_player_obligation(ctx, ob_id, "test.locker", Amount::from_minor(500))
+    });
+    assert!(
+        matches!(over_cap, Err(EconomyError::Unauthorized)),
+        "reprice past GrantLimit=100 must return Unauthorized, got: {over_cap:?}"
+    );
+    assert_eq!(
+        snap(&tw).obligation(ob_id).unwrap().amount.minor(),
+        80,
+        "refused reprice must leave obligation amount unchanged"
+    );
+
+    // Staff (`GOD`) may still reprice to 500.
+    let staff_reprice = with_probe(&mut tw, GOD, move |ctx| {
+        mush_economy::reprice_player_obligation(ctx, ob_id, "test.locker", Amount::from_minor(500))
+    });
+    assert!(staff_reprice.is_ok());
+    assert_eq!(snap(&tw).obligation(ob_id).unwrap().amount.minor(), 500);
 }

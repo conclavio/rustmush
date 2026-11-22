@@ -203,6 +203,17 @@ pub struct MarketStore {
     /// lifting the backoff window so a landed release is pruned on the next sweep. RAM only;
     /// retained each sweep to `withdrawn_holds`.
     pub(crate) withdrawn_release_staged: BTreeMap<ListingId, u64>,
+    /// P2-MOD-29: monotonic counter for staged `LotOp::Release` requests (withdrawn holds
+    /// and lapsed listings alike), RAM only.
+    pub(crate) release_stage_seq: u64,
+    /// P2-MOD-29: most-recent staging sequence per listing so `lot::listing_legs` always
+    /// prioritizes freshly-staged releases ahead of older holds and never starves them
+    /// behind `MAX_LISTING_LEGS_PER_KIND`. RAM only; retained each sweep to active
+    /// `withdrawn_holds` and `listings`.
+    pub(crate) release_stage_order: BTreeMap<ListingId, u64>,
+    /// P2-MOD-29: rotating cursor over `withdrawn_holds` advanced on sweep so unstaged
+    /// withdrawn holds beyond `MAX_LISTING_LEGS_PER_KIND` rotate fairly too. RAM only.
+    pub(crate) withdrawn_release_cursor: Option<ListingId>,
     /// Doc 18 cut IC14 row 16: the market sweeps run this boot (RAM only).
     pub(crate) sweeps: u64,
     /// Doc 18 cut IC14 row 16: how many `hold_standing` reads the sweep made this boot
@@ -214,6 +225,19 @@ pub struct MarketStore {
 }
 
 impl MarketStore {
+    /// Record that a `LotOp::Release` was just staged for `id` (P2-MOD-29), lifting the
+    /// sweep backoff window and pinning it to the front of `lot::listing_legs`.
+    pub(crate) fn note_release_staged(&mut self, id: ListingId, withdrawn: bool) {
+        self.release_stage_seq = self.release_stage_seq.saturating_add(1);
+        self.release_stage_order.insert(id, self.release_stage_seq);
+        let at_sweep = self.sweeps;
+        if withdrawn {
+            self.withdrawn_release_staged.insert(id, at_sweep);
+        } else {
+            self.release_staged.insert(id, at_sweep);
+        }
+    }
+
     /// One pending withdrawn hold-backed listing release authorization, if still retained.
     #[must_use]
     pub fn withdrawn_hold(&self, id: ListingId) -> Option<&WithdrawnHold> {

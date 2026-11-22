@@ -371,7 +371,7 @@ pub const MAX_PAID_ENTRIES_PER_KIND: usize = MAX_OPEN_QUOTES_PER_BUYER;
 
 /// The most eligible reserve or release entries one offer carries (CRIT-9), keeping
 /// `fixed_parameters` well under `MAX_ACTION_PARAMETER_BYTES` even for staff holding many vaults.
-const MAX_LISTING_LEGS_PER_KIND: usize = 64;
+pub(crate) const MAX_LISTING_LEGS_PER_KIND: usize = 64;
 
 /// Server-authenticated eligible `reserve` and `release` legs for one actor, keyed by listing id.
 struct ListingLegs {
@@ -494,73 +494,185 @@ fn listing_legs(
         );
     }
 
-    // 2a. Eligible releases from withdrawn listings (already deleted from `market.listings`).
-    for (id, held) in &market.withdrawn_holds {
-        if out.releases.len() >= MAX_LISTING_LEGS_PER_KIND {
-            break;
-        }
+    // 2. Eligible releases (P2-MOD-29): combine withdrawn-hold and lapsed-listing candidates
+    //    so neither pool can permanently starve the other behind `MAX_LISTING_LEGS_PER_KIND`.
+    //    - Tier 1 (freshly staged): every listing with a recorded `release_stage_order` (from
+    //      `withdraw_listing`, `retry_withdrawn_release`, `retire_vendor`/`load_pack`, or
+    //      `release_lapsed_hold`) is admitted first, most recently staged first, with
+    //      `WithdrawnHold` breaking ties ahead of lapsed listings.
+    //    - Tier 2 (unstaged): remaining slots are partitioned between `WithdrawnHold` (at
+    //      least half, exact-lot holds prioritized ahead of pooled holds and rotated past
+    //      `withdrawn_release_cursor`) and lapsed listings, overflowing any unused share to
+    //      the other pool.
+    struct ReleaseCandidate {
+        id: ListingId,
+        is_withdrawn: bool,
+        staged_order: Option<u64>,
+        endpoint: EndpointRef,
+        commodity: CanonicalId,
+        lot: Option<mush_inventory::LotId>,
+    }
+
+    let mut staged_releases: Vec<ReleaseCandidate> = Vec::new();
+    let mut unstaged_withdrawn: Vec<ReleaseCandidate> = Vec::new();
+    let mut unstaged_lapsed: Vec<ReleaseCandidate> = Vec::new();
+
+    for (&id, held) in &market.withdrawn_holds {
         if !endpoints.contains(&held.endpoint.vault())
-            || market.listing(*id).is_some()
-            || sale_in_force(&engine.world, *id)
+            || market.listing(id).is_some()
+            || sale_in_force(&engine.world, id)
         {
             continue;
+        }
+        let staged_order = market.release_stage_order.get(&id).copied();
+        let cand = ReleaseCandidate {
+            id,
+            is_withdrawn: true,
+            staged_order,
+            endpoint: held.endpoint.0,
+            commodity: held.commodity.0.clone(),
+            lot: held.lot,
+        };
+        if staged_order.is_some() {
+            staged_releases.push(cand);
+        } else {
+            unstaged_withdrawn.push(cand);
+        }
+    }
+
+    for l in market.lot_listings() {
+        let Some((endpoint, commodity, _)) = l.source.lot() else {
+            continue;
+        };
+        if !endpoints.contains(&endpoint.vault())
+            || !crate::projection::lapsed(l.expires.at, l.expires.clock, now)
+            || sale_in_force(&engine.world, l.id)
+        {
+            continue;
+        }
+        let staged_order = market.release_stage_order.get(&l.id).copied();
+        let cand = ReleaseCandidate {
+            id: l.id,
+            is_withdrawn: false,
+            staged_order,
+            endpoint,
+            commodity: commodity.clone(),
+            lot: l.source.exact_lot(),
+        };
+        if staged_order.is_some() {
+            staged_releases.push(cand);
+        } else {
+            unstaged_lapsed.push(cand);
+        }
+    }
+
+    // Tier 1: newest staged release first; withdrawn holds win ties.
+    staged_releases.sort_by(|a, b| {
+        b.staged_order
+            .cmp(&a.staged_order)
+            .then_with(|| b.is_withdrawn.cmp(&a.is_withdrawn))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    // Tier 2a: unstaged withdrawn holds — exact-lot holds first (they have no TTL expiry),
+    // rotated past `withdrawn_release_cursor` so holds past slot 64 rotate across sweeps.
+    let cursor = market.withdrawn_release_cursor;
+    unstaged_withdrawn.sort_by(|a, b| {
+        let a_after = cursor.is_none_or(|c| a.id > c);
+        let b_after = cursor.is_none_or(|c| b.id > c);
+        b.lot
+            .is_some()
+            .cmp(&a.lot.is_some())
+            .then_with(|| b_after.cmp(&a_after))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    // Tier 2b: unstaged lapsed listings — exact-lot holds first, then id order.
+    unstaged_lapsed.sort_by(|a, b| {
+        b.lot
+            .is_some()
+            .cmp(&a.lot.is_some())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let try_insert = |releases: &mut serde_json::Map<String, Value>,
+                      cand: &ReleaseCandidate,
+                      cap: usize|
+     -> bool {
+        if releases.len() >= cap {
+            return false;
+        }
+        let key = cand.id.0.to_string();
+        if releases.contains_key(&key) {
+            return false;
         }
         if !hold_present_in_engine(
             engine,
             families,
-            *id,
-            held.endpoint.0,
-            &held.commodity.0,
-            held.lot,
+            cand.id,
+            cand.endpoint,
+            &cand.commodity,
+            cand.lot,
         ) {
-            continue;
+            return false;
         }
-        out.releases.insert(
-            id.0.to_string(),
+        releases.insert(
+            key,
             json!({
-                "endpoint": held.endpoint.vault().0,
-                "commodity": held.commodity.0.as_str(),
-                "lot": held.lot.map(|l| l.to_string()),
+                "endpoint": cand.endpoint.vault().0,
+                "commodity": cand.commodity.as_str(),
+                "lot": cand.lot.map(|l| l.to_string()),
             }),
         );
-    }
+        true
+    };
 
-    // 2b. Eligible releases from lapsed listings (never active/unwithdrawn, never under active sale).
-    let mut lapsed_candidates: Vec<(bool, &crate::record::Listing)> = market
-        .lot_listings()
-        .filter(|l| {
-            l.source
-                .lot()
-                .is_some_and(|(ep, _, _)| endpoints.contains(&ep.vault()))
-                && crate::projection::lapsed(l.expires.at, l.expires.clock, now)
-                && !sale_in_force(&engine.world, l.id)
-        })
-        .map(|l| (market.release_staged.contains_key(&l.id), l))
-        .collect();
-    lapsed_candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
-    for (_, l) in lapsed_candidates {
+    for cand in &staged_releases {
         if out.releases.len() >= MAX_LISTING_LEGS_PER_KIND {
             break;
         }
-        let key = l.id.0.to_string();
-        if out.releases.contains_key(&key) {
-            continue;
+        try_insert(&mut out.releases, cand, MAX_LISTING_LEGS_PER_KIND);
+    }
+
+    let remaining = MAX_LISTING_LEGS_PER_KIND.saturating_sub(out.releases.len());
+    if remaining > 0 {
+        let withdrawn_reserve = remaining.div_ceil(2);
+        let lapsed_reserve = remaining.saturating_sub(withdrawn_reserve);
+        let target_after_withdrawn = out.releases.len().saturating_add(withdrawn_reserve);
+        let mut withdrawn_idx = 0usize;
+        while withdrawn_idx < unstaged_withdrawn.len()
+            && out.releases.len() < target_after_withdrawn
+        {
+            if let Some(cand) = unstaged_withdrawn.get(withdrawn_idx) {
+                try_insert(&mut out.releases, cand, target_after_withdrawn);
+            }
+            withdrawn_idx += 1;
         }
-        let Some((endpoint, commodity, _)) = l.source.lot() else {
-            continue;
-        };
-        let exact = l.source.exact_lot();
-        if !hold_present_in_engine(engine, families, l.id, endpoint, commodity, exact) {
-            continue;
+        let target_after_lapsed = out
+            .releases
+            .len()
+            .saturating_add(lapsed_reserve)
+            .min(MAX_LISTING_LEGS_PER_KIND);
+        let mut lapsed_idx = 0usize;
+        while lapsed_idx < unstaged_lapsed.len() && out.releases.len() < target_after_lapsed {
+            if let Some(cand) = unstaged_lapsed.get(lapsed_idx) {
+                try_insert(&mut out.releases, cand, target_after_lapsed);
+            }
+            lapsed_idx += 1;
         }
-        out.releases.insert(
-            key,
-            json!({
-                "endpoint": endpoint.vault().0,
-                "commodity": commodity.as_str(),
-                "lot": exact.map(|id| id.to_string()),
-            }),
-        );
+        // Overflow any unused slots: withdrawn holds first, then lapsed listings.
+        for cand in unstaged_withdrawn.get(withdrawn_idx..).unwrap_or_default() {
+            if out.releases.len() >= MAX_LISTING_LEGS_PER_KIND {
+                break;
+            }
+            try_insert(&mut out.releases, cand, MAX_LISTING_LEGS_PER_KIND);
+        }
+        for cand in unstaged_lapsed.get(lapsed_idx..).unwrap_or_default() {
+            if out.releases.len() >= MAX_LISTING_LEGS_PER_KIND {
+                break;
+            }
+            try_insert(&mut out.releases, cand, MAX_LISTING_LEGS_PER_KIND);
+        }
     }
     out
 }
@@ -2384,11 +2496,10 @@ pub fn release_lapsed_hold(
             "This server cannot move lot stock right now, so nothing was released.",
         ));
     }
-    // Doc 18 cut IC14 row 16: the sweep reads this listing's hold on every sweep for a
-    // backoff window from here, so the release's landing deletes it promptly.
+    // Doc 18 cut IC14 row 16 + P2-MOD-29: lift the sweep backoff window and prioritize this
+    // release in `listing_legs` so the release's landing deletes the listing promptly.
     if let Some(store) = ctx.w.module_state_mut::<crate::store::MarketStore>() {
-        let at = store.sweeps;
-        store.release_staged.insert(id, at);
+        store.note_release_staged(id, false);
     }
     Ok(())
 }
