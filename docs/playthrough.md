@@ -495,9 +495,8 @@ offered.
   tank farm and the hauling house. After a wipe, `@tacsim/time`, `@tacsim/port arm`,
   `@tacsim/port haulers ceres_port` and `+operation` confirm it (doc 50 cut notes, "Isidis
   bring-up").
-- The operation's timing depends on when the world first boots, against the game's monthly
-  boundaries. A boot well before a boundary can let the Freeport hold with nobody playing (the
-  same notes give the safe windows). The game clock also runs while the server is stopped, so a
+- The Assembly's votes count from when the world first seeded the operation, so the time the
+  world first boots doesn't matter. The game clock still runs while the server is stopped, so a
   long outage during the operation throws off its balance.
 - The Isidis figures (the threshold, drain, haul size and fees) are provisional and may change
   between deploys.
