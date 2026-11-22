@@ -2643,3 +2643,97 @@ later". Nothing reads Hold the Concession's completion, and that stays as it is.
 - **Hold the Concession fills on the empty run**, as at the retune.
 - **A Ceres hull waits at home while the arm is posting**, even before it has posted.
 - **The second hull is VCC-03, home Ceres**, on the house's lot, goods and design (a Dray).
+
+### Isidis bring-up (2026-11-22)
+
+What a fresh world needs for the Isidis operation, checked against the production boot (lane v54,
+relay v45), before the owner's wipe and redeploy of dev1 and dev2. The OP.8 stories' setup is
+staff's three lines: the Freeport arm opened, Ceres' house opened and the rate set to 24. The
+stock rig lays the arm and the house up, so the stories open them again. A production world
+needs none of the three.
+
+**What boot does on its own.** `mush-server`'s boot composes the content module with the game
+packs whenever `[tacsim].enabled` is on (`crates/mush-server/src/boot.rs:524`), and the lane is
+one of them (`crates/tacsim/src/composition/mod.rs:740`). Its appliers run on the first boot of
+an empty store.
+- **The Concession Review and Hold the Concession**: seeded by the regions applier on the
+  `isidis` row (`crates/tacsim/src/polity.rs:413` → `crates/tacsim/src/concession.rs:134`;
+  the row is `crates/tacsim/content/lane/ceres_phobos.json:3390`). Both start at two of six.
+- **The Assembly's votes**: the `tacsim.assembly` tick (`concession.rs:293`, registered from
+  `crates/tacsim/src/port_tick.rs:718`), one an IC month. On the same tick the declaring arm
+  declares on the Review's fill and posts the Republic's bid (`crates/tacsim/src/isidis_op.rs:157`,
+  the bid at `:200`).
+- **The Freeport arm**: open by default (`crates/tacsim/src/stockpile.rs:118`, `laid_up` is
+  false unless staff lay it up). The port tick runs it (`port_tick.rs:2209` →
+  `stockpile.rs:682`), and it makes its agent and grant on its first fires. Its budget is
+  Occator's treasury (`ceres_phobos.json:2786`, 50,000 cr and a 250,000 cr raise), capped at
+  `ARM_MONTHLY_CAP_CR` (`stockpile.rs:85`).
+- **The tank farm's start stock**: 3,000 t of propellant, its bid and its 2 t a day drain
+  (`ceres_phobos.json:3166`–`3170`).
+- **Ceres' hauling house, VCC-01, VCC-02 and VCC-03**: `ceres_phobos.json:2917`–`2918`. It is
+  open by default (`crates/tacsim/src/port/hauler.rs:1268`), and the port tick seeds its hulls
+  and trades from the IC day after it first sees the house (`port_tick.rs:2207` →
+  `hauler.rs:1335`).
+- **Meridiani as a defender**: its organization is `ceres_phobos.json:3163`, named in the
+  request by `isidis_op.rs:45`.
+- **Republic Customs' acceptor row**: `ceres_phobos.json:2946`.
+- **The OP.7b storefront**: the clerk's store row at Stickney (`ceres_phobos.json:3008`). The
+  bid is posted at the declaration (`isidis_op.rs:200`).
+- **The rate**: `IC_RATIO=24` in `deploy/dev1/instance.env:103` and `deploy/dev2/instance.env:103`,
+  seeded into the world timeline on an empty store. The stories' `@tacsim/time rate=24` is that
+  rate.
+
+**The campaign is seated in production.** `CampaignLink` sits in `compose_server_modules`'
+roster with no condition (`crates/mush-composition/src/lib.rs:434`–`444`). It has the
+formation authority, the defender notice (`campaign_notice.rs:17`) and `TacsimCloseProbe`, whose
+probe table names the tank farm (`crates/tacsim/src/operations.rs:180`). All three of the
+server's roster paths reach that function: the launch (`lib.rs:201`), mind commerce (`:172`) and
+the units roster (`:139`). `driving_rig::EXTRA_MODULES` is the test binary's copy of the same
+seat. No test boots the server's roster and finds the frame; `op0_frame` composes the link by
+hand.
+
+**The checklist after a wipe.** No command is needed. These read-only lines confirm it, as #1
+once the bring-up is done:
+1. `@tacsim/time`: 24 IC seconds per real second.
+2. `@tacsim/port arm`: "Freeport arm: open"; after a few fires, a reading near 3,000 t.
+3. `@tacsim/port haulers ceres_port`: open, with VCC-01, VCC-02 and VCC-03 seeded from the next
+   IC day.
+4. `+operation`: nothing declared, the Review at 2 of 6, Hold at 2 or 3, the Freeport
+   administering Isidis.
+
+Don't run `@tacsim/port arm off` or `@tacsim/port haulers ceres_port off`. They are the test
+rigs' lines.
+
+**Where it belongs.** Staff bring-up is `deploy/README.md`'s *Named launch and the player
+market* (*The bring-up script*, *The sequence by hand*), and `launch-bringup.py` sends no Isidis
+command. The checks above belong there as a last step after the Active boot, once the redeploy
+is done.
+
+**What could make a redeployed world misbehave.**
+- **The Assembly votes on absolute IC month boundaries, and the house runs from boot.**
+  `concession::ic_month` divides the world's IC clock by 30 IC days. The first vote after seeding
+  comes at the next boundary, 0 to 30 IC days later. The stories boot on a boundary, so their
+  votes fall on days 30, 60, 90 and 120. The house's hauls are counted from the first boot
+  (deliveries about days 26, 61, 96 and 131). The tuned contest assumes the window opens on
+  day 148, after the fourth delivery. With the first vote `d` IC days after boot, the close is on
+  day `d + 146`. These figures are estimated from the v54 timeline, not measured:
+  - `d` from about 22 to 30 (the stories' case): four deliveries, and the close reads about
+    `2,948 − 2d` t, so the Republic wins the empty run and one player haul holds.
+  - `d` from about 14 to 21: four deliveries and an earlier close, so the farm reads over 2,905 t
+    and **the Freeport holds with nobody playing**.
+  - `d` up to about 13: the fourth delivery falls in the window, and the Republic wins by more.
+  At 24:1 an IC day is a real hour, so `d` is the real hours from the first boot to the next IC
+  month boundary. With `IC_EPOCH=0987-04-20 06:00` the boundaries fall every 30 real hours:
+  2026-11-22 19:45Z, 2026-11-24 01:45Z, 2026-11-25 07:45Z, 2026-11-26 13:45Z. A first boot
+  within about eight real hours after a boundary matches the stories. The fix is to count the
+  votes from the seeding instant instead. That is a code change and not made here.
+- **Downtime.** IC time runs on wall time, so it passes while the server is stopped. The
+  Assembly catches up every month it missed, while the farm drains at most once a fire's day and
+  the house's hulls don't move. A long stop during the run moves the contest off its tuned
+  figures.
+- **The launch's Houses are not in the stories.** The bring-up seeds their Drays at Ceres
+  (`launch-bringup.py:1525`). Nothing in the minds or procurement takes `+haul/accept`, but the
+  stories have never run beside them.
+- **Hold the Concession's completion changes nothing**, as noted under OP.8's retune.
+- The sky's tables run to IC 2400. The IC year is about 2353.6 today, so they last about two
+  real years at 24:1.
