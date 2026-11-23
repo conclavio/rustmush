@@ -47,6 +47,20 @@ use crate::types::StoreError;
 /// The most chunks one segment file holds by default (doc 12 §10.4).
 pub const DEFAULT_SEGMENT_CHUNKS: usize = 256;
 
+/// Hard upper bound on one inflated archived ledger chunk (16 MiB, 2×
+/// `mush_core::ledger::MAX_SAFE_CHUNK_BYTES`). Bounds decompression against
+/// tampered `.idx.json` metadata or gzip bombs (P2-CORE-24).
+pub const MAX_INFLATED_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Hard upper bound on one compressed gzip member in a `.seg` file
+/// (P2-CORE-24): accommodates a maximally incompressible
+/// [`MAX_INFLATED_CHUNK_BYTES`] chunk plus gzip framing overhead.
+pub const MAX_COMPRESSED_CHUNK_BYTES: u64 = MAX_INFLATED_CHUNK_BYTES + 64 * 1024;
+
+/// Hard upper bound on one `.idx.json` sidecar read during
+/// [`LedgerArchive::open`] (P2-CORE-24).
+const MAX_INDEX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Where one archived chunk lives and what it hashed to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkLoc {
@@ -137,6 +151,77 @@ fn segment_name(first: u64, last: u64) -> String {
     format!("{first:012}-{last:012}.seg")
 }
 
+/// Whether `segment` is a canonical bare `{first:012}-{last:012}.seg` filename
+/// with `first <= last` (no path separators, `..`, or extra suffixes).
+fn is_valid_segment_name(segment: &str) -> bool {
+    let Some(stem) = segment.strip_suffix(".seg") else {
+        return false;
+    };
+    let Some((first_str, last_str)) = stem.split_once('-') else {
+        return false;
+    };
+    if first_str.len() < 12 || last_str.len() < 12 {
+        return false;
+    }
+    if !first_str.bytes().all(|b| b.is_ascii_digit())
+        || !last_str.bytes().all(|b| b.is_ascii_digit())
+    {
+        return false;
+    }
+    let (Ok(first), Ok(last)) = (first_str.parse::<u64>(), last_str.parse::<u64>()) else {
+        return false;
+    };
+    first <= last && segment_name(first, last) == segment
+}
+
+fn validate_segment_name(segment: &str) -> Result<(), StoreError> {
+    if !is_valid_segment_name(segment) {
+        return Err(archive_error(format!(
+            "invalid archive segment filename {segment:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_chunk_loc(loc: &ChunkLoc) -> Result<(), StoreError> {
+    validate_segment_name(&loc.segment)?;
+    if loc.len > MAX_COMPRESSED_CHUNK_BYTES {
+        return Err(archive_error(format!(
+            "compressed chunk length {} exceeds maximum {MAX_COMPRESSED_CHUNK_BYTES}",
+            loc.len
+        )));
+    }
+    if loc.raw_len > MAX_INFLATED_CHUNK_BYTES {
+        return Err(archive_error(format!(
+            "inflated chunk length {} exceeds maximum {MAX_INFLATED_CHUNK_BYTES}",
+            loc.raw_len
+        )));
+    }
+    if loc.offset.checked_add(loc.len).is_none() {
+        return Err(archive_error(format!(
+            "chunk range {}+{} overflows u64",
+            loc.offset, loc.len
+        )));
+    }
+    Ok(())
+}
+
+fn read_limited_to_string(path: &Path, max_bytes: u64) -> Result<String, StoreError> {
+    let file =
+        fs::File::open(path).map_err(|e| archive_error(format!("read {}: {e}", path.display())))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| archive_error(format!("read {}: {e}", path.display())))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+        return Err(archive_error(format!(
+            "archive index {} exceeds maximum size of {max_bytes} bytes",
+            path.display()
+        )));
+    }
+    String::from_utf8(bytes).map_err(|e| archive_error(format!("read {}: {e}", path.display())))
+}
+
 fn index_name(segment: &str) -> String {
     format!("{}.idx.json", segment.trim_end_matches(".seg"))
 }
@@ -219,10 +304,14 @@ impl LedgerArchive {
                 }
                 for idx in &indexes {
                     let path = log_entry.join(idx);
-                    let text = fs::read_to_string(&path)
-                        .map_err(|e| archive_error(format!("read {}: {e}", path.display())))?;
+                    let text = read_limited_to_string(&path, MAX_INDEX_FILE_BYTES)?;
                     let seg: SegmentIndex = serde_json::from_str(&text)
                         .map_err(|e| archive_error(format!("decode {}: {e}", path.display())))?;
+                    for loc in seg.chunks.values() {
+                        validate_chunk_loc(loc).map_err(|e| {
+                            archive_error(format!("invalid index {}: {e}", path.display()))
+                        })?;
+                    }
                     let log = index
                         .logs
                         .entry((seg.ns.clone(), seg.log_id.clone()))
@@ -306,8 +395,8 @@ impl LedgerArchive {
                 if loc.purged {
                     stats.purged += 1;
                 }
-                stats.raw_bytes += loc.raw_len;
-                stats.compressed_bytes += loc.len;
+                stats.raw_bytes = stats.raw_bytes.saturating_add(loc.raw_len);
+                stats.compressed_bytes = stats.compressed_bytes.saturating_add(loc.len);
             }
         }
         stats
@@ -359,6 +448,12 @@ impl LedgerArchive {
             let mut bytes: Vec<u8> = Vec::new();
             let mut locs: BTreeMap<u64, ChunkLoc> = BTreeMap::new();
             for (chunk, text) in run {
+                let raw_len = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                if raw_len > MAX_INFLATED_CHUNK_BYTES {
+                    return Err(archive_error(format!(
+                        "chunk {chunk} of {ns}/{log_id} raw length {raw_len} exceeds maximum {MAX_INFLATED_CHUNK_BYTES}"
+                    )));
+                }
                 let offset = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                 let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
                 encoder
@@ -367,14 +462,20 @@ impl LedgerArchive {
                 let member = encoder
                     .finish()
                     .map_err(|e| archive_error(format!("compress chunk {chunk}: {e}")))?;
+                let member_len = u64::try_from(member.len()).unwrap_or(u64::MAX);
+                if member_len > MAX_COMPRESSED_CHUNK_BYTES {
+                    return Err(archive_error(format!(
+                        "chunk {chunk} of {ns}/{log_id} compressed length {member_len} exceeds maximum {MAX_COMPRESSED_CHUNK_BYTES}"
+                    )));
+                }
                 bytes.extend_from_slice(&member);
                 locs.insert(
                     *chunk,
                     ChunkLoc {
                         segment: segment.clone(),
                         offset,
-                        len: u64::try_from(member.len()).unwrap_or(u64::MAX),
-                        raw_len: u64::try_from(text.len()).unwrap_or(u64::MAX),
+                        len: member_len,
+                        raw_len,
                         sha256: sha256_hex(text.as_bytes()),
                         archived_at: now,
                         purged: false,
@@ -386,7 +487,8 @@ impl LedgerArchive {
             // Read back before the index names anything: the bytes on disk are
             // what the primary may be purged against.
             for (chunk, loc) in &locs {
-                let back = inflate(&read_member_bytes(&seg_path, loc)?).unwrap_or_default();
+                let back =
+                    inflate(&read_member_bytes(&seg_path, loc)?, loc.raw_len).unwrap_or_default();
                 if sha256_hex(back.as_bytes()) != loc.sha256 {
                     let _ = fs::remove_file(&seg_path);
                     return Err(archive_error(format!(
@@ -429,12 +531,14 @@ impl LedgerArchive {
         let Some(loc) = self.holds(ns, log_id, chunk) else {
             return Ok(None);
         };
+        validate_segment_name(&loc.segment)?;
         let path = self.log_dir(ns, log_id).join(&loc.segment);
         let bytes = read_member_bytes(&path, &loc)?;
-        // Damage — a member that no longer inflates, or inflates to bytes that
-        // do not hash to the index — is absence, never an error a caller might
-        // retry into and never a served chunk.
-        let Ok(text) = inflate(&bytes) else {
+        // Damage — a member that no longer inflates, exceeds its recorded raw
+        // length / safety cap, or inflates to bytes that do not hash to the
+        // index — is absence, never an error a caller might retry into and
+        // never a served chunk.
+        let Ok(text) = inflate(&bytes, loc.raw_len) else {
             tracing::error!(
                 ns,
                 log_id,
@@ -470,6 +574,13 @@ impl LedgerArchive {
             let Some(log) = index.logs.get_mut(&(ns.to_owned(), log_id.to_owned())) else {
                 return Ok(());
             };
+            // Validate every target segment filename before mutating RAM or
+            // joining onto `dir` (P2-CORE-24).
+            for chunk in chunks {
+                if let Some(loc) = log.chunks.get(chunk) {
+                    validate_segment_name(&loc.segment)?;
+                }
+            }
             for chunk in chunks {
                 if let Some(loc) = log.chunks.get_mut(chunk) {
                     loc.purged = true;
@@ -485,6 +596,7 @@ impl LedgerArchive {
             }
         }
         for (segment, locs) in touched {
+            validate_segment_name(&segment)?;
             let idx = SegmentIndex {
                 ns: ns.to_owned(),
                 log_id: log_id.to_owned(),
@@ -511,21 +623,77 @@ fn read_dir(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
 /// The bytes of one gzip member at `loc` of the segment at `path` (an I/O
 /// failure is an error; what the bytes mean is [`inflate`]'s question).
 fn read_member_bytes(path: &Path, loc: &ChunkLoc) -> Result<Vec<u8>, StoreError> {
+    if loc.len > MAX_COMPRESSED_CHUNK_BYTES {
+        return Err(archive_error(format!(
+            "compressed chunk length {} exceeds maximum {MAX_COMPRESSED_CHUNK_BYTES} in {}",
+            loc.len,
+            path.display()
+        )));
+    }
+    let len = usize::try_from(loc.len).map_err(|_| {
+        archive_error(format!(
+            "compressed chunk length {} overflows usize in {}",
+            loc.len,
+            path.display()
+        ))
+    })?;
+    let end = loc.offset.checked_add(loc.len).ok_or_else(|| {
+        archive_error(format!(
+            "chunk range {}+{} overflows u64 in {}",
+            loc.offset,
+            loc.len,
+            path.display()
+        ))
+    })?;
     let mut file =
         fs::File::open(path).map_err(|e| archive_error(format!("open {}: {e}", path.display())))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| archive_error(format!("metadata {}: {e}", path.display())))?
+        .len();
+    if end > file_len {
+        return Err(archive_error(format!(
+            "chunk range {}..{end} exceeds segment length {file_len} in {}",
+            loc.offset,
+            path.display()
+        )));
+    }
     file.seek(SeekFrom::Start(loc.offset))
         .map_err(|e| archive_error(format!("seek {}: {e}", path.display())))?;
-    let mut member = vec![0u8; usize::try_from(loc.len).unwrap_or(usize::MAX)];
+    let mut member = vec![0u8; len];
     file.read_exact(&mut member)
         .map_err(|e| archive_error(format!("read {}: {e}", path.display())))?;
     Ok(member)
 }
 
-/// Inflate one gzip member to the chunk text it held.
-fn inflate(member: &[u8]) -> std::io::Result<String> {
-    let mut text = String::new();
-    GzDecoder::new(member).read_to_string(&mut text)?;
-    Ok(text)
+/// Inflate one gzip member to the chunk text it held, enforcing both
+/// [`MAX_INFLATED_CHUNK_BYTES`] and the exact `expected_raw_len` recorded in
+/// the chunk's index entry (P2-CORE-24).
+fn inflate(member: &[u8], expected_raw_len: u64) -> std::io::Result<String> {
+    if expected_raw_len > MAX_INFLATED_CHUNK_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "expected chunk length {expected_raw_len} exceeds maximum {MAX_INFLATED_CHUNK_BYTES}"
+            ),
+        ));
+    }
+    let cap = usize::try_from(expected_raw_len.min(64 * 1024)).unwrap_or(0);
+    let mut raw = Vec::with_capacity(cap);
+    let limit = expected_raw_len.min(MAX_INFLATED_CHUNK_BYTES);
+    GzDecoder::new(member)
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut raw)?;
+    if u64::try_from(raw.len()).unwrap_or(u64::MAX) != expected_raw_len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "inflated chunk length {} does not match recorded raw_len {expected_raw_len}",
+                raw.len()
+            ),
+        ));
+    }
+    String::from_utf8(raw).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// The tiered read for one ledger key (J5 §10.3): a primary miss on a `log:`
@@ -802,5 +970,186 @@ mod tests {
             index_name("000000000003-000000000040.seg"),
             "000000000003-000000000040.idx.json"
         );
+    }
+
+    #[test]
+    fn segment_name_validation_rejects_traversal_and_malformed_names() {
+        assert!(is_valid_segment_name("000000000000-000000000000.seg"));
+        assert!(is_valid_segment_name("000000000003-000000000040.seg"));
+        for bad in [
+            "../000000000000-000000000000.seg",
+            "..\\000000000000-000000000000.seg",
+            "sub/000000000000-000000000000.seg",
+            "/etc/passwd",
+            "0-0.seg",
+            "000000000005-000000000004.seg",
+            "0000000000000-000000000000.seg",
+            "000000000000-000000000000.idx.json",
+            "000000000000-000000000000.seg.tmp",
+            "",
+        ] {
+            assert!(!is_valid_segment_name(bad), "must reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn tampered_index_traversal_and_oversized_len_are_rejected_without_oom() {
+        let root = temp_root("tampered_idx");
+        let log_dir = root.join("economy").join("journal");
+        fs::create_dir_all(&log_dir).unwrap();
+        let seg_name = segment_name(0, 0);
+        fs::write(log_dir.join(&seg_name), b"not-used").unwrap();
+
+        // 1. Path traversal in loc.segment must fail open().
+        let traversal_idx = SegmentIndex {
+            ns: "economy".into(),
+            log_id: "journal".into(),
+            chunks: [(
+                0,
+                ChunkLoc {
+                    segment: "../../escape.seg".into(),
+                    offset: 0,
+                    len: 8,
+                    raw_len: 8,
+                    sha256: sha256_hex(b"not-used"),
+                    archived_at: 1,
+                    purged: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let idx_path = log_dir.join(index_name(&seg_name));
+        fs::write(&idx_path, serde_json::to_vec(&traversal_idx).unwrap()).unwrap();
+        assert!(
+            matches!(LedgerArchive::open(&root), Err(StoreError::Archive(_))),
+            "traversal segment name must be rejected on open"
+        );
+
+        // 2. Oversized loc.len (u64::MAX) must fail open() and read_member_bytes()
+        // without attempting allocation.
+        let huge_loc = ChunkLoc {
+            segment: seg_name.clone(),
+            offset: 0,
+            len: u64::MAX,
+            raw_len: 8,
+            sha256: sha256_hex(b"not-used"),
+            archived_at: 1,
+            purged: false,
+        };
+        let huge_idx = SegmentIndex {
+            ns: "economy".into(),
+            log_id: "journal".into(),
+            chunks: [(0, huge_loc.clone())].into_iter().collect(),
+        };
+        fs::write(&idx_path, serde_json::to_vec(&huge_idx).unwrap()).unwrap();
+        assert!(
+            matches!(LedgerArchive::open(&root), Err(StoreError::Archive(_))),
+            "oversized loc.len must be rejected on open"
+        );
+        assert!(
+            matches!(
+                read_member_bytes(&log_dir.join(&seg_name), &huge_loc),
+                Err(StoreError::Archive(_))
+            ),
+            "read_member_bytes must reject oversized loc.len before allocation"
+        );
+
+        // 3. Defense-in-depth: even if an invalid segment were present in RAM,
+        // read_chunk and mark_purged refuse it before joining onto log_dir.
+        let _ = fs::remove_file(&idx_path);
+        let archive = LedgerArchive::open(&root).unwrap();
+        {
+            let mut idx = archive.lock();
+            idx.logs
+                .entry(("economy".into(), "journal".into()))
+                .or_default()
+                .chunks
+                .insert(
+                    0,
+                    ChunkLoc {
+                        segment: "../escape.seg".into(),
+                        offset: 0,
+                        len: 8,
+                        raw_len: 8,
+                        sha256: sha256_hex(b"not-used"),
+                        archived_at: 1,
+                        purged: false,
+                    },
+                );
+        }
+        assert!(matches!(
+            archive.read_chunk("economy", "journal", 0),
+            Err(StoreError::Archive(_))
+        ));
+        assert!(matches!(
+            archive.mark_purged("economy", "journal", &[0]),
+            Err(StoreError::Archive(_))
+        ));
+        assert!(
+            !root.join("economy").join("escape.idx.json").exists(),
+            "mark_purged must not write outside log_dir"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gzip_bomb_and_raw_len_mismatch_are_bounded_and_treated_as_absent() {
+        let root = temp_root("gzbomb");
+        let archive = LedgerArchive::open(&root).unwrap();
+        let original = chunk_text(0, 0, 2);
+        archive
+            .store_chunks("economy", "journal", vec![(0, original.clone())], 1, 256)
+            .unwrap();
+        drop(archive);
+
+        // Build a small compressed gzip member that inflates to 2 MiB of zeroes
+        // (far larger than the recorded small raw_len, and directly test inflate
+        // capping past MAX_INFLATED_CHUNK_BYTES too).
+        let payload = vec![b'A'; 2 * 1024 * 1024];
+        let mut enc = GzEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&payload).unwrap();
+        let bomb = enc.finish().unwrap();
+        assert!(bomb.len() < 16 * 1024, "bomb compresses tightly");
+
+        // Direct inflate check: stops at expected_raw_len + 1 and errors cleanly.
+        assert!(inflate(&bomb, 64).is_err());
+        assert!(inflate(&bomb, MAX_INFLATED_CHUNK_BYTES + 1).is_err());
+
+        // Overwrite segment with the bomb and point index at it with tiny raw_len.
+        let dir = root.join("economy").join("journal");
+        let seg_name = segment_name(0, 0);
+        fs::write(dir.join(&seg_name), &bomb).unwrap();
+        let idx = SegmentIndex {
+            ns: "economy".into(),
+            log_id: "journal".into(),
+            chunks: [(
+                0,
+                ChunkLoc {
+                    segment: seg_name.clone(),
+                    offset: 0,
+                    len: u64::try_from(bomb.len()).unwrap(),
+                    raw_len: 64,
+                    sha256: sha256_hex(&payload[..64]),
+                    archived_at: 1,
+                    purged: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        fs::write(
+            dir.join(index_name(&seg_name)),
+            serde_json::to_vec(&idx).unwrap(),
+        )
+        .unwrap();
+
+        let reopened = LedgerArchive::open(&root).unwrap();
+        assert_eq!(
+            reopened.read_chunk("economy", "journal", 0).unwrap(),
+            None,
+            "inflated size mismatch / bomb must be treated as absent without OOM"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

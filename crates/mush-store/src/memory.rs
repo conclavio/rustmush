@@ -1534,6 +1534,18 @@ impl AuthoritativeStore for InMemoryStore {
             let bundle_hash = bundle.bundle_hash();
             let doc = serde_json::to_string(&bundle)?;
             let mut inner = self.lock()?;
+            let key = bundle.idempotency();
+            let minimum_accepted_epoch = inner
+                .authoritative_minimum_epochs
+                .get(key.scope())
+                .copied()
+                .unwrap_or(0);
+            if key.epoch() < minimum_accepted_epoch {
+                return Err(StoreError::AuthoritativeEpochRetired {
+                    requested_epoch: key.epoch(),
+                    minimum_accepted_epoch,
+                });
+            }
             if let Some(intent_doc) = inner.authoritative_intents.get(&token) {
                 let existing = decode_intent(intent_doc)?;
                 if existing != bundle {
@@ -1771,6 +1783,19 @@ impl AuthoritativeStore for InMemoryStore {
                 let bundle = decode_intent(intent_doc)?;
                 if bundle.idempotency().scope() == scope
                     && bundle.idempotency().epoch() < minimum_accepted_epoch
+                {
+                    retained_intents = retained_intents.checked_add(1).ok_or_else(|| {
+                        StoreError::AuthoritativeCorrupt(
+                            "retained epoch intent count overflowed".to_owned(),
+                        )
+                    })?;
+                }
+            }
+            for (token, quarantine_doc) in &inner.authoritative_quarantines {
+                let quarantine = decode_quarantine_receipt(quarantine_doc)?;
+                validate_quarantine_binding(&inner, *token, &quarantine)?;
+                if quarantine.idempotency().scope() == scope
+                    && quarantine.idempotency().epoch() < minimum_accepted_epoch
                 {
                     retained_intents = retained_intents.checked_add(1).ok_or_else(|| {
                         StoreError::AuthoritativeCorrupt(
@@ -4430,6 +4455,88 @@ mod tests {
             .checkpoint_authoritative(current_token, current_hash)
             .await
             .unwrap();
+        let retired = store.retire_authoritative_epochs(&scope, 2).await.unwrap();
+        assert_eq!(retired.retired_tombstones, 1);
+    }
+
+    #[tokio::test]
+    async fn quarantine_blocks_epoch_retirement_and_restore_enforces_watermark() {
+        let store = InMemoryStore::new();
+        seed_minimal_world(&store).await;
+        let quarantined = authoritative_bundle_for_epoch(AuthoritativeBundleFixture {
+            token_byte: 111,
+            ingress_byte: 112,
+            request_byte: 113,
+            object_id: ObjId(2),
+            next_id: Some(3),
+            epoch: 1,
+            durable_outbox: vec![],
+            extra_writes: vec![],
+        });
+        let token = quarantined.token();
+        let hash = quarantined.bundle_hash();
+        let scope = quarantined.idempotency().scope().clone();
+        let evidence_hash = CanonicalHash::from_bytes([0x5a; 32]);
+
+        store
+            .reserve_authoritative_intent(quarantined.clone())
+            .await
+            .unwrap();
+        store
+            .discard_quarantined_authoritative_intent(token, hash, evidence_hash)
+            .await
+            .unwrap();
+
+        // A quarantined intent below the proposed watermark must block epoch
+        // retirement (P2-CORE-23).
+        assert!(matches!(
+            store.retire_authoritative_epochs(&scope, 2).await,
+            Err(StoreError::AuthoritativeEpochPending {
+                requested_minimum_epoch: 2,
+                retained_intents: 1,
+            })
+        ));
+        // Retiring epochs at or below the quarantined intent's epoch (e.g. min
+        // epoch 1) is unaffected because epoch 1 >= 1.
+        let low = store.retire_authoritative_epochs(&scope, 1).await.unwrap();
+        assert_eq!(low.minimum_accepted_epoch, 1);
+
+        // Defense-in-depth: even if a scope watermark has already advanced past
+        // a quarantined bundle's epoch (e.g. legacy state or operator bump),
+        // restore must refuse with AuthoritativeEpochRetired without mutating.
+        {
+            let mut inner = store.lock().unwrap();
+            inner.authoritative_minimum_epochs.insert(scope.clone(), 2);
+        }
+        assert!(matches!(
+            store
+                .restore_quarantined_authoritative_intent(quarantined.clone(), evidence_hash)
+                .await,
+            Err(StoreError::AuthoritativeEpochRetired {
+                requested_epoch: 1,
+                minimum_accepted_epoch: 2,
+            })
+        ));
+        assert!(
+            !store
+                .lock()
+                .unwrap()
+                .authoritative_intents
+                .contains_key(&token),
+            "refused restore must not re-insert the intent"
+        );
+
+        // Reset watermark to 1, restore, finalize, checkpoint, and retire epoch 2.
+        {
+            let mut inner = store.lock().unwrap();
+            inner.authoritative_minimum_epochs.insert(scope.clone(), 1);
+        }
+        store
+            .restore_quarantined_authoritative_intent(quarantined, evidence_hash)
+            .await
+            .unwrap();
+        store.reconcile_authoritative(token, hash).await.unwrap();
+        store.checkpoint_authoritative(token, hash).await.unwrap();
         let retired = store.retire_authoritative_epochs(&scope, 2).await.unwrap();
         assert_eq!(retired.retired_tombstones, 1);
     }

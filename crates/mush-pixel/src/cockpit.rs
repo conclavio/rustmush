@@ -37,6 +37,9 @@ pub const ARENA_MAP_FEED: &str = "arena.map";
 /// The map drawn while no `arena.map` is held: open ground, big enough that
 /// the eye never sees its edge.
 const OPEN_MAP_CELLS: usize = 512;
+/// Hard ceiling on any `arena.map` dimension (`width`, `height`, `extent`)
+/// read from untrusted JSON feeds (P2-CLIENT-15).
+pub const MAX_MAP_DIM: usize = 4_096;
 /// Which way is up in the HUD's inset (doc 21 cut G.13): the picture's own
 /// heading, so what the pilot looks at is up; [`Up::North`] is the one
 /// alternative, the camera's way.
@@ -111,6 +114,9 @@ fn map_window_geometry(map: &Value) -> (usize, usize, usize, usize, usize, usize
         .and_then(|n| usize::try_from(n).ok())
         .unwrap_or_else(|| oy.saturating_add(win_h))
         .max(oy.saturating_add(win_h));
+    if win_w > MAX_MAP_DIM || win_h > MAX_MAP_DIM || ext_w > MAX_MAP_DIM || ext_h > MAX_MAP_DIM {
+        return (0, 0, 0, 0, 0, 0);
+    }
     (win_w, win_h, ox, oy, ext_w, ext_h)
 }
 
@@ -568,29 +574,8 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     }
     let unit = elev.get("unit_cm").and_then(Value::as_i64).unwrap_or(1);
     let bytes = base64_decode(elev.get("data")?.as_str()?)?;
-    let mut heights = Vec::with_capacity(w * h);
-    let (mut at, mut last) = (0usize, 0i64);
-    while heights.len() < w * h {
-        let (mut zig, mut shift) = (0u64, 0u32);
-        loop {
-            let b = *bytes.get(at)?;
-            at += 1;
-            zig |= u64::from(b & 0x7f) << shift;
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift > 35 {
-                return None;
-            }
-        }
-        let delta = (zig >> 1) as i64 ^ -((zig & 1) as i64);
-        last += delta;
-        heights.push(last);
-    }
-    if at != bytes.len() {
-        return None;
-    }
+    let total_cells = w.checked_mul(h)?;
+    let heights = decode_elev_deltas(&bytes, total_cells, 0)?;
     let mut terrain = Terrain::new(cells);
     for (i, cm) in heights.into_iter().enumerate() {
         let cm = i32::try_from(cm.saturating_mul(unit)).ok()?;
@@ -615,6 +600,41 @@ pub fn terrain_from_feed(map: &Value) -> Option<Terrain> {
     Some(terrain)
 }
 
+/// Decode `total_cells` zigzag-LEB128 elevation deltas starting from `initial`,
+/// failing closed on truncated input, trailing bytes, oversized varints, or
+/// signed-integer accumulation overflow (P2-CLIENT-15).
+fn decode_elev_deltas(bytes: &[u8], total_cells: usize, initial: i64) -> Option<Vec<i64>> {
+    // Each zigzag-LEB128 delta consumes at least one byte; reject short buffers
+    // before preallocating `heights`.
+    if bytes.len() < total_cells {
+        return None;
+    }
+    let mut heights = Vec::with_capacity(total_cells);
+    let (mut at, mut last) = (0usize, initial);
+    while heights.len() < total_cells {
+        let (mut zig, mut shift) = (0u64, 0u32);
+        loop {
+            let b = *bytes.get(at)?;
+            at += 1;
+            zig |= u64::from(b & 0x7f) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+            if shift > 35 {
+                return None;
+            }
+        }
+        let delta = (zig >> 1) as i64 ^ -((zig & 1) as i64);
+        last = last.checked_add(delta)?;
+        heights.push(last);
+    }
+    if at != bytes.len() {
+        return None;
+    }
+    Some(heights)
+}
+
 /// Standard base64 (padding optional) to bytes; `None` for anything else.
 fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let value = |c: u8| -> Option<u32> {
@@ -628,7 +648,7 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
         }))
     };
     let body = text.trim_end_matches('=');
-    let mut out = Vec::with_capacity(body.len() * 3 / 4);
+    let mut out = Vec::with_capacity((body.len() / 4).saturating_mul(3).saturating_add(3));
     let (mut acc, mut bits) = (0u32, 0u32);
     for c in body.bytes() {
         acc = (acc << 6) | value(c)?;
@@ -2003,5 +2023,46 @@ mod tests {
         assert!(CockpitPicture::new().draw(&mut zoomed, &feeds, &zoom_look));
         assert_ne!(plain.hash(), zoomed.hash(), "1.5x scope zoom modifies view");
         assert!(zoomed.count_colours(256) <= 256);
+    }
+
+    #[test]
+    fn oversized_arena_map_dimensions_and_elev_overflow_fail_closed() {
+        // 1. Oversized width/height/extent/origin_cell are rejected without OOM.
+        for bad in [
+            serde_json::json!({ "width": MAX_MAP_DIM + 1, "height": 4 }),
+            serde_json::json!({ "width": 4, "height": MAX_MAP_DIM + 1 }),
+            serde_json::json!({ "width": 4, "height": 4, "extent": [MAX_MAP_DIM + 1, 4] }),
+            serde_json::json!({ "width": 4, "height": 4, "origin_cell": [MAX_MAP_DIM, 0] }),
+            serde_json::json!({
+                "width": u64::MAX,
+                "height": u64::MAX,
+                "elev": { "encoding": "zigzag-leb128-delta", "data": "AAAA" }
+            }),
+        ] {
+            let map = map_from_feed(&bad);
+            assert_eq!((map.width(), map.height()), (0, 0), "bad map: {bad}");
+            assert!(
+                terrain_from_feed(&bad).is_none(),
+                "oversized terrain must return None: {bad}"
+            );
+        }
+
+        // 2. Short `elev.data` on a max-size 4096x4096 map fails before
+        //    allocating 128 MiB of heights.
+        let short_max = serde_json::json!({
+            "width": MAX_MAP_DIM,
+            "height": MAX_MAP_DIM,
+            "elev": { "encoding": "zigzag-leb128-delta", "data": "AAAA" }
+        });
+        assert!(terrain_from_feed(&short_max).is_none());
+
+        // 3. Signed elevation accumulator overflow returns None instead of
+        //    panicking under `overflow-checks = true` (P2-CLIENT-15).
+        // Zigzag-encoded +1 is 0x02; adding +1 to i64::MAX must return None.
+        assert_eq!(decode_elev_deltas(&[0x02], 1, i64::MAX), None);
+        // Zigzag-encoded -1 is 0x01; adding -1 to i64::MIN must return None.
+        assert_eq!(decode_elev_deltas(&[0x01], 1, i64::MIN), None);
+        // Normal deltas decode cleanly.
+        assert_eq!(decode_elev_deltas(&[0x02, 0x01], 2, 10), Some(vec![11, 10]));
     }
 }

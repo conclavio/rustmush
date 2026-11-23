@@ -14,22 +14,32 @@ use crate::Frame;
 /// third of the encode time.
 const ZLIB_LEVEL: u32 = 3;
 
+/// Hard upper bound on decoded pixels (`width * height`) accepted by
+/// [`decode_rgba`] (16 megapixels = 64 MiB RGBA output; P2-CLIENT-15).
+pub const MAX_DECODE_PIXELS: usize = 4_096 * 4_096;
+
 /// Encode `frame` as a PNG.
 #[must_use]
 pub fn encode(frame: &Frame) -> Vec<u8> {
     let (w, h) = (frame.width(), frame.height());
-    let rgb = frame.rgb();
+    let expected = w.saturating_mul(h).saturating_mul(3);
+    let rgb = frame.rgb().get(..expected).unwrap_or(&[]);
     // Palette when it fits: a quarter of the bytes before compression. The
     // pixels are long runs of one colour, so the last lookup is remembered
     // and the map is consulted only when the colour changes.
     let mut palette: Vec<[u8; 3]> = Vec::new();
-    let indexed_raw = index_rows(rgb.as_chunks::<3>().0, w, &mut palette);
+    let indexed_raw = (w > 0 && h > 0)
+        .then(|| index_rows(rgb.as_chunks::<3>().0, w, &mut palette))
+        .flatten();
     let indexed = indexed_raw.is_some();
     let raw: Vec<u8> = indexed_raw.unwrap_or_else(|| {
-        let mut raw = Vec::with_capacity(h * (1 + w * 3));
-        for row in rgb.chunks_exact(w * 3) {
-            raw.push(0); // filter: none
-            raw.extend_from_slice(row);
+        let row_bytes = w.saturating_mul(3);
+        let mut raw = Vec::with_capacity(h.saturating_mul(1 + row_bytes));
+        if row_bytes > 0 && h > 0 {
+            for row in rgb.chunks_exact(row_bytes) {
+                raw.push(0); // filter: none
+                raw.extend_from_slice(row);
+            }
         }
         raw
     });
@@ -65,12 +75,14 @@ pub fn encode_rgba(width: usize, height: usize, rgba: &[u8]) -> Vec<u8> {
     let expected = width.saturating_mul(height).saturating_mul(4);
     let rgba = rgba.get(..expected).unwrap_or(&[]);
     let mut palette: Vec<[u8; 4]> = Vec::new();
-    let indexed_raw = index_rgba_rows(rgba.as_chunks::<4>().0, width, &mut palette);
+    let indexed_raw = (width > 0 && height > 0)
+        .then(|| index_rgba_rows(rgba.as_chunks::<4>().0, width, &mut palette))
+        .flatten();
     let indexed = indexed_raw.is_some();
     let raw: Vec<u8> = indexed_raw.unwrap_or_else(|| {
         let row_bytes = width.saturating_mul(4);
         let mut raw = Vec::with_capacity(height.saturating_mul(1 + row_bytes));
-        if row_bytes > 0 {
+        if row_bytes > 0 && height > 0 {
             for row in rgba.chunks_exact(row_bytes) {
                 raw.push(0); // filter: none
                 raw.extend_from_slice(row);
@@ -174,20 +186,41 @@ pub fn decode_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
         6 => 4,
         c => return Err(format!("color type {c} is not read")),
     };
-    if w == 0 || h == 0 || w > 16_384 || h > 16_384 {
+    let Some(pixels) = w.checked_mul(h) else {
+        return Err(format!("a {w}x{h} image"));
+    };
+    if w == 0 || h == 0 || w > 16_384 || h > 16_384 || pixels > MAX_DECODE_PIXELS {
         return Err(format!("a {w}x{h} image"));
     }
-    let stride = w * channels;
-    let mut raw = Vec::with_capacity(h * (stride + 1));
+    let Some(stride) = w.checked_mul(channels) else {
+        return Err(format!("a {w}x{h} image"));
+    };
+    let Some(row_bytes) = stride.checked_add(1) else {
+        return Err(format!("a {w}x{h} image"));
+    };
+    let Some(expected_raw) = h.checked_mul(row_bytes) else {
+        return Err(format!("a {w}x{h} image"));
+    };
+    let max_read = u64::try_from(expected_raw)
+        .map_err(|_| format!("a {w}x{h} image"))?
+        .saturating_add(1);
+    let mut raw = Vec::with_capacity(expected_raw.min(64 * 1024));
     flate2::read::ZlibDecoder::new(idat.as_slice())
+        .take(max_read)
         .read_to_end(&mut raw)
         .map_err(|e| format!("the image data does not inflate: {e}"))?;
-    if raw.len() < h * (stride + 1) {
+    if raw.len() > expected_raw {
+        return Err("the image data exceeds its IHDR dimensions".into());
+    }
+    if raw.len() < expected_raw {
         return Err("the image data is short".into());
     }
     let mut prev = vec![0u8; stride];
     let mut row = vec![0u8; stride];
-    let mut rgba = Vec::with_capacity(w * h * 4);
+    let Some(rgba_len) = pixels.checked_mul(4) else {
+        return Err(format!("a {w}x{h} image"));
+    };
+    let mut rgba = Vec::with_capacity(rgba_len);
     for line in raw.chunks_exact(stride + 1).take(h) {
         let (filter, src) = line.split_first().ok_or("an empty row")?;
         for i in 0..stride {
@@ -309,10 +342,13 @@ fn index_rgba_rows(pixels: &[[u8; 4]], w: usize, palette: &mut Vec<[u8; 4]>) -> 
 /// (doc 21a `W-01`). At most 256 slots are ever occupied, so the load factor
 /// never exceeds 0.25.
 fn index_rows(pixels: &[[u8; 3]], w: usize, palette: &mut Vec<[u8; 3]>) -> Option<Vec<u8>> {
+    if w == 0 || pixels.is_empty() {
+        return None;
+    }
     const TABLE_LEN: usize = 1024;
     const TABLE_MASK: usize = TABLE_LEN - 1;
     let mut table = [0u16; TABLE_LEN];
-    let mut raw: Vec<u8> = Vec::with_capacity(pixels.len() / w.max(1) + pixels.len());
+    let mut raw: Vec<u8> = Vec::with_capacity(pixels.len() / w + pixels.len());
     let mut last: Option<([u8; 3], u8)> = None;
     for row in pixels.chunks_exact(w) {
         raw.push(0); // filter: none
@@ -548,5 +584,51 @@ mod tests {
         assert_eq!(colour, 6);
         assert!(plte.is_empty());
         assert_eq!(raw.len(), 32 * (1 + 32 * 4));
+    }
+
+    #[test]
+    fn zero_dimension_encode_and_index_rows_never_panic() {
+        let mut pal = Vec::new();
+        assert!(index_rows(&[], 0, &mut pal).is_none());
+        assert!(index_rows(&[[1, 2, 3]], 0, &mut pal).is_none());
+        for (w, h) in [(0, 0), (0, 5), (5, 0)] {
+            let png = encode(&Frame::new(w, h));
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+            let rgba_png = encode_rgba(w, h, &[]);
+            assert_eq!(&rgba_png[..8], b"\x89PNG\r\n\x1a\n");
+        }
+    }
+
+    #[test]
+    fn decode_rgba_rejects_oversized_dimensions_and_zlib_bombs() {
+        // 1. Oversized IHDR (16384x16384 = 268M px > MAX_DECODE_PIXELS) must
+        //    fail before preallocating gigabytes.
+        let mut huge = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&16_384u32.to_be_bytes());
+        ihdr.extend_from_slice(&16_384u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(&mut huge, b"IHDR", &ihdr);
+        chunk(&mut huge, b"IDAT", &[]);
+        chunk(&mut huge, b"IEND", &[]);
+        assert!(decode_rgba(&huge).is_err());
+
+        // 2. Zlib bomb: 1x1 RGBA IHDR (expected_raw = 5 bytes), IDAT inflates
+        //    to 2 MiB of zeroes. Bounded take(expected_raw + 1) rejects cleanly.
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::best());
+        z.write_all(&vec![0u8; 2 * 1024 * 1024]).unwrap();
+        let bomb_idat = z.finish().unwrap();
+        assert!(bomb_idat.len() < 16 * 1024);
+
+        let mut bomb = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut small_ihdr = Vec::new();
+        small_ihdr.extend_from_slice(&1u32.to_be_bytes());
+        small_ihdr.extend_from_slice(&1u32.to_be_bytes());
+        small_ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        chunk(&mut bomb, b"IHDR", &small_ihdr);
+        chunk(&mut bomb, b"IDAT", &bomb_idat);
+        chunk(&mut bomb, b"IEND", &[]);
+        let err = decode_rgba(&bomb).expect_err("zlib bomb must be rejected");
+        assert!(err.contains("exceeds"), "{err}");
     }
 }

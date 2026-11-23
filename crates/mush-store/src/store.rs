@@ -109,7 +109,8 @@ pub trait AuthoritativeStore: ObjectStore {
     /// Restore the exact full intent from independently verified quarantine
     /// custody so recovery can retry it after the underlying fault is fixed.
     /// This is the sole transition that makes a quarantine tombstone pending
-    /// again and it requires the exact evidence identity.
+    /// again, requires the exact evidence identity, and refuses bundles from
+    /// retired idempotency epochs.
     fn restore_quarantined_authoritative_intent(
         &self,
         bundle: AuthoritativeBundle,
@@ -155,9 +156,9 @@ pub trait AuthoritativeStore: ObjectStore {
 
     /// Advance one idempotency scope's durable retry horizon and remove every
     /// compact receipt/binding below it. Implementations must refuse while a
-    /// full intent remains below the proposed watermark. Redis may commit the
-    /// watermark before finishing bounded tombstone cleanup; after an error,
-    /// retrying the same minimum is required and safe.
+    /// full intent or quarantined intent remains below the proposed watermark.
+    /// Redis may commit the watermark before finishing bounded tombstone
+    /// cleanup; after an error, retrying the same minimum is required and safe.
     fn retire_authoritative_epochs<'a>(
         &'a self,
         scope: &'a IdempotencyScope,

@@ -1089,13 +1089,19 @@ pub fn check_model(e: &ModelBake, looks: &[Look]) -> Vec<String> {
     }
     for look in &naming {
         let (lw, lh) = look.size_cm;
-        if e.size_cm.1.abs_diff(lh) * 50 > lh {
+        let (lw64, lh64, mw64, mh64) = (
+            u64::from(lw),
+            u64::from(lh),
+            u64::from(e.size_cm.0),
+            u64::from(e.size_cm.1),
+        );
+        if mh64.abs_diff(lh64) * 50 > lh64 {
             bad.push(format!(
                 "{}: baked {} cm tall, look {} {lh} cm",
                 e.model, e.size_cm.1, look.id
             ));
         }
-        if e.size_cm.0 * 2 < lw || e.size_cm.0 > lw * 2 {
+        if mw64 * 2 < lw64 || mw64 > lw64 * 2 {
             bad.push(format!(
                 "{}: baked {} cm wide, look {} {lw} cm",
                 e.model, e.size_cm.0, look.id
@@ -1472,5 +1478,29 @@ mod tests {
         assert!(models().len() >= before + 2);
         assert_eq!(model("test.grows_b").map(|m| m.size_cm), Some((250, 100)));
         assert!(install(b"not a pack").is_err());
+    }
+
+    #[test]
+    fn check_model_never_overflows_on_extreme_size_cm() {
+        let mut extreme_look = look::shipped()[0].clone();
+        extreme_look.model = Some("test.extreme".to_string());
+        extreme_look.size_cm = (u32::MAX, u32::MAX);
+        let entry = block_entry("test.extreme", (u32::MAX, 100));
+        let bad = check_model(&entry, &[extreme_look]);
+        assert!(
+            bad.iter().any(|msg| msg.contains("cm tall")),
+            "height mismatch reported without overflow: {bad:?}"
+        );
+
+        let mut tiny_look = look::shipped()[0].clone();
+        tiny_look.model = Some("test.extreme2".to_string());
+        tiny_look.size_cm = (100, 100);
+        let huge_entry = block_entry("test.extreme2", (u32::MAX, u32::MAX));
+        let bad2 = check_model(&huge_entry, &[tiny_look]);
+        assert!(
+            bad2.iter().any(|msg| msg.contains("cm tall"))
+                && bad2.iter().any(|msg| msg.contains("cm wide")),
+            "extreme model dimensions reported without overflow: {bad2:?}"
+        );
     }
 }
