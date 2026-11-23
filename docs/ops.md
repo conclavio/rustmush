@@ -98,70 +98,354 @@ The configured receipt promise makes that distinction executable:
   read-only `CONFIG GET` for those settings. rustmush never silently weakens
   this selected promise.
 
-## Backups
+## Whole-instance backup and restore (doc 52)
 
-> **Not yet in place (2026-10-26).** No instance takes scheduled backups today: the
-> offsite layer below is an example, and no deploy installs it. A restore also needs
-> the directories under `[server].data_dir` that must match the store: the ledger
-> archive, the quarantine spool, the SSH host keys and the four key families
-> (`offer-keys/`, `resolution-keys/`, `decision-keys/`, `geology-keys/`). Each has
-> its own "back it up" note further down. One whole-instance backup and rehearsed
-> restore is open as `T-112` in
-> [the simulator backlog](design/16c-simulator-backlog.md); until it lands, copy all of
-> `[server].data_dir` together with a fresh `dump.rdb` before any redeploy or wipe.
-> A wipe's own recipe takes that copy: `deploy/redeploy/wipe-cutover.sh`, in the order
-> [`deploy/README.md`, "Wipe and redeploy"](../deploy/README.md#wipe-and-redeploy) gives.
+One command writes one archive of everything an instance needs to stand back
+up; a timer runs it every four hours; a second box fetches the archives,
+restores one beside nothing that matters, and proves it is whole. The tool is
+`deploy/backup/rmbak.py` (Python 3, standard library only); the design, what a
+cut of a live instance can and cannot promise, and the owner's open questions
+are in [doc 52](design/52-instance-backup-and-restore.md).
 
-Three layers, cheapest first:
+> **State (2026-11-23).** Built and proved on conclav.dev against the throwaway
+> instances dev3 and dev4 (below). **Not installed on conclav.io**: the timer
+> there, the first archive of dev1 or dev2 and the key for the copy each wait
+> for the owner's word (doc 52 §9). Until the timer runs there, a deploy's own
+> snapshot (`deploy/redeploy/wipe-cutover.sh`) is still the only copy, and
+> `rmbak.py backup <instance>` by hand before any redeploy or wipe is better:
+> it takes the store while the instance runs and proves what it took.
 
-1. **AOF** (`appendonlydir/`) — continuous, already on. Crash recovery, not
-   backup: it lives on the same disk.
-2. **RDB snapshots** — Redis writes `dump.rdb` on its `save` points, and on
-   demand:
-   - in-game: `@dump` (Wizard) triggers a `BGSAVE`, ordered **behind** every
-     write already queued; the invoker is told when the store acknowledged.
-     Once persistence integrity is latched, it is refused without contacting
-     Redis.
-   - shutdown: the clean-shutdown sequence triggers a final `BGSAVE` only
-     after the ordered writer drains cleanly and the process-wide integrity
-     latch remains clear. Otherwise it logs that the snapshot was skipped.
-   - shell: `redis-cli BGSAVE`. This bypasses rustmush's integrity guard; do
-     not use it during an integrity incident as a purported recovery snapshot.
-3. **Offsite copies** — `dump.rdb` is a complete, copyable, point-in-time
-   file (safe to copy while Redis runs; it is written atomically via
-   rename). Cron something like:
+### What an archive is, and what it promises
+
+`<instance>-<UTC>-<commit8>.rmbak.tar.zst`, in `/var/backups/rustmush`, root's,
+mode 0640 to the group `rmbackup` (0600 where that group does not exist):
+
+| Inside | What |
+|---|---|
+| `manifest.json` | the instance, host and commit; the wall time and the IC clock's last checkpoint; every member's size, mode and SHA-256; the **facts** of the store (below) |
+| `redis/dump.rdb` | the store at one instant: one Redis fork |
+| `data/` | the data directory without `logs/`: the ledger archive tier (**money**), the quarantine spool, the four key families, the SSH host key, `launch.json` |
+| `config/` | `instance.env`, the rendered `mushd.toml`, the unit files and the Redis config as installed |
+| `build/` | the commit stamps, **both binaries**, the help files, the deploy directory and the deploy's scripts: everything `deploy.sh` reads |
+
+Never in it: the provider keys (`/opt/rustmush/<inst>/<inst>.env`), the staff
+password file, the logs, the native TLS pair, and anything that is the box's
+and not the instance's (Caddy, the doorway, the client downloads).
+
+**The promise.** The store is what one Redis fork saw between two commands, so
+every transaction is whole; every file beside it is exactly as it was at that
+instant (the backup copies them after the fork and takes the whole cut again
+if any of them changed meanwhile). It is the state a `kill -9` of the server
+at that instant would have left, which the server already boots from. Nobody is
+paused and nothing is announced: a command still queued in the server at that
+instant is not in it, exactly as after a crash.
+
+**The facts** are derived from the snapshot itself (the backup loads its own
+`dump.rdb` into a scratch Redis): key counts and a digest for each key family,
+every ledger's first and last seq and a digest of its entries across the store
+and the archive tier, each instrument's sum of posted balances, the IC clock's
+checkpoint. A restore derives them again from what it loaded, **before the
+server starts**, and refuses on any difference.
+
+### The commands
+
+Run as root. On a box where it is installed the tool is
+`/usr/local/lib/rustmush-backup/rmbak.py`; from a tree it is
+`deploy/backup/rmbak.py`. Below, `rmbak` stands for `python3 <that path>`.
+
+| Command | What it does |
+|---|---|
+| `rmbak backup <instance>` | one archive, now; prints its path. `--dest <dir>` writes elsewhere |
+| `rmbak run` | what the timer runs: every instance in `INSTANCES`, one after another; prune; `status.json` |
+| `rmbak status` | the timer, the last run, the newest archive of each instance; exits non-zero when one is stale or failed |
+| `rmbak show <archive>` | the manifest in brief: when, which commit, the ledgers, the sums |
+| `rmbak verify <archive>` | every member against its checksum |
+| `rmbak verify --deep <archive>` | that, then the snapshot loaded into a scratch Redis and the facts derived again |
+| `rmbak pull` | on the box that fetches: new archives, each verified deeply before it is kept |
+| `rmbak restore <archive> --as dev4` | a **copy**: its own Redis, units, directories and loopback ports |
+| `rmbak restore <archive> --in-place --yes` | the store and data back under the instance's **own name** (the bad day, below) |
+| `rmbak check <instance>` | a restored instance boots, answers and agrees with its manifest |
+| `rmbak remove <instance> --yes` | take a restored copy away (it refuses anything that is not one) |
+| `rmbak tree <archive>` | lay the archive's slice of the build tree (both binaries and everything `deploy.sh` reads) on a box that has lost its own |
+
+`/etc/rustmush-backup.conf` holds the rest, every key with its default written
+out (`deploy/backup/backup.conf.example`): `INSTANCES`, `BACKUP_DIR`, `KEEP`
+(archives kept an instance, 18), `SECRETS` (`in-archive`, or `apart`: the key
+families and the host key are left out and listed with digests), `BINARIES`
+(`yes`; `no` makes a 2.7 MB archive that needs `restore --binaries <dir>`),
+`MAX_AGE_HOURS` (9), and the pull's `PULL_SSH`, `PULL_DIR`, `PULL_KEEP` (84),
+`PULL_DEEP` (`yes`).
+
+### Installing it, and the timer
+
+On the box that takes the backups:
 
 ```bash
-#!/bin/sh
-# after a fresh snapshot: redis-cli BGSAVE && wait for it
-redis-cli BGSAVE
-sleep 5   # or poll: redis-cli INFO persistence | grep rdb_bgsave_in_progress
-cp /var/lib/redis/dump.rdb /backups/mush-$(date +%Y%m%d-%H%M).rdb
-# retention example: keep 24 hourly, 14 daily — prune with find -mtime as taste dictates
+bash /opt/rustmush/<inst>/build/deploy/backup/install.sh take   # the tool, the conf, the units; enables nothing
+editor /etc/rustmush-backup.conf                                # INSTANCES=dev1 dev2
+systemctl start rustmush-backup.service                         # one run by hand
+python3 /usr/local/lib/rustmush-backup/rmbak.py status
+systemctl enable --now rustmush-backup.timer
 ```
 
-## Restore procedure
+- **The interval is one line**, `OnCalendar=*-*-* 00/4:20:00` in
+  `rustmush-backup.timer`: every four hours at twenty past, clear of the ledger
+  archive pass's window (03:00 to 04:00 UTC). Change it on the box with
+  `systemctl edit rustmush-backup.timer`: an `[Timer]` section, an **empty**
+  `OnCalendar=` line (it clears the shipped one), then the new one.
+  `systemd-analyze calendar '<expression>'` reads an expression back;
+  `systemctl list-timers rustmush-backup.timer` shows the next run. Keep
+  `MAX_AGE_HOURS` above twice the interval.
+- **One run does the instances in turn**, so two are never forked at once; a
+  run still going when the timer fires again is not started twice; a run by
+  hand and the timer's cannot overlap (a lock on the backup directory).
+- **It prunes** to `KEEP` archives an instance, and only behind a good backup:
+  while an instance's backups fail, nothing older of it is deleted.
+- **It fails loudly, and someone still has to look.** A failed instance makes
+  the unit `failed` (`systemctl --failed`), with the reason in the journal at
+  `err` (`journalctl -u rustmush-backup -p err`) and in
+  `/var/backups/rustmush/status.json`; `rmbak status` exits non-zero; and the
+  pull on the other box fails, both on the far side's reported failure and on
+  an archive older than `MAX_AGE_HOURS`. There is no pager behind these (doc
+  52, Q-52-6).
+- **A backup that breaks an invariant is written and fails.** If a snapshot's
+  balances do not sum to zero, a ledger has a hole, or the quarantine spool
+  holds a record, the archive is kept (it is evidence, and the best copy there
+  is) and the run fails with the reason. During an integrity incident
+  ("Deterministic failure" below) such an archive is the incident's evidence
+  and never the last known-good backup; pruning stops until a backup is good
+  again.
+- The unit runs at the lowest CPU and I/O priority, writes one directory and
+  has no network: an archive in the making cannot leave the box.
 
-To restore a world from a backed-up `dump.rdb`:
+### The copy to a second box
 
-1. Stop `mushd`, then stop Redis.
-2. Copy the backup over the live dump: `cp /backups/mush-....rdb /var/lib/redis/dump.rdb`
-   (ownership: `chown redis:redis`).
-3. **AOF caveat:** with `appendonly yes`, Redis loads the AOF, *not* your
-   restored RDB. The canonical sequence:
-   - start Redis with AOF disabled (`redis-server --appendonly no ...` or
-     edit the conf) so it loads `dump.rdb`;
-   - re-enable AOF live: `redis-cli CONFIG SET appendonly yes` (rewrites a
-     fresh AOF from the restored dataset), and restore `appendonly yes` in
-     the conf for the next boot;
-   - alternatively, simply move `appendonlydir/` aside before starting —
-     Redis then falls back to the RDB.
-4. Start `mushd`. It loads the world from Redis and play resumes. Everything
-   after the snapshot is gone — that is what "restore" means; announce it.
+The box that restores **pulls**: `rmbak pull`, run by
+`rustmush-backup-pull.timer` fifteen minutes after each backup. Its key's only
+use on the far side is a forced command, `backup-serve.sh`, which answers
+`list`, `status` and `fetch <name>` and nothing else. The six steps that place
+the key (the account, the key, the `authorized_keys` line, password logins off
+on the admin port, the panel rule, the first run) are doc 52 §5; each is the
+owner's to do or to say go to, and none is done.
 
-Verify a backup at any time by pointing a scratch Redis at a copy and
-booting `mushd` with `redis_url` aimed there (a `@dump/verify` convenience
-command is planned).
+By hand, until then, an archive travels as a deploy's tarballs do, through the
+owner's session; it is one file, and `rmbak verify` on the far side proves the
+transfer:
+
+```bash
+scp -P 2222 root@conclav.io:/var/backups/rustmush/dev1-<UTC>-<commit8>.rmbak.tar.zst .
+scp dev1-<UTC>-<commit8>.rmbak.tar.zst root@conclav.dev:/var/backups/rustmush-pulled/
+```
+
+### Restoring a copy and checking it (conclav.dev)
+
+```bash
+rmbak show    /var/backups/rustmush-pulled/dev1-<UTC>-<commit8>.rmbak.tar.zst
+rmbak restore /var/backups/rustmush-pulled/dev1-<UTC>-<commit8>.rmbak.tar.zst --as dev4 --cpus 24-31
+rmbak check dev4                                   # add --staff <login> --password-file <file> for a staff session
+rmbak remove dev4 --yes
+```
+
+`restore --as` reads the archive whole first, refuses a name that is not an
+earlier restored copy (`--replace` takes one's place), and makes
+`/opt/rustmush/dev4`, `redis-dev4mush`, `dev4mush-server` and
+`dev4mush-gateway@a`. The copy binds `127.0.0.1` only (SSH 16892 and web 16893
+unless `--ssh-port` and `--web-port` say otherwise), has the LLM and Discord
+off and an empty environment file, and its units do not restart: a copy never
+spends on a provider, never speaks on Discord, never answers the public
+internet, and a copy that will not boot stays down and says why. The store is
+compared to the manifest before the server starts; on a difference nothing
+boots. `--cpus 24-31` keeps the copy off the cores the nightly soak holds
+(07:17 to about 11:00 UTC).
+
+`check` then holds the running copy to its manifest: the units; this boot's log
+(`world loaded from store` with the manifest's object count, no line at ERROR,
+none of the boot's refusals, the geology key matching its pin); `healthz`; the
+store again (every ledger whole, every instrument zero, each ledger's archived
+entries still there entry for entry); and the clock (next section). With a
+staff login it also proves an archived login works and asks `@tacsim/time`,
+`time`, `@stats` and `@tacsim/port status` (the readiness report: its
+`geology:` line must read `pinned … [ready]`, and any line that is not ready
+is named); `--wait-unfreeze` waits the countdown out and sees the clock run
+on. It writes `check-report.json` beside the copy's config and exits non-zero
+on any failure.
+
+**Measured on conclav.dev** (dev3's archives, 109 MB, a store of 4,905 to
+16,099 keys): a backup 8.6 to 9.1 s; `restore --as` to a served copy **2.8 to
+4.1 s**; `check` 1.1 to 1.3 s, and five minutes more to watch the thaw; a
+wiped dev3 restored in place, started and checked in **8.7 s** (2.3 s the
+restore, 5.1 s `deploy.sh`, 1.3 s the check). The restore time of a real dev1
+or dev2 archive is recorded here when that restore has been run (doc 52 §9,
+step 4).
+
+To look at a copy by hand, tunnel to it and log in with an account of the
+archived world: `ssh -L 16892:127.0.0.1:16892 root@conclav.dev`, then
+`ssh -p 16892 <account>@127.0.0.1`.
+
+### The IC clock after a restore
+
+A restore is an outage as long as the archive is old ("Outages", below). The
+restored world **freezes at the archive's last clock checkpoint** (at most a
+second before the cut on a busy world, ten on an idle one), counts down
+`[game].outage_countdown_s` (five minutes) with world actions paused, and
+then runs on **from that same IC second**. The boot logs
+`boot_outage=OutageFreeze`; `@tacsim/time` reads `frozen at IC <second>`,
+the manifest's `ic_checkpoint_unix`.
+
+- The time the archive spent on disk is discarded. Nothing catches up, and
+  everything keyed to IC time agrees with the store, which is of the same
+  instant. After a restore in place the game calendar is behind where it would
+  have been by the length of the outage, as after any long outage.
+- What is keyed to the wall clock ran on: web session tokens, tempbans and link
+  codes expire by real time, so a restore of a week-old archive comes up with
+  every web login expired.
+- A restore within thirty seconds of the cut re-anchors silently, with no
+  freeze (`boot_outage=SilentReanchor`).
+- A box whose clock is behind the archive's would measure no outage; `check`
+  fails a copy whose clock reads earlier than the manifest's.
+
+### The bad day: an instance's store and data back in place
+
+For dev1 on conclav.io, or on a box rebuilt in its shape. Read it through once
+first; every step prints what it did, and nothing here deletes the state it
+replaces. It needs the archive and the tool (`deploy/backup/rmbak.py`, one
+file) and, on a box that has lost the instance, Redis from packages.redis.io
+with its modules, python3 and zstd; it needs no repo, no build and no
+toolchain, because an archive carries both binaries and everything
+`deploy.sh` reads.
+
+1. **Pick the archive.** `rmbak show <archive>` for the newest; the name carries
+   the commit. `rmbak verify --deep <archive>` on the box it will be restored
+   on: this is the moment to learn it is bad.
+2. **The tree, with the world held.**
+   - A box that still has the instance installed at the archive's commit:
+     nothing to do.
+   - A box that has lost its tree, or the whole instance: `rmbak tree <archive>`
+     lays `/opt/rustmush/<inst>/build` from the archive (it refuses a directory
+     that is not empty), then put the provider keys back
+     (`/opt/rustmush/<inst>/<inst>.env`, root 0600: they are never in an
+     archive, and the server unit will not start without the file), then
+     `SERVER_HOLD=1 bash /opt/rustmush/<inst>/build/deploy/<inst>-split/deploy.sh`:
+     the units, Redis and the rendered config, the world held down.
+   - An archive written with `BINARIES=no` carries no binaries: stage and build
+     the tree at its commit as
+     [`deploy/README.md`, "Wipe and redeploy"](../deploy/README.md#wipe-and-redeploy)
+     does (`deploy/redeploy/stage-build.sh`; about 25 minutes on conclav.io).
+3. **Stop both halves** (`restore --in-place` refuses while either runs):
+   `systemctl stop <inst>mush-server <inst>mush-gateway@a <inst>mush-gateway@b`.
+4. **Restore**: `rmbak restore <archive> --in-place --yes`. It moves the data
+   directory that is there to `data.pre-restore-<UTC>` beside it and the Redis
+   files that are there to `/var/lib/redis-<inst>mush.pre-restore-<UTC>`,
+   places the archive's data, loads the store into the instance's own Redis
+   (with the append-only log off, then on: see the caveat below), and compares
+   the facts. On a difference it stops; the server has not been started.
+5. **Start it as a deploy does**: `rm -f /opt/rustmush/<inst>/server.hold`,
+   then `bash /opt/rustmush/<inst>/build/deploy/<inst>-split/deploy.sh` (it
+   renders `launch_path` from the restored `launch.json` and starts the
+   server and a gateway generation).
+6. **Check**: `rmbak check <inst>`, then a login. After an outage of thirty
+   seconds or more the world is frozen for five minutes (above): tell the
+   players. `@tacsim/port status` is not answered until the thaw, and for a
+   minute after any boot some `site` lines read `its ground is still being
+   mapped. [missing]`; ask again.
+7. Reload Caddy if the box is new, and delete the two `pre-restore-<UTC>`
+   directories once the restored world has been looked at.
+
+Rehearsed twice on conclav.dev, on dev3 while its Registry was rating a line
+(doc 52 §7.5). Wiped (`reset-instance.sh`, and the host key deleted) and
+restored onto itself: steps 4 to 6 took **8.7 s**. With the units, Redis,
+config, tree and data all removed, from the archive alone: steps 2 to 5 took
+**22.5 s** to a served world (15.1 s the tree and the held deploy, 2.4 s the
+restore, 5.0 s `deploy.sh`), and the check then waited out the five-minute
+countdown. Both times the SSH host key came back with the fingerprint it had,
+and every ledger entry for entry.
+
+### Proving the check has teeth
+
+`deploy/backup/test_rmbak.py tamper <archive> <case> <out dir>` writes a
+damaged copy of an archive; `rmbak verify`, `verify --deep` or `restore` must
+then refuse it. The cases, each proved against a real dev3 archive (doc 52
+§7.3): a flipped byte, a truncation, a changed, missing or extra member
+(`verify` refuses); and, with every checksum rewritten to match the damage, a
+balance raised, a journal chunk or its last entry deleted, a login added, the
+clock moved back, an archive-tier segment removed or flipped (`verify --deep`
+and `restore` refuse by name). Two further cases also replace the manifest's
+facts with the damaged store's own, and are refused by the invariants alone.
+`python3 -B deploy/backup/test_rmbak.py` runs every case against a small
+synthetic instance; CI runs it on every pull request.
+
+One damage is **not** caught: a key file other than the geology key that was
+already wrong when the backup read it. Its checksum protects it from then on.
+
+### The throwaway instances on conclav.dev: dev3 and dev4
+
+The owner's word of 2026-11-23 lets dev3 and dev4 stand on conclav.dev for
+this work. Both bind loopback only. They share the box with the GitHub runner
+(`/home/ghrunner/actions-runner`), the gate's Redis on 6799 and the nightly
+soak (cores 0 to 23, 07:17 to about 11:00 UTC): start nothing heavy in those
+hours, and keep a copy on cores 24 to 31 (`restore --cpus 24-31`).
+
+- **dev3** is the source: a deploy-shaped instance at a commit of `origin/main`,
+  made from a copy of `deploy/dev2` and `deploy/dev2-split` with `dev2` renamed,
+  ports 16792 (SSH) and 16793 (web), `EXTERNAL_IP` pinned to `127.0.0.1` in its
+  `deploy.sh`, `LLM_ENABLED=false`, brought up by
+  `deploy/instance/launch-bringup.py`. Its staff login is `keeper`, its password
+  a random one in `/root/dev3-keeper.pw` (root 0600, never printed).
+  - stop: `systemctl stop dev3mush-server dev3mush-gateway@a dev3mush-gateway@b`
+  - start: `systemctl start dev3mush-gateway@a` (its `Wants=` starts the server)
+  - remove: `systemctl disable --now dev3mush-server dev3mush-gateway@a dev3mush-gateway@b redis-dev3mush`,
+    then `rm -rf /opt/rustmush/dev3 /var/lib/redis-dev3mush /var/lib/dev3mush-gateway
+    /etc/redis/redis-dev3mush.conf /etc/systemd/system/dev3mush-* /etc/systemd/system/redis-dev3mush.service
+    /root/dev3-keeper.pw` and `systemctl daemon-reload`.
+- **dev4** is whatever `rmbak restore --as dev4` last made. Stop:
+  `systemctl stop dev4mush-gateway@a dev4mush-server`. Remove:
+  `rmbak remove dev4 --yes`.
+- The backup timer installed there for the rehearsal: `systemctl disable --now
+  rustmush-backup.timer`; its archives are in `/var/backups/rustmush`.
+
+### The layers under it: the append-only log and Redis's own snapshots
+
+Two layers the archive does not replace, and one caveat every restore of a
+`dump.rdb` meets:
+
+1. **AOF** (`appendonlydir/`): continuous, already on. Crash recovery, not
+   backup: it lives on the same disk.
+2. **RDB snapshots**: Redis writes its own `dump.rdb` on its `save` points, and
+   on demand:
+   - in-game: `@dump` (Wizard) triggers a `BGSAVE`, ordered **behind** every
+     write already queued. It reports when Redis **accepted** the save, not
+     when it finished, and a save already in progress is reported as success.
+     Once persistence integrity is latched, it is refused without contacting
+     Redis.
+   - shutdown: the all-in-one `mushd`'s clean-shutdown sequence triggers a
+     final `BGSAVE` only after the ordered writer drains cleanly and the
+     process-wide integrity latch remains clear.
+   - shell: `redis-cli BGSAVE`. This bypasses rustmush's integrity guard; do
+     not use it during an integrity incident as a purported recovery snapshot.
+     (`rmbak backup` does not use `BGSAVE` at all; it takes a replica's
+     snapshot and leaves Redis's own file alone. It does not consult the
+     integrity guard either, which is why it reads the quarantine spool and
+     fails on a record.)
+
+**The caveat: Redis loads its append-only log, not a `dump.rdb` put beside
+it.** Redis 8.10 started with `appendonly yes` and no `appendonlydir/` does
+not fall back to the RDB: it comes up **empty** and writes a fresh, empty log
+(tried on conclav.dev, 2026-11-23). `rmbak restore` therefore loads the file
+with a server run with the log off, turns the log on there (`CONFIG SET
+appendonly yes`, which rewrites it from the loaded data), waits for the
+rewrite, and only then starts the instance's Redis on its own config. By hand
+the sequence is the same:
+
+1. Stop the server and the gateway, then the instance's Redis.
+2. Move `appendonlydir/` aside and put the `dump.rdb` in the Redis directory,
+   owned by `redis`.
+3. Start Redis with the log off (`redis-server <conf> --appendonly no`), check
+   `DBSIZE`, then `redis-cli CONFIG SET appendonly yes` and wait for
+   `aof_rewrite_in_progress:0` in `INFO persistence`.
+4. Stop that Redis, start the unit, check `DBSIZE` again, start the server.
+
+A restore that skips step 3 boots a fresh, empty world that looks healthy. The
+facts are what catch it.
 
 ## Migrations
 

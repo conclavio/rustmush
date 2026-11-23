@@ -519,6 +519,13 @@ the Redis the live `instance.env` names; **swap the trees** (the old one stays a
 holds; **`SERVER_HOLD=1 deploy.sh`**. It prints the units, the hold and the
 store after.
 
+That snapshot is a plain copy of directories. Where the backup tool is on the
+box, take an archive first, while the instance still runs: `python3
+deploy/backup/rmbak.py backup <n>` writes one file that carries the store, the
+data dir, the config, the units and both binaries, proves what it took, and is
+what `rmbak.py restore` reads if the wiped world is wanted back
+([`docs/ops.md`, "Whole-instance backup and restore"](../docs/ops.md#whole-instance-backup-and-restore-doc-52)).
+
 **5. The bring-up**, after a look at what step 4 printed:
 
 ```bash

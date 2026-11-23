@@ -1321,6 +1321,38 @@ jobs:
           bash -n scripts/soak.sh
           python3 -B scripts/test_flake_report.py
           for s in deploy/redeploy/*.sh; do bash -n "$s"; done
+          # Doc 52: the backup's installer and the copy's forced command.
+          for s in deploy/backup/*.sh; do bash -n "$s"; done
+      # Doc 52: the backup tool's cycle tests stand a tiny instance up over a
+      # redis-server of their own and need redis-server and redis-cli on PATH
+      # (any 6.2 or later, no module). The runner image carries neither, so
+      # they come from apt, bounded and tried twice (2026-11-05: an apt mirror
+      # stalled a job for hours). If the mirror fails, that is the mirror and
+      # not this change: the step warns, the cycle tests skip themselves out
+      # loud, and the pure tests still run. When the cycle tests run, a
+      # failure fails the job.
+      - name: Redis for the backup tool's cycle tests (doc 52)
+        timeout-minutes: 8
+        continue-on-error: true
+        run: |
+          for attempt in 1 2; do
+            if timeout 180 sudo apt-get update -q &&
+              timeout 180 sudo apt-get install -y --no-install-recommends redis-server redis-tools; then
+              break
+            fi
+            echo "::warning::apt try $attempt for redis-server failed"
+          done
+          # Only the binaries are wanted: the package's own instance on 6379 goes.
+          sudo systemctl disable --now redis-server || true
+          redis-server --version
+          redis-cli --version
+      - name: The backup tool's tests, every damage case among them (doc 52)
+        timeout-minutes: 10
+        run: |
+          if ! command -v redis-server > /dev/null || ! command -v redis-cli > /dev/null; then
+            echo "::warning::no redis-server on this runner: the backup cycle tests are skipped"
+          fi
+          python3 -B deploy/backup/test_rmbak.py
 
   redis-faults:
     name: K8 Redis and process-fault matrix

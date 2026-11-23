@@ -1,0 +1,23 @@
+[Unit]
+Description=Back up the rustmush instances on this box every four hours (docs/ops.md, "Whole-instance backup and restore")
+
+[Timer]
+# THE INTERVAL, and the only place it is set. Every four hours at twenty past
+# (00:20, 04:20, 08:20, 12:20, 16:20, 20:20 UTC): clear of the ledger archive
+# pass, whose window is 03:00 to 04:00 UTC. To change it on a box, without
+# editing this file:
+#   systemctl edit rustmush-backup.timer
+# and write an [Timer] section with an EMPTY `OnCalendar=` line (it clears this
+# one) followed by the new one, for example `OnCalendar=*-*-* 00/2:20:00` for
+# every two hours. `systemd-analyze calendar '<expression>'` reads an
+# expression back before it is trusted; `systemctl list-timers rustmush-backup.timer`
+# shows the next run. MAX_AGE_HOURS in /etc/rustmush-backup.conf is how old the
+# newest archive may be before `rmbak.py status` and the pull call it stale:
+# keep it above twice the interval.
+OnCalendar=*-*-* 00/4:20:00
+AccuracySec=1min
+# A run the box slept through is taken when it is back up.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,58 @@
+# /etc/rustmush-backup.conf: what rmbak.py backs up, keeps and fetches on this
+# box (docs/ops.md, "Whole-instance backup and restore"). KEY=value lines, read
+# and never evaluated; an unknown key is refused. Every value below is the
+# tool's own default, written out so the box's operator can see what runs.
+# Root-owned, mode 0644: it holds no secret.
+
+# --- on the box that TAKES the backups ---------------------------------------
+
+# The instances to back up, by name under /opt/rustmush, in order, separated by
+# spaces. One at a time, always.
+INSTANCES=
+
+# Where the archives are written. Root-owned, mode 0750; an archive is 0640 to
+# READ_GROUP when that group exists (the copy's forced-command user) and 0600
+# otherwise.
+BACKUP_DIR=/var/backups/rustmush
+READ_GROUP=rmbackup
+
+# How many archives of EACH instance stay on this box; older ones are deleted
+# at the end of each run. At one every four hours, 18 is three days.
+# (Doc 52, Q-52-2: provisional until the owner rules.)
+KEEP=18
+
+# `in-archive`: the four key families and the SSH host key under the data
+# directory ride in the archive. `apart`: they are left out and the manifest
+# lists each with its SHA-256, for a copy kept elsewhere to be checked against
+# at a restore. Provider keys (the units' EnvironmentFile) are never archived
+# in either mode. (Doc 52, Q-52-1: provisional until the owner rules.)
+SECRETS=in-archive
+
+# `yes`: both binaries ride in every archive (about 105 MB of a 109 MB
+# archive), so a restore needs no build. `no`: an archive is about 2 MB and a
+# restore needs both binaries built at the manifest's commit (--binaries).
+# (Doc 52, Q-52-3.)
+BINARIES=yes
+
+# How old the newest archive of an instance may be before `rmbak.py status`
+# (and the pull, on the other box) fails. Keep it above twice the timer's
+# interval.
+MAX_AGE_HOURS=9
+
+# --- on the box that FETCHES them ---------------------------------------------
+
+# The command that reaches backup-serve.sh on the box that takes the backups;
+# `list`, `status` or `fetch <name>` is appended to it. Empty: this box does
+# not pull. For conclav.dev fetching from conclav.io:
+#   PULL_SSH=ssh -p 2222 -i /root/.ssh/rustmush-backup-pull -o BatchMode=yes -o IdentitiesOnly=yes rmbackup@conclav.io
+PULL_SSH=
+
+# Where fetched archives are kept (root-owned, 0700), and how many of each
+# instance. At one every four hours, 84 is two weeks. (Doc 52, Q-52-2.)
+PULL_DIR=/var/backups/rustmush-pulled
+PULL_KEEP=84
+
+# `yes`: a fetched archive is kept only after its snapshot has been loaded into
+# a scratch Redis here and its facts derived again (seconds). `no`: checksums
+# only. (Doc 52, Q-52-8.)
+PULL_DEEP=yes
