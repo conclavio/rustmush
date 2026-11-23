@@ -16,12 +16,46 @@ on:
       - "docs/design/**"
       - "docs/*.md"
       - "README.md"
-  # H3: the `scale` job below runs only on these two triggers.
+  # The nightly and the weekly run are dispatches too: THIS FILE HAS NO
+  # `schedule`. GitHub started this repository's scheduled runs seven to ten
+  # and a half hours late (2026-11), so the clock is a timer on conclav.dev
+  # (deploy/vps-runner/rustmush-dispatch-*.timer; docs/ops.md, "The clock is
+  # on conclav.dev"), which dispatches this workflow at `main` with a `slot`.
+  # scripts/tests/workflow-dispatch.sh fails if a `schedule` comes back.
   workflow_dispatch:
     inputs:
+      # Which run this is. The tier manifest
+      # (crates/mush-contract-tests/test-tiers.toml) reads a job's tier from
+      # its `if:`, so these strings are the contract: change both together.
+      #   by-hand  the default: a dispatch somebody made. Every nightly and
+      #            every weekly job runs, at the fast pulse unless
+      #            `mind_pulse_ms` says otherwise. What a dispatch always did.
+      #   nightly  the box's timer, Monday to Saturday, 05:00 Pacific (it was
+      #            the cron `17 4 * * 1-6`): the jobs whose `if:` is
+      #            `github.event_name == 'workflow_dispatch'`, the M7 stories
+      #            at the nightly's 250 ms pulse.
+      #   weekly   the box's timer, Sunday, 05:00 Pacific (it was the cron
+      #            `17 4 * * 0`; doc 43 cut TS.2, D-43-11): every nightly job
+      #            as above, and the six weekly jobs (M6 author acceptance and
+      #            full replay, the M8 leak battery and House doctrines, the
+      #            two bot win rates), whose `if:` adds
+      #            `&& inputs.slot != 'nightly'`, at the fast pulse (none of
+      #            them sets MIND_PULSE_MS). One run a day, not two on Sunday.
+      #
+      # The failure channel (D-43-3) is GitHub's own failed-workflow email,
+      # which goes to the account that started the run: for the timer's
+      # dispatches the owner's, whose token the box calls with. No workflow
+      # step and no secret; docs/ops.md says how to check.
+      slot:
+        description: "which run: by-hand (everything, fast pulse), nightly or weekly (what the box's timers send)"
+        required: false
+        default: by-hand
+        type: choice
+        options: [by-hand, nightly, weekly]
       # The M7 acceptance stories' Registry pace (`mind-commerce-acceptance`):
       # empty, the default, is the fast path (a 50 ms maintenance pulse, a
-      # genuine rating in minutes); `250` is the nightly schedule's pulse;
+      # genuine rating in minutes); `250` is the nightly's pulse, which the
+      # `nightly` and `weekly` slots set by themselves whatever this says;
       # `1000` is production's, now too slow for a hosted runner's 6 hours.
       # `gh workflow run CI --ref <branch> -f mind_pulse_ms=1000`.
       mind_pulse_ms:
@@ -29,24 +63,6 @@ on:
         required: false
         default: ""
         type: string
-  schedule:
-    # Daily (the repo is public, so hosted-runner minutes are free): Monday
-    # to Saturday here, and Sunday's run is the weekly one below, which runs
-    # every nightly job too (one run a day, not two on Sunday).
-    - cron: "17 4 * * 1-6"
-    # Doc 43 cut TS.2 (D-43-11): the weekly slot. The six jobs that were
-    # dispatch-only (M6 author acceptance and full replay, the M8 leak
-    # battery and House doctrines, the two bot win rates) admit this schedule
-    # by its string, `github.event.schedule == '17 4 * * 0'`, at the fast
-    # pulse (none of them sets MIND_PULSE_MS). The tier manifest
-    # (crates/mush-contract-tests/test-tiers.toml) reads a job's tier from
-    # its `if:`, so the string is the contract: change both together.
-    #
-    # The failure channel (D-43-3) is GitHub's own failed-workflow email,
-    # which goes to the account that last changed this cron syntax
-    # (GitHub's rule for scheduled workflows): the owner's, as the one who
-    # merges. No workflow step and no secret; docs/ops.md says how to check.
-    - cron: "17 4 * * 0"
 
 # The least any job needs: every job only checks the tree out, restores the
 # cargo and npm caches and uploads artifacts, and none of those uses the
@@ -60,7 +76,7 @@ permissions:
 # supersedes (18 of the last 100 PR runs finished superseded). Everything else
 # keeps every run: the bisect and the shard rebalances read main's JUnit run by
 # run. That is why the group is per-ref only for pull requests and per-run for
-# push, schedule and dispatch. GitHub keeps at most one running and one pending
+# push and dispatch (the nightly and the weekly are dispatches). GitHub keeps at most one running and one pending
 # run in a group, and a newer queued run cancels the pending one even with
 # `cancel-in-progress: false`, so one shared main group would still drop runs
 # whenever three pushes landed inside one run's hour (Q-43-14).
@@ -86,14 +102,14 @@ jobs:
     # harness reads `MIND_PULSE_MS` (`paid_purchase::mind_pulse`): unset or
     # empty is a 50 ms pulse, a rating in minutes; `1000` is production's pace.
     # The owner's rule (2026-11-20, replacing "always at production's pace"):
-    # the nightly schedule runs at a 250 ms pulse, a quarter of production's,
+    # the nightly run (the `nightly` slot) is at a 250 ms pulse, a quarter of production's,
     # because a production-pace market story no longer fits a hosted runner's
     # 6 hours, and at 500 ms the two market stories' ratings (~3,780 leases,
     # about 4 h 12 min) still overran their 4 h guard
     # (Sunday's weekly run too: it is the nightly as well); a hand dispatch is fast unless it says
     # `-f mind_pulse_ms=<ms>` (the `MIND_PULSE_MS` env on the story step).
     # Production pacing is untouched: the pulse is not a file key.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -149,7 +165,7 @@ jobs:
         env:
           # The nightly run at 250 ms (the owner's call); a dispatch at the input's
           # (empty = the fast path). The tacsim stories do not read it.
-          MIND_PULSE_MS: ${{ github.event_name == 'schedule' && '250' || inputs.mind_pulse_ms }}
+          MIND_PULSE_MS: ${{ (inputs.slot == 'nightly' || inputs.slot == 'weekly') && '250' || inputs.mind_pulse_ms }}
         # `--nocapture`: a passing story's `M7_*` lines (its rating's wall,
         # `M7_STORY_RATED`) are otherwise swallowed by the harness and only a
         # failure shows them (run 40707221516's typed story).
@@ -160,9 +176,9 @@ jobs:
     # Doc 17h cut M8g G5 (doc 23 S.5 folded in): the M8 gate's stories over the combined M8
     # world (`crates/tacsim/tests/domain_field/m8_world.rs`: the production launch composition over
     # the test world's game content, the three named Houses' sources genuinely rated). Each
-    # takes the three Registry ratings, so it is dispatch- or schedule-only, as the M7 stories
-    # are; the owner's rule: never run locally.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # takes the three Registry ratings, so it runs on a dispatch only (by hand, or the box's
+    # nightly timer), as the M7 stories do; the owner's rule: never run locally.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -239,10 +255,10 @@ jobs:
   # story plus a fresh thirty-match external comparison), re-run when the mind
   # port changes, and hours long (bound 360 min), longer than the nightly can
   # carry. Doc 43 cut TS.2 (D-43-11) moved it, and the five jobs after it that
-  # were dispatch-only, onto the Sunday cron at the fast pulse.
+  # were dispatch-only, into the weekly slot (Sunday) at the fast pulse.
   mind-author-acceptance:
     name: M6 author story and fresh external pilot comparison
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -291,7 +307,7 @@ jobs:
   # run weekly and when the mind kernel changes rather than every night.
   mind-full-replay:
     name: M6 full-duration Class III replay
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -309,7 +325,7 @@ jobs:
   # world's three genuine Registry ratings (about 45 minutes), so the bound is 180.
   m8-leak-battery:
     name: M8 leak battery
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -327,7 +343,7 @@ jobs:
   # launch and folds each one's result pages into procurement's score.
   m8-house-doctrines:
     name: M8 House doctrines win Registry trials
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -1118,7 +1134,7 @@ jobs:
     # keeps only the dependencies) it set main's wall, 2-3 min above the
     # longest test cell. A release-profile or LTO break now surfaces within
     # a day instead of on the merge.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1320,6 +1336,11 @@ jobs:
           # holds on synthetic reports (no network).
           bash -n scripts/soak.sh
           python3 -B scripts/test_flake_report.py
+          # The clock of the nightly, the weekly, CodeQL and the soak is four
+          # timers on conclav.dev: the dispatch call against a stub curl, the
+          # units, the timers' spacing, and no `schedule` in any workflow.
+          bash -n deploy/vps-runner/dispatch-timers-install.sh
+          bash scripts/tests/workflow-dispatch.sh
           for s in deploy/redeploy/*.sh; do bash -n "$s"; done
           # Doc 52: the backup's installer and the copy's forced command.
           for s in deploy/backup/*.sh; do bash -n "$s"; done
@@ -1405,7 +1426,7 @@ jobs:
   # Redis twins use logical dbs 1 and 2.
   scale:
     name: H3 scale harness
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       REDIS_URL: redis://127.0.0.1:6379
@@ -1435,7 +1456,7 @@ jobs:
   # Its sibling bot-muster-rate (below) flies the same bot from the muster.
   bot-win-rate:
     name: Bot win rate against the machine (report-only)
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -1472,7 +1493,7 @@ jobs:
   # that reason.
   bot-muster-rate:
     name: Bot win rate from the muster (report-only)
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -1491,8 +1512,8 @@ jobs:
   # loop over SSH in line mode against the production root at world rate 24,
   # two at Ahuna Flank and two at Kerwan Floor (crates/mush-bot/tests/
   # mining_cohort.rs). About 8 minutes of world readiness and 25-35 of play, so
-  # it is run by hand and no job runs it: not on push, not on a dispatch, not on
-  # the daily schedule. Its tier is by-hand in crates/mush-contract-tests/test-tiers.toml,
+  # it is run by hand and no job runs it: not on push, not on a dispatch, not
+  # nightly. Its tier is by-hand in crates/mush-contract-tests/test-tiers.toml,
   # with its last run's revision (doc 43 TS.2: a comment is a recipe, not a run), as are
   # the target's FR.0 and RS.0 smokes. Its canary, the_mining_root_runs_under_the_bots_serde, is
   # not ignored and runs under nextest in the `test` matrix's bot-stories cell.
@@ -1567,7 +1588,7 @@ jobs:
   # TS.2) and on demand; the ci-bot profile's override lets each outlive its twenty minutes.
   fr7-round-story:
     name: FR.7's round story at 256 and 512 (bot over SSH)
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -1609,7 +1630,7 @@ jobs:
   # The lane prints `MINDS_LANE time ...` lines; the MW.19 cut note has the measured figures.
   bot-minds-lane:
     name: MW.19 the bot's minds lane (the mind market over SSH)
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -1696,7 +1717,7 @@ jobs:
   # so; TACSIM_LONG_RUN_S and TACSIM_PULSES size lanes the delta does not read.
   tacsim-harness:
     name: 16b cut H TacSim harness
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       TACSIM_JSON: harness.json
@@ -1760,8 +1781,9 @@ jobs:
         run: dotnet test unity/CI~/TacSim.CI.csproj --configuration Release --verbosity normal
 
   # Doc 43 TS.2's failure channel (D-43-3) is GitHub's own email for a failed
-  # scheduled run; this job makes that run name its cause. On the schedule and
-  # on a dispatch it waits for every other job, whatever their results, and
+  # run; this job makes that run name its cause. On every dispatch (the box's
+  # nightly and weekly timers, and by hand) it waits for every other job,
+  # whatever their results, and
   # writes one line per job into the run's summary: the failed ones first,
   # each also an error annotation (the email and the run page both list
   # annotations). A failure of that step would be noise, so it always
@@ -1771,7 +1793,7 @@ jobs:
   # refuses a job it leaves out.
   nightly-report:
     name: Nightly report
-    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && github.event_name == 'workflow_dispatch'
     needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, bot-minds-lane, tacsim-harness, web, unity]
     runs-on: ubuntu-latest
     # `actions: read` is for the last step: it lists the day's runs and
@@ -1783,14 +1805,13 @@ jobs:
       - name: Name what failed
         env:
           NEEDS: ${{ toJSON(needs) }}
-          SCHEDULE: ${{ github.event.schedule }}
+          SLOT: ${{ inputs.slot }}
         run: |
           python3 - <<'PY'
           import json, os
           needs = json.loads(os.environ["NEEDS"])
-          kind = "weekly" if os.environ.get("SCHEDULE") == "17 4 * * 0" else "nightly"
-          if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-              kind = "dispatch"
+          slot = os.environ.get("SLOT")
+          kind = slot if slot in ("nightly", "weekly") else "dispatch"
           order = {"failure": 0, "cancelled": 1, "success": 2, "skipped": 3}
           rows = sorted(needs.items(), key=lambda kv: (order.get(kv[1]["result"], 9), kv[0]))
           failed = [job for job, v in rows if v["result"] in ("failure", "cancelled")]

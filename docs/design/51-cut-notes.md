@@ -240,7 +240,8 @@ code and converts no story.
   build a package, then the cells; a cell runs
   `cargo nextest run --binaries-metadata <package> --cargo-metadata <all> --workspace-remap <its copy of the tree> -P soak --test-threads 4`
   for each package in turn until the window closes, and keeps one JUnit report an invocation.
-- **`.github/workflows/soak.yml`**: `schedule` (07:17 UTC; Divergences, 11) and `workflow_dispatch` only, on
+- **`.github/workflows/soak.yml`**: `workflow_dispatch` only since the follow-up (Divergences, 12;
+  as merged it also had a `schedule` at 07:17 UTC, Divergences, 11), on
   `[self-hosted, linux, conclav-dev]`, with a concurrency group of its own, a target directory of
   its own beside the gate's, the report in the step summary and the `soak-junit` artifact.
 - **`scripts/flake_report.py`**: the soak's reports and CI's `nextest-junit-*` artifacts into one
@@ -362,6 +363,66 @@ below).
     runner's service would end the job, which has not been seen. `apt-daily.timer` (a package-list
     refresh at a random hour) and `motd-news.timer` can fall inside the window and are light.
     `fstrim`, `e2scrub_all`, `dpkg-db-backup` and `systemd-tmpfiles-clean` all run outside it.
+12. **Timers on conclav.dev keep the clock, not GitHub's `schedule`** (a follow-up pull request,
+    2026-11-23, after FL.2 merged). The soak did not run on its first night: the workflow was on
+    main from 04:12 UTC with `17 7 * * *`, the runner was online and idle, and at 14:48 UTC it had
+    no run. `gh run list --event schedule` shows why: GitHub starts this repository's scheduled
+    runs seven to ten and a half hours late. The 04:17 UTC nightly started between 11:28 and
+    14:38 UTC on every day from 2026-11-09 to 2026-11-23 (and between 09:52 and 12:34 UTC in the
+    two weeks before), and Monday's 06:17 CodeQL run at 15:45 to 16:17 UTC. A soak that late
+    holds the box from the owner's morning into his afternoon. Asked how the run should be
+    started on time, the owner ruled "Timer on conclav.dev", and then widened it to every
+    scheduled job, spaced by their runtimes. What the follow-up built:
+    - **Four timers** in `deploy/vps-runner/`, in `America/Los_Angeles` so they follow daylight
+      saving, all `Persistent=false` (a firing the box was off for is missed, not caught up):
+      the soak every day at 23:17, the CI nightly Monday to Saturday at 05:00, the CI weekly on
+      Sunday at 05:00, CodeQL on Monday at 13:30. `docs/ops.md` ("The clock is on conclav.dev")
+      has the measured runtimes and the arithmetic: the time kept for a job is one and a half
+      times its longest scheduled run of the last 30 days (the soak, with no run yet, keeps its
+      330-minute timeout), and no two kept times overlap.
+    - **It does not fit the owner's night.** The kept times in a row are 13 h 57 min (16 h 32
+      min on Mondays) against eight hours. The headroom was not shrunk: the soak, the one job
+      that holds his box, is in the night, and the hosted jobs follow it into the day. Only the
+      nightly-to-CodeQL gap protects a shared resource (hosted-runner concurrency); the gaps
+      either side of the soak are tidiness, because the box and the hosted runners share
+      nothing. `docs/ops.md` gives the alternative that ends everything by 07:00.
+    - **`rustmush-dispatch@.service` and `workflow-dispatch.sh`**: one `workflow_dispatch` at
+      `main` through GitHub's API with curl (`gh` is not on the box), for the job the instance
+      names. The service runs as a user of its own; systemd reads the token as root from
+      `/etc/rustmush/dispatch.env` (one line, `DISPATCH_TOKEN=`). The token goes to curl on
+      standard input. A missing file, a file others can read, an empty or malformed value and
+      each refusal from GitHub (401, 403, 404, 422) is one line that says what to do. The call
+      is sent again, three times at most, only when it never reached GitHub; a second dispatch
+      after one that arrived would start the job twice.
+    - **No workflow has a `schedule`.** `soak.yml` and `codeql.yml` lose theirs. `ci.yml` loses
+      both crons and gains a `slot` input: `by-hand` (the default: everything a dispatch always
+      ran, at the fast pulse), `nightly` (the Monday-to-Saturday cron's set, the M7 stories at
+      250 ms) and `weekly` (Sunday's: that and the six weekly jobs). A job's tier is still read
+      from its `if:`: the nightly jobs' is `github.event_name == 'workflow_dispatch'`, the
+      weekly jobs' adds `&& inputs.slot != 'nightly'`. `ci_gated_test_inventory`,
+      `nightly_paths`, `test-tiers.toml` and `.github/nightly-paths.txt` read the new strings,
+      and the first refuses an `if:` that names a schedule. `scripts/flake_report.py` never
+      filtered by event and is unchanged.
+    - `deploy/vps-runner/dispatch-timers-install.sh` puts the files on the box and enables the
+      timers; `scripts/tests/workflow-dispatch.sh` drives the call against a stub curl, lays
+      the week out from the timer files and fails on an overlap, and fails if any workflow has
+      a `schedule`. ci.yml's provisioning job runs it.
+    - **The token is the owner's** to create and place (`docs/ops.md`): a fine-grained personal
+      access token for this one repository with Actions read and write, one for all four jobs.
+      Nobody else creates, reads or copies it. While it is not there each timer fires and its
+      service fails with a line that names the missing file.
+    - **Mail.** A scheduled run's mail goes to the account that last changed the cron line; a
+      dispatched run's goes to the account that dispatched it, which is the token's owner. So
+      a red soak, nightly, weekly or CodeQL run still mails the owner, subject to his
+      notification settings for Actions.
+    - **The trade.** If conclav.dev is down, or the token has expired, nothing clock-run runs,
+      and nobody is mailed, because no run exists. `docs/ops.md` has the commands that show it.
+      A small hosted workflow on GitHub's own schedule (where lateness does not matter) that
+      fails when the newest nightly is too old would watch it; it is not built.
+    - **In summer** the soak starts at 06:17 UTC, inside the hour `apt-daily-upgrade.timer` fires
+      in (item 11). It installs security updates only, needrestart is not on the box and no
+      automatic reboot is configured, so nothing restarts the runner after one; the quiet-box
+      wait covers the load.
 
 **Not built.**
 
@@ -375,7 +436,10 @@ below).
   deleted on 2026-12-07, not renewed.
 - **A dispatch of `soak.yml` itself.** A workflow can be dispatched only once it is on the default
   branch, so the first run of the workflow file is after the merge. The Soak step's script ran by
-  hand on the box (Tests); the checkout, the report step and the upload did not.
+  hand on the box (Tests); the checkout, the report step and the upload did not. Still owed on
+  2026-11-23: the workflow has never run (Divergences, 12). Its first run is the first night
+  after the owner places the token, or his short run by hand
+  (`/usr/local/lib/rustmush/workflow-dispatch.sh soak 20 2`).
 - **The `nightly-report` step** runs on the schedule and on a dispatch of the whole nightly, so it
   first runs on the night after the merge. Its command ran by hand over real runs (Tests).
 - **A hard limit a cell** (above), and **a random phase and seed** (FL.3, FL.4).

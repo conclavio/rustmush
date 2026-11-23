@@ -1866,3 +1866,125 @@ fn expire_unaccepted_is_not_starved_by_older_accepted_live_grants() {
         );
     }
 }
+
+/// **P2-MOD-57a.** `sweep` aligns its scan order with its persisted `ObjId`
+/// cursor so high-`ObjId` blocked applicants at the front of the FIFO queue
+/// cannot collapse the cursor back to index 0 and starve later eligible
+/// applicants across fires.
+#[test]
+fn p2_mod_57_sweep_rotates_past_high_objid_blocked_applicants() {
+    let (mut tw, fx) = scene(enabled, 10_000, 4);
+    // Spawn 8 blocked applicants (no gold account -> ApplicantBlocked, staying
+    // in the queue) and queue them in DESCENDING ObjId order ahead of an
+    // eligible applicant (fx.pat, lowest ObjId, has a gold account).
+    let mut blockers = Vec::new();
+    for i in 0..MAX_RECOVERY_PER_FIRE {
+        let b = tw.spawn_player(&format!("NoAcctBlocker{i}"));
+        blockers.push(b);
+    }
+    blockers.reverse();
+    for b in &blockers {
+        ok(&mut tw, *b, "@recovery/apply");
+    }
+    // Also spawn a high-ObjId eligible victim AFTER the 8 blockers so both a
+    // low-ObjId and a high-ObjId victim behind 8 persistent blockers are reached.
+    let high_victim = tw.spawn_player("HighEligibleVictim");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@account/open #{}=gold", high_victim.0),
+    );
+    ok(&mut tw, fx.pat, "@recovery/apply");
+    ok(&mut tw, high_victim, "@recovery/apply");
+
+    assert_eq!(camp(&tw).recovery_queue().len(), MAX_RECOVERY_PER_FIRE + 2);
+    // Two fires of budget 8 must visit and grant both victims even though all 8
+    // blockers remain permanently in the queue.
+    fire(&mut tw);
+    fire(&mut tw);
+
+    assert!(
+        camp(&tw).recovery_grant(fx.pat).is_some(),
+        "low-ObjId eligible applicant behind 8 descending blockers must not starve"
+    );
+    assert!(
+        camp(&tw).recovery_grant(high_victim).is_some(),
+        "high-ObjId eligible applicant behind 8 persistent blockers must not starve"
+    );
+    assert_eq!(
+        camp(&tw).recovery_queue().len(),
+        MAX_RECOVERY_PER_FIRE,
+        "only the 8 blocked applicants remain waiting in claim order"
+    );
+}
+
+/// **P2-MOD-57b.** `disburse_accepted` rotates across accepted pending grants
+/// via `disburse_cursor` and does not `break` the whole batch when an earlier
+/// applicant's account is unavailable/frozen, preventing stipend starvation.
+#[test]
+fn p2_mod_57_disburse_accepted_rotates_past_blocked_accounts_without_starving() {
+    // 10 hulls: 9 low-ObjId applicants accept and then have their accounts
+    // frozen (so `applicant_account` returns None / disbursement is blocked),
+    // while the 10th applicant keeps an active account.
+    let (mut tw, _fx) = scene(enabled, 50_000, 10);
+    let mut frozen_applicants = Vec::new();
+    for i in 0..9 {
+        let p = tw.spawn_player(&format!("FrozenStipend{i}"));
+        ok(&mut tw, GOD, &format!("@account/open #{}=gold", p.0));
+        ok(&mut tw, p, "@recovery/apply");
+        frozen_applicants.push(p);
+    }
+    let healthy = tw.spawn_player("HealthyStipend10");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", healthy.0));
+    ok(&mut tw, healthy, "@recovery/apply");
+
+    // Grant all 10 offers across two ticks.
+    fire(&mut tw);
+    fire(&mut tw);
+
+    for p in &frozen_applicants {
+        let grant = camp(&tw)
+            .recovery_grant(*p)
+            .cloned()
+            .expect("applicant granted");
+        ok(
+            &mut tw,
+            *p,
+            &format!("@contract/accept {}", grant.contract()),
+        );
+        // Destroy the applicant object so `mush-economy::on_obj_destroyed`
+        // freezes their account (`AccountStatus::Frozen`), making
+        // `applicant_account` return `None` while the lease contract stays live.
+        ok(&mut tw, GOD, &format!("@destroy/override #{}", p.0));
+    }
+    let healthy_grant = camp(&tw)
+        .recovery_grant(healthy)
+        .cloned()
+        .expect("healthy granted");
+    ok(
+        &mut tw,
+        healthy,
+        &format!("@contract/accept {}", healthy_grant.contract()),
+    );
+    let healthy_acct = account_of(&tw, healthy);
+    assert_eq!(bal(&tw, healthy_acct), 0);
+
+    // Fire two ticks (budget 8 per tick): fire 1 rotates past the first 8 frozen
+    // applicants and advances `disburse_cursor`; fire 2 reaches and disburses
+    // `healthy`'s stipend despite all 9 frozen grants ahead of it.
+    fire(&mut tw);
+    fire(&mut tw);
+
+    let after = camp(&tw)
+        .recovery_grant(healthy)
+        .cloned()
+        .expect("healthy grant survives");
+    assert!(
+        after.stipend_posted(),
+        "healthy applicant behind 9 blocked accounts must receive their stipend"
+    );
+    assert!(
+        bal(&tw, healthy_acct) >= 10,
+        "stipend funds must be credited to healthy applicant's account"
+    );
+}

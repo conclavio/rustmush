@@ -34,6 +34,12 @@ pub const MAX_NON_VACATING_CONTESTS: usize = MAX_CLAIM_ENTRIES / 2;
 /// Maximum forensic flight/combat recorder entries retained per hull (`P-3`, `Q-H6`, `Q-S4`).
 pub const MAX_BLACK_BOX_ENTRIES_PER_HULL: usize = 256;
 
+/// Soft hull-count threshold at which settled (non-active) black-box tapes are
+/// recycled oldest-first (`P2-MOD-66`). Active/unsettled forensic tapes are
+/// never evicted by this cap and may grow up to
+/// [`MAX_AUTHORITATIVE_RECOVERY_RECORDS`].
+const MAX_SETTLED_BLACK_BOX_HULLS: usize = 64;
+
 /// Recognized ground tenure at the casualty's position when physical attachment begins (`Q-S1`, `Q-S3`).
 ///
 /// By `Q-S3`, this tenure is captured when physical securing/attach starts and persists
@@ -950,6 +956,34 @@ pub enum BlackBoxFlightEntry {
     },
 }
 
+impl BlackBoxFlightEntry {
+    /// IC timestamp recorded on this black-box entry.
+    #[must_use]
+    pub const fn at_ic(&self) -> i64 {
+        match self {
+            Self::EpochOpened { at_ic, .. }
+            | Self::CombatDamageRecorded { at_ic, .. }
+            | Self::TowAttached { at_ic, .. }
+            | Self::FieldComponentStripped { at_ic, .. }
+            | Self::EpochClosedInBay { at_ic, .. } => *at_ic,
+        }
+    }
+
+    /// Whether this entry records unlawful forensic evidence that must never be
+    /// displaced by benign flight or combat telemetry (`P2-MOD-66`).
+    #[must_use]
+    pub const fn is_forensic_critical(&self) -> bool {
+        match self {
+            Self::FieldComponentStripped { lawful: false, .. } => true,
+            Self::TowAttached { entitlement, .. } => !entitlement.is_lawful(),
+            Self::EpochOpened { .. }
+            | Self::CombatDamageRecorded { .. }
+            | Self::FieldComponentStripped { lawful: true, .. }
+            | Self::EpochClosedInBay { .. } => false,
+        }
+    }
+}
+
 /// Complete forensic extraction report produced when an actor with physical bay access
 /// inspects a recovered hull's closed black box (`P-3`, `Q-H6`, `Q-S4`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -999,14 +1033,95 @@ impl SalvageClaimBook {
         }
     }
 
+    /// Whether `hull` still carries active/unsettled forensic interest and must
+    /// never have its black-box tape evicted (`P2-MOD-66`):
+    /// - any pending salvage claim covering `hull` or a part stripped from it;
+    /// - any recovery record for `hull` that is not yet loaded in a bay, or is a
+    ///   non-self recovery without a terminal settled claim; or
+    /// - any recorded unlawful forensic entry on `hull`'s tape not yet resolved
+    ///   by a terminal hull claim.
+    fn hull_has_active_forensic_interest(&self, hull: ObjId) -> bool {
+        let has_pending_claim = self.claims.values().any(|claim| {
+            claim.state.is_pending()
+                && match &claim.subject {
+                    SalvageSubject::Hull { unit } => *unit == hull,
+                    SalvageSubject::StrippedComponent { parent_hull, .. } => *parent_hull == hull,
+                }
+        });
+        if has_pending_claim {
+            return true;
+        }
+        let has_unsettled_recovery = self.recovery_records.values().any(|rec| {
+            if rec.casualty != hull {
+                return false;
+            }
+            if rec.loaded_into_base.is_none() {
+                return true;
+            }
+            !rec.entitlement.is_self_or_owner_agent()
+                && !self
+                    .claims
+                    .values()
+                    .any(|c| c.operation_id == rec.operation_id && !c.state.is_pending())
+        });
+        if has_unsettled_recovery {
+            return true;
+        }
+        self.black_box_tapes.get(&hull).is_some_and(|tape| {
+            tape.iter().any(BlackBoxFlightEntry::is_forensic_critical)
+                && !self.claims.values().any(|c| {
+                    !c.state.is_pending()
+                        && matches!(&c.subject, SalvageSubject::Hull { unit } if *unit == hull)
+                })
+        })
+    }
+
+    /// Evict the single oldest settled (non-active) black-box tape, preferring
+    /// closed epochs (`EpochClosedInBay`) and ordering by oldest `at_ic` rather
+    /// than lowest `ObjId` (`P2-MOD-66`). Never evicts a hull with active
+    /// forensic interest.
+    fn evict_one_settled_black_box(&mut self) -> bool {
+        let victim = self
+            .black_box_tapes
+            .iter()
+            .filter(|(h, _)| !self.hull_has_active_forensic_interest(**h))
+            .min_by_key(|(h, tape)| {
+                let closed_tier = if matches!(
+                    tape.last(),
+                    Some(BlackBoxFlightEntry::EpochClosedInBay { .. })
+                ) {
+                    0_u8
+                } else {
+                    1_u8
+                };
+                let last_at = tape.last().map_or(i64::MIN, BlackBoxFlightEntry::at_ic);
+                (closed_tier, last_at, h.0)
+            })
+            .map(|(h, _)| *h);
+        if let Some(victim) = victim {
+            self.black_box_tapes.remove(&victim);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Append a [`BlackBoxFlightEntry`] to `hull`'s onboard flight/combat recorder (`P-3`, `Q-H6`, `Q-H9`).
     ///
     /// **Retired for the ground** (doc 36 cut GC.6, Q-36-28): this tape is RAM-only and does not
     /// survive a restart. The ground's evidence reads tacsim's durable surface black box (one
     /// `mush_core::Ledger` log per hull) instead; nothing on the ground appends here.
     ///
+    /// Evicts only oldest settled/terminal hull tapes when past the soft hull cap
+    /// (never active/unsettled forensic records by lowest `ObjId`) and rolls out
+    /// the oldest non-critical telemetry entry at [`MAX_BLACK_BOX_ENTRIES_PER_HULL`]
+    /// so high-volume flight/combat logs cannot permanently blind subsequent
+    /// unlawful-strip or recovery forensics (`P2-MOD-66`).
+    ///
     /// # Errors
-    /// Returns [`SalvageError`] if `hull.0 == 0` or `hull`'s tape has reached [`MAX_BLACK_BOX_ENTRIES_PER_HULL`].
+    /// Returns [`SalvageError`] if `hull.0 == 0` or if all
+    /// [`MAX_BLACK_BOX_ENTRIES_PER_HULL`] slots (or hard hull capacity) are
+    /// occupied by protected forensic entries.
     pub fn append_black_box_entry(
         &mut self,
         hull: ObjId,
@@ -1015,18 +1130,39 @@ impl SalvageClaimBook {
         if hull.0 == 0 {
             return Err(SalvageError::InvalidObjectId("hull"));
         }
-        if !self.black_box_tapes.contains_key(&hull)
-            && self.black_box_tapes.len() >= 64
-            && let Some(&oldest_hull) = self.black_box_tapes.keys().next()
-        {
-            self.black_box_tapes.remove(&oldest_hull);
+        if !self.black_box_tapes.contains_key(&hull) {
+            if self.black_box_tapes.len() >= MAX_SETTLED_BLACK_BOX_HULLS {
+                let _ = self.evict_one_settled_black_box();
+            }
+            if self.black_box_tapes.len() >= MAX_AUTHORITATIVE_RECOVERY_RECORDS {
+                return Err(SalvageError::BlackBoxTapeFull {
+                    hull,
+                    max: MAX_BLACK_BOX_ENTRIES_PER_HULL,
+                });
+            }
         }
         let tape = self.black_box_tapes.entry(hull).or_default();
         if tape.len() >= MAX_BLACK_BOX_ENTRIES_PER_HULL {
-            return Err(SalvageError::BlackBoxTapeFull {
-                hull,
-                max: MAX_BLACK_BOX_ENTRIES_PER_HULL,
-            });
+            // Compact the oldest benign telemetry entry first (preferring
+            // CombatDamageRecorded / EpochOpened over recovery events), never
+            // displacing critical unlawful forensic evidence.
+            let evict_idx = tape
+                .iter()
+                .position(|e| {
+                    matches!(
+                        e,
+                        BlackBoxFlightEntry::CombatDamageRecorded { .. }
+                            | BlackBoxFlightEntry::EpochOpened { .. }
+                    )
+                })
+                .or_else(|| tape.iter().position(|e| !e.is_forensic_critical()));
+            let Some(idx) = evict_idx else {
+                return Err(SalvageError::BlackBoxTapeFull {
+                    hull,
+                    max: MAX_BLACK_BOX_ENTRIES_PER_HULL,
+                });
+            };
+            tape.remove(idx);
         }
         tape.push(entry);
         Ok(())
@@ -1083,18 +1219,21 @@ impl SalvageClaimBook {
             loaded_into_base: None,
             loaded_at_ic: None,
         };
-        let tape = self.black_box_tapes.entry(casualty).or_default();
-        if tape.len() < MAX_BLACK_BOX_ENTRIES_PER_HULL {
-            tape.push(BlackBoxFlightEntry::TowAttached {
+        self.recovery_records.insert(operation_id, record);
+        // P2-MOD-66: route through `append_black_box_entry` so a 256-entry
+        // telemetry cap never blinds TowAttached forensics, and insert the
+        // recovery record first so `casualty` is recognized as active.
+        let _ = self.append_black_box_entry(
+            casualty,
+            BlackBoxFlightEntry::TowAttached {
                 operation_id,
                 tug,
                 recoverer: authority_ctx.recoverer,
                 ground_tenure: authority_ctx.ground_tenure_at_attach.clone(),
                 entitlement,
                 at_ic: attached_at_ic,
-            });
-        }
-        self.recovery_records.insert(operation_id, record);
+            },
+        );
         self.recovery_records
             .get(&operation_id)
             .ok_or(SalvageError::UnknownRecoveryOperation(operation_id))
@@ -1120,14 +1259,14 @@ impl SalvageClaimBook {
         let casualty = rec.casualty;
         rec.loaded_into_base = Some(base);
         rec.loaded_at_ic = Some(loaded_at_ic);
-        let tape = self.black_box_tapes.entry(casualty).or_default();
-        if tape.len() < MAX_BLACK_BOX_ENTRIES_PER_HULL {
-            tape.push(BlackBoxFlightEntry::EpochClosedInBay {
+        let _ = self.append_black_box_entry(
+            casualty,
+            BlackBoxFlightEntry::EpochClosedInBay {
                 operation_id: Some(operation_id),
                 base,
                 at_ic: loaded_at_ic,
-            });
-        }
+            },
+        );
         self.recovery_records
             .get(&operation_id)
             .ok_or(SalvageError::UnknownRecoveryOperation(operation_id))
@@ -1292,6 +1431,21 @@ impl SalvageClaimBook {
     /// Register that a component was stripped from `hull` (`Q-F6`), preventing a subsequent
     /// hull salvage claim from double-claiming the removed component.
     pub fn mark_component_stripped(&mut self, hull: ObjId, component: ComponentId) {
+        if hull.0 == 0 {
+            return;
+        }
+        if !self.stripped_components_by_hull.contains_key(&hull)
+            && self.stripped_components_by_hull.len() >= MAX_AUTHORITATIVE_RECOVERY_RECORDS
+        {
+            let settled = self
+                .stripped_components_by_hull
+                .keys()
+                .copied()
+                .find(|h| !self.hull_has_active_forensic_interest(*h));
+            if let Some(victim) = settled {
+                self.stripped_components_by_hull.remove(&victim);
+            }
+        }
         self.stripped_components_by_hull
             .entry(hull)
             .or_default()
@@ -2522,6 +2676,183 @@ mod tests {
                 reason: ContestSuccessReason::DefectiveProcedure,
                 settled_at_real_s: filed_at + 50,
             }
+        );
+        Ok(())
+    }
+
+    /// **P2-MOD-66**: Active/unsettled forensic black-box tapes are never
+    /// evicted by lowest `ObjId`, settled tapes are recycled oldest-`at_ic`
+    /// first, and hitting [`MAX_BLACK_BOX_ENTRIES_PER_HULL`] never permanently
+    /// blinds unlawful recovery or unlawful field-strip forensic logging.
+    #[test]
+    fn p2_mod_66_black_box_preserves_active_forensics_and_never_blinds_at_256() -> TestResult {
+        let mut book = SalvageClaimBook::new();
+        let owner = ObjId(10);
+        let landholder = ObjId(20);
+        let pirate = ObjId(30);
+        let base = ObjId(90);
+        let victim_claim_hull = ObjId(5);
+        let victim_strip_hull = ObjId(6);
+        let op_unlawful = RecoveryOpId::new(66)?;
+        let unlawful_ctx = RecoveryAuthorityContext {
+            recoverer: pirate,
+            unit_title_holder: owner,
+            has_owner_authorization: false,
+            has_landholder_authorization: false,
+            ground_tenure_at_attach: GroundTenure::Owned {
+                landholder,
+                claim_id: Some(SmolStr::new("parcel-66")),
+            },
+        };
+        // 1. Record an unlawful recovery + pending claim on low-ObjId hull #5,
+        //    and an unlawful field strip on low-ObjId hull #6 (before any claim).
+        book.record_physical_attach(
+            op_unlawful,
+            victim_claim_hull,
+            ObjId(31),
+            &unlawful_ctx,
+            1_000,
+        )?;
+        book.record_bay_load(op_unlawful, base, 1_050)?;
+        let _ = book.resolve_hull_recovery_custody(op_unlawful, 2_000)?;
+        let stolen_part = ComponentId::new("railgun")?;
+        book.append_black_box_entry(
+            victim_strip_hull,
+            BlackBoxFlightEntry::FieldComponentStripped {
+                component: stolen_part.clone(),
+                stripped_by: pirate,
+                lawful: false,
+                at_ic: 1_010,
+            },
+        )?;
+
+        // Add two settled hulls where the HIGHER ObjId has the OLDER timestamp.
+        let newer_low_settled = ObjId(100);
+        let older_high_settled = ObjId(150);
+        book.append_black_box_entry(
+            newer_low_settled,
+            BlackBoxFlightEntry::EpochClosedInBay {
+                operation_id: None,
+                base,
+                at_ic: 9_000,
+            },
+        )?;
+        book.append_black_box_entry(
+            older_high_settled,
+            BlackBoxFlightEntry::EpochClosedInBay {
+                operation_id: None,
+                base,
+                at_ic: 10,
+            },
+        )?;
+
+        // Flood 80 additional higher-ObjId settled hulls past the 64-hull soft cap.
+        for i in 0..80_u32 {
+            let dummy = ObjId(200 + i);
+            book.append_black_box_entry(
+                dummy,
+                BlackBoxFlightEntry::EpochClosedInBay {
+                    operation_id: None,
+                    base,
+                    at_ic: 2_000 + i64::from(i),
+                },
+            )?;
+        }
+
+        // Neither low-ObjId active forensic hull was wiped!
+        check!(
+            !book.black_box_tape_for_hull(victim_claim_hull).is_empty(),
+            "active claim hull #5 forensic tape must survive dummy flood"
+        );
+        check!(
+            !book.black_box_tape_for_hull(victim_strip_hull).is_empty(),
+            "unlawful strip hull #6 forensic tape must survive dummy flood"
+        );
+        let forensics = book.extract_black_box_forensics(op_unlawful, owner, true, 1_200)?;
+        check!(forensics.reveals_unlawful_recovery);
+        check!(
+            forensics
+                .entries
+                .iter()
+                .any(|e| matches!(e, BlackBoxFlightEntry::TowAttached { .. })),
+            "TowAttached entry must remain on victim #5's black box"
+        );
+        // Oldest settled hull (#150 at_ic=10) was evicted before newer #100 (at_ic=9000).
+        check!(
+            book.black_box_tape_for_hull(older_high_settled).is_empty(),
+            "oldest settled tape should be evicted first"
+        );
+        check!(
+            !book.black_box_tape_for_hull(newer_low_settled).is_empty(),
+            "newer lower-ObjId settled tape should outlive older higher-ObjId tape"
+        );
+
+        // 2. Permanent 256-entry blinding prevention: saturate hull #20 with
+        //    MAX_BLACK_BOX_ENTRIES_PER_HULL benign combat damage entries, then
+        //    record an unlawful strip, unlawful tow, and bay load.
+        let saturated_hull = ObjId(20);
+        let sec = SectionId::new("torso")?;
+        for i in 0..MAX_BLACK_BOX_ENTRIES_PER_HULL {
+            book.append_black_box_entry(
+                saturated_hull,
+                BlackBoxFlightEntry::CombatDamageRecorded {
+                    attacker: Some(pirate),
+                    section: sec.clone(),
+                    resulting_state: OperationalState::Operational,
+                    at_ic: 500 + i64::try_from(i).unwrap_or(0),
+                },
+            )?;
+        }
+        check_eq!(
+            book.black_box_tape_for_hull(saturated_hull).len(),
+            MAX_BLACK_BOX_ENTRIES_PER_HULL
+        );
+
+        book.append_black_box_entry(
+            saturated_hull,
+            BlackBoxFlightEntry::FieldComponentStripped {
+                component: stolen_part.clone(),
+                stripped_by: pirate,
+                lawful: false,
+                at_ic: 1_500,
+            },
+        )?;
+        let op_sat = RecoveryOpId::new(67)?;
+        book.record_physical_attach(op_sat, saturated_hull, ObjId(32), &unlawful_ctx, 1_510)?;
+        book.record_bay_load(op_sat, base, 1_520)?;
+
+        // Flood 300 MORE benign entries onto the same hull: critical unlawful
+        // forensic entries must NEVER be displaced by benign telemetry!
+        for i in 0..300_i64 {
+            book.append_black_box_entry(
+                saturated_hull,
+                BlackBoxFlightEntry::CombatDamageRecorded {
+                    attacker: Some(pirate),
+                    section: sec.clone(),
+                    resulting_state: OperationalState::Wreck,
+                    at_ic: 2_000 + i,
+                },
+            )?;
+        }
+        check_eq!(
+            book.black_box_tape_for_hull(saturated_hull).len(),
+            MAX_BLACK_BOX_ENTRIES_PER_HULL
+        );
+        let sat_report = book.extract_black_box_forensics(op_sat, owner, true, 3_000)?;
+        check!(sat_report.reveals_unlawful_recovery);
+        check!(
+            sat_report
+                .unlawful_stripped_components
+                .contains(&stolen_part),
+            "unlawful field strip must survive 256-entry cap and benign flooding"
+        );
+        check!(
+            sat_report.entries.iter().any(|e| matches!(
+                e,
+                BlackBoxFlightEntry::TowAttached { operation_id, entitlement, .. }
+                    if *operation_id == op_sat && !entitlement.is_lawful()
+            )),
+            "unlawful TowAttached must survive 256-entry cap and benign flooding"
         );
         Ok(())
     }

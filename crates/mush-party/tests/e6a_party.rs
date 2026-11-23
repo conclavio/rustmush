@@ -1135,3 +1135,95 @@ fn disbanded_parties_are_bounded_in_ram_and_persisted_kv() {
         mush_party::MAX_RETAINED_DISBANDED_PARTIES
     );
 }
+
+/// P2-MOD-35: Leader-leave handoff enforces `MAX_PARTIES_PER_LEADER`, skipping
+/// members already at cap and disbanding the party when no remaining member can
+/// take leadership; active party memberships are also bounded per member.
+#[test]
+fn p2_mod_35_leader_handoff_enforces_per_leader_cap_and_member_cap() {
+    let mut tw = boot();
+    tw.set_now(1_000);
+    let ann = tw.spawn_player("Ann");
+    let bob = tw.spawn_player("Bob");
+    let cal = tw.spawn_player("Cal");
+
+    // Bob already leads MAX_PARTIES_PER_LEADER parties.
+    for i in 0..MAX_PARTIES_PER_LEADER {
+        ok(&mut tw, bob, &format!("+party/create BobCrew{i}"));
+    }
+    assert_eq!(
+        store(&tw).live_parties_led_by(bob).len(),
+        MAX_PARTIES_PER_LEADER
+    );
+
+    // 1. Ann creates a party with Bob first, then Cal. When Ann leaves, Bob is
+    //    at cap so leadership skips Bob and passes to Cal.
+    ok(&mut tw, ann, "+party/create SkipBob");
+    let p_skip = store(&tw).live_parties_led_by(ann)[0];
+    ok(&mut tw, ann, &format!("+party/invite {p_skip} Bob"));
+    ok(&mut tw, bob, &format!("+party/accept {p_skip}"));
+    ok(&mut tw, ann, &format!("+party/invite {p_skip} Cal"));
+    ok(&mut tw, cal, &format!("+party/accept {p_skip}"));
+
+    ok(&mut tw, ann, &format!("+party/leave {p_skip}"));
+    let rec_skip = store(&tw).party(p_skip).unwrap();
+    assert!(!rec_skip.is_terminal(), "Cal was eligible to lead");
+    assert_eq!(
+        rec_skip.leader, cal,
+        "leadership must skip capped Bob and pass to Cal"
+    );
+    assert_eq!(
+        store(&tw).live_parties_led_by(bob).len(),
+        MAX_PARTIES_PER_LEADER
+    );
+
+    // 2. Ann creates a party with ONLY capped Bob as member. When Ann leaves,
+    //    no surviving member is eligible so the party disbands cleanly.
+    ok(&mut tw, ann, "+party/create OnlyBob");
+    let p_only = store(&tw).live_parties_led_by(ann)[0];
+    ok(&mut tw, ann, &format!("+party/invite {p_only} Bob"));
+    ok(&mut tw, bob, &format!("+party/accept {p_only}"));
+    let leave_out = ok(&mut tw, ann, &format!("+party/leave {p_only}"));
+    assert!(
+        leave_out.contains("disbanded"),
+        "party with only capped survivors must disband: {leave_out}"
+    );
+    let rec_only = store(&tw).party(p_only).unwrap();
+    assert!(rec_only.is_terminal(), "party must be disbanded");
+    assert_eq!(
+        store(&tw).live_parties_led_by(bob).len(),
+        MAX_PARTIES_PER_LEADER,
+        "Bob must never exceed MAX_PARTIES_PER_LEADER via leader leave"
+    );
+
+    // 3. Per-member active membership cap prevents unbounded party joining.
+    let joiner = tw.spawn_player("Joiner");
+    let mut leaders = Vec::new();
+    let mut party_ids = Vec::new();
+    for idx in 0..=mush_party::MAX_PARTIES_PER_MEMBER {
+        let l = tw.spawn_player(&format!("Leader{idx}"));
+        ok(&mut tw, l, &format!("+party/create Crew{idx}"));
+        let pid = store(&tw).live_parties_led_by(l)[0];
+        ok(&mut tw, l, &format!("+party/invite {pid} Joiner"));
+        leaders.push(l);
+        party_ids.push(pid);
+    }
+    for &pid in &party_ids[..mush_party::MAX_PARTIES_PER_MEMBER] {
+        ok(&mut tw, joiner, &format!("+party/accept {pid}"));
+    }
+    let over = err(
+        &mut tw,
+        joiner,
+        &format!(
+            "+party/accept {}",
+            party_ids[mush_party::MAX_PARTIES_PER_MEMBER]
+        ),
+    );
+    assert!(
+        over.contains(&format!(
+            "already in {} parties",
+            mush_party::MAX_PARTIES_PER_MEMBER
+        )),
+        "expected per-member cap refusal: {over}"
+    );
+}

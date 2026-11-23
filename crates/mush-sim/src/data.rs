@@ -1249,20 +1249,37 @@ impl SpatialState {
     }
 
     /// Whether `obj` is bound into the simulation in ANY way: placed,
-    /// quarantined, or acting as infrastructure (a domain host, an interior
-    /// space, a mount host, or a station host). A route traveler must be bound
-    /// in NONE of these (the EITHER-journey-OR-sim-placed invariant). This is
-    /// the single predicate `route_ineligible` (create) and `install_journeys`
-    /// (boot) share, so the two never disagree — note `is_placed` checks the
-    /// record's PARENT, so a lingering `Unplaced` record is correctly NOT bound.
+    /// quarantined, held unreadable placement/assignment, carrying spatial
+    /// dependents or anchored interior spaces, or acting as infrastructure
+    /// (a domain host, presentation room, interior space or member room,
+    /// mount host, or station/assignment host). A route traveler or ordinary
+    /// container vault must be bound in NONE of these (the
+    /// EITHER-journey-OR-sim-placed invariant; `P2-MOD-83`). Note `is_placed`
+    /// checks the record's PARENT, so a lingering non-quarantined `Unplaced`
+    /// record with no bindings is correctly NOT bound.
     #[must_use]
     pub fn is_sim_bound(&self, obj: ObjId) -> bool {
         self.is_placed(obj)
             || self.is_quarantined(obj)
+            || self.held_placement(obj).is_some()
             || self.domain_of_host(obj).is_some()
             || self.spaces.contains_key(&obj)
             || self.mounts.contains_key(&obj)
             || self.stations.contains_key(&obj)
+            || self.assignments.contains_key(&obj)
+            || self.held_assignments.contains_key(&obj)
+            || !self.children_of(obj).is_empty()
+            || self
+                .derived
+                .anchored_spaces
+                .get(&obj)
+                .is_some_and(|spaces| !spaces.is_empty())
+            || self.derived.member_of.contains_key(&obj)
+            || self
+                .derived
+                .presentation_of
+                .get(&obj)
+                .is_some_and(|domains| !domains.is_empty())
     }
 
     /// The domain a host object carries, if any (non-retired).

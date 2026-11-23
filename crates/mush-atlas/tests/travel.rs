@@ -1596,3 +1596,66 @@ fn intercept_does_not_act_as_travel_status_or_dark_actor_oracle() {
         "DARK traveler must not be disclosed by +intercept"
     );
 }
+
+/// P2-MOD-34:
+/// - Another player running `+intercept <target>` (or `+intercept/release <target>`)
+///   cannot overwrite or erase a first player's pending intercept on `<target>`.
+/// - `+intercept` cannot enumerate NPCs in unmapped/hidden/restricted rooms across
+///   the world via substring matching or `#dbref`.
+#[test]
+fn p2_mod_34_intercept_no_overwrite_griefing_and_no_hidden_npc_enumeration() {
+    let mut tw = valley();
+    let west_gate = room(&tw, "West Gate");
+    let east_gate = room(&tw, "East Gate");
+    let alice = player(&mut tw, "Alice", west_gate);
+    let carol = player(&mut tw, "Carol", east_gate);
+    let griefer = player(&mut tw, "Griefer", west_gate);
+
+    // 1. Carol stakes out First Milestone and intercepts Alice; Griefer remotely
+    //    runs `+intercept Alice` and `+intercept/release Alice` from West Gate.
+    let _ = run(&mut tw, alice, "+travel East End");
+    let _ = run(&mut tw, carol, "+stakeout First Milestone");
+    let _ = run(&mut tw, carol, "+intercept Alice");
+    let _ = run(&mut tw, griefer, "+intercept Alice");
+    let _ = run(&mut tw, griefer, "+intercept/release Alice");
+
+    // Carol's intercept must STILL land and hold Alice!
+    let _ = tick_at(&mut tw, T0 + 70);
+    assert!(
+        matches!(
+            journey_of(&tw, alice).map(|j| j.state),
+            Some(mush_atlas::JourneyState::Held {
+                by: mush_atlas::HoldReason::Intercept { by },
+                ..
+            }) if by == carol
+        ),
+        "griefer overwrote or erased Carol's pending intercept"
+    );
+
+    // 2. Hidden/unmapped room NPC cannot be enumerated by substring, exact name, or #dbref.
+    let secret_room = tw
+        .world_mut()
+        .create(ObjKind::Room, "Secret Lair", GOD, None)
+        .unwrap();
+    let secret_npc = tw
+        .world_mut()
+        .create(ObjKind::Npc, "ZoltanTheHiddenBoss", GOD, Some(secret_room))
+        .unwrap();
+
+    let missing = run(&mut tw, griefer, "+intercept NoSuchTargetName");
+    let by_sub = run(&mut tw, griefer, "+intercept z");
+    let by_exact = run(&mut tw, griefer, "+intercept ZoltanTheHiddenBoss");
+    let by_dbref = run(&mut tw, griefer, &format!("+intercept #{}", secret_npc.0));
+    assert_eq!(
+        by_sub, missing,
+        "substring probe leaked hidden NPC: {by_sub}"
+    );
+    assert_eq!(
+        by_exact, missing,
+        "exact name probe leaked hidden NPC: {by_exact}"
+    );
+    assert_eq!(
+        by_dbref, missing,
+        "dbref probe leaked hidden NPC: {by_dbref}"
+    );
+}

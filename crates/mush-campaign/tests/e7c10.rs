@@ -3155,3 +3155,266 @@ fn high32_plain_muster_preserves_roster_lock_and_filters_vacancies_to_commandabl
     );
     assert!(camp(&tw).latest_muster(op).expect("still locked").locked);
 }
+
+/// **P2-MOD-58b.** `expire_grants` rotates via cursor and skips already-paged
+/// custodied live seats / same-actor duplicate stand-downs before consuming
+/// budget, so 32 unreleasable custodied grants cannot permanently starve expiry
+/// of later stale grants.
+#[test]
+fn p2_mod_58_expire_grants_not_starved_by_custodied_live_seats() {
+    let audit = Arc::new(TestAudit::default());
+    let (mut tw, fx) = scene(audit.clone());
+    // Create a low-ID operation with MAX_SEATS_PER_FIRE (32) grants on fx.atlas,
+    // activate one so fx.ace carries a live proxy focus, then mark fx.atlas as
+    // arena-custodied so stand-down refuses, and abort the operation.
+    let custodied_op = operation_bare(&mut tw, &fx);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/join {}=#{}", custodied_op.0, fx.atlas.0),
+    );
+    let mut custodied_seats = Vec::new();
+    for _ in 0..mush_campaign::MAX_SEATS_PER_FIRE {
+        let s = offer(&mut tw, &fx, custodied_op, fx.atlas, fx.ace, "movement");
+        ok(
+            &mut tw,
+            fx.driver,
+            &format!("+seat/accept {}/{}", custodied_op.0, s.0),
+        );
+        custodied_seats.push(s);
+    }
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/activate {}/{}", custodied_op.0, custodied_seats[0].0),
+    );
+    drain(&mut tw);
+    // Mark fx.atlas custodied in an arena so automatic stand-down refuses.
+    mush_sim::deployed::mark(
+        tw.world_mut(),
+        fx.atlas,
+        mush_sim::DeployedMark::new(42, "arena"),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@op/resolve {}=abort", custodied_op.0),
+    );
+
+    // Create a higher-ID aborted operation with a normal stale dormant grant.
+    let victim_op = operation_bare(&mut tw, &fx);
+    assert!(victim_op.0 > custodied_op.0);
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/join {}=#{}", victim_op.0, fx.locust.0),
+    );
+    let victim_seat = offer(&mut tw, &fx, victim_op, fx.locust, fx.duce, "movement");
+    ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/accept {}/{}", victim_op.0, victim_seat.0),
+    );
+    let victim_token = token_of(&tw, victim_op, victim_seat);
+    ok(&mut tw, GOD, &format!("@op/resolve {}=abort", victim_op.0));
+
+    for _ in 0..3 {
+        fire(&mut tw);
+        drain(&mut tw);
+    }
+    assert_eq!(
+        grant_state(&tw, victim_op, victim_seat),
+        Some(GrantState::Expired),
+        "stale grant behind 32 custodied live seats must still expire"
+    );
+    assert!(
+        !audit.knows(&victim_token),
+        "expired victim grant's audit row must be forgotten"
+    );
+    // The custodied unit's live seat stays non-terminal (T.3 invariant preserved).
+    assert!(
+        !grant_state(&tw, custodied_op, custodied_seats[0])
+            .expect("custodied grant")
+            .is_terminal(),
+        "custodied seat must remain non-terminal until arena releases it"
+    );
+}
+
+/// **P2-MOD-59.** `+muster/lock` is restricted to the operation commander /
+/// issuer (`may_roster`) or staff — never any single-unit controller — and
+/// refuses cross-unit OOC account distinctness queries over units outside a
+/// non-staff caller's command so `+muster/lock` cannot be abused as an OOC
+/// alt-account oracle.
+#[test]
+fn p2_mod_59_single_unit_controller_cannot_lock_muster_or_probe_cross_unit_alts() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation_bare(&mut tw, &fx);
+    // Commander joins their Atlas, piloted by fx.driver.
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/join {}=#{}", op.0, fx.atlas.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", fx.atlas.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", fx.atlas.0, fx.driver.0),
+    );
+
+    // Create an allied single-unit controller owning a separate unit `ally_mech`
+    // piloted by `alt`, who shares `fx.driver`'s OOC account!
+    let ally = tw.spawn_player("AllyController");
+    let alt = tw.spawn_player("HiddenAlt");
+    tw.world_mut().move_to(ally, fx.field).unwrap();
+    tw.world_mut().move_to(alt, fx.field).unwrap();
+    if let Ok(mut map) = fx.oracle.0.lock() {
+        let driver_acct = map.get(&fx.driver).copied().expect("driver mapped");
+        map.insert(alt, driver_acct);
+        map.insert(
+            ally,
+            mush_core::AccountId::mint("ally-controller-ooc", 99).unwrap(),
+        );
+    }
+    let ally_mech = tw
+        .world_mut()
+        .create(ObjKind::Thing, "AllyMech", ally, Some(fx.field))
+        .unwrap();
+    tw.world_mut()
+        .attach_behavior(
+            ally_mech,
+            mush_core::BehaviorId::new("sim.participant").unwrap(),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .unwrap();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/place/domain #{}=0", ally_mech.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@spatial/station #{}=pilot,pilot,channels:movement+fire",
+            ally_mech.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", ally_mech.0, alt.0),
+    );
+    // Staff commits ally_mech to the operation alongside commander's Atlas.
+    ok(&mut tw, GOD, &format!("@op/join {}=#{}", op.0, ally_mech.0));
+
+    // 1. Single-unit controller `ally` MUST NOT be able to lock the operation's
+    //    roster OR learn that `alt` and `fx.driver` share an OOC account!
+    let ally_refusal = err(&mut tw, ally, &format!("+muster/lock {}", op.0));
+    assert_eq!(
+        ally_refusal.trim(),
+        mush_campaign::NO_SUCH_OPERATION,
+        "single-unit controller must get existence-hiding refusal, never alt oracle: {ally_refusal}"
+    );
+    assert!(
+        camp(&tw).latest_muster(op).is_none_or(|r| !r.locked),
+        "single-unit controller must never lock the roster"
+    );
+
+    // 2. Non-staff issuer `fx.commander` does NOT command `ally_mech`, so
+    //    `+muster/lock` must refuse BEFORE consulting AccountOracle over
+    //    `ally_mech` (never leaking "one account").
+    let cmd_refusal = err(&mut tw, fx.commander, &format!("+muster/lock {}", op.0));
+    assert!(
+        cmd_refusal.contains("outside your command"),
+        "non-staff issuer must be refused before cross-unit alt oracle: {cmd_refusal}"
+    );
+    assert!(
+        !cmd_refusal.contains("one account"),
+        "must not leak cross-unit OOC alt conflict to non-staff issuer: {cmd_refusal}"
+    );
+    assert!(camp(&tw).latest_muster(op).is_none_or(|r| !r.locked));
+
+    // 3. Staff (`GOD`) commands all units and STILL enforces the full-roster
+    //    distinctness gate across both units.
+    let staff_refusal = err(&mut tw, GOD, &format!("+muster/lock {}", op.0));
+    assert!(
+        staff_refusal.contains("one account"),
+        "staff lock still detects cross-unit OOC alt conflict: {staff_refusal}"
+    );
+    assert!(camp(&tw).latest_muster(op).is_none_or(|r| !r.locked));
+
+    // Once the alt is replaced with a distinct account (`ally`), staff can lock.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/unassign #{}=pilot", ally_mech.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", ally_mech.0, ally.0),
+    );
+    ok(&mut tw, GOD, &format!("+muster/lock {}", op.0));
+    assert!(camp(&tw).latest_muster(op).expect("locked report").locked);
+}
+
+/// **P2-MOD-81.** `+seat/decline` enforces `may_take_seat` and live offer
+/// expiry identically to `+seat/accept`, preventing a bystander on a `Public`
+/// operation from using `+seat/decline` as a seat-offer existence oracle.
+#[test]
+fn p2_mod_81_seat_decline_enforces_may_take_seat_without_existence_oracle() {
+    let (mut tw, fx) = scene(Arc::new(TestAudit::default()));
+    let op = operation(&mut tw, &fx);
+    // Make the operation Public so `visible_offer` sees it at `Lens::Notice`.
+    ok(
+        &mut tw,
+        fx.commander,
+        &format!("@op/terms {}/visibility=public", op.0),
+    );
+    let seat = offer(&mut tw, &fx, op, fx.atlas, fx.ace, "movement");
+
+    // Bystander is NOT in the seat offer's audience: declining an existing seat
+    // MUST return the exact same bytes as declining a nonexistent seat.
+    let real = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/decline {}/{}", op.0, seat.0),
+    );
+    let absent = err(
+        &mut tw,
+        fx.bystander,
+        &format!("+seat/decline {}/9999", op.0),
+    );
+    assert_eq!(real, mush_campaign::NO_SUCH_SEAT);
+    assert_eq!(
+        real, absent,
+        "non-nominee +seat/decline must not leak offer existence"
+    );
+
+    // Authorized nominee (`fx.driver`) CAN decline while the offer is live.
+    let declined = ok(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/decline {}/{}", op.0, seat.0),
+    );
+    assert!(declined.contains("You decline seat"), "{declined}");
+
+    // Once the offer has expired, even the nominee gets `NO_SUCH_SEAT`.
+    let expired_at = tw.world().now() + mush_campaign::SEAT_OFFER_TTL_SECS + 10;
+    tw.set_now(expired_at);
+    let expired = err(
+        &mut tw,
+        fx.driver,
+        &format!("+seat/decline {}/{}", op.0, seat.0),
+    );
+    assert_eq!(expired, mush_campaign::NO_SUCH_SEAT);
+}

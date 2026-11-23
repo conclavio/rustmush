@@ -116,7 +116,9 @@ fn build_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         proposal::get(ctx, parse_id(&raw)?).map_err(CmdError::msg)?
     };
     if rec.author != actor && !mush_atlas::is_staff(ctx.w, actor) {
-        return Err(CmdError::msg(format!("Proposal {} is not yours.", rec.id)));
+        // Uniform refusal matching `proposal::get` so `+build/show <id>` does
+        // not leak whether another player's or staff proposal exists (P2-MOD-87).
+        return Err(CmdError::msg(format!("No proposal {}.", rec.id)));
     }
     let lines = proposal::show_lines(ctx, &rec);
     say(ctx, lines);

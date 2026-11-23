@@ -1432,3 +1432,128 @@ fn high25_scene_created_at_epoch_zero_reanchors_on_real_clock_sync() {
     );
     assert!(scenes(&r.engine).active_scene_at(r.bar).is_none());
 }
+
+/// P2-MOD-32: `+timestop/log` omits `who` on `Emit`/`Spoof` for non-staff viewers,
+/// and `show_scene`, `release_member`, `on_said`, and `on_rolled` filter `Flags::DARK`
+/// actors for non-staff viewers.
+#[test]
+fn p2_mod_32_emit_spoof_anonymity_and_dark_surfaces() {
+    let mut r = rig();
+    run(&mut r.engine, r.nick, "+timestop");
+
+    // 1. Emit & Spoof in `+timestop/log`: non-staff must NOT see who emitted/spoofed.
+    emit_said(
+        &mut r.engine,
+        r.nick,
+        r.bar,
+        NarrativeKind::Emit,
+        "Thunder rumbles.",
+    );
+    emit_said(
+        &mut r.engine,
+        r.nick,
+        r.bar,
+        NarrativeKind::Spoof,
+        "A raven croaks.",
+    );
+
+    let ann_log = texts(&run(&mut r.engine, r.ann, "+timestop/log"));
+    assert!(
+        ann_log.contains("[emit]: Thunder rumbles."),
+        "expected anonymous emit: {ann_log}"
+    );
+    assert!(
+        !ann_log.contains("Nick [emit]"),
+        "Emit source de-anonymized to non-staff: {ann_log}"
+    );
+    assert!(
+        ann_log.contains("[spoof]: A raven croaks."),
+        "expected anonymous spoof: {ann_log}"
+    );
+    assert!(
+        !ann_log.contains("Nick [spoof]"),
+        "Spoof source de-anonymized to non-staff: {ann_log}"
+    );
+
+    // Staff (`GOD`) still sees attribution in `+timestop/log`.
+    r.engine.world.move_to(GOD, r.bar).unwrap();
+    let staff_log = texts(&run(&mut r.engine, GOD, "+timestop/log"));
+    assert!(
+        staff_log.contains("Nick [emit]: Thunder rumbles."),
+        "staff should retain emit attribution: {staff_log}"
+    );
+
+    // 2. `on_said` (Say/Pose) and `on_rolled` ignore `Flags::DARK` actors.
+    let shadow = r
+        .engine
+        .world
+        .create(ObjKind::Player, "ShadowSpy", GOD, Some(r.bar))
+        .unwrap();
+    r.engine
+        .world
+        .set_flag(shadow, mush_core::Flags::DARK, true)
+        .unwrap();
+    emit_said(
+        &mut r.engine,
+        shadow,
+        r.bar,
+        NarrativeKind::Say,
+        "secret whisper",
+    );
+    emit_rolled(&mut r.engine, shadow, r.bar, "4 successes");
+
+    let ann_log = texts(&run(&mut r.engine, r.ann, "+timestop/log"));
+    assert!(
+        !ann_log.contains("ShadowSpy")
+            && !ann_log.contains("secret whisper")
+            && !ann_log.contains("4 successes"),
+        "DARK on_said/on_rolled leaked in log: {ann_log}"
+    );
+
+    // 3. `show_scene` (`+timestop/who`) hides DARK participant from non-staff Ann,
+    //    while showing to self (Nick) and staff (GOD).
+    r.engine
+        .world
+        .set_flag(r.nick, mush_core::Flags::DARK, true)
+        .unwrap();
+    let ann_who = texts(&run(&mut r.engine, r.ann, "+timestop/who"));
+    assert!(
+        !ann_who.contains("Nick"),
+        "DARK participant leaked in +timestop/who: {ann_who}"
+    );
+    let nick_who = texts(&run(&mut r.engine, r.nick, "+timestop/who"));
+    assert!(
+        nick_who.contains("Nick"),
+        "DARK participant should see self in +timestop/who: {nick_who}"
+    );
+    let staff_who = texts(&run(&mut r.engine, GOD, "+timestop/who"));
+    assert!(
+        staff_who.contains("Nick"),
+        "staff should see DARK participant in +timestop/who: {staff_who}"
+    );
+
+    // 4. `release_member`: releasing a DARK member does not log a `Released` event
+    //    that leaks their name to non-staff participants in `+timestop/log`.
+    r.engine
+        .world
+        .set_flag(r.nick, mush_core::Flags::DARK, false)
+        .unwrap();
+    let ghost = r
+        .engine
+        .world
+        .create(ObjKind::Player, "GhostMember", GOD, Some(r.bar))
+        .unwrap();
+    r.engine.world.set_connected(ghost, true);
+    run(&mut r.engine, r.nick, "+timestop/end");
+    run(&mut r.engine, r.nick, "+timestop");
+    r.engine
+        .world
+        .set_flag(ghost, mush_core::Flags::DARK, true)
+        .unwrap();
+    run(&mut r.engine, ghost, "+timestop/leave");
+    let ann_log_after = texts(&run(&mut r.engine, r.ann, "+timestop/log"));
+    assert!(
+        !ann_log_after.contains("GhostMember"),
+        "DARK member release leaked in +timestop/log: {ann_log_after}"
+    );
+}

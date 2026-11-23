@@ -1,0 +1,26 @@
+# The nightly's clock (.github/workflows/ci.yml with slot=nightly, on GitHub's
+# hosted runners): Monday to Saturday at 05:00 Pacific. Sunday's run is the
+# weekly one (rustmush-dispatch-ci-weekly.timer), which runs every nightly
+# job too: one run a day, not two on Sunday.
+#
+# Its place among the four timers (docs/ops.md has the table): the soak's
+# time ends at 04:47. The scheduled nightlies of the 30 days to 2026-11-23
+# usually took 3 h 50 min and at the longest 5 h 38 min (338 minutes); the
+# time kept for it is one and a half times the longest, 507 minutes, to
+# 13:27. Monday's CodeQL run starts at 13:30.
+#
+# Persistent=false: a morning the box was off is a nightly missed, not one
+# caught up at boot.
+#
+# reserved-minutes: 507
+[Unit]
+Description=Start the CI nightly at 05:00 Pacific, Monday to Saturday
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 05:00:00 America/Los_Angeles
+AccuracySec=1s
+Persistent=false
+Unit=rustmush-dispatch@ci-nightly.service
+
+[Install]
+WantedBy=timers.target

@@ -122,8 +122,8 @@ pub enum ReachProof {
 }
 
 impl ReachProof {
-    /// The **stub** reach predicate (cut 7 tightens it): a console must be
-    /// co-located; a remote link's terminal and path must both be live.
+    /// The reach predicate: a console must be live and co-located with a live
+    /// actor; a remote link's actor, terminal, and path must all be live.
     /// Anything unknown **refuses**.
     #[must_use]
     pub fn is_reachable(&self, w: &mush_core::World, actor: ObjId) -> bool {
@@ -131,6 +131,9 @@ impl ReachProof {
             w.get(id)
                 .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
         };
+        if !live(actor) {
+            return false;
+        }
         match self {
             ReachProof::Console { room } => {
                 live(*room) && w.get(actor).and_then(|o| o.location) == Some(*room)
@@ -187,6 +190,49 @@ pub struct ActiveFocus {
     pub proxy: bool,
 }
 
+impl ActiveFocus {
+    /// Whether this focus's reach proof still holds right now (`P2-MOD-62`).
+    ///
+    /// For [`ReachProof::Console`], verifies that:
+    /// 1. the driven actor (`self.actor`) is live and physically co-located in
+    ///    `room` (and, if spatially placed, not quarantined and projecting into
+    ///    `room`), and
+    /// 2. `room` is still the live, anchored console room for
+    ///    `(self.unit, &self.station)` (so moving the unit away, unanchoring or
+    ///    quarantining the console space, or removing the station invalidates
+    ///    remote control).
+    #[must_use]
+    pub fn reach_is_current(&self, w: &mush_core::World) -> bool {
+        if !self.reach.is_reachable(w, self.actor) {
+            return false;
+        }
+        let Some(st) = w.module_state::<crate::data::SpatialState>() else {
+            return false;
+        };
+        if st.is_quarantined(self.actor) || st.held_placement(self.actor).is_some() {
+            return false;
+        }
+        match &self.reach {
+            ReachProof::Console { room } => {
+                if st.is_placed(self.actor)
+                    && crate::graph::project(st, w, self.actor) != Some(*room)
+                {
+                    return false;
+                }
+                crate::commands::console_room_of(w, self.unit, &self.station) == Some(*room)
+            }
+            ReachProof::RemoteLink { .. } => {
+                w.get(self.unit)
+                    .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
+                    && st
+                        .stations
+                        .get(&self.unit)
+                        .is_some_and(|hs| hs.stations.contains_key(&self.station))
+            }
+        }
+    }
+}
+
 /// The world-owned ephemeral focus map (B2). Installed via `reg.state(..)` — an
 /// in-RAM slot, **never persisted, never in an `Outbox`, never hydrated at
 /// boot**. Its single-writer atomicity (one `&mut` `FocusState::claim`
@@ -206,6 +252,17 @@ impl FocusState {
         self.by_unit
             .get(&unit)
             .is_some_and(|accounts| !accounts.is_empty())
+    }
+
+    pub(crate) fn accounts_on_unit(&self, unit: ObjId) -> Vec<AccountId> {
+        self.by_unit
+            .get(&unit)
+            .map(|accounts| accounts.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn all_accounts(&self) -> Vec<AccountId> {
+        self.by_account.keys().copied().collect()
     }
 
     fn forget_unit(&mut self, focus: &ActiveFocus) {
@@ -349,29 +406,29 @@ pub struct ProxyDrive {
 /// for every NPC and [`driving_actor`] is a fixed point after one application.
 #[must_use]
 pub fn proxy_drive_of(world: &mush_core::World, actor: ObjId) -> Option<ProxyDrive> {
-    // **F4/B6.** Only a player character drives. An account-mapped NPC is its
-    // own fixed point, whatever the account map happens to contain.
-    if world
-        .get(actor)
-        .is_none_or(|obj| obj.kind != mush_core::ObjKind::Player)
-    {
+    // **F4/B6.** Only a live player character drives. An account-mapped NPC is
+    // its own fixed point, whatever the account map happens to contain.
+    if world.get(actor).is_none_or(|obj| {
+        obj.kind != mush_core::ObjKind::Player || obj.flags.contains(mush_core::Flags::GOING)
+    }) {
         return None;
     }
     let account = world.module_state::<AccountOracle>()?.account_of(actor)?;
     let focus = world
         .module_state::<FocusState>()?
         .focus_of_account(account)?;
-    // **F4/B4.** The drive is bound to the character that CLAIMED the focus,
-    // never to the account's whole stable: an alt who never consented, was never
-    // in the offer's audience and holds no `SeatAudit` token drives nothing —
-    // and is therefore not narrowed by [`seat_restriction`] either.
-    (focus.proxy && focus.actor != actor && focus.driver == actor).then(|| ProxyDrive {
-        account,
-        driver: actor,
-        npc: focus.actor,
-        unit: focus.unit,
-        station: focus.station.clone(),
-    })
+    // **F4/B4 + P2-MOD-62.** The drive is bound to the character that CLAIMED
+    // the focus and requires the driven NPC's console reach proof to remain
+    // current: if the NPC leaves the console or the console/unit breaks, remote
+    // proxy control is refused immediately.
+    (focus.proxy && focus.actor != actor && focus.driver == actor && focus.reach_is_current(world))
+        .then(|| ProxyDrive {
+            account,
+            driver: actor,
+            npc: focus.actor,
+            unit: focus.unit,
+            station: focus.station.clone(),
+        })
 }
 
 /// The live **proxy seat** this actor's account holds, whoever of the account
@@ -531,7 +588,18 @@ pub fn seat_restriction(
     actor: ObjId,
     act: ProxyAct,
 ) -> Result<(), String> {
-    let Some(drive) = proxy_drive_of(world, actor) else {
+    // T11's guardrail binds the claiming Player driver for as long as the
+    // proxy seat occupies their focus slot — even if the NPC stepped away from
+    // the console (P2-MOD-62 stops remote driving via `proxy_drive_of` without
+    // letting a driver bypass T11 guardrails before `+seat/leave`).
+    if world.get(actor).is_none_or(|obj| {
+        obj.kind != mush_core::ObjKind::Player || obj.flags.contains(mush_core::Flags::GOING)
+    }) {
+        return Ok(());
+    }
+    let Some(drive) =
+        account_proxy_seat(world, actor).filter(|seat| seat.driver == actor && seat.npc != actor)
+    else {
         return Ok(());
     };
     Err(format!(

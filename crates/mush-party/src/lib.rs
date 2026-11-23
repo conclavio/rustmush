@@ -98,7 +98,7 @@ pub use module::{
     is_character, is_staff, party_key, render_actor,
 };
 pub use record::{
-    DisbandCause, Invitation, MAX_PARTIES, MAX_PARTIES_PER_LEADER, MAX_PARTY_INVITES,
-    MAX_PARTY_NAME_BYTES, MAX_PARTY_ROLE_BYTES, MAX_PARTY_SIZE, MAX_RETAINED_DISBANDED_PARTIES,
-    PARTY_IDLE_TTL, Party, PartyStatus, check_label,
+    DisbandCause, Invitation, MAX_PARTIES, MAX_PARTIES_PER_LEADER, MAX_PARTIES_PER_MEMBER,
+    MAX_PARTY_INVITES, MAX_PARTY_NAME_BYTES, MAX_PARTY_ROLE_BYTES, MAX_PARTY_SIZE,
+    MAX_RETAINED_DISBANDED_PARTIES, PARTY_IDLE_TTL, Party, PartyStatus, check_label,
 };

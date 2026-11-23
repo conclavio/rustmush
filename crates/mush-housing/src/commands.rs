@@ -1153,12 +1153,17 @@ fn property_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let f: Vec<String> = p.features.iter().map(|f| f.key.to_string()).collect();
         info(ctx, format!("  features: {}", f.join(", ")));
     }
+    let can_see_all_tenancies = is_staff(ctx.w, ctx.actor) || landlord_viewer(ctx.w, ctx.actor, &p);
     let tenancies: Vec<String> = ctx
         .w
         .module_state::<HousingStore>()
         .map(|s| {
             s.tenancies()
-                .filter(|t| t.property == p.id && !t.status.is_ended())
+                .filter(|t| {
+                    t.property == p.id
+                        && !t.status.is_ended()
+                        && (can_see_all_tenancies || t.is_tenant(ctx.actor))
+                })
                 .map(|t| format!("  tenancy #{} — {}", t.id, t.status.kind().label()))
                 .collect()
         })
@@ -1274,18 +1279,32 @@ fn tenancy_create(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             ),
         ));
     }
-    // **One live tenancy per property** (E5a fold, handoff 1).
-    if ctx
+    // **One live (or pending) tenancy per property** (E5a fold, handoff 1).
+    let (has_live, has_pending) = ctx
         .w
         .module_state::<HousingStore>()
-        .is_some_and(|s| s.has_live_tenancy(p.id))
-    {
+        .map_or((false, false), |s| {
+            (s.has_live_tenancy(p.id), s.has_pending_tenancy(p.id))
+        });
+    if has_live {
         return Err(hidden(
             ctx,
             Some(&p),
             None,
             format!(
                 "Property #{} already has a live tenancy. End it first (@tenancy/resolve) — a \
+                 residence answers for exactly one.",
+                p.id
+            ),
+        ));
+    }
+    if has_pending {
+        return Err(hidden(
+            ctx,
+            Some(&p),
+            None,
+            format!(
+                "Property #{} already has a pending tenancy. End it first (@tenancy/resolve) — a \
                  residence answers for exactly one.",
                 p.id
             ),

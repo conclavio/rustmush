@@ -97,8 +97,14 @@ fn your_turn_notice(ctx: &mut Ctx<'_>, s: &SceneRecord) {
     );
 }
 
-fn is_dark(w: &World, who: ObjId) -> bool {
+pub(crate) fn is_dark(w: &World, who: ObjId) -> bool {
     w.get(who).is_some_and(|o| o.flags.contains(Flags::DARK))
+}
+
+/// Whether `viewer` is permitted to see `target`'s identity/presence in scene
+/// surfaces (self, staff, or non-`DARK` target).
+pub(crate) fn can_see_actor(w: &World, viewer: ObjId, target: ObjId) -> bool {
+    viewer == target || is_staff(w, viewer) || !is_dark(w, target)
 }
 
 fn public_name(w: &World, who: ObjId) -> String {
@@ -109,11 +115,32 @@ fn public_name(w: &World, who: ObjId) -> String {
     }
 }
 
+fn viewer_name(w: &World, viewer: ObjId, who: ObjId) -> String {
+    if can_see_actor(w, viewer, who) {
+        display_name(w, who)
+    } else {
+        "Someone".to_string()
+    }
+}
+
 /// A one-line turn summary safe for room-wide broadcasts (masks `Flags::DARK`
 /// actors as `"Someone"` so hidden presence is never leaked to the room).
 fn turn_line(w: &World, s: &SceneRecord) -> String {
     match s.current_actor() {
         Some(a) => format!("Round {} — it is {}'s turn.", s.round, public_name(w, a)),
+        None => format!("Round {} — no participants.", s.round),
+    }
+}
+
+/// A one-line turn summary tailored to `viewer` (reveals a `Flags::DARK` actor
+/// only to themselves and staff).
+fn turn_line_for(w: &World, viewer: ObjId, s: &SceneRecord) -> String {
+    match s.current_actor() {
+        Some(a) => format!(
+            "Round {} — it is {}'s turn.",
+            s.round,
+            viewer_name(w, viewer, a)
+        ),
         None => format!("Round {} — no participants.", s.round),
     }
 }
@@ -959,7 +986,8 @@ fn release_member(
     }
     ctx.w.clear_exclusive_scene_member(who);
     persist_scene(ctx.out, &updated);
-    if is_dark(ctx.w, who) {
+    let target_dark = is_dark(ctx.w, who);
+    if target_dark {
         ctx.out.sys_to_actor(
             who,
             "scene",
@@ -990,13 +1018,15 @@ fn release_member(
         };
         announce(ctx, anchor, msg);
     }
-    log_event(
-        ctx,
-        &updated,
-        SceneEventKind::Released,
-        Some(who),
-        serde_json::json!({ "self_release": self_release }),
-    );
+    if !target_dark {
+        log_event(
+            ctx,
+            &updated,
+            SceneEventKind::Released,
+            Some(who),
+            serde_json::json!({ "self_release": self_release }),
+        );
+    }
     crate::panel::publish(ctx, &updated);
     crate::panel::publish_none(ctx, who);
     Ok(())
@@ -1042,6 +1072,9 @@ fn timestop_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(CmdError::msg("Usage: +timestop/release <participant>"));
     }
     let who = mush_core::match_object(ctx.w, actor, &arg)?;
+    if !is_staff(ctx.w, actor) && who != actor && is_dark(ctx.w, who) {
+        return Err(CmdError::msg("They are not in this scene."));
+    }
     if who == s.facilitator {
         return Err(CmdError::msg(
             "The facilitator ends the scene with +timestop/end, not /release.",
@@ -1439,16 +1472,25 @@ fn is_hidden_dark_visitor_event(
     if staff {
         return false;
     }
-    if !matches!(ev.kind, SceneEventKind::Joined | SceneEventKind::Left) {
-        return false;
-    }
     let Some(actor) = ev.actor else {
         return false;
     };
-    if actor == viewer {
+    if actor == viewer || !is_dark(w, actor) {
         return false;
     }
-    is_dark(w, actor) && !scene.members().any(|m| m == actor)
+    match ev.kind {
+        SceneEventKind::Joined | SceneEventKind::Left => !scene.members().any(|m| m == actor),
+        SceneEventKind::Released | SceneEventKind::Rolled => true,
+        SceneEventKind::Said => {
+            let narr = ev
+                .detail
+                .get("narr")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            !matches!(narr, "emit" | "spoof")
+        }
+        _ => false,
+    }
 }
 
 /// Render one recorded [`SceneEvent`] to a one-line summary for `viewer`, or
@@ -1457,8 +1499,10 @@ fn is_hidden_dark_visitor_event(
 /// Consent votes are attributed only when `privileged` (facilitator or staff)
 /// or when the event is the viewer's own vote, matching [`consent_lines`] so
 /// `+timestop/log` and `+timestop/log/archive` cannot deanonymize another
-/// participant's consent choice. Legacy `Joined`/`Left` events for currently
-/// `Flags::DARK` non-member visitors are omitted for non-staff viewers.
+/// participant's consent choice. `Emit`/`Spoof` events omit their author for
+/// non-staff viewers so `+timestop/log` cannot de-anonymize emits/spoofs.
+/// Legacy `Joined`/`Left`/`Released`/`Said` (non-emit/spoof)/`Rolled` events
+/// for currently `Flags::DARK` actors are omitted for non-staff viewers.
 fn render_event(
     w: &World,
     scene: &SceneRecord,
@@ -1470,7 +1514,13 @@ fn render_event(
     if is_hidden_dark_visitor_event(w, scene, viewer, staff, ev) {
         return None;
     }
-    let who = ev.actor.map_or_else(String::new, |a| display_name(w, a));
+    let who = ev.actor.map_or_else(String::new, |a| {
+        if staff || a == viewer || !is_dark(w, a) {
+            display_name(w, a)
+        } else {
+            "Someone".to_string()
+        }
+    });
     let s = |k: &str| ev.detail.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let line = match ev.kind {
         SceneEventKind::Started => "The scene began.".to_string(),
@@ -1490,7 +1540,14 @@ fn render_event(
         SceneEventKind::Resumed => "The scene resumed.".to_string(),
         SceneEventKind::Released => format!("{who} was released from the scene."),
         SceneEventKind::Ended => "The scene ended.".to_string(),
-        SceneEventKind::Said => format!("{who} [{}]: {}", s("narr"), s("text")),
+        SceneEventKind::Said => {
+            let narr = s("narr");
+            if !staff && matches!(narr, "emit" | "spoof") {
+                format!("[{narr}]: {}", s("text"))
+            } else {
+                format!("{who} [{narr}]: {}", s("text"))
+            }
+        }
         SceneEventKind::Rolled => format!("{who} rolled: {}", s("summary")),
         SceneEventKind::Joined => format!("{who} arrives."),
         SceneEventKind::Left => format!("{who} leaves."),
@@ -1702,14 +1759,16 @@ fn show_scene(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         to_actor(ctx, "You are not in a scene.");
         return Ok(());
     };
+    let viewer = ctx.actor;
     let mut lines = vec![
         format!("{} (scene #{}) — {}", s.title, s.id, s.status.label()),
-        turn_line(ctx.w, &s),
+        turn_line_for(ctx.w, viewer, &s),
     ];
     let order: Vec<String> = s
         .participants
         .iter()
         .enumerate()
+        .filter(|(_, p)| can_see_actor(ctx.w, viewer, **p))
         .map(|(i, &p)| {
             let marker = if i == s.turn_index { " <=" } else { "" };
             format!("  {}{}", display_name(ctx.w, p), marker)
@@ -1753,7 +1812,7 @@ fn consent_lines(ctx: &Ctx<'_>, s: &SceneRecord) -> Vec<String> {
             for vote in s.consent.iter().filter(|v| v.about == about) {
                 lines.push(format!(
                     "    {} — {} (round {})",
-                    display_name(ctx.w, vote.participant),
+                    viewer_name(ctx.w, ctx.actor, vote.participant),
                     vote.choice,
                     vote.round
                 ));

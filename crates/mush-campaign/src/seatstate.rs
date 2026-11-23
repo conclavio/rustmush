@@ -276,18 +276,24 @@ pub(crate) fn take_muster(
     }
     // **Only the verdict is stored** (Q11A/R3/C23A/C24A). An unknown account
     // makes the verdict `None`, which **fails closed** at roster lock.
-    let players_distinct = ctx
-        .w
-        .module_state::<mush_sim::AccountOracle>()
-        .and_then(|oracle| oracle.all_accounts_distinct(&characters));
-    let accounts_distinct = match players_distinct {
-        None => None,
-        Some(false) => Some(false),
-        Some(true) if accounts.iter().any(Option::is_none) => None,
-        Some(true) => {
-            let mut seen = std::collections::BTreeSet::new();
-            Some(accounts.iter().flatten().all(|id| seen.insert(*id)))
+    // P2-MOD-59: plain read-only `+muster` (`lock == false`) never consults the
+    // OOC account oracle at all, since it discards `accounts_distinct`.
+    let accounts_distinct = if lock {
+        let players_distinct = ctx
+            .w
+            .module_state::<mush_sim::AccountOracle>()
+            .and_then(|oracle| oracle.all_accounts_distinct(&characters));
+        match players_distinct {
+            None => None,
+            Some(false) => Some(false),
+            Some(true) if accounts.iter().any(Option::is_none) => None,
+            Some(true) => {
+                let mut seen = std::collections::BTreeSet::new();
+                Some(accounts.iter().flatten().all(|id| seen.insert(*id)))
+            }
         }
+    } else {
+        None
     };
     MusterReport {
         operation: doc.id(),
@@ -296,6 +302,15 @@ pub(crate) fn take_muster(
         slots,
         accounts_distinct,
         locked: lock && accounts_distinct == Some(true),
+    }
+}
+
+/// Advance a `(operation, offer)` rotation cursor strictly past `key`, wrapping
+/// cleanly to `(0, 0)` at `(u64::MAX, u64::MAX)` (P2-MOD-58).
+const fn next_seat_cursor((op, offer): (u64, u64)) -> (u64, u64) {
+    match offer.checked_add(1) {
+        Some(next_offer) => (op, next_offer),
+        None => (op.wrapping_add(1), 0),
     }
 }
 
@@ -313,53 +328,71 @@ pub(crate) fn take_muster(
 /// the variant discarded the payload. `seatcmd::seat_activate` compares it now,
 /// and a grant recorded under a generation the unit has bumped past is stale.
 ///
-/// Bounded on grants **visited**; a re-run past the applied point is a no-op, so
-/// a reboot re-running the sweep changes nothing.
+/// Bounded on grants **promoted** with a rotating `(operation, offer)` cursor
+/// (P2-MOD-58); unactivated dormant grants are skipped before consuming budget
+/// so they can never starve promotion of active seats. A re-run past the applied
+/// point is a no-op, so a reboot re-running the sweep changes nothing.
 pub(crate) fn observe_activations(ctx: &mut mush_core::Ctx<'_>, budget: usize) -> usize {
-    let candidates: Vec<(crate::seat::SeatGrant, ObjId, String)> = {
+    observe_activations_with(ctx, budget, mush_sim::channel_lease_holder)
+}
+
+fn observe_activations_with(
+    ctx: &mut mush_core::Ctx<'_>,
+    budget: usize,
+    holder_of: impl Fn(
+        &mush_core::World,
+        ObjId,
+        &mush_core::ChannelId,
+    ) -> Option<mush_core::PrincipalId>,
+) -> usize {
+    if budget == 0 {
+        return 0;
+    }
+    let (candidates, next_cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
             return 0;
         };
-        store
+        let cursor = store.seat_observe_cursor;
+        let eligible: Vec<(crate::seat::SeatGrant, ObjId)> = store
             .seat_grants()
             .filter(|grant| matches!(grant.state, GrantState::Dormant))
-            .take(budget)
             .filter_map(|grant| {
-                store.seat_offer(grant.operation, grant.offer).map(|offer| {
-                    (
-                        grant.clone(),
-                        offer.scope.unit.0,
-                        offer.scope.station.to_string(),
-                    )
-                })
+                let offer = store.seat_offer(grant.operation, grant.offer)?;
+                let channel_name = offer.scope.channels.iter().next()?;
+                let channel = mush_core::ChannelId::new(channel_name.as_str())?;
+                let unit = offer.scope.unit.0;
+                let held_by_seat = holder_of(ctx.w, unit, &channel)
+                    == Some(mush_core::PrincipalId::Object { id: grant.actor.0 });
+                held_by_seat.then(|| (grant.clone(), unit))
             })
-            .collect()
+            .collect();
+        let chosen: Vec<(crate::seat::SeatGrant, ObjId)> = eligible
+            .iter()
+            .filter(|(g, _)| (g.operation.0, g.offer.0) >= cursor)
+            .chain(
+                eligible
+                    .iter()
+                    .filter(|(g, _)| (g.operation.0, g.offer.0) < cursor),
+            )
+            .take(budget)
+            .cloned()
+            .collect();
+        let next = chosen
+            .last()
+            .map(|(g, _)| next_seat_cursor((g.operation.0, g.offer.0)));
+        (chosen, next)
     };
+    if let (Some(next), Some(store)) = (next_cursor, ctx.w.module_state_mut::<CampaignStore>()) {
+        store.seat_observe_cursor = next;
+    }
     let mut promoted = 0usize;
-    for (grant, unit, station) in candidates {
-        let Some(channel) = ctx
-            .w
-            .module_state::<CampaignStore>()
-            .and_then(|store| store.seat_offer(grant.operation, grant.offer))
-            .and_then(|offer| offer.scope.channels.iter().next().cloned())
-        else {
-            continue;
-        };
-        let Some(channel) = mush_core::ChannelId::new(channel.as_str()) else {
-            continue;
-        };
-        let held_by_seat = mush_sim::channel_lease_holder(ctx.w, unit, &channel)
-            == Some(mush_core::PrincipalId::Object { id: grant.actor.0 });
-        if !held_by_seat {
-            continue;
-        }
+    for (grant, unit) in candidates {
         // The seat really is live: record the epoch the grant is now current
         // under, read from the unit's own control generation.
         let epoch = ctx
             .w
             .module_state::<mush_sim::SpatialState>()
             .map_or(0, |state| state.control_generation(unit));
-        let _ = &station;
         let mut live = grant;
         live.state = GrantState::Active { epoch };
         if crate::store::put_seat_grant(ctx, live) {
@@ -371,7 +404,8 @@ pub(crate) fn observe_activations(ctx: &mut mush_core::Ctx<'_>, budget: usize) -
 
 /// Expire every dormant grant whose offer has lapsed, and every grant on a
 /// terminal operation. **A `Dormant` grant on an aborted operation expires
-/// rather than surviving to a later one.** Bounded on grants **worked**.
+/// rather than surviving to a later one.** Bounded on grants **worked** with a
+/// rotating `(operation, offer)` cursor (P2-MOD-58).
 ///
 /// ## What the fold changed
 ///
@@ -393,12 +427,20 @@ pub(crate) fn observe_activations(ctx: &mut mush_core::Ctx<'_>, budget: usize) -
 /// per fire (cut 2's fold C4), and **when the revoke itself refuses the grant is
 /// left non-terminal and staff are paged** rather than expired anyway.
 pub(crate) fn expire_grants(ctx: &mut mush_core::Ctx<'_>, budget: usize) -> usize {
+    if budget == 0 {
+        return 0;
+    }
     let now = ctx.w.world_ic_now();
-    let stale: Vec<(crate::seat::SeatGrant, Option<(ObjId, SmolStr)>)> = {
+    // P2-MOD-58: rotate across stale grants via `seat_expire_cursor` and skip
+    // duplicate same-actor live stand-downs and already-paged custodied seats
+    // before consuming budget so blocked/custodied live seats cannot starve
+    // expiry of later stale grants.
+    let (stale, next_cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
             return 0;
         };
-        store
+        let cursor = store.seat_expire_cursor;
+        let all_stale: Vec<(crate::seat::SeatGrant, Option<(ObjId, SmolStr)>)> = store
             .seat_grants()
             .filter(|grant| {
                 if grant.state.is_terminal() {
@@ -412,15 +454,59 @@ pub(crate) fn expire_grants(ctx: &mut mush_core::Ctx<'_>, budget: usize) -> usiz
                     .is_none_or(|offer| offer.is_expired(&now));
                 operation_over || (matches!(grant.state, GrantState::Dormant) && offer_lapsed)
             })
-            .take(budget)
             .map(|grant| {
                 let target = store
                     .seat_offer(grant.operation, grant.offer)
                     .map(|offer| (offer.scope.unit.0, offer.scope.station.clone()));
                 (grant.clone(), target)
             })
-            .collect()
+            .collect();
+        let rotated = all_stale
+            .iter()
+            .filter(|(g, _)| (g.operation.0, g.offer.0) >= cursor)
+            .chain(
+                all_stale
+                    .iter()
+                    .filter(|(g, _)| (g.operation.0, g.offer.0) < cursor),
+            );
+        let mut seen_live_actors: std::collections::BTreeSet<ObjId> =
+            std::collections::BTreeSet::new();
+        let mut chosen = Vec::new();
+        let mut last_visited: Option<(u64, u64)> = None;
+        for (grant, target) in rotated {
+            if chosen.len() >= budget {
+                break;
+            }
+            if seat_is_live(ctx, grant) {
+                let resolved_unit = target.as_ref().map(|(u, _)| *u).or_else(|| {
+                    ctx.w
+                        .module_state::<mush_sim::FocusState>()
+                        .and_then(|state| state.focus_of_actor(grant.actor.0))
+                        .filter(|focus| focus.proxy)
+                        .map(|focus| focus.unit)
+                });
+                if let Some(unit) = resolved_unit
+                    && mush_sim::deployed::is_custodied(ctx.w, unit)
+                {
+                    let subject =
+                        SmolStr::new(format!("seat:{}:{}", grant.operation.0, grant.offer.0));
+                    if store.paged.contains(&subject) {
+                        continue;
+                    }
+                }
+                if !seen_live_actors.insert(grant.actor.0) {
+                    continue;
+                }
+            }
+            last_visited = Some((grant.operation.0, grant.offer.0));
+            chosen.push((grant.clone(), target.clone()));
+        }
+        let next = last_visited.map(next_seat_cursor);
+        (chosen, next)
     };
+    if let (Some(next), Some(store)) = (next_cursor, ctx.w.module_state_mut::<CampaignStore>()) {
+        store.seat_expire_cursor = next;
+    }
     let mut expired = 0usize;
     let mut stood_down: std::collections::BTreeSet<ObjId> = std::collections::BTreeSet::new();
     for (grant, target) in stale {
@@ -514,4 +600,223 @@ fn release_expiring_seat(
 #[must_use]
 pub fn unit_of(unit: UnitRef) -> ObjId {
     unit.0
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use mush_core::{ChannelId, ClockRef, ClockStamp, Ctx, GOD, ObjId, Outbox, PrincipalId};
+    use mush_testkit::TestWorld;
+    use smol_str::SmolStr;
+
+    use super::*;
+    use crate::ids::OperationId;
+    use crate::record::AudienceSpec;
+    use crate::seat::{
+        DriverToken, EligibilitySpec, FallbackSpec, RevocationTerms, SeatOffer, SeatOfferId,
+        SeatScope,
+    };
+
+    fn stamp(at: i64) -> ClockStamp {
+        ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at,
+        }
+    }
+
+    fn make_offer(op: OperationId, id: SeatOfferId, unit: ObjId) -> SeatOffer {
+        let mut offer = SeatOffer {
+            id,
+            operation: op,
+            audience: AudienceSpec {
+                members: vec![mush_org::PrincipalId::Object(GOD)],
+            },
+            eligibility: EligibilitySpec::default(),
+            expires: stamp(10_000),
+            scope: SeatScope {
+                unit: UnitRef(unit),
+                station: SmolStr::new_static("pilot"),
+                channels: BTreeSet::from([SmolStr::new_static("movement")]),
+                mission_order: SmolStr::new_static("hold"),
+                roe: SmolStr::new_static("operation"),
+                permitted_area: None,
+            },
+            fallback: FallbackSpec {
+                holder: UnitRef(ObjId(unit.0 + 1_000)),
+            },
+            revocation: RevocationTerms {
+                by_commander: true,
+                on_operation_end: true,
+            },
+            consent_hash: [0; 32],
+        };
+        offer.consent_hash = crate::seat::seat_consent_hash(&offer);
+        offer
+    }
+
+    fn make_grant(op: OperationId, id: SeatOfferId, npc: ObjId) -> crate::seat::SeatGrant {
+        crate::seat::SeatGrant {
+            operation: op,
+            offer: id,
+            actor: UnitRef(npc),
+            driver: DriverToken(format!("{:016x}{:016x}", op.0, id.0).into()),
+            accepted_at: stamp(1),
+            consent_hash: [1; 32],
+            state: GrantState::Dormant,
+        }
+    }
+
+    /// **P2-MOD-58a.** `observe_activations` skips unactivated `Dormant` grants
+    /// before consuming its 32-slot cap budget AND rotates via
+    /// `seat_observe_cursor` when more than `budget` grants are live at once.
+    #[test]
+    fn p2_mod_58_observe_activations_skips_unactivated_and_rotates_cursor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut tw = TestWorld::with_modules(vec![Box::new(crate::CampaignModule::new())]);
+        let movement = ChannelId::new("movement").ok_or("channel id")?;
+        let mut leases: BTreeMap<(ObjId, ChannelId), PrincipalId> = BTreeMap::new();
+
+        // 1. Seed 32 unactivated dormant grants on op 1 (no lease held), followed
+        //    by 1 live dormant grant on op 2 whose lease IS held.
+        let mut out = Outbox::new();
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::store::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            for i in 1..=32_u64 {
+                let unit = ObjId(100 + u32::try_from(i)?);
+                let npc = ObjId(200 + u32::try_from(i)?);
+                let _ = crate::store::put_seat_offer(
+                    &mut ctx,
+                    make_offer(OperationId(1), SeatOfferId(i), unit),
+                );
+                let _ = crate::store::put_seat_grant(
+                    &mut ctx,
+                    make_grant(OperationId(1), SeatOfferId(i), npc),
+                );
+            }
+            let live_unit = ObjId(500);
+            let live_npc = ObjId(600);
+            let _ = crate::store::put_seat_offer(
+                &mut ctx,
+                make_offer(OperationId(2), SeatOfferId(1), live_unit),
+            );
+            let _ = crate::store::put_seat_grant(
+                &mut ctx,
+                make_grant(OperationId(2), SeatOfferId(1), live_npc),
+            );
+            leases.insert(
+                (live_unit, movement.clone()),
+                PrincipalId::Object { id: live_npc },
+            );
+        }
+
+        let promoted = {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::store::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            observe_activations_with(&mut ctx, crate::MAX_SEATS_PER_FIRE, |_, unit, chan| {
+                leases.get(&(unit, chan.clone())).cloned()
+            })
+        };
+        if promoted != 1 {
+            return Err(format!("expected 1 promoted seat, got {promoted}").into());
+        }
+        let promoted_state = tw
+            .world()
+            .module_state::<CampaignStore>()
+            .and_then(|s| s.seat_grant(OperationId(2), SeatOfferId(1)))
+            .map(|g| g.state.clone());
+        if !matches!(promoted_state, Some(GrantState::Active { .. })) {
+            return Err(
+                "live seat behind 32 unactivated dormant grants must promote in one tick".into(),
+            );
+        }
+
+        // 2. Seed 4 live grants across ops 3..=6 and run with budget=2 so
+        //    `seat_observe_cursor` rotates cleanly across fires.
+        {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::store::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            for op_n in 3..=6_u64 {
+                let unit = ObjId(700 + u32::try_from(op_n)?);
+                let npc = ObjId(800 + u32::try_from(op_n)?);
+                let _ = crate::store::put_seat_offer(
+                    &mut ctx,
+                    make_offer(OperationId(op_n), SeatOfferId(1), unit),
+                );
+                let _ = crate::store::put_seat_grant(
+                    &mut ctx,
+                    make_grant(OperationId(op_n), SeatOfferId(1), npc),
+                );
+                leases.insert((unit, movement.clone()), PrincipalId::Object { id: npc });
+            }
+        }
+        let (first_batch, second_batch) = {
+            let engine = tw.engine_mut();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                actor: GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(SmolStr::new(crate::store::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let a = observe_activations_with(&mut ctx, 2, |_, unit, chan| {
+                leases.get(&(unit, chan.clone())).cloned()
+            });
+            let b = observe_activations_with(&mut ctx, 2, |_, unit, chan| {
+                leases.get(&(unit, chan.clone())).cloned()
+            });
+            (a, b)
+        };
+        if first_batch != 2 || second_batch != 2 {
+            return Err(
+                format!("expected batches (2, 2), got ({first_batch}, {second_batch})").into(),
+            );
+        }
+        let store = tw
+            .world()
+            .module_state::<CampaignStore>()
+            .ok_or("campaign store")?;
+        for op_n in 3..=6_u64 {
+            if !matches!(
+                store
+                    .seat_grant(OperationId(op_n), SeatOfferId(1))
+                    .map(|g| &g.state),
+                Some(GrantState::Active { .. })
+            ) {
+                return Err(format!("op {op_n} grant must be promoted after rotation").into());
+            }
+        }
+        Ok(())
+    }
 }

@@ -2544,8 +2544,10 @@ the nightly's bisect after it merges.
 without running when nobody gives it what it needs — `#[ignore]`d, reading
 `REDIS_URL`, or opting in by a `RUN_*` flag — has a row in
 `crates/mush-contract-tests/test-tiers.toml`: `pr` (a ci.yml job with no `if:`),
-`nightly` (the daily schedule), `weekly` (the Sunday cron, `17 4 * * 0`),
-`dispatch` (a dispatch-only job, or the VPS gate's `harness`/`cost-lane` kinds),
+`nightly` (a job any dispatch reaches: the box's timer dispatches ci.yml with
+`slot=nightly` Monday to Saturday), `weekly` (a job whose `if:` adds
+`inputs.slot != 'nightly'`: Sunday's dispatch, `slot=weekly`),
+`dispatch` (a job only a dispatch by hand reaches, or the VPS gate's `harness`/`cost-lane` kinds),
 or `by-hand` (no job; the row's `by_hand` is the revision of the last recorded
 run), with the configuration that run sets. `ci_gated_test_inventory` holds the
 rows to the workflows: the job must be on the row's tier, run the test by a
@@ -2571,13 +2573,13 @@ with `scripts/vps-gate.sh --env "NAME=VALUE"` and move the row's `by_hand` to
 the revision it ran at.
 
 **The nightly's failure channel** (doc 43 D-43-3) is GitHub's own email for a
-failed scheduled run. GitHub sends a scheduled workflow's notifications to the
-account that last changed the `cron` lines in `ci.yml`, so the owner checks two
-things: that the last commit touching those lines is theirs (a merge they made
-of doc 43 TS.2 counts), and that *Settings → Notifications → Actions* has
+failed run. The nightly is a dispatch from conclav.dev (The clock is on
+conclav.dev, below), and GitHub sends a dispatched run's notifications to the
+account that dispatched it: the owner's, whose token the box calls with. So
+the owner checks one thing: that *Settings → Notifications → Actions* has
 "Send notifications for failed workflows only" with email on. A run that went
-red then mails the owner the next morning; nothing in the workflow sends it.
-The run itself names its cause: on the schedule and on a dispatch, ci.yml's
+red then mails the owner that morning; nothing in the workflow sends it.
+The run itself names its cause: on every dispatch, ci.yml's
 `nightly-report` job waits for every other job and writes one line per job
 into the run's summary, failed ones first, each failure also an error
 annotation (`ci_gated_test_inventory` refuses a job its `needs` leaves out).
@@ -2585,13 +2587,172 @@ An artifact upload that fails (the service's ECONNRESET of nightly #1553) no
 longer fails a test cell: the JUnit and the M6 evidence uploads continue on
 error and the next step warns that the cell's JUnit is missing.
 
+## The clock is on conclav.dev: the nightly, the weekly, CodeQL and the soak
+
+**No workflow has a `schedule` trigger.** GitHub started this repository's
+scheduled runs seven to ten and a half hours late in November 2026 (`gh run
+list --event schedule`: the 04:17 UTC nightly between 11:28 and 14:38 UTC every
+day for two weeks, Monday's 06:17 UTC CodeQL run at 15:45 to 16:17 UTC, and the
+soak's first cron not at all on its night). Four systemd timers on conclav.dev
+keep the clock instead, in the owner's time zone, and each dispatches its
+workflow at `main` through GitHub's API. A run starts within seconds of its
+timer.
+
+**What runs on a clock, all of it** (checked 2026-11-23):
+
+| Job | Workflow and inputs | Runs on | Was |
+| --- | --- | --- | --- |
+| soak | `soak.yml`, its defaults | conclav.dev, the `conclav-dev` runner, cores 0 to 23 | cron `17 7 * * *` |
+| ci-nightly | `ci.yml`, `slot=nightly` | GitHub's hosted runners | cron `17 4 * * 1-6` |
+| ci-weekly | `ci.yml`, `slot=weekly` | GitHub's hosted runners | cron `17 4 * * 0` |
+| codeql | `codeql.yml`, `rust=true` | GitHub's hosted runners | cron `17 6 * * 1` |
+
+Nothing else in the repository runs on a clock as a job. `gate.yml` is
+dispatch-only. conclav.dev itself has only the operating system's timers
+(apt, fstrim, tmpfiles) and no crontab. `deploy/sshdoorway/sshdoorway-logrotate.timer`
+is conclav.io's log rotation every 15 minutes, a chore of that box and not a
+job; it is as it was. GitHub's two leftover "dynamic" CodeQL workflows (the
+default setup's, which stays off) last ran on 2026-10-27 and have no schedule.
+
+**The slots of `ci.yml`.** A dispatch carries `slot`: `by-hand` (the default:
+every nightly and weekly job, the fast pulse unless `-f mind_pulse_ms=` says
+otherwise, as a dispatch always was), `nightly` (what the Monday-to-Saturday
+cron ran: the nightly jobs, the M7 stories at the 250 ms pulse) or `weekly`
+(what Sunday's cron ran: the nightly jobs at that pulse and the six weekly
+jobs). A push and a pull request are untouched. `gh workflow run CI --ref
+<branch>` is still the by-hand run; `-f slot=nightly` runs exactly the
+nightly's set on a branch.
+
+**When, and how long is kept for each.** Times are `America/Los_Angeles` and
+follow daylight saving. "Usual" and "longest" are the scheduled runs of the 30
+days to 2026-11-23, from start to the last job's end. The time kept for a job
+is one and a half times its longest run; the next job starts after it.
+
+| Job | Fires (Pacific) | Runs measured | Usual | Longest | Kept: 1.5 x longest | Kept until | Next job |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| soak | every day 23:17 | none yet | about 3 h 45 min by design | 5 h 30 min, its timeout | 330 min (the timeout: it cannot run longer) | 04:47 | nightly or weekly, 05:00 |
+| ci-nightly | Monday to Saturday 05:00 | 24 | 3 h 50 min | 5 h 38 min (338 min) | 507 min (8 h 27 min) | 13:27 | Monday: codeql, 13:30. Other days: soak, 23:17 |
+| ci-weekly | Sunday 05:00 | 4 | 3 h 50 min | 3 h 50 min (230 min) | 507 min, the nightly's: the weekly is the nightly and more | 13:27 | soak, 23:17 |
+| codeql | Monday 13:30 | 3 | 1 h 22 min | 1 h 43 min (103 min) | 155 min (2 h 35 min) | 16:05 | soak, 23:17 |
+
+`scripts/tests/workflow-dispatch.sh` lays the week out from the timer files
+(each carries its kept minutes) and fails if any two kept times overlap, so a
+changed hour is checked.
+
+**Which gaps protect something.**
+
+- *soak, then the nightly:* nothing is shared. The soak is on conclav.dev and
+  the nightly on GitHub's runners. The gap is tidiness.
+- *the nightly, then CodeQL (Mondays):* both use GitHub's hosted runners, so
+  they share the account's limit on concurrent hosted jobs. An overlap would
+  queue jobs, not break them. This is the one gap between two clock-run jobs
+  that protects a shared resource, and a mild one.
+- *CodeQL, then the soak:* nothing is shared. Tidiness.
+- *the soak and anything by hand on conclav.dev:* the box is the soak's one
+  shared resource, and no other clock-run job uses it. A `gate.yml` dispatch
+  pinned to `conclav-dev` waits for the runner.
+
+**It does not fit the owner's night, and what was done about it.** The night
+is about 23:00 to 07:00, eight hours. The kept times in a row are 5 h 30 min
+and 8 h 27 min, 13 h 57 min, and 16 h 32 min on a Monday. The headroom was
+not shrunk. What is built keeps the one job that holds the owner's box, the
+soak, inside the night (over by 04:47 at the latest), and lets the hosted jobs
+follow it into the day: the nightly usually ends about 08:50 and CodeQL about
+14:50 on Mondays. Under GitHub's late schedule the nightly had been starting
+between 3:28 and 6:38 am Pacific anyway. The alternative, if everything should
+be over by 07:00: the hosted jobs share nothing with the box, so they can run
+beside the soak (CodeQL on Sunday at 19:45, the nightly at 22:30, kept to
+06:57) with the headroom intact only between the two hosted jobs. That is
+three `OnCalendar` lines.
+
+On the one night a year the clocks go forward, 23:17 to 05:00 is 4 h 43 min
+and not 5 h 43 min: a soak that ran to its timeout would overlap the start of
+the nightly by up to 47 minutes. They share nothing.
+
+**The trade: if conclav.dev is down, nothing clock-run runs.** No soak, no
+nightly, no weekly, no CodeQL, and no catch-up afterwards (`Persistent=false`).
+The same holds from the day the token expires or is revoked. GitHub mails only
+for a run that failed, so a night with no run at all is silent: a dead box and
+a green night look the same in the inbox. How to notice:
+
+```text
+gh run list --workflow ci.yml --event workflow_dispatch --limit 3     # a run created today at 05:00 Pacific
+gh run list --workflow soak.yml --limit 3                             # a run created last night at 23:17 Pacific
+ssh root@conclav.dev "systemctl list-timers 'rustmush-dispatch-*'"    # LAST: when each fired
+ssh root@conclav.dev "systemctl --failed 'rustmush-dispatch@*'"       # a call GitHub refused
+```
+
+Nothing watches this by itself. What would: one small hosted workflow on
+GitHub's own schedule, where lateness does not matter, that fails when the
+newest nightly is more than a day and a half old. It is not built.
+
+**The files.** `deploy/vps-runner/`, installed by
+`bash deploy/vps-runner/dispatch-timers-install.sh` as root on the box (its
+header lists every path it changes and how to retire it):
+
+| On the box | What it is |
+| --- | --- |
+| `/etc/systemd/system/rustmush-dispatch-{soak,ci-nightly,ci-weekly,codeql}.timer` | the four clocks; `Persistent=false`, so a firing the box was off for is missed and not caught up at boot |
+| `/etc/systemd/system/rustmush-dispatch@.service` | one call for the job its instance names, as a user of its own with no privileges |
+| `/usr/local/lib/rustmush/workflow-dispatch.sh` | the call: a `workflow_dispatch` at `main` through GitHub's API with curl, and the table of jobs |
+| `/etc/rustmush/dispatch.env` | **the owner's token; not in the repository, and no script creates it** |
+
+**The token is the owner's to create and place.** Nobody else creates, reads
+or copies it. One token serves all four jobs. While the file is not there each
+timer fires at its hour, its service fails with one line that names the
+missing file, and nothing else happens.
+
+1. On GitHub: Settings, Developer settings, Personal access tokens,
+   Fine-grained tokens, Generate new token.
+   - **Resource owner:** `conclavio`.
+   - **Repository access:** Only select repositories, `conclavio/rustmush`.
+   - **Repository permissions:** Actions, **Read and write**. Nothing else;
+     GitHub adds Metadata, read-only, by itself.
+   - **Expiration:** the owner's choice. Every clock-run job stops on the day
+     it expires, and the only signs are the commands above.
+2. On conclav.dev as root, with the token on the clipboard and not on a
+   command line:
+
+   ```text
+   install -d -m 0755 -o root -g root /etc/rustmush
+   install -m 0600 -o root -g root /dev/null /etc/rustmush/dispatch.env
+   nano /etc/rustmush/dispatch.env
+   ```
+
+   The file is `/etc/rustmush/dispatch.env`, owner `root:root`, mode `0600`,
+   and holds one line with no quotes and no spaces:
+   `DISPATCH_TOKEN=github_pat_...`. The script refuses a file that anyone but
+   its owner can read.
+3. Check it:
+
+   ```text
+   systemctl list-timers 'rustmush-dispatch-*'              # NEXT and LAST for each of the four
+   systemctl status rustmush-dispatch@soak.service          # that job's last call: "dispatched soak (...)", or the reason it failed
+   journalctl -u 'rustmush-dispatch@*' -n 20                # the last calls of all four
+   /usr/local/lib/rustmush/workflow-dispatch.sh soak 20 2   # as root: prove the token now with a short soak (20 minutes, two cells)
+   ```
+
+   `systemctl start rustmush-dispatch@ci-nightly.service` starts that job at
+   once, as its timer would. A refusal says what is wrong: HTTP 401 is an
+   expired or revoked token, 403 a token without Actions write (or one the
+   organization has not approved), 404 a token that was not made for this
+   repository.
+
+**Mail.** GitHub mails the account that started a run when it fails. Every
+clock-run job is now started with the owner's token, so a red nightly, weekly,
+CodeQL run or soak mails the owner, as long as *Settings → Notifications →
+Actions* mails him for failed workflows. A dispatch that fails creates no run
+and mails nobody: it is a failed unit in the box's journal.
+
 ## The soak and the known flaky tests (doc 51 FL.2)
 
-**The soak** is `.github/workflows/soak.yml`: nightly at 07:17 UTC (11:17 pm
-Pacific standard time, the owner's night) on the
-`conclav-dev` runner, and on a dispatch (`gh workflow run soak.yml -f minutes=60
--f cells=2`). It has no `pull_request` and no `push` trigger, for the gate's
-reason. `scripts/soak.sh` is the whole run and its header is the reference:
+**The soak** is `.github/workflows/soak.yml`, on the `conclav-dev` runner. Its
+only trigger is a dispatch: a timer on conclav.dev sends one every night at
+23:17 Pacific (The clock is on conclav.dev, above), and one by hand is
+`gh workflow run soak.yml -f minutes=60 -f cells=2`. It has no `pull_request`
+and no `push` trigger, for the gate's reason, and no `schedule`, because
+GitHub starts this repository's scheduled runs hours late. `scripts/soak.sh`
+is the whole run and its header is the reference:
 
 - **What runs.** The suites that run a real server or process: mushd's
   `sim_lenses`, `world_journeys` and `durable_process`; mush-gateway's
@@ -2614,15 +2775,18 @@ reason. `scripts/soak.sh` is the whole run and its header is the reference:
   run's summary. The job commits nothing. It is red on a test that failed in
   some passes and passed in others and is not on the known list, on a listed
   row past its expiry, on a test that failed every pass, and on a soak that
-  could not run. A red soak mails the owner as a red nightly does (below);
-  GitHub sends a scheduled workflow's mail to the account that last changed
-  that file's `cron` line.
+  could not run. A red soak mails the account that started the run: the
+  owner's, since the box dispatches with his token, as long as his GitHub
+  notification settings mail him for failed Actions runs (Settings,
+  Notifications, Actions). A soak that was never started mails nobody
+  (The clock is on conclav.dev, above).
 
 By hand on the box, as `ghrunner`, in a clone with its own target directory:
 `SOAK_CELLS=1 SOAK_PASSES=1 SOAK_DIR=/home/ghrunner/tmp/soak scripts/soak.sh`
 runs one cell once round the four packages and is how a pass is timed.
 
-From 07:17 to about 11:00 UTC the soak holds cores 0 to 23 of conclav.dev. A
+From 23:17 to about 3 am Pacific (07:17 to about 11:00 UTC in winter, an hour
+earlier by UTC in summer) the soak holds cores 0 to 23 of conclav.dev. A
 by-hand run in those hours shares the box with it: keep it to the eight cores
 left, or run it later. A by-hand run that is already going when the soak
 starts is safe: the soak waits for a quiet box and then yields.

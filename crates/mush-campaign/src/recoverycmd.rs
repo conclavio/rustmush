@@ -853,18 +853,38 @@ fn disburse_accepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> 
     if budget == 0 {
         return 0;
     }
-    let pending: Vec<RecoveryGrant> = {
+    // P2-MOD-57: rotate across accepted pending grants via `disburse_cursor` so
+    // blocked/missing/failing accounts cannot starve later accepted grants, and
+    // never abort the batch with a provider-wide `break` on per-applicant errors.
+    let (pending, next_cursor): (Vec<RecoveryGrant>, Option<u32>) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
             return 0;
         };
-        store
+        let cursor = store.disburse_cursor;
+        let all_pending: Vec<&RecoveryGrant> = store
             .recovery_grants()
             .filter(|grant| grant.is_live() && !grant.stipend_posted())
             .filter(|grant| contract_is_active(ctx.w, ContractId(grant.contract())))
+            .collect();
+        let chosen: Vec<RecoveryGrant> = all_pending
+            .iter()
+            .copied()
+            .filter(|g| g.applicant().0 >= cursor)
+            .chain(
+                all_pending
+                    .iter()
+                    .copied()
+                    .filter(|g| g.applicant().0 < cursor),
+            )
             .take(budget)
             .cloned()
-            .collect()
+            .collect();
+        let next = chosen.last().map(|g| g.applicant().0.wrapping_add(1));
+        (chosen, next)
     };
+    if let (Some(next), Some(store)) = (next_cursor, ctx.w.module_state_mut::<CampaignStore>()) {
+        store.disburse_cursor = next;
+    }
     let mut worked = 0usize;
     for grant in pending {
         let cid = ContractId(grant.contract());
@@ -880,7 +900,7 @@ fn disburse_accepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> 
                 "the recovery provider cannot disburse an accepted stipend: its budget is at its floor",
                 "fund the recovery pool account; the stipend will disburse on the next tick",
             );
-            break;
+            continue;
         }
         let Some(account) = applicant_account(ctx, cfg, &PrincipalId::Object(grant.applicant()))
         else {
@@ -905,13 +925,28 @@ fn disburse_accepted(ctx: &mut Ctx<'_>, cfg: &RecoveryConfig, budget: usize) -> 
                 worked = worked.saturating_add(1);
             }
             Err(why) => {
-                crate::settle::page(
-                    ctx,
-                    SmolStr::new_static("recovery:provider"),
-                    &format!("the recovery provider cannot disburse an accepted stipend: {why}"),
-                    "fund the recovery pool account; the stipend will disburse on the next tick",
-                );
-                break;
+                if !pool_can_fund(ctx.w, cfg) {
+                    crate::settle::page(
+                        ctx,
+                        SmolStr::new_static("recovery:provider"),
+                        &format!(
+                            "the recovery provider cannot disburse an accepted stipend: {why}"
+                        ),
+                        "fund the recovery pool account; the stipend will disburse on the next tick",
+                    );
+                } else {
+                    crate::settle::page(
+                        ctx,
+                        SmolStr::new(format!("recovery:applicant:{}", grant.applicant().0)),
+                        &format!(
+                            "recovery applicant #{}: cannot disburse accepted stipend ({why})",
+                            grant.applicant().0
+                        ),
+                        "check the applicant's account status or rules; unrelated accepted \
+                         stipends continue disbursing normally",
+                    );
+                }
+                continue;
             }
         }
     }
@@ -962,7 +997,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     let expired = expire_unaccepted(ctx, &cfg, budget);
     let disbursed = disburse_accepted(ctx, &cfg, budget.saturating_sub(expired));
     let done = expired.saturating_add(disbursed);
-    let (waiting, cursor) = {
+    let (mut waiting, cursor) = {
         let Some(store) = ctx.w.module_state::<CampaignStore>() else {
             return done;
         };
@@ -971,25 +1006,15 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     if waiting.is_empty() {
         return done;
     }
-    // ---- C10/B3 (independent verify fold; owner decision F5(a)): the rotation ----
-    //
-    // `waiting.iter().position(|id| id.0 >= cursor).unwrap_or(0)` ran over a
-    // **claim-ordered** queue, so when nobody satisfied the predicate — which is
-    // exactly what happens once the cursor has passed the largest object id present —
-    // `start` collapsed to 0 and the head of the queue was re-visited first on every
-    // fire, for ever. Combined with the provider-wide `break` below, one applicant the
-    // provider could not pay starved everybody behind them permanently.
-    //
-    // The cursor is still the raw applicant id (it is what `campaign_meta` persists),
-    // but the fallback is now the **position** the cursor names rather than the head:
-    // a cursor past every id wraps to 0 only because the rotation has genuinely
-    // completed a lap, and with `ApplicantBlocked` continuing, a lap now reaches
-    // everybody.
-    let start = waiting
-        .iter()
-        .position(|id| id.0 >= cursor)
-        .unwrap_or(0)
-        .min(waiting.len().saturating_sub(1));
+    // P2-MOD-57: align the sweep scan order with the persisted `ObjId` cursor.
+    // `RecoveryQueue::waiting()` is stored in FIFO claim order for display
+    // (`position_of`), so running `id.0 >= cursor` directly on the unsorted
+    // claim-order slice collapsed back to index 0 whenever an earlier blocked
+    // applicant held a higher `ObjId` than `cursor`, starving later applicants
+    // permanently. Sorting the local scan slice by `ObjId` ensures every fire
+    // advances monotonically around the ring without changing stored claim order.
+    waiting.sort_by_key(|id| id.0);
+    let start = waiting.iter().position(|id| id.0 >= cursor).unwrap_or(0);
     let order: Vec<ObjId> = waiting[start..]
         .iter()
         .chain(waiting[..start].iter())
@@ -1069,7 +1094,7 @@ pub(crate) fn sweep(ctx: &mut Ctx<'_>, budget: usize) -> usize {
     if let Some(last) = last
         && let Some(store) = ctx.w.module_state_mut::<CampaignStore>()
     {
-        store.recovery_cursor = last.0.saturating_add(1);
+        store.recovery_cursor = last.0.wrapping_add(1);
     }
     visited
 }

@@ -527,7 +527,13 @@ fn seat_accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// document is written at all, so there is nothing for a projection to leak.
 fn seat_decline(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (operation, id) = parse_seat_ref(ctx.args.raw())?;
-    let _ = visible_offer(ctx, operation, id).ok_or_else(no_seat)?;
+    let offer = visible_offer(ctx, operation, id).ok_or_else(no_seat)?;
+    // P2-MOD-81: enforce `may_take_seat` and live offer window before answering,
+    // byte-identical to `seat_accept`, closing the seat-offer existence oracle.
+    let now = ctx.w.world_ic_now();
+    if !may_take_seat(ctx, &offer) || offer.is_expired(&now) {
+        return Err(no_seat());
+    }
     info(ctx, format!("You decline seat {id}."));
     Ok(())
 }
@@ -1007,11 +1013,29 @@ pub(crate) fn cmd_muster(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|p| may_seat(ctx, p.unit))
         .map(|p| p.unit.0.0)
         .collect();
-    // **The write gate** (cut 9's fold C1, one cut on): `+muster/lock` mutates —
-    // it freezes a roster and stores a distinctness verdict — so it asks a
-    // command predicate, not the disclosure lens.
-    if lock && commandable.is_empty() && !is_staff(ctx.w, ctx.actor) {
-        return Err(CmdError::msg(NO_SUCH_OPERATION));
+    // **The write gate** (cut 9's fold C1, P2-MOD-59): `+muster/lock` mutates —
+    // it permanently freezes the operation's roster and evaluates OOC account
+    // distinctness across the roster — so it requires operation-level roster
+    // authority (`may_roster`: operation commander/issuer or staff) on a
+    // non-terminal operation, never merely control of a single committed unit.
+    // Furthermore, a non-staff commander may not query cross-unit OOC account
+    // distinctness over units outside their own command (`commandable`).
+    if lock {
+        if !crate::commands::may_roster(ctx, &doc) || doc.runtime.state.is_terminal() {
+            return Err(CmdError::msg(NO_SUCH_OPERATION));
+        }
+        if !is_staff(ctx.w, ctx.actor)
+            && doc
+                .runtime
+                .participants
+                .iter()
+                .any(|p| !commandable.contains(&p.unit.0.0))
+        {
+            return Err(CmdError::msg(
+                "Cannot lock a roster containing units outside your command; ask staff to lock \
+                 the full roster.",
+            ));
+        }
     }
     let report = crate::seatstate::take_muster(ctx, &doc, lock);
     // The RECORD is the whole roster (only `latest_muster` reads it, and it names

@@ -7,7 +7,9 @@
 //! when messages are filed elsewhere; ids in headers are stable).
 
 use mush_core::output::display_name;
-use mush_core::{CmdError, ContextOutcome, Ctx, InputContext, ObjId, Role, World, perm};
+use mush_core::{
+    CmdError, ContextOutcome, Ctx, Flags, InputContext, ObjId, ObjKind, Powers, Role, World, perm,
+};
 use mush_proto::{InputMode, PromptSpec, RichText};
 use smol_str::SmolStr;
 
@@ -118,9 +120,36 @@ fn resolve_msg(ctx: &Ctx<'_>, n: usize) -> Result<u64, CmdError> {
     })
 }
 
+/// Whether `actor` is allowed to resolve and address `target` as a mail
+/// recipient without enumerating `GOING`, `DARK`, or hidden remote NPCs via
+/// unscoped `#dbref` lookups (P2-MOD-74).
+fn can_resolve_recipient(w: &World, actor: ObjId, target: ObjId) -> bool {
+    let Some(o) = w.get(target) else {
+        return false;
+    };
+    if !o.kind.is_actor() || o.flags.contains(Flags::GOING) {
+        return false;
+    }
+    if target == actor || perm::has_role(w, actor, Role::Royalty) {
+        return true;
+    }
+    if o.flags.contains(Flags::DARK) && !perm::has_power(w, actor, Powers::SEE_HIDDEN) {
+        return false;
+    }
+    if o.kind == ObjKind::Npc {
+        if perm::controls(w, actor, target) {
+            return true;
+        }
+        let actor_loc = w.get(actor).and_then(|a| a.location);
+        return actor_loc.is_some() && o.location == actor_loc;
+    }
+    true
+}
+
 /// Resolve a recipient list: names (or `*name` / `#dbref`) separated by
-/// commas and/or whitespace, deduplicated. Unknown names abort the send.
-fn parse_recipients(w: &World, spec: &str) -> Result<Vec<ObjId>, CmdError> {
+/// commas and/or whitespace, deduplicated. Unknown or unauthorized targets
+/// produce one uniform refusal and abort the send.
+fn parse_recipients(w: &World, actor: ObjId, spec: &str) -> Result<Vec<ObjId>, CmdError> {
     let mut out: Vec<ObjId> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     for tok in spec
@@ -134,7 +163,7 @@ fn parse_recipients(w: &World, spec: &str) -> Result<Vec<ObjId>, CmdError> {
         } else {
             w.resolve_player(name)
         };
-        match found.filter(|&i| w.get(i).is_some_and(|o| o.kind.is_actor())) {
+        match found.filter(|&i| can_resolve_recipient(w, actor, i)) {
             Some(i) => {
                 if !out.contains(&i) {
                     if out.len() >= MAX_MAIL_RECIPIENTS {
@@ -319,7 +348,7 @@ fn send_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| CmdError::msg("MAIL: Usage: @mail/send <players>=<subject>"))?
         .to_string();
-    let to = parse_recipients(ctx.w, ctx.args.lhs())?;
+    let to = parse_recipients(ctx.w, ctx.actor, ctx.args.lhs())?;
     let urgent = ctx.switches.has("urgent");
     start_compose(ctx, to, subject, None, urgent)
 }
@@ -332,7 +361,7 @@ fn quick_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if subject.is_empty() {
         return Err(usage());
     }
-    let to = parse_recipients(ctx.w, ctx.args.lhs())?;
+    let to = parse_recipients(ctx.w, ctx.actor, ctx.args.lhs())?;
     let urgent = ctx.switches.has("urgent");
     deliver(ctx, &to, subject, body, None, urgent)
 }
@@ -392,7 +421,7 @@ fn fwd_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .ok_or_else(|| CmdError::msg("MAIL: That message no longer exists."))?;
         (m.from, m.subject.clone(), m.body.clone())
     };
-    let to = parse_recipients(ctx.w, &players)?;
+    let to = parse_recipients(ctx.w, ctx.actor, &players)?;
     let subject = if subject.to_ascii_lowercase().starts_with("fwd:") {
         subject
     } else {
