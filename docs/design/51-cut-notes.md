@@ -177,4 +177,194 @@ taken out by hand, with the gate run between them:
 
 ## FL.2
 
-Not built.
+The detection loop. Built 2026-11-23 on `e468c391b` (main with #771 merged), beside FL.1 (#774), and rebased onto it
+(`867e2d530`) before the pull request. It
+adds a workflow, a nextest profile, two scripts, a list and a contract gate. It changes no product
+code and converts no story.
+
+**Survey.**
+
+- **The stories find their server binary by a compile-time path.** `env!("CARGO_BIN_EXE_mushd")`
+  (`crates/mushd/tests/support/mod.rs:823`) and its twins in mush-gateway, mush-server and
+  mush-bot point into the build's own target directory. A nextest archive extracted somewhere
+  else still runs the server from the build directory, so on one box an archive isolates
+  nothing. That decided how a cell runs (Divergences, 1).
+- **Each package's CI cell has its own feature set.** mush-server's tests turn on
+  `mush-sim/debug-checks` and `mush-housing/debug-checks`; mushd's and mush-gateway's do not; the
+  bot has its own (`gate.yml` already runs it apart for that reason). One build over the four
+  packages would unify them, so the soak builds a package at a time, as CI does.
+- **Nothing in the nine binaries binds a fixed port or kills a process by name**, so six cells
+  can run one test at once. `authoritative_process_kill` and `durability_e2e` only do anything
+  under `REDIS_URL`, which a cell does not have.
+- **The runner's user cannot ask for a cgroup.** `ghrunner` has no sudo and no user systemd
+  manager (`loginctl`: not logged in or lingering), and the runner's unit has `Delegate=no`. So
+  a cell cannot have the `MemoryMax` doc 51 §4.1 offers; `taskset` pins cores only. The unit's
+  `MemoryHigh` (56 GiB on conclav.dev) covers the whole job.
+- **nextest checks a filter's binary ids against the workspace when it loads its
+  configuration.** A `binary_id()` that names no target is a hard error on every run, so a row
+  naming a deleted binary cannot reach CI. A deleted test or module is not checked by nextest;
+  the gate checks those.
+- **nextest 0.9.148 has stress flags** (`--stress-count`, `--stress-duration`). Tried in a toy
+  crate: an iteration in flight at the deadline is finished, not cut, and each iteration is a
+  `<testsuite name="…@stress-N">` in one report written at the end of the whole run.
+- **GitHub lists every attempt's artifacts for a run.** A rerun shard has two
+  `nextest-junit-<shard>` artifacts; the one made while attempt 1's job ran is attempt 1's. That
+  is how the report sees "failed, then passed at the same head" without reading a log.
+
+**Built.**
+
+- **`crates/mush-contract-tests/flaky-known.toml`**, 36 rows. Sixteen are the tests of the rows
+  of `docs/flaky-tests.md` that are open, covered or on watch (rows 5, 6, 10, 12, 13, 14, 15, 16
+  and 17), each with doc 51's class and its row. Twenty are the eighteen entries of the old
+  filter that match no row, carried over as `class = "unclassed"` with a `carried` line; two of
+  them (`arena_story`, `relay_bridge`) are narrowed to the one test a cut note names, and the two
+  substring entries (`~e7c6_b2`, `~what_still_waits`) are written out as their four tests. Every
+  row was listed 2026-11-23 and expires 2026-12-07.
+- **The retry filter is generated.** `.config/nextest.toml` holds one retry override, between
+  `# BEGIN GENERATED flaky-known` and `# END GENERATED flaky-known`: one term a row.
+  `FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::` rewrites
+  it. The `load-sensitive` group stays, as a load limit of two at a time, with no retry. The
+  `redis` group and the run-alone override are untouched.
+- **The gate**, `tests/ci_policy/flaky_known.rs` over `src/flaky_known.rs`. It fails on a row
+  past its `expires`; on an `expires` more than fourteen days ahead of today; on a row with no
+  class, or a classed row with no row of the record, or a row of the record that does not name
+  the test; on a classed row wider than one test; on a test, module or binary the tree does not
+  hold (it follows the `mod` and `#[path]` declarations from the binary's root file and looks for
+  the function under a test attribute); on a generated block that differs from the list; and on a
+  `retries` key anywhere else in the file, in any profile (`retries = 0` is allowed).
+- **The `soak` profile**: four threads, no fail-fast, the `ci` terminate (20 minutes), JUnit, and
+  an `all()` override with `retries = 0`, which outranks the generated retry because a profile's
+  own overrides are read first. Checked in a toy crate: a listed failing test is tried twice
+  under `default` and once under `soak`.
+- **`scripts/soak.sh`**: the whole soak, and the same script by hand. A wait for a quiet box, one
+  build a package, then the cells; a cell runs
+  `cargo nextest run --binaries-metadata <package> --cargo-metadata <all> --workspace-remap <its copy of the tree> -P soak --test-threads 4`
+  for each package in turn until the window closes, and keeps one JUnit report an invocation.
+- **`.github/workflows/soak.yml`**: `schedule` (01:17 UTC) and `workflow_dispatch` only, on
+  `[self-hosted, linux, conclav-dev]`, with a concurrency group of its own, a target directory of
+  its own beside the gate's, the report in the step summary and the `soak-junit` artifact.
+- **`scripts/flake_report.py`**: the soak's reports and CI's `nextest-junit-*` artifacts into one
+  table, with `--check` and `--write`, and `scripts/test_flake_report.py` beside it. ci.yml
+  changes in two places: the `nightly-report` job runs the report over the last day's runs
+  (doc 51 §4.2), and the `provisioning` job runs the script's tests.
+- **`docs/flaky-observed.md`**, generated, from the fourteen days of CI before this unit.
+
+**Tests.**
+
+All on 2026-11-23, at `e468c391b` with this unit's patch. "The box" is conclav.dev, by hand as
+`ghrunner`, in a clone with its own target directory.
+
+**The gate.** `flaky_known` has ten tests; two read the real files and eight doctor a copy. On
+the real files, by hand:
+
+| Edit | The gate says |
+|---|---|
+| row 6's `expires` set to 2026-11-22 | `a_captain_and_its_escort_…: EXPIRED on 2026-11-22 (today is 2026-11-23). Fix the test and delete the row, or, on evidence …, set a new expires no later than 2026-12-07 in a diff the owner sees` |
+| row 14's test renamed to `web_e2e::spa_and_healthz_are_served` | `names nothing in the tree: no test spa_and_healthz_are_served in crates/mushd/tests/world_journeys/web_e2e.rs`, and `row 14 of docs/flaky-tests.md does not name spa_and_healthz_are_served`, and the block no longer matches the list |
+| `retries = 1` put back on the `load-sensitive` override | `[[profile.default.overrides]] #2 asks for a retry outside the generated block` |
+
+The workspace guards on the box: `cargo fmt --check`, `cargo clippy -p mush-contract-tests
+--all-targets -- -D warnings`, rustdoc in both modes, and `ci_policy` and `engine_contracts` whole
+(183 passed, 8 ignored; 189 after the rebase onto FL.1, whose `wait_budget` counts no new wait or
+clock read in this unit's files).
+
+**The retry, before and after.** `cargo nextest list -E '<filter>'` over the six packages the two
+filters name: 105 tests were retried, 77 are. 37 lose theirs (the tests of the FIXED rows 3, 4 and
+11, and 34 module-mates of rows 12 and 13 with no failure on record), 9 gain one (rows 5, 6, 10,
+14, 15, 16, 17), 68 keep theirs. The pull request lists them by name.
+
+**The report, over real artifacts.** `--ci-days 14` read 738 `ci.yml` runs, 105 of them with
+reports, in about 650 API calls. It found by itself rows 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 16
+and 18 of the hand-written record. The red-main windows of the record's last section
+(`in8_mass_scrap`, `house_sweep_rs6c`, `field_raiders::cf6`, `absent_census`) came out as
+"branches (to read)", which is why that reason alone fails nothing. Run 45057892782, whose bot
+cell failed on attempt 1 and passed on attempt 2, reads `same head x1`: the two attempts'
+artifacts were told apart. `docs/flaky-observed.md` is that run's table. The script's own tests
+are `scripts/test_flake_report.py` (15, on synthetic reports), which the `provisioning` job runs.
+
+**The soak, by hand on the box**, through `scripts/soak.sh`, the command the workflow's Soak step
+runs:
+
+- *One cell, one package* (`SOAK_CELLS=1 SOAK_PASSES=1 SOAK_PACKAGES=mush-gateway`): 47 tests, 47
+  passed, 192 s; the report read; no process and no temporary file left.
+- *Six cells, one round* (`SOAK_CELLS=6 SOAK_PASSES=1`), with a working directory as long as the
+  runner's own, so a Unix socket path is as long as it will be in the job:
+
+  | Package | Tests | Seconds an invocation, six cells | Result |
+  |---|---:|---|---|
+  | mushd | 320 | 278 to 321 | 6 of 6 passed |
+  | mush-gateway | 47 | 132 to 193 | 6 of 6 passed |
+  | mush-server | 248 | 448 to 457 | 6 of 6 passed |
+  | mush-bot | 39 | 800 to 814 | 6 of 6 passed |
+
+  24 reports, 3,924 test runs, none failed, so the first soak names no flake. **A round is about
+  29 minutes a cell** (1,690 to 1,750 s), not the 40 doc 51 §4.1 guessed, so a 180-minute window
+  is about six rounds a cell: **about 37 passes a night**, not 24. The build of the four packages
+  took 5 min 20 s on a target directory that already held two of them. Least free memory 52.5 GB of 62; highest load 22.5,
+  mean 10.6, with another session's builds on the box at the time. The stories wait on clocks
+  more than they compute, so the cap of six is set by doc 51 and not by the box; it is not
+  raised here.
+- *The yield* (`SOAK_MAX_START_LOAD=1 SOAK_WAIT_MINUTES=0`): a warning, exit 0, `"state":
+  "yielded"`, no pass.
+- *A stop in mid-run* (SIGTERM to the script): it exited in 0.6 s, `"state": "stopped"`, and no
+  process carried the run's mark afterwards. While the six cells ran, all 39 of their processes
+  (nextest, the test binaries, the `mush-bot` children) carried it.
+- *The profile*, in a toy crate: a listed failing test is tried twice under `default` and once
+  under `soak`.
+
+**Not run:** the workflow file itself, and the `nightly-report` step inside Actions (Not built,
+below).
+
+**Divergences.**
+
+1. **No archive.** Doc 51 §4.1 says one build, archived. The build is one build, and the cells
+   run it through nextest's reuse-build files (`--binaries-metadata`, `--cargo-metadata`) with no
+   tar file, for the Survey's first reason, and because an archive would be extracted again on
+   every invocation of every cell.
+2. **Four builds, not one.** A package at a time, for the Survey's second reason. A pass is
+   therefore four invocations, one a package, and a report is one package's.
+3. **nextest's stress flags are not used.** Doc 51 §7 says to take them if they are there. They
+   are there and they work, but one invocation is one build (so one feature set) and one report
+   written at the end, so a cell stopped by the watchdog or a cancelled job would lose every
+   pass it had finished. The cell's loop is the script's.
+4. **No hard memory limit a cell.** The Survey's fourth point. The bound is the cell count, a
+   quiet-box check before the start, and a watchdog that stops every cell when free memory falls
+   under 6 GB.
+5. **`STORY_PHASE=random` is exported and nothing reads it yet.** The rigs learn the variable in
+   FL.4, and the match seed's knob is FL.3's. Until then a soak pass differs from a CI run only in
+   its load and its count.
+6. **The brief said `flaky-known.toml`; the doc says where**, and the file is at the doc's path.
+   The brief seeded the list from the record's open rows; doc 51 §4.3 point 5 also carries the
+   eighteen unmatched filter entries over, and they are carried.
+7. **Row 1 is not listed.** Its row is FIXED and its WATCH is a second window that never fired
+   in 192 runs. It was a product ordering fault, which is the kind doc 51 §4.3 says a retry
+   hides. Row 5 is FIXED too and is listed, for its second failure, which is on watch.
+8. **`--check` does not fail on "two branches" alone.** Doc 51 §4.2 counts a test that failed on
+   two unrelated branches. The script cannot tell unrelated branches from two stacked ones with
+   one bug, or from a red main, so that row is printed, marked "to read", and fails nothing. A
+   pass on retry and a failure and a pass at one head are findings and do fail it.
+9. **`--check` also fails on a soak test that failed every pass.** That is a broken test on
+   main, not a flake; a green soak beside it would be wrong.
+10. **By default the report downloads only the shards with a failed job**, from runs that failed
+    or were rerun, to stay inside GitHub's rate limit (a day's runs are about 1,100 artifacts, and
+    the job's token has 1,000 requests an hour). It therefore does not see a pass on retry in a
+    green run; `--all-shards` does. Since the retry is now the list's alone, such a pass can only
+    be a listed test.
+
+**Not built.**
+
+- **The first week's soak.** Doc 51 §5 asks for it in this note. It cannot exist until
+  the workflow is on main and has run seven nights. Whoever closes it adds here: the nights that
+  ran, yielded or were stopped (`soak.json`'s `state`); the passes a night of each package; every
+  test the report named, with its rate (failed passes over passes) and whether it was on the
+  list; least free memory and highest load a night (`box.tsv`); and any test that failed for a
+  reason the soak made itself (two cells at once, the box), which is a fault in `soak.sh` and not
+  a flake. The same week decides the carried rows: one with no failure in about 250 passes is
+  deleted on 2026-12-07, not renewed.
+- **A dispatch of `soak.yml` itself.** A workflow can be dispatched only once it is on the default
+  branch, so the first run of the workflow file is after the merge. The Soak step's script ran by
+  hand on the box (Tests); the checkout, the report step and the upload did not.
+- **The `nightly-report` step** runs on the schedule and on a dispatch of the whole nightly, so it
+  first runs on the night after the merge. Its command ran by hand over real runs (Tests).
+- **A hard limit a cell** (above), and **a random phase and seed** (FL.3, FL.4).
+- **The `redis` group in the soak.** One shared instance cannot serve six cells (doc 51 §4.1).

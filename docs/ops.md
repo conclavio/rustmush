@@ -2234,7 +2234,7 @@ cargo nextest run -j 8 -p <crate> --test <group> -E 'test(/^<module>::/)'   # wh
 rustfmt --edition 2021 <changed files>       # never `cargo fmt --all` (the path length breaks it)
 cargo clippy -j 8 -p <crate> --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc -j 8 -p <crate> --no-deps
-cargo nextest run -j 8 -p mush-contract-tests --test ci_policy --test engine_contracts -E 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners|wait_budget)::/)'
+cargo nextest run -j 8 -p mush-contract-tests --test ci_policy --test engine_contracts -E 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners|wait_budget|flaky_known)::/)'
 scripts/vps-gate.sh                          # the broad sweep, once
 ```
 
@@ -2298,6 +2298,84 @@ annotation (`ci_gated_test_inventory` refuses a job its `needs` leaves out).
 An artifact upload that fails (the service's ECONNRESET of nightly #1553) no
 longer fails a test cell: the JUnit and the M6 evidence uploads continue on
 error and the next step warns that the cell's JUnit is missing.
+
+## The soak and the known flaky tests (doc 51 FL.2)
+
+**The soak** is `.github/workflows/soak.yml`: nightly at 01:17 UTC on the
+`conclav-dev` runner, and on a dispatch (`gh workflow run soak.yml -f minutes=60
+-f cells=2`). It has no `pull_request` and no `push` trigger, for the gate's
+reason. `scripts/soak.sh` is the whole run and its header is the reference:
+
+- **What runs.** The suites that run a real server or process: mushd's
+  `sim_lenses`, `world_journeys` and `durable_process`; mush-gateway's
+  `split_halves`; mush-server's `split_boundary` and `commerce_composition`;
+  mush-bot's `arena_e2e`, `arena_contract` and `mining_cohort`. Each package is
+  built alone, as its CI cell builds it. `REDIS_URL` is unset.
+- **How.** Six cells, each pinned to four cores, each running the four
+  packages in turn under nextest's `soak` profile (four threads, no retry)
+  until the window closes. A cell has its own copy of the tree and its own
+  `TMPDIR`.
+- **How the box is protected.** At most 24 tests at once, cores 24 to 31
+  free; a wait for a quiet box before the start, and a yield (a warning, no
+  pass) if the box is still busy after 30 minutes; a watchdog that stops
+  every cell and fails the run when free memory falls under 6 GB; a sweep on
+  exit that leaves no server behind. The runner takes one job at a time, so
+  the soak and a gate dispatch pinned to `conclav-dev` wait for each other;
+  a dispatch on the default `vps` label goes to conclav.io meanwhile.
+- **What comes out.** The `soak-junit` artifact (one JUnit report an
+  invocation, the pass logs, `box.tsv`, `soak.json`) and the report in the
+  run's summary. The job commits nothing. It is red on a test that failed in
+  some passes and passed in others and is not on the known list, on a listed
+  row past its expiry, on a test that failed every pass, and on a soak that
+  could not run. A red soak mails the owner as a red nightly does (below);
+  GitHub sends a scheduled workflow's mail to the account that last changed
+  that file's `cron` line.
+
+By hand on the box, as `ghrunner`, in a clone with its own target directory:
+`SOAK_CELLS=1 SOAK_PASSES=1 SOAK_DIR=/home/ghrunner/tmp/soak scripts/soak.sh`
+runs one cell once round the four packages and is how a pass is timed.
+
+From 01:17 to about 05:00 UTC the soak holds cores 0 to 23 of conclav.dev. A
+by-hand run in those hours shares the box with it: keep it to the eight cores
+left, or run it later. A by-hand run that is already going when the soak
+starts is safe: the soak waits for a quiet box and then yields.
+
+**The report** is `scripts/flake_report.py` (its `--help` is the reference).
+It reads the soak's reports (`--junit <dir>`) and CI's `nextest-junit-*`
+artifacts (`--ci-days 14`, `--ci-runs 60`), applies `docs/flaky-tests.md`'s
+rule for a flake, and prints one row a test with its class and row from the
+known list. Three uses:
+
+```text
+python3 scripts/flake_report.py --run <run id>          # a red pull request: has this test failed anywhere else?
+python3 scripts/flake_report.py --ci-days 14 --write    # refresh docs/flaky-observed.md
+python3 scripts/flake_report.py --junit soak-reports --check   # what the soak job runs
+```
+
+ci.yml's `nightly-report` job runs it over the last day's runs with `--check`.
+Downloads are cached under `target/flake-report/`.
+
+**The known list** is `crates/mush-contract-tests/flaky-known.toml` (doc 51
+§4.3, ruling Q-51-5). There is no blanket retry: nextest retries a test once
+only while it has a row there, and a row lives fourteen days. The retry
+override in `.config/nextest.toml` is generated from the list, and the gate
+`flaky_known` (in `mush-contract-tests`' `ci_policy`) fails on an expired
+row, on a row naming a test that is gone, and on a `retries` key the list
+did not generate. To add, close or renew a row:
+
+```text
+$EDITOR crates/mush-contract-tests/flaky-known.toml
+FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::
+python3 scripts/flake_report.py --ci-days 14 --write
+```
+
+**When the gate goes red on an expired row**, it is red on every pull request
+until the row is dealt with: fix the test and delete the row, or move
+`expires` at most fourteen days ahead in a diff the owner sees. A row is
+renewed on evidence only, a soak failure or a cause written down; a carried
+row (`class = "unclassed"`) with no failure on record is deleted. The
+`load-sensitive` group in `.config/nextest.toml` is still there and is only
+a load limit (two at a time); it carries no retry.
 
 ## Test targets since T.3: the group binaries
 

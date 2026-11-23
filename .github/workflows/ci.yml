@@ -1316,6 +1316,10 @@ jobs:
           # against a stub systemctl; and the on-box wipe recipe.
           bash -n deploy/drain/units.sh
           bash scripts/tests/deploy-units.sh
+          # Doc 51 FL.2: the soak's script parses, and the flake report's rule
+          # holds on synthetic reports (no network).
+          bash -n scripts/soak.sh
+          python3 -B scripts/test_flake_report.py
           for s in deploy/redeploy/*.sh; do bash -n "$s"; done
 
   redis-faults:
@@ -1728,8 +1732,9 @@ jobs:
   # on a dispatch it waits for every other job, whatever their results, and
   # writes one line per job into the run's summary: the failed ones first,
   # each also an error annotation (the email and the run page both list
-  # annotations). A failure of the job itself would be noise, so it always
-  # exits 0. `needs` must name every job of this file:
+  # annotations). A failure of that step would be noise, so it always
+  # exits 0; the job's one red is its last step, the day's flaky tests.
+  # `needs` must name every job of this file:
   # crates/mush-contract-tests/tests/ci_policy/ci_gated_test_inventory.rs
   # refuses a job it leaves out.
   nightly-report:
@@ -1737,6 +1742,11 @@ jobs:
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     needs: [mind-commerce-acceptance, m8-gate-stories, mind-author-acceptance, mind-full-replay, m8-leak-battery, m8-house-doctrines, test, features, documentation, release, provisioning, redis-faults, scale, bot-win-rate, bot-muster-rate, fr7-round-story, bot-minds-lane, tacsim-harness, web, unity]
     runs-on: ubuntu-latest
+    # `actions: read` is for the last step: it lists the day's runs and
+    # downloads their JUnit artifacts.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Name what failed
         env:
@@ -1762,3 +1772,28 @@ jobs:
               print(f"::error title={kind} run: {job}::{job} is {needs[job]['result']}; its log is this run's {job} job")
           print("\n".join(lines))
           PY
+      # Doc 51 unit FL.2 (§4.2, ruling Q-51-8): the day's flaky tests. Every
+      # shard uploads nextest's JUnit and until now nothing read it.
+      # scripts/flake_report.py reads the last day's ci.yml runs (the reports
+      # of the shards with a failed job, every attempt's) and prints which
+      # tests failed and then passed at one head, and whether each is on the
+      # known list (crates/mush-contract-tests/flaky-known.toml). It commits
+      # nothing. This step, and so this job, is RED on a flaky test that is
+      # not on the list or on a row past its expiry: that is the one failure
+      # of this job that is a finding and not noise. A report that could not
+      # read its sources (exit 2: gh, the network, a rate limit) only warns.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: always()
+      - name: The day's flaky tests
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          code=0
+          python3 -B scripts/flake_report.py --ci-days 1 --check | tee -a "$GITHUB_STEP_SUMMARY" || code=$?
+          if [ "$code" = 2 ]; then
+            echo "::warning title=flake report::the report could not read the day's runs; this step's log says why"
+          elif [ "$code" != 0 ]; then
+            exit "$code"
+          fi

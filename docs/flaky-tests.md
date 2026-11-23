@@ -15,8 +15,15 @@ A failure that hit every branch in one window and then stopped was a red main, n
 are listed apart at the end.*
 
 **Status words.** **FIXED** names the change. **OPEN** says why it was left and what the owner
-must decide. **COVERED** means the test is in nextest's `load-sensitive` group (one retry,
-reported `FLAKY`) and has no root fix yet. **WATCH** means seen once and not reproduced.
+must decide. **COVERED** means the test is retried once by nextest (a pass on retry is reported
+`FLAKY`) and has no root fix yet. **WATCH** means seen once and not reproduced.
+
+*Since doc 51 unit FL.2 (2026-11-23) the retry is a row in
+`crates/mush-contract-tests/flaky-known.toml`, not nextest's hand-kept `load-sensitive` list.
+Every row here that is OPEN, COVERED or on WATCH has one, with its doc 51 class and an expiry
+fourteen days on. A FIXED row has none, except row 5, whose second failure is on watch.
+`docs/flaky-observed.md` is the generated table of what
+CI and the soak saw (`scripts/flake_report.py`).*
 
 Run links are `https://github.com/conclavio/rustmush/actions/runs/<id>`; "a1" is attempt 1.
 
