@@ -274,19 +274,29 @@ fn scene(funds: i64, hulls: usize) -> (TestWorld, Fx) {
 /// file is about. Every field goes through `CarrierJourney`'s own constructor, so
 /// nothing here is a shape the tree would refuse.
 fn lose_a_hull(tw: &mut TestWorld, fx: &Fx, who: ObjId, state: JourneyState) -> ObjId {
+    seed_lost_hull(tw, fx, who, state, true)
+}
+
+fn seed_lost_hull(
+    tw: &mut TestWorld,
+    fx: &Fx,
+    who: ObjId,
+    state: JourneyState,
+    form: bool,
+) -> ObjId {
     let hull = tw
         .world_mut()
         .create(ObjKind::Thing, "Wreck", who, Some(LIMBO))
         .expect("a hull");
     ok(tw, GOD, &format!("@asset/title #{}=#{}", hull.0, who.0));
-    place_and_form(tw, hull, fx.node);
-    // Then **quarantined and unplaced**, which is what cut 6's `fail` path leaves
-    // behind for a `Failed`/`Captured` root and what `journey.rs`'s own invariant
-    // requires of a terminal record. It is also why a wreck is *not* an accessible
-    // operational asset, and therefore why an applicant who lost one is eligible at
-    // all. `is_deployable` — the half `loss_is_covered` reads — is formation
-    // membership and nothing else, and quarantine does not touch it.
-    {
+    if form {
+        place_and_form(tw, hull, fx.node);
+        // Then **quarantined and unplaced**, which is what cut 6's `fail` path leaves
+        // behind for a `Failed`/`Captured` root and what `journey.rs`'s own invariant
+        // requires of a terminal record. It is also why a wreck is *not* an accessible
+        // operational asset, and therefore why an applicant who lost one is eligible at
+        // all. `is_deployable` — the half `loss_is_covered` reads — is formation
+        // membership and nothing else, and quarantine does not touch it.
         let state = tw
             .world_mut()
             .module_state_mut::<mush_sim::SpatialState>()
@@ -314,7 +324,7 @@ fn lose_a_hull(tw: &mut TestWorld, fx: &Fx, who: ObjId, state: JourneyState) -> 
     )
     .expect("a route");
     let journey = CarrierJourney::new(
-        JourneyId(1),
+        JourneyId(if form { 1 } else { 60 }),
         hull,
         route,
         mush_sim::SpatialParent::Interior {
@@ -712,47 +722,7 @@ fn p2_mod_60_force_assign_blocks_wreck_laundering_and_eligibility_evasion() {
     }
 
     // ---- 1. Retroactive covered-wreck laundering is refused ----------------
-    let loose_wreck = tw
-        .world_mut()
-        .create(ObjKind::Thing, "UnapprovedWreck", fx.pat, Some(LIMBO))
-        .expect("wreck");
-    ok(
-        &mut tw,
-        GOD,
-        &format!("@asset/title #{}=#{}", loose_wreck.0, fx.pat.0),
-    );
-    let stamp = ClockStamp {
-        clock: ClockRef::WorldIc { generation: 1 },
-        at: tw.world().now(),
-    };
-    let route = RouteDef::new(
-        mush_core::CanonicalId::new("unapproved_run").expect("route id"),
-        (fx.field, LIMBO),
-        vec![LegDef::new(LIMBO, 60).expect("one leg")],
-        mush_core::CanonicalId::new("torch").expect("drive class"),
-        0,
-    )
-    .expect("route");
-    let journey = CarrierJourney::new(
-        JourneyId(60),
-        loose_wreck,
-        route,
-        mush_sim::SpatialParent::Interior {
-            space: LIMBO,
-            slot: None,
-        },
-        stamp.clone(),
-        stamp,
-        0,
-        JourneyState::Failed,
-        None,
-    )
-    .expect("failed journey");
-    tw.world_mut()
-        .module_state_mut::<JourneyBook>()
-        .expect("journey book")
-        .journeys
-        .insert(loose_wreck, journey);
+    let loose_wreck = seed_lost_hull(&mut tw, &fx, fx.pat, JourneyState::Failed, false);
     assert!(!mush_campaign::loss_is_covered(tw.world(), fx.pat));
 
     let ev = tw.run(

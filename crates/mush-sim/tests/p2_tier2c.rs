@@ -25,8 +25,8 @@ use mush_economy::{CustodyProvider, CustodyRef, EconomyModule};
 use mush_org::OrgModule;
 use mush_proto::OutputEvent;
 use mush_sim::data::{
-    DomainClock, DomainRecord, DomainStatus, HeldPlacement, Pose, SpaceAnchor, WindowBox,
-    WindowOpener, WindowRec, WindowSurface, passive_definition_ref, passive_rules_value,
+    HeldPlacement, Pose, SpaceAnchor, WindowBox, WindowOpener, WindowRec, WindowSurface,
+    passive_rules_value,
 };
 use mush_sim::domain::{ActivationBook, MAX_ACTIVE_DOMAINS};
 use mush_sim::route::{LegDef, RouteCatalog, RouteDef};
@@ -34,9 +34,8 @@ use mush_sim::tick::{
     MAX_DOMAINS_PER_PULSE_FIRE, MaintenanceInputs, PulseConfig, plan_maintenance,
 };
 use mush_sim::{
-    AccountOracle, DeployedMark, DomainId, FocusState, InteriorCustodyProvider, JourneyBook,
-    OpenWindow, SeatRequest, SimulationModule, SpatialState, StationId, Transition,
-    request_seat_activation,
+    DeployedMark, FocusState, InteriorCustodyProvider, JourneyBook, OpenWindow, SeatRequest,
+    SimulationModule, SpatialState, StationId, Transition, request_seat_activation,
 };
 use mush_testkit::{authoritative::AcknowledgedWorld as TestWorld, text_of};
 use serde_json::{Value, json};
@@ -50,10 +49,10 @@ const REQUEST_ACTION: &str = "control_handoff_request";
 const RELEASE_ACTION: &str = "control_handoff_release";
 const APPLY_ACTION: &str = "control_handoff_apply";
 
-struct MapOracle(BTreeMap<ObjId, AccountId>);
+struct MapOracle(Arc<Mutex<BTreeMap<ObjId, AccountId>>>);
 impl AccountIdentity for MapOracle {
     fn account_of(&self, character: ObjId) -> Option<AccountId> {
-        self.0.get(&character).copied()
+        self.0.lock().ok()?.get(&character).copied()
     }
 }
 
@@ -378,8 +377,9 @@ fn with_ctx<R>(
 #[test]
 fn p2_mod_61_focus_and_station_hide_global_dark_deployed_and_concealed_targets() {
     let concealed_slot: Arc<Mutex<BTreeSet<ObjId>>> = Arc::default();
+    let accounts: Arc<Mutex<BTreeMap<ObjId, AccountId>>> = Arc::default();
     let mut tw = TestWorld::with_modules(vec![
-        Box::new(SimulationModule::new()),
+        Box::new(SimulationModule::new().with_accounts(Arc::new(MapOracle(Arc::clone(&accounts))))),
         Box::new(ConcealModule(Arc::clone(&concealed_slot))),
     ]);
     let room_a = tw
@@ -459,8 +459,7 @@ fn p2_mod_61_focus_and_station_hide_global_dark_deployed_and_concealed_targets()
 
     // Map attacker's account so focus reaches unit resolution.
     let acct = AccountId::mint("AttackerAcct", 1).unwrap();
-    *tw.world_mut().module_state_mut::<AccountOracle>().unwrap() =
-        AccountOracle::new(Arc::new(MapOracle(BTreeMap::from([(attacker, acct)]))));
+    accounts.lock().unwrap().insert(attacker, acct);
 
     tw.world_mut().move_to(attacker, room_a).unwrap();
     tw.world_mut().move_to(secret_player, room_b).unwrap();
@@ -558,6 +557,55 @@ fn p2_mod_61_focus_and_station_hide_global_dark_deployed_and_concealed_targets()
     );
     assert_eq!(dark_room_focus, missing_focus);
     assert!(!dark_room_focus.contains("HiddenInDarkRoom"));
+
+    // Positive control: a billeted pilot sitting at a deployed unit's live console
+    // CAN reclaim `+focus` on that deployed unit, while stepping out of the console
+    // hides it again.
+    let deployed_pilot = tw.spawn_player("DeployedPilot");
+    let deployed_pilot_acct = AccountId::mint("DeployedPilotAcct", 2).unwrap();
+    accounts
+        .lock()
+        .unwrap()
+        .insert(deployed_pilot, deployed_pilot_acct);
+    let remote_cab = tw
+        .world_mut()
+        .create(ObjKind::Room, "RemoteCab", GOD, None)
+        .unwrap();
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@spatial/station #{}=pilot,pilot,channels:movement,space:#{}",
+            deployed_hull.0, remote_cab.0
+        ),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@spatial/assign #{}=pilot,#{}",
+            deployed_hull.0, deployed_pilot.0
+        ),
+    );
+    // Away from console: deployed unit remains hidden even from its billeted pilot.
+    tw.world_mut().move_to(deployed_pilot, room_a).unwrap();
+    let away_focus = err(
+        &mut tw,
+        deployed_pilot,
+        &format!("+focus #{}/pilot", deployed_hull.0),
+    );
+    assert_eq!(away_focus, missing_focus);
+    // At the live console: billeted pilot reclaims `+focus` cleanly.
+    tw.world_mut().move_to(deployed_pilot, remote_cab).unwrap();
+    let at_console_focus = ok(
+        &mut tw,
+        deployed_pilot,
+        &format!("+focus #{}/pilot", deployed_hull.0),
+    );
+    assert!(
+        at_console_focus.contains("pilot"),
+        "billeted pilot at live console must reclaim +focus on deployed unit: {at_console_focus}"
+    );
 }
 
 // =========================================================================
@@ -566,7 +614,10 @@ fn p2_mod_61_focus_and_station_hide_global_dark_deployed_and_concealed_targets()
 
 #[test]
 fn p2_mod_62_console_reach_revalidated_across_station_handoff_proxy_and_lifecycle() {
-    let mut tw = TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+    let accounts: Arc<Mutex<BTreeMap<ObjId, AccountId>>> = Arc::default();
+    let mut tw = TestWorld::with_modules(vec![Box::new(
+        SimulationModule::new().with_accounts(Arc::new(MapOracle(Arc::clone(&accounts)))),
+    )]);
     // Run `modules_loaded` so `ControlLeaseView` completes its initial scan and
     // accepts real `request_seat_activation` calls.
     tw.modules_loaded(HashMap::new());
@@ -604,11 +655,11 @@ fn p2_mod_62_console_reach_revalidated_across_station_handoff_proxy_and_lifecycl
 
     let acct_p = AccountId::mint("PilotAcct", 1).unwrap();
     let acct_d = AccountId::mint("DriverAcct", 2).unwrap();
-    *tw.world_mut().module_state_mut::<AccountOracle>().unwrap() =
-        AccountOracle::new(Arc::new(MapOracle(BTreeMap::from([
-            (pilot, acct_p),
-            (driver, acct_d),
-        ]))));
+    {
+        let mut map = accounts.lock().unwrap();
+        map.insert(pilot, acct_p);
+        map.insert(driver, acct_d);
+    }
 
     ok(
         &mut tw,
@@ -743,9 +794,35 @@ fn p2_mod_62_console_reach_revalidated_across_station_handoff_proxy_and_lifecycl
     );
     while tw.engine_mut().take_authoritative_submit().is_some() {}
 
-    // 4. Unanchoring console space invalidates console reach even while actor remains in room.
+    // 4. Quarantining the MovingObject host invalidates console reach even while
+    //    the actor remains in the cab, whereas a live stationary `SpaceAnchor::Unanchored`
+    //    interior (e.g. simulator pod) remains a valid console room until the actor leaves.
     tw.world_mut().move_to(pilot, cab).unwrap();
     ok(&mut tw, pilot, &format!("+focus #{}/pilot", atlas.0));
+    with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::run(
+            ctx,
+            &Transition::Quarantine {
+                root: atlas,
+                reason: "console host quarantined".into(),
+            },
+        )
+    })
+    .0
+    .unwrap();
+    let show = ok(&mut tw, pilot, "@station/show");
+    assert!(
+        show.contains("driving no station"),
+        "quarantined MovingObject console host must invalidate reach: {show}"
+    );
+    // Recover & re-place `atlas`; verify a stationary `Unanchored` pod console
+    // still admits `+focus` cleanly, then re-anchor `cab` for proxy seat test.
+    ok(&mut tw, GOD, &format!("@spatial/recover #{}", atlas.0));
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/place/domain #{}=0", atlas.0),
+    );
     with_ctx(&mut tw, GOD, |ctx| {
         mush_sim::run(
             ctx,
@@ -757,12 +834,13 @@ fn p2_mod_62_console_reach_revalidated_across_station_handoff_proxy_and_lifecycl
     })
     .0
     .unwrap();
-    let show = ok(&mut tw, pilot, "@station/show");
+    ok(&mut tw, pilot, &format!("+focus #{}/pilot", atlas.0));
+    let unanchored_show = ok(&mut tw, pilot, "@station/show");
     assert!(
-        show.contains("driving no station"),
-        "unanchored console space must invalidate reach: {show}"
+        unanchored_show.contains("pilot"),
+        "live unanchored stationary console (e.g. simulator pod) must stay reachable: {unanchored_show}"
     );
-    // Re-anchor cab and vacate pilot billet for real proxy seat activation.
+    ok(&mut tw, pilot, "+focus/release");
     with_ctx(&mut tw, GOD, |ctx| {
         mush_sim::run(
             ctx,
@@ -1154,9 +1232,21 @@ fn p2_mod_64_retired_windows_pruned_and_pulse_maintenance_never_starves() {
         );
     }
 
-    // 2. Seed 40 Retired passive DomainRecords ahead of an Active promoted domain
-    //    and verify `plan_maintenance` never starves the active domain and
-    //    `run_maintenance` prunes the retired tombstones.
+    // 2. Open and retire 40 passive DomainRecords ahead of an Active promoted
+    //    domain via real commands, then verify `plan_maintenance` never starves
+    //    the active domain and `run_maintenance` prunes the retired tombstones.
+    for i in 0..40_usize {
+        let host = tw
+            .world_mut()
+            .create(ObjKind::Room, &format!("RetiredHost{i}"), GOD, None)
+            .unwrap();
+        let retired_id = with_ctx(&mut tw, GOD, |ctx| {
+            mush_sim::open_passive_domain(ctx, host, host)
+        })
+        .0
+        .unwrap();
+        ok(&mut tw, GOD, &format!("@domain/retire {}", retired_id.0));
+    }
     let active_room = tw
         .world_mut()
         .create(ObjKind::Room, "ActiveArena", GOD, None)
@@ -1167,26 +1257,6 @@ fn p2_mod_64_retired_windows_pruned_and_pulse_maintenance_never_starves() {
     .0
     .unwrap();
     ok(&mut tw, GOD, &format!("@domain/promote {}", active_id.0));
-
-    {
-        let st = tw.world_mut().module_state_mut::<SpatialState>().unwrap();
-        for i in 0..40_u64 {
-            let id = DomainId(i);
-            st.domains.insert(
-                id,
-                DomainRecord {
-                    id,
-                    host: room,
-                    driver: passive_definition_ref(),
-                    status: DomainStatus::Retired,
-                    clock: DomainClock::Passive,
-                    presentation_location: room,
-                    revision: 2,
-                    window: None,
-                },
-            );
-        }
-    }
 
     let now = tw.world().world_ic_now();
     {
@@ -1307,7 +1377,10 @@ fn p2_mod_82_close_window_releases_activation_slots_and_drains_queue() {
 
 #[test]
 fn p2_mod_65_multi_billet_and_cross_alt_release_revokes_exact_station_lease() {
-    let mut tw = TestWorld::with_modules(vec![Box::new(SimulationModule::new())]);
+    let accounts: Arc<Mutex<BTreeMap<ObjId, AccountId>>> = Arc::default();
+    let mut tw = TestWorld::with_modules(vec![Box::new(
+        SimulationModule::new().with_accounts(Arc::new(MapOracle(Arc::clone(&accounts)))),
+    )]);
     arm_offer_keys(&mut tw);
     tw.set_now(3_000);
 
@@ -1334,11 +1407,11 @@ fn p2_mod_65_multi_billet_and_cross_alt_release_revokes_exact_station_lease() {
 
     // Alt1 and Alt2 share ONE account.
     let shared_acct = AccountId::mint("SharedAcct", 1).unwrap();
-    *tw.world_mut().module_state_mut::<AccountOracle>().unwrap() =
-        AccountOracle::new(Arc::new(MapOracle(BTreeMap::from([
-            (alt1, shared_acct),
-            (alt2, shared_acct),
-        ]))));
+    {
+        let mut map = accounts.lock().unwrap();
+        map.insert(alt1, shared_acct);
+        map.insert(alt2, shared_acct);
+    }
 
     ok(
         &mut tw,
@@ -1712,21 +1785,6 @@ fn p2_mod_83_interior_custody_symmetry_and_is_sim_bound_coverage() {
             riding_bay.0, parked_carrier.0
         ),
     );
-    {
-        let st = tw.world_mut().module_state_mut::<SpatialState>().unwrap();
-        st.held_assignments.insert(
-            held_assign_host,
-            HeldPlacement {
-                key: "assignment:held".into(),
-                reason: "corrupt".into(),
-            },
-        );
-        st.derived
-            .children
-            .entry(child_host)
-            .or_default()
-            .insert(gem);
-    }
     mush_sim::deployed::mark(
         tw.world_mut(),
         deployed_unit,
@@ -1744,12 +1802,26 @@ fn p2_mod_83_interior_custody_symmetry_and_is_sim_bound_coverage() {
         st.is_sim_bound(parked_carrier),
         "unplaced host with anchored spaces must be sim-bound"
     );
+    let mut synthetic = SpatialState::default();
+    synthetic.held_assignments.insert(
+        held_assign_host,
+        HeldPlacement {
+            key: "assignment:held".into(),
+            reason: "corrupt".into(),
+        },
+    );
+    synthetic
+        .derived
+        .children
+        .entry(child_host)
+        .or_default()
+        .insert(gem);
     assert!(
-        st.is_sim_bound(held_assign_host),
+        synthetic.is_sim_bound(held_assign_host),
         "held_assignment host must be sim-bound"
     );
     assert!(
-        st.is_sim_bound(child_host),
+        synthetic.is_sim_bound(child_host),
         "object with spatial children must be sim-bound"
     );
     assert!(

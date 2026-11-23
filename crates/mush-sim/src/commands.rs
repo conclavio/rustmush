@@ -1649,9 +1649,9 @@ pub(crate) fn holds_billet(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId, station: &S
 /// Non-staff visibility & existence-hiding predicate for `+focus` and `@station`
 /// (`P2-MOD-61`). Blocks global `#dbref` / `*name` lookups of distant objects,
 /// `GOING` husks, `Flags::DARK` objects and occupants of `DARK` rooms, deployed
-/// units (unless the actor is physically aboard that unit), `HookPoint::Perceive`
-/// concealment (including `mush-atlas` transit concealment), and out-of-band
-/// carrier transit units.
+/// units (unless the actor is physically aboard that unit or holds `station`'s
+/// billet at its live console), `HookPoint::Perceive` concealment (including
+/// `mush-atlas` transit concealment), and out-of-band carrier transit units.
 pub(crate) fn can_see_station_unit(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> bool {
     let Some(obj) = ctx.w.get(unit) else {
         return false;
@@ -1665,10 +1665,21 @@ pub(crate) fn can_see_station_unit(ctx: &Ctx<'_>, unit: ObjId, station: &Station
         s.parent_of(actor),
         SpatialParent::Interior { space, .. } if crate::aboard_host(s, space) == unit
     );
-    if !aboard && crate::deployed::excluded(ctx.w, crate::deployed::Shown::Unit(unit)) {
+    let holds_this_billet = holds_billet(ctx, actor, unit, station);
+    let at_station_console = holds_this_billet
+        && console_room_of(ctx.w, unit, station)
+            .is_some_and(|room| ReachProof::Console { room }.is_reachable(ctx.w, actor));
+    let deployed = crate::deployed::excluded(ctx.w, crate::deployed::Shown::Unit(unit));
+    if deployed && !aboard && !at_station_console {
         return false;
     }
-    if unit != actor && !ctx.can_perceive(actor, unit) {
+    // When `unit` is deployed, `PlacementGate::perceives` conceals `unit` from
+    // room `look` for everyone not spatially aboard it — including a billeted
+    // pilot sitting at its remote cab or simulator pod console. Allow that
+    // billeted pilot at the live console to reclaim `+focus` / `@station`
+    // while keeping `can_perceive` (including `mush-atlas` transit concealment)
+    // enforced on all non-deployed targets and non-console callers.
+    if unit != actor && !(deployed && at_station_console) && !ctx.can_perceive(actor, unit) {
         return false;
     }
     if let Some(book) = ctx.w.module_state::<JourneyBook>() {
@@ -1677,7 +1688,6 @@ pub(crate) fn can_see_station_unit(ctx: &Ctx<'_>, unit: ObjId, station: &Station
             return false;
         }
     }
-    let holds_this_billet = holds_billet(ctx, actor, unit, station);
     let see_hidden = perm::has_power(ctx.w, actor, Powers::SEE_HIDDEN);
     if !see_hidden && !perm::controls(ctx.w, actor, unit) && !holds_this_billet {
         if obj.flags.contains(Flags::DARK) {
@@ -1707,9 +1717,10 @@ pub(crate) fn can_see_station_unit(ctx: &Ctx<'_>, unit: ObjId, station: &Station
 
 /// The live, valid console room a station is operated from (`P2-MOD-62`):
 /// its backing cockpit `space` if authored (must be live, unquarantined, and —
-/// when an interior space or member room of one — anchored to a non-retired
-/// domain or live unquarantined host), else the unit's own live location (when
-/// unquarantined). `None` when broken or unplaced (reach fails closed).
+/// when an interior space or member room of one — a live stationary unanchored
+/// interior, anchored to a non-retired domain, or anchored to a live
+/// unquarantined host), else the unit's own live location (when unquarantined).
+/// `None` when broken or unplaced (reach fails closed).
 #[must_use]
 pub(crate) fn console_room_of(
     w: &mush_core::World,
@@ -1736,11 +1747,18 @@ pub(crate) fn console_room_of(
                 .and_then(|root| s.spaces.get(root))
         });
         if let Some(rec) = space_rec {
-            if s.is_quarantined(rec.object) || s.held_placement(rec.object).is_some() {
+            if w.get(rec.object)
+                .is_none_or(|o| o.flags.contains(Flags::GOING))
+                || s.is_quarantined(rec.object)
+                || s.held_placement(rec.object).is_some()
+            {
                 return None;
             }
             match &rec.anchor {
-                SpaceAnchor::Unanchored => return None,
+                // Stationary interior spaces (e.g. simulator pods, unanchored
+                // ground sheds) are valid live console rooms as long as they
+                // are neither `GOING`, quarantined, nor held above.
+                SpaceAnchor::Unanchored => {}
                 SpaceAnchor::FixedDomain { domain, .. } => {
                     if s.domains
                         .get(domain)
@@ -2705,8 +2723,10 @@ fn journey_ineligible_inner(
         }
         _ => {}
     }
-    let participant = mush_core::BehaviorId::new("sim.participant").expect("static behavior id");
-    if !ctx.w.has_behavior(carrier, &participant) {
+    if mush_core::BehaviorId::new("sim.participant")
+        .ok()
+        .is_none_or(|participant| !ctx.w.has_behavior(carrier, &participant))
+    {
         return Some(format!("{name} cannot fly a route."));
     }
     {
@@ -2953,8 +2973,10 @@ pub(crate) fn may_command_departure(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
     {
         return false;
     }
-    let participant = mush_core::BehaviorId::new("sim.participant").expect("static behavior id");
-    if !ctx.w.has_behavior(carrier, &participant) {
+    if mush_core::BehaviorId::new("sim.participant")
+        .ok()
+        .is_none_or(|participant| !ctx.w.has_behavior(carrier, &participant))
+    {
         return false;
     }
     let s = st(ctx);
