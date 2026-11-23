@@ -754,7 +754,7 @@ async fn spawn_actor(
     bot_program: Option<&Path>,
     managed_floor: bool,
 ) -> Result<Player> {
-    std::fs::create_dir(directory)?;
+    crate::create_private_dir(directory)?;
     let report = directory.join("report.json");
     let mut command = Command::new(match bot_program {
         Some(program) => program.to_path_buf(),
@@ -772,7 +772,9 @@ async fn spawn_actor(
         .arg(directory.join("memory"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::from(File::create(directory.join("stderr.txt"))?))
+        .stderr(Stdio::from(crate::create_private_file(
+            &directory.join("stderr.txt"),
+        )?))
         .kill_on_drop(true);
     if actor.script.is_none() {
         command.arg("--paused");
@@ -878,12 +880,14 @@ async fn server_start(spec: &Server, dir: &Path) -> Result<Child> {
         .current_dir(spec.working_directory.as_deref().unwrap_or(Path::new(".")))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::from(File::create(dir.join("server-stderr.txt"))?))
+        .stderr(Stdio::from(crate::create_private_file(
+            &dir.join("server-stderr.txt"),
+        )?))
         .kill_on_drop(true)
         .spawn()?;
     let stdout = child.stdout.take().ok_or("server stdout missing")?;
     let mut lines = BufReader::new(stdout).lines();
-    let mut file = File::create(dir.join("server-stdout.txt"))?;
+    let mut file = crate::create_private_file(&dir.join("server-stdout.txt"))?;
     let marker = spec.ready_output.clone();
     tokio::time::timeout(Duration::from_millis(spec.timeout_ms), async {
         let mut bytes = 0;
@@ -997,8 +1001,8 @@ async fn one(
     mut debug: Option<&mut DebugController>,
     run_index: usize,
 ) -> Result<Value> {
-    std::fs::create_dir(directory)?;
-    let mut joined = File::create(directory.join("joined.jsonl"))?;
+    crate::create_private_dir(directory)?;
+    let mut joined = crate::create_private_file(&directory.join("joined.jsonl"))?;
     let startup_at = Instant::now();
     let bot_program = debug.as_ref().and_then(|debug| debug.bot_program.clone());
     let mut debugger = debug
@@ -1630,7 +1634,7 @@ async fn run_inner(
         debug.bot_program = Some(program);
     }
     // A new directory protects earlier artifacts, including traces from failed runs.
-    std::fs::create_dir(directory)?;
+    crate::create_private_dir(directory)?;
     let directory = std::fs::canonicalize(directory)?;
     save_json(&directory.join("manifest.json"), &manifest)?;
     if let Some(debug) = &debug {
@@ -1642,7 +1646,11 @@ async fn run_inner(
     let mut reports = Vec::new();
     for (index, (actors, repetition)) in manifest.runs().into_iter().enumerate() {
         if observer.is_none() {
-            println!("[harness] Run {} ({})", index + 1, manifest.name);
+            println!(
+                "[harness] Run {} ({})",
+                index + 1,
+                crate::terminal::plain(&manifest.name)
+            );
         }
         emit(
             observer.as_ref(),

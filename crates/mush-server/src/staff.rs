@@ -464,8 +464,20 @@ fn boot_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Account-mutating commands must arrive on an interactive player connection,
+/// never via a queued `@wait` (`WaitCmd`) or background tick (P2-TSC-10).
+fn require_interactive_conn(ctx: &Ctx<'_>, verb: &str) -> Result<(), CmdError> {
+    if ctx.w.dispatching_conn().is_none() {
+        return Err(CmdError::msg(format!(
+            "{verb} must be run directly from an interactive connection, not from a queued @wait."
+        )));
+    }
+    Ok(())
+}
+
 fn newpassword_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @newpassword <player>=<new password>.";
+    require_interactive_conn(ctx, "@newpassword")?;
     let who = ctx.args.lhs().trim().to_string();
     let Some(password) = ctx.args.rhs().map(str::trim).filter(|p| !p.is_empty()) else {
         return Err(CmdError::msg(USAGE));
@@ -525,6 +537,7 @@ fn looks_like_private_key(s: &str) -> bool {
 /// (invariant S5: only ever the caller's own account).
 fn sshkey_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     const USAGE: &str = "Usage: @sshkey/add <ssh public key line>, @sshkey/list, or @sshkey/del <index-or-fingerprint>.";
+    require_interactive_conn(ctx, "@sshkey")?;
     if ctx.switches.has("add") {
         let line = ctx.args.raw().trim();
         if line.is_empty() {
@@ -609,6 +622,7 @@ fn newchar_cmd(
 ) -> Result<(), CmdError> {
     const USAGE: &str =
         "Usage: @newchar <Name>  --  create one more character on your own account.";
+    require_interactive_conn(ctx, "@newchar")?;
     let name = ctx.args.raw().trim().to_string();
     if name.is_empty() {
         return Err(CmdError::msg(USAGE));
@@ -783,6 +797,7 @@ fn discord_cmd(queue: &StaffQueue, ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                          @discord/set autofollow=on|off, @discord/set quiet=on|off; \
                          staff: @discord/show <player>, @discord/unlink <player>[=<reason>], \
                          @discord/ban <player>=<reason>, @discord/unban <player>[=<reason>].";
+    require_interactive_conn(ctx, "@discord")?;
     let actor = ctx.actor;
     let lhs = ctx.args.lhs().trim().to_string();
     let rhs = ctx.args.rhs().unwrap_or("").trim().to_string();
@@ -2101,5 +2116,59 @@ mod tests {
             Role::Wizard,
             &[mortal]
         ));
+    }
+
+    #[test]
+    fn account_mutating_commands_refuse_queued_wait_dispatch() {
+        let mut world = World::new_minimal();
+        world.set_now(1_000);
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).unwrap();
+        mush_core::register_engine_commands(&mut reg).unwrap();
+        let queue = Arc::new(StaffQueue::new());
+        register_server_commands(&mut reg, &queue).unwrap();
+        let mut engine = Engine::new(world, reg);
+        let nick = engine
+            .world
+            .create(ObjKind::Player, "Nick", GOD, Some(LIMBO))
+            .unwrap();
+
+        for (actor, cmd) in [
+            (nick, format!("@wait 1=@sshkey/add {PUB_LINE}")),
+            (nick, "@wait 1=@newchar QueuedAlt".to_owned()),
+            (nick, "@wait 1=@discord/link".to_owned()),
+            (
+                GOD,
+                "@wait 1=@newpassword Nick=supersecretpass99".to_owned(),
+            ),
+        ] {
+            let out = run(&mut engine, actor, &cmd);
+            assert!(
+                sys_texts(&out).is_empty(),
+                "queuing @wait should succeed silently: {cmd}: {:?}",
+                sys_texts(&out)
+            );
+        }
+
+        // Advance past the 1 s delay and fire every queued WaitCmd (which dispatches
+        // with `world.dispatching_conn() == None`).
+        engine.world.set_now(1_005);
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        engine.fire_due(1_005_000, &mut out, &mut fx);
+        assert!(
+            queue.drain().is_empty(),
+            "queued @wait dispatches must never enqueue account-mutating StaffOps"
+        );
+        let refused: Vec<String> = sys_texts(&out)
+            .into_iter()
+            .filter(|t| t.contains("interactive connection"))
+            .collect();
+        assert_eq!(
+            refused.len(),
+            4,
+            "all four queued account-mutating commands must be refused: {:?}",
+            sys_texts(&out)
+        );
     }
 }

@@ -182,8 +182,18 @@ pub struct Report {
     pub mine: Option<crate::mine::report::Report>,
 }
 
+/// Maximum total bytes written to a single `--transcript` JSONL file (P2-TSC-25).
+pub const DEFAULT_MAX_TRANSCRIPT_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum raw incoming SSH bytes accepted while no command is pending (P2-TSC-25).
+const MAX_IDLE_SSH_BYTES: usize = 1_000_000;
+/// Maximum total raw incoming SSH bytes accepted across a single session (P2-TSC-25).
+const MAX_SESSION_SSH_BYTES: u64 = 64 * 1024 * 1024;
+
 struct Log {
     file: Option<File>,
+    transcript_bytes: u64,
+    max_transcript_bytes: u64,
+    transcript_capped: bool,
     sequence: u64,
     echo: bool,
     json_events: bool,
@@ -196,12 +206,19 @@ struct Log {
 
 impl Log {
     fn new(path: Option<&PathBuf>) -> Result<Self> {
+        Self::with_limit(path, DEFAULT_MAX_TRANSCRIPT_BYTES)
+    }
+
+    fn with_limit(path: Option<&PathBuf>, max_transcript_bytes: u64) -> Result<Self> {
         // A misspelled/reused artifact path must not silently destroy a prior run.
         let file = path
-            .map(|p| File::options().write(true).create_new(true).open(p))
+            .map(|p| crate::create_new_private_file(p))
             .transpose()?;
         Ok(Self {
             file,
+            transcript_bytes: 0,
+            max_transcript_bytes,
+            transcript_capped: false,
             sequence: 0,
             echo: true,
             json_events: false,
@@ -220,9 +237,27 @@ impl Log {
             "elapsed_ms":self.started.elapsed().as_millis(), "provenance":self.provenance,
             "request_id":self.request, "command_sequence":self.command_sequence, "kind":kind, "data":data});
         if let Some(file) = &mut self.file {
-            serde_json::to_writer(&mut *file, &event)?;
-            writeln!(file)?;
+            if self.transcript_capped {
+                return Err(format!(
+                    "transcript exceeded {} bytes limit",
+                    self.max_transcript_bytes
+                )
+                .into());
+            }
+            let mut line = serde_json::to_vec(&event)?;
+            line.push(b'\n');
+            let next = self.transcript_bytes.saturating_add(line.len() as u64);
+            if next > self.max_transcript_bytes {
+                self.transcript_capped = true;
+                return Err(format!(
+                    "transcript exceeded {} bytes limit",
+                    self.max_transcript_bytes
+                )
+                .into());
+            }
+            file.write_all(&line)?;
             file.flush()?;
+            self.transcript_bytes = next;
         }
         if self.json_events {
             println!("{event}");
@@ -296,6 +331,8 @@ struct App {
     state: State,
     log: Log,
     pending: Option<Pending>,
+    idle_ssh_bytes: usize,
+    total_ssh_bytes: u64,
     model_task: Option<JoinHandle<Result<Reply>>>,
     asking: bool,
     pending_probe: Option<crate::probe::Spec>,
@@ -616,7 +653,7 @@ pub async fn run_controlled(
     let report_file = options
         .report
         .as_ref()
-        .map(|path| File::options().write(true).create_new(true).open(path))
+        .map(|path| crate::create_new_private_file(path))
         .transpose()?;
     let knowledge = Knowledge::load(&config.knowledge)?;
     let character = config
@@ -858,6 +895,8 @@ pub async fn run_controlled(
         request_id: None,
         state,
         log,
+        idle_ssh_bytes: 0,
+        total_ssh_bytes: 0,
         model_task: None,
         asking: false,
         pending_probe: None,
@@ -933,6 +972,10 @@ pub async fn run_controlled(
     if let Err(error) = result.and(memory_result).and(cancel_result) {
         app.state.status = "error".into();
         app.state.outcome = error.to_string();
+        if app.log.transcript_capped {
+            // Stop writing to the capped transcript file so error reporting still completes.
+            app.log.file = None;
+        }
         app.log.event("error", &error.to_string())?;
     }
     let report = Report {
@@ -989,7 +1032,40 @@ fn stdin_lines() -> mpsc::Receiver<String> {
     rx
 }
 
+/// Account an incoming raw SSH data chunk against single-chunk, unsolicited-idle,
+/// and total-session byte caps (P2-TSC-25).
+fn account_ssh_bytes(
+    chunk_len: usize,
+    has_pending: bool,
+    idle_ssh_bytes: &mut usize,
+    total_ssh_bytes: &mut u64,
+) -> Result<()> {
+    if chunk_len > MAX_IDLE_SSH_BYTES {
+        return Err("single SSH chunk exceeded 1 MB".into());
+    }
+    *total_ssh_bytes = total_ssh_bytes.saturating_add(chunk_len as u64);
+    if *total_ssh_bytes > MAX_SESSION_SSH_BYTES {
+        return Err("total SSH session output exceeded 64 MB".into());
+    }
+    if !has_pending {
+        *idle_ssh_bytes = idle_ssh_bytes.saturating_add(chunk_len);
+        if *idle_ssh_bytes > MAX_IDLE_SSH_BYTES {
+            return Err("unsolicited SSH output exceeded 1 MB".into());
+        }
+    }
+    Ok(())
+}
+
 impl App {
+    fn account_ssh_chunk(&mut self, chunk_len: usize) -> Result<()> {
+        account_ssh_bytes(
+            chunk_len,
+            self.pending.is_some(),
+            &mut self.idle_ssh_bytes,
+            &mut self.total_ssh_bytes,
+        )
+    }
+
     fn restore(&mut self, value: crate::checkpoint::Snapshot) -> Result<()> {
         self.config.playtest_feedback = value.playtest_feedback.unwrap_or(false);
         self.mission = value.mission.unwrap_or_default();
@@ -1612,8 +1688,12 @@ impl App {
                 message = self.session.channel.wait() => {
                     match message {
                         Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            self.account_ssh_chunk(data.len())?;
                             let mut text = decoder.feed(&data);
                             if let Some(boundary) = &mut self.checkpoint && boundary.sent && !text.is_empty() {
+                                if boundary.output.len().saturating_add(text.len()) > 1_000_000 {
+                                    return Err("checkpoint output exceeded 1 MB".into());
+                                }
                                 self.log.record("checkpoint-wire",json!(text))?;
                                 text = crate::checkpoint::fenced_output(&mut boundary.output,&mut boundary.received,&text,self.options.campaign_epoch.as_ref().unwrap())?;
                             }
@@ -1824,6 +1904,7 @@ impl App {
     /// the cockpit's are only recorded. None of them is a memory.
     async fn arena_send(&mut self, send: crate::arena::Send) -> Result<()> {
         self.session.send(&send.line).await?;
+        self.idle_ssh_bytes = 0;
         self.state.commands_sent += 1;
         self.log.record(
             "arena-send",
@@ -2055,17 +2136,18 @@ impl App {
             .minds_exec(MindExec::Push, "save", &market::save_request(name, &base))
             .await?;
         let (revision, digest) = market::saved_reply(&saved)?;
+        let clean_digest = plain(&digest);
         self.log.event(
             "mine",
             &format!(
                 "Wrote {name} over the SSH mind service: {pictures} pictures checked, saved as \
-                 revision {revision} ({digest})."
+                 revision {revision} ({clean_digest})."
             ),
         )?;
         Ok(Written {
             name: name.to_owned(),
             revision,
-            digest,
+            digest: clean_digest,
             pictures,
         })
     }
@@ -2079,18 +2161,25 @@ impl App {
         request: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let reply = crate::transport::mind_exec(&self.config.ssh, exec, request).await;
+        let sanitize_value = |value: Option<&Value>| -> Value {
+            match value {
+                Some(Value::String(s)) => Value::String(plain(s)),
+                Some(other) => other.clone(),
+                None => Value::Null,
+            }
+        };
         let record = match &reply {
             Ok(reply) => json!({
                 "exec": exec.command(),
                 "op": op,
-                "status": reply.get("status").cloned().unwrap_or(serde_json::Value::Null),
-                "message": reply.get("message").cloned().unwrap_or(serde_json::Value::Null),
+                "status": sanitize_value(reply.get("status")),
+                "message": sanitize_value(reply.get("message")),
             }),
             Err(error) => json!({
                 "exec": exec.command(),
                 "op": op,
                 "status": "transport",
-                "message": error.to_string(),
+                "message": plain(&error.to_string()),
             }),
         };
         self.log.record("minds-exec", record)?;
@@ -2122,6 +2211,7 @@ impl App {
             .flatten();
         for send in sends {
             self.session.send(&send.line).await?;
+            self.idle_ssh_bytes = 0;
             self.state.commands_sent += 1;
             self.log.record(
                 "mine-send",
@@ -2405,6 +2495,7 @@ impl App {
                 self.memories.save_mission(&self.mission)?;
             }
             self.session.send(command).await?;
+            self.idle_ssh_bytes = 0;
             self.memories.sent(command)?;
             let sent_id = self
                 .memories
@@ -2527,6 +2618,7 @@ impl App {
                 return Ok(());
             }
             let pending = self.pending.take().unwrap();
+            self.idle_ssh_bytes = 0;
             self.log.record(
                 "command-result",
                 json!({"command":pending.command,"output":pending.response()}),
@@ -3784,5 +3876,44 @@ mod tests {
             arena_tick_ends_tick(false),
             "running: the lane's tick is the tick"
         );
+    }
+
+    #[test]
+    fn transcript_log_enforces_max_transcript_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "mush-bot-log-cap-{}-{}.jsonl",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let mut log = Log::with_limit(Some(&path), 512).expect("log");
+        log.echo = false;
+        log.record("observation", json!("short")).expect("fits");
+        let err = log
+            .record("observation", json!("x".repeat(600)))
+            .expect_err("must reject write exceeding max_transcript_bytes")
+            .to_string();
+        assert!(err.contains("512 bytes"), "{err}");
+        assert!(log.transcript_capped);
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(size <= 512, "file grew to {size} bytes past 512 cap");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn incoming_ssh_bytes_are_bounded_when_pending_is_none() {
+        let mut idle = 0usize;
+        let mut total = 0u64;
+        // Pending output uses its own pending.text cap, so idle does not grow.
+        account_ssh_bytes(500_000, true, &mut idle, &mut total).expect("pending chunk ok");
+        assert_eq!(idle, 0);
+        // Without pending, unsolicited SSH bytes are capped at MAX_IDLE_SSH_BYTES (1 MB).
+        account_ssh_bytes(600_000, false, &mut idle, &mut total).expect("under 1 MB");
+        assert!(account_ssh_bytes(500_000, false, &mut idle, &mut total).is_err());
+        // Single oversized chunk is rejected immediately.
+        let mut idle2 = 0usize;
+        let mut total2 = 0u64;
+        assert!(account_ssh_bytes(MAX_IDLE_SSH_BYTES + 1, true, &mut idle2, &mut total2).is_err());
     }
 }

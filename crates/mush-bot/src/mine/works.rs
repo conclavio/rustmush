@@ -151,11 +151,17 @@ fn matter_line(line: &str) -> bool {
         return true;
     }
     // A yard mark (`SYB-01`): three capitals, a hyphen, two digits.
+    // Match raw bytes so multi-byte UTF-8 inputs of length 6 cannot panic on char boundaries (P2-TSC-30).
     let mark = |s: &str| {
-        s.len() == 6
-            && s[..3].bytes().all(|b| b.is_ascii_uppercase())
-            && s.as_bytes()[3] == b'-'
-            && s[4..].bytes().all(|b| b.is_ascii_digit())
+        matches!(
+            s.as_bytes(),
+            [a, b, c, b'-', d, e]
+                if a.is_ascii_uppercase()
+                    && b.is_ascii_uppercase()
+                    && c.is_ascii_uppercase()
+                    && d.is_ascii_digit()
+                    && e.is_ascii_digit()
+        )
     };
     if let Some(rest) = line.strip_prefix("+bay ") {
         return dbref(rest) || mark(rest);
@@ -392,6 +398,9 @@ mod tests {
             "+ship/undock titan",
             "+ship/undock",
             "@works/order fittings",
+            "+bay ééé",
+            "+bay ABé1",
+            "+bay €€",
         ] {
             assert!(!in_vocabulary(line), "{line}");
         }

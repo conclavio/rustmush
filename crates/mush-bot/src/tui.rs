@@ -136,15 +136,19 @@ struct View {
     game: String,
     events: VecDeque<String>,
     state: Value,
+    state_rev: u64,
     input: Editor,
     editor: Option<(String, Editor)>,
     model_choice: Option<usize>,
     panel: usize,
     panel_scroll: u16,
     last_result: String,
+    result_rev: u64,
     scroll: usize,
     notice: String,
     capture: Value,
+    capture_rev: u64,
+    panel_cache: Option<(usize, u64, u64, u64, String)>,
 }
 
 const PANELS: [&str; 17] = [
@@ -172,14 +176,18 @@ impl View {
         let kind = event["kind"].as_str().unwrap_or("event");
         if kind == "model-input" {
             self.capture = event["data"].clone();
+            self.capture_rev = self.capture_rev.wrapping_add(1);
             return;
         }
         if kind == "snapshot" {
             self.state = event["data"].clone();
+            self.state_rev = self.state_rev.wrapping_add(1);
             return;
         }
         if kind == "observation" {
-            self.game.push_str(event["data"].as_str().unwrap_or(""));
+            self.game.push_str(&crate::terminal::plain(
+                event["data"].as_str().unwrap_or(""),
+            ));
             self.game = crate::tail(&self.game, 128_000).into();
         } else if ![
             "model-input",
@@ -225,6 +233,7 @@ impl View {
             .contains(&kind)
             {
                 self.last_result = crate::terminal::plain(&data);
+                self.result_rev = self.result_rev.wrapping_add(1);
                 self.panel = 6;
                 self.panel_scroll = 0;
             }
@@ -241,7 +250,69 @@ impl View {
         }
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn panel_text(&mut self) -> &str {
+        let key = (
+            self.panel,
+            self.state_rev,
+            self.capture_rev,
+            self.result_rev,
+        );
+        let hit = self
+            .panel_cache
+            .as_ref()
+            .is_some_and(|(p, sr, cr, rr, _)| (*p, *sr, *cr, *rr) == key);
+        if !hit {
+            let field = [
+                "state",
+                "costs",
+                "memory_store",
+                "prompts",
+                "context",
+                "debug",
+                "result",
+                "assembly",
+                "group_affiliations",
+                "budget",
+                "conversation",
+                "social",
+                "activity",
+                "learning",
+                "map",
+                "mission",
+                "playtest",
+            ][self.panel];
+            let info = if self.panel == 6 {
+                crate::terminal::plain(&self.last_result)
+            } else if self.panel == 7 {
+                bounded_pretty_json(&serde_json::json!({
+                    "stale": self.state["capture_stale"],
+                    "request_revision": self.capture["request_revision"],
+                    "composition": self.capture["composition"],
+                    "messages": self.capture["payload"]["messages"],
+                }))
+            } else if self.panel == 10 {
+                bounded_pretty_json(&serde_json::json!({
+                    "conversation": self.state["conversation"],
+                    "provenance": self.state["provenance"],
+                    "costs": self.state["costs"]["session"],
+                }))
+            } else if self.panel == 2 {
+                bounded_pretty_json(&serde_json::json!({
+                    "working_notes": self.state["state"]["memory"],
+                    "store": self.state["memory_store"],
+                    "attention": self.state["attention"],
+                }))
+            } else {
+                bounded_pretty_json(&self.state[field])
+            };
+            self.panel_cache = Some((key.0, key.1, key.2, key.3, info));
+        }
+        self.panel_cache
+            .as_ref()
+            .map_or("", |(_, _, _, _, text)| text.as_str())
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
         if frame.area().width < 30 || frame.area().height < 10 {
             frame.render_widget(
                 Paragraph::new(
@@ -265,7 +336,12 @@ impl View {
             .as_str()
             .unwrap_or("connecting");
         let spend = &self.state["costs"]["session"]["totals"]["provider_cost_by_currency"];
-        frame.render_widget(Paragraph::new(format!("RustMUSH Bot | {status} | {model} | session {spend}\nF2 run/pause F3 model F4 prompts F5 step F6 context F7 debug F8 commit F9 panel F10 budget F11 conversation Ctrl+Q quit")), rows[0]);
+        frame.render_widget(
+            Paragraph::new(crate::terminal::plain(&format!(
+                "RustMUSH Bot | {status} | {model} | session {spend}\nF2 run/pause F3 model F4 prompts F5 step F6 context F7 debug F8 commit F9 panel F10 budget F11 conversation Ctrl+Q quit"
+            ))),
+            rows[0],
+        );
         let columns = Layout::horizontal([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(rows[1]);
         let lines: Vec<_> = self.game.lines().collect();
@@ -276,43 +352,14 @@ impl View {
             Paragraph::new(text).block(Block::bordered().title("Game session | PgUp/PgDn scroll")),
             columns[0],
         );
-        let field = [
-            "state",
-            "costs",
-            "memory_store",
-            "prompts",
-            "context",
-            "debug",
-            "result",
-            "assembly",
-            "group_affiliations",
-            "budget",
-            "conversation",
-            "social",
-            "activity",
-            "learning",
-            "map",
-            "mission",
-            "playtest",
-        ][self.panel];
-        let info = if self.panel == 6 {
-            self.last_result.clone()
-        } else if self.panel == 7 {
-            serde_json::to_string_pretty(&serde_json::json!({"stale":self.state["capture_stale"],
-                "request_revision":self.capture["request_revision"],"composition":self.capture["composition"],
-                "messages":self.capture["payload"]["messages"]})).unwrap_or_default()
-        } else if self.panel == 10 {
-            serde_json::to_string_pretty(&serde_json::json!({"conversation":self.state["conversation"],"provenance":self.state["provenance"],"costs":self.state["costs"]["session"]})).unwrap_or_default()
-        } else if self.panel == 2 {
-            serde_json::to_string_pretty(&serde_json::json!({"working_notes":self.state["state"]["memory"],"store":self.state["memory_store"],"attention":self.state["attention"]})).unwrap_or_default()
-        } else {
-            serde_json::to_string_pretty(&self.state[field]).unwrap_or_default()
-        };
+        let panel_idx = self.panel;
+        let panel_scroll = self.panel_scroll;
+        let info = self.panel_text();
         frame.render_widget(
             Paragraph::new(info)
-                .scroll((self.panel_scroll, 0))
+                .scroll((panel_scroll, 0))
                 .wrap(Wrap { trim: false })
-                .block(Block::bordered().title(format!("{} | Ctrl+PgUp/PgDn", PANELS[self.panel]))),
+                .block(Block::bordered().title(format!("{} | Ctrl+PgUp/PgDn", PANELS[panel_idx]))),
             columns[1],
         );
         let events = self
@@ -330,14 +377,15 @@ impl View {
                 .block(Block::bordered().title("Runner events")),
             rows[2],
         );
+        let notice = crate::terminal::plain(&self.notice);
         frame.render_widget(
-            Paragraph::new(self.input.text.clone()).block(Block::bordered().title(
-                if self.notice.is_empty() {
+            Paragraph::new(crate::terminal::plain(&self.input.text)).block(
+                Block::bordered().title(if notice.is_empty() {
                     "Control /help or game command"
                 } else {
-                    &self.notice
-                },
-            )),
+                    notice.as_str()
+                }),
+            ),
             rows[3],
         );
         if let Some((name, editor)) = &self.editor {
@@ -349,7 +397,7 @@ impl View {
             let vertical = row.saturating_sub(area.height.saturating_sub(4) as usize);
             let horizontal = column.saturating_sub(area.width.saturating_sub(4) as usize);
             frame.render_widget(
-                Paragraph::new(editor.text.clone())
+                Paragraph::new(crate::terminal::plain(&editor.text))
                     .scroll((
                         vertical.min(u16::MAX as usize) as u16,
                         horizontal.min(u16::MAX as usize) as u16,
@@ -357,7 +405,7 @@ impl View {
                     .block(
                         Block::bordered()
                             .title(format!("Edit {name} | Ctrl+S apply & pause | Esc cancel"))
-                            .title_bottom(self.notice.as_str()),
+                            .title_bottom(notice.as_str()),
                     ),
                 area,
             );
@@ -619,7 +667,7 @@ pub async fn run(config: Config, options: Options) -> Result<Report> {
                             }
                         }
                         Ok(None) => {}
-                        Err(error) => view.notice = error.to_string(),
+                        Err(error) => view.notice = crate::terminal::plain(&error.to_string()),
                     },
                     Event::Paste(text) => {
                         if let Some((_, editor)) = &mut view.editor {
@@ -660,6 +708,8 @@ struct CastActor {
 struct CastView {
     floor: Value,
     actors: std::collections::BTreeMap<String, CastActor>,
+    data_rev: u64,
+    detail_cache: Option<(usize, usize, u64, &'static str, String)>,
     selected: usize,
     panel: usize,
     scroll: usize,
@@ -690,6 +740,7 @@ impl CastView {
             self.phase.clear();
             self.floor = Value::Null;
             self.title = format!("{} | run {}", self.cast_name, state.run);
+            self.data_rev = self.data_rev.wrapping_add(1);
         }
         if (state.run, state.revision, state.notice)
             != (self.debug.run, self.debug.revision, self.debug.notice)
@@ -726,6 +777,7 @@ impl CastView {
                     self.actors.insert(name.into(), Default::default());
                 }
             }
+            self.data_rev = self.data_rev.wrapping_add(1);
         } else if event["kind"] == "cast-finished" {
             self.phase = if event["data"]["success"] == true {
                 "Passed. Reports saved.".into()
@@ -744,12 +796,19 @@ impl CastView {
             );
         } else if event["actor"] == "_harness" && event["event"]["kind"] == "speaking-floor" {
             self.floor = event["event"]["data"].clone();
+            self.data_rev = self.data_rev.wrapping_add(1);
         } else if let Some(actor) = event["actor"].as_str().filter(|name| *name != "_harness") {
             let view = self.actors.entry(actor.into()).or_default();
             let data = &event["event"]["data"];
             match event["event"]["kind"].as_str().unwrap_or("") {
-                "probe-result" => view.state["last_probe"] = data.clone(),
-                "snapshot" | "ready" => view.state = data.clone(),
+                "probe-result" => {
+                    view.state["last_probe"] = data.clone();
+                    self.data_rev = self.data_rev.wrapping_add(1);
+                }
+                "snapshot" | "ready" => {
+                    view.state = data.clone();
+                    self.data_rev = self.data_rev.wrapping_add(1);
+                }
                 "result" => {
                     for field in [
                         "state",
@@ -780,14 +839,20 @@ impl CastView {
                     view.state["pending_command"] = Value::Null;
                     view.state["staged_decision"] = Value::Null;
                     view.state["model_in_flight"] = Value::Bool(false);
+                    self.data_rev = self.data_rev.wrapping_add(1);
                 }
-                "model-input" => view.capture = data.clone(),
+                "model-input" => {
+                    view.capture = data.clone();
+                    self.data_rev = self.data_rev.wrapping_add(1);
+                }
                 "observation" => {
-                    view.game.push_str(data.as_str().unwrap_or(""));
+                    view.game
+                        .push_str(&crate::terminal::plain(data.as_str().unwrap_or("")));
                     view.game = crate::tail(&view.game, 128_000).into();
                 }
                 "done" | "blocked" | "error" => {
-                    view.state["state"]["status"] = event["event"]["kind"].clone()
+                    view.state["state"]["status"] = event["event"]["kind"].clone();
+                    self.data_rev = self.data_rev.wrapping_add(1);
                 }
                 _ => {}
             }
@@ -912,73 +977,14 @@ impl CastView {
         format!("Phase dispatch: {mode} | {next}{remaining}")
     }
 
-    fn draw(&self, frame: &mut Frame) {
-        if frame.area().width < 55 || frame.area().height < 16 {
-            frame.render_widget(
-                Paragraph::new(format!(
-                    "Resize to 55 x 16.\n{}\n{}\nBots and game remain live.",
-                    self.dispatch_status(),
-                    self.controls_hint()
-                )),
-                frame.area(),
-            );
-            return;
-        }
-        let rows = Layout::vertical([
-            Constraint::Length(4),
-            Constraint::Min(8),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
-        frame.render_widget(
-            Paragraph::new(crate::terminal::plain(&format!(
-                "{} | {}\n{}\n{}\n{}",
-                self.title,
-                self.phase,
-                self.dispatch_status(),
-                self.debug.notice,
-                self.notice
-            ))),
-            rows[0],
-        );
-        let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(25)]).split(rows[1]);
-        let roster = self
-            .actors
-            .iter()
-            .enumerate()
-            .map(|(i, (name, a))| {
-                format!(
-                    "{} {}\n  {} / {}",
-                    if i == self.selected { ">" } else { " " },
-                    name,
-                    a.state["state"]["status"].as_str().unwrap_or("connecting"),
-                    a.state["conversation"]["phase"].as_str().unwrap_or("-")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        frame.render_widget(
-            Paragraph::new(roster)
-                .scroll((
-                    (self.selected * 2)
-                        .saturating_sub(cols[0].height.saturating_sub(4) as usize)
-                        .min(u16::MAX as usize) as u16,
-                    0,
-                ))
-                .block(Block::bordered().title("Actors | Tab")),
-            cols[0],
-        );
-        if let Some((name, actor)) = self.actors.iter().nth(self.selected) {
-            let panes = Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)])
-                .split(cols[1]);
-            let lines: Vec<_> = actor.game.lines().collect();
-            let end = lines.len().saturating_sub(self.scroll.min(lines.len()));
-            let start = end.saturating_sub(panes[0].height.saturating_sub(2) as usize);
-            frame.render_widget(
-                Paragraph::new(lines[start..end].join("\n"))
-                    .block(Block::bordered().title(format!("{name} | game session"))),
-                panes[0],
-            );
+    fn detail_cached(&mut self) -> Option<(&'static str, &str)> {
+        let key = (self.selected, self.panel, self.data_rev);
+        let hit = self
+            .detail_cache
+            .as_ref()
+            .is_some_and(|(s, p, r, _, _)| (*s, *p, *r) == key);
+        if !hit {
+            let (_, actor) = self.actors.iter().nth(self.selected)?;
             let (title, value) = match self.panel {
                 9 => (
                     "Selected actor activities and learning",
@@ -1019,13 +1025,94 @@ impl CastView {
                     serde_json::json!({"state":actor.state["state"],"attention":actor.state["attention"],"character_state":actor.state["character_state"],"last_probe":actor.state["last_probe"]}),
                 ),
             };
+            let formatted = cast_detail(&value);
+            self.detail_cache = Some((key.0, key.1, key.2, title, formatted));
+        }
+        self.detail_cache
+            .as_ref()
+            .map(|(_, _, _, title, text)| (*title, text.as_str()))
+    }
+
+    fn draw(&mut self, frame: &mut Frame) {
+        if frame.area().width < 55 || frame.area().height < 16 {
             frame.render_widget(
-                Paragraph::new(cast_detail(&value))
-                    .scroll((self.detail_scroll, 0))
-                    .wrap(Wrap { trim: false })
-                    .block(Block::bordered().title(format!("{title} | F9"))),
-                panes[1],
+                Paragraph::new(format!(
+                    "Resize to 55 x 16.\n{}\n{}\nBots and game remain live.",
+                    self.dispatch_status(),
+                    self.controls_hint()
+                )),
+                frame.area(),
             );
+            return;
+        }
+        let rows = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Min(8),
+            Constraint::Length(3),
+        ])
+        .split(frame.area());
+        frame.render_widget(
+            Paragraph::new(crate::terminal::plain(&format!(
+                "{} | {}\n{}\n{}\n{}",
+                self.title,
+                self.phase,
+                self.dispatch_status(),
+                self.debug.notice,
+                self.notice
+            ))),
+            rows[0],
+        );
+        let cols = Layout::horizontal([Constraint::Length(24), Constraint::Min(25)]).split(rows[1]);
+        let roster = crate::terminal::plain(
+            &self
+                .actors
+                .iter()
+                .enumerate()
+                .map(|(i, (name, a))| {
+                    format!(
+                        "{} {}\n  {} / {}",
+                        if i == self.selected { ">" } else { " " },
+                        name,
+                        a.state["state"]["status"].as_str().unwrap_or("connecting"),
+                        a.state["conversation"]["phase"].as_str().unwrap_or("-")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        frame.render_widget(
+            Paragraph::new(roster)
+                .scroll((
+                    (self.selected * 2)
+                        .saturating_sub(cols[0].height.saturating_sub(4) as usize)
+                        .min(u16::MAX as usize) as u16,
+                    0,
+                ))
+                .block(Block::bordered().title("Actors | Tab")),
+            cols[0],
+        );
+        if let Some((name, actor)) = self.actors.iter().nth(self.selected) {
+            let panes = Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)])
+                .split(cols[1]);
+            let lines: Vec<_> = actor.game.lines().collect();
+            let end = lines.len().saturating_sub(self.scroll.min(lines.len()));
+            let start = end.saturating_sub(panes[0].height.saturating_sub(2) as usize);
+            let game_title = crate::terminal::plain(&format!("{name} | game session"));
+            let game_text = lines[start..end].join("\n");
+            let detail_scroll = self.detail_scroll;
+            frame.render_widget(
+                Paragraph::new(game_text).block(Block::bordered().title(game_title)),
+                panes[0],
+            );
+            if let Some((title, detail)) = self.detail_cached() {
+                frame.render_widget(
+                    Paragraph::new(detail)
+                        .scroll((detail_scroll, 0))
+                        .wrap(Wrap { trim: false })
+                        .block(Block::bordered().title(format!("{title} | F9"))),
+                    panes[1],
+                );
+            }
         }
         let footer = self.controls_hint();
         frame.render_widget(Paragraph::new(format!("{footer}\nPgUp/Dn game | Ctrl+PgUp/Dn details\nCurrent phase completes; bots and game remain live.")), rows[2]);
@@ -1042,17 +1129,48 @@ impl CastView {
     }
 }
 
-fn cast_detail(value: &Value) -> String {
-    let mut text = serde_json::to_string_pretty(value).unwrap_or_default();
-    if text.len() > 64_000 {
-        let mut end = 64_000;
-        while !text.is_char_boundary(end) {
-            end -= 1;
+const DETAIL_BYTES: usize = 64_000;
+
+/// Stop pretty JSON serialization at [`DETAIL_BYTES`] and strip terminal escapes,
+/// C1 controls, and BiDi overrides (P2-TSC-22, P2-TSC-25).
+fn bounded_pretty_json(value: &Value) -> String {
+    struct Limited {
+        bytes: Vec<u8>,
+        truncated: bool,
+    }
+    impl std::io::Write for Limited {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let remaining = DETAIL_BYTES.saturating_sub(self.bytes.len());
+            if bytes.len() > remaining {
+                self.bytes.extend_from_slice(&bytes[..remaining]);
+                self.truncated = true;
+                return Err(std::io::Error::other("detail display limit reached"));
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
         }
-        text.truncate(end);
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut out = Limited {
+        bytes: Vec::with_capacity(DETAIL_BYTES.min(4096)),
+        truncated: false,
+    };
+    let _ = serde_json::to_writer_pretty(&mut out, value);
+    let valid = match std::str::from_utf8(&out.bytes) {
+        Ok(s) => s,
+        Err(e) => std::str::from_utf8(&out.bytes[..e.valid_up_to()]).unwrap_or(""),
+    };
+    let mut text = crate::terminal::plain(valid);
+    if out.truncated {
         text.push_str("\n[Display limited to 64000 bytes; full data remains in run artifacts.]");
     }
     text
+}
+
+fn cast_detail(value: &Value) -> String {
+    bounded_pretty_json(value)
 }
 
 fn json_value(capture: &Value) -> Value {
@@ -1323,7 +1441,7 @@ mod tests {
             1
         );
         view.panel = 2;
-        let screen = cast_screen(&view, 160, 48);
+        let screen = cast_screen(&mut view, 160, 48);
         assert!(screen.contains("Session costs and budget"));
         assert!(screen.contains("scout-final-budget"));
         assert!(!screen.contains("speaker-old-budget"));
@@ -1414,7 +1532,7 @@ mod tests {
         assert!(view.key(f5).is_none());
         assert!(view.dispatch_status().contains("stopping"));
         for (width, height) in [(40, 10), (100, 24)] {
-            let screen = cast_screen(&view, width, height);
+            let screen = cast_screen(&mut view, width, height);
             assert!(screen.contains("Stopping owned bots"));
             assert!(!screen.contains("F2 hold/continue"));
         }
@@ -1461,7 +1579,7 @@ mod tests {
         assert!(view.pending_control.is_none());
     }
 
-    fn cast_screen(view: &CastView, width: u16, height: u16) -> String {
+    fn cast_screen(view: &mut CastView, width: u16, height: u16) -> String {
         let mut terminal =
             Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| view.draw(frame)).unwrap();
@@ -1496,11 +1614,11 @@ mod tests {
         view.selected = view.actors.keys().position(|name| name == "scout").unwrap();
         for (panel, marker) in [(4, "MEMORY"), (5, "DEBUG"), (6, "PROBE")] {
             view.panel = panel;
-            let screen = cast_screen(&view, 160, 48);
+            let screen = cast_screen(&mut view, 160, 48);
             assert!(screen.contains(&format!("scout_PRIVATE_{marker}")));
             assert!(!screen.contains(&format!("medic_PRIVATE_{marker}")));
         }
-        let small = cast_screen(&view, 45, 10);
+        let small = cast_screen(&mut view, 45, 10);
         assert!(small.contains("Resize to 55 x 16"));
         assert!(small.contains("Bots and game remain live"));
         view.sync_debug(phase_state(2, 3, Mode::Running, Some(1)));
@@ -1544,5 +1662,46 @@ mod tests {
             ));
             terminal.draw(|f| view.draw(f)).unwrap();
         }
+    }
+
+    #[test]
+    fn tui_panels_strip_c1_and_bidi_bound_size_and_cache_unchanged_frames() {
+        let mut view = View::default();
+        let hostile = format!("ok\u{009b}31m\u{202e}spoof{}", "x".repeat(120_000));
+        view.event(serde_json::json!({
+            "kind": "model-input",
+            "data": {
+                "request_revision": "r1",
+                "payload": {"messages": [{"role": "user", "content": hostile}]}
+            }
+        }));
+        view.panel = 7; // Assembly panel
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(160, 48)).unwrap();
+        terminal.draw(|f| view.draw(f)).unwrap();
+        let cached = view
+            .panel_cache
+            .as_ref()
+            .expect("panel cache populated")
+            .4
+            .clone();
+        assert!(cached.len() < 64_200, "len={}", cached.len());
+        assert!(cached.contains("Display limited to 64000 bytes"));
+        assert!(!cached.contains('\u{009b}'));
+        assert!(!cached.contains('\u{202e}'));
+        assert!(!cached.contains('\x1b'));
+        // Second draw with unchanged state/capture reuses the exact cached buffer.
+        let before_ptr = view.panel_cache.as_ref().unwrap().4.as_ptr();
+        terminal.draw(|f| view.draw(f)).unwrap();
+        let after_ptr = view.panel_cache.as_ref().unwrap().4.as_ptr();
+        assert_eq!(before_ptr, after_ptr, "unchanged frame must reuse cache");
+
+        // cast_detail strips C1 and BiDi too.
+        let detail = cast_detail(&serde_json::json!({
+            "msg": "a\u{009b}2J\u{202e}\u{2066}b"
+        }));
+        assert!(!detail.contains('\u{009b}'));
+        assert!(!detail.contains('\u{202e}'));
+        assert!(!detail.contains('\u{2066}'));
+        assert!(detail.contains("a2Jb"), "{detail:?}");
     }
 }

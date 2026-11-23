@@ -7,7 +7,7 @@ use crate::{
     models::Catalog,
 };
 use serde_json::{Value, json};
-use std::{fs::File, path::Path, time::Instant};
+use std::{path::Path, time::Instant};
 
 pub async fn run(
     config: &Config,
@@ -54,7 +54,7 @@ pub async fn run(
     } else {
         source.clone()
     };
-    let file = File::options().write(true).create_new(true).open(output)?;
+    let file = crate::create_new_private_file(output)?;
     let mut costs = Ledger::open(&config.costs, &config.ssh, &config.memory.namespace)?;
     let mut actual_selection = selection;
     actual_selection.settings.name = capture.payload["model"].as_str().unwrap().into();

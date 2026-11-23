@@ -198,7 +198,7 @@ pub fn build(path: &Path, output: &Path) -> Result<Packet> {
     };
     p.id = p.digest()?;
     p.validate()?;
-    std::fs::create_dir(output)?;
+    crate::create_private_dir(output)?;
     save_json(&output.join("packet.json"), &p)?;
     save_json(
         &output.join("operator-reveal.json"),

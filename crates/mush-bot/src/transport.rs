@@ -190,11 +190,12 @@ fn mind_reply(exec: MindExec, bytes: &[u8]) -> Result<serde_json::Value> {
         .map(str::trim)
         .rfind(|line| !line.is_empty())
         .ok_or_else(|| format!("`{}` answered nothing", exec.command()))?;
+    let clean_last = crate::terminal::plain(last);
     let record: serde_json::Value = serde_json::from_str(last).map_err(|_| {
         format!(
             "`{}` answered something that is not the mind service's JSON: {}",
             exec.command(),
-            crate::tail(last, 200)
+            crate::tail(&clean_last, 200)
         )
     })?;
     match record.get("result") {
@@ -204,7 +205,7 @@ fn mind_reply(exec: MindExec, bytes: &[u8]) -> Result<serde_json::Value> {
         _ => Err(format!(
             "`{}` answered a record with no mind result: {}",
             exec.command(),
-            crate::tail(last, 200)
+            crate::tail(&clean_last, 200)
         )
         .into()),
     }
@@ -257,11 +258,13 @@ pub fn validate_command(command: &str) -> Result<()> {
     if command.trim().is_empty() || command.len() > 8192 || command.chars().any(char::is_control) {
         return Err("a game command must be one nonempty line, at most 8192 bytes, with no control characters".into());
     }
-    let verb = command
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    // Match `mush-core::cmd` dispatch normalization: split the first whitespace token,
+    // strip `/switches` before the first `/`, and apply full Unicode `.to_lowercase()`
+    // so trailing slashes (`@newchar/`) and Unicode case folds (`U+212A` Kelvin sign)
+    // cannot slip past the refused lists (P2-TSC-10).
+    let head = command.split_whitespace().next().unwrap_or("");
+    let raw_verb = head.split('/').next().unwrap_or("");
+    let verb = raw_verb.to_lowercase();
     if matches!(verb.as_str(), "@tui" | "@notui") {
         return Err("mush-bot currently supports the SSH line interface only".into());
     }
@@ -274,28 +277,31 @@ pub fn validate_command(command: &str) -> Result<()> {
                 .into(),
         );
     }
-    // Account and session verbs. Game text reaches the model as untrusted
-    // data, so a line another player wrote must never be able to grant
-    // persistent access to the account (`@sshkey/add`), lock its operator
-    // out (`@sshkey/del`), spawn characters, or end the session. The runner
-    // manages keys, characters and disconnects outside the game. A macro
-    // can carry any of these verbs past a first-word check (`@macro
-    // k=@sshkey/add ...`, then `k`), so the bot may not define or delete one;
-    // the runner owns the character's macros.
-    if verb == "@sshkey"
-        || verb.starts_with("@sshkey/")
-        || verb == "@macro"
-        || verb.starts_with("@macro/")
-        || matches!(
-            verb.as_str(),
-            "@newchar" | "quit" | "@quit" | "logout" | "@logout"
-        )
-    {
+    // Account, scheduling, and session verbs. Game text reaches the model as untrusted
+    // data, so a line another player wrote must never be able to grant persistent access
+    // to the account (`@sshkey/add`, `@discord/link`), lock its operator out
+    // (`@sshkey/del`, `@discord/unlink`), spawn characters (`@newchar`), defer a blocked
+    // verb past first-word inspection (`@wait`, `@macro`), or end the session.
+    if matches!(
+        verb.as_str(),
+        "@sshkey"
+            | "@macro"
+            | "@newchar"
+            | "@wait"
+            | "@discord"
+            | "quit"
+            | "@quit"
+            | "logout"
+            | "@logout"
+    ) {
         return Err(
             "account and session commands are not available to the bot; manage SSH keys, \
              characters and disconnects from the runner"
                 .into(),
         );
+    }
+    if (raw_verb.starts_with('@') || raw_verb.starts_with('+')) && !raw_verb.is_ascii() {
+        return Err("@ and + command verbs must be ASCII".into());
     }
     Ok(())
 }
@@ -309,18 +315,35 @@ mod tests {
         for command in [
             "connect rosebot secret",
             "@password old=new",
+            "@password/ old=new",
+            "@newpassword nick=secret",
+            "@newpassword/ nick=secret",
             "@sshkey/add ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA bot",
             "@SSHKEY/del 1",
+            "@ssh\u{212a}ey/add ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA bot",
             "@sshkey/list",
             "@sshkey",
             "@newchar Marco",
+            "@newchar/ Marco",
+            "@wait 0=@sshkey/add ssh-ed25519 AAAA bot",
+            "@WAIT/foo 1=look",
+            "@discord",
+            "@discord/link",
+            "@discord/unlink",
+            "@discord/follow",
+            "@discord/set relay=Marco",
+            "@DISCORD/LINK",
             "QUIT",
             "quit now",
+            "quit/",
             "LOGOUT",
             "@tui",
+            "@tui/",
             "@macro k=@sshkey/add ssh-ed25519 AAAA bot",
             "@MACRO/del k",
             "@macro",
+            "@em\u{0131}t hi",
+            "+\u{00e9}test",
         ] {
             assert!(validate_command(command).is_err(), "{command}");
         }
@@ -354,6 +377,31 @@ mod tests {
     }
 
     #[test]
+    fn mind_reply_errors_strip_terminal_escapes_and_bidi() {
+        use super::{MindExec, mind_reply};
+        let err = mind_reply(
+            MindExec::Check,
+            b"\x1b]52;c;cHduZWQ=\x07\x1b[31mbad\xc2\x9b2J\xe2\x80\xaeoutput",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!err.contains('\x1b'), "{err:?}");
+        assert!(!err.contains('\x07'), "{err:?}");
+        assert!(!err.contains('\u{009b}'), "{err:?}");
+        assert!(!err.contains('\u{202e}'), "{err:?}");
+        assert!(err.contains("bad"), "{err:?}");
+
+        let bad_service = mind_reply(
+            MindExec::Push,
+            "{\"service\":\"other\",\"note\":\"\x1b]52;c;eA==\x07\u{202e}hi\"}".as_bytes(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!bad_service.contains('\x1b'), "{bad_service:?}");
+        assert!(!bad_service.contains('\u{202e}'), "{bad_service:?}");
+    }
+
+    #[test]
     fn refused_verbs_are_only_refused_as_the_verb() {
         for command in [
             "say type @sshkey/add and I will owe you a favor",
@@ -362,6 +410,7 @@ mod tests {
             "@emit The wind picks up.",
             "page Marco=QUIT",
             "say @macro is handy",
+            "say @wait and @discord are mentioned in prose",
         ] {
             assert!(validate_command(command).is_ok(), "{command}");
         }

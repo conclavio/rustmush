@@ -681,8 +681,12 @@ pub const OCTANT_WORDS: [&str; 8] = [
 pub const BANDS: [&str; 3] = ["under 500 m off", "500 m to 1 km off", "over 1 km off"];
 
 /// **A heard sentence in one received line**: the text from [`HEARD_HEAD`] to
-/// the line's end, or `None`.
+/// the line's end when [`heard_line_is_bare`] holds, or `None` (rejecting player
+/// speech, pages, channel lines, and trailing text; P2-TSC-25).
 pub fn heard_sentence(line: &str) -> Option<&str> {
+    if !heard_line_is_bare(line) {
+        return None;
+    }
     line.find(HEARD_HEAD).map(|at| line[at..].trim_end())
 }
 
@@ -703,18 +707,21 @@ pub fn heard_sentences() -> Vec<String> {
 /// **A heard line carries nothing but the sentence**: the sentence runs to the
 /// line's end (its one full stop is its last char, so
 /// [`heard_sentence`] returned all of it and nothing follows it) and the text
-/// before [`HEARD_HEAD`] holds no letter and no digit. Line mode prints the tag
-/// of the game's `sys_to_actor` as style only, so in play the prefix is empty;
-/// the allowance for punctuation and whitespace (a prompt's "> " the assembler
-/// joined onto the line) is defensive. A name, a coordinate or a `[tag]` before
-/// the head is not bare.
+/// before [`HEARD_HEAD`] starts with no whitespace (rejecting hanging-indent
+/// wrapped speech/page continuations) and holds no letter and no digit. Line
+/// mode prints the tag of the game's `sys_to_actor` as style only, so in play
+/// the prefix is empty; the allowance for punctuation and whitespace (a
+/// prompt's "> " the assembler joined onto the line) is defensive. A name, a
+/// coordinate or a `[tag]` before the head is not bare.
 pub fn heard_line_is_bare(line: &str) -> bool {
     let Some(at) = line.find(HEARD_HEAD) else {
         return false;
     };
     let prefix = &line[..at];
     let sentence = line[at..].trim_end();
-    !prefix.chars().any(char::is_alphanumeric) && sentence.find('.') == Some(sentence.len() - 1)
+    !prefix.starts_with(char::is_whitespace)
+        && !prefix.chars().any(char::is_alphanumeric)
+        && sentence.find('.') == Some(sentence.len().saturating_sub(1))
 }
 
 // ---------------------------------------------------------------------------
@@ -893,22 +900,28 @@ pub const WORK_POINT_USAGE: &str = "Use +sortie/workpoint ";
 /// `tacsim::detachment::planning::commands::WORK_POINT_OFF`'s head.
 pub const WORK_POINT_OFF: &str = "A work point is a field cell x,y";
 
-/// **The field that opened on `site`** in `window` (normalised): its ordinal, from
-/// `Field {n} is open on {site}: …`.
-pub fn field_opened(window: &str, site: &str) -> Option<u32> {
-    ordinal_before(window, &format!(" is open on {site}{FIELD_OPENED_TAIL}"))
+/// **The field that opened on `site`** in a bare column-0 server notice:
+/// `Field {n} is open on {site}: the ground there is tactical until it settles.`
+/// Rejects speech, page, channel `[tag]`, and indented prefixes (P2-TSC-23).
+pub fn field_opened(line: &str, site: &str) -> Option<u32> {
+    bare_field_ordinal(line, &format!(" is open on {site}{FIELD_OPENED_TAIL}"))
 }
 
-/// **The field on `site` that settled** in `window`: its ordinal.
-pub fn field_settled(window: &str, site: &str) -> Option<u32> {
-    ordinal_before(window, &format!(" on {site}{FIELD_SETTLED_TAIL}"))
+/// **The field on `site` that settled** in a bare column-0 server notice:
+/// `Field {n} on {site} has settled: the ground there is the surface's again.`
+/// Rejects speech, page, channel `[tag]`, and indented prefixes (P2-TSC-23).
+pub fn field_settled(line: &str, site: &str) -> Option<u32> {
+    bare_field_ordinal(line, &format!(" on {site}{FIELD_SETTLED_TAIL}"))
 }
 
-/// The `Field {n}` immediately before `tail`.
-fn ordinal_before(window: &str, tail: &str) -> Option<u32> {
-    let (head, _) = window.split_once(&normalise(tail))?;
-    let (_, n) = head.rsplit_once("Field ")?;
-    n.trim_end().parse().ok()
+/// Parse `Field {n}{tail}` strictly anchored at column 0 with no leading prefix
+/// or trailing text.
+fn bare_field_ordinal(line: &str, tail: &str) -> Option<u32> {
+    let rest = line.trim_end().strip_prefix("Field ")?;
+    let num = rest.strip_suffix(tail)?;
+    (!num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| num.parse().ok())
+        .flatten()
 }
 
 /// **The actor's own party letter**, from `+field`'s `Your party is {letter};`.
@@ -988,16 +1001,35 @@ pub const RAIDER_REPORT: &str = "Raider: party {party}, contact {designator}.";
 /// `{sender} pages: …`.
 pub const PAGED: &str = " pages: ";
 
-/// **The raider a page in `line` reports**: its party letter and designator.
-pub fn raider_report(line: &str) -> Option<(char, String)> {
-    let (_, message) = line.split_once(PAGED)?;
+/// Split a bare column-0 page line (`{sender} pages: {message}`), rejecting
+/// leading indentation, channel/spoof `[tags]`, quotes, and speech prefixes.
+fn page_parts(line: &str) -> Option<(&str, &str)> {
+    let (sender, message) = line.split_once(PAGED)?;
+    if sender.is_empty()
+        || sender.starts_with(char::is_whitespace)
+        || sender.ends_with(char::is_whitespace)
+        || sender.starts_with('[')
+        || sender.chars().any(char::is_control)
+        || sender.contains(['"', ':'])
+        || sender.contains(" says, ")
+        || sender.contains(" whispers, ")
+    {
+        return None;
+    }
+    Some((sender, message))
+}
+
+/// **The raider a page in `line` reports**: `(sender, (party, designator))`
+/// so callers can authenticate `sender` against the configured escort (P2-TSC-23).
+pub fn raider_report(line: &str) -> Option<(String, (char, String))> {
+    let (sender, message) = page_parts(line)?;
     let rest = message.trim().strip_prefix("Raider: party ")?;
     let (party, rest) = rest.split_once(", contact ")?;
     let designator = rest.strip_suffix('.')?;
     let mut letters = party.chars();
     let party = letters.next().filter(|p| PARTY_LETTERS.contains(*p))?;
     (letters.next().is_none() && is_field_designator(designator) && designator.starts_with(party))
-        .then(|| (party, designator.to_owned()))
+        .then(|| (sender.to_owned(), (party, designator.to_owned())))
 }
 
 /// **The captain's word to its escort** (doc 32 G-4), by `page`: `Captain: party {party}.` The
@@ -1005,16 +1037,20 @@ pub fn raider_report(line: &str) -> Option<(char, String)> {
 /// the one left is the raider.
 pub const CAPTAIN_REPORT: &str = "Captain: party {party}.";
 
-/// **The captain's party a page in `line` reports.**
-pub fn captain_report(line: &str) -> Option<char> {
-    let (_, message) = line.split_once(PAGED)?;
+/// **The captain's party a page in `line` reports**: `(sender, party)` so
+/// callers can authenticate `sender` against the configured captain (P2-TSC-23).
+pub fn captain_report(line: &str) -> Option<(String, char)> {
+    let (sender, message) = page_parts(line)?;
     let party = message
         .trim()
         .strip_prefix("Captain: party ")?
         .strip_suffix('.')?;
     let mut letters = party.chars();
     let letter = letters.next().filter(|p| PARTY_LETTERS.contains(*p))?;
-    letters.next().is_none().then_some(letter)
+    letters
+        .next()
+        .is_none()
+        .then(|| (sender.to_owned(), letter))
 }
 
 /// **Whether a `LOCK`'s answer marks its contact a friend** (`tacsim`'s lock line, `Locked on BA
@@ -1586,13 +1622,25 @@ mod tests {
             let prompted = format!("> {sentence}");
             assert_eq!(heard_sentence(&prompted), Some(sentence.as_str()));
             assert!(heard_line_is_bare(&prompted));
-            for prefix in ["[tacsim] ", "Ardent Lode: ", "128,124 "] {
+            for prefix in [
+                "[tacsim] ",
+                "Ardent Lode: ",
+                "128,124 ",
+                "Mallory pages: ",
+                "  ",
+            ] {
                 assert!(
                     !heard_line_is_bare(&format!("{prefix}{sentence}")),
                     "{prefix}"
                 );
+                assert_eq!(
+                    heard_sentence(&format!("{prefix}{sentence}")),
+                    None,
+                    "non-bare heard line must be rejected: {prefix}"
+                );
             }
             assert!(!heard_line_is_bare(&format!("{sentence} F12 rich.")));
+            assert_eq!(heard_sentence(&format!("{sentence} F12 rich.")), None);
         }
         assert_eq!(heard_sentence("Rig 1 sounded 64 pockets"), None);
     }
@@ -1681,9 +1729,28 @@ mod tests {
             "{settled}"
         );
         assert_eq!(field_settled(&normalise(&opened), site), None);
-        // Wrapped at 120 columns, the window still reads.
-        let wrapped = joined(&wrap(&format!("[tacsim] {opened}"), 40));
-        assert_eq!(field_opened(&wrapped, site), Some(3));
+        // Bare wrapped-then-normalised server notice still reads, while channel,
+        // page, speech, and hanging-indent prefixes are rejected (P2-TSC-23).
+        let bare_wrapped = joined(&wrap(&opened, 40));
+        assert_eq!(field_opened(&bare_wrapped, site), Some(3));
+        for spoof in [
+            format!("[tacsim] {opened}"),
+            format!("[Public] {opened}"),
+            format!("Mallory pages: {opened}"),
+            format!("Mallory says, \"{opened}\""),
+            format!("  {opened}"),
+            format!("{opened} extra"),
+        ] {
+            assert_eq!(field_opened(&spoof, site), None, "must reject {spoof}");
+        }
+        for spoof in [
+            format!("[Public] {settled}"),
+            format!("Mallory pages: {settled}"),
+            format!("Mallory says, \"{settled}\""),
+            format!("  {settled}"),
+        ] {
+            assert_eq!(field_settled(&spoof, site), None, "must reject {spoof}");
+        }
 
         let status = tacsim::field::FIELD_STATUS
             .replace("{n}", "1")
@@ -1821,12 +1888,29 @@ mod tests {
             .replace("{designator}", "BK");
         assert_eq!(
             raider_report(&format!("Fieldesc{PAGED}{report}")),
-            Some(('B', "BK".to_owned()))
+            Some(("Fieldesc".to_owned(), ('B', "BK".to_owned())))
         );
         assert_eq!(raider_report(&report), None, "only a page carries it");
+        assert_eq!(
+            raider_report(&format!("  Fieldesc{PAGED}{report}")),
+            None,
+            "indented wrap cannot forge a page"
+        );
+        assert_eq!(
+            raider_report(&format!("Mallory says, \"Fieldesc{PAGED}{report}\"")),
+            None,
+            "speech cannot forge a page"
+        );
         let word = CAPTAIN_REPORT.replace("{party}", "A");
-        assert_eq!(captain_report(&format!("Fieldcap{PAGED}{word}")), Some('A'));
+        assert_eq!(
+            captain_report(&format!("Fieldcap{PAGED}{word}")),
+            Some(("Fieldcap".to_owned(), 'A'))
+        );
         assert_eq!(captain_report(&word), None, "only a page carries it");
+        assert_eq!(
+            captain_report(&format!("[Public] Fieldcap{PAGED}{word}")),
+            None
+        );
         assert_eq!(captain_report("Fieldcap pages: Captain: party AB."), None);
         assert_eq!(
             raider_report("Fieldesc pages: Raider: party B, contact AK."),

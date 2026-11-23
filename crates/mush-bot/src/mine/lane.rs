@@ -338,7 +338,7 @@ pub fn in_vocabulary(line: &str) -> bool {
     }
     // Doc 48 unit PL.8: a board read whole, page by page.
     if let Some(n) = line.strip_prefix("+market/list after=") {
-        return digits(n);
+        return !n.is_empty() && n.len() <= 20 && n.bytes().all(|b| b.is_ascii_digit());
     }
     if let Some(rest) = line.strip_prefix("+market/sell ") {
         return digits(rest.strip_suffix("=all").unwrap_or(rest));
@@ -475,6 +475,17 @@ enum Verdict {
     Done,
 }
 
+/// Maximum lines retained in the open step's window buffer (P2-TSC-25).
+const MAX_BUF_LINES: usize = 2_048;
+/// Maximum total bytes retained in the open step's window buffer (P2-TSC-25).
+const MAX_BUF_BYTES: usize = 256 * 1024;
+/// Maximum bytes kept for any single line pushed into the window buffer.
+const MAX_BUF_LINE_BYTES: usize = 16_384;
+/// Maximum heard sounding records retained in the lane report (P2-TSC-25).
+const MAX_HEARD: usize = 256;
+/// Maximum queued lane events retained between runner drains.
+const MAX_EVENTS: usize = 1_024;
+
 /// **The mining pilot's lane**: feed it the session's decoded text, tick it
 /// every 50 ms, type what it returns.
 pub struct Lane {
@@ -486,6 +497,7 @@ pub struct Lane {
     /// window (a send clears it; a follow-on drains it up to the line after
     /// the one that decided the step before).
     buf: Vec<Got>,
+    buf_bytes: usize,
     recent: VecDeque<String>,
     last_line_ms: u64,
     last_send_ms: Option<u64>,
@@ -553,6 +565,7 @@ impl Lane {
             me,
             assembler: Assembler::default(),
             buf: Vec::new(),
+            buf_bytes: 0,
             recent: VecDeque::new(),
             last_line_ms: 0,
             last_send_ms: None,
@@ -729,27 +742,64 @@ impl Lane {
         }
         if let Some(sentence) = lines::heard_sentence(raw) {
             let sentence = sentence.to_owned();
-            self.report.heard.push(HeardAt {
-                lane_ms: now_ms,
-                at_unix_ms: self.unix(now_ms),
-                sentence: sentence.clone(),
-                line: raw.to_owned(),
-            });
-            self.events.push(LaneEvent::Heard {
-                sentence,
-                lane_ms: now_ms,
-            });
+            if self.report.heard.len() < MAX_HEARD {
+                self.report.heard.push(HeardAt {
+                    lane_ms: now_ms,
+                    at_unix_ms: self.unix(now_ms),
+                    sentence: sentence.clone(),
+                    line: raw.to_owned(),
+                });
+            }
+            if self.events.len() < MAX_EVENTS {
+                self.events.push(LaneEvent::Heard {
+                    sentence,
+                    lane_ms: now_ms,
+                });
+            }
             return;
         }
         if self.market_unasked(raw) {
             return;
         }
-        self.buf.push(Got {
-            text: raw.to_owned(),
-            ms: now_ms,
-        });
+        self.push_buf(raw, now_ms);
         self.field_line(raw);
         self.escort_line(raw);
+    }
+
+    /// Append one line to the open window buffer, enforcing [`MAX_BUF_LINES`]
+    /// and [`MAX_BUF_BYTES`] by evicting oldest lines in batches (P2-TSC-25).
+    fn push_buf(&mut self, raw: &str, now_ms: u64) {
+        let mut cut = raw.len().min(MAX_BUF_LINE_BYTES);
+        while !raw.is_char_boundary(cut) {
+            cut = cut.saturating_sub(1);
+        }
+        let text = raw[..cut].to_owned();
+        let add_bytes = text.len();
+        if self.buf.len() >= MAX_BUF_LINES
+            || self.buf_bytes.saturating_add(add_bytes) > MAX_BUF_BYTES
+        {
+            let target_lines = (MAX_BUF_LINES * 3) / 4;
+            let target_bytes = (MAX_BUF_BYTES * 3) / 4;
+            let mut drop_n = 0usize;
+            let mut dropped_bytes = 0usize;
+            while drop_n < self.buf.len()
+                && (self.buf.len() - drop_n >= target_lines
+                    || self
+                        .buf_bytes
+                        .saturating_sub(dropped_bytes)
+                        .saturating_add(add_bytes)
+                        > target_bytes)
+            {
+                dropped_bytes = dropped_bytes.saturating_add(self.buf[drop_n].text.len());
+                drop_n += 1;
+            }
+            if drop_n > 0 {
+                self.buf.drain(..drop_n);
+                self.buf_bytes = self.buf_bytes.saturating_sub(dropped_bytes);
+            }
+        }
+        self.buf_bytes = self.buf_bytes.saturating_add(add_bytes);
+        self.buf.push(Got { text, ms: now_ms });
     }
 
     // -- the lines out --------------------------------------------------------
@@ -777,12 +827,26 @@ impl Lane {
         if step.opened_ms.is_some() || now_ms < step.not_before_ms || !gap_ok {
             return Vec::new();
         }
+        if !self.line_in_vocabulary(&line) {
+            self.fail(
+                now_ms,
+                format!(
+                    "command outside the lane's closed vocabulary: {}",
+                    crate::terminal::plain(&line)
+                ),
+            );
+            return Vec::new();
+        }
+        let Some(step) = self.step.as_mut() else {
+            return Vec::new();
+        };
         step.opened_ms = Some(now_ms);
         step.sends = step.sends.saturating_add(1);
         let beat = step.beat;
         let kind = step.kind.clone();
         // A sending step's window opens at the first line after the send.
         self.buf.clear();
+        self.buf_bytes = 0;
         self.last_send_ms = Some(now_ms);
         self.recent.push_back(line.clone());
         while self.recent.len() > ECHO_LINES {
@@ -827,23 +891,17 @@ impl Lane {
         let Some(opened) = step.opened_ms else {
             return false;
         };
-        let window: Vec<Got> = self.buf.clone();
-        let verdict = self.verdict(&step, opened, &window, now_ms);
-        let verdict = match verdict {
-            Verdict::Wait if now_ms >= opened.saturating_add(step.timeout_ms) => {
-                self.deadline(&step, &window)
-            }
-            other => other,
+        let verdict = self.verdict(&step, opened, &self.buf, now_ms);
+        let from_deadline =
+            verdict == Verdict::Wait && now_ms >= opened.saturating_add(step.timeout_ms);
+        let verdict = if from_deadline {
+            self.deadline(&step, &self.buf)
+        } else {
+            verdict
         };
         if verdict == Verdict::Wait {
             return false;
         }
-        // The line that decided: the shortest prefix that decides (a follow-on
-        // opens after it).
-        let decided = (0..window.len())
-            .find(|&end| self.verdict(&step, opened, &window[..=end], now_ms) != Verdict::Wait)
-            .unwrap_or(window.len().saturating_sub(1));
-        let decided_at = decided;
         match verdict {
             Verdict::Wait => false,
             Verdict::Fail(outcome) => {
@@ -892,11 +950,27 @@ impl Lane {
                 }
                 true
             }
-            Verdict::Skip(text) => {
-                self.decided(now_ms, &step, Verdict::Skip(text), &window, decided_at);
-                true
-            }
             other => {
+                // The line that decided: shortest prefix yielding the same verdict
+                // kind via O(log N) binary search (a follow-on opens after it; P2-TSC-25).
+                let target_kind = std::mem::discriminant(&other);
+                let decided_at = if self.buf.is_empty() || from_deadline {
+                    self.buf.len().saturating_sub(1)
+                } else {
+                    let mut lo = 0usize;
+                    let mut hi = self.buf.len().saturating_sub(1);
+                    while lo < hi {
+                        let mid = lo + (hi - lo) / 2;
+                        let v = self.verdict(&step, opened, &self.buf[..=mid], now_ms);
+                        if std::mem::discriminant(&v) == target_kind {
+                            hi = mid;
+                        } else {
+                            lo = mid + 1;
+                        }
+                    }
+                    lo
+                };
+                let window = self.buf.clone();
                 self.decided(now_ms, &step, other, &window, decided_at);
                 true
             }
@@ -918,18 +992,32 @@ impl Lane {
         let quiet = window
             .last()
             .is_some_and(|_| now_ms >= self.last_line_ms.saturating_add(QUIET_MS));
-        // The time `needle` first arrived in the window.
+        // The time `needle` first arrived in the window (single linear pass; P2-TSC-25).
         let first_at = |needle: &str| {
-            (0..window.len()).find_map(|end| {
-                let prefix = normalise(
-                    &window[..=end]
-                        .iter()
-                        .map(|got| got.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                );
-                has(&prefix, needle).then_some(window[end].ms)
-            })
+            let want = normalise(needle);
+            if !text.contains(&want) {
+                return None;
+            }
+            let mut acc = String::new();
+            for got in window {
+                let before = acc.len();
+                for word in got.text.split_whitespace() {
+                    if !acc.is_empty() {
+                        acc.push(' ');
+                    }
+                    acc.push_str(word);
+                }
+                if acc.len() > before {
+                    let mut start = before.saturating_sub(want.len());
+                    while !acc.is_char_boundary(start) {
+                        start = start.saturating_sub(1);
+                    }
+                    if acc[start..].contains(&want) {
+                        return Some(got.ms);
+                    }
+                }
+            }
+            None
         };
         let settled = |needle: &str| {
             first_at(needle).is_some_and(|at| now_ms >= at.saturating_add(SETTLE_MS))
@@ -1495,12 +1583,15 @@ impl Lane {
     /// following its `(more: +market/list after=N)` line up to [`MAX_LIST_PAGES`], before its
     /// rows are read.
     fn after_list_page(&mut self, now_ms: u64, board: Board, raw: &[String]) {
-        self.list_pages.extend(raw.iter().cloned());
+        let room = MAX_BUF_LINES.saturating_sub(self.list_pages.len());
+        self.list_pages.extend(raw.iter().take(room).cloned());
         let more = raw.iter().find_map(|line| {
-            line.trim()
-                .strip_prefix("(more: +market/list after=")
-                .and_then(|rest| rest.strip_suffix(')'))
-                .map(str::to_owned)
+            let after = line
+                .trim()
+                .strip_prefix("(more: +market/list after=")?
+                .strip_suffix(')')?;
+            (!after.is_empty() && after.len() <= 20 && after.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| after.to_owned())
         });
         if let Some(after) = more
             && self.list_page_count + 1 < MAX_LIST_PAGES
@@ -1975,8 +2066,40 @@ impl Lane {
         self.send(beat, Kind::Walk { word, room }, word, not_before_ms);
     }
 
-    /// Queue a step that sends `line`.
+    /// Whether `line` belongs to the active closed vocabulary for this lane's
+    /// configured mode (P2-TSC-24).
+    fn line_in_vocabulary(&self, line: &str) -> bool {
+        if in_vocabulary(line) {
+            return true;
+        }
+        if self.market.is_some() && market::in_vocabulary(line) {
+            return true;
+        }
+        if self.field.is_some() && field::in_vocabulary(line) {
+            return true;
+        }
+        if self.escort.is_some() && escort::in_vocabulary(line) {
+            return true;
+        }
+        if self.expedition.is_some() && detachment::in_vocabulary(line) {
+            return true;
+        }
+        false
+    }
+
+    /// Queue a step that sends `line`, enforcing the active closed vocabulary
+    /// centrally so no sender path can bypass it (P2-TSC-24).
     fn send(&mut self, beat: Beat, kind: Kind, line: &str, not_before_ms: u64) {
+        if !self.line_in_vocabulary(line) {
+            self.fail(
+                not_before_ms,
+                format!(
+                    "command outside the lane's closed vocabulary: {}",
+                    crate::terminal::plain(line)
+                ),
+            );
+            return;
+        }
         let timeout_ms = match kind {
             Kind::Launch
             | Kind::ScanGo
@@ -2010,7 +2133,11 @@ impl Lane {
         decided_at: usize,
     ) {
         let start = decided_at.saturating_add(1).min(self.buf.len());
-        self.buf.drain(..start);
+        let mut drained = 0usize;
+        for got in self.buf.drain(..start) {
+            drained = drained.saturating_add(got.text.len());
+        }
+        self.buf_bytes = self.buf_bytes.saturating_sub(drained);
         self.step = Some(Step {
             kind,
             beat,
@@ -3189,8 +3316,87 @@ mod tests {
             "+market/sell 7=12",
             "say hello",
             "c ",
+            "+market/list after=",
+            "+market/list after=123456789012345678901",
+            "+market/list after=1 foo",
         ] {
             assert!(!in_vocabulary(line), "{line}");
         }
+    }
+
+    #[test]
+    fn after_list_page_rejects_injected_pagination_tokens_and_send_enforces_vocabulary() {
+        let settings = Settings {
+            hull: "Ardent Lode".to_owned(),
+            epoch_unix_ms: 0,
+        };
+        let mut lane = Lane::new(Site::Ahuna, settings.clone(), "Ada".to_owned());
+        lane.beat = Beat::Bunkers;
+        // Hostile non-digit and >20-digit pagination tokens must NOT be sent.
+        let hostile = vec![
+            "#1 reaction mass — 100 × 2.00cr [ceres] at Exchange".to_owned(),
+            "(more: +market/list after=1; @destroy #1)".to_owned(),
+            "(more: +market/list after=123456789012345678901)".to_owned(),
+        ];
+        lane.after_list_page(100, Board::Exchange, &hostile);
+        assert_eq!(lane.step_line(), Some("chandlery"));
+
+        // Valid 1..=20 digit token queues the next page.
+        let mut valid_lane = Lane::new(Site::Ahuna, settings.clone(), "Ada".to_owned());
+        valid_lane.beat = Beat::Bunkers;
+        let valid = vec![
+            "#1 reaction mass — 100 × 2.00cr [ceres] at Exchange".to_owned(),
+            "(more: +market/list after=42)".to_owned(),
+        ];
+        valid_lane.after_list_page(100, Board::Exchange, &valid);
+        assert_eq!(valid_lane.step_line(), Some("+market/list after=42"));
+
+        // Lane::send centrally refuses out-of-vocabulary lines.
+        let mut blocked = Lane::new(Site::Ahuna, settings, "Ada".to_owned());
+        blocked.send(Beat::KitUp, Kind::Chart, "@sshkey/add fake", 10);
+        assert!(
+            blocked
+                .result()
+                .is_some_and(|r| r.outcome.contains("closed vocabulary")),
+            "{:?}",
+            blocked.result()
+        );
+        assert!(blocked.tick(1_000).is_empty());
+    }
+
+    #[test]
+    fn buf_and_heard_are_bounded_and_ignore_non_bare_sounding_spam() {
+        let settings = Settings {
+            hull: "Ardent Lode".to_owned(),
+            epoch_unix_ms: 0,
+        };
+        let mut lane = Lane::new(Site::Ahuna, settings, "Ada".to_owned());
+        assert_eq!(lane.tick(0).len(), 1);
+        // Player page/speech spoofing heard lines must not inflate report.heard.
+        for i in 0..500 {
+            lane.feed(
+                i * 10,
+                "Mallory pages: A sounding thumps through the ground right under you.\n",
+            );
+        }
+        assert!(lane.report.heard.is_empty());
+        // Bare soundings are capped at MAX_HEARD.
+        for i in 0..(MAX_HEARD as u64 + 100) {
+            lane.feed(
+                10_000 + i * 10,
+                "A sounding thumps through the ground right under you.\n",
+            );
+        }
+        assert_eq!(lane.report.heard.len(), MAX_HEARD);
+        // Noisy chat lines cannot grow self.buf past MAX_BUF_LINES or MAX_BUF_BYTES.
+        let noise = format!("{}\n", "chat ".repeat(40));
+        for i in 0..3_000u64 {
+            lane.feed(20_000 + i, &noise);
+        }
+        assert!(lane.buf.len() <= MAX_BUF_LINES);
+        assert!(lane.buf_bytes <= MAX_BUF_BYTES);
+        // The real completion line arriving after flood still decides the step.
+        lane.feed(30_000, "Arrivals\n");
+        assert_ne!(lane.step_line(), Some("c"));
     }
 }
