@@ -2,7 +2,7 @@
 
 Draft 0.3, 2026-11-23, a design, one tool and its unit files. Written against `origin/main` at
 `da2db6ef7`; Draft 0.1, the same day, had every question open, Draft 0.2 recorded the owner's
-rulings, and this draft records the first real archives (§7.8). It closes `T-112` of [the simulator backlog](16c-simulator-backlog.md): until now no
+rulings, and this draft records the first real archives (§7.8) and the pull in place (§5). It closes `T-112` of [the simulator backlog](16c-simulator-backlog.md): until now no
 instance took a backup, and a restore needed six directories that no recipe copied together with
 the store. The tool is `deploy/backup/rmbak.py`; the runbook is
 [`docs/ops.md`, "Whole-instance backup and restore"](../ops.md#whole-instance-backup-and-restore-doc-52).
@@ -389,11 +389,30 @@ thing that fails, and prints the next command with the value it needs already in
 Both scripts are tested against stub `sshd`, `systemctl`, `ssh` and `ufw` in a sandbox root
 (`OwnerScripts` in `test_rmbak.py`): the order, the refusals before anything is touched, and that
 sshd is put back at every stop (not confirmed; `sshd -t` refuses; `sshd -T` still reads passwords
-on; the running daemon still offers one). They have not been run on the boxes.
+on; the running daemon still offers one).
 
-Until the pull is in place an archive crosses by hand through a session's own root access:
-`scp -P 2222 root@conclav.io:/var/backups/rustmush/<name> .` and onward to conclav.dev. That is
-how §9's first real archive travels.
+**The owner ran all three on 2026-11-23, and the pull is in place.** What the boxes show after
+them, read back by the session:
+
+- conclav.io: `sshd -T` reads `passwordauthentication no`, `kbdinteractiveauthentication no` and
+  `permitrootlogin without-password`; the drop-in sorts first in `sshd_config.d`; a key login still
+  works. ufw already admitted TCP 2222 from anywhere (the panel is what narrows it), so the script
+  added no rule, as it says it will not. The archives are `root:rmbackup 0640`.
+- conclav.dev: the host key was kept because it had the fingerprint conclav.io printed; the far
+  side listed its four archives and refused the probe that was not one of its three requests
+  (conclav.io logged `refused: unknown request`); the first pull fetched all four, each read back
+  against its manifest and its snapshot loaded and re-derived; the pull timer is enabled for
+  thirty-five past every fourth hour.
+
+One fault the first real use found, in the tool and not on a box: `rmbak.py status` on conclav.dev
+exited non-zero with `rustmush-backup.timer is not enabled`, because the rehearsal had left a
+directory of dev3 archives there and `status` judged every directory it found. It now judges a
+box by the part its conf says it plays (it takes when `INSTANCES` names an instance, it fetches
+when `PULL_SSH` is set) and reads clean on both boxes.
+
+The first real archive crossed by hand through the session's own root access
+(`scp -P 2222 root@conclav.io:/var/backups/rustmush/<name> .` and onward), before the pull
+existed; nothing has to cross that way any more.
 
 ## 6. The restore and the check
 
@@ -737,8 +756,8 @@ once it has merged, and archives carry the list from then on.
 | 2 | The owner rules Q-52-1 and Q-52-2 | **ruled 2026-11-23**; the two-tier retention, the build tools and the owner's two scripts added to this PR |
 | 3 | On conclav.io: `build-tools-install.sh`, `install.sh take`, `INSTANCES`, one run by hand, the timer | **done 2026-11-23** (§7.8) |
 | 4 | The first real archive of dev1, carried to conclav.dev by hand, restored as dev4 and checked; the restore time and what the check found in the runbook | **done 2026-11-23** (§7.8): 5.4 s to a served copy |
-| 4a | The tool on conclav.io brought up to the follow-up PR (`live_errors` in each manifest) | after that PR merges |
-| 5 | The pull: §5's three commands | the owner's to run |
+| 4a | The tool on both boxes brought up to PR #780 (`live_errors` in each manifest) | **done 2026-11-23**, after it merged; archives from the 00:20 UTC run of 2026-11-24 on carry the list |
+| 5 | The pull: §5's three commands | **done 2026-11-23, by the owner**; four archives fetched and verified on conclav.dev |
 | 6 | dev3 and dev4 removed from conclav.dev (Q-52-10) | after step 4 |
 
 Not in these steps: a weekly boot drill (Q-52-8), a pager (Q-52-6), encryption (Q-52-7), the two
@@ -873,15 +892,19 @@ conclav.dev's address: the pull.**
 - **conclav.io under play.** §7.8's run was on an idle evening with nobody connected: the fork
   took 7 ms and neither server logged a lagging loop. The same under a full sim center is not
   measured.
-- **The timer's own first run on conclav.io** (20:20 UTC, 2026-11-23) had not come round when this
-  was written. The same unit ran by hand there, and the same timer fired by itself on conclav.dev.
+- The timer's own first run on conclav.io came round at 20:20:03 UTC on 2026-11-23: dev1 in 21.0 s
+  and dev2 in 21.7 s, less than half the first run by hand, whose reads were cold.
+- **The pull timer's own first run** (00:35 UTC, 2026-11-24) had not come round when this was
+  written. The same command ran by hand through `pull-key.sh --finish`.
 - **A large store.** The facts read every key; at 12,000 keys that is a fifth of a second. At a
   million it will be minutes and want a look.
 - **The key families other than geology** (§7.3).
 - **Redis across versions.** Both boxes run 8.10.3. An archive loaded by an older Redis, or with
   a module missing, fails at the load and says so; a newer one is expected to read it and is not
   tried.
-- **The pull over a real SSH key** and the two scripts of §5 on the boxes themselves: tested
-  against stubs, not run. The owner runs them.
+- **`pull-access.sh`'s rollbacks on a real sshd.** The owner's run took the path where every
+  proof passed; the stops and the putting-back are tested against stubs only.
+- **The ufw rule.** conclav.io's ufw already admitted the port, so the branch that adds the one
+  narrow rule has run only against a stub.
 - **A build on conclav.io.** §7.7's proof is conclav.dev's; conclav.io has the same Node now and
   has not built with it.

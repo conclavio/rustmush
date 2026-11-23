@@ -82,7 +82,7 @@ if [ "$ROLE" = take ]; then
   fi
   install -o root -g root -m 0644 "$HERE/rustmush-backup.service" "$HERE/rustmush-backup.timer" /etc/systemd/system/
   systemctl daemon-reload
-  echo "install: done. Nothing is enabled. Next, in order:"
+  echo "install: done. This run enabled and started nothing (a timer that was enabled still is). On a new box, in order:"
   echo "  1. set INSTANCES in $CONF"
   echo "  2. one run by hand:    systemctl start rustmush-backup.service; python3 $LIB/rmbak.py status"
   echo "  3. the timer:          systemctl enable --now rustmush-backup.timer"
@@ -90,7 +90,7 @@ else
   install -d -o root -g root -m 0700 /var/backups/rustmush-pulled
   install -o root -g root -m 0644 "$HERE/rustmush-backup-pull.service" "$HERE/rustmush-backup-pull.timer" /etc/systemd/system/
   systemctl daemon-reload
-  echo "install: done. Nothing is enabled. Next, in order:"
+  echo "install: done. This run enabled and started nothing (a timer that was enabled still is). On a new box:"
   echo "  the OWNER, as root: bash $LIB/pull-key.sh     (it makes the key and prints the next two commands;"
   echo "  the last of them sets PULL_SSH, runs one pull and enables rustmush-backup-pull.timer)"
 fi
