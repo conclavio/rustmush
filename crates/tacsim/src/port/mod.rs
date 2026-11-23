@@ -141,6 +141,8 @@ pub mod board;
 pub mod burn;
 pub mod buyout;
 pub mod capacity;
+/// A haul's leg through a house's storefront, and its ask (doc 50 cut OP.3).
+pub mod carried;
 /// Doc 19 cut A.3: `+chart` — the sky from where you stand, the passages now and
 /// the window over the next IC year (doc 19 §5).
 /// Doc 39 cut IN.11: `@industry/census`, the matter census.

@@ -10,6 +10,11 @@
 //! - **A loss.** A hauler's hull wrecked with the goods aboard owes the lost leg: the hold is
 //!   released, so the goods are part of the wreck, and the job fails with the bond to the shipper.
 //!
+//! - **A house's ask.** Occator's vault at Ceres is its storefront, the pool its standing ask
+//!   sells: a haul loaded out of it takes its units off that ask, and one that comes back late
+//!   puts them on it again (`tacsim::port::carried`), so the stock clerk's drift check never
+//!   pages and the mills' restock is never refused.
+//!
 //! **What is a fixture.** The capability by staff's `@org/grant`; the hull's wreck by staff's
 //! `@unit/damage`, every cell of her unit to its least, which the haul's `wrecked` reads.
 
@@ -86,12 +91,17 @@ fn settle(rig: &mut Rig, n: usize) {
 /// Occator's factor, standing at Ceres' exchange, granted `tacsim.jobs.post` on Occator, posts a
 /// haul of [`QTY`] [`GOOD`] `as=` Occator into the tank farm at Isidis. `(factor, haul contract)`.
 fn org_haul(rig: &mut Rig) -> (ObjId, u64) {
+    org_haul_of(rig, QTY, GOOD)
+}
+
+/// [`org_haul`] of `qty` of `good`.
+fn org_haul_of(rig: &mut Rig, qty: u64, good: &str) -> (ObjId, u64) {
     let factor = pilot(rig, "Factor", 81);
     let exchange = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
     teleport(&mut rig.tw, factor, exchange);
     let occator = org_of(rig, "ceres_port", "occator");
     let farm = org_of(rig, "isidis_port", "isidis_tank_farm");
-    let line = format!("+haul/post {QTY} {GOOD} to=isidis fee=500 as=#{occator} into=#{farm} go");
+    let line = format!("+haul/post {qty} {good} to=isidis fee=500 as=#{occator} into=#{farm} go");
     // Without the capability: refused.
     let refused = run(&mut rig.tw, factor, &line);
     assert!(refused.contains(tacsim::services::NOT_POSTER), "{refused}");
@@ -306,6 +316,11 @@ async fn op3_a_hull_wrecked_with_a_hauls_goods_releases_them_and_fails_the_job()
 
 /// The hold's pool of [`GOOD`]: `(quantity, available)`.
 fn pool(rig: &mut Rig, hold: u64) -> (u64, u64) {
+    pool_of(rig, hold, GOOD)
+}
+
+/// A vault's pool of `good`: `(quantity, available)`.
+fn pool_of(rig: &mut Rig, hold: u64, good: &str) -> (u64, u64) {
     let families = rig
         .tw
         .world()
@@ -322,10 +337,212 @@ fn pool(rig: &mut Rig, hold: u64) -> (u64, u64) {
         .pool(
             &mut txn,
             mush_inventory::record::EndpointRef(mush_economy::VaultId(hold)),
-            &mush_core::CanonicalId::new(GOOD).expect("a good"),
+            &mush_core::CanonicalId::new(good).expect("a good"),
         )
         .expect("the pool reads")
         .map_or((0, 0), |p| (p.quantity, p.available))
+}
+
+// ---- a house's ask (`tacsim::port::carried`) ---------------------------------------------------
+
+/// The good the Freeport arm ships, and one of its hauls' size.
+const PROPELLANT: &str = "propellant";
+const ARM_HAUL: u64 = 30;
+/// The clerk's page, and the warning that followed it on the live worlds.
+const DRIFT: &str = "a port storefront's stock and its listing disagree";
+const RESTOCK_REFUSED: &str = "the clerk's restock of a milled ask was refused";
+
+/// A `MakeWriter` that collects formatted log lines (`mill.rs`'s).
+#[derive(Clone, Default)]
+struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Capture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("the capture buffer")).into_owned()
+    }
+}
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("the capture buffer")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Capture;
+    fn make_writer(&'a self) -> Capture {
+        self.clone()
+    }
+}
+
+/// A dispatcher writing warnings and errors into `capture` (`mill.rs`'s registration anchor).
+fn capture_dispatch(capture: Capture) -> tracing::Dispatch {
+    static ANCHOR: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+    ANCHOR.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+    tracing::Dispatch::new(
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(capture)
+            .finish(),
+    )
+}
+
+/// Occator's storefront vault at Ceres.
+fn occator_vault(rig: &Rig) -> u64 {
+    let occator = org_of(rig, "ceres_port", "occator");
+    tacsim::services::org_vault(rig.tw.world(), mush_org::OrgId(occator), "ceres")
+        .expect("Occator's vault at Ceres")
+}
+
+/// What the standing ask on `vault`'s pool of `good` lists.
+fn listed(rig: &Rig, vault: u64, good: &str) -> u64 {
+    let market = rig
+        .tw
+        .world()
+        .module_state::<mush_market::MarketStore>()
+        .expect("the market");
+    let listing = market
+        .lot_listing_of(
+            mush_inventory::record::EndpointRef(mush_economy::VaultId(vault)),
+            &mush_core::CanonicalId::new(good).expect("a good"),
+        )
+        .expect("a standing ask");
+    market.listing(listing).expect("the listing").quantity
+}
+
+/// Port fires until the ask on `vault`'s pool of `good` lists what the pool holds (a mill's batch
+/// is listed a fire or two after it lands), `fires` at most. `(listed, held)` as it ends.
+fn until_square(rig: &mut Rig, vault: u64, good: &str, fires: usize) -> (u64, u64) {
+    for _ in 0..fires {
+        settle(rig, 1);
+        let held = pool_of(rig, vault, good).0;
+        if listed(rig, vault, good) == held {
+            break;
+        }
+    }
+    (listed(rig, vault, good), pool_of(rig, vault, good).0)
+}
+
+/// **A haul loaded out of a house's storefront takes its units off the house's ask** (the live
+/// worlds' page of 2026-11-23: "a port storefront's stock and its listing disagree vault=18
+/// good=propellant"). The Freeport arm's haul is 30 t of propellant from Occator's vault at Ceres,
+/// which is the pool Occator's ask sells. The load leaves the pool 30 t under its listing, and
+/// then under the refinery's floor, so the refinery's batches could never be restocked. The stock
+/// clerk lowers the ask by the load, nothing pages, and the refinery's product is listed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op3_a_haul_out_of_a_storefront_takes_its_units_off_the_houses_ask() {
+    let capture = Capture::default();
+    let dispatch = capture_dispatch(capture.clone());
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+    let mut rig = stocked();
+    set_rate(&mut rig.tw, 24);
+    let vault = occator_vault(&rig);
+    let stocked_t = pool_of(&mut rig, vault, PROPELLANT).0;
+    assert_eq!(
+        listed(&rig, vault, PROPELLANT),
+        stocked_t,
+        "the ask lists the whole seeded pool"
+    );
+
+    let (_, haul_contract) = org_haul_of(&mut rig, ARM_HAUL, PROPELLANT);
+    assert_eq!(haul_job(&rig, haul_contract).source, vault);
+    let (hauler, _) = prospector(&mut rig, "Hauler", 87, "Tallow");
+    let took = run(
+        &mut rig.tw,
+        hauler,
+        &format!("+haul/accept {haul_contract} go"),
+    );
+    assert!(took.contains("You take haul"), "{took}");
+    settle(&mut rig, 3);
+    assert_eq!(haul_job(&rig, haul_contract).stage, HaulStage::Aboard);
+    // Under the listing by the load, less whatever the refinery has milled back since.
+    assert!(
+        pool_of(&mut rig, vault, PROPELLANT).0 < stocked_t,
+        "the load left the storefront"
+    );
+
+    // The clerk squares the ask with the load; the refinery, its product now under its floor,
+    // mills a batch, and the batch is listed.
+    let (asked, held) = until_square(&mut rig, vault, PROPELLANT, 16);
+    assert_eq!(asked, held, "the ask lists what the storefront holds");
+    assert!(
+        haul_job(&rig, haul_contract).ask_out,
+        "the haul's record says its load is off the ask"
+    );
+    settle(&mut rig, 6);
+    let (asked, held) = until_square(&mut rig, vault, PROPELLANT, 16);
+    assert_eq!(asked, held, "and goes on listing it");
+    let report = run(&mut rig.tw, GOD, "@tacsim/port status");
+    assert!(
+        !report.contains("but the storefront holds"),
+        "no Listings line is flagged:\n{report}"
+    );
+    let logged = capture.text();
+    assert!(!logged.contains(DRIFT), "the drift check paged:\n{logged}");
+    assert!(
+        !logged.contains(RESTOCK_REFUSED),
+        "a restock was refused:\n{logged}"
+    );
+}
+
+/// **A haul that comes back late puts its units on the house's ask again.** The hull never
+/// leaves Ceres; the term ends with the goods aboard, and the return leg lands them in Occator's
+/// vault there, the storefront they were loaded from. The clerk raises the ask by the return, and
+/// nothing pages.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn op3_a_haul_returned_to_a_storefront_goes_back_on_the_houses_ask() {
+    let capture = Capture::default();
+    let dispatch = capture_dispatch(capture.clone());
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+    let mut rig = stocked();
+    set_rate(&mut rig.tw, 24);
+    let vault = occator_vault(&rig);
+    let (_, haul_contract) = org_haul_of(&mut rig, ARM_HAUL, PROPELLANT);
+    let (hauler, _) = prospector(&mut rig, "Laggard", 88, "Stint");
+    let took = run(
+        &mut rig.tw,
+        hauler,
+        &format!("+haul/accept {haul_contract} go"),
+    );
+    assert!(took.contains("You take haul"), "{took}");
+    settle(&mut rig, 3);
+    let aboard = haul_job(&rig, haul_contract);
+    assert_eq!(aboard.stage, HaulStage::Aboard);
+    let (asked, held) = until_square(&mut rig, vault, PROPELLANT, 16);
+    assert_eq!(asked, held, "the load is off the ask");
+
+    // The term ends with the goods aboard; the return lands them back in the storefront.
+    let due = aboard.due_ic.expect("a term");
+    let (_, queued) = advance_to(&mut rig, due + 60);
+    land_quietly(&mut rig, &queued);
+    settle(&mut rig, 6);
+    let back = haul_job(&rig, haul_contract);
+    assert_eq!(back.stage, HaulStage::Closed, "{back:?}");
+    assert_eq!(
+        back.returned_to,
+        Some(vault),
+        "the goods went back to Occator's vault at Ceres"
+    );
+    let (asked, held) = until_square(&mut rig, vault, PROPELLANT, 16);
+    assert_eq!(asked, held, "the ask lists what the storefront holds again");
+    assert!(
+        haul_job(&rig, haul_contract).ask_in,
+        "the haul's record says its return is on the ask"
+    );
+    let logged = capture.text();
+    assert!(!logged.contains(DRIFT), "the drift check paged:\n{logged}");
+    assert!(
+        !logged.contains(RESTOCK_REFUSED),
+        "a restock was refused:\n{logged}"
+    );
 }
 
 /// **Doc 50 cut OP.3: the departure grace holds at a high clock rate** (Q-50-63; doc 50a A-8b).

@@ -2,7 +2,7 @@
 //! "Finite seeded stock", "The driver"; D-18-26, D-18-32, Q-18-31; lead rulings L4,
 //! L5, L7, L19, L20).
 //!
-//! Five things live here, all driven by the `tacsim.port` tick
+//! Six things live here, all driven by the `tacsim.port` tick
 //! ([`crate::port_tick`]), which runs as GOD and submits nothing itself: every
 //! authoritative act below is made inside `Fire::as_principal`, as the principal it
 //! is for, at most one per principal per fire (D-18-32).
@@ -42,6 +42,10 @@
 //!   ore and credits product at the storefront under the mill's ledger
 //!   (`tacsim_port_mill`). The drift check and the list step read the milled units not yet
 //!   listed, so the gap between a batch and its restock never pages.
+//! - **A haul through a storefront** (`crate::port::carried`): an organization's haul loads out
+//!   of its house's storefront pool and may land in one, moving the pool and never the listing.
+//!   Before the drift check the clerk lowers or raises the ask by the landed leg, one act a
+//!   fire, and marks the haul's record in the same outbox.
 //! - **The lapsed-hold release arm** (`release_verify`, `release_agent`,
 //!   `release_step`): a player's hold-backed lot listing that lapsed is released
 //!   by the tick acting **as the vault's owner** through
@@ -840,10 +844,11 @@ fn seed_step(
 /// (every row seeded) list an ask whose pool has stock, no live listing and no Draw in
 /// flight, then (doc 20 cut SM.5) the intake drip for a refreshed bid, then (doc 20 cut
 /// SM.12a) the mill: a restock, then a batch, then (doc 18 cut IC10, lead 2h-ii) re-post a
-/// lapsed standing bid. The drift check takes no step; it and the list step net out the
-/// units the mills made and the ask does not yet carry (`crate::port::mill::unlisted`), and
-/// a mill fault skips only the asks of the good it is about (D8: nothing the mill reads
-/// returns early). An ask whose listing the market refused is passed over for the rest of
+/// lapsed standing bid. Ahead of the drift check, an ask is squared with a haul's leg through
+/// its storefront (`crate::port::carried`). The drift check takes no step; it and the list
+/// step net out the units the mills made and the ask does not yet carry
+/// (`crate::port::mill::unlisted`), and a mill fault skips only the asks of the good it is
+/// about (D8: nothing the mill reads returns early). An ask whose listing the market refused is passed over for the rest of
 /// that IC day (`PortTickState::list_refused`; doc 20 cut SM.12a, D8, lead ruling L24's
 /// rule): a milled pool a suspended or retired house cannot list never spends the clerk's
 /// every act. Nothing is notified: the clerk is a Thing.
@@ -912,6 +917,11 @@ pub(crate) fn stock_step(
     if let Some(step) = crate::port::supply::supply_step(ctx, state, fire, clerk, &map, &def) {
         return step;
     }
+    // A haul's leg through a storefront (doc 50 cut OP.3's vault-to-vault hauls): its ask comes
+    // down by a load and up by a delivery or a return, ahead of the drift check that reads it.
+    if let Some(step) = crate::port::carried::carried_step(ctx, state, fire, clerk, &map, &def) {
+        return step;
+    }
     // 4–5. Every row is seeded: the drift check, then the list step.
     let mut due: Option<(mush_market::VendorId, u64, CanonicalId, u64, u64)> = None;
     // Doc 20 cut SM.12a (F1): the due ask's vendor org and its mills' target counters.
@@ -963,6 +973,11 @@ pub(crate) fn stock_step(
                 .unwrap_or_default();
             // Doc 39 cut IN.5: a works' house purchase lowered the ask by the lot it is moving.
             let net = net.saturating_sub(crate::port::supply::moving(ctx, row.vault, &ask.good));
+            // A haul's landed leg the clerk has not squared the ask with yet (it waits out a Draw
+            // in flight): the pool reads as its ask knows it meanwhile.
+            let (hauled_out, hauled_back) =
+                crate::port::carried::pending(ctx, row.vault, &ask.good);
+            let net = crate::port::carried::as_listed(net, hauled_out, hauled_back);
             // Doc 48 unit PL.1: and an own-stock mill by the batch it has drawn and not milled.
             let net = net.saturating_sub(crate::port::mill::drawn(
                 vendor,

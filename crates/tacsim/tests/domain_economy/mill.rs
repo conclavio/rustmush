@@ -2704,7 +2704,11 @@ fn occurrences(files: &[(String, String)], needle: &str) -> Vec<(String, usize)>
 /// other place, the mill's step. **Doc 50 unit LW.5** (Q-50-44) adds a second: the enforcing
 /// authority's offer of seized goods (`port/seized.rs`) raises its standing ask by the units the
 /// customs ruling's own bundle moved into its vault, the rule the mill keeps (matter put in the
-/// pool by its owner before the raise, never minted by the market).
+/// pool by its owner before the raise, never minted by the market). **The storefront's ask
+/// (2026-11-23; doc 50 cut notes, OP.3)** adds a third: the stock clerk raises a house's ask by
+/// the units a haul's delivery or late return landed in its storefront (`port/carried.rs`), by
+/// the same rule: the haul's own leg put the matter in the pool, under the job's ledger, before
+/// the raise, and the raise is never more than the pool holds over the listing.
 #[test]
 fn sm12a_only_the_mill_restocks() {
     let mut files = production_files("tacsim/src");
@@ -2718,10 +2722,11 @@ fn sm12a_only_the_mill_restocks() {
         occurrences(&files, "restock_ask("),
         vec![
             ("mush-market/src/api.rs".to_owned(), 1),
+            ("tacsim/src/port/carried.rs".to_owned(), 1),
             ("tacsim/src/port/mill.rs".to_owned(), 1),
             ("tacsim/src/port/seized.rs".to_owned(), 1),
         ],
-        "one definition, the mill's call and the seized goods' offer"
+        "one definition, the mill's call, the seized goods' offer and a haul's landing"
     );
 }
 
