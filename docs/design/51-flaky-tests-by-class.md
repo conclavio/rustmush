@@ -1,13 +1,22 @@
 # 51. Flaky tests, removed by class — the audit of waits, the shared helpers, the ratchet and the detection loop
 
-Draft 0.1, 2026-11-22, docs and one read-only script. Written against `origin/main` at `6f35070f8`.
+Draft 0.2, 2026-11-22, docs and one read-only script. Written against `origin/main` at `6f35070f8`.
 It extends [doc 43](43-testing-strategy.md), the testing strategy, and its clock-seam note
-[43c](43c-the-clock-seam.md). It changes no test and no product code. The units in §5 are a sketch;
-they are cut only on the owner's word.
+[43c](43c-the-clock-seam.md). It changes no test and no product code. Draft 0.1, the same day, was
+the audit and the design with every question open; it merged as #771.
 
-**The questions for the owner** (each in full in §6, with its alternative and reason):
+**Draft 0.2 records the owner's ruling of 2026-11-22.** Asked "Take doc 51's proposed defaults for
+all eleven questions and cut FL.1 and FL.2?", the owner answered: "Take defaults, cut both".
+- **All eleven questions are ruled**, each accepted as written and marked **Ruled** in §6. Where
+  §3 and §4 say "proposed" beside a question's number, read it as ruled.
+- **FL.1 and FL.2 are cut** (§5). **FL.3 to FL.10 are not**; each waits for a further word from
+  the owner.
+- Nothing else in the document changed from Draft 0.1.
 
-| | Question | Proposed default |
+**The questions, each ruled at its default** (each in full in §6, with the alternative it was
+weighed against and the reason):
+
+| | Question | Ruled 2026-11-22, as proposed |
 |---|---|---|
 | Q-51-1 | Where the shared story helpers live | a new dev-only crate, `mush-storykit` |
 | Q-51-2 | A pinned dice seed for a sim-center match | yes: `ArenaConfig::seed`, the twin of `FieldConfig::seed`, which no config file can set |
@@ -623,10 +632,14 @@ retry, a new flake still reaches main first and is found afterward.
 The soak is what makes the narrow policy bearable: most flakes meet the list before they meet a
 pull request.
 
-## 5. Units of work (a sketch; cut only after the rulings)
+## 5. Units of work (FL.1 and FL.2 cut; FL.3 to FL.10 wait for a further word)
+
+**Where the units stand at Draft 0.2.** The owner cut FL.1 and FL.2 on 2026-11-22 ("Take defaults,
+cut both"). FL.3 to FL.10 stay a sketch: none is cut, and each waits for a further word from the
+owner.
 
 One pull request each. S is under a day's session, M one to two, L more. "Runs" is §2.4's count
-for the suite. FL.0 is this document and its script.
+for the suite. FL.0 is this document and its script, merged as #771.
 
 | Unit | What | Crates | Size | Runs |
 |---|---|---|---|---:|
@@ -641,11 +654,11 @@ for the suite. FL.0 is this document and its script.
 | **FL.9 the small crates** | mush-net-web's and mush-net-ssh's bare sleeps onto barriers and absence-between-marks; mush-sshdoorway's rig onto the kit; the literal-span counter baselined | mush-net-web, mush-net-ssh, mush-sshdoorway, mush-contract-tests | M | |
 | **FL.10 close-out** | budgets re-blessed down and the totals recorded; `docs/flaky-tests.md` rows closed against the soak's record; doc 43 §2.3 gains rules F, D, C, S, P and T as #16 to #21; what the soak found that no rule covers | docs, mush-contract-tests | S | |
 
-**Order.** FL.1 and FL.2 first and together; they share no file. FL.1 stops the counts rising
-while the rest lands, and FL.2 is how each later unit proves itself (its note gives the soak's
-rate for its suite before and after). Then FL.3 and FL.4 together, the two suites with 21 runs
-each; they share only the kit, where each adds its own module. Then FL.5, FL.6 and FL.7 in any
-order, FL.8, FL.9 and FL.10.
+**Order.** FL.1 and FL.2 first and together (both cut); they share no file. FL.1 stops the
+counts rising while the rest lands, and FL.2 is how each later unit proves itself (its note
+gives the soak's rate for its suite before and after). Then FL.3 and FL.4 together, the two
+suites with 21 runs each; they share only the kit, where each adds its own module. Then FL.5,
+FL.6 and FL.7 in any order, FL.8, FL.9 and FL.10.
 
 **What each unit's note must show.** The suite's soak rate before and after, at 24 passes or
 more; `wait_budget`'s counts for its files before and after; and, by doc 43 rule 2.3 #14, the
@@ -660,7 +673,11 @@ standing red jobs, which have their own owners.
 Every question has a proposed default, an alternative and a reason. **(expensive to reverse)**
 marks an answer that would take a significant refactor to undo.
 
-**Q-51-1 — Where the shared helpers live.**
+**Where each stands at Draft 0.2.** The owner ruled once, on 2026-11-22: "Take defaults, cut
+both". All eleven questions are ruled, each at its proposed default. Each heading says so; the
+alternative and the reason are kept as the record of what was weighed.
+
+**Q-51-1 — Where the shared helpers live.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** a new dev-only crate, `mush-storykit`, as §3.8.
 - **Alternative:** each crate keeps its own `tests/support`, and a contract test holds the
   copies to the same text.
@@ -668,7 +685,7 @@ marks an answer that would take a significant refactor to undo.
   text-equality gate keeps four and adds a chore. The cost is one more workspace member that the
   four story crates' tests link.
 
-**Q-51-2 — A pinned dice seed for a sim-center match.**
+**Q-51-2 — A pinned dice seed for a sim-center match.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** `ArenaConfig::seed: Option<u64>`, read where `seed_for` is called in
   `match_::start`, set by no config file key, exactly as `FieldConfig::seed`.
 - **Alternative:** no product change; stories use only fixtures where the result is certain
@@ -676,7 +693,7 @@ marks an answer that would take a significant refactor to undo.
 - **Reason:** fields have had the knob since FR.5 and it is why field stories are exact. The
   alternative works for standing units and leaves every story with a moving unit to its odds.
 
-**Q-51-3 — The odds bar.**
+**Q-51-3 — The odds bar.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** a story that samples chance states its odds with `Odds`. On the
   pull-request tier, bad luck alone may fail it at most once in 1,000,000 runs. A story that
   cannot meet that runs on the dispatch tier and reports an interval.
@@ -685,7 +702,7 @@ marks an answer that would take a significant refactor to undo.
   by luck about once in four days, which is the complaint this document answers. At 1 in
   1,000,000 it is once in about a year.
 
-**Q-51-4 — An end-of-reply marker in player text.**
+**Q-51-4 — An end-of-reply marker in player text.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** none in this program. Test rigs use the sentinel line. If the soak
   shows the bot's own out-of-arena reads flaking, a later unit adds `OUTPUTPREFIX` and
   `OUTPUTSUFFIX` as player commands, the MU\* convention.
@@ -693,7 +710,7 @@ marks an answer that would take a significant refactor to undo.
 - **Reason:** the 18 rows hold no failure of the bot's own reader. A new player command is a
   surface players' clients will come to rely on, so it should answer a seen need.
 
-**Q-51-5 — The retry policy.**
+**Q-51-5 — The retry policy.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** §4.3's five points: no blanket retry; one retry for tests on
   `flaky-known.toml`; rows expire after 14 days; the soak never retries; the 18 unmatched
   entries are carried over and must earn their renewal.
@@ -702,13 +719,13 @@ marks an answer that would take a significant refactor to undo.
 - **Reason:** §4.3's table. The alternative blocks the pull request just as often (the check
   goes red on a new flake), and it invites adding a row to make the check pass.
 
-**Q-51-6 — What the ratchet counts.**
+**Q-51-6 — What the ratchet counts.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** story files only, three counters, paused tests exempt, as §3.9.
 - **Alternative:** count rig files too.
 - **Reason:** a rig is where a wait primitive belongs. Counting rigs would put a raise line on
   every helper the units add.
 
-**Q-51-7 — The soak's schedule and size.**
+**Q-51-7 — The soak's schedule and size.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** nightly at 01:17 UTC, clear of the 04:17 nightly; six cells of four
   cores; about three hours.
 - **Alternative:** weekly, or on dispatch only.
@@ -716,7 +733,7 @@ marks an answer that would take a significant refactor to undo.
   the time, after up to a week of pull requests have met it. The box has no other standing
   load at that hour.
 
-**Q-51-8 — Where the observed-flake table lives.**
+**Q-51-8 — Where the observed-flake table lives.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** `docs/flaky-observed.md`, generated, refreshed by whoever opens the
   pull request that adds or closes a row. The soak and the nightly report print it and go red
   on a new name; they commit nothing.
@@ -724,14 +741,14 @@ marks an answer that would take a significant refactor to undo.
 - **Reason:** nothing lands on main today without the owner merging it, and an issue is one
   more place to look.
 
-**Q-51-9 — The instant a stock rig boots at.**
+**Q-51-9 — The instant a stock rig boots at.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** `STORY_EPOCH`, fixed and on no IC boundary. Schedule-bound stories run
   at three named phases. The soak draws a random phase and prints it.
 - **Alternative:** a random phase on every run, pull requests included.
 - **Reason:** a random phase on pull requests finds more and is a flake by design. The soak is
   the place for it: a failure there costs nobody a merge and names the phase to pin.
 
-**Q-51-10 — tacsim's 416 real-clock arena tests.**
+**Q-51-10 — tacsim's 416 real-clock arena tests.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** leave them. The ratchet holds their 82 `clock` sites where they are, and a unit
   is cut for one only when the soak names it.
 - **Alternative:** an FL.11 that moves `cockpit.rs` and `match_lifecycle.rs` to the paused
@@ -739,7 +756,7 @@ marks an answer that would take a significant refactor to undo.
 - **Reason:** none has failed in the window, and TS.10a's measure was run time, which doc 43
   owns. The alternative is about 270 tests in two files of 17,000 lines and more.
 
-**Q-51-11 — A fire count on the staff schedule readout.**
+**Q-51-11 — A fire count on the staff schedule readout.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** not now. `after_tick` reads `@ps` as it prints today (a tick's next
   fire), and FL.8 reports whether whole seconds are fine enough.
 - **Alternative:** add a per-tick fire count to `@ps` in FL.8.
