@@ -2387,6 +2387,26 @@ fn p2_mod_13_contract_builders_close_account_and_asset_existence_oracles() {
             victim_asset.0, victim.0, attacker.0
         ),
     );
+    // Preserving an already-named org forfeit destination (e.g. a system/staff-built contract
+    // amended by its player issuer) succeeds without reopening probing of other hidden accounts.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@contract/deadline {cid}=60 forfeit={corp_acct}"),
+    );
+    ok(
+        &mut tw,
+        attacker,
+        &format!("@contract/deadline {cid}=120 forfeit={corp_acct}"),
+    );
+    assert_eq!(
+        err(
+            &mut tw,
+            attacker,
+            &format!("@contract/deadline {cid}=120 forfeit={bystander_acct}")
+        ),
+        "No such account."
+    );
 }
 
 /// **P2-MOD-42**:

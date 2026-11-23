@@ -312,6 +312,7 @@ struct Compose {
     registry_recall: Option<Box<mush_roll::commerce::registry_recall::RegistryRecallPolicy>>,
     registry_revocation:
         Option<Box<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>>,
+    seal_mark_authority: Option<(mush_org::OrgId, mush_org::OrgScopeId)>,
     minds_facts: bool,
     paid_resales: bool,
     derived_updates: bool,
@@ -336,6 +337,7 @@ impl Compose {
         owner_attestations: false,
         registry_recall: None,
         registry_revocation: None,
+        seal_mark_authority: None,
         minds_facts: false,
         paid_resales: false,
         derived_updates: false,
@@ -463,6 +465,7 @@ impl Compose {
             owner_attestations: _,
             registry_recall,
             registry_revocation,
+            seal_mark_authority,
             minds_facts,
             paid_resales: _,
             derived_updates,
@@ -480,6 +483,7 @@ impl Compose {
             || *qualification_short_parent
             || registry_recall.is_some()
             || registry_revocation.is_some()
+            || seal_mark_authority.is_some()
             || *minds_facts
             || *derived_updates
     }
@@ -620,6 +624,7 @@ impl PlayerWorld {
                 owner_attestations: c.owner_attestations,
                 registry_recall: c.registry_recall.as_deref().cloned(),
                 registry_revocation: c.registry_revocation.as_deref().cloned(),
+                seal_mark_authority: c.seal_mark_authority,
                 qualification_short_parent: c.qualification_short_parent,
                 shared: shared.clone(),
                 purchase: purchase.clone(),

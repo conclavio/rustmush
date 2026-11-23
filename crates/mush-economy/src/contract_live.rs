@@ -1073,17 +1073,48 @@ fn build_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Whether account `a` is already named on `c`'s own consent terms (excluding the
+/// unset `AccountId(0)` placeholder). Used by [`known_contract_account`] after
+/// verifying `a` is `Active` and non-`System`, so an issuer editing an already-populated
+/// draft (e.g. preserving an organization treasury forfeit destination on an amended
+/// claim-fee contract) neither gets locked out nor gains an existence oracle.
+fn account_already_on_contract(c: &EconomicContract, a: AccountId) -> bool {
+    if a.0 == 0 {
+        return false;
+    }
+    let terms = &c.consent.terms;
+    terms.remainder_to == a
+        || matches!(terms.on_expiry, Expiry::Forfeit { to } if to == a)
+        || terms.consideration.iter().any(|con| con.account == a)
+        || terms.split.iter().any(|s| s.to == a)
+        || terms
+            .outcomes
+            .iter()
+            .any(|o| o.payouts.iter().any(|p| p.to == a))
+        || terms.deliverables.iter().any(|d| {
+            matches!(
+                d,
+                Deliverable::Obligation { template }
+                    if template.debit_account == a || template.credit_account == a
+            )
+        })
+}
+
 /// Whether `ctx.actor` has standing to name account `a` in a contract builder
 /// (`@contract/deliver obligation`, `/split`, `/remainder`, `/deadline forfeit=`,
 /// `/outcome pay=`) without creating an existence oracle (E4c D1 + P2-MOD-13).
 ///
 /// Admits:
 /// - any account the actor satisfies [`may_view_account`] on (staff, owner, or
-///   `economy.account.view` on its live scope); OR
+///   `economy.account.view` on its live scope);
+/// - an `Active` non-`System` account already referenced on `c`'s own terms (so
+///   amending a system- or org-populated draft to preserve existing payout/forfeit
+///   accounts works while closed accounts still fail uniformly); OR
 /// - an `Active` personal (`Object`) account owned by a party already named on `c`.
 ///
-/// Hidden organization compartments, `System` faucets/sinks, inactive/closed accounts,
-/// and non-party stranger accounts are all refused uniformly with `"No such account."`.
+/// Hidden organization compartments not already on `c`, `System` faucets/sinks,
+/// inactive/closed accounts, and non-party stranger accounts are all refused
+/// uniformly with `"No such account."`.
 fn known_contract_account(ctx: &Ctx<'_>, c: &EconomicContract, a: AccountId) -> bool {
     if may_view_account(ctx.w, ctx.actor, a) {
         return true;
@@ -1094,7 +1125,13 @@ fn known_contract_account(ctx: &Ctx<'_>, c: &EconomicContract, a: AccountId) -> 
     let Some(acct) = store.snapshot().account(a) else {
         return false;
     };
-    if acct.status != AccountStatus::Active || !matches!(acct.owner, PrincipalId::Object(_)) {
+    if acct.status != AccountStatus::Active || matches!(acct.owner, PrincipalId::System(_)) {
+        return false;
+    }
+    if account_already_on_contract(c, a) {
+        return true;
+    }
+    if !matches!(acct.owner, PrincipalId::Object(_)) {
         return false;
     }
     c.consent

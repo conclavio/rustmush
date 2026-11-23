@@ -30,14 +30,18 @@ impl SubmissionRuntime for Runtime {
         SubmissionRuntimeState::new(Arc::new(Proof(proof.clone())), Box::new(proof))
     }
 }
-fn branch(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
-    let mut w = Rig::personal(f, Compose::MINDS_FACTS).boot(saved)?;
+#[inline(never)]
+fn branch_with(f: &PurchaseFixture, saved: &Durable, compose: &Compose) -> TestResult<PlayerWorld> {
+    let mut w = Rig::personal(f, compose.clone()).boot(saved)?;
     w.engine.set_submission_runtime(Arc::new(Runtime))?;
     w.engine.set_offer_keys(mush_core::OfferKeyRing::new(
         mush_core::OfferSecret::new(1, [0x82; 32])?,
         [],
     )?);
     Ok(w)
+}
+fn branch(f: &PurchaseFixture, saved: &Durable) -> TestResult<PlayerWorld> {
+    branch_with(f, saved, &Compose::MINDS_FACTS)
 }
 fn fire(w: &mut PlayerWorld) -> TestResult {
     let at = w.engine.world.now().checked_mul(1000).ok_or("tick clock")?;
@@ -809,7 +813,6 @@ fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
     fire(&mut w)?;
     drain_until(&mut w, licence, 1, START + 600)?;
     let params = json!({"owner_licence": licence.get()});
-    let provider = w.minds_facts.clone().ok_or("actual configured facts")?;
     check!(
         rows(&disk(&w), "roll", MARKS).is_empty(),
         "no production writer: the ring starts empty"
@@ -826,8 +829,11 @@ fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         ))?,
         "the writer is the Registry's"
     );
-    // F7: the writer is gated on the Registry's capability word, not on
-    // staff: a character granted it on an organisation's root scope writes.
+    // F7 + P2-MOD-80: the writer is gated on the Registry's capability word on an
+    // explicitly bound Registry `(organization, scope)` authority, not on staff or
+    // on an unbound org grant. First confirm unbound `Compose::MINDS_FACTS` fails
+    // closed even when `BUYER` holds `SEAL_MARK_CAPABILITY` on `Registry`, then
+    // reboot with `with_seal_mark_authority(reg_org, reg_root)` so `BUYER` writes.
     w.say(GOD, "@org/create Registry")?;
     w.say(
         GOD,
@@ -837,6 +843,37 @@ fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
             mush_roll::commerce::seal_marks::SEAL_MARK_CAPABILITY
         ),
     )?;
+    check!(
+        crate::test_checks::refused(prepare(
+            &mut w,
+            "roll",
+            SEAL_MARK,
+            1,
+            BUYER,
+            START + 608,
+            json!({"licence": licence, "hull": 1, "at_ic": issued, "governed": false, "sortie": "1@0"})
+        ))?,
+        "P2-MOD-80: unbound composition refuses non-GOD org grantees"
+    );
+    let (reg_org, reg_root) = {
+        let state = w
+            .engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .ok_or("actual Org")?
+            .state();
+        let org = state
+            .orgs()
+            .find(|r| r.name.as_str() == "Registry")
+            .ok_or("actual Registry org")?;
+        (org.id, org.root_scope)
+    };
+    let bound = Compose {
+        seal_mark_authority: Some((reg_org, reg_root)),
+        ..Compose::MINDS_FACTS
+    };
+    let mut w = branch_with(f, &capture(&w, &disk(&w)), &bound)?;
+    let provider = w.minds_facts.clone().ok_or("actual configured facts")?;
     // A mark before the term's window is ignored.
     let zero = mark_by(
         &mut w,
@@ -985,7 +1022,7 @@ fn unattestable(f: &PurchaseFixture, saved: &Durable) -> TestResult {
         "the oldest six governed dropped"
     );
     check_eq!(marks.last().and_then(|m| m.get("hull")), Some(&json!(last)));
-    let cold = branch(f, &capture(&w, &disk(&w)))?;
+    let cold = branch_with(f, &capture(&w, &disk(&w)), &bound)?;
     check_eq!(
         rows(&disk(&cold), "roll", MARKS),
         rows(&disk(&w), "roll", MARKS),
