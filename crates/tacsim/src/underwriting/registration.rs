@@ -126,7 +126,7 @@ impl CoverageConfiguration {
             .ic_host()
             .ok_or_else(|| bad("coverage requires actual IC composition"))?;
         Ok(Registration {
-            config: self.clone(),
+            config: std::sync::Arc::new(self.clone()),
             // Doc 17h cut M8d D5: the inspection's record cell, for the exclusion.
             host: CoverageHost::new(
                 self.protocol.clone(),
@@ -144,7 +144,7 @@ impl CoverageConfiguration {
 }
 #[derive(Clone)]
 pub(crate) struct Registration {
-    config: CoverageConfiguration,
+    config: std::sync::Arc<CoverageConfiguration>,
     pub(crate) host: CoverageHost,
     readiness: Readiness,
 }
@@ -290,7 +290,40 @@ impl Registration {
             },
         )?;
         reg.definition(descriptor)?;
+        reg.subscribe(
+            mush_core::WorldEventKind::ActionStateChanged,
+            std::sync::Arc::new(CoverageObserver {
+                host: self.host.clone(),
+            }),
+        );
+        if self.host.inner.inspection.is_some() {
+            let tick_host = self.host.clone();
+            reg.tick(
+                "coverage.unwarranted",
+                mush_core::TickCadence::Coarse(std::time::Duration::from_secs(1)),
+                std::sync::Arc::new(
+                    move |ctx: &mut mush_core::Ctx<'_>, _: &str, _: Option<mush_core::SceneId>| {
+                        if let Some(snapshot) = tick_host.take_dirty_unwarranted() {
+                            match serde_json::to_value(&snapshot) {
+                                Ok(value) => {
+                                    crate::store::push_op(
+                                        ctx.out,
+                                        mush_core::ModuleWrite::JsonSet {
+                                            key: super::host::UNWARRANTED_KEY.into(),
+                                            value,
+                                        },
+                                    );
+                                    ctx.out.pin_deferred();
+                                }
+                                Err(_) => tick_host.mark_unwarranted_dirty(),
+                            }
+                        }
+                    },
+                ),
+            )?;
+        }
         self.host
+            .inner
             .installed
             .set(Installed {
                 families,
@@ -306,6 +339,37 @@ impl Registration {
     }
     pub(crate) fn writer(&self) -> &CoverageWriter {
         &self.config.writer
+    }
+}
+
+struct CoverageObserver {
+    host: CoverageHost,
+}
+impl mush_core::WorldObserver for CoverageObserver {
+    fn on_event(&self, ctx: &mut mush_core::Ctx<'_>, ev: &mush_core::WorldEvent) {
+        let mush_core::WorldEvent::ActionStateChanged {
+            owner,
+            family,
+            keys,
+        } = ev
+        else {
+            return;
+        };
+        if owner.as_str() == crate::NS {
+            self.host.observe_coverage_keys(ctx, family.as_str(), keys);
+            return;
+        }
+        if let Some(handle) = self
+            .host
+            .inner
+            .inspection
+            .as_ref()
+            .and_then(|w| w.family().ok())
+            && owner == handle.owner()
+            && family == handle.descriptor().id()
+        {
+            self.host.observe_inspection_keys(ctx, keys);
+        }
     }
 }
 

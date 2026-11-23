@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const SURVEY_FAMILY: &str = "tacsim.quest_survey_evidence";
 const TRADE_PREFIX: &str = "tacsim:quest_trade:";
 const MAX_WATCHES: usize = 128;
+const MAX_TRADE_BOOKS: usize = 8_192;
 const MAX_PURCHASE_HOLDS: usize = 8;
 const MAX_TRADE_BYTES: usize = 256 * 1024;
 
@@ -459,9 +460,9 @@ impl TradeWatch {
             && receipt.quantity >= *quantity
             && receipt.accepted_at >= self.accepted.at_utc
     }
-    fn remember_purchase(&mut self, receipt: TradeReceipt) {
+    fn remember_purchase(&mut self, receipt: TradeReceipt) -> bool {
         if self.sale.is_some() || !self.matches_purchase(&receipt) {
-            return;
+            return false;
         }
         let order = |r: &TradeReceipt| (r.accepted_at, r.settled_at, r.quote);
         if let Some(old) = self
@@ -471,6 +472,8 @@ impl TradeWatch {
         {
             if order(old) < order(&receipt) {
                 *old = receipt;
+            } else {
+                return false;
             }
         } else {
             if self.candidates.len() == MAX_PURCHASE_HOLDS
@@ -485,17 +488,18 @@ impl TradeWatch {
                     .get(oldest)
                     .is_some_and(|old| order(&receipt) <= order(old))
                 {
-                    return;
+                    return false;
                 }
                 self.candidates.remove(oldest);
             }
             self.candidates.push(receipt);
         }
         self.candidates.sort_by_key(|r| r.hold);
+        true
     }
-    fn select_pair(&mut self, sale: &TradeReceipt, paid: impl Fn(&TradeReceipt) -> bool) {
+    fn select_pair(&mut self, sale: &TradeReceipt, paid: impl Fn(&TradeReceipt) -> bool) -> bool {
         if self.sale.is_some() || sale.purchase {
-            return;
+            return false;
         }
         let Some(purchase) = self
             .candidates
@@ -512,18 +516,21 @@ impl TradeWatch {
             })
             .cloned()
         else {
-            return;
+            return false;
         };
         self.purchase = Some(purchase);
         self.sale = Some(sale.clone());
         self.candidates.clear();
+        true
     }
-    fn migrate_unmatched(&mut self) {
+    fn migrate_unmatched(&mut self) -> bool {
         if self.sale.is_none()
             && let Some(purchase) = self.purchase.take()
         {
             self.remember_purchase(purchase);
+            return true;
         }
+        false
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +599,10 @@ impl TradeBook {
 pub(crate) struct TradeEvidenceStore {
     books: BTreeMap<ObjId, TradeBook>,
     unreadable: BTreeSet<ObjId>,
+    /// High-water settled `QuoteId` already inspected by `reconcile` (`P2-TSW-42`).
+    last_reconciled_quote: u64,
+    /// Actors whose `TradeBook` recently gained a committed watch and need one backfill scan.
+    needs_backfill: BTreeSet<ObjId>,
 }
 
 pub(crate) fn boot(ctx: &mut ModuleCtx<'_>, data: &ModuleBootData) -> Result<(), ModError> {
@@ -609,7 +620,12 @@ pub(crate) fn boot(ctx: &mut ModuleCtx<'_>, data: &ModuleBootData) -> Result<(),
             .ok()
             .filter(|book| book.actor == actor && book.check().is_ok());
         if let Some(book) = book {
-            loaded.books.insert(actor, book);
+            if !book.watches.is_empty() {
+                if book.watches.iter().any(|w| w.sale.is_none()) {
+                    loaded.needs_backfill.insert(actor);
+                }
+                loaded.books.insert(actor, book);
+            }
         } else {
             loaded.unreadable.insert(actor);
             tracing::warn!(
@@ -623,16 +639,52 @@ pub(crate) fn boot(ctx: &mut ModuleCtx<'_>, data: &ModuleBootData) -> Result<(),
         .ok_or_else(|| ModError::msg("quest trade evidence store missing"))? = loaded;
     Ok(())
 }
+fn emit_book_write(out: &mut mush_core::Outbox, book: &TradeBook) -> Result<(), String> {
+    book.check()?;
+    let value = serde_json::to_value(book).map_err(|e| e.to_string())?;
+    crate::store::push_op(
+        out,
+        ModuleWrite::JsonSet {
+            key: SmolStr::new(format!("{TRADE_PREFIX}{}", book.actor.0)),
+            value,
+        },
+    );
+    Ok(())
+}
+fn emit_book_delete(out: &mut mush_core::Outbox, actor: ObjId) {
+    crate::store::push_op(
+        out,
+        ModuleWrite::Del {
+            key: SmolStr::new(format!("{TRADE_PREFIX}{}", actor.0)),
+        },
+    );
+}
 fn put_book(ctx: &mut Ctx<'_>, book: TradeBook) -> Result<(), String> {
+    let actor = book.actor;
+    if book.watches.is_empty() {
+        let store = ctx
+            .w
+            .module_state_mut::<TradeEvidenceStore>()
+            .ok_or("quest evidence unavailable")?;
+        if store.unreadable.contains(&actor) {
+            return Err("quest evidence needs staff repair".into());
+        }
+        store.books.remove(&actor);
+        store.needs_backfill.remove(&actor);
+        emit_book_delete(ctx.out, actor);
+        return Ok(());
+    }
     book.check()?;
     let value = serde_json::to_value(&book).map_err(|e| e.to_string())?;
-    let actor = book.actor;
     let store = ctx
         .w
         .module_state_mut::<TradeEvidenceStore>()
         .ok_or("quest evidence unavailable")?;
     if store.unreadable.contains(&actor) {
         return Err("quest evidence needs staff repair".into());
+    }
+    if !store.books.contains_key(&actor) && store.books.len() >= MAX_TRADE_BOOKS {
+        return Err("quest trade evidence store is full".into());
     }
     store.books.insert(actor, book);
     crate::store::push_op(
@@ -645,28 +697,57 @@ fn put_book(ctx: &mut Ctx<'_>, book: TradeBook) -> Result<(), String> {
     Ok(())
 }
 
-/// A provisional command watch cannot grant credit: capture and the commit guard
-/// must match the actual accepted typed quest and its exact frozen terms.
+/// Ensures committed active Trade quests have a watch in `TradeEvidenceStore` (`P2-TSW-42`).
+/// Never called before acceptance commits; short-circuits immediately for non-Trade quests.
 pub(crate) fn watch(ctx: &mut Ctx<'_>, row: &QuestRecord) -> Result<(), String> {
+    if !row.is_active()
+        || !row
+            .definition
+            .checkpoints
+            .iter()
+            .any(|c| matches!(c.objective, Objective::Trade { .. }))
+    {
+        return Ok(());
+    }
     row.check()?;
     let store = ctx
         .w
-        .module_state::<TradeEvidenceStore>()
+        .module_state_mut::<TradeEvidenceStore>()
         .ok_or("quest evidence unavailable")?;
     if store.unreadable.contains(&row.actor) {
         return Err("quest evidence needs staff repair".into());
     }
-    let old = store.books.get(&row.actor).cloned();
-    let mut book = old.clone().unwrap_or(TradeBook {
+    if store.books.get(&row.actor).is_some_and(|book| {
+        row.definition
+            .checkpoints
+            .iter()
+            .filter(|c| matches!(c.objective, Objective::Trade { .. }))
+            .all(|cp| {
+                book.watches.iter().any(|w| {
+                    w.key == row.key
+                        && w.checkpoint == cp.id
+                        && w.accepted == row.accepted
+                        && w.objective == cp.objective
+                })
+            })
+    }) {
+        return Ok(());
+    }
+    let already_present = store.books.contains_key(&row.actor);
+    if !already_present && store.books.len() >= MAX_TRADE_BOOKS {
+        return Err("quest trade evidence store is full".into());
+    }
+    let mut book = store.books.get(&row.actor).cloned().unwrap_or(TradeBook {
         schema: 1,
         actor: row.actor,
         watches: Vec::new(),
     });
+    let mut changed = false;
     for checkpoint in &row.definition.checkpoints {
         if !matches!(checkpoint.objective, Objective::Trade { .. }) {
             continue;
         }
-        let watch = TradeWatch {
+        let fresh = TradeWatch {
             key: row.key.clone(),
             checkpoint: checkpoint.id.clone(),
             accepted: row.accepted.clone(),
@@ -680,21 +761,119 @@ pub(crate) fn watch(ctx: &mut Ctx<'_>, row: &QuestRecord) -> Result<(), String> 
             .iter_mut()
             .find(|w| w.key == row.key && w.checkpoint == checkpoint.id)
         {
-            if existing.accepted != watch.accepted || existing.objective != watch.objective {
-                // An uncommitted prior request cannot reserve another acceptance's evidence.
-                *existing = watch;
+            if existing.accepted != fresh.accepted || existing.objective != fresh.objective {
+                *existing = fresh;
+                changed = true;
             }
         } else {
             if book.watches.len() >= MAX_WATCHES {
                 return Err("quest trade evidence is full".into());
             }
-            book.watches.push(watch);
+            book.watches.push(fresh);
+            changed = true;
         }
     }
-    if !book.watches.is_empty() && old.as_ref() != Some(&book) {
+    if changed {
+        store.needs_backfill.insert(row.actor);
         put_book(ctx, book)?;
     }
     Ok(())
+}
+
+/// Outcome of pruning one actor's `TradeBook` (`P2-TSW-42`).
+enum PruneAction {
+    Update(ObjId),
+    Delete(ObjId),
+}
+
+impl TradeEvidenceStore {
+    fn prune_in_place(
+        &mut self,
+        rows: &[QuestRecord],
+        refreshed_actors: &BTreeSet<ObjId>,
+    ) -> Vec<PruneAction> {
+        let mut active_trade_keys: BTreeMap<ObjId, BTreeSet<QuestKey>> = BTreeMap::new();
+        let mut inactive_keys: BTreeMap<ObjId, BTreeSet<QuestKey>> = BTreeMap::new();
+        for row in rows {
+            if row.is_active() {
+                if row
+                    .definition
+                    .checkpoints
+                    .iter()
+                    .any(|c| matches!(c.objective, Objective::Trade { .. }))
+                {
+                    active_trade_keys
+                        .entry(row.actor)
+                        .or_default()
+                        .insert(row.key.clone());
+                }
+            } else {
+                inactive_keys
+                    .entry(row.actor)
+                    .or_default()
+                    .insert(row.key.clone());
+            }
+        }
+        let actors: Vec<ObjId> = self
+            .books
+            .keys()
+            .copied()
+            .filter(|actor| refreshed_actors.contains(actor) || inactive_keys.contains_key(actor))
+            .collect();
+        let mut actions = Vec::new();
+        for actor in actors {
+            if self.unreadable.contains(&actor) {
+                continue;
+            }
+            let Some(book) = self.books.get_mut(&actor) else {
+                continue;
+            };
+            let before_len = book.watches.len();
+            if refreshed_actors.contains(&actor) {
+                let active = active_trade_keys.get(&actor);
+                book.watches
+                    .retain(|watch| active.is_some_and(|keys| keys.contains(&watch.key)));
+            } else if let Some(inactive) = inactive_keys.get(&actor) {
+                book.watches.retain(|watch| !inactive.contains(&watch.key));
+            }
+            if book.watches.len() == before_len {
+                continue;
+            }
+            if book.watches.is_empty() {
+                self.books.remove(&actor);
+                self.needs_backfill.remove(&actor);
+                actions.push(PruneAction::Delete(actor));
+            } else {
+                actions.push(PruneAction::Update(actor));
+            }
+        }
+        actions
+    }
+}
+
+/// Prunes trade watches for completed, abandoned, declined, or absent quests and deletes
+/// empty `TradeBook` KV documents (`P2-TSW-42`).
+pub(crate) fn prune_for_rows(
+    ctx: &mut Ctx<'_>,
+    rows: &[QuestRecord],
+    refreshed_actors: &BTreeSet<ObjId>,
+) {
+    let Some(store) = ctx.w.module_state_mut::<TradeEvidenceStore>() else {
+        return;
+    };
+    let actions = store.prune_in_place(rows, refreshed_actors);
+    for action in actions {
+        match action {
+            PruneAction::Delete(actor) => emit_book_delete(ctx.out, actor),
+            PruneAction::Update(actor) => {
+                if let Some(book) = store.books.get(&actor)
+                    && let Err(error) = emit_book_write(ctx.out, book)
+                {
+                    tracing::warn!(%error, actor = actor.0, "quest pruned trade book could not be written");
+                }
+            }
+        }
+    }
 }
 
 fn paid_transaction(w: &World, contract: u64, transaction: u64, at: i64) -> bool {
@@ -722,6 +901,16 @@ fn paid_transaction(w: &World, contract: u64, transaction: u64, at: i64) -> bool
             .is_none_or(|c| {
                 c.pending.is_none() && c.state == ContractState::Settled { transaction }
             })
+}
+fn quote_actor(q: &Quote) -> Option<ObjId> {
+    let lot = q.lot.as_ref()?;
+    match (&q.buyer, &q.seller, lot.kind) {
+        (PrincipalId::Object(actor), PrincipalId::Organization(_), PaidKind::Draw) => Some(*actor),
+        (PrincipalId::Organization(_), PrincipalId::Object(actor), PaidKind::Deliver) => {
+            Some(*actor)
+        }
+        _ => None,
+    }
 }
 fn from_quote(w: &World, q: &Quote) -> Option<TradeReceipt> {
     let lot = q.lot.as_ref()?;
@@ -765,21 +954,16 @@ fn from_quote(w: &World, q: &Quote) -> Option<TradeReceipt> {
     receipt.check().ok()?;
     Some(receipt)
 }
-fn record_quote(ctx: &mut Ctx<'_>, q: &Quote) {
-    let Some(receipt) = from_quote(ctx.w, q) else {
-        return;
-    };
-    let Some(mut book) = ctx
-        .w
-        .module_state::<TradeEvidenceStore>()
-        .and_then(|s| s.books.get(&receipt.actor))
-        .cloned()
-    else {
-        return;
-    };
-    let before = book.clone();
+fn apply_receipt_in_place(
+    book: &mut TradeBook,
+    receipt: &TradeReceipt,
+    paid_purchases: &BTreeSet<(u64, u64, i64)>,
+) -> bool {
+    let mut changed = false;
     for watch in &mut book.watches {
-        watch.migrate_unmatched();
+        if watch.migrate_unmatched() {
+            changed = true;
+        }
         let Objective::Trade {
             destination,
             commodity,
@@ -797,20 +981,78 @@ fn record_quote(ctx: &mut Ctx<'_>, q: &Quote) {
             continue;
         }
         if receipt.purchase {
-            watch.remember_purchase(receipt.clone());
-        } else if receipt.market == *destination {
-            watch.select_pair(&receipt, |purchase| {
-                paid_transaction(
-                    ctx.w,
+            if watch.remember_purchase(receipt.clone()) {
+                changed = true;
+            }
+        } else if receipt.market == *destination
+            && watch.select_pair(receipt, |purchase| {
+                paid_purchases.contains(&(
                     purchase.contract,
                     purchase.transaction,
                     purchase.settled_at,
-                )
-            });
+                ))
+            })
+        {
+            changed = true;
         }
     }
-    if book != before
-        && let Err(error) = put_book(ctx, book)
+    changed
+}
+fn precheck_paid_candidates(w: &World, book: &TradeBook) -> BTreeSet<(u64, u64, i64)> {
+    let mut paid = BTreeSet::new();
+    for watch in &book.watches {
+        if watch.sale.is_some() {
+            continue;
+        }
+        for candidate in watch.candidates.iter().chain(watch.purchase.iter()) {
+            if paid_transaction(
+                w,
+                candidate.contract,
+                candidate.transaction,
+                candidate.settled_at,
+            ) {
+                paid.insert((
+                    candidate.contract,
+                    candidate.transaction,
+                    candidate.settled_at,
+                ));
+            }
+        }
+    }
+    paid
+}
+fn record_quote(ctx: &mut Ctx<'_>, q: &Quote) {
+    let Some(actor) = quote_actor(q) else {
+        return;
+    };
+    let has_unmatched = ctx
+        .w
+        .module_state::<TradeEvidenceStore>()
+        .and_then(|s| (!s.unreadable.contains(&actor)).then(|| s.books.get(&actor))?)
+        .is_some_and(|book| book.watches.iter().any(|w| w.sale.is_none()));
+    if !has_unmatched {
+        return;
+    }
+    let Some(receipt) = from_quote(ctx.w, q) else {
+        return;
+    };
+    let paid_purchases = if !receipt.purchase {
+        ctx.w
+            .module_state::<TradeEvidenceStore>()
+            .and_then(|s| s.books.get(&actor))
+            .map(|book| precheck_paid_candidates(ctx.w, book))
+            .unwrap_or_default()
+    } else {
+        BTreeSet::new()
+    };
+    let Some(store) = ctx.w.module_state_mut::<TradeEvidenceStore>() else {
+        return;
+    };
+    let Some(book) = store.books.get_mut(&actor) else {
+        return;
+    };
+    if apply_receipt_in_place(book, &receipt, &paid_purchases)
+        && let Err(error) = emit_book_write(ctx.out, book)
     {
         tracing::warn!(%error, "quest trade receipt could not be retained");
     }
@@ -833,70 +1075,214 @@ pub(crate) fn on_economic_event(ctx: &mut Ctx<'_>, event: &EconomicEvent) {
     }
 }
 
-/// Repair missed notifications from retained owner rows, and prefetch old Co-op
-/// stake keys through the economy's cold-receipt path. No history is invented.
+/// Repair missed notifications from retained owner rows, and prefetch unresolved cold keys
+/// for connected actors only, using a high-water `QuoteId` cursor and in-place mutation
+/// (`P2-TSW-42`). No history is invented.
 pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
-    let books: Vec<_> = ctx
-        .w
-        .module_state::<TradeEvidenceStore>()
-        .into_iter()
-        .flat_map(|store| store.books.values())
-        .cloned()
-        .collect();
-    for mut book in books {
-        let before = book.clone();
-        for watch in &mut book.watches {
-            for receipt in [&watch.purchase, &watch.sale]
-                .into_iter()
-                .flatten()
-                .chain(watch.candidates.iter())
-            {
-                let key = mush_economy::settle_key(ContractId(receipt.contract));
-                let _ = mush_economy::resolve_idempotency(ctx, &key);
+    // 1. Collect unresolved settlement keys and reversal repairs ONLY for connected actors.
+    let mut keys_to_resolve = Vec::new();
+    let mut repair_actors = Vec::new();
+    let mut reversed_txs = BTreeSet::new();
+    if let Some(store) = ctx.w.module_state::<TradeEvidenceStore>() {
+        let economy = ctx.w.module_state::<EconomyStore>();
+        for (&actor, book) in &store.books {
+            if !ctx.w.is_connected(actor) || store.unreadable.contains(&actor) {
+                continue;
             }
-            // Unknown cold keys are not failures. Only an actual owner reversal
-            // releases the first pair, allowing the pilot to try the lesson again.
-            let reversed = |receipt: &TradeReceipt| {
-                ctx.w.module_state::<EconomyStore>().is_some_and(|economy| {
-                    economy
-                        .snapshot()
-                        .is_reversed(TransactionId(receipt.transaction))
-                })
+            let mut needs_repair = false;
+            for watch in &book.watches {
+                if watch.sale.is_none() && watch.purchase.is_some() {
+                    needs_repair = true;
+                }
+                for receipt in [&watch.purchase, &watch.sale]
+                    .into_iter()
+                    .flatten()
+                    .chain(watch.candidates.iter())
+                {
+                    if let Some(econ) = economy {
+                        let key = mush_economy::settle_key(ContractId(receipt.contract));
+                        if econ.snapshot().idempotency(&key).is_none()
+                            && econ.cold_key(&key).is_none()
+                        {
+                            keys_to_resolve.push(key);
+                        }
+                        if econ
+                            .snapshot()
+                            .is_reversed(TransactionId(receipt.transaction))
+                        {
+                            reversed_txs.insert(receipt.transaction);
+                            needs_repair = true;
+                        }
+                    }
+                }
+            }
+            if needs_repair {
+                repair_actors.push(actor);
+            }
+        }
+    }
+    for key in keys_to_resolve {
+        let _ = mush_economy::resolve_idempotency(ctx, &key);
+    }
+    if !repair_actors.is_empty()
+        && let Some(store) = ctx.w.module_state_mut::<TradeEvidenceStore>()
+    {
+        for actor in repair_actors {
+            let Some(book) = store.books.get_mut(&actor) else {
+                continue;
             };
-            if watch.purchase.as_ref().is_some_and(reversed) {
-                watch.purchase = None;
-                watch.sale = None;
-            } else if watch.sale.as_ref().is_some_and(reversed) {
-                watch.sale = None;
+            let mut changed = false;
+            for watch in &mut book.watches {
+                if watch
+                    .purchase
+                    .as_ref()
+                    .is_some_and(|r| reversed_txs.contains(&r.transaction))
+                {
+                    watch.purchase = None;
+                    watch.sale = None;
+                    changed = true;
+                } else if watch
+                    .sale
+                    .as_ref()
+                    .is_some_and(|r| reversed_txs.contains(&r.transaction))
+                {
+                    watch.sale = None;
+                    changed = true;
+                }
+                let before_len = watch.candidates.len();
+                watch
+                    .candidates
+                    .retain(|r| !reversed_txs.contains(&r.transaction));
+                if watch.candidates.len() != before_len {
+                    changed = true;
+                }
+                if watch.migrate_unmatched() {
+                    changed = true;
+                }
             }
-            watch.candidates.retain(|receipt| !reversed(receipt));
-            watch.migrate_unmatched();
+            if changed && let Err(error) = emit_book_write(ctx.out, book) {
+                tracing::warn!(%error, "quest reversed trade evidence could not be repaired");
+            }
         }
-        if before != book
-            && let Err(error) = put_book(ctx, book)
+    }
+    // 2. Scan settled MarketStore quotes ONLY when at least one connected actor has an
+    //    unmatched watch, skipping quotes already below the high-water cursor unless that
+    //    actor just gained a fresh watch (`needs_backfill`).
+    let (unmatched_actors, backfill, high_water) = {
+        let Some(store) = ctx.w.module_state::<TradeEvidenceStore>() else {
+            return;
+        };
+        let mut unmatched = BTreeSet::new();
+        for (&actor, book) in &store.books {
+            if ctx.w.is_connected(actor)
+                && !store.unreadable.contains(&actor)
+                && book.watches.iter().any(|w| w.sale.is_none())
+            {
+                unmatched.insert(actor);
+            }
+        }
+        let backfill: BTreeSet<ObjId> = store
+            .needs_backfill
+            .iter()
+            .copied()
+            .filter(|actor| unmatched.contains(actor))
+            .collect();
+        (unmatched, backfill, store.last_reconciled_quote)
+    };
+    if !unmatched_actors.is_empty() {
+        let mut matched_receipts = Vec::new();
+        let mut max_settled: u64 = high_water;
+        let mut min_active_unsettled: Option<u64> = None;
+        if let Some(market) = ctx.w.module_state::<MarketStore>() {
+            let economy = ctx.w.module_state::<EconomyStore>();
+            for q in market.quotes() {
+                if q.settled.is_none() {
+                    if let (Some(cid), Some(econ)) = (q.contract, economy)
+                        && econ.snapshot().contract(cid).is_some_and(|c| {
+                            matches!(c.state, ContractState::Draft | ContractState::Active)
+                        })
+                    {
+                        min_active_unsettled = Some(match min_active_unsettled {
+                            Some(cur) => cur.min(q.id.0),
+                            None => q.id.0,
+                        });
+                    }
+                    continue;
+                }
+                if q.id.0 > max_settled {
+                    max_settled = q.id.0;
+                }
+                let Some(actor) = quote_actor(q) else {
+                    continue;
+                };
+                if !unmatched_actors.contains(&actor) {
+                    continue;
+                }
+                if q.id.0 <= high_water && !backfill.contains(&actor) {
+                    continue;
+                }
+                if let Some(receipt) = from_quote(ctx.w, q) {
+                    matched_receipts.push(receipt);
+                }
+            }
+        }
+        let mut paid_by_actor: BTreeMap<ObjId, BTreeSet<(u64, u64, i64)>> = BTreeMap::new();
+        if matched_receipts.iter().any(|r| !r.purchase)
+            && let Some(store) = ctx.w.module_state::<TradeEvidenceStore>()
         {
-            tracing::warn!(%error, "quest reversed trade evidence could not be repaired");
+            for receipt in &matched_receipts {
+                if !receipt.purchase
+                    && !paid_by_actor.contains_key(&receipt.actor)
+                    && let Some(book) = store.books.get(&receipt.actor)
+                {
+                    paid_by_actor.insert(receipt.actor, precheck_paid_candidates(ctx.w, book));
+                }
+            }
+        }
+        let safe_hw = match min_active_unsettled {
+            Some(open_id) => max_settled.min(open_id.saturating_sub(1)),
+            None => max_settled,
+        };
+        if let Some(store) = ctx.w.module_state_mut::<TradeEvidenceStore>() {
+            store.last_reconciled_quote = store.last_reconciled_quote.max(safe_hw);
+            for actor in &backfill {
+                store.needs_backfill.remove(actor);
+            }
+            let empty = BTreeSet::new();
+            let mut changed_actors = BTreeSet::new();
+            for receipt in &matched_receipts {
+                if let Some(book) = store.books.get_mut(&receipt.actor) {
+                    let paid = paid_by_actor.get(&receipt.actor).unwrap_or(&empty);
+                    if apply_receipt_in_place(book, receipt, paid) {
+                        changed_actors.insert(receipt.actor);
+                    }
+                }
+            }
+            for actor in changed_actors {
+                if let Some(book) = store.books.get(&actor)
+                    && let Err(error) = emit_book_write(ctx.out, book)
+                {
+                    tracing::warn!(%error, "quest reconciled trade receipt could not be retained");
+                }
+            }
         }
     }
-    let quotes: Vec<_> = ctx
-        .w
-        .module_state::<MarketStore>()
-        .into_iter()
-        .flat_map(|market| market.quotes())
-        .filter(|q| q.settled.is_some())
-        .cloned()
-        .collect();
-    for quote in quotes {
-        record_quote(ctx, &quote);
-    }
-    let stakes: Vec<_> = ctx
-        .w
-        .module_state::<crate::store::TacsimStore>()
-        .into_iter()
-        .flat_map(|s| s.enrolments())
-        .filter(|e| e.status == coop::EnrolmentStatus::Active && ctx.w.is_connected(e.pilot))
-        .map(|e| coop::stake_key(ContractId(e.lease)))
-        .collect();
+    // 3. Prefetch unresolved Co-op stake keys only for connected active pilots.
+    let stakes: Vec<_> = {
+        let economy = ctx.w.module_state::<EconomyStore>();
+        ctx.w
+            .module_state::<crate::store::TacsimStore>()
+            .into_iter()
+            .flat_map(|s| s.enrolments())
+            .filter(|e| e.status == coop::EnrolmentStatus::Active && ctx.w.is_connected(e.pilot))
+            .map(|e| coop::stake_key(ContractId(e.lease)))
+            .filter(|key| {
+                economy.is_none_or(|econ| {
+                    econ.snapshot().idempotency(key).is_none() && econ.cold_key(key).is_none()
+                })
+            })
+            .collect()
+    };
     for key in stakes {
         let _ = mush_economy::resolve_idempotency(ctx, &key);
     }
@@ -2022,5 +2408,138 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn p2_tsw_42_in_place_receipt_matching_is_idempotent_and_reports_changes() {
+        let actor = ObjId(7);
+        let objective = Objective::Trade {
+            origin: "stickney".into(),
+            destination: "ceres".into(),
+            commodity: "industrial_parts".into(),
+            quantity: 2,
+        };
+        let mut book = TradeBook {
+            schema: 1,
+            actor,
+            watches: vec![TradeWatch {
+                key: QuestKey {
+                    source: "tacsim.quests.first_steps/quest.dov_fittings".into(),
+                    booking: None,
+                    actor: Some(actor),
+                },
+                checkpoint: "deliver".into(),
+                accepted: Stamp {
+                    at_ic: 10,
+                    at_utc: 10,
+                },
+                objective,
+                candidates: Vec::new(),
+                purchase: None,
+                sale: None,
+            }],
+        };
+        let purchase = TradeReceipt {
+            actor,
+            quote: 1,
+            contract: 11,
+            transaction: 101,
+            market: "stickney".into(),
+            commodity: "industrial_parts".into(),
+            quantity: 2,
+            hold: 3,
+            purchase: true,
+            accepted_at: 12,
+            settled_at: 13,
+        };
+        let sale = TradeReceipt {
+            actor,
+            quote: 2,
+            contract: 12,
+            transaction: 102,
+            market: "ceres".into(),
+            commodity: "industrial_parts".into(),
+            quantity: 2,
+            hold: 3,
+            purchase: false,
+            accepted_at: 15,
+            settled_at: 16,
+        };
+        let empty = BTreeSet::new();
+        assert!(apply_receipt_in_place(&mut book, &purchase, &empty));
+        assert!(
+            !apply_receipt_in_place(&mut book, &purchase, &empty),
+            "reapplying identical purchase must be a no-op"
+        );
+        let paid = BTreeSet::from([(purchase.contract, purchase.transaction, purchase.settled_at)]);
+        assert!(apply_receipt_in_place(&mut book, &sale, &paid));
+        assert!(book.watches[0].sale.is_some());
+        assert!(
+            !apply_receipt_in_place(&mut book, &sale, &paid),
+            "reapplying sale after watch matched must be a no-op"
+        );
+    }
+
+    #[test]
+    fn p2_tsw_42_prune_removes_inactive_watches_and_deletes_empty_trade_books() {
+        let actor_done = ObjId(7);
+        let actor_active = ObjId(8);
+        let key_done = QuestKey {
+            source: "tacsim.quests.first_steps/quest.dov_fittings".into(),
+            booking: None,
+            actor: Some(actor_done),
+        };
+        let key_active = QuestKey {
+            source: "tacsim.quests.first_steps/quest.dov_fittings".into(),
+            booking: None,
+            actor: Some(actor_active),
+        };
+        let make_watch = |key: QuestKey| TradeWatch {
+            key,
+            checkpoint: "deliver".into(),
+            accepted: Stamp {
+                at_ic: 10,
+                at_utc: 10,
+            },
+            objective: Objective::Trade {
+                origin: "stickney".into(),
+                destination: "ceres".into(),
+                commodity: "industrial_parts".into(),
+                quantity: 2,
+            },
+            candidates: Vec::new(),
+            purchase: None,
+            sale: None,
+        };
+        let mut store = TradeEvidenceStore::default();
+        store.books.insert(
+            actor_done,
+            TradeBook {
+                schema: 1,
+                actor: actor_done,
+                watches: vec![make_watch(key_done)],
+            },
+        );
+        store.books.insert(
+            actor_active,
+            TradeBook {
+                schema: 1,
+                actor: actor_active,
+                watches: vec![make_watch(key_active)],
+            },
+        );
+
+        let refreshed = BTreeSet::from([actor_done]);
+        let actions = store.prune_in_place(&[], &refreshed);
+        assert!(
+            !store.books.contains_key(&actor_done),
+            "refreshed actor with no active trade quests must have empty book removed"
+        );
+        assert!(
+            store.books.contains_key(&actor_active),
+            "un-refreshed other actor's book remains untouched"
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(actions[0], PruneAction::Delete(id) if id == actor_done));
     }
 }

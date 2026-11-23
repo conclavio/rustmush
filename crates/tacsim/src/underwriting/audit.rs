@@ -3,17 +3,27 @@
 use super::{
     CoverageError,
     families::{Families, MAX_ROWS, Row},
+    host::read,
     metadata::Publications,
-    policy::{Exposure, HullHead, Receipt},
+    policy::{Exposure, HullHead, Policy, Receipt, Terminal},
     records::{Publication, Quote},
 };
-use mush_core::{CommitToken, ModuleCtx, StateFamilyHandle};
+use mush_core::{ClockStamp, CommitToken, DefinitionDigest, ModuleCtx, ObjId, StateFamilyHandle};
 use mush_economy::EconomyStore;
 use mush_roll::commerce::coverage::CoverageWriter;
 use std::{
     any::TypeId,
     collections::{BTreeMap, BTreeSet},
 };
+
+#[derive(Default)]
+pub(super) struct BootAuditSummary {
+    pub(super) used_requests: BTreeSet<DefinitionDigest>,
+    pub(super) bound_quotes: BTreeSet<CommitToken>,
+    pub(super) unbound_quotes: Vec<(CommitToken, ObjId, CommitToken, i64)>,
+    pub(super) known_hulls: BTreeSet<ObjId>,
+    pub(super) active_policies: Vec<(CommitToken, ObjId, ClockStamp, ClockStamp)>,
+}
 fn bad(_: impl std::fmt::Display) -> CoverageError {
     CoverageError::Authority
 }
@@ -60,7 +70,7 @@ pub(super) fn all(
     f: &Families,
     writer: Option<&CoverageWriter>,
     service: Option<mush_core::ObjId>,
-) -> Result<(), CoverageError> {
+) -> Result<BootAuditSummary, CoverageError> {
     if ctx.module.as_deref() != Some(crate::NS)
         || ctx
             .w
@@ -177,7 +187,7 @@ pub(super) fn all(
     }
     let economy = ctx.state::<EconomyStore>();
     if economy.is_none() && !enabled && policies.is_empty() {
-        return Ok(());
+        return Ok(BootAuditSummary::default());
     }
     if ctx
         .w
@@ -304,7 +314,10 @@ pub(super) fn all(
             return Err(CoverageError::Product);
         }
     }
+    let mut known_hulls = BTreeSet::new();
+    let mut active_policies = Vec::new();
     for (hull, chain) in chains {
+        known_hulls.insert(hull);
         let mut previous = None;
         for (index, p) in chain.values().enumerate() {
             if p.sequence != index as u64 + 1
@@ -326,6 +339,15 @@ pub(super) fn all(
                     return Err(CoverageError::Clock);
                 }
             }
+            if p.history.terminal().is_none() {
+                let terms = &p.history.consent().terms;
+                active_policies.push((
+                    p.operation,
+                    hull,
+                    terms.starts_at.clone(),
+                    terms.ends_at.clone(),
+                ));
+            }
             previous = Some(*p);
         }
         let latest = previous.ok_or(CoverageError::Product)?;
@@ -333,10 +355,121 @@ pub(super) fn all(
             return Err(CoverageError::Product);
         }
     }
+    let unbound_quotes = quotes
+        .values()
+        .filter(|q| !used_quotes.contains(&q.operation))
+        .map(|q| {
+            (
+                q.operation,
+                q.terms.buyer,
+                q.risk.ic_open,
+                q.terms.expires_at_utc,
+            )
+        })
+        .collect();
+    Ok(BootAuditSummary {
+        used_requests: requests,
+        bound_quotes: used_quotes,
+        unbound_quotes,
+        known_hulls,
+        active_policies,
+    })
+}
+
+/// O(1) runtime owner-slot check replacing full-table `audit::all()` on hot paths.
+pub(super) fn check_runtime_context<'a>(
+    ctx: &'a ModuleCtx<'_>,
+) -> Result<(&'a Publications, &'a EconomyStore), CoverageError> {
+    if ctx.module.as_deref() != Some(crate::NS)
+        || ctx
+            .w
+            .module_state_owner(TypeId::of::<Publications>())
+            .is_none_or(|o| o.as_str() != crate::NS)
+        || ctx
+            .w
+            .module_state_owner(TypeId::of::<EconomyStore>())
+            .is_none_or(|o| o.as_str() != "economy")
+    {
+        return Err(CoverageError::Authority);
+    }
+    let native_products = ctx
+        .state::<Publications>()
+        .ok_or(CoverageError::Authority)?;
+    let economy = ctx
+        .state::<EconomyStore>()
+        .ok_or(CoverageError::Authority)?;
+    Ok((native_products, economy))
+}
+
+/// O(1) point verification for a single committed [`Quote`] at runtime.
+pub(super) fn verify_quote_runtime(
+    ctx: &ModuleCtx<'_>,
+    f: &Families,
+    q: &Quote,
+) -> Result<(), CoverageError> {
+    let (native_products, _) = check_runtime_context(ctx)?;
+    let p: &Publication = read(ctx, &f.products, q.publication.to_hex())?;
+    if native_products
+        .rows
+        .get(&q.publication)
+        .is_none_or(|native| native.as_ref() != p)
+    {
+        return Err(CoverageError::Product);
+    }
+    q.matches_publication(p)?;
+    raw_open(ctx, q)
+}
+
+/// O(1) point verification for a single committed [`Policy`] at runtime.
+pub(super) fn verify_policy_runtime(
+    ctx: &ModuleCtx<'_>,
+    f: &Families,
+    service: ObjId,
+    p: &Policy,
+) -> Result<(), CoverageError> {
+    let (_, economy) = check_runtime_context(ctx)?;
+    let c = p.history.consent();
+    if p.history.terminal().is_none() && c.terms.adjudicator != service {
+        return Err(CoverageError::Authority);
+    }
+    let q: &Quote = read(ctx, &f.quotes, p.quote.to_hex())?;
+    p.matches_quote(q)?;
+    let actual = economy.coverage_history(p.operation).map_err(bad)?;
+    if actual != &p.history {
+        return Err(CoverageError::Product);
+    }
+    let exposure = read(ctx, &f.exposures, p.operation.to_hex())?;
+    if *exposure != Exposure::from_policy(p)? {
+        return Err(CoverageError::Product);
+    }
+    let hull = read(ctx, &f.hulls, format!("{:08x}", c.basis.hull.0))?;
+    if p.history.terminal().is_none()
+        && (*hull != HullHead::from_policy(p)? || hull.active != Some(p.operation))
+    {
+        return Err(CoverageError::Product);
+    }
     Ok(())
 }
 
-pub(super) fn request_used(
+/// O(1) point verification for a single committed [`Terminal`] and its [`Policy`] at runtime.
+pub(super) fn verify_terminal_runtime(
+    ctx: &ModuleCtx<'_>,
+    f: &Families,
+    service: ObjId,
+    p: &Policy,
+    terminal: &Terminal,
+) -> Result<(), CoverageError> {
+    verify_policy_runtime(ctx, f, service, p)?;
+    terminal.matches_policy(p)?;
+    let receipt = read(ctx, &f.receipts, p.operation.to_hex())?;
+    if *receipt != Receipt::from_policy(p)? {
+        return Err(CoverageError::Product);
+    }
+    Ok(())
+}
+
+/// Full-scan fallback used only if the bounded runtime candidate index ever overflows.
+pub(super) fn request_used_scan(
     ctx: &ModuleCtx<'_>,
     f: &Families,
     request: mush_core::DefinitionDigest,

@@ -83,6 +83,8 @@ pub const PROCUREMENT_ACTION: &str = "tacsim_procurement";
 pub const PROCUREMENT_OUTCOME: &str = "tacsim_procurement_result";
 /// The ledger family.
 pub const PROCUREMENT_FAMILY: &str = "tacsim.procurement_ledger";
+/// The per-operation uniqueness index family (`P2-TSW-40`).
+pub const PROCUREMENT_OP_FAMILY: &str = "tacsim.procurement_ops";
 /// Grants of one funded purchase that may fail to land before the tick refunds it.
 pub const MAX_GRANT_TRIES: u8 = 3;
 /// Refunds that may fail to land after them before the tick pages `escrow held` for staff and
@@ -149,6 +151,7 @@ pub(crate) fn register(
     outcomes: &BTreeMap<String, DefinitionRef>,
 ) -> Result<(), ModError> {
     let rows = ledger::register(reg)?;
+    let ops = ledger::register_ops(reg)?;
     let action = actions
         .get(PROCUREMENT_ACTION)
         .cloned()
@@ -163,9 +166,10 @@ pub(crate) fn register(
             action: action.clone(),
             outcome,
             rows: rows.clone(),
+            ops: ops.clone(),
         },
     )?;
-    reg.state(tick::ProcurementState::new(rows, action));
+    reg.state(tick::ProcurementState::new(rows, ops, action));
     reg.tick(
         PROCUREMENT_TICK,
         TickCadence::Coarse(PROCUREMENT_TICK_PERIOD),

@@ -28,12 +28,17 @@ pub const ACTION: &str = "tacsim_quest";
 pub const OUTCOME: &str = "tacsim_quest_result";
 const REVISION: &str = "quest_world";
 
+const MAX_REWARDED_CACHE: usize = 8_192;
+
 #[derive(Clone, Default)]
 struct Projection {
     ready: bool,
     actors: BTreeSet<ObjId>,
     rows: Vec<QuestRecord>,
     commissions: Option<Vec<SurveyRecord>>,
+    /// RAM cache of quest keys whose completion reward has already been recorded
+    /// in `mush_npc` (`P2-TSW-42`), avoiding per-5s canonical re-hashing.
+    rewarded: BTreeSet<QuestKey>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,13 +142,90 @@ fn project_scope(
     });
     projection.rows.extend_from_slice(rows);
 }
+fn prune_orders(ctx: &mut Ctx<'_>, rows: &[QuestRecord]) {
+    let stale: Vec<_> = ctx
+        .w
+        .module_state::<Orders>()
+        .into_iter()
+        .flat_map(|orders| orders.0.iter())
+        .filter(|(_, order)| {
+            rows.iter()
+                .any(|row| row.key == order.next.key && row.revision >= order.next.revision)
+                || !order_valid(ctx.w, order)
+        })
+        .map(|(actor, _)| *actor)
+        .collect();
+    if let Some(orders) = ctx.w.module_state_mut::<Orders>() {
+        for actor in stale {
+            orders.0.remove(&actor);
+        }
+    }
+}
+/// Single-pass per-tick refresh (`P2-TSW-42`): reads `QuestIndexKey::Legacy`, survey commissions,
+/// and prunes `Orders` ONCE per tick rather than once per connected actor.
+pub(crate) fn refresh_tick(
+    ctx: &mut Ctx<'_>,
+) -> Result<(Vec<QuestRecord>, BTreeSet<ObjId>), String> {
+    let commissions = crate::port::survey::records(ctx).ok();
+    let legacy = match list_scope(ctx, QuestIndexKey::Legacy) {
+        Ok(rows) => rows,
+        Err(error) => {
+            if let Some(projection) = ctx.w.module_state_mut::<Projection>() {
+                let rewarded = std::mem::take(&mut projection.rewarded);
+                *projection = Projection {
+                    rewarded,
+                    ..Projection::default()
+                };
+            }
+            return Err(error);
+        }
+    };
+    let targets: BTreeSet<ObjId> = ctx.w.connected().chain([ctx.actor]).collect();
+    let mut rows = legacy;
+    let mut readable = BTreeSet::new();
+    for actor in &targets {
+        if let Ok(own) = list_scope(ctx, QuestIndexKey::Actor(*actor)) {
+            readable.insert(*actor);
+            rows.extend(own);
+        }
+    }
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    rows.dedup_by(|a, b| a.key == b.key);
+    {
+        let projection = ctx
+            .w
+            .module_state_mut::<Projection>()
+            .ok_or("quest service unavailable")?;
+        projection.ready = true;
+        projection.actors = readable.clone();
+        projection.rows = rows.clone();
+        projection.commissions = commissions;
+    }
+    prune_orders(ctx, &rows);
+    Ok((rows, readable))
+}
+pub(crate) fn is_rewarded(w: &World, key: &QuestKey) -> bool {
+    w.module_state::<Projection>()
+        .is_some_and(|projection| projection.rewarded.contains(key))
+}
+pub(crate) fn mark_rewarded(w: &mut World, key: QuestKey) {
+    if let Some(projection) = w.module_state_mut::<Projection>()
+        && (projection.rewarded.len() < MAX_REWARDED_CACHE || projection.rewarded.contains(&key))
+    {
+        projection.rewarded.insert(key);
+    }
+}
 pub fn refresh_for(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<Vec<QuestRecord>, String> {
     let mut rows = match list_scope(ctx, QuestIndexKey::Legacy) {
         Ok(rows) => rows,
         Err(error) => {
             // The legacy index is shared by every reader, so none is complete.
             if let Some(projection) = ctx.w.module_state_mut::<Projection>() {
-                *projection = Projection::default();
+                let rewarded = std::mem::take(&mut projection.rewarded);
+                *projection = Projection {
+                    rewarded,
+                    ..Projection::default()
+                };
             }
             return Err(error);
         }
@@ -163,23 +245,7 @@ pub fn refresh_for(ctx: &mut Ctx<'_>, actor: ObjId) -> Result<Vec<QuestRecord>, 
         own.is_ok(),
     );
     let _ = own?;
-    let stale: Vec<_> = ctx
-        .w
-        .module_state::<Orders>()
-        .into_iter()
-        .flat_map(|orders| orders.0.iter())
-        .filter(|(_, order)| {
-            rows.iter()
-                .any(|row| row.key == order.next.key && row.revision >= order.next.revision)
-                || !order_valid(ctx.w, order)
-        })
-        .map(|(actor, _)| *actor)
-        .collect();
-    if let Some(orders) = ctx.w.module_state_mut::<Orders>() {
-        for actor in stale {
-            orders.0.remove(&actor);
-        }
-    }
+    prune_orders(ctx, &rows);
     Ok(rows)
 }
 pub fn projection_ready_for(w: &World, actor: ObjId) -> bool {

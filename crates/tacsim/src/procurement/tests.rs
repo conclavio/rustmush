@@ -515,3 +515,120 @@ fn the_policy_bounds_and_defaults() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn p2_tsw_40_op_index_maps_old_operation_back_to_original_period_key() -> TestResult {
+    let c = charter(10)?;
+    let r = row(MAY, 7, (c, 7), 40_000, RowPhase::Funded)?;
+    let idx = super::ledger::ProcurementOpIndex::from_row(&r);
+    idx.check()?;
+    check_eq!(idx.row_key(), r.key());
+    let op_key = super::ledger::ProcurementOpKey {
+        org: r.org,
+        operation: r.operation,
+    };
+    check!(
+        op_key
+            .key_text()
+            .starts_with(&super::ledger::ProcurementKey::prefix(r.org)),
+        "operation index keys stay scoped per org"
+    );
+    check_eq!(
+        rank::spent(std::slice::from_ref(&r), JUNE),
+        Some(0),
+        "older funded row settled from op index never charges a later month's budget"
+    );
+    Ok(())
+}
+
+#[test]
+fn p2_tsw_41_pre_filter_excludes_ineligible_listings_before_score_cache() -> TestResult {
+    let c_open = charter(10)?;
+    let c_capped = charter(11)?;
+    let held = BTreeMap::from([(c_capped, 2)]);
+    let skipped = BTreeSet::from([token(99)]);
+    let roles = [ProcurementRole::Sealed];
+    let filter = super::tick::ScanFilter {
+        roles: &roles,
+        remaining: 50_000,
+        held: &held,
+        cap: 2,
+        skipped: &skipped,
+    };
+    // Wrong form, overpriced, zero-priced, skipped, and capped listings are all rejected pre-cache.
+    check!(!super::tick::listing_admitted(
+        token(1),
+        ListingForm::Open,
+        c_open,
+        10_000,
+        &filter
+    ));
+    check!(!super::tick::listing_admitted(
+        token(2),
+        ListingForm::Sealed,
+        c_open,
+        50_001,
+        &filter
+    ));
+    check!(!super::tick::listing_admitted(
+        token(3),
+        ListingForm::Sealed,
+        c_open,
+        0,
+        &filter
+    ));
+    check!(!super::tick::listing_admitted(
+        token(99),
+        ListingForm::Sealed,
+        c_open,
+        10_000,
+        &filter
+    ));
+    check!(!super::tick::listing_admitted(
+        token(4),
+        ListingForm::Sealed,
+        c_capped,
+        10_000,
+        &filter
+    ));
+    // Eligible sealed listing within remaining budget and below charter cap is admitted.
+    check!(super::tick::listing_admitted(
+        token(5),
+        ListingForm::Sealed,
+        c_open,
+        50_000,
+        &filter
+    ));
+    Ok(())
+}
+
+#[test]
+fn p2_tsw_51_active_hull_count_filters_retired_and_non_hulls_before_bounding() -> TestResult {
+    use mush_economy::AssetLifecycle;
+
+    let world_hulls = BTreeSet::from([ObjId(10_001), ObjId(10_002), ObjId(10_003)]);
+    // 5,000 retired hulls + 5,000 active non-hulls BEFORE the 3 active world hulls.
+    let mut assets = Vec::new();
+    for i in 1..=5_000_u32 {
+        assets.push((AssetLifecycle::WrittenOff, ObjId(10_001)));
+        assets.push((AssetLifecycle::Active, ObjId(20_000 + i)));
+    }
+    assets.push((AssetLifecycle::Active, ObjId(10_001)));
+    assets.push((AssetLifecycle::Active, ObjId(10_002)));
+    assets.push((AssetLifecycle::Active, ObjId(10_003)));
+
+    let (count, truncated) = super::tick::count_active_hulls(assets, &world_hulls, 4_096);
+    check_eq!(
+        count,
+        3,
+        "retired and non-hull assets must not truncate active hulls"
+    );
+    check!(!truncated);
+
+    // Reaching the active-hull limit reports truncation explicitly.
+    let many_active = (0..10_u32).map(|_| (AssetLifecycle::Active, ObjId(10_001)));
+    let (capped, hit) = super::tick::count_active_hulls(many_active, &world_hulls, 4);
+    check_eq!(capped, 4);
+    check!(hit, "reaching active hull bound signals truncation");
+    Ok(())
+}

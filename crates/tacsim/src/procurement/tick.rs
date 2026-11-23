@@ -23,10 +23,12 @@ use mush_roll::commerce::rating::{RatingRef, RatingScore, RatingTally};
 use mush_roll::commerce::{CharterId, LicenceId};
 use serde_json::json;
 
-use super::ledger::{Period, ProcurementKey, ProcurementRow, RowPhase};
+use super::ledger::{
+    Period, ProcurementKey, ProcurementOpIndex, ProcurementOpKey, ProcurementRow, RowPhase,
+};
 use super::rank::{self, Candidate, SCORE_CACHE_BOUND};
 use super::{MAX_GRANT_TRIES, MAX_REFUND_TRIES};
-use crate::launch::ProcurementPolicy;
+use crate::launch::{ProcurementPolicy, ProcurementRole};
 use crate::port_tick::{Fire, Step};
 
 /// Listings pages one fire reads at most; the scan resumes on the next fire.
@@ -40,21 +42,26 @@ pub const MAX_HOLDINGS_READS: usize = 16;
 pub const MAX_LEDGER_ROWS: usize = 256;
 /// Fires a quote may stay unseen after its Quote before the listing is skipped for the month.
 pub const MAX_QUOTE_WAITS: u8 = 6;
-/// Organisation assets one hull count walks at most.
+/// Active titled hulls one cap count walks at most (`P2-TSW-51`).
 const MAX_HULL_ASSETS: usize = 4_096;
+/// Distinct page keys retained per policy per IC month (`P2-TSW-50`).
+const MAX_PAGED_PER_RUN: usize = 256;
 
 /// **The tick's RAM slot** (P3/P7): pacing only. The ledger rows, the market and the Roll are
 /// the memory; a restart empties this and the next fire re-derives everything.
 #[derive(Clone)]
 pub(crate) struct ProcurementState {
     rows: StateFamilyHandle<ProcurementKey, ProcurementRow>,
+    ops: StateFamilyHandle<ProcurementOpKey, ProcurementOpIndex>,
     action: DefinitionRef,
     runs: BTreeMap<u64, Run>,
+    /// Rotating listing cursor persisted across IC months when `SCORE_CACHE_BOUND` truncates a
+    /// month's eligible scan (`P2-TSW-41`).
+    scan_cursors: BTreeMap<u64, CommitToken>,
     /// The ONE ledger row each agent's `tacsim_procurement` offer fixes (the yard's rows
     /// precedent; H5: one row, so the offer never grows): written by the tick just before it
     /// submits the record as the agent.
     records: BTreeMap<ObjId, BTreeMap<String, ProcurementRow>>,
-    paged: BTreeSet<String>,
     /// `(IC second, ordinal)` of the submission keys.
     keys: (i64, u64),
     /// The deployment's policies, set once the launch composes
@@ -80,6 +87,8 @@ struct Run {
     closed_why: Option<&'static str>,
     quoting: Option<Quoting>,
     skipped: BTreeSet<CommitToken>,
+    /// Per-month bounded page deduplication set, cleared on period rollover (`P2-TSW-50`).
+    paged: BTreeSet<String>,
     /// Terminal steps submitted per funded purchase: the Grants, then the Refunds (H3).
     grants: BTreeMap<CommitToken, u8>,
     scan: Scan,
@@ -100,6 +109,10 @@ struct Quoting {
 #[derive(Clone, Debug, Default)]
 struct Scan {
     after: Option<CommitToken>,
+    /// Cursor where this month's scan began (for rotating wrap-around, `P2-TSW-41`).
+    started_at: Option<CommitToken>,
+    /// Whether the scan has already wrapped past the end of the listing table back to `None`.
+    wrapped: bool,
     done: bool,
     listings: Vec<ProcurementListing>,
     /// A rating count in progress: its cache key, rating, next page and the count so far.
@@ -109,14 +122,16 @@ struct Scan {
 impl ProcurementState {
     pub(super) fn new(
         rows: StateFamilyHandle<ProcurementKey, ProcurementRow>,
+        ops: StateFamilyHandle<ProcurementOpKey, ProcurementOpIndex>,
         action: DefinitionRef,
     ) -> Self {
         Self {
             rows,
+            ops,
             action,
             runs: BTreeMap::new(),
+            scan_cursors: BTreeMap::new(),
             records: BTreeMap::new(),
-            paged: BTreeSet::new(),
             keys: (i64::MIN, 0),
             policies: Vec::new(),
             #[cfg(test)]
@@ -124,6 +139,30 @@ impl ProcurementState {
             #[cfg(test)]
             admit_zero: false,
         }
+    }
+    /// Moves heavy pacing maps out via `std::mem::take` so the 5-second tick avoids cloning
+    /// `runs`, `records`, and `scan_cursors` (`P2-TSW-50`).
+    fn take_for_tick(&mut self) -> Self {
+        Self {
+            rows: self.rows.clone(),
+            ops: self.ops.clone(),
+            action: self.action.clone(),
+            runs: std::mem::take(&mut self.runs),
+            scan_cursors: std::mem::take(&mut self.scan_cursors),
+            records: std::mem::take(&mut self.records),
+            keys: self.keys,
+            policies: self.policies.clone(),
+            #[cfg(test)]
+            assumed_hulls: self.assumed_hulls,
+            #[cfg(test)]
+            admit_zero: self.admit_zero,
+        }
+    }
+    fn restore_after_tick(&mut self, taken: Self) {
+        self.runs = taken.runs;
+        self.scan_cursors = taken.scan_cursors;
+        self.records = taken.records;
+        self.keys = taken.keys;
     }
     /// Test only: admit a 0‰ line (the composed rig's one rating won no trial).
     #[cfg(test)]
@@ -152,12 +191,20 @@ impl ProcurementState {
     pub(crate) fn assume_hulls(&mut self, hulls: u32) {
         self.assumed_hulls = Some(hulls);
     }
-    fn hulls(&self, w: &World, org: OrgId) -> u32 {
+    fn hulls(&mut self, w: &World, org: OrgId) -> u32 {
         #[cfg(test)]
         if let Some(hulls) = self.assumed_hulls {
             return hulls;
         }
-        titled_hulls(w, org)
+        let (count, truncated) = titled_hulls(w, org);
+        if truncated {
+            self.page(
+                org,
+                "hulls bound",
+                "more active titled hulls than one cap count admits; cap uses the first bound",
+            );
+        }
+        count
     }
     /// Test only: what the month knows of `org`: its scores, its listings scanned, whether
     /// it is closed and the paged refusals so far.
@@ -176,7 +223,7 @@ impl ProcurementState {
             }),
             run.map(|r| r.closed_why),
             run.map(|r| r.skipped.len()),
-            self.paged
+            run.map(|r| &r.paged)
         )
     }
     /// Test only: fix `row` into `agent`'s record offer, as the tick does before it records.
@@ -190,7 +237,24 @@ impl ProcurementState {
         self.records.get(&agent)
     }
     fn page(&mut self, org: OrgId, what: &str, detail: &str) {
-        if self.paged.insert(format!("{}/{what}", org.0)) {
+        let paged = &mut self.runs.entry(org.0).or_default().paged;
+        let key = format!("{}/{what}", org.0);
+        if paged.contains(&key) {
+            return;
+        }
+        if paged.len() >= MAX_PAGED_PER_RUN {
+            if paged.insert(format!("{}/page_bound", org.0)) {
+                tracing::warn!(
+                    log_id = "tacsim.procurement.refused",
+                    org = org.0,
+                    what = "page_bound",
+                    detail = "too many distinct procurement refusal pages this month; further unique pages suppressed until rollover",
+                    "tacsim: a House's procurement step is refused; the policy moves on"
+                );
+            }
+            return;
+        }
+        if paged.insert(key) {
             tracing::warn!(
                 log_id = "tacsim.procurement.refused",
                 org = org.0,
@@ -237,13 +301,20 @@ pub(crate) fn procurement_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<Sce
     else {
         return;
     };
-    let Some(mut state) = ctx.w.module_state::<ProcurementState>().cloned() else {
+    let has_policies = ctx
+        .w
+        .module_state::<ProcurementState>()
+        .is_some_and(|state| !state.policies.is_empty());
+    if !has_policies {
+        return;
+    }
+    let Some(mut state) = ctx
+        .state_mut::<ProcurementState>()
+        .map(ProcurementState::take_for_tick)
+    else {
         return;
     };
     let policies = state.policies.clone();
-    if policies.is_empty() {
-        return;
-    }
     let handles = ctx
         .w
         .module_state::<crate::minds::market_commands::MindCommandService>()
@@ -268,7 +339,7 @@ pub(crate) fn procurement_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<Sce
         fire.settle(policy.agent, step);
     }
     if let Some(slot) = ctx.state_mut::<ProcurementState>() {
-        *slot = state;
+        slot.restore_after_tick(state);
     }
 }
 
@@ -292,10 +363,19 @@ fn visit(
     let (org, agent) = (policy.org, policy.agent);
     let now_ic = ctx.w.world_ic_now().at;
     let period = Period::of_ic(now_ic);
+    let start_after = state.scan_cursors.get(&org.0).copied();
     let run = state.runs.entry(org.0).or_default();
     if run.period != Some(period) {
         *run = Run {
             period: Some(period),
+            scan: Scan {
+                after: start_after,
+                started_at: start_after,
+                wrapped: false,
+                done: false,
+                listings: Vec::new(),
+                tally: None,
+            },
             ..Run::default()
         };
     }
@@ -303,7 +383,7 @@ fn visit(
         // The agent's last step has not landed; read it next fire (D-18-32).
         return Step::Deferred;
     }
-    let Some(rows) = ledger_rows(ctx, &state.rows, org, period) else {
+    let Some(mut rows) = ledger_rows(ctx, &state.rows, org, period) else {
         state.page(org, "ledger", "the procurement ledger is unreadable");
         return Step::Refused;
     };
@@ -341,6 +421,63 @@ fn visit(
     };
     for purchase in open {
         if rows.iter().any(|row| row.operation == purchase.operation()) {
+            continue;
+        }
+        // P2-TSW-40: check the operation-keyed index before treating an open purchase as unrecorded
+        // so funded purchases older than two IC months settle in place and never duplicate or
+        // double-charge a new month's budget.
+        let op_key = ProcurementOpKey {
+            org,
+            operation: purchase.operation(),
+        };
+        let indexed = match ctx.action_state(&state.ops, &op_key) {
+            Ok(idx) => idx.copied(),
+            Err(_) => {
+                state.page(org, "ops", "the procurement operation index is unreadable");
+                return Step::Refused;
+            }
+        };
+        if let Some(op_idx) = indexed {
+            let existing = match ctx.action_state(&state.rows, &op_idx.row_key()) {
+                Ok(Some(row)) => row.clone(),
+                _ => {
+                    state.page(org, "ledger", "an indexed procurement row is unreadable");
+                    return Step::Refused;
+                }
+            };
+            if existing.phase == RowPhase::Funded {
+                if let Some(view) = operation(ctx, handles, existing.operation) {
+                    match view.phase() {
+                        ProcurementPhase::Granted => {
+                            return record(
+                                ctx,
+                                fire,
+                                state,
+                                existing.with_phase(RowPhase::Granted),
+                            );
+                        }
+                        ProcurementPhase::Refunded => {
+                            return record(
+                                ctx,
+                                fire,
+                                state,
+                                existing.with_phase(RowPhase::Refunded),
+                            );
+                        }
+                        ProcurementPhase::Funded => {
+                            let protocol = view.protocol();
+                            if let Some(step) =
+                                settle(ctx, fire, state, handles, policy, (&existing, protocol))
+                            {
+                                return step;
+                            }
+                        }
+                    }
+                } else {
+                    state.page(org, "operation", "a funded purchase is unreadable");
+                }
+            }
+            rows.push(existing);
             continue;
         }
         let Some(view) = operation(ctx, handles, purchase.operation()) else {
@@ -689,6 +826,32 @@ fn pay(
     step
 }
 
+/// Eligibility criteria applied BEFORE admitting listings into the bounded score cache or
+/// spending Roll tally reads (`P2-TSW-41`).
+pub(super) struct ScanFilter<'a> {
+    pub(super) roles: &'a [ProcurementRole],
+    pub(super) remaining: i64,
+    pub(super) held: &'a BTreeMap<CharterId, u32>,
+    pub(super) cap: u32,
+    pub(super) skipped: &'a BTreeSet<CommitToken>,
+}
+
+/// Pure pre-filter check (`P2-TSW-41`): admits only listings matching `roles`, priced in
+/// `1..=remaining`, not already skipped this month, and whose charter is below `cap`.
+pub(super) fn listing_admitted(
+    listing: CommitToken,
+    form: mush_market::mind_commands::ListingForm,
+    charter: CharterId,
+    price_minor: i64,
+    filter: &ScanFilter<'_>,
+) -> bool {
+    rank::admits(filter.roles, form)
+        && price_minor > 0
+        && price_minor <= filter.remaining
+        && !filter.skipped.contains(&listing)
+        && filter.held.get(&charter).copied().unwrap_or(0) < filter.cap
+}
+
 /// Step 4: scan, score, rank, check the cap and the treasury, and quote the best.
 fn choose_and_quote(
     ctx: &mut Ctx<'_>,
@@ -704,13 +867,6 @@ fn choose_and_quote(
         close(state, org, period, "the month's budget is spent");
         return Step::Idle;
     }
-    let Some(unread) = scan(ctx, state, handles, org) else {
-        // More listings or ratings to read: on the next fire.
-        return Step::Worked;
-    };
-    let Some(candidates) = candidates(state, policy) else {
-        return Step::Worked;
-    };
     let hulls = state.hulls(ctx.w, org);
     let cap = rank::cap_for(policy.cap(&defaults), hulls);
     let Some(holdings) = holdings(ctx, handles, org) else {
@@ -727,6 +883,20 @@ fn choose_and_quote(
         .get(&org.0)
         .map(|run| run.skipped.clone())
         .unwrap_or_default();
+    let filter = ScanFilter {
+        roles: &policy.roles,
+        remaining,
+        held: &held,
+        cap,
+        skipped: &skipped,
+    };
+    let Some(unread) = scan(ctx, state, handles, org, &filter) else {
+        // More listings or ratings to read: on the next fire.
+        return Step::Worked;
+    };
+    let Some(candidates) = candidates(state, policy) else {
+        return Step::Worked;
+    };
     let Some(best) = rank::choose(&candidates, remaining, &held, cap, &skipped).copied() else {
         if unread {
             // Round 2: a rating this fire could not read may be the line it would buy; the
@@ -809,17 +979,17 @@ fn close(state: &mut ProcurementState, org: OrgId, period: Period, why: &'static
 }
 
 /// Advance the month's scan within this fire's budget: listings pages, then rating counts.
-/// `Some(unread)` once every listing is read and every readable rating scored, `unread` when a
-/// rating read failed this fire; `None` while there is more to read. The scan is bounded at
-/// [`SCORE_CACHE_BOUND`] listings a month (H4: `scan bound` pages when it is hit); a rating read
-/// that fails is not kept, so it is retried on the next fire, and this fire goes on without it:
-/// it may still buy the best line it scored, but it never closes the month as having nothing to
-/// buy (round 2).
+/// `Some(unread)` once every eligible listing up to [`SCORE_CACHE_BOUND`] is read and every
+/// readable rating scored, `unread` when a rating read failed this fire; `None` while there is
+/// more to read. Listings are pre-filtered by role, affordability, skip set, and charter cap
+/// BEFORE consuming a cache slot or Roll tally read, and a rotating cursor persists across
+/// months whenever the bound hits (`P2-TSW-41`).
 fn scan(
     ctx: &Ctx<'_>,
     state: &mut ProcurementState,
     handles: &Handles,
     org: OrgId,
+    filter: &ScanFilter<'_>,
 ) -> Option<bool> {
     for _ in 0..MAX_LISTING_PAGES_PER_FIRE {
         let run = state.runs.get(&org.0)?;
@@ -838,21 +1008,75 @@ fn scan(
             state.page(org, "listings", "the market's listings are unreadable");
             return None;
         };
-        let run = state.runs.get_mut(&org.0)?;
-        let room = SCORE_CACHE_BOUND.saturating_sub(run.scan.listings.len());
-        let bounded = page.rows().len() > room;
-        run.scan
-            .listings
-            .extend(page.rows().iter().take(room).cloned());
-        run.scan.after = page.next();
-        run.scan.done = page.next().is_none() || bounded;
-        if bounded || (run.scan.listings.len() >= SCORE_CACHE_BOUND && page.next().is_some()) {
-            run.scan.done = true;
+        let mut hit_bound = false;
+        let mut resume_cursor: Option<CommitToken> = None;
+        let mut finished_full_ring = false;
+        {
+            let run = state.runs.get_mut(&org.0)?;
+            let started_at = run.scan.started_at;
+            let wrapped = run.scan.wrapped;
+            for listing in page.rows() {
+                let view = listing.view();
+                let token = view.publication();
+                if wrapped && started_at.is_some_and(|stop| token > stop) {
+                    finished_full_ring = true;
+                    break;
+                }
+                if !listing_admitted(
+                    token,
+                    view.form(),
+                    view.charter(),
+                    view.price_minor(),
+                    filter,
+                ) {
+                    continue;
+                }
+                if run.scan.listings.len() >= SCORE_CACHE_BOUND {
+                    hit_bound = true;
+                    break;
+                }
+                run.scan.listings.push(listing.clone());
+                resume_cursor = Some(token);
+            }
+            if hit_bound {
+                run.scan.done = true;
+                let cursor = resume_cursor
+                    .or_else(|| run.scan.listings.last().map(|l| l.view().publication()));
+                if let Some(cursor) = cursor {
+                    state.scan_cursors.insert(org.0, cursor);
+                }
+            } else if finished_full_ring {
+                run.scan.done = true;
+                state.scan_cursors.remove(&org.0);
+            } else {
+                match page.next() {
+                    Some(next) => {
+                        if wrapped && started_at.is_some_and(|stop| next > stop) {
+                            run.scan.done = true;
+                            state.scan_cursors.remove(&org.0);
+                        } else {
+                            run.scan.after = Some(next);
+                        }
+                    }
+                    None => {
+                        if started_at.is_some() && !wrapped {
+                            run.scan.after = None;
+                            run.scan.wrapped = true;
+                        } else {
+                            run.scan.done = true;
+                            state.scan_cursors.remove(&org.0);
+                        }
+                    }
+                }
+            }
+        }
+        if hit_bound {
             state.page(
                 org,
                 "scan bound",
-                "more listings than one month's scan reads; the rest wait for next month",
+                "more eligible listings than one month's scan reads; cursor rotates next month",
             );
+            break;
         }
     }
     let mut reads = 0;
@@ -865,6 +1089,16 @@ fn scan(
         let pending = match run.scan.tally.clone() {
             Some(pending) => Some(pending),
             None => run.scan.listings.iter().find_map(|l| {
+                let view = l.view();
+                if !listing_admitted(
+                    view.publication(),
+                    view.form(),
+                    view.charter(),
+                    view.price_minor(),
+                    filter,
+                ) {
+                    return None;
+                }
                 let key = cache_key(l)?;
                 (!run.scores.contains_key(&key) && !failed.contains(&key))
                     .then(|| (key, l.rating(), 0, RatingTally::default()))
@@ -977,22 +1211,42 @@ fn holdings(ctx: &Ctx<'_>, handles: &Handles, org: OrgId) -> Option<Vec<(Licence
     Some(out)
 }
 
+/// Pure active-hull counter (`P2-TSW-51`): filters for `AssetLifecycle::Active` world hulls
+/// BEFORE applying `limit`, returning `(count, truncated)`.
+pub(super) fn count_active_hulls<I>(assets: I, hulls: &BTreeSet<ObjId>, limit: usize) -> (u32, bool)
+where
+    I: IntoIterator<Item = (mush_economy::AssetLifecycle, ObjId)>,
+{
+    let mut count: usize = 0;
+    let mut truncated = false;
+    for (lifecycle, object) in assets {
+        if lifecycle != mush_economy::AssetLifecycle::Active || !hulls.contains(&object) {
+            continue;
+        }
+        if count >= limit {
+            truncated = true;
+            break;
+        }
+        count += 1;
+    }
+    (u32::try_from(count).unwrap_or(u32::MAX), truncated)
+}
+
 /// **`H`, the organisation's titled hulls** (P6): its Active E4 titles whose object is a world
-/// hull.
-fn titled_hulls(w: &World, org: OrgId) -> u32 {
+/// hull, filtered BEFORE bounding (`P2-TSW-51`).
+fn titled_hulls(w: &World, org: OrgId) -> (u32, bool) {
     let hulls = crate::surface::recovery::world_hulls(w);
     let Some(economy) = w.module_state::<mush_economy::EconomyStore>() else {
-        return 0;
+        return (0, false);
     };
-    let count = economy
-        .snapshot()
-        .assets_of(&mush_org::PrincipalId::Organization(org))
-        .take(MAX_HULL_ASSETS)
-        .filter(|asset| {
-            asset.lifecycle == mush_economy::AssetLifecycle::Active && hulls.contains(&asset.object)
-        })
-        .count();
-    u32::try_from(count).unwrap_or(u32::MAX)
+    count_active_hulls(
+        economy
+            .snapshot()
+            .assets_of(&mush_org::PrincipalId::Organization(org))
+            .map(|asset| (asset.lifecycle, asset.object)),
+        &hulls,
+        MAX_HULL_ASSETS,
+    )
 }
 
 /// The organisation's treasury on `scope` (its root) in the listing's `instrument` (the account

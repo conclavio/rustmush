@@ -416,11 +416,7 @@ fn accept(ctx: &mut Ctx<'_>, npc: ObjId, token: &str, decline: bool) -> Result<S
             "Decline of {title} submitted. This quest will be closed without a reward or penalty. Use +quest to read the committed journal."
         ));
     }
-    store::stage_accept(ctx, row.clone())?;
-    // Prepare capture before the next market event. This watch grants nothing;
-    // both evidence and the typed accepted row must match before any progress.
-    // The tick retries after interrupted acceptance or a cold owner service.
-    let _ = super::evidence::watch(ctx, &row);
+    store::stage_accept(ctx, row)?;
     Ok(format!(
         "Acceptance of {title} submitted. Use +quest to read the committed journal and next objective."
     ))
