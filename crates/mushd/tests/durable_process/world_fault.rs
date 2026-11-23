@@ -38,8 +38,10 @@ use mushd::accounts::hash_password;
 use mushd::logging;
 use russh::ChannelMsg;
 
-/// How long one client step (a login, a line, an expected banner) may take.
-const STEP_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long one client step (a login, a line, an expected banner) may take
+/// against the child `mushd`: twice the rig's step limit, the 120 s this file
+/// has always allowed.
+const CHILD_STEP_TIMEOUT: Duration = crate::support::STEP_TIMEOUT.saturating_mul(2);
 /// How long the child gets to bind its SSH listener. A debug-build boot walks
 /// twenty-odd modules, their migrations and two key rings first.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
@@ -273,7 +275,7 @@ impl Term {
     /// char-select screen is skipped for a single-character account on some
     /// paths, so the login has to tolerate either landing.
     async fn expect_either(&mut self, a: &str, b: &str) -> bool {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + CHILD_STEP_TIMEOUT;
         loop {
             let text = strip_ansi(&self.seen);
             if text.contains(a) {
@@ -301,7 +303,7 @@ impl Term {
     }
 
     async fn expect(&mut self, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + CHILD_STEP_TIMEOUT;
         while !strip_ansi(&self.seen).contains(needle) {
             let msg = tokio::time::timeout_at(deadline, self.channel.wait())
                 .await

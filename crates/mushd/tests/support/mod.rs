@@ -17,23 +17,10 @@ use std::time::Duration;
 
 use russh::ChannelMsg;
 
-/// Generous per-step timeout: CI boxes can stall on argon2 + process spawn.
-pub const STEP_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Wait for an observable condition, with one deadline covering the checks as
-/// well as the polling interval. A slow SSH reply cannot multiply the bound.
-pub async fn wait_until(bound: Duration, label: &str, mut check: impl AsyncFnMut() -> bool) {
-    tokio::time::timeout(bound, async {
-        loop {
-            if check().await {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("{label} did not happen within {bound:?}"));
-}
+// Doc 51 cut FL.1: the one wait loop and the one step limit are the story
+// kit's. This rig re-exports them, so a story's `use support::{STEP_TIMEOUT,
+// wait_until}` reads the shared copy and there is no second definition here.
+pub use mush_storykit::{STEP_TIMEOUT, wait_until};
 
 /// The running arena's own `clock m:ss`, as printed by `@arena/status`.
 /// Use this for tests whose premise needs elapsed simulation time.

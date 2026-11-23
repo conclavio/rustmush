@@ -2332,6 +2332,7 @@ dependencies = [
  "mush-server",
  "mush-sim",
  "mush-store",
+ "mush-storykit",
  "mush-tactics",
  "mush-testkit",
  "serde",
@@ -2989,6 +2990,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mush-storykit"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "mush-tactics"
 version = "0.1.0"
 dependencies = [
@@ -3103,6 +3111,7 @@ dependencies = [
  "mush-session",
  "mush-sim",
  "mush-store",
+ "mush-storykit",
  "mush-tactics",
  "mush-testkit",
  "mush-weather",

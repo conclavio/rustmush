@@ -62,3 +62,6 @@ toml.workspace = true
 # 2026-11-04) reads the licence Grace bound and the campaign's recovery and notice windows.
 mush-campaign.workspace = true
 mush-roll.workspace = true
+# Doc 51 cut FL.1: the wait budget (tests/ci_policy/wait_budget.rs) holds the story kit's
+# `NEXTEST_TERMINATE` to `.config/nextest.toml`.
+mush-storykit.workspace = true

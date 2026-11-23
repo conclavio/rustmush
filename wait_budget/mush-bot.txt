@@ -1,0 +1,35 @@
+# mush-bot — the wait budget of its story files (doc 51 cut FL.1).
+#
+# `<counter> <budget> <low-water> <path>`: `wait` is a raw sleep or timeout,
+# `clock` a wall-clock read. A count may only fall. Regenerate with:
+#   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
+# A raise carries a written reason; the prefer-instead is `mush-storykit`.
+#
+# total: 78 raw waits, 28 wall-clock reads
+clock 1 1 tests/arena_commander.rs
+wait 5 5 tests/arena_contract.rs
+wait 9 9 tests/arena_e2e.rs
+wait 7 7 tests/arena_mind_author_story.rs
+clock 2 2 tests/arena_mind_author_story.rs
+wait 9 9 tests/arena_mind_isolation.rs
+clock 2 2 tests/arena_mind_port_rate.rs
+clock 1 1 tests/budgets_offline.rs
+clock 1 1 tests/campaign.rs
+wait 20 20 tests/e2e.rs
+clock 1 1 tests/e2e.rs
+clock 1 1 tests/life.rs
+wait 25 25 tests/mining_cohort.rs
+clock 7 7 tests/mining_cohort.rs
+wait 2 2 tests/mining_cohort/fr7_round.rs
+clock 2 2 tests/mining_cohort/fr7_round.rs
+clock 1 1 tests/mining_cohort/in11_matter.rs
+clock 1 1 tests/mining_cohort/rs9_story_a.rs
+clock 1 1 tests/mining_cohort/rs9_story_b.rs
+clock 1 1 tests/offline.rs
+clock 1 1 tests/playtesting.rs
+clock 1 1 tests/probes_offline.rs
+clock 1 1 tests/regression_offline.rs
+clock 1 1 tests/social_campaign.rs
+wait 1 1 tests/studio.rs
+clock 1 1 tests/studio.rs
+clock 1 1 tests/trace_offline.rs

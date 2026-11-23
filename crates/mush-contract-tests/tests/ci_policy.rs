@@ -9,7 +9,7 @@
 //! The tree's and the workflows' own gates: the gated-test inventory and its
 //! tier manifest (test-tiers.toml), the tacsim shard guard, the clippy test
 //! allowances, the feature census, the panic budget, the fiat budget (doc
-//! 43 cut TS.6) and the restriction
+//! 43 cut TS.6), the wait budget (doc 51 cut FL.1) and the restriction
 //! lints (three of the four guards run before every push), the toolchain
 //! pin, the RNG and serialization policies, the legacy-handler and
 //! matcher-call-site registries, the schedule source, the fault gates and
@@ -57,3 +57,5 @@ mod schedule_source;
 mod toolchain_pin;
 #[path = "ci_policy/truth_serialization_policy.rs"]
 mod truth_serialization_policy;
+#[path = "ci_policy/wait_budget.rs"]
+mod wait_budget;

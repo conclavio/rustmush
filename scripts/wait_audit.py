@@ -9,6 +9,7 @@ one, its shape (how it waits) and its class (what it waits for). The counts in d
     python scripts/wait_audit.py --dump          # one TSV row a site, for reading
     python scripts/wait_audit.py --class clock   # the sites of one class
     python scripts/wait_audit.py --literals      # the literal-span census
+    python scripts/wait_audit.py --budget        # what the wait_budget gate counts, a row a file
     python scripts/wait_audit.py --src           # ...with the test code under src/ (minutes)
 
 What is scanned. Every .rs file under crates/<pkg>/tests/ (the integration
@@ -21,6 +22,13 @@ needle in prose is not a site.
 What is a site. A call of one of: sleep( (tokio's, std's or bare), timeout(,
 timeout_at(, sleep_until(, recv_timeout(, wait_timeout(. A method call .timeout(
 is a client's configuration, not a wait, and is not counted.
+
+--budget prints what doc 51's ratchet counts (the `wait_budget` gate in
+crates/mush-contract-tests/tests/ci_policy/wait_budget.rs): in story files only,
+outside any `start_paused` test, the raw waits above (`wait`) and the wall-clock
+reads unix_now_s(, unix_now_ms( and SystemTime::now( (`clock`). One row a file
+and counter, `<counter> <count> <crate>/<path>`, then the totals by crate. The
+gate's budget files must hold the same counts.
 
 Shape, mechanical:
   fixed    a sleep outside any loop: the test waits a span and goes on
@@ -61,9 +69,14 @@ from collections import Counter, defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# The dot is its own alternative, so `x.timeout(` matches at the dot whatever comes
+# before it. (Until doc 51 cut FL.1 the look-behind stood before the optional dot,
+# and `x.timeout(` was read as a bare `timeout(` and counted; the tree held none.)
 NEEDLE = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<dot>\.)?(?P<name>sleep_until|sleep|timeout_at|timeout|recv_timeout|wait_timeout)\s*\("
+    r"(?:(?P<dot>\.)|(?<![A-Za-z0-9_]))(?P<name>sleep_until|sleep|timeout_at|timeout|recv_timeout|wait_timeout)\s*\("
 )
+# A wall-clock read (doc 51 §3.9). The empty `dot` group keeps scan_file's shape.
+CLOCK = re.compile(r"(?<![A-Za-z0-9_])(?P<dot>)(?P<name>unix_now_s|unix_now_ms|SystemTime\s*::\s*now)\s*\(")
 LITERAL = re.compile(r"Duration::from_(secs|millis|micros|secs_f32|secs_f64)\(\s*([0-9][0-9_\.]*)\s*\)")
 FN = re.compile(r"\bfn\s+([A-Za-z0-9_]+)")
 LOOP = re.compile(r"(?<![A-Za-z0-9_])(loop|while|for)(?![A-Za-z0-9_])")
@@ -123,7 +136,7 @@ class Site:
     __slots__ = ("crate", "path", "line", "name", "shape", "paused", "fn", "text", "ctx", "cls", "rule", "scope")
 
 
-def scan_file(crate, rel, source, start_line=0, scope="tests"):
+def scan_file(crate, rel, source, start_line=0, scope="tests", pattern=NEEDLE):
     """The sites of one file. `start_line`: ignore sites above it (src files)."""
     code = blank(source)
     raw_lines = source.split("\n")
@@ -145,7 +158,7 @@ def scan_file(crate, rel, source, start_line=0, scope="tests"):
                 hi = mid - 1
         return lo + 1
 
-    needles = {m.start(): m for m in NEEDLE.finditer(code)}
+    needles = {m.start(): m for m in pattern.finditer(code)}
     i, n = 0, len(code)
     while i < n:
         c = code[i]
@@ -333,7 +346,11 @@ def main():
     ap.add_argument("--dump", action="store_true", help="one TSV row a site")
     ap.add_argument("--class", dest="cls", choices=CLASSES, help="list the sites of one class")
     ap.add_argument("--literals", action="store_true", help="the literal-duration census")
+    ap.add_argument("--budget", action="store_true", help="what the wait_budget gate counts, one row a file")
     args = ap.parse_args()
+
+    if args.budget:
+        return budget()
 
     sites, literals, files = [], Counter(), 0
     for crate, rel, source, start, scope in walk(args.src):
@@ -388,6 +405,27 @@ def main():
     print("\nBy rule\n")
     for (cls, rule), k in sorted(Counter((s.cls, s.rule) for s in sites).items()):
         print(f"  {cls:9} {k:4}  {rule}")
+
+
+def budget():
+    """The wait_budget gate's counts: story files, outside paused tests."""
+    rows = Counter()
+    for crate, rel, source, start, scope in walk(False):
+        if "/support/" in rel or rel.endswith("/harness.rs") or crate == "mush-storykit":
+            continue
+        path = rel.split("/", 2)[2]
+        for counter, pattern in (("wait", NEEDLE), ("clock", CLOCK)):
+            n = sum(1 for s in scan_file(crate, rel, source, start, scope, pattern) if not s.paused)
+            if n:
+                rows[(crate, path, counter)] = n
+    order = {"wait": 0, "clock": 1}
+    for (crate, path, counter), n in sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1], order[kv[0][2]])):
+        print(f"{counter} {n} {crate}/{path}")
+    print()
+    by = Counter()
+    for (crate, _path, counter), n in rows.items():
+        by[(crate, counter)] += n
+    table(sorted({k[0] for k in by}), ["wait", "clock"], lambda r, c: by[(r, c)])
 
 
 if __name__ == "__main__":

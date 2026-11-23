@@ -122,7 +122,16 @@ const RATCHET_CRATES: [&str; 12] = [
 /// bot laboratory — out of the engine (no engine, store or gateway among its
 /// production dependencies; it plays the game over SSH as a player would), so an
 /// unwrap in it ends a bot, never a world. The owner's call, 2026-09-10.
-const EXCLUDED_CRATES: [&str; 3] = ["mush-contract-tests", "mush-testkit", "mush-bot"];
+/// `mush-storykit` (doc 51 cut FL.1) is the story suites' shared rig: a wait
+/// that runs out panics there by design, and
+/// `no_production_crate_links_an_excluded_crate` below is what keeps it a
+/// dev-dependency only.
+const EXCLUDED_CRATES: [&str; 4] = [
+    "mush-contract-tests",
+    "mush-testkit",
+    "mush-bot",
+    "mush-storykit",
+];
 
 /// Single files excluded by path, relative to the workspace root.
 const EXCLUDED_FILES: [&str; 1] = ["crates/mush-store/src/suite.rs"];
@@ -632,8 +641,9 @@ fn production_excluded_dep_edges(parsed: &toml::Value) -> Vec<String> {
 }
 
 /// `EXCLUDED_CRATES` are exempt from the production panic budget only because no
-/// production crate links them (`mush-testkit` is test scaffolding; `mush-bot`
-/// is an out-of-engine SSH client; `mush-contract-tests` is this test harness).
+/// production crate links them (`mush-testkit` and `mush-storykit` are test
+/// scaffolding; `mush-bot` is an out-of-engine SSH client; `mush-contract-tests`
+/// is this test harness).
 /// If any crate outside `mush-contract-tests` lists one of them in
 /// `[dependencies]` or `[build-dependencies]`, that exemption becomes an
 /// unbudgeted backdoor into production binaries.
