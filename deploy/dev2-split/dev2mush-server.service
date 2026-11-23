@@ -10,6 +10,21 @@ Documentation=file:/opt/rustmush/dev2/build/deploy/dev2-split/README.md
 # stops dialing, so a start by hand heals the gap on its own.
 StartLimitBurst=5
 StartLimitIntervalSec=60
+# Doc 44 cut MW.1, the world's HOLD. While /opt/rustmush/dev2/server.hold
+# exists, every start of this unit is refused: deploy.sh's, the one a gateway
+# generation's `Wants=` pulls in (a generation's start or restart, a Redis
+# restart propagated through the gateway's `Requires=`), boot's, and a hand
+# `systemctl start`, which fails with "Assertion failed on job". A refused
+# start changes no unit state and costs no start-limit token; a `restart` of a
+# RUNNING unit while held stops it and leaves it down. It is what keeps a wiped
+# box's world down until its named launch is Active: `SERVER_HOLD=1 deploy.sh`
+# and `reset-instance.sh --no-start` set it, deploy/instance/launch-bringup.py
+# lifts it when it starts the world. /opt/rustmush/dev2 is root:root 0755, so
+# the service user can neither set nor lift it. By hand:
+# `rm /opt/rustmush/dev2/server.hold` (deploy/README.md, "Wipe and redeploy").
+# An Assert, not a Condition: a Condition would make that hand start a silent
+# no-op that "succeeds".
+AssertPathExists=!/opt/rustmush/dev2/server.hold
 
 [Service]
 # READY=1 (mush_drain::notify) goes out the moment the IPC socket is bound, so

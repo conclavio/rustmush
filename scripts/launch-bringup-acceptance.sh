@@ -19,7 +19,10 @@
 #   2. the same run, interrupted once and started again, ends the same way;
 #   3. no player can log in or register before the Active boot: a probe types
 #      `create` at the PUBLIC front door every few seconds for the whole
-#      bring-up and is never let in, and is let in once the unit is started;
+#      bring-up and is never let in, and is let in once the unit is started.
+#      The world is HELD meanwhile (<inst>/server.hold, which the shim's unit
+#      asserts as the split's server unit does): the interrupted run and the
+#      `--no-start` reset leave the hold, a run that starts the world lifts it;
 #   4. a House with three titled hulls, a funded treasury and a rated listing
 #      buys a licence by its own agent, and the hulls go back to the Co-op.
 #      This is the long step: a rating is half an hour for a copy of
@@ -83,9 +86,12 @@ fi
 log() { echo "acceptance: $*"; }
 
 # --- the unit: a systemctl that knows one unit, the scratch instance's world.
+# It asserts the hold as the split's server unit does (doc 44 cut MW.1): while
+# <inst>/server.hold exists a start is refused, "Assertion failed".
 cat > "$work/shim/systemctl" << EOF
 #!/usr/bin/env bash
 pidfile="$work/server.pid"
+hold="$inst/server.hold"
 alive() { [ -f "\$pidfile" ] && kill -0 "\$(cat "\$pidfile")" 2> /dev/null; }
 stop_unit() {
   if alive; then
@@ -97,6 +103,11 @@ stop_unit() {
 }
 start_unit() {
   alive && return 0
+  if [ -e "\$hold" ]; then
+    echo "Assertion failed on job for $unit." >&2
+    echo "\$(date +%s) refused-held" >> "$work/unit.log"
+    exit 1
+  fi
   rm -f "$inst/ipc.sock"
   $LLM_ENV setsid runuser -u "$owner" -- "$bin/mush-server" --config "$inst/mushd.toml" \\
     >> "$work/unit-server.log" 2>&1 < /dev/null &
@@ -104,7 +115,7 @@ start_unit() {
   echo "\$(date +%s) start" >> "$work/unit.log"
 }
 case "\$1" in
-cat) [ "\$2" = "$unit" ] ;;
+cat) [ "\$2" = "$unit" ] && echo "AssertPathExists=!\$hold" ;;
 show) if [ "\$3" = User ] || [ "\$3" = Group ]; then echo "$owner"; fi ;;
 is-active) alive ;;
 stop) stop_unit ;;
@@ -319,10 +330,17 @@ if pgrep -u "$owner" -f "$inst/data/bringup" > /dev/null; then
   echo "acceptance: the interrupted run left a private boot running" >&2; exit 1
 fi
 kept_off
+# Doc 44 cut MW.1: the interrupted run left the world HELD, so no gateway
+# restart could have started it on the half-made launch.
+held() { [ -e "$inst/server.hold" ]; }
+held || { echo "acceptance: the interrupted run left no hold" >&2; exit 1; }
 log "run 2: the same store, to the end"
 full_run second --no-seed "${llm_args[@]}"
 expect_ready "$work/bringup-second.log"
 kept_off
+grep -q 'the world is HELD' "$work/bringup-second.log"
+grep -q 'lifted the hold' "$work/bringup-second.log"
+if held; then echo "acceptance: the bring-up started the world and left the hold" >&2; exit 1; fi
 [ "$(probe afterstart)" = in ] || { echo "acceptance: nobody can register after the unit started" >&2; exit 1; }
 log "a player registers once the unit is up"
 counter_as_a_player afterstart
@@ -346,10 +364,12 @@ if grep -q '^launch_path' "$inst/mushd.toml"; then
 fi
 grep -q '^# launch_path = ' "$inst/mushd.toml"
 [ ! -e "$inst/data/launch.json" ] && [ ! -e "$inst/data/bringup" ]
+held || { echo "acceptance: reset-instance.sh --no-start left the world unheld" >&2; exit 1; }
 log "run 3: the second bring-up, on the reset store"
 full_run third --no-seed "${llm_args[@]}"
 expect_ready "$work/bringup-third.log"
 kept_off
+if held; then echo "acceptance: the second bring-up started the world and left the hold" >&2; exit 1; fi
 
 # --- 4: the seed line and a House's purchase, on the live world of run 3.
 # The long step: the Registry's rating is its trial matches. SEED=0 skips it.

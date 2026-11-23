@@ -1311,6 +1311,12 @@ jobs:
           bash -n deploy/dev2-split/gateway-swap.sh
           bash scripts/tests/gateway-swap.sh
           bash scripts/tests/check-web-bundle.sh
+          # The 2026-11-22 wipe: the deploys' systemd helpers (a propagated
+          # Redis restart settled, one enabled generation, the server's hold),
+          # against a stub systemctl; and the on-box wipe recipe.
+          bash -n deploy/drain/units.sh
+          bash scripts/tests/deploy-units.sh
+          for s in deploy/redeploy/*.sh; do bash -n "$s"; done
 
   redis-faults:
     name: K8 Redis and process-fault matrix

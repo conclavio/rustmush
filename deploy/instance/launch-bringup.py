@@ -49,9 +49,15 @@ passed its checks. While it is stopped nothing answers on the instance's own
 IPC socket, so the public gateway generations, which stay up, have no world to
 log anybody in to or register anybody on; the private gateway listens on
 loopback only. A private `--ipc` socket alone would lock the operator out as
-well, which is why the script brings its own gateway. Start from a stopped
-unit (`scripts/reset-instance.sh ... --no-start`, then the deploy with
-`SERVER_HOLD=1`) and no player ever sees the world without its market.
+well, which is why the script brings its own gateway. The world is HELD down
+meanwhile: before the stop the script writes `server.hold` beside the
+instance.env, and the split's server unit (`AssertPathExists=!`) refuses every
+start while it exists, so a gateway generation that starts or restarts cannot
+pull the world in through its `Wants=`. The hold is lifted once the Active boot
+has passed; a run that stops leaves it. Start from a held unit
+(`scripts/reset-instance.sh ... --no-start`, then the deploy with
+`SERVER_HOLD=1`, both of which set it) and no player ever sees the world
+without its market.
 
 SAFE TO INTERRUPT AND RUN AGAIN. Where the bring-up stands is read from the
 world and from launch.json, never assumed: every identity is looked up by name
@@ -554,6 +560,9 @@ class Box:
         self.ssh_endpoint = None
         self.ssh_host_key_path = None
         self.unit = None
+        # The world's hold (doc 44 cut MW.1), beside the installed instance.env:
+        # the split's server unit refuses every start while it exists.
+        self.hold = os.path.join(os.path.dirname(self.env_file), "server.hold")
         self.owner = None
         self.owner_uid = None
         self.owner_gid = None
@@ -661,6 +670,10 @@ class Box:
         return self.known_hosts_file
 
     def systemctl(self, verb):
+        if verb in ("start", "restart") and self.held():
+            # The unit would refuse the start (and a restart would leave it down).
+            raise Stop(f"{self.unit} is HELD ({self.hold}): not {verb}ing it. The hold is lifted "
+                       "once the Active boot has passed; by hand: rm " + self.hold)
         done = subprocess.run(["systemctl", verb, self.unit], capture_output=True, text=True)
         if done.returncode != 0:
             raise Stop(f"systemctl {verb} {self.unit} failed ({done.returncode}): "
@@ -669,6 +682,42 @@ class Box:
     def unit_active(self):
         return bool(self.unit) and subprocess.run(
             ["systemctl", "is-active", "--quiet", self.unit]).returncode == 0
+
+    # ---- the world's hold (doc 44 cut MW.1)
+    #
+    # While <instance root>/server.hold exists, the split's server unit
+    # (`AssertPathExists=!`) refuses every start: a deploy's, the one a gateway
+    # generation's `Wants=` pulls in when it starts or restarts, boot's, a hand
+    # `systemctl start`. `reset-instance.sh --no-start` and `SERVER_HOLD=1
+    # deploy.sh` set it; this script sets it too, before it stops the unit, and
+    # lifts it only once the Active boot has passed. A run that stops leaves it.
+
+    def held(self):
+        return bool(self.unit) and os.path.lexists(self.hold)
+
+    def unit_asserts_hold(self):
+        done = subprocess.run(["systemctl", "cat", self.unit], capture_output=True, text=True)
+        return any(line.strip() == f"AssertPathExists=!{self.hold}"
+                   for line in done.stdout.splitlines())
+
+    def set_hold(self):
+        directory = os.path.dirname(self.hold)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            atomic_write_at(dir_fd, os.path.basename(self.hold),
+                            f"held by launch-bringup.py at {stamp}; it lifts the hold when it "
+                            "starts the world\n", 0o644, stage_dir_fd=dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    def lift_hold(self):
+        """Remove the hold; whether there was one."""
+        try:
+            os.unlink(self.hold)
+        except FileNotFoundError:
+            return False
+        return True
 
     # ---- what is kept: the transcript, and the hulls lent to a House
 
@@ -1725,6 +1774,17 @@ def bring_up(box, password):
     if document is None and box.launch_is_live():
         # A document that went with a wiped world, and a config still naming it.
         box.render()
+    if box.unit:
+        # Before the stop: from here nothing starts the world but this script,
+        # once the Active boot has passed.
+        box.set_hold()
+        if box.unit_asserts_hold():
+            say(f"the world is HELD ({box.hold}): {box.unit} refuses every start, the one a "
+                "gateway generation's Wants= pulls in included, until the Active boot has passed")
+        else:
+            say(f"WARNING: {box.unit} does not assert {box.hold} (a unit installed before the "
+                "hold): a gateway generation's start or restart can still start the world. "
+                "Deploy the current units (deploy.sh installs them)")
     if box.unit_active():
         say(f"stopping {box.unit}: the world is down until the Active boot has passed")
         box.systemctl("stop")
@@ -1952,6 +2012,11 @@ def main():
             say("the Active boot passed: " + ready)
             for what, seconds in box.timings.items():
                 say(f"  {what}: {seconds}s")
+        # The launch is Active: the hold has done its work (and a hold left
+        # beside a world that is already running would only make its next
+        # restart leave it down).
+        if box.unit and box.lift_hold():
+            say(f"lifted the hold {box.hold}: the launch is Active")
         if args.no_systemd or args.no_start:
             say("the world is left stopped; start it, then run this again with --llm-check and, "
                 "for the seed line and the House's purchase, with --seed-only")
@@ -1981,12 +2046,14 @@ def main():
     except Stop as stop:
         print(f"launch-bringup: STOPPED: {stop}", file=sys.stderr)
         if box and box.unit and not box.unit_active():
-            print(f"launch-bringup: {box.unit} is left STOPPED, so nobody is let in to a half-made "
-                  "launch. Run this again: it takes up where it stopped", file=sys.stderr)
+            held = f" and HELD ({box.hold})" if box.held() else ""
+            print(f"launch-bringup: {box.unit} is left STOPPED{held}, so nobody is let in to a "
+                  "half-made launch. Run this again: it takes up where it stopped", file=sys.stderr)
         return 1
     except Interrupted as signal_name:
-        print(f"launch-bringup: interrupted ({signal_name}). The private boots are stopped; run "
-              "this again and it takes up where it stopped", file=sys.stderr)
+        held = f"; {box.unit} is left HELD ({box.hold})" if box and box.held() else ""
+        print(f"launch-bringup: interrupted ({signal_name}). The private boots are stopped{held}; "
+              "run this again and it takes up where it stopped", file=sys.stderr)
         return 130
     finally:
         if box:

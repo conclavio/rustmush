@@ -518,16 +518,33 @@ A unit of its own, two if qualified cover is wanted.
 1. The wipe and redeploy at main, from a stopped unit (`reset-instance.sh --no-start`, the
    split deploy with `SERVER_HOLD=1`), then `launch-bringup.py`. Its log must carry the
    fitting shop's line; `mushd.toml` must read `wake_majors = true`.
+   **Done on both boxes on 2026-11-22**, at main `ebe5840f` (PR #763's merge), on fresh
+   stores, by the recipe now committed as `deploy/redeploy/` (`deploy/README.md`, "Wipe and
+   redeploy"): `launch.json` in mode `active` and `launch_path` live, the 18 majors enabled,
+   each House three Drays at Ceres Freeport, the fitting shop at its Visiting Berth Gallery,
+   the counter's door open; the staff login is `keeper`. The run found two gaps in the
+   deploy, both fixed in the scripts since: `SERVER_HOLD=1` did not hold under systemd (the
+   gateway generation's `Wants=` started the world two seconds after the deploy said it would
+   not; now the server unit asserts a hold file, `server.hold`, that the reset and the deploy
+   set and the bring-up lifts), and a deploy that restarts the instance's Redis raced the
+   generations it restarts (now refused under a running instance unless `REDIS_RESTART=1`,
+   and the deploy waits for systemd's jobs before it reads which generation serves).
 2. The provider keys in the unit's environment file, and the LLM check passing (§8 step 8).
    With `wake_majors` on, eighteen majors may now spend: read `@llm/budget` after the smoke.
    The majors are still stubs (MW.18).
+   **The check passed on both boxes on 2026-11-22** (`npc_dialogue_major` and
+   `tacsim_deliberate` each with an `ok` row). The `@llm/budget` read after the smoke is
+   still to do.
 3. The seed line's rating and a House's purchase (half an hour or more; `--seed-only`).
+   The 2026-11-22 bring-up went on to both on each box; whether they finished is not
+   recorded here (`--seed-only` takes them up where they stand).
 4. §8 step 9's smoke by hand, on w11term, and with it the route this unit opened:
    `+coop/buyout`, `+core/buy II go`, `+core/fit` from the gallery with the ship docked, a
    second fitting to displace a core, then `+core/sell` of the stored one there. No story
    flies that route on a real server; the acceptance reads the counter and sells nothing.
 5. The calls above: the shop's place, the rate and the till.
-6. §8 step 10: record what each box runs.
+6. §8 step 10: record what each box runs. **Recorded:** dev1 and dev2 both run main
+   `ebe5840f`, with the named launch live since 2026-11-22.
 
 ## MW.4
 

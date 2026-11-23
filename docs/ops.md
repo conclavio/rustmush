@@ -109,6 +109,8 @@ The configured receipt promise makes that distinction executable:
 > restore is open as `T-112` in
 > [the simulator backlog](design/16c-simulator-backlog.md); until it lands, copy all of
 > `[server].data_dir` together with a fresh `dump.rdb` before any redeploy or wipe.
+> A wipe's own recipe takes that copy: `deploy/redeploy/wipe-cutover.sh`, in the order
+> [`deploy/README.md`, "Wipe and redeploy"](../deploy/README.md#wipe-and-redeploy) gives.
 
 Three layers, cheapest first:
 
@@ -2893,6 +2895,19 @@ a gap the gateway serves, not a reason for the gateway to stop; a shared
 `SIGHUP` is reserved (doc 33 §4.5): logged, ignored. Full walkthrough (first
 switch, redeploy, the swap, switch back, adapting to another instance) is in
 `deploy/dev1-split/README.md`.
+
+**A wipe holds the world down** (doc 44 cut MW.1). Because a generation
+`Wants=` the server, starting or restarting one starts the world, so "do not
+start the server" is not something a deploy can say by leaving a `systemctl
+start` out. The server unit instead asserts `AssertPathExists=!<instance
+root>/server.hold`: while that root-owned file exists every start of the
+server is refused, and the generations come up and hold the front door of a
+world that is not there. `reset-instance.sh --no-start` and `SERVER_HOLD=1
+deploy.sh` set it, and `deploy/instance/launch-bringup.py` lifts it once the
+named launch is Active. Both halves also `Requires=` the instance's Redis, so a
+Redis restart restarts them (connections drop once): `deploy.sh` refuses one
+under a running instance unless `REDIS_RESTART=1`. The procedure, in order, is
+[`deploy/README.md`, "Wipe and redeploy"](../deploy/README.md#wipe-and-redeploy).
 
 **Stopping one half stops that half.** `systemctl stop <name>mush-gateway`
 stops the gateway only; the server unit keeps running the world (doc 33 GG.2:

@@ -21,13 +21,22 @@ cat > "$fixture/bin/id" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = -u ]; then echo 0; else exec "$RESET_TEST_REAL_ID" "$@"; fi
 SH
+# `stop` and `start` are logged with `held` while the hold file exists; a held
+# `start` fails as the split's server unit's AssertPathExists=! makes it fail.
+export RESET_TEST_HOLD="$fixture/server.hold"
 cat > "$fixture/bin/systemctl" <<'SH'
 #!/usr/bin/env bash
 case "$1" in
 cat) exit 0 ;;
 show)
   if [ "$3" = User ]; then echo "$RESET_TEST_OWNER"; else echo "$RESET_TEST_GROUP"; fi ;;
-stop|start) printf '%s\n' "$1" >> "$RESET_TEST_LOG" ;;
+stop|start)
+  if [ -e "$RESET_TEST_HOLD" ]; then
+    printf '%s held\n' "$1" >> "$RESET_TEST_LOG"
+    if [ "$1" = start ]; then echo "Assertion failed on job for $2." >&2; exit 1; fi
+  else
+    printf '%s\n' "$1" >> "$RESET_TEST_LOG"
+  fi ;;
 *) echo 'unexpected mock systemctl command' >&2; exit 1 ;;
 esac
 SH
@@ -176,10 +185,35 @@ prepare
 printf 'reset-test secret
 ' | bash "$root/scripts/reset-instance.sh" "$fixture/instance.env" --yes --staff Keeper --no-start > "$fixture/output" 2>&1
 assert_clean
-printf 'stop
-flush
-bootstrap
-' > "$fixture/expected-order"
+# ...and HELD (doc 44 cut MW.1): server.hold beside the instance.env, written
+# before the unit was stopped, a plain file, readable, saying who set it.
+printf 'stop held\nflush\nbootstrap\n' > "$fixture/expected-order"
 cmp "$fixture/expected-order" "$RESET_TEST_LOG"
-grep -q 'left STOPPED' "$fixture/output"
-echo 'reset fixture: host identity, secret stdin, cleanup, restart ordering, the launch line and --no-start passed'
+grep -q 'left STOPPED and HELD' "$fixture/output"
+[ -f "$fixture/server.hold" ] && [ ! -L "$fixture/server.hold" ]
+[ "$(stat -c %a "$fixture/server.hold")" = 644 ]
+grep -q '^held by reset-instance.sh --no-start at ' "$fixture/server.hold"
+[ -z "$(find "$fixture" -maxdepth 1 -name 'server.hold.*')" ]
+
+# A reset that starts the world lifts a hold it finds, before the start the
+# hold would refuse.
+prepare
+bash "$root/scripts/reset-instance.sh" "$fixture/instance.env" --yes > "$fixture/output" 2>&1
+assert_clean
+printf 'stop held\nflush\nstart\n' > "$fixture/expected-order"
+cmp "$fixture/expected-order" "$RESET_TEST_LOG"
+[ ! -e "$fixture/server.hold" ]
+grep -q 'lifted the hold' "$fixture/output"
+
+# A symlinked hold file is refused before anything is stopped or written
+# through it.
+prepare
+ln -s "$fixture/outside" "$fixture/server.hold"
+if bash "$root/scripts/reset-instance.sh" "$fixture/instance.env" --yes --no-start > "$fixture/output" 2>&1; then
+  echo 'reset wrote through a symlinked hold file' >&2; exit 1
+fi
+[ ! -s "$RESET_TEST_LOG" ]
+grep -q 'refusing a symlinked hold file' "$fixture/output"
+[ "$(cat "$fixture/outside")" = 'must survive symlink cleanup' ]
+rm -f "$fixture/server.hold" "$fixture/data/outside-link"
+echo 'reset fixture: host identity, secret stdin, cleanup, restart ordering, the launch line, --no-start and its hold passed'

@@ -14,7 +14,7 @@ its sessions with warnings and exits when they are gone (see *Gateway
 generations* below).
 
 It is a **drop-in alternative to `deploy/dev1`** for the *same* instance: same
-Redis (6788), same `instance.env` and so the same rendered `mushd.toml`, same
+Redis (its Unix socket `/run/redis-dev1mush/redis.sock`), same `instance.env` and so the same rendered `mushd.toml`, same
 SSH port (6789), same web port (6790), same data/TLS/env. You run **one or the
 other**, not both (they share the SSH and web ports).
 
