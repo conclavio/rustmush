@@ -106,7 +106,7 @@ const LINTS: [&str; 6] = [
 /// 2026-09-10, at S8's gate.
 const OUT_OF_ENGINE: [&str; 1] = ["mush-bot"];
 
-const MEASURED: [(&str, [u32; 6]); 51] = [
+const MEASURED: [(&str, [u32; 6]); 52] = [
     ("mush-ansi", [0, 0, 13, 0, 0, 0]),
     // S1: born with all six denied (14-spatial-implementation-plan §3.1).
     ("mush-atlas", [0, 0, 0, 0, 0, 0]),
@@ -171,6 +171,10 @@ const MEASURED: [(&str, [u32; 6]); 51] = [
     ("mush-sshdoorway", [0, 0, 0, 0, 0, 0]),
     ("mush-sshdoorway-proto", [0, 0, 0, 0, 0, 0]),
     ("mush-store", [18, 283, 15, 1, 1, 2]),
+    // Doc 51 cut FL.1: the story suites' shared rig. Its two panics are the
+    // failures of `wait_until` and `StoryBudget::hold`: a wait that runs out
+    // panics, which is how a test fails.
+    ("mush-storykit", [0, 0, 0, 2, 0, 0]),
     ("mush-tactics", [3, 49, 1, 0, 2, 0]),
     ("mush-testkit", [0, 5, 0, 1, 0, 0]),
     ("mush-weather", [0, 11, 11, 0, 0, 0]),
@@ -436,7 +440,7 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
     );
     assert_eq!(
         MEASURED.len(),
-        51,
+        52,
         "the measurement in this file's header covered 43 crates; S1 added mush-atlas and \
          mush-content, both born at zero on every lint; 16b cut R-b deleted ruleset-wod and \
          ruleset-shadowrun; 17b cut M2.1 added mush-mind, born at zero on every lint; the \
@@ -444,7 +448,8 @@ fn the_measurement_covers_every_crate_in_the_workspace() {
          spike adds mush-pixel, born at zero on every lint; doc 21 cut G.3b adds \
          mush-pixel-wasm, born at zero on every lint; doc 28 P1 adds mush-composition, born \
          at zero on every lint; doc 29 adds mush-sshdoorway and mush-sshdoorway-proto, both born \n         at zero on every lint; doc 33 cut GG.3 adds mush-drain, born at zero on every lint; \
-         crates in OUT_OF_ENGINE are not measured"
+         doc 51 cut FL.1 adds mush-storykit, born at zero on every lint but `panic`; crates in \
+         OUT_OF_ENGINE are not measured"
     );
 }
 
@@ -478,14 +483,15 @@ fn the_enabled_set_is_the_one_the_measurement_produced() {
             // Doc 28 P1: mush-composition adds one more to each.
             // Doc 29: mush-sshdoorway and mush-sshdoorway-proto add two more to each.
             // Doc 33 cut GG.3: mush-drain adds one more to each.
-            ("clippy::unwrap_used", 48),
+            // Doc 51 cut FL.1: mush-storykit adds one more to each but `panic`.
+            ("clippy::unwrap_used", 49),
             // 16b cut R-a: tacsim now carries the composition root's three expects, so
             // it no longer denies `expect_used`; nine crates did, ten with mush-mind.
-            ("clippy::expect_used", 17),
-            ("clippy::indexing_slicing", 24),
+            ("clippy::expect_used", 18),
+            ("clippy::indexing_slicing", 25),
             ("clippy::panic", 46),
-            ("clippy::unreachable", 42),
-            ("clippy::panic_in_result_fn", 49),
+            ("clippy::unreachable", 43),
+            ("clippy::panic_in_result_fn", 50),
         ]),
         "the per-lint crate counts moved; re-measure before changing them"
     );

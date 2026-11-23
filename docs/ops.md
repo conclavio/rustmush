@@ -2234,7 +2234,7 @@ cargo nextest run -j 8 -p <crate> --test <group> -E 'test(/^<module>::/)'   # wh
 rustfmt --edition 2021 <changed files>       # never `cargo fmt --all` (the path length breaks it)
 cargo clippy -j 8 -p <crate> --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc -j 8 -p <crate> --no-deps
-cargo nextest run -j 8 -p mush-contract-tests --test ci_policy --test engine_contracts -E 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners)::/)'
+cargo nextest run -j 8 -p mush-contract-tests --test ci_policy --test engine_contracts -E 'test(/^(feature_matrix_inventory|panic_budget|restriction_lints|state_slot_owners|wait_budget)::/)'
 scripts/vps-gate.sh                          # the broad sweep, once
 ```
 

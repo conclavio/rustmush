@@ -34,7 +34,8 @@ use mushd::ipguard::IpGuard;
 use mushd::ssh_bridge::{SshBridge, start_listener};
 use mushd::world_task;
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+use crate::support::STEP_TIMEOUT;
+
 const GM_PASSWORD: &str = "gm-secret-1";
 
 fn scratch_dir(tag: &str) -> PathBuf {

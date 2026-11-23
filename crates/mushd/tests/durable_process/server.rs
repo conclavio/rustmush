@@ -794,7 +794,7 @@ mod ssh_full_stack {
     use mushd::ssh_bridge::start_listener;
     use russh::ChannelMsg;
 
-    const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+    use crate::support::STEP_TIMEOUT;
 
     struct AcceptAll;
 
