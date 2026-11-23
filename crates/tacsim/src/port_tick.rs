@@ -1780,6 +1780,9 @@ pub struct PortTickState {
     pub(crate) supply_day: BTreeMap<(u64, CanonicalId), i64>,
     /// **Doc 39 cut IN.5**: the house purchases warned about this boot, by `(stores, good)`.
     pub(crate) supply_warned: BTreeSet<(u64, CanonicalId)>,
+    /// The asks the clerk could not square with a haul's landed leg, warned about this boot, by
+    /// `(storefront vault, good)` (`crate::port::carried`).
+    pub(crate) carried_warned: BTreeSet<(u64, CanonicalId)>,
     /// **Doc 48 unit EX.9**: the consumption rows done or refused today, by
     /// `(storefront vault, good)`, with the IC day. Bounded by
     /// `crate::port::stock::MAX_CLERK_ROWS`; stale days are pruned at each insert.

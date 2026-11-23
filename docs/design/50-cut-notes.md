@@ -1690,6 +1690,32 @@ with OP.6's two, below; no lane bump.
   check; the delivery acknowledged after the loss check; the ore reading of ores only; the
   admission reading pools only; no rate in the gap.
 
+### The storefront's ask (2026-11-23, from the live worlds)
+
+Both live worlds logged one page a boot, seven hours after launch: "a port storefront's stock and
+its listing disagree vault=18 good=propellant", then "the clerk's restock of a milled ask was
+refused". No lane bump.
+- **The cause.** An organization's vault is its lane storefront (the divergence above), which is
+  the pool its standing ask sells. A haul's legs are the job's and never the market's, so the
+  load took the goods out from under the listing and left the listing as it was. OP.4's arm ships
+  30 t of propellant from Occator's storefront at Ceres, and EX.10's house loads it after
+  `FALLBACK_IC_DAYS` (7 IC days, seven real hours at 24:1): the pool read 4,970 under a listing of
+  5,000. That is also under the refinery's floor of 5,000, so the refinery milled 16 t a day,
+  and each restock was refused because the listing already stood over the pool. A late return
+  to a storefront is the same fault the other way.
+- **The fix** (`port::carried`, on the stock clerk's arm before the drift check). The clerk
+  lowers the ask by a landed load and raises it by a landed delivery or return, one act a fire,
+  and marks the haul's record in the same outbox (`HaulJob::ask_out`, `ask_in`; `returned_to`
+  keeps where a return landed). What is owed is read from the job's ledger and its record each
+  fire, so a restart squares a leg once. It moves the ask only by what the pool is short or over,
+  so an ask staff re-listed by hand is left alone. While it waits out a Draw in flight, the drift
+  check and the Listings line read the pool as its ask knows it.
+- **A world an older build ran needs no repair**: its loaded hauls carry no mark, so the first
+  fire after a redeploy lowers the ask, and the next restocks the refinery's product.
+- **Tests** (`domain_economy::op3_hauls`): `op3_a_haul_out_of_a_storefront_takes_its_units_off_the_houses_ask`
+  and `op3_a_haul_returned_to_a_storefront_goes_back_on_the_houses_ask`, both failing with the
+  clerk's step out (a listing of 5,000 over a pool of 4,986); the unit tests in `port::carried`.
+
 ## OP.4
 
 The stockpile, its drain and the Freeport arm's budget; NPC hulls at the picket (Q-50-21, Q-50-22,

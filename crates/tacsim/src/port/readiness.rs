@@ -962,6 +962,18 @@ fn commerce_lines(
             } else {
                 String::new()
             };
+            // A haul's landed leg the stock clerk has not squared the ask with yet
+            // (`crate::port::carried`): the pool reads as its ask knows it meanwhile.
+            let (hauled_out, hauled_back) = crate::port::carried::pending(ctx, row.vault, good);
+            if hauled_out > 0 {
+                clause =
+                    format!("{clause}, {hauled_out} {unit} loaded for a haul and still listed");
+            }
+            if hauled_back > 0 {
+                clause =
+                    format!("{clause}, {hauled_back} {unit} landed by a haul and not yet listed");
+            }
+            let net = crate::port::carried::as_listed(net, hauled_out, hauled_back);
             let reading = market
                 .map(|m| crate::port::stock::ask_reading(m, row.vault, good))
                 .unwrap_or_default();

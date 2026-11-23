@@ -35,6 +35,12 @@
 //!   wreck, and the arm lapses the job: the fee back to the shipper and the bond to them, as a
 //!   seizure does.
 //!
+//! - **A house's ask** (the stock clerk's, `crate::port::carried`): an organization's vault at a
+//!   port is its storefront, the pool its standing ask sells. A load out of one, and a delivery
+//!   or a late return into one, moves that pool and not its listing, so the record keeps whether
+//!   each landed leg's ask is squared ([`HaulJob::ask_out`], [`HaulJob::ask_in`]) and the port's
+//!   stock clerk lowers or raises the ask by the leg (`unsquared`, `square`).
+//!
 //! The legs are works' shape (doc 39 cut IN.3): the record names the leg owed, the command or the
 //! port arm submits it as its actor, the offer projects it from the record, and the prepare moves
 //! the goods once under the job's ledger ordinal (`tacsim.haul_ledger`).
@@ -361,6 +367,20 @@ pub struct HaulJob {
     pub tries: u32,
     /// Where it stands.
     pub stage: HaulStage,
+    /// **The source's ask is squared with the load** (`crate::port::carried`): the port's stock
+    /// clerk lowered the standing ask on the storefront the goods were loaded out of, or found
+    /// nothing to lower. Unset on a record written before the clerk kept it, so a load an older
+    /// build left under its listing is squared at the first fire.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ask_out: bool,
+    /// **The landing vault's ask is squared with the delivery or the return**, as
+    /// [`HaulJob::ask_out`] is with the load.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ask_in: bool,
+    /// **The vault a late return landed the goods in**, `VaultId.0`, kept when the return is
+    /// acknowledged (the owed leg that named it is cleared then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returned_to: Option<u64>,
 }
 
 impl HaulJob {
@@ -861,6 +881,9 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
         owed: None,
         tries: 0,
         stage: HaulStage::Posted,
+        ask_out: false,
+        ask_in: false,
+        returned_to: None,
     };
     put(ctx, &job);
     Ok(POSTED
@@ -1410,6 +1433,8 @@ fn returning(ctx: &mut Ctx<'_>, job: &mut HaulJob, acts: u32, ledger: Option<&Ha
                     .map(|v| SmolStr::new(v.as_str()))
             })
             .map_or_else(String::new, |v| super::venue_name(ctx.w, &v));
+        // The stock clerk reads where the goods landed after the leg is cleared.
+        job.returned_to = job.owed.as_ref().map(|o| o.to).or(job.returned_to);
         job.owed = None;
         job.stage = HaulStage::Closed;
         let line = TOLD_RETURNED
@@ -1475,6 +1500,85 @@ fn locker_venue(w: &World, player: ObjId, vault: u64) -> Option<SmolStr> {
         .values()
         .find(|l| l.player == player && l.vault == vault)
         .map(|l| l.venue.clone())
+}
+
+// ---- a house's ask --------------------------------------------------------------------------
+
+/// **What the hauls' landed legs moved at one storefront pool and its ask does not show yet**
+/// (`crate::port::carried`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Unsquared {
+    /// Units loaded out of the pool.
+    pub out: u64,
+    /// Units a delivery or a return landed in it.
+    pub back: u64,
+    /// The hauls those are, each with whether its load and its landing is the one unsquared.
+    pub jobs: Vec<(u64, bool, bool)>,
+}
+
+/// The vault a haul's return landed (or is landing) its goods in.
+fn return_vault(job: &HaulJob) -> Option<u64> {
+    job.returned_to.or_else(|| {
+        job.owed
+            .as_ref()
+            .filter(|o| o.kind == LegKind::Return)
+            .map(|o| o.to)
+    })
+}
+
+/// **The landed legs at `vault`'s pool of `good` whose ask is not squared yet**: every kept haul
+/// (open, or closed and not yet pruned) whose load left that vault, or whose delivery or return
+/// landed in it, by the job's ledger and never by its stage, so a leg counts from the fire after
+/// it commits. A haul out of and back into the same vault counts on both sides.
+pub(crate) fn unsquared(ctx: &Ctx<'_>, vault: u64, good: &CanonicalId) -> Unsquared {
+    let mut found = Unsquared::default();
+    let Some(book) = super::book(ctx.w) else {
+        return found;
+    };
+    for job in book.hauls.values().filter_map(Held::present) {
+        if &job.good != good {
+            continue;
+        }
+        let from_here = !job.ask_out && job.source == vault;
+        let returned_here = return_vault(job) == Some(vault);
+        let to_here = !job.ask_in && (job.drop == vault || returned_here);
+        if !from_here && !to_here {
+            continue;
+        }
+        let Some(ledger) = landed(ctx, job.contract) else {
+            continue;
+        };
+        let out = from_here && ledger.acts >= 1;
+        let back = to_here
+            && match ledger.last {
+                LegKind::Deliver => job.drop == vault,
+                LegKind::Return => returned_here,
+                LegKind::Load | LegKind::Seized | LegKind::Lost => false,
+            };
+        if out {
+            found.out = found.out.saturating_add(job.quantity);
+        }
+        if back {
+            found.back = found.back.saturating_add(job.quantity);
+        }
+        if out || back {
+            found.jobs.push((job.contract, out, back));
+        }
+    }
+    found
+}
+
+/// **Mark `jobs`' legs squared with their asks** ([`unsquared`]'s rows): the record alone, in the
+/// outbox of the clerk's act that squared them.
+pub(crate) fn square(ctx: &mut Ctx<'_>, jobs: &[(u64, bool, bool)]) {
+    for (contract, out, back) in jobs {
+        let Some(mut job) = haul_of(ctx.w, *contract) else {
+            continue;
+        };
+        job.ask_out |= *out;
+        job.ask_in |= *back;
+        put(ctx, &job);
+    }
 }
 
 // ---- the board ------------------------------------------------------------------------------
@@ -1941,6 +2045,9 @@ mod tests {
             owed: None,
             tries: 0,
             stage: HaulStage::Posted,
+            ask_out: false,
+            ask_in: false,
+            returned_to: None,
         }
     }
 
