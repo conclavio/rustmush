@@ -874,6 +874,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         });
         if let Some(rec) = paused {
             data::persist_domain(ctx.out, &rec);
+            let _ = domain::release_activation(ctx, *d);
         }
     }
     // Retire the records the husk owned.
@@ -882,6 +883,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         .module_state_mut::<SpatialState>()
         .expect("sim state slot installed at registration");
     let mut dels: Vec<smol_str::SmolStr> = Vec::new();
+    let mut retired_hosted = None;
     if let Some(d) = hosted
         && let Some(rec) = s.domains.get_mut(&d)
     {
@@ -899,6 +901,7 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         rec.revision = revision;
         let rec = rec.clone();
         data::persist_domain(ctx.out, &rec);
+        retired_hosted = Some(d);
     }
     if was_space {
         s.spaces.remove(&obj);
@@ -960,9 +963,75 @@ fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     for actor in crew_refresh {
         links::refresh_actor_links(ctx.w, actor);
     }
+    if let Some(d) = retired_hosted {
+        let _ = domain::release_activation(ctx, d);
+    }
     if let Some(space) = member_space {
         drop_destroyed_member(ctx, obj, space);
     }
+    // P2-MOD-62: relinquish any focus whose actor, driver, unit, or console
+    // room was destroyed (or whose console reach broke as a consequence of
+    // unanchoring/quarantining/retiring above).
+    let broken_foci: Vec<focus::ActiveFocus> = ctx
+        .w
+        .module_state::<focus::FocusState>()
+        .map(|focus_state| {
+            focus_state
+                .all_accounts()
+                .into_iter()
+                .filter_map(|account| focus_state.focus_of_account(account))
+                .filter(|focus| {
+                    focus.actor == obj
+                        || focus.driver == obj
+                        || focus.unit == obj
+                        || matches!(focus.reach, focus::ReachProof::Console { room } if room == obj)
+                        || !focus.reach_is_current(ctx.w)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for focus in broken_foci {
+        if let Some(focus_state) = ctx.w.module_state_mut::<focus::FocusState>() {
+            focus_state.relinquish(focus.account);
+        }
+        let unit_alive = focus.unit != obj
+            && ctx
+                .w
+                .get(focus.unit)
+                .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING));
+        let actor_alive = focus.actor != obj
+            && ctx
+                .w
+                .get(focus.actor)
+                .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING));
+        if unit_alive {
+            if focus.proxy {
+                seat::clear_seat_narrowing(ctx, focus.unit, &focus.station, focus.actor);
+            }
+            if let Some(next) =
+                state(ctx.w).and_then(|s| s.next_control_generation(focus.unit).ok())
+            {
+                commands::apply_focus_bump_and_refresh(ctx, focus.unit, next, focus.actor);
+            } else if actor_alive {
+                links::refresh_actor_links(ctx.w, focus.actor);
+            }
+            if actor_alive {
+                station::fire_station_fallback_as(ctx, focus.actor, focus.unit, &focus.station);
+            }
+        } else if actor_alive {
+            links::refresh_actor_links(ctx.w, focus.actor);
+        }
+    }
+}
+
+/// `WorldEvent::Moved` observer (`P2-MOD-62`): invalidate any ordinary focus
+/// whose console reach proof broke when its actor or unit moved away.
+fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+    let WorldEvent::Moved { who, .. } = ev else {
+        return;
+    };
+    commands::invalidate_stale_foci_after_move(ctx, *who);
 }
 
 /// **The programmatic-destroy backstop for a member room** (doc 18 §4.2 (c),
@@ -1154,6 +1223,7 @@ impl GameModule for SimulationModule {
         reg.destroy_gate(Arc::new(StructuralDestroyGate));
         reg.detach_gate(Arc::new(SimDetachGate));
         reg.subscribe(WorldEventKind::ObjDestroyed, Arc::new(on_obj_destroyed));
+        reg.subscribe(WorldEventKind::Moved, Arc::new(on_moved));
         // E7c6 B1+B2+B3: ONE `Coarse` tick advances every carrier journey on the
         // world's IC clock — the housing assessment tick's "pull, not a
         // subscription" shape. It is the whole driver: the leg cursor makes it

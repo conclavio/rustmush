@@ -2442,3 +2442,144 @@ fn recall_is_capped_and_ooc_speech_enforces_length_and_rate_limits() {
     );
     assert!(!texts.iter().any(|t| t.contains("line 0")));
 }
+
+/// P2-MOD-36, P2-MOD-37, P2-MOD-38:
+/// - Non-managed hidden/closed/see-locked channels return uniform `"No such channel."`
+///   across `@channel/destroy|perm|color|set|who`.
+/// - `@channel/who` filters `Flags::DARK` members (except self/staff), hides other
+///   members' `[gagged]` listening state from non-staff, and refuses IC presence/listening
+///   disclosure on non-managed IC channels for non-staff.
+/// - Only staff (`Role::Wizard`+) may toggle the Discord `relay` flag, never a
+///   delegated non-staff `perms.admin` lock holder.
+#[test]
+fn p2_mod_36_37_38_comsys_channel_oracle_who_privacy_and_relay_staff_gate() {
+    let (mut engine, nick, ann) = setup();
+
+    // P2-MOD-36: Non-managed see-locked channel collapses all admin verbs to "No such channel."
+    run(&mut engine, GOD, "@channel/create SecretNet");
+    run(&mut engine, GOD, "@channel/perm SecretNet=see=#false");
+    for verb in [
+        "@channel/destroy SecretNet",
+        "@channel/perm SecretNet=speak=#true",
+        "@channel/color SecretNet=red,#ff0000",
+        "@channel/set SecretNet=loud",
+        "@channel/who SecretNet",
+    ] {
+        let secret_out = sys_texts(&run(&mut engine, nick, verb));
+        let missing_out = sys_texts(&run(
+            &mut engine,
+            nick,
+            &verb.replace("SecretNet", "NoSuchNet"),
+        ));
+        assert_eq!(secret_out, vec!["No such channel.".to_string()], "{verb}");
+        assert_eq!(secret_out, missing_out, "{verb} existence oracle");
+    }
+
+    // P2-MOD-37: `@channel/who` hides DARK members and others' `[gagged]` state,
+    // and hides remote presence/listening state on non-managed IC channels.
+    run(&mut engine, nick, "addcom p=Public");
+    run(&mut engine, ann, "addcom p=Public");
+    run(&mut engine, ann, "@channel/gag p");
+    engine
+        .world
+        .set_flag(ann, mush_core::Flags::DARK, true)
+        .unwrap();
+    let who_nick = sys_texts(&run(&mut engine, nick, "@channel/who Public")).join("\n");
+    assert!(
+        !who_nick.contains("Ann"),
+        "DARK member leaked in @channel/who: {who_nick}"
+    );
+    let who_god = sys_texts(&run(&mut engine, GOD, "@channel/who Public")).join("\n");
+    assert!(
+        who_god.contains("Ann"),
+        "staff must still see DARK member: {who_god}"
+    );
+    assert!(
+        who_god.contains("[gagged]"),
+        "staff sees gagged state: {who_god}"
+    );
+
+    // Un-DARK Ann: Nick still must NOT see Ann's `[gagged]` listening state,
+    // while Ann sees her own `[gagged]` state.
+    engine
+        .world
+        .set_flag(ann, mush_core::Flags::DARK, false)
+        .unwrap();
+    let who_nick2 = sys_texts(&run(&mut engine, nick, "@channel/who Public")).join("\n");
+    assert!(
+        who_nick2.contains("Ann"),
+        "visible member shown: {who_nick2}"
+    );
+    assert!(
+        !who_nick2.contains("[gagged]"),
+        "another member's listening/gagged state leaked: {who_nick2}"
+    );
+    let who_ann = sys_texts(&run(&mut engine, ann, "@channel/who Public")).join("\n");
+    assert!(
+        who_ann.contains("[gagged]"),
+        "self sees own gagged state: {who_ann}"
+    );
+
+    // Non-managed IC channel: non-staff sees no remote presence or listening state.
+    run(&mut engine, GOD, "@channel/create RadioNet");
+    run(&mut engine, GOD, "@channel/set RadioNet=ic");
+    run(&mut engine, nick, "addcom r=RadioNet");
+    run(&mut engine, ann, "addcom r=RadioNet");
+    let ic_who_nick = sys_texts(&run(&mut engine, nick, "@channel/who RadioNet")).join("\n");
+    assert!(
+        !ic_who_nick.contains("Ann") && !ic_who_nick.contains("[connected]"),
+        "IC channel leaked remote presence to non-staff: {ic_who_nick}"
+    );
+    let ic_who_god = sys_texts(&run(&mut engine, GOD, "@channel/who RadioNet")).join("\n");
+    assert!(
+        ic_who_god.contains("Ann"),
+        "staff should still see IC channel roster: {ic_who_god}"
+    );
+
+    // P2-MOD-38: Non-staff delegated `perms.admin` can set normal flags (e.g. `loud`),
+    // but CANNOT toggle `relay` (strictly Wizard+).
+    run(
+        &mut engine,
+        GOD,
+        &format!("@channel/perm Public=admin=#{}", nick.0),
+    );
+    let loud_ok = sys_texts(&run(&mut engine, nick, "@channel/set Public=loud")).join("\n");
+    assert!(
+        loud_ok.contains("Flag loud set"),
+        "admin lock still works: {loud_ok}"
+    );
+    let relay_denied = sys_texts(&run(&mut engine, nick, "@channel/set Public=relay")).join("\n");
+    assert!(
+        relay_denied.contains("Permission denied"),
+        "non-staff admin must not enable relay: {relay_denied}"
+    );
+    assert!(
+        !state(&engine)
+            .channel_by_name("Public")
+            .unwrap()
+            .flags
+            .relay
+    );
+    // Even after staff enables relay, non-staff admin cannot turn it off.
+    run(&mut engine, GOD, "@channel/set Public=relay");
+    assert!(
+        state(&engine)
+            .channel_by_name("Public")
+            .unwrap()
+            .flags
+            .relay
+    );
+    let unrelay_denied =
+        sys_texts(&run(&mut engine, nick, "@channel/set Public=!relay")).join("\n");
+    assert!(
+        unrelay_denied.contains("Permission denied"),
+        "non-staff admin must not disable relay: {unrelay_denied}"
+    );
+    assert!(
+        state(&engine)
+            .channel_by_name("Public")
+            .unwrap()
+            .flags
+            .relay
+    );
+}

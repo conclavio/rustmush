@@ -1001,3 +1001,297 @@ fn s4b2_a_field_mark_coexists_with_the_claim_and_the_close_takes_the_live_hull()
     );
     Ok(())
 }
+
+/// **P2-MOD-67**: Reaching `MAX_HISTORY = 8192` with closed IC custody rows no
+/// longer permanently bricks future IC mind sorties. Opening a new sortie
+/// compacts the oldest closed row(s) via `ModuleDelete` + cryptographic
+/// `ic_custody_checkpoint`, keeps open rows intact, enforces sortie sequence
+/// monotonicity past compacted rows, and passes cold reboot + boot audit.
+#[test]
+fn p2_mod_67_compacting_closed_ic_custody_history_prevents_permanent_dos() -> Result {
+    let mut f = setup()?;
+    // Create a second unit so we can keep one OPEN sortie (`sortie = 2`) alive
+    // while saturating history to `MAX_HISTORY` with closed sorties.
+    let base = f
+        .world
+        .world()
+        .get(f.hull)
+        .and_then(|o| o.location)
+        .ok_or("base")?;
+    let active_hull =
+        f.world
+            .world_mut()
+            .create(ObjKind::Thing, "Active IC hull", GOD, Some(base))?;
+    f.world.run(
+        GOD,
+        &format!("@unit/create #{}=physical_hull", active_hull.0),
+    );
+    let _ = f.world.world_mut().take_dirty();
+    let _ = f.world.take_module_ops();
+
+    let state_snap = stored(&f);
+    let record_schema = state_snap
+        .record_definition
+        .clone()
+        .ok_or("record schema")?;
+    let active_unit = state_snap
+        .units
+        .get(&active_hull)
+        .ok_or("active unit")?
+        .clone();
+    let active_digest = encode_unit_document(&record_schema, &active_unit, None)?.1;
+    let active_unit_doc = encode_unit_document(&record_schema, &active_unit, None)?.0;
+
+    // Build `MAX_HISTORY` (8192) rows:
+    // - sortie 1: CLOSED (the oldest closed row -> MUST be evicted on open #8193)
+    // - sortie 2: OPEN on `active_hull` (-> MUST NEVER be evicted!)
+    // - sorties 3..=MAX_HISTORY: CLOSED
+    let mut seed_rows = Vec::with_capacity(MAX_HISTORY);
+    let mut sortie_1_key = String::new();
+    let mut sortie_2_open_token = CommitToken::from_bytes([0; 16]);
+    for i in 1..=u64::try_from(MAX_HISTORY)? {
+        let mut open_bytes = [0_u8; 16];
+        open_bytes[0] = 0xA1;
+        open_bytes[8..16].copy_from_slice(&i.to_be_bytes());
+        let open_op = CommitToken::from_bytes(open_bytes);
+        let is_open = i == 2;
+        let closed = if is_open {
+            sortie_2_open_token = open_op;
+            None
+        } else {
+            let mut close_bytes = [0_u8; 16];
+            close_bytes[0] = 0xB2;
+            close_bytes[8..16].copy_from_slice(&i.to_be_bytes());
+            Some(Closing {
+                operation: CommitToken::from_bytes(close_bytes),
+                action: f.rules.close.clone(),
+                event: IcEventRef {
+                    sequence: i,
+                    digest: DefinitionDigest::from_bytes([6; 32]),
+                },
+                unit_digest: active_digest,
+            })
+        };
+        let rec = Record {
+            format: 1,
+            open: Opening {
+                operation: open_op,
+                action: f.rules.open.clone(),
+                unit: if is_open { active_hull } else { ObjId(9_000) },
+                sortie: i,
+                dispatcher: GOD,
+                seal_digest: DefinitionDigest::from_bytes([4; 32]),
+                record_schema: record_schema.clone(),
+                definition: active_unit.schema().clone(),
+                revision: active_unit.revision(),
+                unit_digest: active_digest,
+            },
+            closed,
+        };
+        if i == 1 {
+            sortie_1_key = rec.key();
+        }
+        seed_rows.push(rec);
+    }
+
+    let saturated = IcCustodies::reconstruct(seed_rows.clone())?;
+    check_eq!(saturated.rows.len(), MAX_HISTORY);
+    check_eq!(saturated.active.len(), 1);
+    f.world
+        .world_mut()
+        .module_state_mut::<UnitStore>()
+        .ok_or("store")?
+        .ic = saturated;
+
+    // Prepare, stage, and install sortie #8193 (`MAX_HISTORY + 1`) on `f.hull`.
+    let next_sortie = u64::try_from(MAX_HISTORY)? + 1;
+    let inv_for = |f: &Fixture, sortie: u64, req_byte: u8| -> Result<ActionInvocation> {
+        let request = RequestUid::from_bytes([req_byte; 16]);
+        let principal = PrincipalId::Object { id: GOD };
+        let revision = stored(f).units.get(&f.hull).ok_or("hull")?.revision();
+        Ok(ActionInvocation::new(ActionInvocationDraft {
+            request,
+            principal: principal.clone(),
+            actor: GOD,
+            offered_action: ActionOfferId(CanonicalHash::from_bytes([1; 32])),
+            subject: PerceivedRef::SelfActor,
+            targets: vec![],
+            parameters: json!({"unit": f.hull, "revision": revision, "sortie": sortie}),
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal,
+                    owner: OwnerId::new("tacsim")?,
+                    namespace: CanonicalId::new("ic_physical")?,
+                },
+                1,
+                IdempotencyKey::Request(request),
+            ),
+        })?)
+    };
+
+    let inv_8193 = inv_for(&f, next_sortie, 0x31)?;
+    let token_8193 = CommitToken::from_bytes([0x51; 16]);
+    let (prepared, out) = f
+        .world
+        .engine_mut()
+        .prepare_registered_composed_authoritative_action(&f.rules.open, &inv_8193, token_8193)?;
+
+    // Inspect ReplayWrites: must delete oldest closed row (`sortie_1_key`),
+    // write `ic_custody_checkpoint`, and write new row + unit doc.
+    let mut deleted_keys = Vec::new();
+    let mut checkpoint_val: Option<Value> = None;
+    let mut new_row_entry: Option<(SmolStr, Value)> = None;
+    let mut new_unit_doc: Option<(SmolStr, Value)> = None;
+    for w in prepared.authoritative_replay_writes() {
+        match w {
+            ReplayWrite::ModuleDelete { namespace, key } if namespace.as_str() == "tactics" => {
+                deleted_keys.push(key.as_str().to_owned());
+            }
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } if namespace.as_str() == "tactics" => {
+                if key.as_str() == CHECKPOINT_KEY {
+                    checkpoint_val = Some(value);
+                } else if key.as_str().starts_with(PREFIX) {
+                    new_row_entry = Some((key.as_str().into(), value));
+                } else if key.as_str().starts_with("unit:") {
+                    new_unit_doc = Some((key.as_str().into(), value));
+                }
+            }
+            _ => {}
+        }
+    }
+    check_eq!(deleted_keys, vec![sortie_1_key.clone()]);
+    let cp_json = checkpoint_val.ok_or("missing ic_custody_checkpoint write")?;
+    let cp: Checkpoint = serde_json::from_value(cp_json.clone())?;
+    check_eq!(cp.format, 1);
+    check_eq!(cp.compacted_through_sortie, 1);
+    check_eq!(cp.compacted_count, 1);
+
+    // Stage and install into live world state.
+    let (outcome, resolution, mut definitions, mut witnesses, mut durable_outbox, semantic_events) =
+        out.into_parts();
+    definitions.extend([f.rules.open.clone(), outcome.schema().clone()]);
+    definitions.sort();
+    definitions.dedup();
+    if witnesses.is_empty() {
+        witnesses.push(inv_8193.principal().clone());
+    }
+    witnesses.sort();
+    witnesses.dedup();
+    durable_outbox.sort_by_key(|o| o.ordinal());
+    let bundle = AuthoritativeBundle::new(AuthoritativeBundleDraft {
+        token: token_8193,
+        request: inv_8193.request(),
+        idempotency: inv_8193.idempotency().clone(),
+        ingress_hash: CanonicalHash::from_bytes([2; 32]),
+        request_hash: inv_8193.request_hash(),
+        plan_hash: CanonicalHash::from_bytes([3; 32]),
+        action: f.rules.open.clone(),
+        provider: prepared.owner().clone(),
+        cause: PreparedCausalRef::new(inv_8193.request(), None, 0)?,
+        definitions,
+        writes: prepared.authoritative_replay_writes(),
+        outcome,
+        resolution: resolution.map(|r| r.bind(token_8193)),
+        semantic_events,
+        eligible_witnesses: witnesses,
+        durable_outbox,
+    })?;
+    let guards = f
+        .world
+        .registry()
+        .server_guard_set_builder(RevisionSet::default())?
+        .finish()?;
+    f.world
+        .engine_mut()
+        .stage_authoritative_action(prepared, guards, bundle)?;
+    install(&mut f)?;
+
+    let after = stored(&f);
+    check_eq!(after.ic.rows.len(), MAX_HISTORY);
+    check!(after.is_ic_custodied(f.hull), "new sortie 8193 opened");
+    check!(
+        after.is_ic_custodied(active_hull) && after.ic.rows.contains_key(&sortie_2_open_token),
+        "open sortie 2 must never be compacted"
+    );
+    check_eq!(after.ic.compacted_through_sortie(), 1);
+
+    // Replaying compacted sortie 1 on another fresh hull must be refused!
+    let third_hull =
+        f.world
+            .world_mut()
+            .create(ObjKind::Thing, "Third IC hull", GOD, Some(base))?;
+    f.world.run(
+        GOD,
+        &format!("@unit/create #{}=physical_hull", third_hull.0),
+    );
+    let replay_inv = {
+        let request = RequestUid::from_bytes([0x32; 16]);
+        let principal = PrincipalId::Object { id: GOD };
+        let revision = stored(&f).units.get(&third_hull).ok_or("third")?.revision();
+        ActionInvocation::new(ActionInvocationDraft {
+            request,
+            principal: principal.clone(),
+            actor: GOD,
+            offered_action: ActionOfferId(CanonicalHash::from_bytes([1; 32])),
+            subject: PerceivedRef::SelfActor,
+            targets: vec![],
+            parameters: json!({"unit": third_hull, "revision": revision, "sortie": 1}),
+            idempotency: ScopedIdempotencyKey::new(
+                IdempotencyScope {
+                    principal,
+                    owner: OwnerId::new("tacsim")?,
+                    namespace: CanonicalId::new("ic_physical")?,
+                },
+                1,
+                IdempotencyKey::Request(request),
+            ),
+        })?
+    };
+    check!(
+        f.world
+            .engine_mut()
+            .prepare_registered_composed_authoritative_action(
+                &f.rules.open,
+                &replay_inv,
+                CommitToken::from_bytes([0x52; 16]),
+            )
+            .is_err(),
+        "replaying a compacted sortie number must be refused"
+    );
+
+    // Cold reboot with the compacted disk image (all rows except deleted sortie 1
+    // + new sortie 8193 + ic_custody_checkpoint + both open unit docs) passes
+    // load + reconstruct + check_boot cleanly!
+    let mut disk_kv: Vec<(SmolStr, Value)> = Vec::with_capacity(MAX_HISTORY + 3);
+    for rec in seed_rows.into_iter().skip(1) {
+        disk_kv.push((rec.key().into(), serde_json::to_value(&rec)?));
+    }
+    disk_kv.push(new_row_entry.ok_or("new row")?);
+    disk_kv.push((CHECKPOINT_KEY.into(), cp_json.clone()));
+    disk_kv.push(new_unit_doc.ok_or("new unit doc")?);
+    disk_kv.push((format!("unit:{}", active_hull.0).into(), active_unit_doc));
+
+    let reopened = cold(&f, disk_kv.clone(), true)?;
+    let reloaded = reopened
+        .world
+        .module_state::<UnitStore>()
+        .ok_or("reloaded store")?;
+    check_eq!(reloaded.ic.rows.len(), MAX_HISTORY);
+    check_eq!(reloaded.ic.compacted_through_sortie(), 1);
+    check!(reloaded.is_ic_custodied(f.hull));
+    check!(reloaded.is_ic_custodied(active_hull));
+
+    // Disabled config refuses checkpoint; tampered checkpoint refuses.
+    check!(cold(&f, disk_kv, false).is_err());
+    let mut bad_cp = cp_json;
+    bad_cp
+        .as_object_mut()
+        .ok_or("cp obj")?
+        .insert("compacted_count".into(), json!(0));
+    check!(cold(&f, vec![(CHECKPOINT_KEY.into(), bad_cp)], true).is_err());
+    Ok(())
+}

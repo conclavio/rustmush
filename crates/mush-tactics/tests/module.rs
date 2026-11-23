@@ -4005,3 +4005,46 @@ fn af3_the_boot_keeps_the_markers_for_the_claim_and_restores_the_unclaimed() {
     assert!(mush_tactics::custody::marker_of(world.world(), mech).is_some());
     assert!(mush_sim::deployed::is_deployed(world.world(), mech));
 }
+
+/// **P2-MOD-85.** `on_obj_destroyed` scrubs a dangling component-asset pointer
+/// on a deployed unit (preserving the deployed marker on disk), but suppresses
+/// `tactics.unit` and `tactics.vitals` keyframes to stationed viewers while the
+/// unit is `deployed::excluded`.
+#[test]
+fn p2_mod_85_on_obj_destroyed_suppresses_keyframes_for_deployed_excluded_unit() {
+    let mut world = af3_boot(true);
+    let (mech, rifle) = kitted_unit(&mut world);
+    let pilot = i8_player(&mut world, "DeployedPilot");
+    i8_grant(&mut world, pilot, mech, 10);
+    world.connect(pilot);
+    let _ = af3_check_out(&mut world, mech);
+    assert!(
+        mush_sim::deployed::excluded(world.world(), mush_sim::deployed::Shown::Unit(mech)),
+        "checked-out arena unit must be deployed::excluded"
+    );
+    world.take_module_ops();
+
+    world.world_mut().destroy(rifle).unwrap();
+    let mut out = Outbox::new();
+    let mut fxx = Effects::new();
+    world.engine_mut().emit_world_event(
+        &WorldEvent::ObjDestroyed { obj: rifle },
+        &mut out,
+        &mut fxx,
+    );
+    let ev = out.take();
+
+    assert_eq!(
+        asset_of(&world, mech),
+        None,
+        "runtime scrub still repairs the dangling asset pointer"
+    );
+    assert!(
+        i8_frames_to(&ev, "tactics.unit", PanelFrameKind::Keyframe, pilot).is_empty(),
+        "on_obj_destroyed must suppress tactics.unit keyframes for deployed::excluded units"
+    );
+    assert!(
+        i8_frames_to(&ev, "tactics.vitals", PanelFrameKind::Keyframe, pilot).is_empty(),
+        "on_obj_destroyed must suppress tactics.vitals keyframes for deployed::excluded units"
+    );
+}

@@ -988,6 +988,12 @@ impl InputContext for DraftEditContext {
 // Snapshot assembly + draft store/persist + rendering
 // ----------------------------------------------------------------------
 
+/// Whether `actor` is authorized to inspect `room`'s topology and description
+/// during `@gen` / `@gen/building` (controls the room or is staff, P2-MOD-70).
+fn may_inspect_room(w: &World, actor: ObjId, room: ObjId) -> bool {
+    perm::controls(w, actor, room) || perm::has_role(w, actor, Role::Royalty)
+}
+
 fn build_snapshot(
     w: &World,
     room: ObjId,
@@ -997,8 +1003,8 @@ fn build_snapshot(
     prior_draft: Option<DraftPayload>,
 ) -> GenSnapshot {
     let theme = resolve_theme(w, room);
-    let facts = room_facts(w, room);
-    let neighbors = neighbor_descs(w, room);
+    let facts = room_facts(w, builder, room);
+    let neighbors = neighbor_descs(w, builder, room);
     GenSnapshot {
         kind: GenKind::Room,
         room,
@@ -1012,7 +1018,7 @@ fn build_snapshot(
     }
 }
 
-fn room_facts(w: &World, room: ObjId) -> RoomFacts {
+fn room_facts(w: &World, actor: ObjId, room: ObjId) -> RoomFacts {
     let name = room_name(w, room);
     let mut exits = Vec::new();
     for &e in w.exits_of(room) {
@@ -1021,7 +1027,10 @@ fn room_facts(w: &World, room: ObjId) -> RoomFacts {
         let primary = segs.next().unwrap_or("").to_string();
         let mut aliases: Vec<String> = segs.map(str::to_string).collect();
         aliases.extend(o.aliases.iter().map(|a| a.to_string()));
-        let destination = o.destination.map(|d| room_name(w, d));
+        let destination = o
+            .destination
+            .filter(|&d| may_inspect_room(w, actor, d))
+            .map(|d| room_name(w, d));
         exits.push(ExitFact {
             name: primary,
             aliases,
@@ -1031,7 +1040,7 @@ fn room_facts(w: &World, room: ObjId) -> RoomFacts {
     RoomFacts { name, exits }
 }
 
-fn neighbor_descs(w: &World, room: ObjId) -> Vec<NeighborDesc> {
+fn neighbor_descs(w: &World, actor: ObjId, room: ObjId) -> Vec<NeighborDesc> {
     let mut out = Vec::new();
     for &e in w.exits_of(room) {
         if out.len() >= MAX_NEIGHBORS {
@@ -1041,6 +1050,9 @@ fn neighbor_descs(w: &World, room: ObjId) -> Vec<NeighborDesc> {
         let Some(dest) = exit.destination else {
             continue;
         };
+        if !may_inspect_room(w, actor, dest) {
+            continue;
+        }
         let Some(desc) = w.attr(dest, "desc").and_then(|a| a.as_text()) else {
             continue;
         };
@@ -1194,6 +1206,9 @@ fn apply_exit(ctx: &mut Ctx<'_>, room: ObjId, ed: &ExitDraft) -> bool {
         })
     });
     let Some(exit) = matched else { return false };
+    if !perm::can_modify(ctx.w, ctx.actor, exit) {
+        return false;
+    }
     let mut wrote = false;
     if !ed.desc.trim().is_empty() {
         set_attr_audited(ctx, exit, "desc", &ed.desc);
@@ -1263,7 +1278,7 @@ fn gen_building(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let max_rooms = ctx
         .state::<WorldgenState>()
         .map_or(MAX_BUILDING_ROOMS, |st| st.batch_max_rooms);
-    let rooms = walk_building(ctx.w, entrance, max_rooms);
+    let rooms = walk_building(ctx.w, ctx.actor, entrance, max_rooms);
     if rooms.len() < 2 {
         return Err(CmdError::msg(
             "That room has no interior exits to other rooms; describe a single room with \
@@ -1579,7 +1594,7 @@ fn retry_brief(
     let max_rooms = ctx
         .state::<WorldgenState>()
         .map_or(MAX_BUILDING_ROOMS, |st| st.batch_max_rooms);
-    let rooms = walk_building(ctx.w, entrance, max_rooms);
+    let rooms = walk_building(ctx.w, ctx.actor, entrance, max_rooms);
     if rooms.len() < 2 {
         return Err(CmdError::msg(
             "That room no longer has interior exits to other rooms.",
@@ -1868,7 +1883,7 @@ fn defer_batch_room(
             return false;
         };
         let theme = resolve_theme(ctx.w, room);
-        let facts = room_facts(ctx.w, room);
+        let facts = room_facts(ctx.w, builder, room);
         let neighbors = batch_neighbor_descs(ctx.w, st, room, builder);
         GenSnapshot {
             kind: GenKind::Room,
@@ -2002,9 +2017,10 @@ fn degrade_remaining(ctx: &mut Ctx<'_>, entrance: ObjId) {
 /// BFS from `entrance` over interior exits, bounded at `max_rooms` (the
 /// `[worldgen].batch_max_rooms` config knob, default
 /// [`MAX_BUILDING_ROOMS`]). "Interior" = a linked exit whose destination room
-/// is in the entrance's zone; for an unzoned entrance, within
-/// [`MAX_UNZONED_HOPS`] hops. The entrance is always first (BFS order).
-fn walk_building(w: &World, entrance: ObjId, max_rooms: usize) -> Vec<ObjId> {
+/// is in the entrance's zone (or within [`MAX_UNZONED_HOPS`] hops when unzoned)
+/// **and** that `actor` controls or is staff to inspect (P2-MOD-70). The
+/// entrance is always first (BFS order).
+fn walk_building(w: &World, actor: ObjId, entrance: ObjId, max_rooms: usize) -> Vec<ObjId> {
     use std::collections::{HashSet, VecDeque};
     let zone = w.get(entrance).and_then(|o| o.zone);
     let mut visited: HashSet<ObjId> = HashSet::new();
@@ -2027,6 +2043,9 @@ fn walk_building(w: &World, entrance: ObjId, max_rooms: usize) -> Vec<ObjId> {
             }
             let Some(dobj) = w.get(dest) else { continue };
             if dobj.kind != ObjKind::Room {
+                continue;
+            }
+            if !may_inspect_room(w, actor, dest) {
                 continue;
             }
             let interior = match zone {
@@ -2093,6 +2112,9 @@ fn batch_neighbor_descs(
         let Some(dest) = exit.destination else {
             continue;
         };
+        if !may_inspect_room(w, builder, dest) {
+            continue;
+        }
         let desc = st
             .draft(dest, builder)
             .map(|d| d.payload.desc.clone())

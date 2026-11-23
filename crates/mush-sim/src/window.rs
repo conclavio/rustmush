@@ -8,10 +8,11 @@ use mush_core::{BINDING_SCHEMA_VERSION, BehaviorBinding, BehaviorId, Ctx, ObjId,
 
 use crate::data::{
     DomainClock, DomainId, DomainRecord, DomainStatus, GeometryFn, MetricGeometry, Pose, ResolveFn,
-    RoomResolver, SpatialParent, SpatialState, WindowGeometry, WindowRec, passive_definition_ref,
-    persist_domain, persist_meta,
+    RoomResolver, SpatialParent, SpatialState, WindowGeometry, WindowRec, domain_key,
+    passive_definition_ref, persist_del, persist_domain, persist_meta,
 };
 use crate::graph::rebuild;
+use crate::links::{commit_control_bumps_and_refresh, prepare_subtree_control_bumps};
 use crate::transition::{Transition, run};
 
 /// The most windows open at once (doc 14 §3.4: `MAX_ACTIVE_DOMAINS` bounds the
@@ -294,6 +295,10 @@ pub fn windows(w: &World) -> impl Iterator<Item = (DomainId, &WindowRec)> + '_ {
 /// The transition's refusal, or the pose's.
 pub fn place(ctx: &mut Ctx<'_>, obj: ObjId, domain: DomainId, pose: Pose) -> Result<(), String> {
     pose.validate()?;
+    let bumps = {
+        let st = state(ctx.w)?;
+        prepare_subtree_control_bumps(ctx, st, obj).map_err(|e| e.to_string())?
+    };
     attach(ctx, obj, "sim.participant")?;
     run(
         ctx,
@@ -302,7 +307,10 @@ pub fn place(ctx: &mut Ctx<'_>, obj: ObjId, domain: DomainId, pose: Pose) -> Res
             parent: SpatialParent::Direct { domain, pose },
         },
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    commit_control_bumps_and_refresh(ctx, obj, &bumps);
+    crate::commands::invalidate_stale_foci_after_move(ctx, obj);
+    Ok(())
 }
 
 /// **Place `obj` inside the interior space `space`** — one planned transition,
@@ -328,6 +336,10 @@ pub fn place_interior(
     space: ObjId,
     slot: Option<crate::data::SlotId>,
 ) -> Result<(), String> {
+    let bumps = {
+        let st = state(ctx.w)?;
+        prepare_subtree_control_bumps(ctx, st, obj).map_err(|e| e.to_string())?
+    };
     attach(ctx, obj, "sim.participant")?;
     run(
         ctx,
@@ -336,7 +348,10 @@ pub fn place_interior(
             parent: SpatialParent::Interior { space, slot },
         },
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    commit_control_bumps_and_refresh(ctx, obj, &bumps);
+    crate::commands::invalidate_stale_foci_after_move(ctx, obj);
+    Ok(())
 }
 
 /// **Declare (or re-declare) a compartment on an interior space** (doc 18 §4.2
@@ -382,6 +397,10 @@ pub fn declare_compartment(
 /// The transition's refusal.
 pub fn unplace(ctx: &mut Ctx<'_>, obj: ObjId, reason: &str) -> Result<(), String> {
     let by = ctx.actor;
+    let bumps = {
+        let st = state(ctx.w)?;
+        prepare_subtree_control_bumps(ctx, st, obj).map_err(|e| e.to_string())?
+    };
     run(
         ctx,
         &Transition::Unplace {
@@ -391,7 +410,10 @@ pub fn unplace(ctx: &mut Ctx<'_>, obj: ObjId, reason: &str) -> Result<(), String
             keep: true,
         },
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    commit_control_bumps_and_refresh(ctx, obj, &bumps);
+    crate::commands::invalidate_stale_foci_after_move(ctx, obj);
+    Ok(())
 }
 
 /// Where `obj` stands, when it is directly placed.
@@ -480,5 +502,44 @@ pub fn close_window(ctx: &mut Ctx<'_>, domain: DomainId) -> Result<Vec<ObjId>, S
         unplace(ctx, obj, "the window closed")?;
     }
     run(ctx, &Transition::Retire { domain }).map_err(|e| e.to_string())?;
+    // P2-MOD-82: release any standing ActivationBook slot (and promote queued
+    // domains) when a window domain retires.
+    if let Err(error) = crate::domain::release_activation(ctx, domain) {
+        tracing::error!(
+            domain = %domain,
+            %error,
+            "sim: window close could not release standing activation"
+        );
+    }
+    // P2-MOD-64: prune the retired empty window DomainRecord immediately so
+    // player-driven window churn cannot grow `domains` unboundedly or starve
+    // pulse maintenance. `next_domain_id` stays strictly monotonic in `meta`.
+    let pruned = {
+        let st = state_mut(ctx.w)?;
+        let empty_retired = st
+            .domains
+            .get(&domain)
+            .is_some_and(|d| d.status == DomainStatus::Retired)
+            && st
+                .derived
+                .domain_direct
+                .get(&domain)
+                .is_none_or(std::collections::BTreeSet::is_empty)
+            && st
+                .derived
+                .spaces_in_domain
+                .get(&domain)
+                .is_none_or(std::collections::BTreeSet::is_empty);
+        if empty_retired {
+            st.domains.remove(&domain);
+            st.derived = rebuild(st);
+            true
+        } else {
+            false
+        }
+    };
+    if pruned {
+        persist_del(ctx.out, domain_key(domain));
+    }
     Ok(members)
 }

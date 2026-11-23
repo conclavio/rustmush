@@ -219,3 +219,80 @@ fn query_and_room_ambient_reflect_the_active_scene() {
         "closed scenes are not glanced"
     );
 }
+
+/// P2-MOD-32: `panel::glance` and `panel::keyframe` (both pushed keyframes and
+/// `ScenesQuery` / `RoomAmbient`) filter `Flags::DARK` actors for non-staff viewers
+/// while preserving visibility for staff and the DARK actor themselves.
+#[test]
+fn p2_mod_32_panel_glance_and_keyframe_filter_dark_actors() {
+    let mut rig = rig();
+    // Nick starts the scene while DARK so Nick is facilitator + current_actor + participant.
+    rig.engine
+        .world
+        .set_flag(rig.nick, mush_core::Flags::DARK, true)
+        .unwrap();
+    let start = run(&mut rig.engine, rig.nick, "+timestop");
+
+    // Non-staff participant Ann's pushed keyframe must omit DARK Nick everywhere.
+    let ann_frame = &scene_panels(&start, rig.ann)[0];
+    assert!(
+        ann_frame["current_actor"].is_null(),
+        "DARK current_actor leaked in pushed keyframe: {ann_frame}"
+    );
+    assert!(
+        ann_frame["facilitator"].is_null(),
+        "DARK facilitator leaked in pushed keyframe: {ann_frame}"
+    );
+    let ann_participants = ann_frame["participants"].as_array().unwrap();
+    assert!(
+        !ann_participants.iter().any(|p| p["name"] == "Nick"),
+        "DARK participant leaked to Ann: {ann_frame}"
+    );
+
+    // DARK Nick's own pushed keyframe still sees self.
+    let nick_frame = &scene_panels(&start, rig.nick)[0];
+    assert_eq!(nick_frame["current_actor"]["name"], "Nick");
+    assert_eq!(nick_frame["facilitator"]["name"], "Nick");
+
+    // `ScenesQuery` also filters DARK actors for Ann and shows them to Nick.
+    let (_, handler) = rig.engine.registry.query_handler("scenes").unwrap();
+    let OutputEvent::Panel { data: ann_q, .. } = handler
+        .query(&rig.engine.world, rig.ann, &serde_json::json!({}))
+        .unwrap()
+    else {
+        panic!("expected Panel");
+    };
+    assert!(ann_q["current_actor"].is_null());
+    assert!(ann_q["facilitator"].is_null());
+    assert!(
+        !ann_q["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "Nick")
+    );
+
+    // `RoomAmbient` glance hides DARK current_actor from non-staff Ann, shows to GOD.
+    let rv_ann = room_view(
+        &rig.engine.registry,
+        &rig.engine.world,
+        rig.ann,
+        rig.bar,
+        DETACHED,
+    )
+    .unwrap();
+    assert!(
+        rv_ann.ambient["scene"]["current_actor"].is_null(),
+        "DARK current_actor leaked in RoomAmbient glance: {}",
+        rv_ann.ambient["scene"]
+    );
+    let rv_god = room_view(
+        &rig.engine.registry,
+        &rig.engine.world,
+        GOD,
+        rig.bar,
+        DETACHED,
+    )
+    .unwrap();
+    assert_eq!(rv_god.ambient["scene"]["current_actor"]["name"], "Nick");
+}

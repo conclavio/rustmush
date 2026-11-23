@@ -1557,24 +1557,36 @@ fn vf_b3_stations_scan_is_bounded() {
     );
 }
 
-// C3 / D3(b): reach is an ACQUIRE-TIME gate only in cut 5. Focusing at a console
-// and then leaving the room does NOT lose foreground control; continuous reach
-// is tracked to cut 7 (`RemoteLink`/`EnvelopeId`). This pins the documented
-// stance so a cut-7 change is deliberate.
+// C3 / D3(b) -> P2-MOD-62: `ReachProof::Console` is continuously revalidated
+// after initial focus claim. Leaving the console room invalidates foreground
+// control so `@station/show` reports no station, `FocusState` clears, and
+// `@station/handoff` refuses remote control.
 #[test]
-fn vf_c3_reach_is_acquire_time_only_in_cut5() {
+fn vf_c3_reach_is_revalidated_after_leaving_console() {
     let (mut tw, fx, _, _) = scene();
     ok(&mut tw, fx.pilot, &format!("+focus #{}/pilot", fx.atlas.0));
     // Walk off the console into another room.
     tw.world_mut().move_to(fx.pilot, fx.other).unwrap();
-    // Foreground control is retained (reach is not re-evaluated); `@station/show`
-    // and a handoff still proceed for the still-focused billet-holder.
+    // Stale console proof is invalidated; `@station/show` and `@station/handoff`
+    // no longer treat the departed actor as driving the station.
     let shown = ok(&mut tw, fx.pilot, "@station/show");
-    assert!(shown.contains("driving"), "{shown}");
+    assert!(
+        shown.contains("driving no station"),
+        "leaving console clears station drive: {shown}"
+    );
     assert_eq!(
         focused_station_of(&tw, fx.pilot),
-        Some(fx.atlas),
-        "focus survives leaving the console (acquire-time reach only)"
+        None,
+        "stale ordinary console focus is invalidated after leaving the console"
+    );
+    let refused = err(
+        &mut tw,
+        fx.pilot,
+        &format!("@station/handoff #{}/pilot", fx.atlas.0),
+    );
+    assert!(
+        refused.contains("+focus it first") || refused.contains("no longer at"),
+        "remote handoff after leaving console must refuse: {refused}"
     );
 }
 

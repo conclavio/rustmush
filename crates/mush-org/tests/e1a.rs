@@ -1281,3 +1281,116 @@ fn charter_revision_is_guarded_and_preserves_identity_lifecycle_and_authority() 
     }
     assert_eq!(s.org(old.id), Some(&old));
 }
+
+/// P2-MOD-41: `mush_org::authorize()` enforces `PolicyEffect::Deny` rules against
+/// delegation grantors so a denied grantor cannot bypass policy denies via
+/// delegation (while an actor's independent non-denied grant still authorizes).
+#[test]
+fn p2_mod_41_delegation_respects_policy_deny_on_grantor() {
+    let mut s = two_orgs();
+    // Grant 100 a delegable capability on scope 10 subtree, delegated to 200.
+    s = apply(
+        &s,
+        vec![OrgMutationOp::PutGrant {
+            grant: grant(
+                1,
+                1,
+                100,
+                "economy.account.transfer",
+                ScopeSelector::SubtreeLive(OrgScopeId(10)),
+                true,
+            ),
+        }],
+    );
+    let del = Delegation {
+        id: mush_org::DelegationId(1),
+        org: OrgId(1),
+        grantor: ObjId(100),
+        grantee: ObjId(200),
+        capability: cap("economy.account.transfer"),
+        scope: ScopeSelector::Exact(OrgScopeId(11)),
+        limit: None,
+        source_grant: mush_org::GrantId(1),
+        source_revision: 1,
+        expires_at: 10_000,
+        status: DelegationStatus::Active,
+    };
+    s = apply(&s, vec![OrgMutationOp::Delegate { delegation: del }]);
+
+    // Baseline: 200 is authorized via 100's delegation.
+    assert!(
+        mush_org::authorize(
+            &s,
+            &req(200, "economy.account.transfer", 11, 0),
+            &NoPredicates
+        )
+        .is_allow(),
+        "baseline delegation authorizes"
+    );
+
+    // Add a PolicyEffect::Deny rule targeting grantor 100 directly.
+    let deny_policy = AccessPolicy {
+        id: mush_org::PolicyId(1),
+        org: OrgId(1),
+        owner: PrincipalId::Organization(OrgId(1)),
+        default: PolicyEffect::Deny,
+        rules: vec![PolicyRule {
+            effect: PolicyEffect::Deny,
+            subject: PolicySubject::Principal(PrincipalId::Object(ObjId(100))),
+            capability: cap("economy.account.transfer"),
+            scope: ScopeSelector::SubtreeLive(OrgScopeId(10)),
+            conditions: vec![],
+        }],
+        revision: 1,
+    };
+    s = apply(
+        &s,
+        vec![OrgMutationOp::PutPolicy {
+            policy: deny_policy,
+        }],
+    );
+
+    // Both grantor 100 AND delegatee 200 must now be denied!
+    assert!(
+        !mush_org::authorize(
+            &s,
+            &req(100, "economy.account.transfer", 11, 0),
+            &NoPredicates
+        )
+        .is_allow(),
+        "denied grantor must be refused"
+    );
+    assert!(
+        !mush_org::authorize(
+            &s,
+            &req(200, "economy.account.transfer", 11, 0),
+            &NoPredicates
+        )
+        .is_allow(),
+        "delegation from PolicyEffect::Deny-blocked grantor must NOT authorize"
+    );
+
+    // An independent direct grant to 200 is unaffected by 100's deny.
+    s = apply(
+        &s,
+        vec![OrgMutationOp::PutGrant {
+            grant: grant(
+                2,
+                1,
+                200,
+                "economy.account.transfer",
+                ScopeSelector::Exact(OrgScopeId(11)),
+                false,
+            ),
+        }],
+    );
+    assert!(
+        mush_org::authorize(
+            &s,
+            &req(200, "economy.account.transfer", 11, 0),
+            &NoPredicates
+        )
+        .is_allow(),
+        "independent direct grant to 200 must still authorize"
+    );
+}

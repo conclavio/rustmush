@@ -171,7 +171,12 @@ impl TowRigProfile {
     /// The heaviest casualty a tug of `tug_mass_kg` takes under this profile, kg.
     #[must_use]
     pub const fn max_casualty_mass_kg(self, tug_mass_kg: u64) -> u64 {
-        tug_mass_kg.saturating_mul(self.cap_permille()) / 1_000
+        let scaled = (tug_mass_kg as u128).saturating_mul(self.cap_permille() as u128) / 1_000;
+        if scaled > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            scaled as u64
+        }
     }
 }
 
@@ -265,13 +270,15 @@ pub fn tow_speed_factor_permille_capped(
 ) -> Result<u32, RecoveryError> {
     let ratio_permille =
         tow_mass_ratio_permille_capped(tug_mass_kg, casualty_mass_kg, profile, cap_kg)?;
-    let factor = match profile {
-        TowRigProfile::Standard => 850_u64.saturating_sub((ratio_permille * 300) / 1_000),
-        TowRigProfile::RecoveryOptimized | TowRigProfile::Heavy => {
-            950_u64.saturating_sub((ratio_permille * 225) / 1_000)
-        }
+    // P2-MOD-86: widen to u128 / saturating arithmetic so extreme explicit
+    // tow caps cannot overflow `ratio_permille * weight`.
+    let (base, weight) = match profile {
+        TowRigProfile::Standard => (850_u128, 300_u128),
+        TowRigProfile::RecoveryOptimized | TowRigProfile::Heavy => (950_u128, 225_u128),
     };
-    u32::try_from(factor.max(1)).map_err(|_| RecoveryError::MassOverflow)
+    let penalty = u128::from(ratio_permille).saturating_mul(weight) / 1_000;
+    let factor = base.saturating_sub(penalty).max(1);
+    u32::try_from(factor).map_err(|_| RecoveryError::MassOverflow)
 }
 
 /// Compute the coupled tow speed in `cm/s` from the tug's `base_speed_cms`, tug mass,
@@ -310,7 +317,7 @@ pub fn scaled_tow_speed_cms_capped(
         profile,
         cap_kg,
     )?);
-    let scaled = (u64::from(base_speed_cms) * factor_permille) / 1_000;
+    let scaled = u64::from(base_speed_cms).saturating_mul(factor_permille) / 1_000;
     u32::try_from(scaled.max(1)).map_err(|_| RecoveryError::MassOverflow)
 }
 
@@ -339,31 +346,25 @@ impl FieldPose {
     }
 
     /// Integer Euclidean distance in centimeters to `other` if on the same `site`,
-    /// or `None` if on different sites.
+    /// or `None` if on different sites (saturating at `u64::MAX` when exact
+    /// same-site distance exceeds `u64::MAX`).
     #[must_use]
     pub fn distance_cm_to(&self, other: &Self) -> Option<u64> {
         if self.site != other.site {
             return None;
         }
-        let dx = i128::from(self.x_cm) - i128::from(other.x_cm);
-        let dy = i128::from(self.y_cm) - i128::from(other.y_cm);
-        let dist_sq = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
-        let root = isqrt_i128(dist_sq);
-        u64::try_from(root).ok()
+        // P2-MOD-86: compute unsigned differences and square in `u128` using
+        // checked addition + `u128::isqrt`, avoiding the `i128::MAX + 1`
+        // overflow panic in the previous Newton iteration.
+        let dx = u128::from(self.x_cm.abs_diff(other.x_cm));
+        let dy = u128::from(self.y_cm.abs_diff(other.y_cm));
+        let dx_sq = dx.saturating_mul(dx);
+        let dy_sq = dy.saturating_mul(dy);
+        let Some(dist_sq) = dx_sq.checked_add(dy_sq) else {
+            return Some(u64::MAX);
+        };
+        Some(u64::try_from(dist_sq.isqrt()).unwrap_or(u64::MAX))
     }
-}
-
-const fn isqrt_i128(n: i128) -> i128 {
-    if n <= 0 {
-        return 0;
-    }
-    let mut x = n;
-    let mut y = (x + 1) / 2;
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
 }
 
 /// Prospective tug parameters for [`inspect_field_unit`].
@@ -1916,3 +1917,86 @@ impl fmt::Display for RecoveryError {
 }
 
 impl std::error::Error for RecoveryError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **P2-MOD-86b**: Checked/saturating arithmetic in `tow_speed_factor_permille_capped`,
+    /// `TowRigProfile::max_casualty_mass_kg`, and `FieldPose::distance_cm_to` never
+    /// overflows, wraps, or panics on extreme inputs.
+    #[test]
+    fn p2_mod_86_checked_arithmetic_no_overflow_or_panic() {
+        let huge_casualty = u64::MAX / 1_000;
+        for profile in [
+            TowRigProfile::Standard,
+            TowRigProfile::RecoveryOptimized,
+            TowRigProfile::Heavy,
+        ] {
+            let factor =
+                tow_speed_factor_permille_capped(1, huge_casualty, profile, Some(huge_casualty))
+                    .expect("extreme explicit cap must not overflow");
+            assert_eq!(
+                factor, 1,
+                "extreme mass ratio must clamp to minimum speed 1"
+            );
+            let speed = scaled_tow_speed_cms_capped(
+                u32::MAX,
+                1,
+                huge_casualty,
+                profile,
+                Some(huge_casualty),
+            )
+            .expect("scaled speed must not overflow");
+            assert!(speed >= 1);
+        }
+
+        assert_eq!(
+            TowRigProfile::RecoveryOptimized.max_casualty_mass_kg(u64::MAX / 2),
+            u64::MAX
+        );
+
+        let min_corner = FieldPose {
+            site: ObjId(1),
+            x_cm: i64::MIN,
+            y_cm: i64::MIN,
+        };
+        let max_corner = FieldPose {
+            site: ObjId(1),
+            x_cm: i64::MAX,
+            y_cm: i64::MAX,
+        };
+        assert_eq!(min_corner.distance_cm_to(&max_corner), Some(u64::MAX));
+
+        let min_x = FieldPose {
+            site: ObjId(1),
+            x_cm: i64::MIN,
+            y_cm: 0,
+        };
+        let max_x = FieldPose {
+            site: ObjId(1),
+            x_cm: i64::MAX,
+            y_cm: 0,
+        };
+        assert_eq!(min_x.distance_cm_to(&max_x), Some(u64::MAX));
+
+        let other_site = FieldPose {
+            site: ObjId(2),
+            x_cm: 0,
+            y_cm: 0,
+        };
+        assert_eq!(min_x.distance_cm_to(&other_site), None);
+
+        let p1 = FieldPose {
+            site: ObjId(1),
+            x_cm: 0,
+            y_cm: 0,
+        };
+        let p2 = FieldPose {
+            site: ObjId(1),
+            x_cm: 3_000,
+            y_cm: 4_000,
+        };
+        assert_eq!(p1.distance_cm_to(&p2), Some(5_000));
+    }
+}

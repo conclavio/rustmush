@@ -353,7 +353,11 @@ pub fn offer(
     npc: ObjId,
     channels: &str,
 ) -> SeatOfferId {
-    let before: BTreeSet<u64> = camp(tw).seat_offers().map(|o| o.id.0).collect();
+    let before: BTreeSet<u64> = camp(tw)
+        .seat_offers()
+        .filter(|o| o.operation == op)
+        .map(|o| o.id.0)
+        .collect();
     ok(
         tw,
         fx.commander,
@@ -367,6 +371,7 @@ pub fn offer(
     );
     camp(tw)
         .seat_offers()
+        .filter(|o| o.operation == op)
         .map(|o| o.id)
         .find(|id| !before.contains(&id.0))
         .expect("one new seat offer")

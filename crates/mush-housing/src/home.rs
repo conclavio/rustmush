@@ -96,17 +96,26 @@ pub fn to_unhome_on_end(
 /// if `home` is directly `anchor` or in `property_rooms` (even if destroyed/`GOING`),
 /// keep `home`; otherwise walk transitively via `enclosing` so an `Obj.home` pointed
 /// at a container or object standing inside the property still resolves inside it.
+///
+/// Fails closed by returning `anchor` when `enclosing` reports
+/// [`crate::EnclosingRoom::LimitOrCycle`], ensuring callers like
+/// [`to_unhome_on_end`] and [`homed_inside`] treat cycle/depth-overflow targets as
+/// must-clear rather than letting them survive tenancy end.
 #[must_use]
 pub fn effective_home_room(
     home: ObjId,
-    enclosing: impl Fn(ObjId) -> Option<ObjId>,
+    enclosing: impl Fn(ObjId) -> crate::EnclosingRoom,
     anchor: ObjId,
     property_rooms: &BTreeSet<ObjId>,
 ) -> ObjId {
     if home == anchor || property_rooms.contains(&home) {
         home
     } else {
-        enclosing(home).unwrap_or(home)
+        match enclosing(home) {
+            crate::EnclosingRoom::Room(room) => room,
+            crate::EnclosingRoom::Unlocated => home,
+            crate::EnclosingRoom::LimitOrCycle => anchor,
+        }
     }
 }
 

@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
 const PREFIX: &str = "ic_custody:";
+const CHECKPOINT_KEY: &str = "ic_custody_checkpoint";
 fn refused(reason: impl std::fmt::Display) -> ParticipantError {
     tracing::debug!(target: "ic_claim", %reason, "tactics: IC hull custody refused");
     ParticipantError::refused("IC hull custody is unavailable or changed")
@@ -115,6 +116,74 @@ impl Record {
         .map_err(refused)
     }
 }
+/// Durable cryptographic checkpoint summarizing closed/terminal `ic_custody:`
+/// rows compacted once history reaches [`MAX_HISTORY`] (`P2-MOD-67`), so closed
+/// sorties never permanently exhaust global IC mind sortie capacity while
+/// maintaining sequence continuity and boot-audit integrity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Checkpoint {
+    format: u16,
+    compacted_through_sortie: u64,
+    compacted_count: u64,
+    chain_digest: DefinitionDigest,
+}
+impl Checkpoint {
+    fn validate(&self) -> Result<(), ParticipantError> {
+        if self.format != 1
+            || self.compacted_through_sortie == 0
+            || self.compacted_count == 0
+            || self.chain_digest.as_bytes() == &[0; 32]
+        {
+            return Err(refused("checkpoint"));
+        }
+        mush_core::canonical_json_bytes_with_limit(
+            &serde_json::to_value(self).map_err(refused)?,
+            MAX_HISTORY_BYTES,
+        )
+        .map_err(refused)?;
+        Ok(())
+    }
+    fn advance(prev: Option<&Self>, evicted: &Record) -> Result<Self, ParticipantError> {
+        evicted.validate()?;
+        let closed = evicted
+            .closed
+            .as_ref()
+            .ok_or_else(|| refused("cannot compact open custody row"))?;
+        let prev_digest =
+            prev.map_or_else(|| DefinitionDigest::from_bytes([0; 32]), |c| c.chain_digest);
+        let prev_count = prev.map_or(0, |c| c.compacted_count);
+        let prev_sortie = prev.map_or(0, |c| c.compacted_through_sortie);
+        let compacted_count = prev_count
+            .checked_add(1)
+            .ok_or_else(|| refused("checkpoint count overflow"))?;
+        let compacted_through_sortie = prev_sortie.max(evicted.open.sortie);
+        let open_digest = evicted.digest()?;
+        let chain_digest = DefinitionDigest::for_canonical_value(
+            "tactics.ic_custody.checkpoint.v1",
+            &serde_json::json!({
+                "prev": prev_digest,
+                "count": compacted_count,
+                "open": evicted.open.operation,
+                "sortie": evicted.open.sortie,
+                "unit": evicted.open.unit,
+                "close": closed.operation,
+                "event": closed.event,
+                "open_digest": open_digest,
+                "unit_digest": closed.unit_digest,
+            }),
+        )
+        .map_err(refused)?;
+        let next = Self {
+            format: 1,
+            compacted_through_sortie,
+            compacted_count,
+            chain_digest,
+        };
+        next.validate()?;
+        Ok(next)
+    }
+}
 /// Private complete historical book, kept in the existing actual UnitStore slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct IcCustodies {
@@ -122,17 +191,34 @@ pub(crate) struct IcCustodies {
     generation: u64,
     rows: BTreeMap<CommitToken, Arc<Record>>,
     active: BTreeMap<ObjId, CommitToken>,
+    checkpoint: Option<Checkpoint>,
 }
 impl IcCustodies {
+    #[cfg(test)]
     fn reconstruct(rows: impl IntoIterator<Item = Record>) -> Result<Self, ParticipantError> {
+        Self::reconstruct_with_checkpoint(rows, None)
+    }
+    fn reconstruct_with_checkpoint(
+        rows: impl IntoIterator<Item = Record>,
+        checkpoint: Option<Checkpoint>,
+    ) -> Result<Self, ParticipantError> {
+        if let Some(cp) = &checkpoint {
+            cp.validate()?;
+        }
         let mut s = Self {
             loaded: true,
+            checkpoint,
             ..Self::default()
         };
         let mut sorties = BTreeSet::new();
         let mut closes = BTreeSet::new();
         for r in rows {
             r.validate()?;
+            if let Some(cp) = &s.checkpoint
+                && r.open.sortie == cp.compacted_through_sortie
+            {
+                return Err(refused("compacted sortie replay"));
+            }
             if s.rows.len() >= MAX_HISTORY
                 || s.rows.contains_key(&r.open.operation)
                 || !sorties.insert(r.open.sortie)
@@ -154,6 +240,30 @@ impl IcCustodies {
             return Err(refused("crossed operation"));
         }
         Ok(s)
+    }
+    fn compacted_through_sortie(&self) -> u64 {
+        self.checkpoint
+            .as_ref()
+            .map_or(0, |cp| cp.compacted_through_sortie)
+    }
+    fn oldest_closed_key(&self) -> Option<CommitToken> {
+        self.rows
+            .values()
+            .filter(|r| r.closed.is_some())
+            .min_by_key(|r| (r.open.sortie, r.open.operation))
+            .map(|r| r.open.operation)
+    }
+    fn compact_one_closed(&mut self) -> Result<Option<Arc<Record>>, ParticipantError> {
+        let Some(key) = self.oldest_closed_key() else {
+            return Ok(None);
+        };
+        let evicted = self
+            .rows
+            .remove(&key)
+            .ok_or_else(|| refused("compact missing"))?;
+        let next_cp = Checkpoint::advance(self.checkpoint.as_ref(), &evicted)?;
+        self.checkpoint = Some(next_cp);
+        Ok(Some(evicted))
     }
     fn ready(&self) -> Result<(), ParticipantError> {
         if self.loaded {
@@ -691,7 +801,9 @@ impl OwnerParticipant for IcCustodyParticipant {
                         id: ctx.invocation().actor(),
                     })
                     || state.ic.holds(unit)
-                    || state.ic.rows.len() >= MAX_HISTORY
+                    || sortie <= state.ic.compacted_through_sortie()
+                    || (state.ic.rows.len() >= MAX_HISTORY
+                        && state.ic.oldest_closed_key().is_none())
                     || state.ic.active.len() >= MAX_OPEN
                     || state.ic.rows.contains_key(&ctx.commit_token())
                     || state.ic.rows.values().any(|r| {
@@ -798,7 +910,35 @@ impl OwnerParticipant for IcCustodyParticipant {
             .generation
             .checked_add(1)
             .ok_or_else(|| refused("generation"))?;
+        let mut writes = Vec::new();
         if opening {
+            // P2-MOD-67: compact oldest closed/terminal row(s) when at
+            // `MAX_HISTORY` capacity, recording a cryptographic checkpoint and
+            // deleting the compacted key(s) so closed history never permanently
+            // exhausts global IC sortie capacity. Below `MAX_HISTORY`, zero
+            // compaction occurs and the exact 2-write image is preserved.
+            let mut compacted = false;
+            while book.rows.len() >= MAX_HISTORY {
+                let evicted = book
+                    .compact_one_closed()?
+                    .ok_or_else(|| refused("open capacity"))?;
+                writes.push(ReplayWrite::ModuleDelete {
+                    namespace: OwnerId::new("tactics").map_err(refused)?,
+                    key: AuthoritativeKey::parse_canonical(evicted.key()).map_err(refused)?,
+                });
+                compacted = true;
+            }
+            if compacted {
+                let cp = book
+                    .checkpoint
+                    .as_ref()
+                    .ok_or_else(|| refused("checkpoint missing"))?;
+                writes.push(ReplayWrite::ModuleJsonSet {
+                    namespace: OwnerId::new("tactics").map_err(refused)?,
+                    key: AuthoritativeKey::parse_canonical(CHECKPOINT_KEY).map_err(refused)?,
+                    value: serde_json::to_value(cp).map_err(refused)?,
+                });
+            }
             book.active.insert(unit, row.open.operation);
         } else {
             book.active.remove(&unit);
@@ -818,6 +958,12 @@ impl OwnerParticipant for IcCustodyParticipant {
             key: AuthoritativeKey::parse_canonical(row.key()).map_err(refused)?,
             value: serde_json::to_value(&row).map_err(refused)?,
         };
+        writes.push(write);
+        writes.push(ReplayWrite::ModuleJsonSet {
+            namespace: OwnerId::new("tactics").map_err(refused)?,
+            key: AuthoritativeKey::parse_canonical(format!("unit:{}", unit.0)).map_err(refused)?,
+            value: document,
+        });
         book.rows.insert(row.open.operation, Arc::new(row));
         Ok(OwnerPreparation::new(
             output,
@@ -834,15 +980,7 @@ impl OwnerParticipant for IcCustodyParticipant {
                 after_record,
                 book,
             },
-            vec![
-                write,
-                ReplayWrite::ModuleJsonSet {
-                    namespace: OwnerId::new("tactics").map_err(refused)?,
-                    key: AuthoritativeKey::parse_canonical(format!("unit:{}", unit.0))
-                        .map_err(refused)?,
-                    value: document,
-                },
-            ],
+            writes,
         ))
     }
     fn recheck(
@@ -896,42 +1034,62 @@ impl OwnerParticipant for IcCustodyParticipant {
         })
     }
     fn accepts_write(&self, w: &ReplayWrite) -> bool {
-        let ReplayWrite::ModuleJsonSet {
-            namespace,
-            key,
-            value,
-        } = w
-        else {
-            return false;
-        };
-        if namespace.as_str() != "tactics" {
-            return false;
+        match w {
+            ReplayWrite::ModuleDelete { namespace, key } => {
+                namespace.as_str() == "tactics"
+                    && key
+                        .as_str()
+                        .strip_prefix(PREFIX)
+                        .is_some_and(|hex| CommitToken::from_hex(hex).is_ok())
+            }
+            ReplayWrite::ModuleJsonSet {
+                namespace,
+                key,
+                value,
+            } => {
+                if namespace.as_str() != "tactics" {
+                    return false;
+                }
+                if key.as_str().starts_with("unit:") {
+                    return crate::module::replacement_write_is_exact(
+                        key.as_str(),
+                        value,
+                        &self.record,
+                    );
+                }
+                if key.as_str() == CHECKPOINT_KEY {
+                    let Ok(cp) = serde_json::from_value::<Checkpoint>(value.clone()) else {
+                        return false;
+                    };
+                    return cp.validate().is_ok()
+                        && serde_json::to_value(&cp).ok().as_ref() == Some(value);
+                }
+                let Ok(r) = serde_json::from_value::<Record>(value.clone()) else {
+                    return false;
+                };
+                r.validate().is_ok()
+                    && key.as_str() == r.key()
+                    && serde_json::to_value(&r).ok().as_ref() == Some(value)
+                    && self
+                        .config
+                        .actions
+                        .get(if r.closed.is_some() { 1 } else { 0 })
+                        == Some(
+                            r.closed
+                                .as_ref()
+                                .map(|c| &c.action)
+                                .unwrap_or(&r.open.action),
+                        )
+            }
+            _ => false,
         }
-        if key.as_str().starts_with("unit:") {
-            return crate::module::replacement_write_is_exact(key.as_str(), value, &self.record);
-        }
-        let Ok(r) = serde_json::from_value::<Record>(value.clone()) else {
-            return false;
-        };
-        r.validate().is_ok()
-            && key.as_str() == r.key()
-            && serde_json::to_value(&r).ok().as_ref() == Some(value)
-            && self
-                .config
-                .actions
-                .get(if r.closed.is_some() { 1 } else { 0 })
-                == Some(
-                    r.closed
-                        .as_ref()
-                        .map(|c| &c.action)
-                        .unwrap_or(&r.open.action),
-                )
     }
 }
 /// Extract before unit boot can repair anything. All missing companions are
 /// checked by the final four-owner audit, even when this inventory is empty.
 pub(crate) fn load(data: &mut ModuleBootData, enabled: bool) -> Result<IcCustodies, ModError> {
     let mut rows = Vec::new();
+    let mut checkpoint: Option<Checkpoint> = None;
     let mut ordinary = Vec::new();
     for (k, v) in std::mem::take(&mut data.kv) {
         if k.starts_with(PREFIX) {
@@ -950,12 +1108,28 @@ pub(crate) fn load(data: &mut ModuleBootData, enabled: bool) -> Result<IcCustodi
                 return Err(bad("IC custody key or shape differs"));
             }
             rows.push(r);
+        } else if k.as_str() == CHECKPOINT_KEY {
+            if !enabled {
+                return Err(bad(
+                    "IC custody history requires its actual owner configuration",
+                ));
+            }
+            if checkpoint.is_some() {
+                return Err(bad("duplicate IC custody checkpoint"));
+            }
+            mush_core::canonical_json_bytes_with_limit(&v, MAX_HISTORY_BYTES).map_err(bad)?;
+            let cp: Checkpoint = serde_json::from_value(v.clone()).map_err(bad)?;
+            cp.validate().map_err(bad)?;
+            if serde_json::to_value(&cp).map_err(bad)? != v {
+                return Err(bad("IC custody checkpoint shape differs"));
+            }
+            checkpoint = Some(cp);
         } else {
             ordinary.push((k, v));
         }
     }
     data.kv = ordinary;
-    IcCustodies::reconstruct(rows).map_err(bad)
+    IcCustodies::reconstruct_with_checkpoint(rows, checkpoint).map_err(bad)
 }
 pub(crate) fn check_boot(state: &UnitStore) -> Result<(), ModError> {
     state.ic.ready().map_err(bad)?;

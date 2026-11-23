@@ -18,6 +18,7 @@ use mush_core::output::obj_ref;
 use mush_core::{Ctx, EventHook, HookReadContext, ObjId, QueryHandler, World};
 use mush_proto::{OutputEvent, PanelFrameKind, RichText, SmolStr};
 
+use crate::commands::can_see_actor;
 use crate::data::{SceneRecord, ScenesState};
 
 /// The panel feed and query name.
@@ -26,8 +27,12 @@ pub const FEED: &str = "scenes";
 pub const AMBIENT_KEY: &str = "scene";
 
 /// The status-line glance: id, title, kind, mode, status, round, turn, and
-/// whose turn it is.
-pub(crate) fn glance(w: &World, rec: &SceneRecord) -> serde_json::Value {
+/// whose turn it is (filtering `Flags::DARK` actors for non-staff viewers).
+pub(crate) fn glance(w: &World, viewer: ObjId, rec: &SceneRecord) -> serde_json::Value {
+    let current_actor = rec
+        .current_actor()
+        .filter(|&a| can_see_actor(w, viewer, a))
+        .map(|a| obj_ref(w, a));
     serde_json::json!({
         "id": rec.id.0,
         "title": rec.title,
@@ -36,17 +41,23 @@ pub(crate) fn glance(w: &World, rec: &SceneRecord) -> serde_json::Value {
         "status": rec.status,
         "round": rec.round,
         "turn": rec.turn,
-        "current_actor": rec.current_actor().map(|a| obj_ref(w, a)),
+        "current_actor": current_actor,
     })
 }
 
 /// The full scene-screen keyframe: the glance plus membership, anchor,
-/// facilitator, clocks.
-pub(crate) fn keyframe(w: &World, rec: &SceneRecord) -> serde_json::Value {
+/// facilitator, clocks (filtering `Flags::DARK` actors for non-staff viewers).
+pub(crate) fn keyframe(w: &World, viewer: ObjId, rec: &SceneRecord) -> serde_json::Value {
     let refs = |ids: &[ObjId]| -> Vec<mush_proto::ObjRef> {
-        ids.iter().map(|&id| obj_ref(w, id)).collect()
+        ids.iter()
+            .copied()
+            .filter(|&id| can_see_actor(w, viewer, id))
+            .map(|id| obj_ref(w, id))
+            .collect()
     };
-    let mut value = glance(w, rec);
+    let facilitator =
+        can_see_actor(w, viewer, rec.facilitator).then(|| obj_ref(w, rec.facilitator));
+    let mut value = glance(w, viewer, rec);
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "participants".into(),
@@ -58,7 +69,7 @@ pub(crate) fn keyframe(w: &World, rec: &SceneRecord) -> serde_json::Value {
         );
         object.insert(
             "facilitator".into(),
-            serde_json::to_value(obj_ref(w, rec.facilitator)).unwrap_or_default(),
+            serde_json::to_value(facilitator).unwrap_or_default(),
         );
         object.insert(
             "anchor".into(),
@@ -91,12 +102,13 @@ fn panel(data: serde_json::Value) -> OutputEvent {
 }
 
 /// Push the scene's keyframe to every current member (participants and
-/// observers). Call after the mutation and its persist, never before.
+/// observers), filtered per recipient for `Flags::DARK` privacy. Call after
+/// the mutation and its persist, never before.
 pub(crate) fn publish(ctx: &mut Ctx<'_>, rec: &SceneRecord) {
-    let data = keyframe(ctx.w, rec);
     let members: Vec<ObjId> = rec.members().collect();
     for member in members {
-        ctx.out.to_actor(member, panel(data.clone()));
+        let data = keyframe(ctx.w, member, rec);
+        ctx.out.to_actor(member, panel(data));
     }
 }
 
@@ -119,7 +131,7 @@ impl QueryHandler for ScenesQuery {
         let data = w
             .module_state::<ScenesState>()
             .and_then(|st| st.active_scene_of(actor))
-            .map_or(serde_json::Value::Null, |rec| keyframe(w, rec));
+            .map_or(serde_json::Value::Null, |rec| keyframe(w, actor, rec));
         Ok(panel(data))
     }
 }
@@ -132,13 +144,13 @@ impl EventHook for SceneAmbient {
     fn room_ambient(
         &self,
         ctx: &HookReadContext<'_>,
-        _looker: ObjId,
+        looker: ObjId,
         room: ObjId,
     ) -> Vec<(SmolStr, serde_json::Value)> {
         let w = ctx.world();
         w.module_state::<ScenesState>()
             .and_then(|st| st.active_scene_at(room))
-            .map(|rec| vec![(SmolStr::new_static(AMBIENT_KEY), glance(w, rec))])
+            .map(|rec| vec![(SmolStr::new_static(AMBIENT_KEY), glance(w, looker, rec))])
             .unwrap_or_default()
     }
 }
