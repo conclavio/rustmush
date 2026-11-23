@@ -240,7 +240,7 @@ code and converts no story.
   build a package, then the cells; a cell runs
   `cargo nextest run --binaries-metadata <package> --cargo-metadata <all> --workspace-remap <its copy of the tree> -P soak --test-threads 4`
   for each package in turn until the window closes, and keeps one JUnit report an invocation.
-- **`.github/workflows/soak.yml`**: `schedule` (01:17 UTC) and `workflow_dispatch` only, on
+- **`.github/workflows/soak.yml`**: `schedule` (07:17 UTC; Divergences, 11) and `workflow_dispatch` only, on
   `[self-hosted, linux, conclav-dev]`, with a concurrency group of its own, a target directory of
   its own beside the gate's, the report in the step summary and the `soak-junit` artifact.
 - **`scripts/flake_report.py`**: the soak's reports and CI's `nextest-junit-*` artifacts into one
@@ -350,6 +350,18 @@ below).
     the job's token has 1,000 requests an hour). It therefore does not see a pass on retry in a
     green run; `--all-shards` does. Since the retry is now the list's alone, such a pass can only
     be a listed test.
+11. **The soak starts at 07:17 UTC, not doc 51's 01:17.** The owner moved it on 2026-11-23, on the
+    pull request: 01:17 UTC is 5:17 pm Pacific, his working day, and 07:17 is 11:17 pm (standard
+    time; the cron is UTC), so the soak holds the box from about 07:17 to 11:00 UTC, about 11 pm
+    to 3 am his time. What else is scheduled then, checked that day: ci.yml's 04:17 nightly and
+    Monday's 06:17 CodeQL run are on hosted runners and share nothing with the box; `gate.yml` is
+    dispatch-only, and a dispatch pinned to `conclav-dev` in those hours waits for the runner. On
+    the box itself there is no cron daemon and no crontab. `apt-daily-upgrade.timer` fires
+    between 06:00 and 07:00 UTC, so 17 minutes or more before the soak and never inside it; an
+    upgrade that is still running at 07:17 meets the quiet-box wait, and one that restarted the
+    runner's service would end the job, which has not been seen. `apt-daily.timer` (a package-list
+    refresh at a random hour) and `motd-news.timer` can fall inside the window and are light.
+    `fstrim`, `e2scrub_all`, `dpkg-db-backup` and `systemd-tmpfiles-clean` all run outside it.
 
 **Not built.**
 

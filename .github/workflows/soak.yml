@@ -33,12 +33,22 @@ name: Soak (flaky tests)
 #   * no Redis: REDIS_URL is unset in every cell, so the gate's private
 #     instance on 6799 is not used and not wiped.
 #
-# 01:17 UTC is clear of ci.yml's 04:17 nightly, which runs on hosted runners
-# in any case; the box has no other standing load at that hour.
+# 07:17 UTC is the owner's night: 11:17 pm Pacific standard time (12:17 am in
+# summer; the cron is UTC and does not follow the clocks), so the soak holds
+# the box from about 07:17 to 11:00 UTC, while nobody is at it. The owner
+# moved it there from doc 51's 01:17 on 2026-11-23: 01:17 UTC is 5:17 pm
+# Pacific, the working day. What else is scheduled then, checked 2026-11-23:
+#   * ci.yml's 04:17 nightly and Monday's 06:17 CodeQL run are on hosted
+#     runners and share nothing with this box, whatever is still running;
+#   * on the box, `apt-daily-upgrade.timer` fires between 06:00 and 07:00 UTC,
+#     so before the soak, never inside it; an upgrade still running at 07:17
+#     is what the wait for a quiet box is for. `apt-daily.timer` (a package
+#     list refresh, any hour) and `motd-news.timer` can fall inside the
+#     window and are light. No cron daemon and no crontab is on the box.
 
 on:
   schedule:
-    - cron: "17 1 * * *"
+    - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
       minutes:

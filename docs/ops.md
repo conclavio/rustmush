@@ -2301,7 +2301,8 @@ error and the next step warns that the cell's JUnit is missing.
 
 ## The soak and the known flaky tests (doc 51 FL.2)
 
-**The soak** is `.github/workflows/soak.yml`: nightly at 01:17 UTC on the
+**The soak** is `.github/workflows/soak.yml`: nightly at 07:17 UTC (11:17 pm
+Pacific standard time, the owner's night) on the
 `conclav-dev` runner, and on a dispatch (`gh workflow run soak.yml -f minutes=60
 -f cells=2`). It has no `pull_request` and no `push` trigger, for the gate's
 reason. `scripts/soak.sh` is the whole run and its header is the reference:
@@ -2335,7 +2336,7 @@ By hand on the box, as `ghrunner`, in a clone with its own target directory:
 `SOAK_CELLS=1 SOAK_PASSES=1 SOAK_DIR=/home/ghrunner/tmp/soak scripts/soak.sh`
 runs one cell once round the four packages and is how a pass is timed.
 
-From 01:17 to about 05:00 UTC the soak holds cores 0 to 23 of conclav.dev. A
+From 07:17 to about 11:00 UTC the soak holds cores 0 to 23 of conclav.dev. A
 by-hand run in those hours shares the box with it: keep it to the eight cores
 left, or run it later. A by-hand run that is already going when the soak
 starts is safe: the soak waits for a quiet box and then yields.
