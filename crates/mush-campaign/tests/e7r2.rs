@@ -677,3 +677,212 @@ fn e7r2_p0b_the_marker_re_enters_through_the_same_wire_and_defaults_closed() {
 fn e7r2_p0b_the_loss_visit_bound_is_encoded() {
     assert_eq!(mush_campaign::MAX_RECOVERY_LOSS_VISIT, 64);
 }
+
+/// **P2-MOD-60.** `@force/assign` enforces recovery eligibility and
+/// covered-wreck cooldown-waiver invariants in both directions:
+/// 1. Assigning an already-wrecked or quarantined hull into a formation is
+///    refused so an unapproved loss cannot be retroactively laundered into a
+///    covered-wreck cooldown waiver.
+/// 2. Removing an operational hull via `@force/assign -` preserves its
+///    eligibility count in `accessible_operational_assets` (persisted across
+///    restarts) for `RECOVERY_COOLDOWN_SECS` so working hulls cannot be hidden
+///    to claim a recovery loaner.
+/// 3. Assigning a previously unformed operational hull while its owner holds a
+///    live recovery loaner is refused for non-staff until `@recovery/return`.
+#[test]
+fn p2_mod_60_force_assign_blocks_wreck_laundering_and_eligibility_evasion() {
+    let (mut tw, fx) = scene(2_000, 3);
+    // Grant Pat `force.assign` + `force.command` on the org scope so Pat can
+    // attempt the player-level `@force/assign` attacks directly.
+    let scope = tw
+        .world()
+        .module_state::<mush_org::OrgStore>()
+        .expect("org")
+        .state()
+        .orgs()
+        .next()
+        .expect("one org")
+        .root_scope;
+    for cap in ["force.assign", "force.command"] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@org/grant #{}=Ironhold {cap} scope={}", fx.pat.0, scope.0),
+        );
+    }
+
+    // ---- 1. Retroactive covered-wreck laundering is refused ----------------
+    let loose_wreck = tw
+        .world_mut()
+        .create(ObjKind::Thing, "UnapprovedWreck", fx.pat, Some(LIMBO))
+        .expect("wreck");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", loose_wreck.0, fx.pat.0),
+    );
+    let stamp = ClockStamp {
+        clock: ClockRef::WorldIc { generation: 1 },
+        at: tw.world().now(),
+    };
+    let route = RouteDef::new(
+        mush_core::CanonicalId::new("unapproved_run").expect("route id"),
+        (fx.field, LIMBO),
+        vec![LegDef::new(LIMBO, 60).expect("one leg")],
+        mush_core::CanonicalId::new("torch").expect("drive class"),
+        0,
+    )
+    .expect("route");
+    let journey = CarrierJourney::new(
+        JourneyId(60),
+        loose_wreck,
+        route,
+        mush_sim::SpatialParent::Interior {
+            space: LIMBO,
+            slot: None,
+        },
+        stamp.clone(),
+        stamp,
+        0,
+        JourneyState::Failed,
+        None,
+    )
+    .expect("failed journey");
+    tw.world_mut()
+        .module_state_mut::<JourneyBook>()
+        .expect("journey book")
+        .journeys
+        .insert(loose_wreck, journey);
+    assert!(!mush_campaign::loss_is_covered(tw.world(), fx.pat));
+
+    let ev = tw.run(
+        fx.pat,
+        &format!("@force/assign {}=#{}", fx.node, loose_wreck.0),
+    );
+    assert!(
+        has_error(&ev) && texts(&ev).contains("wrecked or quarantined"),
+        "retroactively assigning a wreck into a formation must be refused: {}",
+        texts(&ev)
+    );
+    assert!(
+        !mush_campaign::loss_is_covered(tw.world(), fx.pat),
+        "unapproved wreck must remain uncovered"
+    );
+
+    // ---- 2. Removing an operational hull via `@force/assign -` does not ----
+    //         evade `HasAssets` eligibility (and persists in campaign_meta)
+    let working = tw
+        .world_mut()
+        .create(ObjKind::Thing, "WorkingHull", fx.pat, Some(LIMBO))
+        .expect("working hull");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", working.0, fx.pat.0),
+    );
+    place_and_form(&mut tw, working, fx.node);
+    assert_eq!(
+        mush_campaign::accessible_operational_assets(tw.world(), fx.pat),
+        1
+    );
+
+    // Clear prior module ops, then remove `working` from the formation.
+    let _ = tw.take_module_ops();
+    ok(
+        &mut tw,
+        fx.pat,
+        &format!("@force/assign {}=-#{}", fx.node, working.0),
+    );
+    assert!(
+        !mush_campaign::is_accessible_operational(tw.world(), working),
+        "unit really left the formation"
+    );
+    assert_eq!(
+        mush_campaign::accessible_operational_assets(tw.world(), fx.pat),
+        1,
+        "recently released operational hull must still count against recovery eligibility"
+    );
+    let persisted_meta = tw.take_module_ops().into_iter().any(|op| {
+        matches!(
+            op.op,
+            mush_core::module::ModuleWrite::JsonSet { ref key, ref value }
+                if key.as_str() == "campaign_meta"
+                    && value
+                        .get("formation_releases")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|arr| !arr.is_empty())
+        )
+    });
+    assert!(
+        persisted_meta,
+        "formation release anti-evasion record must be persisted in campaign_meta"
+    );
+    ok(&mut tw, fx.pat, "@recovery/apply scout");
+    fire(&mut tw);
+    assert!(
+        camp(&tw).recovery_grant(fx.pat).is_none(),
+        "applicant who temporarily removed an operational hull must not receive a loaner"
+    );
+
+    // ---- 3. Fielding an unformed operational hull while holding a live -----
+    //         recovery loaner is refused until `@recovery/return`
+    let robin = tw.spawn_player("Robin");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", robin.0));
+    for cap in ["force.assign", "force.command"] {
+        ok(
+            &mut tw,
+            GOD,
+            &format!("@org/grant #{}=Ironhold {cap} scope={}", robin.0, scope.0),
+        );
+    }
+    let hidden = tw
+        .world_mut()
+        .create(ObjKind::Thing, "HiddenHull", robin, Some(LIMBO))
+        .expect("hidden hull");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@asset/title #{}=#{}", hidden.0, robin.0),
+    );
+    tw.world_mut()
+        .attach_behavior(
+            hidden,
+            mush_core::BehaviorId::new("sim.participant").expect("behavior"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("bind");
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/place/domain #{}=0", hidden.0),
+    );
+
+    // Robin applies while `hidden` is unformed and gets a loaner.
+    ok(&mut tw, robin, "@recovery/apply scout");
+    fire(&mut tw);
+    assert!(
+        camp(&tw).recovery_grant(robin).is_some_and(|g| g.is_live()),
+        "robin received a loaner"
+    );
+
+    // Attempting to field `hidden` via `@force/assign` while holding the live
+    // loaner MUST be refused.
+    let assign_ev = tw.run(robin, &format!("@force/assign {}=#{}", fx.node, hidden.0));
+    assert!(
+        has_error(&assign_ev) && texts(&assign_ev).contains("live recovery loaner"),
+        "must not assign a hidden operational hull while holding a live loaner: {}",
+        texts(&assign_ev)
+    );
+    // Returning the loaner lifts the block cleanly.
+    ok(&mut tw, robin, "@recovery/return");
+    ok(
+        &mut tw,
+        robin,
+        &format!("@force/assign {}=#{}", fx.node, hidden.0),
+    );
+    assert!(mush_campaign::is_accessible_operational(tw.world(), hidden));
+}

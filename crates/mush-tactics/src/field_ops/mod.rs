@@ -1511,4 +1511,230 @@ mod tests {
 
         Ok(())
     }
+
+    /// **P2-MOD-68**: `FieldEngineeringBook` refuses field stabilization,
+    /// unjamming, and resupply on `SectionCondition::Wreck` sections and
+    /// `ComponentCondition::Missing` (`"missing"` / `"removed"`) components,
+    /// preserving the port workshop boundary.
+    #[test]
+    fn p2_mod_68_field_engineering_enforces_wreck_and_missing_workshop_boundary() -> TestResult {
+        let site = ObjId(801);
+        let tender_id = ObjId(802);
+        let target_id = ObjId(803);
+        let mut fixture = build_biped_fixture(target_id)?;
+
+        let left_arm = SectionId::new("left_arm")?;
+        let needler = ComponentId::new("needler")?;
+        let mast_array = ComponentId::new("mast_array")?;
+        let ammo_cell = CellId::new("ammo")?;
+        let internals = CellId::new("internals")?;
+
+        // Set `left_arm` (which hosts `needler`) to `"wreck"` (SectionCondition::Wreck)
+        // with depleted internals, `needler` jammed & low ammo, and `mast_array` (in
+        // intact `torso`) to `"missing"`.
+        let setup_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetSectionCondition {
+                    section: left_arm.clone(),
+                    condition: ConditionId::new("wreck")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Section {
+                        section: left_arm.clone(),
+                        cell: internals,
+                    },
+                    value: 5,
+                },
+                UnitMutationOp::SetComponentCondition {
+                    component: needler.clone(),
+                    condition: ConditionId::new("jammed")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: needler.clone(),
+                        cell: ammo_cell.clone(),
+                    },
+                    value: 2,
+                },
+                UnitMutationOp::SetComponentCondition {
+                    component: mast_array.clone(),
+                    condition: ConditionId::new("missing")?,
+                },
+            ],
+            Some(fixture.unit.revision()),
+            None,
+        )?;
+        fixture.unit = apply(&fixture.unit, &setup_plan, 100)?.0;
+
+        let pose = FieldPose {
+            site,
+            x_cm: 0,
+            y_cm: 0,
+        };
+        let mut eng_book = FieldEngineeringBook::new();
+        eng_book.register_tender(FieldTenderState {
+            tender_unit: tender_id,
+            site_id: site,
+            pose,
+            operational_state: OperationalState::Operational,
+            spare_parts_kg: 500,
+            ammo_supply_rounds: 100,
+            charge_reserve_cu: 200,
+            max_service_distance_cm: DEFAULT_MAX_TENDER_SERVICE_DISTANCE_CM,
+        })?;
+
+        // 1. Stabilizing a `SectionCondition::Wreck` section MUST fail with RequiresWorkshopFacility.
+        let wreck_stab = eng_book.field_stabilize_damaged_section(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            &left_arm,
+            5,
+            DEFAULT_SPARE_PARTS_KG_PER_STRUCTURAL_POINT,
+            false,
+            false,
+            30,
+            150,
+        );
+        check!(matches!(
+            wreck_stab,
+            Err(FieldEngineeringError::RequiresWorkshopFacility { .. })
+        ));
+        check_eq!(
+            fixture
+                .unit
+                .section(&left_arm)
+                .map(|s| s.condition.as_str()),
+            Some("wreck")
+        );
+
+        // 2. Unjamming a jammed component inside a `SectionCondition::Wreck` section MUST fail.
+        let wreck_unjam = eng_book.field_unjam_component(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            &needler,
+            None,
+            DEFAULT_UNJAM_SPARE_PARTS_KG,
+            false,
+            false,
+            20,
+            160,
+        );
+        check!(matches!(
+            wreck_unjam,
+            Err(FieldEngineeringError::RequiresWorkshopFacility { .. })
+        ));
+
+        // 3. Unjamming a `"missing"` component MUST fail with RequiresWorkshopFacility.
+        let missing_unjam = eng_book.field_unjam_component(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            &mast_array,
+            None,
+            DEFAULT_UNJAM_SPARE_PARTS_KG,
+            false,
+            false,
+            20,
+            165,
+        );
+        check!(matches!(
+            missing_unjam,
+            Err(FieldEngineeringError::RequiresWorkshopFacility { .. })
+        ));
+
+        // 4. Rearming a weapon inside a `SectionCondition::Wreck` section MUST fail.
+        let wreck_rearm = eng_book.field_resupply_ammo_and_charge(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            Some((&needler, &ammo_cell, 10)),
+            0,
+            5,
+            2,
+            None,
+            false,
+            false,
+            10,
+            170,
+        );
+        check!(matches!(
+            wreck_rearm,
+            Err(FieldEngineeringError::RequiresWorkshopFacility { .. })
+        ));
+
+        // 5. Restore `left_arm` to `"intact"`, mark `needler` as `"missing"`, and
+        //    verify `field_resupply_ammo_and_charge` refuses rearming a missing weapon.
+        let missing_weapon_plan = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetSectionCondition {
+                    section: left_arm.clone(),
+                    condition: ConditionId::new("intact")?,
+                },
+                UnitMutationOp::SetComponentCondition {
+                    component: needler.clone(),
+                    condition: ConditionId::new("missing")?,
+                },
+            ],
+            Some(fixture.unit.revision()),
+            None,
+        )?;
+        fixture.unit = apply(&fixture.unit, &missing_weapon_plan, 180)?.0;
+        let missing_rearm = eng_book.field_resupply_ammo_and_charge(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            Some((&needler, &ammo_cell, 10)),
+            0,
+            5,
+            2,
+            None,
+            false,
+            false,
+            10,
+            190,
+        );
+        check!(matches!(
+            missing_rearm,
+            Err(FieldEngineeringError::RequiresWorkshopFacility { .. })
+        ));
+
+        // Same for `"removed"` alias of `ComponentCondition::Missing`.
+        let removed_weapon_plan = UnitMutationPlan::new(
+            vec![UnitMutationOp::SetComponentCondition {
+                component: needler.clone(),
+                condition: ConditionId::new("removed")?,
+            }],
+            Some(fixture.unit.revision()),
+            None,
+        )?;
+        fixture.unit = apply(&fixture.unit, &removed_weapon_plan, 195)?.0;
+        let removed_rearm = eng_book.field_resupply_ammo_and_charge(
+            tender_id,
+            &mut fixture.unit,
+            pose,
+            &fixture.anatomy,
+            Some((&needler, &ammo_cell, 10)),
+            0,
+            5,
+            2,
+            None,
+            false,
+            false,
+            10,
+            200,
+        );
+        check!(matches!(
+            removed_rearm,
+            Err(FieldEngineeringError::RequiresWorkshopFacility { .. })
+        ));
+
+        Ok(())
+    }
 }

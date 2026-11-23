@@ -861,16 +861,66 @@ pub fn accessible_operational_assets(world: &World, who: ObjId) -> u32 {
     let Some(economy) = world.module_state::<EconomyStore>() else {
         return 0;
     };
+    let store = world.module_state::<crate::store::CampaignStore>();
+    let now_ic = world.world_ic_now().at;
     let mut count = 0_u32;
     for asset in economy.snapshot().assets() {
         if asset.title_owner != principal {
             continue;
         }
-        if is_accessible_operational(world, asset.object) {
+        // P2-MOD-60: count both currently formed operational assets and
+        // operational assets recently removed from a formation via
+        // `@force/assign -` within `RECOVERY_COOLDOWN_SECS`, so temporarily
+        // unassigning a working hull cannot bypass `HasAssets` eligibility.
+        let deployable_or_released = is_deployable(world, asset.object)
+            || store.is_some_and(|s| s.recently_released_from_formation(asset.object, now_ic));
+        if deployable_or_released && is_reachable_unencumbered_asset(world, asset.object) {
             count = count.saturating_add(1);
         }
     }
     count
+}
+
+/// Whether `object` is an active, unfrozen, unencumbered, spatially placed,
+/// non-quarantined economic asset (the non-formation half of
+/// [`is_accessible_operational`]).
+#[must_use]
+pub(crate) fn is_reachable_unencumbered_asset(world: &World, object: ObjId) -> bool {
+    let Some(economy) = world.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let Some(asset) = economy.snapshot().asset(object) else {
+        return false;
+    };
+    if asset.frozen
+        || !matches!(asset.lifecycle, AssetLifecycle::Active)
+        || !asset.encumbrances.is_empty()
+    {
+        return false;
+    }
+    // **reachable** — `mush_sim`: placed in the spatial graph and not quarantined.
+    world
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|st| st.is_placed(object) && !st.is_quarantined(object))
+}
+
+/// Whether `object` is already in a terminal loss state (`Failed` / `Captured`)
+/// in `mush-sim`'s `JourneyBook` or quarantined in `SpatialState` (P2-MOD-60).
+#[must_use]
+pub(crate) fn is_wreck_or_quarantined(world: &World, object: ObjId) -> bool {
+    let journey_lost = world
+        .module_state::<mush_sim::JourneyBook>()
+        .and_then(|book| book.get(object))
+        .is_some_and(|journey| {
+            matches!(
+                journey.state(),
+                mush_sim::JourneyState::Failed | mush_sim::JourneyState::Captured { .. }
+            )
+        });
+    let quarantined = world
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|st| st.is_quarantined(object));
+    journey_lost || quarantined
 }
 
 /// **The per-asset half of [`accessible_operational_assets`], as one predicate**
@@ -887,23 +937,7 @@ pub fn accessible_operational_assets(world: &World, who: ObjId) -> u32 {
 /// disagree.
 #[must_use]
 pub fn is_accessible_operational(world: &World, object: ObjId) -> bool {
-    let Some(economy) = world.module_state::<EconomyStore>() else {
-        return false;
-    };
-    let Some(asset) = economy.snapshot().asset(object) else {
-        return false;
-    };
-    if asset.frozen
-        || !matches!(asset.lifecycle, AssetLifecycle::Active)
-        || !asset.encumbrances.is_empty()
-    {
-        return false;
-    }
-    // **reachable** — `mush_sim`: placed in the spatial graph and not quarantined.
-    let reachable = world
-        .module_state::<mush_sim::SpatialState>()
-        .is_some_and(|st| st.is_placed(object) && !st.is_quarantined(object));
-    reachable && is_deployable(world, object)
+    is_reachable_unencumbered_asset(world, object) && is_deployable(world, object)
 }
 
 /// **Deployable, answered campaign-side** — the object is a member of a formation

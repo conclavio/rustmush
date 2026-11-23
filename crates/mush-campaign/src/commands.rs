@@ -1498,16 +1498,90 @@ fn force_assign(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !may_commit_unit(ctx, unit) {
         return Err(deny());
     }
+    if !remove {
+        if ctx
+            .w
+            .get(obj)
+            .is_none_or(|o| o.flags.contains(mush_core::Flags::GOING))
+        {
+            return Err(CmdError::msg(
+                "That unit does not exist or is being destroyed.",
+            ));
+        }
+        // P2-MOD-60: never allow assigning an already-wrecked or quarantined
+        // unit into a formation, which would retroactively turn an unapproved
+        // loss into a covered-wreck recovery cooldown waiver.
+        if crate::recovery::is_wreck_or_quarantined(ctx.w, obj) {
+            return Err(CmdError::msg(
+                "A wrecked or quarantined unit cannot be assigned to a formation.",
+            ));
+        }
+        // P2-MOD-60: prevent hiding an unformed operational hull to obtain a
+        // recovery loaner and then immediately fielding it via `@force/assign`.
+        if !is_staff(ctx.w, ctx.actor)
+            && crate::recovery::is_reachable_unencumbered_asset(ctx.w, obj)
+            && let Some(PrincipalId::Object(owner)) = ctx
+                .w
+                .module_state::<mush_economy::EconomyStore>()
+                .and_then(|econ| econ.snapshot().asset(obj))
+                .map(|asset| asset.title_owner.clone())
+        {
+            let cfg = crate::recovery::policy(ctx);
+            let has_live_loaner = ctx
+                .w
+                .module_state::<CampaignStore>()
+                .and_then(|s| s.recovery_grant(owner))
+                .is_some_and(|g| g.is_live() && g.loaner() != obj);
+            if has_live_loaner {
+                let current = crate::recovery::accessible_operational_assets(ctx.w, owner);
+                let already_counted = crate::recovery::is_deployable(ctx.w, obj)
+                    || ctx.w.module_state::<CampaignStore>().is_some_and(|s| {
+                        s.recently_released_from_formation(obj, ctx.w.world_ic_now().at)
+                    });
+                let projected = if already_counted {
+                    current
+                } else {
+                    current.saturating_add(1)
+                };
+                if projected > cfg.max_operational_assets {
+                    return Err(CmdError::msg(
+                        "Cannot assign an operational hull while its owner holds a live recovery \
+                         loaner; return the loaner with `@recovery/return` first.",
+                    ));
+                }
+            }
+        }
+    }
     let mut node = node;
+    let was_member = node.members.contains(&unit);
     if remove {
         node.members.retain(|m| *m != unit);
-    } else if !node.members.contains(&unit) {
+    } else if !was_member {
         node.members.push(unit);
     }
     node.revision = node.revision.saturating_add(1);
     node.check()
         .map_err(|error| CmdError::msg(format!("That assignment is refused: {error}")))?;
     put_formation(ctx, node);
+    // P2-MOD-60: removing a non-wrecked unit from a formation preserves its
+    // recovery-eligibility accounting for `RECOVERY_COOLDOWN_SECS` so an
+    // applicant cannot temporarily unassign operational hulls to evade
+    // `HasAssets`. Re-assigning clears the release marker.
+    if remove && was_member && !crate::recovery::is_wreck_or_quarantined(ctx.w, obj) {
+        let now_ic = ctx.w.world_ic_now().at;
+        if let Some(store) = ctx.w.module_state_mut::<CampaignStore>() {
+            store.record_formation_release(obj, now_ic);
+        }
+        persist_meta(ctx);
+    } else if !remove {
+        let cleared = ctx
+            .w
+            .module_state_mut::<CampaignStore>()
+            .is_some_and(|store| store.clear_formation_release(obj));
+        if cleared {
+            persist_meta(ctx);
+        }
+    }
     ctx.out.info(
         ctx.actor,
         format!(

@@ -141,13 +141,26 @@ pub struct CampaignStore {
     /// [`crate::recovery::MAX_COMPENSATED_WRECKS`]), persisted in `campaign_meta`
     /// and hydrated from both `campaign_meta` and loaded grants.
     compensated_wrecks: BTreeSet<u32>,
+    /// Operational units recently removed from a formation via `@force/assign -`,
+    /// mapping `ObjId.0 -> released_at_ic` (P2-MOD-60). Persisted in `campaign_meta`
+    /// so releasing an operational hull cannot evade recovery eligibility for
+    /// [`crate::recovery::RECOVERY_COOLDOWN_SECS`].
+    formation_releases: BTreeMap<u32, i64>,
     /// The recovery arm's own rotation cursor — the raw applicant id it resumes
     /// **past**, so a queue longer than one fire's budget is worked round-robin and
     /// nobody at the back is starved by the front.
     pub(crate) recovery_cursor: u32,
+    /// In-RAM rotation cursor for `recoverycmd::disburse_accepted`, so a
+    /// blocked or failing applicant stipend cannot starve later accepted grants
+    /// (P2-MOD-57).
+    pub(crate) disburse_cursor: u32,
     /// In-RAM rotation cursor for `recoverycmd::expire_unaccepted`, so a
     /// transiently stuck `end_lease` cannot starve expiry of later unaccepted offers.
     pub(crate) expire_cursor: u32,
+    /// In-RAM rotation cursor for `seatstate::observe_activations` (P2-MOD-58).
+    pub(crate) seat_observe_cursor: (u64, u64),
+    /// In-RAM rotation cursor for `seatstate::expire_grants` (P2-MOD-58).
+    pub(crate) seat_expire_cursor: (u64, u64),
     held: Vec<HeldDoc>,
     /// How many refused documents did not fit in `held` (E7 cut 9 fold, B14). Past
     /// [`MAX_HELD_DOCUMENTS`] the 65th was dropped from the list with no counter and
@@ -207,6 +220,10 @@ struct Meta {
     /// Wreck object IDs already compensated by a recovery grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     compensated_wrecks: Vec<u32>,
+    /// Recently released formation members (`(unit_id, released_at_ic)`) for
+    /// recovery eligibility anti-evasion (P2-MOD-60).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    formation_releases: Vec<(u32, i64)>,
     /// Per-issuer declaration timestamps (HIGH-30).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     declaration_log: BTreeMap<SmolStr, Vec<i64>>,
@@ -491,6 +508,50 @@ impl CampaignStore {
         }
     }
 
+    /// Record that `unit` was removed from a formation at `now_ic`, pruning
+    /// expired entries and bounding retention at [`MAX_FORMATION_NODES`]
+    /// (P2-MOD-60).
+    pub(crate) fn record_formation_release(&mut self, unit: mush_core::ObjId, now_ic: i64) {
+        if unit.0 == 0 {
+            return;
+        }
+        let cutoff = now_ic.saturating_sub(crate::recovery::RECOVERY_COOLDOWN_SECS);
+        self.formation_releases.retain(|_, &mut at| at > cutoff);
+        self.formation_releases.insert(unit.0, now_ic);
+        while self.formation_releases.len() > MAX_FORMATION_NODES {
+            let oldest = self
+                .formation_releases
+                .iter()
+                .min_by_key(|(id, at)| (**at, **id))
+                .map(|(id, _)| *id);
+            let Some(oldest) = oldest else {
+                break;
+            };
+            self.formation_releases.remove(&oldest);
+        }
+    }
+
+    /// Clear any pending formation-release marker for `unit` when it is
+    /// re-assigned to a formation; returns `true` if a marker was present.
+    pub(crate) fn clear_formation_release(&mut self, unit: mush_core::ObjId) -> bool {
+        self.formation_releases.remove(&unit.0).is_some()
+    }
+
+    /// Whether `unit` was removed from a formation within
+    /// [`crate::recovery::RECOVERY_COOLDOWN_SECS`] of `now_ic` (P2-MOD-60).
+    #[must_use]
+    pub(crate) fn recently_released_from_formation(
+        &self,
+        unit: mush_core::ObjId,
+        now_ic: i64,
+    ) -> bool {
+        self.formation_releases
+            .get(&unit.0)
+            .is_some_and(|&released_at| {
+                now_ic < released_at.saturating_add(crate::recovery::RECOVERY_COOLDOWN_SECS)
+            })
+    }
+
     pub(crate) fn install_muster(&mut self, report: MusterReport) {
         self.muster_cycle = self.muster_cycle.max(report.cycle);
         self.musters
@@ -505,6 +566,11 @@ impl CampaignStore {
             muster_cycle: self.muster_cycle,
             recovery_cursor: self.recovery_cursor,
             compensated_wrecks: self.compensated_wrecks.iter().copied().collect(),
+            formation_releases: self
+                .formation_releases
+                .iter()
+                .map(|(&unit, &at)| (unit, at))
+                .collect(),
             declaration_log: self.declaration_log.clone(),
             notice_log: self.notice_log.clone(),
             notice_pair_log: self
@@ -1094,6 +1160,15 @@ pub(crate) fn load(kv: Vec<(SmolStr, serde_json::Value)>) -> CampaignStore {
                     store.recovery_cursor = meta.recovery_cursor;
                     for wreck in meta.compensated_wrecks {
                         store.record_compensated_wreck(mush_core::ObjId(wreck));
+                    }
+                    for (unit, released_at) in meta
+                        .formation_releases
+                        .into_iter()
+                        .take(MAX_FORMATION_NODES)
+                    {
+                        if unit != 0 {
+                            store.formation_releases.insert(unit, released_at);
+                        }
                     }
                     store.declaration_log = meta
                         .declaration_log
