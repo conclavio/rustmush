@@ -621,13 +621,24 @@ loop. Where that box was in the loop, and what replaces it:
 | carried archives between the boxes, by `scp` through a session | the pull (§5) |
 | built the bundle for any release build on conclav.dev | the box does |
 
-What stays on the owner's workstation, and why a box never needs it:
+What **stays on the owner's Windows box, by design**, and why a box never needs it. The owner, the
+same day: "my windows box will stay in the loop for 3d asset management where the raw assets are
+required". The goal is that the two boxes build and deploy the server, the web client and its
+WebAssembly on their own; anything that needs the raw 3D assets is not theirs to do.
 
-- **Baking from the licensed asset packs** (`scripts/unit-bake`, `ship-bake`, `planet-bake`,
-  `ground-extract`: Unity or Blender, and the purchased packs). The packs never go in the public
-  repository and never go on a box. What a build reads is their baked output, which is committed:
-  60 model files under `crates/mush-pixel/models/` (56 MB), the looks and the content packs under
-  `crates/`. A build from a clean clone is the proof that nothing else is read.
+- **Everything that reads the raw assets**: the purchased packs themselves, the Unity project,
+  and the bake steps (`scripts/unit-bake`, `ship-bake`, `planet-bake`, `ground-extract`: Unity or
+  Blender over the packs). **No asset tooling is installed on a box and no raw asset is moved to
+  one**; the pack models never go in the public repository (the owner's ruling of 2026-10-29).
+- **What a box build consumes instead, and where it gets it**: the *baked* output of those
+  steps, which is committed, so a box gets it from its clone of the repository at the commit it
+  builds and from nowhere else. That is 60 model files under `crates/mush-pixel/models/` (56 MB,
+  each naming the pack, version and prefab it was baked from), the looks under
+  `crates/mush-pixel/looks/`, and the content packs under `crates/tacsim/content/`. The web
+  build copies the models and the designer's catalogue out of those directories
+  (`web/scripts/build-wasm.mjs`); the server compiles the rest in. A change to a model reaches a
+  box as a commit: baked on the Windows box, committed, built on the box.
+- A build from a clean clone (below) is the proof that nothing else is read.
 - **The Unity client** (`scripts/release-unity-client.ps1`): built with Unity and uploaded to
   `/opt/rustmush/clients`. It is not part of a server deploy.
 - **The operator's seat**: the root SSH key, the `gh` login, the provider keys placed in

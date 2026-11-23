@@ -342,11 +342,18 @@ COMMIT=<sha8 it printed> JOBS=4 bash deploy/redeploy/stage-build.sh dev1   # bot
   `stage-build.sh` reads them. Root runs it and builds nothing: git, npm and
   cargo run as `ghrunner`, so no package's script runs as root. It changes
   nothing live. On a box whose live tree predates the script, run a copy of it.
-- **The licensed asset packs are never on a box and never in the repository.**
-  A build reads only their baked output, which is committed under `crates/`
-  (the 60 model files, the looks, the content packs). Baking from the packs,
-  and the Unity client, stay on the owner's workstation; neither is part of a
-  server deploy.
+- **3D asset work stays on the owner's Windows box, by design** (the owner,
+  2026-11-23: "my windows box will stay in the loop for 3d asset management
+  where the raw assets are required"). The raw packs, the Unity project and
+  the bake steps (`scripts/unit-bake`, `ship-bake`, `planet-bake`,
+  `ground-extract`) are never on a box: install no asset tooling there and move
+  no raw asset there, and the pack models never go in the public repository.
+  A box build consumes only the **baked** output, and gets it from its clone of
+  the repository at the commit it builds: the 60 model files under
+  `crates/mush-pixel/models/`, the looks under `crates/mush-pixel/looks/`, the
+  content packs under `crates/tacsim/content/`. A changed model reaches a box
+  as a commit. The Unity client is built on the Windows box too and is not
+  part of a server deploy.
 
 Proved on conclav.dev from a clean checkout: sources and web client 25 s, both
 release binaries 324 s into an empty target at 20 jobs, no warning (doc 52

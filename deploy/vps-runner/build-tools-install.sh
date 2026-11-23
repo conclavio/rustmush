@@ -22,7 +22,11 @@
 #
 #   xz-utils, zstd, python3 and git from apt, when one is missing.
 #
-# What it does NOT install: the wasm32-unknown-unknown target. That belongs to
+# What it does NOT install, by design: anything for 3D asset work. The raw
+# asset packs, Unity and the bake steps stay on the owner's Windows box (his
+# word, 2026-11-23); a box builds from the baked files committed under crates/.
+#
+# Nor the wasm32-unknown-unknown target. That belongs to
 # the toolchain rust-toolchain.toml pins, and deploy/redeploy/stage-source.sh
 # adds it in the tree it builds, for the user that builds, so it always
 # matches the commit being built.
