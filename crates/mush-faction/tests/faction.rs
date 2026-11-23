@@ -899,3 +899,205 @@ fn stances_are_declared_by_officers_persist_and_go_with_their_faction() {
     assert_eq!(state(&engine).stances.len(), 2);
     assert_eq!(state(&engine).stance(sabbat, cam), Stance::Neutral);
 }
+
+/// P2-MOD-40:
+/// - Stance notices do not leak hidden declaring factions/orgs to target officers
+///   who cannot list them, and omit covert officer names on public declarations.
+/// - `side_listed` requires `MembershipStatus::Active` for hidden orgs so suspended
+///   former members cannot inspect hidden orgs or their stances.
+#[test]
+fn p2_mod_40_stance_notices_and_side_listed_hide_covert_and_suspended_state() {
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let cam_off = world
+        .create(ObjKind::Player, "CamOfficer", GOD, Some(LIMBO))
+        .unwrap();
+    let covert_off = world
+        .create(ObjKind::Player, "CovertSpy", GOD, Some(LIMBO))
+        .unwrap();
+    let shadow_off = world
+        .create(ObjKind::Player, "ShadowBoss", GOD, Some(LIMBO))
+        .unwrap();
+    let suspended_ex = world
+        .create(ObjKind::Player, "ExAgent", GOD, Some(LIMBO))
+        .unwrap();
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    registry
+        .register(
+            mush_core::CommandSpec {
+                name: "test-org-member".into(),
+                shape: mush_core::ArgShape::EqPair,
+                ..mush_core::CommandSpec::default()
+            },
+            std::sync::Arc::new(move |ctx: &mut mush_core::Ctx<'_>| {
+                let org = mush_org::OrgId(
+                    ctx.args
+                        .lhs()
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| mush_core::CmdError::msg("org id"))?,
+                );
+                let (status, rev) = match ctx.args.rhs().unwrap_or_default().trim() {
+                    "active" => (mush_org::MembershipStatus::Active, 1),
+                    "suspended" => (mush_org::MembershipStatus::Suspended, 2),
+                    _ => return Err(mush_core::CmdError::msg("bad status")),
+                };
+                let plan =
+                    mush_org::OrgMutationPlan::of(vec![mush_org::OrgMutationOp::PutMembership {
+                        membership: mush_org::OrgMembership {
+                            org,
+                            member: suspended_ex,
+                            status,
+                            titles: vec![],
+                            roles: std::collections::BTreeSet::new(),
+                            visibility: mush_org::Visibility::MembersKnow,
+                            since: 1_000,
+                            revision: rev,
+                        },
+                    }]);
+                mush_org::submit(
+                    ctx,
+                    &plan,
+                    mush_org::OrgAction {
+                        action: SmolStr::new_static("test.member"),
+                        org: Some(org),
+                        detail: serde_json::json!({}),
+                    },
+                )
+                .map_err(|e| mush_core::CmdError::msg(e.to_string()))?;
+                Ok(())
+            }),
+        )
+        .unwrap();
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(ComsysModule::new()),
+            Box::new(FactionModule::new()),
+        ],
+    )
+    .unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .unwrap();
+
+    // Public Camarilla with officer CamOfficer.
+    run(&mut engine, GOD, "@faction/create Camarilla");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/add Camarilla=CamOfficer/level:2",
+    );
+
+    // Public Anarchs with a COVERT officer CovertSpy.
+    run(&mut engine, GOD, "@faction/create Anarchs");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/add Anarchs=CovertSpy/level:2/vis:covert",
+    );
+
+    // Hidden faction ShadowCabal with officer ShadowBoss.
+    run(&mut engine, GOD, "@faction/create ShadowCabal");
+    run(&mut engine, GOD, "@faction/set ShadowCabal=hidden:yes");
+    run(
+        &mut engine,
+        GOD,
+        "@faction/add ShadowCabal=ShadowBoss/level:2",
+    );
+
+    // 1. Covert officer of public faction Anarchs declares hostile toward Camarilla:
+    //    CamOfficer hears Anarchs' stance, WITHOUT learning CovertSpy's identity.
+    let out_covert = run(
+        &mut engine,
+        covert_off,
+        "+faction/stance Anarchs=Camarilla/hostile",
+    );
+    let cam_msgs: String = out_covert
+        .events()
+        .iter()
+        .filter(|(a, _)| matches!(a, mush_core::Audience::Actor(who) if *who == cam_off))
+        .filter_map(|(_, ev)| match ev {
+            OutputEvent::Sys(text) => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        cam_msgs.contains("Anarchs has declared itself Hostile toward Camarilla."),
+        "expected stance notice: {cam_msgs}"
+    );
+    assert!(
+        !cam_msgs.contains("CovertSpy"),
+        "covert officer name leaked in stance notice: {cam_msgs}"
+    );
+
+    // 2. Hidden faction ShadowCabal declares hostile toward Camarilla:
+    //    CamOfficer must NOT receive a notice revealing ShadowCabal or ShadowBoss.
+    let out_hidden = run(
+        &mut engine,
+        shadow_off,
+        "+faction/stance ShadowCabal=Camarilla/hostile",
+    );
+    let cam_hidden_msgs: String = out_hidden
+        .events()
+        .iter()
+        .filter(|(a, _)| matches!(a, mush_core::Audience::Actor(who) if *who == cam_off))
+        .filter_map(|(_, ev)| match ev {
+            OutputEvent::Sys(text) => Some(text.to_plain_text()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        cam_hidden_msgs.is_empty(),
+        "hidden faction declaration leaked to target officer: {cam_hidden_msgs}"
+    );
+
+    // 3. Hidden org with a Suspended member: `side_listed` must NOT let Suspended
+    //    member resolve or view the hidden org via `+faction <org>`.
+    run(&mut engine, GOD, "@org/create SecretSyndicate");
+    run(
+        &mut engine,
+        GOD,
+        "@org/status SecretSyndicate=active hidden=yes",
+    );
+    let org_id = {
+        let org_store = engine
+            .world
+            .module_state::<mush_org::OrgStore>()
+            .expect("org store");
+        let org = org_store
+            .state()
+            .orgs()
+            .find(|o| o.name == "SecretSyndicate")
+            .expect("SecretSyndicate created");
+        assert!(org.hidden, "SecretSyndicate must be hidden");
+        org.id
+    };
+    run(
+        &mut engine,
+        GOD,
+        &format!("test-org-member {}=active", org_id.0),
+    );
+    // Active member can inspect it:
+    let active_view = joined(&run(&mut engine, suspended_ex, "+faction SecretSyndicate"));
+    assert!(active_view.contains("SecretSyndicate"), "{active_view}");
+    // Suspend membership -> must now see uniform "No such faction." refusal!
+    run(
+        &mut engine,
+        GOD,
+        &format!("test-org-member {}=suspended", org_id.0),
+    );
+    let suspended_view = joined(&run(&mut engine, suspended_ex, "+faction SecretSyndicate"));
+    let missing_view = joined(&run(&mut engine, suspended_ex, "+faction TotallyFakeOrg"));
+    assert_eq!(
+        suspended_view, missing_view,
+        "suspended member must not see hidden org via side_listed: {suspended_view}"
+    );
+}

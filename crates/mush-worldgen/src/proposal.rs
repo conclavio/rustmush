@@ -1424,22 +1424,67 @@ pub fn answer(
 ) -> Result<String, String> {
     let rec = get(ctx, id)?;
     authorize(ctx, &rec, actor)?;
-    let text = text.trim();
-    if text.is_empty() || text.len() > MAX_ANSWER_BYTES {
-        return Err(format!("An answer is 1 to {MAX_ANSWER_BYTES} bytes."));
-    }
-    if !rec.questions.iter().any(|q| q.n == n) {
-        return Err(format!("Proposal {id} has no question {n}."));
+    if !rec.status.open() {
+        return Err(format!("Proposal {id} is {}.", rec.status.label()));
     }
     if rec.status == ProposalStatus::Planning {
         return Err(format!(
             "Proposal {id} is being planned; answer when it asks."
         ));
     }
+    if rec.status == ProposalStatus::Capped {
+        return Err(format!(
+            "Proposal {id} has spent its cap; staff can raise it or start another."
+        ));
+    }
+    if matches!(
+        rec.status,
+        ProposalStatus::Failed {
+            retryable: false,
+            ..
+        }
+    ) {
+        return Err(format!(
+            "Proposal {id} failed permanently and cannot be retried."
+        ));
+    }
+    let text = text.trim();
+    if text.is_empty() || text.len() > MAX_ANSWER_BYTES {
+        return Err(format!("An answer is 1 to {MAX_ANSWER_BYTES} bytes."));
+    }
+    let Some(existing_q) = rec.questions.iter().find(|q| q.n == n) else {
+        return Err(format!("Proposal {id} has no question {n}."));
+    };
+    let already_answered = existing_q.answer.is_some();
+    let will_rerun = rec.unanswered() == 0 || (!already_answered && rec.unanswered() == 1);
+    // Re-answering an already-answered question (or answering outside
+    // `NeedsAnswers`) when all questions are answered would trigger a new
+    // planning run just like feedback; enforce `MAX_FEEDBACK` so `+build/answer`
+    // cannot bypass the feedback round cap (P2-MOD-87).
+    let counts_as_feedback =
+        will_rerun && (already_answered || rec.status != ProposalStatus::NeedsAnswers);
+    if counts_as_feedback && rec.feedback.len() >= MAX_FEEDBACK {
+        return Err(format!(
+            "Proposal {id} has had its {MAX_FEEDBACK} rounds of feedback; start another."
+        ));
+    }
+    if will_rerun {
+        let cap = state(ctx)?.plan.cap_usd;
+        if rec.cost_usd >= cap {
+            return Err(format!(
+                "Proposal {id} has spent its cap (${:.2} of ${cap:.2}); staff can raise it or start another.",
+                rec.cost_usd
+            ));
+        }
+    }
     let text = text.to_string();
+    let feedback_note = counts_as_feedback.then(|| format!("Q{n}: {text}"));
     let rec = update(ctx, id, move |r| {
         if let Some(q) = r.questions.iter_mut().find(|q| q.n == n) {
             q.answer = Some(text);
+        }
+        if let Some(note) = feedback_note {
+            r.feedback.push(note);
         }
     })?;
     if rec.unanswered() == 0 {
@@ -1461,16 +1506,42 @@ pub fn answer(
 pub fn feedback(ctx: &mut Ctx<'_>, id: u64, actor: ObjId, text: &str) -> Result<String, String> {
     let rec = get(ctx, id)?;
     authorize(ctx, &rec, actor)?;
-    let text = text.trim();
-    if text.is_empty() || text.len() > MAX_ANSWER_BYTES {
-        return Err(format!("Feedback is 1 to {MAX_ANSWER_BYTES} bytes."));
+    if !rec.status.open() {
+        return Err(format!("Proposal {id} is {}.", rec.status.label()));
     }
     if rec.status == ProposalStatus::Planning {
         return Err(format!("Proposal {id} is being planned; wait for it."));
     }
+    if rec.status == ProposalStatus::Capped {
+        return Err(format!(
+            "Proposal {id} has spent its cap; staff can raise it or start another."
+        ));
+    }
+    if matches!(
+        rec.status,
+        ProposalStatus::Failed {
+            retryable: false,
+            ..
+        }
+    ) {
+        return Err(format!(
+            "Proposal {id} failed permanently and cannot be retried."
+        ));
+    }
+    let text = text.trim();
+    if text.is_empty() || text.len() > MAX_ANSWER_BYTES {
+        return Err(format!("Feedback is 1 to {MAX_ANSWER_BYTES} bytes."));
+    }
     if rec.feedback.len() >= MAX_FEEDBACK {
         return Err(format!(
             "Proposal {id} has had its {MAX_FEEDBACK} rounds of feedback; start another."
+        ));
+    }
+    let cap = state(ctx)?.plan.cap_usd;
+    if rec.cost_usd >= cap {
+        return Err(format!(
+            "Proposal {id} has spent its cap (${:.2} of ${cap:.2}); staff can raise it or start another.",
+            rec.cost_usd
         ));
     }
     let text = text.to_string();
@@ -1539,7 +1610,9 @@ fn authorize(ctx: &Ctx<'_>, rec: &ProposalRec, actor: ObjId) -> Result<(), Strin
     if rec.author == actor || mush_atlas::is_staff(ctx.w, actor) {
         Ok(())
     } else {
-        Err(format!("Proposal {} is not yours.", rec.id))
+        // Uniform refusal matching `proposal::get` so probing proposal IDs
+        // cannot enumerate other players' or staff proposals (P2-MOD-87).
+        Err(format!("No proposal {}.", rec.id))
     }
 }
 

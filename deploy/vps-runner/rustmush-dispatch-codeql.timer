@@ -1,0 +1,24 @@
+# CodeQL's clock (.github/workflows/codeql.yml with rust=true, on GitHub's
+# hosted runners): Monday at 13:30 Pacific, the weekly Rust analysis (the
+# fast analyses run again with it).
+#
+# Its place among the four timers (docs/ops.md has the table): Monday's
+# nightly has its time to 13:27. The three scheduled CodeQL runs of the 30
+# days to 2026-11-23 usually took 1 h 22 min and at the longest 1 h 43 min
+# (103 minutes); the time kept for it is one and a half times the longest,
+# 155 minutes, to 16:05. The next clock-run job is the soak at 23:17.
+#
+# Persistent=false: no catch-up run at boot.
+#
+# reserved-minutes: 155
+[Unit]
+Description=Start the CodeQL Rust analysis at 13:30 Pacific on Monday
+
+[Timer]
+OnCalendar=Mon *-*-* 13:30:00 America/Los_Angeles
+AccuracySec=1s
+Persistent=false
+Unit=rustmush-dispatch@codeql.service
+
+[Install]
+WantedBy=timers.target

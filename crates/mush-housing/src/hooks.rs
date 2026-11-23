@@ -43,7 +43,9 @@ use mush_org::{OrgScopeId, PrincipalId};
 use mush_proto::RichText;
 
 use crate::access::Access;
-use crate::module::{HousingStore, LiveEntry, RoomEntry, enclosing_room, is_let, is_staff};
+use crate::module::{
+    EnclosingRoom, HousingStore, LiveEntry, RoomEntry, enclosing_room, is_let, is_staff,
+};
 use crate::record::{Property, PropertyStatus};
 
 /// The one refusal a stranger ever sees at a private door.
@@ -73,10 +75,25 @@ impl EventHook for AccessHook {
         //
         // Walk `dest` transitively to its enclosing room so teleporting into a
         // container, vehicle, or character standing inside an occupied home
-        // cannot bypass the room's access gate.
-        let dest_room = enclosing_room(w, dest).unwrap_or(dest);
-        if matches!(may_reach(w, actor, dest_room), Access::Refused) {
-            return Err(RichText::tag("error", REFUSED));
+        // cannot bypass the room's access gate. Fail closed on depth/cycle
+        // overflow for non-staff when housing is loaded.
+        let housing_loaded = w.module_state::<HousingStore>().is_some();
+        match enclosing_room(w, dest) {
+            EnclosingRoom::Room(dest_room) => {
+                if matches!(may_reach(w, actor, dest_room), Access::Refused) {
+                    return Err(RichText::tag("error", REFUSED));
+                }
+            }
+            EnclosingRoom::Unlocated => {
+                if matches!(may_reach(w, actor, dest), Access::Refused) {
+                    return Err(RichText::tag("error", REFUSED));
+                }
+            }
+            EnclosingRoom::LimitOrCycle => {
+                if housing_loaded && !is_staff(w, actor) {
+                    return Err(RichText::tag("error", REFUSED));
+                }
+            }
         }
         // **The source half, for things** (verify fold, H2). A move only ever asked
         // about the destination, so `@teleport #lamp=#yard` walked an object straight
@@ -96,11 +113,20 @@ impl EventHook for AccessHook {
         // be able to walk out, and a staffer must always be able to pull somebody
         // out. It is the same asymmetry `to_unhome_on_end` has — the door is about
         // reaching *in*.
-        if !crate::module::is_character(w, actor)
-            && let Some(from) = enclosing_room(w, actor)
-            && matches!(may_reach(w, actor, from), Access::Refused)
-        {
-            return Err(RichText::tag("error", REFUSED_CARRY));
+        if !crate::module::is_character(w, actor) {
+            match enclosing_room(w, actor) {
+                EnclosingRoom::Room(from) => {
+                    if matches!(may_reach(w, actor, from), Access::Refused) {
+                        return Err(RichText::tag("error", REFUSED_CARRY));
+                    }
+                }
+                EnclosingRoom::Unlocated => {}
+                EnclosingRoom::LimitOrCycle => {
+                    if housing_loaded && !is_staff(w, actor) {
+                        return Err(RichText::tag("error", REFUSED_CARRY));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -113,15 +139,23 @@ impl EventHook for AccessHook {
         dest: ObjId,
     ) -> Result<(), RichText> {
         let w = ctx.world();
+        let housing_loaded = w.module_state::<HousingStore>().is_some();
         // Where it is coming FROM, and where it is going TO, resolved transitively
         // to the enclosing room so nested containers inside a private room cannot
-        // bypass either direction of the gate.
-        for room in [enclosing_room(w, obj), enclosing_room(w, dest)]
-            .into_iter()
-            .flatten()
-        {
-            if matches!(may_reach(w, mover, room), Access::Refused) {
-                return Err(RichText::tag("error", REFUSED_CARRY));
+        // bypass either direction of the gate. Fail closed on depth/cycle overflow.
+        for resolved in [enclosing_room(w, obj), enclosing_room(w, dest)] {
+            match resolved {
+                EnclosingRoom::Room(room) => {
+                    if matches!(may_reach(w, mover, room), Access::Refused) {
+                        return Err(RichText::tag("error", REFUSED_CARRY));
+                    }
+                }
+                EnclosingRoom::Unlocated => {}
+                EnclosingRoom::LimitOrCycle => {
+                    if housing_loaded && !is_staff(w, mover) {
+                        return Err(RichText::tag("error", REFUSED_CARRY));
+                    }
+                }
             }
         }
         Ok(())

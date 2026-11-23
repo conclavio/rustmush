@@ -1,0 +1,24 @@
+# The weekly's clock (.github/workflows/ci.yml with slot=weekly, on GitHub's
+# hosted runners): Sunday at 05:00 Pacific. It is the nightly and the weekly
+# jobs in one run (doc 43 D-43-11).
+#
+# Its place among the four timers (docs/ops.md has the table): the nightly's.
+# The four scheduled weekly runs of the 30 days to 2026-11-23 took 3 h 50 min
+# at the longest, less than the longest nightly, because the weekly jobs are
+# not the long ones. The weekly is the nightly and more, so the time kept for
+# it is the nightly's: one and a half times 338 minutes, 507, to 13:27.
+#
+# Persistent=false: no catch-up run at boot.
+#
+# reserved-minutes: 507
+[Unit]
+Description=Start the CI weekly run at 05:00 Pacific on Sunday
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00 America/Los_Angeles
+AccuracySec=1s
+Persistent=false
+Unit=rustmush-dispatch@ci-weekly.service
+
+[Install]
+WantedBy=timers.target

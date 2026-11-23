@@ -64,8 +64,9 @@ use crate::error::PartyError;
 use crate::ids::{PartyId, parse_party_id};
 use crate::module::{NS, PartyStore, is_character, persist_meta, put_party, render_actor};
 use crate::record::{
-    DisbandCause, Invitation, MAX_PARTIES, MAX_PARTIES_PER_LEADER, MAX_PARTY_INVITES,
-    MAX_PARTY_NAME_BYTES, MAX_PARTY_ROLE_BYTES, MAX_PARTY_SIZE, Party, PartyStatus, check_label,
+    DisbandCause, Invitation, MAX_PARTIES, MAX_PARTIES_PER_LEADER, MAX_PARTIES_PER_MEMBER,
+    MAX_PARTY_INVITES, MAX_PARTY_NAME_BYTES, MAX_PARTY_ROLE_BYTES, MAX_PARTY_SIZE, Party,
+    PartyStatus, check_label,
 };
 
 /// The most parties one `+party` render lists per section. Bounded like every other
@@ -496,6 +497,11 @@ fn create(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
                 "You already lead {MAX_PARTIES_PER_LEADER} parties. Disband one first."
             )));
         }
+        if store.live_parties_of(who).len() >= MAX_PARTIES_PER_MEMBER {
+            return Err(CmdError::msg(format!(
+                "You are already in {MAX_PARTIES_PER_MEMBER} parties. Leave one first."
+            )));
+        }
         if store.live_count() >= MAX_PARTIES {
             return Err(CmdError::msg(
                 "There are too many parties right now. Try again later.",
@@ -617,6 +623,15 @@ fn accept(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
         put_party(ctx, p);
         return Err(CmdError::msg("That invitation has expired."));
     }
+    if ctx
+        .w
+        .module_state::<PartyStore>()
+        .is_some_and(|s| s.live_parties_of(who).len() >= MAX_PARTIES_PER_MEMBER)
+    {
+        return Err(CmdError::msg(format!(
+            "You are already in {MAX_PARTIES_PER_MEMBER} parties. Leave one first."
+        )));
+    }
     if p.check_room_for_member().is_err() {
         return Err(CmdError::msg(format!(
             "That party is full ({MAX_PARTY_SIZE} members)."
@@ -667,13 +682,30 @@ fn leave(ctx: &mut Ctx<'_>, lhs: &str) -> Result<(), CmdError> {
     }
     let now = ctx.w.now();
     let was_leader = p.is_leader(who);
-    if !p.remove_member(who) {
+    let prior_others: Vec<ObjId> = p.members.iter().copied().filter(|m| *m != who).collect();
+    let can_lead = |candidate: ObjId| {
+        ctx.w
+            .module_state::<PartyStore>()
+            .is_none_or(|s| s.live_parties_led_by(candidate).len() < MAX_PARTIES_PER_LEADER)
+    };
+    if !p.remove_member_with_handoff(who, can_lead) {
         return Err(CmdError::msg("You are not in that party."));
     }
     let (id, label) = (p.id, p.name.to_string());
     let mut mine = format!("You left {label} (party {id}).");
     if p.is_terminal() {
-        mine.push_str(" It disbanded — you were the last member.");
+        if prior_others.is_empty() {
+            mine.push_str(" It disbanded — you were the last member.");
+        } else {
+            mine.push_str(" It disbanded — no remaining member could take leadership.");
+            let line = format!(
+                "{} left {label} (party {id}); it disbanded because no remaining member could lead it.",
+                render_actor(ctx.w, who)
+            );
+            for other in prior_others {
+                notify(ctx, other, line.clone());
+            }
+        }
     } else {
         p.touch(now);
         if was_leader {

@@ -1299,3 +1299,120 @@ fn high23_mail_list_and_query_paginate_output() {
     };
     assert_eq!(clamped["limit"], mush_mail::MAIL_QUERY_MAX_LIMIT);
 }
+
+/// P2-MOD-74:
+/// - Unscoped `#dbref` resolution in `@mail` must not enumerate `DARK`, `GOING`,
+///   or remote hidden NPCs for non-staff callers.
+/// - `transit::post_notice` must not allocate or persist an orphan `MailMsg` doc
+///   when every recipient's mailbox is at quota.
+#[test]
+fn p2_mod_74_mail_dbref_scoping_and_post_notice_no_orphan_msg() {
+    let (mut engine, alice, bob) = setup();
+    let secret_room = engine
+        .world
+        .create(ObjKind::Room, "Hidden Vault", GOD, None)
+        .unwrap();
+    let hidden_npc = engine
+        .world
+        .create(ObjKind::Npc, "SecretBroker", GOD, Some(secret_room))
+        .unwrap();
+    let dark_player = engine
+        .world
+        .create(ObjKind::Player, "ShadowWiz", GOD, Some(LIMBO))
+        .unwrap();
+    engine
+        .world
+        .set_flag(dark_player, mush_core::Flags::DARK, true)
+        .unwrap();
+    let going_player = engine
+        .world
+        .create(ObjKind::Player, "DoomedUser", GOD, Some(LIMBO))
+        .unwrap();
+    engine
+        .world
+        .set_flag(going_player, mush_core::Flags::GOING, true)
+        .unwrap();
+
+    // Non-staff Alice gets the exact same refusal for DARK, GOING, hidden remote NPC,
+    // and nonexistent `#dbref`, without printing their display names.
+    for target in [hidden_npc, dark_player, going_player, ObjId(999_999)] {
+        let out = run(
+            &mut engine,
+            alice,
+            &format!("@mail/send #{}=Probe", target.0),
+        );
+        assert_actor_saw(
+            out.events(),
+            alice,
+            &format!("MAIL: No such player: #{}.", target.0),
+        );
+        let all = format!("{:?}", out.events());
+        assert!(!all.contains("SecretBroker"), "hidden NPC leaked: {all}");
+        assert!(!all.contains("ShadowWiz"), "DARK player leaked: {all}");
+        assert!(!all.contains("DoomedUser"), "GOING player leaked: {all}");
+    }
+
+    // Staff (`GOD`) can still resolve DARK player and remote NPC by `#dbref`,
+    // while `GOING` remains unaddressable.
+    let staff_ok = run(
+        &mut engine,
+        GOD,
+        &format!("@mail/send #{}=Notice", dark_player.0),
+    );
+    assert_actor_saw(staff_ok.events(), GOD, "MAIL: Composing to ShadowWiz");
+    let _ = run(&mut engine, GOD, "~q");
+    let staff_going = run(
+        &mut engine,
+        GOD,
+        &format!("@mail/send #{}=Notice", going_player.0),
+    );
+    assert_actor_saw(
+        staff_going.events(),
+        GOD,
+        &format!("MAIL: No such player: #{}.", going_player.0),
+    );
+
+    // `post_notice` when all recipients are at quota: returns Err and creates
+    // ZERO orphan `MailMsg` entries in RAM or persisted KV ops.
+    let quota = mail(&engine).quota();
+    for i in 0..quota {
+        let _ = run(
+            &mut engine,
+            alice,
+            &format!("@mail/quick Bob=Fill {i}/body"),
+        );
+    }
+    let before_next_id = mail(&engine).next_id();
+    let clerk = engine
+        .world
+        .create(ObjKind::Thing, "Registry Clerk", GOD, Some(LIMBO))
+        .unwrap();
+    let mut out = Outbox::new();
+    let res = {
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: clerk,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new("mail")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        mush_mail::post_notice(&mut ctx, clerk, &[bob], "Over Quota", "Should not orphan.")
+    };
+    assert!(res.is_err(), "full-mailbox post_notice should fail cleanly");
+    assert_eq!(
+        mail(&engine).next_id(),
+        before_next_id,
+        "failed post_notice must not burn a mail id"
+    );
+    assert!(
+        mail(&engine).message(before_next_id).is_none(),
+        "failed post_notice must not insert an orphan MailMsg in RAM"
+    );
+    assert!(
+        out.take_deferred().is_empty(),
+        "failed post_notice must not persist any KV writes"
+    );
+}

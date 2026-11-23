@@ -793,6 +793,14 @@ fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     if !is_ic_narrative(*kind) {
         return;
     }
+    // Never record attributed speech/poses from `Flags::DARK` actors into the
+    // scene transcript so hidden presence cannot leak through `+timestop/log`
+    // or `+recap`. Anonymous `Emit`/`Spoof` remain recorded (with `who`
+    // suppressed for non-staff viewers at render time).
+    if commands::is_dark(ctx.w, *who) && !matches!(kind, NarrativeKind::Emit | NarrativeKind::Spoof)
+    {
+        return;
+    }
     let Some(s) = active_scene_at(ctx.w, *room) else {
         return;
     };
@@ -891,9 +899,16 @@ impl CommandGate for TurnGate {
             );
         }
         if scene.current_actor() != Some(actor) {
-            let whose = scene
-                .current_actor()
-                .map_or_else(|| "no one".to_string(), |a| display_name(w, a));
+            let whose = scene.current_actor().map_or_else(
+                || "no one".to_string(),
+                |a| {
+                    if commands::can_see_actor(w, actor, a) {
+                        display_name(w, a)
+                    } else {
+                        "Someone".to_string()
+                    }
+                },
+            );
             return Err(format!(
                 "It is not your turn in the scene — it is {whose}'s (round {}). \
                  Wait, or ask the facilitator to advance the turn.",
@@ -909,6 +924,9 @@ fn on_rolled(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     let WorldEvent::Rolled { who, room, summary } = ev else {
         return;
     };
+    if commands::is_dark(ctx.w, *who) {
+        return;
+    }
     let Some(s) = active_scene_at(ctx.w, *room) else {
         return;
     };

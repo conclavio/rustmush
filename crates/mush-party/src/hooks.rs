@@ -18,7 +18,7 @@
 use mush_core::{Ctx, WorldEvent};
 
 use crate::module::{PartyStore, put_party};
-use crate::record::Party;
+use crate::record::{MAX_PARTIES_PER_LEADER, Party};
 
 /// Drop a destroyed object from every live, unlocked party.
 pub(crate) fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
@@ -36,7 +36,12 @@ pub(crate) fn on_obj_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     };
     for mut p in touched {
         p.invited.retain(|i| i.who != gone);
-        let _: bool = p.remove_member(gone);
+        let can_lead = |candidate| {
+            ctx.w
+                .module_state::<PartyStore>()
+                .is_none_or(|s| s.live_parties_led_by(candidate).len() < MAX_PARTIES_PER_LEADER)
+        };
+        let _: bool = p.remove_member_with_handoff(gone, can_lead);
         p.bump();
         put_party(ctx, p);
     }

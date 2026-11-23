@@ -73,6 +73,13 @@ pub const PARTY_IDLE_TTL: i64 = 7 * 24 * 60 * 60;
 /// do not count.
 pub const MAX_PARTIES_PER_LEADER: usize = 4;
 
+/// The most **live** parties one player may belong to at once (led or joined).
+///
+/// Bounds active membership cleanly so `+party/accept` and `+party/leave`
+/// disambiguation lists stay compact and a pair of accounts cannot accumulate
+/// unbounded memberships.
+pub const MAX_PARTIES_PER_MEMBER: usize = 16;
+
 /// The most **live** parties the whole world holds at once.
 ///
 /// Not in §9 — added here so `+party/create` is bounded globally as well as per
@@ -528,22 +535,44 @@ impl Party {
     /// Returns `false` when `who` was not a member (nothing changed). The caller
     /// still owns the [`Party::touch`], because a no-op is not activity.
     pub fn remove_member(&mut self, who: ObjId) -> bool {
+        self.remove_member_with_handoff(who, |_| true)
+    }
+
+    /// Drop `who` from the roster, handing leadership to the first surviving
+    /// member in roster order for whom `can_lead` returns `true`.
+    ///
+    /// If `who` was the leader and no surviving member is eligible to lead
+    /// (e.g. every remaining member is already at [`MAX_PARTIES_PER_LEADER`]),
+    /// the party disbands with [`DisbandCause::Empty`] so leader-leave handoff
+    /// cannot bypass per-leader party caps (P2-MOD-35).
+    pub fn remove_member_with_handoff(
+        &mut self,
+        who: ObjId,
+        can_lead: impl Fn(ObjId) -> bool,
+    ) -> bool {
         let before = self.members.len();
         self.members.retain(|m| *m != who);
         if self.members.len() == before {
             return false;
         }
         self.roles.remove(&who);
-        match self.members.first().copied() {
-            // The lead passes to the next member in roster order.
-            Some(next) => {
-                if self.leader == who {
-                    self.leader = next;
-                }
-            }
+        if self.members.is_empty() {
             // The last member left: the party is over, and the roster is empty by
             // design (§3.2's "last member leaves → Disbanded{Empty}").
-            None => self.disband(DisbandCause::Empty),
+            self.disband(DisbandCause::Empty);
+            return true;
+        }
+        if self.leader == who {
+            match self.members.iter().copied().find(|m| can_lead(*m)) {
+                Some(next) => self.leader = next,
+                None => {
+                    // No surviving member is eligible to lead: clear the roster
+                    // so the `Disbanded { how: Empty }` wire invariant holds.
+                    self.members.clear();
+                    self.roles.clear();
+                    self.disband(DisbandCause::Empty);
+                }
+            }
         }
         true
     }

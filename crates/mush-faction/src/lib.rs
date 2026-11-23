@@ -770,11 +770,11 @@ fn publish_board_clock(
             );
         }
     };
-    let org_name = ctx
+    let (org_name, org_hidden) = ctx
         .w
         .module_state::<mush_org::OrgStore>()
         .and_then(|s| s.state().org(operator))
-        .map(|o| o.name.clone())
+        .map(|o| (o.name.clone(), o.hidden))
         .ok_or("Operator unavailable.")?;
     let faction = if let Some(f) = factions.factions.values().find(|f| f.org == Some(operator)) {
         f.clone()
@@ -789,6 +789,7 @@ fn publish_board_clock(
             .ok_or("Faction ids exhausted.")?;
         let mut f = Faction::new(id, &org_name);
         f.org = Some(operator);
+        f.hidden = org_hidden;
         factions.factions.insert(id, f.clone());
         f
     };

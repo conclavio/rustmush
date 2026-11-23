@@ -1023,3 +1023,105 @@ fn ext_p2_15_concave_neighborhood_and_reservation_reject_spanning_buildings() {
         "valid boundary-touching site inside concave reservation must succeed: {good_res:?}"
     );
 }
+
+/// P2-MOD-33 & P2-MOD-72:
+/// - `Access::Restricted` rooms are masked in hydration overlap errors and failed
+///   probes consume per-player request rate-limit budget.
+/// - `hydrate::free_ground` validates full polygon containment against concave
+///   neighborhoods rather than vertices only.
+#[test]
+fn p2_mod_33_and_72_restricted_room_masking_rate_limit_and_concave_free_ground() {
+    // 1. Restricted room name masking + rate-limiting on failed overlap probes.
+    let secret_block = signed(json!({
+        "manifest": { "id": "neighborhood.block", "version": 1, "kind": "neighborhood", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 }] },
+        "entries": {
+            "neighborhood": { "kind": "neighborhood", "def": {
+                "region": "region.town", "locality": "locality.town", "name": "Secret Block",
+                "setting": "suburban",
+                "footprint": [[0, 0], [200, 0], [200, 200], [0, 200]],
+                "room_budget": { "target": 3, "maximum": 12 },
+                "hydration": { "enabled": true, "max_player_sites": 4 } } },
+            "room.green": { "kind": "room", "def": { "name": "The Green", "surface": "ground",
+                "footprint": { "rect": [[10, 10], [40, 40]] }, "desc": "A wide green." } },
+            "room.vault": { "kind": "room", "def": { "name": "Hidden Sanctum", "surface": "ground",
+                "access": "restricted",
+                "footprint": { "rect": [[60, 60], [100, 100]] }, "desc": "Secret vault." } },
+            "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
+                "names": ["Out <O>;o;out", "Limbo <L>;limbo"] } }
+        }
+    }));
+    let mut tw = TestWorld::with_modules(modules(secret_block));
+    let probe = tw.spawn_player("Probe");
+    tw.engine_mut().set_now(10_000);
+
+    let err = ask(&mut tw, probe, Some(square(65.0, 65.0, 20.0)))
+        .expect_err("overlapping restricted room must fail");
+    assert!(
+        !err.contains("Hidden Sanctum"),
+        "restricted room name leaked in hydrate::request: {err}"
+    );
+    assert!(err.contains("not available"), "{err}");
+
+    // Repeating failed overlap probes consumes the per-player rate limit.
+    for i in 1..mush_atlas::MAX_REQUESTS_PER_PLAYER_WINDOW {
+        let _ = ask(
+            &mut tw,
+            probe,
+            Some(square(65.0 + f64::from(i as u32), 65.0, 10.0)),
+        );
+    }
+    let throttled = ask(&mut tw, probe, Some(square(120.0, 120.0, 20.0)))
+        .expect_err("rate limit must stop repeated probes");
+    assert!(
+        throttled.contains("limit"),
+        "expected rate limit: {throttled}"
+    );
+
+    // 2. Concave notch neighborhood where the first SW grid square has all 4 corners
+    //    inside the polygon but its middle crosses a concave notch: `free_ground` must
+    //    skip it and select a genuinely contained square so auto-placement succeeds.
+    // U-shaped bottom notch: outer [0, 80] x [0, 80] with a narrow notch cut up into
+    // [10, 16] x [0, 30] from y=0..30; a 24m square starting at (0,0) has corners at
+    // (0,0), (24,0), (24,24), (0,24) all inside/on the polygon while its bottom edge
+    // bridges across the notch (10..16, 0..24)!
+    let notched = signed(json!({
+        "manifest": { "id": "neighborhood.block", "version": 1, "kind": "neighborhood", "digest": "",
+                      "requires": [{ "id": "region.town", "version": 1 }] },
+        "entries": {
+            "neighborhood": { "kind": "neighborhood", "def": {
+                "region": "region.town", "locality": "locality.town", "name": "Notched Block",
+                "setting": "suburban",
+                "footprint": [[0, 0], [10, 0], [10, 30], [16, 30], [16, 0], [80, 0], [80, 80], [0, 80]],
+                "room_budget": { "target": 3, "maximum": 12 },
+                "hydration": { "enabled": true, "max_player_sites": 4 } } },
+            "room.green": { "kind": "room", "def": { "name": "The Green", "surface": "ground",
+                "footprint": { "rect": [[0, 40], [20, 60]] }, "desc": "A wide green." } },
+            "exit.limbo_green": { "kind": "exit", "def": { "from": "limbo", "to": "room.green",
+                "names": ["Out <O>;o;out", "Limbo <L>;limbo"] } }
+        }
+    }));
+    let mut tw2 = TestWorld::with_modules(modules(notched));
+    let bob = tw2.spawn_player("Bob");
+    let chosen = ask(&mut tw2, bob, None)
+        .expect("free_ground must skip notch-bridging candidate and find valid ground");
+    let fp = chosen.record().footprint.to_cm().expect("cm");
+    let nb_poly = atlas(&tw2)
+        .records
+        .neighborhoods
+        .get(&nb_key())
+        .unwrap()
+        .footprint
+        .to_cm()
+        .unwrap();
+    // All 4 corners AND the centre of the selected square must lie inside the neighborhood.
+    let bbox = fp.bbox();
+    let centre = mush_atlas::PointCm {
+        x: (bbox.min.x + bbox.max.x) / 2,
+        y: (bbox.min.y + bbox.max.y) / 2,
+    };
+    assert!(
+        nb_poly.contains(centre),
+        "free_ground picked a notch-bridging square: {fp:?}"
+    );
+}

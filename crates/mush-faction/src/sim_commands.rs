@@ -429,7 +429,12 @@ fn cmd_player_clocks(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let fac = fac_ref(ctx);
         st.clocks
             .values()
-            .filter(|c| fac.visibility_passes(actor, staff, c.faction, c.visibility))
+            .filter(|c| {
+                fac.factions
+                    .get(&c.faction)
+                    .is_some_and(|f| fac.faction_listed(actor, staff, f))
+                    && fac.visibility_passes(actor, staff, c.faction, c.visibility)
+            })
             .map(|c| {
                 let fname = fac
                     .factions

@@ -280,15 +280,32 @@ impl FieldEngineeringBook {
                 ),
             });
         }
-        if let Some(section_id) = install_point_section(&comp.install)
-            && effective_section_condition(target_unit, section_id, anatomy)
-                == Some(SectionCondition::Destroyed)
+        if ComponentCondition::classify_condition_id(&comp.condition) == ComponentCondition::Missing
         {
             return Err(FieldEngineeringError::RequiresWorkshopFacility {
                 unit: target_unit.object(),
-                reason: SmolStr::new_static(
-                    "component in destroyed section requires workshop section reconstruction",
-                ),
+                reason: SmolStr::new_static("missing component slot requires workshop replacement"),
+            });
+        }
+        if let Some(section_id) = install_point_section(&comp.install)
+            && let Some(sec_cond) = effective_section_condition(target_unit, section_id, anatomy)
+            && !sec_cond.is_functional()
+        {
+            let reason = match sec_cond {
+                SectionCondition::Destroyed => {
+                    "component in destroyed section requires workshop section reconstruction"
+                }
+                SectionCondition::Wreck => {
+                    "component in wrecked section requires workshop section reconstruction"
+                }
+                SectionCondition::Irrecoverable => {
+                    "component in irrecoverable section requires workshop facility"
+                }
+                SectionCondition::Intact | SectionCondition::Damaged => unreachable!(),
+            };
+            return Err(FieldEngineeringError::RequiresWorkshopFacility {
+                unit: target_unit.object(),
+                reason: SmolStr::new_static(reason),
             });
         }
 
@@ -442,12 +459,22 @@ impl FieldEngineeringBook {
         }
         let eff_sec = effective_section_condition(target_unit, section_id, anatomy)
             .unwrap_or(SectionCondition::Intact);
-        if eff_sec == SectionCondition::Destroyed {
+        if !eff_sec.is_functional() {
+            let reason = match eff_sec {
+                SectionCondition::Destroyed => {
+                    "destroyed section cannot be reconstructed in the field; workshop facility required"
+                }
+                SectionCondition::Wreck => {
+                    "wrecked section cannot be reconstructed in the field; workshop facility required"
+                }
+                SectionCondition::Irrecoverable => {
+                    "irrecoverable section cannot be reconstructed in the field; workshop facility required"
+                }
+                SectionCondition::Intact | SectionCondition::Damaged => unreachable!(),
+            };
             return Err(FieldEngineeringError::RequiresWorkshopFacility {
                 unit: target_unit.object(),
-                reason: SmolStr::new_static(
-                    "destroyed section cannot be reconstructed in the field; workshop facility required",
-                ),
+                reason: SmolStr::new_static(reason),
             });
         }
 
@@ -625,15 +652,34 @@ impl FieldEngineeringBook {
                     ),
                 });
             }
-            if let Some(sec_id) = install_point_section(&comp.install)
-                && effective_section_condition(target_unit, sec_id, anatomy)
-                    == Some(SectionCondition::Destroyed)
+            if ComponentCondition::classify_condition_id(&comp.condition)
+                == ComponentCondition::Missing
+                || eff_comp == Some(ComponentCondition::Missing)
             {
                 return Err(FieldEngineeringError::RequiresWorkshopFacility {
                     unit: target_unit.object(),
-                    reason: SmolStr::new_static(
-                        "component in destroyed section cannot be rearmed in the field",
-                    ),
+                    reason: SmolStr::new_static("missing component cannot be rearmed in the field"),
+                });
+            }
+            if let Some(sec_id) = install_point_section(&comp.install)
+                && let Some(sec_cond) = effective_section_condition(target_unit, sec_id, anatomy)
+                && !sec_cond.is_functional()
+            {
+                let reason = match sec_cond {
+                    SectionCondition::Destroyed => {
+                        "component in destroyed section cannot be rearmed in the field"
+                    }
+                    SectionCondition::Wreck => {
+                        "component in wrecked section cannot be rearmed in the field"
+                    }
+                    SectionCondition::Irrecoverable => {
+                        "component in irrecoverable section cannot be rearmed in the field"
+                    }
+                    SectionCondition::Intact | SectionCondition::Damaged => unreachable!(),
+                };
+                return Err(FieldEngineeringError::RequiresWorkshopFacility {
+                    unit: target_unit.object(),
+                    reason: SmolStr::new_static(reason),
                 });
             }
             let cell_addr = CellAddr::Component {

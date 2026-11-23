@@ -1555,22 +1555,37 @@ fn on_obj_destroyed(
                 // revision with no delta, so the repaired unit's stationed
                 // viewers get a fresh keyframe and vitals frame — the state
                 // change would otherwise reach nobody until a manual refresh.
+                // P2-MOD-85: suppress world-channel keyframes when the unit is
+                // `deployed::excluded` so deployed arena/field units never leak
+                // state past the deployed-exclusion boundary.
                 let repaired_obj = unit.object();
-                let unit_frame =
-                    view::UnitView::of(ctx.w, repaired_obj, &view::UnitSource::Active(&unit), now);
-                let (unit_value, vitals_value) = (unit_frame.to_frame(), unit_frame.vitals_value());
+                let excluded = mush_sim::deployed::excluded(
+                    ctx.w,
+                    mush_sim::deployed::Shown::Unit(repaired_obj),
+                );
+                let frames = (!excluded).then(|| {
+                    let unit_frame = view::UnitView::of(
+                        ctx.w,
+                        repaired_obj,
+                        &view::UnitSource::Active(&unit),
+                        now,
+                    );
+                    (unit_frame.to_frame(), unit_frame.vitals_value())
+                });
                 if let Some(store) = ctx.w.module_state_mut::<UnitStore>() {
                     store.update_active(unit, digest);
                 }
-                fan_state(
-                    ctx,
-                    feed,
-                    vitals,
-                    repaired_obj,
-                    None,
-                    unit_value,
-                    vitals_value,
-                );
+                if let Some((unit_value, vitals_value)) = frames {
+                    fan_state(
+                        ctx,
+                        feed,
+                        vitals,
+                        repaired_obj,
+                        None,
+                        unit_value,
+                        vitals_value,
+                    );
+                }
             }
             Err(error) => {
                 tracing::error!(unit = %unit.object(), dead = %obj, %error, "tactics: could not encode component asset repair; live state left untouched");
@@ -3268,6 +3283,11 @@ fn fan_state(
     unit_frame: serde_json::Value,
     vitals_frame: serde_json::Value,
 ) {
+    // P2-MOD-85: never fan `tactics.unit`/`tactics.vitals` keyframes for a
+    // `deployed::excluded` unit.
+    if mush_sim::deployed::excluded(ctx.w, mush_sim::deployed::Shown::Unit(obj)) {
+        return;
+    }
     let mut audience: Vec<ObjId> = also.into_iter().collect();
     audience.extend(
         crate::status::stationed_viewers(ctx.w, obj, view::MAX_UNIT_AUDIENCE)

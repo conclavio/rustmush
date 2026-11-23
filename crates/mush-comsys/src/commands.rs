@@ -10,8 +10,8 @@ use mush_core::commands::movement;
 use mush_core::lock::MAX_LOCK_DEPTH;
 use mush_core::output::display_name;
 use mush_core::{
-    ArgShape, CmdError, CommandSpec, Ctx, LockExpr, LookupErr, ModError, ObjId, Powers, Registrar,
-    Role, World, eval_lock, parse_lock, perm,
+    ArgShape, CmdError, CommandSpec, Ctx, Flags, LockExpr, LookupErr, ModError, ObjId, Powers,
+    Registrar, Role, World, eval_lock, parse_lock, perm,
 };
 use smol_str::SmolStr;
 
@@ -42,12 +42,14 @@ fn state<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut ComsysState {
         .expect("comsys state slot installed at registration")
 }
 
-/// A cloned snapshot of the channel with this name.
+/// A cloned snapshot of the channel with this name, gated by [`chan_visible`]
+/// so hidden, closed, or see-locked channels (managed or non-managed) cannot
+/// be enumerated via `@channel/destroy|perm|color|set` refusals (P2-MOD-36).
 fn chan_snapshot(ctx: &Ctx<'_>, name: &str) -> Result<Channel, CmdError> {
     ctx.w
         .module_state::<ComsysState>()
         .and_then(|st| st.channel_by_name(name).cloned())
-        .filter(|c| c.managed.is_none() || chan_visible(ctx.w, ctx.actor, c))
+        .filter(|c| chan_visible(ctx.w, ctx.actor, c))
         .ok_or_else(|| CmdError::msg("No such channel."))
 }
 
@@ -706,6 +708,7 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .map(str::to_lowercase)
         .ok_or_else(|| CmdError::msg(usage))?;
+    let is_wizard = perm::has_role(ctx.w, actor, Role::Wizard);
     let (updated, note) = {
         let st = state(ctx);
         let ch = st
@@ -748,8 +751,17 @@ fn channel_set(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 }
                 // Programme D4: the staff's declaration that this channel's
                 // lines may leave the world for the mapped Discord channel,
-                // and that linked Discord users may speak on it.
-                "relay" => ch.flags.relay = on,
+                // and that linked Discord users may speak on it. Restricted
+                // strictly to staff (`Role::Wizard`+), never delegated via
+                // `perms.admin` locks (P2-MOD-38).
+                "relay" => {
+                    if !is_wizard {
+                        return Err(CmdError::msg(
+                            "Permission denied. Only staff (Wizard+) may toggle relay.",
+                        ));
+                    }
+                    ch.flags.relay = on;
+                }
                 "persist" => ch.history.persist = on,
                 _ => return Err(CmdError::msg(usage)),
             }
@@ -800,18 +812,38 @@ fn channel_who(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ctx.out.info(actor, "Membership follows the accepted detachment roster. Channel UI does not report remote presence or listening state.");
         return Ok(());
     }
+    let staff = perm::has_role(ctx.w, actor, Role::Royalty)
+        || perm::has_power(ctx.w, actor, Powers::COMSYS_ADMIN);
+    // Non-managed IC channels also keep remote presence and listening state
+    // private from non-staff viewers (P2-MOD-37).
+    if c.flags.ic && !staff {
+        ctx.out.info(
+            actor,
+            "In-character channel UI does not report remote presence or listening state.",
+        );
+        return Ok(());
+    }
+    let see_dark = staff || perm::has_power(ctx.w, actor, Powers::SEE_HIDDEN);
     let mut rows: Vec<String> = {
         let st = ctx
             .w
             .module_state::<ComsysState>()
             .ok_or_else(|| CmdError::msg("Comsys is not loaded."))?;
         st.members_of(c.id)
+            .filter(|m| {
+                m.player == actor
+                    || see_dark
+                    || !ctx
+                        .w
+                        .get(m.player)
+                        .is_some_and(|o| o.flags.contains(Flags::DARK))
+            })
             .map(|m| {
                 let mut line = format!("  {}", display_name(ctx.w, m.player));
                 if ctx.w.is_connected(m.player) {
                     line.push_str(" [connected]");
                 }
-                if m.gagged {
+                if m.gagged && (m.player == actor || staff) {
                     line.push_str(" [gagged]");
                 }
                 line

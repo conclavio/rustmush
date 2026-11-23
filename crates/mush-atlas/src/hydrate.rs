@@ -728,6 +728,7 @@ pub fn request(
     placement: Placement,
 ) -> Result<Requested, String> {
     let now = ctx.w.now();
+    let staff = crate::module::is_staff(ctx.w, who);
     let rec = {
         let st = state(ctx)?;
         let Some(nb) = st.records.neighborhoods.get(neighborhood) else {
@@ -771,9 +772,7 @@ pub fn request(
             return Ok(Requested::Converged(existing.clone()));
         }
         // STRAG-M9: per-player non-staff rate limits and withdrawal cooldown.
-        if !crate::module::is_staff(ctx.w, who)
-            && let Some(standing) = st.hydration.standing.get(&who)
-        {
+        if !staff && let Some(standing) = st.hydration.standing.get(&who) {
             let recent_req = recent_timestamps(&standing.request_history, now, REQUEST_WINDOW_SECS);
             if recent_req.len() >= MAX_REQUESTS_PER_PLAYER_WINDOW {
                 return Err(format!(
@@ -815,6 +814,9 @@ pub fn request(
             });
         }
         // The footprint: nothing standing and no other request under it.
+        // Overlap rejections are returned as `Err(msg)` out of this block so
+        // non-staff coordinate probes consume request rate-limit budget (P2-MOD-33).
+        let mut overlap_err: Option<String> = None;
         for other in st.hydration.outstanding_in(neighborhood) {
             if let Ok(poly) = other.footprint.to_cm()
                 && overlap(&shape, &Shape::Polygon(poly), nb.resolution_cm)
@@ -822,67 +824,94 @@ pub fn request(
                 if other.character == who && other.kind == kind {
                     return Ok(Requested::Converged(other.clone()));
                 }
-                return Err(format!(
+                overlap_err = Some(format!(
                     "That ground is spoken for: request {} ({}) is already {} there.",
                     other.id,
                     mush_core::output::display_name(ctx.w, other.character),
                     other.status.label()
                 ));
+                break;
             }
         }
-        for site in st.records.sites_in(neighborhood) {
-            if let Ok(poly) = site.footprint.to_cm()
-                && overlap(&shape, &Shape::Polygon(poly), nb.resolution_cm)
-            {
-                return Err(format!("That ground is {}'s ({}).", site.name, site.key));
+        if overlap_err.is_none() {
+            for site in st.records.sites_in(neighborhood) {
+                if let Ok(poly) = site.footprint.to_cm()
+                    && overlap(&shape, &Shape::Polygon(poly), nb.resolution_cm)
+                {
+                    overlap_err = Some(format!("That ground is {}'s ({}).", site.name, site.key));
+                    break;
+                }
             }
         }
-        for room in st.records.rooms_in(neighborhood) {
-            if let Ok(other) = room.footprint.shape()
-                && overlap(&shape, &other, nb.resolution_cm)
-            {
+        if overlap_err.is_none() {
+            for room in st.records.rooms_in(neighborhood) {
+                if let Ok(other) = room.footprint.shape()
+                    && overlap(&shape, &other, nb.resolution_cm)
+                {
+                    if room.access == crate::record::Access::Restricted
+                        && !staff
+                        && !mush_core::perm::controls(ctx.w, who, room.room)
+                    {
+                        overlap_err = Some("That ground is not available.".to_string());
+                    } else {
+                        overlap_err = Some(format!(
+                            "That ground is under {}.",
+                            mush_core::output::display_name(ctx.w, room.room)
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(err) = overlap_err {
+            Err(err)
+        } else {
+            // The neighborhood's unit.
+            let standing_sites = st
+                .records
+                .sites_in(neighborhood)
+                .filter(|s| matches!(s.origin, SiteOrigin::Hydrated { .. }))
+                .count();
+            let generating = st
+                .hydration
+                .outstanding_in(neighborhood)
+                .filter(|r| r.status.site().is_none())
+                .count();
+            let allowed = usize::try_from(nb.hydration.max_player_sites).unwrap_or(usize::MAX);
+            if standing_sites.saturating_add(generating) >= allowed {
                 return Err(format!(
-                    "That ground is under {}.",
-                    mush_core::output::display_name(ctx.w, room.room)
+                    "{} holds its allowance of {} player-built site{}; build elsewhere, or wait for a review.",
+                    nb.name,
+                    nb.hydration.max_player_sites,
+                    if nb.hydration.max_player_sites == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
                 ));
             }
+            Ok(RequestRec {
+                id,
+                character: who,
+                neighborhood: neighborhood.clone(),
+                kind,
+                footprint,
+                prose: placement.prose.trim().to_string(),
+                status: RequestStatus::Generating,
+                pack: None,
+                created: now,
+                updated: now,
+                revision: 1,
+            })
         }
-        // The neighborhood's unit.
-        let standing_sites = st
-            .records
-            .sites_in(neighborhood)
-            .filter(|s| matches!(s.origin, SiteOrigin::Hydrated { .. }))
-            .count();
-        let generating = st
-            .hydration
-            .outstanding_in(neighborhood)
-            .filter(|r| r.status.site().is_none())
-            .count();
-        let allowed = usize::try_from(nb.hydration.max_player_sites).unwrap_or(usize::MAX);
-        if standing_sites.saturating_add(generating) >= allowed {
-            return Err(format!(
-                "{} holds its allowance of {} player-built site{}; build elsewhere, or wait for a review.",
-                nb.name,
-                nb.hydration.max_player_sites,
-                if nb.hydration.max_player_sites == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ));
-        }
-        RequestRec {
-            id,
-            character: who,
-            neighborhood: neighborhood.clone(),
-            kind,
-            footprint,
-            prose: placement.prose.trim().to_string(),
-            status: RequestStatus::Generating,
-            pack: None,
-            created: now,
-            updated: now,
-            revision: 1,
+    };
+    let rec = match rec {
+        Ok(rec) => rec,
+        Err(err) => {
+            if !staff {
+                record_request_timestamp(ctx, who, now);
+            }
+            return Err(err);
         }
     };
     // STRAG-M9: prune terminal requests before enforcing the global MAX_REQUESTS
@@ -942,9 +971,10 @@ fn free_ground(
         while x + side <= x1 {
             let rect = Rect2(Point2(x, y), Point2(x + side, y + side));
             if let Ok(candidate) = rect.to_polygon().to_cm() {
-                let inside = candidate.points().iter().all(|p| poly.contains(*p));
                 let shape = Shape::Polygon(candidate);
-                if inside && !taken.iter().any(|t| overlap(&shape, t, nb.resolution_cm)) {
+                if crate::validate::inside(&poly, &shape)
+                    && !taken.iter().any(|t| overlap(&shape, t, nb.resolution_cm))
+                {
                     return Some(rect.to_polygon());
                 }
             }
@@ -1127,6 +1157,7 @@ fn validate_activation_pack(ctx: &Ctx<'_>, rec: &RequestRec, pack: &Pack) -> Res
             ));
         }
     }
+    let requester_staff = crate::module::is_staff(ctx.w, rec.character);
     for room in st.records.rooms_in(&rec.neighborhood) {
         if &room.key.pack == pack_id {
             continue;
@@ -1134,6 +1165,12 @@ fn validate_activation_pack(ctx: &Ctx<'_>, rec: &RequestRec, pack: &Pack) -> Res
         if let Ok(other) = room.footprint.shape()
             && overlap(&req_shape, &other, nb.resolution_cm)
         {
+            if room.access == crate::record::Access::Restricted
+                && !requester_staff
+                && !mush_core::perm::controls(ctx.w, rec.character, room.room)
+            {
+                return Err("The reserved footprint is no longer available.".to_string());
+            }
             return Err(format!(
                 "The reserved footprint now overlaps standing room {}.",
                 mush_core::output::display_name(ctx.w, room.room)

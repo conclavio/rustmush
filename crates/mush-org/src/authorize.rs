@@ -200,9 +200,10 @@ pub fn authorize(state: &OrgState, req: &AuthRequest, predicates: &dyn Predicate
         }
     }
 
-    // One-hop delegations to the actor — FULLY re-resolve the live source (R-B2).
+    // One-hop delegations to the actor — FULLY re-resolve the live source (R-B2)
+    // and enforce `PolicyEffect::Deny` rules against the grantor (P2-MOD-41).
     for d in state.delegations_to(req.actor) {
-        if let Some(rev) = delegation_authorizes(state, d, org, req) {
+        if let Some(rev) = delegation_authorizes(state, d, org, req, predicates) {
             grant_ok = true;
             revs.push((SmolStr::new("delegation"), rev));
         }
@@ -323,13 +324,15 @@ fn limit_ok(limit: Option<GrantLimit>, req: &AuthRequest) -> GrantCheck {
     }
 }
 
-/// Fully re-resolve a delegation against its LIVE source (R-B2). Returns the
-/// source grant's revision if it authorizes.
+/// Fully re-resolve a delegation against its LIVE source (R-B2) and enforce
+/// `PolicyEffect::Deny` rules on the grantor (P2-MOD-41). Returns the source
+/// grant's revision if it authorizes.
 fn delegation_authorizes(
     state: &OrgState,
     d: &Delegation,
     org: OrgId,
     req: &AuthRequest,
+    predicates: &dyn PredicateEval,
 ) -> Option<u64> {
     if d.org != org
         || d.status != crate::DelegationStatus::Active
@@ -367,6 +370,19 @@ fn delegation_authorizes(
     }
     // The source's own limit must also admit the amount.
     if !matches!(limit_ok(src.limit, req), GrantCheck::Ok) {
+        return None;
+    }
+    // P2-MOD-41: A grantor explicitly denied by an org `PolicyEffect::Deny` rule
+    // (direct principal, org member, role, or registered predicate) cannot
+    // circumvent that deny by delegating authority to an un-denied grantee.
+    let grantor_req = AuthRequest {
+        actor: d.grantor,
+        capability: req.capability.clone(),
+        scope: req.scope,
+        now: req.now,
+        amount: req.amount,
+    };
+    if explicitly_denied(state, &grantor_req, predicates, || Ok::<(), ()>(())).unwrap_or(true) {
         return None;
     }
     Some(src.revision)

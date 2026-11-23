@@ -173,11 +173,25 @@ fn loop_arrows(mine: ObjId) -> Vec<Arrow> {
     ]
 }
 
-/// One `Thing` the player owns outright, so `perm::controls` answers true for it.
+/// One `Thing` carrier hull (`sim.participant`) the player owns outright, so
+/// `perm::controls` and `P2-MOD-84`'s carrier eligibility gate both admit it.
 fn owned_by(tw: &mut TestWorld, who: ObjId, name: &str) -> ObjId {
-    tw.world_mut()
+    let hull = tw
+        .world_mut()
         .create(ObjKind::Thing, name, who, Some(mush_core::LIMBO))
-        .expect("an owned object")
+        .expect("an owned object");
+    tw.world_mut()
+        .attach_behavior(
+            hull,
+            mush_core::BehaviorId::new("sim.participant").expect("sim.participant behavior"),
+            mush_core::BehaviorBinding {
+                schema_version: 1,
+                attached_by: GOD,
+                attached_at: 0,
+            },
+        )
+        .expect("attach sim.participant");
+    hull
 }
 
 // ---- E7r2: P3 — the audit --------------------------------------------------

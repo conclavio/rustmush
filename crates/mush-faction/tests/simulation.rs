@@ -789,3 +789,37 @@ fn kc0a_a_polity_clock_moves_by_a_typed_cause() {
         before
     );
 }
+
+/// P2-MOD-39: `+clocks` filters hidden factions out for non-staff non-members,
+/// even when the clock's own visibility is `Visibility::Public`.
+#[test]
+fn p2_mod_39_clocks_hides_hidden_factions_from_non_members() {
+    let (mut engine, nick, bob) = boot();
+    run(&mut engine, GOD, "@faction/create ShadowCabal");
+    run(&mut engine, GOD, "@faction/set ShadowCabal=hidden:yes");
+    run(&mut engine, GOD, "@faction/add ShadowCabal=Nick");
+    run(&mut engine, GOD, "@front/create ShadowCabal=Covert Plot");
+    run(&mut engine, GOD, "@clock/create 0=Secret Coup/4");
+    run(&mut engine, GOD, "@clock/set 0=vis:public");
+    run(&mut engine, GOD, "@clock/advance 0=2");
+
+    // Non-member Bob must NOT see the hidden faction's name, clock, or progress.
+    let bob_out = texts(&run(&mut engine, bob, "+clocks"));
+    assert!(
+        !bob_out.contains("ShadowCabal") && !bob_out.contains("Secret Coup"),
+        "hidden faction clock leaked to non-member: {bob_out}"
+    );
+    assert!(bob_out.contains("no active faction clocks"), "{bob_out}");
+
+    // Member Nick and staff GOD still see the clock.
+    let nick_out = texts(&run(&mut engine, nick, "+clocks"));
+    assert!(
+        nick_out.contains("Secret Coup") && nick_out.contains("ShadowCabal"),
+        "member should see hidden faction clock: {nick_out}"
+    );
+    let staff_out = texts(&run(&mut engine, GOD, "+clocks"));
+    assert!(
+        staff_out.contains("Secret Coup"),
+        "staff should see hidden faction clock: {staff_out}"
+    );
+}

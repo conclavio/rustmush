@@ -674,16 +674,16 @@ async fn a_staff_proposal_applies_live_with_a_record_ticket_and_a_stranger_canno
             .as_str()
             .starts_with("site.p1_a_bakery"))
     );
-    // Rae is not the author and not staff.
+    // Rae is not the author and not staff (uniform refusal hides proposal existence).
     let (went, _) = step(&mut tw, rae, "+build/go 1");
     assert!(
-        sys_to(&went, rae).contains("not yours"),
+        sys_to(&went, rae).contains("No proposal 1."),
         "{}",
         sys_to(&went, rae)
     );
     let (shown, _) = step(&mut tw, rae, "+build/show 1");
     assert!(
-        sys_to(&shown, rae).contains("not yours"),
+        sys_to(&shown, rae).contains("No proposal 1."),
         "{}",
         sys_to(&shown, rae)
     );
@@ -1471,5 +1471,154 @@ fn p2_mod_28_build_propose_enforces_hydration_gates_open_cap_and_stale_pruning()
     assert_eq!(
         remaining, 1,
         "all stale open proposals past STALE_PROPOSAL_TTL_SECS must be pruned"
+    );
+}
+
+/// P2-MOD-87:
+/// - `+build/show <id>` returns a uniform refusal indistinguishable from a
+///   nonexistent proposal for non-owned proposals (no existence oracle).
+/// - `proposal::answer` enforces open-state, `retryable: false`, and `MAX_FEEDBACK`
+///   without mutating closed/non-retryable proposals or bypassing the feedback cap.
+#[tokio::test]
+async fn p2_mod_87_proposal_answer_guards_and_build_show_uniform_refusal() {
+    let (mut tw, mock, llm) = rig();
+    let alice = green_player(&mut tw, "Alice");
+    let bob = green_player(&mut tw, "Bob");
+    tw.set_now(1_000);
+
+    // Alice creates proposal 1 and gets 1 question back (`NeedsAnswers`).
+    let (_, effects) = step(&mut tw, alice, "+build/place park=A quiet garden.");
+    mock.push_response(ask(&["What kind of trees?"]));
+    finish(&mut tw, &llm, alice, &effects).await;
+    assert_eq!(proposal(&tw, 1).status, ProposalStatus::NeedsAnswers);
+
+    // 1. `+build/show <id>` existence oracle: Bob probing Alice's proposal 1 gets
+    //    the exact same shape as probing nonexistent proposal 9999.
+    let (other_ev, _) = step(&mut tw, bob, "+build/show 1");
+    let (missing_ev, _) = step(&mut tw, bob, "+build/show 9999");
+    assert_eq!(
+        sys_to(&other_ev, bob).replace('1', "N"),
+        sys_to(&missing_ev, bob).replace("9999", "N"),
+        "+build/show must not distinguish another player's proposal from missing"
+    );
+    assert!(
+        !sys_to(&other_ev, bob).contains("is not yours"),
+        "existence oracle text leaked: {}",
+        sys_to(&other_ev, bob)
+    );
+
+    // 2. Answering Q1 triggers planning, then the plan fails permanently (`retryable: false`).
+    let (_, fx) = step(&mut tw, alice, "+build/answer 1/1=Oaks.");
+    assert!(fx.iter().any(|e| matches!(e, Effect::ModuleAsync { .. })));
+    mock.set_default(Err(mush_llm::LlmError::Refused {
+        category: Some("policy".into()),
+    }));
+    finish(&mut tw, &llm, alice, &fx).await;
+    assert!(
+        matches!(
+            proposal(&tw, 1).status,
+            ProposalStatus::Failed {
+                retryable: false,
+                ..
+            }
+        ),
+        "expected permanent failure, got {:?}",
+        proposal(&tw, 1).status
+    );
+
+    // `proposal::answer` MUST refuse a `retryable: false` proposal without mutating its answer!
+    let (fail_ev, fail_fx) = step(&mut tw, alice, "+build/answer 1/1=Pines.");
+    assert!(
+        fail_fx
+            .iter()
+            .all(|e| !matches!(e, Effect::ModuleAsync { .. })),
+        "retryable:false must not restart planning"
+    );
+    assert!(
+        sys_to(&fail_ev, alice).contains("failed permanently"),
+        "{}",
+        sys_to(&fail_ev, alice)
+    );
+    assert_eq!(
+        proposal(&tw, 1).questions[0].answer.as_deref(),
+        Some("Oaks."),
+        "refused answer must not mutate failed proposal"
+    );
+
+    // 3. Withdrawn (closed) proposal cannot be mutated via `proposal::answer`.
+    let (wd_ev, _) = step(&mut tw, alice, "+build/withdraw 1");
+    assert!(
+        sys_to(&wd_ev, alice).contains("withdrawn"),
+        "{}",
+        sys_to(&wd_ev, alice)
+    );
+    let (closed_ev, closed_fx) = step(&mut tw, alice, "+build/answer 1/1=Birches.");
+    assert!(
+        closed_fx
+            .iter()
+            .all(|e| !matches!(e, Effect::ModuleAsync { .. }))
+    );
+    assert!(
+        sys_to(&closed_ev, alice).contains("withdrawn"),
+        "{}",
+        sys_to(&closed_ev, alice)
+    );
+    assert_eq!(
+        proposal(&tw, 1).questions[0].answer.as_deref(),
+        Some("Oaks."),
+        "closed proposal must not be mutated by answer"
+    );
+
+    // 4. Re-answering an already-answered question on a NeedsWork proposal
+    //    cannot bypass `MAX_FEEDBACK` to run unlimited planning rounds.
+    let (_, fx2) = step(&mut tw, alice, "+build/place park=Another garden.");
+    mock.push_response(ask(&["Color?"]));
+    finish(&mut tw, &llm, alice, &fx2).await;
+    assert_eq!(proposal(&tw, 2).status, ProposalStatus::NeedsAnswers);
+
+    // Drive each planning run into NeedsWork through the real async completion path.
+    mock.set_default(Ok(propose_and_validate(
+        site_entries("Far Park", "site.park", [[190.0, 190.0], [230.0, 230.0]]),
+        0.01,
+    )));
+
+    // Initial answer consumes 0 feedback rounds and moves to NeedsWork.
+    let (_, fx_init) = step(&mut tw, alice, "+build/answer 2/1=Green.");
+    assert!(
+        fx_init
+            .iter()
+            .any(|e| matches!(e, Effect::ModuleAsync { .. }))
+    );
+    finish(&mut tw, &llm, alice, &fx_init).await;
+    assert!(matches!(
+        proposal(&tw, 2).status,
+        ProposalStatus::NeedsWork { .. }
+    ));
+
+    // Re-answer Q1 `MAX_FEEDBACK` times (transitioning back to NeedsWork each time).
+    for round in 0..mush_worldgen::proposal::MAX_FEEDBACK {
+        let (_, rfx) = step(&mut tw, alice, &format!("+build/answer 2/1=Green v{round}"));
+        assert!(
+            rfx.iter().any(|e| matches!(e, Effect::ModuleAsync { .. })),
+            "re-answer {round} within MAX_FEEDBACK allowed"
+        );
+        finish(&mut tw, &llm, alice, &rfx).await;
+        assert!(matches!(
+            proposal(&tw, 2).status,
+            ProposalStatus::NeedsWork { .. }
+        ));
+    }
+    // The next re-answer MUST hit MAX_FEEDBACK and refuse!
+    let (cap_ev, cap_fx) = step(&mut tw, alice, "+build/answer 2/1=One too many.");
+    assert!(
+        cap_fx
+            .iter()
+            .all(|e| !matches!(e, Effect::ModuleAsync { .. })),
+        "re-answer past MAX_FEEDBACK must not trigger run"
+    );
+    assert!(
+        sys_to(&cap_ev, alice).contains("rounds of feedback"),
+        "expected MAX_FEEDBACK refusal: {}",
+        sys_to(&cap_ev, alice)
     );
 }

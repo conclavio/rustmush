@@ -950,7 +950,8 @@ impl WorkshopBook {
         if section_was_destroying {
             for (comp_id, comp_state) in unit.components() {
                 if install_point_section(&comp_state.install) == Some(section_id)
-                    && comp_state.condition.as_str() != "stripped"
+                    && ComponentCondition::classify_condition_id(&comp_state.condition)
+                        != ComponentCondition::Missing
                     && comp_state.condition != destroyed_comp_cond
                 {
                     ops.push(UnitMutationOp::SetComponentCondition {
@@ -1204,6 +1205,38 @@ impl WorkshopBook {
                     parent_hull: rec.provenance.parent_hull,
                     rightful_owner: *rightful_owner,
                     reason: reason.clone(),
+                });
+            }
+            // P2-MOD-86: verify stripped-record integrity binding so a caller
+            // cannot reference an unrelated clean stripped record while forging
+            // definition, condition, asset pointer, or cell values.
+            if rec.definition != replacement.definition {
+                return Err(WorkshopError::StrippedComponentRecordMismatch {
+                    record_id: rec_id,
+                    field: "definition",
+                });
+            }
+            if rec.condition != replacement.condition {
+                return Err(WorkshopError::StrippedComponentRecordMismatch {
+                    record_id: rec_id,
+                    field: "condition",
+                });
+            }
+            if rec.asset != replacement.asset {
+                return Err(WorkshopError::StrippedComponentRecordMismatch {
+                    record_id: rec_id,
+                    field: "asset",
+                });
+            }
+            let expected_cells: BTreeMap<CellId, i64> = rec
+                .cells
+                .iter()
+                .map(|(k, v)| (k.clone(), v.current))
+                .collect();
+            if expected_cells != replacement.cell_values {
+                return Err(WorkshopError::StrippedComponentRecordMismatch {
+                    record_id: rec_id,
+                    field: "cell_values",
                 });
             }
         }
@@ -1769,6 +1802,13 @@ pub enum WorkshopError {
         /// Hull into which it was already installed.
         consumed_into_hull: ObjId,
     },
+    /// Replacement part spec disagreed with the referenced [`StrippedComponentRecord`] (`P2-MOD-86`).
+    StrippedComponentRecordMismatch {
+        /// Stripped component record id.
+        record_id: u64,
+        /// Field that disagreed with the authoritative stripped record.
+        field: &'static str,
+    },
     /// Replacement part definition did not match the slot's expected definition.
     IncompatibleReplacementDefinition {
         /// Target component slot id.
@@ -1889,6 +1929,10 @@ impl fmt::Display for WorkshopError {
             } => write!(
                 f,
                 "stripped component record {record_id} was already installed into {consumed_into_hull}"
+            ),
+            Self::StrippedComponentRecordMismatch { record_id, field } => write!(
+                f,
+                "replacement part spec field `{field}` does not match stripped component record {record_id}"
             ),
             Self::IncompatibleReplacementDefinition {
                 component,
@@ -2630,6 +2674,289 @@ mod tests {
             Some(20)
         );
 
+        Ok(())
+    }
+
+    /// **P2-MOD-86a**: `replace_component_in_slot` enforces full stripped-record
+    /// integrity binding (`definition`, `condition`, `asset`, `cell_values`) and
+    /// `reconstruct_section` preserves `"missing"`/`"removed"` component slots.
+    #[test]
+    fn p2_mod_86_stripped_record_integrity_binding_and_missing_preservation() -> TestResult {
+        let owner = ObjId(10);
+        let donor_fix = build_workshop_test_biped(ObjId(186))?;
+        let recipient_fix = build_workshop_test_biped(ObjId(187))?;
+        let anatomy = donor_fix.anatomy.clone();
+        let autocannon = ComponentId::new("autocannon")?;
+        let reactor = ComponentId::new("reactor")?;
+        let ammo = CellId::new("ammo")?;
+        let torso = SectionId::new("torso")?;
+        let custody = CustodyTitleStatus::ResolvedTitle { owner };
+
+        // Give donor's autocannon partial ammo (5), Damaged condition, and an asset pointer.
+        let prep_donor = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetComponentCondition {
+                    component: autocannon.clone(),
+                    condition: ConditionId::new("damaged")?,
+                },
+                UnitMutationOp::SetCell {
+                    addr: CellAddr::Component {
+                        component: autocannon.clone(),
+                        cell: ammo.clone(),
+                    },
+                    value: 5,
+                },
+                UnitMutationOp::SetComponentAsset {
+                    component: autocannon.clone(),
+                    asset: Some(ObjId(777)),
+                },
+            ],
+            Some(donor_fix.unit.revision()),
+            None,
+        )?;
+        let (donor_unit, _) = apply(&donor_fix.unit, &prep_donor, 100)?;
+
+        // Destroy recipient's autocannon so the slot accepts replacement.
+        let prep_recipient = UnitMutationPlan::new(
+            vec![UnitMutationOp::SetComponentCondition {
+                component: autocannon.clone(),
+                condition: ConditionId::new("destroyed")?,
+            }],
+            Some(recipient_fix.unit.revision()),
+            None,
+        )?;
+        let (recipient_unit, _) = apply(&recipient_fix.unit, &prep_recipient, 100)?;
+
+        let mut workshop = WorkshopBook::new();
+        let (_, _, stripped_rec) = workshop.strip_component(
+            &donor_unit,
+            &anatomy,
+            &autocannon,
+            owner,
+            &StripAuthorization::BayOrWorkshop {
+                custody: custody.clone(),
+                has_explicit_owner_permission: false,
+            },
+            None,
+            110,
+        )?;
+        let genuine = ReplacementPartSpec::from_stripped_record(&stripped_rec);
+
+        // 1. Forged definition referencing clean stripped record -> refused.
+        let reactor_def = donor_unit
+            .component(&reactor)
+            .ok_or("reactor")?
+            .definition
+            .clone();
+        let mut forged_def = genuine.clone();
+        forged_def.definition = reactor_def.clone();
+        check!(matches!(
+            workshop.replace_component_in_slot(
+                &recipient_unit,
+                &anatomy,
+                &autocannon,
+                &forged_def,
+                owner,
+                &custody,
+                false,
+                500,
+                60,
+                None,
+                120,
+            ),
+            Err(WorkshopError::StrippedComponentRecordMismatch {
+                field: "definition",
+                ..
+            })
+        ));
+
+        // 1a. Non-stripped replacement with wrong definition still fails with
+        //     `IncompatibleReplacementDefinition`.
+        let mut non_stripped_wrong_def = genuine.clone();
+        non_stripped_wrong_def.source_stripped_record_id = None;
+        non_stripped_wrong_def.definition = reactor_def;
+        check!(matches!(
+            workshop.replace_component_in_slot(
+                &recipient_unit,
+                &anatomy,
+                &autocannon,
+                &non_stripped_wrong_def,
+                owner,
+                &custody,
+                false,
+                500,
+                60,
+                None,
+                120,
+            ),
+            Err(WorkshopError::IncompatibleReplacementDefinition { .. })
+        ));
+
+        // 1b. Cross-component stripped record: claiming a stripped `reactor`
+        //     record while presenting `autocannon`'s definition -> refused with
+        //     `StrippedComponentRecordMismatch { field: "definition" }`.
+        let (_, _, reactor_stripped) = workshop.strip_component(
+            &donor_unit,
+            &anatomy,
+            &reactor,
+            owner,
+            &StripAuthorization::BayOrWorkshop {
+                custody: custody.clone(),
+                has_explicit_owner_permission: false,
+            },
+            None,
+            115,
+        )?;
+        let mut mismatched_rec = genuine.clone();
+        mismatched_rec.source_stripped_record_id = Some(reactor_stripped.record_id);
+        check!(matches!(
+            workshop.replace_component_in_slot(
+                &recipient_unit,
+                &anatomy,
+                &autocannon,
+                &mismatched_rec,
+                owner,
+                &custody,
+                false,
+                500,
+                60,
+                None,
+                120,
+            ),
+            Err(WorkshopError::StrippedComponentRecordMismatch {
+                field: "definition",
+                ..
+            })
+        ));
+
+        // 2. Forged condition (upgrading Damaged -> Intact) -> refused.
+        let mut forged_cond = genuine.clone();
+        forged_cond.condition = ComponentCondition::Intact;
+        check!(matches!(
+            workshop.replace_component_in_slot(
+                &recipient_unit,
+                &anatomy,
+                &autocannon,
+                &forged_cond,
+                owner,
+                &custody,
+                false,
+                500,
+                60,
+                None,
+                121,
+            ),
+            Err(WorkshopError::StrippedComponentRecordMismatch {
+                field: "condition",
+                ..
+            })
+        ));
+
+        // 3. Forged asset pointer -> refused.
+        let mut forged_asset = genuine.clone();
+        forged_asset.asset = Some(ObjId(999));
+        check!(matches!(
+            workshop.replace_component_in_slot(
+                &recipient_unit,
+                &anatomy,
+                &autocannon,
+                &forged_asset,
+                owner,
+                &custody,
+                false,
+                500,
+                60,
+                None,
+                122,
+            ),
+            Err(WorkshopError::StrippedComponentRecordMismatch { field: "asset", .. })
+        ));
+
+        // 4. Forged cell_values (inflating ammo 5 -> 20) -> refused.
+        let mut forged_cells = genuine.clone();
+        forged_cells.cell_values.insert(ammo.clone(), 20);
+        check!(matches!(
+            workshop.replace_component_in_slot(
+                &recipient_unit,
+                &anatomy,
+                &autocannon,
+                &forged_cells,
+                owner,
+                &custody,
+                false,
+                500,
+                60,
+                None,
+                123,
+            ),
+            Err(WorkshopError::StrippedComponentRecordMismatch {
+                field: "cell_values",
+                ..
+            })
+        ));
+
+        // Record was NOT consumed by any rejected attempt; genuine spec succeeds.
+        check_eq!(
+            workshop
+                .stripped_component(stripped_rec.record_id)
+                .and_then(|r| r.consumed_into_hull),
+            None
+        );
+        let (installed, _, _) = workshop.replace_component_in_slot(
+            &recipient_unit,
+            &anatomy,
+            &autocannon,
+            &genuine,
+            owner,
+            &custody,
+            false,
+            500,
+            60,
+            None,
+            125,
+        )?;
+        check_eq!(
+            installed
+                .component(&autocannon)
+                .map(|c| (c.condition.as_str(), c.asset)),
+            Some(("damaged", Some(ObjId(777))))
+        );
+
+        // 5. `reconstruct_section` preserves `"missing"` / `"removed"` component slots.
+        let missing_in_destroyed = UnitMutationPlan::new(
+            vec![
+                UnitMutationOp::SetSectionCondition {
+                    section: torso.clone(),
+                    condition: ConditionId::new("destroyed")?,
+                },
+                UnitMutationOp::SetComponentCondition {
+                    component: autocannon.clone(),
+                    condition: ConditionId::new("missing")?,
+                },
+            ],
+            Some(recipient_unit.revision()),
+            None,
+        )?;
+        let (wrecked_torso_unit, _) = apply(&recipient_unit, &missing_in_destroyed, 130)?;
+        let (reconstructed, _, _) = workshop.reconstruct_section(
+            &wrecked_torso_unit,
+            &anatomy,
+            &torso,
+            owner,
+            &custody,
+            false,
+            1_000,
+            120,
+            None,
+            140,
+        )?;
+        check_eq!(
+            reconstructed
+                .component(&autocannon)
+                .map(|c| c.condition.as_str()),
+            Some("missing"),
+            "reconstruct_section must preserve ComponentCondition::Missing slots"
+        );
         Ok(())
     }
 }

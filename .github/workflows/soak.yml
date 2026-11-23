@@ -13,14 +13,15 @@ name: Soak (flaky tests)
 # passed in others and is not on the known list
 # (crates/mush-contract-tests/flaky-known.toml), a listed row past its expiry,
 # a test that failed every pass, or a soak that could not run. A red soak
-# reaches the owner the way a red nightly does (doc 43 D-43-3): GitHub's mail
-# for a failed scheduled run.
+# reaches the owner by GitHub's mail for a failed run, which goes to the
+# account that started it: the owner's, whose token the box dispatches with
+# (below), if his notification settings mail him for failed Actions runs.
 #
 # THE RULES OF A SELF-HOSTED RUNNER ON A PUBLIC REPOSITORY (gate.yml's):
-#   * `schedule` and `workflow_dispatch` ONLY. Never `pull_request`, never
-#     `push`: a fork's pull request must never reach the owner's boxes. A
-#     schedule runs the default branch's copy of this file, and a dispatch
-#     needs write access to the repository. Do not add a trigger here.
+#   * `workflow_dispatch` ONLY. Never `pull_request`, never `push`: a fork's
+#     pull request must never reach the owner's boxes. A dispatch needs write
+#     access to the repository. Do not add a trigger here, and not `schedule`
+#     either (below).
 #   * one job at a time on the box: the `conclav-dev` runner takes one job, so
 #     the soak and a gate.yml dispatch pinned to `conclav-dev` never share the
 #     box or a target directory; whichever came second waits for the runner.
@@ -33,22 +34,35 @@ name: Soak (flaky tests)
 #   * no Redis: REDIS_URL is unset in every cell, so the gate's private
 #     instance on 6799 is not used and not wiped.
 #
-# 07:17 UTC is the owner's night: 11:17 pm Pacific standard time (12:17 am in
-# summer; the cron is UTC and does not follow the clocks), so the soak holds
-# the box from about 07:17 to 11:00 UTC, while nobody is at it. The owner
-# moved it there from doc 51's 01:17 on 2026-11-23: 01:17 UTC is 5:17 pm
-# Pacific, the working day. What else is scheduled then, checked 2026-11-23:
+# WHAT STARTS IT: a timer on conclav.dev, not a `schedule` here. At 23:17
+# Pacific (07:17 UTC in winter, 06:17 UTC in summer)
+# `rustmush-dispatch-soak.timer` on the box dispatches this workflow at `main`
+# through GitHub's API, with a token the owner placed there
+# (deploy/vps-runner/; docs/ops.md, "The clock is on conclav.dev", which also
+# has the nightly's, the weekly's and CodeQL's timers and the time kept for
+# each). The soak then holds the box for about three hours and three
+# quarters, to about 3 am Pacific, while nobody is at it.
+#
+# Why not a cron: GitHub starts this repository's scheduled runs seven to
+# ten and a half hours late. ci.yml's 04:17 UTC nightly started between
+# 11:28 and 14:38 UTC every day of the two weeks to 2026-11-23, and the
+# `17 7 * * *` this file had on its first night had not fired by 14:48 UTC.
+# A soak that late holds the box through the owner's working day. With both
+# a cron and the timer the late run would hold it a second time, so there is
+# no cron; scripts/tests/workflow-dispatch.sh fails if one comes back.
+#
+# What else is scheduled in those hours, checked 2026-11-23:
 #   * ci.yml's 04:17 nightly and Monday's 06:17 CodeQL run are on hosted
-#     runners and share nothing with this box, whatever is still running;
-#   * on the box, `apt-daily-upgrade.timer` fires between 06:00 and 07:00 UTC,
-#     so before the soak, never inside it; an upgrade still running at 07:17
-#     is what the wait for a quiet box is for. `apt-daily.timer` (a package
-#     list refresh, any hour) and `motd-news.timer` can fall inside the
-#     window and are light. No cron daemon and no crontab is on the box.
+#     runners and share nothing with this box, whenever they start;
+#   * on the box, `apt-daily-upgrade.timer` fires between 06:00 and 07:00 UTC:
+#     before the soak in winter, and around its start in summer. It installs
+#     security updates only, nothing restarts the runner's service after one
+#     (no needrestart, no automatic reboot), and the soak waits for a quiet
+#     box before it starts. `apt-daily.timer` (a package list refresh, any
+#     hour) and `motd-news.timer` can fall inside the window and are light.
+#     No cron daemon and no crontab is on the box.
 
 on:
-  schedule:
-    - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
       minutes:

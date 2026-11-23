@@ -6,12 +6,14 @@
 # one says here WHEN it runs and UNDER WHAT:
 #
 #   tier      pr        a ci.yml job with no `if:` (every push and pull request)
-#             nightly   a job whose `if:` admits the schedule (daily, 04:17 UTC)
-#             weekly    a job whose `if:` admits the Sunday cron '17 4 * * 0'
-#                       (D-43-11), at the fast pulse
-#             dispatch  a job only `workflow_dispatch` reaches, or the VPS
-#                       gate (`job = "gate.yml:<kind>"`, `via` the script
-#                       the kind runs)
+#             nightly   a job whose `if:` is any dispatch: the box's timer
+#                       dispatches ci.yml with `slot=nightly` Monday to
+#                       Saturday and `slot=weekly` on Sunday, 05:00 Pacific
+#             weekly    a job whose `if:` adds `inputs.slot != 'nightly'`
+#                       (D-43-11): Sunday's dispatch, at the fast pulse
+#             dispatch  a job only a dispatch by hand reaches (`inputs.slot
+#                       == 'by-hand'`), or the VPS gate (`job =
+#                       "gate.yml:<kind>"`, `via` the script the kind runs)
 #             by-hand   no job: somebody runs it on a box. `by_hand` is the
 #                       `by-hand:` tag, the revision of its last recorded run
 #                       (or `never`, with a note saying why)

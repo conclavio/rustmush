@@ -32,14 +32,11 @@ use crate::module::{
 };
 use crate::record::{Funding, Property, PropertyStatus, Tenancy, TenancyStatus, TenancyStatusKind};
 
-/// How deep the ending sweep walks a property's contents — a lamp, in a bag, in a
-/// coat, on a shelf (verify fold, H5).
-///
-/// The sweep used to look one level down, at `contents_of(room)` and no further, so
-/// anything a tenant was *carrying* kept its `Obj.home` pointing into a house that
-/// was no longer theirs — and core's destroy dispersal, which honours no hook, would
-/// have posted it back through the front door.
-const END_SWEEP_DEPTH: usize = 6;
+/// How deep the ending sweep walks a property's contents — matched to
+/// [`crate::module::MAX_ENCLOSING_DEPTH`] so arbitrarily nested containers up to
+/// the containment walk limit are swept (while [`END_SWEEP_MAX`] and a visited
+/// set keep total work bounded and cycle-safe).
+const END_SWEEP_DEPTH: usize = crate::module::MAX_ENCLOSING_DEPTH;
 /// The most objects one ending sweep will look at, in each of its two halves. It is
 /// the same bound the economy puts on its own contents walks: a world-sized scan
 /// belongs in a tick handler only when it cannot run away.
@@ -109,7 +106,7 @@ pub fn create_tenancy(
         if p.status == PropertyStatus::Withdrawn {
             return Err(crate::HousingError::Withdrawn(property));
         }
-        if store.has_live_tenancy(property) {
+        if store.has_live_tenancy(property) || store.has_pending_tenancy(property) {
             return Err(crate::HousingError::AlreadyLet(property));
         }
     }
@@ -266,15 +263,16 @@ pub(crate) fn end(ctx: &mut Ctx<'_>, t: &Tenancy) {
 /// the tick path, where a hang is the world task.
 fn contents_deep(w: &World, rooms: &BTreeSet<ObjId>, anchor: ObjId) -> Vec<ObjId> {
     let mut out: Vec<ObjId> = Vec::new();
-    let mut frontier: Vec<ObjId> = rooms
-        .iter()
-        .copied()
-        .chain(std::iter::once(anchor))
-        .collect();
+    let mut visited: BTreeSet<ObjId> = rooms.iter().copied().collect();
+    visited.insert(anchor);
+    let mut frontier: Vec<ObjId> = visited.iter().copied().collect();
     for _ in 0..END_SWEEP_DEPTH {
         let mut next: Vec<ObjId> = Vec::new();
         for r in frontier.drain(..) {
             for c in w.contents_of(r) {
+                if !visited.insert(*c) {
+                    continue;
+                }
                 if out.len() >= END_SWEEP_MAX {
                     tracing::warn!(anchor = anchor.0, "housing: the ending sweep hit its cap");
                     return out;

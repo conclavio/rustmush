@@ -1409,10 +1409,12 @@ fn vanished_batch_room_diagnostic_is_commit_bound() {
 
 #[test]
 fn lost_batch_room_control_diagnostic_is_commit_bound() {
-    let (mut tw, _mock, _llm, [hall, ..]) = building_world();
+    let (mut tw, _mock, _llm, [hall, parlor, study]) = building_world();
     let builder = tw.spawn_player("Builder");
     tw.world_mut().get_mut(builder).unwrap().powers = Powers::BUILDER_LLM;
-    tw.world_mut().get_mut(hall).unwrap().owner = builder;
+    for r in [hall, parlor, study] {
+        tw.world_mut().get_mut(r).unwrap().owner = builder;
+    }
     tw.world_mut().move_to(builder, hall).unwrap();
     let (_open, effects) = step_cmd(&mut tw, builder, "@gen/building here=A mansion.");
     let (module, correlation, _) = module_async(&effects);
@@ -1810,6 +1812,171 @@ async fn building_batch_persists_across_reboot() {
     assert_eq!(
         tw2.world().attr(hall, "desc").and_then(|a| a.as_text()),
         Some("A grand hall of veined marble.")
+    );
+}
+
+/// P2-MOD-69 & P2-MOD-70:
+/// - `@gen/accept` (`apply_exit`) enforces `perm::can_modify` on exits before
+///   writing `desc`/`osucc`, so a builder owning a room cannot mutate another
+///   owner's exit in that room.
+/// - `@gen` (`neighbor_descs`/`room_facts`) and `@gen/building` (`walk_building`)
+///   restrict room topology and neighbor description collection to rooms the
+///   builder controls (or staff).
+#[tokio::test]
+async fn p2_mod_69_and_70_exit_can_modify_and_unauthorized_neighbor_and_building_isolation() {
+    let mock = Arc::new(MockProvider::new("openrouter"));
+    let llm = batch_service(&mock);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_atlas::AtlasModule::new()),
+        Box::new(WorldgenModule::new(llm.clone())),
+    ]);
+
+    // Non-staff builder Alice with Powers::BUILDER_LLM.
+    let alice = tw.spawn_player("Alice");
+    tw.world_mut()
+        .get_mut(alice)
+        .unwrap()
+        .powers
+        .insert(Powers::BUILDER_LLM);
+
+    // Alice owns `Lobby` and `Backroom` (her own rooms).
+    // GOD owns `SecretVault` (with confidential desc) and `GodExit` sitting in Alice's Lobby!
+    let lobby = tw
+        .world_mut()
+        .create(ObjKind::Room, "Alice Lobby", alice, None)
+        .unwrap();
+    let backroom = tw
+        .world_mut()
+        .create(ObjKind::Room, "Alice Backroom", alice, None)
+        .unwrap();
+    let secret_vault = tw
+        .world_mut()
+        .create(ObjKind::Room, "TopSecretVault", GOD, None)
+        .unwrap();
+    tw.world_mut()
+        .set_attr(
+            secret_vault,
+            "desc",
+            mush_core::Attr::text("CLASSIFIED_VAULT_SECRET_CODE_9911", GOD),
+        )
+        .unwrap();
+    tw.world_mut()
+        .set_attr(
+            backroom,
+            "desc",
+            mush_core::Attr::text("Alice's own cozy storeroom.", alice),
+        )
+        .unwrap();
+
+    // GOD's exit inside Alice's Lobby pointing to TopSecretVault.
+    let god_exit = tw
+        .world_mut()
+        .create(ObjKind::Exit, "vault;v", GOD, Some(lobby))
+        .unwrap();
+    tw.world_mut()
+        .link_exit(god_exit, Some(secret_vault))
+        .unwrap();
+    tw.world_mut()
+        .set_attr(
+            god_exit,
+            "desc",
+            mush_core::Attr::text("Original vault door.", GOD),
+        )
+        .unwrap();
+    tw.world_mut()
+        .set_attr(
+            god_exit,
+            "osucc",
+            mush_core::Attr::text("enters the vault.", GOD),
+        )
+        .unwrap();
+
+    // Alice's own exit pointing to Alice Backroom.
+    let alice_exit = tw
+        .world_mut()
+        .create(ObjKind::Exit, "east;e", alice, Some(lobby))
+        .unwrap();
+    tw.world_mut()
+        .link_exit(alice_exit, Some(backroom))
+        .unwrap();
+
+    tw.world_mut().move_to(alice, lobby).unwrap();
+
+    // 1. `@gen here=...`: prompt sent to LLM must NOT contain TopSecretVault's
+    //    name or description, while still including Alice's own neighbor backroom.
+    mock.push_response(tool_resp(json!({
+        "desc": "A tidy lobby.",
+        "exits": [
+            { "direction": "vault", "name": "vault", "desc": "HACKED DESC", "transit_msg": "HACKED OSUCC" },
+            { "direction": "east", "name": "east", "desc": "A painted door.", "transit_msg": "heads east." }
+        ]
+    })));
+    gen_cycle(&mut tw, &llm, alice, "@gen here=A tidy lobby.").await;
+
+    let req = mock.last_request().expect("captured prompt");
+    let user_prompt = user_text(&req);
+    assert!(
+        !user_prompt.contains("CLASSIFIED_VAULT_SECRET_CODE_9911"),
+        "unauthorized neighbor desc leaked into @gen prompt: {user_prompt}"
+    );
+    assert!(
+        !user_prompt.contains("TopSecretVault"),
+        "unauthorized neighbor room name leaked into @gen prompt: {user_prompt}"
+    );
+    assert!(
+        user_prompt.contains("Alice's own cozy storeroom."),
+        "owned neighbor desc should still be included: {user_prompt}"
+    );
+
+    // 2. `@gen/accept`: Alice's own exit IS updated, while GOD's exit in Alice's
+    //    room is NOT modified (P2-MOD-69).
+    let (acc, _) = step_cmd(&mut tw, alice, "@gen/accept");
+    assert!(
+        contains(&sys_to(&acc, alice), "Accepted"),
+        "{:?}",
+        sys_to(&acc, alice)
+    );
+    assert_eq!(
+        tw.world()
+            .attr(alice_exit, "desc")
+            .and_then(|a| a.as_text()),
+        Some("A painted door.")
+    );
+    assert_eq!(
+        tw.world().attr(god_exit, "desc").and_then(|a| a.as_text()),
+        Some("Original vault door."),
+        "uncontrolled exit desc must not be modified by @gen/accept"
+    );
+    assert_eq!(
+        tw.world().attr(god_exit, "osucc").and_then(|a| a.as_text()),
+        Some("enters the vault."),
+        "uncontrolled exit osucc must not be modified by @gen/accept"
+    );
+
+    // 3. `@gen/building here=...`: walk_building must include ONLY Alice's rooms
+    //    (lobby + backroom) and NEVER sweep in GOD's TopSecretVault (P2-MOD-70).
+    mock.push_response(brief_tool_resp(json!({
+        "concept": "Small shop",
+        "palette": "Warm wood",
+        "rooms": [
+            { "index": 1, "name": "Alice Lobby", "concept": "Front counter." },
+            { "index": 2, "name": "Alice Backroom", "concept": "Stock room." }
+        ]
+    })));
+    let (open_ev, effects) = step_cmd(&mut tw, alice, "@gen/building here=A small shop.");
+    assert!(
+        contains(&sys_to(&open_ev, alice), "found 2 interior rooms"),
+        "walk_building must only count Alice's 2 controlled rooms: {:?}",
+        sys_to(&open_ev, alice)
+    );
+    let (module, correlation, payload) = module_async(&effects);
+    let result = run_worldgen_async(&llm, &payload).await;
+    let _ = apply_done(&mut tw, &module, alice, correlation, result);
+    let brief_req = mock.last_request().expect("brief prompt");
+    let brief_prompt = user_text(&brief_req);
+    assert!(
+        !brief_prompt.contains("TopSecretVault"),
+        "walk_building leaked uncontrolled room into building brief: {brief_prompt}"
     );
 }
 

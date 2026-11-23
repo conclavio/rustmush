@@ -577,7 +577,10 @@ fn plus_move_walks_cells_and_walls_counters_and_closed_rooms_stop_it() {
     );
     let events = tw.run(rae, "+move east 6");
     let t = text(&tw, &events, rae);
-    assert!(t.contains("Breakroom is not open to you"), "{t}");
+    assert!(
+        t.contains("that area is not open to you") && !t.contains("Breakroom"),
+        "{t}"
+    );
     assert_eq!(location(&tw, rae), Some(lobby), "P1: never in two rooms");
     // Staff walk anywhere: through the door into the breakroom, and the room
     // follows the pose (D-14-18).
@@ -1813,4 +1816,98 @@ fn dark_and_restricted_moves_do_not_disclose_and_move_honors_deployed_exclusion(
         "+move on excluded domain must not change pose"
     );
     mush_sim::deployed::clear(tw.world_mut(), staff);
+}
+
+/// P2-MOD-33 & P2-MOD-72:
+/// - Stepping off the window edge toward an `Access::Restricted` room must NOT
+///   grow the window into it or disclose its name/coordinates to non-staff.
+/// - Stepping onto a cell occupied by a `Flags::DARK` actor must NOT disclose
+///   their presence via `"someone is standing there"` collision to non-staff.
+#[test]
+fn p2_mod_33_and_72_restricted_grow_and_dark_collision_masked() {
+    // 1. Restricted room beyond the edge does not grow the map or disclose its name.
+    {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(starter::STAFF_LOBBY_JSON).expect("json");
+        doc["entries"]["room.backlot"]["def"]["access"] = serde_json::json!("restricted");
+        let restricted_lot = signed(doc);
+        let mut packs = starter::packs().expect("packs");
+        packs.retain(|p| p.manifest().id() != restricted_lot.manifest().id());
+        packs.push(restricted_lot);
+        let mut appliers = Appliers::new();
+        mush_atlas::register_appliers(&mut appliers).expect("atlas appliers");
+        mush_npc::content::register_appliers(&mut appliers).expect("npc appliers");
+        let content = ContentModule::new()
+            .with_appliers(appliers)
+            .with_boot_packs(packs.clone());
+        let mut tw = TestWorld::with_modules(vec![
+            Box::new(Probe),
+            Box::new(mush_npc::NpcModule::new()),
+            Box::new(SimulationModule::new()),
+            Box::new(AtlasModule::new().with_shelf(packs)),
+            Box::new(content),
+        ]);
+        let staff = GOD;
+        let coffee = room_named(&tw, "Coffee Shop");
+        let backlot = room_named(&tw, "Backlot");
+        assert_eq!(
+            atlas(&tw).records.roomgeo.get(&backlot).map(|g| g.access),
+            Some(mush_atlas::Access::Restricted)
+        );
+        tw.world_mut().move_to(staff, coffee).unwrap();
+        let (domain, _) = open_over(&mut tw, staff, "312,240,334,272");
+        let before_bbox = atlas(&tw).windows.open.get(&domain.0).unwrap().frame.bbox;
+        let rae = tw.spawn_player("Rae");
+        tw.world_mut().move_to(rae, coffee).unwrap();
+        with_ctx(&mut tw, staff, move |ctx| {
+            mush_atlas::window::place_in_room(ctx, domain, rae, coffee, None)
+        })
+        .expect("rae placed");
+        let (events, _) = step(&mut tw, rae, "+move north 20");
+        let t = text(&tw, &events, rae);
+        assert!(
+            !t.contains("Backlot") && !t.contains("grows to take in"),
+            "restricted room beyond edge leaked on grow: {t}"
+        );
+        let after_bbox = atlas(&tw).windows.open.get(&domain.0).unwrap().frame.bbox;
+        assert_eq!(
+            after_bbox, before_bbox,
+            "non-staff must not grow window into restricted room"
+        );
+    }
+
+    // 2. DARK actor on adjacent cell does not trigger "someone is standing there" for non-staff.
+    {
+        let mut tw = lot();
+        let staff = GOD;
+        let lobby = room_named(&tw, "Lobby");
+        tw.world_mut().move_to(staff, lobby).unwrap();
+        let (domain, _) = open_over(&mut tw, staff, &format!("#{}", lobby.0));
+        let rae = tw.spawn_player("Rae");
+        let ghost = tw.spawn_player("Ghost");
+        tw.world_mut()
+            .set_flag(ghost, mush_core::Flags::DARK, true)
+            .unwrap();
+        tw.world_mut().move_to(rae, lobby).unwrap();
+        tw.world_mut().move_to(ghost, lobby).unwrap();
+        with_ctx(&mut tw, staff, move |ctx| {
+            mush_atlas::window::place_in_room(ctx, domain, rae, lobby, None)
+        })
+        .unwrap();
+        let rae_pose = pose_of(&tw, rae).expect("rae pose");
+        // Place DARK Ghost one cell (50 cm) east of Rae.
+        let mut ghost_pose = rae_pose;
+        ghost_pose.x_cm += 50;
+        with_ctx(&mut tw, staff, move |ctx| {
+            mush_sim::place(ctx, ghost, domain, ghost_pose)
+        })
+        .unwrap();
+
+        let events = tw.run(rae, "+move east 1");
+        let t = text(&tw, &events, rae);
+        assert!(
+            !t.contains("someone is standing there"),
+            "DARK actor caused collision oracle: {t}"
+        );
+    }
 }
