@@ -19,7 +19,7 @@
 //! `@slowtest` is the M1 prototype of this seam: a fake 3-second "LLM
 //! call" proving typed re-entry without ever blocking the game loop.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
@@ -753,6 +753,13 @@ pub struct Engine {
     conn_count: HashMap<ObjId, u32>,
     /// Pending `@wait` entries per actor (capped at [`WAIT_QUEUE_MAX`]).
     pending_waits: HashMap<ObjId, u32>,
+    /// Pending `@wait` entries per owning object (`obj.owner` at enqueue time,
+    /// capped at [`WAIT_QUEUE_MAX`]) so builders cannot multiply scheduler
+    /// capacity across many owned objects (P2-CORE-20).
+    pending_waits_by_owner: HashMap<ObjId, u32>,
+    /// Recorded owner for each queued wait of an actor, so releasing a slot
+    /// decrements the exact owner bucket charged even after `@chown` or sweep.
+    pending_wait_owners: HashMap<ObjId, VecDeque<ObjId>>,
     /// Pending internal command continuations per actor (capped separately at
     /// [`CONTINUATION_QUEUE_MAX`] so mortal `@wait` queues cannot drop them).
     pending_continuations: HashMap<ObjId, u32>,
@@ -842,6 +849,8 @@ impl Engine {
             conns: HashMap::new(),
             conn_count: HashMap::new(),
             pending_waits: HashMap::new(),
+            pending_waits_by_owner: HashMap::new(),
+            pending_wait_owners: HashMap::new(),
             pending_continuations: HashMap::new(),
             lag_last_ms: 0,
             lag_max_ms: 0,
@@ -4125,10 +4134,12 @@ impl Engine {
                         tracing::debug!(%actor, "WaitCmd for missing actor dropped");
                         continue;
                     }
-                    // CORE-M2: cap per-actor synchronous `WaitCmd` dispatches
-                    // per tick so a 100-entry burst spreads smoothly across
-                    // ticks without losing work or starving other actors.
-                    let fired = actor_wait_fires.entry(actor).or_insert(0);
+                    // CORE-M2 + P2-CORE-20: cap per-owner synchronous `WaitCmd`
+                    // dispatches per tick (equal to per-actor for players) so a
+                    // burst spread across owned objects cannot starve other
+                    // actors or saturate a single step.
+                    let owner = self.world.get(actor).map_or(actor, |o| o.owner);
+                    let fired = actor_wait_fires.entry(owner).or_insert(0);
                     if *fired >= MAX_WAIT_FIRES_PER_ACTOR_PER_STEP {
                         deferred_waits.push(ScheduledKind::WaitCmd { actor, line });
                         continue;
@@ -5068,21 +5079,25 @@ impl Engine {
                             *n += 1;
                         }
                         ScheduledKind::WaitCmd { actor, .. } => {
-                            let n = self.pending_waits.entry(*actor).or_insert(0);
-                            if *n >= WAIT_QUEUE_MAX {
+                            if !self.try_reserve_wait_slot(*actor) {
                                 out.best_effort_error(*actor, "Too many commands queued.");
+                                if let Some(owner) = self
+                                    .world
+                                    .get(*actor)
+                                    .map(|o| o.owner)
+                                    .filter(|&o| o != *actor)
+                                {
+                                    out.best_effort_error(owner, "Too many commands queued.");
+                                }
                                 continue;
                             }
-                            *n += 1;
                         }
                         ScheduledKind::ConnectionCompletion(request) => {
                             let actor = request.actor();
-                            let n = self.pending_waits.entry(actor).or_insert(0);
-                            if *n >= WAIT_QUEUE_MAX {
+                            if !self.try_reserve_wait_slot(actor) {
                                 out.best_effort_error(actor, "Too many commands queued.");
                                 continue;
                             }
-                            *n += 1;
                         }
                         _ => {}
                     }
@@ -5469,7 +5484,30 @@ impl Engine {
         self.durable_gate.take()
     }
 
-    /// Release one pending-`@wait` slot for an actor (its timer fired).
+    /// Reserve one pending-`@wait` slot enforcing [`WAIT_QUEUE_MAX`] against
+    /// BOTH `actor` and `actor`'s owner (`obj.owner`, P2-CORE-20).
+    fn try_reserve_wait_slot(&mut self, actor: ObjId) -> bool {
+        let owner = self.world.get(actor).map_or(actor, |o| o.owner);
+        let actor_count = self.pending_waits.get(&actor).copied().unwrap_or(0);
+        let owner_count = self
+            .pending_waits_by_owner
+            .get(&owner)
+            .copied()
+            .unwrap_or(0);
+        if actor_count >= WAIT_QUEUE_MAX || owner_count >= WAIT_QUEUE_MAX {
+            return false;
+        }
+        *self.pending_waits.entry(actor).or_insert(0) += 1;
+        *self.pending_waits_by_owner.entry(owner).or_insert(0) += 1;
+        self.pending_wait_owners
+            .entry(actor)
+            .or_default()
+            .push_back(owner);
+        true
+    }
+
+    /// Release one pending-`@wait` slot for an actor (its timer fired),
+    /// releasing the exact owner bucket that was charged at enqueue time.
     fn dec_pending_waits(&mut self, actor: ObjId) {
         match self.pending_waits.get_mut(&actor) {
             Some(n) if *n > 1 => *n -= 1,
@@ -5477,6 +5515,25 @@ impl Engine {
                 self.pending_waits.remove(&actor);
             }
             None => {}
+        }
+        let recorded_owner = match self.pending_wait_owners.get_mut(&actor) {
+            Some(queue) => {
+                let owner = queue.pop_front();
+                if queue.is_empty() {
+                    self.pending_wait_owners.remove(&actor);
+                }
+                owner
+            }
+            None => None,
+        };
+        if let Some(owner) = recorded_owner {
+            match self.pending_waits_by_owner.get_mut(&owner) {
+                Some(n) if *n > 1 => *n -= 1,
+                Some(_) => {
+                    self.pending_waits_by_owner.remove(&owner);
+                }
+                None => {}
+            }
         }
     }
 
@@ -8212,6 +8269,116 @@ mod tests {
         assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(!engine.pending_continuations.contains_key(&nick));
         assert_eq!(engine.pending_waits.get(&nick), Some(&WAIT_QUEUE_MAX));
+    }
+
+    #[test]
+    fn p2_core_20_wait_queue_enforces_per_owner_cap_and_releases_after_chown_or_sweep() {
+        let mut w = World::new_minimal();
+        w.set_now(1_000);
+        let builder = w
+            .create(ObjKind::Player, "Builder", GOD, Some(LIMBO))
+            .expect("create builder");
+        let other = w
+            .create(ObjKind::Player, "Other", GOD, Some(LIMBO))
+            .expect("create other");
+        let things: Vec<ObjId> = (0..5)
+            .map(|i| {
+                w.create(ObjKind::Thing, &format!("gadget{i}"), builder, Some(LIMBO))
+                    .expect("create thing")
+            })
+            .collect();
+        let mut reg = Registry::new();
+        register_core_commands(&mut reg).expect("core");
+        register_engine_commands(&mut reg).expect("engine");
+        let mut engine = Box::new(Engine::new(w, reg));
+
+        // Enqueue 25 waits across each of 5 builder-owned things (125 attempts):
+        // owner bucket caps aggregate waits at WAIT_QUEUE_MAX (100).
+        let mut accepted = 0u32;
+        let mut refused = 0u32;
+        for &thing in &things {
+            for i in 0..25 {
+                let mut out = Outbox::new();
+                let mut fx = Effects::new();
+                out.defer(Deferred::ScheduleIn {
+                    delay_ms: 1_000 + i * 10,
+                    kind: ScheduledKind::WaitCmd {
+                        actor: thing,
+                        line: "say tick".into(),
+                    },
+                });
+                engine.drain_deferred(&mut out, &mut fx);
+                if texts(&out)
+                    .iter()
+                    .any(|t| t.contains("Too many commands queued."))
+                {
+                    refused += 1;
+                } else {
+                    accepted += 1;
+                }
+            }
+        }
+        assert_eq!(accepted, WAIT_QUEUE_MAX);
+        assert_eq!(refused, 25);
+        assert_eq!(
+            engine.pending_waits_by_owner.get(&builder),
+            Some(&WAIT_QUEUE_MAX)
+        );
+        assert_eq!(engine.sched.len() as u32, WAIT_QUEUE_MAX);
+
+        // Builder's own `@wait` is also refused while their owned objects hold
+        // all WAIT_QUEUE_MAX slots, whereas an unrelated player is unaffected.
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 2,
+                actor: builder,
+                line: "@wait 10=say me".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(
+            texts(&out)
+                .iter()
+                .any(|t| t.contains("Too many commands queued.")),
+            "owner's direct @wait must share the per-owner cap: {:?}",
+            texts(&out)
+        );
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Cmd {
+                conn: 3,
+                actor: other,
+                line: "@wait 60=say hi".into(),
+            },
+            &mut out,
+            &mut fx,
+        );
+        assert!(out.events().is_empty(), "unrelated player stays uncapped");
+
+        // Chown one queued thing to `other` and destroy+sweep another before
+        // their timers fire; draining all timers must still release `builder`'s
+        // owner bucket cleanly back to zero (no counter leak).
+        engine.world.chown(things[0], other).expect("chown");
+        engine.world.destroy(things[1]).expect("destroy");
+        engine.world.sweep();
+
+        let mut now_ms = 1_005_000i64;
+        for _ in 0..40 {
+            let (mut out, mut fx) = (Outbox::new(), Effects::new());
+            engine.fire_due(now_ms, &mut out, &mut fx);
+            now_ms += 1_000;
+            if !engine.pending_waits_by_owner.contains_key(&builder) {
+                break;
+            }
+        }
+        assert!(
+            !engine.pending_waits_by_owner.contains_key(&builder),
+            "builder owner bucket must drain cleanly even after chown and sweep: {:?}",
+            engine.pending_waits_by_owner
+        );
+        assert_eq!(engine.pending_waits_by_owner.get(&other), Some(&1));
     }
 
     #[test]

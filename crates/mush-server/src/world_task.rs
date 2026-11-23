@@ -268,9 +268,14 @@ const MAX_PENDING_REATTACH_BYTES: usize =
 const MAX_PENDING_OPERATIONAL_BYTES: usize =
     MAX_PENDING_BARRIERS * PENDING_BARRIER_CHARGE_BYTES + MAX_PENDING_REATTACH_BYTES;
 
-/// Capacity of the sequential staff-op executor's queue (rare wizard
-/// commands; the bound only matters as backpressure).
+/// Capacity of the dedicated high-priority staff/moderation queue (`@siteban`,
+/// `@newpassword`, `@discord/show|unlink|ban|unban`, `@dump`).
 const STAFF_OPS_CAPACITY: usize = 64;
+
+/// Capacity of the isolated player self-service store-ops queue (`@sshkey/*`,
+/// `@newchar`, `@discord/*`), kept separate from [`STAFF_OPS_CAPACITY`] so
+/// player floods can never starve Wizard moderation (P2-EDGE-18).
+const PLAYER_OPS_CAPACITY: usize = 64;
 
 /// One loop iteration (step + delivery + flush) taking longer than this is
 /// logged as loop lag — the observability hook PLAN's risk 2 asks for. The
@@ -1838,20 +1843,29 @@ fn spawn_persist_with_gateway_mode(
         DurableOutboxPolicy::default(),
         outbox_stop,
     ));
-    // Sequential executor for staff store ops (@siteban set/clear/list):
-    // ONE task draining ONE queue, so two staff commands issued in order
-    // can never race each other in the store or the IpGuard mirror. It
-    // drains and exits when the world loop (the only sender) ends.
+    // Sequential executor for store-backed staff & player self-service ops:
+    // ONE task draining TWO priority lanes (`staff_rx` prioritized over
+    // `player_rx` via `biased;` select), so two commands issued in order can
+    // never race each other in the store or the IpGuard mirror AND player
+    // self-service floods can never saturate or starve Wizard moderation
+    // (P2-EDGE-18). It drains and exits when the world loop (the only sender)
+    // ends.
     let (staff_tx, staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
+    let (player_tx, player_rx) = mpsc::channel(PLAYER_OPS_CAPACITY);
+    let staff_queues = StaffOpsQueues {
+        staff: staff_tx,
+        player: player_tx,
+    };
     // The staff executor gets only a WEAK world sender (like the writer):
     // it needs the world for `@newpassword`'s web-connection boots, but a
     // strong sender would keep the world loop's channel alive while the
-    // loop is what closes the staff queue — a shutdown deadlock.
+    // loop is what closes the staff queues — a shutdown deadlock.
     tokio::spawn(staff_ops_loop(
         Arc::clone(&deps.store),
         Arc::clone(&deps.guard),
         tx.downgrade(),
         staff_rx,
+        player_rx,
         gateway.clone(),
     ));
     // The loop keeps only a weak sender for effect completions — holding a
@@ -1863,7 +1877,7 @@ fn spawn_persist_with_gateway_mode(
         tx.downgrade(),
         writer_tx,
         deps,
-        staff_tx,
+        staff_queues,
         gateway,
         high_water,
         signal_rx,
@@ -3461,7 +3475,7 @@ async fn run(
     tx: mpsc::WeakSender<WorldMsg>,
     writer: StoreWriter,
     deps: ServerDeps,
-    staff_ops: mpsc::Sender<StaffWork>,
+    staff_ops: StaffOpsQueues,
     gateway: Gateway,
     high_water: Arc<AtomicU64>,
     mut signals: WriterSignalReceiver,
@@ -4455,7 +4469,11 @@ async fn run(
                         WorldMsg::StaffBarrier { reply } => {
                             // Previous world work has crossed its exact receipt and
                             // the previous iteration dispatched its local/store ops.
-                            if let Err(error) = staff_ops.try_send(StaffWork::Barrier(reply)) {
+                            // Routing the barrier through the lower-priority `player`
+                            // lane fences BOTH lanes because `staff_ops_loop` uses
+                            // `biased;` select favoring `staff` ahead of `player`.
+                            if let Err(error) = staff_ops.player.try_send(StaffWork::Barrier(reply))
+                            {
                                 let result = if matches!(&error, mpsc::error::TrySendError::Full(_))
                                 {
                                     WorldReadError::Busy
@@ -5923,6 +5941,7 @@ async fn run(
             run_staff_ops(
                 &deps,
                 &engine.world,
+                |actor| engine.account_of(actor),
                 &gateway,
                 &writer,
                 &staff_ops,

@@ -858,3 +858,151 @@ data: {\"type\":\"message_stop\"}\n\n";
     assert_eq!(input["desc"], "A hall.");
     assert_eq!(done.stop_reason, StopReason::ToolUse);
 }
+
+#[tokio::test]
+async fn p2_core_15_openai_sparse_tool_call_index_does_not_oom() {
+    // A huge sparse index in OpenAI SSE tool_calls must not allocate a giant
+    // Vec; BTreeMap stores only the single active slot.
+    let sse = "\
+data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1000000000,\"id\":\"call_sparse\",\"type\":\"function\",\"function\":{\"name\":\"submit_room\",\"arguments\":\"{\\\"desc\\\":\\\"ok\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n\
+data: [DONE]\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(sse.as_bytes().to_vec(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, Some("k".to_string())).unwrap();
+    let stream = provider
+        .stream(&CompletionRequest::simple("gen"), TIMEOUT)
+        .await
+        .unwrap();
+    let (_, done) = collect_stream(stream).await;
+    let done = done.expect("Done event");
+    let (name, input) = done.first_tool_use().expect("sparse tool call assembled");
+    assert_eq!(name, "submit_room");
+    assert_eq!(input["desc"], "ok");
+}
+
+#[tokio::test]
+async fn p2_core_15_openai_stream_caps_distinct_tool_calls() {
+    let mut sse = String::new();
+    for i in 0..65usize {
+        sse.push_str(&format!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":{i},\"id\":\"c_{i}\",\"function\":{{\"name\":\"fn_{i}\",\"arguments\":\"{{}}\"}}}}]}}}}]}}\n\n"
+        ));
+    }
+    sse.push_str("data: [DONE]\n\n");
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(sse.into_bytes(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, Some("k".to_string())).unwrap();
+    let mut stream = provider
+        .stream(&CompletionRequest::simple("gen"), TIMEOUT)
+        .await
+        .unwrap();
+
+    let mut saw_err = None;
+    let mut saw_done = false;
+    while let Some(ev) = stream.next().await {
+        match ev {
+            Err(e) => {
+                saw_err = Some(e);
+                break;
+            }
+            Ok(StreamEvent::Done(_)) => saw_done = true,
+            Ok(_) => {}
+        }
+    }
+    assert!(
+        !saw_done,
+        "must abort before Done once tool cap is exceeded"
+    );
+    assert!(
+        matches!(saw_err, Some(LlmError::MalformedOutput(_))),
+        "expected MalformedOutput, got {saw_err:?}"
+    );
+}
+
+#[test]
+fn p2_core_26_providers_reject_non_loopback_cleartext_http() {
+    let bad_openai = provider_cfg(ProviderKind::Openai, "http://api.openai.com/v1".into());
+    assert!(matches!(
+        OpenAiProvider::new("openrouter", &bad_openai, Some("k".into())),
+        Err(LlmError::InvalidRequest(_))
+    ));
+    let bad_anthropic = provider_cfg(ProviderKind::Anthropic, "http://api.anthropic.com".into());
+    assert!(matches!(
+        AnthropicProvider::new("anthropic", &bad_anthropic, "k".into()),
+        Err(LlmError::InvalidRequest(_))
+    ));
+
+    for loopback in [
+        "http://127.0.0.1:11434/v1",
+        "http://[::1]:11434/v1",
+        "http://localhost:11434/v1",
+    ] {
+        let ocfg = provider_cfg(ProviderKind::Openai, loopback.into());
+        assert!(OpenAiProvider::new("local", &ocfg, None).is_ok());
+        let acfg = provider_cfg(ProviderKind::Anthropic, loopback.into());
+        assert!(AnthropicProvider::new("local", &acfg, "k".into()).is_ok());
+    }
+}
+
+#[tokio::test]
+async fn p2_core_26_openai_malformed_tool_args_scrubs_and_bounds_tool_name() {
+    let secret = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0b3BzZWNyZXQifQ.sig_99999999";
+    let huge_name = format!("Bearer {secret} {}", "z".repeat(1200));
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "z-ai/glm-5.3",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "c",
+                        "type": "function",
+                        "function": {"name": huge_name, "arguments": "{bad"}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = provider_cfg(ProviderKind::Openai, server.uri());
+    let provider = OpenAiProvider::new("openrouter", &cfg, Some("k".to_string())).unwrap();
+    let err = provider
+        .complete(&CompletionRequest::simple("gen"), TIMEOUT)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, LlmError::MalformedOutput(_)));
+    let msg = err.to_string();
+    assert!(
+        !msg.contains(secret),
+        "secret leaked into tool name error: {msg}"
+    );
+    assert!(!msg.contains("eyJhbGciOiJIUzI1NiJ9"), "{msg}");
+    assert!(
+        msg.len() < 600,
+        "diagnostic error not bounded: len={}",
+        msg.len()
+    );
+}

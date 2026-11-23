@@ -11,7 +11,7 @@ use mush_proto::{OutputEvent, RichText};
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::Flags;
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
-use crate::matchit::match_object;
+use crate::matchit::{MatchErr, match_object, match_object_visible};
 use crate::obj::ObjKind;
 use crate::output::{display_name, name_span};
 
@@ -22,7 +22,22 @@ fn get_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if q.is_empty() {
         return Err(CmdError::msg("Get what?"));
     }
-    let target = match_object(ctx.w, ctx.actor, &q)?;
+    let my_loc = ctx.w.get(ctx.actor).and_then(|a| a.location);
+    let lens = ctx.typed_state.lens();
+    let target = match_object_visible(ctx.w, ctx.actor, &q, |id| {
+        let Some(o) = ctx.w.get(id) else {
+            return false;
+        };
+        if o.flags.contains(Flags::GOING) {
+            return false;
+        }
+        // Carried items still match so `get <carried>` reports "You already
+        // have that!", and `get here` reports "You can't take that!".
+        if o.location == Some(ctx.actor) || (o.kind == ObjKind::Room && Some(id) == my_loc) {
+            return true;
+        }
+        super::target_visible_here(ctx.reg, ctx.w, ctx.actor, id, my_loc, lens)
+    })?;
     let o = ctx
         .w
         .get(target)
@@ -39,7 +54,6 @@ fn get_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             return Err(CmdError::msg("You can't take that!"));
         }
     }
-    let my_loc = ctx.w.get(ctx.actor).and_then(|a| a.location);
     if o.location != my_loc || my_loc.is_none() {
         return Err(CmdError::msg("I don't see that here."));
     }
@@ -129,21 +143,32 @@ fn give_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "Give what to whom?  (give <object>=<recipient>)",
         ));
     }
-    let obj = match_object(ctx.w, ctx.actor, &obj_name)?;
+    let obj = match_object_visible(ctx.w, ctx.actor, &obj_name, |id| {
+        ctx.w
+            .get(id)
+            .is_some_and(|o| !o.flags.contains(Flags::GOING) && o.location == Some(ctx.actor))
+    })
+    .map_err(|e| match e {
+        MatchErr::NoMatch => CmdError::msg("You don't have that!"),
+        other => other.into(),
+    })?;
     if ctx.w.get(obj).and_then(|o| o.location) != Some(ctx.actor) {
         return Err(CmdError::msg("You don't have that!"));
     }
-    let recipient = match_object(ctx.w, ctx.actor, &who_name)?;
+    let my_loc = ctx.w.get(ctx.actor).and_then(|a| a.location);
+    let lens = ctx.typed_state.lens();
+    let recipient = match_object_visible(ctx.w, ctx.actor, &who_name, |id| {
+        super::target_visible_here(ctx.reg, ctx.w, ctx.actor, id, my_loc, lens)
+    })?;
     if recipient == ctx.actor {
         return Err(CmdError::msg("You already have that!"));
     }
     let r = ctx
         .w
         .get(recipient)
-        .ok_or_else(|| CmdError::msg("They aren't here."))?;
-    let my_loc = ctx.w.get(ctx.actor).and_then(|a| a.location);
+        .ok_or_else(|| CmdError::msg("I don't see that here."))?;
     if r.location != my_loc || my_loc.is_none() {
-        return Err(CmdError::msg("They aren't here."));
+        return Err(CmdError::msg("I don't see that here."));
     }
     // Recipients: actors always, things only when ENTER_OK (vending seams).
     let receivable =

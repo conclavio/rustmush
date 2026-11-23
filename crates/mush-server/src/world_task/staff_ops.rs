@@ -774,56 +774,124 @@ pub(super) fn human_duration(mut s: i64) -> String {
     }
 }
 
-/// Maximum concurrent store-backed ops one non-staff actor may have in flight
-/// in `staff_ops` (queued or executing), preventing a single player from
-/// monopolizing `STAFF_OPS_CAPACITY`.
+/// Maximum concurrent store-backed ops one non-staff account (or unmapped
+/// actor) may have in flight in `staff_ops` (queued or executing), preventing
+/// a single player or multi-alt account from monopolizing player queue slots.
 pub(super) const MAX_STAFF_OPS_PER_PLAYER: usize = 2;
 
-/// Maximum concurrent store-backed ops one Wizard+ actor may have in flight
-/// (generous for legitimate staff bursts while still bounding one actor).
+/// Maximum concurrent store-backed ops one Wizard+ account (or unmapped actor)
+/// may have in flight (generous for legitimate staff bursts while still
+/// bounding one caller).
 pub(super) const MAX_STAFF_OPS_PER_STAFF: usize = 8;
 
-/// Tracks per-actor in-flight counts for the bounded `staff_ops` executor
-/// channel. Incremented on enqueue in `world_task` and decremented
-/// automatically via [`StaffActorPermit`]'s `Drop` when execution finishes or
-/// when an item is dropped on full/closed send or shutdown.
+/// Dedicated pair of bounded channels into [`staff_ops_loop`] (P2-EDGE-18):
+/// Wizard/staff moderation ops ride `staff` while player self-service ops
+/// (`@sshkey/*`, `@newchar`, `@discord/*`) ride `player`. `staff_ops_loop`
+/// drains them via `tokio::select! { biased; ... }` prioritizing `staff`, so
+/// player self-service floods can never saturate or starve Wizard moderation.
+#[derive(Clone)]
+pub(super) struct StaffOpsQueues {
+    /// Dedicated high-priority lane for Wizard/staff moderation ops.
+    pub(super) staff: mpsc::Sender<StaffWork>,
+    /// Bounded lane for player self-service store ops and global barriers.
+    pub(super) player: mpsc::Sender<StaffWork>,
+}
+
+/// Whether `kind` is a Wizard/staff moderation operation that routes onto
+/// [`StaffOpsQueues::staff`] rather than [`StaffOpsQueues::player`].
+pub(super) fn is_staff_priority(kind: &StaffOpKind) -> bool {
+    match kind {
+        StaffOpKind::SetBan { .. }
+        | StaffOpKind::ClearBan { .. }
+        | StaffOpKind::LiftTempban { .. }
+        | StaffOpKind::ListBans
+        | StaffOpKind::NewPassword { .. }
+        | StaffOpKind::DiscordShow { .. }
+        | StaffOpKind::DiscordUnlink { .. }
+        | StaffOpKind::DiscordBan { .. }
+        | StaffOpKind::DiscordUnban { .. }
+        | StaffOpKind::Dump => true,
+        StaffOpKind::AddSshKey { .. }
+        | StaffOpKind::ListSshKeys { .. }
+        | StaffOpKind::DelSshKey { .. }
+        | StaffOpKind::NewChar { .. }
+        | StaffOpKind::DiscordStatus { .. }
+        | StaffOpKind::DiscordLinkMint { .. }
+        | StaffOpKind::DiscordUnlinkSelf { .. }
+        | StaffOpKind::DiscordSet { .. }
+        | StaffOpKind::DiscordFollow { .. }
+        | StaffOpKind::Shutdown
+        | StaffOpKind::Boot { .. }
+        | StaffOpKind::Ps
+        | StaffOpKind::Stats => false,
+    }
+}
+
+/// Accounting key for [`StaffInFlight`] (P2-EDGE-18): keyed by
+/// [`mush_core::AccountId`] whenever the actor is mapped in the account
+/// identity oracle so multi-alt accounts share one in-flight cap, falling back
+/// to [`ObjId`] when unmapped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum StaffInFlightKey {
+    Account(mush_core::AccountId),
+    Actor(ObjId),
+}
+
+impl StaffInFlightKey {
+    pub(super) fn for_actor(
+        actor: ObjId,
+        account_of: &impl Fn(ObjId) -> Option<mush_core::AccountId>,
+    ) -> Self {
+        account_of(actor).map_or(Self::Actor(actor), Self::Account)
+    }
+}
+
+/// Tracks per-account (falling back to per-actor) in-flight counts for the
+/// bounded `staff_ops` executor channels. Incremented on enqueue in
+/// `world_task` and decremented automatically via [`StaffActorPermit`]'s `Drop`
+/// when execution finishes or when an item is dropped on full/closed send or
+/// shutdown.
 #[derive(Clone, Debug, Default)]
 pub(super) struct StaffInFlight {
-    counts: Arc<std::sync::Mutex<std::collections::HashMap<ObjId, usize>>>,
+    counts: Arc<std::sync::Mutex<std::collections::HashMap<StaffInFlightKey, usize>>>,
 }
 
 impl StaffInFlight {
-    pub(super) fn try_acquire(&self, actor: ObjId, limit: usize) -> Option<StaffActorPermit> {
+    pub(super) fn try_acquire(
+        &self,
+        key: StaffInFlightKey,
+        limit: usize,
+    ) -> Option<StaffActorPermit> {
         let mut counts = self
             .counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = counts.entry(actor).or_insert(0);
+        let entry = counts.entry(key).or_insert(0);
         if *entry >= limit {
             return None;
         }
         *entry += 1;
         Some(StaffActorPermit {
             tracker: self.clone(),
-            actor,
+            key,
         })
     }
 
     #[cfg(test)]
-    pub(super) fn count(&self, actor: ObjId) -> usize {
+    pub(super) fn count(&self, key: StaffInFlightKey) -> usize {
         self.counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&actor)
+            .get(&key)
             .copied()
             .unwrap_or(0)
     }
 }
 
-/// RAII permit holding one per-actor slot in [`StaffInFlight`].
+/// RAII permit holding one per-account/per-actor slot in [`StaffInFlight`].
 pub(super) struct StaffActorPermit {
     tracker: StaffInFlight,
-    actor: ObjId,
+    key: StaffInFlightKey,
 }
 
 impl Drop for StaffActorPermit {
@@ -833,9 +901,9 @@ impl Drop for StaffActorPermit {
             .counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = counts.get_mut(&self.actor) {
+        if let Some(count) = counts.get_mut(&self.key) {
             if *count <= 1 {
-                counts.remove(&self.actor);
+                counts.remove(&self.key);
             } else {
                 *count -= 1;
             }
@@ -844,12 +912,16 @@ impl Drop for StaffActorPermit {
 }
 
 /// Enqueue one `StaffWork` item without EVER blocking `world_task`: enforces
-/// the per-actor in-flight cap and uses non-blocking `try_send` so a full
-/// `staff_ops` queue cannot deadlock `world_task` ↔ `staff_ops_loop`.
+/// the per-account (or per-actor fallback) in-flight cap and uses non-blocking
+/// `try_send` onto the appropriate priority lane so a full queue cannot
+/// deadlock `world_task` ↔ `staff_ops_loop` and player self-service floods
+/// cannot starve Wizard moderation.
+#[allow(clippy::too_many_arguments)]
 fn enqueue_staff_work(
     world: &World,
+    account_of: &impl Fn(ObjId) -> Option<mush_core::AccountId>,
     gateway: &Gateway,
-    staff_ops: &mpsc::Sender<StaffWork>,
+    lane: &mpsc::Sender<StaffWork>,
     in_flight: &StaffInFlight,
     actor: ObjId,
     cmd_label: &str,
@@ -860,12 +932,14 @@ fn enqueue_staff_work(
     } else {
         MAX_STAFF_OPS_PER_PLAYER
     };
-    let Some(permit) = in_flight.try_acquire(actor, cap) else {
+    let key = StaffInFlightKey::for_actor(actor, account_of);
+    let Some(permit) = in_flight.try_acquire(key, cap) else {
         tracing::warn!(
             %actor,
+            ?key,
             cap,
             cmd = cmd_label,
-            "per-actor staff_ops in-flight cap reached; refusing op"
+            "per-account staff_ops in-flight cap reached; refusing op"
         );
         send_sys(
             gateway,
@@ -874,7 +948,7 @@ fn enqueue_staff_work(
         );
         return;
     };
-    match staff_ops.try_send(build(permit)) {
+    match lane.try_send(build(permit)) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
             tracing::warn!(
@@ -902,21 +976,28 @@ fn enqueue_staff_work(
 /// `ControlMsg::Shutdown` and exits. Every op is audit-logged with the
 /// requesting actor.
 ///
-/// Strictly synchronous: never `.await`s on the bounded `staff_ops` channel
+/// Strictly synchronous: never `.await`s on the bounded `staff_ops` channels
 /// inside single-writer `world_task`, breaking the `world_task` ↔
 /// `staff_ops_loop` AB-BA deadlock.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_staff_ops(
     _deps: &ServerDeps,
     world: &World,
+    account_of: impl Fn(ObjId) -> Option<mush_core::AccountId>,
     gateway: &Gateway,
     writer: &StoreWriter,
-    staff_ops: &mpsc::Sender<StaffWork>,
+    queues: &StaffOpsQueues,
     in_flight: &StaffInFlight,
     ops: Vec<StaffOp>,
 ) -> bool {
     let mut shutdown = false;
     for op in ops {
         let actor = op.actor;
+        let lane = if is_staff_priority(&op.kind) {
+            &queues.staff
+        } else {
+            &queues.player
+        };
         match op.kind {
             StaffOpKind::SetBan {
                 ref ip,
@@ -926,8 +1007,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, %ip, ?until_unix, reason, "@siteban requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@siteban",
@@ -938,8 +1020,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, %ip, operation = ?op.kind, "@siteban pardon requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@siteban pardon",
@@ -950,8 +1033,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, "@siteban list requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@siteban",
@@ -964,8 +1048,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, %target, "@newpassword requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@newpassword",
@@ -981,8 +1066,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, fingerprint, "@sshkey/add requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@sshkey",
@@ -993,8 +1079,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, "@sshkey/list requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@sshkey",
@@ -1005,8 +1092,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, which, "@sshkey/del requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@sshkey",
@@ -1019,8 +1107,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, name, "@newchar requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@newchar",
@@ -1037,8 +1126,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, kind = ?op.kind, "@discord self-service op requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@discord",
@@ -1075,8 +1165,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, %target, kind = ?op.kind, "@discord staff op requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@discord",
@@ -1087,8 +1178,9 @@ pub(super) fn run_staff_ops(
                 tracing::info!(%actor, "@discord/unban requested");
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@discord",
@@ -1100,8 +1192,9 @@ pub(super) fn run_staff_ops(
                 let writer_clone = writer.clone();
                 enqueue_staff_work(
                     world,
+                    &account_of,
                     gateway,
-                    staff_ops,
+                    lane,
                     in_flight,
                     actor,
                     "@dump",
@@ -1589,7 +1682,8 @@ pub(super) async fn staff_ops_loop(
     store: Arc<dyn ObjectStore>,
     guard: Arc<IpGuard>,
     world: mpsc::WeakSender<WorldMsg>,
-    mut rx: mpsc::Receiver<StaffWork>,
+    mut staff_rx: mpsc::Receiver<StaffWork>,
+    mut player_rx: mpsc::Receiver<StaffWork>,
     gateway: Gateway,
 ) {
     // The staff executor's server->gateway output (confirmations, the target's
@@ -1599,7 +1693,44 @@ pub(super) async fn staff_ops_loop(
     // (`structured_conns_of` / `detach_conn_local`) go through the same sink; in
     // split mode they resolve on the gateway process (this sink emits a
     // fire-and-forget `CloseWebSessions` instead).
-    while let Some(work) = rx.recv().await {
+    //
+    // P2-EDGE-18: drain high-priority Wizard/staff moderation ops (`staff_rx`)
+    // ahead of player self-service ops (`player_rx`) via `biased;` selection.
+    // Because `WorldMsg::StaffBarrier` rides `player_rx`, it observes `Ok(())`
+    // only after all prior work in BOTH lanes has completed.
+    let mut staff_open = true;
+    let mut player_open = true;
+    loop {
+        let work = match (staff_open, player_open) {
+            (true, true) => {
+                tokio::select! {
+                    biased;
+                    item = staff_rx.recv() => match item {
+                        Some(work) => work,
+                        None => {
+                            staff_open = false;
+                            continue;
+                        }
+                    },
+                    item = player_rx.recv() => match item {
+                        Some(work) => work,
+                        None => {
+                            player_open = false;
+                            continue;
+                        }
+                    },
+                }
+            }
+            (true, false) => match staff_rx.recv().await {
+                Some(work) => work,
+                None => break,
+            },
+            (false, true) => match player_rx.recv().await {
+                Some(work) => work,
+                None => break,
+            },
+            (false, false) => break,
+        };
         let (op, permit) = match work {
             StaffWork::Barrier(reply) => {
                 let _ = reply.send(Ok(()));

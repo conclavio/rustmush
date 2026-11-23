@@ -213,10 +213,10 @@ impl Rig {
         let mut store = ActionStateStore::new(self.reg.clone());
         for (k, v) in self.rows.values() {
             let (k, e) = envelope(&self.reg, k, v)?;
-            store.records.insert(
+            Arc::make_mut(&mut store.records).insert(
                 k,
                 StoredStateRecord {
-                    value: Box::new(v.clone()),
+                    value: Arc::new(v.clone()),
                     canonical: CanonicalStateBytes(
                         canonical_json_bytes_with_limit(&e, 262_144)?.into(),
                     ),

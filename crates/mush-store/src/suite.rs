@@ -2499,6 +2499,46 @@ pub async fn authoritative_epoch_lifecycle(store: &dyn AuthoritativeStore) {
         .retire_authoritative_epochs(&scope, 2)
         .await
         .expect("retire current epoch");
+
+    // Quarantined intents below the proposed watermark also block retirement
+    // until restored, finalized, and checkpointed (P2-CORE-23).
+    let quarantined = authoritative_bundle_with(18, 28, 2, vec![], false, vec![]);
+    let evidence_hash = CanonicalHash::from_bytes([0x6c; 32]);
+    store
+        .reserve_authoritative_intent(quarantined.clone())
+        .await
+        .expect("reserve quarantine candidate in epoch 2");
+    store
+        .discard_quarantined_authoritative_intent(
+            quarantined.token(),
+            quarantined.bundle_hash(),
+            evidence_hash,
+        )
+        .await
+        .expect("discard into quarantine");
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 3).await,
+        Err(StoreError::AuthoritativeEpochPending {
+            requested_minimum_epoch: 3,
+            retained_intents: 1,
+        })
+    ));
+    store
+        .restore_quarantined_authoritative_intent(quarantined.clone(), evidence_hash)
+        .await
+        .expect("restore quarantined bundle before epoch retirement");
+    store
+        .reconcile_authoritative(quarantined.token(), quarantined.bundle_hash())
+        .await
+        .expect("finalize restored bundle");
+    store
+        .checkpoint_authoritative(quarantined.token(), quarantined.bundle_hash())
+        .await
+        .expect("checkpoint restored bundle");
+    store
+        .retire_authoritative_epochs(&scope, 3)
+        .await
+        .expect("retire epoch 2 after quarantine is resolved");
 }
 
 /// Token/hash and scoped-idempotency conflicts are closed identically by all

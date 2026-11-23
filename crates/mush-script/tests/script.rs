@@ -2605,3 +2605,367 @@ fn p2_core_3_key_size_mutators_map_zip_latched_limit_and_var_fn_caps() {
         .join()
         .expect("script p2_core_3 thread must not overflow stack or panic");
 }
+
+#[test]
+fn p2_core_12_script_move_enforces_kinds_controls_live_typed_state_and_emits_moved() {
+    use mush_core::module::{
+        EventHook, GameModule, HookPoint, HookReadContext, ModError, Registrar, WorldEvent,
+        WorldEventKind,
+    };
+    use mush_proto::RichText;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    type MovedLog = Arc<Mutex<Vec<(ObjId, Option<ObjId>, ObjId)>>>;
+
+    struct MoveAudit {
+        block_move: Arc<AtomicBool>,
+        block_carry: Arc<AtomicBool>,
+        move_hook_saw_live_state: Arc<AtomicBool>,
+        carry_hook_saw_live_state: Arc<AtomicBool>,
+        moved_events: MovedLog,
+    }
+
+    struct AuditHook {
+        block_move: Arc<AtomicBool>,
+        block_carry: Arc<AtomicBool>,
+        move_hook_saw_live_state: Arc<AtomicBool>,
+        carry_hook_saw_live_state: Arc<AtomicBool>,
+    }
+
+    impl EventHook for AuditHook {
+        fn move_attempt(
+            &self,
+            ctx: &HookReadContext<'_>,
+            _actor: ObjId,
+            _exit: Option<ObjId>,
+            _dest: ObjId,
+        ) -> Result<(), RichText> {
+            if ctx.typed_state_available() {
+                self.move_hook_saw_live_state.store(true, Ordering::SeqCst);
+            }
+            if self.block_move.load(Ordering::SeqCst) {
+                return Err(RichText::plain("warded by live hook"));
+            }
+            Ok(())
+        }
+
+        fn carry_attempt(
+            &self,
+            ctx: &HookReadContext<'_>,
+            _mover: ObjId,
+            _obj: ObjId,
+            _dest: ObjId,
+        ) -> Result<(), RichText> {
+            if ctx.typed_state_available() {
+                self.carry_hook_saw_live_state.store(true, Ordering::SeqCst);
+            }
+            if self.block_carry.load(Ordering::SeqCst) {
+                return Err(RichText::plain("custody locked"));
+            }
+            Ok(())
+        }
+    }
+
+    impl GameModule for MoveAudit {
+        fn name(&self) -> &'static str {
+            "move_audit"
+        }
+
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let hook = Arc::new(AuditHook {
+                block_move: Arc::clone(&self.block_move),
+                block_carry: Arc::clone(&self.block_carry),
+                move_hook_saw_live_state: Arc::clone(&self.move_hook_saw_live_state),
+                carry_hook_saw_live_state: Arc::clone(&self.carry_hook_saw_live_state),
+            });
+            reg.hook(
+                HookPoint::MoveAttempt,
+                Arc::clone(&hook) as Arc<dyn EventHook>,
+            );
+            reg.hook(HookPoint::CarryAttempt, hook);
+            let moved_events = Arc::clone(&self.moved_events);
+            reg.subscribe(
+                WorldEventKind::Moved,
+                Arc::new(move |_ctx: &mut mush_core::Ctx<'_>, ev: &WorldEvent| {
+                    if let WorldEvent::Moved { who, from, to } = ev {
+                        moved_events.lock().unwrap().push((*who, *from, *to));
+                    }
+                }),
+            );
+            Ok(())
+        }
+    }
+
+    let block_move = Arc::new(AtomicBool::new(false));
+    let block_carry = Arc::new(AtomicBool::new(false));
+    let move_hook_saw_live_state = Arc::new(AtomicBool::new(false));
+    let carry_hook_saw_live_state = Arc::new(AtomicBool::new(false));
+    let moved_events = Arc::new(Mutex::new(Vec::new()));
+
+    let mut world = World::new_minimal();
+    world.set_now(1_000);
+    let mut registry = Registry::new();
+    register_core_commands(&mut registry).unwrap();
+    register_engine_commands(&mut registry).unwrap();
+    let mut engine = Engine::with_modules(
+        world,
+        registry,
+        vec![
+            Box::new(MoveAudit {
+                block_move: Arc::clone(&block_move),
+                block_carry: Arc::clone(&block_carry),
+                move_hook_saw_live_state: Arc::clone(&move_hook_saw_live_state),
+                carry_hook_saw_live_state: Arc::clone(&carry_hook_saw_live_state),
+                moved_events: Arc::clone(&moved_events),
+            }),
+            Box::new(ScriptModule::new()),
+        ],
+    )
+    .unwrap();
+    let (mut out, mut fx) = (Outbox::new(), Effects::new());
+    engine
+        .modules_loaded(HashMap::new(), &mut out, &mut fx)
+        .unwrap();
+    let mut f = Fixture { engine };
+
+    let nick = f.builder("Nick");
+    let own_room = f
+        .engine
+        .world
+        .create(ObjKind::Room, "Own", nick, None)
+        .unwrap();
+    let jump_ok = f.room("Plaza");
+    f.engine
+        .world
+        .set_flag(jump_ok, Flags::JUMP_OK, true)
+        .unwrap();
+    f.engine.world.move_to(nick, jump_ok).unwrap();
+
+    let my_exit = f
+        .engine
+        .world
+        .create(ObjKind::Exit, "north", nick, Some(own_room))
+        .unwrap();
+    let my_thing = f.thing("gem", nick, own_room);
+    let my_box = f.thing("chest", nick, own_room);
+    // Console inside uncontrolled JUMP_OK `jump_ok` so `mush::here()` IS
+    // `jump_ok`, while `my_exit`/`own_room` resolve because Nick controls them.
+    let plaza_console = f.thing("pconsole", nick, jump_ok);
+
+    // 1. Exit injection into uncontrolled JUMP_OK room is refused.
+    f.seed_script(
+        plaza_console,
+        "script:command:inject",
+        &format!(
+            "mush::move(mush::matchit(\"#{}\"), mush::here())",
+            my_exit.0
+        ),
+    );
+    let out = f.run(nick, "inject");
+    assert!(
+        actor_saw(&out, nick, "Permission denied"),
+        "{:?}",
+        all_text(&out)
+    );
+    assert_eq!(
+        f.engine.world.get(my_exit).unwrap().location,
+        Some(own_room)
+    );
+    assert!(f.engine.world.exits_of(jump_ok).is_empty());
+
+    // 2. Room targets, Exit destinations, and non-Room actor destinations are
+    //    all rejected.
+    f.seed_script(
+        plaza_console,
+        "script:command:mvroom",
+        &format!(
+            "mush::move(mush::matchit(\"#{}\"), mush::here())",
+            own_room.0
+        ),
+    );
+    let out = f.run(nick, "mvroom");
+    assert!(
+        actor_saw(&out, nick, "Cannot move a room"),
+        "{:?}",
+        all_text(&out)
+    );
+    assert_eq!(f.engine.world.get(own_room).unwrap().location, None);
+
+    f.engine.world.move_to(nick, own_room).unwrap();
+    let console = f.thing("console", nick, own_room);
+
+    f.seed_script(
+        console,
+        "script:command:toexit",
+        &format!(
+            "mush::move(mush::matchit(\"#{}\"), mush::matchit(\"#{}\"))",
+            my_thing.0, my_exit.0
+        ),
+    );
+    let out = f.run(nick, "toexit");
+    assert!(
+        actor_saw(&out, nick, "Cannot move an object into an exit"),
+        "{:?}",
+        all_text(&out)
+    );
+    assert_eq!(
+        f.engine.world.get(my_thing).unwrap().location,
+        Some(own_room)
+    );
+
+    f.seed_script(
+        console,
+        "script:command:actortothing",
+        &format!(
+            "mush::move(mush::caller(), mush::matchit(\"#{}\"))",
+            my_box.0
+        ),
+    );
+    let out = f.run(nick, "actortothing");
+    assert!(
+        actor_saw(&out, nick, "Actors can only be moved into rooms"),
+        "{:?}",
+        all_text(&out)
+    );
+    assert_eq!(f.engine.world.get(nick).unwrap().location, Some(own_room));
+
+    // 3. Moving a Thing into a non-Room container consults CarryAttempt with
+    //    live typed-state context.
+    block_carry.store(true, Ordering::SeqCst);
+    f.seed_script(
+        console,
+        "script:command:stow",
+        &format!(
+            "mush::move(mush::matchit(\"#{}\"), mush::matchit(\"#{}\"))",
+            my_thing.0, my_box.0
+        ),
+    );
+    let out = f.run(nick, "stow");
+    assert!(
+        actor_saw(&out, nick, "custody locked"),
+        "{:?}",
+        all_text(&out)
+    );
+    assert!(
+        carry_hook_saw_live_state.load(Ordering::SeqCst),
+        "CarryAttempt hook invoked from mush::move must receive live typed state"
+    );
+    assert_eq!(
+        f.engine.world.get(my_thing).unwrap().location,
+        Some(own_room)
+    );
+    block_carry.store(false, Ordering::SeqCst);
+
+    // 4. Legitimate actor move into destination room:
+    //    - MoveAttempt hook receives live typed state and can veto.
+    //    - When permitted, emits WorldEvent::Moved to external observers AND
+    //      fires script:enter on the destination room exactly ONCE.
+    let dest_room = f
+        .engine
+        .world
+        .create(ObjKind::Room, "Dest", nick, None)
+        .unwrap();
+    let enter_tag = "ENTER_MARKER_ONCE";
+    f.seed_script(
+        dest_room,
+        "script:enter",
+        &format!(r#"mush::pemit(mover, "{enter_tag}")"#),
+    );
+    f.seed_script(
+        console,
+        "script:command:warp",
+        &format!(
+            "mush::move(mush::caller(), mush::matchit(\"#{}\"))",
+            dest_room.0
+        ),
+    );
+
+    block_move.store(true, Ordering::SeqCst);
+    moved_events.lock().unwrap().clear();
+    let out = f.run(nick, "warp");
+    assert!(
+        actor_saw(&out, nick, "warded by live hook"),
+        "{:?}",
+        all_text(&out)
+    );
+    assert!(
+        move_hook_saw_live_state.load(Ordering::SeqCst),
+        "MoveAttempt hook invoked from mush::move must receive live typed state"
+    );
+    assert_eq!(f.engine.world.get(nick).unwrap().location, Some(own_room));
+    assert!(moved_events.lock().unwrap().is_empty());
+
+    block_move.store(false, Ordering::SeqCst);
+    let out = f.run(nick, "warp");
+    assert_eq!(f.engine.world.get(nick).unwrap().location, Some(dest_room));
+    let recorded = moved_events.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        vec![(nick, Some(own_room), dest_room)],
+        "mush::move must emit WorldEvent::Moved to external observers"
+    );
+    let enter_count = all_text(&out)
+        .iter()
+        .filter(|t| t.contains(enter_tag))
+        .count();
+    assert_eq!(
+        enter_count,
+        1,
+        "script:enter must fire exactly once (no double-firing on WorldEvent::Moved flush): {:?}",
+        all_text(&out)
+    );
+}
+
+#[test]
+fn p2_core_20_script_schedule_cannot_multiply_wait_queue_across_objects() {
+    let mut f = Fixture::new();
+    let nick = f.builder("Nick");
+
+    // Create 10 scripted objects owned by Nick, each scheduling 15 timers
+    // (150 attempts total). Per-owner WAIT_QUEUE_MAX (100) must cap total
+    // queued timers across all objects combined.
+    for i in 0..10 {
+        let obj = f.thing(&format!("clock{i}"), nick, LIMBO);
+        f.seed_script(
+            obj,
+            &format!("script:command:arm{i}"),
+            r#"for j in 0..15 { mush::schedule(10 + j, "tick"); }"#,
+        );
+        f.seed_script(
+            obj,
+            "script:timer:tick",
+            r#"mush::emit(mush::here(), "TICK_FIRED")"#,
+        );
+    }
+
+    let mut refused = false;
+    for i in 0..10 {
+        let out = f.run(nick, &format!("arm{i}"));
+        if actor_saw(&out, nick, "Too many commands queued.") {
+            refused = true;
+        }
+    }
+    assert!(
+        refused,
+        "scheduling 150 timers across 10 builder-owned objects must hit per-owner WAIT_QUEUE_MAX"
+    );
+
+    // Drain every scheduled timer over simulated ticks and confirm at most 100
+    // (WAIT_QUEUE_MAX) actually entered the scheduler across all 10 objects.
+    let mut fired = 0usize;
+    let mut sec = 1_010i64;
+    for _ in 0..40 {
+        f.set_now(sec);
+        let out = f.fire_due(sec);
+        fired += all_text(&out)
+            .iter()
+            .filter(|t| t.contains("TICK_FIRED"))
+            .count();
+        sec += 5;
+    }
+    assert_eq!(
+        fired, 100,
+        "total scheduled timers across all of Nick's objects must be capped at WAIT_QUEUE_MAX (100)"
+    );
+}

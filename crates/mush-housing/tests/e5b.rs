@@ -4579,12 +4579,28 @@ fn high27_access_hook_blocks_nested_containers_and_end_clears_enclosed_homes() {
         "dest container bypass: {out}"
     );
     assert_eq!(tw.world().get(r.rex).unwrap().location, Some(LIMBO));
+    // P2-CORE-12 Layer 1 blocks teleporting an actor into a non-Room container upfront;
+    // verify BOTH Layer 1 (`@teleport`) and Layer 2 (`AccessHook::move_attempt` directly).
     let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", r.rex.0, pouch.0)));
     assert!(
-        out.contains(mush_housing::REFUSED),
-        "nested dest bypass: {out}"
+        out.contains("You can't go there."),
+        "nested dest actor teleport must be refused by P2-CORE-12: {out}"
     );
     assert_eq!(tw.world().get(r.rex).unwrap().location, Some(LIMBO));
+    let detached = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+    let hook_err = mush_core::module::check_move_attempt(
+        &tw.engine().registry,
+        tw.world(),
+        r.rex,
+        None,
+        chest,
+        detached,
+    )
+    .expect_err("AccessHook::move_attempt must still refuse nested container dest");
+    assert!(
+        hook_err.to_plain_text().contains(mush_housing::REFUSED),
+        "nested dest hook bypass: {hook_err:?}"
+    );
 
     // 2. MoveAttempt source bypass: `gem` nested inside `pouch -> chest -> anchor`
     //    cannot be teleported out to `LIMBO`.
@@ -4597,7 +4613,6 @@ fn high27_access_hook_blocks_nested_containers_and_end_clears_enclosed_homes() {
 
     // 3. CarryAttempt source & dest bypass: stranger Rex cannot carry `gem` out of
     //    `pouch` OR carry `rock` into `pouch`.
-    let detached = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
     assert!(
         mush_core::module::check_carry_attempt(
             &tw.engine().registry,
@@ -4942,13 +4957,29 @@ fn p2_mod_9_enclosing_room_depth_limit_fails_closed_and_unhomes_deep_containers(
     );
 
     // 1. MoveAttempt destination fails closed for non-staff stranger into deepest container.
+    // P2-CORE-12 Layer 1 blocks teleporting an actor into a non-Room container upfront;
+    // verify BOTH Layer 1 (`@teleport`) and Layer 2 (`AccessHook::move_attempt` directly).
     let outsider = tw.spawn_player("Outsider");
     let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", outsider.0, deepest.0)));
     assert!(
-        out.contains(mush_housing::REFUSED),
-        "deep dest must fail closed: {out}"
+        out.contains("You can't go there."),
+        "deep dest actor teleport must be refused by P2-CORE-12: {out}"
     );
     assert_eq!(tw.world().get(outsider).unwrap().location, Some(LIMBO));
+    let detached = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+    let hook_err = mush_core::module::check_move_attempt(
+        &tw.engine().registry,
+        tw.world(),
+        outsider,
+        None,
+        deepest,
+        detached,
+    )
+    .expect_err("AccessHook::move_attempt must still fail closed on LimitOrCycle dest");
+    assert!(
+        hook_err.to_plain_text().contains(mush_housing::REFUSED),
+        "deep dest hook must fail closed: {hook_err:?}"
+    );
 
     // 2. MoveAttempt source fails closed for a thing inside the deep chain.
     let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", loot.0, LIMBO.0)));
@@ -4959,7 +4990,6 @@ fn p2_mod_9_enclosing_room_depth_limit_fails_closed_and_unhomes_deep_containers(
     assert_eq!(tw.world().get(loot).unwrap().location, Some(deepest));
 
     // 3. CarryAttempt fails closed for non-staff mover in both directions.
-    let detached = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
     assert!(
         mush_core::module::check_carry_attempt(
             &tw.engine().registry,

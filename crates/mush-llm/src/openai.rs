@@ -10,6 +10,7 @@
 //! leading `role:"system"` message, `ToolUse` → `assistant.tool_calls` (with
 //! `arguments` as a JSON **string**), `ToolResult` → `role:"tool"` messages.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures::channel::mpsc;
@@ -55,10 +56,11 @@ impl OpenAiProvider {
         cfg: &ProviderConfig,
         api_key: Option<String>,
     ) -> Result<OpenAiProvider, LlmError> {
+        let base_url = http::validate_base_url(&cfg.base_url)?;
         Ok(OpenAiProvider {
             id: id.into(),
             client: http::client()?,
-            base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            base_url,
             api_key,
             referer: cfg.referer.clone(),
             title: cfg.title.clone(),
@@ -241,7 +243,8 @@ impl LlmProvider for OpenAiProvider {
                             break;
                         }
                         for emitted in asm.on_data(&event.data) {
-                            if tx.send(emitted).await.is_err() {
+                            let is_err = emitted.is_err();
+                            if tx.send(emitted).await.is_err() || is_err {
                                 return;
                             }
                         }
@@ -270,6 +273,10 @@ impl LlmProvider for OpenAiProvider {
 
 // -- streaming assembly ----------------------------------------------------
 
+/// Maximum distinct tool calls assembled in a single OpenAI SSE stream
+/// (`P2-CORE-15`). Prevents sparse-index OOM and unbounded map growth.
+const MAX_STREAM_TOOL_CALLS: usize = 64;
+
 struct ToolAsm {
     id: String,
     name: String,
@@ -280,7 +287,7 @@ struct ToolAsm {
 struct StreamAsm {
     model: String,
     text: String,
-    tools: Vec<ToolAsm>,
+    tools: BTreeMap<usize, ToolAsm>,
     stop: StopReason,
     usage: Usage,
 }
@@ -290,7 +297,7 @@ impl StreamAsm {
         StreamAsm {
             model,
             text: String::new(),
-            tools: Vec::new(),
+            tools: BTreeMap::new(),
             stop: StopReason::EndTurn,
             usage: Usage::default(),
         }
@@ -331,16 +338,30 @@ impl StreamAsm {
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
-                let idx = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-                while self.tools.len() <= idx {
-                    self.tools.push(ToolAsm {
-                        id: String::new(),
-                        name: String::new(),
-                        args: String::new(),
-                        started: false,
-                    });
+                let idx = match call.get("index") {
+                    None | Some(Value::Null) => 0usize,
+                    Some(v) => match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+                        Some(n) => n,
+                        None => {
+                            emitted.push(Err(LlmError::MalformedOutput(
+                                "invalid tool_call index in stream".to_string(),
+                            )));
+                            return emitted;
+                        }
+                    },
+                };
+                if !self.tools.contains_key(&idx) && self.tools.len() >= MAX_STREAM_TOOL_CALLS {
+                    emitted.push(Err(LlmError::MalformedOutput(format!(
+                        "stream exceeded maximum of {MAX_STREAM_TOOL_CALLS} tool calls"
+                    ))));
+                    return emitted;
                 }
-                let slot = &mut self.tools[idx];
+                let slot = self.tools.entry(idx).or_insert_with(|| ToolAsm {
+                    id: String::new(),
+                    name: String::new(),
+                    args: String::new(),
+                    started: false,
+                });
                 if let Some(id) = call.get("id").and_then(Value::as_str)
                     && !id.is_empty()
                 {
@@ -377,7 +398,7 @@ impl StreamAsm {
         if !self.text.is_empty() {
             content.push(ContentBlock::Text { text: self.text });
         }
-        for t in self.tools {
+        for (_, t) in self.tools {
             content.push(ContentBlock::ToolUse {
                 id: t.id,
                 name: t.name,
@@ -515,7 +536,10 @@ fn parse_response(v: &Value) -> Result<CompletionResponse, LlmError> {
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
             let input: Value = serde_json::from_str(args_str).map_err(|e| {
-                LlmError::MalformedOutput(format!("tool arguments for {name:?}: {e}"))
+                LlmError::MalformedOutput(format!(
+                    "tool arguments for {:?}: {e}",
+                    http::snippet(&name)
+                ))
             })?;
             content.push(ContentBlock::ToolUse {
                 id: call

@@ -7201,6 +7201,11 @@ async fn held_receipt_rig() -> HeldReceiptRig {
         direct_actions: None,
     };
     let (staff_tx, _staff_rx) = mpsc::channel(STAFF_OPS_CAPACITY);
+    let (player_tx, _player_rx) = mpsc::channel(PLAYER_OPS_CAPACITY);
+    let staff_queues = StaffOpsQueues {
+        staff: staff_tx,
+        player: player_tx,
+    };
     let (_signal_tx, signal_rx) = writer_signal_channel();
     let metrics = Arc::new(Metrics::new());
     let (writer, writer_rx) = persist::test_store_writer_channel(Arc::clone(&metrics));
@@ -7214,7 +7219,7 @@ async fn held_receipt_rig() -> HeldReceiptRig {
         tx.downgrade(),
         writer,
         deps,
-        staff_tx,
+        staff_queues,
         gateway,
         Arc::new(AtomicU64::new(0)),
         signal_rx,
@@ -12880,9 +12885,15 @@ async fn run_staff_ops_never_blocks_on_full_queue_and_enforces_per_actor_cap() {
     let (writer, _writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
     let in_flight = StaffInFlight::default();
 
-    // Queue with capacity 3: Alice can only enqueue MAX_STAFF_OPS_PER_PLAYER (2)
+    // Player queue with capacity 3: Alice can only enqueue MAX_STAFF_OPS_PER_PLAYER (2)
     // before hitting her per-actor cap; her 3rd op is refused immediately.
-    let (staff_tx, mut staff_rx) = mpsc::channel(3);
+    let (staff_tx, _staff_rx) = mpsc::channel(3);
+    let (player_tx, mut player_rx) = mpsc::channel(3);
+    let queues = StaffOpsQueues {
+        staff: staff_tx,
+        player: player_tx,
+    };
+    let no_accounts = |_: ObjId| None;
     let ops = (0..3)
         .map(|_| StaffOp {
             actor: alice,
@@ -12890,9 +12901,19 @@ async fn run_staff_ops_never_blocks_on_full_queue_and_enforces_per_actor_cap() {
         })
         .collect();
     assert!(!run_staff_ops(
-        &deps, &world, &gateway, &writer, &staff_tx, &in_flight, ops
+        &deps,
+        &world,
+        no_accounts,
+        &gateway,
+        &writer,
+        &queues,
+        &in_flight,
+        ops
     ));
-    assert_eq!(in_flight.count(alice), MAX_STAFF_OPS_PER_PLAYER);
+    assert_eq!(
+        in_flight.count(StaffInFlightKey::Actor(alice)),
+        MAX_STAFF_OPS_PER_PLAYER
+    );
     {
         let sends = recorder.sends.lock().unwrap();
         assert!(
@@ -12903,29 +12924,31 @@ async fn run_staff_ops_never_blocks_on_full_queue_and_enforces_per_actor_cap() {
         );
     }
 
-    // Bob takes the 3rd and final slot in the bounded queue.
+    // Bob takes the 3rd and final slot in the bounded player queue.
     assert!(!run_staff_ops(
         &deps,
         &world,
+        no_accounts,
         &gateway,
         &writer,
-        &staff_tx,
+        &queues,
         &in_flight,
         vec![StaffOp {
             actor: bob,
             kind: StaffOpKind::DiscordStatus { actor: bob },
         }],
     ));
-    assert_eq!(in_flight.count(bob), 1);
+    assert_eq!(in_flight.count(StaffInFlightKey::Actor(bob)), 1);
 
-    // Carol tries while the queue is completely full: must NOT block, must emit
-    // "Server busy; please try again shortly.", and must NOT leak her permit.
+    // Carol tries while the player queue is completely full: must NOT block,
+    // must emit "Server busy; please try again shortly.", and must NOT leak her permit.
     assert!(!run_staff_ops(
         &deps,
         &world,
+        no_accounts,
         &gateway,
         &writer,
-        &staff_tx,
+        &queues,
         &in_flight,
         vec![StaffOp {
             actor: carol,
@@ -12933,7 +12956,7 @@ async fn run_staff_ops_never_blocks_on_full_queue_and_enforces_per_actor_cap() {
         }],
     ));
     assert_eq!(
-        in_flight.count(carol),
+        in_flight.count(StaffInFlightKey::Actor(carol)),
         0,
         "full-queue refusal must release the acquired permit"
     );
@@ -12948,9 +12971,9 @@ async fn run_staff_ops_never_blocks_on_full_queue_and_enforces_per_actor_cap() {
     }
 
     // Draining and dropping the queued items releases all permits via RAII Drop.
-    while staff_rx.try_recv().is_ok() {}
-    assert_eq!(in_flight.count(alice), 0);
-    assert_eq!(in_flight.count(bob), 0);
+    while player_rx.try_recv().is_ok() {}
+    assert_eq!(in_flight.count(StaffInFlightKey::Actor(alice)), 0);
+    assert_eq!(in_flight.count(StaffInFlightKey::Actor(bob)), 0);
 }
 
 #[tokio::test]
@@ -13260,6 +13283,7 @@ async fn demoted_wizard_queued_privileged_staff_ops_are_refused_at_execution() {
     });
 
     let (staff_tx, staff_rx) = mpsc::channel(32);
+    let (_player_tx, player_rx) = mpsc::channel(32);
     let recorder = Arc::new(RecordingGateway::default());
     let gateway: Gateway = recorder.clone();
     let loop_join = tokio::spawn(staff_ops_loop(
@@ -13267,13 +13291,18 @@ async fn demoted_wizard_queued_privileged_staff_ops_are_refused_at_execution() {
         guard.clone(),
         weak,
         staff_rx,
+        player_rx,
         gateway,
     ));
 
     let (writer, mut writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
     let in_flight = StaffInFlight::default();
     let demoted = ObjId(42);
-    let make_permit = || in_flight.try_acquire(demoted, 32).unwrap();
+    let make_permit = || {
+        in_flight
+            .try_acquire(StaffInFlightKey::Actor(demoted), 32)
+            .unwrap()
+    };
 
     let privileged_ops = vec![
         StaffOpKind::SetBan {
@@ -13331,6 +13360,7 @@ async fn demoted_wizard_queued_privileged_staff_ops_are_refused_at_execution() {
         .unwrap();
 
     drop(staff_tx);
+    drop(_player_tx);
     loop_join.await.unwrap();
     drop(world_tx);
     let checks = responder.await.unwrap();
@@ -13360,5 +13390,303 @@ async fn demoted_wizard_queued_privileged_staff_ops_are_refused_at_execution() {
     assert!(acct.discord.is_some());
     assert!(store.discord_ban_get(777_001).await.unwrap().is_none());
     assert!(store.discord_ban_get(777_002).await.unwrap().is_some());
-    assert_eq!(in_flight.count(demoted), 0, "all permits released");
+    assert_eq!(
+        in_flight.count(StaffInFlightKey::Actor(demoted)),
+        0,
+        "all permits released"
+    );
+}
+
+#[tokio::test]
+async fn player_self_service_flood_never_starves_wizard_moderation_and_caps_by_account() {
+    let mut world = World::new_minimal();
+    let alt_a1 = world
+        .create(ObjKind::Player, "AltA1", GOD, Some(LIMBO))
+        .unwrap();
+    let alt_a2 = world
+        .create(ObjKind::Player, "AltA2", GOD, Some(LIMBO))
+        .unwrap();
+    let alt_a3 = world
+        .create(ObjKind::Player, "AltA3", GOD, Some(LIMBO))
+        .unwrap();
+    let bob = world
+        .create(ObjKind::Player, "BobPlayer", GOD, Some(LIMBO))
+        .unwrap();
+    let unmapped = world
+        .create(ObjKind::Player, "Unmapped", GOD, Some(LIMBO))
+        .unwrap();
+    let wiz = world
+        .create(ObjKind::Player, "ModWizard", GOD, Some(LIMBO))
+        .unwrap();
+    world.set_flag(wiz, Flags::WIZARD, true).unwrap();
+
+    let acct_a = mush_core::AccountId::mint("multi_alt_acct", 100).unwrap();
+    let acct_b = mush_core::AccountId::mint("bob_acct", 101).unwrap();
+    let acct_wiz = mush_core::AccountId::mint("mod_wizard", 102).unwrap();
+    let account_of = move |id: ObjId| -> Option<mush_core::AccountId> {
+        if id == alt_a1 || id == alt_a2 || id == alt_a3 {
+            Some(acct_a)
+        } else if id == bob {
+            Some(acct_b)
+        } else if id == wiz {
+            Some(acct_wiz)
+        } else {
+            None
+        }
+    };
+
+    let deps = ServerDeps::in_memory();
+    let recorder = Arc::new(RecordingGateway::default());
+    let gateway: Gateway = recorder.clone();
+    let (writer, _writer_rx) = persist::test_store_writer_channel(Arc::new(Metrics::new()));
+    let in_flight = StaffInFlight::default();
+
+    // Small player lane (capacity 3) vs dedicated staff lane (capacity 4).
+    let (staff_tx, mut staff_rx) = mpsc::channel(4);
+    let (player_tx, mut player_rx) = mpsc::channel(3);
+    let queues = StaffOpsQueues {
+        staff: staff_tx,
+        player: player_tx,
+    };
+
+    // 1. Multi-alt AccountId sharing: AltA1 + AltA2 together consume both of
+    //    acct_a's MAX_STAFF_OPS_PER_PLAYER (2) slots; AltA3 on the SAME account
+    //    must be refused with "Too many pending requests".
+    assert!(!run_staff_ops(
+        &deps,
+        &world,
+        account_of,
+        &gateway,
+        &writer,
+        &queues,
+        &in_flight,
+        vec![
+            StaffOp {
+                actor: alt_a1,
+                kind: StaffOpKind::ListSshKeys { actor: alt_a1 },
+            },
+            StaffOp {
+                actor: alt_a2,
+                kind: StaffOpKind::DiscordStatus { actor: alt_a2 },
+            },
+            StaffOp {
+                actor: alt_a3,
+                kind: StaffOpKind::NewChar {
+                    actor: alt_a3,
+                    name: "AltA4".into(),
+                    max_characters: 5,
+                },
+            },
+        ],
+    ));
+    assert_eq!(
+        in_flight.count(StaffInFlightKey::Account(acct_a)),
+        MAX_STAFF_OPS_PER_PLAYER
+    );
+    {
+        let sends = recorder.sends.lock().unwrap();
+        assert!(
+            sends
+                .iter()
+                .any(|(t, e)| *t == SendTarget::Char(u64::from(alt_a3.0))
+                    && format!("{e:?}").contains("Too many pending requests")),
+            "3rd op across alts of same AccountId must be capped: {sends:?}"
+        );
+    }
+
+    // 2. Bob fills the 3rd and final slot of the player queue; unmapped player
+    //    falls back to ObjId key and hits the full player queue ("Server busy").
+    assert!(!run_staff_ops(
+        &deps,
+        &world,
+        account_of,
+        &gateway,
+        &writer,
+        &queues,
+        &in_flight,
+        vec![
+            StaffOp {
+                actor: bob,
+                kind: StaffOpKind::DiscordLinkMint { actor: bob },
+            },
+            StaffOp {
+                actor: unmapped,
+                kind: StaffOpKind::DiscordStatus { actor: unmapped },
+            },
+        ],
+    ));
+    assert_eq!(in_flight.count(StaffInFlightKey::Account(acct_b)), 1);
+    assert_eq!(in_flight.count(StaffInFlightKey::Actor(unmapped)), 0);
+    {
+        let sends = recorder.sends.lock().unwrap();
+        assert!(
+            sends
+                .iter()
+                .any(|(t, e)| *t == SendTarget::Char(u64::from(unmapped.0))
+                    && format!("{e:?}").contains("Server busy")),
+            "saturated player queue must reject additional player ops: {sends:?}"
+        );
+    }
+
+    // 3. Even while the player queue is 100% saturated, Wizard moderation ops
+    //    enqueue cleanly on the isolated high-priority staff channel.
+    assert!(!run_staff_ops(
+        &deps,
+        &world,
+        account_of,
+        &gateway,
+        &writer,
+        &queues,
+        &in_flight,
+        vec![
+            StaffOp {
+                actor: wiz,
+                kind: StaffOpKind::SetBan {
+                    ip: "198.51.100.7".parse().unwrap(),
+                    until_unix: None,
+                    reason: "flood".into(),
+                },
+            },
+            StaffOp {
+                actor: wiz,
+                kind: StaffOpKind::ListBans,
+            },
+            StaffOp {
+                actor: wiz,
+                kind: StaffOpKind::Dump,
+            },
+        ],
+    ));
+    assert_eq!(in_flight.count(StaffInFlightKey::Account(acct_wiz)), 3);
+
+    // Drain both queues cleanly and confirm all permits release.
+    let mut staff_count = 0;
+    while staff_rx.try_recv().is_ok() {
+        staff_count += 1;
+    }
+    let mut player_count = 0;
+    while player_rx.try_recv().is_ok() {
+        player_count += 1;
+    }
+    assert_eq!(
+        staff_count, 3,
+        "all 3 Wizard moderation ops queued on staff lane"
+    );
+    assert_eq!(
+        player_count, 3,
+        "player self-service ops stayed isolated on player lane"
+    );
+    assert_eq!(in_flight.count(StaffInFlightKey::Account(acct_a)), 0);
+    assert_eq!(in_flight.count(StaffInFlightKey::Account(acct_b)), 0);
+    assert_eq!(in_flight.count(StaffInFlightKey::Account(acct_wiz)), 0);
+}
+
+#[tokio::test]
+async fn staff_ops_loop_prioritizes_wizard_lane_over_backlogged_player_lane() {
+    let store = Arc::new(InMemoryStore::new());
+    let guard = Arc::new(IpGuard::new());
+
+    let (world_tx, mut world_rx) = mpsc::channel::<WorldMsg>(16);
+    let weak = world_tx.downgrade();
+    let responder = tokio::spawn(async move {
+        while let Some(msg) = world_rx.recv().await {
+            if let WorldMsg::RecheckStaffRole { reply, .. } = msg {
+                let _ = reply.send(Ok(true));
+            }
+        }
+    });
+
+    let (staff_tx, staff_rx) = mpsc::channel(8);
+    let (player_tx, player_rx) = mpsc::channel(8);
+    let in_flight = StaffInFlight::default();
+    let player_a = ObjId(10);
+    let player_b = ObjId(11);
+    let wiz = ObjId(1);
+
+    // Pre-fill the player lane BEFORE queuing the Wizard op on the staff lane,
+    // then start `staff_ops_loop`: `biased;` select must execute the Wizard op
+    // first ahead of all backlogged player self-service ops.
+    player_tx
+        .send(StaffWork::Op {
+            op: StaffOp {
+                actor: player_a,
+                kind: StaffOpKind::DiscordStatus { actor: player_a },
+            },
+            permit: in_flight
+                .try_acquire(StaffInFlightKey::Actor(player_a), 4)
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+    player_tx
+        .send(StaffWork::Op {
+            op: StaffOp {
+                actor: player_b,
+                kind: StaffOpKind::ListSshKeys { actor: player_b },
+            },
+            permit: in_flight
+                .try_acquire(StaffInFlightKey::Actor(player_b), 4)
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+    staff_tx
+        .send(StaffWork::Op {
+            op: StaffOp {
+                actor: wiz,
+                kind: StaffOpKind::SetBan {
+                    ip: "203.0.113.9".parse().unwrap(),
+                    until_unix: None,
+                    reason: "priority check".into(),
+                },
+            },
+            permit: in_flight
+                .try_acquire(StaffInFlightKey::Actor(wiz), 8)
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+
+    // Also enqueue a barrier on the player lane behind the player ops to prove
+    // it completes only after BOTH lanes drain.
+    let (barrier_tx, barrier_rx) = oneshot::channel();
+    player_tx
+        .send(StaffWork::Barrier(barrier_tx))
+        .await
+        .unwrap();
+
+    let recorder = Arc::new(RecordingGateway::default());
+    let gateway: Gateway = recorder.clone();
+    let loop_join = tokio::spawn(staff_ops_loop(
+        store.clone(),
+        guard.clone(),
+        weak,
+        staff_rx,
+        player_rx,
+        gateway,
+    ));
+
+    barrier_rx.await.unwrap().unwrap();
+    drop(staff_tx);
+    drop(player_tx);
+    loop_join.await.unwrap();
+    drop(world_tx);
+    responder.await.unwrap();
+
+    let targets: Vec<SendTarget> = recorder
+        .sends
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(t, _)| t.clone())
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            SendTarget::Char(u64::from(wiz.0)),
+            SendTarget::Char(u64::from(player_a.0)),
+            SendTarget::Char(u64::from(player_b.0)),
+        ],
+        "Wizard moderation op must run ahead of backlogged player self-service ops"
+    );
 }

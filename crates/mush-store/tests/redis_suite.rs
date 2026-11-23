@@ -1351,6 +1351,76 @@ redis_gated!(authoritative_epoch_retirement_is_watermark_first, store, {
             .retired_tombstones,
         1
     );
+
+    // P2-CORE-23: quarantined intents block epoch retirement, and restoring a
+    // quarantined intent whose epoch is already below the minimum watermark is
+    // refused atomically by restore_authoritative.lua.
+    let quarantined = authoritative_bundle_for_epoch(15, 25, 2);
+    let q_token = quarantined.token();
+    let q_hash = quarantined.bundle_hash();
+    let evidence_hash = CanonicalHash::from_bytes([0x7d; 32]);
+    store
+        .reserve_authoritative_intent(quarantined.clone())
+        .await
+        .expect("reserve quarantined bundle");
+    store
+        .discard_quarantined_authoritative_intent(q_token, q_hash, evidence_hash)
+        .await
+        .expect("discard to quarantine");
+    assert!(matches!(
+        store.retire_authoritative_epochs(&scope, 3).await,
+        Err(StoreError::AuthoritativeEpochPending {
+            requested_minimum_epoch: 3,
+            retained_intents: 1,
+        })
+    ));
+    let scope_digest = CanonicalHash::for_canonical_value(
+        "authoritative_idempotency_scope.v1",
+        1,
+        &serde_json::to_value(&scope).unwrap(),
+        64 * 1024,
+    )
+    .unwrap();
+    let min_key = format!("auth:min_epoch:{scope_digest}");
+    store
+        .client()
+        .set::<(), _, _>(&min_key, "3", None, None, false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .restore_quarantined_authoritative_intent(quarantined.clone(), evidence_hash)
+            .await,
+        Err(StoreError::AuthoritativeEpochRetired {
+            requested_epoch: 2,
+            minimum_accepted_epoch: 3,
+        })
+    ));
+    store
+        .client()
+        .set::<(), _, _>(&min_key, "2", None, None, false)
+        .await
+        .unwrap();
+    store
+        .restore_quarantined_authoritative_intent(quarantined, evidence_hash)
+        .await
+        .expect("restore when epoch >= minimum_accepted_epoch");
+    store
+        .reconcile_authoritative(q_token, q_hash)
+        .await
+        .expect("finalize restored bundle");
+    store
+        .checkpoint_authoritative(q_token, q_hash)
+        .await
+        .expect("checkpoint restored bundle");
+    assert_eq!(
+        store
+            .retire_authoritative_epochs(&scope, 3)
+            .await
+            .expect("retire epoch 2 after quarantine resolved")
+            .retired_tombstones,
+        1
+    );
 });
 
 redis_gated!(

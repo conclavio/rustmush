@@ -5605,6 +5605,20 @@ pub fn check_move_attempt(
     )
 }
 
+/// Consult a pre-snapshotted slice of `MoveAttempt` hooks with an explicit
+/// [`TypedStateLens`](crate::TypedStateLens) (used by `mush-script` so
+/// `mush::move` evaluates hooks against live typed state; P2-CORE-12).
+pub fn check_move_attempt_hooks(
+    hooks: &[HookReg],
+    w: &World,
+    actor: ObjId,
+    exit: Option<ObjId>,
+    dest: ObjId,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Result<(), RichText> {
+    check_move_attempt_via(hooks, w, actor, exit, dest, lens)
+}
+
 /// The one ordinary movement-hook loop, also used by inert admission with the
 /// actual registered slice. No structural-transition exemption is attached.
 pub(crate) fn check_move_attempt_via(
@@ -5633,7 +5647,27 @@ pub fn check_carry_attempt(
     dest: ObjId,
     lens: crate::action_state::TypedStateLens<'_>,
 ) -> Result<(), RichText> {
-    for h in reg.hooks(HookPoint::CarryAttempt) {
+    check_carry_attempt_hooks(
+        reg.hooks(HookPoint::CarryAttempt),
+        w,
+        mover,
+        obj,
+        dest,
+        lens,
+    )
+}
+
+/// Consult a pre-snapshotted slice of `CarryAttempt` hooks with an explicit
+/// [`TypedStateLens`](crate::TypedStateLens) (P2-CORE-12).
+pub fn check_carry_attempt_hooks(
+    hooks: &[HookReg],
+    w: &World,
+    mover: ObjId,
+    obj: ObjId,
+    dest: ObjId,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Result<(), RichText> {
+    for h in hooks {
         let ctx = HookReadContext::for_module(w, lens, &h.module);
         h.hook.carry_attempt(&ctx, mover, obj, dest)?;
     }

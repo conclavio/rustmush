@@ -68,10 +68,11 @@ impl AnthropicProvider {
                 )));
             }
         }
+        let base_url = http::validate_base_url(&cfg.base_url)?;
         Ok(AnthropicProvider {
             id: id.into(),
             client: http::client()?,
-            base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            base_url,
             api_key,
             version: cfg
                 .anthropic_version

@@ -4024,3 +4024,60 @@ fn vf_provenance_tripwire_no_production_writer_yet() {
          tell a phantom from a real contact) — extend i8_k2 to prove it"
     );
 }
+
+#[test]
+fn p2_core_19_order_and_ack_enforce_admission_when_routing_disabled() {
+    let (mut tw, fx) = scene();
+    assert!(
+        !mush_propagation::routing::enabled(tw.world()),
+        "regression fixture must exercise the routing-disabled path"
+    );
+
+    // 1. `+order` enforces `MAX_PRINCIPAL_PENDING` even with strategic routing disabled.
+    for i in 0..mush_propagation::admission::MAX_PRINCIPAL_PENDING {
+        ok(&mut tw, fx.ann, &format!("+order #{}=plan {i}", fx.bob.0));
+    }
+    let refused = err(&mut tw, fx.ann, &format!("+order #{}=overflow", fx.bob.0));
+    assert!(!refused.is_empty());
+
+    // Another principal (`bob`) is unaffected by `ann`'s per-principal cap.
+    ok(
+        &mut tw,
+        fx.bob,
+        &format!("+order #{}=counter-order", fx.ann.0),
+    );
+
+    // 2. `+orders/ack` enforces `MAX_PRINCIPAL_CONTROL_PENDING` when routing is disabled.
+    let at = stamp(&tw);
+    let mut store = book(&tw);
+    let mut delivered_ids = Vec::new();
+    for idx in 0..=mush_propagation::admission::MAX_PRINCIPAL_CONTROL_PENDING {
+        let id = store.alloc_envelope().unwrap();
+        let env = Envelope::issue(
+            id,
+            fx.ann,
+            fx.bob,
+            format!("deliver {idx}"),
+            (idx + 100) as u32,
+            at.clone(),
+        )
+        .unwrap()
+        .in_state(EnvelopeState::Delivered, at.clone());
+        store.put_envelope(env).unwrap();
+        delivered_ids.push(id);
+    }
+    set_book(&mut tw, store);
+
+    for &id in &delivered_ids[..mush_propagation::admission::MAX_PRINCIPAL_CONTROL_PENDING] {
+        ok(&mut tw, fx.bob, &format!("+orders/ack {id}"));
+    }
+    let ack_refused = err(
+        &mut tw,
+        fx.bob,
+        &format!(
+            "+orders/ack {}",
+            delivered_ids[mush_propagation::admission::MAX_PRINCIPAL_CONTROL_PENDING]
+        ),
+    );
+    assert!(!ack_refused.is_empty());
+}

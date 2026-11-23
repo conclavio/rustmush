@@ -24,7 +24,7 @@ use std::sync::Arc;
 use mush_proto::{OutputEvent, RichText};
 
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
-use crate::flags::Role;
+use crate::flags::{Flags, Powers, Role};
 use crate::obj::ObjId;
 use crate::output::display_name;
 use crate::perm;
@@ -123,18 +123,53 @@ fn save_ignore_list(ctx: &mut Ctx<'_>, mut ids: Vec<ObjId>) -> Result<(), CmdErr
 
 /// Resolve an `@ignore` target: `*name`/name via the global player index,
 /// or a `#dbref` naming an actor.
-fn resolve_actor(w: &World, raw: &str) -> Result<ObjId, CmdError> {
+///
+/// For non-staff actors, `#dbref` resolution refuses unviewable, remote,
+/// `DARK`, `GOING`, or `Perceive`-cloaked targets with the exact same
+/// `"I don't recognize that player."` error as an unknown id, preventing
+/// `#0..#N` name and staff-role enumeration (P2-CORE-13). Entries already on
+/// the caller's own mute list remain removable via `@ignore/clear #<id>`.
+fn resolve_actor(ctx: &Ctx<'_>, raw: &str, already_ignored: &[ObjId]) -> Result<ObjId, CmdError> {
     let q = raw.trim();
+    let staff = perm::has_role(ctx.w, ctx.actor, Role::Wizard)
+        || perm::has_power(ctx.w, ctx.actor, Powers::SEE_HIDDEN);
     if let Ok(id) = q.parse::<ObjId>() {
-        return if w.get(id).is_some_and(|o| o.kind.is_actor()) {
-            Ok(id)
-        } else {
-            Err(CmdError::msg("I don't recognize that player."))
+        if already_ignored.contains(&id) {
+            return Ok(id);
+        }
+        let Some(o) = ctx.w.get(id) else {
+            return Err(CmdError::msg("I don't recognize that player."));
         };
+        if !o.kind.is_actor() || o.flags.contains(Flags::GOING) {
+            return Err(CmdError::msg("I don't recognize that player."));
+        }
+        if !staff && id != ctx.actor && !perm::controls(ctx.w, ctx.actor, id) {
+            let my_loc = ctx.w.get(ctx.actor).and_then(|a| a.location);
+            let visible_here = super::target_visible_here(
+                ctx.reg,
+                ctx.w,
+                ctx.actor,
+                id,
+                my_loc,
+                ctx.typed_state.lens(),
+            );
+            if !visible_here {
+                return Err(CmdError::msg("I don't recognize that player."));
+            }
+        }
+        return Ok(id);
     }
     let name = q.strip_prefix('*').unwrap_or(q);
-    w.resolve_player(name)
-        .ok_or_else(|| CmdError::msg("I don't recognize that player."))
+    let id = ctx
+        .w
+        .resolve_player(name)
+        .ok_or_else(|| CmdError::msg("I don't recognize that player."))?;
+    if !already_ignored.contains(&id)
+        && ctx.w.get(id).is_none_or(|o| o.flags.contains(Flags::GOING))
+    {
+        return Err(CmdError::msg("I don't recognize that player."));
+    }
+    Ok(id)
 }
 
 /// Render one mute-list entry: the live name, or the bare dbref for a
@@ -177,7 +212,7 @@ fn ignore_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
             return Ok(());
         }
-        let target = resolve_actor(ctx.w, &raw)?;
+        let target = resolve_actor(ctx, &raw, &ids)?;
         let name = entry_name(ctx.w, target);
         if !ids.contains(&target) {
             return Err(CmdError::msg(format!("You are not ignoring {name}.")));
@@ -192,7 +227,7 @@ fn ignore_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         list_ignored(ctx);
         return Ok(());
     }
-    let target = resolve_actor(ctx.w, &raw)?;
+    let target = resolve_actor(ctx, &raw, &[])?;
     if target == ctx.actor {
         return Err(CmdError::msg("You can't ignore yourself."));
     }
@@ -273,7 +308,6 @@ mod tests {
 
     use super::*;
     use crate::cmd::dispatch;
-    use crate::flags::Flags;
     use crate::obj::{GOD, LIMBO, ObjKind};
     use crate::output::{Audience, Outbox};
 

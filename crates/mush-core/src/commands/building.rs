@@ -68,9 +68,51 @@ fn check_exit_words(reg: &Registry, spec: &str) -> Result<(), CmdError> {
     Ok(())
 }
 
+/// Validate an exit name specification (`"north;n;nor"`) completely BEFORE
+/// allocating any object (P2-CORE-16): non-empty primary name, alias count
+/// within [`MAX_ALIASES_PER_OBJECT`](crate::world::MAX_ALIASES_PER_OBJECT),
+/// [`validate_object_name_part`](crate::world::validate_object_name_part) on
+/// every segment, and [`check_exit_words`] against kernel/host commands.
+fn validate_exit_spec(reg: &Registry, spec: &str) -> Result<(String, Vec<String>), CmdError> {
+    let mut segs = spec.split(';').map(str::trim).filter(|s| !s.is_empty());
+    let name = segs
+        .next()
+        .ok_or_else(|| CmdError::msg("Open which exit?"))?
+        .to_string();
+    let aliases: Vec<String> = segs.map(str::to_string).collect();
+    if aliases.len() > crate::world::MAX_ALIASES_PER_OBJECT {
+        return Err(CmdError::msg(format!(
+            "Too many aliases (maximum {}).",
+            crate::world::MAX_ALIASES_PER_OBJECT
+        )));
+    }
+    crate::world::validate_object_name_part(&name).map_err(CmdError::msg)?;
+    for a in &aliases {
+        crate::world::validate_object_name_part(a).map_err(CmdError::msg)?;
+    }
+    check_exit_words(reg, spec)?;
+    Ok((name, aliases))
+}
+
+/// Enforce the per-owner live object quota for non-staff builders before
+/// allocating `additional` objects (P2-CORE-20). Wizards and God are exempt.
+fn check_builder_quota(w: &World, actor: ObjId, additional: usize) -> Result<(), CmdError> {
+    if perm::has_role(w, actor, Role::Wizard) {
+        return Ok(());
+    }
+    let cap = w.builder_object_quota();
+    if w.owned_object_count(actor).saturating_add(additional) > cap {
+        return Err(CmdError::msg(format!(
+            "Object quota exceeded (maximum {cap} objects)."
+        )));
+    }
+    Ok(())
+}
+
 /// Create an exit named by `spec` (`"north;n;nor"`) from `src`, owned by
-/// `owner`, optionally linked to `dest`. Returns the new exit. The caller has
-/// run [`check_exit_words`] over `spec` first.
+/// `owner`, optionally linked to `dest`. Returns the new exit. Validates all
+/// name segments and the alias count BEFORE allocating any object (P2-CORE-16);
+/// callers also run [`check_exit_words`] / [`validate_exit_spec`] first.
 fn open_exit(
     w: &mut World,
     owner: ObjId,
@@ -84,6 +126,16 @@ fn open_exit(
         .ok_or_else(|| CmdError::msg("Open which exit?"))?
         .to_string();
     let aliases: Vec<String> = segs.map(str::to_string).collect();
+    if aliases.len() > crate::world::MAX_ALIASES_PER_OBJECT {
+        return Err(CmdError::msg(format!(
+            "Too many aliases (maximum {}).",
+            crate::world::MAX_ALIASES_PER_OBJECT
+        )));
+    }
+    crate::world::validate_object_name_part(&name).map_err(CmdError::msg)?;
+    for a in &aliases {
+        crate::world::validate_object_name_part(a).map_err(CmdError::msg)?;
+    }
     let exit = w.create(ObjKind::Exit, &name, owner, Some(src))?;
     for a in aliases {
         w.add_alias(exit, &a)?;
@@ -99,6 +151,8 @@ fn create_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if name.is_empty() {
         return Err(CmdError::msg("Create what?"));
     }
+    crate::world::validate_object_name_part(&name).map_err(CmdError::msg)?;
+    check_builder_quota(ctx.w, ctx.actor, 1)?;
     let thing = ctx
         .w
         .create(ObjKind::Thing, &name, ctx.actor, Some(ctx.actor))?;
@@ -117,26 +171,21 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if name.is_empty() {
         return Err(CmdError::msg("Dig what?"));
     }
+    crate::world::validate_object_name_part(&name).map_err(CmdError::msg)?;
     let exit_specs: Vec<String> = ctx.args.rhs_list().to_vec();
-    // Validate every fallible prerequisite before allocating the room. Command
-    // handlers run under an output/deferred checkpoint, not a World rollback;
-    // returning Err after `create` would otherwise leave a dirty, silently
-    // persisted room while reporting only the later permission error.
+    // Validate every fallible prerequisite (exit names, alias counts, kernel
+    // words, room control, and builder quota) BEFORE allocating the room or any
+    // exit. Command handlers run under an output/deferred checkpoint, not a
+    // World rollback; returning Err after `create` would otherwise leave a
+    // dirty, silently persisted object while reporting only the later error.
     let exit_source = if exit_specs.is_empty() {
         None
     } else {
-        if exit_specs.iter().any(|spec| {
-            !spec
-                .split(';')
-                .map(str::trim)
-                .any(|segment| !segment.is_empty())
-        }) {
-            return Err(CmdError::msg("Open which exit?"));
-        }
-        // 16c B-75 (cut AQ): neither exit may take a kernel or host word, and the
-        // room is not made for one that would.
+        // 16c B-75 (cut AQ) + P2-CORE-16: validate every exit's primary name,
+        // aliases, alias count, and kernel/host word collisions before any
+        // object is created.
         for spec in &exit_specs {
-            check_exit_words(ctx.reg, spec)?;
+            validate_exit_spec(ctx.reg, spec)?;
         }
         let here = ctx
             .w
@@ -150,6 +199,8 @@ fn dig_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         Some(here)
     };
+    let objects_needed = 1 + exit_specs.len().min(2);
+    check_builder_quota(ctx.w, ctx.actor, objects_needed)?;
     let room = ctx.w.create(ObjKind::Room, &name, ctx.actor, None)?;
     ctx.out.info(
         ctx.actor,
@@ -219,8 +270,9 @@ fn open_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if !perm::controls(ctx.w, ctx.actor, here) {
         return Err(perm_denied());
     }
-    // 16c B-75 (cut AQ): the exit may not take a kernel or host word.
-    check_exit_words(ctx.reg, &spec)?;
+    // 16c B-75 (cut AQ) + P2-CORE-16: validate primary name, aliases, alias
+    // count, and kernel/host word collisions before creating anything.
+    validate_exit_spec(ctx.reg, &spec)?;
     let dest = match ctx.args.rhs().map(str::to_string).filter(|s| !s.is_empty()) {
         Some(d) => {
             let dest = match_object(ctx.w, ctx.actor, &d)?;
@@ -231,6 +283,7 @@ fn open_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         None => None,
     };
+    check_builder_quota(ctx.w, ctx.actor, 1)?;
     let exit = open_exit(ctx.w, ctx.actor, here, &spec, dest)?;
     ctx.out.info(ctx.actor, format!("Opened. ({exit})"));
     ctx.emit_world_event(&WorldEvent::ObjCreated {
@@ -665,6 +718,14 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some(d) => (match_object(ctx.w, ctx.actor, &lhs)?, d),
         None => (ctx.actor, lhs),
     };
+    let target_kind = ctx
+        .w
+        .get(target)
+        .map(|o| o.kind)
+        .ok_or(crate::matchit::MatchErr::NoMatch)?;
+    if target_kind == ObjKind::Room {
+        return Err(CmdError::msg("You can't teleport a room."));
+    }
     let raw_dest = match_object(ctx.w, ctx.actor, &dest_name)?;
     // Teleporting "to" an object means its location; to a room, the room.
     let dest = match ctx.w.get(raw_dest).map(|o| (o.kind, o.location)) {
@@ -675,6 +736,12 @@ fn teleport_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         Some((_, Some(loc))) => loc,
         _ => return Err(CmdError::msg("You can't go there.")),
     };
+    // Actors and exits may only be teleported into rooms (P2-CORE-12).
+    if (target_kind.is_actor() || target_kind == ObjKind::Exit)
+        && ctx.w.get(dest).is_none_or(|o| o.kind != ObjKind::Room)
+    {
+        return Err(CmdError::msg("You can't go there."));
+    }
     if !perm::can_teleport(ctx.w, ctx.actor, target, dest) {
         return Err(perm_denied());
     }

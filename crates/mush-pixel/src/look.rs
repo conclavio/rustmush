@@ -41,6 +41,13 @@ pub const DOLL_MAX_W: usize = 24;
 pub const DOLL_MAX_H: usize = 16;
 /// The largest sprite frame, pixels a side (doc 22 D-22-9: 96x96 frames).
 pub const SPRITE_MAX: usize = 96;
+/// Maximum `size_cm` dimension (width or height) accepted by [`Look::parse`]
+/// (1 km, well above every unit silhouette while keeping downstream scale
+/// arithmetic strictly overflow-free; P2-CLIENT-14).
+pub const MAX_SIZE_CM: u32 = 100_000;
+/// Maximum runtime-installed looks retained in process memory by [`install`]
+/// (P2-CLIENT-15).
+pub const MAX_RUNTIME_LOOKS: usize = 512;
 /// The reserved unit id of the look an unclassified contact is drawn with.
 pub const UNKNOWN: &str = "unknown";
 
@@ -564,9 +571,12 @@ impl Look {
         if cw == 0 || ch == 0 {
             return err("look: `size_cm` must not be zero");
         }
+        if cw > u64::from(MAX_SIZE_CM) || ch > u64::from(MAX_SIZE_CM) {
+            return err(format!("look: `size_cm` must be at most {MAX_SIZE_CM} cm"));
+        }
         let size_cm = (
-            u32::try_from(cw).unwrap_or(u32::MAX),
-            u32::try_from(ch).unwrap_or(u32::MAX),
+            u32::try_from(cw).unwrap_or(MAX_SIZE_CM),
+            u32::try_from(ch).unwrap_or(MAX_SIZE_CM),
         );
         let short = string(obj, "short", "look")?;
         let mut weapons = BTreeMap::new();
@@ -950,20 +960,36 @@ fn runtime() -> Vec<&'static Look> {
 ///
 /// # Errors
 ///
-/// [`LookError`] when the look does not parse, or does not name `unit`.
+/// [`LookError`] when the look does not parse, does not name `unit`, or
+/// installing it would exceed [`MAX_RUNTIME_LOOKS`].
 pub fn install(unit: &str, text: &str) -> Result<bool, LookError> {
     let mut look = Look::parse(text)?;
     if !look.units.iter().any(|u| u == unit) {
         return err(format!("look: it draws {:?}, not {unit}", look.units));
     }
-    if for_unit(unit).is_some() {
+    if shipped().iter().any(|l| l.units.iter().any(|u| u == unit)) {
         return Ok(false);
     }
     look.id = unit.to_string();
-    RUNTIME
+    let mut guard = RUNTIME
         .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(Box::leak(Box::new(look)));
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    insert_runtime_look(&mut guard, MAX_RUNTIME_LOOKS, unit, look)
+}
+
+fn insert_runtime_look(
+    runtime: &mut Vec<&'static Look>,
+    cap: usize,
+    unit: &str,
+    look: Look,
+) -> Result<bool, LookError> {
+    if runtime.iter().any(|l| l.units.iter().any(|u| u == unit)) {
+        return Ok(false);
+    }
+    if runtime.len() >= cap {
+        return err(format!("look: runtime look limit ({cap}) reached"));
+    }
+    runtime.push(Box::leak(Box::new(look)));
     Ok(true)
 }
 
@@ -1327,5 +1353,52 @@ mod tests {
         );
         assert_eq!(of("right_track", None), Some((0, 24)), "destroyed");
         assert_eq!(of("left_track", None), Some((6, 24)));
+    }
+
+    #[test]
+    fn parse_bounds_size_cm_and_runtime_install_is_capped() {
+        let too_wide = format!(
+            r#"{{"units":["u"],"label":"U","short":"U","size_cm":[{},100]}}"#,
+            u64::from(MAX_SIZE_CM) + 1
+        );
+        assert!(Look::parse(&too_wide).is_err());
+        let too_tall = format!(
+            r#"{{"units":["u"],"label":"U","short":"U","size_cm":[100,{}]}}"#,
+            u64::MAX
+        );
+        assert!(Look::parse(&too_tall).is_err());
+        let at_cap = format!(
+            r#"{{"units":["u"],"label":"U","short":"U","size_cm":[{MAX_SIZE_CM},{MAX_SIZE_CM}]}}"#
+        );
+        let ok = Look::parse(&at_cap).expect("MAX_SIZE_CM is accepted");
+        assert_eq!(ok.size_cm, (MAX_SIZE_CM, MAX_SIZE_CM));
+
+        // Runtime look installation enforces the cap and deduplicates under lock.
+        let mut table: Vec<&'static Look> = Vec::new();
+        let make_look = |unit: &str| {
+            let text =
+                format!(r#"{{"units":["{unit}"],"label":"L","short":"S","size_cm":[200,200]}}"#);
+            let mut look = Look::parse(&text).expect("valid look");
+            look.id = unit.to_string();
+            look
+        };
+        assert_eq!(
+            insert_runtime_look(&mut table, 2, "test.cap.a", make_look("test.cap.a")),
+            Ok(true)
+        );
+        // Re-installing the same unit is a no-op and does not leak or consume capacity.
+        assert_eq!(
+            insert_runtime_look(&mut table, 2, "test.cap.a", make_look("test.cap.a")),
+            Ok(false)
+        );
+        assert_eq!(table.len(), 1);
+        assert_eq!(
+            insert_runtime_look(&mut table, 2, "test.cap.b", make_look("test.cap.b")),
+            Ok(true)
+        );
+        assert_eq!(table.len(), 2);
+        // Third distinct unit hits the cap and is refused cleanly.
+        assert!(insert_runtime_look(&mut table, 2, "test.cap.c", make_look("test.cap.c")).is_err());
+        assert_eq!(table.len(), 2);
     }
 }

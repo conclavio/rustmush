@@ -10,6 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_PURCHASES: usize = 256;
 pub const MAX_SETTLEMENTS: usize = 8;
+/// Maximum live (`Phase::Quoted | Phase::Reserved`) purchase rows per actor.
+pub const MAX_ACTOR_LIVE_PURCHASES: usize = 32;
+/// Maximum unreserved (`Phase::Quoted`) purchase rows per actor (`P2-CORE-18`).
+/// Kept well below [`MAX_PURCHASES`] so zero-balance actors cannot saturate the
+/// global purchase table with free quotes.
+pub const MAX_ACTOR_UNRESERVED_QUOTES: usize = 4;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tariff {
@@ -151,13 +157,26 @@ fn bytes(e: &Envelope) -> u32 {
         .map_or(e.payload().len() as u32, |d| d.bytes)
 }
 fn pending(e: &Envelope) -> bool {
-    !e.state().is_terminal()
+    matches!(
+        e.state(),
+        crate::EnvelopeState::Queued | crate::EnvelopeState::Transmitted
+    )
 }
 fn unspent(e: &Envelope) -> bool {
     pending(e)
         && e.path().is_empty()
         && e.transit()
             .is_none_or(|r| r.serialization.is_none() && r.admitted_operators.is_empty())
+}
+/// Whether an unreserved `Phase::Quoted` row has expired or its envelope is no
+/// longer pending (`Queued | Transmitted`), so it holds no money and can be
+/// evicted inline without economy settlement (`P2-CORE-18`).
+fn quote_evictable(w: &World, p: &Purchase, now: i64) -> bool {
+    p.phase == Phase::Quoted
+        && (now >= p.quote_until
+            || w.module_state::<PropagationStore>()
+                .and_then(|s| s.envelope(p.envelope))
+                .is_none_or(|e| !pending(e)))
 }
 pub(crate) fn persist(ctx: &mut Ctx<'_>) {
     let Some(book) = ctx.w.module_state::<PropagationStore>() else {
@@ -497,17 +516,6 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                 "The Exchange is awaiting its charter capital; paid quotes are unavailable.",
             ));
         }
-        if market
-            .purchases
-            .values()
-            .filter(|p| p.issuer == actor && matches!(p.phase, Phase::Quoted | Phase::Reserved))
-            .count()
-            >= 32
-        {
-            return Err(fail(
-                "Your 32 live quote/reservation slots are full; cancel unused quotes.",
-            ));
-        }
         let e = ctx
             .w
             .module_state::<PropagationStore>()
@@ -540,13 +548,46 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .parse()
             .map_err(|_| fail("Supply an authorized account."))?;
         api.payer(ctx.w, ctx.actor, payer).map_err(CmdError::msg)?;
-        // Retire only terminal rows. Live reservations are never evicted for room.
+        // Enforce at most 1 live `Phase::Quoted` row per `(issuer, envelope)`
+        // by replacing any prior quote for this copy in place, and retire this
+        // actor's own expired/stale quotes before checking per-actor caps
+        // (`P2-CORE-18`).
+        market.purchases.retain(|_, p| {
+            !(p.issuer == actor
+                && p.phase == Phase::Quoted
+                && (p.envelope == id || quote_evictable(ctx.w, p, now)))
+        });
+        if market
+            .purchases
+            .values()
+            .filter(|p| p.issuer == actor && p.phase == Phase::Quoted)
+            .count()
+            >= MAX_ACTOR_UNRESERVED_QUOTES
+        {
+            return Err(fail(
+                "Your unreserved quote slots are full; buy or cancel unused quotes.",
+            ));
+        }
+        if market
+            .purchases
+            .values()
+            .filter(|p| p.issuer == actor && matches!(p.phase, Phase::Quoted | Phase::Reserved))
+            .count()
+            >= MAX_ACTOR_LIVE_PURCHASES
+        {
+            return Err(fail(
+                "Your 32 live quote/reservation slots are full; cancel unused quotes.",
+            ));
+        }
+        // Retire terminal rows and expired/stale unreserved quotes inline when
+        // at capacity. Live reservations are never evicted for room.
         if market.purchases.len() >= MAX_PURCHASES {
             let old = market
                 .purchases
                 .iter()
                 .find(|(_, p)| {
                     p.phase == Phase::Released
+                        || quote_evictable(ctx.w, p, now)
                         || (p.phase == Phase::Consumed
                             && ctx
                                 .w
@@ -554,7 +595,7 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                                 .and_then(|s| s.envelope(p.envelope))
                                 .is_none_or(|e| !pending(e)))
                 })
-                .map(|(id, _)| *id);
+                .map(|(qid, _)| *qid);
             if let Some(old) = old {
                 market.purchases.remove(&old);
             } else {
@@ -673,4 +714,467 @@ pub fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     persist(ctx);
     say(ctx, line(&p));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EnvelopeState;
+    use crate::routing::{Measurement, Metric, MetricProvider, RoutingServices};
+    use crate::service::{
+        Config as ServiceConfig, Evidence, Integration, Principal, Receipt,
+        State as ServiceStateStore,
+    };
+    use mush_core::{
+        ClockStamp, Engine, GOD, GameModule, ModError, ModuleActionState, ObjKind, Outbox,
+        ParsedArgs, Registrar, Registry, SwitchSet,
+    };
+    use smol_str::SmolStr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Debug)]
+    struct NoopMetric;
+    impl Metric for NoopMetric {
+        fn between(&self, _w: &World, _from: ObjId, _to: ObjId) -> Measurement {
+            Measurement::Unknown
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopMetricProvider;
+    impl MetricProvider for NoopMetricProvider {
+        fn snapshot(&self, _w: &World, _at: &ClockStamp) -> Box<dyn Metric> {
+            Box::new(NoopMetric)
+        }
+    }
+
+    #[derive(Debug)]
+    struct StubIntegration {
+        next_hold: AtomicU64,
+        next_tx: AtomicU64,
+    }
+
+    impl StubIntegration {
+        fn new() -> Self {
+            Self {
+                next_hold: AtomicU64::new(100),
+                next_tx: AtomicU64::new(500),
+            }
+        }
+    }
+
+    impl Integration for StubIntegration {
+        fn payer(&self, _w: &World, _actor: ObjId, _account: u64) -> Result<(), String> {
+            Ok(())
+        }
+        fn reserve(&self, _ctx: &mut Ctx<'_>, _p: &Purchase) -> Result<u64, String> {
+            Ok(self.next_hold.fetch_add(1, Ordering::Relaxed))
+        }
+        fn reserved(&self, _w: &World, _p: &Purchase) -> bool {
+            true
+        }
+        fn settle(&self, _ctx: &mut Ctx<'_>, _p: &Purchase, _capture: bool) -> Result<u64, String> {
+            Ok(self.next_tx.fetch_add(1, Ordering::Relaxed))
+        }
+        fn seed(&self) -> Result<ServiceConfig, String> {
+            Ok(ServiceConfig {
+                version: 1,
+                bytes_per_unit: 128,
+                short_message_bytes: 1024,
+                burst_units: 8,
+                standard_delay_s: 0,
+                deferred_min_s: 0,
+                window_period_s: 86400,
+                window_start_s: 0,
+                window_duration_s: 3600,
+                aging_s: 300,
+            })
+        }
+        fn operator(&self, _w: &World, _pair: &CanonicalId) -> Option<u64> {
+            Some(1)
+        }
+        fn principals(&self, _w: &World, endpoint: ObjId) -> Vec<Principal> {
+            vec![Principal::Object(endpoint)]
+        }
+        fn valid_principal(&self, _w: &World, _p: &Principal) -> bool {
+            true
+        }
+        fn visible(&self, _w: &World, _actor: ObjId, _receipt: &Receipt) -> bool {
+            true
+        }
+        fn authorized(
+            &self,
+            _w: &World,
+            _actor: ObjId,
+            _pair: &CanonicalId,
+            _action: &str,
+        ) -> bool {
+            true
+        }
+        fn discover(&self, _ctx: &mut Ctx<'_>, _evidence: &Evidence) -> Result<(), String> {
+            Ok(())
+        }
+        fn publish(&self, _ctx: &mut Ctx<'_>, _evidence: &Evidence) -> Result<u64, String> {
+            Ok(1)
+        }
+    }
+
+    struct CommerceTestModule(Option<(PropagationStore, RoutingServices)>);
+    impl GameModule for CommerceTestModule {
+        fn name(&self) -> &'static str {
+            crate::NS
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            if let Some((store, services)) = self.0.take() {
+                reg.state(store);
+                reg.state(services);
+            }
+            Ok(())
+        }
+    }
+
+    fn setup_engine() -> (Engine, ObjId, ObjId, ObjId) {
+        let mut store = PropagationStore::default();
+        let cfg = StubIntegration::new().seed().expect("seed");
+        let mut service = ServiceStateStore::new(cfg);
+        service.commerce = Some(Market {
+            operator: 1,
+            payee: 2,
+            tariff: Tariff {
+                version: 1,
+                standard_minor: 100,
+                priority_minor: 500,
+                quote_secs: 600,
+                reservation_secs: 3600,
+            },
+            legacy_before: 1,
+            capital_transaction: Some(1),
+            next: 1,
+            purchases: BTreeMap::new(),
+        });
+        store.transport.service = Some(service);
+        let services = RoutingServices(
+            Arc::new(NoopMetricProvider),
+            Some(Arc::new(StubIntegration::new())),
+        );
+        let mut world = World::new_minimal();
+        world.set_now(10_000);
+        let alice = world
+            .create(ObjKind::Player, "Alice", GOD, Some(mush_core::LIMBO))
+            .expect("alice");
+        let bob = world
+            .create(ObjKind::Player, "Bob", GOD, Some(mush_core::LIMBO))
+            .expect("bob");
+        let carol = world
+            .create(ObjKind::Player, "Carol", GOD, Some(mush_core::LIMBO))
+            .expect("carol");
+        let engine = Engine::with_modules(
+            world,
+            Registry::new(),
+            vec![Box::new(CommerceTestModule(Some((store, services))))],
+        )
+        .expect("engine");
+        (engine, alice, bob, carol)
+    }
+
+    fn add_envelope(
+        engine: &mut Engine,
+        issuer: ObjId,
+        recipient: ObjId,
+        state: EnvelopeState,
+    ) -> u64 {
+        let now = engine.world.world_ic_now();
+        let store = engine
+            .world
+            .module_state_mut::<PropagationStore>()
+            .expect("store");
+        let id = store.alloc_envelope().expect("alloc");
+        let mut env = Envelope::issue(id, issuer, recipient, "hello".into(), 1, now.clone())
+            .expect("envelope");
+        if state != EnvelopeState::Queued {
+            env = env.in_state(state, now);
+        }
+        store.put_envelope(env).expect("put");
+        id
+    }
+
+    fn run_commerce(
+        engine: &mut Engine,
+        actor: ObjId,
+        switch: &str,
+        raw: &str,
+    ) -> Result<String, CmdError> {
+        let mut out = Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            actor,
+            switches: SwitchSet::from_names([switch]),
+            args: ParsedArgs::parse(mush_core::ArgShape::EqPair, raw),
+            out: &mut out,
+            module: Some(SmolStr::new_static(crate::NS)),
+            typed_state: ModuleActionState::unavailable(),
+        };
+        let res = command(&mut ctx);
+        let text = out
+            .take()
+            .into_iter()
+            .map(|(_, ev)| match ev {
+                mush_proto::OutputEvent::Sys(rt) => rt.to_plain_text(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        res.map(|()| text)
+    }
+
+    #[test]
+    fn p2_core_18_repeated_quotes_replace_in_place_and_cap_unreserved() {
+        let (mut engine, alice, bob, _) = setup_engine();
+        let mut envs = Vec::new();
+        for _ in 0..=MAX_ACTOR_UNRESERVED_QUOTES {
+            envs.push(add_envelope(&mut engine, alice, bob, EnvelopeState::Queued));
+        }
+
+        // Repeatedly quoting the same envelope replaces the existing `Quoted`
+        // row in place so `purchases.len()` stays 1 instead of exhausting slots.
+        for class in ["standard", "priority", "standard", "priority"] {
+            run_commerce(
+                &mut engine,
+                alice,
+                "quote",
+                &format!("{}= {class},1", envs[0]),
+            )
+            .expect("re-quote replaces in place");
+            let m = current(&engine.world).expect("market");
+            assert_eq!(m.purchases.len(), 1);
+            let only = m.purchases.values().next().expect("quote");
+            assert_eq!(only.envelope, envs[0]);
+            assert_eq!(
+                only.class,
+                if class == "priority" {
+                    Class::Priority
+                } else {
+                    Class::Standard
+                }
+            );
+        }
+
+        // Fill up to MAX_ACTOR_UNRESERVED_QUOTES distinct envelopes.
+        for &env in &envs[1..MAX_ACTOR_UNRESERVED_QUOTES] {
+            run_commerce(&mut engine, alice, "quote", &format!("{env}=standard,1"))
+                .expect("within unreserved quote cap");
+        }
+        assert_eq!(
+            current(&engine.world).expect("market").purchases.len(),
+            MAX_ACTOR_UNRESERVED_QUOTES
+        );
+
+        // An additional distinct unreserved quote is refused.
+        let extra = envs[MAX_ACTOR_UNRESERVED_QUOTES];
+        let err = run_commerce(&mut engine, alice, "quote", &format!("{extra}=standard,1"))
+            .expect_err("must enforce per-actor unreserved quote cap");
+        assert!(err.to_string().contains("unreserved quote slots are full"));
+
+        // Re-quoting an already-quoted envelope still succeeds in place at the cap.
+        run_commerce(
+            &mut engine,
+            alice,
+            "quote",
+            &format!("{}=priority,1", envs[0]),
+        )
+        .expect("in-place replacement works even at unreserved cap");
+        assert_eq!(
+            current(&engine.world).expect("market").purchases.len(),
+            MAX_ACTOR_UNRESERVED_QUOTES
+        );
+    }
+
+    #[test]
+    fn p2_core_18_expired_quotes_evicted_inline_at_max_purchases() {
+        let (mut engine, alice, bob, carol) = setup_engine();
+        let env_carol = add_envelope(&mut engine, carol, bob, EnvelopeState::Queued);
+        let env_alice = add_envelope(&mut engine, alice, bob, EnvelopeState::Queued);
+
+        // Saturate `market.purchases` to MAX_PURCHASES with expired `Phase::Quoted`
+        // rows without running `sweep`.
+        {
+            let m = engine
+                .world
+                .module_state_mut::<PropagationStore>()
+                .expect("store")
+                .transport
+                .service
+                .as_mut()
+                .expect("service")
+                .commerce
+                .as_mut()
+                .expect("market");
+            for i in 1..=(MAX_PURCHASES as u64) {
+                m.purchases.insert(
+                    i,
+                    Purchase {
+                        id: i,
+                        envelope: env_alice,
+                        issuer: alice,
+                        recipient: bob,
+                        operator: 1,
+                        payee: 2,
+                        payer: 1,
+                        class: Class::Standard,
+                        bytes: 5,
+                        units: 1,
+                        tariff: 1,
+                        unit_minor: 100,
+                        total_minor: 100,
+                        quoted_at: 1_000,
+                        quote_until: 1_600,
+                        service_until: 4_600,
+                        phase: Phase::Quoted,
+                        hold: None,
+                        transaction: None,
+                    },
+                );
+            }
+            m.next = (MAX_PURCHASES as u64) + 1;
+        }
+
+        // Now is 10_000 > quote_until (1_600): Carol's fresh quote evicts one
+        // expired `Phase::Quoted` row inline and succeeds immediately.
+        run_commerce(
+            &mut engine,
+            carol,
+            "quote",
+            &format!("{env_carol}=standard,1"),
+        )
+        .expect("expired Quoted row must be evicted inline at MAX_PURCHASES");
+        let m = current(&engine.world).expect("market");
+        assert_eq!(m.purchases.len(), MAX_PURCHASES);
+        assert!(m.purchases.values().any(|p| p.issuer == carol));
+
+        // By contrast, live `Phase::Reserved` rows are never evicted inline.
+        let env_carol2 = add_envelope(&mut engine, carol, bob, EnvelopeState::Queued);
+        {
+            let m = engine
+                .world
+                .module_state_mut::<PropagationStore>()
+                .expect("store")
+                .transport
+                .service
+                .as_mut()
+                .expect("service")
+                .commerce
+                .as_mut()
+                .expect("market");
+            m.purchases.clear();
+            for i in 1..=(MAX_PURCHASES as u64) {
+                m.purchases.insert(
+                    i,
+                    Purchase {
+                        id: i,
+                        envelope: 10_000 + i,
+                        issuer: alice,
+                        recipient: bob,
+                        operator: 1,
+                        payee: 2,
+                        payer: 1,
+                        class: Class::Standard,
+                        bytes: 5,
+                        units: 1,
+                        tariff: 1,
+                        unit_minor: 100,
+                        total_minor: 100,
+                        quoted_at: 9_900,
+                        quote_until: 10_500,
+                        service_until: 13_500,
+                        phase: Phase::Reserved,
+                        hold: Some(i),
+                        transaction: None,
+                    },
+                );
+            }
+            m.next = (MAX_PURCHASES as u64) + 1;
+        }
+        let err = run_commerce(
+            &mut engine,
+            carol,
+            "quote",
+            &format!("{env_carol2}=standard,1"),
+        )
+        .expect_err("live Reserved rows must never be evicted inline");
+        assert!(err.to_string().contains("capacity is full"));
+    }
+
+    #[test]
+    fn p2_core_18_delivered_envelope_cannot_be_quoted_or_bought() {
+        let (mut engine, alice, bob, _) = setup_engine();
+        let delivered = add_envelope(&mut engine, alice, bob, EnvelopeState::Delivered);
+
+        // 1. Delivered envelope fails `unspent` / `pending` and cannot be quoted or listed.
+        let outbox = run_commerce(&mut engine, alice, "outbox", "").expect("outbox");
+        assert!(
+            !outbox.contains(&format!("Envelope {delivered}")),
+            "{outbox}"
+        );
+        let err = run_commerce(
+            &mut engine,
+            alice,
+            "quote",
+            &format!("{delivered}=priority,1"),
+        )
+        .expect_err("Delivered envelope must not be quotable");
+        assert!(err.to_string().contains("No such unconsumed outgoing copy"));
+
+        // 2. An envelope quoted while `Queued` and then delivered locally before
+        //    `+relay/buy` cannot be reserved, and `sweep` releases the quote.
+        let env = add_envelope(&mut engine, alice, bob, EnvelopeState::Queued);
+        run_commerce(&mut engine, alice, "quote", &format!("{env}=priority,1"))
+            .expect("quote while Queued");
+        let qid = current(&engine.world)
+            .expect("market")
+            .purchases
+            .values()
+            .find(|p| p.envelope == env)
+            .expect("quote row")
+            .id;
+
+        let now = engine.world.world_ic_now();
+        let delivered_copy = engine
+            .world
+            .module_state::<PropagationStore>()
+            .expect("store")
+            .envelope(env)
+            .expect("env")
+            .clone()
+            .in_state(EnvelopeState::Delivered, now);
+        engine
+            .world
+            .module_state_mut::<PropagationStore>()
+            .expect("store")
+            .put_envelope(delivered_copy)
+            .expect("update");
+
+        let buy_err = run_commerce(&mut engine, alice, "buy", &qid.to_string())
+            .expect_err("Delivered envelope must not be buyable");
+        assert!(buy_err.to_string().contains("Copy no longer eligible"));
+
+        // Sweep releases the now-stale quote without waiting for `quote_until`.
+        let mut out = Outbox::new();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            actor: GOD,
+            switches: SwitchSet::default(),
+            args: ParsedArgs::parse(mush_core::ArgShape::Raw, ""),
+            out: &mut out,
+            module: Some(SmolStr::new_static(crate::NS)),
+            typed_state: ModuleActionState::unavailable(),
+        };
+        sweep(&mut ctx);
+        assert_eq!(
+            current(&engine.world).expect("market").purchases[&qid].phase,
+            Phase::Released
+        );
+    }
 }

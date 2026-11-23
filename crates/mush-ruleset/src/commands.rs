@@ -316,16 +316,44 @@ fn approval_json(doc: &SheetDoc) -> serde_json::Value {
     })
 }
 
-/// Return a copy of `data` with every staff-only field removed.
+/// Return a copy of `data` with every staff-only field removed
+/// (case-insensitively, so non-canonical keys cannot bypass redaction;
+/// P2-CORE-25).
 fn strip_staff_only(schema: &SheetSchema, data: &serde_json::Value) -> serde_json::Value {
     let Some(obj) = data.as_object() else {
         return data.clone();
     };
     let mut out = obj.clone();
-    for (_, f) in schema.fields() {
-        if f.staff_only {
-            out.remove(f.id.as_str());
-        }
-    }
+    out.retain(|k, _| !schema.field(k).is_some_and(|f| f.staff_only));
     serde_json::Value::Object(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{FieldDef, SectionLayout, SheetSchemaBuilder, SheetSection};
+
+    #[test]
+    fn p2_core_25_strip_staff_only_is_case_insensitive() {
+        let schema = SheetSchemaBuilder::new("toy", 1)
+            .section(
+                SheetSection::new("core", "Core", SectionLayout::List)
+                    .field(FieldDef::dots("strength", "Strength", 1, 5))
+                    .field(FieldDef::text("notes", "Notes", 200).staff_only()),
+            )
+            .unwrap()
+            .build();
+        let data = serde_json::json!({
+            "strength": 3,
+            "notes": "canonical secret",
+            "NOTES": "uppercase secret",
+            "Notes": "mixed secret",
+        });
+        let stripped = strip_staff_only(&schema, &data);
+        let obj = stripped.as_object().unwrap();
+        assert_eq!(obj.get("strength"), Some(&serde_json::json!(3)));
+        assert!(!obj.contains_key("notes"));
+        assert!(!obj.contains_key("NOTES"));
+        assert!(!obj.contains_key("Notes"));
+    }
 }

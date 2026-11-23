@@ -1028,3 +1028,318 @@ async fn p2_core_11_nan_inf_and_negative_cost_usd_rejected_and_never_poison_caps
     });
     assert!(LlmService::from_config(&bad_cfg).is_err());
 }
+
+#[tokio::test]
+async fn p2_core_10_retry_after_clamped_to_max_delay_and_call_deadline() {
+    use std::time::Instant;
+
+    // 1. Huge Retry-After (24h) is clamped to retry.max_delay_ms (5ms) and retries promptly.
+    let provider = Arc::new(MockProvider::new("openrouter"));
+    provider.push_error(LlmError::RateLimited {
+        retry_after: Some(Duration::from_secs(86_400)),
+    });
+    provider.push_ok("recovered", mock::usage(2, 2, None));
+
+    let svc = LlmService::builder()
+        .global_enabled(true)
+        .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+        .route("worldgen_room", route("z-ai/glm-5.3", 64))
+        .retry(RetryConfig {
+            min_delay_ms: 1,
+            max_delay_ms: 5,
+            factor: 2.0,
+            max_retries: 2,
+            jitter: false,
+        })
+        .build();
+
+    let t0 = Instant::now();
+    let resp = svc
+        .call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .expect("should clamp Retry-After and succeed on retry");
+    assert_eq!(resp.text(), "recovered");
+    assert_eq!(provider.call_count(), 2);
+    assert!(
+        t0.elapsed() < Duration::from_secs(1),
+        "Retry-After was not clamped: elapsed {:?}",
+        t0.elapsed()
+    );
+
+    // 2. When clamped delay exceeds remaining call deadline (timeout_s = 1, max_delay_ms = 30s),
+    //    the retry aborts immediately without sleeping past the deadline.
+    let provider2 = Arc::new(MockProvider::new("openrouter"));
+    provider2.push_error(LlmError::RateLimited {
+        retry_after: Some(Duration::from_secs(60)),
+    });
+    provider2.push_ok("unreachable", mock::usage(1, 1, None));
+
+    let mut short_route = route("z-ai/glm-5.3", 64);
+    short_route.timeout_s = 1;
+    let svc2 = LlmService::builder()
+        .global_enabled(true)
+        .provider("openrouter", provider2.clone() as Arc<dyn LlmProvider>)
+        .route("worldgen_room", short_route)
+        .retry(RetryConfig {
+            min_delay_ms: 10,
+            max_delay_ms: 30_000,
+            factor: 2.0,
+            max_retries: 3,
+            jitter: false,
+        })
+        .build();
+
+    let t1 = Instant::now();
+    let err = svc2
+        .call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .expect_err("retry delay >= remaining deadline must fail fast");
+    assert!(matches!(err, LlmError::RateLimited { .. }), "got {err:?}");
+    assert_eq!(provider2.call_count(), 1);
+    assert!(
+        t1.elapsed() < Duration::from_millis(500),
+        "exceeded deadline budget: elapsed {:?}",
+        t1.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn p2_core_10_backoff_releases_concurrency_permit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RateLimitFirstProvider {
+        calls: AtomicUsize,
+        first_failed: Notify,
+        second_finished: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for RateLimitFirstProvider {
+        fn id(&self) -> &ProviderId {
+            static ID: std::sync::OnceLock<ProviderId> = std::sync::OnceLock::new();
+            ID.get_or_init(|| ProviderId::from("openrouter"))
+        }
+        fn caps(&self) -> ProviderCaps {
+            ProviderCaps::default()
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _timeout: Duration,
+        ) -> Result<CompletionResponse, LlmError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let is_first = format!("{:?}", req.messages).contains("call-a");
+            if is_first && n == 0 {
+                self.first_failed.notify_waiters();
+                return Err(LlmError::RateLimited {
+                    retry_after: Some(Duration::from_millis(250)),
+                });
+            }
+            if !is_first {
+                self.second_finished.notify_waiters();
+            }
+            Ok(mock::ok_response("ok", mock::usage(1, 1, None)))
+        }
+        async fn stream(
+            &self,
+            _req: &CompletionRequest,
+            _timeout: Duration,
+        ) -> Result<LlmStream, LlmError> {
+            Ok(stream::empty::<Result<StreamEvent, LlmError>>().boxed())
+        }
+    }
+
+    let provider = Arc::new(RateLimitFirstProvider {
+        calls: AtomicUsize::new(0),
+        first_failed: Notify::new(),
+        second_finished: Notify::new(),
+    });
+    let svc = Arc::new(
+        LlmService::builder()
+            .global_enabled(true)
+            .provider("openrouter", provider.clone() as Arc<dyn LlmProvider>)
+            .route("worldgen_room", route("z-ai/glm-5.3", 64))
+            .concurrency(ConcurrencyConfig {
+                max_interactive: 1,
+                max_interactive_queued: 4,
+                max_background: 1,
+                max_background_queued: 4,
+            })
+            .retry(RetryConfig {
+                min_delay_ms: 250,
+                max_delay_ms: 250,
+                factor: 1.0,
+                max_retries: 2,
+                jitter: false,
+            })
+            .build(),
+    );
+
+    let failed_notified = provider.first_failed.notified();
+    let call_a = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        async move {
+            svc.call(
+                ctx(LlmFeature::WorldgenRoom),
+                CompletionRequest::simple("call-a"),
+            )
+            .await
+        }
+    });
+    failed_notified.await;
+    // Yield so call_a drops its semaphore permit and enters backoff sleep.
+    tokio::task::yield_now().await;
+
+    // With max_interactive = 1, call_b can only finish inside <150ms if call_a
+    // released the active concurrency permit during its 250ms backoff sleep!
+    let t0 = std::time::Instant::now();
+    svc.call(
+        ctx(LlmFeature::WorldgenRoom),
+        CompletionRequest::simple("call-b"),
+    )
+    .await
+    .expect("call-b should acquire released permit during call-a backoff");
+    assert!(
+        t0.elapsed() < Duration::from_millis(150),
+        "call-b was blocked by call-a backoff sleep ({:?})",
+        t0.elapsed()
+    );
+
+    call_a
+        .await
+        .expect("task join")
+        .expect("call-a succeeds on retry");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn p2_core_10_retry_rechecks_kill_switch_circuit_breaker_and_qps() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // 1. Kill switch engaged during backoff sleep aborts retry with Disabled.
+    struct SlowFailProvider {
+        calls: AtomicUsize,
+        entered: Notify,
+    }
+    #[async_trait::async_trait]
+    impl LlmProvider for SlowFailProvider {
+        fn id(&self) -> &ProviderId {
+            static ID: std::sync::OnceLock<ProviderId> = std::sync::OnceLock::new();
+            ID.get_or_init(|| ProviderId::from("openrouter"))
+        }
+        fn caps(&self) -> ProviderCaps {
+            ProviderCaps::default()
+        }
+        async fn complete(
+            &self,
+            _req: &CompletionRequest,
+            _timeout: Duration,
+        ) -> Result<CompletionResponse, LlmError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.entered.notify_waiters();
+            Err(LlmError::RateLimited {
+                retry_after: Some(Duration::from_millis(120)),
+            })
+        }
+        async fn stream(
+            &self,
+            _req: &CompletionRequest,
+            _timeout: Duration,
+        ) -> Result<LlmStream, LlmError> {
+            Ok(stream::empty::<Result<StreamEvent, LlmError>>().boxed())
+        }
+    }
+
+    let kill_provider = Arc::new(SlowFailProvider {
+        calls: AtomicUsize::new(0),
+        entered: Notify::new(),
+    });
+    let svc_kill = Arc::new(
+        LlmService::builder()
+            .global_enabled(true)
+            .provider("openrouter", kill_provider.clone() as Arc<dyn LlmProvider>)
+            .route("worldgen_room", route("z-ai/glm-5.3", 64))
+            .retry(RetryConfig {
+                min_delay_ms: 120,
+                max_delay_ms: 120,
+                factor: 1.0,
+                max_retries: 3,
+                jitter: false,
+            })
+            .build(),
+    );
+    let entered = kill_provider.entered.notified();
+    let h = tokio::spawn({
+        let svc = Arc::clone(&svc_kill);
+        async move { svc.call(ctx(LlmFeature::WorldgenRoom), req()).await }
+    });
+    entered.await;
+    tokio::task::yield_now().await;
+    svc_kill.kill_switch().set_global(true);
+    let err = h
+        .await
+        .expect("join")
+        .expect_err("must stop on kill switch");
+    assert!(matches!(err, LlmError::Disabled), "got {err:?}");
+    assert_eq!(kill_provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        svc_kill.audit_log().recent(1)[0].outcome,
+        mush_llm::Outcome::Disabled
+    );
+
+    // 2. Circuit breaker trips mid-retry and short-circuits remaining attempts.
+    let breaker_provider = Arc::new(MockProvider::new("openrouter"));
+    breaker_provider.set_default(Err(LlmError::Overloaded));
+    let svc_breaker = LlmService::builder()
+        .global_enabled(true)
+        .provider(
+            "openrouter",
+            breaker_provider.clone() as Arc<dyn LlmProvider>,
+        )
+        .route("worldgen_room", route("z-ai/glm-5.3", 64))
+        .retry(fast_retry(5))
+        .breaker(CircuitBreakerConfig {
+            consecutive_failures: 2,
+            open_secs: 60,
+        })
+        .build();
+    let err = svc_breaker
+        .call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .expect_err("breaker should open mid-retry");
+    assert!(matches!(err, LlmError::Overloaded), "got {err:?}");
+    assert_eq!(
+        breaker_provider.call_count(),
+        2,
+        "breaker must stop retries once consecutive_failures is reached"
+    );
+
+    // 3. Per-provider QPS limiter is re-checked before every retry attempt
+    //    (and bounded by the call deadline so a 1-rpm limiter times out instead
+    //    of dispatching an unthrottled retry).
+    let qps_provider = Arc::new(MockProvider::new("openrouter"));
+    qps_provider.push_error(LlmError::Overloaded);
+    qps_provider.push_ok("should be throttled", mock::usage(1, 1, None));
+    let mut short_route = route("z-ai/glm-5.3", 64);
+    short_route.timeout_s = 1;
+    let svc_qps = LlmService::builder()
+        .global_enabled(true)
+        .provider_with_rpm(
+            "openrouter",
+            qps_provider.clone() as Arc<dyn LlmProvider>,
+            1,
+        )
+        .route("worldgen_room", short_route)
+        .retry(fast_retry(2))
+        .build();
+    let err = svc_qps
+        .call(ctx(LlmFeature::WorldgenRoom), req())
+        .await
+        .expect_err("retry must obey QPS limiter and deadline");
+    assert!(matches!(err, LlmError::Timeout), "got {err:?}");
+    assert_eq!(
+        qps_provider.call_count(),
+        1,
+        "retry must not bypass the QPS limiter"
+    );
+}

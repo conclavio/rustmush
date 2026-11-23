@@ -5,8 +5,11 @@
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
 use crate::cmd::{Registry, RegistryError};
-use crate::obj::ObjId;
+use crate::flags::{Flags, Powers};
+use crate::module::{HookPoint, perceives_via};
+use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, room_view};
+use crate::perm;
 use crate::world::World;
 
 pub mod admin;
@@ -76,4 +79,49 @@ pub(crate) fn show_room(
             out.to_actor(looker, OutputEvent::Sys(line));
         }
     }
+}
+
+/// Whether `target` is visibly co-located with `observer` in `observer_loc`,
+/// honoring `Flags::GOING`, `Flags::DARK`, uncontrolled `DARK` rooms, and
+/// `HookPoint::Perceive` (P2-CORE-13).
+///
+/// Intended as a filter for [`crate::matchit::match_object_visible`] so hidden
+/// or cloaked targets cannot leak existence via exact match, prefix ambiguity,
+/// ordinal shifts, `#dbref`, or `*name`.
+pub(super) fn target_visible_here(
+    reg: &Registry,
+    w: &World,
+    observer: ObjId,
+    target: ObjId,
+    observer_loc: Option<ObjId>,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> bool {
+    let Some(o) = w.get(target) else {
+        return false;
+    };
+    if o.flags.contains(Flags::GOING) {
+        return false;
+    }
+    if target == observer {
+        return true;
+    }
+    let Some(loc) = observer_loc else {
+        return false;
+    };
+    if o.location != Some(loc) {
+        return false;
+    }
+    let see_hidden = perm::has_power(w, observer, Powers::SEE_HIDDEN);
+    let controls_target = perm::controls(w, observer, target);
+    if o.flags.contains(Flags::DARK) && !see_hidden && !controls_target {
+        return false;
+    }
+    if o.kind != ObjKind::Exit && !see_hidden && !controls_target {
+        let in_dark_room = w.get(loc).is_some_and(|r| r.flags.contains(Flags::DARK))
+            && !perm::controls(w, observer, loc);
+        if in_dark_room {
+            return false;
+        }
+    }
+    perceives_via(reg.hooks(HookPoint::Perceive), w, observer, target, lens)
 }

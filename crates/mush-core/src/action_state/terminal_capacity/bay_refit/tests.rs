@@ -228,10 +228,10 @@ fn store(registry: &StateFamilyRegistry, rows: &[(Key, Value)]) -> TestResult<Ac
     let mut store = ActionStateStore::new(registry.clone());
     for (k, v) in rows {
         let (k, e) = envelope(registry, k, v)?;
-        store.records.insert(
+        std::sync::Arc::make_mut(&mut store.records).insert(
             k,
             StoredStateRecord {
-                value: Box::new(v.clone()),
+                value: std::sync::Arc::new(v.clone()),
                 canonical: CanonicalStateBytes(canonical_json_bytes_with_limit(&e, 262144)?.into()),
             },
         );

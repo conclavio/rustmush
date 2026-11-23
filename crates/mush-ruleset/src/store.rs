@@ -307,10 +307,17 @@ impl SheetStore {
                 got: f.ty.name(),
             });
         };
-        // Build the candidate map and validate the whole field.
-        let mut candidate = doc.map(field).cloned().unwrap_or_default();
+        // Build the candidate map from the canonical field id so mixed-case
+        // input (e.g. `@sheet/set target/DISCIPLINES:k=v`) preserves existing
+        // map entries instead of overwriting them (P2-CORE-25).
+        let canonical = f.id.clone();
+        let mut candidate = doc.map(canonical.as_str()).cloned().unwrap_or_default();
         candidate.insert(key.to_string(), value);
-        self.set_field(doc, field, serde_json::Value::Object(candidate))
+        self.set_field(
+            doc,
+            canonical.as_str(),
+            serde_json::Value::Object(candidate),
+        )
     }
 
     // ------------------------------------------------------------------
@@ -366,12 +373,13 @@ impl SheetStore {
     /// field.
     #[must_use]
     pub fn wound_penalty(&self, doc: &SheetDoc, field: &str) -> i8 {
-        let Some(crate::schema::FieldType::Track { levels, .. }) =
-            self.schema.field(field).map(|f| &f.ty)
-        else {
+        let Some(f) = self.schema.field(field) else {
             return 0;
         };
-        let Some(marks) = doc.track(field) else {
+        let crate::schema::FieldType::Track { levels, .. } = &f.ty else {
+            return 0;
+        };
+        let Some(marks) = doc.track(f.id.as_str()) else {
             return 0;
         };
         let filled = marks.iter().filter(|m| m.is_some()).count();
@@ -698,5 +706,37 @@ mod tests {
             store.get(&w, bob).is_none(),
             "invalid migration must quarantine to None"
         );
+    }
+
+    #[test]
+    fn p2_core_25_set_map_entry_preserves_existing_entries_on_mixed_case_field() {
+        let store = SheetStore::new(schema());
+        let mut doc = SheetDoc::new_default(store.schema());
+        store
+            .set_map_entry(&mut doc, "backgrounds", "Contacts", serde_json::json!(2))
+            .unwrap();
+        // Mixed-case lookup must load existing canonical map entries rather
+        // than overwriting the map with only the new key.
+        store
+            .set_map_entry(&mut doc, "BACKGROUNDS", "Resources", serde_json::json!(3))
+            .unwrap();
+        let map = doc.map("backgrounds").unwrap();
+        assert_eq!(map.get("Contacts"), Some(&serde_json::json!(2)));
+        assert_eq!(map.get("Resources"), Some(&serde_json::json!(3)));
+
+        // Mixed-case wound_penalty resolves canonical track too.
+        doc.set_track(
+            "health",
+            &[
+                Some(SmolStr::new("B")),
+                Some(SmolStr::new("B")),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+        );
+        assert_eq!(store.wound_penalty(&doc, "HEALTH"), -1);
     }
 }

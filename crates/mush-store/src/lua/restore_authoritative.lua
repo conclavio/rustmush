@@ -2,9 +2,10 @@
 -- quarantine record. No replay target is touched here.
 --
 -- KEYS: intent, finalized receipt, idempotency binding, pending set,
--- retained count, retained bytes, retained generation, quarantine receipt.
+-- retained count, retained bytes, retained generation, quarantine receipt,
+-- minimum epoch.
 -- ARGV: exact intent doc, exact binding doc, exact quarantine receipt, token,
--- candidate bytes, max count, max bytes.
+-- candidate bytes, max count, max bytes, request epoch.
 
 local function key_type(key)
   local result = redis.call('TYPE', key)
@@ -19,9 +20,28 @@ local function canonical_decimal(value)
     (value == '0' or string.sub(value, 1, 1) ~= '0')
 end
 
+local function decimal_less(left, right)
+  if string.len(left) ~= string.len(right) then
+    return string.len(left) < string.len(right)
+  end
+  return left < right
+end
+
 local pending_type = key_type(KEYS[4])
 if pending_type ~= 'none' and pending_type ~= 'set' then
   return 'CORRUPT_PENDING'
+end
+
+local minimum_type = key_type(KEYS[9])
+if minimum_type ~= 'none' and minimum_type ~= 'string' then
+  return 'CORRUPT_EPOCH_WATERMARK'
+end
+local minimum_epoch = redis.call('GET', KEYS[9]) or '0'
+if not canonical_decimal(minimum_epoch) or not canonical_decimal(ARGV[8]) then
+  return 'CORRUPT_EPOCH_WATERMARK'
+end
+if decimal_less(ARGV[8], minimum_epoch) then
+  return 'EPOCH_RETIRED:' .. minimum_epoch
 end
 
 local intent = redis.call('GET', KEYS[1])

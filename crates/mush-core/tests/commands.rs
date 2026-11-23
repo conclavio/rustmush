@@ -2677,3 +2677,536 @@ fn p2_core_6_ignore_macros_and_sheet_cannot_be_exfiltrated_via_examine_or_lock()
         );
     }
 }
+
+#[test]
+fn p2_core_12_teleport_blocks_exit_injection_room_targets_and_non_room_actor_dests() {
+    let mut g = Game::new();
+    let bob = g.bob; // Builder
+
+    let own_room = g.w.create(ObjKind::Room, "OwnRoom", bob, None).unwrap();
+    let own_room2 = g.w.create(ObjKind::Room, "OwnRoom2", bob, None).unwrap();
+    let jump_ok = g.w.create(ObjKind::Room, "Plaza", GOD, None).unwrap();
+    g.w.set_flag(jump_ok, Flags::JUMP_OK, true).unwrap();
+    g.w.move_to(bob, own_room).unwrap();
+
+    // Builder creates an exit in their own room.
+    let my_exit =
+        g.w.create(ObjKind::Exit, "north", bob, Some(own_room))
+            .unwrap();
+
+    // 1. Cannot inject an exit into an uncontrolled JUMP_OK room (even with
+    //    TEL_ANYWHERE).
+    let out = g.run(bob, &format!("@teleport #{}=#{}", my_exit.0, jump_ok.0));
+    assert_error_contains(&out, bob, "Permission denied.");
+    assert_eq!(g.loc(my_exit), Some(own_room));
+    assert!(g.w.exits_of(jump_ok).is_empty());
+
+    g.w.get_mut(bob).unwrap().powers = Powers::TEL_ANYWHERE;
+    let out = g.run(bob, &format!("@teleport #{}=#{}", my_exit.0, jump_ok.0));
+    assert_error_contains(&out, bob, "Permission denied.");
+    assert!(g.w.exits_of(jump_ok).is_empty());
+
+    // 2. Relocating an exit into another room the builder CONTROLS succeeds.
+    let out = g.run(bob, &format!("@teleport #{}=#{}", my_exit.0, own_room2.0));
+    assert_error_contains(&out, bob, "Teleported.");
+    assert_eq!(g.loc(my_exit), Some(own_room2));
+    assert!(g.w.exits_of(own_room2).contains(&my_exit));
+
+    // 3. Rooms can never be teleported (prevents room-in-room corruption).
+    let out = g.run(bob, &format!("@teleport #{}=#{}", own_room.0, jump_ok.0));
+    assert_error_contains(&out, bob, "can't teleport a room");
+    assert_eq!(g.loc(own_room), None);
+
+    let out = g.run(GOD, &format!("@teleport #{}=#{}", own_room.0, jump_ok.0));
+    assert_error_contains(&out, GOD, "can't teleport a room");
+    assert_eq!(g.loc(own_room), None);
+
+    // 4. Teleporting an actor "to" a carried thing (whose location is an
+    //    actor, not a room) is rejected cleanly.
+    let pocket =
+        g.w.create(ObjKind::Thing, "pocket", bob, Some(bob))
+            .unwrap();
+    let out = g.run(GOD, &format!("@teleport *Ann=#{}", pocket.0));
+    assert_error_contains(&out, GOD, "You can't go there.");
+    assert_eq!(g.loc(g.ann), Some(LIMBO));
+}
+
+#[test]
+fn p2_core_13_dark_and_perceive_cloak_hiding_across_look_whisper_get_give_who_and_ignore() {
+    use mush_core::module::{EventHook, HookPoint, HookReadContext, Perceive, Registrar};
+    use std::sync::Arc;
+
+    struct CloakTarget(ObjId);
+    impl EventHook for CloakTarget {
+        fn perceives(
+            &self,
+            _ctx: &HookReadContext<'_>,
+            observer: ObjId,
+            subject: ObjId,
+        ) -> Perceive {
+            if subject == self.0 && observer != subject {
+                Perceive::Conceal
+            } else {
+                Perceive::Abstain
+            }
+        }
+    }
+
+    let mut w = World::new_minimal();
+    let hall = w.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+    let cellar = w.create(ObjKind::Room, "Cellar", GOD, None).unwrap();
+    w.set_flag(cellar, Flags::DARK, true).unwrap();
+
+    let ann = w.create(ObjKind::Player, "Ann", GOD, Some(hall)).unwrap();
+    let bob = w.create(ObjKind::Player, "Bob", GOD, Some(hall)).unwrap();
+    let dark_wiz = w
+        .create(ObjKind::Player, "ShadowWiz", GOD, Some(hall))
+        .unwrap();
+    w.set_flag(dark_wiz, Flags::WIZARD | Flags::DARK, true)
+        .unwrap();
+    let cloaked_player = w
+        .create(ObjKind::Player, "Cloaked", GOD, Some(hall))
+        .unwrap();
+    let ghost_player = w.create(ObjKind::Player, "Ghost", GOD, Some(hall)).unwrap();
+    w.set_flag(ghost_player, Flags::DARK, true).unwrap();
+    let _ghoul_player = w.create(ObjKind::Player, "Ghoul", GOD, Some(hall)).unwrap();
+
+    let dark_thing = w
+        .create(ObjKind::Thing, "darkgem", GOD, Some(hall))
+        .unwrap();
+    w.set_flag(dark_thing, Flags::DARK, true).unwrap();
+    let visible_thing = w
+        .create(ObjKind::Thing, "darkish", GOD, Some(hall))
+        .unwrap();
+    let cloaked_thing = w
+        .create(ObjKind::Thing, "stealthbox", GOD, Some(hall))
+        .unwrap();
+    let dark_exit = w.create(ObjKind::Exit, "secret", GOD, Some(hall)).unwrap();
+    w.set_flag(dark_exit, Flags::DARK, true).unwrap();
+    let box_with_only_dark = w
+        .create(ObjKind::Thing, "displaycase", GOD, Some(hall))
+        .unwrap();
+    let hidden_inside = w
+        .create(ObjKind::Thing, "hiddenjewel", GOD, Some(box_with_only_dark))
+        .unwrap();
+    w.set_flag(hidden_inside, Flags::DARK, true).unwrap();
+
+    let coin = w.create(ObjKind::Thing, "coin", ann, Some(ann)).unwrap();
+    let remote_player = w
+        .create(ObjKind::Player, "Remote", GOD, Some(cellar))
+        .unwrap();
+    let remote_wiz = w
+        .create(ObjKind::Player, "RemoteWiz", GOD, Some(cellar))
+        .unwrap();
+    w.set_flag(remote_wiz, Flags::WIZARD, true).unwrap();
+    let going_player = w
+        .create(ObjKind::Player, "Vanished", GOD, Some(hall))
+        .unwrap();
+    w.destroy(going_player).unwrap();
+
+    for p in [ann, bob, dark_wiz, cloaked_player, remote_player] {
+        w.set_connected(p, true);
+    }
+
+    let mut reg = Registry::new();
+    register_core_commands(&mut reg).unwrap();
+    {
+        let mut r = Registrar::new(&mut reg, "cloak");
+        r.hook(HookPoint::Perceive, Arc::new(CloakTarget(cloaked_player)));
+        r.hook(HookPoint::Perceive, Arc::new(CloakTarget(cloaked_thing)));
+    }
+
+    let run = |w: &mut World, actor: ObjId, line: &str| -> Outbox {
+        let mut out = Outbox::new();
+        dispatch(&reg, w, actor, line, &mut out, DETACHED);
+        out
+    };
+
+    // 1. `look`: DARK thing, DARK exit, DARK actor, cloaked actor/thing, and
+    //    GOING husk all return identical NoMatch; prefix "dark" resolves
+    //    unambiguously to visible `darkish` without leaking DARK `darkgem`.
+    let no_match = actor_texts(&run(&mut w, ann, "look zzzmissing"), ann);
+    for probe in [
+        "look darkgem".to_string(),
+        format!("look #{}", dark_thing.0),
+        "look secret".to_string(),
+        format!("look #{}", dark_exit.0),
+        "look ShadowWiz".to_string(),
+        format!("look #{}", dark_wiz.0),
+        "look Cloaked".to_string(),
+        format!("look #{}", cloaked_player.0),
+        "look stealthbox".to_string(),
+        format!("look #{}", going_player.0),
+    ] {
+        assert_eq!(
+            actor_texts(&run(&mut w, ann, &probe), ann),
+            no_match,
+            "`{probe}` must not leak hidden target"
+        );
+    }
+    let prefix_look = actor_texts(&run(&mut w, ann, "look dark"), ann).join("\n");
+    assert!(
+        prefix_look.contains("darkish") && !prefix_look.contains("darkgem"),
+        "DARK sibling must not cause ambiguity: {prefix_look}"
+    );
+    let case_look = actor_texts(&run(&mut w, ann, "look displaycase"), ann).join("\n");
+    assert!(
+        !case_look.contains("Contents:"),
+        "Thing holding only DARK items must not print bare Contents line: {case_look}"
+    );
+
+    // 2. `whisper`: DARK/cloaked/remote/non-existent all give uniform
+    //    "They aren't here." with zero delivery; prefix "gh" resolves cleanly
+    //    to visible Ghoul without leaking DARK Ghost.
+    let whisper_missing = actor_texts(&run(&mut w, ann, "whisper zzzmissing=hi"), ann);
+    assert_eq!(whisper_missing, vec!["They aren't here.".to_string()]);
+    for probe in [
+        "whisper ShadowWiz=hi".to_string(),
+        "whisper *ShadowWiz=hi".to_string(),
+        format!("whisper #{}=hi", dark_wiz.0),
+        "whisper Cloaked=hi".to_string(),
+        format!("whisper #{}=hi", cloaked_player.0),
+        "whisper *Remote=hi".to_string(),
+    ] {
+        let out = run(&mut w, ann, &probe);
+        assert_eq!(
+            actor_texts(&out, ann),
+            whisper_missing,
+            "`{probe}` must match missing target error"
+        );
+        assert!(
+            out.events().iter().all(|(a, _)| *a == Audience::Actor(ann)),
+            "`{probe}` must not deliver to hidden target"
+        );
+    }
+    let out = run(&mut w, ann, "whisper gh=hello");
+    assert_error_contains(&out, ann, "You whisper \"hello\" to Ghoul.");
+
+    // 3. `get`: DARK/cloaked items cannot be picked up or leaked via ambiguity.
+    for probe in [
+        "get darkgem".to_string(),
+        format!("get #{}", dark_thing.0),
+        "get stealthbox".to_string(),
+        format!("get #{}", cloaked_thing.0),
+    ] {
+        let out = run(&mut w, ann, &probe);
+        assert_eq!(actor_texts(&out, ann), no_match, "`{probe}`");
+    }
+    assert_eq!(w.get(dark_thing).unwrap().location, Some(hall));
+    assert_eq!(w.get(cloaked_thing).unwrap().location, Some(hall));
+    let out = run(&mut w, ann, "get dark");
+    assert_error_contains(&out, ann, "You take darkish.");
+    assert_eq!(w.get(visible_thing).unwrap().location, Some(ann));
+
+    // 4. `give`: cannot force-give to DARK/cloaked targets or probe via #dbref.
+    for probe in [
+        "give coin=ShadowWiz".to_string(),
+        format!("give coin=#{}", dark_wiz.0),
+        "give coin=*ShadowWiz".to_string(),
+        "give coin=Cloaked".to_string(),
+        format!("give coin=#{}", cloaked_player.0),
+    ] {
+        let out = run(&mut w, ann, &probe);
+        assert_eq!(actor_texts(&out, ann), no_match, "`{probe}`");
+    }
+    assert_eq!(w.get(coin).unwrap().location, Some(ann));
+
+    // 5. `WHO`: cloaked co-located player has `here == false` and
+    //    `location == None`; inside uncontrolled DARK room `cellar`, co-located
+    //    `remote_player` also has `here == false` and `location == None`.
+    let who_out = run(&mut w, ann, "WHO");
+    let entries = who_out
+        .events()
+        .iter()
+        .find_map(|(_, e)| match e {
+            OutputEvent::Who(v) => Some(v.clone()),
+            _ => None,
+        })
+        .expect("WHO output");
+    let cloaked_row = entries
+        .iter()
+        .find(|e| e.name == "Cloaked")
+        .expect("Cloaked listed online");
+    assert!(
+        !cloaked_row.here,
+        "cloaked player must not report here=true"
+    );
+    assert_eq!(
+        cloaked_row.location, None,
+        "cloaked player must not disclose room location"
+    );
+    assert!(
+        entries.iter().all(|e| e.name != "ShadowWiz"),
+        "DARK staffer must remain omitted from mortal WHO"
+    );
+
+    // Move Ann into uncontrolled DARK room `cellar` alongside `remote_player`
+    // and a floor item.
+    let cellar_floor = w
+        .create(ObjKind::Thing, "cellar_key", GOD, Some(cellar))
+        .unwrap();
+    w.move_to(ann, cellar).unwrap();
+    let cellar_who = run(&mut w, ann, "WHO");
+    let cellar_entries = cellar_who
+        .events()
+        .iter()
+        .find_map(|(_, e)| match e {
+            OutputEvent::Who(v) => Some(v.clone()),
+            _ => None,
+        })
+        .expect("WHO in dark room");
+    let remote_row = cellar_entries
+        .iter()
+        .find(|e| e.name == "Remote")
+        .expect("Remote online");
+    assert!(
+        !remote_row.here && remote_row.location.is_none(),
+        "co-located player in uncontrolled DARK room must not reveal locality: {remote_row:?}"
+    );
+    let self_row = cellar_entries
+        .iter()
+        .find(|e| e.name == "Ann")
+        .expect("self online");
+    assert!(self_row.here && self_row.location.as_deref() == Some("Cellar"));
+    assert_eq!(
+        actor_texts(&run(&mut w, ann, "look cellar_key"), ann),
+        no_match
+    );
+    assert_eq!(
+        actor_texts(&run(&mut w, ann, "get cellar_key"), ann),
+        no_match
+    );
+    assert_eq!(w.get(cellar_floor).unwrap().location, Some(cellar));
+    assert_eq!(
+        actor_texts(&run(&mut w, ann, "whisper Remote=hi"), ann),
+        whisper_missing
+    );
+    assert_eq!(
+        actor_texts(&run(&mut w, ann, "give coin=Remote"), ann),
+        no_match
+    );
+    // Carried coin is still lookable inside the DARK room.
+    assert!(
+        actor_texts(&run(&mut w, ann, "look coin"), ann)
+            .join("\n")
+            .contains("coin")
+    );
+
+    // 6. `@ignore` `#dbref` probes: non-staff probing unviewable/DARK/remote/
+    //    cloaked/GOING `#dbref` targets receives uniform "I don't recognize
+    //    that player." — zero name or staff-role disclosure.
+    w.move_to(ann, hall).unwrap();
+    let unknown_ignore = actor_texts(&run(&mut w, ann, "@ignore #99999"), ann);
+    assert_eq!(
+        unknown_ignore,
+        vec!["I don't recognize that player.".to_string()]
+    );
+    for probe in [
+        format!("@ignore #{}", dark_wiz.0),
+        format!("@ignore #{}", cloaked_player.0),
+        format!("@ignore #{}", remote_player.0),
+        format!("@ignore #{}", remote_wiz.0),
+        format!("@ignore #{}", going_player.0),
+        format!("@ignore/clear #{}", remote_player.0),
+        format!("@ignore/clear #{}", dark_wiz.0),
+    ] {
+        assert_eq!(
+            actor_texts(&run(&mut w, ann, &probe), ann),
+            unknown_ignore,
+            "`{probe}` must not disclose actor name or staff role"
+        );
+    }
+    // Clearing an already-ignored entry by `#dbref` still works even if the
+    // target moves away or is destroyed.
+    let out = run(&mut w, ann, "@ignore Bob");
+    assert_error_contains(&out, ann, "You are now ignoring Bob.");
+    w.move_to(bob, cellar).unwrap();
+    let out = run(&mut w, ann, &format!("@ignore/clear #{}", bob.0));
+    assert_error_contains(&out, ann, "You are no longer ignoring Bob.");
+}
+
+#[test]
+fn p2_core_16_create_dig_open_validate_names_and_prevent_partial_allocations() {
+    let mut g = Game::new();
+    let bob = g.bob; // Builder
+    let workshop = g.w.create(ObjKind::Room, "Workshop", bob, None).unwrap();
+    g.w.move_to(bob, workshop).unwrap();
+
+    let count_before = g.w.iter().count();
+    let too_long = "x".repeat(mush_core::world::MAX_OBJECT_NAME_CHARS + 1);
+    let too_many_aliases = (0..=mush_core::world::MAX_ALIASES_PER_OBJECT)
+        .map(|i| format!("a{i}"))
+        .collect::<Vec<_>>()
+        .join(";");
+
+    // 1. `@create` rejects control chars, BiDi overrides, `=`, `;`, and >64 chars.
+    for bad in [
+        "bad\x1b[31mred".to_string(),
+        "bad\u{202E}bidi".to_string(),
+        "bad=eq".to_string(),
+        "bad;semi".to_string(),
+        too_long.clone(),
+    ] {
+        let out = g.run(bob, &format!("@create {bad}"));
+        assert!(
+            actor_texts(&out, bob)
+                .iter()
+                .any(|t| t.contains("invalid") || t.contains("too long")),
+            "@create {bad:?} must fail: {:?}",
+            actor_texts(&out, bob)
+        );
+    }
+    assert_eq!(g.w.iter().count(), count_before, "no leaked @create objs");
+
+    // 2. `@open` rejects invalid names/aliases and >10 aliases BEFORE creating
+    //    any exit.
+    for bad_spec in [
+        format!("north;n;{too_long}"),
+        "bad\u{202E}exit;n".to_string(),
+        format!("north;{too_many_aliases}"),
+    ] {
+        let out = g.run(bob, &format!("@open {bad_spec}"));
+        assert!(
+            actor_texts(&out, bob).iter().any(|t| t.contains("invalid")
+                || t.contains("too long")
+                || t.contains("Too many aliases")),
+            "@open {bad_spec:?} must fail: {:?}",
+            actor_texts(&out, bob)
+        );
+    }
+    assert_eq!(g.w.iter().count(), count_before, "no leaked @open exits");
+    assert!(g.w.exits_of(workshop).is_empty());
+
+    // 3. `@dig` rejects invalid room name, invalid back-exit name, or >10
+    //    aliases on the back exit WITHOUT leaking the room or the first exit.
+    for bad_dig in [
+        format!("@dig {too_long}=east,west"),
+        "@dig Good\u{202E}Room=east,west".to_string(),
+        format!("@dig Good Room=east,west;{too_many_aliases}"),
+        format!("@dig Good Room=east,{too_long}"),
+    ] {
+        let out = g.run(bob, &bad_dig);
+        assert!(
+            actor_texts(&out, bob).iter().any(|t| t.contains("invalid")
+                || t.contains("too long")
+                || t.contains("Too many aliases")),
+            "`{bad_dig}` must fail: {:?}",
+            actor_texts(&out, bob)
+        );
+        assert_eq!(
+            g.w.iter().count(),
+            count_before,
+            "`{bad_dig}` must not leave an orphaned room or exit"
+        );
+        assert!(g.w.exits_of(workshop).is_empty());
+    }
+
+    // 4. `World::create` rejects control and BiDi characters directly while
+    //    preserving legitimate internal/module names (e.g. `north;n`).
+    assert!(matches!(
+        g.w.create(ObjKind::Thing, "bell\x07", bob, Some(workshop)),
+        Err(mush_core::WorldError::InvalidName(_))
+    ));
+    assert!(matches!(
+        g.w.create(ObjKind::Room, "spoof\u{202E}room", bob, None),
+        Err(mush_core::WorldError::InvalidName(_))
+    ));
+    assert!(
+        g.w.create(ObjKind::Exit, "north;n", bob, Some(workshop))
+            .is_ok()
+    );
+}
+
+#[test]
+fn p2_core_20_builder_object_quota_caps_create_dig_open_without_partial_allocs() {
+    let mut g = Game::new();
+    let bob = g.bob; // Builder
+    let base = g.w.create(ObjKind::Room, "Base", bob, None).unwrap();
+    g.w.move_to(bob, base).unwrap();
+
+    // Base is already 1 owned object; cap Bob at 3 owned objects total.
+    g.w.set_builder_object_quota(3);
+    assert_eq!(g.w.owned_object_count(bob), 1);
+
+    // `@create` -> 2/3 succeeds.
+    let out = g.run(bob, "@create widget");
+    assert_error_contains(&out, bob, "Created:");
+    assert_eq!(g.w.owned_object_count(bob), 2);
+
+    // `@dig Den=east,west` needs 3 objects (2 + 3 > 3) -> refused cleanly with
+    // zero partial allocations!
+    let count_before = g.w.iter().count();
+    let out = g.run(bob, "@dig Den=east,west");
+    assert_error_contains(&out, bob, "Object quota exceeded");
+    assert_eq!(g.w.iter().count(), count_before);
+
+    // `@open` needs 1 object (2 + 1 == 3) -> succeeds.
+    let out = g.run(bob, "@open north");
+    assert_error_contains(&out, bob, "Opened.");
+    assert_eq!(g.w.owned_object_count(bob), 3);
+
+    // Further `@create`, `@dig`, and `@open` are refused at 3/3.
+    let out = g.run(bob, "@create extra");
+    assert_error_contains(&out, bob, "Object quota exceeded");
+    let out = g.run(bob, "@open south");
+    assert_error_contains(&out, bob, "Object quota exceeded");
+
+    // Destroying one object frees quota cleanly.
+    let out = g.run(bob, "@destroy widget");
+    assert_error_contains(&out, bob, "Destroyed.");
+    let out = g.run(bob, "@create replacement");
+    assert_error_contains(&out, bob, "Created:");
+
+    // Staff (Wizard+) are exempt from the builder quota.
+    let wiz =
+        g.w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+    for i in 0..5 {
+        let out = g.run(wiz, &format!("@create staff_item_{i}"));
+        assert_error_contains(&out, wiz, "Created:");
+    }
+}
+
+#[test]
+fn p2_core_21_wizard_cannot_modify_god_or_god_owned_objects_via_building_commands() {
+    let mut g = Game::new();
+    let wiz =
+        g.w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+    let god_zmo =
+        g.w.create(ObjKind::Thing, "GodZMO", GOD, Some(LIMBO))
+            .unwrap();
+    g.w.set_flag(god_zmo, Flags::ZONE_MASTER, true).unwrap();
+    let mortal_thing =
+        g.w.create(ObjKind::Thing, "AnnCup", g.ann, Some(LIMBO))
+            .unwrap();
+
+    for cmd in [
+        "@name #1=NotGod",
+        "@set #1/secret=pwned",
+        "@set #1=HALTED",
+        "@set #1=DARK",
+        "@lock #1=#1",
+        &format!("@lock/zone #{}=#{}", god_zmo.0, wiz.0),
+        &format!("@parent #1=#{}", mortal_thing.0),
+        &format!("@destroy #{}", god_zmo.0),
+    ] {
+        let out = g.run(wiz, cmd);
+        assert_error_contains(&out, wiz, "Permission denied.");
+    }
+    assert_eq!(g.w.get(GOD).unwrap().name, "God");
+    assert!(g.w.attr(GOD, "secret").is_none());
+    assert!(!g.w.get(GOD).unwrap().flags.contains(Flags::HALTED));
+    assert!(!g.w.get(GOD).unwrap().flags.contains(Flags::DARK));
+    assert!(!g.w.get(god_zmo).unwrap().flags.contains(Flags::GOING));
+
+    // Legitimate Wizard operations on non-God objects still succeed.
+    let out = g.run(wiz, "@set AnnCup/note=inspected");
+    assert_error_contains(&out, wiz, "Set.");
+    assert_eq!(
+        g.w.attr(mortal_thing, "note").and_then(|a| a.as_text()),
+        Some("inspected")
+    );
+}

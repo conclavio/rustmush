@@ -2119,6 +2119,7 @@ impl AuthoritativeStore for RedisStore {
                         AUTHORITATIVE_RETAINED_BYTES.to_owned(),
                         AUTHORITATIVE_RETAINED_GENERATION.to_owned(),
                         authoritative_quarantine_key(token),
+                        authoritative_minimum_epoch_key(bundle.idempotency().scope())?,
                     ],
                     vec![
                         intent_doc.clone(),
@@ -2128,13 +2129,24 @@ impl AuthoritativeStore for RedisStore {
                         intent_doc.len().to_string(),
                         MAX_RETAINED_AUTHORITATIVE_INTENTS.to_string(),
                         MAX_RETAINED_AUTHORITATIVE_BYTES.to_string(),
+                        bundle.idempotency().epoch().to_string(),
                     ],
                 )
                 .await?;
             let resumed = match code.as_str() {
                 "RESTORED" => false,
                 "RESUMED" => true,
-                _ => return Err(authoritative_script_error(&code)),
+                _ => {
+                    if let Some(minimum) = code.strip_prefix("EPOCH_RETIRED:")
+                        && let Ok(minimum_accepted_epoch) = minimum.parse::<u64>()
+                    {
+                        return Err(StoreError::AuthoritativeEpochRetired {
+                            requested_epoch: bundle.idempotency().epoch(),
+                            minimum_accepted_epoch,
+                        });
+                    }
+                    return Err(authoritative_script_error(&code));
+                }
             };
             let Some(LoadedAuthoritative::Retained { bundle: stored, .. }) =
                 self.load_validated_authoritative(token).await?
@@ -2310,12 +2322,14 @@ impl AuthoritativeStore for RedisStore {
                 )?;
                 let mut cursor = None;
                 let mut retained_intents = 0_usize;
+                let mut seen_tokens = std::collections::BTreeSet::new();
                 loop {
                     let page = self
                         .scan_authoritative_intents(cursor, MAX_AUTHORITATIVE_DISCOVERY_PAGE)
                         .await?;
                     for bundle in page.intents {
-                        if bundle.idempotency().scope() == scope
+                        if seen_tokens.insert(bundle.token())
+                            && bundle.idempotency().scope() == scope
                             && bundle.idempotency().epoch() < minimum_accepted_epoch
                         {
                             retained_intents =
@@ -2328,6 +2342,59 @@ impl AuthoritativeStore for RedisStore {
                     }
                     let Some(next) = page.next_cursor else { break };
                     cursor = Some(next);
+                }
+                let mut quarantine_cursor = "0".to_owned();
+                loop {
+                    let (next, keys): (String, Vec<Key>) = self
+                        .client
+                        .scan_page(
+                            quarantine_cursor,
+                            format!("{AUTHORITATIVE_QUARANTINE_PREFIX}*"),
+                            u32::try_from(MAX_AUTHORITATIVE_DISCOVERY_PAGE).ok(),
+                            None,
+                        )
+                        .await?;
+                    let unique: std::collections::BTreeSet<String> = keys
+                        .iter()
+                        .filter_map(|key| key.as_str().map(ToOwned::to_owned))
+                        .collect();
+                    for quarantine_key in unique {
+                        let token = quarantine_key
+                            .strip_prefix(AUTHORITATIVE_QUARANTINE_PREFIX)
+                            .ok_or_else(|| {
+                                StoreError::AuthoritativeCorrupt(
+                                    "Redis quarantine scan returned a key outside its prefix"
+                                        .to_owned(),
+                                )
+                            })
+                            .and_then(|token| {
+                                CommitToken::from_hex(token).map_err(|error| {
+                                    StoreError::AuthoritativeCorrupt(format!(
+                                        "Redis authoritative quarantine key has invalid token: {error}"
+                                    ))
+                                })
+                            })?;
+                        if !seen_tokens.insert(token) {
+                            continue;
+                        }
+                        let Some(quarantine) = self.load_quarantine_receipt(token).await? else {
+                            continue;
+                        };
+                        if quarantine.idempotency().scope() == scope
+                            && quarantine.idempotency().epoch() < minimum_accepted_epoch
+                        {
+                            retained_intents =
+                                retained_intents.checked_add(1).ok_or_else(|| {
+                                    StoreError::AuthoritativeCorrupt(
+                                        "retained epoch intent count overflowed".to_owned(),
+                                    )
+                                })?;
+                        }
+                    }
+                    if next == "0" {
+                        break;
+                    }
+                    quarantine_cursor = next;
                 }
                 if retained_intents != 0 {
                     return Err(StoreError::AuthoritativeEpochPending {
@@ -4074,6 +4141,31 @@ mod tests {
         assert!(
             !TOKEN_TOUCH_CAS_LUA.contains("cjson"),
             "JSON decoding/encoding stays in Rust serde_json"
+        );
+    }
+
+    /// P2-CORE-23: `restore_authoritative.lua` must enforce the scope's
+    /// `minimum_accepted_epoch` watermark (`KEYS[9]` vs `ARGV[8]`) before
+    /// inspecting or mutating any retained/quarantine keys.
+    #[test]
+    fn restore_authoritative_lua_enforces_minimum_epoch_before_mutation() {
+        let check_pos = RESTORE_AUTHORITATIVE_LUA
+            .find("if decimal_less(ARGV[8], minimum_epoch) then\n  return 'EPOCH_RETIRED:' .. minimum_epoch")
+            .expect("restore_authoritative.lua must reject epochs below minimum_epoch");
+        assert!(
+            RESTORE_AUTHORITATIVE_LUA.contains("key_type(KEYS[9])"),
+            "restore_authoritative.lua must validate KEYS[9] type"
+        );
+        let first_write_pos = RESTORE_AUTHORITATIVE_LUA
+            .find("redis.call('SET'")
+            .into_iter()
+            .chain(RESTORE_AUTHORITATIVE_LUA.find("redis.call('SADD'"))
+            .chain(RESTORE_AUTHORITATIVE_LUA.find("redis.call('DEL'"))
+            .min()
+            .expect("restore script writes on restore");
+        assert!(
+            check_pos < first_write_pos,
+            "minimum epoch check must precede all mutations in restore_authoritative.lua"
         );
     }
 }

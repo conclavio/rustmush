@@ -154,11 +154,13 @@ pub fn check_look(look: &Look, units: &[(&str, &UnitShape)]) -> LookCheck {
                 .push(format!("{name}: model {model} is not in the catalog")),
             Some(entry) => {
                 let ((lw, lh), (mw, mh)) = (look.size_cm, entry.size_cm);
-                if mh.abs_diff(lh) * 50 > lh {
+                let (lw64, lh64, mw64, mh64) =
+                    (u64::from(lw), u64::from(lh), u64::from(mw), u64::from(mh));
+                if mh64.abs_diff(lh64) * 50 > lh64 {
                     out.refusals
                         .push(format!("{name}: {lh} cm tall, its model {model} {mh} cm"));
                 }
-                if mw * 2 < lw || mw > lw * 2 {
+                if mw64 * 2 < lw64 || mw64 > lw64 * 2 {
                     out.refusals
                         .push(format!("{name}: {lw} cm wide, its model {model} {mw} cm"));
                 }
@@ -351,6 +353,35 @@ mod tests {
                 SpriteKind::Hostile
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn check_look_and_check_draft_never_overflow_on_extreme_size_cm() {
+        // Direct check_look with u32::MAX dimensions must compare in u64 and
+        // refuse cleanly without release-mode integer overflow panics (P2-CLIENT-14).
+        let mut look = Look::parse(&tank_look()).expect("shipped tank look");
+        look.model = Some("mc.st.tank_lvl2".to_string());
+        look.size_cm = (u32::MAX, u32::MAX);
+        let shape = UnitShape::of_def(&tank_def());
+        let checked = check_look(&look, &[("tacsim.unit.line_tank", &shape)]);
+        assert!(
+            checked.refusals.iter().any(|r| r.contains("cm tall")),
+            "{checked:?}"
+        );
+        assert!(
+            checked.refusals.iter().any(|r| r.contains("cm wide")),
+            "{checked:?}"
+        );
+
+        // Draft JSON with huge size_cm is refused cleanly at Look::parse.
+        let mut draft: Value = serde_json::from_str(&tank_look()).expect("JSON");
+        draft["size_cm"] = serde_json::json!([u64::from(u32::MAX), u64::from(u32::MAX)]);
+        draft["model"] = "mc.st.tank_lvl2".into();
+        let checked = check_draft(&draft.to_string(), &tank_def());
+        assert!(
+            checked.refusals.iter().any(|r| r.contains("size_cm")),
+            "{checked:?}"
         );
     }
 }
