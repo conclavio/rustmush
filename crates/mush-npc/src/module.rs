@@ -570,10 +570,10 @@ fn on_said(ctx: &mut Ctx<'_>, who: ObjId, room: ObjId, kind: NarrativeKind, text
         let addresses_other = ctx.w.contents_of(room).iter().copied().any(|other| {
             other != npc
                 && other != who
-                && ctx
-                    .w
-                    .get(other)
-                    .is_some_and(|o| matches!(o.kind, ObjKind::Npc | ObjKind::Player))
+                && ctx.w.get(other).is_some_and(|o| {
+                    matches!(o.kind, ObjKind::Npc | ObjKind::Player)
+                        && !o.flags.intersects(Flags::DARK | Flags::GOING)
+                })
                 && addresses(ctx.w, other, text)
                 && ctx.can_perceive(npc, other)
         });
@@ -619,7 +619,7 @@ fn on_moved(ctx: &mut Ctx<'_>, who: ObjId, from: Option<ObjId>, to: ObjId) {
         h.runtime_mut(who).conversation_focus = None;
         h.drop_mailbox(who);
     }
-    if !is_connected_player(ctx.w, who) {
+    if !is_connected_player(ctx.w, who) || is_dark(ctx.w, who) {
         return;
     }
     let now = now_ms(ctx.w);
@@ -667,7 +667,11 @@ fn on_presence(ctx: &mut Ctx<'_>, who: ObjId, connected: bool) {
     let Some(room) = ctx.w.get(who).and_then(|o| o.location) else {
         return;
     };
-    if ctx.w.get(who).is_none_or(|o| o.kind != ObjKind::Player) {
+    if ctx
+        .w
+        .get(who)
+        .is_none_or(|o| o.kind != ObjKind::Player || o.flags.contains(Flags::DARK))
+    {
         return;
     }
     let now = now_ms(ctx.w);
@@ -748,8 +752,10 @@ pub fn scene_turn_context(
     let exits: Vec<String> = w
         .exits_of(room)
         .iter()
+        .copied()
+        .filter(|&exit| visible_exit(w, exit))
         .take(MAX_TURN_EXITS)
-        .map(|&exit| bounded_text(display_name(w, exit), MAX_TURN_NAME_BYTES))
+        .map(|exit| bounded_text(display_name(w, exit), MAX_TURN_NAME_BYTES))
         .collect();
     serde_json::json!({
         "scene": scene,
@@ -777,7 +783,12 @@ fn on_scene_turn(ctx: &mut Ctx<'_>, scene: u64, actor: ObjId, round: u32) {
     let Some(profile) = read_profile(ctx.w, actor) else {
         return;
     };
-    if !profile.enabled || ctx.w.get(actor).is_none_or(|o| o.kind != ObjKind::Npc) {
+    if !profile.enabled
+        || ctx
+            .w
+            .get(actor)
+            .is_none_or(|o| o.kind != ObjKind::Npc || o.flags.contains(Flags::GOING))
+    {
         return;
     }
     let Some(room) = ctx.w.get(actor).and_then(|o| o.location) else {
@@ -789,7 +800,7 @@ fn on_scene_turn(ctx: &mut Ctx<'_>, scene: u64, actor: ObjId, round: u32) {
     // participant IDs or the contents of private interface replies.
     let present: Vec<ObjId> = players_present(ctx.w, room)
         .into_iter()
-        .filter(|&who| who != actor && ctx.can_perceive(actor, who))
+        .filter(|&who| who != actor && !is_dark(ctx.w, who) && ctx.can_perceive(actor, who))
         .take(MAX_TURN_PRESENT)
         .collect();
     context["present"] = serde_json::json!(
@@ -1390,9 +1401,10 @@ fn issue_capture(ctx: &mut Ctx<'_>, request: crate::decision::NpcDecisionRequest
 /// - not `DARK`;
 /// - who typed something within `active_secs` REAL seconds of `now`.
 ///
-/// It is narrower than `players_present`, which every stimulus-driven wake still uses:
-/// a stimulus is itself something a live player just did, so nothing is spent on an idle
-/// room there, and a `DARK` wizard who speaks to an NPC is still answered.
+/// It is narrower than `players_present`, which stimulus-driven wakes use:
+/// both exclude `DARK` and `GOING` characters, and `present_for_ambient`
+/// additionally requires a live connection and recent player activity so
+/// unprompted chatter never fires into an idle or link-dead room.
 #[must_use]
 pub fn present_for_ambient(w: &World, who: ObjId, now: i64, active_secs: i64) -> bool {
     w.get(who)
@@ -1737,7 +1749,11 @@ impl AsyncCompletion for NpcCompletion {
                 _ => String::new(),
             };
             let installed = !summary.trim().is_empty()
-                && ctx.w.get(npc).is_some_and(|o| o.kind == ObjKind::Npc)
+                && ctx
+                    .w
+                    .get(npc)
+                    .is_some_and(|o| o.kind == ObjKind::Npc && !o.flags.contains(Flags::GOING))
+                && enabled_npc(ctx.w, npc)
                 && {
                     let mut attr = Attr::text(&summary, npc);
                     attr.flags = AttrFlags::WIZARD_ONLY;
@@ -1792,8 +1808,10 @@ impl AsyncCompletion for NpcCompletion {
             .and_then(|h| h.runtime(npc))
             .and_then(|rt| rt.last_decision.as_ref())
             .is_some_and(|last| last.correlation == correlation && last.unprompted);
-        // Re-validate against current state.
-        if ctx.w.get(npc).is_none_or(|o| o.kind != ObjKind::Npc) {
+        // Re-validate against current state (`P2-CORE-17`): a parked, going,
+        // nowhere, or exclusive-scene (timestopped) NPC must not act on an
+        // in-flight completion.
+        if !npc_can_act(ctx.w, npc) {
             return;
         }
         let Some(room) = ctx.w.get(npc).and_then(|o| o.location) else {
@@ -1847,6 +1865,9 @@ impl AsyncCompletion for NpcCompletion {
                             "npc: memory reference was not shown in the captured turn"
                         );
                         continue;
+                    }
+                    if !npc_can_act(ctx.w, npc) {
+                        break;
                     }
                     let Some(room) = ctx.w.get(npc).and_then(|o| o.location) else {
                         break;
@@ -2048,10 +2069,7 @@ fn invoke_interface(
         );
         return;
     };
-    let live_asker = ctx
-        .w
-        .get(asker)
-        .is_some_and(|o| o.location == Some(room) && !o.flags.contains(mush_core::Flags::GOING));
+    let live_asker = live_interface_audience(ctx, npc, asker, room);
     let result = if live_asker {
         // Rule 1: the ability runs as the asker — the command context's actor
         // is theirs for the call, so every read the provider makes through a
@@ -2117,14 +2135,15 @@ fn invoke_interface(
                         speak_to(ctx, npc, asker, NarrativeKind::Say, line);
                     }
                     let asker_name = display_name(ctx.w, asker);
-                    if !lines.is_empty() {
+                    if !lines.is_empty() && !is_dark(ctx.w, asker) && !is_dark(ctx.w, npc) {
                         let aside = format!(
                             "{} speaks quietly with {asker_name}.",
                             display_name(ctx.w, npc)
                         );
-                        ctx.out.to_room(
+                        ctx.out.to_room_from(
                             room,
                             vec![asker],
+                            asker,
                             OutputEvent::Narrative {
                                 kind: NarrativeKind::Emit,
                                 actor: Some(obj_ref(ctx.w, npc)),
@@ -3714,11 +3733,12 @@ fn build_dialogue_snapshot(
         .filter_map(Stimulus::subject)
         .chain(present.iter().copied())
     {
-        let is_present_player =
-            ctx.w.get(subject).is_some_and(|object| {
-                object.kind == ObjKind::Player && object.location == Some(room)
-            }) && ctx.w.is_connected(subject)
-                && ctx.can_perceive(npc, subject);
+        let is_present_player = ctx.w.get(subject).is_some_and(|object| {
+            object.kind == ObjKind::Player
+                && object.location == Some(room)
+                && !object.flags.intersects(Flags::DARK | Flags::GOING)
+        }) && ctx.w.is_connected(subject)
+            && ctx.can_perceive(npc, subject);
         if is_present_player && !prioritized_present.contains(&subject) {
             prioritized_present.push(subject);
             if prioritized_present.len() == MAX_SCENE_PRESENT {
@@ -3915,9 +3935,10 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
     );
     let present = present
         .iter()
-        .filter(|&&p| p != npc)
+        .copied()
+        .filter(|&p| p != npc && !is_dark(ctx.w, p) && !is_going(ctx.w, p))
         .take(MAX_SCENE_PRESENT)
-        .map(|&p| present_player(ctx, npc, p))
+        .map(|p| present_player(ctx, npc, p))
         .collect();
     let exits = ctx
         .w
@@ -3926,6 +3947,7 @@ fn build_scene(ctx: &Ctx<'_>, npc: ObjId, room: ObjId, present: &[ObjId]) -> Sce
         .filter_map(|&e| {
             ctx.w
                 .get(e)
+                .filter(|o| !o.flags.intersects(Flags::DARK | Flags::GOING))
                 .map(|o| bounded_text(primary(&o.name).to_string(), MAX_SNAPSHOT_NAME_BYTES))
         })
         .take(MAX_SCENE_EXITS)
@@ -4558,11 +4580,62 @@ fn enabled_npc(w: &World, npc: ObjId) -> bool {
     read_profile(w, npc).is_some_and(|p| p.enabled)
 }
 
+fn is_dark(w: &World, id: ObjId) -> bool {
+    w.get(id).is_some_and(|o| o.flags.contains(Flags::DARK))
+}
+
+fn is_going(w: &World, id: ObjId) -> bool {
+    w.get(id).is_some_and(|o| o.flags.contains(Flags::GOING))
+}
+
+fn visible_exit(w: &World, exit: ObjId) -> bool {
+    w.get(exit)
+        .is_some_and(|o| !o.flags.intersects(Flags::DARK | Flags::GOING))
+}
+
+/// Live re-entry gate for autonomous NPC dialogue/degraded completions
+/// (`P2-CORE-17`): must still be a live, enabled NPC outside any exclusive
+/// (timestopped) scene.
+fn npc_can_act(w: &World, npc: ObjId) -> bool {
+    w.get(npc)
+        .is_some_and(|o| o.kind == ObjKind::Npc && !o.flags.contains(Flags::GOING))
+        && enabled_npc(w, npc)
+        && !w.in_exclusive_scene(npc)
+}
+
+/// Live re-entry gate for `invoke_interface` (`P2-CORE-17`), aligned with
+/// `private_lore::live_audience`: live enabled NPC (not in exclusive scene),
+/// connected co-located non-`GOING` player asker, and mutual `can_perceive`.
+fn live_interface_audience(ctx: &Ctx<'_>, npc: ObjId, asker: ObjId, room: ObjId) -> bool {
+    if !npc_can_act(ctx.w, npc) {
+        return false;
+    }
+    let Some(npc_obj) = ctx.w.get(npc) else {
+        return false;
+    };
+    let Some(asker_obj) = ctx
+        .w
+        .get(asker)
+        .filter(|o| o.kind == ObjKind::Player && !o.flags.contains(Flags::GOING))
+    else {
+        return false;
+    };
+    ctx.w.is_connected(asker)
+        && npc_obj.location == Some(room)
+        && asker_obj.location == Some(room)
+        && ctx.can_perceive(npc, asker)
+        && ctx.can_perceive(asker, npc)
+}
+
 fn players_present(w: &World, room: ObjId) -> Vec<ObjId> {
     w.contents_of(room)
         .iter()
         .copied()
-        .filter(|&o| w.get(o).is_some_and(|x| x.kind == ObjKind::Player) && w.is_connected(o))
+        .filter(|&o| {
+            w.get(o).is_some_and(|x| {
+                x.kind == ObjKind::Player && !x.flags.intersects(Flags::DARK | Flags::GOING)
+            }) && w.is_connected(o)
+        })
         .take(MAX_SCENE_PRESENT)
         .collect()
 }

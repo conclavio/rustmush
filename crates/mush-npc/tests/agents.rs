@@ -4673,3 +4673,58 @@ async fn p2_core_8_multi_speaker_staff_poke_and_heard_in_room_isolate_interface_
         &serde_json::json!({"status": "nothing", "npc": susie}).to_string(),
     );
 }
+
+#[tokio::test]
+async fn p2_core_13_dark_player_movement_and_presence_ignored_by_observers_and_informants() {
+    let mut rig = Rig::new();
+    rig.set_now(0);
+    let hall = rig.room("Hall");
+    let alley = rig.room("Alley");
+    rig.exit("in", alley, hall);
+    rig.exit("out", hall, alley);
+    let boss = rig.player("Boss", alley, true);
+    let spy = rig.npc("Spy", hall, &informant(boss, true, &["darkwiz"]));
+    let dark = rig.player("DarkWiz", alley, true);
+    rig.engine
+        .world
+        .set_flag(dark, mush_core::Flags::DARK, true)
+        .unwrap();
+
+    // Moving a DARK player into and out of the informant's room, and
+    // connecting/disconnecting inside it, must not file intel or wake the NPC.
+    rig.run(dark, "in");
+    let mut out = Outbox::new();
+    let mut fx = Effects::new();
+    rig.engine.step(
+        Inbound::ConnUp {
+            conn: 901,
+            actor: dark,
+            caps_structured: false,
+            from_linkdead: false,
+        },
+        &mut out,
+        &mut fx,
+    );
+    rig.engine.step(
+        Inbound::ConnDown {
+            conn: 901,
+            actor: dark,
+            reason: mush_core::DisconnectKind::Quit,
+        },
+        &mut out,
+        &mut fx,
+    );
+    rig.run(dark, "out");
+
+    assert_eq!(
+        rig.host().intel.filed_by(spy),
+        0,
+        "DARK player must not trigger informant intel filings"
+    );
+    assert!(
+        rig.host()
+            .runtime(spy)
+            .is_none_or(|rt| rt.mailbox.is_empty()),
+        "DARK player movement/presence must not wake NPC observers"
+    );
+}

@@ -573,7 +573,7 @@ impl LlmService {
             Priority::Interactive => &self.sem_interactive,
             Priority::Background => &self.sem_background,
         };
-        let _permit = sem.acquire().await.expect("semaphore open");
+        let permit = sem.acquire().await.expect("semaphore open");
 
         // 5. Per-provider QPS.
         if let Some(lim) = self.limiters.get(&provider_id) {
@@ -612,8 +612,7 @@ impl LlmService {
         };
 
         // 6. Circuit breaker + retry.
-        let breaker = self.breakers.get(&provider_id);
-        if let Some(b) = breaker
+        if let Some(b) = self.breakers.get(&provider_id)
             && b.is_open()
         {
             drop(reservation);
@@ -630,15 +629,19 @@ impl LlmService {
         }
 
         let result = self
-            .retrying_complete(provider.as_ref(), &eff, timeout)
+            .retrying_complete(
+                RetryAttemptCtx {
+                    provider: provider.as_ref(),
+                    provider_id: &provider_id,
+                    route_key,
+                    call_ctx: &ctx,
+                    sem,
+                    req: &eff,
+                    timeout,
+                },
+                permit,
+            )
             .await;
-
-        if let Some(b) = breaker {
-            match &result {
-                Err(e) if e.is_transport_failure() => b.record_failure(&self.breaker_cfg),
-                _ => b.record_success(),
-            }
-        }
 
         // 7. Validate usage + settle + audit.
         match result {
@@ -676,10 +679,10 @@ impl LlmService {
             }
             Err(e) => {
                 drop(reservation);
-                let outcome = if matches!(e, LlmError::Refused { .. }) {
-                    Outcome::Refused
-                } else {
-                    Outcome::Error
+                let outcome = match e {
+                    LlmError::Refused { .. } => Outcome::Refused,
+                    LlmError::Disabled => Outcome::Disabled,
+                    _ => Outcome::Error,
                 };
                 self.write_audit(
                     &ctx,
@@ -895,9 +898,8 @@ impl LlmService {
 
     async fn retrying_complete(
         &self,
-        provider: &dyn LlmProvider,
-        req: &CompletionRequest,
-        timeout: Duration,
+        attempt: RetryAttemptCtx<'_>,
+        mut permit: tokio::sync::SemaphorePermit<'_>,
     ) -> Result<CompletionResponse, LlmError> {
         use backon::{BackoffBuilder, ExponentialBuilder};
 
@@ -911,18 +913,130 @@ impl LlmService {
         }
         let mut schedule = builder.build();
 
+        let deadline = Instant::now() + attempt.timeout;
+        let max_delay = Duration::from_millis(self.retry.max_delay_ms);
+        let breaker = self.breakers.get(attempt.provider_id);
+        let limiter = self.limiters.get(attempt.provider_id);
+
         loop {
-            match provider.complete(req, timeout).await {
-                Ok(r) => return Ok(r),
-                Err(e) if e.is_retryable() => match schedule.next() {
-                    Some(base) => {
-                        let delay = e.retry_after().map_or(base, |ra| ra.max(base));
-                        tracing::debug!(delay_ms = delay.as_millis() as u64, error = %e, "llm retry");
-                        tokio::time::sleep(delay).await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(LlmError::Timeout);
+            }
+            let outcome = match tokio::time::timeout(
+                remaining,
+                attempt.provider.complete(attempt.req, remaining),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(_) => Err(LlmError::Timeout),
+            };
+
+            match outcome {
+                Ok(r) => {
+                    if let Some(b) = breaker {
+                        b.record_success();
                     }
-                    None => return Err(e),
-                },
-                Err(e) => return Err(e),
+                    return Ok(r);
+                }
+                Err(e) => {
+                    if let Some(b) = breaker {
+                        if e.is_transport_failure() {
+                            b.record_failure(&self.breaker_cfg);
+                        } else {
+                            b.record_success();
+                        }
+                    }
+                    if !e.is_retryable() {
+                        return Err(e);
+                    }
+                    let Some(base) = schedule.next() else {
+                        return Err(e);
+                    };
+                    if attempt.call_ctx.parked
+                        || self
+                            .kill
+                            .is_disabled(attempt.route_key, attempt.call_ctx.npc)
+                    {
+                        return Err(LlmError::Disabled);
+                    }
+                    if breaker.is_some_and(CircuitBreaker::is_open) {
+                        return Err(LlmError::Overloaded);
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(e);
+                    }
+                    // Clamp `Retry-After` to `retry.max_delay_ms` and the
+                    // remaining call deadline (`P2-CORE-10`). If the wait
+                    // alone would consume the remaining deadline, fail now
+                    // instead of sleeping with no budget left to retry.
+                    let delay = e
+                        .retry_after()
+                        .map_or(base, |ra| ra.max(base))
+                        .min(max_delay);
+                    if delay >= remaining {
+                        return Err(e);
+                    }
+                    tracing::debug!(
+                        delay_ms = delay.as_millis() as u64,
+                        error = %e,
+                        "llm retry"
+                    );
+
+                    // Release the active concurrency permit across the backoff
+                    // sleep so slow retries cannot pin the semaphore; the
+                    // outer admission permit in `call()` keeps total in-flight
+                    // + waiting work bounded.
+                    drop(permit);
+                    tokio::time::sleep(delay).await;
+
+                    if attempt.call_ctx.parked
+                        || self
+                            .kill
+                            .is_disabled(attempt.route_key, attempt.call_ctx.npc)
+                    {
+                        return Err(LlmError::Disabled);
+                    }
+                    if breaker.is_some_and(CircuitBreaker::is_open) {
+                        return Err(LlmError::Overloaded);
+                    }
+
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(e);
+                    }
+                    permit = match tokio::time::timeout(remaining, attempt.sem.acquire()).await {
+                        Ok(Ok(p)) => p,
+                        Ok(Err(_)) => return Err(LlmError::Overloaded),
+                        Err(_) => return Err(LlmError::Timeout),
+                    };
+
+                    if let Some(lim) = limiter {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            return Err(LlmError::Timeout);
+                        }
+                        if tokio::time::timeout(remaining, lim.until_ready())
+                            .await
+                            .is_err()
+                        {
+                            return Err(LlmError::Timeout);
+                        }
+                    }
+
+                    if attempt.call_ctx.parked
+                        || self
+                            .kill
+                            .is_disabled(attempt.route_key, attempt.call_ctx.npc)
+                    {
+                        return Err(LlmError::Disabled);
+                    }
+                    if breaker.is_some_and(CircuitBreaker::is_open) {
+                        return Err(LlmError::Overloaded);
+                    }
+                }
             }
         }
     }
@@ -1001,6 +1115,18 @@ impl LlmService {
         };
         self.audit.record(rec);
     }
+}
+
+// -- retry helper context --------------------------------------------------
+
+struct RetryAttemptCtx<'a> {
+    provider: &'a dyn LlmProvider,
+    provider_id: &'a ProviderId,
+    route_key: &'a str,
+    call_ctx: &'a CallCtx,
+    sem: &'a Semaphore,
+    req: &'a CompletionRequest,
+    timeout: Duration,
 }
 
 // -- streaming settle adapter ---------------------------------------------

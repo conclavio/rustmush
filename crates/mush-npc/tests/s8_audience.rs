@@ -119,10 +119,20 @@ impl mush_core::EventHook for CloakHook {
     fn perceives(
         &self,
         ctx: &mush_core::HookReadContext<'_>,
-        _observer: ObjId,
+        observer: ObjId,
         subject: ObjId,
     ) -> mush_core::Perceive {
         if ctx.world().attr(subject, "test_cloaked").is_some() {
+            mush_core::Perceive::Conceal
+        } else if ctx
+            .world()
+            .attr(subject, "test_cloaked_from_players")
+            .is_some()
+            && ctx
+                .world()
+                .get(observer)
+                .is_some_and(|o| o.kind == ObjKind::Player)
+        {
             mush_core::Perceive::Conceal
         } else {
             mush_core::Perceive::Abstain
@@ -1123,4 +1133,269 @@ fn the_default_audience_is_the_asker() {
     // An older encoding without the field decodes as private.
     let decoded: InterfaceReply = serde_json::from_str(r#"{"text":"x"}"#).unwrap();
     assert_eq!(decoded.audience, mush_core::ReplyAudience::Asker);
+}
+
+#[test]
+fn p2_core_13_dark_players_exits_and_asides_do_not_leak() {
+    use mush_core::Flags;
+
+    let mut lot = lot();
+    let lobby = lot.tw.world().get(lot.clerk).unwrap().location.unwrap();
+    let dark_wiz = lot.tw.spawn_player("DarkWiz");
+    lot.tw.world_mut().move_to(dark_wiz, lobby).unwrap();
+    lot.tw
+        .world_mut()
+        .set_flag(dark_wiz, Flags::DARK, true)
+        .unwrap();
+
+    // Add a visible exit, a DARK exit, and a GOING exit.
+    let visible_exit = lot
+        .tw
+        .world_mut()
+        .create(ObjKind::Exit, "North", GOD, Some(lobby))
+        .unwrap();
+    let dark_exit = lot
+        .tw
+        .world_mut()
+        .create(ObjKind::Exit, "SecretDoor", GOD, Some(lobby))
+        .unwrap();
+    lot.tw
+        .world_mut()
+        .set_flag(dark_exit, Flags::DARK, true)
+        .unwrap();
+    let going_exit = lot
+        .tw
+        .world_mut()
+        .create(ObjKind::Exit, "VanishingGate", GOD, Some(lobby))
+        .unwrap();
+    lot.tw
+        .world_mut()
+        .set_flag(going_exit, Flags::GOING, true)
+        .unwrap();
+    let _ = visible_exit;
+
+    // 1. Dialogue snapshot excludes DARK players and DARK/GOING exits.
+    lot.tw.set_now(100);
+    let snap = dialogue_snapshot(&mut lot.tw, lot.clerk, lot.alice);
+    let present_names: Vec<&str> = snap.scene.present.iter().map(|p| p.name.as_str()).collect();
+    assert!(present_names.contains(&"Alice"), "{present_names:?}");
+    assert!(present_names.contains(&"Bob"), "{present_names:?}");
+    assert!(
+        !present_names.contains(&"DarkWiz"),
+        "DARK player leaked into dialogue snapshot: {present_names:?}"
+    );
+    assert!(snap.scene.exits.iter().any(|e| e == "North"));
+    assert!(
+        !snap.scene.exits.iter().any(|e| e == "SecretDoor"),
+        "DARK exit leaked into dialogue snapshot: {:?}",
+        snap.scene.exits
+    );
+    assert!(
+        !snap.scene.exits.iter().any(|e| e == "VanishingGate"),
+        "GOING exit leaked into dialogue snapshot: {:?}",
+        snap.scene.exits
+    );
+
+    // 2. Scene turn context (`scene_turn_context` + `on_scene_turn`) excludes DARK players and DARK/GOING exits.
+    let ctx_json = scene_context(&mut lot.tw, lot.clerk);
+    let scene_present: Vec<&str> = ctx_json["present"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(!scene_present.contains(&"DarkWiz"), "{scene_present:?}");
+    let scene_exits: Vec<&str> = ctx_json["exits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(scene_exits.contains(&"North"), "{scene_exits:?}");
+    assert!(!scene_exits.contains(&"SecretDoor"), "{scene_exits:?}");
+    assert!(!scene_exits.contains(&"VanishingGate"), "{scene_exits:?}");
+
+    // 3. `invoke_interface` quiet-aside is suppressed for a DARK asker.
+    let events_dark = ability_turn(&mut lot.tw, lot.clerk, dark_wiz, 501, "probe.private");
+    assert!(
+        !text(&lot.tw, &events_dark, lot.bob).contains("speaks quietly"),
+        "DARK asker leaked via quiet aside: {}",
+        text(&lot.tw, &events_dark, lot.bob)
+    );
+
+    // 4. `invoke_interface` quiet-aside carries `subject: Some(asker)` so a
+    //    bystander who cannot perceive `asker` does NOT see the aside even when
+    //    the NPC perceives `asker` and delivers the private reply.
+    lot.tw
+        .world_mut()
+        .set_attr(
+            lot.alice,
+            "test_cloaked_from_players",
+            mush_core::Attr::text("1", GOD),
+        )
+        .unwrap();
+    let events_cloaked = ability_turn(&mut lot.tw, lot.clerk, lot.alice, 502, "probe.private");
+    assert!(
+        text(&lot.tw, &events_cloaked, lot.alice).contains("Confidential review"),
+        "asker still receives private reply"
+    );
+    assert!(
+        !text(&lot.tw, &events_cloaked, lot.bob).contains("speaks quietly"),
+        "concealed asker leaked to bystander via quiet aside: {}",
+        text(&lot.tw, &events_cloaked, lot.bob)
+    );
+    assert!(
+        events_cloaked.iter().any(|(aud, _)| matches!(
+            aud,
+            Audience::Room { subject: Some(s), .. } if *s == lot.alice
+        )),
+        "quiet aside must set Audience::Room subject to Some(asker): {events_cloaked:?}"
+    );
+}
+
+#[test]
+fn p2_core_17_on_complete_and_invoke_interface_revalidate_live_state() {
+    use mush_core::Flags;
+
+    fn say_turn(
+        tw: &mut TestWorld,
+        npc: ObjId,
+        asker: ObjId,
+        correlation: u64,
+        text_line: &str,
+    ) -> Vec<(Audience, OutputEvent)> {
+        tw.world_mut()
+            .module_state_mut::<mush_npc::NpcHostState>()
+            .unwrap()
+            .begin_turn(npc, 1, correlation);
+        let payload = serde_json::json!({
+            "status": "ok",
+            "npc": npc,
+            "asker": asker,
+            "actions": [
+                { "action": { "action": "say", "text": text_line } },
+                { "action": { "action": "use_ability", "name": "probe.public", "input": {} } }
+            ]
+        })
+        .to_string();
+        let mut out = Outbox::new();
+        let mut fx = Effects::new();
+        tw.engine_mut().step(
+            Inbound::Apply(WorldCommand::ModuleAsyncDone {
+                module: "npc".into(),
+                actor: npc,
+                correlation,
+                payload,
+            }),
+            &mut out,
+            &mut fx,
+        );
+        out.take()
+    }
+
+    let has_narrative = |events: &[(Audience, OutputEvent)]| {
+        events
+            .iter()
+            .any(|(_, ev)| matches!(ev, OutputEvent::Narrative { .. }))
+    };
+
+    // 1. Disabled (parked) NPC drops in-flight completion actions (and Degraded fallback).
+    {
+        let mut lot = lot();
+        let prof = mush_npc::AgentProfile {
+            interfaces: vec!["probe".into()],
+            enabled: false,
+            ..mush_npc::AgentProfile::default()
+        };
+        lot.tw
+            .world_mut()
+            .set_attr(
+                lot.clerk,
+                mush_npc::PROFILE_ATTR,
+                mush_core::Attr::json(serde_json::to_value(&prof).unwrap(), GOD),
+            )
+            .unwrap();
+        let events = say_turn(&mut lot.tw, lot.clerk, lot.alice, 601, "parked leak");
+        assert!(
+            !has_narrative(&events),
+            "parked NPC must emit no narrative: {events:?}"
+        );
+        assert!(lot.said.0.lock().unwrap().is_empty());
+        assert!(
+            lot.tw
+                .world()
+                .module_state::<mush_npc::NpcHostState>()
+                .unwrap()
+                .interface_audit
+                .is_empty()
+        );
+    }
+
+    // 2. GOING NPC drops in-flight completion actions.
+    {
+        let mut lot = lot();
+        lot.tw
+            .world_mut()
+            .set_flag(lot.clerk, Flags::GOING, true)
+            .unwrap();
+        let events = say_turn(&mut lot.tw, lot.clerk, lot.alice, 602, "going leak");
+        assert!(
+            !has_narrative(&events),
+            "GOING NPC must emit no narrative: {events:?}"
+        );
+        assert!(lot.said.0.lock().unwrap().is_empty());
+    }
+
+    // 3. Exclusive-scene (timestopped) NPC drops in-flight completion actions.
+    {
+        let mut lot = lot();
+        lot.tw.world_mut().set_exclusive_scene_member(lot.clerk);
+        let events = say_turn(&mut lot.tw, lot.clerk, lot.alice, 603, "timestop leak");
+        assert!(
+            !has_narrative(&events),
+            "timestopped NPC must emit no narrative: {events:?}"
+        );
+        assert!(lot.said.0.lock().unwrap().is_empty());
+    }
+
+    // 4. `invoke_interface` refuses a disconnected asker.
+    {
+        let mut lot = lot();
+        lot.tw.world_mut().set_connected(lot.alice, false);
+        let events = ability_turn(&mut lot.tw, lot.clerk, lot.alice, 604, "probe.public");
+        assert!(
+            !text(&lot.tw, &events, lot.bob).contains("The sky is blue today."),
+            "disconnected asker must not invoke interface"
+        );
+        let audit = &lot
+            .tw
+            .world()
+            .module_state::<mush_npc::NpcHostState>()
+            .unwrap()
+            .interface_audit;
+        assert_eq!(audit.len(), 1);
+        assert!(!audit[0].ok);
+    }
+
+    // 5. `invoke_interface` refuses a newly concealed asker (failed `can_perceive`).
+    {
+        let mut lot = lot();
+        lot.tw
+            .world_mut()
+            .set_attr(lot.alice, "test_cloaked", mush_core::Attr::text("1", GOD))
+            .unwrap();
+        let events = ability_turn(&mut lot.tw, lot.clerk, lot.alice, 605, "probe.public");
+        assert!(
+            !text(&lot.tw, &events, lot.bob).contains("The sky is blue today."),
+            "concealed asker must not invoke interface"
+        );
+        let audit = &lot
+            .tw
+            .world()
+            .module_state::<mush_npc::NpcHostState>()
+            .unwrap()
+            .interface_audit;
+        assert_eq!(audit.len(), 1);
+        assert!(!audit[0].ok);
+    }
 }
