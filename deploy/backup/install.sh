@@ -39,9 +39,15 @@ for tool in python3 redis-cli redis-server systemctl; do
 done
 command -v zstd > /dev/null || echo "install: note: no zstd on this box; archives will be gzip (.tar.gz)" >&2
 
-install -d -o root -g root -m 0755 "$LIB"
-install -o root -g root -m 0755 "$HERE/rmbak.py" "$HERE/backup-serve.sh" "$LIB/"
-install -o root -g root -m 0644 "$HERE/README.md" "$LIB/"
+# The whole directory goes to $LIB, this script and the owner's two among it, so
+# the box can run any of them again without a tree.
+if [ "$HERE" != "$LIB" ]; then
+  install -d -o root -g root -m 0755 "$LIB"
+  install -o root -g root -m 0755 "$HERE/rmbak.py" "$HERE/backup-serve.sh" "$HERE/install.sh" \
+    "$HERE/pull-access.sh" "$HERE/pull-key.sh" "$LIB/"
+  install -o root -g root -m 0644 "$HERE/README.md" "$HERE/backup.conf.example" \
+    "$HERE"/rustmush-backup*.service "$HERE"/rustmush-backup*.timer "$LIB/"
+fi
 if [ -e "$CONF" ]; then
   echo "install: $CONF exists and is kept as it is"
 else
@@ -78,7 +84,6 @@ else
   install -o root -g root -m 0644 "$HERE/rustmush-backup-pull.service" "$HERE/rustmush-backup-pull.timer" /etc/systemd/system/
   systemctl daemon-reload
   echo "install: done. Nothing is enabled. Next, in order:"
-  echo "  1. set PULL_SSH in $CONF (the key it names is the owner's to make and place)"
-  echo "  2. one run by hand:    systemctl start rustmush-backup-pull.service; python3 $LIB/rmbak.py status"
-  echo "  3. the timer:          systemctl enable --now rustmush-backup-pull.timer"
+  echo "  the OWNER, as root: bash $LIB/pull-key.sh     (it makes the key and prints the next two commands;"
+  echo "  the last of them sets PULL_SSH, runs one pull and enables rustmush-backup-pull.timer)"
 fi

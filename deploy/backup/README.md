@@ -20,6 +20,8 @@ archives, restores one beside nothing that matters, and proves it is whole.
 | `rustmush-backup.service`, `.timer` | `/etc/systemd/system/` | The box that takes backups: every four hours at twenty past. **The interval is the timer's one `OnCalendar=` line.** |
 | `rustmush-backup-pull.service`, `.timer` | `/etc/systemd/system/` | The box that fetches them: fifteen minutes later. |
 | `install.sh` | run from the tree | `install.sh take [--serve-user]` or `install.sh pull`. Installs; enables nothing. |
+| `pull-key.sh` | `/usr/local/lib/rustmush-backup/` | **The owner runs it**, on the box that fetches: makes the pull's SSH key, and with `--finish <fingerprint>` trusts the far side's host key, sets `PULL_SSH` and enables the pull. |
+| `pull-access.sh` | `/usr/local/lib/rustmush-backup/` | **The owner runs it**, on the box that takes backups: password logins off (and proved off, and a key login confirmed by him) before it admits the pull's key with its forced command and adds one firewall rule. |
 | `test_rmbak.py` | stays in the tree | The tests (`python3 -B deploy/backup/test_rmbak.py`), and the tamper tool the runbook's proof uses. |
 
 ## In one screen

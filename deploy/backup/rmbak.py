@@ -79,12 +79,14 @@ CONF_DEFAULTS = {
     "BACKUP_DIR": "/var/backups/rustmush",
     "INSTANCES": "",
     "KEEP": "18",
+    "KEEP_DAILY_DAYS": "0",
     "SECRETS": "in-archive",
     "BINARIES": "yes",
     "READ_GROUP": "rmbackup",
     "PULL_SSH": "",
     "PULL_DIR": "/var/backups/rustmush-pulled",
-    "PULL_KEEP": "84",
+    "PULL_KEEP": "18",
+    "PULL_KEEP_DAILY_DAYS": "30",
     "PULL_DEEP": "yes",
     "MAX_AGE_HOURS": "9",
 }
@@ -228,6 +230,9 @@ def load_conf(path):
     for key in ("KEEP", "PULL_KEEP", "MAX_AGE_HOURS"):
         if not conf[key].isdigit() or int(conf[key]) < 1:
             raise Fail(f"{path}: {key} is a whole number, at least 1")
+    for key in ("KEEP_DAILY_DAYS", "PULL_KEEP_DAILY_DAYS"):
+        if not conf[key].isdigit():
+            raise Fail(f"{path}: {key} is a whole number of days (0 keeps no dailies)")
     return conf
 
 
@@ -1305,8 +1310,29 @@ def archives_in(directory, instance=None):
     return sorted(names, key=lambda n: (NAME_RE.match(n).group(2), n))
 
 
-def prune(directory, instance, keep):
-    doomed = archives_in(directory, instance)[:-keep]
+def kept_names(names, keep, daily_days=0):
+    """Which of one instance's archives stay (doc 52, Q-52-2): the newest
+    `keep`, and beyond those ONE a UTC day, the day's LAST archive, for the
+    `daily_days` days up to the newest archive's own day. The days are counted
+    from the newest archive held, not from today, so a backup that has stopped
+    never ages the history it left away."""
+    names = sorted(names, key=lambda n: (NAME_RE.match(n).group(2), n))
+    kept = set(names[-keep:])
+    if daily_days and names:
+        def day(name):
+            return calendar.timegm(time.strptime(NAME_RE.match(name).group(2)[:8], "%Y%m%d")) // 86400
+        newest_day = day(names[-1])
+        last_of_day = {}
+        for name in names:
+            last_of_day[day(name)] = name  # sorted: the last one seen is the day's last
+        kept.update(name for when, name in last_of_day.items() if newest_day - when < daily_days)
+    return kept
+
+
+def prune(directory, instance, keep, daily_days=0):
+    names = archives_in(directory, instance)
+    kept = kept_names(names, keep, daily_days)
+    doomed = [name for name in names if name not in kept]
     for name in doomed:
         os.unlink(os.path.join(directory, name))
     return doomed
@@ -1358,9 +1384,10 @@ def cmd_run(args):
         # Prune only behind a good backup: while an instance's backups fail, nothing
         # older is deleted, so the last known-good archive is never rotated out.
         if row["ok"]:
-            removed = prune(dest, instance, int(conf["KEEP"]))
+            removed = prune(dest, instance, int(conf["KEEP"]), int(conf["KEEP_DAILY_DAYS"]))
             if removed:
-                say(f"{instance}: pruned {len(removed)} archive(s), keeping the newest {conf['KEEP']}")
+                say(f"{instance}: pruned {len(removed)} archive(s), keeping the newest {conf['KEEP']}" +
+                    (f" and one a day for {conf['KEEP_DAILY_DAYS']} days" if int(conf["KEEP_DAILY_DAYS"]) else ""))
         row["kept"] = len(archives_in(dest, instance))
     status["updated_utc"] = utc()
     status["host"] = socket.gethostname()
@@ -1390,11 +1417,13 @@ def cmd_pull(args):
         size, _, name = line.partition(" ")
         if NAME_RE.match(name) and size.isdigit():
             offered.append((name, int(size)))
-    keep = int(conf["PULL_KEEP"])
+    keep, daily_days = int(conf["PULL_KEEP"]), int(conf["PULL_KEEP_DAILY_DAYS"])
     wanted = set()
     for instance in sorted({NAME_RE.match(n).group(1) for n, _ in offered}):
-        newest = [n for n, _ in offered if NAME_RE.match(n).group(1) == instance]
-        wanted.update(sorted(newest, key=lambda n: NAME_RE.match(n).group(2))[-keep:])
+        # What this box would keep of everything it holds or is offered: nothing
+        # is fetched only to be pruned at the end of the same run.
+        known = set(archives_in(dest, instance)) | {n for n, _ in offered if NAME_RE.match(n).group(1) == instance}
+        wanted.update(kept_names(known, keep, daily_days))
     fetched = 0
     for name, size in offered:
         if name not in wanted or os.path.exists(os.path.join(dest, name)):
@@ -1420,9 +1449,10 @@ def cmd_pull(args):
             if os.path.exists(partial):
                 os.unlink(partial)
     for instance in sorted({NAME_RE.match(n).group(1) for n in archives_in(dest)}):
-        removed = prune(dest, instance, keep)
+        removed = prune(dest, instance, keep, daily_days)
         if removed:
-            say(f"{instance}: pruned {len(removed)} pulled archive(s), keeping the newest {keep}")
+            say(f"{instance}: pruned {len(removed)} pulled archive(s), keeping the newest {keep}" +
+                (f" and one a day for {daily_days} days" if daily_days else ""))
     # Loud when the other side is failing or has gone quiet.
     problems = []
     try:

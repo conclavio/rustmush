@@ -173,8 +173,16 @@ out (`deploy/backup/backup.conf.example`): `INSTANCES`, `BACKUP_DIR`, `KEEP`
 (archives kept an instance, 18), `SECRETS` (`in-archive`, or `apart`: the key
 families and the host key are left out and listed with digests), `BINARIES`
 (`yes`; `no` makes a 2.7 MB archive that needs `restore --binaries <dir>`),
-`MAX_AGE_HOURS` (9), and the pull's `PULL_SSH`, `PULL_DIR`, `PULL_KEEP` (84),
-`PULL_DEEP` (`yes`).
+`MAX_AGE_HOURS` (9), and the pull's `PULL_SSH`, `PULL_DIR`, `PULL_KEEP` (18),
+`PULL_KEEP_DAILY_DAYS` (30), `PULL_DEEP` (`yes`).
+
+**What is kept** (the owner's ruling of 2026-11-23, doc 52 Q-52-2). On the box
+that takes the backups: the newest 18 of each instance, three days. On the box
+that fetches them: the newest 18, and beyond those **one archive a UTC day, the
+day's last**, for the 30 days up to the newest archive's own day: about 45 an
+instance. The month is counted back from the newest archive held, not from
+today, so a backup that has stopped never ages its history away. Either box can
+run either rule (`KEEP_DAILY_DAYS` is 0 on the taking side).
 
 ### Installing it, and the timer
 
@@ -225,14 +233,39 @@ systemctl enable --now rustmush-backup.timer
 The box that restores **pulls**: `rmbak pull`, run by
 `rustmush-backup-pull.timer` fifteen minutes after each backup. Its key's only
 use on the far side is a forced command, `backup-serve.sh`, which answers
-`list`, `status` and `fetch <name>` and nothing else. The six steps that place
-the key (the account, the key, the `authorized_keys` line, password logins off
-on the admin port, the panel rule, the first run) are doc 52 §5; each is the
-owner's to do or to say go to, and none is done.
+`list`, `status` and `fetch <name>` and nothing else.
 
-By hand, until then, an archive travels as a deploy's tarballs do, through the
-owner's session; it is one file, and `rmbak verify` on the far side proves the
-transfer:
+**Setting it up is three commands, and the owner runs them**: they make an SSH
+key, turn password logins off on the admin port, and add a firewall rule, and
+no session of Claude's changes a box's login or firewall settings. Each prints
+the next one with the value it needs already in it (doc 52 §5 has every step).
+
+```bash
+# 1. on conclav.dev (after `install.sh pull`): makes the key, prints command 2
+bash /usr/local/lib/rustmush-backup/pull-key.sh
+# 2. on conclav.io (after `install.sh take`): password logins off and proved off, then it WAITS for a
+#    key login from your own box in a second terminal; then the key's one line and one ufw rule; prints command 3
+bash /usr/local/lib/rustmush-backup/pull-access.sh '<the public key line command 1 printed>'
+# 3. on conclav.dev: trusts conclav.io's host key only if it has that fingerprint, sets PULL_SSH,
+#    runs one pull, enables the pull timer
+bash /usr/local/lib/rustmush-backup/pull-key.sh --finish <the fingerprint command 2 printed>
+```
+
+Command 2 stops, and puts sshd back as it was, if `sshd -t` refuses the config,
+if `sshd -T` still reads passwords on, if the running sshd still offers a
+password, or if the key login is not confirmed. It adds the ufw rule (TCP 2222
+from `50.6.20.140`, conclav.dev's own address, and nothing wider) only if ufw
+does not already admit that port from anywhere. To undo it: remove
+`/etc/ssh/sshd_config.d/00-rustmush-no-passwords.conf` and `systemctl reload
+ssh`; empty `/var/lib/rmbackup/.ssh/authorized_keys`; `ufw delete allow from
+50.6.20.140 to any port 2222 proto tcp`.
+
+> **Until command 2 has been run**, conclav.io's admin port takes root's
+> password and, since the panel rule of 2026-11-23, is reachable from
+> conclav.dev, where every session works as root.
+
+By hand, until then, an archive travels through a session's own root access;
+it is one file, and `rmbak verify` on the far side proves the transfer:
 
 ```bash
 scp -P 2222 root@conclav.io:/var/backups/rustmush/dev1-<UTC>-<commit8>.rmbak.tar.zst .
@@ -283,6 +316,41 @@ step 4).
 To look at a copy by hand, tunnel to it and log in with an account of the
 archived world: `ssh -L 16892:127.0.0.1:16892 root@conclav.dev`, then
 `ssh -p 16892 <account>@127.0.0.1`.
+
+### A box builds its own deploy
+
+Since 2026-11-23 (the owner: "let's install node on both boxes so they can do
+their own full builds ... so my windows box isnt in the loop") nothing a deploy
+needs is built on, or shipped from, another machine.
+
+```bash
+bash deploy/vps-runner/build-tools-install.sh          # once a box: Node 22.23.5, pinned and verified, into /usr/local
+COMMIT=main JOBS=4 bash deploy/redeploy/stage-source.sh dev1 dev2   # the tree tar and the web client's tar, made here
+COMMIT=<sha8 it printed> JOBS=4 bash deploy/redeploy/stage-build.sh dev1   # both halves, beside the live tree
+```
+
+- `build-tools-install.sh` (also `WITH_BUILD_TOOLS=1 provision.sh`) downloads
+  the official linux-x64 Node tarball from nodejs.org, checks it against the
+  SHA-256 pinned in the script (the value in that release's `SHASUMS256.txt`),
+  unpacks it root-owned under `/usr/local/lib/nodejs` and links `node`, `npm`
+  and `npx` into `/usr/local/bin`. It adds no apt source. To move to a newer
+  Node 22, change the version and the digest together and run it again.
+- `stage-source.sh` keeps a clone of the public repository in the build user's
+  `~/rustmush-stage`, takes `git archive` of the commit, builds the web client
+  there (`npm ci`, the picture's WebAssembly, Vite) and leaves
+  `<instance>-tree-<sha8>.tar` and `<instance>-dist-<sha8>.tar` where
+  `stage-build.sh` reads them. Root runs it and builds nothing: git, npm and
+  cargo run as `ghrunner`, so no package's script runs as root. It changes
+  nothing live. On a box whose live tree predates the script, run a copy of it.
+- **The licensed asset packs are never on a box and never in the repository.**
+  A build reads only their baked output, which is committed under `crates/`
+  (the 60 model files, the looks, the content packs). Baking from the packs,
+  and the Unity client, stay on the owner's workstation; neither is part of a
+  server deploy.
+
+Proved on conclav.dev from a clean checkout: sources and web client 25 s, both
+release binaries 324 s into an empty target at 20 jobs, no warning (doc 52
+§7.7). conclav.io's build of both halves is about 25 minutes at four jobs.
 
 ### The IC clock after a restore
 

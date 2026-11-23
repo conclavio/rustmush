@@ -1,7 +1,7 @@
 # 52. Whole-instance backup and restore — one archive, a cut of a live instance, a timer, and a restore that proves it
 
-Draft 0.1, 2026-11-23, a design, one tool and its unit files. Written against `origin/main` at
-`da2db6ef7`. It closes `T-112` of [the simulator backlog](16c-simulator-backlog.md): until now no
+Draft 0.2, 2026-11-23, a design, one tool and its unit files. Written against `origin/main` at
+`da2db6ef7`; Draft 0.1, the same day, had every question open. It closes `T-112` of [the simulator backlog](16c-simulator-backlog.md): until now no
 instance took a backup, and a restore needed six directories that no recipe copied together with
 the store. The tool is `deploy/backup/rmbak.py`; the runbook is
 [`docs/ops.md`, "Whole-instance backup and restore"](../ops.md#whole-instance-backup-and-restore-doc-52).
@@ -13,16 +13,37 @@ dev3 and dev4 may stand on conclav.dev for this). **Nothing on conclav.io has be
 timer there, the first archive of dev1 or dev2, and the key for the copy each wait for the owner
 (§9). The numbers below are measured ones, and §7 says which run each came from.
 
-**The questions for the owner** (each in full in §10, with its alternative and reason). The first
-two decide what the tool does on conclav.io and are not assumed: the tool runs today on the
-proposed defaults, each one line of `/etc/rustmush-backup.conf`.
+**Draft 0.2 records the owner's rulings of 2026-11-23.** Asked Q-52-1, Q-52-2 and for the go on
+conclav.io, the owner answered: "instance keys in the archive yes i agree ... how many archives to
+keep, 18 on conclav.io is fine, for conclav.dev i would keep the same 18 plus 1 per day from the
+last month (so ~45-48 backups) .. let's install node on both boxes so they can do their own full
+builds, and any other tools required so my windows box isnt in the loop .. i've added a hostinger
+firewall rule to allow 50.6.20.140 incoming to port 2222, i'll let you handle the ufw side after
+disabling root ssh password login (i have console access as a backup)".
 
-| | Question | Proposed default |
+- **Q-52-1 is ruled as proposed**: the key families and the SSH host key ride in the archive.
+- **Q-52-2 is ruled, and not as proposed** for conclav.dev: the newest 18 there too, and beyond
+  those one archive a day for the last month. Built as two tiers (§10, Q-52-2).
+- **Q-52-4 is ruled by what he did**: the panel now admits conclav.dev (`50.6.20.140`, the address
+  on that box's own interface) to port 2222, so the copy is the pull.
+- **New scope: each box builds its own deploys**, with the Windows box out of the loop. Built as
+  `deploy/vps-runner/build-tools-install.sh` (Node, pinned and verified) and
+  `deploy/redeploy/stage-source.sh` (the tree and the web client, made on the box), and proved by a
+  full build from a clean checkout on conclav.dev (§7.7). It also changes Q-52-3's reason, not its
+  default.
+- **The sshd and firewall change stays his to run.** He offered it to the session; a session does
+  not change a box's login or firewall settings, so it is one script he runs
+  (`deploy/backup/pull-access.sh`, §5), and the key is one more (`pull-key.sh`).
+- Q-52-3 and Q-52-5 to Q-52-10 are still open at their defaults.
+
+**The questions** (each in full in §10, with its alternative and reason):
+
+| | Question | Default, or ruling |
 |---|---|---|
-| Q-52-1 | Do secrets ride in the archive? | the four key families and the SSH host key **in** the archive; provider keys **never** |
-| Q-52-2 | How many archives are kept on each box? | 18 an instance on conclav.io (three days), 84 on conclav.dev (two weeks) |
+| Q-52-1 | Do secrets ride in the archive? | **Ruled 2026-11-23, as proposed:** the four key families and the SSH host key **in** the archive; provider keys **never** |
+| Q-52-2 | How many archives are kept on each box? | **Ruled 2026-11-23:** 18 an instance on conclav.io; on conclav.dev the newest 18 and one a day for the last 30 days (about 45) |
 | Q-52-3 | Do the binaries ride in every archive? | yes: 109 MB an archive instead of 2.7 MB, and a restore needs no build |
-| Q-52-4 | Which box starts the copy? | conclav.dev pulls, with a key that can list and fetch archives and nothing else |
+| Q-52-4 | Which box starts the copy? | **Ruled 2026-11-23, by the panel rule he added:** conclav.dev pulls, with a key that can list and fetch archives and nothing else |
 | Q-52-5 | A staff login for the check of a real archive | none: the check reads the clock from the copy's store; the staff password stays on conclav.io |
 | Q-52-6 | Where a failed backup is heard | the failed unit, `rmbak.py status`, and the pull failing on conclav.dev; no pager yet |
 | Q-52-7 | Are archives encrypted at rest? | not yet: both boxes are the owner's; required before a copy leaves them |
@@ -97,9 +118,11 @@ Three facts in that table were not known before this work and changed the design
 
 - **The release gateway embeds the web client** (`crates/mush-net-web/build.rs` refuses a release
   build without `web/dist`). A rebuild at the manifest's commit therefore needs Node and the wasm
-  toolchain as well as cargo. conclav.dev has no Node, and neither does conclav.io: the bundle is
-  built on the owner's dev box at each deploy. That is why the binaries ride in the archive by
-  default.
+  toolchain as well as cargo. On 2026-11-23 neither box had Node: the bundle was built on the owner's Windows
+  box at each deploy. That is why the binaries ride in the archive by default. The owner's ruling
+  of the same day puts Node on both boxes (§7.7), so a rebuild is now possible there; the archive
+  still carries the binaries, because a restore that needs no build is the one that works on a
+  box that has nothing yet.
 - **The store holds no record of a purge.** When the archive pass moves a sealed chunk to disk and
   deletes it from the store, the only record is `purged: true` in the segment's index file
   (`crates/mush-store/src/archive.rs`). So nothing in the store says which files it depends on,
@@ -320,39 +343,54 @@ jail it, and a forced command needs no change to sshd at all.
 production box holds no credential for anything; the build box holds one that reads backups it is
 about to hold anyway.
 
-**What the pull needs that is not there today.** conclav.dev cannot reach conclav.io's admin sshd:
-port 2222 is admitted in the Hostinger panel from the owner's address only (a connection from
-conclav.dev on 2026-11-23 timed out). So the pull needs one panel rule, and that rule has a cost
-the owner should see: on 2222 sshd still accepts **root's password** (`conclav-vps` notes of
-2026-10-31: `PermitRootLogin yes` and `PasswordAuthentication yes` win there), and the panel rule
-is what shields it. Admitting conclav.dev's address exposes that login to anything running on
-conclav.dev. The steps below turn password logins off first.
+**What the pull needed, and its cost.** Until 2026-11-23 conclav.dev could not reach conclav.io's
+admin sshd: port 2222 was admitted in the Hostinger panel from the owner's address only. The
+owner has added the rule for `50.6.20.140`, which is the address on conclav.dev's own interface
+(`ip -4 addr show ens3`; no outside service was asked), and the port answers from there now. The
+cost of that rule: on 2222 sshd still accepts **root's password** (`conclav-vps` notes of
+2026-10-31: `PermitRootLogin yes` and `PasswordAuthentication yes` win there), the panel rule was
+what shielded it, and it is now reachable from a box where every session works as root. **Until
+step 2 below is run, that exposure is open.**
 
-**The steps, for the owner** (nothing here is done; each is his to do or to say go to):
+**Three commands, all the owner's.** They make a key, change sshd's settings and the firewall, and
+admit a key: no session runs them. Each script says at its head what it does, stops at the first
+thing that fails, and prints the next command with the value it needs already in it.
 
-1. On conclav.io: `bash /opt/rustmush/dev1/build/deploy/backup/install.sh take --serve-user`
-   (after a deploy that carries this directory, or from a copy of it). It makes the account
-   `rmbackup` with an empty, root-owned `authorized_keys`.
-2. On conclav.dev, as root, make the key. It has no passphrase because a timer uses it; its whole
-   power is the forced command of step 3:
-   `ssh-keygen -t ed25519 -N '' -C backup-pull@conclav.dev -f /root/.ssh/rustmush-backup-pull`
-3. On conclav.io, put the one line above, with the public half
-   (`/root/.ssh/rustmush-backup-pull.pub` on conclav.dev), into
-   `/var/lib/rmbackup/.ssh/authorized_keys`.
-4. On conclav.io, before the panel rule: stop password logins on the admin port. A drop-in
-   `/etc/ssh/sshd_config.d/00-no-passwords.conf` with `PasswordAuthentication no` and
-   `PermitRootLogin prohibit-password` (it must sort before `50-cloud-init.conf`: the first
-   value wins), then `sshd -t` and the socket restart the 2026-10-31 notes give. Check a new
-   key login from the owner's box in a second terminal before closing the first.
-5. In the Hostinger panel: admit conclav.dev's public IPv4 to TCP 2222.
-6. On conclav.dev: `install.sh pull`, set `PULL_SSH` in `/etc/rustmush-backup.conf` to the line
-   the example gives, accept the host key once after comparing its fingerprint with the one
-   conclav.io prints (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`), run
-   `systemctl start rustmush-backup-pull.service`, then enable the timer.
+1. **On conclav.dev**, as root: `bash /usr/local/lib/rustmush-backup/pull-key.sh`. It makes
+   `/root/.ssh/rustmush-backup-pull` (ed25519, no passphrase, because a timer uses it; its whole
+   power is the forced command of step 2) unless it exists, and prints step 2's command with the
+   public key in it.
+2. **On conclav.io**, as root: `bash /usr/local/lib/rustmush-backup/pull-access.sh '<public key
+   line>'`. In this order:
+   - it refuses unless root has a key of its own in `authorized_keys`;
+   - it makes the account `rmbackup` (no password, a root-owned `authorized_keys`);
+   - it turns **password logins off**: a drop-in, `/etc/ssh/sshd_config.d/00-rustmush-no-passwords.conf`
+     (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin
+     prohibit-password`; it sorts first, and sshd keeps the first value it reads), then `sshd -t`,
+     then a reload, which ends no session;
+   - it proves it twice: `sshd -T` reads passwords off for root and for `rmbackup`, and the
+     running sshd, asked on the port, offers neither `password` nor `keyboard-interactive`. If
+     either proof fails the drop-in is removed, sshd reloaded, and the script stops;
+   - **it waits** for him to prove a key login from his own box in a second terminal and type
+     `yes`; anything else puts sshd back as it was and stops;
+   - only then it writes the one key line, with the forced command, and adds **one** ufw rule,
+     TCP 2222 from `50.6.20.140` and nothing wider, and only if ufw does not already admit that
+     port from anywhere (the notes say it does: the panel is what narrows it);
+   - it prints its host key's fingerprint inside step 3's command.
+3. **On conclav.dev**, as root: `bash /usr/local/lib/rustmush-backup/pull-key.sh --finish
+   <fingerprint>`. It reads conclav.io's host key off the wire and keeps it only if it has that
+   fingerprint, writes `PULL_SSH` into `/etc/rustmush-backup.conf`, asks for the list, checks that
+   the far side refuses a command that is not one of the three, runs one pull and enables the
+   pull timer.
 
-Until then an archive crosses by hand the way a deploy's tarballs do, through the owner's own
-session: `scp -P 2222 root@conclav.io:/var/backups/rustmush/<name> .` and then onward to
-conclav.dev. That is how §9's first real archive will travel.
+Both scripts are tested against stub `sshd`, `systemctl`, `ssh` and `ufw` in a sandbox root
+(`OwnerScripts` in `test_rmbak.py`): the order, the refusals before anything is touched, and that
+sshd is put back at every stop (not confirmed; `sshd -t` refuses; `sshd -T` still reads passwords
+on; the running daemon still offers one). They have not been run on the boxes.
+
+Until the pull is in place an archive crosses by hand through a session's own root access:
+`scp -P 2222 root@conclav.io:/var/backups/rustmush/<name> .` and onward to conclav.dev. That is
+how §9's first real archive travels.
 
 ## 6. The restore and the check
 
@@ -570,6 +608,50 @@ A cut that lands in the middle of a pass is the case §2.3's second attempt is f
 a test (a file landed between the fork and the copy, a second attempt taken), and was not met
 live: the pass on dev4 took under a second.
 
+### 7.7 A box builds its own deploy
+
+The owner's ruling of 2026-11-23: both boxes do their own full builds, the Windows box out of the
+loop. Where that box was in the loop, and what replaces it:
+
+| The Windows box did | Now |
+|---|---|
+| built the web client at the commit (`npm ci && npm run build`: Node 22, the wasm32 target) and shipped `web/dist` as a tar | `deploy/redeploy/stage-source.sh` builds it on the box, as an unprivileged user |
+| made the tree tar (`git archive` of its own checkout) and piped it over ssh | the same script makes it from the box's own clone of the public repository |
+| carried the redeploy scripts inside that tar | unchanged: they are still read out of the tree tar, which the box now makes |
+| carried archives between the boxes, by `scp` through a session | the pull (§5) |
+| built the bundle for any release build on conclav.dev | the box does |
+
+What stays on the owner's workstation, and why a box never needs it:
+
+- **Baking from the licensed asset packs** (`scripts/unit-bake`, `ship-bake`, `planet-bake`,
+  `ground-extract`: Unity or Blender, and the purchased packs). The packs never go in the public
+  repository and never go on a box. What a build reads is their baked output, which is committed:
+  60 model files under `crates/mush-pixel/models/` (56 MB), the looks and the content packs under
+  `crates/`. A build from a clean clone is the proof that nothing else is read.
+- **The Unity client** (`scripts/release-unity-client.ps1`): built with Unity and uploaded to
+  `/opt/rustmush/clients`. It is not part of a server deploy.
+- **The operator's seat**: the root SSH key, the `gh` login, the provider keys placed in
+  `<inst>.env`. These are who runs a deploy, not what it is built from.
+
+**What a box needs**, beyond what `deploy/vps-runner/provision.sh` already installs (the C
+toolchain, git, Redis with its modules, a pinned rustup and toolchain for `ghrunner`):
+`deploy/vps-runner/build-tools-install.sh` installs **Node 22.23.5**, the official linux-x64
+tarball from nodejs.org, verified against the SHA-256 nodejs.org publishes for it and pinned in
+the script, unpacked root-owned under `/usr/local/lib/nodejs` with `node`, `npm` and `npx` linked
+into `/usr/local/bin`; and `xz`, `zstd`, `python3`, `git` from apt where one is missing. No
+third-party apt source is added (Ubuntu 24.04's own Node is 18, which the web build refuses). The
+wasm32 target is added by `stage-source.sh` in the tree it builds, so it always belongs to the
+toolchain that commit pins.
+
+**Proved on conclav.dev**, from nothing but the box and github.com, the npm registry and
+static.rust-lang.org: `build-tools-install.sh` (the checksum `OK`, Node v22.23.5, npm 10.9.9);
+`COMMIT=main bash stage-source.sh dev3` cloned the repository, resolved `4b8d7c56b`, built the web
+client as `ghrunner` and left the two tars in **25 s** (the client itself 19 s); then both halves
+from those two tars into an empty target directory, `--locked`, as `ghrunner`: the bundle guard
+passed, both binaries built in **324 s** at 20 jobs with no warning, and both report IPC version
+15. **349 s from a clean checkout to both release binaries, with no other machine involved.**
+conclav.io gets the same script at §9's step 3; its build is about 25 minutes at four jobs.
+
 ## 8. What this does not do
 
 - **The box.** Caddy's config and certificates, the doorway's host key and config, the firewall,
@@ -593,10 +675,10 @@ live: the pass on dev4 took under a second.
 | Step | What | State |
 |---|---|---|
 | 1 | The tool, the units, the tests, this doc and the runbook; the cycle proved on conclav.dev | **this PR** |
-| 2 | The owner rules Q-52-1 and Q-52-2 (and the rest, or takes the defaults) | waits on the owner |
-| 3 | On conclav.io, with his go: `install.sh take`, `INSTANCES`, one run by hand, the timer | waits on the owner |
-| 4 | The first real archive of dev1 or dev2, carried to conclav.dev by hand, restored as dev4 and checked; the restore time and what the check found go into the runbook | waits on step 3 |
-| 5 | The key and the pull timer (§5's six steps) | waits on the owner |
+| 2 | The owner rules Q-52-1 and Q-52-2 | **ruled 2026-11-23**; the two-tier retention, the build tools and the owner's two scripts added to this PR |
+| 3 | On conclav.io, once this PR has merged: `build-tools-install.sh`, `install.sh take`, `INSTANCES`, one run by hand, the timer | next |
+| 4 | The first real archive of dev1 or dev2, carried to conclav.dev by hand, restored as dev4 and checked; the restore time and what the check found go into the runbook | after step 3 |
+| 5 | The pull: §5's three commands | the owner's to run |
 | 6 | dev3 and dev4 removed from conclav.dev (Q-52-10) | after step 4 |
 
 Not in these steps: a weekly boot drill (Q-52-8), a pager (Q-52-6), encryption (Q-52-7), the two
@@ -607,7 +689,7 @@ server rows (Q-52-9).
 Every question has a proposed default, an alternative and a reason. **(expensive to reverse)**
 marks an answer that would be costly to undo.
 
-**Q-52-1 — Do secrets ride in the archive?**
+**Q-52-1 — Do secrets ride in the archive?** **Ruled 2026-11-23: accepted as written.**
 - **Proposed default:** the four key families and the SSH host key are **in** the archive
   (`SECRETS=in-archive`). Provider keys and the staff password file are **never** archived; the
   manifest names them.
@@ -625,11 +707,22 @@ marks an answer that would be costly to undo.
   could use without also running the world. Kept apart, the keys need their own backup, and that
   second backup is the thing most likely to be forgotten.
 
-**Q-52-2 — How many archives are kept on each box?**
-- **Proposed default:** `KEEP=18` an instance on conclav.io (three days at four hours) and
-  `PULL_KEEP=84` on conclav.dev (two weeks). With the binaries in, 109 MB each: 2.0 GB an instance
-  on conclav.io (3.9 GB for dev1 and dev2) and 9.2 GB an instance on conclav.dev (18.3 GB for
-  both). conclav.io had 110 GB free on 2026-11-22 and conclav.dev 237 GB today.
+**Q-52-2 — How many archives are kept on each box?** **Ruled 2026-11-23: 18 on conclav.io as
+proposed; on conclav.dev the newest 18 and one a day for the last month, not the proposed 84.**
+- **As ruled and built:** `KEEP=18` on conclav.io (three days at four hours). On conclav.dev
+  `PULL_KEEP=18` and `PULL_KEEP_DAILY_DAYS=30`: the newest 18, and beyond those **one archive a
+  UTC day, the day's last one**, for the 30 days up to the newest archive's own day. That is 45
+  archives when backups run every four hours (18, and 27 dailies the 18 do not already cover).
+  Three choices inside the ruling, each the session's and each one line to change:
+  - *The day's last archive is the one kept.* By the time a day has left the newest 18 it is
+    over, so its last archive is settled, and it is the one that holds the whole day.
+  - *Days are UTC days*, as the archive names are.
+  - *The month is counted back from the newest archive held, not from today.* If backups stop,
+    nothing ages away: the history a dead backup left is exactly what one would want kept.
+  The pull fetches only what this rule would keep, so nothing is fetched to be pruned in the same
+  run. With the binaries in, 110 MB each: 2.0 GB an instance on conclav.io (4 GB for dev1 and
+  dev2) and 5 GB an instance on conclav.dev (10 GB for both).
+- **Proposed default, superseded:** `PULL_KEEP=84` on conclav.dev (two weeks of every archive).
 - **Alternative:** fewer on the production box (6: one day, 1.3 GB for both) and the history only
   on conclav.dev; or a ladder (every four hours for two days, then one a day for a month), which
   is more code than a count.
@@ -642,14 +735,17 @@ marks an answer that would be costly to undo.
 - **Alternative:** `BINARIES=no`: an archive is 2.7 MB instead of 109 MB, and a restore needs
   both binaries built at the manifest's commit (`--binaries <dir>`). Built and tested.
 - **Reason:** the gateway embeds the web client, so a rebuild needs Node and the wasm toolchain as
-  well as cargo, and neither server has Node (§1). On a bad day "build it first" is half an hour
-  on a box that can, and a search for one that can. With the binaries in, a copy is up in four
+  well as cargo. When this was written neither server had Node (§1); since the owner's ruling of
+  2026-11-23 both can build (§7.7), so the alternative is now workable and costs a build: 5 minutes
+  on conclav.dev, about 25 on conclav.io. On a bad day "build it first" is still that wait, on a
+  box that must already have its toolchain. With the binaries in, a copy is up in four
   seconds on any box with Redis, an instance is back from nothing in 22.5 s (§7.5), and what
   runs is byte for byte what ran. The cost is disk and
   about 1.3 GB a day between the two boxes, which neither will notice. If it ever matters, the
   middle path is to carry the binaries only in the first archive after each deploy.
 
-**Q-52-4 — Which box starts the copy?**
+**Q-52-4 — Which box starts the copy?** **Ruled 2026-11-23 by the panel rule the owner added for
+conclav.dev's address: the pull.**
 - **Proposed default:** conclav.dev pulls, with a forced-command key (§5).
 - **Alternative:** conclav.io pushes to an account on conclav.dev whose forced command only
   receives archives. It needs no panel rule and no change to conclav.io's sshd.
@@ -722,4 +818,6 @@ marks an answer that would be costly to undo.
 - **Redis across versions.** Both boxes run 8.10.3. An archive loaded by an older Redis, or with
   a module missing, fails at the load and says so; a newer one is expected to read it and is not
   tried.
-- **The pull over a real SSH key**, the panel rule and the sshd drop-in of §5: written, not run.
+- **The pull over a real SSH key** and the two scripts of §5 on the boxes themselves: tested
+  against stubs, not run. The owner runs them.
+- **A build on conclav.io.** §7.7's proof is conclav.dev's.

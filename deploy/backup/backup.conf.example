@@ -16,16 +16,18 @@ INSTANCES=
 BACKUP_DIR=/var/backups/rustmush
 READ_GROUP=rmbackup
 
-# How many archives of EACH instance stay on this box; older ones are deleted
-# at the end of each run. At one every four hours, 18 is three days.
-# (Doc 52, Q-52-2: provisional until the owner rules.)
+# How many archives of EACH instance stay on this box: the newest KEEP, and
+# beyond those one a UTC day (the day's last) for KEEP_DAILY_DAYS days; the
+# rest are deleted at the end of each good run. At one every four hours, 18 is
+# three days. (Doc 52, Q-52-2, ruled 2026-11-23: 18 here, no dailies.)
 KEEP=18
+KEEP_DAILY_DAYS=0
 
 # `in-archive`: the four key families and the SSH host key under the data
 # directory ride in the archive. `apart`: they are left out and the manifest
 # lists each with its SHA-256, for a copy kept elsewhere to be checked against
 # at a restore. Provider keys (the units' EnvironmentFile) are never archived
-# in either mode. (Doc 52, Q-52-1: provisional until the owner rules.)
+# in either mode. (Doc 52, Q-52-1, ruled 2026-11-23: in the archive.)
 SECRETS=in-archive
 
 # `yes`: both binaries ride in every archive (about 105 MB of a 109 MB
@@ -44,13 +46,19 @@ MAX_AGE_HOURS=9
 # The command that reaches backup-serve.sh on the box that takes the backups;
 # `list`, `status` or `fetch <name>` is appended to it. Empty: this box does
 # not pull. For conclav.dev fetching from conclav.io:
-#   PULL_SSH=ssh -p 2222 -i /root/.ssh/rustmush-backup-pull -o BatchMode=yes -o IdentitiesOnly=yes rmbackup@conclav.io
+#   PULL_SSH=ssh -p 2222 -i /root/.ssh/rustmush-backup-pull -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/rustmush-backup-known_hosts rmbackup@conclav.io
+# (pull-key.sh --finish writes this line: the owner runs it.)
 PULL_SSH=
 
 # Where fetched archives are kept (root-owned, 0700), and how many of each
-# instance. At one every four hours, 84 is two weeks. (Doc 52, Q-52-2.)
+# instance: the newest PULL_KEEP, and beyond those ONE a UTC day, the day's
+# last archive, for the PULL_KEEP_DAILY_DAYS days up to the newest archive's
+# own day (counted from the newest archive held, not from today, so a backup
+# that has stopped never ages its history away). 18 and 30 keep about 45.
+# (Doc 52, Q-52-2, ruled 2026-11-23.)
 PULL_DIR=/var/backups/rustmush-pulled
-PULL_KEEP=84
+PULL_KEEP=18
+PULL_KEEP_DAILY_DAYS=30
 
 # `yes`: a fetched archive is kept only after its snapshot has been loaded into
 # a scratch Redis here and its facts derived again (seconds). `no`: checksums
