@@ -29,6 +29,13 @@
 #                       entirely as ghrunner (pinned commit SHA; never runs an
 #                       install script as root): optional, for linker
 #                       experiments; jobs link with rust-lld by default
+#   WITH_DISPATCH_TIMERS=1
+#                       also run dispatch-timers-install.sh beside this file:
+#                       the four timers that start the soak, the nightly, the
+#                       weekly and CodeQL (no workflow has a `schedule`), for
+#                       conclav.dev only: ONE box keeps the clock. The token
+#                       they call GitHub with is the owner's to place
+#                       afterwards; that script's header and docs/ops.md say how
 #
 # Every step is idempotent: run it again after a change to the files beside
 # it, and it reinstalls only what changed. Root never executes scripts from
@@ -59,6 +66,7 @@ RUNNER_NAME="${RUNNER_NAME:-conclav-vps}"
 RUNNER_LABELS="${RUNNER_LABELS:-vps}"
 RUNNER_MEMORY_HIGH="${RUNNER_MEMORY_HIGH:-22G}"
 WITH_MOLD="${WITH_MOLD:-0}"
+WITH_DISPATCH_TIMERS="${WITH_DISPATCH_TIMERS:-0}"
 RUNNER_USER=ghrunner
 
 if ! [[ "$RUNNER_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -260,5 +268,11 @@ if [ "$WITH_MOLD" = 1 ] && ! command -v mold > /dev/null && [ ! -x "$home/.local
   as_runner env PATH="$job_path" TMPDIR="$home/tmp" bash -c 'cd "$1" && cargo +"$2" build --release && PREFIX="$3/.local" ./install-mold.sh' _ "$mold_build" "$TOOLCHAIN" "$home"
   as_runner rm -rf "$mold_build"
   echo "installed $(as_runner "$home/.local/bin/mold" --version)"
+fi
+# 8. The clock-run workflows' timers, optional (conclav.dev, and only one box:
+#    two would start every job twice): root-owned files from beside this
+#    script, nothing from a ghrunner-writable directory.
+if [ "$WITH_DISPATCH_TIMERS" = 1 ]; then
+  bash "$here/dispatch-timers-install.sh"
 fi
 echo "provisioned: $UNIT, redis-gate on 6799, $RUNNER_USER's toolchain $(as_runner "$home/.cargo/bin/rustc" +"$TOOLCHAIN" --version) (logs in $log_dir)"

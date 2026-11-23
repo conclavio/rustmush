@@ -589,6 +589,11 @@ decisions and §8.1 what they change elsewhere.
   by the ruling's own reason — the load on conclav.io is the same for both — and is re-blessed in the same cut;
   the owner says so if the cost lane should stay. The harness's `TACSIM_ASSERT=1` absolutes (per-wake and
   per-window milliseconds) are what moves; the deterministic block is host-independent and does not.
+- **Since 2026-11-23 the crons are gone** (doc 51 cut notes, FL.2, Divergences 12). GitHub ran the
+  schedule seven to ten and a half hours late, so timers on conclav.dev dispatch `ci.yml` with a
+  `slot` input: `nightly` Monday to Saturday, `weekly` on Sunday. A weekly job's `if:` is now
+  `github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'`. The cron strings below
+  are the history; `docs/ops.md` ("The clock is on conclav.dev") is the present.
 - **D-43-11 adds a second cron.** `ci.yml` gains `- cron: "17 4 * * 0"` beside the daily one, and the six
   dispatch-only jobs' `if:` admits the Sunday schedule at the fast pulse (`MIND_PULSE_MS` empty); TS.2 writes
   it. The nightly's channel (D-43-3) is the owner's GitHub notification setting, outside the tree.

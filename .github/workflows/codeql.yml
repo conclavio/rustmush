@@ -9,8 +9,13 @@
 # JavaScript/TypeScript, Python, about a minute each — run on every push to
 # main and every pull request, as default setup ran them; the Rust analysis,
 # 33-44 minutes per run on the default setup's runs of 2026-10-26 and the
-# long pole of every pull request's checks, runs on the weekly schedule and
-# on demand, never on a push or a pull request. .github/codeql/codeql-config.yml
+# long pole of every pull request's checks, runs weekly and on demand, never
+# on a push or a pull request. Weekly is a dispatch too: this file has no
+# `schedule`, because GitHub started this repository's scheduled runs seven
+# to ten and a half hours late (2026-11). A timer on conclav.dev dispatches
+# it at `main` on Monday at 13:30 Pacific
+# (deploy/vps-runner/rustmush-dispatch-codeql.timer; docs/ops.md, "The clock
+# is on conclav.dev"). .github/codeql/codeql-config.yml
 # excludes the two Rust rules whose 425 alerts were noise; the weekly run
 # reports the rest.
 name: CodeQL
@@ -20,9 +25,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  schedule:
-    # Mondays 06:17 UTC: the weekly Rust analysis (the fast ones re-run too).
-    - cron: "17 6 * * 1"
+  # The weekly Rust analysis is the box's Monday dispatch with rust=true (the
+  # fast ones re-run too); a dispatch by hand is the same.
   workflow_dispatch:
     inputs:
       rust:
@@ -36,7 +40,7 @@ permissions:
 
 # A newer push to the same branch or pull request supersedes a running
 # analysis of the older one; the event name keeps a push to main from
-# cancelling the schedule's Rust run on the same ref.
+# cancelling the weekly dispatch's Rust run on the same ref.
 concurrency:
   group: codeql-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
@@ -69,8 +73,9 @@ jobs:
 
   rust:
     name: Analyze (rust)
-    # Never on a push or a pull request: the schedule, or a dispatch that asks.
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.rust)
+    # Never on a push or a pull request: a dispatch that asks (the box's
+    # Monday timer does, and a dispatch by hand does by default).
+    if: github.event_name == 'workflow_dispatch' && inputs.rust
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:

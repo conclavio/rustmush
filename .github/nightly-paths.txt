@@ -6,8 +6,8 @@
 # on #475, whose grace windows moved the M7 and M8 stories' pins.
 #
 # One line a path: `<job id> <tier> <path>`. The job id is the key under `jobs:` in
-# ci.yml; the tier is `nightly` (the daily schedule), `weekly` (the Sunday 04:17
-# schedule) or `dispatch` (by hand only), and must match the job's `if:`; the path
+# ci.yml; the tier is `nightly` (the box's daily dispatch), `weekly` (Sunday's
+# dispatch) or `dispatch` (by hand only), and must match the job's `if:`; the path
 # is a workspace-relative file, or a directory prefix ending in `/`. A PR's changed
 # file matches a line when it equals the path or starts with the prefix.
 # scripts/nightly_advice.py prints the matches (the `lint` cell runs it on every pull

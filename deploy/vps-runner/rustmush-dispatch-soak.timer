@@ -1,0 +1,27 @@
+# The soak's clock (doc 51 FL.2; .github/workflows/soak.yml, on this box).
+# 23:17 in the owner's time zone, so it follows daylight saving: 07:17 UTC in
+# winter, 06:17 UTC in summer. The soak is the one clock-run job that holds
+# conclav.dev, so it is the one that has to sit in the owner's night.
+#
+# Its place among the four timers (docs/ops.md has the table): no measured
+# night yet, so the time kept for it is the job's own timeout, 330 minutes,
+# which it cannot outrun. It is over by 04:47 at the latest; the nightly
+# starts at 05:00.
+#
+# Persistent=false: a night the box was off is a night missed. There is no
+# catch-up run at boot, which would hold the box in the owner's day.
+#
+#   systemctl list-timers 'rustmush-dispatch-*'   when each fires next, and last
+#
+# reserved-minutes: 330
+[Unit]
+Description=Start the soak at 23:17 Pacific every night (doc 51 FL.2)
+
+[Timer]
+OnCalendar=*-*-* 23:17:00 America/Los_Angeles
+AccuracySec=1s
+Persistent=false
+Unit=rustmush-dispatch@soak.service
+
+[Install]
+WantedBy=timers.target

@@ -533,6 +533,8 @@ A scheduled job on conclav.dev that repeats the story suites the way a hosted CI
 - **Where.** A new workflow, `.github/workflows/soak.yml`, on `schedule` and
   `workflow_dispatch` only, `runs-on` the `conclav-dev` runner. It has no `pull_request`
   trigger, for `gate.yml`'s reason: a fork's pull request must never reach the owner's boxes.
+  **As built (2026-11-23):** `workflow_dispatch` only. A timer on conclav.dev dispatches it at
+  23:17 Pacific, because GitHub starts this repository's scheduled runs hours late (Q-51-7).
 - **What.** The binaries that run a real server or process: mushd `sim_lenses`,
   `world_journeys` and `durable_process`; mush-gateway `split_halves`; mush-server
   `split_boundary` and `commerce_composition`; mush-bot `arena_e2e`, `arena_contract` and
@@ -731,6 +733,14 @@ alternative and the reason are kept as the record of what was weighed.
 - **Moved 2026-11-23:** the owner set the hour to 07:17 UTC when FL.2 was built. 01:17 UTC is
   5:17 pm Pacific; 07:17 is 11:17 pm, so the soak runs from about 11 pm to 3 am his time. The
   size and the length are as ruled. FL.2's cut note says what else is scheduled in that window.
+- **Started from the box, ruled 2026-11-23:** the workflow's cron never fired on its first night.
+  GitHub starts this repository's scheduled runs seven to ten and a half hours late, which
+  puts a 07:17 UTC soak in the owner's working day. Asked how the run should be started on
+  time, the owner ruled "Timer on conclav.dev": a systemd timer on the box dispatches
+  `soak.yml` at `main` at 23:17 Pacific, following daylight saving, and the workflow has no
+  `schedule` trigger. The same day he widened it to every scheduled job (the CI nightly, the
+  weekly and CodeQL), spaced by their runtimes; no workflow has a `schedule` now. FL.2's cut
+  note has the follow-up, and `docs/ops.md` the table.
 - **Alternative:** weekly, or on dispatch only.
 - **Reason:** §4.1's table. A weekly soak of the same size finds a 1-in-20 flake about 71% of
   the time, after up to a week of pull requests have met it. The box has no other standing
