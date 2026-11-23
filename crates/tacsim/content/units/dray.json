@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.pack.dray",
-    "version": 3,
+    "version": 4,
     "kind": "rules_definition",
-    "digest": "29251cd41240e93b151230fb76840673a8e678144273675883e4d8c2f6d24a85",
+    "digest": "a4d618e81654b970d9f80a48d88bb048f8a68e71f4e9e56ef894bcf3866e82db",
     "requires": [
       {
         "id": "tacsim.pack.plants",
@@ -191,11 +191,11 @@
             }
           ],
           "exits": [
-            { "from": "airlock", "to": "passage", "names": ["Inner Hatch <I>;inner;in;passage", "Airlock <A>;airlock;forward"] },
+            { "from": "airlock", "to": "passage", "names": ["Inner Hatch <IN>;in;inner;passage", "Airlock <AL>;al;airlock;forward"] },
             { "from": "passage", "to": "bridge", "names": ["Bridge <U>;bridge;up;u", "Passage <D>;passage;down;d"] },
-            { "from": "passage", "to": "crew", "names": ["Crew Compartment <C>;crew;galley;bunks;aft", "Passage <P>;passage;out;forward"] },
-            { "from": "passage", "to": "hold", "names": ["Cargo Hold <H>;hold;down;d", "Passage <U>;passage;up;u"] },
-            { "from": "hold", "to": "engineering", "names": ["Engineering <E>;engineering;eng;down;d", "Hold <H>;hold;up;u"] }
+            { "from": "passage", "to": "crew", "names": ["Crew Compartment <C>;c;crew;galley;bunks;aft", "Passage <O>;o;passage;out;forward"] },
+            { "from": "passage", "to": "hold", "names": ["Cargo Hold <H>;h;hold;down;d", "Passage <U>;passage;up;u"] },
+            { "from": "hold", "to": "engineering", "names": ["Engineering <E>;e;engineering;eng;down;d", "Hold <H>;h;hold;up;u"] }
           ],
           "gauges": {
             "cargo": ["hold", "passage", "bridge"],
