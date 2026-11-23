@@ -1,0 +1,133 @@
+name: Soak (flaky tests)
+
+# Doc 51 unit FL.2 (§4.1, ruling Q-51-7): the nightly soak. The story suites,
+# the binaries that run a real server or process, are repeated on conclav.dev
+# as six cells of four cores for about three hours, under nextest's `soak`
+# profile, which never retries. A flake is then a failure in a report on main,
+# with its output, before a pull request meets it. scripts/soak.sh is the
+# whole run (its header says what runs and how the box is protected);
+# scripts/flake_report.py reads the reports into the run's summary.
+#
+# THE JOB ONLY REPORTS (ruling Q-51-8). It writes nothing to the repository.
+# It is red when the report finds a test that failed in some passes and
+# passed in others and is not on the known list
+# (crates/mush-contract-tests/flaky-known.toml), a listed row past its expiry,
+# a test that failed every pass, or a soak that could not run. A red soak
+# reaches the owner the way a red nightly does (doc 43 D-43-3): GitHub's mail
+# for a failed scheduled run.
+#
+# THE RULES OF A SELF-HOSTED RUNNER ON A PUBLIC REPOSITORY (gate.yml's):
+#   * `schedule` and `workflow_dispatch` ONLY. Never `pull_request`, never
+#     `push`: a fork's pull request must never reach the owner's boxes. A
+#     schedule runs the default branch's copy of this file, and a dispatch
+#     needs write access to the repository. Do not add a trigger here.
+#   * one job at a time on the box: the `conclav-dev` runner takes one job, so
+#     the soak and a gate.yml dispatch pinned to `conclav-dev` never share the
+#     box or a target directory; whichever came second waits for the runner.
+#     A gate dispatch on the default `vps` label goes to conclav.io while the
+#     soak holds this box. The soak has a concurrency group of its own, so
+#     it neither replaces nor is replaced by a waiting gate dispatch.
+#   * the soak has its own target directory beside the gate's warm one
+#     (`_work/rustmush/soak-target`): four per-package builds, kept warm from
+#     night to night, that a gate sweep's whole-workspace build never touches.
+#   * no Redis: REDIS_URL is unset in every cell, so the gate's private
+#     instance on 6799 is not used and not wiped.
+#
+# 07:17 UTC is the owner's night: 11:17 pm Pacific standard time (12:17 am in
+# summer; the cron is UTC and does not follow the clocks), so the soak holds
+# the box from about 07:17 to 11:00 UTC, while nobody is at it. The owner
+# moved it there from doc 51's 01:17 on 2026-11-23: 01:17 UTC is 5:17 pm
+# Pacific, the working day. What else is scheduled then, checked 2026-11-23:
+#   * ci.yml's 04:17 nightly and Monday's 06:17 CodeQL run are on hosted
+#     runners and share nothing with this box, whatever is still running;
+#   * on the box, `apt-daily-upgrade.timer` fires between 06:00 and 07:00 UTC,
+#     so before the soak, never inside it; an upgrade still running at 07:17
+#     is what the wait for a quiet box is for. `apt-daily.timer` (a package
+#     list refresh, any hour) and `motd-news.timer` can fall inside the
+#     window and are light. No cron daemon and no crontab is on the box.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "the window in minutes: no invocation starts after it (the night's is 180)"
+        type: string
+        default: "180"
+      cells:
+        description: "cells of four cores, 1 to 6 (cores 24-31 stay free)"
+        type: string
+        default: "6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    name: soak on conclav-dev
+    runs-on: [self-hosted, linux, conclav-dev]
+    # The window, the last invocation started inside it (twenty-five minutes
+    # of stories, or nextest's twenty-minute terminate), the build and the
+    # wait for a quiet box.
+    timeout-minutes: 330
+    env:
+      CARGO_TERM_COLOR: always
+      # Beside the checkout, not inside it: actions/checkout cleans the
+      # checkout on every run. Kept across runs; the owner may `rm -rf` it.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../soak-target
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Rust toolchain (pinned by rust-toolchain.toml) and cargo-nextest
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo nextest --version
+      # The job's own temporary directory, wiped between jobs (gate.yml's
+      # reason: /tmp on the box holds other users' leftovers, and it is a
+      # tmpfs). The cells' working space is under it, on disk.
+      - name: The job's own temporary directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Soak
+        env:
+          # The inputs reach the script as environment values, never as
+          # interpolated text; scripts/soak.sh refuses anything but digits.
+          MINUTES: ${{ inputs.minutes || '180' }}
+          CELLS: ${{ inputs.cells || '6' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$MINUTES" =~ ^[0-9]{1,3}$ && "$CELLS" =~ ^[1-6]$ ]]; then
+            echo "::error::minutes is 1 to 999 and cells is 1 to 6"
+            exit 1
+          fi
+          export SOAK_MINUTES="$MINUTES" SOAK_CELLS="$CELLS"
+          export SOAK_OUT="$GITHUB_WORKSPACE/soak-reports"
+          scripts/soak.sh
+      - name: Report
+        if: always()
+        run: |
+          set -o pipefail
+          if [ ! -f soak-reports/soak.json ]; then
+            echo "The soak wrote no summary; nothing to report." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## The soak"
+            echo
+            echo '```json'
+            cat soak-reports/soak.json
+            echo '```'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 -B scripts/flake_report.py --junit soak-reports --check | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: soak-junit
+          path: soak-reports/
+          if-no-files-found: ignore
+          retention-days: 30

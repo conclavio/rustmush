@@ -15,6 +15,8 @@
 //! matcher-call-site registries, the schedule source, the fault gates and
 //! the H3 scale harness (its tests #[ignore]d: the nightly `scale` job runs
 //! the module by name, and its Redis twins run alone, .config/nextest.toml).
+//! `flaky_known` (doc 51 unit FL.2) holds the known flaky tests and the one
+//! nextest retry they generate.
 //!
 //! One module: `cargo nextest run -p mush-contract-tests --test ci_policy -E 'test(/^ci_gated_test_inventory::/)'`
 //! or `cargo test -p mush-contract-tests --test ci_policy ci_gated_test_inventory::` (a substring filter, so no
@@ -33,6 +35,8 @@ mod clippy_test_allowances;
 mod feature_matrix_inventory;
 #[path = "ci_policy/fiat_budget.rs"]
 mod fiat_budget;
+#[path = "ci_policy/flaky_known.rs"]
+mod flaky_known;
 #[path = "ci_policy/gate5_fault_matrix.rs"]
 mod gate5_fault_matrix;
 #[path = "ci_policy/legacy_handler_allowlist.rs"]

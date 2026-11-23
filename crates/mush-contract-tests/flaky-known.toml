@@ -1,0 +1,340 @@
+# The known flaky tests (doc 51 unit FL.2, ruling Q-51-5).
+#
+# A test is retried once by nextest only while it has a row here. There is no
+# blanket retry and no hand-kept filter: the retry override in
+# .config/nextest.toml is generated from this file, and
+# tests/ci_policy/flaky_known.rs fails when the two differ, when a row is past
+# its `expires` date, or when a row names a test the tree no longer holds.
+#
+# A row:
+#
+#   binary   nextest's binary id: <package>::<target>, or the bare package for
+#            its lib tests
+#   test     the one test, by its full name in that binary
+#   class    doc 51's class: figure, dice, clock, clock-phase, stream, process,
+#            event, or unknown (the cause is not found yet)
+#   row      the row of docs/flaky-tests.md that explains it
+#   listed   the day the row was written
+#   expires  the last day it holds: fourteen days on. Past it the gate is red.
+#            The test is fixed and the row deleted, or the date is moved, at
+#            most fourteen days ahead, in a diff the owner sees. A row is
+#            renewed on evidence only: a soak failure, or a cause written down.
+#   note     anything else a reader should know
+#
+# A row with class "unclassed" was carried over from the hand-kept
+# `load-sensitive` retry of cut T.1 with no failure on record (doc 51 §4.3
+# point 5). It says so in `carried`, has no `row`, and is the one kind that
+# may cover a whole module (`module`) or a whole binary (`whole_binary =
+# true`). It must earn a class and a row of the record to be renewed.
+#
+# After any edit:
+#   FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::
+# rewrites the block in .config/nextest.toml, and
+#   python3 scripts/flake_report.py --ci-days 14 --write
+# refreshes docs/flaky-observed.md (ruling Q-51-8: in the pull request that
+# adds or closes a row).
+
+# --- Rows of docs/flaky-tests.md that are open, covered or on watch ---------
+
+[[flaky]]
+binary = "mush-bot::mining_cohort"
+test = "a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment"
+class = "unknown"
+row = 5
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "the row's busy-answer cause is fixed (#764); listed for its second failure, \"no buying metal ore bid\", seen once and on watch"
+
+[[flaky]]
+binary = "mush-bot::mining_cohort"
+test = "a_captain_and_its_escort_fight_the_raider_in_an_ic_field"
+class = "unknown"
+row = 6
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "open; a stall now fails inside the 18-minute story budget with both bots' last lines"
+
+[[flaky]]
+binary = "mush-server::split_boundary"
+test = "boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it"
+class = "clock"
+row = 10
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; a bare 20 ms sleep before an assertion on a spawned task"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "restart_survival::restart_mid_scene_resumes_in_current_room"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "restart_survival::client_disconnect_during_gap_leaves_survivor_intact"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "gateway_generations::a_finish_warns_once_closes_after_the_grace_and_leaves_no_marker"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "server_unit::a_gateway_started_before_its_server_serves_the_gap_then_heals"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::sim_lenses"
+test = "observer_rule::nothing_of_the_shooting_crosses_to_the_world_or_to_the_target"
+class = "clock"
+row = 13
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::sim_lenses"
+test = "observer_rule::nothing_about_an_undetected_unit_crosses_on_any_surface"
+class = "clock"
+row = 13
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::world_journeys"
+test = "web_e2e::spa_if_built_and_healthz_are_served"
+class = "process"
+row = 14
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; the class is doc 51's likely reading, the cause is not known"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "arena_custody_split::the_arena_surface_survives_the_split_and_a_server_restart"
+class = "process"
+row = 15
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; the class is doc 51's likely reading, the cause is not known"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "arena_custody_split::a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line"
+class = "process"
+row = 15
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; the class is doc 51's likely reading, the cause is not known"
+
+[[flaky]]
+binary = "mushd::sim_lenses"
+test = "sim_rematch::two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec"
+class = "unknown"
+row = 16
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; seen once"
+
+[[flaky]]
+binary = "mush-server::commerce_composition"
+test = "ic_buyout_dormancy::ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving"
+class = "clock-phase"
+row = 17
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; the class is doc 51's likely reading, which unit FL.4 settles"
+
+[[flaky]]
+binary = "mush-server::commerce_composition"
+test = "ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall"
+class = "clock-phase"
+row = 17
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "on watch; the class is doc 51's likely reading, which unit FL.4 settles"
+
+# --- Carried over from the `load-sensitive` retry: no failure on record -----
+#
+# The eighteen entries of the old filter that match no row of the record.
+# Two are narrowed to the one test a cut note names; the rest keep the scope
+# the filter gave them.
+
+[[flaky]]
+binary = "mushd::world_journeys"
+module = "scripting_e2e"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::sim_lenses"
+module = "sim_reflex"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::durable_process"
+module = "load_soak"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::durable_process"
+module = "world_fault"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::durable_process"
+test = "relay_bridge::r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1, which covered relay_bridge::*; narrowed to the test the cut notes name"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mushd::sim_lenses"
+test = "arena_story::two_pilots_walk_in_fight_and_one_tank_is_destroyed"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1, which covered arena_story::*; narrowed to the test the cut notes name"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "two_process_e2e"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "server_panic_relaunch"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "arena_story_split"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "two_gateways"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "gateway_generations_unit"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-server::split_boundary"
+module = "ipc_authoritative_action"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-server::split_boundary"
+module = "ipc_window"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-worldgen::plan"
+whole_binary = true
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-worldgen::review_plan"
+whole_binary = true
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-worldgen::s8_authority"
+whole_binary = true
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-sim"
+test = "journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-sim"
+test = "journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-sim"
+test = "journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-server"
+test = "world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1, written there as test(~what_still_waits); an unbiased select!, which doc 51 §4.3 says will want a real row"
+listed = "2026-11-23"
+expires = "2026-12-07"

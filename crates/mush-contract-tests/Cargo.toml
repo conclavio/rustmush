@@ -16,6 +16,8 @@ mush-tactics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# Doc 51 FL.2: src/flaky_known.rs reads flaky-known.toml and .config/nextest.toml.
+toml.workspace = true
 
 [lints]
 workspace = true

@@ -29,9 +29,19 @@
 # their in-memory or skip branch.
 #
 # The load-sensitive suites (the 16b doc's list: the ones that flaked under a
-# loaded box and passed alone) are the `load-sensitive` group, two at a time,
-# with one retry: a pass on retry is reported FLAKY, in the run's final
-# status and in the JUnit report, never silently.
+# loaded box and passed alone) are the `load-sensitive` group, two at a time.
+# The group is a load limit only. It carried one retry until doc 51 unit FL.2
+# (2026-11-23).
+#
+# RETRIES (doc 51 §4.3, ruling Q-51-5): there is no blanket retry and no
+# hand-kept retry filter. A test is retried once only while it has a row in
+# crates/mush-contract-tests/flaky-known.toml, and a row lives fourteen days.
+# The one retry override below is GENERATED from that list, between the
+# `BEGIN GENERATED` and `END GENERATED` lines; the gate
+# crates/mush-contract-tests/tests/ci_policy/flaky_known.rs fails on a block
+# that differs from the list and on a `retries` key anywhere else in this
+# file. A pass on retry is reported FLAKY, in the run's final status and as a
+# <flakyFailure> in the JUnit report; scripts/flake_report.py reads those.
 #
 # Profiles: `default` is the local run (eight test threads on the owner's
 # sixteen-thread box, nothing terminated, every slow test named at 60 s);
@@ -39,7 +49,9 @@
 # 20 min instead of holding the job to its 120-minute timeout, and the JUnit
 # report at target/nextest/ci/junit.xml, which each shard uploads. Doc-tests
 # are not nextest's: every `cargo nextest run` sweep in CI has a
-# `cargo test --doc` beside it.
+# `cargo test --doc` beside it. `soak` (`-P soak`) is the nightly soak's
+# (.github/workflows/soak.yml, scripts/soak.sh): `ci` with four threads and
+# no retry at all, so a flake shows as a failure with its output.
 #
 # `cargo nextest show-config test-groups -p <pkg>` lists the groups and their
 # members; `cargo nextest run -p <pkg>` is the local sweep (`-E 'test(name)'`
@@ -79,14 +91,57 @@ filter = 'binary_id(mush-store::redis_suite) | binary_id(mush-store::memory_suit
 test-group = 'redis'
 
 # The load-sensitive suites (16b: "passed alone twice" was the flake rule),
-# two at a time and one retry. A pass on retry is FLAKY in the final status
-# and a <flakyFailure> in the JUnit report, never a silent pass; a broken
-# test fails twice. (An override's filter cannot name a group, so the retry
-# rides on this one override rather than on a `ci`-only twin of this list.)
+# two at a time. No retry rides on this override any more: the retry is the
+# generated block below, and this list is only a load limit.
 [[profile.default.overrides]]
 filter = '(binary_id(mushd::world_journeys) & test(/^scripting_e2e::/)) | (binary_id(mushd::sim_lenses) & test(/^sim_reflex::/)) | (binary_id(mushd::durable_process) & test(/^load_soak::/)) | (binary_id(mushd::durable_process) & test(/^world_fault::/)) | (binary_id(mushd::durable_process) & test(/^relay_bridge::/)) | (binary_id(mushd::sim_lenses) & test(/^observer_rule::/)) | (binary_id(mushd::sim_lenses) & test(/^arena_story::/)) | (binary_id(mush-gateway::split_halves) & test(/^two_process_e2e::/)) | (binary_id(mush-gateway::split_halves) & test(/^server_unit::/)) | (binary_id(mush-gateway::split_halves) & test(/^server_panic_relaunch::/)) | (binary_id(mush-gateway::split_halves) & test(/^restart_survival::/)) | (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/)) | (binary_id(mush-gateway::split_halves) & test(/^two_gateways::/)) | (binary_id(mush-gateway::split_halves) & test(/^gateway_generations::/)) | (binary_id(mush-gateway::split_halves) & test(/^gateway_generations_unit::/)) | (binary_id(mush-server::split_boundary) & test(/^ipc_authoritative_action::/)) | (binary_id(mush-server::split_boundary) & test(/^ipc_teardown::/)) | (binary_id(mush-server::split_boundary) & test(/^ipc_window::/)) | binary_id(mush-worldgen::plan) | binary_id(mush-worldgen::review_plan) | binary_id(mush-worldgen::s8_authority) | (binary_id(mush-sim) & test(~e7c6_b2)) | (binary_id(mush-server) & test(~what_still_waits))'
 test-group = 'load-sensitive'
+
+# BEGIN GENERATED flaky-known (doc 51 FL.2). This block is generated from
+# crates/mush-contract-tests/flaky-known.toml: one term a row, one retry, nothing else.
+# Do not edit it. Change the list, then regenerate:
+#   FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::
+[[profile.default.overrides]]
+filter = '''
+    (binary_id(mush-bot::mining_cohort) & test(=a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment))
+  | (binary_id(mush-bot::mining_cohort) & test(=a_captain_and_its_escort_fight_the_raider_in_an_ic_field))
+  | (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^gateway_generations_unit::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^server_panic_relaunch::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^two_gateways::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^two_process_e2e::/))
+  | (binary_id(mush-gateway::split_halves) & test(=arena_custody_split::a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line))
+  | (binary_id(mush-gateway::split_halves) & test(=arena_custody_split::the_arena_surface_survives_the_split_and_a_server_restart))
+  | (binary_id(mush-gateway::split_halves) & test(=gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved))
+  | (binary_id(mush-gateway::split_halves) & test(=gateway_generations::a_finish_warns_once_closes_after_the_grace_and_leaves_no_marker))
+  | (binary_id(mush-gateway::split_halves) & test(=restart_survival::client_disconnect_during_gap_leaves_survivor_intact))
+  | (binary_id(mush-gateway::split_halves) & test(=restart_survival::restart_mid_scene_resumes_in_current_room))
+  | (binary_id(mush-gateway::split_halves) & test(=server_unit::a_gateway_started_before_its_server_serves_the_gap_then_heals))
+  | (binary_id(mush-server) & test(=world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped))
+  | (binary_id(mush-server::commerce_composition) & test(=ic_buyout_dormancy::ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving))
+  | (binary_id(mush-server::commerce_composition) & test(=ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall))
+  | (binary_id(mush-server::split_boundary) & test(/^ipc_authoritative_action::/))
+  | (binary_id(mush-server::split_boundary) & test(/^ipc_window::/))
+  | (binary_id(mush-server::split_boundary) & test(=boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it))
+  | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent))
+  | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key))
+  | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant))
+  | (binary_id(mushd::durable_process) & test(/^load_soak::/))
+  | (binary_id(mushd::durable_process) & test(/^world_fault::/))
+  | (binary_id(mushd::durable_process) & test(=relay_bridge::r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries))
+  | (binary_id(mushd::sim_lenses) & test(/^sim_reflex::/))
+  | (binary_id(mushd::sim_lenses) & test(=arena_story::two_pilots_walk_in_fight_and_one_tank_is_destroyed))
+  | (binary_id(mushd::sim_lenses) & test(=observer_rule::nothing_about_an_undetected_unit_crosses_on_any_surface))
+  | (binary_id(mushd::sim_lenses) & test(=observer_rule::nothing_of_the_shooting_crosses_to_the_world_or_to_the_target))
+  | (binary_id(mushd::sim_lenses) & test(=sim_rematch::two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec))
+  | (binary_id(mushd::world_journeys) & test(/^scripting_e2e::/))
+  | (binary_id(mushd::world_journeys) & test(=web_e2e::spa_if_built_and_healthz_are_served))
+  | binary_id(mush-worldgen::plan)
+  | binary_id(mush-worldgen::review_plan)
+  | binary_id(mush-worldgen::s8_authority)
+'''
 retries = 1
+# END GENERATED flaky-known
 
 [profile.ci]
 # The hosted runner's four threads, all of them (`num-cpus` is nextest's
@@ -133,3 +188,28 @@ slow-timeout = { period = "60s", terminate-after = 100 }
 [profile.ci-bot.junit]
 path = "junit.xml"
 report-name = "rustmush-ci-bot"
+
+# `soak` (`-P soak`) is the nightly soak's (doc 51 §4.1, unit FL.2): the story
+# suites repeated on conclav.dev, six cells of four cores, by scripts/soak.sh.
+# It is `ci` again (profiles inherit `default`, not each other) with the
+# cell's four threads, and it NEVER retries (doc 51 §4.3 point 4): the
+# override below outranks the generated retry of the default profile, because
+# a profile's own overrides are read first, so a flake is a failure in the
+# report with its output and not a quiet pass. The groups and the run-alone
+# override of `default` still apply; REDIS_URL is unset in a cell, so the
+# `redis` group's tests take their in-memory or skip branch.
+[profile.soak]
+test-threads = 4
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 20 }
+final-status-level = "fail"
+
+[[profile.soak.overrides]]
+filter = 'all()'
+retries = 0
+
+[profile.soak.junit]
+# <the cell's workspace>/target/nextest/soak/junit.xml, moved aside by
+# scripts/soak.sh after every invocation: one file a pass of one package.
+path = "junit.xml"
+report-name = "rustmush-soak"

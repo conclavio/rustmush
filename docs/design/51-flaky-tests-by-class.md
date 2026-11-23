@@ -728,6 +728,9 @@ alternative and the reason are kept as the record of what was weighed.
 **Q-51-7 — The soak's schedule and size.** **Ruled 2026-11-22: accepted as written.**
 - **Proposed default:** nightly at 01:17 UTC, clear of the 04:17 nightly; six cells of four
   cores; about three hours.
+- **Moved 2026-11-23:** the owner set the hour to 07:17 UTC when FL.2 was built. 01:17 UTC is
+  5:17 pm Pacific; 07:17 is 11:17 pm, so the soak runs from about 11 pm to 3 am his time. The
+  size and the length are as ruled. FL.2's cut note says what else is scheduled in that window.
 - **Alternative:** weekly, or on dispatch only.
 - **Reason:** §4.1's table. A weekly soak of the same size finds a 1-in-20 flake about 71% of
   the time, after up to a week of pull requests have met it. The box has no other standing
