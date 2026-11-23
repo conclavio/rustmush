@@ -44,7 +44,7 @@ impl Fixture {
         self.records.insert(
             k,
             StoredStateRecord {
-                value: Box::new(v),
+                value: std::sync::Arc::new(v),
                 canonical: CanonicalStateBytes(
                     canonical_json_bytes_with_limit(&envelope, 262144)?.into(),
                 ),

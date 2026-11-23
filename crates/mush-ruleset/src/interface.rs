@@ -148,7 +148,8 @@ impl InterfaceAbilityProvider for RulesInterface {
 fn first_sentence(text: &str) -> String {
     let t = text.trim();
     let end = t.find(['.', '!', '?']).map_or(t.len(), |i| i + 1);
-    t[..end.min(160)].to_string()
+    let cut = t.floor_char_boundary(end.min(160));
+    t.get(..cut).unwrap_or_default().to_string()
 }
 
 /// The module the server composes beside a ruleset to front its rules.
@@ -180,5 +181,19 @@ impl GameModule for RulesInterfaceModule {
             RULES_INTERFACE,
             Arc::clone(&self.provider) as Arc<dyn InterfaceAbilityProvider>,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_sentence;
+
+    #[test]
+    fn p2_core_25_first_sentence_respects_utf8_char_boundaries() {
+        // 159 ASCII bytes + a 4-byte emoji straddling byte 160 must not panic.
+        let s = format!("{}🚀 trailing text", "a".repeat(159));
+        let cut = first_sentence(&s);
+        assert_eq!(cut.len(), 159);
+        assert_eq!(cut, "a".repeat(159));
     }
 }

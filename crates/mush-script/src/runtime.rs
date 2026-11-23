@@ -28,7 +28,7 @@
 //!    (no aliasing).
 //! 3. **No nested cascades.** Host functions never re-enter script execution
 //!    or fire core world events — they push follow-up work onto the session
-//!    queue, which the driver drains iteratively. So [`drive`] is never
+//!    queue, which the driver drains iteratively. So [`drive_inner`] is never
 //!    re-entrant and the session is `Some` only for one flat cascade.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -52,10 +52,10 @@ use crate::guards;
 use mush_core::commands::is_ignoring;
 use mush_core::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
 use mush_core::matchit::{MatchErr, is_nearby, match_object_visible};
-use mush_core::module::{HookPoint, HookReg, perceives_via};
+use mush_core::module::{HookPoint, HookReg, WorldEvent, perceives_via};
 use mush_core::{
-    Attr, AttrFlags, AttrValue, Deferred, Flags, Obj, ObjId, ObjKind, Outbox, Powers, Registry,
-    Role, ScheduledKind, World, match_object, obj_ref, perm,
+    ActionStateSnapshot, ActionStateStore, Attr, AttrFlags, AttrValue, Deferred, Flags, Obj, ObjId,
+    ObjKind, Outbox, Powers, Registry, Role, ScheduledKind, World, match_object, obj_ref, perm,
 };
 use mush_core::{DetachedTypedState, TypedStateLens};
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
@@ -174,6 +174,9 @@ pub struct ScriptState {
     pub(crate) owned_namespaces: Vec<SmolStr>,
     /// `MoveAttempt` hooks (snapshot at boot) consulted by `mush::move`.
     pub(crate) move_hooks: Vec<HookReg>,
+    /// `CarryAttempt` hooks (snapshot at boot) consulted by `mush::move` when
+    /// moving a `Thing` into or out of a non-room holder (P2-CORE-12).
+    pub(crate) carry_hooks: Vec<HookReg>,
     /// `Perceive` hooks (snapshot at boot) consulted by [`owner_can_see`], so
     /// scripts cannot see an object the look/output layer conceals (M11).
     pub(crate) perceive_hooks: Vec<HookReg>,
@@ -193,6 +196,7 @@ impl ScriptState {
             strikes: HashMap::new(),
             owned_namespaces: Vec::new(),
             move_hooks: Vec::new(),
+            carry_hooks: Vec::new(),
             perceive_hooks: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15,
             compile_count: 0,
@@ -278,6 +282,14 @@ pub(crate) struct Trigger {
 struct ScriptSession {
     world: World,
     out: Outbox,
+    /// Live O(1) read-only snapshot of engine-owned typed state for this
+    /// cascade, so `MoveAttempt`/`CarryAttempt`/`Perceive` hooks see live
+    /// typed state without `unsafe` (P2-CORE-12).
+    typed_state: Option<ActionStateSnapshot>,
+    /// Successful `mush::move` relocations recorded during this cascade and
+    /// emitted as `WorldEvent::Moved` to external observers once the session
+    /// restores `world`/`out` (P2-CORE-12).
+    moved_events: Vec<(ObjId, Option<ObjId>, ObjId)>,
     queue: VecDeque<Trigger>,
     total: u32,
     current: Option<Frame>,
@@ -292,16 +304,50 @@ struct ScriptSession {
     dirty_scripts: BTreeMap<ObjId, BTreeSet<SmolStr>>,
 }
 
+impl ScriptSession {
+    fn typed_state_lens(&self) -> TypedStateLens<'_> {
+        match &self.typed_state {
+            Some(snap) => snap.lens(),
+            None => TypedStateLens::Detached(DetachedTypedState::ScriptSnapshot),
+        }
+    }
+}
+
 thread_local! {
     /// The active cascade's owned handle (see the module docs). `Some` only
-    /// while [`drive`] runs; host functions borrow it transiently.
+    /// while [`drive_inner`] runs; host functions borrow it transiently.
     static SESSION: RefCell<Option<ScriptSession>> = const { RefCell::new(None) };
+    /// Nesting counter set while flushing `WorldEvent::Moved` produced by
+    /// `mush::move`, so `ScriptModule::on_moved` does not double-fire or
+    /// reset cascade depth (P2-CORE-12).
+    static FLUSHING_SCRIPT_MOVES: Cell<usize> = const { Cell::new(0) };
     /// The currently-executing invocation's monotonic budget, read by `on_progress`.
     static BUDGET: Cell<Budget> = const { Cell::new(Budget::NONE) };
     /// First fatal sandbox refusal (`sleep`, `parse_json`) raised during the
     /// current invocation, latched so a callback's `ErrorInFunctionCall`
     /// wrapper + `try`/`catch` cannot swallow it.
     static FATAL_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Whether `mush-script` is currently flushing `WorldEvent::Moved` events
+/// recorded by `mush::move` to external observers.
+pub(crate) fn is_flushing_script_moves() -> bool {
+    FLUSHING_SCRIPT_MOVES.with(|c| c.get() > 0)
+}
+
+struct FlushMovesGuard;
+
+impl FlushMovesGuard {
+    fn enter() -> Self {
+        FLUSHING_SCRIPT_MOVES.with(|c| c.set(c.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for FlushMovesGuard {
+    fn drop(&mut self) {
+        FLUSHING_SCRIPT_MOVES.with(|c| c.set(c.get().saturating_sub(1)));
+    }
 }
 
 /// Per-invocation monotonic budget state for `on_progress` (CRIT-8).
@@ -326,10 +372,13 @@ impl Budget {
     };
 }
 
-/// Restores the caller's world/outbox on scope exit (incl. panic).
+/// Restores the caller's world/outbox on scope exit (incl. panic) and returns
+/// any recorded script moves so the caller can emit `WorldEvent::Moved` once
+/// the world is back in place.
 struct SessionGuard<'a> {
     world: &'a mut World,
     out: &'a mut Outbox,
+    moved_events: &'a mut Vec<(ObjId, Option<ObjId>, ObjId)>,
 }
 
 impl Drop for SessionGuard<'_> {
@@ -337,6 +386,9 @@ impl Drop for SessionGuard<'_> {
         if let Some(sess) = SESSION.with(|s| s.borrow_mut().take()) {
             *self.world = sess.world;
             *self.out = sess.out;
+            *self.moved_events = sess.moved_events;
+            // `sess.typed_state` drops right here so the live `ActionStateStore`
+            // refcount returns to 1 before control leaves `drive_*`.
         }
         BUDGET.with(|b| b.set(Budget::NONE));
         FATAL_ERROR.with(|f| *f.borrow_mut() = None);
@@ -344,13 +396,51 @@ impl Drop for SessionGuard<'_> {
     }
 }
 
-/// Run a bounded script cascade: move `world`/`out` into a session, drain
-/// `initial` (and everything the scripts enqueue) under the global cascade
-/// caps, then restore. A no-op when `initial` is empty.
-pub(crate) fn drive(world: &mut World, out: &mut Outbox, initial: VecDeque<Trigger>) {
+/// Run a bounded script cascade with live [`Registry`] and [`TypedStateLens`]
+/// context (P2-CORE-12): supplies live typed state to `MoveAttempt`,
+/// `CarryAttempt`, and `Perceive` hooks, and flushes recorded `mush::move`
+/// relocations as `WorldEvent::Moved` to external observers after the cascade.
+pub(crate) fn drive_with_context(
+    reg: &Registry,
+    world: &mut World,
+    out: &mut Outbox,
+    lens: TypedStateLens<'_>,
+    initial: VecDeque<Trigger>,
+) {
     if initial.is_empty() {
         return;
     }
+    let snapshot = lens.store().map(ActionStateStore::read_snapshot);
+    let moved_events = drive_inner(world, out, snapshot, initial);
+    if !moved_events.is_empty() {
+        let _guard = FlushMovesGuard::enter();
+        for (who, from, to) in moved_events {
+            mush_core::module::emit_world_event(
+                reg,
+                world,
+                out,
+                &WorldEvent::Moved { who, from, to },
+                lens,
+            );
+        }
+    }
+}
+
+/// Compatibility entry point when called via the context-less
+/// `CommandFallback::try_command`.
+pub(crate) fn drive_detached(world: &mut World, out: &mut Outbox, initial: VecDeque<Trigger>) {
+    if initial.is_empty() {
+        return;
+    }
+    let _ = drive_inner(world, out, None, initial);
+}
+
+fn drive_inner(
+    world: &mut World,
+    out: &mut Outbox,
+    typed_state: Option<ActionStateSnapshot>,
+    initial: VecDeque<Trigger>,
+) -> Vec<(ObjId, Option<ObjId>, ObjId)> {
     debug_assert!(
         SESSION.with(|s| s.borrow().is_none()),
         "script cascades are never nested"
@@ -368,6 +458,8 @@ pub(crate) fn drive(world: &mut World, out: &mut Outbox, initial: VecDeque<Trigg
         *s.borrow_mut() = Some(ScriptSession {
             world: real_world,
             out: real_out,
+            typed_state,
+            moved_events: Vec::new(),
             queue: initial,
             total: 0,
             current: None,
@@ -377,10 +469,18 @@ pub(crate) fn drive(world: &mut World, out: &mut Outbox, initial: VecDeque<Trigg
             dirty_scripts: BTreeMap::new(),
         });
     });
-    // From here the real world lives in the thread-local; `world`/`out` are
-    // placeholders moved into the guard, which restores them on drop.
-    let _guard = SessionGuard { world, out };
-    run_loop();
+    let mut moved_events = Vec::new();
+    {
+        // From here the real world lives in the thread-local; `world`/`out` are
+        // placeholders moved into the guard, which restores them on drop.
+        let _guard = SessionGuard {
+            world,
+            out,
+            moved_events: &mut moved_events,
+        };
+        run_loop();
+    }
+    moved_events
 }
 
 /// The cascade drain loop: pop, budget-check, run.
@@ -1123,6 +1223,7 @@ mod mush_api {
         }
         super::with_session(|sess| {
             let w = &sess.world;
+            let lens = sess.typed_state_lens();
             if q.eq_ignore_ascii_case("me") || q.eq_ignore_ascii_case("here") {
                 return match_object(w, fr.self_obj, q)
                     .ok()
@@ -1132,11 +1233,11 @@ mod mush_api {
             if q.starts_with('#') || q.starts_with('*') {
                 return match_object(w, fr.self_obj, q)
                     .ok()
-                    .filter(|&id| super::script_can_observe(w, &fr, id))
+                    .filter(|&id| super::script_can_observe(w, &fr, id, lens))
                     .ok_or_else(|| super::err(MatchErr::NoMatch.to_string()));
             }
             match_object_visible(w, fr.self_obj, q, |id| {
-                super::local_match_visible(w, &fr, id)
+                super::local_match_visible(w, &fr, id, lens)
             })
             .map_err(|e| super::err(e.to_string()))
         })
@@ -1193,11 +1294,10 @@ fn loc_of(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
 /// output layer conceals from `owner` is invisible to scripts too. A free
 /// pass (no snapshotted hook) leaves script visibility exactly as before.
 ///
-/// The lens is [`DetachedTypedState::ScriptSnapshot`]: this runs off the
-/// world-task loop, where there is no live authoritative store to read, and
-/// the hook slice itself is a boot snapshot. A hook that needs typed state
-/// abstains here — deliberately, and by a name that says so.
-fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
+/// Uses `lens` (live typed-state snapshot when invoked from `Engine` dispatch,
+/// falling back to [`DetachedTypedState::ScriptSnapshot`] when invoked outside
+/// a live store).
+fn owner_can_see(w: &World, owner: ObjId, obj: ObjId, lens: TypedStateLens<'_>) -> bool {
     let Some(o) = w.get(obj) else { return false };
     if o.flags.contains(Flags::GOING) {
         return false;
@@ -1209,13 +1309,7 @@ fn owner_can_see(w: &World, owner: ObjId, obj: ObjId) -> bool {
         return false;
     }
     if let Some(st) = w.module_state::<ScriptState>()
-        && !perceives_via(
-            &st.perceive_hooks,
-            w,
-            owner,
-            obj,
-            TypedStateLens::Detached(DetachedTypedState::ScriptSnapshot),
-        )
+        && !perceives_via(&st.perceive_hooks, w, owner, obj, lens)
     {
         return false;
     }
@@ -1251,8 +1345,8 @@ fn script_is_local(w: &World, fr: &Frame, obj: ObjId) -> bool {
 /// perceive it ([`owner_can_see`]) AND `obj` must either be local to
 /// `self_obj` (not concealed inside an uncontrolled `DARK` room) or examinable
 /// by `owner` (HIGH-17).
-fn script_can_observe(w: &World, fr: &Frame, obj: ObjId) -> bool {
-    if !owner_can_see(w, fr.owner, obj) {
+fn script_can_observe(w: &World, fr: &Frame, obj: ObjId, lens: TypedStateLens<'_>) -> bool {
+    if !owner_can_see(w, fr.owner, obj, lens) {
         return false;
     }
     if perm::can_examine(w, fr.owner, obj) {
@@ -1279,8 +1373,8 @@ fn script_can_observe(w: &World, fr: &Frame, obj: ObjId) -> bool {
 /// Visibility predicate for local `mush::matchit` candidate pools (HIGH-17):
 /// hides `DARK`/concealed objects and occupants of an uncontrolled `DARK` room
 /// before exact/prefix/ordinal matching runs.
-fn local_match_visible(w: &World, fr: &Frame, id: ObjId) -> bool {
-    if !owner_can_see(w, fr.owner, id) {
+fn local_match_visible(w: &World, fr: &Frame, id: ObjId, lens: TypedStateLens<'_>) -> bool {
+    if !owner_can_see(w, fr.owner, id, lens) {
         return false;
     }
     let carried = id == fr.self_obj || w.contents_of(fr.self_obj).contains(&id);
@@ -1304,8 +1398,9 @@ fn name_impl(obj: ObjId) -> String {
             return "nothing".to_string();
         };
         let w = &sess.world;
-        let allowed = script_can_observe(w, &fr, obj)
-            || (obj == fr.caller && owner_can_see(w, fr.owner, obj));
+        let lens = sess.typed_state_lens();
+        let allowed = script_can_observe(w, &fr, obj, lens)
+            || (obj == fr.caller && owner_can_see(w, fr.owner, obj, lens));
         if !allowed {
             return "nothing".to_string();
         }
@@ -1322,7 +1417,7 @@ fn loc_visible(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
         let Some(fr) = sess.current else {
             return false;
         };
-        obj == fr.self_obj || script_can_observe(&sess.world, &fr, obj)
+        obj == fr.self_obj || script_can_observe(&sess.world, &fr, obj, sess.typed_state_lens())
     });
     match visible {
         Some(true) => loc_of(obj),
@@ -1334,6 +1429,7 @@ fn loc_visible(obj: ObjId) -> Result<ObjId, Box<EvalAltResult>> {
 fn contents_impl(container: ObjId) -> Array {
     with_session(|sess| {
         let w = &sess.world;
+        let lens = sess.typed_state_lens();
         let Some(fr) = sess.current else {
             return Array::new();
         };
@@ -1362,7 +1458,7 @@ fn contents_impl(container: ObjId) -> Array {
         w.contents_of(container)
             .iter()
             .copied()
-            .filter(|&m| owner_can_see(w, owner, m))
+            .filter(|&m| owner_can_see(w, owner, m, lens))
             .map(Dynamic::from)
             .collect::<Array>()
     })
@@ -1375,7 +1471,7 @@ fn has_flag_impl(obj: ObjId, flag: &str) -> bool {
         let Some(fr) = sess.current else {
             return false;
         };
-        if !script_can_observe(&sess.world, &fr, obj) {
+        if !script_can_observe(&sess.world, &fr, obj, sess.typed_state_lens()) {
             return false;
         }
         let Some(o) = sess.world.get(obj) else {
@@ -1397,7 +1493,7 @@ fn get_attr_impl(obj: ObjId, attr: &str) -> String {
         };
         let w = &sess.world;
         let owner = fr.owner;
-        if !script_can_observe(w, &fr, obj) {
+        if !script_can_observe(w, &fr, obj, sess.typed_state_lens()) {
             return String::new();
         }
         let attr_trimmed = attr.trim();
@@ -1581,7 +1677,7 @@ fn emit_impl(target: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
         let (self_obj, owner, depth) = (fr.self_obj, fr.owner, fr.depth);
         let is_self_or_here =
             target == self_obj || sess.world.get(self_obj).and_then(|o| o.location) == Some(target);
-        if !is_self_or_here && !owner_can_see(&sess.world, owner, target) {
+        if !is_self_or_here && !owner_can_see(&sess.world, owner, target, sess.typed_state_lens()) {
             return Err(err("Cannot emit there."));
         }
         let Some(room) = room_of(&sess.world, target) else {
@@ -1634,10 +1730,11 @@ fn pemit_impl(player: ObjId, text: &str) -> Result<(), Box<EvalAltResult>> {
     with_session_mut(|sess| {
         let fr = sess.current.ok_or_else(|| err("no frame"))?;
         let owner = fr.owner;
+        let lens = sess.typed_state_lens();
         let target_is_actor = sess.world.get(player).is_some_and(|o| o.kind.is_actor());
-        let target_visible = target_is_actor && owner_can_see(&sess.world, owner, player);
+        let target_visible = target_is_actor && owner_can_see(&sess.world, owner, player, lens);
         let target_reachable = (script_is_local(&sess.world, &fr, player)
-            && script_can_observe(&sess.world, &fr, player))
+            && script_can_observe(&sess.world, &fr, player, lens))
             || player == fr.caller
             || perm::controls(&sess.world, owner, player);
         if !target_visible || !target_reachable {
@@ -1681,24 +1778,64 @@ fn move_impl(obj: ObjId, dest: ObjId) -> Result<(), Box<EvalAltResult>> {
             .current
             .map(|f| (f.owner, f.depth))
             .ok_or_else(|| err("no frame"))?;
+        let Some((obj_kind, from)) = sess.world.get(obj).map(|o| (o.kind, o.location)) else {
+            return Err(err("No such object."));
+        };
+        let Some(dest_kind) = sess.world.get(dest).map(|o| o.kind) else {
+            return Err(err("No such destination."));
+        };
+        // P2-CORE-12: enforce containment kind invariants — rooms cannot be
+        // relocated, exits cannot be destinations, and actors/exits may only
+        // land in rooms.
+        if obj_kind == ObjKind::Room {
+            return Err(err("Cannot move a room."));
+        }
+        if dest_kind == ObjKind::Exit {
+            return Err(err("Cannot move an object into an exit."));
+        }
+        if obj_kind.is_actor() && dest_kind != ObjKind::Room {
+            return Err(err("Actors can only be moved into rooms."));
+        }
+        if obj_kind == ObjKind::Exit && dest_kind != ObjKind::Room {
+            return Err(err("Exits can only be moved into rooms."));
+        }
         if !perm::can_teleport(&sess.world, owner, obj, dest) {
             return Err(err("Permission denied."));
         }
-        let hooks = sess
+        let (move_hooks, carry_hooks) = sess
             .world
             .module_state::<ScriptState>()
-            .map(|st| st.move_hooks.clone())
+            .map(|st| (st.move_hooks.clone(), st.carry_hooks.clone()))
             .unwrap_or_default();
-        for h in &hooks {
-            let hook_ctx = mush_core::HookReadContext::without_typed_state(&sess.world, &h.module);
-            if let Err(reason) = h.hook.move_attempt(&hook_ctx, obj, None, dest) {
-                return Err(err(reason.to_plain_text()));
-            }
+        let lens = sess.typed_state_lens();
+        if let Err(reason) = mush_core::module::check_move_attempt_hooks(
+            &move_hooks,
+            &sess.world,
+            obj,
+            None,
+            dest,
+            lens,
+        ) {
+            return Err(err(reason.to_plain_text()));
         }
-        let from = sess.world.get(obj).and_then(|o| o.location);
+        let from_kind = from.and_then(|f| sess.world.get(f)).map(|o| o.kind);
+        if obj_kind == ObjKind::Thing
+            && (dest_kind != ObjKind::Room || from_kind.is_some_and(|k| k != ObjKind::Room))
+            && let Err(reason) = mush_core::module::check_carry_attempt_hooks(
+                &carry_hooks,
+                &sess.world,
+                owner,
+                obj,
+                dest,
+                lens,
+            )
+        {
+            return Err(err(reason.to_plain_text()));
+        }
         sess.world
             .move_to(obj, dest)
             .map_err(|e| err(e.to_string()))?;
+        sess.moved_events.push((obj, from, dest));
         let max_depth = sess
             .world
             .module_state::<ScriptState>()
@@ -2307,14 +2444,17 @@ pub(crate) fn recompile_object(w: &mut World, out: &mut Outbox, obj: ObjId) {
 }
 
 /// Snapshot the registry data the off-loop session needs (module-owned attr
-/// namespaces + `MoveAttempt`/`Perceive` hooks) into the state slot at boot.
+/// namespaces + `MoveAttempt`/`CarryAttempt`/`Perceive` hooks) into the state
+/// slot at boot.
 pub(crate) fn snapshot_registry(w: &mut World, reg: &Registry) {
     let namespaces = reg.module_attr_namespaces();
     let move_hooks = reg.hooks(HookPoint::MoveAttempt).to_vec();
+    let carry_hooks = reg.hooks(HookPoint::CarryAttempt).to_vec();
     let perceive_hooks = reg.hooks(HookPoint::Perceive).to_vec();
     if let Some(st) = w.module_state_mut::<ScriptState>() {
         st.owned_namespaces = namespaces;
         st.move_hooks = move_hooks;
+        st.carry_hooks = carry_hooks;
         st.perceive_hooks = perceive_hooks;
     }
 }

@@ -19,7 +19,7 @@ use mush_proto::{NarrativeKind, OutputEvent, RichText};
 use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Role};
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
-use crate::matchit::match_object;
+use crate::matchit::{MatchErr, match_object_visible};
 use crate::obj::ObjId;
 use crate::output::{display_name, obj_ref};
 use crate::perm;
@@ -167,8 +167,15 @@ fn whisper_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .map(str::to_string)
         .filter(|m| !m.is_empty())
         .ok_or_else(|| CmdError::msg("Whisper what?  (whisper <who>=<message>)"))?;
-    let target = match_object(ctx.w, ctx.actor, &target_name)?;
     let my_loc = ctx.w.get(ctx.actor).and_then(|o| o.location);
+    let lens = ctx.typed_state.lens();
+    let target = match match_object_visible(ctx.w, ctx.actor, &target_name, |id| {
+        super::target_visible_here(ctx.reg, ctx.w, ctx.actor, id, my_loc, lens)
+    }) {
+        Ok(id) => id,
+        Err(MatchErr::NoMatch) => return Err(CmdError::msg("They aren't here.")),
+        Err(e) => return Err(e.into()),
+    };
     let their_loc = ctx.w.get(target).and_then(|o| o.location);
     if my_loc.is_none() || my_loc != their_loc {
         return Err(CmdError::msg("They aren't here."));

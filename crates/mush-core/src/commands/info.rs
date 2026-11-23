@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use mush_proto::{OutputEvent, PanelFrameKind, RichText, SmolStr, WhoEntry};
 
-use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError};
+use crate::cmd::{ArgShape, CmdError, CommandSpec, Ctx, Registry, RegistryError, spec_visible_to};
 use crate::flags::{Flags, Powers, Role};
-use crate::module::{HookReadContext, QueryHandler, Registrar};
+use crate::module::{HookPoint, HookReadContext, QueryHandler, Registrar, perceives_via};
 use crate::obj::ObjId;
 use crate::perm;
 use crate::world::World;
@@ -19,22 +19,51 @@ use super::attr_text;
 /// The WHO listing as seen by `viewer`: connected actors with real
 /// idle/connect times from the engine-maintained session stats. Staff
 /// (Wizard+ or `SEE_HIDDEN`) see every location and DARK players; a player
-/// sees the location of whoever shares their room and nothing else
-/// (interface plan I3, D-I-12), and every entry says whether it is `here`.
-/// Shared by the `WHO` command and the `"who"` query handler — one view,
-/// two transports.
+/// sees the location of whoever shares their room (when not in an uncontrolled
+/// `DARK` room and not concealed by `HookPoint::Perceive`) and nothing else
+/// (interface plan I3, D-I-12; P2-CORE-13), and every entry says whether it is
+/// `here`. Shared by the `WHO` command and the `"who"` query handler — one
+/// view, two transports.
 #[must_use]
 pub fn who_entries(w: &World, viewer: ObjId) -> Vec<WhoEntry> {
+    who_entries_filtered(w, viewer, |_| true)
+}
+
+fn who_entries_with_perception(
+    reg: &Registry,
+    w: &World,
+    viewer: ObjId,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> Vec<WhoEntry> {
+    let hooks = reg.hooks(HookPoint::Perceive);
+    who_entries_filtered(w, viewer, |id| perceives_via(hooks, w, viewer, id, lens))
+}
+
+fn who_entries_filtered<F>(w: &World, viewer: ObjId, mut can_perceive: F) -> Vec<WhoEntry>
+where
+    F: FnMut(ObjId) -> bool,
+{
     let staff =
         perm::has_role(w, viewer, Role::Wizard) || perm::has_power(w, viewer, Powers::SEE_HIDDEN);
     let viewer_room = w.get(viewer).and_then(|o| o.location);
+    let in_dark_room = !staff
+        && viewer_room.is_some_and(|r| {
+            w.get(r).is_some_and(|ro| ro.flags.contains(Flags::DARK))
+                && !perm::controls(w, viewer, r)
+        });
     let mut entries = Vec::new();
     for id in w.connected() {
         let Some(o) = w.get(id) else { continue };
         if o.flags.contains(Flags::DARK) && !staff && id != viewer {
             continue;
         }
-        let here = viewer_room.is_some() && o.location == viewer_room;
+        let same_room = viewer_room.is_some() && o.location == viewer_room;
+        // Gate co-location (`here`/`location`) on `!in_dark_room` and
+        // `Perceive` hooks so mortals cannot detect cloaked occupants or
+        // companions in an uncontrolled DARK room via `WHO` (P2-CORE-13).
+        let here = same_room
+            && (id == viewer
+                || ((!in_dark_room || perm::controls(w, viewer, id)) && can_perceive(id)));
         let location = if staff || here {
             o.location.and_then(|l| w.get(l)).map(|r| r.name.clone())
         } else {
@@ -64,7 +93,7 @@ pub fn who_entries(w: &World, viewer: ObjId) -> Vec<WhoEntry> {
 }
 
 fn who_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    let entries = who_entries(ctx.w, ctx.actor);
+    let entries = who_entries_with_perception(ctx.reg, ctx.w, ctx.actor, ctx.typed_state.lens());
     ctx.out.to_actor(ctx.actor, OutputEvent::Who(entries));
     Ok(())
 }
@@ -141,6 +170,19 @@ impl QueryHandler for WhoQuery {
     ) -> Result<OutputEvent, RichText> {
         Ok(OutputEvent::Who(who_entries(w, actor)))
     }
+
+    fn query_with_context(
+        &self,
+        context: &HookReadContext<'_>,
+        actor: ObjId,
+        _params: &serde_json::Value,
+    ) -> Result<OutputEvent, RichText> {
+        let entries = match context.registry() {
+            Some(reg) => who_entries_with_perception(reg, context.world(), actor, context.lens()),
+            None => who_entries(context.world(), actor),
+        };
+        Ok(OutputEvent::Who(entries))
+    }
 }
 
 /// The query name and panel feed the command table answers on.
@@ -201,24 +243,6 @@ fn truncate_summary(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", s[..end].trim_end())
-}
-
-/// Whether `viewer` may see `spec` in a listing: the role, power and
-/// privilege gates dispatch itself applies, and nothing else.
-///
-/// Locks are per-target and are not evaluated. Neither are
-/// [`CommandGate`](crate::CommandGate)s: a gate takes the world and refuses
-/// with a reason at dispatch time, so it cannot be run speculatively for a
-/// listing — a gated-but-in-role verb still appears, in the palette and in
-/// `help` alike. This is the one predicate both listings share, so the
-/// line-mode `help` table and the web/TUI palette can never drift into
-/// naming different surfaces.
-fn spec_visible_to(w: &World, viewer: ObjId, role: Role, spec: &CommandSpec) -> bool {
-    role >= spec.min_role
-        && spec.power.is_none_or(|p| perm::has_power(w, viewer, p))
-        && spec
-            .privilege
-            .is_none_or(|p| perm::has_privilege(w, viewer, p))
 }
 
 /// One help entry as the viewer's own `help <name>` command reads it.
@@ -835,5 +859,67 @@ mod tests {
         let entry = super::help_entry(&reg, &w, nick, "+locked-guide").unwrap();
         assert_eq!(entry.command.as_deref(), Some("+locked-guide"));
         assert!(!entry.publicly_visible);
+    }
+
+    #[test]
+    fn p2_core_13_who_query_gates_locality_on_perceive_and_dark_room() {
+        use crate::engine::{Effects, Engine, Inbound};
+        use crate::module::{EventHook, HookPoint, HookReadContext, Perceive, Registrar};
+        use crate::output::Outbox;
+        use std::sync::Arc;
+
+        struct ConcealOne(ObjId);
+        impl EventHook for ConcealOne {
+            fn perceives(
+                &self,
+                _ctx: &HookReadContext<'_>,
+                observer: ObjId,
+                subject: ObjId,
+            ) -> Perceive {
+                if subject == self.0 && observer != subject {
+                    Perceive::Conceal
+                } else {
+                    Perceive::Abstain
+                }
+            }
+        }
+
+        let mut w = World::new_minimal();
+        let hall = w.create(ObjKind::Room, "Hall", GOD, None).unwrap();
+        let nick = w.create(ObjKind::Player, "Nick", GOD, Some(hall)).unwrap();
+        let shade = w.create(ObjKind::Player, "Shade", GOD, Some(hall)).unwrap();
+        w.set_connected(nick, true);
+        w.set_connected(shade, true);
+        let mut reg = Registry::new();
+        crate::commands::register_core_commands(&mut reg).unwrap();
+        Registrar::new(&mut reg, "cloak").hook(HookPoint::Perceive, Arc::new(ConcealOne(shade)));
+
+        let mut engine = Box::new(Engine::new(w, reg));
+        let (mut out, mut fx) = (Outbox::new(), Effects::new());
+        engine.step(
+            Inbound::Query {
+                conn: 1,
+                actor: nick,
+                id: 42,
+                name: "who".into(),
+                args: serde_json::json!({}),
+            },
+            &mut out,
+            &mut fx,
+        );
+        let entries = out
+            .events()
+            .iter()
+            .find_map(|(_, ev)| match ev {
+                OutputEvent::Reply { event, .. } => match event.as_ref() {
+                    OutputEvent::Who(entries) => Some(entries.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("expected OutputEvent::Reply(OutputEvent::Who) from who query");
+        let shade_row = entries.iter().find(|e| e.name == "Shade").unwrap();
+        assert!(!shade_row.here);
+        assert_eq!(shade_row.location, None);
     }
 }

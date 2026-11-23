@@ -8,7 +8,7 @@ use mush_proto::{OutputEvent, RichText};
 use crate::attr::{AttrFlags, AttrValue};
 use crate::cmd::{CmdError, CommandSpec, Ctx, Registry, RegistryError};
 use crate::flags::{Flags, Powers, Role};
-use crate::matchit::{MatchErr, is_nearby, match_object};
+use crate::matchit::{MatchErr, is_nearby, match_object, match_object_visible};
 use crate::module::{HookPoint, perceives_via};
 use crate::obj::{ObjId, ObjKind};
 use crate::output::{Outbox, name_span};
@@ -16,6 +16,54 @@ use crate::perm;
 use crate::world::World;
 
 use super::{attr_text, show_room};
+
+/// Whether `target` may be resolved by `look` for `observer` (P2-CORE-13):
+/// filters `GOING` husks, `Perceive`-cloaked subjects, unreachable `#dbref`/
+/// `*name` spellings, `Flags::DARK` non-room targets, and uncarried occupants
+/// of uncontrolled `DARK` rooms BEFORE ambiguity/ordinal matching.
+fn look_target_visible(
+    reg: &Registry,
+    w: &World,
+    observer: ObjId,
+    target: ObjId,
+    global_spelling: bool,
+    lens: crate::action_state::TypedStateLens<'_>,
+) -> bool {
+    let Some(o) = w.get(target) else {
+        return false;
+    };
+    if o.flags.contains(Flags::GOING) {
+        return false;
+    }
+    if target == observer {
+        return true;
+    }
+    if !perceives_via(reg.hooks(HookPoint::Perceive), w, observer, target, lens) {
+        return false;
+    }
+    if global_spelling && !is_nearby(w, observer, target) && !perm::can_examine(w, observer, target)
+    {
+        return false;
+    }
+    if o.kind == ObjKind::Room || o.location == Some(observer) {
+        return true;
+    }
+    let see_hidden = perm::has_power(w, observer, Powers::SEE_HIDDEN);
+    let controls_target = perm::controls(w, observer, target);
+    if o.flags.contains(Flags::DARK) && !see_hidden && !controls_target {
+        return false;
+    }
+    if o.kind != ObjKind::Exit && !see_hidden && !controls_target {
+        let in_dark_room = o.location.is_some_and(|loc| {
+            w.get(loc).is_some_and(|r| r.flags.contains(Flags::DARK))
+                && !perm::controls(w, observer, loc)
+        });
+        if in_dark_room {
+            return false;
+        }
+    }
+    true
+}
 
 fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let q = ctx.args.raw().to_string();
@@ -36,38 +84,19 @@ fn look_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         let t = q.trim();
         t.starts_with('#') || t.starts_with('*')
     };
-    match match_object(ctx.w, ctx.actor, &q) {
-        // M11 per-observer projection: a target the looker cannot perceive
-        // (a cloaked vampire) resolves to nothing — true silence, so `look
-        // <name>` and `look #dbref` cannot probe a concealed subject. The
-        // looker always perceives themselves. Free pass with no Perceive hook,
-        // so this is identical to today for a game without concealment.
-        //
-        // Locality on top of that: a dbref or `*name` naming something out of
-        // reach reads nothing unless the looker could examine it anyway (its
-        // controller, or staff holding `EXAMINE_ALL`), so walking `#0..#N`
-        // cannot pull descs and room views out of the database.
-        Ok(target)
-            if (target == ctx.actor || ctx.can_perceive(ctx.actor, target))
-                && (!global_spelling
-                    || is_nearby(ctx.w, ctx.actor, target)
-                    || perm::can_examine(ctx.w, ctx.actor, target)) =>
-        {
-            look_at(
-                ctx.reg,
-                ctx.w,
-                ctx.actor,
-                target,
-                ctx.out,
-                ctx.typed_state.lens(),
-            );
+    let lens = ctx.typed_state.lens();
+    match match_object_visible(ctx.w, ctx.actor, &q, |id| {
+        look_target_visible(ctx.reg, ctx.w, ctx.actor, id, global_spelling, lens)
+    }) {
+        Ok(target) => {
+            look_at(ctx.reg, ctx.w, ctx.actor, target, ctx.out, lens);
             Ok(())
         }
-        // A matched-but-imperceptible or matched-but-distant target falls
+        // A matched-but-imperceptible, DARK, GOING, or distant target falls
         // through exactly like a name that matched nothing: the `detail:`
         // keyword fallback, then the byte-identical NoMatch refusal. No
-        // existence oracle either way.
-        Ok(_) | Err(MatchErr::NoMatch) => {
+        // existence, ambiguity, or ordinal oracle either way.
+        Err(MatchErr::NoMatch) => {
             // `look <keyword>`: room details stored as `detail:<keyword>`
             // attributes on the room (inheritable), then on the looker.
             let attr = format!("detail:{}", q.trim());
@@ -147,24 +176,27 @@ fn look_at(
         && !o.flags.contains(Flags::OPAQUE)
         && (o.kind == ObjKind::Thing || perm::controls(w, looker, target));
     if contents_visible {
-        let mut text = RichText::plain("Contents:");
-        for &c in &o.contents {
-            if w.get(c)
-                .is_some_and(|co| !co.flags.intersects(Flags::GOING | Flags::DARK))
-                // M11 per-observer projection: never list an occupant the
-                // looker cannot perceive (free pass with no Perceive hook).
-                && perceives_via(
-                    reg.hooks(HookPoint::Perceive),
-                    w,
-                    looker,
-                    c,
-                    lens,
-                )
-            {
+        let see_hidden = perm::has_power(w, looker, Powers::SEE_HIDDEN);
+        let visible_contents: Vec<ObjId> = o
+            .contents
+            .iter()
+            .copied()
+            .filter(|&c| {
+                w.get(c).is_some_and(|co| {
+                    !co.flags.contains(Flags::GOING)
+                        && (!co.flags.contains(Flags::DARK)
+                            || see_hidden
+                            || perm::controls(w, looker, c))
+                }) && perceives_via(reg.hooks(HookPoint::Perceive), w, looker, c, lens)
+            })
+            .collect();
+        if !visible_contents.is_empty() {
+            let mut text = RichText::plain("Contents:");
+            for c in visible_contents {
                 text = text.text(" ").span(name_span(w, c));
             }
+            out.to_actor(looker, OutputEvent::Sys(text));
         }
-        out.to_actor(looker, OutputEvent::Sys(text));
     }
 }
 

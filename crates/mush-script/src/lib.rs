@@ -58,15 +58,17 @@ use mush_core::module::{
     GameModule, ModError, ModuleBootData, ModuleCtx, Registrar, WorldEvent, WorldEventKind,
 };
 use mush_core::{
-    ArgShape, CmdError, CommandFallback, CommandSpec, Ctx, ObjId, Outbox, Role, World, match_object,
+    ArgShape, CmdError, CommandFallback, CommandSpec, Ctx, ObjId, Outbox, Registry, Role,
+    TypedStateLens, World, match_object,
 };
 use mush_proto::NarrativeKind;
 use smol_str::SmolStr;
 
 pub use runtime::{MIN_TIMER_DELAY_SECS, ScriptConfig, ScriptState};
 use runtime::{
-    Trigger, collect_command_triggers, collect_hear_triggers, collect_move_triggers, drive,
-    has_runnable, initial_trigger_cap, recompile_object, recompile_script_attr, snapshot_registry,
+    Trigger, collect_command_triggers, collect_hear_triggers, collect_move_triggers,
+    drive_detached, drive_with_context, has_runnable, initial_trigger_cap,
+    is_flushing_script_moves, recompile_object, recompile_script_attr, snapshot_registry,
 };
 
 /// The mush-script game module. Hand one to `Engine::with_modules`.
@@ -232,6 +234,12 @@ fn on_said(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
 
 /// `on_enter`/`on_leave`: run reactors in the vacated and entered rooms.
 fn on_moved(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
+    // `mush::move` already queued its own depth-bounded `script:leave` /
+    // `script:enter` triggers inside the script cascade before flushing
+    // `WorldEvent::Moved` to external observers (P2-CORE-12).
+    if is_flushing_script_moves() {
+        return;
+    }
     let WorldEvent::Moved { who, from, to } = ev else {
         return;
     };
@@ -263,7 +271,29 @@ impl CommandFallback for ScriptCommands {
         if triggers.is_empty() {
             return false;
         }
-        drive(w, out, triggers.into());
+        drive_detached(w, out, triggers.into());
+        true
+    }
+
+    fn try_command_with_context(
+        &self,
+        reg: &Registry,
+        w: &mut World,
+        actor: ObjId,
+        line: &str,
+        out: &mut Outbox,
+        lens: TypedStateLens<'_>,
+    ) -> bool {
+        let (verb, arg) = split_head(line);
+        if verb.is_empty() {
+            return false;
+        }
+        let limit = initial_trigger_cap(w);
+        let triggers = collect_command_triggers(w, actor, verb, arg, limit);
+        if triggers.is_empty() {
+            return false;
+        }
+        drive_with_context(reg, w, out, lens, triggers.into());
         true
     }
 }
@@ -323,7 +353,8 @@ fn run(ctx: &mut Ctx<'_>, triggers: Vec<Trigger>) {
         return;
     }
     let queue: VecDeque<Trigger> = triggers.into();
-    drive(ctx.w, ctx.out, queue);
+    let lens = ctx.typed_state.lens();
+    drive_with_context(ctx.reg, ctx.w, ctx.out, lens, queue);
 }
 
 /// Split off the first whitespace-delimited word.

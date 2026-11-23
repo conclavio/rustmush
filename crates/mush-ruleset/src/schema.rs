@@ -453,6 +453,11 @@ impl DamageLevelDef {
     }
 }
 
+/// Maximum slots a [`TrackSize::Derived`] expression may resolve to, matching
+/// [`TrackSize::Fixed`]'s `u8` upper bound so untrusted or future ruleset
+/// expressions cannot trigger unbounded `Vec` allocations (P2-CORE-25).
+pub const MAX_TRACK_SLOTS: usize = u8::MAX as usize;
+
 /// A track's size: fixed, or derived from other numeric fields.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -465,12 +470,15 @@ pub enum TrackSize {
 
 impl TrackSize {
     /// Resolve the concrete slot count against a sheet-data document
-    /// (missing numeric refs read as 0; the result is clamped to `>= 0`).
+    /// (missing numeric refs read as 0; the result is clamped to
+    /// `0..=MAX_TRACK_SLOTS`).
     #[must_use]
     pub fn resolve(&self, data: &serde_json::Value) -> usize {
         match self {
             TrackSize::Fixed(n) => *n as usize,
-            TrackSize::Derived(expr) => expr.eval_data(data).max(0) as usize,
+            TrackSize::Derived(expr) => usize::try_from(expr.eval_data(data).max(0))
+                .unwrap_or(MAX_TRACK_SLOTS)
+                .min(MAX_TRACK_SLOTS),
         }
     }
 }
@@ -878,5 +886,17 @@ mod tests {
         assert_eq!(e.eval_data(&data), 14);
         // Missing ref reads as 0.
         assert_eq!(DerivedExpr::field("missing").eval_data(&data), 0);
+    }
+
+    #[test]
+    fn p2_core_25_derived_track_size_is_capped() {
+        let huge =
+            TrackSize::Derived(DerivedExpr::field("n").mul(DerivedExpr::constant(1_000_000)));
+        assert_eq!(
+            huge.resolve(&serde_json::json!({ "n": 1_000_000 })),
+            MAX_TRACK_SLOTS
+        );
+        let negative = TrackSize::Derived(DerivedExpr::constant(-42));
+        assert_eq!(negative.resolve(&serde_json::json!({})), 0);
     }
 }

@@ -349,8 +349,10 @@ impl BudgetPlan {
             };
             for fid in rule.fields(schema) {
                 let value = doc.number(fid).unwrap_or(i64::from(rule.base));
-                let above = (value - i64::from(rule.base)).max(0);
-                ledger.spent += i32::try_from(above).unwrap_or(i32::MAX) * rule.cost_per_dot;
+                let above = value.saturating_sub(i64::from(rule.base)).max(0);
+                let dots = i32::try_from(above).unwrap_or(i32::MAX);
+                let cost = dots.saturating_mul(rule.cost_per_dot);
+                ledger.spent = ledger.spent.saturating_add(cost);
             }
         }
         ledgers
@@ -366,13 +368,13 @@ impl BudgetPlan {
                 issues.push(ChargenIssue::Overspent {
                     pool: l.name.clone(),
                     label: l.label.clone(),
-                    by: l.spent - l.total,
+                    by: l.spent.saturating_sub(l.total),
                 });
             } else if l.underspent() {
                 issues.push(ChargenIssue::Underspent {
                     pool: l.name.clone(),
                     label: l.label.clone(),
-                    by: l.total - l.spent,
+                    by: l.total.saturating_sub(l.spent),
                 });
             }
         }
@@ -614,5 +616,32 @@ mod tests {
         // Finalize computes the derived total (3 + 3 + 2).
         finalize(&flow, &mut doc).unwrap();
         assert_eq!(doc.number("physical_total"), Some(8));
+    }
+
+    #[test]
+    fn p2_core_25_budget_assess_and_issues_use_saturating_arithmetic() {
+        let s = schema();
+        let plan = BudgetPlan::new()
+            .pool(PoolDef::new("attrs", "Attributes", 5))
+            .rule(CostRule::new(
+                "attrs",
+                FieldSelector::Category("physical".into()),
+                1,
+                1_000_000,
+            ));
+        let mut doc = SheetDoc::new_default(&s);
+        doc.set_number("strength", i64::MAX);
+        doc.set_number("dexterity", i64::MAX);
+        doc.set_number("stamina", i64::MIN);
+
+        let ledgers = plan.assess(&s, &doc);
+        assert_eq!(ledgers[0].spent, i32::MAX);
+        assert!(ledgers[0].overspent());
+
+        let issues = plan.issues(&s, &doc);
+        assert!(issues.iter().any(|i| matches!(
+            i,
+            ChargenIssue::Overspent { pool, by, .. } if pool == "attrs" && *by == i32::MAX - 5
+        )));
     }
 }

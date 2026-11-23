@@ -505,6 +505,24 @@ pub trait CommandFallback: Send + Sync {
     /// Try to handle `line` (the whole post-alias command line) as `actor`.
     /// Return `true` if handled (dispatch stops before `Huh?`).
     fn try_command(&self, w: &mut World, actor: ObjId, line: &str, out: &mut Outbox) -> bool;
+
+    /// Context-aware fallback variant carrying the live [`Registry`] and
+    /// [`TypedStateLens`](crate::TypedStateLens) so fallbacks such as
+    /// `mush-script` can invoke hooks against live typed state and emit
+    /// post-mutation [`WorldEvent`](crate::module::WorldEvent)s (P2-CORE-12).
+    /// Defaults to [`CommandFallback::try_command`].
+    fn try_command_with_context(
+        &self,
+        reg: &Registry,
+        w: &mut World,
+        actor: ObjId,
+        line: &str,
+        out: &mut Outbox,
+        lens: crate::action_state::TypedStateLens<'_>,
+    ) -> bool {
+        let _ = (reg, lens);
+        self.try_command(w, actor, line, out)
+    }
 }
 
 /// Registration failed.
@@ -1257,21 +1275,54 @@ impl Registry {
         self.help_topics.keys().map(SmolStr::as_str)
     }
 
-    /// The closest registered name/alias to `verb` by edit distance
-    /// (≤ 2 edits and closer than the word's own length) — the `Huh?`
-    /// suggestion.
+    /// The closest **publicly visible** registered name/alias to `verb` by edit
+    /// distance (≤ 2 edits and closer than the word's own length).
+    ///
+    /// Never suggests role-, power-, privilege-, or lock-gated commands when
+    /// called without a viewer context (P2-CORE-22). For viewer-aware `Huh?`
+    /// suggestions (including commands the viewer is authorized to run), use
+    /// [`Registry::suggest_for`].
     #[must_use]
     pub fn suggest(&self, verb: &str) -> Option<SmolStr> {
+        self.suggest_filtered(verb, |spec| {
+            spec.min_role == Role::Player
+                && spec.power.is_none()
+                && spec.privilege.is_none()
+                && spec.lock.is_none()
+        })
+    }
+
+    /// The closest registered name/alias to `verb` that `actor` is permitted to
+    /// see (matching the visibility rules of `help`/`command_entries`, plus any
+    /// command-level `lock`; P2-CORE-22).
+    #[must_use]
+    pub fn suggest_for(&self, w: &World, actor: ObjId, verb: &str) -> Option<SmolStr> {
+        let role = perm::role_of(w, actor);
+        self.suggest_filtered(verb, |spec| {
+            spec_visible_to(w, actor, role, spec)
+                && spec
+                    .lock
+                    .as_ref()
+                    .is_none_or(|lock| eval_lock(w, lock, actor, MAX_LOCK_DEPTH))
+        })
+    }
+
+    fn suggest_filtered<F>(&self, verb: &str, mut visible: F) -> Option<SmolStr>
+    where
+        F: FnMut(&CommandSpec) -> bool,
+    {
         const MAX_SUGGEST_DIST: usize = 2;
         if verb.is_empty() {
             return None;
         }
+        // Pre-filter eligible entries once so hidden staff/gated verbs can
+        // never influence either the candidate loop or its length ceiling.
+        let eligible: Vec<&Entry> = self.entries.iter().filter(|e| visible(&e.spec)).collect();
         // Lowercasing never reduces Unicode scalar count, so if `verb` is
         // already more than MAX_SUGGEST_DIST chars longer than the longest
-        // registered command/alias, no match is possible — return without
+        // visible command/alias, no match is possible — return without
         // allocating (CORE-M2).
-        let max_candidate_chars = self
-            .entries
+        let max_candidate_chars = eligible
             .iter()
             .flat_map(|e| std::iter::once(&e.spec.name).chain(e.spec.aliases.iter()))
             .map(|n| {
@@ -1283,7 +1334,9 @@ impl Registry {
             })
             .max()
             .unwrap_or(0);
-        if verb.chars().count() > max_candidate_chars.saturating_add(MAX_SUGGEST_DIST) {
+        if max_candidate_chars == 0
+            || verb.chars().count() > max_candidate_chars.saturating_add(MAX_SUGGEST_DIST)
+        {
             return None;
         }
 
@@ -1297,7 +1350,7 @@ impl Registry {
         let mut prev: Vec<usize> = Vec::with_capacity(max_candidate_chars + 1);
         let mut cur: Vec<usize> = Vec::with_capacity(max_candidate_chars + 1);
         let mut best: Option<(usize, &SmolStr)> = None;
-        for e in &self.entries {
+        for e in eligible {
             for name in std::iter::once(&e.spec.name).chain(e.spec.aliases.iter()) {
                 if name.is_ascii() && v_len.abs_diff(name.len()) > MAX_SUGGEST_DIST {
                     continue;
@@ -1325,6 +1378,17 @@ impl Registry {
         }
         best.map(|(_, n)| n.clone())
     }
+}
+
+/// Whether `viewer` may see `spec` in a command listing, help lookup, or fuzzy
+/// typo suggestion: the role, power, and privilege gates dispatch itself
+/// applies (shared by `help_cmd`, `command_entries`, and `Registry::suggest_for`).
+pub(crate) fn spec_visible_to(w: &World, viewer: ObjId, role: Role, spec: &CommandSpec) -> bool {
+    role >= spec.min_role
+        && spec.power.is_none_or(|p| perm::has_power(w, viewer, p))
+        && spec
+            .privilege
+            .is_none_or(|p| perm::has_privilege(w, viewer, p))
 }
 
 /// Bounded Levenshtein distance reusing caller-provided scratch rows; returns
@@ -1875,11 +1939,11 @@ fn dispatch_line(
             match resolve_behavior_command(reg, w, actor, verb, lens) {
                 BehaviorResolution::One { target, index } => {
                     let Some(bspec) = reg.behavior_spec(&target.behavior) else {
-                        huh(reg, actor, verb, out);
+                        huh(reg, w, actor, verb, out);
                         return None;
                     };
                     let Some(cmd) = bspec.commands.get(index) else {
-                        huh(reg, actor, verb, out);
+                        huh(reg, w, actor, verb, out);
                         return None;
                     };
                     if let Some((args, switches)) =
@@ -1918,11 +1982,14 @@ fn dispatch_line(
             // `Huh?`. They run against the full post-alias line.
             let line = cur.trim().to_string();
             for entry in &reg.command_fallbacks {
-                if entry.fallback.try_command(w, actor, &line, out) {
+                if entry
+                    .fallback
+                    .try_command_with_context(reg, w, actor, &line, out, lens)
+                {
                     return None;
                 }
             }
-            huh(reg, actor, verb, out);
+            huh(reg, w, actor, verb, out);
         }
         Err(LookupErr::Ambiguous(names)) => {
             let names: Vec<&str> = names.iter().map(SmolStr::as_str).collect();
@@ -2107,10 +2174,11 @@ pub(crate) fn check_command_gates(
     Ok(())
 }
 
-/// Queue the classic `Huh?`, with a fuzzy suggestion when one is close.
-fn huh(reg: &Registry, actor: ObjId, verb: &str, out: &mut Outbox) {
+/// Queue the classic `Huh?`, with a fuzzy suggestion when one visible to
+/// `actor` is close (P2-CORE-22).
+fn huh(reg: &Registry, w: &World, actor: ObjId, verb: &str, out: &mut Outbox) {
     let mut msg = String::from("Huh?  (Type \"help\" for help.)");
-    if let Some(s) = reg.suggest(verb) {
+    if let Some(s) = reg.suggest_for(w, actor, verb) {
         msg.push_str(&format!("  Did you mean \"{s}\"?"));
     }
     out.error(actor, msg);
@@ -2274,6 +2342,115 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(1),
             "suggest must early-return without O(m*n) work on oversized verbs"
+        );
+    }
+
+    #[test]
+    fn p2_core_22_suggest_hides_role_power_privilege_and_lock_gated_verbs() {
+        use crate::flags::{Flags, Powers, Privileges};
+        use crate::lock::LockExpr;
+        use crate::obj::{GOD, LIMBO, ObjKind};
+
+        let mut w = World::new_minimal();
+        let mortal = w.create(ObjKind::Player, "Ann", GOD, Some(LIMBO)).unwrap();
+        let builder = w.create(ObjKind::Player, "Bob", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(builder, Flags::BUILDER, true).unwrap();
+        let wiz = w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+
+        let mut reg = Registry::new();
+        crate::commands::register_core_commands(&mut reg).unwrap();
+        reg.register(
+            CommandSpec {
+                name: "@powsecret".into(),
+                power: Some(Powers::BOOT),
+                help: "power gated".into(),
+                ..CommandSpec::default()
+            },
+            noop(),
+        )
+        .unwrap();
+        reg.register(
+            CommandSpec {
+                name: "@privsecret".into(),
+                privilege: Some(Privileges::DISCORD_IDENTITY),
+                help: "privilege gated".into(),
+                ..CommandSpec::default()
+            },
+            noop(),
+        )
+        .unwrap();
+        reg.register(
+            CommandSpec {
+                name: "@locksecret".into(),
+                lock: Some(LockExpr::Is(builder)),
+                help: "lock gated".into(),
+                ..CommandSpec::default()
+            },
+            noop(),
+        )
+        .unwrap();
+
+        // Viewer-less suggest() only suggests publicly visible verbs — never
+        // Wizard/Builder/Power/Privilege/Lock-gated verbs (`@wal` falls back
+        // to public `@tel`, never suggesting Wizard-only `@wall`).
+        assert_ne!(reg.suggest("@wal").as_deref(), Some("@wall"));
+        assert_eq!(reg.suggest("@powsecre"), None);
+        assert_eq!(reg.suggest("@privsecre"), None);
+        assert_eq!(reg.suggest("@locksecre"), None);
+        assert_eq!(reg.suggest("lok").as_deref(), Some("look"));
+
+        // Mortal sees none of Builder/Wizard/Power/Privilege/Lock-gated verbs.
+        assert_ne!(
+            reg.suggest_for(&w, mortal, "@wal").as_deref(),
+            Some("@wall")
+        );
+        assert_ne!(reg.suggest_for(&w, mortal, "@di").as_deref(), Some("@dig"));
+        assert_eq!(reg.suggest_for(&w, mortal, "@powsecre"), None);
+        assert_eq!(reg.suggest_for(&w, mortal, "@privsecre"), None);
+        assert_eq!(reg.suggest_for(&w, mortal, "@locksecre"), None);
+
+        // Builder sees @dig and their locked verb, never Wizard/Power/Priv.
+        assert_eq!(reg.suggest_for(&w, builder, "@di").as_deref(), Some("@dig"));
+        assert_eq!(
+            reg.suggest_for(&w, builder, "@locksecre").as_deref(),
+            Some("@locksecret")
+        );
+        assert_ne!(
+            reg.suggest_for(&w, builder, "@wal").as_deref(),
+            Some("@wall")
+        );
+        assert_eq!(reg.suggest_for(&w, builder, "@powsecre"), None);
+
+        // Wizard sees @wall and power-gated verbs, NOT explicit privilege verbs.
+        assert_eq!(reg.suggest_for(&w, wiz, "@wal").as_deref(), Some("@wall"));
+        assert_eq!(
+            reg.suggest_for(&w, wiz, "@powsecre").as_deref(),
+            Some("@powsecret")
+        );
+        assert_eq!(reg.suggest_for(&w, wiz, "@privsecre"), None);
+
+        // Explicit grant unlocks suggestion for that holder only.
+        w.get_mut(mortal).unwrap().privileges = Privileges::DISCORD_IDENTITY;
+        assert_eq!(
+            reg.suggest_for(&w, mortal, "@privsecre").as_deref(),
+            Some("@privsecret")
+        );
+        // Dispatch Huh? uses suggest_for and never leaks @wall to mortal.
+        let mut out = Outbox::new();
+        dispatch(&reg, &mut w, mortal, "@wal hi", &mut out, DETACHED);
+        let msg = out
+            .events()
+            .iter()
+            .filter_map(|(_, e)| match e {
+                OutputEvent::Sys(t) => Some(t.to_plain_text()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !msg.contains("@wall"),
+            "Huh? must not suggest Wizard verb to mortal: {msg}"
         );
     }
 

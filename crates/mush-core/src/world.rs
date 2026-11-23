@@ -52,6 +52,10 @@ pub const MAX_PLAYER_NAME_CHARS: usize = 32;
 /// set via `@name` (CORE-M3).
 pub const MAX_OBJECT_NAME_CHARS: usize = 64;
 
+/// Default per-owner live object cap enforced for non-staff builders in
+/// `@create`, `@dig`, and `@open` (P2-CORE-20).
+pub const MAX_OBJECTS_PER_BUILDER: usize = 512;
+
 /// Names and aliases reserved against player `@name` impersonation (CORE-M3).
 pub const RESERVED_PLAYER_NAMES: &[&str] = &[
     "god",
@@ -383,6 +387,9 @@ pub struct World {
     module_state_revs: HashMap<TypeId, u64>,
     /// Last revision assigned by `composed_install_parts_mut`.
     composed_install_rev: u64,
+    /// Optional per-owner live object quota override for non-staff builders
+    /// (`None` uses [`MAX_OBJECTS_PER_BUILDER`]). Transient, never persisted.
+    builder_object_quota: Option<usize>,
 }
 
 fn game_clock_compatibility(epoch: WorldTimelineEpoch) -> GameClock {
@@ -1261,6 +1268,27 @@ impl World {
     // Mutators
     // ------------------------------------------------------------------
 
+    /// Effective per-owner live object cap enforced for non-staff builders in
+    /// `@create`, `@dig`, and `@open` (defaults to [`MAX_OBJECTS_PER_BUILDER`]).
+    #[must_use]
+    pub fn builder_object_quota(&self) -> usize {
+        self.builder_object_quota.unwrap_or(MAX_OBJECTS_PER_BUILDER)
+    }
+
+    /// Configure the per-owner live object cap enforced for non-staff builders.
+    pub fn set_builder_object_quota(&mut self, max: usize) {
+        self.builder_object_quota = Some(max);
+    }
+
+    /// Count live (non-`GOING`) objects owned by `owner`, excluding `owner`
+    /// itself (a player always owns their own player object).
+    #[must_use]
+    pub fn owned_object_count(&self, owner: ObjId) -> usize {
+        self.iter()
+            .filter(|o| o.id != owner && o.owner == owner && !o.flags.contains(Flags::GOING))
+            .count()
+    }
+
     /// Create a new object, allocate its id, and wire it into the world.
     ///
     /// - `Player`s own themselves (the `owner` argument is ignored for
@@ -1270,6 +1298,8 @@ impl World {
     ///   `exits` list, everything else into `contents`.
     /// - Actors get `home` defaulted to their creation location, must have
     ///   a name not already claimed by another actor, and are indexed.
+    /// - Names containing control or Unicode BiDi override characters are
+    ///   rejected ([`WorldError::InvalidName`]; P2-CORE-16).
     pub fn create(
         &mut self,
         kind: ObjKind,
@@ -1277,6 +1307,11 @@ impl World {
         owner: ObjId,
         location: Option<ObjId>,
     ) -> Result<ObjId, WorldError> {
+        if name.chars().any(|c| c.is_control() || is_bidi_control(c)) {
+            return Err(WorldError::InvalidName(
+                "That name contains invalid characters.".to_string(),
+            ));
+        }
         if kind != ObjKind::Player {
             self.ensure(owner)?;
         }
@@ -1518,6 +1553,10 @@ impl World {
         if kind == ObjKind::Player {
             validate_player_name_part(name, id == GOD, 2)
                 .map_err(|msg| WorldError::InvalidName(msg.to_string()))?;
+        } else if name.chars().any(|c| c.is_control() || is_bidi_control(c)) {
+            return Err(WorldError::InvalidName(
+                "That name contains invalid characters.".to_string(),
+            ));
         }
         if is_actor
             && let Some(&other) = self.player_index.get(&UncasedName::from(name))
@@ -1547,6 +1586,10 @@ impl World {
         if kind == ObjKind::Player {
             validate_player_name_part(alias, id == GOD, 1)
                 .map_err(|msg| WorldError::InvalidName(msg.to_string()))?;
+        } else if alias.chars().any(|c| c.is_control() || is_bidi_control(c)) {
+            return Err(WorldError::InvalidName(
+                "That name contains invalid characters.".to_string(),
+            ));
         }
         let key = UncasedName::from(alias);
         if o.aliases.iter().any(|a| UncasedName::from(a) == key) {

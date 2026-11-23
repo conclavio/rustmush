@@ -139,9 +139,15 @@ pub fn validate(schema: &SheetSchema, data: &serde_json::Value) -> Result<(), Ve
         }]);
     };
 
-    // Unknown top-level keys.
+    // Unknown or non-canonical-cased top-level keys: `SheetSchema::field` is
+    // ASCII case-insensitive for command lookup, but sheet documents must store
+    // exact canonical `FieldDef::id` keys so value checks and `strip_staff_only`
+    // cannot be bypassed via mixed-case keys (P2-CORE-25).
     for key in obj.keys() {
-        if schema.field(key).is_none() {
+        if !schema
+            .field(key)
+            .is_some_and(|f| f.id.as_str() == key.as_str())
+        {
             errors.push(SheetError::UnknownField { field: key.clone() });
         }
     }
@@ -445,5 +451,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn p2_core_25_non_canonical_case_keys_are_rejected() {
+        let s = schema();
+        let mut data = s.default_data();
+        data["STRENGTH"] = serde_json::json!(999);
+        let errs = validate(&s, &data).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, SheetError::UnknownField { field } if field == "STRENGTH")),
+            "mixed-case key must be rejected as UnknownField: {errs:?}"
+        );
     }
 }

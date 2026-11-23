@@ -2182,8 +2182,9 @@ impl<T: Send + Sync + 'static> ErasedStateValue for T {
     }
 }
 
+#[derive(Clone)]
 struct StoredStateRecord {
-    value: Box<dyn ErasedStateValue>,
+    value: Arc<dyn ErasedStateValue>,
     canonical: CanonicalStateBytes,
 }
 
@@ -2328,7 +2329,7 @@ impl Drop for ReservationGuard {
 /// accessor; all gameplay mutation goes through [`ActionTxn`].
 pub struct ActionStateStore {
     registry: StateFamilyRegistry,
-    records: BTreeMap<StateKey, StoredStateRecord>,
+    records: Arc<BTreeMap<StateKey, StoredStateRecord>>,
     live_canonical_bytes: usize,
     capacity: Arc<terminal_capacity::CapacityState>,
     capacity_usage: terminal_capacity::Usage,
@@ -2336,6 +2337,26 @@ pub struct ActionStateStore {
     slot: Arc<ReservationSlot>,
     revision: u64,
     next_reservation: u64,
+}
+
+/// Owned, read-only O(1) snapshot of an [`ActionStateStore`] (P2-CORE-12).
+///
+/// Shares the immutable registry, record map, and reservation slot via `Arc` so
+/// `'static` synchronous scopes such as `mush-script` cascades can supply live
+/// [`TypedStateLens`] contexts to veto/perception hooks without `unsafe` and
+/// without cloning stored records. Drop before mutating the live store to keep
+/// copy-on-write refcounts at 1.
+#[derive(Debug)]
+pub struct ActionStateSnapshot {
+    store: ActionStateStore,
+}
+
+impl ActionStateSnapshot {
+    /// Borrow this snapshot as a live [`TypedStateLens`].
+    #[must_use]
+    pub const fn lens(&self) -> TypedStateLens<'_> {
+        TypedStateLens::Live(&self.store)
+    }
 }
 
 /// One immutable entry in a bounded typed-family scan.
@@ -2406,7 +2427,7 @@ impl ActionStateStore {
         let capacity_verifiers = terminal_capacity::Verifiers::for_registry(&registry);
         Self {
             registry,
-            records: BTreeMap::new(),
+            records: Arc::new(BTreeMap::new()),
             live_canonical_bytes: 0,
             capacity: Arc::default(),
             capacity_usage: terminal_capacity::Usage::default(),
@@ -2414,6 +2435,24 @@ impl ActionStateStore {
             slot: Arc::new(ReservationSlot::new()),
             revision: 0,
             next_reservation: 0,
+        }
+    }
+
+    /// Take an O(1) owned read-only snapshot of this store's live typed state.
+    #[must_use]
+    pub fn read_snapshot(&self) -> ActionStateSnapshot {
+        ActionStateSnapshot {
+            store: ActionStateStore {
+                registry: self.registry.clone(),
+                records: Arc::clone(&self.records),
+                live_canonical_bytes: self.live_canonical_bytes,
+                capacity: Arc::clone(&self.capacity),
+                capacity_usage: terminal_capacity::Usage::default(),
+                capacity_verifiers: terminal_capacity::Verifiers::default(),
+                slot: Arc::clone(&self.slot),
+                revision: self.revision,
+                next_reservation: self.next_reservation,
+            },
         }
     }
 
@@ -2618,7 +2657,13 @@ impl ActionStateStore {
             }
             let canonical = CanonicalStateBytes(Arc::from(expected));
             if hydrated
-                .insert(state_key.clone(), StoredStateRecord { value, canonical })
+                .insert(
+                    state_key.clone(),
+                    StoredStateRecord {
+                        value: Arc::from(value),
+                        canonical,
+                    },
+                )
                 .is_some()
             {
                 return Err(ActionStateError::DuplicateHydratedRecord { key: state_key });
@@ -2634,7 +2679,7 @@ impl ActionStateStore {
         let typed_bytes = total_bytes
             .checked_sub(capacity.metadata_bytes())
             .ok_or(ActionStateError::ArithmeticOverflow)?;
-        self.records = hydrated;
+        self.records = Arc::new(hydrated);
         self.live_canonical_bytes = typed_bytes;
         self.capacity = Arc::new(capacity);
         self.capacity_usage = usage;
@@ -2982,15 +3027,20 @@ impl<'a> BoundTypedInstall<'a> {
             guard,
             ..
         } = installation;
+        let records = Arc::make_mut(&mut store.records);
         for (key, mutation) in mutations {
             match mutation {
                 InstallMutation::Put { value, canonical } => {
-                    store
-                        .records
-                        .insert(key, StoredStateRecord { value, canonical });
+                    records.insert(
+                        key,
+                        StoredStateRecord {
+                            value: Arc::from(value),
+                            canonical,
+                        },
+                    );
                 }
                 InstallMutation::Delete => {
-                    let removed = store.records.remove(&key);
+                    let removed = records.remove(&key);
                     debug_assert!(removed.is_some(), "prepared delete retained its pre-state");
                 }
             }

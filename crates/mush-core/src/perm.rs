@@ -3,18 +3,19 @@
 //! Every command handler routes its authority questions through this module
 //! — nobody inlines flag math. The core primitive is [`controls`]:
 //!
-//! > `who` controls `what` iff `who` is Wizard-or-better, **or** `who` is
-//! > `what` itself, **or** `who` (or `who`'s owner) owns `what`, **or**
-//! > `what`'s Zone Master Object has a `Zone` lock that `who` passes
-//! > (delegated zone administration, design doc §2.6; never grants control
-//! > over Wizard/God-owned objects to lower-role actors).
+//! > `who` controls `what` iff `who` is `what` itself, **or** `who` is
+//! > Wizard-or-better at least matching `what`'s owner/object role (`Wizard`
+//! > cannot control `#1` God or God-owned objects), **or** `who` (or `who`'s
+//! > owner) owns `what`, **or** `what`'s Zone Master Object has a `Zone` lock
+//! > that `who` passes (delegated zone administration, design doc §2.6; never
+//! > grants control over Wizard/God-owned objects to lower-role actors).
 //!
 //! Granular Rhost-style [`Powers`] refine the picture: [`has_power`] is
 //! automatically satisfied for Wizard+ so staff never need explicit grants.
 
 use crate::flags::{Flags, Powers, Privileges, Role};
 use crate::lock::{LockType, MAX_LOCK_DEPTH, eval_lock};
-use crate::obj::ObjId;
+use crate::obj::{ObjId, ObjKind};
 use crate::world::World;
 
 /// The staff role of an object ([`Role::Player`] if it does not exist).
@@ -48,18 +49,24 @@ pub fn has_privilege(w: &World, who: ObjId, privilege: Privileges) -> bool {
     w.get(who).is_some_and(|o| o.privileges.contains(privilege))
 }
 
-/// The classic "does `who` control `what`" check: God ∨ Wizard ∨ self ∨
-/// owner ∨ zone delegation (the ZMO's `Zone` lock, which never confers
-/// control over a Wizard/God-owned object to a lower-role actor).
+/// The classic "does `who` control `what`" check: self ∨ God ∨ Wizard (for
+/// non-God targets) ∨ owner ∨ zone delegation (the ZMO's `Zone` lock, which
+/// never confers control over a Wizard/God-owned object to a lower-role actor).
+///
+/// Enforces the `Wizard < God` authority boundary (P2-CORE-21): targeting `#1`
+/// (`GOD`) or any God-owned object requires `Role::God` (`who == GOD`) unless
+/// `who` itself is owned by `GOD` (e.g. a God-owned puppet acting on God's
+/// objects).
 #[must_use]
 pub fn controls(w: &World, who: ObjId, what: ObjId) -> bool {
     let Some(a) = w.get(who) else { return false };
     let Some(b) = w.get(what) else { return false };
-    if a.role() >= Role::Wizard {
-        return true;
-    }
     if who == what {
         return true;
+    }
+    let target_owner_role = role_of(w, b.owner).max(b.role());
+    if a.role() >= Role::Wizard {
+        return a.role() >= target_owner_role;
     }
     // Ownership: `what` owned by `who` directly, or by `who`'s owner (so a
     // player's puppets/objects speak with the player's authority).
@@ -70,7 +77,6 @@ pub fn controls(w: &World, who: ObjId, what: ObjId) -> bool {
     // that zone delegation never confers control over an object owned by (or
     // carrying) `Role::Wizard` or `Role::God` unless `who` already holds at
     // least that role (EXT-P1-1).
-    let target_owner_role = role_of(w, b.owner).max(b.role());
     if (target_owner_role < Role::Wizard || a.role() >= target_owner_role)
         && let Some(z) = b.zone
         && let Some(zo) = w.get(z)
@@ -133,25 +139,41 @@ pub fn can_modify(w: &World, who: ObjId, what: ObjId) -> bool {
 
 /// Whether `who` may teleport `target` to `dest`.
 ///
-/// Three questions, all of which must pass:
-/// 1. **The body**: moving something other than yourself needs control over
+/// Structural & authority requirements (P2-CORE-12):
+/// 1. **Object kinds**: rooms may never be teleported; exits may never be
+///    destinations; actors (`Player`/`Npc`) and exits may only be moved into
+///    `Room` destinations.
+/// 2. **The body**: moving something other than yourself needs control over
 ///    it or the `TEL_ANYTHING` power.
-/// 2. **The destination**: must be controlled by `who`, be `JUMP_OK`, or
-///    `who` holds `TEL_ANYWHERE`.
-/// 3. **The destination's `Teleport` lock**, evaluated against `target`
+/// 3. **The destination**: relocating an `Exit` always requires
+///    `controls(w, who, dest)` (matching `@open`, forbidding non-controlling
+///    exit injection into `JUMP_OK` rooms); other targets require control over
+///    `dest`, `JUMP_OK`, or `TEL_ANYWHERE`.
+/// 4. **The destination's `Teleport` lock**, evaluated against `target`
 ///    (Wizard+ bypasses a failing lock).
 #[must_use]
 pub fn can_teleport(w: &World, who: ObjId, target: ObjId, dest: ObjId) -> bool {
     let Some(d) = w.get(dest) else { return false };
-    if w.get(target).is_none() {
+    let Some(t) = w.get(target) else { return false };
+    if t.kind == ObjKind::Room {
+        return false;
+    }
+    if d.kind == ObjKind::Exit {
+        return false;
+    }
+    if (t.kind == ObjKind::Exit || t.kind.is_actor()) && d.kind != ObjKind::Room {
         return false;
     }
     if target != who && !controls(w, who, target) && !has_power(w, who, Powers::TEL_ANYTHING) {
         return false;
     }
-    let dest_open = controls(w, who, dest)
-        || d.flags.contains(Flags::JUMP_OK)
-        || has_power(w, who, Powers::TEL_ANYWHERE);
+    let dest_open = if t.kind == ObjKind::Exit {
+        controls(w, who, dest)
+    } else {
+        controls(w, who, dest)
+            || d.flags.contains(Flags::JUMP_OK)
+            || has_power(w, who, Powers::TEL_ANYWHERE)
+    };
     if !dest_open {
         return false;
     }
@@ -410,5 +432,67 @@ mod tests {
         w.set_flag(nick, Flags::BUILDER, true).unwrap();
         assert!(has_role(&w, nick, Role::Builder));
         assert!(!has_role(&w, nick, Role::Wizard));
+    }
+
+    #[test]
+    fn p2_core_21_wizard_does_not_control_god_or_god_owned_objects() {
+        let (mut w, nick, _bob, ball, _rock) = setup();
+        let wiz = w.create(ObjKind::Player, "Wiz", GOD, Some(LIMBO)).unwrap();
+        w.set_flag(wiz, Flags::WIZARD, true).unwrap();
+        let wiz_thing = w
+            .create(ObjKind::Thing, "wthing", wiz, Some(LIMBO))
+            .unwrap();
+        let god_thing = w
+            .create(ObjKind::Thing, "gthing", GOD, Some(LIMBO))
+            .unwrap();
+
+        // Wizard cannot control #1 (GOD) or any GOD-owned object (incl. Limbo).
+        assert!(!controls(&w, wiz, GOD));
+        assert!(!controls(&w, wiz, god_thing));
+        assert!(!controls(&w, wiz, LIMBO));
+        assert!(!can_modify(&w, wiz, GOD));
+        assert!(!can_modify(&w, wiz, god_thing));
+
+        // Wizard retains control over self, Wizard-owned, and lower-role objects.
+        assert!(controls(&w, wiz, wiz));
+        assert!(controls(&w, wiz, wiz_thing));
+        assert!(controls(&w, wiz, nick));
+        assert!(controls(&w, wiz, ball));
+
+        // GOD controls everything, including #1 and Wizard objects.
+        assert!(controls(&w, GOD, GOD));
+        assert!(controls(&w, GOD, wiz));
+        assert!(controls(&w, GOD, wiz_thing));
+        assert!(controls(&w, GOD, god_thing));
+    }
+
+    #[test]
+    fn p2_core_12_can_teleport_restricts_rooms_exits_and_destinations() {
+        let (mut w, nick, _bob, ball, _rock) = setup();
+        let own_room = w.create(ObjKind::Room, "OwnRoom", nick, None).unwrap();
+        let own_room2 = w.create(ObjKind::Room, "OwnRoom2", nick, None).unwrap();
+        let open = w.create(ObjKind::Room, "Open", GOD, None).unwrap();
+        w.set_flag(open, Flags::JUMP_OK, true).unwrap();
+        let my_exit = w
+            .create(ObjKind::Exit, "north", nick, Some(own_room))
+            .unwrap();
+
+        // Relocating an exit requires controlling dest — JUMP_OK and
+        // TEL_ANYWHERE never suffice.
+        assert!(!can_teleport(&w, nick, my_exit, open));
+        w.get_mut(nick).unwrap().powers = Powers::TEL_ANYWHERE;
+        assert!(!can_teleport(&w, nick, my_exit, open));
+        assert!(can_teleport(&w, nick, my_exit, own_room2));
+
+        // Rooms may never be teleported, even by GOD.
+        assert!(!can_teleport(&w, nick, own_room, open));
+        assert!(!can_teleport(&w, GOD, own_room, open));
+
+        // Exits may never be teleport destinations; actors require Room dest.
+        assert!(!can_teleport(&w, nick, ball, my_exit));
+        assert!(!can_teleport(&w, GOD, ball, my_exit));
+        assert!(!can_teleport(&w, nick, nick, ball));
+        assert!(!can_teleport(&w, GOD, nick, ball));
+        assert!(!can_teleport(&w, nick, my_exit, ball));
     }
 }
