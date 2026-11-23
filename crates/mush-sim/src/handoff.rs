@@ -259,18 +259,49 @@ fn declared_fallback(engine: &Engine, unit: ObjId, station: &StationId) -> Optio
 }
 
 /// The released station whose declared fallback a DEPARTED billet-holder reseats
-/// (C1/C2, invariant 6). When the actor holds no focus on `unit` — the release or
-/// switch already relinquished it — re-source the offer from a surviving billet
-/// grant on `unit` whose station declares a fallback. Bounded by the actor's own
-/// grants on the unit (D-LBK-5), never a scan of the unit's whole seat map.
-fn departed_fallback_station(engine: &Engine, actor: ObjId, unit: ObjId) -> Option<StationId> {
-    engine
-        .world
-        .command_subjects_of(actor)
-        .iter()
-        .filter(|grant| grant.subject == unit)
-        .filter_map(|grant| StationId::new(grant.station.as_str()))
-        .find(|station| declared_fallback(engine, unit, station).is_some())
+/// (C1/C2, invariant 6; `P2-MOD-65`). When the actor holds no focus on `unit`
+/// and no explicit `pending_relief` is recorded, re-source the offer from a
+/// surviving billet grant on `unit` whose station declares a non-self fallback
+/// and has no pending handoff — preferring a station whose K6 lease is
+/// **currently held by `actor`** over a merely vacant one so multi-billet
+/// releases never misdirect onto an unrelated station.
+fn departed_fallback_station(
+    engine: &Engine,
+    leases: &StateFamilyHandle<ControlLeaseKey, ControlLeaseState>,
+    spatial: &SpatialState,
+    actor: ObjId,
+    unit: ObjId,
+) -> Result<Option<StationId>, ActionError> {
+    let actor_principal = PrincipalId::Object { id: actor };
+    let mut vacant: Option<StationId> = None;
+    for grant in engine.world.command_subjects_of(actor) {
+        if grant.subject != unit {
+            continue;
+        }
+        let Some(station) = StationId::new(grant.station.as_str()) else {
+            continue;
+        };
+        if !declared_fallback(engine, unit, &station).is_some_and(|fb| fb != actor) {
+            continue;
+        }
+        let Some(channel) = station_channel(spatial, unit, &station) else {
+            continue;
+        };
+        let key = ControlLeaseKey::new(unit, channel);
+        let lease = engine
+            .action_state()
+            .get(leases, &key)
+            .map_err(|error| HandoffProvider::state_error(&error))?;
+        if lease.and_then(ControlLeaseState::pending).is_some() {
+            continue;
+        }
+        match lease.and_then(ControlLeaseState::holder) {
+            Some(holder) if *holder == actor_principal => return Ok(Some(station)),
+            None if vacant.is_none() => vacant = Some(station),
+            _ => {}
+        }
+    }
+    Ok(vacant)
 }
 
 /// The requester's current control-generation on `station` of `unit` (the exact
@@ -814,6 +845,53 @@ impl HandoffProvider {
         )
     }
 
+    /// Exact released station staged by `fire_station_fallback_as` for
+    /// `(actor, unit)`, validated against the current grant epoch, non-self
+    /// declared fallback, and live lease state (`P2-MOD-65`).
+    fn pending_relief_station(
+        &self,
+        engine: &Engine,
+        spatial: &SpatialState,
+        actor: ObjId,
+        unit: ObjId,
+        focused_station: Option<&StationId>,
+    ) -> Result<Option<StationId>, ActionError> {
+        let Some((station, recorded_epoch)) = engine
+            .world
+            .module_state::<crate::station::StationFallbacks>()
+            .and_then(|fallbacks| fallbacks.pending_relief(actor, unit))
+            .map(|(station, epoch)| (station.clone(), epoch))
+        else {
+            return Ok(None);
+        };
+        if focused_station == Some(&station) {
+            return Ok(None);
+        }
+        if requester_grant_epoch(engine, actor, unit, station.as_str()) != Some(recorded_epoch) {
+            return Ok(None);
+        }
+        if !declared_fallback(engine, unit, &station).is_some_and(|fb| fb != actor) {
+            return Ok(None);
+        }
+        let Some(channel) = station_channel(spatial, unit, &station) else {
+            return Ok(None);
+        };
+        let key = ControlLeaseKey::new(unit, channel);
+        let lease = engine
+            .action_state()
+            .get(&self.families.leases, &key)
+            .map_err(|error| Self::state_error(&error))?;
+        if lease.and_then(ControlLeaseState::pending).is_some() {
+            return Ok(None);
+        }
+        let actor_principal = PrincipalId::Object { id: actor };
+        match lease.and_then(ControlLeaseState::holder) {
+            None => Ok(Some(station)),
+            Some(holder) if *holder == actor_principal => Ok(Some(station)),
+            Some(_) => Ok(None),
+        }
+    }
+
     /// E7c5 B5 (candidate (iii)): project the request/cancel ingress for one
     /// crew member's focused station. The offer declares **`required_channels =
     /// []`** — so the kernel's `project_legal_actions` never runs the
@@ -845,42 +923,59 @@ impl HandoffProvider {
         if crate::journey::operator_restraint(&engine.world, actor).is_some() {
             return Ok(None);
         }
+        let Some(spatial) = engine.world.module_state::<SpatialState>() else {
+            return Ok(None);
+        };
         let actor_principal = PrincipalId::Object { id: actor };
-        // The station this offer projects for, and whether the actor is currently
-        // DRIVING it (focused). A focused billet-holder rides the manual
-        // `@station/handoff`; a DEPARTED billet-holder (focus already relinquished
-        // by the same release/switch that fired the fallback — C1/C2) re-sources
-        // the relief offer from the surviving billet grant, not the transient
-        // `FocusState` the release tore down. The departed path exists only for the
-        // `request` verb (the fallback fire); `cancel` uses the focused path first
-        // and falls back to staff/requester pending-handoff lookup (P2-MOD-25).
-        let focused_here = engine
+        // P2-MOD-62: revalidate `ReachProof::Console` on every offer projection;
+        // a focus whose actor moved away from the console (or whose console
+        // broke) is never treated as currently driving.
+        let raw_focus_here = engine
             .world
             .module_state::<FocusState>()
             .and_then(|state| state.focus_of_actor(actor))
-            .filter(|focus| focus.unit == unit)
+            .filter(|focus| focus.unit == unit);
+        let has_stale_focus_here =
+            raw_focus_here.is_some_and(|focus| !focus.reach_is_current(&engine.world));
+        let focused_here = raw_focus_here
+            .filter(|focus| focus.reach_is_current(&engine.world))
             .map(|focus| (focus.station.clone(), focus.proxy));
-        // E7c10 B4: a PROXY focus (an OOC seat grant directing this NPC) rides
-        // the identical create/relief offer and differs only in the recorded
-        // `reason`, so the lease's own audit trail says which of the two
-        // ingresses established it. No second control model, no second focus.
-        let proxy = focused_here.as_ref().is_some_and(|(_, proxy)| *proxy);
-        let physical_npc = physical_npc_station(&engine.world, actor, unit);
-        let npc_here = physical_npc.is_some() && focused_here.is_none();
-        let (station, driving) = match focused_here.map(|(station, _)| station) {
-            Some(station) => (station, true),
-            None if npc_here => (
-                physical_npc.ok_or_else(|| Self::stale("NPC station changed"))?,
-                true,
-            ),
-            None if request => match departed_fallback_station(engine, actor, unit) {
-                Some(station) => (station, false),
-                None => return Ok(None),
-            },
-            None => return self.project_fallback_cancel_offer(action, engine, unit, actor),
+        // P2-MOD-65: when `fire_station_fallback_as` staged an explicit relief
+        // for a released station on `unit` (including a same-unit multi-billet
+        // focus switch), honor that exact released station before consulting
+        // `focused_here` or `departed_fallback_station`.
+        let explicit_relief = if matches!(self.operation, HandoffOperation::Request) {
+            self.pending_relief_station(
+                engine,
+                spatial,
+                actor,
+                unit,
+                focused_here.as_ref().map(|(station, _)| station),
+            )?
+        } else {
+            None
         };
-        let Some(spatial) = engine.world.module_state::<SpatialState>() else {
+        let physical_npc = physical_npc_station(&engine.world, actor, unit);
+        let (station, driving, proxy, npc_here) = if let Some(rel_station) = explicit_relief {
+            (rel_station, false, false, false)
+        } else if let Some((station, proxy)) = focused_here {
+            (station, true, proxy, false)
+        } else if let Some(npc_station) = physical_npc {
+            (npc_station, true, false, true)
+        } else if matches!(self.operation, HandoffOperation::Request) {
+            // Do not silently convert a stale/broken console focus into a
+            // departed fallback offer when the actor never released focus.
+            if has_stale_focus_here {
+                return Ok(None);
+            }
+            match departed_fallback_station(engine, &self.families.leases, spatial, actor, unit)? {
+                Some(station) => (station, false, false, false),
+                None => return Ok(None),
+            }
+        } else if matches!(self.operation, HandoffOperation::Release) {
             return Ok(None);
+        } else {
+            return self.project_fallback_cancel_offer(action, engine, unit, actor);
         };
         // Doc 47 unit CO.5 (R-47-6): a physically seated NPC at a console of several channels
         // asks for every lease its billet grants at once. Every other station is cut 5's
@@ -1280,6 +1375,7 @@ impl ActionProvider for HandoffProvider {
 
 #[derive(Clone)]
 struct HandoffScheduleAdapter {
+    leases: StateFamilyHandle<ControlLeaseKey, ControlLeaseState>,
     schedules: StateFamilyHandle<ScheduleId, DurableSchedule>,
     jobs: StateFamilyHandle<ScheduleId, HandoffJob>,
 }
@@ -1327,22 +1423,61 @@ impl ScheduleActionAdapter for HandoffScheduleAdapter {
                 "active control-handoff schedule and job disagree",
             ));
         }
-        // E7c5 B5 (candidate (iii)) & P2-MOD-22/25: re-check the requester's
-        // control-generation witness, operator restraint, and physical NPC
-        // station presence at apply time. When stale, plan a scheduler-owned
+        // E7c5 B5 (candidate (iii)) & P2-MOD-22/25/62: re-check the requester's
+        // control-generation witness, operator restraint, console reach proof
+        // (for self-claiming station/seat handoffs), and physical NPC station
+        // presence at apply time. When stale, plan a scheduler-owned
         // stale-cancel transition (`cancel_stale: true`) that atomically clears
         // `leases.pending`, completes `schedules[sid]`, and removes `jobs[sid]`
         // instead of returning `Err(Stale)` and spinning forever.
-        let witness_stale = job.witness.as_ref().is_some_and(|witness| {
-            !engine.world.channel_grant_is_current(
-                witness.actor,
-                job.lease.subject(),
-                job.owner.as_str(),
-                witness.station.as_str(),
-                witness.epoch,
-                job.lease.channel(),
-            ) || crate::journey::operator_restraint(&engine.world, witness.actor).is_some()
-        });
+        let pending_claims_self = engine
+            .action_state()
+            .get(&self.leases, &job.lease)
+            .map_err(|_| HandoffProvider::integrity("control-handoff lease is unavailable"))?
+            .and_then(ControlLeaseState::pending)
+            .is_some_and(|pending| {
+                job.witness.as_ref().is_some_and(|witness| {
+                    pending.to() == Some(&PrincipalId::Object { id: witness.actor })
+                })
+            });
+        let console_reach_stale = pending_claims_self
+            && job.witness.as_ref().is_some_and(|witness| {
+                if witness.physical_npc {
+                    return false;
+                }
+                let Some(station_id) = StationId::new(witness.station.as_str()) else {
+                    return true;
+                };
+                match engine
+                    .world
+                    .module_state::<FocusState>()
+                    .and_then(|state| state.focus_of_actor(witness.actor))
+                    .filter(|focus| {
+                        focus.unit == job.lease.subject() && focus.station == station_id
+                    }) {
+                    Some(focus) => !focus.reach_is_current(&engine.world),
+                    None => crate::commands::console_room_of(
+                        &engine.world,
+                        job.lease.subject(),
+                        &station_id,
+                    )
+                    .is_none_or(|room| {
+                        !crate::focus::ReachProof::Console { room }
+                            .is_reachable(&engine.world, witness.actor)
+                    }),
+                }
+            });
+        let witness_stale = console_reach_stale
+            || job.witness.as_ref().is_some_and(|witness| {
+                !engine.world.channel_grant_is_current(
+                    witness.actor,
+                    job.lease.subject(),
+                    job.owner.as_str(),
+                    witness.station.as_str(),
+                    witness.epoch,
+                    job.lease.channel(),
+                ) || crate::journey::operator_restraint(&engine.world, witness.actor).is_some()
+            });
         let npc_witness = (!witness_stale)
             .then(|| job.witness.as_ref().filter(|w| w.physical_npc))
             .flatten();
@@ -1649,7 +1784,11 @@ pub(crate) fn register(
         CanonicalId::new(SCHEDULE_SOURCE).map_err(|error| ModError::msg(error.to_string()))?,
         apply,
         schedules.clone(),
-        HandoffScheduleAdapter { schedules, jobs },
+        HandoffScheduleAdapter {
+            leases: families.leases,
+            schedules,
+            jobs,
+        },
     )?;
     Ok(tick_definitions)
 }

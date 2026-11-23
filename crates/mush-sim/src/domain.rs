@@ -570,6 +570,54 @@ pub fn stand_down_domain(
     Ok(summary)
 }
 
+/// Release a domain's standing activation entry (live or queued) when the
+/// domain leaves `Active` (retired, paused, window closed, or host destroyed;
+/// `P2-MOD-82`).
+///
+/// For a live (non-queued) activation, writes the [`DomainSummary`] first (same
+/// order as `@domain/demote`), deletes `activation:<id>`, removes the entry
+/// from [`ActivationBook::activations`], and drains queued requests into the
+/// freed [`MAX_ACTIVE_DOMAINS`] slot. For a queued activation, simply removes
+/// and deletes the queued request.
+///
+/// Returns `(released, dequeued)`.
+pub(crate) fn release_activation(
+    ctx: &mut mush_core::Ctx<'_>,
+    id: DomainId,
+) -> Result<(bool, Vec<DomainId>), DomainWorkflowError> {
+    let Some(request) = ctx
+        .w
+        .module_state::<ActivationBook>()
+        .and_then(|book| book.activations.get(&id).cloned())
+    else {
+        return Ok((false, Vec::new()));
+    };
+    if request.is_queued() {
+        persist_activation_del(ctx.out, id);
+        if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
+            book.activations.remove(&id);
+        }
+        return Ok((true, Vec::new()));
+    }
+    let to = ctx.w.world_ic_now();
+    let units = units_in(ctx, id);
+    let from = mush_core::ClockStamp {
+        clock: to.clock.clone(),
+        at: request.at().at.min(to.at),
+    };
+    let summary = DomainSummary::new(id, from, to, 0, units)?;
+    if !persist_summary(ctx.out, &summary) {
+        return Err(DomainWorkflowError::NotWorldIc);
+    }
+    persist_activation_del(ctx.out, id);
+    if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
+        book.summaries.insert(id, summary);
+        book.activations.remove(&id);
+    }
+    let dequeued = flush_dequeued(ctx);
+    Ok((true, dequeued))
+}
+
 /// Re-evaluate the queue: while a slot is free, promote the lowest-id queued
 /// request. Returns the domains that came off the queue, so the caller persists
 /// exactly those. Bounded by [`MAX_ACTIVE_DOMAINS`] iterations — a queue can

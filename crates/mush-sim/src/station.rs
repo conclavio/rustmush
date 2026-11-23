@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use mush_core::matchit::match_object_visible;
 use mush_core::{
     ChannelId, CmdError, Ctx, Flags, IdempotencyKeyText, ModuleOp, ModuleWrite, ObjId,
     PerceivedRef, match_object,
@@ -263,14 +264,22 @@ pub const MAX_STATION_FALLBACKS: usize = 4096;
 /// the data the immediate controller reads on a clean switch. Persisted as
 /// `sim.station_fallback` docs and re-hydrated at boot from a `station_fallback:`
 /// branch in `load_boot` (D2), bounded by [`MAX_STATION_FALLBACKS`].
+///
+/// Also carries ephemeral RAM `pending_reliefs` mapping `(departed_actor, unit)`
+/// to `(released_station, post_bump_epoch)` so multi-billet switches (even on
+/// the same unit) and cross-alt releases always project the exact released
+/// station's fallback relief (`P2-MOD-65`).
 #[derive(Clone, Debug, Default)]
-pub struct StationFallbacks(BTreeMap<(ObjId, StationId), ObjId>);
+pub struct StationFallbacks {
+    fallbacks: BTreeMap<(ObjId, StationId), ObjId>,
+    pending_reliefs: BTreeMap<(ObjId, ObjId), (StationId, u64)>,
+}
 
 impl StationFallbacks {
     /// The declared fallback controller for one station, if any.
     #[must_use]
     pub fn holder(&self, unit: ObjId, station: &StationId) -> Option<ObjId> {
-        self.0.get(&(unit, station.clone())).copied()
+        self.fallbacks.get(&(unit, station.clone())).copied()
     }
 
     /// Declare (or replace) one station's fallback controller. Returns `false`
@@ -280,22 +289,56 @@ impl StationFallbacks {
     #[must_use]
     pub fn declare(&mut self, unit: ObjId, station: StationId, holder: ObjId) -> bool {
         let key = (unit, station);
-        if !self.0.contains_key(&key) && self.0.len() >= MAX_STATION_FALLBACKS {
+        if !self.fallbacks.contains_key(&key) && self.fallbacks.len() >= MAX_STATION_FALLBACKS {
             return false;
         }
-        self.0.insert(key, holder);
+        self.fallbacks.insert(key, holder);
         true
+    }
+
+    /// Record the exact released `(station, epoch)` for a pending fallback
+    /// relief staged as `actor` on `unit` (`P2-MOD-65`). Bounded by
+    /// [`MAX_STATION_FALLBACKS`].
+    pub(crate) fn record_pending_relief(
+        &mut self,
+        actor: ObjId,
+        unit: ObjId,
+        station: StationId,
+        epoch: u64,
+    ) {
+        let key = (actor, unit);
+        if !self.pending_reliefs.contains_key(&key)
+            && self.pending_reliefs.len() >= MAX_STATION_FALLBACKS
+            && let Some(oldest) = self.pending_reliefs.keys().next().copied()
+        {
+            self.pending_reliefs.remove(&oldest);
+        }
+        self.pending_reliefs.insert(key, (station, epoch));
+    }
+
+    /// The exact released `(station, epoch)` staged by `fire_station_fallback_as`
+    /// for `(actor, unit)`, if any (`P2-MOD-65`).
+    #[must_use]
+    pub(crate) fn pending_relief(&self, actor: ObjId, unit: ObjId) -> Option<(&StationId, u64)> {
+        self.pending_reliefs
+            .get(&(actor, unit))
+            .map(|(station, epoch)| (station, *epoch))
+    }
+
+    /// Clear any recorded pending relief for `(actor, unit)`.
+    pub(crate) fn clear_pending_relief(&mut self, actor: ObjId, unit: ObjId) {
+        self.pending_reliefs.remove(&(actor, unit));
     }
 
     /// How many fallbacks are declared.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.fallbacks.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.fallbacks.is_empty()
     }
 }
 
@@ -308,23 +351,37 @@ fn fallbacks<'a>(ctx: &'a Ctx<'_>) -> Option<&'a StationFallbacks> {
     ctx.w.module_state::<StationFallbacks>()
 }
 
-/// Resolve a `<unit>` reference with existence hiding: an unknown OR an
-/// unviewable unit is refused with the SAME line, so the refusal reveals nothing.
-fn resolve_visible_unit(ctx: &Ctx<'_>, unit_ref: &str) -> Result<ObjId, CmdError> {
-    match match_object(ctx.w, ctx.actor, unit_ref) {
-        Ok(unit) if ctx.can_perceive(ctx.actor, unit) => Ok(unit),
-        _ => Err(CmdError::msg(NO_SUCH_STATION)),
+/// Resolve a `<unit>` reference with existence hiding (`P2-MOD-61`): an
+/// unknown, distant `#dbref`/`*name`, `DARK`, deployed, or transit-concealed
+/// unit is refused with the SAME line for non-staff, so the refusal reveals
+/// nothing.
+fn resolve_visible_unit(
+    ctx: &Ctx<'_>,
+    unit_ref: &str,
+    station: &StationId,
+) -> Result<ObjId, CmdError> {
+    if is_admin(ctx.w, ctx.actor) {
+        return match match_object(ctx.w, ctx.actor, unit_ref) {
+            Ok(unit) if ctx.can_perceive(ctx.actor, unit) => Ok(unit),
+            _ => Err(CmdError::msg(NO_SUCH_STATION)),
+        };
     }
+    match_object_visible(ctx.w, ctx.actor, unit_ref, |id| {
+        crate::commands::can_see_station_unit(ctx, id, station)
+    })
+    .map_err(|_| CmdError::msg(NO_SUCH_STATION))
 }
 
-/// Parse `<unit>/<station>` from the lhs.
+/// Parse `<unit>/<station>` from the lhs. Validates `<station>` syntax BEFORE
+/// resolving `<unit>` so an invalid/empty station never acts as a unit
+/// existence oracle (`P2-MOD-61`).
 fn parse_unit_station(ctx: &Ctx<'_>, lhs: &str) -> Result<(ObjId, StationId), CmdError> {
     let (unit_ref, station_ref) = lhs
         .split_once('/')
         .ok_or_else(|| CmdError::msg("Usage: @station/<verb> <unit>/<station>[=<holder>]"))?;
-    let unit = resolve_visible_unit(ctx, unit_ref.trim())?;
     let station = StationId::new(station_ref.trim())
         .ok_or_else(|| CmdError::msg("Usage: @station/<verb> <unit>/<station>[=<holder>]"))?;
+    let unit = resolve_visible_unit(ctx, unit_ref.trim(), &station)?;
     Ok((unit, station))
 }
 
@@ -441,15 +498,23 @@ fn station_handoff(ctx: &mut Ctx<'_>, cancel: bool) -> Result<(), CmdError> {
         }
         // Focus-gated for new handoffs: the offer is projected only for the actor's
         // focused station (the billet that proves authority and fixes the one
-        // channel). Cancel allows an unfocused billet-holder to withdraw their own
-        // stale/pending handoff (P2-MOD-25).
-        if !cancel
-            && focused_station(ctx, ctx.actor) != Some((unit, station.clone()))
-            && crate::handoff::physical_npc_station(ctx.w, ctx.actor, unit) != Some(station.clone())
-        {
-            return Err(CmdError::msg(format!(
-                "You are not driving `{station}` there; +focus it first."
-            )));
+        // channel), with console reach revalidated (`P2-MOD-62`). Cancel allows an
+        // unfocused billet-holder to withdraw their own stale/pending handoff
+        // (P2-MOD-25).
+        if !cancel {
+            if crate::commands::invalidate_stale_focus_for_actor(ctx, ctx.actor) {
+                return Err(CmdError::msg(format!(
+                    "You are no longer at `{station}`'s console; move back and +focus it again."
+                )));
+            }
+            if focused_station(ctx, ctx.actor) != Some((unit, station.clone()))
+                && crate::handoff::physical_npc_station(ctx.w, ctx.actor, unit)
+                    != Some(station.clone())
+            {
+                return Err(CmdError::msg(format!(
+                    "You are not driving `{station}` there; +focus it first."
+                )));
+            }
         }
     }
     let action = if cancel {
@@ -467,6 +532,9 @@ fn station_handoff(ctx: &mut Ctx<'_>, cancel: bool) -> Result<(), CmdError> {
     } else {
         return Err(CmdError::msg(NO_SUCH_STATION));
     };
+    if !cancel && let Some(slot) = ctx.w.module_state_mut::<StationFallbacks>() {
+        slot.clear_pending_relief(ctx.actor, unit);
+    }
     submit_station_action(ctx, action, unit, revision, cancel);
     Ok(())
 }
@@ -514,6 +582,9 @@ pub fn request_control_release(
         || ctx.authoritative_queue_full()
     {
         return Err(CmdError::msg("A control request is already pending."));
+    }
+    if crate::commands::invalidate_stale_focus_for_actor(ctx, actor) {
+        return Err(CmdError::msg(NO_SUCH_STATION));
     }
     if !holds_billet(ctx, actor, unit, station)
         || (focused_station(ctx, actor) != Some((unit, station.clone()))
@@ -615,6 +686,8 @@ pub fn request_npc_control(
 /// `@station/show [<unit>/<station>]` — the actor's foreground station and its
 /// lease disposition (read-only). Names no unit location.
 fn station_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    // P2-MOD-62: invalidate any broken ordinary console focus before reading.
+    let _ = crate::commands::invalidate_stale_focus_for_actor(ctx, ctx.actor);
     // ---- E7c11 independent verify fold, D8 ----
     // Resolve through the ingress. `focused_station` is `FocusState`'s
     // ACTOR-keyed read and a proxy focus is keyed on the NPC, so cut 11 answered
@@ -711,32 +784,18 @@ fn station_fallback(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// The immediate deterministic controller (B6 / invariant 6; K7.0 template). On
-/// a clean release OR switch away from `station` on `unit`, if a fallback is
-/// declared, hand the released station to it **immediately** — a direct
-/// `submit_authoritative` with a deterministic key and **no `PendingDecision`**,
-/// exactly the `mush-npc` `UseAbility` immediate-controller shape. Called from
-/// BOTH `focus_release` and `focus_acquire`'s switch path (C2), **after** the
-/// unit's control-generation bump and republish (C1), so the deferred submit
-/// pins the NEW grant epoch — the offer re-sources the relief from the surviving
-/// billet grant (`HandoffProvider::departed_fallback_station`) rather than the
-/// focus the release just tore down, and so the seat actually fills.
-pub(crate) fn fire_station_fallback(ctx: &mut Ctx<'_>, unit: ObjId, station: &StationId) {
-    let actor = ctx.actor;
-    let _ = fire_station_fallback_as(ctx, actor, unit, station);
-}
-
-/// The same fire, staged **as `actor`** rather than as `ctx.actor`.
+/// The immediate deterministic controller (B6 / invariant 6; K7.0 template),
+/// staged **as `actor`** rather than as `ctx.actor`.
 ///
-/// **E7c10 B4/B6.** A proxy seat's stand-down, and the displaced own-station
-/// handoff a seat activation performs, are both relieved by an actor who is not
-/// the one typing the command: the NPC gives its station back to the declared
-/// fallback, and the absent player's character gives back the station the seat
-/// took its focus from. `Ctx::submit_authoritative` is hard-wired to
-/// `ctx.actor`, and the engine keys its one-submit-per-drain slot by ACTOR, so
-/// staging under the departing actor is both necessary (the offer is projected
-/// for *that* actor's surviving billet grant) and safe (two actors, two slots,
-/// neither fans the other out). Returns whether a submit was staged.
+/// **E7c10 B4/B6 & P2-MOD-65.** On a clean release, focus switch (including
+/// cross-alt or same-unit multi-billet switches), proxy stand-down, or stale
+/// console invalidation, if a fallback is declared for `(unit, station)`, hand
+/// the released station to it **immediately** — a direct `AuthoritativeSubmit`
+/// with a deterministic key and **no `PendingDecision`**, staged under the
+/// departing `actor` and recording `(actor, unit) -> (station, post-bump
+/// epoch)` in [`StationFallbacks`] (for non-self fallbacks) so
+/// `project_station_offer` relieves that exact station. Returns whether a
+/// submit was staged.
 pub(crate) fn fire_station_fallback_as(
     ctx: &mut Ctx<'_>,
     actor: ObjId,
@@ -764,6 +823,15 @@ pub(crate) fn fire_station_fallback_as(
     let Ok(key) = IdempotencyKeyText::parse_canonical(&discriminator) else {
         return false;
     };
+    // P2-MOD-65: record the exact released station and post-bump epoch for a
+    // non-self fallback so `project_station_offer` relieves this exact billet
+    // even when the actor holds multiple billets on `unit` or switched to
+    // another billet on `unit`.
+    if holder != actor
+        && let Some(slot) = ctx.w.module_state_mut::<StationFallbacks>()
+    {
+        slot.record_pending_relief(actor, unit, station.clone(), revision);
+    }
     ctx.out
         .defer(mush_core::Deferred::AuthoritativeSubmit(Box::new(
             mush_core::AuthoritativeSubmit {

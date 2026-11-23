@@ -644,6 +644,26 @@ fn stand_down(
     })
 }
 
+/// Clear a proxy seat's channel narrowing through [`seat_billet`] — the single
+/// canonical narrowing writer in `seat.rs` — when a proxy focus is torn down
+/// by object destruction (`P2-MOD-62`).
+pub(crate) fn clear_seat_narrowing(
+    ctx: &mut Ctx<'_>,
+    unit: ObjId,
+    station: &StationId,
+    actor: ObjId,
+) {
+    let still_seated = crate::commands::st(ctx)
+        .assignments
+        .get(&unit)
+        .and_then(|ha| ha.seats.get(station))
+        .is_some_and(|seat| seat.actor == actor && seat.granted.is_some());
+    if still_seated {
+        let now = ctx.w.now();
+        seat_billet(ctx, unit, station, actor, now, None);
+    }
+}
+
 /// Write one seat on `unit`'s `assignment:<unit>` document, rebuild the derived
 /// indexes and persist. Infallible by construction (the station was proven to
 /// exist by the caller's preflight).
@@ -785,6 +805,7 @@ impl mush_core::EventHook for SeatDisconnectHook {
             .w
             .module_state::<FocusState>()
             .and_then(|state| state.focus_of_account(account))
+            .filter(|focus| focus.driver == actor || focus.actor == actor)
             .cloned()
         else {
             return;

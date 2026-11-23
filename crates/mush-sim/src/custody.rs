@@ -36,6 +36,7 @@ use mush_core::{Ctx, Flags, HookPoint, MAX_CONTAINMENT_DEPTH, ObjId, World};
 use mush_economy::{CustodyError, CustodyProvider, CustodyRef};
 
 use crate::data::{MAX_SPATIAL_DEPTH, NS, SpaceAnchor, SpatialParent, SpatialState};
+use crate::links::{commit_control_bumps_and_refresh, prepare_subtree_control_bumps};
 use crate::transition::{Transition, run};
 
 /// Hard cap on physical descendants inspected when validating a deposit subtree.
@@ -151,8 +152,24 @@ fn refuse_nested_deposit(w: &World, st: &SpatialState, obj: ObjId) -> Result<(),
 #[must_use]
 fn claim_reason(w: &World, obj: ObjId) -> Option<String> {
     let st = w.module_state::<SpatialState>()?;
-    st.is_sim_bound(obj)
-        .then(|| format!("{} is bound into the simulation.", display_name(w, obj)))
+    if st.is_sim_bound(obj) {
+        return Some(format!(
+            "{} is bound into the simulation.",
+            display_name(w, obj)
+        ));
+    }
+    if let Some(book) = w.module_state::<crate::journey::JourneyBook>()
+        && let Some(why) = crate::journey::journeying_reason(book, w, obj)
+    {
+        return Some(why);
+    }
+    if crate::deployed::is_custodied(w, obj) {
+        return Some(format!(
+            "{} is held under active simulation custody.",
+            display_name(w, obj)
+        ));
+    }
+    None
 }
 
 /// Everything `space` holds through INTERIOR placement, transitively through
@@ -160,10 +177,11 @@ fn claim_reason(w: &World, obj: ObjId) -> Option<String> {
 ///
 /// Attached units, actors (`Player`/`Npc`), nested vault backings, and
 /// multi-room walkable interiors are deliberately excluded: `holds` and
-/// `contents` agree on that, so an enclosing vault can never absorb another
-/// vault's escrow/policy or abduct an actor.
+/// `contents` are exact mathematical duals (`P2-MOD-4`, `P2-MOD-83`), so an
+/// enclosing vault can never absorb another vault's escrow/policy or abduct an
+/// actor, and never disagrees between `contents` and `holds`.
 fn interior_contents(w: &World, st: &SpatialState, space: ObjId) -> Vec<ObjId> {
-    if crate::is_multi_room(st, space) {
+    if !live(w, space) || !st.spaces.contains_key(&space) || crate::is_multi_room(st, space) {
         return Vec::new();
     }
     let mut out: Vec<ObjId> = Vec::new();
@@ -188,7 +206,10 @@ fn interior_contents(w: &World, st: &SpatialState, space: ObjId) -> Vec<ObjId> {
                 }
                 if let Some(riding) = st.derived.anchored_spaces.get(&c) {
                     for &nested in riding {
-                        if !is_nested_boundary(w, st, nested) && visited_spaces.insert(nested) {
+                        if nested != c
+                            && !is_nested_boundary(w, st, nested)
+                            && visited_spaces.insert(nested)
+                        {
                             next.push(nested);
                         }
                     }
@@ -209,33 +230,55 @@ fn interior_contents(w: &World, st: &SpatialState, space: ObjId) -> Vec<ObjId> {
     out
 }
 
-/// The inverse walk of [`interior_contents`]: whether `obj`'s interior parent
-/// chain reaches `target`, stepping out of a nested non-boundary space through
-/// its `MovingObject` anchor. Bounded by [`MAX_SPATIAL_DEPTH`].
+/// The exact inverse walk of [`interior_contents`] (`P2-MOD-83`): whether
+/// `obj`'s interior parent chain reaches `target`, stepping out of nested
+/// non-boundary spaces via BOTH their `MovingObject` anchor AND any direct
+/// `Interior` placement of the space record itself. Bounded by
+/// [`MAX_SPATIAL_DEPTH`] and guarded against cycles.
 fn interior_holder(w: &World, st: &SpatialState, obj: ObjId, target: ObjId) -> bool {
-    if crate::is_multi_room(st, target) || is_actor(w, obj) || is_nested_boundary(w, st, obj) {
+    if !live(w, target)
+        || !st.spaces.contains_key(&target)
+        || crate::is_multi_room(st, target)
+        || is_actor(w, obj)
+        || is_nested_boundary(w, st, obj)
+    {
         return false;
     }
-    let mut cur = obj;
+    let mut visited: BTreeSet<ObjId> = BTreeSet::from([obj]);
+    let mut frontier: Vec<ObjId> = vec![obj];
     for _ in 0..MAX_SPATIAL_DEPTH {
-        let SpatialParent::Interior { space, .. } = st.parent_of(cur) else {
-            return false;
-        };
-        if space == target {
-            return true;
-        }
-        if is_nested_boundary(w, st, space) {
-            return false;
-        }
-        match st.spaces.get(&space).map(|s| s.anchor.clone()) {
-            Some(SpaceAnchor::MovingObject { host }) if host != space => {
-                if is_actor(w, host) || is_nested_boundary(w, st, host) {
-                    return false;
-                }
-                cur = host;
+        let mut next: Vec<ObjId> = Vec::new();
+        for cur in frontier.drain(..) {
+            let SpatialParent::Interior { space, .. } = st.parent_of(cur) else {
+                continue;
+            };
+            if space == target {
+                return true;
             }
-            _ => return false,
+            if is_nested_boundary(w, st, space) {
+                continue;
+            }
+            if let Some(rec) = st.spaces.get(&space) {
+                if let SpaceAnchor::MovingObject { host } = rec.anchor
+                    && host != space
+                    && !is_actor(w, host)
+                    && !is_nested_boundary(w, st, host)
+                    && visited.insert(host)
+                {
+                    next.push(host);
+                }
+                if !is_actor(w, space)
+                    && matches!(st.parent_of(space), SpatialParent::Interior { .. })
+                    && visited.insert(space)
+                {
+                    next.push(space);
+                }
+            }
         }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
     }
     false
 }
@@ -363,6 +406,14 @@ impl CustodyProvider for InteriorCustodyProvider {
         }
         ctx.check_carry_attempt(actor, obj, *space)
             .map_err(|rt| CustodyError::Refused(rt.to_plain_text()))?;
+        let bumps = {
+            let st = ctx
+                .w
+                .module_state::<SpatialState>()
+                .ok_or(CustodyError::NoProvider)?;
+            prepare_subtree_control_bumps(st, obj)
+                .map_err(|e| CustodyError::Refused(e.to_string()))?
+        };
         run(
             ctx,
             &Transition::Place {
@@ -373,7 +424,10 @@ impl CustodyProvider for InteriorCustodyProvider {
                 },
             },
         )
-        .map_err(|e| CustodyError::Refused(e.to_string()))
+        .map_err(|e| CustodyError::Refused(e.to_string()))?;
+        commit_control_bumps_and_refresh(ctx, obj, &bumps);
+        crate::commands::invalidate_stale_foci_after_move(ctx, obj);
+        Ok(())
     }
 
     /// Take `obj` out of the space and hand it to `to`, in three steps that
@@ -481,6 +535,14 @@ impl CustodyProvider for InteriorCustodyProvider {
                 .carry_attempt(&hook_ctx, actor, obj, to)
                 .map_err(|rt| CustodyError::Refused(rt.to_plain_text()))?;
         }
+        let bumps = {
+            let st = ctx
+                .w
+                .module_state::<SpatialState>()
+                .ok_or(CustodyError::NoProvider)?;
+            prepare_subtree_control_bumps(st, obj)
+                .map_err(|e| CustodyError::Refused(e.to_string()))?
+        };
         // ---- 2. leave the simulation, keeping the projection where it is ----
         let reason = format!("withdrawn from {}", display_name(ctx.w, *space));
         run(
@@ -493,9 +555,12 @@ impl CustodyProvider for InteriorCustodyProvider {
             },
         )
         .map_err(|e| CustodyError::Refused(e.to_string()))?;
-        // ---- 3. the ONE world move ----
+        // ---- 3. the ONE world move, then advance control epoch & revoke links ----
         ctx.w
             .move_to(obj, to)
-            .map_err(|e| CustodyError::Refused(e.to_string()))
+            .map_err(|e| CustodyError::Refused(e.to_string()))?;
+        commit_control_bumps_and_refresh(ctx, obj, &bumps);
+        crate::commands::invalidate_stale_foci_after_move(ctx, obj);
+        Ok(())
     }
 }

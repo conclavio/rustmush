@@ -19,9 +19,13 @@ use crate::domain::{
 use crate::focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, ReachProof};
 use crate::graph::{effective_domain, presence, project, verify_indexes, verify_projections};
 use crate::journey::{self, CarrierJourney, JourneyBook, JourneyId, JourneyState};
-use crate::links::{refresh_actor_links, refresh_unit_actors};
+use crate::links::{
+    commit_control_bumps_and_refresh, prepare_subtree_control_bumps, refresh_actor_links,
+    refresh_unit_actors,
+};
 use crate::route::{self, LegDef, MAX_LEGS, RouteDef};
 use crate::transition::{Transition, move_carrier_subtree, run};
+use mush_core::matchit::{is_nearby, match_object_visible};
 use mush_core::{
     ArgShape, CanonicalId, ChannelId, ClockRef, ClockStamp, CmdError, CommandCompatibility,
     CommandSpec, Ctx, Flags, ModError, ObjId, ObjKind, Powers, Registrar, Role, match_object, perm,
@@ -76,34 +80,6 @@ fn default_station_priority(role: &str) -> u16 {
 
 fn counter_err(error: SpatialCounterError) -> CmdError {
     CmdError::msg(error.to_string())
-}
-
-/// Preflight a unit's control-epoch bump, but ONLY if the object is actually a
-/// control host (has stations or assignments) — so a plain placed object never
-/// grows a spurious `cgen:` doc. This runs before a structural transition so an
-/// exhausted epoch refuses with zero mutation.
-fn prepare_control_bump_if_host(ctx: &Ctx<'_>, unit: ObjId) -> Result<Option<u64>, CmdError> {
-    let is_host = {
-        let s = st(ctx);
-        s.stations.contains_key(&unit) || s.assignments.contains_key(&unit)
-    };
-    if is_host {
-        st(ctx)
-            .next_control_generation(unit)
-            .map(Some)
-            .map_err(counter_err)
-    } else {
-        Ok(None)
-    }
-}
-
-/// Commit a previously checked control generation. No fallible work may occur
-/// between preflight and this call on the single world thread.
-fn apply_control_bump(ctx: &mut Ctx<'_>, unit: ObjId, next: Option<u64>) {
-    if let Some(next) = next {
-        st_mut(ctx).apply_control_generation(unit, next);
-        persist_control_gen(ctx.out, unit, next);
-    }
 }
 
 pub(crate) fn rhs_required(ctx: &Ctx<'_>, usage: &str) -> Result<String, CmdError> {
@@ -443,38 +419,23 @@ fn domain_status(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// could not even be re-promoted to clear it (`domain_promote` refuses a
 /// non-Active domain).
 fn release_activation(ctx: &mut Ctx<'_>, id: DomainId, why: &str) {
-    let Some(request) = ab(ctx).activations.get(&id).cloned() else {
-        return;
-    };
-    let to = ctx.w.world_ic_now();
-    let units = domain_units(ctx, id);
-    let from = ClockStamp {
-        clock: to.clock.clone(),
-        at: request.at().at.min(to.at),
-    };
-    match DomainSummary::new(id, from, to, 0, units) {
-        Ok(summary) => {
-            if domain::persist_summary(ctx.out, &summary) {
-                domain::persist_activation_del(ctx.out, id);
-                if let Some(book) = ctx.w.module_state_mut::<ActivationBook>() {
-                    book.summaries.insert(id, summary);
-                    book.activations.remove(&id);
-                }
-                info(
-                    ctx,
-                    format!("Domain #{id} stood down ({why}); its summary is written first."),
-                );
+    match domain::release_activation(ctx, id) {
+        Ok((true, dequeued)) => {
+            info(
+                ctx,
+                format!("Domain #{id} stood down ({why}); its summary is written first."),
+            );
+            for other in dequeued {
+                info(ctx, format!("Domain #{other} came off the queue."));
             }
         }
+        Ok((false, _)) => {}
         Err(error) => tracing::error!(
             domain = %id,
             %error,
             "sim: a standing activation could not be closed; it keeps its tactical slot. \
              Recommended: @domain/demote the domain by hand"
         ),
-    }
-    for other in domain::flush_dequeued(ctx) {
-        info(ctx, format!("Domain #{other} came off the queue."));
     }
 }
 
@@ -878,11 +839,11 @@ fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     };
     let desc = describe_parent(ctx, &parent);
-    let control_generation = prepare_control_bump_if_host(ctx, obj)?;
+    let bumps = prepare_subtree_control_bumps(st(ctx), obj).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj, parent }).map_err(sim_err)?;
-    // A (re-)placed unit grants control to its crew again.
-    refresh_unit_actors(ctx.w, obj);
-    apply_control_bump(ctx, obj, control_generation);
+    // Bump control generation FIRST, then republish crew links (P2-MOD-63).
+    commit_control_bumps_and_refresh(ctx, obj, &bumps);
+    invalidate_stale_foci_after_move(ctx, obj);
     info(ctx, format!("Placed {} {desc}.", display_name(ctx.w, obj)));
     Ok(())
 }
@@ -898,7 +859,7 @@ fn spatial_unplace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .unwrap_or("staff unplace")
         .to_string();
     let keep = ctx.switches.has("keep");
-    let control_generation = prepare_control_bump_if_host(ctx, obj)?;
+    let bumps = prepare_subtree_control_bumps(st(ctx), obj).map_err(counter_err)?;
     run(
         ctx,
         &Transition::Unplace {
@@ -909,9 +870,9 @@ fn spatial_unplace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
     )
     .map_err(sim_err)?;
-    // An unplaced unit stops granting control to its crew.
-    refresh_unit_actors(ctx.w, obj);
-    apply_control_bump(ctx, obj, control_generation);
+    // Bump control generation FIRST, then retract crew links (P2-MOD-63).
+    commit_control_bumps_and_refresh(ctx, obj, &bumps);
+    invalidate_stale_foci_after_move(ctx, obj);
     info(ctx, format!("Unplaced {}.", display_name(ctx.w, obj)));
     Ok(())
 }
@@ -1658,7 +1619,8 @@ pub(crate) fn focused_station(ctx: &Ctx<'_>, actor: ObjId) -> Option<(ObjId, Sta
 
 /// The same predicate, over a bare `&World`, for a caller that holds an
 /// `&Engine` or a `&World` and no `Ctx`. There is still exactly ONE focus
-/// predicate; `focused_station` delegates to it.
+/// predicate; `focused_station` delegates to it. Enforces continuous reach
+/// revalidation (`P2-MOD-62`).
 #[must_use]
 pub(crate) fn focused_station_of(
     world: &mush_core::World,
@@ -1667,6 +1629,7 @@ pub(crate) fn focused_station_of(
     world
         .module_state::<FocusState>()?
         .focus_of_actor(actor)
+        .filter(|f| f.reach_is_current(world))
         .map(|f| (f.unit, f.station.clone()))
 }
 
@@ -1683,17 +1646,197 @@ pub(crate) fn holds_billet(ctx: &Ctx<'_>, actor: ObjId, unit: ObjId, station: &S
             .is_some_and(|seat| seat.actor == actor)
 }
 
-/// The console room a station is operated from: its backing cockpit `space` if
-/// authored, else the unit's own projected location. `None` when neither exists
-/// (reach then fails closed).
-pub(crate) fn console_room(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> Option<ObjId> {
+/// Non-staff visibility & existence-hiding predicate for `+focus` and `@station`
+/// (`P2-MOD-61`). Blocks global `#dbref` / `*name` lookups of distant objects,
+/// `GOING` husks, `Flags::DARK` objects and occupants of `DARK` rooms, deployed
+/// units (unless the actor is physically aboard that unit), `HookPoint::Perceive`
+/// concealment (including `mush-atlas` transit concealment), and out-of-band
+/// carrier transit units.
+pub(crate) fn can_see_station_unit(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> bool {
+    let Some(obj) = ctx.w.get(unit) else {
+        return false;
+    };
+    if obj.flags.contains(Flags::GOING) {
+        return false;
+    }
+    let actor = ctx.actor;
     let s = st(ctx);
-    let space = s
-        .stations
-        .get(&unit)
-        .and_then(|hs| hs.stations.get(station))
-        .and_then(|spec| spec.space);
-    space.or_else(|| ctx.w.get(unit).and_then(|o| o.location))
+    let aboard = matches!(
+        s.parent_of(actor),
+        SpatialParent::Interior { space, .. } if crate::aboard_host(s, space) == unit
+    );
+    if !aboard && crate::deployed::excluded(ctx.w, crate::deployed::Shown::Unit(unit)) {
+        return false;
+    }
+    if unit != actor && !ctx.can_perceive(actor, unit) {
+        return false;
+    }
+    if let Some(book) = ctx.w.module_state::<JourneyBook>() {
+        let unit_root = crate::journey::under_way_root_of(s, book, unit);
+        if unit_root.is_some() && crate::journey::under_way_root_of(s, book, actor) != unit_root {
+            return false;
+        }
+    }
+    let holds_this_billet = holds_billet(ctx, actor, unit, station);
+    let see_hidden = perm::has_power(ctx.w, actor, Powers::SEE_HIDDEN);
+    if !see_hidden && !perm::controls(ctx.w, actor, unit) && !holds_this_billet {
+        if obj.flags.contains(Flags::DARK) {
+            return false;
+        }
+        let carried = ctx.w.contents_of(actor).contains(&unit);
+        let in_dark_room = !carried
+            && unit != actor
+            && ctx
+                .w
+                .get(actor)
+                .and_then(|a| a.location)
+                .is_some_and(|loc| {
+                    loc != unit
+                        && ctx
+                            .w
+                            .get(loc)
+                            .is_some_and(|r| r.flags.contains(Flags::DARK))
+                        && !perm::controls(ctx.w, actor, loc)
+                });
+        if in_dark_room {
+            return false;
+        }
+    }
+    is_nearby(ctx.w, actor, unit) || aboard || holds_this_billet
+}
+
+/// The live, valid console room a station is operated from (`P2-MOD-62`):
+/// its backing cockpit `space` if authored (must be live, unquarantined, and —
+/// when an interior space or member room of one — anchored to a non-retired
+/// domain or live unquarantined host), else the unit's own live location (when
+/// unquarantined). `None` when broken or unplaced (reach fails closed).
+#[must_use]
+pub(crate) fn console_room_of(
+    w: &mush_core::World,
+    unit: ObjId,
+    station: &StationId,
+) -> Option<ObjId> {
+    let unit_obj = w.get(unit)?;
+    if unit_obj.flags.contains(Flags::GOING) {
+        return None;
+    }
+    let s = w.module_state::<SpatialState>()?;
+    let spec = s.stations.get(&unit)?.stations.get(station)?;
+    if let Some(space) = spec.space {
+        if w.get(space).is_none_or(|o| o.flags.contains(Flags::GOING))
+            || s.is_quarantined(space)
+            || s.held_placement(space).is_some()
+        {
+            return None;
+        }
+        let space_rec = s.spaces.get(&space).or_else(|| {
+            s.derived
+                .member_of
+                .get(&space)
+                .and_then(|root| s.spaces.get(root))
+        });
+        if let Some(rec) = space_rec {
+            if s.is_quarantined(rec.object) || s.held_placement(rec.object).is_some() {
+                return None;
+            }
+            match &rec.anchor {
+                SpaceAnchor::Unanchored => return None,
+                SpaceAnchor::FixedDomain { domain, .. } => {
+                    if s.domains
+                        .get(domain)
+                        .is_none_or(|d| d.status == DomainStatus::Retired)
+                    {
+                        return None;
+                    }
+                }
+                SpaceAnchor::MovingObject { host } => {
+                    if w.get(*host).is_none_or(|o| o.flags.contains(Flags::GOING))
+                        || s.is_quarantined(*host)
+                        || s.held_placement(*host).is_some()
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(space)
+    } else {
+        if s.is_quarantined(unit) || s.held_placement(unit).is_some() {
+            return None;
+        }
+        let loc = unit_obj.location?;
+        w.get(loc)
+            .filter(|o| !o.flags.contains(Flags::GOING))
+            .map(|_| loc)
+    }
+}
+
+/// The console room a station is operated from: delegates to [`console_room_of`].
+pub(crate) fn console_room(ctx: &Ctx<'_>, unit: ObjId, station: &StationId) -> Option<ObjId> {
+    console_room_of(ctx.w, unit, station)
+}
+
+/// Relinquish an ordinary (non-proxy) focus whose console reach proof broke,
+/// advance its unit's control generation, republish grants, and fire its
+/// station's declared fallback (`P2-MOD-62`).
+fn relinquish_broken_ordinary_focus(ctx: &mut Ctx<'_>, focus: ActiveFocus) {
+    if let Some(state) = ctx.w.module_state_mut::<FocusState>() {
+        state.relinquish(focus.account);
+    }
+    if let Ok(next) = st(ctx).next_control_generation(focus.unit) {
+        apply_focus_bump_and_refresh(ctx, focus.unit, next, focus.actor);
+    } else {
+        refresh_actor_links(ctx.w, focus.actor);
+    }
+    crate::station::fire_station_fallback_as(ctx, focus.actor, focus.unit, &focus.station);
+}
+
+/// If `actor` holds an ordinary (non-proxy) focus whose reach proof is no
+/// longer current, relinquish it, bump its unit's epoch, refresh grants, and
+/// fire its declared fallback (`P2-MOD-62`). Returns `true` if invalidated.
+pub(crate) fn invalidate_stale_focus_for_actor(ctx: &mut Ctx<'_>, actor: ObjId) -> bool {
+    let broken = ctx
+        .w
+        .module_state::<FocusState>()
+        .and_then(|state| state.focus_of_actor(actor))
+        .filter(|focus| !focus.proxy && !focus.reach_is_current(ctx.w))
+        .cloned();
+    if let Some(focus) = broken {
+        relinquish_broken_ordinary_focus(ctx, focus);
+        true
+    } else {
+        false
+    }
+}
+
+/// After `moved` changes location or placement, invalidate any ordinary
+/// (non-proxy) focus held by `moved` or focused on `moved` (or any unit in its
+/// spatial subtree) whose console reach proof broke (`P2-MOD-62`).
+pub(crate) fn invalidate_stale_foci_after_move(ctx: &mut Ctx<'_>, moved: ObjId) {
+    let _ = invalidate_stale_focus_for_actor(ctx, moved);
+    let broken: Vec<ActiveFocus> = {
+        let Some(focus_state) = ctx.w.module_state::<FocusState>() else {
+            return;
+        };
+        let units: Vec<ObjId> = ctx
+            .w
+            .module_state::<SpatialState>()
+            .map(|st| st.subtree(moved))
+            .unwrap_or_else(|| vec![moved]);
+        let mut accounts = BTreeSet::new();
+        for unit in units {
+            accounts.extend(focus_state.accounts_on_unit(unit));
+        }
+        accounts
+            .into_iter()
+            .filter_map(|account| focus_state.focus_of_account(account))
+            .filter(|focus| !focus.proxy && !focus.reach_is_current(ctx.w))
+            .cloned()
+            .collect()
+    };
+    for focus in broken {
+        relinquish_broken_ordinary_focus(ctx, focus);
+    }
 }
 
 /// Preflight one control-epoch bump for a unit (fails closed on exhaustion,
@@ -1739,7 +1882,8 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let (unit_ref, station_ref) = raw
         .split_once('/')
         .ok_or_else(|| CmdError::msg("Usage: +focus <unit>/<station>"))?;
-    let unit = match_object(ctx.w, ctx.actor, unit_ref.trim())?;
+    // P2-MOD-61: validate `<station>` syntax BEFORE resolving `<unit>` so an
+    // invalid/empty station never acts as a unit existence oracle.
     let station = StationId::new(station_ref)
         .ok_or_else(|| CmdError::msg("Usage: +focus <unit>/<station>"))?;
     // ---- E7c11: B0 (T11's guardrail, call site 1 of 4) ----
@@ -1774,6 +1918,15 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let account = account_oracle(ctx).account_of(ctx.actor).ok_or_else(|| {
         CmdError::msg("This character has no account on record, so focus is unavailable.")
     })?;
+    // P2-MOD-61: non-staff unit resolution enforces perception, !DARK,
+    // !deployed, non-transit, and locality BEFORE revealing any object name.
+    let unit = if is_admin(ctx.w, ctx.actor) {
+        match_object(ctx.w, ctx.actor, unit_ref.trim())?
+    } else {
+        match_object_visible(ctx.w, ctx.actor, unit_ref.trim(), |id| {
+            can_see_station_unit(ctx, id, &station)
+        })?
+    };
     // Ownership alone never satisfies control (invariant 5): a billet is required.
     if !holds_billet(ctx, ctx.actor, unit, &station) {
         return Err(CmdError::msg(format!(
@@ -1834,14 +1987,17 @@ fn focus_acquire(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             refresh_actor_links(ctx.w, prior.actor);
         }
     }
-    // C2 / invariant 6: a focus SWITCH releases the prior station just as
-    // `+focus/release` does, so it must fire that station's declared fallback too
-    // — AFTER the prior unit's epoch bump above, so the fire pins the new grant
-    // epoch and its offer re-sources from the surviving billet grant. Mirror
-    // `focus_release`: fire for the switching actor's own displaced focus.
+    if let Some(slot) = ctx.w.module_state_mut::<crate::station::StationFallbacks>() {
+        slot.clear_pending_relief(ctx.actor, unit);
+    }
+    // C2 / invariant 6 / P2-MOD-65: a focus SWITCH releases the prior station
+    // just as `+focus/release` does — including cross-alt displacement and
+    // same-unit multi-billet switches — so fire the displaced station's
+    // declared fallback AS `prior.actor` (skipping a no-op re-focus on the
+    // identical `(actor, unit, station)`).
     for prior in &released {
-        if prior.actor == ctx.actor {
-            crate::station::fire_station_fallback(ctx, prior.unit, &prior.station);
+        if !(prior.actor == ctx.actor && prior.unit == unit && prior.station == station) {
+            crate::station::fire_station_fallback_as(ctx, prior.actor, prior.unit, &prior.station);
         }
     }
     info(
@@ -1889,9 +2045,9 @@ fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let account = account_oracle(ctx)
         .account_of(ctx.actor)
         .ok_or_else(|| CmdError::msg("Your account is not mapped; there is nothing to release."))?;
-    let Some((unit, station)) = focus_state(ctx)
+    let Some((released_actor, unit, station)) = focus_state(ctx)
         .focus_of_account(account)
-        .map(|f| (f.unit, f.station.clone()))
+        .map(|f| (f.actor, f.unit, f.station.clone()))
     else {
         return Err(CmdError::msg("You hold no foreground focus."));
     };
@@ -1904,18 +2060,17 @@ fn focus_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     // Bump then republish: the released billet still projects its grant (a
     // delayed intent is revalidated and refused), now under the new epoch.
     apply_focus_bump_and_refresh(ctx, unit, generation, ctx.actor);
-    if let Some(focus) = released
+    if let Some(focus) = &released
         && focus.actor != ctx.actor
     {
         refresh_actor_links(ctx.w, focus.actor);
     }
-    // B6 / invariant 6 (C1): a clean release fires the released station's declared
-    // fallback immediately (the K7.0 immediate-controller seam) — AFTER the epoch
-    // bump and republish, so the deferred submit pins the NEW grant epoch and its
-    // offer re-sources from the surviving billet grant rather than the focus this
-    // release just relinquished. Fired past every fallible step, so no partial
-    // release ever queues an orphan submit.
-    crate::station::fire_station_fallback(ctx, unit, &station);
+    // B6 / invariant 6 (C1) / P2-MOD-65: a clean release fires the released
+    // station's declared fallback immediately AS `released_actor` (so a
+    // cross-alt `+focus/release` revokes the actual holding alt's K6 lease
+    // rather than misfiring under `ctx.actor`) — AFTER the epoch bump and
+    // republish, pinning the exact released station and post-bump epoch.
+    crate::station::fire_station_fallback_as(ctx, released_actor, unit, &station);
     info(ctx, "You relinquish foreground control.");
     Ok(())
 }
@@ -1926,6 +2081,14 @@ fn focus_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         info(ctx, "Your account is not mapped; you hold no focus.");
         return Ok(());
     };
+    // P2-MOD-62: invalidate a broken ordinary console focus before reporting.
+    if let Some(stale_actor) = focus_state(ctx)
+        .focus_of_account(account)
+        .filter(|f| !f.proxy && !f.reach_is_current(ctx.w))
+        .map(|f| f.actor)
+    {
+        let _ = invalidate_stale_focus_for_actor(ctx, stale_actor);
+    }
     let line = focus_state(ctx).focus_of_account(account).map(|f| {
         format!(
             "You control `{}` on {} (epoch {}).",
@@ -2111,7 +2274,10 @@ fn spatial_egress(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let parent = egress_parent(ctx, unit, egress_id.as_deref())?;
+    let bumps = prepare_subtree_control_bumps(st(ctx), unit).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj: unit, parent }).map_err(sim_err)?;
+    commit_control_bumps_and_refresh(ctx, unit, &bumps);
+    invalidate_stale_foci_after_move(ctx, unit);
     info(ctx, format!("{} egressed.", display_name(ctx.w, unit)));
     Ok(())
 }
@@ -2135,7 +2301,10 @@ fn spatial_detach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     };
     let parent = detach_parent(ctx, host)?;
+    let bumps = prepare_subtree_control_bumps(st(ctx), child).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj: child, parent }).map_err(sim_err)?;
+    commit_control_bumps_and_refresh(ctx, child, &bumps);
+    invalidate_stale_foci_after_move(ctx, child);
     info(ctx, format!("Detached {}.", display_name(ctx.w, child)));
     Ok(())
 }
@@ -2228,7 +2397,10 @@ pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .move_attempt(&hook_ctx, actor, None, dest)
             .map_err(|rt| CmdError::msg(rt.to_plain_text()))?;
     }
+    let bumps = prepare_subtree_control_bumps(st(ctx), actor).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj: actor, parent }).map_err(sim_err)?;
+    commit_control_bumps_and_refresh(ctx, actor, &bumps);
+    invalidate_stale_foci_after_move(ctx, actor);
     info(ctx, "You egress.");
     Ok(())
 }
@@ -2526,10 +2698,28 @@ fn journey_ineligible_inner(
         Some(o) if o.flags.contains(Flags::GOING) => {
             return Some(format!("{name} is being destroyed."));
         }
-        Some(o) if matches!(o.kind, ObjKind::Room | ObjKind::Exit) => {
+        // P2-MOD-84: only `ObjKind::Thing` carrier objects may fly a route
+        // (reject actors `Player`/`Npc` as well as `Room`/`Exit`).
+        Some(o) if o.kind != ObjKind::Thing => {
             return Some(format!("{name} cannot fly a route."));
         }
         _ => {}
+    }
+    let participant = mush_core::BehaviorId::new("sim.participant").expect("static behavior id");
+    if !ctx.w.has_behavior(carrier, &participant) {
+        return Some(format!("{name} cannot fly a route."));
+    }
+    {
+        let s = st(ctx);
+        if s.spaces.contains_key(&carrier) || s.domain_of_host(carrier).is_some() {
+            return Some(format!("{name} cannot fly a route."));
+        }
+        if matches!(
+            s.parent_of(carrier),
+            SpatialParent::Interior { space, .. } if crate::is_vault_backing(ctx.w, space)
+        ) {
+            return Some(format!("{name} cannot depart from inside a vault."));
+        }
     }
     if jb(ctx).under_way(carrier) {
         return Some(format!(
@@ -2748,9 +2938,30 @@ fn journey_plan(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// relation that needed `mush_org::authorize_in_world` would be a new edge, which
 /// this pass does not add (§4.1's "no new crate and no new edge").
 pub(crate) fn may_command_departure(ctx: &Ctx<'_>, carrier: ObjId) -> bool {
-    is_admin(ctx.w, ctx.actor)
-        || perm::controls(ctx.w, ctx.actor, carrier)
-        || drives(ctx, ctx.actor, carrier)
+    if is_admin(ctx.w, ctx.actor) {
+        return true;
+    }
+    // P2-MOD-84: non-staff may never command departure of themselves, any actor
+    // (`Player`/`Npc`), or any non-carrier / non-participant object.
+    if carrier == ctx.actor {
+        return false;
+    }
+    if ctx
+        .w
+        .get(carrier)
+        .is_none_or(|o| o.kind != ObjKind::Thing || o.flags.contains(Flags::GOING))
+    {
+        return false;
+    }
+    let participant = mush_core::BehaviorId::new("sim.participant").expect("static behavior id");
+    if !ctx.w.has_behavior(carrier, &participant) {
+        return false;
+    }
+    let s = st(ctx);
+    if s.spaces.contains_key(&carrier) || s.domain_of_host(carrier).is_some() {
+        return false;
+    }
+    perm::controls(ctx.w, ctx.actor, carrier) || drives(ctx, ctx.actor, carrier)
 }
 
 /// **The DRIVE gate** — a billet at a station whose granted channels contain the

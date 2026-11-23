@@ -2718,6 +2718,16 @@ impl PulseConfig {
     }
 }
 
+/// Maximum retired empty passive `DomainRecord`s pruned in a single
+/// maintenance pass (`P2-MOD-64`, D-LBK-5 bounded per tick).
+const MAX_RETIRED_DOMAINS_PRUNED_PER_TICK: usize = 64;
+
+/// Rotating scan cursor for [`run_maintenance`] so non-retired active domains
+/// past [`MAX_DOMAINS_PER_PULSE_FIRE`] are never permanently starved across
+/// ticks (`P2-MOD-64`). Ephemeral RAM state, never persisted.
+#[derive(Clone, Debug, Default)]
+struct MaintenanceCursor(Option<DomainId>);
+
 /// Run one maintenance pass over the promoted domains: apply live activation
 /// requests, arm the cursor of a domain that has none, and stand a domain that
 /// is no longer eligible back down.
@@ -2768,12 +2778,21 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
             state
                 .domains
                 .iter()
-                .filter(|(_, record)| domain_is_space(ctx.w, record.host))
+                .filter(|(_, record)| {
+                    record.status != DomainStatus::Retired && domain_is_space(ctx.w, record.host)
+                })
                 .map(|(id, _)| *id)
                 .collect()
         })
         .unwrap_or_default();
-    let plan = {
+    let cursor_after = if only.is_none() {
+        ctx.w
+            .module_state::<MaintenanceCursor>()
+            .and_then(|cursor| cursor.0)
+    } else {
+        None
+    };
+    let (plan, next_cursor) = {
         let Some(state) = ctx.w.module_state::<SpatialState>() else {
             return PulseMaintenance::default();
         };
@@ -2782,16 +2801,24 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
             .module_state::<crate::domain::ActivationBook>()
             .cloned()
             .unwrap_or_default();
-        plan_maintenance(&MaintenanceInputs {
-            state,
-            book: &book,
-            now: &now,
-            config,
-            space: &space,
-            cursors: &cursors,
-            only,
-        })
+        plan_maintenance_from(
+            &MaintenanceInputs {
+                state,
+                book: &book,
+                now: &now,
+                config,
+                space: &space,
+                cursors: &cursors,
+                only,
+            },
+            cursor_after,
+        )
     };
+    if only.is_none()
+        && let Some(cursor) = ctx.w.module_state_mut::<MaintenanceCursor>()
+    {
+        cursor.0 = next_cursor;
+    }
     // ---- the applying authority: one `sim` document per applied domain ----
     let mut applied_records = Vec::new();
     let mut stood_down_records = Vec::new();
@@ -2818,6 +2845,52 @@ pub fn run_maintenance(ctx: &mut mush_core::Ctx<'_>, only: Option<DomainId>) -> 
     }
     for record in applied_records.iter().chain(&stood_down_records) {
         crate::data::persist_domain(ctx.out, record);
+    }
+    // P2-MOD-64: bounded pruning of retired empty passive `DomainRecord`s
+    // (those not pulsing, with no cursor, no activation entry, and no spatial
+    // references), reclaiming both RAM and `domain:<id>` KV docs.
+    if only.is_none() {
+        let active_activations: std::collections::BTreeSet<DomainId> = ctx
+            .w
+            .module_state::<crate::domain::ActivationBook>()
+            .map(|book| book.activations.keys().copied().collect())
+            .unwrap_or_default();
+        let pruned: Vec<DomainId> = if let Some(state) = ctx.w.module_state_mut::<SpatialState>() {
+            let ids: Vec<DomainId> = state
+                .domains
+                .iter()
+                .filter(|(id, rec)| {
+                    rec.status == DomainStatus::Retired
+                        && !rec.clock.is_pulsing()
+                        && !cursors.contains_key(id)
+                        && !active_activations.contains(id)
+                        && state
+                            .derived
+                            .domain_direct
+                            .get(id)
+                            .is_none_or(std::collections::BTreeSet::is_empty)
+                        && state
+                            .derived
+                            .spaces_in_domain
+                            .get(id)
+                            .is_none_or(std::collections::BTreeSet::is_empty)
+                })
+                .map(|(id, _)| *id)
+                .take(MAX_RETIRED_DOMAINS_PRUNED_PER_TICK)
+                .collect();
+            for id in &ids {
+                state.domains.remove(id);
+            }
+            if !ids.is_empty() {
+                state.derived = crate::graph::rebuild(state);
+            }
+            ids
+        } else {
+            Vec::new()
+        };
+        for id in pruned {
+            crate::data::persist_del(ctx.out, crate::data::domain_key(id));
+        }
     }
     // **D9(a):** the journey book follows the domain, both ways. `Promoted` had
     // no writer at all before this fold, so a cruising carrier that entered a
@@ -3022,79 +3095,153 @@ pub struct MaintenanceInputs<'a> {
 /// Decide what the maintenance pass should do, without mutating anything.
 ///
 /// Pure over its inputs, so the world-side tick and `@domain/tick` share one
-/// decision and cannot disagree. Bounded on domains **visited** (D-LBK-5).
+/// decision and cannot disagree. Bounded on eligible domains **visited**
+/// (D-LBK-5): skips retired passive tombstones and prioritizes promoted /
+/// cursor-armed domains so active domains are never starved behind retired
+/// records (`P2-MOD-64`).
 #[must_use]
 pub fn plan_maintenance(input: &MaintenanceInputs<'_>) -> PulseMaintenance {
+    plan_maintenance_from(input, None).0
+}
+
+fn eval_domain_maintenance(
+    plan: &mut PulseMaintenance,
+    input: &MaintenanceInputs<'_>,
+    id: DomainId,
+    record: &crate::data::DomainRecord,
+) {
+    let period_ms = input.config.period_ms(input.space.contains(&id));
+    let live = input.book.is_promoted(id);
+    let units = input
+        .state
+        .derived
+        .local_objects
+        .get(&id)
+        .map_or(0, std::collections::BTreeSet::len);
+    match (&record.clock, live, record.status == DomainStatus::Active) {
+        // A live request on an active, passive domain: apply it.
+        (DomainClock::Passive, true, true) => match check_domain_capacity(units) {
+            Ok(_) => {
+                let mut candidate = record.clone();
+                match apply_pulse(&mut candidate, period_ms, input.now) {
+                    Ok(_) => {
+                        plan.applied.push(id);
+                        plan.periods.insert(id, period_ms);
+                    }
+                    Err(reason) => plan.refused.push(reason),
+                }
+            }
+            Err(reason) => plan.refused.push(reason),
+        },
+        // Pulsing but no longer eligible: stand it back down. State is
+        // preserved both ways; only the cadence changes (Q15A).
+        (DomainClock::Pulse { .. }, false, _) | (DomainClock::Pulse { .. }, _, false) => {
+            plan.stood_down.push(id);
+        }
+        // Pulsing and eligible: arm it **only when it needs arming** — no
+        // cursor at all, or a cursor pinned to a superseded generation
+        // (fold T1/T3/D3(a)). Re-arming a live cursor is not "a HIT that
+        // changes nothing": it reset the cursor and froze the world on the
+        // domain's second tick.
+        (DomainClock::Pulse { generation, .. }, true, true) => {
+            if input.cursors.get(&id) != Some(generation) {
+                plan.armed.push(id);
+            }
+            // **B5:** the cap is re-measured on the PULSING arm too, and a
+            // domain that has outgrown it is PAGED rather than stood down
+            // mid-combat.
+            if let Err(reason) = check_domain_capacity(units) {
+                plan.refused.push(format!(
+                    "Domain #{id} is already pulsing and has outgrown its cap; it keeps \
+                     pulsing and is NOT stood down mid-combat. {reason}"
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn plan_maintenance_from(
+    input: &MaintenanceInputs<'_>,
+    after: Option<DomainId>,
+) -> (PulseMaintenance, Option<DomainId>) {
     let MaintenanceInputs {
         state,
         book,
-        now,
-        config,
-        space,
         cursors,
         only,
+        ..
     } = input;
     let mut plan = PulseMaintenance::default();
-    let mut visited = 0_usize;
-    for (id, record) in &state.domains {
-        if only.is_some_and(|wanted| wanted != *id) {
-            continue;
+    let mut next_cursor = None;
+    if let Some(wanted) = *only {
+        if let Some(record) = state.domains.get(&wanted) {
+            eval_domain_maintenance(&mut plan, input, wanted, record);
         }
-        visited = visited.saturating_add(1);
-        if visited > MAX_DOMAINS_PER_PULSE_FIRE {
-            plan.bound_hit = true;
-            break;
+    } else {
+        let mut visited = 0_usize;
+        let mut seen = std::collections::BTreeSet::new();
+        // Priority pass: evaluate promoted and cursor-armed domains first so
+        // they are never starved behind idle or retired records (`P2-MOD-64`).
+        let mut priority = std::collections::BTreeSet::new();
+        priority.extend(book.activations.keys().copied());
+        priority.extend(cursors.keys().copied());
+        for id in priority {
+            let Some(record) = state.domains.get(&id) else {
+                continue;
+            };
+            if record.status == DomainStatus::Retired && !record.clock.is_pulsing() {
+                continue;
+            }
+            visited = visited.saturating_add(1);
+            if visited > MAX_DOMAINS_PER_PULSE_FIRE {
+                plan.bound_hit = true;
+                break;
+            }
+            seen.insert(id);
+            eval_domain_maintenance(&mut plan, input, id, record);
         }
-        let period_ms = config.period_ms(space.contains(id));
-        let live = book.is_promoted(*id);
-        let units = state
-            .derived
-            .local_objects
-            .get(id)
-            .map_or(0, std::collections::BTreeSet::len);
-        match (&record.clock, live, record.status == DomainStatus::Active) {
-            // A live request on an active, passive domain: apply it.
-            (DomainClock::Passive, true, true) => match check_domain_capacity(units) {
-                Ok(_) => {
-                    let mut candidate = record.clone();
-                    match apply_pulse(&mut candidate, period_ms, now) {
-                        Ok(_) => {
-                            plan.applied.push(*id);
-                            plan.periods.insert(*id, period_ms);
-                        }
-                        Err(reason) => plan.refused.push(reason),
-                    }
+        // Rotating pass over remaining non-retired (or still-pulsing) domains,
+        // skipping retired passive tombstones without charging `visited`.
+        if !plan.bound_hit {
+            let mut last_scanned = after;
+            let iter_tail = match after {
+                Some(cursor) => state.domains.range((
+                    std::ops::Bound::Excluded(cursor),
+                    std::ops::Bound::Unbounded,
+                )),
+                None => state.domains.range((
+                    std::ops::Bound::<DomainId>::Unbounded,
+                    std::ops::Bound::Unbounded,
+                )),
+            };
+            let iter_head = match after {
+                Some(cursor) => state.domains.range((
+                    std::ops::Bound::Unbounded,
+                    std::ops::Bound::Included(cursor),
+                )),
+                None => state.domains.range((
+                    std::ops::Bound::Excluded(DomainId(u64::MAX)),
+                    std::ops::Bound::Unbounded,
+                )),
+            };
+            for (&id, record) in iter_tail.chain(iter_head) {
+                if seen.contains(&id) {
+                    continue;
                 }
-                Err(reason) => plan.refused.push(reason),
-            },
-            // Pulsing but no longer eligible: stand it back down. State is
-            // preserved both ways; only the cadence changes (Q15A).
-            (DomainClock::Pulse { .. }, false, _) | (DomainClock::Pulse { .. }, _, false) => {
-                plan.stood_down.push(*id);
+                if record.status == DomainStatus::Retired && !record.clock.is_pulsing() {
+                    continue;
+                }
+                visited = visited.saturating_add(1);
+                if visited > MAX_DOMAINS_PER_PULSE_FIRE {
+                    plan.bound_hit = true;
+                    next_cursor = last_scanned;
+                    break;
+                }
+                seen.insert(id);
+                last_scanned = Some(id);
+                eval_domain_maintenance(&mut plan, input, id, record);
             }
-            // Pulsing and eligible: arm it **only when it needs arming** — no
-            // cursor at all, or a cursor pinned to a superseded generation
-            // (fold T1/T3/D3(a)). Re-arming a live cursor is not "a HIT that
-            // changes nothing": it reset the cursor and froze the world on the
-            // domain's second tick.
-            (DomainClock::Pulse { generation, .. }, true, true) => {
-                if cursors.get(id) != Some(generation) {
-                    plan.armed.push(*id);
-                }
-                // **B5:** the cap is re-measured on the PULSING arm too, and a
-                // domain that has outgrown it is PAGED rather than stood down
-                // mid-combat. Before this fold `check_domain_capacity` ran on
-                // exactly one arm — the promote transition — so a 65th unit
-                // entering an already-pulsing domain was neither refused nor
-                // reported anywhere.
-                if let Err(reason) = check_domain_capacity(units) {
-                    plan.refused.push(format!(
-                        "Domain #{id} is already pulsing and has outgrown its cap; it keeps \
-                         pulsing and is NOT stood down mid-combat. {reason}"
-                    ));
-                }
-            }
-            _ => {}
         }
     }
     // **The disarm queue** (fold T3/D3(a)): a cursor that belongs to no pulsing
@@ -3114,7 +3261,7 @@ pub fn plan_maintenance(input: &MaintenanceInputs<'_>) -> PulseMaintenance {
             plan.disarm.push(*id);
         }
     }
-    plan
+    (plan, next_cursor)
 }
 
 // ----------------------------------------------------------------------
@@ -3584,6 +3731,7 @@ pub(crate) fn register(
         reaping: families.reaping.clone(),
     });
     reg.state(StandingOrderBook::default());
+    reg.state(MaintenanceCursor::default());
 
     reg.action_provider(
         definitions.arm_action.clone(),
