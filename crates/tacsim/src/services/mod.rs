@@ -14,7 +14,7 @@ pub mod haul;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{Ctx, World};
+use mush_core::{Ctx, ObjId, World};
 
 use crate::port::owned::Held;
 use crate::store::TacsimStore;
@@ -221,6 +221,28 @@ pub const JOBS_POST_CAPABILITY: &str = "tacsim.jobs.post";
 /// The line a poster who may not post for that organization reads.
 pub const NOT_POSTER: &str = "You may not post jobs for that organization.";
 
+/// Whether `actor` currently holds [`JOBS_POST_CAPABILITY`] on `org`'s root compartment
+/// (`P2-TSW-48`).
+pub(crate) fn may_post_for_org(w: &World, actor: ObjId, org: mush_org::OrgId) -> bool {
+    let Some(root) = w
+        .module_state::<mush_org::OrgStore>()
+        .and_then(|store| store.state().org(org).map(|o| o.root_scope))
+    else {
+        return false;
+    };
+    let Some(capability) = mush_org::CapabilityId::new(JOBS_POST_CAPABILITY) else {
+        return false;
+    };
+    let request = mush_org::AuthRequest {
+        actor,
+        capability,
+        scope: root,
+        now: w.now(),
+        amount: None,
+    };
+    mush_org::authorize_in_world(w, &request).is_allow()
+}
+
 /// **Who posts a job** (doc 50 cut OP.3, Q-50-23): the actor, from their own account; or, with
 /// `as=<org>`, the organization, when the actor holds [`JOBS_POST_CAPABILITY`] on its root
 /// compartment, from the organization's credit account.
@@ -235,21 +257,7 @@ pub(crate) fn poster(
     };
     let name = name.strip_prefix("org:").unwrap_or(name);
     let org = mush_economy::resolve_org_visible(ctx, name).ok_or_else(|| NOT_POSTER.to_owned())?;
-    let root = ctx
-        .w
-        .module_state::<mush_org::OrgStore>()
-        .and_then(|store| store.state().org(org).map(|o| o.root_scope))
-        .ok_or_else(|| NOT_POSTER.to_owned())?;
-    let capability =
-        mush_org::CapabilityId::new(JOBS_POST_CAPABILITY).ok_or_else(|| NOT_POSTER.to_owned())?;
-    let request = mush_org::AuthRequest {
-        actor: ctx.actor,
-        capability,
-        scope: root,
-        now: ctx.w.now(),
-        amount: None,
-    };
-    if !mush_org::authorize_in_world(ctx.w, &request).is_allow() {
+    if !may_post_for_org(ctx.w, ctx.actor, org) {
         return Err(NOT_POSTER.to_owned());
     }
     let principal = mush_org::PrincipalId::Organization(org);

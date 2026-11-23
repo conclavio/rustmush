@@ -146,6 +146,38 @@ fn vacate(ctx: &mut Ctx<'_>, actor: ObjId, unit: ObjId) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the physically occupied rig and its containing carrier bay directly from
+/// `SpatialState::parent_of(actor)` -> `SpaceAnchor::MovingObject { host }` (`P2-TSW-26`),
+/// without requiring lessee ownership, bay locality, or a live `OperateCrew` grant.
+fn occupied_rig_for_leave(w: &World, actor: ObjId) -> Result<(ObjId, ObjId, ObjId), String> {
+    let state = w
+        .module_state::<SpatialState>()
+        .ok_or("Spatial state unavailable.")?;
+    let SpatialParent::Interior { space, .. } = state.parent_of(actor) else {
+        return Err("You are not inside that rig.".into());
+    };
+    let anchored = mush_sim::anchored_space_of(w, space).unwrap_or(space);
+    let unit = match state.spaces.get(&anchored).map(|s| &s.anchor) {
+        Some(mush_sim::SpaceAnchor::MovingObject { host })
+            if super::ship::hull_view(w, *host).is_none() =>
+        {
+            *host
+        }
+        _ => return Err("You are not inside that rig.".into()),
+    };
+    let SpatialParent::Interior {
+        space: bay_room, ..
+    } = state.parent_of(unit)
+    else {
+        return Err("Unit must be in the selected carrier's actual vehicle bay.".into());
+    };
+    let (view, _) = super::ship::hull_of_room(w, bay_room)
+        .ok_or("Unit must be in the selected carrier's actual vehicle bay.")?;
+    let carrier = view.hull();
+    let bay = bay(w, unit, carrier)?;
+    Ok((unit, bay, carrier))
+}
+
 /// Only the lessee boards themself. The actual K6 control request remains a
 /// separate ordinary player command after they choose their own focus.
 pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
@@ -185,6 +217,32 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
             return Err(usage.into());
         }
     }
+    // P2-TSW-26: when leaving a rig, resolve the physically occupied rig directly from
+    // `SpatialState::parent_of(ctx.actor)` -> `SpaceAnchor::MovingObject { host }` without
+    // requiring lessee ownership, bay locality, or a live `OperateCrew` grant, so delegated
+    // operators (including after grant revocation) can never be trapped inside an exit-less cab.
+    if leave {
+        let actor = ctx.actor;
+        let (unit, bay, carrier) = occupied_rig_for_leave(ctx.w, actor)?;
+        if !projection::physically_aboard(ctx.w, actor, unit) {
+            return Err("You are not inside that rig.".into());
+        }
+        if !released(ctx, unit, actor, carrier)? {
+            super::coop::say(
+                ctx,
+                "Control release requested. Once it settles, repeat +tv/<n> leave to step into the bay.",
+            );
+            return Ok(());
+        }
+        move_person(ctx, actor, bay)?;
+        vacate(ctx, actor, unit)?;
+        super::coop::say(
+            ctx,
+            "You step into the vehicle bay and give back your rig billet.",
+        );
+        ctx.show_room(actor, bay);
+        return Ok(());
+    }
     let store = ctx
         .w
         .module_state::<crate::TacsimStore>()
@@ -205,7 +263,7 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
     // Doc 36a lane 3 (P1-6): or a live lease on the carrier whose bay the actor stands in, when
     // its lessee delegated OperateCrew to them (`+tv/<n>/permissions`, then `@unitgrant/issue`
     // within that loan); the lessee stays the lease's principal.
-    if rentals.is_empty() && !leave {
+    if rentals.is_empty() {
         let here = ctx.w.get(ctx.actor).and_then(|o| o.location);
         let delegated: Vec<_> = store
             .tv_leases_live()
@@ -228,26 +286,6 @@ pub(crate) fn player(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let unit = rental.tv;
     let bay = bay(ctx.w, unit, rental.hull)?;
     let actor = ctx.actor;
-    if leave {
-        if !projection::physically_aboard(ctx.w, actor, unit) {
-            return Err("You are not inside that rig.".into());
-        }
-        if !released(ctx, unit, actor, rental.hull)? {
-            super::coop::say(
-                ctx,
-                "Control release requested. Once it settles, repeat +tv/<n> leave to step into the bay.",
-            );
-            return Ok(());
-        }
-        move_person(ctx, actor, bay)?;
-        vacate(ctx, actor, unit)?;
-        super::coop::say(
-            ctx,
-            "You step into the vehicle bay and give back your rig billet.",
-        );
-        ctx.show_room(actor, bay);
-        return Ok(());
-    }
     let reader = ctx
         .w
         .module_state::<PlanningHandles>()
@@ -462,4 +500,160 @@ pub(crate) fn bay_access(ctx: &mut Ctx<'_>) -> Result<(), String> {
     );
     ctx.show_room(ctx.actor, to);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// **P2-TSW-26**: a delegated operator inside an exit-less rig cab resolves their occupied rig
+    /// and bay directly from `SpatialState::parent_of(actor)` -> `SpaceAnchor::MovingObject`
+    /// without lessee ownership, bay locality, or live `OperateCrew`; someone on the carrier's
+    /// bridge is rejected as not inside a rig.
+    #[test]
+    fn p2_tsw_26_leave_resolves_occupied_rig_without_lessee_ownership_or_operate_crew() {
+        use crate::port::owned::{Held, OwnedBody, OwnedHull};
+        use crate::port::{HullRow, PortMap};
+        use mush_core::CanonicalId;
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let delegate = tw.spawn_player("Delegate");
+        let carrier = tw
+            .world_mut()
+            .create(ObjKind::Thing, "Dray-P", ObjId(1), None)
+            .expect("carrier");
+        let bridge = tw
+            .world_mut()
+            .create(ObjKind::Room, "Bridge", ObjId(1), None)
+            .expect("bridge");
+        let bay_room = tw
+            .world_mut()
+            .create(ObjKind::Room, "Vehicle Bay", ObjId(1), None)
+            .expect("bay");
+        let rig = tw
+            .world_mut()
+            .create(ObjKind::Thing, "Rig", ObjId(1), None)
+            .expect("rig");
+        let cab = tw
+            .world_mut()
+            .create(ObjKind::Room, "Rig Cab", ObjId(1), None)
+            .expect("cab");
+
+        let lane_id = CanonicalId::new(crate::definitions::content::LANE_PACK).expect("lane id");
+        let ceres_entry = CanonicalId::new("ceres_port").expect("entry");
+        let dray_p = CanonicalId::new("tacsim.unit.dray_p").expect("dray_p");
+        let lane_pack =
+            crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("lane pack");
+        let lane_ver = lane_pack.manifest().version();
+
+        {
+            let store = tw
+                .world_mut()
+                .module_state_mut::<crate::TacsimStore>()
+                .expect("store");
+            store.cfg.enabled = true;
+            store
+                .stage_pack(crate::LoadedPack {
+                    source: "<test>".to_owned(),
+                    pack: lane_pack,
+                })
+                .expect("stage");
+            store.seeded_keys.insert((lane_id.clone(), lane_ver));
+            store.applied.insert(lane_id.clone(), lane_ver);
+            store.port_maps.insert(
+                (lane_id.clone(), ceres_entry.clone()),
+                PortMap::new(lane_id, ceres_entry.clone()),
+            );
+            let mut rooms = BTreeMap::new();
+            rooms.insert(CanonicalId::new("bridge").expect("id"), bridge.0);
+            rooms.insert(CanonicalId::new("bay").expect("id"), bay_room.0);
+            let row = HullRow {
+                n: 1,
+                mark: "FPC-P-1".to_owned(),
+                hull: carrier.0,
+                rooms,
+                exits: Vec::new(),
+            };
+            store.yard.owned.insert(
+                carrier,
+                Held::Present(Box::new(OwnedHull {
+                    hull: carrier,
+                    design: dray_p,
+                    mark: "FPC-P-1".to_owned(),
+                    home: ceres_entry,
+                    provenance: 1,
+                    body: OwnedBody::Ship(row),
+                })),
+            );
+        }
+
+        let rigs_slot = mush_sim::SlotId::new("rigs").expect("slot");
+        {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            crate::port::hull::declare_space(
+                &mut ctx,
+                bridge,
+                mush_sim::SpaceAnchor::MovingObject { host: carrier },
+            )
+            .expect("bridge space");
+            crate::port::hull::declare_space(
+                &mut ctx,
+                bay_room,
+                mush_sim::SpaceAnchor::MovingObject { host: carrier },
+            )
+            .expect("bay space");
+            mush_sim::declare_compartment(&mut ctx, bay_room, rigs_slot.clone(), Some(2))
+                .expect("rigs compartment");
+            crate::port::hull::declare_space(
+                &mut ctx,
+                cab,
+                mush_sim::SpaceAnchor::MovingObject { host: rig },
+            )
+            .expect("cab space");
+            mush_sim::place_interior(&mut ctx, rig, bay_room, Some(rigs_slot))
+                .expect("place rig in bay");
+            mush_sim::place_interior(&mut ctx, delegate, cab, None).expect("place delegate in cab");
+        }
+
+        // Delegate has NO lease and NO OperateCrew grant, yet resolves `(rig, bay_room, carrier)`.
+        let resolved = occupied_rig_for_leave(tw.world(), delegate)
+            .expect("delegate inside rig cab must resolve rig and bay");
+        assert_eq!(resolved, (rig, bay_room, carrier));
+
+        // Someone standing on the carrier's bridge is NOT inside a rig.
+        {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            mush_sim::place_interior(&mut ctx, delegate, bridge, None)
+                .expect("place delegate on bridge");
+        }
+        let err = occupied_rig_for_leave(tw.world(), delegate)
+            .expect_err("carrier bridge occupant must not resolve as a rig");
+        assert_eq!(err, "You are not inside that rig.");
+    }
 }

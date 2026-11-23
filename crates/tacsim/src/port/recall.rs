@@ -126,6 +126,9 @@ pub const NOT_REVOKED: &str = "Not revoked: ";
 pub const REVOKED_REPLY: &str = "Charter of the {name} ({mark}) revoked from {pilot}: {why}. The Dray is back in the Co-op's pool.";
 /// The revocation whose lease end is retrying: `{name}`, `{mark}`, `{pilot}`, `{why}`.
 pub const REVOKED_RETRYING: &str = "Charter of the {name} ({mark}) revoked from {pilot}: {why}. The lease end is retrying; the Dray returns when it completes.";
+/// Open bay work on the hull (`P2-TSW-48`): `{name}`.
+pub const RECALL_BAY_WORK: &str =
+    "The {name} has an open bay order; she goes back to the Co-op once it is done or canceled.";
 /// **A rig in the bay** (doc 20 cut SM.3a; reviewer F1): `{name}`. The pilot's own
 /// `+coop/release` refuses with it (the pilot hands the rigs back first); a revoke,
 /// the dormancy recall and the return arm repossess the rigs instead
@@ -178,6 +181,8 @@ pub(crate) enum RecallBlock {
     Inflight,
     /// Goods still moving through the hold.
     GoodsMoving,
+    /// Open bay repair/rearm order on the hull (`P2-TSW-48`).
+    BayWork,
     /// Cargo aboard.
     Cargo,
     /// A hold pool that would not read.
@@ -258,6 +263,11 @@ pub(crate) fn recall_block(ctx: &Ctx<'_>, e: &Enrolment) -> Option<(RecallBlock,
             Busy::Goods => RecallBlock::GoodsMoving,
         };
         return Some((block, line));
+    }
+    // 4b. P2-TSW-48: an open bay order holds the hull until it completes or is canceled, so
+    // releasing or recalling the charter never re-homes the hold vault under a live order.
+    if crate::port::bay_work::under_work(w, e.hull) {
+        return Some((RecallBlock::BayWork, named(RECALL_BAY_WORK, e)));
     }
     // 5. The cargo pool: every goods-table row that is no consumable.
     let Some(goods) = w.module_state::<TacsimStore>().and_then(TacsimStore::goods) else {
@@ -1399,5 +1409,119 @@ mod tests {
         ));
         assert!(idle_over(1_900, 1_000, 900, None, 0, None));
         assert!(!idle(1_900, 1_000, 7, None, 0, None));
+    }
+
+    /// **P2-TSW-48**: `recall_block` returns `RecallBlock::BayWork` when `bay_work::under_work` is
+    /// true for the chartered hull, preventing `+coop/release` from re-homing the hold vault under
+    /// an open bay repair order.
+    #[test]
+    fn p2_tsw_48_recall_block_blocks_hull_under_bay_work() {
+        use crate::port::PortMap;
+        use crate::port::bay_work::{BayHullState, bay_key};
+        use mush_sim::data::Pose;
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let gallery = tw
+            .world_mut()
+            .create(ObjKind::Room, "Ceres Gallery", ObjId(1), None)
+            .expect("gallery");
+        let pilot = tw.spawn_player("BayWorkPilot");
+        let hull = tw
+            .world_mut()
+            .create(ObjKind::Thing, "Salt Moth", ObjId(1), None)
+            .expect("hull");
+        let posture = mush_sim::passive_rules_value(serde_json::json!({})).expect("posture");
+        let domain = {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let domain = mush_sim::open_passive_domain(&mut ctx, gallery, gallery).expect("domain");
+            mush_sim::place(&mut ctx, hull, domain, Pose::passive(posture)).expect("place");
+            domain
+        };
+        let lane_id =
+            mush_core::CanonicalId::new(crate::definitions::content::LANE_PACK).expect("id");
+        let ceres_entry = mush_core::CanonicalId::new("ceres_port").expect("entry");
+        let lane_pack =
+            crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("lane");
+        let lane_ver = lane_pack.manifest().version();
+        {
+            let store = tw
+                .world_mut()
+                .module_state_mut::<TacsimStore>()
+                .expect("store");
+            store.cfg.enabled = true;
+            store
+                .stage_pack(crate::LoadedPack {
+                    source: "<test>".to_owned(),
+                    pack: lane_pack,
+                })
+                .expect("stage");
+            store.seeded_keys.insert((lane_id.clone(), lane_ver));
+            store.applied.insert(lane_id.clone(), lane_ver);
+            let mut map = PortMap::new(lane_id.clone(), ceres_entry.clone());
+            map.domain = Some(domain.0);
+            store
+                .port_maps
+                .insert((lane_id.clone(), ceres_entry.clone()), map);
+            // Unreadable bay state fails closed in `under_work`, matching an open bay order.
+            store.bay_hulls.insert(hull, BayHullState::Unreadable);
+            let _ = bay_key(hull);
+        }
+        let enrolment = Enrolment {
+            schema: crate::port::coop::ENROLMENT_SCHEMA,
+            account: mush_core::AccountId::mint("baywork", 1).expect("acct"),
+            pilot,
+            programme: mush_core::CanonicalId::new("coop.first_captain").expect("id"),
+            pack: lane_id,
+            entry: ceres_entry,
+            hull,
+            mark: "FPC-D-0401".to_owned(),
+            laid_up_name: "Slack Water".to_owned(),
+            name: "Salt Moth".to_owned(),
+            lease: 10,
+            vault: 3,
+            credit_account: 11,
+            stake_minor: 2_500_000,
+            share_permille: 250,
+            buyout_minor: 9_000_000,
+            enrolled_at: 1_000,
+            status: EnrolmentStatus::Active,
+            leased_at: 1_000,
+            buyout: None,
+            ended_at: None,
+            ended: None,
+            sales: 0,
+            margin_minor: 0,
+            shares_minor: 0,
+        };
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: pilot,
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let blocked = recall_block(&ctx, &enrolment).expect("must block under bay work");
+        assert_eq!(blocked.0, RecallBlock::BayWork);
+        assert_eq!(blocked.1, named(RECALL_BAY_WORK, &enrolment));
     }
 }

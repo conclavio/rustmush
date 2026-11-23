@@ -4718,6 +4718,7 @@ mod tests {
             repossessed: false,
             written_off: false,
             wreck_aboard_ic: None,
+            loans_issued: false,
         };
         let docs = vec![
             (

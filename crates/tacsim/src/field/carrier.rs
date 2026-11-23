@@ -1267,6 +1267,7 @@ mod review_72h_tests {
                     repossessed: false,
                     written_off: false,
                     wreck_aboard_ic: None,
+                    loans_issued: false,
                 }),
             );
 
