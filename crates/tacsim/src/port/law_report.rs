@@ -34,7 +34,7 @@ use mush_core::{
 use mush_economy::VaultId;
 use mush_inventory::InventoryFamilies;
 use mush_inventory::record::{EndpointRef, LotId};
-use mush_org::PrincipalId;
+use mush_org::{OrgId, PrincipalId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use smol_str::SmolStr;
@@ -64,6 +64,12 @@ pub const REPORT_FAMILY: &str = "tacsim.law_report";
 const REPORT_REVISION: &str = "tacsim.law_report.v1";
 /// The most reports one offer carries.
 const MAX_OFFER_ROWS: usize = 16;
+/// Sentinel `ObjId` stored in `SaleReceipt::seller`/`buyer` when that side was an organization
+/// (`P2-TSW-21`), so `seller_org`/`buyer_org` carries the real `OrgId` and no real character id
+/// (including `#0`) ever aliases it.
+const ORG_PARTY_SENTINEL: ObjId = ObjId(u32::MAX);
+/// Hard cap on the RAM-only `law_reports_landed` deduplication cache (`P2-TSW-49`).
+const MAX_LANDED_CACHE: usize = 4_096;
 
 /// The usage line.
 pub const LAW_USAGE: &str = "Usage: +law  |  +law/report <quote> [go]  |  +law/audit #<hull>";
@@ -110,10 +116,16 @@ pub const LAW_STAFF_ONLY: &str = "Only staff order an audit.";
 pub struct SaleReceipt {
     /// The sale's quote, `QuoteId.0`.
     pub quote: u64,
-    /// The seller.
+    /// The seller (character id, or `ORG_PARTY_SENTINEL` when `seller_org` is `Some`).
     pub seller: ObjId,
-    /// The buyer.
+    /// The buyer (character id, or `ORG_PARTY_SENTINEL` when `buyer_org` is `Some`).
     pub buyer: ObjId,
+    /// The selling organization, when the seller was `PrincipalId::Organization` (`P2-TSW-21`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seller_org: Option<OrgId>,
+    /// The buying organization, when the buyer was `PrincipalId::Organization` (`P2-TSW-21`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buyer_org: Option<OrgId>,
     /// The venue.
     pub venue: CanonicalId,
     /// The good.
@@ -141,24 +153,53 @@ pub struct SaleReceipt {
 }
 
 impl SaleReceipt {
-    /// The other party, from `who`'s side; `None` when `who` is neither.
+    /// Whether `who` is the character buyer on this receipt.
     #[must_use]
-    pub fn other(&self, who: ObjId) -> Option<ObjId> {
-        if who == self.buyer {
-            Some(self.seller)
-        } else if who == self.seller {
-            Some(self.buyer)
+    pub const fn is_buyer(&self, who: ObjId) -> bool {
+        self.buyer_org.is_none() && self.buyer.0 == who.0
+    }
+
+    /// Whether `who` is the character seller on this receipt.
+    #[must_use]
+    pub const fn is_seller(&self, who: ObjId) -> bool {
+        self.seller_org.is_none() && self.seller.0 == who.0
+    }
+
+    /// The other party as an [`Offender`], from `who`'s side; `None` when `who` is neither
+    /// (`P2-TSW-21`).
+    #[must_use]
+    pub const fn other_offender(&self, who: ObjId) -> Option<Offender> {
+        if self.is_buyer(who) {
+            Some(match self.seller_org {
+                Some(org) => Offender::Organization(org),
+                None => Offender::Character(self.seller),
+            })
+        } else if self.is_seller(who) {
+            Some(match self.buyer_org {
+                Some(org) => Offender::Organization(org),
+                None => Offender::Character(self.buyer),
+            })
         } else {
             None
         }
     }
 
+    /// The other character party, from `who`'s side; `None` when `who` is neither or the other
+    /// party is an organization.
+    #[must_use]
+    pub const fn other(&self, who: ObjId) -> Option<ObjId> {
+        match self.other_offender(who) {
+            Some(Offender::Character(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Whether the other party, from `who`'s side, lacked the papers at the sale.
     #[must_use]
-    pub fn other_lacked(&self, who: ObjId) -> bool {
-        if who == self.buyer {
+    pub const fn other_lacked(&self, who: ObjId) -> bool {
+        if self.is_buyer(who) {
             !self.seller_papers
-        } else if who == self.seller {
+        } else if self.is_seller(who) {
             !self.buyer_papers
         } else {
             false
@@ -195,7 +236,11 @@ impl ReceiptBook {
                 self.receipts.len()
             ));
         }
-        if self.receipts.iter().any(|r| r.other(self.party).is_none()) {
+        if self
+            .receipts
+            .iter()
+            .any(|r| r.other_offender(self.party).is_none())
+        {
             return Err("a receipt names another party".to_owned());
         }
         Ok(())
@@ -224,12 +269,20 @@ fn put_book(ctx: &mut Ctx<'_>, book: &ReceiptBook) {
     crate::port::owned::write(ctx, receipts_key(book.party).to_string(), book);
 }
 
-/// **A private sale settled** (the proceeds policy's `private_sale`, Q-50-66): a receipt for
-/// each character party when the venue's law restricts the good.
+/// **A private sale settled** (the proceeds policy's `private_sale`, Q-50-66; `P2-TSW-21`): a
+/// receipt for each character party when the venue's law restricts the good, including sales
+/// where the counterparty is an `Organization` (organizations hold no prospecting license, so
+/// their `*_papers` flag is `false` and reporting fines `Offender::Organization`).
 pub(crate) fn on_private_sale(ctx: &mut Ctx<'_>, sale: &mush_market::PrivateSale<'_>) {
-    let (PrincipalId::Object(seller), PrincipalId::Object(buyer)) = (sale.seller, sale.buyer)
-    else {
-        return;
+    let (seller, seller_org) = match sale.seller {
+        PrincipalId::Object(id) => (*id, None),
+        PrincipalId::Organization(org) => (ORG_PARTY_SENTINEL, Some(*org)),
+        PrincipalId::System(_) => return,
+    };
+    let (buyer, buyer_org) = match sale.buyer {
+        PrincipalId::Object(id) => (*id, None),
+        PrincipalId::Organization(org) => (ORG_PARTY_SENTINEL, Some(*org)),
+        PrincipalId::System(_) => return,
     };
     let Some(paper) = crate::port::law::restriction_at(ctx.w, sale.market, sale.commodity) else {
         return;
@@ -241,27 +294,36 @@ pub(crate) fn on_private_sale(ctx: &mut Ctx<'_>, sale: &mush_market::PrivateSale
         return;
     };
     let now = ctx.w.world_ic_now().at;
-    let papers = |who: ObjId| {
-        paper.as_str() == crate::port::law::PICKET_PAPERS
+    let papers = |who: ObjId, org: Option<OrgId>| {
+        org.is_none()
+            && paper.as_str() == crate::port::law::PICKET_PAPERS
             && crate::port::law::papers_clear(ctx.w, who, now)
     };
     let receipt = SaleReceipt {
         quote: sale.quote.0,
-        seller: *seller,
-        buyer: *buyer,
+        seller,
+        buyer,
+        seller_org,
+        buyer_org,
         venue: CanonicalId::new(sale.market.as_str()).unwrap_or_else(|_| entry.clone()),
         good: sale.commodity.clone(),
         units: sale.quantity,
         price_minor: sale.price.minor(),
         at_ic: now,
         polity: polity.0,
-        seller_papers: papers(*seller),
-        buyer_papers: papers(*buyer),
+        seller_papers: papers(seller, seller_org),
+        buyer_papers: papers(buyer, buyer_org),
         destination: sale.destination.vault().0,
         lot: sale.lot,
         reported: false,
     };
-    for party in [*seller, *buyer] {
+    for party in [
+        seller_org.is_none().then_some(seller),
+        buyer_org.is_none().then_some(buyer),
+    ]
+    .into_iter()
+    .flatten()
+    {
         let mut book = receipts_of(ctx.w, party).unwrap_or(ReceiptBook {
             schema: RECEIPTS_SCHEMA,
             party,
@@ -329,7 +391,7 @@ fn list(w: &World, who: ObjId) -> String {
     };
     let mut out = vec![RECEIPTS_HEAD.to_owned()];
     for r in &book.receipts {
-        let side = if r.buyer == who { "bought" } else { "sold" };
+        let side = if r.is_buyer(who) { "bought" } else { "sold" };
         out.push(format!(
             "  sale {}: {side} {} {} at {}{}",
             r.quote,
@@ -387,7 +449,7 @@ fn refusal(w: &World, who: ObjId, r: &SaleReceipt) -> Option<String> {
     if here.as_ref() != Some(&venue) {
         return Some(REPORT_NOT_HERE.to_owned());
     }
-    if r.buyer == who {
+    if r.is_buyer(who) {
         let from = EndpointRef(VaultId(r.destination));
         if !mush_inventory::may_take(w, who, from)
             || !mush_market::seller::bidder_holds_vault(w, &PrincipalId::Object(who), from.vault())
@@ -408,6 +470,12 @@ fn refusal(w: &World, who: ObjId, r: &SaleReceipt) -> Option<String> {
     None
 }
 
+fn org_name_of(w: &World, org: OrgId) -> String {
+    w.module_state::<mush_org::OrgStore>()
+        .and_then(|store| store.state().org(org).map(|o| o.name.to_string()))
+        .unwrap_or_else(|| format!("organization #{}", org.0))
+}
+
 fn report_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let who = ctx.actor;
     let word = rest.trim().trim_start_matches('#');
@@ -417,11 +485,13 @@ fn report_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
     if let Some(line) = refusal(ctx.w, who, &r) {
         return Err(line);
     }
-    let buyer = r.buyer == who;
+    let buyer = r.is_buyer(who);
     if !go {
-        let other = r
-            .other(who)
-            .map_or_else(String::new, |o| crate::port::coop::name_of(ctx.w, o));
+        let other = match r.other_offender(who) {
+            Some(Offender::Character(o)) => crate::port::coop::name_of(ctx.w, o),
+            Some(Offender::Organization(org)) => org_name_of(ctx.w, org),
+            _ => String::new(),
+        };
         return Ok(REPORT_PREVIEW
             .replace("{who}", &other)
             .replace("{goods}", if buyer { REPORT_HANDOVER } else { "" }));
@@ -515,7 +585,7 @@ fn rows_for(w: &World, actor: ObjId) -> Map<String, Value> {
         if refusal(w, actor, &r).is_some() {
             continue;
         }
-        let into = if r.buyer == actor {
+        let into = if r.is_buyer(actor) {
             let Some(vault) = mush_market::MarketId::new(r.venue.as_str())
                 .and_then(|venue| crate::port::law::port_entry_of(w, &venue))
                 .and_then(|entry| crate::port::seized::port_authority(w, &entry))
@@ -568,7 +638,7 @@ fn report_generation(w: &World, actor: ObjId) -> Result<u64, mush_core::ActionEr
         let snapshot = economy.snapshot();
         for (quote, row_val) in &rows {
             if let Ok(row) = serde_json::from_value::<ReportRow>(row_val.clone())
-                && row.receipt.buyer == actor
+                && row.receipt.is_buyer(actor)
             {
                 let stamp = snapshot.vault(VaultId(row.receipt.destination)).map(|v| {
                     json!({
@@ -702,7 +772,7 @@ impl ActionProvider for ReportProvider {
             .ok_or_else(invalid)?;
         let actor = invocation.actor();
         let r = &row.receipt;
-        if r.other(actor).is_none() || !r.other_lacked(actor) {
+        if r.other_offender(actor).is_none() || !r.other_lacked(actor) {
             return Err(port_error(
                 ActionErrorCode::Unauthorized,
                 "that sale is not yours to report",
@@ -719,7 +789,7 @@ impl ActionProvider for ReportProvider {
             return Err(refused("that sale has already been reported"));
         }
         // A reporting buyer hands the goods over to the authority's vault, in this bundle.
-        let handed = if r.buyer == actor {
+        let handed = if r.is_buyer(actor) {
             let into = EndpointRef(VaultId(row.into.ok_or_else(invalid)?));
             let from = EndpointRef(VaultId(r.destination));
             if from == into {
@@ -822,6 +892,32 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         }
         mark_reported(ctx, party, r.quote);
     }
+    prune_landed(ctx.w);
+}
+
+/// Prune `store.law_reports_landed` to quotes that still appear in a live receipt book within
+/// [`REPORT_WINDOW_IC_S`] and enforce [`MAX_LANDED_CACHE`] (`P2-TSW-49`).
+pub(crate) fn prune_landed(w: &mut World) {
+    let now = w.world_ic_now().at;
+    let Some(store) = w.module_state_mut::<TacsimStore>() else {
+        return;
+    };
+    if store.law_reports_landed.is_empty() {
+        return;
+    }
+    let live: std::collections::BTreeSet<u64> = store
+        .sale_receipts
+        .values()
+        .flat_map(|book| book.receipts.iter())
+        .filter(|r| now <= r.at_ic.saturating_add(REPORT_WINDOW_IC_S))
+        .map(|r| r.quote)
+        .collect();
+    store.law_reports_landed.retain(|q| live.contains(q));
+    while store.law_reports_landed.len() > MAX_LANDED_CACHE {
+        if store.law_reports_landed.pop_first().is_none() {
+            break;
+        }
+    }
 }
 
 fn mark_reported(ctx: &mut Ctx<'_>, party: ObjId, quote: u64) {
@@ -840,17 +936,22 @@ fn mark_reported(ctx: &mut Ctx<'_>, party: ObjId, quote: u64) {
     }
     if let Some(store) = ctx.w.module_state_mut::<TacsimStore>() {
         store.law_reports_landed.insert(quote);
+        while store.law_reports_landed.len() > MAX_LANDED_CACHE {
+            if store.law_reports_landed.pop_first().is_none() {
+                break;
+            }
+        }
     }
 }
 
 /// One landed report, recorded and fined.
 fn apply(ctx: &mut Ctx<'_>, row: &ReportLanded, r: &SaleReceipt) {
-    let Some(offender) = r.other(row.by) else {
+    let Some(offender) = r.other_offender(row.by) else {
         return;
     };
-    let buyer_reports = row.by == r.buyer;
+    let buyer_reports = r.is_buyer(row.by);
     let key = OffenseKey {
-        offender: Offender::Character(offender),
+        offender,
         polity: mush_faction::FactionId(r.polity),
     };
     let offense = ProvenOffense {
@@ -885,8 +986,12 @@ fn apply(ctx: &mut Ctx<'_>, row: &ReportLanded, r: &SaleReceipt) {
     }
     let entry = mush_market::MarketId::new(r.venue.as_str())
         .and_then(|venue| crate::port::law::port_entry_of(ctx.w, &venue));
+    let notify = match offender {
+        Offender::Character(who) => Some(who),
+        Offender::Organization(_) | Offender::Account(_) => None,
+    };
     if let Some(entry) = entry {
-        crate::surface::security::fine_now(ctx, &key, &entry, Some(offender));
+        crate::surface::security::fine_now(ctx, &key, &entry, notify);
     }
     // Doc 50 unit LW.4 (Q-50-69): a sale proven by a party's report costs standing.
     crate::port::record::lose_standing(
@@ -994,4 +1099,106 @@ pub(crate) fn register(
     };
     reg.state(ReportHandles { action, reports });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_receipt(
+        quote: u64,
+        seller: ObjId,
+        seller_org: Option<OrgId>,
+        buyer: ObjId,
+        buyer_org: Option<OrgId>,
+        at_ic: i64,
+    ) -> SaleReceipt {
+        SaleReceipt {
+            quote,
+            seller,
+            buyer,
+            seller_org,
+            buyer_org,
+            venue: CanonicalId::new("ceres").expect("venue"),
+            good: CanonicalId::new("strategic_ore").expect("good"),
+            units: 2,
+            price_minor: 30_000,
+            at_ic,
+            polity: 1,
+            seller_papers: false,
+            buyer_papers: false,
+            destination: 7,
+            lot: None,
+            reported: false,
+        }
+    }
+
+    #[test]
+    fn p2_tsw_21_org_private_sale_receipt_maps_to_org_offender_without_aliasing_god() {
+        let buyer = ObjId(42);
+        let org = OrgId(99);
+        let r = sample_receipt(101, ORG_PARTY_SENTINEL, Some(org), buyer, None, 1_000);
+        assert!(r.is_buyer(buyer));
+        assert!(!r.is_seller(buyer));
+        assert!(!r.is_seller(ObjId(0)));
+        assert!(!r.is_seller(ORG_PARTY_SENTINEL));
+        assert_eq!(r.other_offender(buyer), Some(Offender::Organization(org)));
+        assert_eq!(r.other(buyer), None);
+        assert!(r.other_lacked(buyer));
+        let book = ReceiptBook {
+            schema: RECEIPTS_SCHEMA,
+            party: buyer,
+            receipts: vec![r.clone()],
+        };
+        assert!(book.check().is_ok());
+
+        // Buyer-as-org receipt on seller's book:
+        let seller = ObjId(77);
+        let r2 = sample_receipt(102, seller, None, ORG_PARTY_SENTINEL, Some(org), 1_000);
+        assert!(r2.is_seller(seller));
+        assert!(!r2.is_buyer(seller));
+        assert_eq!(r2.other_offender(seller), Some(Offender::Organization(org)));
+        assert!(r2.other_lacked(seller));
+        let book2 = ReceiptBook {
+            schema: RECEIPTS_SCHEMA,
+            party: seller,
+            receipts: vec![r2],
+        };
+        assert!(book2.check().is_ok());
+    }
+
+    #[test]
+    fn p2_tsw_49_prune_landed_drops_expired_and_unreferenced_quotes() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let w = tw.world_mut();
+        let party = ObjId(12);
+        let now = w.world_ic_now().at;
+        let fresh = sample_receipt(10, ObjId(5), None, party, None, now);
+        let expired = sample_receipt(
+            11,
+            ObjId(5),
+            None,
+            party,
+            None,
+            now.saturating_sub(REPORT_WINDOW_IC_S + 1),
+        );
+        let store = w.module_state_mut::<TacsimStore>().expect("store");
+        store.sale_receipts.insert(
+            party,
+            ReceiptBook {
+                schema: RECEIPTS_SCHEMA,
+                party,
+                receipts: vec![fresh, expired],
+            },
+        );
+        store.law_reports_landed.insert(10);
+        store.law_reports_landed.insert(11);
+        store.law_reports_landed.insert(999);
+        prune_landed(w);
+        let store = w.module_state::<TacsimStore>().expect("store");
+        assert!(store.law_reports_landed.contains(&10));
+        assert!(!store.law_reports_landed.contains(&11));
+        assert!(!store.law_reports_landed.contains(&999));
+    }
 }

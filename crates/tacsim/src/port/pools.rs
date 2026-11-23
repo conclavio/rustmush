@@ -100,6 +100,11 @@ pub const HOUSE_KEY: &str = "org.";
 /// (provisional): long enough to buy again, short enough that another buyer of the same pool
 /// waits minutes, not days (the market keeps one live draw listing a pool).
 pub const PLAYER_ASK_TTL_SECS: i64 = 600;
+/// **P2-TSW-32**: post-expiry cooldown (real seconds) before a player who let a clerk-posted
+/// private supply ask lapse untaken may request another on the same vendor pool or part store.
+pub const PLAYER_ASK_COOLDOWN_SECS: i64 = PLAYER_ASK_TTL_SECS;
+/// Hard cap on RAM-tracked player private-ask locks in `PortTickState::player_ask_locks`.
+const MAX_PLAYER_ASK_LOCKS: usize = 1_024;
 /// **Doc 48 unit PL.5**: the most hulls a House has on order at once (the record's bound).
 pub const MAX_HOUSE_ORDERS: usize = 8;
 
@@ -1522,29 +1527,54 @@ fn seller(
     def.vendors
         .iter()
         .find_map(|v| {
-            v.asks
-                .iter()
-                .find(|ask| &ask.good == good)
-                .map(|ask| (v.clone(), ask.price_major))
+            v.asks.iter().find(|ask| &ask.good == good).and_then(|ask| {
+                minor_of(ask.price_major, scale)
+                    .and_then(|minor| u64::try_from(minor).ok())
+                    .map(|minor| (v.clone(), minor))
+            })
         })
-        // The owner's IN.11 ruling (lane v33): a vendor that stocks a good and bids for it, with
-        // no ask (a vendor never both asks and bids one good), sells the house its stock at its
-        // bid — Stickney Yards' carbon, which the works' plants take.
+        // The owner's IN.11 ruling (lane v33) & P2-TSW-32: a vendor that stocks a good and bids
+        // for it, with no ask (a vendor never both asks and bids one good), sells its stock at
+        // >= max(bid_price_major, live public bid price) so reach premiums or emergency bids on
+        // the live board can never create same-port arbitrage against Stickney's carbon_ore pool.
         .or_else(|| {
             def.vendors.iter().find_map(|v| {
                 let stocked = v.stock.iter().any(|row| &row.good == good);
                 v.bids
                     .iter()
                     .find(|bid| stocked && &bid.good == good)
-                    .map(|bid| (v.clone(), bid.price_major))
+                    .and_then(|bid| {
+                        let major =
+                            crate::port::price::bid_price_major(w, def, bid).max(bid.price_major);
+                        let computed =
+                            minor_of(major, scale).and_then(|minor| u64::try_from(minor).ok())?;
+                        let live_bid = live_public_bid_minor(w, def, good);
+                        Some((v.clone(), computed.max(live_bid)))
+                    })
             })
         })
-        .and_then(|(v, major)| {
-            minor_of(major, scale)
-                .and_then(|minor| u64::try_from(minor).ok())
-                .map(|minor| (v, minor))
-        })
         .ok_or_else(|| format!("no ask for {good} at the yard"))
+}
+
+/// Highest live public bid price (`Supply::Wanted`, minor units) for `good` at `def.venue`
+/// (`P2-TSW-32`).
+fn live_public_bid_minor(w: &World, def: &PortDef, good: &CanonicalId) -> u64 {
+    w.module_state::<MarketStore>()
+        .map(|market| {
+            market
+                .live_listings()
+                .filter(|listing| {
+                    listing.market.as_str() == def.venue.as_str()
+                        && listing.private_to.is_none()
+                        && listing.source.is_wanted()
+                        && listing.catalog.ruleset.as_str() == crate::NS
+                        && listing.catalog.code.as_str() == good.as_str()
+                })
+                .filter_map(|listing| u64::try_from(listing.price.minor()).ok())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
 }
 
 /// The yard's port def and map.
@@ -1989,12 +2019,32 @@ mod board {
                 Some((name, u64::try_from(row.price.minor()).unwrap_or(0)))
             })
             .unwrap_or_default();
+        // P2-TSW-32: check buyer funds before creating a quote so short buyers do not leave
+        // unactivated quotes behind.
+        if !super::is_helm(ctx.w, buyer) {
+            let need = price
+                .checked_mul(quantity)
+                .ok_or_else(|| BuyError::Plain("a price overflows".to_owned()))?;
+            let available = crate::port::credit::own_account(ctx.w, buyer)
+                .map_or(0, |a| super::available_minor(ctx.w, a.id));
+            if available < need {
+                return Err(BuyError::Plain(
+                    "You do not have enough available credit for that purchase.".to_owned(),
+                ));
+            }
+        }
         let into = EndpointRef(VaultId(escrow));
         let saved = ctx.actor;
         ctx.actor = buyer;
         let bought = quote_and_accept(ctx, listing, quantity, into);
         ctx.actor = saved;
         bought.map_err(BuyError::Market)?;
+        // Taking the private ask clears any cooldown lock for this listing (P2-TSW-32).
+        if let Some(state) = ctx.w.module_state_mut::<crate::port_tick::PortTickState>() {
+            state
+                .player_ask_locks
+                .retain(|_, (locked_id, _)| *locked_id != listing.0);
+        }
         Ok(Bought::Accepted {
             seller,
             quantity,
@@ -2215,10 +2265,59 @@ mod board {
         if ctx.authoritative_pending(clerk) {
             return Ok(false);
         }
+        // P2-TSW-32: verify buyer available funds cover `price * quantity` before locking a
+        // vendor pool or part lot under an exclusive private ask.
+        let need = price
+            .checked_mul(quantity)
+            .ok_or_else(|| "a price overflows".to_owned())?;
+        let available = crate::port::credit::own_account(ctx.w, buyer)
+            .map_or(0, |account| super::available_minor(ctx.w, account.id));
+        if available < need {
+            return Err(
+                "You do not have enough available credit to cover that supply listing.".to_owned(),
+            );
+        }
         let price = i64::try_from(price).map_err(|_| "a price overflows")?;
+        let helm = super::is_helm(ctx.w, buyer);
+        let source_vault = match &source {
+            mush_market::Supply::Stock { vault } => vault.0,
+            mush_market::Supply::Lot { endpoint, .. } => endpoint.0.vault().0,
+            _ => 0,
+        };
+        let now = ctx.w.now();
+        // P2-TSW-32: enforce a post-expiry cooldown on players whose previous private ask on
+        // this vendor pool or part store lapsed untaken, preventing indefinite 10-minute lockout.
+        if !helm {
+            let lock_key = (buyer, source_vault, good.clone());
+            let blocked = {
+                let existing = ctx
+                    .w
+                    .module_state_mut::<crate::port_tick::PortTickState>()
+                    .and_then(|state| {
+                        state.player_ask_locks.retain(|_, (_, exp)| {
+                            now < exp.saturating_add(super::PLAYER_ASK_COOLDOWN_SECS)
+                        });
+                        state.player_ask_locks.get(&lock_key).copied()
+                    });
+                existing.is_some_and(|(prev_id, exp)| {
+                    let gone = ctx
+                        .w
+                        .module_state::<MarketStore>()
+                        .is_none_or(|market| market.listing(ListingId(prev_id)).is_none());
+                    (gone || now >= exp)
+                        && now < exp.saturating_add(super::PLAYER_ASK_COOLDOWN_SECS)
+                })
+            };
+            if blocked {
+                return Err(
+                    "Your last supply listing lapsed untaken; wait before requesting another."
+                        .to_owned(),
+                );
+            }
+        }
         // Doc 48 unit PL.5: a house's agent takes its ask on the next fire; a player's lapses in
         // minutes, so another buyer of the pool waits minutes, not days.
-        let ttl_secs = if super::is_helm(ctx.w, buyer) {
+        let ttl_secs = if helm {
             mush_market::MAX_LISTING_TTL_SECS
         } else {
             super::PLAYER_ASK_TTL_SECS
@@ -2241,9 +2340,38 @@ mod board {
         ctx.actor = clerk;
         let listed = mush_market::list_goods(ctx, spec);
         ctx.actor = saved;
-        listed
-            .map(|_| true)
-            .map_err(|error| format!("the port could not list its {good}: {error:?}"))
+        match listed {
+            Ok(listing_id) => {
+                if !helm {
+                    let expires = ctx
+                        .w
+                        .module_state::<MarketStore>()
+                        .and_then(|market| market.listing(listing_id).map(|l| l.expires.at))
+                        .unwrap_or_else(|| now.saturating_add(ttl_secs));
+                    if let Some(state) = ctx.w.module_state_mut::<crate::port_tick::PortTickState>()
+                    {
+                        while state.player_ask_locks.len() >= super::MAX_PLAYER_ASK_LOCKS {
+                            let oldest = state
+                                .player_ask_locks
+                                .iter()
+                                .min_by_key(|(_, (_, exp))| *exp)
+                                .map(|(k, _)| k.clone());
+                            match oldest {
+                                Some(k) => {
+                                    state.player_ask_locks.remove(&k);
+                                }
+                                None => break,
+                            }
+                        }
+                        state
+                            .player_ask_locks
+                            .insert((buyer, source_vault, good.clone()), (listing_id.0, expires));
+                    }
+                }
+                Ok(true)
+            }
+            Err(error) => Err(format!("the port could not list its {good}: {error:?}")),
+        }
     }
 
     /// **The part's lot ask**: a lot of `good` in the yard operator's stores standing in a lot
@@ -2298,5 +2426,42 @@ mod board {
         } else {
             Bought::Wait(Wait::Busy)
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **P2-TSW-32**: a bid-backed pool ask (`carbon_ore` at Stickney) must price at least as
+    /// high as `max(bid_price_major, authored bid.price_major)` and never below a live public bid
+    /// on the same venue; non-helm buyers carry a positive post-expiry cooldown.
+    #[test]
+    fn p2_tsw_32_bid_backed_pool_price_and_lock_bounds_hold() {
+        const {
+            assert!(PLAYER_ASK_COOLDOWN_SECS >= PLAYER_ASK_TTL_SECS);
+            assert!(MAX_PLAYER_ASK_LOCKS >= 64);
+        }
+        let pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON)
+            .expect("the shipped lane loads");
+        let stickney_id = CanonicalId::new("stickney_port").expect("id");
+        let Some(crate::pack::PackEntry::Port(stickney)) = pack.entry(&stickney_id) else {
+            panic!("stickney_port entry");
+        };
+        let carbon = CanonicalId::new("carbon_ore").expect("good");
+        let authored_bid = stickney
+            .vendors
+            .iter()
+            .find(|v| v.org.as_str() == "stickney_yards")
+            .and_then(|v| v.bids.iter().find(|b| b.good == carbon))
+            .expect("stickney_yards carbon_ore bid");
+        let world = World::new_minimal();
+        let (vendor, price) = seller(&world, stickney, &carbon, false).expect("bid-backed seller");
+        assert_eq!(vendor.org.as_str(), "stickney_yards");
+        assert!(
+            price >= authored_bid.price_major,
+            "bid-backed ask price ({price}) must be >= authored bid ({})",
+            authored_bid.price_major
+        );
     }
 }
