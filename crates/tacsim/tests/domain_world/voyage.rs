@@ -8008,6 +8008,7 @@ fn sfr15_hull_fidelity_splits_rear_hit_per_dray_json_strips_pdc_and_refits_in_ba
     seed_pool(&mut rig, vault_id, "propellant", 55, LotId(991));
     seed_pool(&mut rig, vault_id, "provisions", 19, LotId(992));
     seed_pool(&mut rig, vault_id, "industrial_parts", 8, LotId(993));
+    seed_pool(&mut rig, vault_id, "structural_alloys", 16, LotId(994));
     set_rate(&mut rig.tw, 3_600);
     board(&mut rig, pilot);
 

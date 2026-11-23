@@ -296,3 +296,122 @@ fn live_title_and_replaced_intent_change_the_final_revision() {
         initial
     );
 }
+
+/// **P2-TSW-29**: `pruned_for_facts` retains revoked `LeasedOrganizationGrant` tombstones while
+/// the underlying equipment lease is still active (even past `valid_until`), prunes any child
+/// delegations of those revoked loans, prunes expired active leased loans (preserving renewed-term
+/// re-issuance), and reclaims the revoked tombstones once the equipment lease ends.
+#[test]
+fn p2_tsw_29_pruned_for_facts_retains_active_lease_revocations_and_reclaims_dead_ones() {
+    use crate::unit_authority::UnitLeaseBinding;
+    use crate::{GrantId, OrgId};
+
+    struct LeaseFacts {
+        active_lease: Option<(OrgId, UnitLeaseBinding)>,
+    }
+    impl UnitAuthorityFacts for LeaseFacts {
+        fn principal_exists(&self, _: ObjId) -> bool {
+            true
+        }
+        fn asset(&self, _: ObjId) -> Option<UnitAssetFacts> {
+            None
+        }
+        fn equipment_lease(&self, organization: OrgId, lease: &UnitLeaseBinding) -> bool {
+            self.active_lease
+                .as_ref()
+                .is_some_and(|(org, bound)| *org == organization && bound == lease)
+        }
+    }
+
+    let org = OrgId(7);
+    let lease = UnitLeaseBinding {
+        contract: 42,
+        unit: ObjId(3),
+        tenant: ObjId(2),
+        consent_hash: [0x42; 32],
+    };
+    let mut reg = UnitGrantRegistry::default();
+
+    // 1. Revoked leased loan (delegable) whose lease is active.
+    let mut leased_revoked = row();
+    leased_revoked.id = UnitGrantId(reg.next_id);
+    leased_revoked.delegable = true;
+    leased_revoked.valid_from = Some(100);
+    leased_revoked.valid_until = Some(200);
+    leased_revoked.parent = UnitGrantParent::LeasedOrganizationGrant {
+        organization: org,
+        grant: GrantId(9),
+        lease: lease.clone(),
+    };
+    reg = reg
+        .with_grant(leased_revoked.clone())
+        .expect("issue leased");
+
+    // 2. Active child delegated from that leased loan (must be pruned when parent is revoked).
+    let mut child = row();
+    child.id = UnitGrantId(reg.next_id);
+    child.grantor = ObjId(2);
+    child.grantee = UnitGrantee::Character(ObjId(4));
+    child.valid_from = Some(100);
+    child.valid_until = Some(200);
+    child.parent = UnitGrantParent::UnitGrant {
+        id: leased_revoked.id,
+    };
+    reg = reg.with_grant(child.clone()).expect("issue child");
+
+    // 3. Expired active leased loan (must be pruned so renewed leases can re-issue).
+    let mut leased_expired = row();
+    leased_expired.id = UnitGrantId(reg.next_id);
+    leased_expired.capability = UnitCapability::RecoverLoad;
+    leased_expired.valid_from = Some(100);
+    leased_expired.valid_until = Some(200);
+    leased_expired.parent = UnitGrantParent::LeasedOrganizationGrant {
+        organization: org,
+        grant: GrantId(10),
+        lease: lease.clone(),
+    };
+    reg = reg
+        .with_grant(leased_expired.clone())
+        .expect("issue expired");
+
+    // 4. Unrelated revoked personal-title grant (must be pruned).
+    let mut personal_revoked = row();
+    personal_revoked.id = UnitGrantId(reg.next_id);
+    reg = reg
+        .with_grant(personal_revoked.clone())
+        .expect("issue personal");
+    personal_revoked.status = UnitGrantStatus::Revoked;
+    personal_revoked.revision = 2;
+    reg = reg
+        .with_grant(personal_revoked.clone())
+        .expect("revoke personal");
+
+    // Revoke the first leased grant.
+    let mut revoked_lease_row = leased_revoked.clone();
+    revoked_lease_row.status = UnitGrantStatus::Revoked;
+    revoked_lease_row.revision = 2;
+    reg = reg
+        .with_grant(revoked_lease_row.clone())
+        .expect("revoke leased");
+
+    // While the lease is active (even after `valid_until = 200`):
+    // - `leased_revoked` is RETAINED as a tombstone
+    // - `child`, `leased_expired`, and `personal_revoked` are PRUNED.
+    let active_facts = LeaseFacts {
+        active_lease: Some((org, lease)),
+    };
+    let pruned_active = reg.pruned_for_facts(250, &active_facts);
+    assert!(pruned_active.validate().is_ok());
+    assert_eq!(pruned_active.grants.len(), 1);
+    assert_eq!(
+        pruned_active.grants.get(&leased_revoked.id),
+        Some(&revoked_lease_row)
+    );
+
+    // Once the lease ends (`equipment_lease == false`), the revoked tombstone is reclaimed.
+    let ended_facts = LeaseFacts { active_lease: None };
+    let pruned_ended = pruned_active.pruned_for_facts(250, &ended_facts);
+    assert!(pruned_ended.validate().is_ok());
+    assert!(pruned_ended.grants.is_empty());
+    assert_eq!(pruned_ended.next_id, reg.next_id);
+}

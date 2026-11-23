@@ -6,7 +6,9 @@ use mush_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::record::{MAX_UNIT_GRANTS, UnitGrant, UnitGrantId, UnitGrantParent, UnitGrantStatus};
+use super::record::{
+    MAX_UNIT_GRANTS, UnitAuthorityFacts, UnitGrant, UnitGrantId, UnitGrantParent, UnitGrantStatus,
+};
 
 pub const FAMILY: &str = "unit_grants";
 pub const MAX_REGISTRY_BYTES: usize = 256 * 1024;
@@ -90,14 +92,67 @@ impl UnitGrantRegistry {
         }
     }
 
-    fn prune_revoked(&mut self) {
-        let mut kept = BTreeMap::new();
+    /// Return a copy with terminal (revoked or expired) grants and any
+    /// descendant grants whose parent is no longer live removed, while
+    /// retaining revoked `LeasedOrganizationGrant` tombstones for equipment
+    /// leases that are still active (`P2-TSW-29`) so unrelated global grant
+    /// issuance cannot erase an explicit rig-loan revocation and allow
+    /// self-reissuance.
+    #[must_use]
+    pub fn pruned_for_facts(&self, now: i64, facts: &dyn UnitAuthorityFacts) -> Self {
+        let mut kept: BTreeMap<UnitGrantId, UnitGrant> = BTreeMap::new();
         for (id, grant) in &self.grants {
             if grant.status != UnitGrantStatus::Active {
+                if grant.status == UnitGrantStatus::Revoked
+                    && let UnitGrantParent::LeasedOrganizationGrant {
+                        organization,
+                        lease,
+                        ..
+                    } = &grant.parent
+                    && facts.equipment_lease(*organization, lease)
+                {
+                    kept.insert(*id, grant.clone());
+                }
+                continue;
+            }
+            if grant.valid_until.is_some_and(|end| now >= end) {
                 continue;
             }
             if let UnitGrantParent::UnitGrant { id: parent_id } = grant.parent
-                && !kept.contains_key(&parent_id)
+                && kept
+                    .get(&parent_id)
+                    .is_none_or(|p| p.status != UnitGrantStatus::Active)
+            {
+                continue;
+            }
+            kept.insert(*id, grant.clone());
+        }
+        Self {
+            revision: self.revision,
+            next_id: self.next_id,
+            grants: kept,
+        }
+    }
+
+    fn prune_revoked(&mut self, keep_leased: bool) {
+        let mut kept: BTreeMap<UnitGrantId, UnitGrant> = BTreeMap::new();
+        for (id, grant) in &self.grants {
+            if grant.status != UnitGrantStatus::Active {
+                if keep_leased
+                    && grant.status == UnitGrantStatus::Revoked
+                    && matches!(
+                        grant.parent,
+                        UnitGrantParent::LeasedOrganizationGrant { .. }
+                    )
+                {
+                    kept.insert(*id, grant.clone());
+                }
+                continue;
+            }
+            if let UnitGrantParent::UnitGrant { id: parent_id } = grant.parent
+                && kept
+                    .get(&parent_id)
+                    .is_none_or(|p| p.status != UnitGrantStatus::Active)
             {
                 continue;
             }
@@ -127,8 +182,14 @@ impl UnitGrantRegistry {
             let bytes = serde_json::to_vec(&next).map_err(|e| e.to_string())?.len();
             if bytes > MAX_REGISTRY_BYTES {
                 // Exempt revocation from MAX_REGISTRY_BYTES lockout even on a
-                // legacy registry filled up to the 256 KiB family ceiling.
-                next.prune_revoked();
+                // legacy registry filled up to the 256 KiB family ceiling;
+                // drop non-leased revoked rows first to preserve P2-TSW-29
+                // active-lease tombstones whenever possible.
+                next.prune_revoked(true);
+                if serde_json::to_vec(&next).map_err(|e| e.to_string())?.len() > MAX_REGISTRY_BYTES
+                {
+                    next.prune_revoked(false);
+                }
             }
         }
         next.validate()?;

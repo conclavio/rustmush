@@ -538,13 +538,6 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
         })
         .collect();
     if !current.is_empty() {
-        if !rental.loans_issued {
-            let stamped = super::tv::TvLease {
-                loans_issued: true,
-                ..rental.clone()
-            };
-            crate::store::put_tv_lease(ctx, &stamped);
-        }
         for grant in &current {
             let UnitAuthorityResponse::Authority { allowed } = ctx
                 .read_owner(
@@ -691,13 +684,9 @@ fn issue(
         )
     })
     .map_err(|_| "Occator's lender has an action pending; retry shortly.".to_owned())??;
-    // P2-TSW-29: persist loan issuance on the lease record so revoked loans cannot be silently
-    // re-issued if `UnitGrantRegistry::pruned` removes the revoked rows.
-    let stamped = super::tv::TvLease {
-        loans_issued: true,
-        ..rental.clone()
-    };
-    crate::store::put_tv_lease(ctx, &stamped);
+    // P2-TSW-29: `UnitGrantRegistry::pruned_for_facts` retains revoked `LeasedOrganizationGrant`
+    // rows for the lifetime of an active lease inside the authoritative Org state family, so
+    // `submit_from` stays a pure prepared action with no legacy module writes in the same step.
     super::coop::say(
         ctx,
         "Occator is recording the four operational loans. Use +tv/permissions to inspect the committed agreement.",
