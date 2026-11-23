@@ -1,0 +1,38 @@
+# Start one clock-run workflow with a workflow_dispatch at main. The instance
+# is the job: rustmush-dispatch@soak, @ci-nightly, @ci-weekly, @codeql. The
+# four rustmush-dispatch-*.timer units beside this file fire them;
+# workflow-dispatch.sh is the call, holds the table of jobs and says why the
+# box and not GitHub's schedule keeps the clock. conclav.dev only.
+#
+# Installed by dispatch-timers-install.sh. By hand:
+#   systemctl start rustmush-dispatch@soak.service     a whole night's soak, now
+#   journalctl -u 'rustmush-dispatch@*' -n 20          what the last calls said
+[Unit]
+Description=Start %i on GitHub: a workflow_dispatch at main
+Documentation=https://github.com/conclavio/rustmush/blob/main/docs/ops.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The owner's token, root's and mode 0600. systemd reads it as root before
+# the service drops to a user of its own. The `-` leaves a missing file to
+# the script, whose error says what to create; systemd's would not.
+EnvironmentFile=-/etc/rustmush/dispatch.env
+ExecStart=/usr/local/lib/rustmush/workflow-dispatch.sh %i
+TimeoutStartSec=5min
+# One HTTPS call: no privileges, no writable disk but a private /tmp.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=

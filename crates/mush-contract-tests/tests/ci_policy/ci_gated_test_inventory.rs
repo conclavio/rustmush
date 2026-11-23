@@ -984,8 +984,14 @@ const TIERS_MANIFEST: &str = "test-tiers.toml";
 /// The tiers, most frequent first (doc 43 TS.2).
 const TIERS: [&str; 5] = ["pr", "nightly", "weekly", "dispatch", "by-hand"];
 
-/// The Sunday cron (D-43-11). A job whose `if:` admits this schedule is weekly.
-const WEEKLY_CRON: &str = "17 4 * * 0";
+/// What a weekly job's `if:` adds to a nightly one's (D-43-11): the box's
+/// timers dispatch ci.yml with `slot=nightly` Monday to Saturday and
+/// `slot=weekly` on Sunday, and a dispatch by hand is `slot=by-hand`. A job
+/// the nightly slot is kept out of is weekly.
+const NOT_THE_NIGHTLY: &str = "inputs.slot != 'nightly'";
+
+/// A job only a dispatch by hand reaches: neither timer runs it.
+const BY_HAND_ONLY: &str = "inputs.slot == 'by-hand'";
 
 #[derive(Debug, serde::Deserialize)]
 struct TierManifest {
@@ -1157,8 +1163,10 @@ fn workflow_lines(workflow: &str) -> Vec<WorkflowLine<'_>> {
 }
 
 /// Each job's tier, read from its job-level `if:` (doc 43 TS.2): none runs on
-/// every push and pull request; the Sunday cron is weekly; any schedule is
-/// nightly; `workflow_dispatch` alone is dispatch.
+/// every push and pull request. ci.yml has no `schedule`: the nightly and the
+/// weekly are dispatches from a timer on conclav.dev, so a job any dispatch
+/// reaches is nightly, one the nightly slot is kept out of is weekly, and one
+/// only the by-hand slot reaches is dispatch.
 fn job_tiers(workflow: &str) -> BTreeMap<String, &'static str> {
     let mut tiers = BTreeMap::new();
     for line in workflow_lines(workflow) {
@@ -1167,12 +1175,17 @@ fn job_tiers(workflow: &str) -> BTreeMap<String, &'static str> {
         let Some(condition) = line.text.strip_prefix("    if:") else {
             continue;
         };
-        let tier = if condition.contains(&format!("github.event.schedule == '{WEEKLY_CRON}'")) {
-            "weekly"
-        } else if condition.contains("'schedule'") {
-            "nightly"
-        } else if condition.contains("'workflow_dispatch'") {
+        assert!(
+            !condition.contains("schedule"),
+            "ci.yml job `{job}`: `if:{condition}` reads a schedule, and ci.yml has none \
+             (the box's timers dispatch it with a `slot`)"
+        );
+        let tier = if condition.contains(BY_HAND_ONLY) {
             "dispatch"
+        } else if condition.contains(NOT_THE_NIGHTLY) {
+            "weekly"
+        } else if condition.contains("'workflow_dispatch'") {
+            "nightly"
         } else {
             panic!("ci.yml job `{job}`: cannot read a tier from `if:{condition}`")
         };
@@ -1469,13 +1482,13 @@ jobs:
       - run: cargo test -p a --test t -- --ignored
   # between jobs: cargo test -p a --test b
   night:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
   sunday:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'
     steps:
       # cargo test -p a --test c -- --ignored
   button:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.slot == 'by-hand'
 ";
     let tiers = job_tiers(workflow);
     assert_eq!(tiers["every"], "pr");
@@ -1659,8 +1672,8 @@ fn x() {
 }
 
 /// **The nightly names its cause** (doc 43 TS.2, D-43-3; 2026-11-04). The
-/// `nightly-report` job writes one line per job of ci.yml into a scheduled
-/// run's summary, and it can only report a job its `needs` names. A job added
+/// `nightly-report` job writes one line per job of ci.yml into a dispatched
+/// run's summary (the nightly and the weekly are dispatches), and it can only report a job its `needs` names. A job added
 /// to the file and not to that list would be red in silence there.
 #[test]
 fn the_nightly_report_waits_for_every_job() {

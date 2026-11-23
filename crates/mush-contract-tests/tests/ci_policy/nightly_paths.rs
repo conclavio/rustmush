@@ -28,12 +28,14 @@ fn tier_of(condition: &str) -> Option<&'static str> {
     if condition.contains("pull_request") {
         return None;
     }
-    if condition.contains("'17 4 * * 0'") {
-        Some("weekly")
-    } else if condition.contains("schedule") {
-        Some("nightly")
-    } else if condition.contains("workflow_dispatch") {
+    // ci.yml has no `schedule`: a timer on conclav.dev dispatches it with
+    // `slot=nightly` or `slot=weekly`, and a dispatch by hand is `by-hand`.
+    if condition.contains("inputs.slot == 'by-hand'") {
         Some("dispatch")
+    } else if condition.contains("inputs.slot != 'nightly'") {
+        Some("weekly")
+    } else if condition.contains("workflow_dispatch") {
+        Some("nightly")
     } else {
         None
     }
@@ -165,19 +167,21 @@ fn the_lint_cell_prints_the_dispatch_advice() {
 }
 
 #[test]
-fn the_tier_reading_matches_the_three_schedules() {
+fn the_tier_reading_matches_the_three_slots() {
     assert_eq!(
-        tier_of("github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'"),
+        tier_of("github.event_name == 'workflow_dispatch'"),
         Some("nightly")
     );
     assert_eq!(
-        tier_of(
-            "github.event_name == 'workflow_dispatch' || github.event.schedule == '17 4 * * 0'"
-        ),
+        tier_of("always() && github.event_name == 'workflow_dispatch'"),
+        Some("nightly")
+    );
+    assert_eq!(
+        tier_of("github.event_name == 'workflow_dispatch' && inputs.slot != 'nightly'"),
         Some("weekly")
     );
     assert_eq!(
-        tier_of("github.event_name == 'workflow_dispatch'"),
+        tier_of("github.event_name == 'workflow_dispatch' && inputs.slot == 'by-hand'"),
         Some("dispatch")
     );
     assert_eq!(tier_of("github.event_name == 'pull_request'"), None);
