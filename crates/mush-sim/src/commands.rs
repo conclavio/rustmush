@@ -20,8 +20,8 @@ use crate::focus::{AccountOracle, ActiveFocus, FocusState, MAX_BILLETS_LISTED, R
 use crate::graph::{effective_domain, presence, project, verify_indexes, verify_projections};
 use crate::journey::{self, CarrierJourney, JourneyBook, JourneyId, JourneyState};
 use crate::links::{
-    commit_control_bumps_and_refresh, prepare_subtree_control_bumps, refresh_actor_links,
-    refresh_unit_actors,
+    commit_control_bumps_and_refresh, prepare_subtree_control_bumps,
+    prepare_subtree_control_bumps_for_staff_place, refresh_actor_links, refresh_unit_actors,
 };
 use crate::route::{self, LegDef, MAX_LEGS, RouteDef};
 use crate::transition::{Transition, move_carrier_subtree, run};
@@ -839,7 +839,8 @@ fn spatial_place(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         ));
     };
     let desc = describe_parent(ctx, &parent);
-    let bumps = prepare_subtree_control_bumps(st(ctx), obj).map_err(counter_err)?;
+    let bumps =
+        prepare_subtree_control_bumps_for_staff_place(ctx, st(ctx), obj).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj, parent }).map_err(sim_err)?;
     // Bump control generation FIRST, then republish crew links (P2-MOD-63).
     commit_control_bumps_and_refresh(ctx, obj, &bumps);
@@ -859,7 +860,8 @@ fn spatial_unplace(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .unwrap_or("staff unplace")
         .to_string();
     let keep = ctx.switches.has("keep");
-    let bumps = prepare_subtree_control_bumps(st(ctx), obj).map_err(counter_err)?;
+    let bumps =
+        prepare_subtree_control_bumps_for_staff_place(ctx, st(ctx), obj).map_err(counter_err)?;
     run(
         ctx,
         &Transition::Unplace {
@@ -2292,7 +2294,7 @@ fn spatial_egress(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let parent = egress_parent(ctx, unit, egress_id.as_deref())?;
-    let bumps = prepare_subtree_control_bumps(st(ctx), unit).map_err(counter_err)?;
+    let bumps = prepare_subtree_control_bumps(ctx, st(ctx), unit).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj: unit, parent }).map_err(sim_err)?;
     commit_control_bumps_and_refresh(ctx, unit, &bumps);
     invalidate_stale_foci_after_move(ctx, unit);
@@ -2319,7 +2321,7 @@ fn spatial_detach(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         )));
     };
     let parent = detach_parent(ctx, host)?;
-    let bumps = prepare_subtree_control_bumps(st(ctx), child).map_err(counter_err)?;
+    let bumps = prepare_subtree_control_bumps(ctx, st(ctx), child).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj: child, parent }).map_err(sim_err)?;
     commit_control_bumps_and_refresh(ctx, child, &bumps);
     invalidate_stale_foci_after_move(ctx, child);
@@ -2415,7 +2417,7 @@ pub(crate) fn egress_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .move_attempt(&hook_ctx, actor, None, dest)
             .map_err(|rt| CmdError::msg(rt.to_plain_text()))?;
     }
-    let bumps = prepare_subtree_control_bumps(st(ctx), actor).map_err(counter_err)?;
+    let bumps = prepare_subtree_control_bumps(ctx, st(ctx), actor).map_err(counter_err)?;
     run(ctx, &Transition::Place { obj: actor, parent }).map_err(sim_err)?;
     commit_control_bumps_and_refresh(ctx, actor, &bumps);
     invalidate_stale_foci_after_move(ctx, actor);

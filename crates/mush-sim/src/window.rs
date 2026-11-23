@@ -297,7 +297,7 @@ pub fn place(ctx: &mut Ctx<'_>, obj: ObjId, domain: DomainId, pose: Pose) -> Res
     pose.validate()?;
     let bumps = {
         let st = state(ctx.w)?;
-        prepare_subtree_control_bumps(st, obj).map_err(|e| e.to_string())?
+        prepare_subtree_control_bumps(ctx, st, obj).map_err(|e| e.to_string())?
     };
     attach(ctx, obj, "sim.participant")?;
     run(
@@ -338,7 +338,7 @@ pub fn place_interior(
 ) -> Result<(), String> {
     let bumps = {
         let st = state(ctx.w)?;
-        prepare_subtree_control_bumps(st, obj).map_err(|e| e.to_string())?
+        prepare_subtree_control_bumps(ctx, st, obj).map_err(|e| e.to_string())?
     };
     attach(ctx, obj, "sim.participant")?;
     run(
@@ -399,7 +399,7 @@ pub fn unplace(ctx: &mut Ctx<'_>, obj: ObjId, reason: &str) -> Result<(), String
     let by = ctx.actor;
     let bumps = {
         let st = state(ctx.w)?;
-        prepare_subtree_control_bumps(st, obj).map_err(|e| e.to_string())?
+        prepare_subtree_control_bumps(ctx, st, obj).map_err(|e| e.to_string())?
     };
     run(
         ctx,

@@ -1185,6 +1185,209 @@ fn p2_mod_63_control_gen_and_links_update_across_window_custody_egress_and_detac
     );
 }
 
+#[test]
+fn p2_mod_63_unmanned_rig_omits_cgen_writes_while_live_witnesses_bump() {
+    let accounts: Arc<Mutex<BTreeMap<ObjId, AccountId>>> = Arc::default();
+    let oracle: Arc<dyn AccountIdentity> = Arc::new(MapOracle(Arc::clone(&accounts)));
+    let mut tw = TestWorld::with_modules(vec![Box::new(
+        SimulationModule::new().with_accounts(oracle),
+    )]);
+    tw.modules_loaded(HashMap::new());
+    arm_offer_keys(&mut tw);
+    tw.set_now(1_000);
+
+    let room = tw
+        .world_mut()
+        .create(ObjKind::Room, "Yard", GOD, None)
+        .unwrap();
+    let bay = tw
+        .world_mut()
+        .create(ObjKind::Room, "Bay", GOD, None)
+        .unwrap();
+    let shed = tw
+        .world_mut()
+        .create(ObjKind::Room, "Shed", GOD, None)
+        .unwrap();
+    let rig = tw
+        .world_mut()
+        .create(ObjKind::Thing, "UnmannedRig", GOD, Some(room))
+        .unwrap();
+    let cab = tw
+        .world_mut()
+        .create(ObjKind::Room, "RigCab", GOD, None)
+        .unwrap();
+    let npc = tw
+        .world_mut()
+        .create(ObjKind::Npc, "DronePilot", GOD, Some(room))
+        .unwrap();
+    let pilot = tw.spawn_player("LeasePilot");
+    tw.world_mut().move_to(pilot, cab).unwrap();
+    accounts
+        .lock()
+        .unwrap()
+        .insert(pilot, AccountId::mint("LeasePilotAcct", 1).unwrap());
+    tw.connect(pilot);
+
+    bind(&mut tw, bay, "sim.interior");
+    bind(&mut tw, shed, "sim.interior");
+    bind(&mut tw, cab, "sim.interior");
+    bind(&mut tw, rig, "sim.participant");
+
+    let (dom_res, _) = with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::open_window(
+            ctx,
+            OpenWindow {
+                host: room,
+                presentation: room,
+                rec: sample_window_rec(),
+                driver: None,
+            },
+        )
+    });
+    let dom = dom_res.unwrap();
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/space #{}=fixed:{}", bay.0, dom.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/space #{}=fixed:{}", shed.0, dom.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/space #{}=moving:#{}", cab.0, rig.0),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@spatial/station #{}=pilot,pilot,channels:helm,space:#{}",
+            rig.0, cab.0
+        ),
+    );
+
+    let has_cgen_write = |ops: &[ModuleOp], unit: ObjId| {
+        let needle = format!("cgen:{}", unit.0);
+        ops.iter()
+            .any(|op| matches!(&op.op, ModuleWrite::JsonSet { key, .. } if key.as_str() == needle))
+    };
+
+    // 1. Unmanned, unleased, unfocused rig with declared station emits ZERO `cgen:` writes
+    //    across `window::place`, `window::place_interior`, and `window::unplace`.
+    let gen0 = tw
+        .world()
+        .module_state::<SpatialState>()
+        .unwrap()
+        .control_generation(rig);
+    let (res, ops) = with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::place(ctx, rig, dom, sample_pose())
+    });
+    res.unwrap();
+    assert!(
+        !has_cgen_write(&ops, rig),
+        "unmanned window::place wrote cgen"
+    );
+    let (res, ops) = with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::place_interior(ctx, rig, bay, None)
+    });
+    res.unwrap();
+    assert!(
+        !has_cgen_write(&ops, rig),
+        "unmanned window::place_interior (bay) wrote cgen"
+    );
+    let (res, ops) = with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::place_interior(ctx, rig, shed, None)
+    });
+    res.unwrap();
+    assert!(
+        !has_cgen_write(&ops, rig),
+        "unmanned window::place_interior (shed) wrote cgen"
+    );
+    let (res, ops) = with_ctx(&mut tw, GOD, |ctx| mush_sim::unplace(ctx, rig, "stored"));
+    res.unwrap();
+    assert!(
+        !has_cgen_write(&ops, rig),
+        "unmanned window::unplace wrote cgen"
+    );
+    assert_eq!(
+        tw.world()
+            .module_state::<SpatialState>()
+            .unwrap()
+            .control_generation(rig),
+        gen0,
+        "unmanned rig control_generation must stay unchanged"
+    );
+
+    // 2. A live NPC standing in the anchored cab (even with zero assignments,
+    //    leases, or foci) MUST trigger `cgen:` bumps on placement transitions.
+    tw.world_mut().move_to(npc, cab).unwrap();
+    let (res, ops) = with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::place_interior(ctx, rig, bay, None)
+    });
+    res.unwrap();
+    assert!(
+        has_cgen_write(&ops, rig),
+        "NPC inside anchored cab must persist cgen on window::place_interior"
+    );
+    let gen_npc = tw
+        .world()
+        .module_state::<SpatialState>()
+        .unwrap()
+        .control_generation(rig);
+    assert!(gen_npc > gen0);
+    tw.world_mut().move_to(npc, room).unwrap();
+
+    // 3. A pending K6 control lease (with zero assignments, foci, or NPCs)
+    //    mirrored in `ControlLeaseView` MUST still trigger `cgen:` bumps.
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@spatial/assign #{}=pilot,#{}", rig.0, pilot.0),
+    );
+    ok(&mut tw, pilot, &format!("+focus #{}/pilot", rig.0));
+    while tw.engine_mut().take_authoritative_submit().is_some() {}
+    ok(
+        &mut tw,
+        pilot,
+        &format!("@station/handoff #{}/pilot", rig.0),
+    );
+    let submit = *tw
+        .engine_mut()
+        .take_authoritative_submit()
+        .expect("staged handoff");
+    let pending = lease_post_image(&drive_submit(&mut tw, &submit, 71));
+    assert!(pending.pending().is_some());
+    // Clear focus & assignment while the pending K6 lease remains in `control_leases`,
+    // then fire the coarse tick so `ControlLeaseView` refreshes its mirror.
+    ok(&mut tw, pilot, "+focus/release");
+    ok(&mut tw, GOD, &format!("@spatial/unassign #{}=pilot", rig.0));
+    tw.set_now(1_005);
+    let _ = tw.fire_due(1_005 * 1000);
+
+    let gen_pending_before = tw
+        .world()
+        .module_state::<SpatialState>()
+        .unwrap()
+        .control_generation(rig);
+    let (res, ops) = with_ctx(&mut tw, GOD, |ctx| {
+        mush_sim::place_interior(ctx, rig, shed, None)
+    });
+    res.unwrap();
+    assert!(
+        has_cgen_write(&ops, rig),
+        "pending K6 lease must persist cgen on window::place_interior"
+    );
+    let gen_pending_after = tw
+        .world()
+        .module_state::<SpatialState>()
+        .unwrap()
+        .control_generation(rig);
+    assert!(gen_pending_after > gen_pending_before);
+}
+
 // =========================================================================
 // P2-MOD-64 & P2-MOD-82: Retired DomainRecord pruning, maintenance starvation,
 // and ActivationBook slot release on window::close_window

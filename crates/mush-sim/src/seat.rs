@@ -72,6 +72,7 @@ pub const MAX_LEASE_VIEW_RECORDS: usize = 1_024;
 pub struct ControlLeaseView {
     handle: Option<StateFamilyHandle<ControlLeaseKey, ControlLeaseState>>,
     holders: BTreeMap<(ObjId, ChannelId), PrincipalId>,
+    pending: BTreeSet<(ObjId, ChannelId)>,
     /// Whether the last refresh completed (`false` = the family scan was
     /// unavailable or hit its bound; a caller that must fail closed asks this).
     complete: bool,
@@ -89,6 +90,7 @@ impl std::fmt::Debug for ControlLeaseView {
         f.debug_struct("ControlLeaseView")
             .field("wired", &self.handle.is_some())
             .field("holders", &self.holders.len())
+            .field("pending", &self.pending.len())
             .field("complete", &self.complete)
             .finish()
     }
@@ -102,6 +104,7 @@ impl ControlLeaseView {
         Self {
             handle: Some(handle),
             holders: BTreeMap::new(),
+            pending: BTreeSet::new(),
             complete: false,
             cursor: None,
         }
@@ -111,6 +114,17 @@ impl ControlLeaseView {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// Whether `unit` currently has any active or pending K6 control lease in
+    /// the mirror.
+    pub(crate) fn has_unit_lease(&self, unit: ObjId) -> bool {
+        self.holders.keys().any(|(u, _)| *u == unit) || self.pending.iter().any(|(u, _)| *u == unit)
+    }
+
+    /// Borrow the capability handle for owner-scoped direct family reads.
+    pub(crate) fn handle(&self) -> Option<&StateFamilyHandle<ControlLeaseKey, ControlLeaseState>> {
+        self.handle.as_ref()
     }
 
     /// Note one `(unit, channel) -> holder` row. This is the refresh's own
@@ -142,6 +156,7 @@ impl ControlLeaseView {
     #[cfg(any(test, feature = "testkit"))]
     pub fn note_unread(&mut self) {
         self.holders.clear();
+        self.pending.clear();
         self.cursor = None;
         self.complete = false;
     }
@@ -178,11 +193,16 @@ pub fn channel_lease_holder(w: &World, unit: ObjId, channel: &ChannelId) -> Opti
 /// deployment past the page bound never mirrored the rest at all. The previous
 /// holders now survive a transient, and the cursor is stored on the view.
 pub(crate) fn refresh_control_lease_view(ctx: &mut Ctx<'_>) {
-    let Some((handle, mut holders, mut after)) =
+    let Some((handle, mut holders, mut pending, mut after)) =
         ctx.w.module_state::<ControlLeaseView>().and_then(|view| {
-            view.handle
-                .clone()
-                .map(|handle| (handle, view.holders.clone(), view.cursor.clone()))
+            view.handle.clone().map(|handle| {
+                (
+                    handle,
+                    view.holders.clone(),
+                    view.pending.clone(),
+                    view.cursor.clone(),
+                )
+            })
         })
     else {
         return;
@@ -192,6 +212,7 @@ pub(crate) fn refresh_control_lease_view(ctx: &mut Ctx<'_>) {
         // A fresh pass rebuilds from the top; a resumed one adds to what the
         // earlier pages already mirrored.
         holders.clear();
+        pending.clear();
     }
     let mut complete = false;
     let mut wrapped = false;
@@ -211,6 +232,9 @@ pub(crate) fn refresh_control_lease_view(ctx: &mut Ctx<'_>) {
                     (lease.key().subject(), lease.key().channel().clone()),
                     holder.clone(),
                 );
+            }
+            if lease.pending().is_some() {
+                pending.insert((lease.key().subject(), lease.key().channel().clone()));
             }
         }
         match page.next_after() {
@@ -235,6 +259,7 @@ pub(crate) fn refresh_control_lease_view(ctx: &mut Ctx<'_>) {
     }
     if let Some(view) = ctx.w.module_state_mut::<ControlLeaseView>() {
         view.holders = holders;
+        view.pending = pending;
         view.cursor = if wrapped { None } else { after };
         // A resumed pass that finally wraps has seen the whole family across
         // fires, which is what `is_complete` promises.

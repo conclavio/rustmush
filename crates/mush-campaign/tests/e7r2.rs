@@ -160,9 +160,9 @@ fn probe_pool_account() -> AccountId {
     account_of(&tw, yard)
 }
 
-/// Bound as a spatial participant, placed in the domain, and a formation member —
-/// the three facts beyond title and encumbrance.
-fn place_and_form(tw: &mut TestWorld, hull: ObjId, node: mush_campaign::FormationId) {
+/// Bound as a spatial participant and placed in the domain (without assigning
+/// to a formation).
+fn place_in_domain(tw: &mut TestWorld, hull: ObjId) {
     tw.world_mut()
         .attach_behavior(
             hull,
@@ -175,6 +175,12 @@ fn place_and_form(tw: &mut TestWorld, hull: ObjId, node: mush_campaign::Formatio
         )
         .expect("bind the participant");
     ok(tw, GOD, &format!("@spatial/place/domain #{}=0", hull.0));
+}
+
+/// Bound as a spatial participant, placed in the domain, and a formation member —
+/// the three facts beyond title and encumbrance.
+fn place_and_form(tw: &mut TestWorld, hull: ObjId, node: mush_campaign::FormationId) {
+    place_in_domain(tw, hull);
     ok(tw, GOD, &format!("@force/assign {node}=#{}", hull.0));
 }
 
@@ -291,12 +297,17 @@ fn seed_lost_hull(
     ok(tw, GOD, &format!("@asset/title #{}=#{}", hull.0, who.0));
     if form {
         place_and_form(tw, hull, fx.node);
-        // Then **quarantined and unplaced**, which is what cut 6's `fail` path leaves
-        // behind for a `Failed`/`Captured` root and what `journey.rs`'s own invariant
-        // requires of a terminal record. It is also why a wreck is *not* an accessible
-        // operational asset, and therefore why an applicant who lost one is eligible at
-        // all. `is_deployable` — the half `loss_is_covered` reads — is formation
-        // membership and nothing else, and quarantine does not touch it.
+    } else {
+        place_in_domain(tw, hull);
+    }
+    // Then **quarantined and unplaced**, which is what cut 6's `fail` path leaves
+    // behind for a `Failed`/`Captured` root and what `journey.rs`'s own invariant
+    // requires of a terminal record (whether or not the hull was assigned to a
+    // formation). It is also why a wreck is *not* an accessible operational asset,
+    // and therefore why an applicant who lost one is eligible at all.
+    // `is_deployable` — the half `loss_is_covered` reads — is formation
+    // membership and nothing else, and quarantine does not touch it.
+    {
         let state = tw
             .world_mut()
             .module_state_mut::<mush_sim::SpatialState>()

@@ -411,7 +411,7 @@ impl CustodyProvider for InteriorCustodyProvider {
                 .w
                 .module_state::<SpatialState>()
                 .ok_or(CustodyError::NoProvider)?;
-            prepare_subtree_control_bumps(st, obj)
+            prepare_subtree_control_bumps(ctx, st, obj)
                 .map_err(|e| CustodyError::Refused(e.to_string()))?
         };
         run(
@@ -540,7 +540,7 @@ impl CustodyProvider for InteriorCustodyProvider {
                 .w
                 .module_state::<SpatialState>()
                 .ok_or(CustodyError::NoProvider)?;
-            prepare_subtree_control_bumps(st, obj)
+            prepare_subtree_control_bumps(ctx, st, obj)
                 .map_err(|e| CustodyError::Refused(e.to_string()))?
         };
         // ---- 2. leave the simulation, keeping the projection where it is ----
