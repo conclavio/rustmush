@@ -3491,10 +3491,25 @@ async fn r8a_expired_hold_waiting_in_release_backlog_cannot_be_captured() {
     let bob = rig.endpoints();
     rig.retail_ready();
     let (alice, payer) = rig.retail_sender("ExpiryBacklogBuyer", true);
-    let (_, env) = rig.retail_mail(alice, bob, "expiry backlog");
     // The first eight expired quotes fill this pass's bounded release budget.
-    for _ in 0..mush_propagation::commerce::MAX_SETTLEMENTS {
-        rig.retail_quote(alice, env, "standard", payer);
+    // Seed them across distinct envelopes and actors (within the per-actor
+    // unreserved quote cap) before creating the paid quote so their IDs sort
+    // ahead of `paid`.
+    let max_per_actor = mush_propagation::commerce::MAX_ACTOR_UNRESERVED_QUOTES;
+    let backlog_actors = mush_propagation::commerce::MAX_SETTLEMENTS.div_ceil(max_per_actor);
+    let mut backlog = Vec::with_capacity(mush_propagation::commerce::MAX_SETTLEMENTS);
+    for a in 0..backlog_actors {
+        let (actor, acc) = rig.retail_sender(&format!("ExpiryBacklogActor{a}"), false);
+        let remaining = mush_propagation::commerce::MAX_SETTLEMENTS - backlog.len();
+        let count = remaining.min(max_per_actor);
+        for i in 0..count {
+            let (_, e) = rig.retail_mail(actor, bob, &format!("backlog {a}-{i}"));
+            backlog.push((actor, acc, e));
+        }
+    }
+    let (_, env) = rig.retail_mail(alice, bob, "expiry backlog");
+    for (actor, acc, e) in backlog {
+        rig.retail_quote(actor, e, "standard", acc);
     }
     let paid = rig.retail_quote(alice, env, "priority", payer);
     rig.run(alice, &format!("+relay/buy {paid}"));

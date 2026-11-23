@@ -1187,8 +1187,8 @@ async fn p2_core_10_backoff_releases_concurrency_permit() {
         }
     });
     failed_notified.await;
-    // Yield briefly so call_a drops its semaphore permit and enters sleep.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Yield so call_a drops its semaphore permit and enters backoff sleep.
+    tokio::task::yield_now().await;
 
     // With max_interactive = 1, call_b can only finish inside <150ms if call_a
     // released the active concurrency permit during its 250ms backoff sleep!
@@ -1274,7 +1274,7 @@ async fn p2_core_10_retry_rechecks_kill_switch_circuit_breaker_and_qps() {
         async move { svc.call(ctx(LlmFeature::WorldgenRoom), req()).await }
     });
     entered.await;
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tokio::task::yield_now().await;
     svc_kill.kill_switch().set_global(true);
     let err = h
         .await

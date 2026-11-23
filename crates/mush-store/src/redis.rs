@@ -2350,7 +2350,7 @@ impl AuthoritativeStore for RedisStore {
                         .scan_page(
                             quarantine_cursor,
                             format!("{AUTHORITATIVE_QUARANTINE_PREFIX}*"),
-                            Some(u32::try_from(MAX_AUTHORITATIVE_DISCOVERY_PAGE).unwrap()),
+                            u32::try_from(MAX_AUTHORITATIVE_DISCOVERY_PAGE).ok(),
                             None,
                         )
                         .await?;

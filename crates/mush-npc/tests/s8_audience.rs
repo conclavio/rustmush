@@ -122,16 +122,15 @@ impl mush_core::EventHook for CloakHook {
         observer: ObjId,
         subject: ObjId,
     ) -> mush_core::Perceive {
-        if ctx.world().attr(subject, "test_cloaked").is_some() {
-            mush_core::Perceive::Conceal
-        } else if ctx
-            .world()
-            .attr(subject, "test_cloaked_from_players")
-            .is_some()
-            && ctx
+        if ctx.world().attr(subject, "test_cloaked").is_some()
+            || (ctx
                 .world()
-                .get(observer)
-                .is_some_and(|o| o.kind == ObjKind::Player)
+                .attr(subject, "test_cloaked_from_players")
+                .is_some()
+                && ctx
+                    .world()
+                    .get(observer)
+                    .is_some_and(|o| o.kind == ObjKind::Player))
         {
             mush_core::Perceive::Conceal
         } else {
@@ -194,21 +193,23 @@ fn lot() -> Lot {
     }
 }
 
-/// Complete one ability turn of `npc` for `asker`: the events it printed.
-fn ability_turn(
+/// Complete one synthetic turn of `npc` for `asker` with explicit `actions`.
+fn submit_turn_actions(
     tw: &mut TestWorld,
     npc: ObjId,
     asker: ObjId,
     correlation: u64,
-    ability: &str,
+    actions: serde_json::Value,
 ) -> Vec<(Audience, OutputEvent)> {
     tw.world_mut()
         .module_state_mut::<mush_npc::NpcHostState>()
         .unwrap()
         .begin_turn(npc, 1, correlation);
     let payload = serde_json::json!({
-        "status": "ok", "npc": npc, "asker": asker,
-        "actions": [{ "action": { "action": "use_ability", "name": ability, "input": {} } }]
+        "status": "ok",
+        "npc": npc,
+        "asker": asker,
+        "actions": actions,
     })
     .to_string();
     let mut out = Outbox::new();
@@ -224,6 +225,23 @@ fn ability_turn(
         &mut fx,
     );
     out.take()
+}
+
+/// Complete one ability turn of `npc` for `asker`: the events it printed.
+fn ability_turn(
+    tw: &mut TestWorld,
+    npc: ObjId,
+    asker: ObjId,
+    correlation: u64,
+    ability: &str,
+) -> Vec<(Audience, OutputEvent)> {
+    submit_turn_actions(
+        tw,
+        npc,
+        asker,
+        correlation,
+        serde_json::json!([{ "action": { "action": "use_ability", "name": ability, "input": {} } }]),
+    )
 }
 
 fn text(tw: &TestWorld, events: &[(Audience, OutputEvent)], who: ObjId) -> String {
@@ -1264,33 +1282,16 @@ fn p2_core_17_on_complete_and_invoke_interface_revalidate_live_state() {
         correlation: u64,
         text_line: &str,
     ) -> Vec<(Audience, OutputEvent)> {
-        tw.world_mut()
-            .module_state_mut::<mush_npc::NpcHostState>()
-            .unwrap()
-            .begin_turn(npc, 1, correlation);
-        let payload = serde_json::json!({
-            "status": "ok",
-            "npc": npc,
-            "asker": asker,
-            "actions": [
+        submit_turn_actions(
+            tw,
+            npc,
+            asker,
+            correlation,
+            serde_json::json!([
                 { "action": { "action": "say", "text": text_line } },
                 { "action": { "action": "use_ability", "name": "probe.public", "input": {} } }
-            ]
-        })
-        .to_string();
-        let mut out = Outbox::new();
-        let mut fx = Effects::new();
-        tw.engine_mut().step(
-            Inbound::Apply(WorldCommand::ModuleAsyncDone {
-                module: "npc".into(),
-                actor: npc,
-                correlation,
-                payload,
-            }),
-            &mut out,
-            &mut fx,
-        );
-        out.take()
+            ]),
+        )
     }
 
     let has_narrative = |events: &[(Audience, OutputEvent)]| {

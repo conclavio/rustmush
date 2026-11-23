@@ -222,34 +222,10 @@ guard = "self"
 note = "drop: the match must be in the actor's inventory, or You don't have that!"
 
 [[site]]
-file = "mush-core/src/commands/items.rs"
-function = "get_cmd"
-guard = "locality"
-note = "get: the match must stand in the actor's room, or I don't see that here."
-
-[[site]]
-file = "mush-core/src/commands/items.rs"
-function = "give_cmd"
-guard = "locality"
-note = "give: the object must be held (self) and the recipient must stand in the actor's room, or They aren't here."
-
-[[site]]
 file = "mush-core/src/commands/look.rs"
 function = "examine_cmd"
 guard = "perceive"
 note = "examine: can_perceive after the match, a concealed target answering the NoMatch an unheld name gets (16b cut S.2)."
-
-[[site]]
-file = "mush-core/src/commands/look.rs"
-function = "look_cmd"
-guard = "perceive"
-note = "look <target>: can_perceive, and a #N or *name spelling must be near unless the looker could examine it anyway."
-
-[[site]]
-file = "mush-core/src/commands/speech.rs"
-function = "whisper_cmd"
-guard = "locality"
-note = "whisper: the target must share the actor's room, or They aren't here."
 
 # ---------------------------------------------------------------------------
 # mush-economy
