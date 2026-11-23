@@ -178,7 +178,9 @@ families and the host key are left out and listed with digests), `BINARIES`
 
 ### Installing it, and the timer
 
-On the box that takes the backups:
+On the box that takes the backups, from a deployed tree that carries
+`deploy/backup/` (or from a copy of that one directory, shipped by hand, on a
+box whose instances were deployed before it existed):
 
 ```bash
 bash /opt/rustmush/<inst>/build/deploy/backup/install.sh take   # the tool, the conf, the units; enables nothing

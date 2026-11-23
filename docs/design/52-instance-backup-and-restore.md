@@ -510,7 +510,9 @@ backup onward; a key file damaged on the live box before a backup is backed up d
 `systemctl start rustmush-backup.service` on conclav.dev, `INSTANCES=dev3`: 109.9 MB in 9.1 s of
 wall clock and 5.8 s of CPU inside the unit's sandbox (no network, one writable directory, the
 scratch Redis as the `redis` user in the unit's private temp directory). `rmbak.py status` printed
-the newest archive and exited non-zero until the timer was enabled. `rmbak.py pull` through
+the newest archive and exited non-zero until the timer was enabled. Enabled, the timer then fired
+by itself at 16:20:06 UTC: 110.7 MB in 9.2 s, the oldest archive pruned (`KEEP=4` there), the
+unit `Deactivated successfully`, `status` clean, the next run listed for 20:20. `rmbak.py pull` through
 `backup-serve.sh` (a local stand-in for `ssh`: no key was made) fetched both archives, verified
 and deep-verified each, in 2.2 s.
 

@@ -1079,7 +1079,8 @@ def copy_data(data_dir, stage, secrets_mode, manifest):
         os.chmod(target, stat.S_IMODE(info.st_mode))
     manifest["dirs"] = dirs
     manifest["skipped"] = skipped
-    manifest["secrets"] = {"mode": secrets_mode, "kept_apart": apart}
+    # The field is named for the files, and holds their names and digests only.
+    manifest["key_files"] = {"mode": secrets_mode, "kept_apart": apart}
 
 
 def snapshot_store(env, stage):
@@ -1585,7 +1586,7 @@ def wait_for(what, ready, timeout):
 
 def place_data(stage, manifest, data_dir, secrets_dir, without_secrets):
     """The archive's data directory, whole, owned by the service user."""
-    apart = manifest.get("secrets", {}).get("kept_apart", [])
+    apart = manifest.get("key_files", {}).get("kept_apart", [])
     if apart and not without_secrets:
         # Before anything is placed: the files kept apart are here, and are the right ones.
         if not secrets_dir:
@@ -1599,7 +1600,7 @@ def place_data(stage, manifest, data_dir, secrets_dir, without_secrets):
     for entry in manifest.get("dirs", []):
         path = os.path.join(data_dir, entry["path"][len("data/"):])
         os.makedirs(path, exist_ok=True)
-        os.chmod(path, int(entry["mode"], 8))
+        os.chmod(path, int(entry["mode"], 8) & 0o777)
     modes = {entry["path"]: entry["mode"] for entry in manifest["files"]}
     source_root = os.path.join(stage, "data")
     for directory, _, files in os.walk(source_root):
@@ -1609,7 +1610,7 @@ def place_data(stage, manifest, data_dir, secrets_dir, without_secrets):
             target = os.path.join(data_dir, rel)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.move(source, target)
-            os.chmod(target, int(modes["data/" + rel], 8))
+            os.chmod(target, int(modes["data/" + rel], 8) & 0o777)
     if apart and not without_secrets:
         for entry in apart:
             rel = entry["path"][len("data/"):]
@@ -1617,7 +1618,7 @@ def place_data(stage, manifest, data_dir, secrets_dir, without_secrets):
             target = os.path.join(data_dir, rel)
             os.makedirs(os.path.dirname(target), mode=0o700, exist_ok=True)
             shutil.copyfile(source, target)
-            os.chmod(target, int(entry["mode"], 8))
+            os.chmod(target, int(entry["mode"], 8) & 0o777)
     os.makedirs(os.path.join(data_dir, "logs"), exist_ok=True)
     if is_root():
         for directory, dirs, files in os.walk(data_dir):
@@ -1751,6 +1752,15 @@ def cmd_restore(args):
             if not args.replace:
                 raise Fail(f"{layout.root} is an earlier restored copy: pass --replace, or `rmbak.py remove {name} --yes`")
             remove_copy(layout)
+        # A name with no directory can still be an instance's: its units, its Redis
+        # config or its store may be all that is left of it. None of them is touched.
+        claimed = [p for p in (os.path.join(layout.units_dir, layout.server_unit),
+                               os.path.join(layout.units_dir, f"{name}mush-gateway@.service"),
+                               os.path.join(layout.units_dir, layout.redis_unit),
+                               layout.redis_conf, layout.redis_dir, layout.gw_state) if os.path.lexists(p)]
+        if claimed:
+            raise Fail(f"{name} is not free on this box ({', '.join(claimed)} exist and no restore made them): "
+                       "pick another name for the copy")
         if not user_exists("redis"):
             raise Fail("this box has no redis user (install Redis from packages.redis.io first)")
         if not user_exists("mush"):
@@ -2308,8 +2318,8 @@ def cmd_show(args):
               f"({row['chunks_in_store']} in the store, {row['chunks_only_in_archive']} only in the archive tier)")
     for name, row in sorted(facts["economy"]["instruments"].items()):
         print(f"economy       {name}: {row['accounts']} accounts, posted balances sum to {row['sum_posted']}")
-    secrets = manifest.get("secrets", {})
-    print(f"secrets       {secrets.get('mode')}: {len(secrets.get('kept_apart', []))} file(s) kept apart")
+    key_files = manifest.get("key_files", {})
+    print(f"key files     {key_files.get('mode')}: {len(key_files.get('kept_apart', []))} file(s) kept apart")
     print(f"binaries      " + ", ".join(f"{n} {'in the archive' if b['in_archive'] else 'NOT in the archive'} "
                                          f"({b['sha256'][:12]}…)" for n, b in sorted(manifest["binaries"].items())))
     print(f"files         {len(manifest['files'])}, {sum(f['size'] for f in manifest['files']) / 1e6:.1f} MB unpacked")

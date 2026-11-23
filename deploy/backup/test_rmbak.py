@@ -571,7 +571,7 @@ class Cycle(unittest.TestCase):
         self.assertNotIn("data/ssh_host_ed25519", paths)
         self.assertNotIn("data/offer-keys/key-0000000001.hex", paths)
         self.assertNotIn("build/target/release/mush-server", paths)
-        apart = {row["path"]: row for row in manifest["secrets"]["kept_apart"]}
+        apart = {row["path"]: row for row in manifest["key_files"]["kept_apart"]}
         self.assertEqual(set(apart), {"data/ssh_host_ed25519", "data/offer-keys/key-0000000001.hex"})
         self.assertEqual(apart["data/ssh_host_ed25519"]["sha256"], hashlib.sha256(b"host key\n").hexdigest())
         self.assertFalse(manifest["binaries"]["mush-server"]["in_archive"])
