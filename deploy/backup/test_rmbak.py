@@ -707,6 +707,18 @@ class Cycle(unittest.TestCase):
             self.assertIn("ghost", str(caught.exception))
             time.sleep(1.1)
         self.assertEqual(len(rmbak.archives_in(dest, "t1")), 2)
+        # With a group to read them, every archive is 0640 to it, the earlier ones included.
+        import grp
+        group = grp.getgrgid(os.getgid()).gr_name
+        for name in rmbak.archives_in(dest):
+            os.chmod(os.path.join(dest, name), 0o600)
+        with open(conf, "a") as handle:
+            handle.write(f"READ_GROUP={group}\n")
+        time.sleep(1.1)
+        with self.assertRaises(rmbak.Fail):
+            rmbak.cmd_run(Args)
+        for name in rmbak.archives_in(dest):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(dest, name)).st_mode), 0o640, name)
         with open(os.path.join(dest, "status.json")) as handle:
             status = json.load(handle)
         self.assertTrue(status["instances"]["t1"]["ok"])

@@ -431,7 +431,7 @@ server's boot 1.0 to 1.1 s).
 | The boot's log | this run's lines, by invocation id | `world loaded from store` with the manifest's object count; `world timeline installed`; **no line at ERROR**; none of the boot's refusals (conservation, contiguity, quarantine, a corrupt object); the geology key matches its pin |
 | `healthz` | the copy's own web port | `ok`, `store_ok`, `integrity_ok`, `server_ok` |
 | The store under the running server | the facts again | every ledger still whole and every instrument still zero; the same accounts; **each ledger's archived entries still there, entry for entry** (a digest over the prefix the archive held); the clock's checkpoint not earlier than the archive's |
-| The clock | the freeze in the store | frozen at exactly the archive's last checkpoint, counting down (§6.3) |
+| The clock | the freeze in the store | frozen at exactly the archive's last checkpoint, counting down (§6.3); with `--wait-unfreeze`, the freeze gone from the store and the checkpoint moving on from that second, with no login needed |
 | A staff session, when a password is given | `connect`, `@tacsim/time`, `time`, `@stats`, `@tacsim/port status` | the archived login works; `@tacsim/time` reads the frozen second; the readiness report's `geology:` line reads `pinned … [ready]` and any line not ready is named (197 of 197 ready on the restored dev3); with `--wait-unfreeze`, the world thaws and the clock runs on from there |
 
 Measured: 1.1 to 1.3 s without the wait, and five minutes more with it (304 s; the clock then read

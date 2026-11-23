@@ -70,6 +70,13 @@ if [ "$ROLE" = take ]; then
   fi
   if getent group rmbackup > /dev/null; then
     install -d -o root -g rmbackup -m 0750 /var/backups/rustmush
+    # Archives written before the account existed are root's alone: the group reads them all.
+    for f in /var/backups/rustmush/*.rmbak.tar.* /var/backups/rustmush/status.json; do
+      if [ -f "$f" ] && [ ! -L "$f" ]; then
+        chgrp rmbackup "$f"
+        chmod 0640 "$f"
+      fi
+    done
   else
     install -d -o root -g root -m 0750 /var/backups/rustmush
   fi

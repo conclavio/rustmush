@@ -1389,6 +1389,14 @@ def cmd_run(args):
                 say(f"{instance}: pruned {len(removed)} archive(s), keeping the newest {conf['KEEP']}" +
                     (f" and one a day for {conf['KEEP_DAILY_DAYS']} days" if int(conf["KEEP_DAILY_DAYS"]) else ""))
         row["kept"] = len(archives_in(dest, instance))
+    # An archive written before the copy's account existed is root's alone: once
+    # the group is there, every archive is readable by it, old ones included.
+    for name in archives_in(dest):
+        try:
+            shutil.chown(os.path.join(dest, name), group=conf["READ_GROUP"])
+            os.chmod(os.path.join(dest, name), 0o640)
+        except (LookupError, PermissionError):
+            break
     status["updated_utc"] = utc()
     status["host"] = socket.gethostname()
     write_atomic(status_path, json.dumps(status, indent=1, sort_keys=True) + "\n", 0o640)
@@ -2289,6 +2297,26 @@ def cmd_check(args):
             shutil.rmtree(workdir, ignore_errors=True)
     else:
         note("no staff session (--staff, --password-file): @tacsim/time and the login were NOT checked")
+        if args.wait_unfreeze and freeze:
+            # Without a login the thaw is read where the world writes it: the store.
+            say("waiting for the post-outage countdown to end (five minutes by default)")
+            end, later = time.monotonic() + 420, {"freeze": freeze}
+            while time.monotonic() < end and later.get("freeze"):
+                time.sleep(15)
+                client = Redis.from_url(env["REDIS_URL"])
+                later = collect_facts(client, None)["clock"]
+                client.close()
+            if later.get("freeze"):
+                bad("the store still held the world frozen seven minutes after the boot")
+            else:
+                time.sleep(12)  # an idle world checkpoints its clock every ten seconds
+                client = Redis.from_url(env["REDIS_URL"])
+                later = collect_facts(client, None)["clock"]
+                client.close()
+                moved = ((later.get("checkpoint") or {}).get("ic_unix", 0)) - checkpoint.get("ic_unix", 0)
+                (ok if moved > 0 else bad)(
+                    f"the clock resumed from the archived instant: IC "
+                    f"{ic_date((later.get('checkpoint') or {}).get('ic_unix', 0))}, {moved} IC seconds on")
 
     result = {"instance": args.instance, "archive": manifest.get("instance"), "checked_utc": utc(),
               "took_s": round(time.monotonic() - started, 1), "failures": failures,

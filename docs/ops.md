@@ -277,7 +277,7 @@ scp dev1-<UTC>-<commit8>.rmbak.tar.zst root@conclav.dev:/var/backups/rustmush-pu
 ```bash
 rmbak show    /var/backups/rustmush-pulled/dev1-<UTC>-<commit8>.rmbak.tar.zst
 rmbak restore /var/backups/rustmush-pulled/dev1-<UTC>-<commit8>.rmbak.tar.zst --as dev4 --cpus 24-31
-rmbak check dev4                                   # add --staff <login> --password-file <file> for a staff session
+rmbak check dev4 --wait-unfreeze                   # add --staff <login> --password-file <file> for a staff session
 rmbak remove dev4 --yes
 ```
 
@@ -301,8 +301,8 @@ entries still there entry for entry); and the clock (next section). With a
 staff login it also proves an archived login works and asks `@tacsim/time`,
 `time`, `@stats` and `@tacsim/port status` (the readiness report: its
 `geology:` line must read `pinned … [ready]`, and any line that is not ready
-is named); `--wait-unfreeze` waits the countdown out and sees the clock run
-on. It writes `check-report.json` beside the copy's config and exits non-zero
+is named). `--wait-unfreeze` waits the countdown out and sees the clock run
+on, with a login or without one (it reads the thaw from the copy's store). It writes `check-report.json` beside the copy's config and exits non-zero
 on any failure.
 
 **Measured on conclav.dev** (dev3's archives, 109 MB, a store of 4,905 to
