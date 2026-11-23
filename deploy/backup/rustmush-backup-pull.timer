@@ -1,0 +1,13 @@
+[Unit]
+Description=Fetch new rustmush archives from the box that takes them, every four hours
+
+[Timer]
+# Fifteen minutes after each backup (rustmush-backup.timer on the other box
+# runs at twenty past). Move the two together: `systemctl edit
+# rustmush-backup-pull.timer`, an empty `OnCalendar=` line, then the new one.
+OnCalendar=*-*-* 00/4:35:00
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

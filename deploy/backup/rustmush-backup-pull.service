@@ -1,0 +1,23 @@
+[Unit]
+Description=Fetch and verify new rustmush archives from the box that takes them (docs/ops.md, "Whole-instance backup and restore")
+Documentation=file:/usr/local/lib/rustmush-backup/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# `rmbak.py pull` asks the far side's backup-serve.sh for its list, fetches
+# every archive this box does not hold, reads each back whole against its
+# manifest before keeping it, prunes to PULL_KEEP, and FAILS when the far
+# side's last backup failed or the newest archive here is older than
+# MAX_AGE_HOURS: a backup that has stopped is noticed on this box too.
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /usr/local/lib/rustmush-backup/rmbak.py pull
+TimeoutStartSec=60min
+Nice=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/backups/rustmush-pulled

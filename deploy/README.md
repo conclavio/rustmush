@@ -462,11 +462,25 @@ named by the instance (`dev1`, `dev2`, ...: `/opt/rustmush/<n>`,
 [`launch-bringup-run.sh`](redeploy/launch-bringup-run.sh). Each says at its head
 what it does; the order, and why, is here.
 
-**1. On the dev box: the web bundle and two tars, at the commit.** `web/dist` is
-git-ignored and the release build embeds it, so it is built at the same commit
-(its `.commit` stamp must equal the tree's `.source-commit`; the deploy refuses
-otherwise) and shipped beside `git archive`'s tree. One copy of each tar serves
-both instances.
+**1. The web bundle and two tars, at the commit, made on the box.** `web/dist`
+is git-ignored and the release build embeds it, so it is built at the same
+commit (its `.commit` stamp must equal the tree's `.source-commit`; the deploy
+refuses otherwise) beside `git archive`'s tree. Since 2026-11-23 the box makes
+both itself, from its own clone of the repository, on a box that
+[`vps-runner/build-tools-install.sh`](vps-runner/build-tools-install.sh) has
+given Node (`docs/ops.md`, "A box builds its own deploy"):
+
+```bash
+COMMIT=main JOBS=4 bash /opt/rustmush/dev1/build/deploy/redeploy/stage-source.sh dev1 dev2   # prints STAGED <sha8>
+S8=<the sha8 it printed>
+```
+
+It leaves `/root/dev1-tree-$S8.tar`, `/root/dev1-dist-$S8.tar` and the same pair
+for dev2, and changes nothing live. A box whose live tree predates
+`stage-source.sh` runs a copy of it.
+
+The way it was done until then, from the dev box, still works and needs Node 22
+and the wasm32 target there:
 
 ```bash
 git fetch origin ; VPS=root@conclav.io ; KEY=./hostinger ; SHA=$(git rev-parse origin/main) ; S8=${SHA:0:8}
@@ -518,6 +532,13 @@ the Redis the live `instance.env` names; **swap the trees** (the old one stays a
 `build.old-<UTC>`); **`reset-instance.sh --yes --no-start`**, which wipes and
 holds; **`SERVER_HOLD=1 deploy.sh`**. It prints the units, the hold and the
 store after.
+
+That snapshot is a plain copy of directories. Where the backup tool is on the
+box, take an archive first, while the instance still runs: `python3
+deploy/backup/rmbak.py backup <n>` writes one file that carries the store, the
+data dir, the config, the units and both binaries, proves what it took, and is
+what `rmbak.py restore` reads if the wiped world is wanted back
+([`docs/ops.md`, "Whole-instance backup and restore"](../docs/ops.md#whole-instance-backup-and-restore-doc-52)).
 
 **5. The bring-up**, after a look at what step 4 printed:
 

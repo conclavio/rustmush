@@ -1,0 +1,35 @@
+[Unit]
+Description=Back up every configured rustmush instance to one archive each (docs/ops.md, "Whole-instance backup and restore")
+Documentation=file:/usr/local/lib/rustmush-backup/README.md
+
+[Service]
+# One run does every instance in INSTANCES (/etc/rustmush-backup.conf), one
+# after another, so two instances are never forked at once; a oneshot that is
+# still running when the timer fires again is not started a second time, so a
+# run never overlaps itself; and the tool holds a lock on the backup directory
+# against a run by hand. It prunes to KEEP archives an instance and writes
+# status.json. Any instance that fails makes the run fail: the unit shows
+# `failed`, the lines are in the journal at `err`, and `rmbak.py status` and
+# the box that pulls the archives both say so.
+Type=oneshot
+ExecStart=/usr/bin/python3 -B /usr/local/lib/rustmush-backup/rmbak.py run
+TimeoutStartSec=30min
+
+# Play comes first: the lowest CPU and I/O priority on the box.
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=20
+
+# It reads the instances (root, because the key families are 0700 to the
+# service user) and writes ONE directory. It reaches each store over its Unix
+# socket and nothing over the network: with PrivateNetwork an archive in the
+# making cannot leave the box. An instance whose REDIS_URL is TCP would need
+# that line taken out.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/backups/rustmush

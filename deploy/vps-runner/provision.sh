@@ -36,6 +36,10 @@
 #                       conclav.dev only: ONE box keeps the clock. The token
 #                       they call GitHub with is the owner's to place
 #                       afterwards; that script's header and docs/ops.md say how
+#   WITH_BUILD_TOOLS=1  also run build-tools-install.sh beside this file: the
+#                       pinned Node and the few tools a box needs to build a
+#                       whole deploy by itself, web client included, with no
+#                       other machine in the loop (both boxes; doc 52)
 #
 # Every step is idempotent: run it again after a change to the files beside
 # it, and it reinstalls only what changed. Root never executes scripts from
@@ -67,6 +71,7 @@ RUNNER_LABELS="${RUNNER_LABELS:-vps}"
 RUNNER_MEMORY_HIGH="${RUNNER_MEMORY_HIGH:-22G}"
 WITH_MOLD="${WITH_MOLD:-0}"
 WITH_DISPATCH_TIMERS="${WITH_DISPATCH_TIMERS:-0}"
+WITH_BUILD_TOOLS="${WITH_BUILD_TOOLS:-0}"
 RUNNER_USER=ghrunner
 
 if ! [[ "$RUNNER_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -274,5 +279,10 @@ fi
 #    script, nothing from a ghrunner-writable directory.
 if [ "$WITH_DISPATCH_TIMERS" = 1 ]; then
   bash "$here/dispatch-timers-install.sh"
+fi
+# 9. The box builds its own deploys, optional: Node at a pinned version,
+#    verified by SHA-256, from a root-owned file beside this script.
+if [ "$WITH_BUILD_TOOLS" = 1 ]; then
+  bash "$here/build-tools-install.sh"
 fi
 echo "provisioned: $UNIT, redis-gate on 6799, $RUNNER_USER's toolchain $(as_runner "$home/.cargo/bin/rustc" +"$TOOLCHAIN" --version) (logs in $log_dir)"
