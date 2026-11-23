@@ -1,7 +1,8 @@
 # 52. Whole-instance backup and restore — one archive, a cut of a live instance, a timer, and a restore that proves it
 
-Draft 0.2, 2026-11-23, a design, one tool and its unit files. Written against `origin/main` at
-`da2db6ef7`; Draft 0.1, the same day, had every question open. It closes `T-112` of [the simulator backlog](16c-simulator-backlog.md): until now no
+Draft 0.3, 2026-11-23, a design, one tool and its unit files. Written against `origin/main` at
+`da2db6ef7`; Draft 0.1, the same day, had every question open, Draft 0.2 recorded the owner's
+rulings, and this draft records the first real archives (§7.8). It closes `T-112` of [the simulator backlog](16c-simulator-backlog.md): until now no
 instance took a backup, and a restore needed six directories that no recipe copied together with
 the store. The tool is `deploy/backup/rmbak.py`; the runbook is
 [`docs/ops.md`, "Whole-instance backup and restore"](../ops.md#whole-instance-backup-and-restore-doc-52).
@@ -9,9 +10,11 @@ the store. The tool is `deploy/backup/rmbak.py`; the runbook is
 **What is built and proved, and where.** Everything in this draft was run on conclav.dev, against
 `dev3`, a throwaway instance deployed there by the repo's own `deploy.sh` and brought up by the
 named-launch recipe, and `dev4`, the name its restored copies take (the owner's word of 2026-11-23:
-dev3 and dev4 may stand on conclav.dev for this). **Nothing on conclav.io has been touched.** The
-timer there, the first archive of dev1 or dev2, and the key for the copy each wait for the owner
-(§9). The numbers below are measured ones, and §7 says which run each came from.
+dev3 and dev4 may stand on conclav.dev for this). **Since the merge of PR #778 the tool is installed
+on conclav.io**, at the owner's go: the timer runs there every four hours, dev1 and dev2 each have
+a first archive, and dev1's was restored on conclav.dev and checked (§7.8). The pull's three
+commands are still the owner's to run (§5). The numbers below are measured ones, and §7 says which
+run each came from.
 
 **Draft 0.2 records the owner's rulings of 2026-11-23.** Asked Q-52-1, Q-52-2 and for the go on
 conclav.io, the owner answered: "instance keys in the archive yes i agree ... how many archives to
@@ -428,8 +431,8 @@ server's boot 1.0 to 1.1 s).
 | | What it asks | Passes when |
 |---|---|---|
 | The units | Redis, the server, a gateway generation | all active |
-| The boot's log | this run's lines, by invocation id | `world loaded from store` with the manifest's object count; `world timeline installed`; **no line at ERROR**; none of the boot's refusals (conservation, contiguity, quarantine, a corrupt object); the geology key matches its pin |
-| `healthz` | the copy's own web port | `ok`, `store_ok`, `integrity_ok`, `server_ok` |
+| The boot's log | this run's lines, by invocation id | `world loaded from store` with the manifest's object count; `world timeline installed`; **no line at ERROR that the live instance had not logged itself** (the manifest carries the live server's distinct ERROR lines since its boot, numbers and times taken out; `--known-errors <file>` supplies them for an archive that lists none); none of the boot's refusals (conservation, contiguity, quarantine, a corrupt object); the geology key matches its pin |
+| `healthz` | the copy's own web port | `ok`, `store_ok`, `integrity_ok`, `server_ok`. While the world counts down its outage freeze it does not tick, so the server answers **503 with `world_ok=false`**: that passes only with the other three true, and after the thaw the answer must be 200 with all of them |
 | The store under the running server | the facts again | every ledger still whole and every instrument still zero; the same accounts; **each ledger's archived entries still there, entry for entry** (a digest over the prefix the archive held); the clock's checkpoint not earlier than the archive's |
 | The clock | the freeze in the store | frozen at exactly the archive's last checkpoint, counting down (§6.3); with `--wait-unfreeze`, the freeze gone from the store and the checkpoint moving on from that second, with no login needed |
 | A staff session, when a password is given | `connect`, `@tacsim/time`, `time`, `@stats`, `@tacsim/port status` | the archived login works; `@tacsim/time` reads the frozen second; the readiness report's `geology:` line reads `pinned … [ready]` and any line not ready is named (197 of 197 ready on the restored dev3); with `--wait-unfreeze`, the world thaws and the clock runs on from there |
@@ -591,8 +594,9 @@ fails only on the geology line.
 
 ### 7.6 The archive tier
 
-On dev1 and dev2 today the tier is empty: a chunk is purged only above 512 MB of ledger resident
-in the store, and the stores are megabytes. So the tier was made to work on dev4: its
+On dev1 and dev2 today the tier holds copies and has purged nothing (dev1's first archive carried
+22 chunks in 5 segments, none purged): a chunk is purged only above 512 MB of ledger resident in
+the store, and the stores are megabytes. So the purge was made to happen on dev4: its
 `[store.archive]` set to an all-day window, no retention and zero watermarks, and the server
 restarted.
 
@@ -663,6 +667,50 @@ passed, both binaries built in **324 s** at 20 jobs with no warning, and both re
 15. **349 s from a clean checkout to both release binaries, with no other machine involved.**
 conclav.io gets the same script at §9's step 3; its build is about 25 minutes at four jobs.
 
+### 7.8 The first real archives (conclav.io, after the merge)
+
+2026-11-23, the tool as merged (`ee2fce6d`), at the owner's go. dev1 and dev2 were never
+restarted or reconfigured.
+
+| Step | Result |
+|---|---|
+| `build-tools-install.sh` on conclav.io | the checksum `OK`; Node v22.23.5 under `/usr/local`, beside Ubuntu's own 18.19.1 in `/usr/bin`, which the web build refuses and which is left as it was |
+| `install.sh take`, `INSTANCES=dev1 dev2` | the tool, the conf and the units; nothing enabled |
+| `systemctl start rustmush-backup.service`, by hand | **dev1**: 113.0 MB, 139 files, 29,868 keys, 8 accounts, 8 ledgers, IC 2353-09-16 10:42:48, 53.2 s. **dev2**: 112.6 MB, 135 files, 27,742 keys, 7 accounts, 8 ledgers, 26.5 s. One attempt each; 1 min 32 s of CPU for the two at the lowest priority |
+| the live servers meanwhile | no line at WARN or ERROR in either server's log across the run (a lagging world loop logs one); `healthz` `loop_lag_ms` 0; no restart; Redis's fork 7.1 ms on dev1 and 4.1 ms on dev2 |
+| `systemctl enable --now rustmush-backup.timer` | `status` clean; the next run listed for 20:20 UTC |
+| dev1's archive to conclav.dev, by `scp` through the session | 4.1 s out and 3.7 s in; `verify --deep` there 1.6 s |
+| `restore … --as dev4 --replace --cpus 24-31` | `the restored store matches its manifest: 29867 keys, 8 accounts, 8 ledgers whole across both tiers, every instrument sums to zero`; **a served copy in 5.4 s** (5.5 s the first time): 2.3 s to read and unpack, 1.1 s the store's load, 0.5 s the facts, 1.2 s the boot |
+| `check dev4 --wait-unfreeze --known-errors <live dev1's ERROR lines>` | every check passed: 1,070 objects, `boot_outage=OutageFreeze`, all 8 ledgers entry for entry, frozen at IC 74226537768, the archive's checkpoint to the second; `healthz` 503 with `world_ok=false` during the countdown and 200 after it; the clock 600 IC seconds on after the thaw; the geology key matches its pin |
+
+dev1's world in the archive: 54 accounts of `tacsim.credit` and one of `tacsim.licence.freeport`,
+each summing to zero; the money journal at seq 657 in 29 chunks; 22 chunks copied to the archive
+tier and none purged.
+
+**Two things the real restore found, neither the restore's fault, both now understood by the
+check:**
+
+- **dev1 and dev2 each log one ERROR a boot, and so does a copy of either.** `tacsim::port::stock:
+  a port storefront's stock and its listing disagree vault=18 good=propellant listing=65`: once in
+  dev1's log and once in dev2's since their boots of 2026-11-22, and again in the copy at its
+  first tick after the thaw. The copy is repeating the live world, which has a standing fault at
+  that storefront. A check that failed on every ERROR would fail every restore of these worlds
+  for a reason that has nothing to do with the restore; one that ignored ERRORs would be blind.
+  So a backup now records the live server's distinct ERROR lines since its boot (`live_errors`
+  in the manifest), and the check passes an ERROR only if the live instance had logged the same
+  one. Run without that list, the same check fails on this line, as it should. The storefront
+  itself is the game's to fix, and is reported to the lead.
+- **`healthz` answers 503 for the whole five-minute countdown.** A frozen world does not tick,
+  the loop's timestamp goes stale after five seconds, and `world_ok` reads false. The first check
+  ran three seconds after the boot and saw 200; one a minute later saw 503. This is the server's
+  behavior on dev1 and dev2 too, after any restart more than thirty seconds after the last
+  checkpoint: anything that watches `healthz` will call the instance down for five minutes.
+  Reported to the lead; the check now expects it.
+
+The archives these runs took were written before `live_errors` existed, so the check was given
+live dev1's ERROR lines by `--known-errors`. The tool on conclav.io is brought up to this PR
+once it has merged, and archives carry the list from then on.
+
 ## 8. What this does not do
 
 - **The box.** Caddy's config and certificates, the doorway's host key and config, the firewall,
@@ -687,8 +735,9 @@ conclav.io gets the same script at §9's step 3; its build is about 25 minutes a
 |---|---|---|
 | 1 | The tool, the units, the tests, this doc and the runbook; the cycle proved on conclav.dev | **this PR** |
 | 2 | The owner rules Q-52-1 and Q-52-2 | **ruled 2026-11-23**; the two-tier retention, the build tools and the owner's two scripts added to this PR |
-| 3 | On conclav.io, once this PR has merged: `build-tools-install.sh`, `install.sh take`, `INSTANCES`, one run by hand, the timer | next |
-| 4 | The first real archive of dev1 or dev2, carried to conclav.dev by hand, restored as dev4 and checked; the restore time and what the check found go into the runbook | after step 3 |
+| 3 | On conclav.io: `build-tools-install.sh`, `install.sh take`, `INSTANCES`, one run by hand, the timer | **done 2026-11-23** (§7.8) |
+| 4 | The first real archive of dev1, carried to conclav.dev by hand, restored as dev4 and checked; the restore time and what the check found in the runbook | **done 2026-11-23** (§7.8): 5.4 s to a served copy |
+| 4a | The tool on conclav.io brought up to the follow-up PR (`live_errors` in each manifest) | after that PR merges |
 | 5 | The pull: §5's three commands | the owner's to run |
 | 6 | dev3 and dev4 removed from conclav.dev (Q-52-10) | after step 4 |
 
@@ -821,8 +870,11 @@ conclav.dev's address: the pull.**
 
 ## 11. What this work did not check
 
-- **conclav.io.** Every number is from conclav.dev: 32 cores, an idle box, a store of megabytes.
-  The fork's cost on the production box under play is expected to be small and is not measured.
+- **conclav.io under play.** §7.8's run was on an idle evening with nobody connected: the fork
+  took 7 ms and neither server logged a lagging loop. The same under a full sim center is not
+  measured.
+- **The timer's own first run on conclav.io** (20:20 UTC, 2026-11-23) had not come round when this
+  was written. The same unit ran by hand there, and the same timer fired by itself on conclav.dev.
 - **A large store.** The facts read every key; at 12,000 keys that is a fifth of a second. At a
   million it will be minutes and want a look.
 - **The key families other than geology** (§7.3).
@@ -831,4 +883,5 @@ conclav.dev's address: the pull.**
   tried.
 - **The pull over a real SSH key** and the two scripts of §5 on the boxes themselves: tested
   against stubs, not run. The owner runs them.
-- **A build on conclav.io.** §7.7's proof is conclav.dev's.
+- **A build on conclav.io.** §7.7's proof is conclav.dev's; conclav.io has the same Node now and
+  has not built with it.

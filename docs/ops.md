@@ -107,13 +107,15 @@ restores one beside nothing that matters, and proves it is whole. The tool is
 cut of a live instance can and cannot promise, and the owner's open questions
 are in [doc 52](design/52-instance-backup-and-restore.md).
 
-> **State (2026-11-23).** Built and proved on conclav.dev against the throwaway
-> instances dev3 and dev4 (below). **Not installed on conclav.io**: the timer
-> there, the first archive of dev1 or dev2 and the key for the copy each wait
-> for the owner's word (doc 52 §9). Until the timer runs there, a deploy's own
-> snapshot (`deploy/redeploy/wipe-cutover.sh`) is still the only copy, and
-> `rmbak.py backup <instance>` by hand before any redeploy or wipe is better:
-> it takes the store while the instance runs and proves what it took.
+> **State (2026-11-23).** Installed on conclav.io since the merge of PR #778:
+> `rustmush-backup.timer` backs dev1 and dev2 up every four hours into
+> `/var/backups/rustmush`, 18 kept of each. dev1's first archive was restored
+> on conclav.dev and checked (doc 52 §7.8). **Not yet in place: the copy to
+> conclav.dev.** Its three commands are the owner's to run ("The copy to a
+> second box", below); until then the archives are on conclav.io's own disk
+> only. Before any redeploy or wipe, `rmbak.py backup <instance>` by hand is
+> the snapshot to take: it takes the store while the instance runs and proves
+> what it took.
 
 ### What an archive is, and what it promises
 
@@ -302,16 +304,40 @@ staff login it also proves an archived login works and asks `@tacsim/time`,
 `time`, `@stats` and `@tacsim/port status` (the readiness report: its
 `geology:` line must read `pinned … [ready]`, and any line that is not ready
 is named). `--wait-unfreeze` waits the countdown out and sees the clock run
-on, with a login or without one (it reads the thaw from the copy's store). It writes `check-report.json` beside the copy's config and exits non-zero
+on, with a login or without one (it reads the thaw from the copy's store).
+
+Two things `check` knows about a restored world, both learned from dev1's
+(doc 52 §7.8):
+
+- **An ERROR the live instance logs too is the live world's, not the
+  restore's.** A backup records the live server's distinct ERROR lines since
+  its boot in the manifest (`rmbak show` prints them), and `check` fails only
+  on an ERROR that is not among them. For an archive that lists none, give it
+  the live log: `--known-errors <file of the live server's log lines>`
+  (`journalctl -u <inst>mush-server -g ERROR -o cat > file`).
+- **`healthz` answers 503 while the world is frozen in its countdown**
+  (`world_ok=false`; a frozen world does not tick). `check` passes that only
+  with `store_ok`, `integrity_ok` and `server_ok` true, and requires 200 after
+  the thaw. The live servers do the same after any restart more than thirty
+  seconds after their last checkpoint: a monitor on `healthz` reads five
+  minutes of "down".
+
+It writes `check-report.json` beside the copy's config and exits non-zero
 on any failure.
 
 **Measured on conclav.dev** (dev3's archives, 109 MB, a store of 4,905 to
 16,099 keys): a backup 8.6 to 9.1 s; `restore --as` to a served copy **2.8 to
 4.1 s**; `check` 1.1 to 1.3 s, and five minutes more to watch the thaw; a
 wiped dev3 restored in place, started and checked in **8.7 s** (2.3 s the
-restore, 5.1 s `deploy.sh`, 1.3 s the check). The restore time of a real dev1
-or dev2 archive is recorded here when that restore has been run (doc 52 §9,
-step 4).
+restore, 5.1 s `deploy.sh`, 1.3 s the check).
+
+**Measured on the real thing, 2026-11-23** (doc 52 §7.8): on conclav.io the
+timer's unit took dev1 in 53 s and dev2 in 27 s (113 MB each, about 29,000
+keys), at the lowest priority, with no lagging loop in either server's log and
+a 7 ms fork. dev1's archive, carried to conclav.dev, **restored to a served
+copy in 5.4 s** and passed every check: 1,070 objects, all 8 ledgers entry for
+entry, frozen at the archive's last clock checkpoint to the second, thawed
+five minutes later with the clock running on from there.
 
 To look at a copy by hand, tunnel to it and log in with an account of the
 archived world: `ssh -L 16892:127.0.0.1:16892 root@conclav.dev`, then
@@ -422,7 +448,7 @@ toolchain, because an archive carries both binaries and everything
    server and a gateway generation).
 6. **Check**: `rmbak check <inst>`, then a login. After an outage of thirty
    seconds or more the world is frozen for five minutes (above): tell the
-   players. `@tacsim/port status` is not answered until the thaw, and for a
+   players, and expect `healthz` to answer 503 until the thaw. `@tacsim/port status` is not answered until the thaw, and for a
    minute after any boot some `site` lines read `its ground is still being
    mapped. [missing]`; ask again.
 7. Reload Caddy if the box is new, and delete the two `pre-restore-<UTC>`

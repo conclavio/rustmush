@@ -476,6 +476,20 @@ class Pure(unittest.TestCase):
             self.assertEqual(set(rmbak.archives_in(root, "dev1")), kept)
             self.assertEqual(len(rmbak.archives_in(root, "dev2")), 3, "another instance's archives are not touched")
 
+    def test_an_error_line_is_known_by_what_it_says_not_when(self):
+        live = ("half=server 2026-11-23T01:11:23.245183Z ERROR tacsim::port::stock: tacsim: a port storefront's stock "
+                "and its listing disagree vault=18 good=propellant listing=65 pool=4970 runbook=\"@inv/show <vault>\"")
+        copy = ("\x1b[2mhalf=server 2026-11-23T19:19:17.104588Z\x1b[0m ERROR tacsim::port::stock: tacsim: a port "
+                "storefront's stock and its listing disagree vault=18 good=propellant listing=65 pool=5004 "
+                "runbook=\"@inv/show <vault>\"")
+        other = "half=server 2026-11-23T19:19:18.000000Z ERROR mush_economy::boot: economy: journal contiguity breach"
+        self.assertEqual(rmbak.error_signature(live), rmbak.error_signature(copy))
+        self.assertNotEqual(rmbak.error_signature(live), rmbak.error_signature(other))
+        self.assertTrue(rmbak.error_signature(live).startswith("ERROR tacsim::port::stock:"))
+        log = "\n".join(["half=server 2026-11-23T19:14:17Z  INFO boot: world loaded from store", copy, other,
+                         "half=server 2026-11-23T19:14:18Z  WARN no ERROR here, only the word in a warning? no: ERROR"])
+        self.assertEqual(len(rmbak.error_lines(log)), 3, "a line that says ERROR anywhere is read as one")
+
     def test_conf_refuses_what_it_does_not_know(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(rmbak.Fail):
