@@ -2517,14 +2517,23 @@ def archive_age_s(name):
 
 
 def cmd_status(args):
-    """Is the backup healthy on this box: the timer, the last run, the newest archives."""
+    """Is the backup healthy on this box, for the part this box plays: it TAKES
+    backups when INSTANCES names any, and FETCHES them when PULL_SSH is set. A
+    directory of archives that belongs to neither part is not judged (a box
+    that only fetches is not failed for having no timer that takes)."""
     conf = load_conf(args.conf)
+    parts = []
+    if conf["INSTANCES"].split():
+        parts.append(("takes", conf["BACKUP_DIR"], "rustmush-backup.timer", conf["INSTANCES"].split()))
+    if conf["PULL_SSH"]:
+        parts.append(("fetches", conf["PULL_DIR"], "rustmush-backup-pull.timer", None))
+    if not parts:
+        raise Fail("this box neither takes nor fetches backups: INSTANCES and PULL_SSH are both empty in "
+                   f"{args.conf or DEFAULT_CONF}")
     problems = []
-    for directory, timer in ((conf["BACKUP_DIR"], "rustmush-backup.timer"),
-                             (conf["PULL_DIR"], "rustmush-backup-pull.timer")):
-        if not os.path.isdir(directory):
-            continue
-        if shutil.which("systemctl"):
+    for part, directory, timer, named in parts:
+        print(f"this box {part} backups: {directory}")
+        if shutil.which("systemctl") and not os.environ.get("RMBAK_SYSROOT"):
             enabled = subprocess.run(["systemctl", "is-enabled", timer], capture_output=True, text=True).stdout.strip()
             last = subprocess.run(["systemctl", "show", "-p", "LastTriggerUSec", "--value", timer],
                                   capture_output=True, text=True).stdout.strip()
@@ -2536,7 +2545,10 @@ def cmd_status(args):
                 status = json.load(handle)
         except (OSError, ValueError):
             status = {}
-        instances = sorted(set(status.get("instances", {})) | {NAME_RE.match(n).group(1) for n in archives_in(directory)})
+        # The taking side answers for the instances its conf names; the fetching
+        # side for every instance the far side reports or it holds an archive of.
+        instances = named or sorted(set(status.get("instances", {})) |
+                                    {NAME_RE.match(n).group(1) for n in archives_in(directory)})
         for instance in instances:
             row = status.get("instances", {}).get(instance, {})
             have = archives_in(directory, instance)

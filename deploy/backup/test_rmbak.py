@@ -490,6 +490,46 @@ class Pure(unittest.TestCase):
                          "half=server 2026-11-23T19:14:18Z  WARN no ERROR here, only the word in a warning? no: ERROR"])
         self.assertEqual(len(rmbak.error_lines(log)), 3, "a line that says ERROR anywhere is read as one")
 
+    def test_status_judges_a_box_by_the_part_it_plays(self):
+        def stamp(age_h):
+            return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() - age_h * 3600))
+
+        class Args:
+            pass
+        with tempfile.TemporaryDirectory() as root:
+            taken, pulled = os.path.join(root, "taken"), os.path.join(root, "pulled")
+            os.makedirs(taken)
+            os.makedirs(pulled)
+            os.environ["RMBAK_SYSROOT"] = root  # no systemd timer is asked about in a test
+            try:
+                # A box that only fetches: fresh archives in its pull directory, and a
+                # leftover directory of old ones that is none of its business.
+                open(os.path.join(pulled, f"dev1-{stamp(1)}-aaaaaaaa.rmbak.tar.zst"), "w").close()
+                open(os.path.join(taken, f"dev3-{stamp(900)}-aaaaaaaa.rmbak.tar.zst"), "w").close()
+                Args.conf = conf_file(root, "fetch.conf", BACKUP_DIR=taken, PULL_DIR=pulled, PULL_SSH="ssh far")
+                rmbak.cmd_status(Args)
+                # The same box, its newest fetched archive gone stale: loud.
+                os.rename(os.path.join(pulled, os.listdir(pulled)[0]),
+                          os.path.join(pulled, f"dev1-{stamp(30)}-aaaaaaaa.rmbak.tar.zst"))
+                with self.assertRaises(rmbak.Fail) as caught:
+                    rmbak.cmd_status(Args)
+                self.assertIn("dev1: no archive", str(caught.exception))
+                # A box that takes: it answers for every instance its conf names.
+                open(os.path.join(taken, f"dev1-{stamp(1)}-aaaaaaaa.rmbak.tar.zst"), "w").close()
+                Args.conf = conf_file(root, "take.conf", BACKUP_DIR=taken, PULL_DIR=pulled, INSTANCES="dev1 dev2")
+                with self.assertRaises(rmbak.Fail) as caught:
+                    rmbak.cmd_status(Args)
+                self.assertIn("dev2: no archive", str(caught.exception))
+                self.assertNotIn("dev1", str(caught.exception))
+                self.assertNotIn("dev3", str(caught.exception), "an instance the conf does not name is not judged")
+                # A box that does neither says so.
+                Args.conf = conf_file(root, "none.conf", BACKUP_DIR=taken, PULL_DIR=pulled)
+                with self.assertRaises(rmbak.Fail) as caught:
+                    rmbak.cmd_status(Args)
+                self.assertIn("neither takes nor fetches", str(caught.exception))
+            finally:
+                os.environ.pop("RMBAK_SYSROOT", None)
+
     def test_conf_refuses_what_it_does_not_know(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(rmbak.Fail):

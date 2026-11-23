@@ -110,10 +110,11 @@ are in [doc 52](design/52-instance-backup-and-restore.md).
 > **State (2026-11-23).** Installed on conclav.io since the merge of PR #778:
 > `rustmush-backup.timer` backs dev1 and dev2 up every four hours into
 > `/var/backups/rustmush`, 18 kept of each. dev1's first archive was restored
-> on conclav.dev and checked (doc 52 §7.8). **Not yet in place: the copy to
-> conclav.dev.** Its three commands are the owner's to run ("The copy to a
-> second box", below); until then the archives are on conclav.io's own disk
-> only. Before any redeploy or wipe, `rmbak.py backup <instance>` by hand is
+> on conclav.dev and checked (doc 52 §7.8). **The copy to conclav.dev is in
+> place too**: the owner ran its three commands the same day, and
+> `rustmush-backup-pull.timer` there fetches and verifies new archives fifteen
+> minutes after each backup, keeping the newest 18 and one a day for 30 days.
+> Password logins are off on conclav.io's admin port. Before any redeploy or wipe, `rmbak.py backup <instance>` by hand is
 > the snapshot to take: it takes the store while the instance runs and proves
 > what it took.
 
@@ -262,9 +263,17 @@ does not already admit that port from anywhere. To undo it: remove
 ssh`; empty `/var/lib/rmbackup/.ssh/authorized_keys`; `ufw delete allow from
 50.6.20.140 to any port 2222 proto tcp`.
 
-> **Until command 2 has been run**, conclav.io's admin port takes root's
-> password and, since the panel rule of 2026-11-23, is reachable from
-> conclav.dev, where every session works as root.
+The owner ran all three on 2026-11-23. conclav.io's sshd reads passwords off
+(`sshd -T`), its ufw already admitted the port so no rule was added, and
+conclav.dev fetched and verified the four archives there were. A box set up
+later starts from command 1 in the same way; until its command 2 has been
+run, its admin port takes whatever logins it took before.
+
+**Is it healthy?** `rmbak status`, on either box, exits non-zero when it is
+not. It judges a box by the part its conf says it plays: a box whose
+`INSTANCES` names an instance must have its backup timer enabled and a fresh,
+good archive of each; a box whose `PULL_SSH` is set must have its pull timer
+enabled and a fresh archive of every instance the far side reports.
 
 By hand, until then, an archive travels through a session's own root access;
 it is one file, and `rmbak verify` on the far side proves the transfer:
