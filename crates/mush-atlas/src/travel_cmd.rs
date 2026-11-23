@@ -600,22 +600,49 @@ fn cmd_stakeout(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 // ---------------------------------------------------------------------------
 
 /// Whether `viewer` is allowed to resolve `target` by name for `+intercept`
-/// without leaking `Flags::DARK` or `Flags::GOING` actors.
-fn can_see_traveler(w: &mush_core::World, viewer: ObjId, target: ObjId) -> bool {
+/// without leaking `Flags::DARK`/`Flags::GOING` actors or enumerating NPCs in
+/// hidden/restricted/inaccessible rooms (P2-MOD-34).
+fn can_see_traveler(st: &AtlasState, w: &mush_core::World, viewer: ObjId, target: ObjId) -> bool {
     let Some(o) = w.get(target) else {
         return false;
     };
     if o.flags.contains(mush_core::Flags::GOING) {
         return false;
     }
-    if target == viewer {
+    if target == viewer || is_staff(w, viewer) {
         return true;
     }
     if o.flags.contains(mush_core::Flags::DARK)
-        && !is_staff(w, viewer)
         && !mush_core::perm::has_power(w, viewer, mush_core::Powers::SEE_HIDDEN)
     {
         return false;
+    }
+    if o.kind == mush_core::ObjKind::Npc {
+        if mush_core::perm::controls(w, viewer, target) {
+            return true;
+        }
+        let Some(loc) = o.location else {
+            return false;
+        };
+        if w.get(viewer).and_then(|v| v.location) == Some(loc) {
+            return true;
+        }
+        let Some(loc_obj) = w.get(loc) else {
+            return false;
+        };
+        if loc_obj.flags.contains(mush_core::Flags::DARK)
+            || loc_obj.flags.contains(mush_core::Flags::GOING)
+        {
+            return false;
+        }
+        // Only NPCs standing in mapped public atlas rooms may be resolved
+        // remotely; NPCs in unmapped/private or `Access::Restricted` rooms
+        // cannot be enumerated across the world.
+        return st
+            .records
+            .roomgeo
+            .get(&loc)
+            .is_some_and(|g| g.access == crate::record::Access::Public);
     }
     true
 }
@@ -623,19 +650,21 @@ fn can_see_traveler(w: &mush_core::World, viewer: ObjId, target: ObjId) -> bool 
 /// Find a traveler by what the actor typed: a public service vehicle or a
 /// visible character (`Player`/`Npc`), independent of whether they are
 /// currently on a journey (so `+intercept` is neither a global travel-status
-/// oracle nor a `Flags::DARK` existence oracle).
+/// oracle nor a `Flags::DARK`/hidden-NPC existence oracle).
 fn find_traveler(ctx: &Ctx<'_>, raw: &str) -> Result<ObjId, CmdError> {
     let st = state(ctx)?;
+    let staff = is_staff(ctx.w, ctx.actor);
     let vehicles: Vec<ObjId> = st
         .records
         .connections
         .values()
+        .filter(|c| staff || c.visibility == crate::record::Visibility::Public)
         .filter_map(|c| service_vehicle(ctx.w, c))
-        .filter(|o| can_see_traveler(ctx.w, ctx.actor, *o))
+        .filter(|o| can_see_traveler(st, ctx.w, ctx.actor, *o))
         .collect();
     let matched = match_object(ctx.w, ctx.actor, raw)
         .ok()
-        .filter(|o| can_see_traveler(ctx.w, ctx.actor, *o));
+        .filter(|o| can_see_traveler(st, ctx.w, ctx.actor, *o));
     if let Some(obj) = matched
         && (vehicles.contains(&obj) || ctx.w.get(obj).is_some_and(|o| o.kind.is_actor()))
     {
@@ -648,12 +677,18 @@ fn find_traveler(ctx: &Ctx<'_>, raw: &str) -> Result<ObjId, CmdError> {
     }) {
         return Ok(v);
     }
+    // Global world lookup requires an exact (case-insensitive) name match so
+    // single-character probes cannot enumerate actors across the world.
+    let needle = raw.trim();
+    if needle.is_empty() {
+        return Err(CmdError::msg("No such traveler."));
+    }
     ctx.w
         .iter()
         .find(|o| {
             o.kind.is_actor()
-                && can_see_traveler(ctx.w, ctx.actor, o.id)
-                && matches_name(mush_core::output::primary_name(&o.name), raw)
+                && can_see_traveler(st, ctx.w, ctx.actor, o.id)
+                && mush_core::output::primary_name(&o.name).eq_ignore_ascii_case(needle)
         })
         .map(|o| o.id)
         .ok_or_else(|| CmdError::msg("No such traveler."))
@@ -764,14 +799,14 @@ fn cmd_intercept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             _ => Node::Room { room: here },
         }
     };
-    // One pending intercept per actor, installed regardless of whether the
-    // target currently has a live journey — so `+intercept <name>` never
-    // confirms whether someone is traveling anywhere on the map.
+    // One pending intercept per actor, keyed by `(traveler, actor)` so no
+    // other player can overwrite or cancel this actor's intercept, and
+    // installed regardless of whether the target currently has a live journey.
     if let Some(st) = ctx.state_mut::<AtlasState>() {
-        st.travel.intercepts.retain(|_, i| i.by != actor);
+        st.travel.intercepts.retain(|&(_, by), _| by != actor);
         st.travel
             .intercepts
-            .insert(traveler, travel::Intercept { by: actor, at });
+            .insert((traveler, actor), travel::Intercept { by: actor, at });
     }
     // K: no confirmation of whether it is traveling or coming this way at all.
     say(
@@ -823,13 +858,16 @@ fn intercept_release(ctx: &mut Ctx<'_>, traveler: ObjId, here: ObjId) -> Result<
         }
         return Ok(());
     }
-    let (held_by_me_or_staff, pending_mine_or_staff, held_here_by_other) = {
+    let (held_by_me_or_staff, pending_mine, pending_any_for_staff, held_here_by_other) = {
         let st = state(ctx)?;
-        let pending = st
-            .travel
-            .intercepts
-            .get(&traveler)
-            .is_some_and(|i| i.by == actor || staff);
+        let pending_mine = st.travel.intercepts.contains_key(&(traveler, actor));
+        let pending_any = staff
+            && st
+                .travel
+                .intercepts
+                .range((traveler, ObjId(0))..=(traveler, ObjId(u32::MAX)))
+                .next()
+                .is_some();
         let (release_id, other_here) = match st.travel.journey_of(traveler) {
             Some(j) => match &j.state {
                 JourneyState::Held { by, .. } if by.by() == actor || staff => (Some(j.id), false),
@@ -841,16 +879,20 @@ fn intercept_release(ctx: &mut Ctx<'_>, traveler: ObjId, here: ObjId) -> Result<
             },
             None => (None, false),
         };
-        (release_id, pending, other_here)
+        (release_id, pending_mine, pending_any, other_here)
     };
     if let Some(id) = held_by_me_or_staff {
         travel::release(ctx, id, Some(actor)).map_err(CmdError::msg)?;
         say(ctx, vec![format!("You let the {name} go on.")]);
         return Ok(());
     }
-    if pending_mine_or_staff {
+    if pending_mine || pending_any_for_staff {
         if let Some(st) = ctx.state_mut::<AtlasState>() {
-            st.travel.intercepts.remove(&traveler);
+            if pending_mine {
+                st.travel.intercepts.remove(&(traveler, actor));
+            } else {
+                st.travel.intercepts.retain(|&(t, _), _| t != traveler);
+            }
         }
         say(ctx, vec![format!("You stop waiting for the {name}.")]);
         return Ok(());

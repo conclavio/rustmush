@@ -116,10 +116,11 @@ pub use econ::{BindEdge, HousingEconomyObserver, PENDING_OBLIGATION};
 pub use flow::{create_tenancy, submit_support_plan};
 pub use hooks::{NO_DESTROY, REFUSED, REFUSED_CARRY, may_reach};
 pub use module::{
-    AssessState, CAPABILITIES, HousingModule, HousingStore, LiveEntry, MAX_ASSESSMENTS_PER_FIRE,
-    MAX_ENCLOSING_DEPTH, MAX_NOTICE_BYTES, MAX_PENDING_NOTICES, MAX_VISITED_PER_FIRE,
-    MAX_WORKED_PER_FIRE, META_KEY, NO_PROPERTY_MARKER, NS, PendingNotice, RoomEntry, STORY_QUEUE,
-    TICK_PERIOD_SECS, TICK_TAG, TickStats, assess_key, cadence_now, enclosing_room,
-    is_inside_property, is_staff, notice_key, property_key, render_principal, tenancy_key,
+    AssessState, CAPABILITIES, EnclosingRoom, HousingModule, HousingStore, LiveEntry,
+    MAX_ASSESSMENTS_PER_FIRE, MAX_ENCLOSING_DEPTH, MAX_NOTICE_BYTES, MAX_PENDING_NOTICES,
+    MAX_VISITED_PER_FIRE, MAX_WORKED_PER_FIRE, META_KEY, NO_PROPERTY_MARKER, NS, PendingNotice,
+    RoomEntry, STORY_QUEUE, TICK_PERIOD_SECS, TICK_TAG, TickStats, assess_key, cadence_now,
+    enclosing_room, is_inside_property, is_staff, notice_key, property_key, render_principal,
+    tenancy_key,
 };
 pub use quarantine::{Conflict, MAX_QUARANTINE_PAGES, QuarantineKey};

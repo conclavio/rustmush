@@ -1485,6 +1485,10 @@ pub fn standable(cell: Cell) -> bool {
 fn occupied(w: &World, domain: DomainId, surface: &SurfaceComposite) -> BTreeSet<(u16, u16)> {
     mush_sim::participants(w, domain)
         .into_iter()
+        .filter(|(obj, _)| {
+            !w.get(*obj)
+                .is_some_and(|o| o.flags.contains(mush_core::Flags::DARK))
+        })
         .filter_map(|(_, pose)| surface.cell_of(pose_cm(&pose)))
         .collect()
 }
@@ -2225,7 +2229,7 @@ fn authorize_room_entry(
             .get(&room)
             .is_some_and(|g| g.access == crate::record::Access::Restricted)
     {
-        return Err(format!("{} is not open to you", name(ctx.w, room)));
+        return Err("that area is not open to you".to_string());
     }
     Ok(())
 }
@@ -2470,10 +2474,20 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
             .ok_or_else(|| "the map is not drawn yet".to_string())?;
         let (mut si, mut x, mut y) =
             locate(composite, &pose).ok_or_else(|| "you are off the map".to_string())?;
-        // Everyone else's cells, on every surface.
+        // Everyone else's cells, on every surface (hiding `Flags::DARK` objects
+        // from non-staff movers without `Powers::SEE_HIDDEN`, P2-MOD-72).
+        let see_dark =
+            staff || mush_core::perm::has_power(ctx.w, actor, mush_core::Powers::SEE_HIDDEN);
         let taken: BTreeSet<(usize, u16, u16)> = mush_sim::participants(ctx.w, domain)
             .into_iter()
-            .filter(|(o, _)| *o != actor)
+            .filter(|(o, _)| {
+                *o != actor
+                    && (see_dark
+                        || !ctx
+                            .w
+                            .get(*o)
+                            .is_some_and(|obj| obj.flags.contains(mush_core::Flags::DARK)))
+            })
             .filter_map(|(_, p)| locate(composite, &p))
             .collect();
         let surface_at = |i: usize| composite.surfaces.get(i);
@@ -2701,10 +2715,21 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
                     if !staff && let Ok(st) = state_mut(ctx) {
                         st.windows.actor_grow_at.insert((domain.0, actor), now);
                     }
-                    report.stopped = Some(format!(
-                        "the map grows to take in {}; step again when it is drawn",
-                        name(ctx.w, room)
-                    ));
+                    let restricted = !staff
+                        && state(ctx).is_ok_and(|st| {
+                            st.records
+                                .roomgeo
+                                .get(&room)
+                                .is_some_and(|g| g.access == crate::record::Access::Restricted)
+                        });
+                    report.stopped = Some(if restricted {
+                        "the map grows further; step again when it is drawn".to_string()
+                    } else {
+                        format!(
+                            "the map grows to take in {}; step again when it is drawn",
+                            name(ctx.w, room)
+                        )
+                    });
                 }
                 Ok(None) => {}
                 Err(error) => report.stopped = Some(error),
@@ -2718,7 +2743,8 @@ pub fn step(ctx: &mut Ctx<'_>, actor: ObjId, target: StepTarget) -> Result<StepR
 /// Grow `domain`'s window to take in the room whose footprint holds `beyond` on
 /// `surface` (doc 14 §3.4 *Growth*): the frame widens by that footprint plus
 /// the margin, the cell size is chosen again under the cap, and a re-composite
-/// is deferred. `Ok(None)` when no footprint lies there.
+/// is deferred. `Ok(None)` when no footprint lies there (or, for non-staff,
+/// when the room there is `Access::Restricted`).
 ///
 /// # Errors
 ///
@@ -2729,6 +2755,7 @@ pub fn grow(
     beyond: PointCm,
     surface: &SurfaceRef,
 ) -> Result<Option<ObjId>, String> {
+    let staff = crate::module::is_staff(ctx.w, ctx.actor);
     let (room, new_frame, rooms) = {
         let st = state(ctx)?;
         let entry = st
@@ -2746,6 +2773,7 @@ pub fn grow(
             .roomgeo
             .values()
             .filter(|g| &g.surface == surface)
+            .filter(|g| staff || g.access != crate::record::Access::Restricted)
             .filter(|g| {
                 st.records
                     .neighborhoods

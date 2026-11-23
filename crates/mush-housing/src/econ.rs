@@ -46,7 +46,7 @@ use mush_economy::{
 };
 
 use crate::module::HousingStore;
-use crate::record::{Funding, Resolution, Tenancy};
+use crate::record::{Funding, PropertyStatus, Resolution, Tenancy};
 
 /// The obligation id a drafted-but-not-yet-activated exact tenancy carries.
 ///
@@ -315,6 +315,60 @@ fn activate_lease(
         }
         return;
     };
+    // Re-validate property eligibility at activation time: between offer and
+    // tenant acceptance, the property may have been withdrawn, removed,
+    // quarantined, or let under another tenancy. Refusing activation and
+    // unwinding the lease avoids activating onto a Withdrawn property or
+    // pushing a live property into LiveEntry::Conflict / quarantine.
+    let ineligible_reason = {
+        let Some(store) = ctx.w.module_state::<HousingStore>() else {
+            return;
+        };
+        match store.property(t.property) {
+            None => Some("its property no longer exists"),
+            Some(p) if p.status == PropertyStatus::Withdrawn => {
+                Some("its property has been withdrawn")
+            }
+            Some(_) if store.is_quarantined_property(t.property) => {
+                Some("its property is under quarantine review")
+            }
+            Some(_) if store.has_live_tenancy(t.property) => {
+                Some("its property already has a live tenancy")
+            }
+            Some(_) => None,
+        }
+    };
+    if let Some(reason) = ineligible_reason {
+        tracing::warn!(
+            tenancy = t.id.0,
+            property = t.property.0,
+            contract = contract.0,
+            reason,
+            "housing: refusing to activate pending lease on ineligible property; unwinding"
+        );
+        let before = t.status.kind();
+        match crate::resolve(t, Resolution::Settled, now) {
+            Ok(ended) => {
+                crate::flow::notify_tenants(
+                    ctx,
+                    &ended,
+                    &format!(
+                        "HOME: tenancy #{} could not activate because {reason} (contract \
+                         #{contract}). The lease has been closed.",
+                        ended.id
+                    ),
+                );
+                crate::flow::commit(ctx, before, ended);
+            }
+            Err(error) => tracing::error!(
+                tenancy = t.id.0,
+                contract = contract.0,
+                %error,
+                "housing: could not unwind an ineligible pending lease"
+            ),
+        }
+        return;
+    }
     let mut bound = t.clone();
     bound.funding = Funding::Exact {
         contract,

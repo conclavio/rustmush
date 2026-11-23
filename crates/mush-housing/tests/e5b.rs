@@ -4543,19 +4543,19 @@ fn high27_access_hook_blocks_nested_containers_and_end_clears_enclosed_homes() {
 
     assert_eq!(
         mush_housing::enclosing_room(tw.world(), r.anchor),
-        Some(r.anchor)
+        mush_housing::EnclosingRoom::Room(r.anchor)
     );
     assert_eq!(
         mush_housing::enclosing_room(tw.world(), chest),
-        Some(r.anchor)
+        mush_housing::EnclosingRoom::Room(r.anchor)
     );
     assert_eq!(
         mush_housing::enclosing_room(tw.world(), pouch),
-        Some(r.anchor)
+        mush_housing::EnclosingRoom::Room(r.anchor)
     );
     assert_eq!(
         mush_housing::enclosing_room(tw.world(), gem),
-        Some(r.anchor)
+        mush_housing::EnclosingRoom::Room(r.anchor)
     );
 
     // Cycle-safety check on a standalone corrupt world with a location loop.
@@ -4567,7 +4567,10 @@ fn high27_access_hook_blocks_nested_containers_and_end_clears_enclosed_homes() {
         .create(mush_core::ObjKind::Thing, "B", GOD, Some(a))
         .unwrap();
     cyclic.get_mut(a).unwrap().location = Some(b);
-    assert_eq!(mush_housing::enclosing_room(&cyclic, a), None);
+    assert_eq!(
+        mush_housing::enclosing_room(&cyclic, a),
+        mush_housing::EnclosingRoom::LimitOrCycle
+    );
 
     // 1. MoveAttempt dest bypass: stranger Rex cannot be teleported into `chest` or `pouch`.
     let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", r.rex.0, chest.0)));
@@ -4878,4 +4881,347 @@ fn list_filters_do_not_leak_landlord_to_guests_or_widen_on_bad_property() {
     assert_eq!(bad, missing);
     assert!(bad.contains(mush_housing::NO_SUCH_TENANCY), "{bad}");
     assert!(!bad.contains(&format!("#{p}")), "filter widened: {bad}");
+}
+
+/// P2-MOD-9: `enclosing_room` returns `EnclosingRoom::LimitOrCycle` past
+/// `MAX_ENCLOSING_DEPTH` (or on cycles); `AccessHook` fails closed on both
+/// `move_attempt` and `carry_attempt`; tenancy-end unhoming clears homes
+/// pointing into deep/cyclic chains as well as containers nested deeper than
+/// the old `END_SWEEP_DEPTH = 6`.
+#[test]
+fn p2_mod_9_enclosing_room_depth_limit_fails_closed_and_unhomes_deep_containers() {
+    let mut tw = boot();
+    let r = rig(&mut tw);
+    let tid = tenant(&mut tw, &r, r.pat, 3);
+    ok(&mut tw, r.pat, &format!("+guest add #{}", r.rex.0));
+
+    // Build a 132-deep chain of containers inside Pat's home (exceeds MAX_ENCLOSING_DEPTH = 128).
+    let mut parent = r.anchor;
+    let mut level10 = r.anchor;
+    for depth in 1..=132 {
+        let box_id = tw
+            .world_mut()
+            .create(
+                mush_core::ObjKind::Thing,
+                &format!("Box{depth}"),
+                r.pat,
+                Some(parent),
+            )
+            .unwrap();
+        tw.world_mut()
+            .get_mut(box_id)
+            .unwrap()
+            .flags
+            .insert(mush_core::Flags::ENTER_OK);
+        if depth == 10 {
+            level10 = box_id;
+        }
+        parent = box_id;
+    }
+    let deepest = parent;
+    let loot = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "DeepLoot", r.pat, Some(deepest))
+        .unwrap();
+    let mid_item = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "MidItem", r.pat, Some(level10))
+        .unwrap();
+    let outside_rock = tw
+        .world_mut()
+        .create(mush_core::ObjKind::Thing, "Rock", r.rex, Some(LIMBO))
+        .unwrap();
+
+    assert_eq!(
+        mush_housing::enclosing_room(tw.world(), deepest),
+        mush_housing::EnclosingRoom::LimitOrCycle
+    );
+    assert_eq!(
+        mush_housing::enclosing_room(tw.world(), level10),
+        mush_housing::EnclosingRoom::Room(r.anchor)
+    );
+
+    // 1. MoveAttempt destination fails closed for non-staff stranger into deepest container.
+    let outsider = tw.spawn_player("Outsider");
+    let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", outsider.0, deepest.0)));
+    assert!(
+        out.contains(mush_housing::REFUSED),
+        "deep dest must fail closed: {out}"
+    );
+    assert_eq!(tw.world().get(outsider).unwrap().location, Some(LIMBO));
+
+    // 2. MoveAttempt source fails closed for a thing inside the deep chain.
+    let out = texts(&tw.run(GOD, &format!("@teleport #{}=#{}", loot.0, LIMBO.0)));
+    assert!(
+        out.contains(mush_housing::REFUSED_CARRY),
+        "deep source thing must fail closed: {out}"
+    );
+    assert_eq!(tw.world().get(loot).unwrap().location, Some(deepest));
+
+    // 3. CarryAttempt fails closed for non-staff mover in both directions.
+    let detached = mush_core::TypedStateLens::Detached(mush_core::DetachedTypedState::Test);
+    assert!(
+        mush_core::module::check_carry_attempt(
+            &tw.engine().registry,
+            tw.world(),
+            outsider,
+            loot,
+            outsider,
+            detached,
+        )
+        .is_err(),
+        "carry from deep container must fail closed"
+    );
+    assert!(
+        mush_core::module::check_carry_attempt(
+            &tw.engine().registry,
+            tw.world(),
+            outsider,
+            outside_rock,
+            deepest,
+            detached,
+        )
+        .is_err(),
+        "carry into deep container must fail closed"
+    );
+
+    // 4. Homes pointing at depth 10 (> old END_SWEEP_DEPTH = 6) and depth 132 (LimitOrCycle)
+    //    must all be cleared on tenancy end (for tenant, guest, and items).
+    tw.world_mut().set_home(r.pat, Some(deepest)).unwrap();
+    tw.world_mut().set_home(r.rex, Some(deepest)).unwrap();
+    tw.world_mut().set_home(mid_item, Some(r.anchor)).unwrap();
+    tw.world_mut().set_home(loot, Some(deepest)).unwrap();
+
+    ok(&mut tw, GOD, &format!("@tenancy/resolve {tid}=end"));
+    assert_eq!(
+        home_of(&tw, r.pat),
+        None,
+        "tenant deep home must be cleared"
+    );
+    assert_eq!(home_of(&tw, r.rex), None, "guest deep home must be cleared");
+    assert_eq!(
+        home_of(&tw, mid_item),
+        None,
+        "item nested past depth 6 must be unhomed"
+    );
+    assert_eq!(
+        home_of(&tw, loot),
+        None,
+        "deepest item home must be cleared"
+    );
+
+    // 5. `+home/leave` (`drop_home_here`) also clears a tenant's home on `LimitOrCycle`.
+    let tid2 = tenant(&mut tw, &r, r.pat, 3);
+    tw.world_mut().set_home(r.pat, Some(deepest)).unwrap();
+    ok(&mut tw, r.pat, "+home/leave");
+    assert_eq!(status(&tw, tid2), TenancyStatusKind::Ended);
+    assert_eq!(
+        home_of(&tw, r.pat),
+        None,
+        "leaver deep home must be cleared by drop_home_here"
+    );
+}
+
+/// P2-MOD-73: Pending exact-lease activation refuses `Withdrawn` (and already-let)
+/// properties without activating or triggering quarantine, `@tenancy/create` rejects
+/// overlapping pending tenancies, and `@property/show` hides another actor's pending
+/// tenancy from an existing tenant while still showing it to staff/landlord.
+#[test]
+fn p2_mod_73_pending_exact_lease_guards_and_property_show_gate() {
+    let mut tw = boot();
+    let mut r = rig(&mut tw);
+    ok(&mut tw, GOD, "@dig LeaseFlat=uplease,downlease");
+    let flat = room_named(&tw, "LeaseFlat");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create LeaseFlat=#{} tier=1 landlord=#{}",
+            flat.0, r.quinn.0
+        ),
+    );
+    r.property = store(&tw).properties().last().expect("property").id;
+    r.anchor = flat;
+    ok(&mut tw, GOD, "@instrument/register gold=0");
+    ok(&mut tw, GOD, "@account/system faucet=gold");
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", r.pat.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", r.rex.0));
+    ok(&mut tw, GOD, &format!("@account/open #{}=gold", r.quinn.0));
+    let (faucet, pat_acct, rex_acct, quinn_acct) = {
+        let econ = tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .unwrap();
+        let snap = econ.snapshot();
+        let faucet = snap
+            .accounts()
+            .find(|a| matches!(&a.owner, mush_org::PrincipalId::System(_)))
+            .unwrap()
+            .id;
+        let p = snap
+            .accounts()
+            .find(|a| a.owner == mush_org::PrincipalId::Object(r.pat))
+            .unwrap()
+            .id;
+        let rx = snap
+            .accounts()
+            .find(|a| a.owner == mush_org::PrincipalId::Object(r.rex))
+            .unwrap()
+            .id;
+        let q = snap
+            .accounts()
+            .find(|a| a.owner == mush_org::PrincipalId::Object(r.quinn))
+            .unwrap()
+            .id;
+        (faucet, p, rx, q)
+    };
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={pat_acct} 1000"),
+    );
+    ok(
+        &mut tw,
+        GOD,
+        &format!("@econ/mint {faucet}={rex_acct} 1000"),
+    );
+
+    // 1. Draft a pending exact tenancy for Pat.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {}=#{} cadence={} mode=exact rent=10 from={pat_acct} to={quinn_acct}",
+            r.property, r.pat.0, r.cadence
+        ),
+    );
+    let pending_tid = store(&tw).tenancies().last().unwrap().id;
+    assert_eq!(status(&tw, pending_tid), TenancyStatusKind::Pending);
+    let contract = match tenancy(&tw, pending_tid).funding {
+        mush_housing::Funding::Exact { contract, .. } => contract,
+        other => panic!("expected exact funding, got {other:?}"),
+    };
+
+    // 2. A second `@tenancy/create` while a Pending tenancy exists is refused.
+    let dup = texts(&tw.run(
+        GOD,
+        &format!(
+            "@tenancy/create {}=#{} cadence={}",
+            r.property, r.rex.0, r.cadence
+        ),
+    ));
+    assert!(
+        dup.contains("already has a pending tenancy"),
+        "duplicate tenancy while pending must be refused: {dup}"
+    );
+
+    // 3. Withdraw the property before Pat accepts; accepting must NOT activate on
+    //    the Withdrawn property and must unwind the lease cleanly.
+    ok(&mut tw, GOD, &format!("@property/withdraw {}", r.property));
+    ok(&mut tw, r.pat, &format!("@contract/accept {contract}"));
+    assert_eq!(
+        status(&tw, pending_tid),
+        TenancyStatusKind::Ended,
+        "pending lease must not activate on Withdrawn property"
+    );
+    assert!(
+        !store(&tw).has_live_tenancy(r.property),
+        "withdrawn property must remain without a live tenancy"
+    );
+    assert!(
+        !store(&tw).is_quarantined_property(r.property),
+        "refused pending activation must not quarantine property"
+    );
+    let econ = tw
+        .world()
+        .module_state::<mush_economy::EconomyStore>()
+        .unwrap();
+    assert!(
+        !econ.snapshot().contract(contract).unwrap().state.is_live(),
+        "unwound lease contract must not stay live"
+    );
+
+    // 4. Legacy/pre-fix state with both a live tenancy (Pat) and a Pending exact
+    //    tenancy (Rex) on the same property:
+    //    - `@property/show` hides Rex's pending tenancy from Pat, while showing it
+    //      to staff and the landlord.
+    //    - If Rex accepts their pending lease while Pat's tenancy is live,
+    //      activation is refused and unwound without quarantining the property.
+    ok(&mut tw, GOD, "@dig ShowGateFlat=upshowgate,downshowgate");
+    let flat2 = room_named(&tw, "ShowGateFlat");
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@property/create ShowGateFlat=#{} tier=1 landlord=#{}",
+            flat2.0, r.quinn.0
+        ),
+    );
+    let p2 = store(&tw).properties().last().unwrap().id;
+    // First create Rex's pending exact lease on p2 so the lease contract exists.
+    ok(
+        &mut tw,
+        GOD,
+        &format!(
+            "@tenancy/create {p2}=#{} cadence={} mode=exact rent=10 from={rex_acct} to={quinn_acct}",
+            r.rex.0, r.cadence
+        ),
+    );
+    let pending_id = store(&tw).tenancies().last().unwrap().id;
+    let contract2 = match tenancy(&tw, pending_id).funding {
+        mush_housing::Funding::Exact { contract, .. } => contract,
+        other => panic!("expected exact funding, got {other:?}"),
+    };
+    // Clone KV, inject an Active tenancy for Pat on p2 alongside Rex's Pending tenancy, and reboot.
+    let mut kv = fold_kv(&mut tw);
+    let live_tid = TenancyId(pending_id.0 + 1);
+    let mut pat_set = std::collections::BTreeSet::new();
+    pat_set.insert(r.pat);
+    let pat_draft = mush_housing::Tenancy::new(
+        live_tid,
+        p2,
+        pat_set.clone(),
+        mush_economy::CadenceId(r.cadence),
+    )
+    .unwrap();
+    let pat_active = mush_housing::accept(&pat_draft, true, &pat_set, 0).unwrap();
+    kv.entry(SmolStr::new(NS)).or_default().push((
+        mush_housing::tenancy_key(live_tid),
+        serde_json::to_value(&pat_active).unwrap(),
+    ));
+    reboot(&mut tw, kv);
+
+    let pat_view = ok(&mut tw, r.pat, &format!("@property/show {p2}"));
+    assert!(pat_view.contains(&format!("tenancy #{live_tid}")));
+    assert!(
+        !pat_view.contains(&format!("tenancy #{pending_id}")),
+        "tenant must not see another actor's pending tenancy: {pat_view}"
+    );
+    let landlord_view = ok(&mut tw, r.quinn, &format!("@property/show {p2}"));
+    assert!(
+        landlord_view.contains(&format!("tenancy #{pending_id}")),
+        "landlord should still see pending tenancy: {landlord_view}"
+    );
+    let staff_view = ok(&mut tw, GOD, &format!("@property/show {p2}"));
+    assert!(
+        staff_view.contains(&format!("tenancy #{pending_id}")),
+        "staff should still see pending tenancy: {staff_view}"
+    );
+
+    // Rex accepts contract2 while Pat's tenancy is live: must refuse and unwind without quarantine!
+    ok(&mut tw, r.rex, &format!("@contract/accept {contract2}"));
+    assert_eq!(
+        status(&tw, pending_id),
+        TenancyStatusKind::Ended,
+        "pending lease must unwind when property already has a live tenancy"
+    );
+    assert_eq!(
+        status(&tw, live_tid),
+        TenancyStatusKind::Active,
+        "existing live tenancy must remain unaffected"
+    );
+    assert!(
+        !store(&tw).is_quarantined_property(p2),
+        "refusing second pending lease must not trigger quarantine"
+    );
 }

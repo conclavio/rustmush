@@ -537,8 +537,10 @@ pub struct TravelState {
     pub patches: BTreeMap<RecordKey, RoomDoc>,
     /// Stake-outs, by watcher.
     pub watches: BTreeMap<ObjId, Watch>,
-    /// Intercepts, by traveler.
-    pub intercepts: BTreeMap<ObjId, Intercept>,
+    /// Intercepts, keyed by `(traveler, interceptor)` so one player's
+    /// `+intercept` cannot overwrite or erase another player's intercept on
+    /// the same traveler (P2-MOD-34).
+    pub intercepts: BTreeMap<(ObjId, ObjId), Intercept>,
     /// Known places, by character.
     pub known: BTreeMap<ObjId, Vec<RecordKey>>,
     /// Service vehicles, by connection.
@@ -1727,10 +1729,14 @@ fn hold_reason_at(ctx: &Ctx<'_>, j: &JourneyRec) -> Option<HoldReason> {
     let here = j.here()?;
     let obj = j.traveler.obj();
     let in_grace = ctx.w.now() < j.grace_until;
-    if let Some(intercept) = st.travel.intercepts.get(&obj)
-        && &intercept.at == here
-        && !in_grace
-        && interceptor_present_at(st, ctx.w, intercept.by, here)
+    if !in_grace
+        && let Some((_, intercept)) = st
+            .travel
+            .intercepts
+            .range((obj, ObjId(0))..=(obj, ObjId(u32::MAX)))
+            .find(|(_, intercept)| {
+                &intercept.at == here && interceptor_present_at(st, ctx.w, intercept.by, here)
+            })
     {
         return Some(HoldReason::Intercept { by: intercept.by });
     }
@@ -1889,12 +1895,15 @@ fn apply_hold(
     tell_room(ctx, place, holder, text);
     // A hold from a watch or intercept is spent once it lands.
     let now_real = ctx.w.now();
-    let is_intercept = matches!(reason, HoldReason::Intercept { .. });
-    if let Some(st) = state_mut(ctx) {
-        st.travel.intercepts.remove(&obj);
-        if is_intercept {
-            st.travel.intercept_hold_started.insert(id, now_real);
-        }
+    let intercept_holder = match reason {
+        HoldReason::Intercept { by } => Some(by),
+        HoldReason::Watch { .. } | HoldReason::Staff { .. } => None,
+    };
+    if let Some(st) = state_mut(ctx)
+        && let Some(by) = intercept_holder
+    {
+        st.travel.intercepts.remove(&(obj, by));
+        st.travel.intercept_hold_started.insert(id, now_real);
     }
     persist(ctx, &held);
     if let Some(st) = state_mut(ctx) {
@@ -2089,7 +2098,7 @@ fn retire(ctx: &mut Ctx<'_>, id: JourneyId) {
             if st.travel.by_traveler.get(&obj) == Some(&id) {
                 st.travel.by_traveler.remove(&obj);
             }
-            st.travel.intercepts.remove(&obj);
+            st.travel.intercepts.retain(|&(t, _), _| t != obj);
         }
     }
 }
@@ -2638,21 +2647,21 @@ fn sweep_patches(ctx: &mut Ctx<'_>) {
     // HIGH-38: drop pending intercepts whose actor is gone or left their room,
     // and lift HoldReason::Intercept journeys when the interceptor left, is gone,
     // or exceeded MAX_INTERCEPT_HOLD_REAL_S.
-    let stale_intercepts: Vec<ObjId> = state_of(ctx)
+    let stale_intercepts: Vec<(ObjId, ObjId)> = state_of(ctx)
         .map(|st| {
             st.travel
                 .intercepts
                 .iter()
                 .filter(|(_, i)| !interceptor_present_at(st, ctx.w, i.by, &i.at))
-                .map(|(traveler, _)| *traveler)
+                .map(|(k, _)| *k)
                 .collect()
         })
         .unwrap_or_default();
     if !stale_intercepts.is_empty()
         && let Some(st) = state_mut(ctx)
     {
-        for traveler in stale_intercepts {
-            st.travel.intercepts.remove(&traveler);
+        for key in stale_intercepts {
+            st.travel.intercepts.remove(&key);
         }
     }
     let now_real = ctx.w.now();
@@ -2988,8 +2997,9 @@ pub(crate) fn on_destroyed(ctx: &mut Ctx<'_>, ev: &WorldEvent) {
     }
     if let Some(st) = state_mut(ctx) {
         st.travel.watches.remove(obj);
-        st.travel.intercepts.remove(obj);
-        st.travel.intercepts.retain(|_, i| i.by != *obj);
+        st.travel
+            .intercepts
+            .retain(|&(traveler, by), _| traveler != *obj && by != *obj);
     }
 }
 

@@ -501,10 +501,19 @@ pub fn post_notice(
     let Some(state) = ctx.state_mut::<MailState>() else {
         return Err("the mail state is not composed".to_owned());
     };
+    let quota = state.quota();
+    let mut eligible: Vec<ObjId> = Vec::new();
+    for &owner in to {
+        if !eligible.contains(&owner) && state.entry_count(owner) < quota {
+            eligible.push(owner);
+        }
+    }
+    if eligible.is_empty() {
+        return Err("all recipients' mailboxes are full".to_owned());
+    }
     let id = state
         .alloc_id()
         .ok_or_else(|| "the mail id space is exhausted".to_owned())?;
-    let quota = state.quota();
     let msg = MailMsg {
         id,
         from,
@@ -516,19 +525,16 @@ pub fn post_notice(
         delivery: None,
     };
     state.insert_msg(msg.clone());
-    let mut entries: Vec<MailboxEntry> = Vec::new();
-    for owner in to {
-        if state.entry_count(*owner) >= quota {
-            continue;
-        }
+    let mut entries: Vec<MailboxEntry> = Vec::with_capacity(eligible.len());
+    for owner in eligible {
         let entry = MailboxEntry {
-            owner: *owner,
+            owner,
             msg: id,
             folder: INBOX.into(),
             status: MailStatus::Unread,
             read_at: None,
         };
-        state.box_mut(*owner).entries.insert(id, entry.clone());
+        state.box_mut(owner).entries.insert(id, entry.clone());
         entries.push(entry);
     }
     let next = state.next_id();

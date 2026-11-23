@@ -7,7 +7,7 @@
 //! the declaring and the shown side.
 
 use mush_core::output::display_name;
-use mush_core::{CmdError, Ctx, ObjId, World};
+use mush_core::{CmdError, Ctx, Flags, ObjId, World};
 
 use crate::data::{FactionState, Stance, StanceRow, StanceSide, persist_del, persist_stance};
 
@@ -51,7 +51,8 @@ fn resolve_side(w: &World, viewer: ObjId, staff: bool, name: &str) -> Option<Sta
     side_listed(w, viewer, staff, StanceSide::Org(org.id)).then_some(StanceSide::Org(org.id))
 }
 
-/// Whether `viewer` may know `side` exists.
+/// Whether `viewer` may know `side` exists (requiring `MembershipStatus::Active`
+/// for hidden orgs so suspended/former members cannot see them, P2-MOD-40).
 fn side_listed(w: &World, viewer: ObjId, staff: bool, side: StanceSide) -> bool {
     match side {
         StanceSide::Faction(id) => factions(w).is_some_and(|st| {
@@ -60,8 +61,57 @@ fn side_listed(w: &World, viewer: ObjId, staff: bool, side: StanceSide) -> bool 
                 .is_some_and(|f| st.faction_listed(viewer, staff, f))
         }),
         StanceSide::Org(id) => orgs(w).is_some_and(|orgs| {
-            orgs.org(id)
-                .is_some_and(|org| !org.hidden || staff || orgs.membership(id, viewer).is_some())
+            orgs.org(id).is_some_and(|org| {
+                !org.hidden
+                    || staff
+                    || orgs
+                        .membership(id, viewer)
+                        .is_some_and(|m| m.status == mush_org::MembershipStatus::Active)
+            })
+        }),
+    }
+}
+
+/// Whether `viewer` is permitted to see `actor`'s name attributed as the
+/// officer who declared `from`'s stance (preventing covert/non-public officers
+/// or `Flags::DARK` actors from being exposed in stance notices, P2-MOD-40).
+fn actor_visible_for_stance(
+    w: &World,
+    viewer: ObjId,
+    viewer_staff: bool,
+    from: StanceSide,
+    actor: ObjId,
+) -> bool {
+    if viewer_staff || viewer == actor {
+        return true;
+    }
+    if w.get(actor).is_some_and(|o| o.flags.contains(Flags::DARK)) {
+        return false;
+    }
+    match from {
+        StanceSide::Faction(id) => factions(w).is_some_and(|st| {
+            if let Some(m) = st.membership(actor, id) {
+                st.membership_visible(viewer, viewer_staff, m)
+            } else {
+                st.factions
+                    .get(&id)
+                    .is_some_and(|f| !f.hidden && f.principals.contains(&actor))
+            }
+        }),
+        StanceSide::Org(id) => orgs(w).is_some_and(|orgs| {
+            let Some(m) = orgs.membership(id, actor) else {
+                return false;
+            };
+            if m.status != mush_org::MembershipStatus::Active {
+                return false;
+            }
+            match m.visibility {
+                mush_org::Visibility::Public => true,
+                mush_org::Visibility::MembersKnow => orgs
+                    .membership(id, viewer)
+                    .is_some_and(|vm| vm.status == mush_org::MembershipStatus::Active),
+                mush_org::Visibility::Hidden => false,
+            }
         }),
     }
 }
@@ -204,15 +254,30 @@ pub(crate) fn declare(ctx: &mut Ctx<'_>, staff_verb: bool) -> Result<(), CmdErro
     }
     line.push_str(" A field already running is unchanged; the next one reads it.");
     ctx.out.sys_to_actor(actor, "faction", line);
-    let notice = format!(
-        "{from_name} has declared itself {} toward {to_name} ({}).",
-        stance.label(),
-        display_name(ctx.w, actor)
-    );
     for officer in officers_of(ctx.w, to) {
-        if officer != actor {
-            ctx.out.sys_to_actor(officer, "faction", notice.clone());
+        if officer == actor {
+            continue;
         }
+        let officer_staff = crate::commands::is_admin(ctx.w, officer);
+        // Never leak a hidden declaring faction/org to target officers who
+        // cannot list `from`, and omit covert/non-public officer attribution
+        // when the recipient is not permitted to see `actor`'s membership.
+        if !side_listed(ctx.w, officer, officer_staff, from) {
+            continue;
+        }
+        let notice = if actor_visible_for_stance(ctx.w, officer, officer_staff, from, actor) {
+            format!(
+                "{from_name} has declared itself {} toward {to_name} ({}).",
+                stance.label(),
+                display_name(ctx.w, actor)
+            )
+        } else {
+            format!(
+                "{from_name} has declared itself {} toward {to_name}.",
+                stance.label()
+            )
+        };
+        ctx.out.sys_to_actor(officer, "faction", notice);
     }
     Ok(())
 }

@@ -572,6 +572,17 @@ impl HousingStore {
         )
     }
 
+    /// Whether `property` currently has a `Pending` tenancy (an offered exact
+    /// lease awaiting tenant acceptance).
+    #[must_use]
+    pub fn has_pending_tenancy(&self, property: PropertyId) -> bool {
+        self.open.iter().any(|id| {
+            self.tenancies.get(id).is_some_and(|t| {
+                t.property == property && matches!(t.status, crate::record::TenancyStatus::Pending)
+            })
+        })
+    }
+
     /// The property one room belongs to — the **unique** holder, read off the
     /// projection (D-LBK-4a). A room two properties hold answers `None` here: it is a
     /// [`RoomEntry::Conflict`], quarantined by pass 0, and every caller that decides
@@ -846,31 +857,68 @@ pub fn is_character(w: &World, id: ObjId) -> bool {
 /// Maximum containment hops walked by [`enclosing_room`] before failing closed.
 pub const MAX_ENCLOSING_DEPTH: usize = 128;
 
+/// Tri-state result of walking `Obj.location` transitively to an enclosing
+/// [`ObjKind::Room`].
+///
+/// Distinguishes "genuinely outside any room" ([`Self::Unlocated`]) from
+/// hitting a containment cycle or exceeding [`MAX_ENCLOSING_DEPTH`]
+/// ([`Self::LimitOrCycle`]), so security hooks and tenancy-end unhoming can
+/// fail closed instead of mistaking depth overflow for an unlocated object.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EnclosingRoom {
+    /// Resolved to an enclosing room (including when the starting object is itself a room).
+    Room(ObjId),
+    /// The object does not exist or has no enclosing room (`location == None`).
+    Unlocated,
+    /// The containment chain hit a cycle or exceeded [`MAX_ENCLOSING_DEPTH`].
+    LimitOrCycle,
+}
+
+impl EnclosingRoom {
+    /// Returns the resolved room `ObjId`, if any.
+    #[must_use]
+    pub const fn room(self) -> Option<ObjId> {
+        match self {
+            Self::Room(id) => Some(id),
+            Self::Unlocated | Self::LimitOrCycle => None,
+        }
+    }
+}
+
 /// Cycle-safe transitive walk up `Obj.location` from `id` to its enclosing
 /// [`ObjKind::Room`].
 ///
-/// Returns `Some(id)` when `id` is itself a room, `Some(room)` when `id` is
-/// nested inside any chain of containers/characters inside `room`, or `None`
-/// if `id` does not exist, has no enclosing room, or hits a cycle / depth cap.
+/// Returns [`EnclosingRoom::Room`] when `id` is itself a room or nested inside
+/// a room within [`MAX_ENCLOSING_DEPTH`] hops, [`EnclosingRoom::Unlocated`]
+/// when `id` does not exist or has no enclosing room, or
+/// [`EnclosingRoom::LimitOrCycle`] when a cycle or the depth cap is hit.
 #[must_use]
-pub fn enclosing_room(w: &World, id: ObjId) -> Option<ObjId> {
+pub fn enclosing_room(w: &World, id: ObjId) -> EnclosingRoom {
     let mut cur = id;
     let mut visited = BTreeSet::new();
     for _ in 0..MAX_ENCLOSING_DEPTH {
         if !visited.insert(cur) {
-            return None;
+            return EnclosingRoom::LimitOrCycle;
         }
-        let o = w.get(cur)?;
+        let Some(o) = w.get(cur) else {
+            return EnclosingRoom::Unlocated;
+        };
         if o.kind == ObjKind::Room {
-            return Some(cur);
+            return EnclosingRoom::Room(cur);
         }
-        cur = o.location?;
+        let Some(next) = o.location else {
+            return EnclosingRoom::Unlocated;
+        };
+        cur = next;
     }
-    None
+    EnclosingRoom::LimitOrCycle
 }
 
 /// Whether `target` is directly `anchor` or in `rooms`, or is transitively
 /// enclosed inside any of them.
+///
+/// Fails closed (`true`) on [`EnclosingRoom::LimitOrCycle`] so unhoming paths
+/// never leave behind an unverified `Obj.home` pointer.
 #[must_use]
 pub fn is_inside_property(
     w: &World,
@@ -881,7 +929,11 @@ pub fn is_inside_property(
     if target == anchor || rooms.contains(&target) {
         return true;
     }
-    enclosing_room(w, target).is_some_and(|room| room == anchor || rooms.contains(&room))
+    match enclosing_room(w, target) {
+        EnclosingRoom::Room(room) => room == anchor || rooms.contains(&room),
+        EnclosingRoom::Unlocated => false,
+        EnclosingRoom::LimitOrCycle => true,
+    }
 }
 
 /// "Now" on a tenancy's own cadence clock — the `now` every E5a predicate and every
