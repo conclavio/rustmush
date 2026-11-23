@@ -232,6 +232,12 @@ pub enum TowStage {
         /// IC seconds left when a field paused it (Q-41-3); `None` while it runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         paused: Option<i64>,
+        /// **Committed stores/bale payment** (`P2-TSW-15`): `true` only after
+        /// `TowOrder::Tended(TendStep::Finish)` atomically debited stores & bale. While `false`,
+        /// `apply_plan` has not run; once `true`, `Release` is refused until `TendStep::Applied`
+        /// retires the act after applying the unit mutation plan.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        paid: bool,
     },
 }
 
@@ -1857,6 +1863,14 @@ impl ActionProvider for TowProvider {
                 if promoted && !field {
                     return Err(refused(crate::surface::site_record::FIELD_OPEN_CODE));
                 }
+                // P2-TSW-15: never let Release discard a tend act whose stores/bale debit has
+                // already committed and is awaiting plan application.
+                if matches!(
+                    record.tows.act_of(tv).map(|a| &a.stage),
+                    Some(TowStage::Tend { paid: true, .. })
+                ) {
+                    return Err(refused("tend_paid"));
+                }
                 // Doc 36 cut GC.6 (Q-36-26): a release starts the tenure again.
                 let released = record
                     .tows
@@ -2247,10 +2261,47 @@ fn verify_live_site_order_world(
                         return Err(refused("claim_not_system"));
                     }
                 }
+                ClaimOrder::File {
+                    hull,
+                    contract,
+                    window_end,
+                    now_real,
+                    ..
+                } => {
+                    // P2-TSW-1: enforce the full configured contest window (minus small clock
+                    // slack) against both the order's filing timestamp and the live economy
+                    // contract so a stale/expired unattached contract can never be attached.
+                    let configured = crate::surface::claim::claim_window_real_secs(world);
+                    let min_window = crate::surface::claim::min_claim_window_secs(configured);
+                    if *window_end <= *now_real || window_end.saturating_sub(*now_real) < min_window
+                    {
+                        return Err(refused("claim_window_short"));
+                    }
+                    let cid = mush_economy::ContractId(*contract);
+                    if let Some(store) = world.module_state::<mush_economy::EconomyStore>() {
+                        let Some(live_contract) = store.snapshot().contract(cid) else {
+                            return Err(refused("claim_no_contract"));
+                        };
+                        if live_contract.state.is_terminal()
+                            || mush_economy::salvage_claim_hull(live_contract) != Some(*hull)
+                        {
+                            return Err(refused("claim_window_short"));
+                        }
+                        if let Some((live_end, paused)) =
+                            mush_economy::salvage_claim_window(world, cid)
+                        {
+                            let live_now = world.now();
+                            if live_end <= live_now
+                                || (!paused && live_end.saturating_sub(live_now) < min_window)
+                            {
+                                return Err(refused("claim_window_short"));
+                            }
+                        }
+                    }
+                }
                 ClaimOrder::AuthorizeBlock { .. }
                 | ClaimOrder::Refuse { .. }
                 | ClaimOrder::Ask { .. }
-                | ClaimOrder::File { .. }
                 | ClaimOrder::Report { .. }
                 | ClaimOrder::AtRisk { .. }
                 | ClaimOrder::Settle { .. } => {}
@@ -2536,9 +2587,13 @@ impl TowProvider {
                 .and_then(crate::surface::claim::TenurePin::landholder)
                 && landholder != holder
                 && pin.as_ref().and_then(|pin| pin.answering) != Some(holder)
-                && !pin
-                    .as_ref()
-                    .is_some_and(|pin| pin.owner_grant.is_some() || pin.landholder_authorized)
+                // P2-TSW-12: owner-grant and landholder authorizations pinned at attach belong
+                // strictly to `pin.recoverer` and never suppress unlawful logs for a different
+                // custodian principal.
+                && !pin.as_ref().is_some_and(|pin| {
+                    pin.recoverer == holder
+                        && (pin.owner_grant.is_some() || pin.landholder_authorized)
+                })
             {
                 crate::surface::claim::log_unlawful(
                     record,
@@ -2876,6 +2931,7 @@ impl TowProvider {
                     target: facts.target,
                     work: facts.work.clone(),
                     paused: None,
+                    paid: false,
                 },
                 (now, now.saturating_add(i64::from(facts.secs))),
             )
@@ -2883,9 +2939,10 @@ impl TowProvider {
         Ok("filed".to_owned())
     }
 
-    /// **The tick's step on a tend act** (doc 41 cut RS.1): a pause under a field, a resume on
-    /// open ground, a finish that draws the stores and writes the bale, or a finish that came
-    /// to nothing.
+    /// **The tick's step on a tend act** (doc 41 cut RS.1; `P2-TSW-15`): a pause under a field, a
+    /// resume on open ground, a finish that verifies & atomically debits stores and bale before
+    /// marking `paid = true`, an `Applied` step that retires the paid act after `apply_plan` has
+    /// run, or a finish that came to nothing.
     fn tended(
         &self,
         txn: &mut ActionTxn<'_>,
@@ -2902,9 +2959,21 @@ impl TowProvider {
             .iter_mut()
             .find(|a| a.tug == tv && a.ordinal == ordinal && a.operator == actor)
             .ok_or_else(|| port_error(ActionErrorCode::Conflict, "that tend act has landed"))?;
-        let TowStage::Tend { paused, .. } = &mut act.stage else {
+        let TowStage::Tend { paused, paid, .. } = &mut act.stage else {
             return Err(invalid());
         };
+        if *paid {
+            return match step {
+                TendStep::Applied => {
+                    record.tows.take_act(tv);
+                    Ok("applied".to_owned())
+                }
+                _ => Err(port_error(
+                    ActionErrorCode::Conflict,
+                    "that tend act is already paid",
+                )),
+            };
+        }
         match step {
             TendStep::Pause => {
                 if !promoted || paused.is_some() {
@@ -2931,6 +3000,12 @@ impl TowProvider {
                 act.due_ic = now.saturating_add(left);
                 return Ok("resumed".to_owned());
             }
+            TendStep::Applied => {
+                return Err(port_error(
+                    ActionErrorCode::Conflict,
+                    "that tend act has not been paid yet",
+                ));
+            }
             TendStep::Lost { .. } | TendStep::Finish { .. } => {}
         }
         if promoted || paused.is_some() || act.due_ic > now {
@@ -2939,32 +3014,50 @@ impl TowProvider {
                 "the tend act is not due",
             ));
         }
-        record.tows.take_act(tv);
         let TendStep::Finish { draw } = step else {
+            record.tows.take_act(tv);
             return Ok("lost".to_owned());
         };
-        // The draw (Q-41-2): what the stores still hold of it, out of them; the bale written.
-        // The work already landed on the unit (the load's precedent), so a short store never
-        // undoes it: the finish takes what is there and says so.
-        let mut short = false;
-        let mut taken: BTreeMap<CanonicalId, u64> = BTreeMap::new();
-        if let Some(inventory) = self.inventory.as_ref() {
+        // P2-TSW-15: verify stores and bale BEFORE debiting anything; `apply_plan` has not run
+        // yet, so any shortfall or stale bale fails closed cleanly without debiting or marking paid.
+        if !draw.debit.is_empty() {
+            let Some(inventory) = self.inventory.as_ref() else {
+                record.tows.take_act(tv);
+                return Ok("lost:short".to_owned());
+            };
             let stores = mush_inventory::EndpointRef(mush_economy::VaultId(draw.stores));
             for (good, qty) in &draw.debit {
                 let have = inventory
                     .available(txn, stores, good)
                     .map_err(|_| integrity("the stores cannot be read"))?;
-                let take = have.min(*qty);
-                short |= take < *qty;
-                taken.insert(good.clone(), take);
-                if take > 0 {
-                    inventory
-                        .debit(txn, stores, good, take)
-                        .map_err(|_| integrity("the stores could not be drawn"))?;
+                if have < *qty {
+                    record.tows.take_act(tv);
+                    return Ok("lost:short".to_owned());
                 }
             }
-        } else if !draw.debit.is_empty() {
-            short = true;
+        }
+        let existing_rig = if draw.bale_after.is_some() {
+            let found = act::read_record(txn, &self.excursions, tv)?;
+            let current_bale = found.as_ref().and_then(|r| r.bale);
+            if current_bale != draw.bale_before {
+                record.tows.take_act(tv);
+                return Ok("lost:short".to_owned());
+            }
+            Some(found)
+        } else {
+            None
+        };
+        let mut taken: BTreeMap<CanonicalId, u64> = BTreeMap::new();
+        if let Some(inventory) = self.inventory.as_ref() {
+            let stores = mush_inventory::EndpointRef(mush_economy::VaultId(draw.stores));
+            for (good, qty) in &draw.debit {
+                if *qty > 0 {
+                    inventory
+                        .debit(txn, stores, good, *qty)
+                        .map_err(|_| integrity("the stores could not be drawn"))?;
+                }
+                taken.insert(good.clone(), *qty);
+            }
         }
         // Doc 48 cut EX.0: a draw's rows past its bale lines are a rearm's munitions, out of the
         // stores into the target's magazines (the census's `loaded`), in this bundle.
@@ -2978,8 +3071,7 @@ impl TowProvider {
                 *units = units.saturating_add(*take);
             }
         }
-        if let Some(after) = draw.bale_after {
-            let found = act::read_record(txn, &self.excursions, tv)?;
+        if let (Some(after), Some(found)) = (draw.bale_after, existing_rig) {
             let existed = found.is_some();
             let mut rig =
                 found.unwrap_or_else(|| crate::surface::excursion::RigRecord::fresh_unread(tv));
@@ -3003,11 +3095,18 @@ impl TowProvider {
             rig.bale = Some(after);
             act::write_record(txn, &self.excursions, rig, existed)?;
         }
-        Ok(if short {
-            "tended:short".to_owned()
-        } else {
-            "tended".to_owned()
-        })
+        // Mark the tend act durably paid; `tow::tick` now applies `apply_plan` and submits
+        // `TendStep::Applied` to retire the act.
+        if let Some(act) = record
+            .tows
+            .acts
+            .iter_mut()
+            .find(|a| a.tug == tv && a.ordinal == ordinal)
+            && let TowStage::Tend { paid, .. } = &mut act.stage
+        {
+            *paid = true;
+        }
+        Ok("tended".to_owned())
     }
 
     /// **A stores op** (doc 41 cut RS.1): a load from the carrier's hold into the stores,
@@ -3205,6 +3304,11 @@ pub(crate) fn submit(
     else {
         return false;
     };
+    // P2-TSW-15: never overwrite a pending TowOrders row while `actor` already has an
+    // authoritative submission in flight (clobbering an in-flight Tended/Claim/Tow order).
+    if ctx.authoritative_pending(actor) {
+        return false;
+    }
     let committed_nonce = nonces
         .as_ref()
         .and_then(|handle| {
@@ -3387,6 +3491,12 @@ pub(crate) fn release_cmd(ctx: &mut Ctx<'_>, rig: &act::RigAt, go: bool) -> Resu
     let (site, _, _) =
         on_ground(ctx.w, rig.tv).ok_or_else(|| CmdError::msg(NOT_ON_GROUND.replace("{n}", &n)))?;
     let record = record_or_busy(ctx, &site);
+    if matches!(
+        record.tows.act_of(rig.tv).map(|a| &a.stage),
+        Some(TowStage::Tend { paid: true, .. })
+    ) {
+        return Err(CmdError::msg(TOW_BUSY.replace("{n}", &n)));
+    }
     let casualty = record
         .tows
         .towing(rig.tv)
@@ -3657,6 +3767,12 @@ pub(crate) fn field_release_cmd(
     let site = crate::field::field_of_unit(ctx.w, rig.tv)
         .ok_or_else(|| CmdError::msg(NOT_ON_GROUND.replace("{n}", &n)))?;
     let record = record_or_busy(ctx, &site);
+    if matches!(
+        record.tows.act_of(rig.tv).map(|a| &a.stage),
+        Some(TowStage::Tend { paid: true, .. })
+    ) {
+        return Err(CmdError::msg(TOW_BUSY.replace("{n}", &n)));
+    }
     let casualty = record
         .tows
         .towing(rig.tv)
@@ -4024,9 +4140,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         let promoted = record.open_field().is_some();
         for act in &record.tows.acts {
             acts_now.insert(act.tug, act.ordinal);
-            // Doc 41 cut RS.1 (Q-41-3): a tend act pauses under a field and resumes after it.
-            if let TowStage::Tend { paused, .. } = &act.stage {
+            // Doc 41 cut RS.1 (Q-41-3) & P2-TSW-15: a tend act pauses under a field and resumes
+            // after it while unpaid; once paid (`paid == true`), it awaits unit-plan application
+            // and retirement on open ground.
+            if let TowStage::Tend { paused, paid, .. } = &act.stage {
                 use crate::surface::tender::TendStep;
+                if *paid {
+                    if !promoted {
+                        due.push((site.clone(), false, act.clone()));
+                    }
+                    continue;
+                }
                 match (promoted, paused) {
                     (true, None) => steps.push((site.clone(), act.clone(), TendStep::Pause)),
                     (false, Some(_)) => steps.push((site.clone(), act.clone(), TendStep::Resume)),
@@ -4058,17 +4182,38 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
         if ctx.authoritative_pending(act.operator) {
             continue;
         }
-        let order = match act.stage.clone() {
-            TowStage::Tend { target, work, .. } => TowOrder::Tended {
-                ordinal: act.ordinal,
-                site: site.clone(),
-                step: crate::surface::tender::due_step(ctx, &act, target, &work, now),
-            },
-            TowStage::Attach { casualty } => TowOrder::Attached {
-                ordinal: act.ordinal,
-                site: site.clone(),
-                facts: attach_facts(ctx, act.tug, casualty).map(Box::new),
-            },
+        let (order, tag) = match act.stage.clone() {
+            TowStage::Tend {
+                target, work, paid, ..
+            } => {
+                let (step, tag) = if paid {
+                    (
+                        crate::surface::tender::apply_paid(ctx, &act, target, &work, now),
+                        act.ordinal.saturating_mul(4).saturating_add(3),
+                    )
+                } else {
+                    (
+                        crate::surface::tender::due_step(ctx, &act, target, &work, now),
+                        act.ordinal.saturating_mul(4),
+                    )
+                };
+                (
+                    TowOrder::Tended {
+                        ordinal: act.ordinal,
+                        site: site.clone(),
+                        step,
+                    },
+                    tag,
+                )
+            }
+            TowStage::Attach { casualty } => (
+                TowOrder::Attached {
+                    ordinal: act.ordinal,
+                    site: site.clone(),
+                    facts: attach_facts(ctx, act.tug, casualty).map(Box::new),
+                },
+                act.ordinal,
+            ),
             TowStage::Load { carrier } => {
                 let casualty = ctx
                     .w
@@ -4112,14 +4257,17 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
                         })?;
                     load_facts(ctx, act.tug, casualty, carrier, ramp)
                 });
-                TowOrder::Loaded {
-                    ordinal: act.ordinal,
-                    site: site.clone(),
-                    facts: facts.map(Box::new),
-                }
+                (
+                    TowOrder::Loaded {
+                        ordinal: act.ordinal,
+                        site: site.clone(),
+                        facts: facts.map(Box::new),
+                    },
+                    act.ordinal,
+                )
             }
         };
-        if submit(ctx, act.operator, act.tug, order, act.ordinal)
+        if submit(ctx, act.operator, act.tug, order, tag)
             && let Some(watch) = ctx.w.module_state_mut::<TowWatch>()
         {
             watch.0.insert(act.tug, (act.operator, act));
@@ -4200,7 +4348,15 @@ fn place_in_bay(
         tracing::warn!(casualty = casualty.0, carrier = carrier.0, %error, "tacsim: a tow's load could not be placed in the bay; its finish records it");
         return Vec::new();
     }
-    let captives = load_crew(ctx, site, (casualty, carrier, room), friend, operator);
+    // P2-TSW-14: consented retrieval loads must not capture the casualty's crew as unlogged
+    // captives; treat `friend || retrieval` as friendly crew boarding.
+    let captives = load_crew(
+        ctx,
+        site,
+        (casualty, carrier, room),
+        friend || retrieval,
+        operator,
+    );
     if written_off && !crate::port::tv::hand_back(ctx, casualty) {
         return captives;
     }

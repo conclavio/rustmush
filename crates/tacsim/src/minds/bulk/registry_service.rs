@@ -36,6 +36,27 @@ use crate::minds::registry::factory::{Factory, PreparedRegistry};
 mod reconformance;
 const COMMAND: &str = "@registry";
 const RETRY_MS: i64 = 1_000;
+const TURN_LEASE_TIMEOUT_MS: i64 = 15_000;
+const GRANT_BACKOFF_MS: i64 = 2_000;
+const MAX_GRANT_BACKOFF_MS: i64 = 30_000;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GrantOutcome {
+    Taken,
+    Skipped,
+    WorkersBusy,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsumeOutcome {
+    Continue,
+    AdmittedAborted,
+    GrantYielded,
+    GrantCancelled,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingTurn {
+    actor: ObjId,
+    since_ms: i64,
+}
 #[cfg(test)]
 #[path = "registry_service_tests.rs"]
 mod tests;
@@ -184,14 +205,16 @@ struct Entry {
     phase: Phase,
     cancel: bool,
     schedule_after: i64,
+    grant_after: i64,
+    grant_failures: u32,
 }
 #[derive(Default)]
 pub(super) struct Lane {
     reconformance: reconformance::Queue,
     entries: BTreeMap<ObjId, Entry>,
-    // The shared FairQueue has lent this turn to one signed publication. Keep
-    // every later account in that queue until this grant/cancel is acknowledged.
-    pending_turn: Option<ObjId>,
+    // Bounded turn lease borrowed from the shared FairQueue for one signed
+    // Grant/Cancel publication. Released on Ack, Grant NoIntent, or timeout.
+    pending_turn: Option<PendingTurn>,
     // Only a broken in-process phase join can reach this lane. Each retained
     // value came out of the same bounded queue and still owns its admitted job.
     // Never discard a Machine merely because that invariant failed.
@@ -207,9 +230,14 @@ impl Lane {
     pub(super) fn has_pending_turn(&self) -> bool {
         self.pending_turn.is_some()
     }
+    fn release_turn(&mut self, actor: ObjId) {
+        if self.pending_turn.is_some_and(|turn| turn.actor == actor) {
+            self.pending_turn = None;
+        }
+    }
     // A refusal hands the caller's own `Ready` back, unboxed, for its retry.
     #[allow(clippy::result_large_err)]
-    fn take_fair_turn(&mut self, ready: Ready) -> Result<(), Ready> {
+    fn take_fair_turn(&mut self, ready: Ready, now: i64) -> Result<(), Ready> {
         if self.pending_turn.is_some() {
             return Err(ready);
         }
@@ -221,10 +249,59 @@ impl Lane {
         if !matches!(entry.phase, Phase::Queued) {
             return Err(ready);
         }
-        self.pending_turn = Some(entry.actor);
+        self.pending_turn = Some(PendingTurn {
+            actor: entry.actor,
+            since_ms: now,
+        });
         entry.phase = Phase::Grant(Some(ready));
         entry.schedule_after = 0;
         Ok(())
+    }
+    fn release_expired_turn(
+        &mut self,
+        now: i64,
+        tickets: Option<&mut super::registry_tickets::Tickets>,
+        queue: &mut super::executor::FairQueue,
+    ) {
+        let Some(turn) = self.pending_turn else {
+            return;
+        };
+        if now.saturating_sub(turn.since_ms) < TURN_LEASE_TIMEOUT_MS {
+            return;
+        }
+        self.pending_turn = None;
+        let Some(entry) = self.entries.get_mut(&turn.actor) else {
+            return;
+        };
+        let Phase::Grant(ready_slot) = &mut entry.phase else {
+            return;
+        };
+        if let Some(pending) = &mut entry.pending {
+            if pending.ack.is_some() {
+                return;
+            }
+            pending.attempt.poll();
+            if pending.transition == Transition::Grant
+                && matches!(pending.attempt, Attempt::Unsubmitted | Attempt::NoIntent)
+                && let (Some(tickets), Some(binding)) = (tickets, entry.binding)
+                && tickets.discard_ungranted(pending.ticket, binding).is_ok()
+            {
+                entry.pending = None;
+            } else {
+                return;
+            }
+        }
+        if entry.cancel {
+            entry.schedule_after = 0;
+            return;
+        }
+        if let Some(ready) = ready_slot.take() {
+            entry.bump_grant_backoff(now);
+            match queue.push(ready) {
+                Ok(()) => entry.phase = Phase::Queued,
+                Err((_, ready)) => entry.phase = Phase::Ready(Some(ready)),
+            }
+        }
     }
     fn accept_ack(&mut self, ack: Acknowledged) -> bool {
         let Some((pending, schedule_after)) = self.entries.values_mut().find_map(|entry| {
@@ -244,6 +321,14 @@ impl Lane {
     }
 }
 impl Entry {
+    fn bump_grant_backoff(&mut self, now: i64) {
+        self.grant_failures = self.grant_failures.saturating_add(1);
+        let shift = self.grant_failures.saturating_sub(1).min(4);
+        let delay = GRANT_BACKOFF_MS
+            .saturating_mul(1_i64 << shift)
+            .min(MAX_GRANT_BACKOFF_MS);
+        self.grant_after = now.saturating_add(delay);
+    }
     // A newly lent fair turn, first matching ACK or retained worker completion
     // makes progress eligible immediately. Polling the same unresolved state
     // still uses this bounded retry deadline and never replaces its observation.
@@ -261,22 +346,48 @@ impl Entry {
     }
 }
 
+fn actor_live(w: &mush_core::World, actor: ObjId, account: AccountId) -> bool {
+    w.get(actor).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Player && !o.flags.contains(mush_core::Flags::GOING)
+    }) && world::account(w, actor) == Ok(account)
+}
+
 fn consume_attempt(
     entry: &mut Entry,
     tickets: &mut super::registry_tickets::Tickets,
     preparing: &mut std::collections::BTreeSet<AccountId>,
-) -> Result<bool, BulkError> {
+    now: i64,
+) -> Result<ConsumeOutcome, BulkError> {
     let Some(pending) = &mut entry.pending else {
-        return Ok(false);
+        return Ok(ConsumeOutcome::Continue);
     };
     // A genuine owner acknowledgement must still pass the normal typed and
     // private-quota readback. It cannot be discarded by a transport outcome.
     if pending.ack.is_some() {
-        return Ok(false);
+        return Ok(ConsumeOutcome::Continue);
     }
     pending.attempt.poll();
+    if matches!(entry.phase, Phase::Grant(_)) && pending.transition == Transition::Grant {
+        let discard = matches!(pending.attempt, Attempt::NoIntent)
+            || (entry.cancel && matches!(pending.attempt, Attempt::Unsubmitted));
+        if discard {
+            let binding = entry.binding.ok_or(BulkError::Stale)?;
+            tickets.discard_ungranted(pending.ticket, binding)?;
+            entry.pending = None;
+            if entry.cancel {
+                entry.schedule_after = 0;
+                return Ok(ConsumeOutcome::GrantCancelled);
+            }
+            if let Phase::Grant(ready) = &mut entry.phase {
+                entry.phase = Phase::Ready(ready.take());
+            }
+            entry.bump_grant_backoff(now);
+            return Ok(ConsumeOutcome::GrantYielded);
+        }
+        return Ok(ConsumeOutcome::Continue);
+    }
     if !matches!(pending.attempt, Attempt::NoIntent) {
-        return Ok(false);
+        return Ok(ConsumeOutcome::Continue);
     }
     if matches!(entry.phase, Phase::Admission { .. }) {
         if pending.transition != Transition::Admit || entry.binding.is_some() {
@@ -291,12 +402,11 @@ fn consume_attempt(
         preparing.remove(&entry.account);
         entry.pending = None;
         entry.phase = Phase::Finished;
-        return Ok(true);
+        return Ok(ConsumeOutcome::AdmittedAborted);
     }
     if !matches!(
         (&entry.phase, pending.transition),
-        (Phase::Grant(_), Transition::Grant)
-            | (Phase::Settle(_), Transition::Settle)
+        (Phase::Settle(_), Transition::Settle)
             | (Phase::Cancel(_), Transition::Cancel)
             | (Phase::Recover(_), Transition::Recover)
     ) || entry.binding.is_none()
@@ -311,10 +421,10 @@ fn consume_attempt(
     {
         return Err(BulkError::Stale);
     }
-    // Admitted work retains its paid lease/result and fair head. Only this
-    // exact ticket may retry; no receipt or Machine is dropped or rebuilt.
+    // Paid settlements, cancels, and recoveries keep their exact ticket across
+    // NoIntent retries so no worker receipt or Machine is dropped or rebuilt.
     pending.attempt = Attempt::Unsubmitted;
-    Ok(false)
+    Ok(ConsumeOutcome::Continue)
 }
 
 /// Whether the Registry service still holds a job for `actor`. A rating's
@@ -581,6 +691,13 @@ pub(in crate::minds) fn completed_rating(
         .filter(|run| run.plan.kind == super::model::WorkKind::Registry)
         .filter_map(|run| Some((run.finished_ms?, run.id, run.registry_job?)))
         .collect();
+    if let Ok(archived) = store.archived_registry_runs(account, ctx.actor) {
+        jobs.extend(
+            archived
+                .into_iter()
+                .map(|entry| (entry.finished_ms, entry.run, entry.job)),
+        );
+    }
     jobs.sort_by_key(|(finished, run, _)| std::cmp::Reverse((*finished, *run)));
     for (_, _, job) in jobs {
         let Ok(read) = ctx.read_owner(&config.reader, RegistryReadRequest::new(job)) else {
@@ -614,6 +731,8 @@ fn cancel(ctx: &mut Ctx<'_>) -> Result<(), BulkError> {
     // The next real bounded worker receipt must settle before an idle cancel.
     // This is merely an unacknowledged request; no durable success is emitted.
     entry.cancel = true;
+    entry.schedule_after = 0;
+    entry.grant_after = 0;
     Ok(())
 }
 pub(super) fn prepared(
@@ -677,6 +796,8 @@ pub(super) fn prepared(
                 },
                 cancel: false,
                 schedule_after: 0,
+                grant_after: 0,
+                grant_failures: 0,
             },
         );
         Ok(())
@@ -795,7 +916,7 @@ fn advance(
                 }
             }
             (Phase::Grant(ready), Transition::Grant) => {
-                if ready.is_none() || runtime.registry.pending_turn != Some(entry.actor) {
+                if ready.is_none() {
                     return Err(BulkError::Missing);
                 }
                 let lease = ctx
@@ -808,15 +929,14 @@ fn advance(
                     ready: ready.take(),
                     lease: Some(lease),
                 };
-                runtime.registry.pending_turn = None;
+                entry.grant_failures = 0;
+                entry.grant_after = 0;
+                runtime.registry.release_turn(entry.actor);
             }
             (Phase::Settle(ready), Transition::Settle)
             | (Phase::Cancel(ready), Transition::Cancel) => {
                 if ack.transition == Transition::Cancel {
-                    if runtime.registry.pending_turn != Some(entry.actor) {
-                        return Err(BulkError::Stale);
-                    }
-                    runtime.registry.pending_turn = None;
+                    runtime.registry.release_turn(entry.actor);
                 }
                 if execution.observation().phase.terminal() {
                     entry.phase = Phase::Finished;
@@ -843,7 +963,7 @@ fn advance(
         entry.binding = Some(binding);
         entry.pending = None;
     }
-    if consume_attempt(
+    match consume_attempt(
         entry,
         &mut ctx
             .w
@@ -851,12 +971,20 @@ fn advance(
             .ok_or(BulkError::Missing)?
             .registry,
         &mut runtime.external_preparing,
+        world::now_ms(),
     )? {
-        if !entry.reconformance {
-            ctx.out
-                .info(entry.actor, "Registry preparation was not admitted.");
+        ConsumeOutcome::AdmittedAborted => {
+            if !entry.reconformance {
+                ctx.out
+                    .info(entry.actor, "Registry preparation was not admitted.");
+            }
+            return Ok(());
         }
-        return Ok(());
+        ConsumeOutcome::GrantYielded => {
+            runtime.registry.release_turn(entry.actor);
+            return Ok(());
+        }
+        ConsumeOutcome::GrantCancelled | ConsumeOutcome::Continue => {}
     }
     if entry.pending.is_none() {
         let binding = entry.binding;
@@ -1038,13 +1166,106 @@ pub(super) fn completed(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, done: Complet
         .retry
         .push_back(super::world::PendingCompletion { done, blob: None });
 }
-pub(super) fn grant(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, ready: Ready) {
-    let Err(ready) = runtime.registry.take_fair_turn(ready) else {
+pub(super) fn prepare_drain(ctx: &mut Ctx<'_>, runtime: &mut Runtime, now: i64) {
+    let tickets = ctx
+        .w
+        .module_state_mut::<Artifacts>()
+        .map(|a| &mut a.registry);
+    runtime
+        .registry
+        .release_expired_turn(now, tickets, &mut runtime.queue);
+    if runtime.registry.has_pending_turn() || runtime.conduct.has_pending_turn() {
         return;
-    };
-    if let Err((_, ready)) = runtime.queue.push(ready) {
+    }
+    let cancel_account = runtime
+        .registry
+        .entries
+        .values()
+        .find(|entry| {
+            entry.cancel
+                && matches!(entry.phase, Phase::Queued)
+                && actor_live(ctx.w, entry.actor, entry.account)
+        })
+        .map(|entry| entry.account);
+    if let Some(account) = cancel_account
+        && let Some(ready) = runtime.queue.remove(account)
+        && let Err(ready) = runtime.registry.take_fair_turn(ready, now)
+        && let Err((_, ready)) = runtime.queue.push(ready)
+    {
         runtime.registry.stranded_ready.push(ready);
-        tracing::error!("Registry continuation exceeded its reserved queue");
+    }
+}
+pub(super) fn grant(
+    ctx: &mut Ctx<'_>,
+    runtime: &mut Runtime,
+    ready: Ready,
+    now: i64,
+) -> GrantOutcome {
+    if runtime.registry.has_pending_turn() {
+        if let Err((_, ready)) = runtime.queue.push_front(ready) {
+            runtime.registry.stranded_ready.push(ready);
+        }
+        return GrantOutcome::WorkersBusy;
+    }
+    let eligible = {
+        let Some(entry) = runtime.registry.entries.values_mut().find(|e| {
+            e.account == ready.account() && e.binding.is_some_and(|b| b.run == ready.run())
+        }) else {
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.registry.stranded_ready.push(ready);
+            }
+            return GrantOutcome::Skipped;
+        };
+        if !matches!(entry.phase, Phase::Queued) {
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.registry.stranded_ready.push(ready);
+            }
+            return GrantOutcome::Skipped;
+        }
+        if !actor_live(ctx.w, entry.actor, entry.account) {
+            entry.bump_grant_backoff(now);
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.registry.stranded_ready.push(ready);
+            }
+            return GrantOutcome::Skipped;
+        }
+        if entry.cancel {
+            Ok(())
+        } else if now < entry.grant_after {
+            Err(BulkError::Quota)
+        } else {
+            match ctx.w.module_state::<BulkStore>() {
+                Some(store) => {
+                    store.can_grant(ready.account(), ready.run(), now, ready.next_grant_ms())
+                }
+                None => Err(BulkError::Missing),
+            }
+        }
+    };
+    match eligible {
+        Ok(()) => {
+            if let Err(ready) = runtime.registry.take_fair_turn(ready, now) {
+                if let Err((_, ready)) = runtime.queue.push(ready) {
+                    runtime.registry.stranded_ready.push(ready);
+                    tracing::error!("Registry continuation exceeded its reserved queue");
+                }
+                GrantOutcome::Skipped
+            } else {
+                GrantOutcome::Taken
+            }
+        }
+        Err(BulkError::Busy) => {
+            if let Err((_, ready)) = runtime.queue.push_front(ready) {
+                runtime.registry.stranded_ready.push(ready);
+            }
+            GrantOutcome::WorkersBusy
+        }
+        Err(_) => {
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.registry.stranded_ready.push(ready);
+            }
+            GrantOutcome::Skipped
+        }
     }
 }
 pub(super) fn dispatch(ctx: &mut Ctx<'_>, runtime: &mut Runtime) {
@@ -1090,6 +1311,8 @@ pub(super) fn dispatch(ctx: &mut Ctx<'_>, runtime: &mut Runtime) {
                     phase,
                     cancel: false,
                     schedule_after: 0,
+                    grant_after: 0,
+                    grant_failures: 0,
                 },
             );
         }

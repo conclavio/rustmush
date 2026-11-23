@@ -228,12 +228,15 @@ fn completed_or_interrupted_conduct_history_cannot_be_trimmed_or_forgotten() -> 
     check!(!legacy.changes_conduct());
     check_eq!(legacy.resulting_run(run), Some(store.account_run(id, run)?));
     store.cfg.completed_per_character = 1;
-    check!(
-        store
-            .prepare_conduct_admit(id, actor, 2, plan()?, CommitToken::from_bytes([8; 16]), 2)
-            .is_err()
-    );
+    // Proving retention limits must never deadlock Conduct admission, and
+    // Conduct history remains retained and untrimmable across subsequent runs.
+    let (second, admitted) =
+        store.prepare_conduct_admit(id, actor, 2, plan()?, CommitToken::from_bytes([8; 16]), 2)?;
+    check!(admitted.evicted().is_empty());
+    apply(&mut store, admitted)?;
     check!(store.account_run(id, run).is_ok());
+    check!(store.account_run(id, second).is_ok());
+    check_eq!(store.conduct_runs()?.count(), 2);
     Ok(())
 }
 #[test]
@@ -297,5 +300,71 @@ fn old_plan_bytes_omit_every_conduct_field() -> TestResult {
     let (_, change) = store.prepare_admit(id, actor, 1, p, 0)?;
     let text = std::str::from_utf8(change.bytes())?;
     check!(!text.contains("conduct"));
+    Ok(())
+}
+
+#[test]
+fn p2_tsc_7_conduct_archival_separates_per_run_docs_and_roundtrips_fail_closed() -> TestResult {
+    let cfg = BulkConfig {
+        completed_per_character: 1,
+        ..BulkConfig::default()
+    };
+    let mut store = BulkStore::new(cfg.clone())?;
+    let id = AccountId::mint("p2-tsc-7-conduct-archive", 1)?;
+    let actor = mush_core::GOD;
+    let mut archived_docs: Vec<(RunId, Vec<u8>)> = Vec::new();
+    let mut run_ids = Vec::new();
+
+    // Run 8 sequential Conduct trials under completed_per_character = 1.
+    for i in 1..=8_u8 {
+        let job = CommitToken::from_bytes([i + 10; 16]);
+        let (run, admitted) =
+            store.prepare_conduct_admit(id, actor, u64::from(i), plan()?, job, i64::from(i))?;
+        check!(admitted.evicted().is_empty());
+        check!(admitted.changes_conduct());
+        for (acct, archived_run) in admitted.archived_conduct() {
+            let doc = ArchivedConductRun {
+                format: CONDUCT_ARCHIVE_FORMAT,
+                account: *acct,
+                run: Box::new(archived_run.clone()),
+            };
+            archived_docs.push((archived_run.id, serde_json::to_vec(&doc)?));
+        }
+        apply(&mut store, admitted)?;
+        let cancelled = store.prepare_cancel(id, actor, run, i64::from(i) + 50)?;
+        apply(&mut store, cancelled)?;
+        run_ids.push(run);
+    }
+
+    // Old terminal Conduct runs archived into separate KV docs while all 8
+    // remain visible through conduct_runs() and run()/account_run().
+    check!(!archived_docs.is_empty());
+    check!(store.account(id)?.runs.len() <= 5);
+    check_eq!(store.conduct_runs()?.count(), 8);
+    for run in &run_ids {
+        check!(store.run(id, actor, *run).is_ok());
+        check!(store.account_run(id, *run).is_ok());
+    }
+
+    // Reloading Account + per-run archived Conduct docs restores all 8 runs.
+    let account_bytes = serde_json::to_vec(store.account(id)?)?;
+    let mut reboot = BulkStore::new(cfg.clone())?;
+    reboot.load(id, &account_bytes)?;
+    for (run_id, bytes) in &archived_docs {
+        reboot.load_archived_conduct(id, *run_id, bytes)?;
+    }
+    check_eq!(reboot.conduct_runs()?.count(), 8);
+    for run in &run_ids {
+        check_eq!(reboot.account_run(id, *run)?, store.account_run(id, *run)?);
+    }
+
+    // Tampered Conduct archive doc fails closed and quarantines conduct_runs().
+    let mut bad = BulkStore::new(cfg)?;
+    bad.load(id, &account_bytes)?;
+    check_eq!(
+        bad.load_archived_conduct(id, archived_docs[0].0, b"{}"),
+        Err(BulkError::Quarantined)
+    );
+    check!(bad.conduct_runs().is_err());
     Ok(())
 }

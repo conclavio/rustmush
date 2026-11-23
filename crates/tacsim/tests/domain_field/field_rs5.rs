@@ -571,3 +571,118 @@ fn rs5_the_clerk_hands_an_unaccepted_job_and_a_lapsed_one_to_tycho() {
         "the fresh contract runs one window"
     );
 }
+
+/// **P2-TSW-14**: when an acceptor takes a retrieval job (escrowing a performance bond), loads
+/// the hull into their bay, and lapses past `perform_by_ic`, `retrieval::lapse` MUST:
+/// 1. place a bay hold (`bay_work::held_for`) in favor of the title owner so the acceptor cannot
+///    sequester the hull,
+/// 2. transition the job to `RetrievalStage::Closed` (NEVER `RetrievalStage::House`, preventing
+///    Tycho Mutual head-of-line DoS), and
+/// 3. expire the contract so the acceptor's performance bond forfeits to the poster.
+#[test]
+fn p2_tsw_14_lapsed_bay_held_retrieval_places_owner_hold_and_closes_not_house() {
+    let ground = &AHUNA_FLANK;
+    let mut rig = stocked_tuned(quick);
+    let (a, _a_row, a_tvs) = on_pad_as_at(&mut rig, ("Pilot", 1, "Salt Moth"), ground.site(), 1);
+    let prospect = a_tvs[0];
+    launched_at(&mut rig, ground.entry, a, prospect);
+    let (rx, ry, _) = ramp_at(&rig.tw, ground.entry);
+    let ramp = (rx.div_euclid(1_000), ry.div_euclid(1_000));
+    to_cell_on(&mut rig, ground.entry, prospect, (ramp.0 + 1, ramp.1));
+    powerless(&mut rig, prospect);
+    let s = crate::site_record_rig::staff_member(&mut rig);
+    crate::site_record_rig::staff(
+        &mut rig,
+        s,
+        &format!(
+            "@tacsim/site {} leave #{} casualty {},{}",
+            ground.entry,
+            prospect.0,
+            ramp.0 + 1,
+            ramp.1
+        ),
+    );
+    let (b, b_row, b_tvs) = on_pad_as_at(&mut rig, ("Second", 2, "Red Moth"), ground.site(), 1);
+    let b_carrier = ObjId(b_row.hull);
+    let tug = b_tvs[0];
+    let owner = occator(&rig);
+    let occ_acct = occator_account(&rig);
+    let dest = mush_core::CanonicalId::new("ceres_port").expect("ceres");
+    let posted = staff_hand(&mut rig, |ctx| {
+        tacsim::surface::retrieval::post(
+            ctx,
+            prospect,
+            (owner.clone(), occ_acct),
+            dest.clone(),
+            None,
+        )
+    });
+    assert!(posted.is_ok(), "{posted:?}");
+
+    // B accepts the retrieval job: bond is escrowed from B's available funds.
+    let avail_before = available(&rig, b);
+    let bal_before = balance(&rig, account(&rig, b));
+    let taken = run(
+        &mut rig.tw,
+        b,
+        &format!("+salvage/accept #{} go", prospect.0),
+    );
+    assert!(taken.contains("You accept job"), "{taken}");
+    let accepted = order_of(rig.tw.world(), prospect).expect("accepted order");
+    assert_eq!(accepted.stage, RetrievalStage::Accepted);
+    let perform_by = accepted.perform_by_ic.expect("perform_by_ic");
+    assert!(
+        available(&rig, b) < avail_before,
+        "accepting a retrieval job must escrow a non-zero bond"
+    );
+
+    // B tows and loads the rig into B's own carrier bay.
+    launched_at(&mut rig, ground.entry, b, tug);
+    to_cell_on(&mut rig, ground.entry, tug, (ramp.0 + 1, ramp.1));
+    let (out, queued) = command(&mut rig, b, "+tv/1 tow go");
+    assert_eq!(queued.len(), 1, "{out}");
+    land(&mut rig, &queued[0]).expect("tow start");
+    assert!(
+        seconds_until(&mut rig, 120, |rig| site_record_at(rig, ground.entry)
+            .and_then(|r| r.tows.towing(tug).map(|op| op.casualty()))
+            == Some(prospect)),
+        "tow attaches"
+    );
+    let (out, queued) = command(&mut rig, b, "+tv/1 load go");
+    assert_eq!(queued.len(), 1, "{out}");
+    land(&mut rig, &queued[0]).expect("load start");
+    assert!(
+        seconds_until(&mut rig, 180, |rig| tacsim::surface::tow::in_bay_of(
+            rig.tw.world(),
+            prospect,
+            b_carrier
+        ) && site_record_at(rig, ground.entry)
+            .is_some_and(|r| r.tows.act_of(tug).is_none())),
+        "loaded into B's bay"
+    );
+
+    // B sits in B's bay past perform_by_ic without delivering: retrieval::lapse must close the
+    // job (not hand it to Tycho as RetrievalStage::House), place a bay hold for Occator, and
+    // expire the contract forfeiting B's performance bond.
+    skip_and_fire(&mut rig, perform_by + 60);
+    let lapsed = order_of(rig.tw.world(), prospect).expect("lapsed order");
+    assert_eq!(
+        lapsed.stage,
+        RetrievalStage::Closed,
+        "bay-held lapsed retrieval must close instead of stalling Tycho in House: {lapsed:?}"
+    );
+    assert_eq!(
+        tacsim::port::bay_work::held_for(rig.tw.world(), prospect),
+        Some(owner),
+        "bay-held lapsed retrieval must place a bay hold for the title owner"
+    );
+    assert_eq!(
+        contract_state(&rig, accepted.contract),
+        mush_economy::ContractState::Expired,
+        "lapsed retrieval contract must expire"
+    );
+    assert!(
+        balance(&rig, account(&rig, b)) < bal_before,
+        "lapsing acceptor must forfeit the escrowed performance bond"
+    );
+}

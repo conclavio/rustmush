@@ -19,7 +19,10 @@
 //! walker on the concourse reads the same sky a captain does. Figures are the
 //! planner's and the sky's; none is authored here.
 
-use mush_core::{CanonicalId, CmdError, Ctx, World};
+use std::collections::BTreeMap;
+use std::sync::{LazyLock, Mutex};
+
+use mush_core::{CanonicalId, CmdError, Ctx, DefinitionDigest, ObjId, World};
 
 use crate::ephemeris::AU_KM;
 use crate::kepler::ElementRow;
@@ -28,10 +31,12 @@ use crate::port::burn::{HullSpec, hull_spec_of};
 use crate::port::coop::{helm_of, port_name};
 use crate::port::def::PortDef;
 use crate::port::passage::{
-    PassagePlan, PlanError, choose_route, leg_distance_km, leg_seconds, passage_burn,
+    HullDrive, PassagePlan, PlanError, choose_route, choose_route_with_rev, leg_distance_km,
+    leg_seconds, passage_burn,
 };
 use crate::port::price::{
-    emergency_readings, premium_permille, priced, reach_for, reach_ratio_permille,
+    CachedSky, Reach, cached_sky, emergency_readings_with_sky, premium_permille, priced,
+    reach_for_with_sky, reach_ratio_permille,
 };
 use crate::port::readiness::report_ports;
 use crate::port::ship::{Berth, berth_of, hull_view};
@@ -59,6 +64,209 @@ pub const WINDOW_DAYS: i64 = 365;
 pub const PLAN_WINDOW_DAYS: i64 = 30;
 /// Seconds in an IC day.
 const DAY: i64 = 86_400;
+/// Quantization bucket for cached 365-day passage window scans (`P2-TSW-19`: 1 IC hour).
+const WINDOW_CACHE_BUCKET_S: i64 = 3_600;
+/// Maximum cached window summaries kept in RAM (`P2-TSW-19`).
+const MAX_WINDOW_CACHE: usize = 256;
+/// Rate-limit refusal for excessive `+chart <port>` / `sky.chart` queries (`P2-TSW-19`).
+pub(crate) const CHART_RATE_LIMITED: &str =
+    "You are charting passages too quickly; try again in a moment.";
+
+/// Per-actor token-bucket rate limiter for expensive chart queries (`P2-TSW-19`): allows a short
+/// burst of queries, then refills 1 query every [`Self::REFILL_SECS`] real seconds, bounded to
+/// [`Self::MAX_ACTORS`] tracked actors.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChartRateLimiter {
+    actors: BTreeMap<ObjId, ActorChartBucket>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActorChartBucket {
+    tokens: u32,
+    last_at: i64,
+}
+
+impl ChartRateLimiter {
+    /// Burst queries admitted per actor before throttling.
+    pub(crate) const BURST: u32 = 8;
+    /// Real seconds per refilled query token.
+    pub(crate) const REFILL_SECS: i64 = 2;
+    /// Hard cap on tracked actor buckets to keep memory bounded.
+    const MAX_ACTORS: usize = 4_096;
+
+    /// Consume one query token for `actor` at real UTC second `now_real`, returning `true` if
+    /// admitted or `false` if rate-limited.
+    pub(crate) fn admit(&mut self, actor: ObjId, now_real: i64) -> bool {
+        if !self.actors.contains_key(&actor) && self.actors.len() >= Self::MAX_ACTORS {
+            let oldest = self
+                .actors
+                .iter()
+                .min_by_key(|(_, b)| b.last_at)
+                .map(|(id, _)| *id);
+            if let Some(id) = oldest {
+                self.actors.remove(&id);
+            }
+        }
+        let bucket = self.actors.entry(actor).or_insert(ActorChartBucket {
+            tokens: Self::BURST,
+            last_at: now_real,
+        });
+        if now_real > bucket.last_at {
+            let elapsed = now_real.saturating_sub(bucket.last_at);
+            let gained = u32::try_from(elapsed / Self::REFILL_SECS).unwrap_or(Self::BURST);
+            if gained > 0 {
+                bucket.tokens = bucket.tokens.saturating_add(gained).min(Self::BURST);
+                bucket.last_at = bucket
+                    .last_at
+                    .saturating_add(i64::from(gained).saturating_mul(Self::REFILL_SECS));
+            }
+        }
+        if bucket.tokens == 0 {
+            return false;
+        }
+        bucket.tokens = bucket.tokens.saturating_sub(1);
+        if bucket.tokens == Self::BURST.saturating_sub(1) && now_real > bucket.last_at {
+            bucket.last_at = now_real;
+        }
+        true
+    }
+}
+
+/// Single-day entry produced by a `0..=WINDOW_DAYS` passage scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowDay {
+    pub(crate) offset: i64,
+    pub(crate) total_s: i64,
+    pub(crate) burn_t: u64,
+}
+
+/// Summary of the `0..=WINDOW_DAYS` scan for one destination (`P2-TSW-19`: shared by `+chart`
+/// and `sky.chart` and cached by quantized `(sky_epoch, route_pair)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowSummary {
+    pub(crate) fastest: WindowDay,
+    pub(crate) cheapest: WindowDay,
+    pub(crate) worst: WindowDay,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowCacheKey {
+    pack_digest: DefinitionDigest,
+    ephemeris_epoch: i64,
+    ephemeris_rate: u32,
+    from_venue: CanonicalId,
+    dest_venue: CanonicalId,
+    routes: Vec<CanonicalId>,
+    drive: HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    occupants: u32,
+    ic_bucket: i64,
+}
+
+type WindowCacheEntry = (WindowCacheKey, Option<WindowSummary>);
+
+static WINDOW_CACHE: LazyLock<Mutex<Vec<WindowCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+pub(crate) fn summarize_window_days(days: &[WindowDay]) -> Option<WindowSummary> {
+    let fastest = *days.iter().min_by_key(|d| (d.total_s, d.offset))?;
+    let cheapest = days
+        .iter()
+        .copied()
+        .min_by_key(|d| (d.burn_t, d.total_s, d.offset))
+        .unwrap_or(fastest);
+    let worst = days
+        .iter()
+        .copied()
+        .max_by_key(|d| (d.total_s, d.burn_t))
+        .unwrap_or(fastest);
+    Some(WindowSummary {
+        fastest,
+        cheapest,
+        worst,
+    })
+}
+
+/// Cached `0..=WINDOW_DAYS` window summary for `(v, dest)` at `now` (`P2-TSW-19`): `today` is
+/// computed live at exact `now`, while the `1..=WINDOW_DAYS` future sweep is cached per
+/// quantized `(pack, ephemeris, route_pair, hull_drive, payload, occupants, ic_hour_bucket)`.
+pub(crate) fn cached_window_summary(
+    v: &Vantage<'_>,
+    dest: &Destination,
+    now: i64,
+    today: &PassagePlan,
+) -> Option<WindowSummary> {
+    let today_day = WindowDay {
+        offset: 0,
+        total_s: today.total_s,
+        burn_t: today.burn_t,
+    };
+    let rate = v.sky().ephemeris().rate_permille();
+    if rate == 0 {
+        return Some(WindowSummary {
+            fastest: today_day,
+            cheapest: today_day,
+            worst: today_day,
+        });
+    }
+    let ic_bucket = now.div_euclid(WINDOW_CACHE_BUCKET_S);
+    let anchor = ic_bucket.saturating_mul(WINDOW_CACHE_BUCKET_S);
+    let key = WindowCacheKey {
+        pack_digest: v.pack.manifest().digest(),
+        ephemeris_epoch: v.sky().config_epoch(),
+        ephemeris_rate: rate,
+        from_venue: v.def.venue.clone(),
+        dest_venue: dest.venue.clone(),
+        routes: dest.routes.clone(),
+        drive: v.spec.drive.clone(),
+        dry_kg: v.spec.dry_kg,
+        payload_kg: v.payload_kg,
+        occupants: v.occupants,
+        ic_bucket,
+    };
+    let future = {
+        let cache = WINDOW_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)
+    };
+    let future_summary = match future {
+        Some(cached) => cached,
+        None => {
+            let mut days = Vec::with_capacity(usize::try_from(WINDOW_DAYS).unwrap_or(0));
+            for offset in 1..=WINDOW_DAYS {
+                let depart = anchor.saturating_add(offset.saturating_mul(DAY));
+                if let Ok(plan) = plan_at(v, dest, v.payload_kg, depart) {
+                    days.push(WindowDay {
+                        offset,
+                        total_s: plan.total_s,
+                        burn_t: plan.burn_t,
+                    });
+                }
+            }
+            let computed = summarize_window_days(&days);
+            let mut cache = WINDOW_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !cache.iter().any(|(k, _)| *k == key) {
+                if cache.len() >= MAX_WINDOW_CACHE {
+                    cache.remove(0);
+                }
+                cache.push((key, computed));
+            }
+            computed
+        }
+    };
+    match future_summary {
+        Some(f) => summarize_window_days(&[today_day, f.fastest, f.cheapest, f.worst]),
+        None => Some(WindowSummary {
+            fastest: today_day,
+            cheapest: today_day,
+            worst: today_day,
+        }),
+    }
+}
 
 /// Not at a port, aboard nothing: the chart has no vantage.
 pub const CHART_NOWHERE: &str =
@@ -87,11 +295,25 @@ pub(crate) struct Vantage<'w> {
     pub(crate) occupants: u32,
     /// The lane pack.
     pub(crate) pack: &'w RulesPack,
-    /// The sky.
-    pub(crate) sky: Sky,
+    /// Cached sky and precomputed revision digest (`P2-TSW-19`).
+    pub(crate) sky_entry: CachedSky,
     /// **Planned at the hull's load** (doc 20 cut SM.9; decision D5): `true` for the actor's
     /// docked charter at its load, `false` for a port's programme hull planned empty.
     pub(crate) loaded: bool,
+}
+
+impl Vantage<'_> {
+    /// Borrow the cached sky.
+    #[must_use]
+    pub(crate) fn sky(&self) -> &Sky {
+        &self.sky_entry.0
+    }
+
+    /// Borrow the precomputed sky revision digest, when available.
+    #[must_use]
+    pub(crate) fn sky_rev(&self) -> Option<&DefinitionDigest> {
+        self.sky_entry.1.as_ref()
+    }
 }
 
 /// The body a lane place stands on.
@@ -151,7 +373,7 @@ pub(crate) fn vantage_reading<'w>(
         .ok_or_else(|| CHART_NO_LANE.to_owned())?;
     let (pack, _) = report_ports(store, w);
     let pack = pack.ok_or_else(|| CHART_NO_LANE.to_owned())?;
-    let sky = Sky::from_pack(pack, &store.config().time.ephemeris);
+    let sky_entry = cached_sky(pack, &store.config().time.ephemeris);
     // A docked charter: its port, its load.
     if let Some(charter) = helm_of(w, actor)
         && let Some(view) = hull_view(w, charter.hull)
@@ -174,7 +396,7 @@ pub(crate) fn vantage_reading<'w>(
             payload_kg: basis.payload,
             occupants: souls,
             pack,
-            sky,
+            sky_entry,
             loaded: true,
         });
     }
@@ -198,7 +420,7 @@ pub(crate) fn vantage_for_world(w: &World, actor: mush_core::ObjId) -> Result<Va
     let (pack, ports) = report_ports(store, w);
     let pack = pack.ok_or_else(|| CHART_NO_LANE.to_owned())?;
     let goods = store.goods().ok_or_else(|| CHART_NO_LANE.to_owned())?;
-    let sky = Sky::from_pack(pack, &store.config().time.ephemeris);
+    let sky_entry = cached_sky(pack, &store.config().time.ephemeris);
     let here = w.get(actor).and_then(|o| o.location).map(|room| room.0);
     let standing = crate::port::voyage::lane_ports(w)
         .into_iter()
@@ -237,7 +459,7 @@ pub(crate) fn vantage_for_world(w: &World, actor: mush_core::ObjId) -> Result<Va
         payload_kg,
         occupants: 1,
         pack,
-        sky,
+        sky_entry,
         loaded: false,
     })
 }
@@ -251,18 +473,34 @@ pub(crate) fn plan_at(
     depart_ic: i64,
 ) -> Result<PassagePlan, PlanError> {
     let options = PassageOptions::default();
-    choose_route(
-        &v.sky,
-        v.pack,
-        &dest.routes,
-        &v.spec.drive,
-        v.spec.dry_kg,
-        payload_kg,
-        v.occupants,
-        depart_ic,
-        options.policy,
-        None,
-    )
+    if let Some(sky_rev) = v.sky_rev() {
+        choose_route_with_rev(
+            v.sky(),
+            sky_rev,
+            v.pack,
+            &dest.routes,
+            &v.spec.drive,
+            v.spec.dry_kg,
+            payload_kg,
+            v.occupants,
+            depart_ic,
+            options.policy,
+            None,
+        )
+    } else {
+        choose_route(
+            v.sky(),
+            v.pack,
+            &dest.routes,
+            &v.spec.drive,
+            v.spec.dry_kg,
+            payload_kg,
+            v.occupants,
+            depart_ic,
+            options.policy,
+            None,
+        )
+    }
 }
 
 /// The direct chord's passage from the vantage's body to `to` at `depart_ic`:
@@ -273,7 +511,7 @@ pub(crate) fn direct_at(
     payload_kg: u64,
     depart_ic: i64,
 ) -> Option<(u64, u32, u64)> {
-    let dist = leg_distance_km(&v.sky, &v.body, depart_ic, to, depart_ic)?;
+    let dist = leg_distance_km(v.sky(), &v.body, depart_ic, to, depart_ic)?;
     let secs = leg_seconds(&v.spec.drive, v.spec.dry_kg, payload_kg, dist).ok()?;
     let leg = crate::port::families::LegPlan {
         to: to.clone(),
@@ -305,25 +543,25 @@ pub(crate) fn sky_lines(
     v: &Vantage<'_>,
     now: i64,
 ) -> Vec<String> {
-    let motion = if v.sky.ephemeris().rate_permille() == 0 {
+    let sky = v.sky();
+    let motion = if sky.ephemeris().rate_permille() == 0 {
         "constant".to_owned()
     } else {
-        format!("moving, rate {}", v.sky.ephemeris().rate_permille())
+        format!("moving, rate {}", sky.ephemeris().rate_permille())
     };
     let mut lines = vec![format!(
         "The sky on {} ({}; {}), from {} on {}:",
         epoch_date(now),
-        v.sky.model(),
+        sky.model(),
         motion,
         port_name(v.def),
         v.body
     )];
-    let mut bodies: Vec<(CanonicalId, f64, f64, f64)> = v
-        .sky
+    let mut bodies: Vec<(CanonicalId, f64, f64, f64)> = sky
         .ephemeris()
         .bodies()
         .filter_map(|(id, _)| {
-            let (r, lon, lat) = v.sky.heliocentric(id, now)?;
+            let (r, lon, lat) = sky.heliocentric(id, now)?;
             Some((id.clone(), r, lon, lat))
         })
         .collect();
@@ -333,16 +571,15 @@ pub(crate) fn sky_lines(
             "here".to_owned()
         } else {
             match (
-                v.sky.distance_km(&v.body, now, id, now),
-                v.sky.light_lag_s(&v.body, now, id, now),
+                sky.distance_km(&v.body, now, id, now),
+                sky.light_lag_s(&v.body, now, id, now),
             ) {
                 (Some(km), Some(lag)) => format!("{} AU from here, {}", au3(km), lag_text(lag)),
                 _ => "unplaced".to_owned(),
             }
         };
         // Doc 19 cut A.7: a moon says whose it is.
-        let moon = v
-            .sky
+        let moon = sky
             .parent_of(id)
             .map_or_else(String::new, |parent| format!("  moon of {parent}"));
         #[allow(clippy::cast_precision_loss)]
@@ -434,15 +671,16 @@ pub(crate) fn sky_lines(
     lines
 }
 
-/// One day of the window scan.
-struct Day {
-    offset: i64,
-    total_s: i64,
-    burn_t: u64,
-}
-
-/// `+chart <port>`: the window over the next IC year.
+/// `+chart <port>`: the window over the next IC year (`P2-TSW-19`: rate-limited per actor and
+/// backed by cached sky/window/reach scans).
 fn chart_window(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> {
+    let actor = ctx.actor;
+    let now_real = ctx.w.now();
+    if let Some(limiter) = ctx.w.module_state_mut::<ChartRateLimiter>()
+        && !limiter.admit(actor, now_real)
+    {
+        return Err(CmdError::msg(CHART_RATE_LIMITED));
+    }
     let v = vantage(ctx)?;
     let w: &World = ctx.w;
     let now = w.world_ic_now().at;
@@ -473,6 +711,22 @@ pub(crate) fn window_lines_for(
     now: i64,
 ) -> Result<Vec<String>, String> {
     let today = plan_at(v, dest, v.payload_kg, now).map_err(|e| e.to_string())?;
+    let summary = (v.sky().ephemeris().rate_permille() != 0)
+        .then(|| cached_window_summary(v, dest, now, &today))
+        .flatten();
+    Ok(format_window_lines_with(w, v, dest, now, &today, summary))
+}
+
+/// Format one destination's window text given a precomputed `today` plan and optional cached
+/// [`WindowSummary`] (`P2-TSW-19`: shared by `+chart <port>` and `sky.chart`).
+pub(crate) fn format_window_lines_with(
+    w: &World,
+    v: &Vantage<'_>,
+    dest: &Destination,
+    now: i64,
+    today: &PassagePlan,
+    summary: Option<WindowSummary>,
+) -> Vec<String> {
     let mut lines = vec![format!(
         "The window for {} from {}, the {} at {} t, scanned a day at a time over the next {} IC days:",
         dest.port,
@@ -488,34 +742,15 @@ pub(crate) fn window_lines_for(
         today.burn_t,
         today.crew_days
     ));
-    lines.extend(demand_lines(w, &dest.venue));
-    if v.sky.ephemeris().rate_permille() == 0 {
+    lines.extend(demand_lines_with_sky(w, v, &dest.venue));
+    if v.sky().ephemeris().rate_permille() == 0 {
         lines.push("  The sky is constant on this server: every day is today.".to_owned());
-        return Ok(lines);
+        return lines;
     }
-    let mut days: Vec<Day> = Vec::with_capacity(usize::try_from(WINDOW_DAYS).unwrap_or(0) + 1);
-    for offset in 0..=WINDOW_DAYS {
-        let depart = now.saturating_add(offset.saturating_mul(DAY));
-        if let Ok(plan) = plan_at(v, dest, v.payload_kg, depart) {
-            days.push(Day {
-                offset,
-                total_s: plan.total_s,
-                burn_t: plan.burn_t,
-            });
-        }
-    }
-    let Some(fastest) = days.iter().min_by_key(|d| (d.total_s, d.offset)) else {
-        return Ok(lines);
+    let Some(summary) = summary else {
+        return lines;
     };
-    let cheapest = days
-        .iter()
-        .min_by_key(|d| (d.burn_t, d.total_s, d.offset))
-        .unwrap_or(fastest);
-    let worst = days
-        .iter()
-        .max_by_key(|d| (d.total_s, d.burn_t))
-        .unwrap_or(fastest);
-    let describe = |label: &str, day: &Day| -> String {
+    let describe = |label: &str, day: WindowDay| -> String {
         let date = epoch_date(now.saturating_add(day.offset.saturating_mul(DAY)));
         let dh = day.total_s - today.total_s;
         let sign = if dh < 0 { "-" } else { "+" };
@@ -531,19 +766,22 @@ pub(crate) fn window_lines_for(
             dt.abs()
         )
     };
-    lines.push(describe("fastest", fastest));
-    if cheapest.offset != fastest.offset {
-        lines.push(describe("cheapest", cheapest));
+    lines.push(describe("fastest", summary.fastest));
+    if summary.cheapest.offset != summary.fastest.offset {
+        lines.push(describe("cheapest", summary.cheapest));
     }
-    lines.push(describe("worst", worst));
-    Ok(lines)
+    lines.push(describe("worst", summary.worst));
+    lines
 }
 
-/// **The destination's demand side under its season** (doc 19 §6, cut A.4b): for
-/// the port at `venue`, each standing bid's list price and what it posts at — the
-/// premium against the median reach — then the emergency line: which life-support
-/// goods are due at the cap, or that none are and where the reach stands.
-fn demand_lines(w: &World, venue: &CanonicalId) -> Vec<String> {
+/// **The destination's demand side under its season** (doc 19 §6, cut A.4b; `P2-TSW-19`): reuses
+/// `v`'s hoisted cached sky/revision and deduplicates goods across standing bids and emergency
+/// readings.
+pub(crate) fn demand_lines_with_sky(
+    w: &World,
+    v: &Vantage<'_>,
+    venue: &CanonicalId,
+) -> Vec<String> {
     let Some(store) = w.module_state::<TacsimStore>() else {
         return Vec::new();
     };
@@ -570,9 +808,16 @@ fn demand_lines(w: &World, venue: &CanonicalId) -> Vec<String> {
             .find(|o| &o.id == org)
             .map_or_else(|| org.to_string(), |o| o.name.clone())
     };
+    let mut reaches: BTreeMap<CanonicalId, Option<Reach>> = BTreeMap::new();
+    let sky = v.sky();
+    let sky_rev = v.sky_rev();
     for vendor in &def.vendors {
         for bid in &vendor.bids {
-            let line = match reach_for(w, def, &bid.good) {
+            let reach = *reaches.entry(bid.good.clone()).or_insert_with(|| {
+                sky_rev
+                    .and_then(|rev| reach_for_with_sky(w, v.pack, &ports, sky, rev, def, &bid.good))
+            });
+            let line = match reach {
                 Some(reach) => {
                     let p = premium_permille(premium.k_permille, premium.cap_permille, reach);
                     format!(
@@ -598,7 +843,9 @@ fn demand_lines(w: &World, venue: &CanonicalId) -> Vec<String> {
         }
     }
     if let Some(emergency) = &def.emergency {
-        let readings = emergency_readings(w, def);
+        let readings = sky_rev.map_or_else(Vec::new, |rev| {
+            emergency_readings_with_sky(w, v.pack, &ports, sky, rev, def, &mut reaches)
+        });
         let ratio = readings
             .iter()
             .filter_map(|r| r.reach)
@@ -639,26 +886,24 @@ fn demand_lines(w: &World, venue: &CanonicalId) -> Vec<String> {
 /// `+chart/body <id>`: one body and its elements.
 fn chart_body(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> {
     let v = vantage(ctx)?;
+    let sky = v.sky();
     let w: &World = ctx.w;
     let now = w.world_ic_now().at;
     let wanted = word.trim().to_lowercase();
-    let id = v
-        .sky
+    let id = sky
         .ephemeris()
         .bodies()
         .map(|(id, _)| id.clone())
         .find(|id| id.as_str().eq_ignore_ascii_case(&wanted))
         .ok_or_else(|| {
-            let list: Vec<String> = v
-                .sky
+            let list: Vec<String> = sky
                 .ephemeris()
                 .bodies()
                 .map(|(id, _)| id.to_string())
                 .collect();
             CmdError::msg(CHART_NO_BODY.replace("{list}", &list.join(", ")))
         })?;
-    let (r, lon, lat) = v
-        .sky
+    let (r, lon, lat) = sky
         .heliocentric(&id, now)
         .ok_or_else(|| CmdError::msg(CHART_NO_BODY.replace("{list}", "nothing")))?;
     #[allow(clippy::cast_precision_loss)]
@@ -671,8 +916,8 @@ fn chart_body(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> {
     )];
     if id != v.body
         && let (Some(km), Some(lag)) = (
-            v.sky.distance_km(&v.body, now, &id, now),
-            v.sky.light_lag_s(&v.body, now, &id, now),
+            sky.distance_km(&v.body, now, &id, now),
+            sky.light_lag_s(&v.body, now, &id, now),
         )
     {
         lines.push(format!(
@@ -683,7 +928,7 @@ fn chart_body(ctx: &mut Ctx<'_>, word: &str) -> Result<Vec<String>, CmdError> {
             lag_text(lag)
         ));
     }
-    match &v.sky {
+    match sky {
         Sky::Kepler(kepler) => match kepler.table(&id) {
             Some(rows) => {
                 let row: &ElementRow = rows
@@ -890,5 +1135,56 @@ mod tests {
         assert_eq!(au3(AU_KM / 2), "0.500");
         assert_eq!(lag_text(125), "2m 05s light");
         assert_eq!(lag_text(59), "0m 59s light");
+    }
+
+    /// **P2-TSW-19**: `ChartRateLimiter` bounds rapid chart computations per actor with a burst
+    /// of 8, refills 1 token per 2 real seconds, isolates actors from one another, and caps
+    /// tracked actors cleanly.
+    #[test]
+    fn p2_tsw_19_chart_rate_limiter_enforces_burst_and_refill_per_actor() {
+        let mut limiter = ChartRateLimiter::default();
+        let alice = ObjId(10);
+        let bob = ObjId(11);
+        for i in 0..8 {
+            assert!(limiter.admit(alice, 1_000), "burst call {i} must pass");
+        }
+        assert!(
+            !limiter.admit(alice, 1_000),
+            "9th immediate call must be rate-limited"
+        );
+        // Another actor has an independent bucket.
+        assert!(
+            limiter.admit(bob, 1_000),
+            "bob must not be blocked by alice"
+        );
+        // 1 second later is still below the 2s refill interval.
+        assert!(!limiter.admit(alice, 1_001));
+        // 2 seconds later refills 1 token.
+        assert!(limiter.admit(alice, 1_002));
+        assert!(!limiter.admit(alice, 1_002));
+    }
+
+    /// **P2-TSW-19**: `price::cached_sky` returns the identical `Arc` across repeated lookups for
+    /// the same `(pack_digest, epoch, rate)` so `Sky::from_pack` is not rebuilt per query.
+    #[test]
+    fn p2_tsw_19_cached_sky_reuses_arc_for_same_key() {
+        let digest = mush_core::DefinitionDigest::for_canonical_value("t", &serde_json::json!(1))
+            .expect("digest");
+        let manifest = crate::pack::PackManifest::new(
+            CanonicalId::new("test_sky_cache").expect("id"),
+            1,
+            crate::pack::PackKind::RulesDefinition,
+            digest,
+            Vec::new(),
+        )
+        .expect("manifest");
+        let pack = crate::pack::RulesPack::new(manifest, BTreeMap::new()).expect("pack");
+        let cfg = crate::config::EphemerisConfig::default();
+        let first = crate::port::price::cached_sky(&pack, &cfg);
+        let second = crate::port::price::cached_sky(&pack, &cfg);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "repeated calls with the same lane/sky config must reuse the cached Arc"
+        );
     }
 }

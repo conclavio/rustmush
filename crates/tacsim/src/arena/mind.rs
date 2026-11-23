@@ -1884,6 +1884,13 @@ impl Arena {
                 return;
             }
             self.adopt_mind(unit, Some(state));
+            // P2-TSC-8: if the hull lost its core while piloted, drop it to the
+            // captured ROM immediately on handback rather than leaving a stale
+            // non-ROM runtime until the next think.
+            if self.unit(unit).is_some_and(|slot| !slot.limits.wreck) && self.core_lost(unit) {
+                let hash = self.think_line_hash();
+                self.drop_for_core(unit, self.now_ms, hash);
+            }
         }
     }
 
@@ -3293,7 +3300,7 @@ impl Arena {
             .map(|weapon| weapon.id.clone())
             .collect::<Vec<_>>();
         let channels = own.seal.channels.clone();
-        let profile = self.classes.row(own.seal.class);
+        let profile = self.classes.row(self.mind_class(unit));
         // A staff stock-slider change is an adapter over the active authored
         // card. Preserve its schema, extra fields and ordered programs.
         let active = runtime.card.key();

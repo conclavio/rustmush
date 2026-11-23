@@ -1104,7 +1104,27 @@ impl Arena {
         }
         match by {
             FiredBy::Seat => {}
-            FiredBy::Machine | FiredBy::Cond { .. } => {
+            FiredBy::Machine => {
+                if self.holds_fire(unit) || self.rule_vetoed(unit, weapon, at_ms) {
+                    return Err(Refusal::Unwarranted);
+                }
+            }
+            FiredBy::Cond { slot } => {
+                if let Some(rule) = usize::from(slot)
+                    .checked_sub(1)
+                    .and_then(|at| self.conditions.slots(unit).get(at))
+                    .and_then(Option::as_ref)
+                {
+                    let Some(cond) = rule.fire().filter(|cond| cond.weapon == weapon) else {
+                        return Err(Refusal::Unwarranted);
+                    };
+                    if !self.floor_lifted(unit) {
+                        condition_is_lawful(cond, self.odds_floor_permille)?;
+                        if self.rule_breaks_floor(rule) {
+                            return Err(Refusal::Unlawful);
+                        }
+                    }
+                }
                 if self.holds_fire(unit) || self.rule_vetoed(unit, weapon, at_ms) {
                     return Err(Refusal::Unwarranted);
                 }
@@ -1120,17 +1140,19 @@ impl Arena {
                     self.conditions.slots(unit).get(at).cloned().flatten()
                 });
                 if slot.is_some() {
-                    let Some(cond) = cited
-                        .as_ref()
-                        .and_then(Rule::fire)
-                        .filter(|cond| cond.weapon == weapon)
-                    else {
+                    let Some(rule) = cited.as_ref() else {
+                        return Err(Refusal::Unwarranted);
+                    };
+                    let Some(cond) = rule.fire().filter(|cond| cond.weapon == weapon) else {
                         return Err(Refusal::Unwarranted);
                     };
                     // Doc 17h cut M8b C4 (D-UM-17's third point, D-UM-42): an
                     // ungoverned core alone skips the floor at the cited fire.
                     if !self.floor_lifted(unit) {
                         condition_is_lawful(cond, self.odds_floor_permille)?;
+                        if self.rule_breaks_floor(rule) {
+                            return Err(Refusal::Unlawful);
+                        }
                     }
                 }
                 // (3b) hold-fire: the hull's standing order (the ARENA's row —
@@ -1227,18 +1249,18 @@ impl Arena {
         if let Some(observer) = &mut self.acceptance {
             observer.record(resolution.p_permille);
         }
-        // Doc 17h cut M8b C5 (D-UM-42): a slot's shot under the floor, or on an
-        // unclassified contact, that only an ungoverned core let through — a
-        // record field of the `fired` line, false (absent) on every other shot.
-        let unlawful = self.floor_lifted(unit)
-            && by
-                .slot()
-                .and_then(|n| {
-                    let at = usize::from(n).checked_sub(1)?;
-                    self.conditions.slots(unit).get(at).cloned().flatten()
-                })
-                .as_ref()
-                .is_some_and(|rule| self.rule_unlawful(unit, rule));
+        // Doc 17h cut M8b C5 (D-UM-42) / P2-TSC-8: a slot's shot under the floor,
+        // or on an unclassified contact — a record field of the `fired` line,
+        // false (absent) on every lawful shot, never suppressed if `floor_lifted`
+        // flipped false after arming.
+        let unlawful = by
+            .slot()
+            .and_then(|n| {
+                let at = usize::from(n).checked_sub(1)?;
+                self.conditions.slots(unit).get(at).cloned().flatten()
+            })
+            .as_ref()
+            .is_some_and(|rule| self.rule_unlawful(unit, rule));
         let hash = self.event_hash();
         if let Some(state) = self.unit_mut(unit) {
             state.ready_at_ms.insert(SmolStr::new(weapon), ready_at);
@@ -3691,5 +3713,46 @@ mod tests {
             );
             assert_eq!(plain.ledger.digest(), observed.ledger.digest());
         }
+    }
+
+    /// **P2-TSC-8 (1, 5)**: `FiredBy::Cond` enforces the Compact odds floor whenever
+    /// `!floor_lifted(unit)` (on core loss, Class 0 degradation, or ROM drop), and every
+    /// unlawful slot shot journals `EventKind::Fired { unlawful: true }` directly from
+    /// `rule_unlawful` without gating on `floor_lifted`.
+    #[test]
+    fn p2_tsc_8_cond_fire_enforces_floor_and_journals_unlawful_audit() {
+        let mut under = a_minds_lock();
+        under.odds_floor_permille = 200;
+
+        // Governed hull: FiredBy::Cond refuses sub-floor Slot 1 with Refusal::Unlawful.
+        assert_eq!(
+            under
+                .clone()
+                .resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 }),
+            Err(Refusal::Unlawful)
+        );
+
+        // Ungoverned hull: FiredBy::Cond fires and records `unlawful: true` in the ledger.
+        let mut lifted = ungoverned(under);
+        assert_eq!(
+            lifted.resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 }),
+            Ok(1)
+        );
+        let text = journal_text(&mut lifted);
+        assert!(
+            text.contains("\"by\":\"cond\",\"slot\":1,\"unlawful\":true"),
+            "sub-floor cond fire must record unlawful:true: {text}"
+        );
+
+        // Once dropped to ROM (mind.dropped() or runtime.dropped), floor returns and Cond refuses.
+        let mut rom_dropped = ungoverned(a_minds_lock());
+        rom_dropped.odds_floor_permille = 200;
+        rom_dropped.minds.get_mut(&RED).expect("mind").dropped =
+            Some(crate::arena::mind::DropCause::Strikes);
+        assert!(!rom_dropped.floor_lifted(RED));
+        assert_eq!(
+            rom_dropped.resolve_fire_by(RED, "cannon", 0, FiredBy::Cond { slot: 1 }),
+            Err(Refusal::Unlawful)
+        );
     }
 }

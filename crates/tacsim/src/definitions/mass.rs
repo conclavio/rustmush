@@ -286,22 +286,43 @@ pub fn partition(
 
 // ---- the world's reads -------------------------------------------------------------------
 
-/// **`hull`'s design and its budget** (doc 39 cut IN.8): the catalogue entry its unit's schema
-/// names, when the yard partitions it.
+/// **`hull`'s design and its budget** (doc 39 cut IN.8; `P2-TSW-16`): the catalogue entry its
+/// unit's schema names (checking the fitted cored-hull budgets first, then the fielded catalogue
+/// and its base [`crate::definitions::core_replacement::surface_chassis`]), when the yard
+/// partitions it.
+#[must_use]
+pub(crate) fn budget_of_schema(
+    w: &mush_core::World,
+    wanted: &str,
+) -> Option<(CanonicalId, MassBudget)> {
+    let store = w.module_state::<crate::store::TacsimStore>()?;
+    let find_in = |budgets: &BTreeMap<CanonicalId, MassBudget>, key: &str| {
+        budgets
+            .iter()
+            .find(|(id, _)| id.as_str() == key)
+            .map(|(id, budget)| (id.clone(), budget.clone()))
+    };
+    find_in(&store.fitted_definitions().budgets, wanted)
+        .or_else(|| find_in(&store.definitions().budgets, wanted))
+        .or_else(|| {
+            let base = crate::definitions::core_replacement::surface_chassis(wanted);
+            (base != wanted)
+                .then(|| find_in(&store.definitions().budgets, base))
+                .flatten()
+        })
+}
+
+/// **A hull's mass budget**, by its own unit record: the design (`CanonicalId`) and partition its
+/// unit's schema names (checking the fitted cored-hull budgets first, then the fielded catalogue
+/// and its base [`crate::definitions::core_replacement::surface_chassis`]), when the yard
+/// partitions it.
 #[must_use]
 pub(crate) fn hull_budget(
     w: &mush_core::World,
     hull: mush_core::ObjId,
 ) -> Option<(CanonicalId, MassBudget)> {
     let unit = mush_tactics::module::unit_of(w, hull)?;
-    let store = w.module_state::<crate::store::TacsimStore>()?;
-    let wanted = unit.schema().key().id.as_str();
-    store
-        .definitions()
-        .budgets
-        .iter()
-        .find(|(id, _)| id.as_str() == wanted)
-        .map(|(id, budget)| (id.clone(), budget.clone()))
+    budget_of_schema(w, unit.schema().key().id.as_str())
 }
 
 /// **A bulk good's reference, minor units a ledger unit** (§4.6, §4.10): the live ask of the
@@ -331,12 +352,17 @@ pub(crate) fn reference_price_minor(
     budget: &MassBudget,
 ) -> u64 {
     let scale = crate::port::apply::credit_scale(w);
+    let base_design = crate::definitions::core_replacement::surface_chassis(design.as_str());
     let buyout = crate::port::voyage::lane_ports(w)
         .into_iter()
         .find_map(|(def, _)| {
             let programme = def.programme.as_ref()?;
-            (&programme.unit == design || programme.refits.values().any(|unit| unit == design))
-                .then_some(programme.buyout_major)
+            (programme.unit.as_str() == base_design
+                || programme
+                    .refits
+                    .values()
+                    .any(|unit| unit.as_str() == base_design))
+            .then_some(programme.buyout_major)
         });
     if let Some(minor) = buyout
         .and_then(|major| crate::port::apply::minor_of(major, scale))

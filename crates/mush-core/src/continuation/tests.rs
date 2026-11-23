@@ -490,24 +490,34 @@ fn registration_is_exact_primary_and_fixed_valid_switches_only() -> TestResult {
 }
 
 #[test]
-fn queues_share_wait_limit_release_it_and_roll_back_failed_handlers() -> TestResult {
+fn queues_enforce_separate_limits_release_them_and_roll_back_failed_handlers() -> TestResult {
     let (mut engine, shared) = engine(spec(), None)?;
-    // The existing wait queue allows 100 entries. Both paths consume one slot.
-    for i in 0..100 {
-        command(
-            &mut engine,
-            GOD,
-            if i % 2 == 0 {
-                "@enqueue ticket"
-            } else {
-                "@ordinary"
-            },
-        );
+    // Saturating mortal `@wait` slots (100) must not starve internal command
+    // continuations; each lane enforces its own 100-entry cap.
+    for _ in 0..100 {
+        command(&mut engine, GOD, "@ordinary");
     }
     assert_eq!(engine.sched.len(), 100);
-    command(&mut engine, GOD, "@enqueue excess");
     command(&mut engine, GOD, "@ordinary");
-    assert_eq!(engine.sched.len(), 100);
+    assert_eq!(
+        engine.sched.len(),
+        100,
+        "101st mortal wait must still be refused"
+    );
+    for _ in 0..100 {
+        command(&mut engine, GOD, "@enqueue ticket");
+    }
+    assert_eq!(
+        engine.sched.len(),
+        200,
+        "saturated mortal waits must not drop command continuations"
+    );
+    command(&mut engine, GOD, "@enqueue excess");
+    assert_eq!(
+        engine.sched.len(),
+        200,
+        "101st command continuation must still be refused by its own cap"
+    );
     // Bounded per-actor WaitCmd slices (CORE-M2) drain losslessly across ticks.
     let mut passes = 0usize;
     while let Some(due) = engine.sched.next_due() {
@@ -516,7 +526,7 @@ fn queues_share_wait_limit_release_it_and_roll_back_failed_handlers() -> TestRes
         assert!(passes <= 64, "queue must drain in bounded steps");
     }
     assert!(engine.sched.is_empty());
-    assert_eq!(shared.calls.lock().map_err(|_| "calls")?.len(), 100);
+    assert_eq!(shared.calls.lock().map_err(|_| "calls")?.len(), 200);
     command(&mut engine, GOD, "@enqueue fail");
     assert!(engine.sched.is_empty());
     command(&mut engine, GOD, "@enqueue error");
@@ -530,7 +540,7 @@ fn queues_share_wait_limit_release_it_and_roll_back_failed_handlers() -> TestRes
     assert_eq!(
         engine.sched.len(),
         1,
-        "fired continuations release the same wait counter"
+        "fired continuations release their continuation counter"
     );
     Ok(())
 }

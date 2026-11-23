@@ -30,6 +30,20 @@ pub(super) struct Execution {
     classes: ClassTable,
 }
 impl Execution {
+    #[cfg(test)]
+    pub(super) fn from_parts(
+        seal: MindSeal,
+        source: String,
+        arena: ArenaConfig,
+        classes: ClassTable,
+    ) -> Self {
+        Self {
+            seal,
+            source,
+            arena,
+            classes,
+        }
+    }
     pub(super) fn capture(
         world: &World,
         facts: &IcAdmissionFacts,
@@ -62,6 +76,9 @@ impl Execution {
             .module_state::<crate::store::TacsimStore>()
             .ok_or_else(|| bad("sources"))?;
         let unit = mush_tactics::module::unit_of(world, facts.unit()).ok_or_else(|| bad("unit"))?;
+        if crate::match_::seal::core_impounded(world, unit) {
+            return Err(bad("impounded core"));
+        }
         // Doc 23 cut S.4b-2: the composition's own catalogue (a governed or fitted world's rig
         // roots ride it; the store's is the fielded set alone), else the store's.
         let catalog = composed.unwrap_or_else(|| store.definitions());

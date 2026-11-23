@@ -587,6 +587,27 @@ pub fn post(
     Ok(order)
 }
 
+/// **Minimum provider bond on a player retrieval acceptance** (`P2-TSW-14`): 20% of the fee
+/// (matching `mush_economy::JOB_BOND_PERMILLE`), at least 100 cr (`10_000` minor), capped at
+/// the fee itself, so non-house acceptors always risk collateral even when `fee <= 10,000 cr`.
+const MIN_RETRIEVAL_BOND_MINOR: i64 = 10_000;
+
+/// **The bond a non-house player escrows to accept a retrieval job** (`P2-TSW-14`): uses
+/// `mush_economy::job_bond` when above the 10,000 cr threshold, and enforces a minimum 20%
+/// (floor 100 cr, capped at `fee_minor`) below it.
+#[must_use]
+pub(crate) fn retrieval_bond(fee_minor: i64) -> Option<Amount> {
+    if fee_minor <= 0 {
+        return None;
+    }
+    if let Some(bond) = mush_economy::job_bond(Amount::from_minor(fee_minor)) {
+        return Some(bond);
+    }
+    let pct = fee_minor.saturating_mul(mush_economy::JOB_BOND_PERMILLE) / 1_000;
+    let minor = pct.max(MIN_RETRIEVAL_BOND_MINOR).min(fee_minor);
+    (minor > 0).then_some(Amount::from_minor(minor))
+}
+
 /// **Accept `hull`'s open job** for `acceptor` (Q-41-8): the contract's second party, and the
 /// record's acceptor — with a performance window for a player, none for the house (Tycho's
 /// window is what remains of the contract).
@@ -606,10 +627,10 @@ pub fn accept(
     if order.poster == acceptor {
         return Err(OWN_JOB.to_owned());
     }
-    // Doc 48 cut EX.5 (Q-48-12, -13): the generalised join. A player or their org escrows the
-    // bond a fee above 10,000 cr asks; the house's fallback acceptance posts none.
+    // Doc 48 cut EX.5 (Q-48-12, -13) & P2-TSW-14: a player or their org always escrows a minimum
+    // bond on retrieval acceptance (forfeit to the poster on lapse); the house's fallback posts none.
     let bond = (!house_acceptance)
-        .then(|| mush_economy::job_bond(Amount::from_minor(order.fee_minor)))
+        .then(|| retrieval_bond(order.fee_minor))
         .flatten();
     mush_economy::join_job(
         ctx,
@@ -807,6 +828,14 @@ fn to_house(ctx: &mut Ctx<'_>, order: &RetrievalOrder) {
     if order.destination != house.port {
         return;
     }
+    // P2-TSW-14: Tycho's lifter cannot pull a hull out of another carrier's bay; avoid assigning
+    // RetrievalStage::House to a bay-held hull (which would head-of-line block house_arm).
+    if matches!(
+        crate::surface::act::where_is(ctx.w, order.hull),
+        crate::surface::act::Where::Bay { .. }
+    ) {
+        return;
+    }
     let Some(account) = house.account else {
         tracing::error!(
             hull = order.hull.0,
@@ -825,9 +854,11 @@ fn to_house(ctx: &mut Ctx<'_>, order: &RetrievalOrder) {
     }
 }
 
-/// A player's acceptance lapsed: the contract lapses (its bond, if any, forfeit to the poster,
-/// Q-48-13; 48e services:G26), a fresh one is posted for Tycho with one window's deadline, and
-/// Tycho accepts it on the same tick.
+/// A player's acceptance lapsed: the contract lapses (its bond forfeit to the poster, Q-48-13;
+/// 48e services:G26; P2-TSW-14). If the lapsed acceptor already loaded the hull into a carrier
+/// bay, immediately mark it held for its title holder (`bay_work::hold_for`) and close the job
+/// instead of assigning `RetrievalStage::House` (avoiding permanent sequestration and Tycho
+/// head-of-line DoS). Otherwise a fresh job is posted for Tycho, who accepts it on the same tick.
 fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
     let Some(house) = house(ctx.w) else {
         return;
@@ -844,6 +875,49 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
         }
     }
     let now = ctx.w.world_ic_now().at;
+    let lapsed = order.acceptor.clone();
+    // P2-TSW-14: if the hull was loaded into a carrier's bay during the lapsed retrieval,
+    // immediately hold it for its title holder so the owner can extract it via stow_held /
+    // berth_held (or hand back a lease rig docked at the lessor's port), and do NOT assign it to
+    // Tycho's house arm where an unreachable bay hull would head-of-line block house_arm.
+    if let crate::surface::act::Where::Bay { hull: carrier } =
+        crate::surface::act::where_is(ctx.w, order.hull)
+    {
+        let owner = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .and_then(|e| {
+                e.snapshot()
+                    .asset(order.hull)
+                    .map(|a| a.title_owner.clone())
+            })
+            .unwrap_or_else(|| order.poster.clone());
+        let handed_back = crate::port::tv::is_lease_rig(ctx.w, order.hull)
+            && matches!(
+                crate::port::ship::berth_of(ctx.w, carrier),
+                crate::port::ship::Berth::Docked { map, .. }
+                    if crate::port::coop::programme_port(ctx.w)
+                        .is_some_and(|port| port.entry == map.entry)
+            )
+            && crate::port::tv::hand_back(ctx, order.hull);
+        if !handed_back {
+            crate::port::bay_work::hold_for(ctx, order.hull, owner);
+        }
+        let closed = RetrievalOrder {
+            acceptor: None,
+            perform_by_ic: None,
+            stage: RetrievalStage::Closed,
+            ..order
+        };
+        crate::store::put_retrieval(ctx, &closed);
+        if let Some(acceptor) = lapsed {
+            let line = TOLD_LAPSED.replace("{name}", &name(ctx.w, closed.hull));
+            tell(ctx, &acceptor, &line);
+        }
+        let notice = TOLD_LAPSED.replace("{name}", &name(ctx.w, closed.hull));
+        tell(ctx, &closed.poster, &notice);
+        return;
+    }
     let serial = order.serial.saturating_add(1);
     let fresh = mush_economy::post_retrieval(
         ctx,
@@ -858,7 +932,6 @@ fn lapse(ctx: &mut Ctx<'_>, order: RetrievalOrder) {
             deadline_ic: now.saturating_add(window_secs(ctx.w)),
         },
     );
-    let lapsed = order.acceptor.clone();
     let mut next = RetrievalOrder {
         serial,
         acceptor: None,
@@ -1142,7 +1215,7 @@ pub(crate) fn accept_cmd(ctx: &mut Ctx<'_>, raw: &str) -> Result<(), CmdError> {
     if acts_for(ctx.w, ctx.actor, &order.poster) || acceptor == order.poster {
         return Err(CmdError::msg(OWN_JOB));
     }
-    let bond = mush_economy::job_bond(Amount::from_minor(order.fee_minor))
+    let bond = retrieval_bond(order.fee_minor)
         .map(|bond| {
             BOND_CLAUSE.replace("{bond}", &crate::port::coop::money_minor(ctx, bond.minor()))
         })
@@ -1224,7 +1297,7 @@ pub fn services(w: &World, venue: &mush_market::MarketId) -> Vec<mush_market::Se
                 pay: fee,
                 instrument: instrument.clone(),
                 negotiable: false,
-                bond: mush_economy::job_bond(fee),
+                bond: retrieval_bond(order.fee_minor),
                 term: mush_market::ServiceTerm::FromAcceptance {
                     ic_secs: window_secs(w),
                 },
@@ -1472,4 +1545,29 @@ pub(crate) fn debts_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     };
     ctx.out.sys_to_actor(ctx.actor, "tacsim.retrieval", text);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **P2-TSW-14**: every paid retrieval job requires a non-zero acceptor performance bond
+    /// (never 0 below 10,000 cr) so an attacker cannot accept and sequester a hull for free.
+    #[test]
+    fn p2_tsw_14_retrieval_bond_has_non_zero_floor_below_10k_cr() {
+        assert_eq!(retrieval_bond(0), None);
+        assert_eq!(retrieval_bond(-500), None);
+        // Tiny fee: capped at fee_minor so bond never exceeds fee.
+        assert_eq!(retrieval_bond(5_000), Some(Amount::from_minor(5_000)));
+        // Small fee (200 cr = 20_000 minor): 20% = 4_000 -> raised to 100 cr floor (10_000).
+        assert_eq!(retrieval_bond(20_000), Some(Amount::from_minor(10_000)));
+        // Medium fee (5_000 cr = 500_000 minor, below mush_economy's 10_000 cr threshold):
+        // 20% = 100_000 minor (1_000 cr).
+        assert_eq!(retrieval_bond(500_000), Some(Amount::from_minor(100_000)));
+        // Large fee (50_000 cr = 5_000_000 minor): delegates to mush_economy::job_bond.
+        assert_eq!(
+            retrieval_bond(5_000_000),
+            mush_economy::job_bond(Amount::from_minor(5_000_000))
+        );
+    }
 }

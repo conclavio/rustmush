@@ -27,7 +27,7 @@ pub use participant::{CloseEvent, IcSortieParticipant, StartPermit};
 pub use state::IcSorties;
 pub use surface::{
     ClaimRead, SurfaceClose, active_under_licence, claim_closed, claim_execution, claim_of,
-    claim_seal, retained_source,
+    claim_seal, opens_by_dispatcher_since, retained_source,
 };
 
 /// **Whether the IC claim path is composed in `world`** (doc 23 cut S.4b-1): the seal owner's

@@ -230,6 +230,9 @@ impl FairQueue {
     pub(super) fn is_empty(&self) -> bool {
         self.order.is_empty() && self.ready.is_empty()
     }
+    pub(super) fn len(&self) -> usize {
+        self.order.len()
+    }
     pub fn new(cfg: &BulkConfig) -> Result<Self, BulkError> {
         cfg.validate()?;
         Ok(Self {
@@ -250,6 +253,27 @@ impl FairQueue {
         self.order.push_back(ready.account);
         self.ready.insert(ready.account, ready);
         Ok(())
+    }
+    /// Restore a popped head entry to the front of the queue when all workers
+    /// are busy so fair scheduling order is preserved without holding a turn.
+    #[allow(clippy::result_large_err)]
+    pub(super) fn push_front(&mut self, ready: Ready) -> Result<(), (BulkError, Ready)> {
+        if self.ready.contains_key(&ready.account) {
+            return Err((BulkError::Busy, ready));
+        }
+        if self.ready.len() >= self.limit {
+            return Err((BulkError::QueueFull, ready));
+        }
+        self.order.push_front(ready.account);
+        self.ready.insert(ready.account, ready);
+        Ok(())
+    }
+    pub(super) fn remove(&mut self, account: AccountId) -> Option<Ready> {
+        let ready = self.ready.remove(&account)?;
+        if let Some(pos) = self.order.iter().position(|id| *id == account) {
+            self.order.remove(pos);
+        }
+        Some(ready)
     }
     pub fn pop(&mut self) -> Option<Ready> {
         let id = self.order.pop_front()?;

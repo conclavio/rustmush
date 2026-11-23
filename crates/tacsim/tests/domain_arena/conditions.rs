@@ -3345,6 +3345,101 @@ fn cannon_fire(slot: Option<u8>) -> IntentKind {
     }
 }
 
+/// The millisecond at which `RED`'s `n`-th think lands.
+fn red_landing(arena: &Arena, n: i64) -> i64 {
+    think_at(RED, n) + arena.substep_len_ms()
+}
+
+/// Sub-check for [`m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_one_reads_cycling`]:
+/// citation landing on the gun's `WeaponReady` after a lawful slot shot.
+#[inline(never)]
+fn assert_m1b2_weapon_ready_cycling(classified: Classification) {
+    let mut rig = Stepper::new(mind_duel(
+        classified,
+        &[
+            (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+            (4, vec![cannon_fire(Some(1))]),
+        ],
+    ));
+    let land0 = red_landing(&rig.arena, 0);
+    let land4 = red_landing(&rig.arena, 4);
+    assert_eq!(
+        land4 - land0,
+        i64::from(cannon().cycle_ms),
+        "the precondition"
+    );
+    rig.to(land0);
+    rig.to(land4);
+    let refused = rig.refused(RED);
+    assert_eq!(
+        refused.iter().map(|(word, ..)| *word).collect::<Vec<_>>(),
+        vec![Refusal::Cycling],
+        "lawful WeaponReady shot makes the simultaneous citation read cycling"
+    );
+    let shots: Vec<(i64, Option<String>)> = rig
+        .shots()
+        .into_iter()
+        .map(|(t_ms, _, _, by, _)| (t_ms, by))
+        .collect();
+    assert_eq!(
+        shots,
+        vec![
+            (land0, Some("cond".to_owned())),
+            (land4, Some("cond".to_owned()))
+        ]
+    );
+}
+
+/// Sub-check for [`m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_one_reads_cycling`]:
+/// floor raised over the slot after its lawful landing shot (`cycling` while
+/// still cycling; `unlawful` once `WeaponReady` arrives and P2-TSC-8 blocks the
+/// now-unlawful `FiredBy::Cond` shot).
+#[inline(never)]
+fn assert_m1b2_raised_floor_cycling_then_unlawful(classified: Classification) {
+    let mut rig = Stepper::new(mind_duel(
+        classified,
+        &[
+            (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+            (1, vec![cannon_fire(Some(1))]),
+            (4, vec![cannon_fire(Some(1))]),
+        ],
+    ));
+    let land0 = red_landing(&rig.arena, 0);
+    let land1 = red_landing(&rig.arena, 1);
+    let land4 = red_landing(&rig.arena, 4);
+    assert_eq!(
+        land4 - land0,
+        i64::from(cannon().cycle_ms),
+        "the precondition"
+    );
+    rig.to(land0);
+    rig.arena.odds_floor_permille = 200;
+    rig.to(land1);
+    assert_eq!(
+        rig.refused(RED)
+            .iter()
+            .map(|(word, ..)| *word)
+            .collect::<Vec<_>>(),
+        vec![Refusal::Cycling],
+        "cycling beats unlawful while the gun is still cycling"
+    );
+    rig.to(land4);
+    assert_eq!(
+        rig.refused(RED)
+            .iter()
+            .map(|(word, ..)| *word)
+            .collect::<Vec<_>>(),
+        vec![Refusal::Unlawful],
+        "at WeaponReady, the sub-floor slot cannot auto-fire and the citation reads unlawful"
+    );
+    let shots: Vec<(i64, Option<String>)> = rig
+        .shots()
+        .into_iter()
+        .map(|(t_ms, _, _, by, _)| (t_ms, by))
+        .collect();
+    assert_eq!(shots, vec![(land0, Some("cond".to_owned()))]);
+}
+
 /// **The law for a mind's fire** (17b cut M1b.2; doc 17 §5, D-UM-17 as
 /// amended 2026-10-04, D-UM-19): red, a scripted mind locked on a classified
 /// blue at 50 per cent, lands one think's intents at a time, and the arena's
@@ -3486,47 +3581,14 @@ fn m1b2_the_law_refuses_an_uncited_and_an_unwarranted_mind_fire_and_a_cycling_on
     // The citation at the gun's `WeaponReady`: the slot armed at think 0
     // fires at its landing; the cannon's cycle ends exactly at think 4's
     // landing, where the `WeaponReady` pops before the landing and the slot
-    // fires again — and the citation reads `cycling`. Once more with the
-    // floor raised over the slot after its arming: still `cycling`.
-    for raise_floor in [false, true] {
-        let mut rig = Stepper::new(mind_duel(
-            classified,
-            &[
-                (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
-                (4, vec![cannon_fire(Some(1))]),
-            ],
-        ));
-        let land0 = landing(&rig.arena, 0);
-        let land4 = landing(&rig.arena, 4);
-        assert_eq!(
-            land4 - land0,
-            i64::from(cannon().cycle_ms),
-            "the precondition"
-        );
-        rig.to(land0);
-        if raise_floor {
-            rig.arena.odds_floor_permille = 200;
-        }
-        rig.to(land4);
-        let refused = rig.refused(RED);
-        assert_eq!(
-            refused.iter().map(|(word, ..)| *word).collect::<Vec<_>>(),
-            vec![Refusal::Cycling],
-            "floor raised: {raise_floor}"
-        );
-        let shots: Vec<(i64, Option<String>)> = rig
-            .shots()
-            .into_iter()
-            .map(|(t_ms, _, _, by, _)| (t_ms, by))
-            .collect();
-        assert_eq!(
-            shots,
-            vec![
-                (land0, Some("cond".to_owned())),
-                (land4, Some("cond".to_owned()))
-            ]
-        );
-    }
+    // fires again — and the citation reads `cycling`.
+    assert_m1b2_weapon_ready_cycling(classified);
+    // With the floor raised over the slot after its lawful landing shot:
+    // while the gun is still cycling (think 1), the citation reads `cycling`
+    // (the weapon before the law); once the cycle completes at `WeaponReady`
+    // (think 4), P2-TSC-8 blocks the now-unlawful `FiredBy::Cond` shot so the
+    // slot does not fire again and the citation reads `unlawful`.
+    assert_m1b2_raised_floor_cycling_then_unlawful(classified);
 
     // Under a standing hold-fire: the lawful citation `unwarranted`, and the
     // slot's own landing shot dropped silently.
@@ -4046,8 +4108,12 @@ fn m1b2_the_cited_fire_at_a_weapon_ready_reads_cycling_at_three_cadences() {
 ///   landing;
 /// * an `X` lock — `unwarranted`, nothing fires at the landing;
 /// * a citation at the gun's `WeaponReady` (think 8's landing, two cycles
-///   after the slot's first shot) with the floor raised over the slot at
-///   5,000 — `cycling`: the weapon before the law;
+///   after the slot's first shot) on a lawful slot — `cycling`: the slot fires
+///   at `WeaponReady` ahead of the citation;
+/// * with the floor raised over the slot at 5,000, a citation while the gun is
+///   still cycling from think 4's lawful shot (think 6) — `cycling` (the weapon
+///   before the law); and at `WeaponReady` (think 8) — `unlawful` with
+///   `Floor { 200 }` (P2-TSC-8 blocks the now-unlawful `FiredBy::Cond` shot);
 /// * under a standing hold-fire, a lawful citation `unwarranted` and nothing
 ///   fires; with the floor raised at 5,000 over a slot armed before it, the
 ///   citation at think 6 `unlawful` with `Floor { 200 }`: the floor before
@@ -4154,14 +4220,18 @@ fn m1b2_the_law_reads_every_case_the_same_at_three_cadences() {
     let run = law(Classification::Unknown, vec![(0, cited(100))], false, false);
     assert_eq!(run.refused_at(RED, think_at(RED, 1)), unwarranted);
     assert_eq!(at(&run, 0), Vec::new());
-    // A citation at the gun's `WeaponReady`, the floor raised over the slot.
+    // A citation at the gun's `WeaponReady` (lawful slot): the slot's own shot
+    // lands first and the simultaneous citation reads `cycling`.
     let cycle = i64::from(cannon().cycle_ms);
     assert_eq!(
         land(8) - land(0),
         2 * cycle,
         "the precondition: think 8 lands on the slot's third WeaponReady"
     );
-    assert!(land(0) < 5_000 && land(8) > 5_000, "the edit between");
+    assert!(
+        land(0) < 5_000 && land(4) < 5_000 && land(6) > 5_000 && land(8) > 5_000,
+        "the edit between the second lawful shot (land 4) and think 6"
+    );
     let run = law(
         classified,
         vec![
@@ -4169,7 +4239,7 @@ fn m1b2_the_law_reads_every_case_the_same_at_three_cadences() {
             (8, vec![cannon_fire(Some(1))]),
         ],
         false,
-        true,
+        false,
     );
     assert_eq!(
         run.refused_at(RED, think_at(RED, 9)),
@@ -4182,7 +4252,43 @@ fn m1b2_the_law_reads_every_case_the_same_at_three_cadences() {
     assert_eq!(
         at(&run, 8),
         vec![(land(8), "cannon".to_owned(), Some("cond".to_owned()))],
-        "the slot's own shot at the WeaponReady"
+        "the lawful slot's own shot at the WeaponReady"
+    );
+    // With the floor raised over the slot at 5,000: while the gun is still
+    // cycling from land(4)'s lawful shot (think 6), the citation reads
+    // `cycling` (weapon before law); once `WeaponReady` arrives at land(8),
+    // P2-TSC-8 blocks the now-unlawful `FiredBy::Cond` shot so nothing fires
+    // at land(8) and the citation reads `unlawful`.
+    let run = law(
+        classified,
+        vec![
+            (0, vec![arm(cond("cannon", 100, ASPECTS_ANY))]),
+            (6, vec![cannon_fire(Some(1))]),
+            (8, vec![cannon_fire(Some(1))]),
+        ],
+        false,
+        true,
+    );
+    assert_eq!(
+        run.refused_at(RED, think_at(RED, 7)),
+        vec![(
+            Refusal::Cycling,
+            cannon_word.clone(),
+            RefusalDetail::Cycling { secs: 2 }
+        )]
+    );
+    assert_eq!(
+        run.refused_at(RED, think_at(RED, 9)),
+        vec![(
+            Refusal::Unlawful,
+            cannon_word.clone(),
+            RefusalDetail::Floor { permille: 200 }
+        )]
+    );
+    assert_eq!(
+        at(&run, 8),
+        Vec::new(),
+        "sub-floor slot must not auto-fire via FiredBy::Cond at WeaponReady"
     );
     // Under a standing hold-fire: lawful, then unlawful.
     let run = law(classified, vec![(0, cited(100))], true, false);

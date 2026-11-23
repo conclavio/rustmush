@@ -2329,6 +2329,7 @@ pub(crate) fn tv_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         || matches!(ctx.args.raw().trim(), "board" | "leave")
     {
         gate(ctx, Gate::Move)?;
+        super::equipment::observe_actor_loans(ctx);
         return super::boarding::player(ctx).map_err(CmdError::msg);
     }
     if ctx.switches.has("permissions") {
@@ -3503,6 +3504,12 @@ fn run_settle(
                             ..record.clone()
                         };
                         put_tv_lease(ctx, &forfeit);
+                        super::equipment::revoke_lease_loans(
+                            ctx,
+                            record.lease,
+                            record.tv,
+                            record.pilot,
+                        );
                         say(ctx, line);
                     }
                     Ok(Deposit::Released) => {
@@ -4987,6 +4994,9 @@ fn left_out_since(ctx: &Ctx<'_>, tv: ObjId) -> Option<i64> {
 /// found in a bay already goes back to the shed now. A write-off the economy cannot finish is
 /// logged and tried again on the next tick, with nothing of it written.
 pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
+    // P2-TSW-18: drain stale operational loans of returned, repossessed, written-off, forfeited,
+    // or ended/transferred leases on every tick so UnitGrantRegistry cannot saturate.
+    super::equipment::sweep_stale_loans(ctx);
     let now = ctx.w.world_ic_now().at;
     let bar = WRITE_OFF_LEFT_IC_DAYS.saturating_mul(DAY);
     let live: Vec<TvLease> = ctx
@@ -5097,6 +5107,7 @@ pub(crate) fn write_off_left_out(ctx: &mut Ctx<'_>) {
                 ..record.clone()
             },
         );
+        super::equipment::revoke_lease_loans(ctx, record.lease, record.tv, record.pilot);
         // Doc 41 cut RS.5 (Q-41-9, Q-41-14): a rig on the ground stays there and Occator posts
         // its retrieval, the lessee charged the fee as a debt; one aboard its carrier waits for
         // the carrier's docking at the lessor's port; any other goes back to the shed now.
@@ -5312,6 +5323,7 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
         ..record.clone()
     };
     put_tv_lease(ctx, &returned);
+    super::equipment::revoke_lease_loans(ctx, record.lease, record.tv, record.pilot);
     // e. The reply.
     let mut line = match charge {
         _ if plan.write_off => WRITTEN_OFF.replace("{mark}", &record.mark),
@@ -5600,6 +5612,7 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             ..record.clone()
         };
         put_tv_lease(ctx, &returned);
+        super::equipment::revoke_lease_loans(ctx, record.lease, record.tv, record.pilot);
         // 5. Doc 41 cut RS.5 (Q-41-9, Q-41-13): the retrieval for a rig on the ground, and
         // the debt beyond the deposit (a tick's or staff's act, never another character's).
         if wreck || left {

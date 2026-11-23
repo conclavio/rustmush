@@ -1231,6 +1231,10 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
     if own.seal.digest == crate::arena::mind::SealRef::none().digest {
         return IntentOutcome::Refused(Refusal::Profile);
     }
+    let live_class = arena.mind_class(unit);
+    if live_class == crate::arena::core::CoreClass::Zero {
+        return IntentOutcome::Refused(Refusal::Profile);
+    }
     let floor = if arena.floor_lifted(unit) {
         0
     } else {
@@ -1249,7 +1253,7 @@ fn apply_profile(arena: &mut Arena, unit: ObjId, index: u8, source: IntentSource
         .iter()
         .map(|weapon| weapon.id.clone())
         .collect::<Vec<_>>();
-    let profile = arena.classes.row(own.seal.class);
+    let profile = arena.classes.row(live_class);
     let prepared = match runtime.prepare_switch(
         &arena.cards,
         unit,

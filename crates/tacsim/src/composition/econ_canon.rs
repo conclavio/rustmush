@@ -267,9 +267,8 @@ fn commit_once(
 /// `mush-canon`, 08c §6.1 deviation 1): it reads canon's own **open tail**, which is
 /// exactly what a restart rehydrates, keyed on the `source` the contract's condition
 /// named. It is bounded by `mush_canon::MAX_RECORDS_PER_SOURCE` and by the economy's
-/// own per-re-scan cap, and it reads nothing else: no scope filter is needed because
-/// the economy compares kind, source and party intersection and never renders the
-/// record.
+/// own per-re-scan cap, and excludes [`CanonScope::Secret`] records (`P2-TSW-17`) so
+/// staff-only/covert chronicle entries are never exposed as economy attestation evidence.
 #[derive(Debug, Default)]
 pub struct CanonEvidenceReader;
 
@@ -283,8 +282,14 @@ impl mush_economy::CanonEvidence for CanonEvidenceReader {
         let Some(state) = w.module_state::<CanonState>() else {
             return Vec::new();
         };
-        mush_canon::records_for_source(state, source, limit)
+        let cap = limit.min(mush_canon::MAX_RECORDS_PER_SOURCE);
+        if cap == 0 {
+            return Vec::new();
+        }
+        mush_canon::records_for_source(state, source, mush_canon::MAX_RECORDS_PER_SOURCE)
             .into_iter()
+            .filter(|e| e.scope != CanonScope::Secret)
+            .take(cap)
             .map(|e| mush_economy::CanonRecord {
                 canon_id: e.id.0,
                 kind: e.kind,
@@ -296,5 +301,86 @@ impl mush_economy::CanonEvidence for CanonEvidenceReader {
                 at: e.at,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_economy::CanonEvidence;
+    use mush_testkit::TestWorld;
+
+    #[test]
+    fn p2_tsw_17_canon_evidence_reader_excludes_secret_scope() {
+        let mut tw = TestWorld::with_modules(vec![Box::new(mush_canon::CanonModule::new())]);
+        let alice = ObjId(10);
+        let source = "campaign.operation.resolved:op:42";
+
+        let mut out = mush_core::Outbox::new();
+        let engine = tw.engine_mut();
+        let mut ctx = mush_core::Ctx {
+            w: &mut engine.world,
+            actor: mush_core::GOD,
+            switches: mush_core::SwitchSet::default(),
+            args: mush_core::ParsedArgs::default(),
+            out: &mut out,
+            reg: &engine.registry,
+            module: Some(SmolStr::new_static("tacsim")),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let public_id = mush_canon::commit(
+            &mut ctx,
+            CanonDraft {
+                kind: SmolStr::new_static("campaign.operation.resolved"),
+                summary: "Public op resolved.".to_owned(),
+                entities: vec![alice],
+                scope: CanonScope::Public,
+                ic_time: 100,
+                source: source.to_owned(),
+                detail: serde_json::json!({}),
+            },
+        );
+        assert!(public_id.is_some());
+        let secret_id = mush_canon::commit(
+            &mut ctx,
+            CanonDraft {
+                kind: SmolStr::new_static("campaign.operation.resolved"),
+                summary: "Covert op resolved.".to_owned(),
+                entities: vec![mush_core::GOD, alice],
+                scope: CanonScope::Secret,
+                ic_time: 101,
+                source: source.to_owned(),
+                detail: serde_json::json!({}),
+            },
+        );
+        assert!(secret_id.is_some());
+        let secret_only = mush_canon::commit(
+            &mut ctx,
+            CanonDraft {
+                kind: SmolStr::new_static("campaign.operation.resolved"),
+                summary: "Secret-only source.".to_owned(),
+                entities: vec![mush_core::GOD, alice],
+                scope: CanonScope::Secret,
+                ic_time: 102,
+                source: "campaign.operation.resolved:op:99".to_owned(),
+                detail: serde_json::json!({}),
+            },
+        );
+        assert!(secret_only.is_some());
+
+        let reader = CanonEvidenceReader;
+        // Secret-only source must return empty.
+        assert!(
+            reader
+                .records_for_source(tw.world(), "campaign.operation.resolved:op:99", 8)
+                .is_empty(),
+            "CanonScope::Secret records must never be exposed to economy attestation"
+        );
+        // Mixed source with limit=1 must skip the newer Secret record and still return the Public one.
+        let mixed = reader.records_for_source(tw.world(), source, 1);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].entities, vec![alice]);
+        // limit=0 returns empty.
+        assert!(reader.records_for_source(tw.world(), source, 0).is_empty());
     }
 }

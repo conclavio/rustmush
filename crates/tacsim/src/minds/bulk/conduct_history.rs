@@ -201,7 +201,9 @@ fn reconstruct(
         {
             return Err(invalid("Conduct admission and quota disagree"));
         }
-        if duplicates.contains(super::publication::account_key(account).as_str()) {
+        if duplicates.contains(super::publication::account_key(account).as_str())
+            || duplicates.contains(super::publication::conduct_run_key(account, run.id).as_str())
+        {
             return Err(invalid("Conduct quota document repeated"));
         }
         let observation = conduct_projection::observation(run)?;

@@ -491,6 +491,9 @@ async fn stand_up() -> Story {
         panic!("the claim is filed: {row:?}");
     };
     assert_eq!(row.told, vec![owner], "the title holder is who is told");
+    // P2-TSW-1 (M16): filing IC mail is deferred until the authoritative ClaimOrder::File commit
+    // is observed on the surface tick so uncommitted filings never spam mail.
+    let _ = second(&mut rig);
     // And he is written to now, at the filing, while he is away: the one letter of the story.
     let posted: Vec<Vec<ObjId>> = post
         .lock()

@@ -696,7 +696,13 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         }
     }
     runtime.waiting = retained;
-    for _ in 0..runtime.cfg.queued + runtime.cfg.proving_workers {
+    super::registry_service::prepare_drain(ctx, &mut runtime, now);
+    super::conduct_service::prepare_drain(ctx, &mut runtime, now);
+    let max_turns = runtime
+        .queue
+        .len()
+        .min(runtime.cfg.queued + runtime.cfg.proving_workers);
+    for _ in 0..max_turns {
         if runtime.registry.has_pending_turn() || runtime.conduct.has_pending_turn() {
             break;
         }
@@ -706,14 +712,18 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
         let account = ready.account();
         let run = ready.run();
         if store_kind(ctx.w, account, run) == Some(super::model::WorkKind::Conduct) {
-            super::conduct_service::grant(ctx, &mut runtime, ready);
-            break;
+            match super::conduct_service::grant(ctx, &mut runtime, ready, now) {
+                super::registry_service::GrantOutcome::Skipped => continue,
+                super::registry_service::GrantOutcome::Taken
+                | super::registry_service::GrantOutcome::WorkersBusy => break,
+            }
         }
         if store_kind(ctx.w, account, run) == Some(super::model::WorkKind::Registry) {
-            super::registry_service::grant(ctx, &mut runtime, ready);
-            // The signed grant has borrowed this exact fair turn. Its pending
-            // or Unknown disposition must not let later accounts overtake it.
-            break;
+            match super::registry_service::grant(ctx, &mut runtime, ready, now) {
+                super::registry_service::GrantOutcome::Skipped => continue,
+                super::registry_service::GrantOutcome::Taken
+                | super::registry_service::GrantOutcome::WorkersBusy => break,
+            }
         }
         let store = match ctx.w.module_state::<BulkStore>() {
             Some(s) => s,
@@ -743,7 +753,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
                 continue;
             }
             Err(BulkError::Busy) => {
-                let _ = runtime.queue.push(ready);
+                let _ = runtime.queue.push_front(ready);
                 break;
             }
             Err(error) => {

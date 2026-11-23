@@ -1098,28 +1098,24 @@ pub(super) fn custody_unit(
         .map(|id| crate::deliberation::CharacterRef::Character { id });
     // Doc 23 cut S.4b-2 (D-23-17 (a), D-23-23 step 3): a rig whose claim is open is admitted
     // under the claim's own retained seal, never the ROM; the arena installs its runner from
-    // the claim's retained source (`arena_bridge::sealed_sources`). Every other entrant, and a
-    // claim the book no longer holds, seals the ROM as before.
-    let claimed = entrant
-        .claim
-        .and_then(|open| crate::minds::ic_sortie::claim_seal(ctx.w, open))
-        .filter(|seal| seal.unit == entrant.unit);
-    let seal = match claimed {
-        Some(seal) => seal,
-        None => crate::match_::seal::seal_rom_for(
-            entrant.unit,
-            &cells,
-            &rule_weapons,
-            sortie,
-            &crate::match_::seal::IcSealConfig {
-                minds: &cfg.minds,
-                reflex: &cfg.arena.reflex,
-                principal,
-                impounded: crate::match_::seal::core_impounded(ctx.w, &cells),
-            },
-        )
-        .map_err(|error| format!("#{} could not be sealed ({error})", entrant.unit.0))?,
-    };
+    // the claim's retained source (`arena_bridge::sealed_sources`). Every other entrant, a
+    // claim the book no longer holds, and any hull whose fitted core has since been seized or
+    // forfeited (`core_impounded`, P2-TSC-4) seals the ROM as before.
+    let impounded = crate::match_::seal::core_impounded(ctx.w, &cells);
+    let claimed = (!impounded)
+        .then_some(entrant.claim)
+        .flatten()
+        .and_then(|open| crate::minds::ic_sortie::claim_seal(ctx.w, open));
+    let seal = resolve_admit_seal(
+        entrant.unit,
+        &cells,
+        &rule_weapons,
+        sortie,
+        principal,
+        cfg,
+        claimed,
+        impounded,
+    )?;
     let unit = CustodyUnit {
         id: entrant.unit,
         team: party,
@@ -1144,10 +1140,119 @@ pub(super) fn custody_unit(
     Ok((unit, pilot))
 }
 
+/// Resolve the [`crate::arena::MindSeal`] for a field entrant (P2-TSC-4): an open `ic_sortie`
+/// claim seal is trusted only while the fitted core is NOT impounded; once seized or forfeited
+/// (`impounded == true`), force `seal_rom_for(..., impounded: true)` (Class 0 governed ROM).
+#[allow(clippy::too_many_arguments)]
+fn resolve_admit_seal(
+    unit: ObjId,
+    cells: &mush_tactics::TacticalUnit,
+    rule_weapons: &[crate::arena::rules::RuleWeapon],
+    sortie: crate::arena::mind::SortieId,
+    principal: Option<crate::deliberation::CharacterRef>,
+    cfg: &crate::config::TacsimConfig,
+    claimed: Option<crate::arena::MindSeal>,
+    impounded: bool,
+) -> Result<crate::arena::MindSeal, String> {
+    let claimed = (!impounded)
+        .then_some(claimed)
+        .flatten()
+        .filter(|seal| seal.unit == unit);
+    match claimed {
+        Some(seal) => Ok(seal),
+        None => crate::match_::seal::seal_rom_for(
+            unit,
+            cells,
+            rule_weapons,
+            sortie,
+            &crate::match_::seal::IcSealConfig {
+                minds: &cfg.minds,
+                reflex: &cfg.arena.reflex,
+                principal,
+                impounded,
+            },
+        )
+        .map_err(|error| format!("#{} could not be sealed ({error})", unit.0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::surface::site_record::{GroundKind, SitePose};
+
+    /// **P2-TSC-4**: even if an `ic_sortie` claim was opened before `@registry/seize` or
+    /// `@registry/forfeit`, field admission must ignore `claim_seal` when `impounded` is `true`
+    /// and force `seal_rom_for(..., impounded: true)` (Class 0, governed, ROM).
+    #[test]
+    fn p2_tsc_4_impounded_core_forces_rom_seal_over_open_ic_sortie_claim() {
+        use crate::arena::core::CoreClass;
+        use crate::arena::mind::{SealEngine, SortieId};
+
+        let unit = ObjId(77);
+        let cfg = crate::config::TacsimConfig::default();
+        let cells = crate::arena::test_support::tactical_unit_cored(unit, CoreClass::I);
+        let rule_weapons = vec![crate::arena::rules::RuleWeapon {
+            id: smol_str::SmolStr::new_static("cannon"),
+            rounds_max: 40,
+        }];
+        let sortie = SortieId::ic(unit, 1_000);
+
+        // Simulate a Class I claim seal that was opened before seizure/forfeiture.
+        let pre_seizure_claim = crate::match_::seal::seal_rom_for(
+            unit,
+            &cells,
+            &rule_weapons,
+            sortie,
+            &crate::match_::seal::IcSealConfig {
+                minds: &cfg.minds,
+                reflex: &cfg.arena.reflex,
+                principal: None,
+                impounded: false,
+            },
+        )
+        .expect("pre-seizure Class I seal");
+        assert_eq!(pre_seizure_claim.class, CoreClass::I);
+        assert!(pre_seizure_claim.core.is_some());
+
+        // When NOT impounded, the open claim seal is preserved.
+        let healthy = resolve_admit_seal(
+            unit,
+            &cells,
+            &rule_weapons,
+            sortie,
+            None,
+            &cfg,
+            Some(pre_seizure_claim.clone()),
+            false,
+        )
+        .expect("healthy admission");
+        assert_eq!(healthy, pre_seizure_claim);
+        assert_eq!(healthy.class, CoreClass::I);
+
+        // Once seized/forfeited (`impounded == true`), the open claim seal MUST be ignored
+        // and replaced by the Class 0 governed ROM seal (`NO_CORE_FALLBACK`).
+        let impounded = resolve_admit_seal(
+            unit,
+            &cells,
+            &rule_weapons,
+            sortie,
+            None,
+            &cfg,
+            Some(pre_seizure_claim),
+            true,
+        )
+        .expect("impounded admission falls back to ROM");
+        assert_eq!(impounded.class, CoreClass::Zero);
+        assert!(impounded.governed);
+        assert_eq!(impounded.core, None);
+        assert_eq!(impounded.engine, SealEngine::Native);
+        assert_eq!(
+            impounded.fallback.as_deref(),
+            Some(crate::match_::seal::NO_CORE_FALLBACK)
+        );
+        assert!(!impounded.lifts_floor());
+    }
 
     /// **Doc 45 cut AP.5** (Q-45-1): a stamp is forgotten only once its five minutes are over
     /// and its session with them.

@@ -288,7 +288,7 @@ pub struct TendFacts {
     pub side: u16,
 }
 
-/// **A finish's draw**, fixed by the tick after the work landed on the unit.
+/// **A finish's draw**, fixed by the tick before the work commits its debit and applies on the unit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TendDraw {
@@ -296,6 +296,9 @@ pub struct TendDraw {
     pub stores: u64,
     /// Goods out of the stores: the tonnes opened into the bale, and a rearm's rounds.
     pub debit: BTreeMap<CanonicalId, u64>,
+    /// The bale expected before the draw (`P2-TSW-15`: checked atomically in `TowProvider::tended`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bale_before: Option<Bale>,
     /// The bale after the work (`None`: the work touched no bale).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bale_after: Option<Bale>,
@@ -307,11 +310,13 @@ pub struct TendDraw {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TendStep {
-    /// The work landed on the unit: draw it.
+    /// Debit stores and bale atomically and mark the tend act paid (`P2-TSW-15`).
     Finish {
         /// The draw.
         draw: Box<TendDraw>,
     },
+    /// Retire a paid tend act after its unit mutation plan has been applied (`P2-TSW-15`).
+    Applied,
     /// The work came to nothing (the target past it, or gone).
     Lost {
         /// Why, in words.
@@ -329,6 +334,7 @@ impl TendStep {
     pub const fn word(&self) -> &'static str {
         match self {
             Self::Finish { .. } => "finish",
+            Self::Applied => "applied",
             Self::Lost { .. } => "lost",
             Self::Pause => "pause",
             Self::Resume => "resume",
@@ -1127,6 +1133,15 @@ fn work(
     let dark = || CmdError::msg(crate::port::tv::TV_DARK.replace("{name}", &rig.mark));
     let (_, contents) = stores_contents(ctx, rig.tv).ok_or_else(dark)?;
     let budget = crate::definitions::mass::hull_budget(ctx.w, target).map(|(_, budget)| budget);
+    // P2-TSW-16: fail closed when a hull schema has no mass budget so stabilize cannot repair for 0 kg.
+    if matches!(job, TendWork::Stabilize { .. }) && budget.is_none() {
+        return Err(CmdError::msg(
+            TEND_REFUSED
+                .replace("{n}", &n)
+                .replace("{name}", &label)
+                .replace("{why}", "her design has no mass budget"),
+        ));
+    }
     let need = job.need(budget.as_ref());
     if let TendWork::Rearm {
         component, good, ..
@@ -1239,17 +1254,24 @@ fn work(
 
 // ---- the tick -----------------------------------------------------------------------------
 
-/// **The tick's step on `tv`'s due tend act**: the library run on the target's unit, the change
-/// applied, and the draw the finish takes; or what it came to when the work is past.
-pub(crate) fn finish(
-    ctx: &mut Ctx<'_>,
+/// **Read-only planning step for `tv`'s due tend act** (`P2-TSW-15`): validates live state,
+/// stores, bale, and budget, runs the library on a clone, and builds the `UnitMutationPlan`
+/// **without** applying it to `target`. The plan is only persisted via `apply_plan` after
+/// `TowOrder::Tended(TendStep::Finish)` commits the debit atomically (`paid == true`).
+fn plan_finish(
+    ctx: &Ctx<'_>,
     tv: ObjId,
     target: ObjId,
     work: &TendWork,
     (secs, now): (i64, i64),
-) -> TendStep {
-    let lost = |why: &str| TendStep::Lost {
-        why: why.to_owned(),
+) -> (TendStep, Option<mush_tactics::UnitMutationPlan>) {
+    let lost = |why: &str| {
+        (
+            TendStep::Lost {
+                why: why.to_owned(),
+            },
+            None,
+        )
     };
     let w: &World = ctx.w;
     let Some(def) = tender_def(w, tv) else {
@@ -1272,6 +1294,9 @@ pub(crate) fn finish(
     };
     let bale = bale_of(ctx, tv);
     let budget = crate::definitions::mass::hull_budget(w, target).map(|(_, budget)| budget);
+    if matches!(work, TendWork::Stabilize { .. }) && budget.is_none() {
+        return lost("her design has no mass budget");
+    }
     let need = work.need(budget.as_ref());
     let (bale_after, debit) = draw_of(bale, &need);
     if !covers(&contents, &debit) {
@@ -1293,7 +1318,7 @@ pub(crate) fn finish(
         work,
         (secs, now),
     ) {
-        return TendStep::Lost { why };
+        return (TendStep::Lost { why }, None);
     }
     let plan = mush_tactics::field_ops::ic_condition_plan(
         &before,
@@ -1305,35 +1330,108 @@ pub(crate) fn finish(
         ))),
     );
     match plan {
-        Ok(Some(plan)) => {
-            if let Err(error) = mush_tactics::module::apply_plan(ctx, target, &plan) {
-                return TendStep::Lost { why: error };
-            }
-        }
-        Ok(None) => return lost("there was nothing left to do"),
-        Err(error) => {
-            return TendStep::Lost {
+        Ok(Some(plan)) => (
+            TendStep::Finish {
+                draw: Box::new(TendDraw {
+                    stores: stores.0,
+                    debit,
+                    bale_before: bale,
+                    bale_after,
+                    line: work.words(),
+                }),
+            },
+            Some(plan),
+        ),
+        Ok(None) => lost("there was nothing left to do"),
+        Err(error) => (
+            TendStep::Lost {
                 why: error.to_string(),
-            };
-        }
-    }
-    TendStep::Finish {
-        draw: Box::new(TendDraw {
-            stores: stores.0,
-            debit,
-            bale_after,
-            line: work.words(),
-        }),
+            },
+            None,
+        ),
     }
 }
 
-/// **The finishes the tick has run on a unit and not yet seen land** (RAM): `(tender, ordinal)`
-/// → the step it submitted, so a finish refused or lost in flight is resubmitted as it was and
-/// the work never lands on the unit twice; and the line the operator is told when it lands.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct TendApplied(BTreeMap<(ObjId, u32), TendStep>);
+/// Rebuild a unit mutation plan for an already-paid tend act (`paid == true`, e.g., after a
+/// server restart or target revision shift between payment commit and plan application).
+fn rebuild_paid_plan(
+    w: &World,
+    tv: ObjId,
+    target: ObjId,
+    work: &TendWork,
+    (secs, now): (i64, i64),
+) -> Option<mush_tactics::UnitMutationPlan> {
+    let def = tender_def(w, tv)?;
+    let (site, pose) = tow::ground_pose(w, tv)?;
+    let (there, target_pose) = tow::ground_pose(w, target)?;
+    if there != site {
+        return None;
+    }
+    let (before, _, anatomy) = unit_parts(w, target)?;
+    let ammo_supply_rounds = match work {
+        TendWork::Rearm { rounds, .. } => (*rounds).max(0),
+        _ => 0,
+    };
+    let mut book = FieldEngineeringBook::new();
+    book.register_tender(FieldTenderState {
+        tender_unit: tv,
+        site_id: pose.site,
+        pose,
+        operational_state: OperationalState::Operational,
+        spare_parts_kg: DEFAULT_UNJAM_SPARE_PARTS_KG,
+        ammo_supply_rounds,
+        charge_reserve_cu: 0,
+        max_service_distance_cm: u64::from(def.reach_cm),
+    })
+    .ok()?;
+    let mut after = before.clone();
+    run_library(
+        &mut book,
+        tv,
+        &mut after,
+        (target_pose, &anatomy),
+        work,
+        (secs, now),
+    )
+    .ok()?;
+    mush_tactics::field_ops::ic_condition_plan(
+        &before,
+        &after,
+        None,
+        Some(smol_str::SmolStr::new(format!(
+            "tacsim.tender.{}",
+            work.verb()
+        ))),
+    )
+    .ok()
+    .flatten()
+}
 
-/// **The step for `act`, due now**: the one already run for it, else [`finish`]'s, kept.
+/// RAM progress of one due tend act (`P2-TSW-15`): tracks whether the act is only planned
+/// (payment pending, `apply_plan` has NOT run), applied (payment committed and `apply_plan` ran
+/// once), or lost before payment.
+#[derive(Clone, Debug)]
+enum TendProgress {
+    Planned {
+        target: ObjId,
+        line: String,
+        plan: Box<mush_tactics::UnitMutationPlan>,
+    },
+    Applied {
+        line: String,
+    },
+    Lost {
+        why: String,
+    },
+}
+
+/// **The due tend acts tracked in RAM** (`P2-TSW-15`): `(tender, ordinal)` -> progress, so
+/// `apply_plan` runs strictly AFTER payment commits (`paid == true`) and never runs twice.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TendApplied(BTreeMap<(ObjId, u32), TendProgress>);
+
+/// **The payment step for an unpaid due tend act** (`paid == false`, `P2-TSW-15`): read-only
+/// validation and planning — NEVER mutates `target` before `TowOrder::Tended(Finish)` commits.
 pub(crate) fn due_step(
     ctx: &mut Ctx<'_>,
     act: &tow::TowAct,
@@ -1342,21 +1440,83 @@ pub(crate) fn due_step(
     now: i64,
 ) -> TendStep {
     let key = (act.tug, act.ordinal);
-    if let Some(step) = ctx
-        .w
-        .module_state::<TendApplied>()
-        .and_then(|applied| applied.0.get(&key).cloned())
-    {
-        return step;
-    }
     let secs = act.due_ic.saturating_sub(act.started_ic);
-    let step = finish(ctx, act.tug, target, work, (secs, now));
+    let (step, plan) = plan_finish(ctx, act.tug, target, work, (secs, now));
     if let Some(applied) = ctx.w.module_state_mut::<TendApplied>() {
         // Bounded as the tow's acts are: one a tug.
         applied.0.retain(|(tug, _), _| *tug != act.tug);
-        applied.0.insert(key, step.clone());
+        match (&step, plan) {
+            (TendStep::Finish { draw }, Some(plan)) => {
+                applied.0.insert(
+                    key,
+                    TendProgress::Planned {
+                        target,
+                        line: draw.line.clone(),
+                        plan: Box::new(plan),
+                    },
+                );
+            }
+            (TendStep::Lost { why }, _) => {
+                applied
+                    .0
+                    .insert(key, TendProgress::Lost { why: why.clone() });
+            }
+            _ => {}
+        }
     }
     step
+}
+
+/// **Apply a tend act whose stores/bale debit has already committed** (`paid == true`,
+/// `P2-TSW-15`): applies `apply_plan` at most once and returns `TendStep::Applied` to retire
+/// the paid act from `SiteRecord`.
+pub(crate) fn apply_paid(
+    ctx: &mut Ctx<'_>,
+    act: &tow::TowAct,
+    target: ObjId,
+    work: &TendWork,
+    now: i64,
+) -> TendStep {
+    let key = (act.tug, act.ordinal);
+    let cached = ctx
+        .w
+        .module_state::<TendApplied>()
+        .and_then(|applied| applied.0.get(&key).cloned());
+    if matches!(cached, Some(TendProgress::Applied { .. })) {
+        return TendStep::Applied;
+    }
+    let (planned_plan, line) = match cached {
+        Some(TendProgress::Planned {
+            target: cached_target,
+            line,
+            plan,
+        }) if cached_target == target => (Some(*plan), line),
+        _ => (None, work.words()),
+    };
+    let mut done = false;
+    if let Some(plan) = planned_plan
+        && mush_tactics::module::apply_plan(ctx, target, &plan).is_ok()
+    {
+        done = true;
+    }
+    if !done {
+        let secs = act.due_ic.saturating_sub(act.started_ic);
+        if let Some(plan) = rebuild_paid_plan(ctx.w, act.tug, target, work, (secs, now))
+            && let Err(error) = mush_tactics::module::apply_plan(ctx, target, &plan)
+        {
+            tracing::warn!(
+                tender = act.tug.0,
+                target = target.0,
+                %error,
+                "tacsim: a paid tend plan could not apply"
+            );
+        }
+    }
+    if let Some(applied) = ctx.w.module_state_mut::<TendApplied>() {
+        applied.0.retain(|(tug, _), _| *tug != act.tug);
+        applied.0.insert(key, TendProgress::Applied { line });
+    }
+    TendStep::Applied
 }
 
 /// **A pause or a resume** submitted for `act`, and the operator told.
@@ -1375,7 +1535,7 @@ pub(crate) fn step(ctx: &mut Ctx<'_>, site: &CanonicalId, act: &tow::TowAct, ste
                 "{min}",
                 &(paused.unwrap_or(0).max(0).saturating_add(59) / 60).to_string(),
             ),
-        TendStep::Finish { .. } | TendStep::Lost { .. } => return,
+        TendStep::Finish { .. } | TendStep::Applied | TendStep::Lost { .. } => return,
     };
     let tag = act.ordinal.saturating_mul(4).saturating_add(match step {
         TendStep::Pause => 1,
@@ -1406,20 +1566,24 @@ pub(crate) fn landed_line(
     target: ObjId,
 ) -> String {
     let name = crate::port::coop::name_of(ctx.w, target);
-    let step = ctx
+    let progress = ctx
         .w
         .module_state_mut::<TendApplied>()
         .and_then(|applied| applied.0.remove(&key));
-    match step {
-        Some(TendStep::Finish { draw }) => TENDED
+    match progress {
+        Some(TendProgress::Applied { line }) => TENDED
             .replace("{n}", slot)
             .replace("{name}", &name)
-            .replace("{work}", &draw.line),
-        Some(TendStep::Lost { why }) => TEND_LOST
+            .replace("{work}", &line),
+        Some(TendProgress::Lost { why }) => TEND_LOST
             .replace("{n}", slot)
             .replace("{name}", &name)
             .replace("{why}", &why),
-        _ => TEND_LOST
+        Some(TendProgress::Planned { .. }) => TEND_LOST
+            .replace("{n}", slot)
+            .replace("{name}", &name)
+            .replace("{why}", "the stores ran short or it was let go"),
+        None => TEND_LOST
             .replace("{n}", slot)
             .replace("{name}", &name)
             .replace("{why}", "it was let go"),

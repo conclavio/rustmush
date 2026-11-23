@@ -297,6 +297,7 @@ impl CommittedCoverageClose {
         let actual = state
             .rows
             .get(&self.open())
+            .and_then(|row| row.as_full())
             .ok_or_else(|| bad("retained close"))?;
         let close = actual
             .closed
@@ -307,7 +308,7 @@ impl CommittedCoverageClose {
             .as_ref()
             .ok_or_else(|| bad("missing covered close"))?;
         capture.validate(&actual.open)?;
-        if **actual != *self.record || capture.departure != self.departure {
+        if *actual != *self.record || capture.departure != self.departure {
             return Err(bad("retained covered close changed"));
         }
         Ok(())
@@ -394,7 +395,11 @@ impl AcknowledgedDeparture {
     }
     pub(crate) fn recheck(&self, world: &World) -> Result<(), ParticipantError> {
         let state = audited_state(world, &self.host.writer)?;
-        let actual = state.rows.get(&self.open()).ok_or_else(|| bad("open"))?;
+        let actual = state
+            .rows
+            .get(&self.open())
+            .and_then(|row| row.as_full())
+            .ok_or_else(|| bad("open"))?;
         self.permit.matches_capture(actual.open.withheld.as_ref())?;
         let withheld = self.permit.state.lock().map_err(bad)?;
         if !matches!(&*withheld, WithheldState::Acknowledged {origin,request,open}
@@ -421,7 +426,11 @@ impl IcHost {
         departure: DefinitionDigest,
     ) -> Result<CommittedCoverageClose, ParticipantError> {
         let state = audited_state(world, &self.writer)?;
-        let record = state.rows.get(&open).ok_or_else(|| bad("retained open"))?;
+        let record = state
+            .rows
+            .get(&open)
+            .and_then(|row| row.as_full())
+            .ok_or_else(|| bad("retained open"))?;
         let close = record
             .closed
             .as_ref()
@@ -436,7 +445,7 @@ impl IcHost {
         }
         Ok(CommittedCoverageClose {
             host: self.clone(),
-            record: Arc::clone(record),
+            record: Arc::new(record.clone()),
             departure,
         })
     }
@@ -458,9 +467,11 @@ impl IcHost {
             WithheldState::Released { .. } => return Err(bad("departure already released")),
         };
         let record = actual
-            .rows
-            .values()
-            .find(|r| r.open.request == request)
+            .requests
+            .get(&request)
+            .filter(|(_, is_close)| !*is_close)
+            .and_then(|(open, _)| actual.rows.get(open))
+            .and_then(|row| row.as_full())
             .ok_or_else(|| bad("no actual acknowledged opening"))?;
         permit.matches_capture(record.open.withheld.as_ref())?;
         if record.closed.is_some()
@@ -480,7 +491,7 @@ impl IcHost {
         Ok(AcknowledgedDeparture {
             host: self.clone(),
             permit: Arc::clone(permit),
-            record: Arc::clone(record),
+            record: Arc::new(record.clone()),
             digest,
         })
     }
@@ -546,9 +557,11 @@ impl IcHost {
             return Err(bad("withheld ticket changed or already acknowledged"));
         }
         let Some(record) = actual
-            .rows
-            .values()
-            .find(|r| r.open.request == pending.ticket.request)
+            .requests
+            .get(&pending.ticket.request)
+            .filter(|(_, is_close)| !*is_close)
+            .and_then(|(open, _)| actual.rows.get(open))
+            .and_then(|row| row.as_full())
         else {
             return Ok(None);
         };
@@ -593,7 +606,7 @@ impl IcHost {
         Ok(Some(AcknowledgedDeparture {
             host: self.clone(),
             permit: Arc::clone(&pending.permit),
-            record: Arc::clone(record),
+            record: Arc::new(record.clone()),
             digest,
         }))
     }
@@ -680,6 +693,7 @@ pub(crate) fn audit_history(
     let row = state
         .rows
         .get(&basis.ic_open)
+        .and_then(|row| row.as_full())
         .ok_or_else(|| bad("IC opening"))?;
     row.validate()?;
     let withheld = row
@@ -734,6 +748,7 @@ pub(crate) fn audit_qualified_history(
     let row = state
         .rows
         .get(&basis.ic_open)
+        .and_then(|row| row.as_full())
         .ok_or_else(|| bad("IC opening"))?;
     let seal = &row.open.execution.seal;
     let certificate = seal

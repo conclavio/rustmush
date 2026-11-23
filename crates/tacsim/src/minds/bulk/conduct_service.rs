@@ -33,6 +33,9 @@ use mush_roll::{
 use std::{collections::VecDeque, sync::Arc};
 
 const COMMAND: &str = "@conduct";
+const TURN_LEASE_TIMEOUT_MS: i64 = 15_000;
+const GRANT_BACKOFF_MS: i64 = 2_000;
+const MAX_GRANT_BACKOFF_MS: i64 = 30_000;
 #[derive(Clone)]
 struct Configuration {
     factory: Arc<Factory>,
@@ -138,13 +141,25 @@ struct Entry {
     cancel: bool,
     cancelled: bool,
     next_ms: i64,
+    grant_after: i64,
+    grant_failures: u32,
+}
+impl Entry {
+    fn bump_grant_backoff(&mut self, now: i64) {
+        self.grant_failures = self.grant_failures.saturating_add(1);
+        let shift = self.grant_failures.saturating_sub(1).min(4);
+        let delay = GRANT_BACKOFF_MS
+            .saturating_mul(1_i64 << shift)
+            .min(MAX_GRANT_BACKOFF_MS);
+        self.grant_after = now.saturating_add(delay);
+    }
 }
 #[derive(Default)]
 pub(super) struct Lane {
     loaded: bool,
     entry: Option<Entry>,
     stopped: VecDeque<StoppedBinding>,
-    pending_turn: bool,
+    pending_turn: Option<i64>,
     stranded: Vec<Ready>,
 }
 impl Lane {
@@ -152,7 +167,7 @@ impl Lane {
         !self.loaded
             && self.entry.is_none()
             && self.stopped.is_empty()
-            && !self.pending_turn
+            && self.pending_turn.is_none()
             && self.stranded.is_empty()
     }
     pub(super) fn accounts(&self) -> impl Iterator<Item = AccountId> + '_ {
@@ -170,7 +185,53 @@ impl Lane {
                 .is_some_and(|e| matches!(e.phase, Phase::Recover(_)))
     }
     pub(super) fn has_pending_turn(&self) -> bool {
-        self.pending_turn
+        self.pending_turn.is_some()
+    }
+    fn release_expired_turn(
+        &mut self,
+        now: i64,
+        tickets: Option<&mut super::conduct_tickets::Tickets>,
+        queue: &mut super::executor::FairQueue,
+    ) {
+        let Some(since_ms) = self.pending_turn else {
+            return;
+        };
+        if now.saturating_sub(since_ms) < TURN_LEASE_TIMEOUT_MS {
+            return;
+        }
+        self.pending_turn = None;
+        let Some(entry) = self.entry.as_mut() else {
+            return;
+        };
+        let Phase::Grant(ready_slot) = &mut entry.phase else {
+            return;
+        };
+        if let Some(pending) = &mut entry.pending {
+            if pending.ack.is_some() {
+                return;
+            }
+            pending.attempt.poll();
+            if pending.phase == Transition::Grant
+                && matches!(pending.attempt, Attempt::Unsubmitted | Attempt::NoIntent)
+                && let (Some(tickets), Some(binding)) = (tickets, entry.binding)
+                && tickets.discard_ungranted(pending.ticket, binding).is_ok()
+            {
+                entry.pending = None;
+            } else {
+                return;
+            }
+        }
+        if entry.cancel {
+            entry.next_ms = 0;
+            return;
+        }
+        if let Some(ready) = ready_slot.take() {
+            entry.bump_grant_backoff(now);
+            match queue.push(ready) {
+                Ok(()) => entry.phase = Phase::Queued,
+                Err((_, ready)) => entry.phase = Phase::Ready(Some(ready)),
+            }
+        }
     }
     pub(super) fn capture(
         &mut self,
@@ -355,6 +416,7 @@ fn control(ctx: &mut Ctx<'_>, retry: bool) -> Result<(), BulkError> {
         pending.attempt = Attempt::Unsubmitted;
     } else {
         entry.cancel = true;
+        entry.grant_after = 0;
     }
     entry.next_ms = 0;
     Ok(())
@@ -396,6 +458,8 @@ pub(super) fn prepared(
             cancel: false,
             cancelled: false,
             next_ms: 0,
+            grant_after: 0,
+            grant_failures: 0,
         });
         Ok(())
     })();
@@ -511,7 +575,7 @@ fn advance(
                 runtime.external_preparing.remove(&entry.account);
             }
             (Phase::Grant(ready), Transition::Grant) => {
-                if ready.is_none() || !runtime.conduct.pending_turn {
+                if ready.is_none() {
                     return Err(BulkError::Stale);
                 }
                 let lease = ctx
@@ -524,14 +588,16 @@ fn advance(
                     ready: ready.take(),
                     lease: Some(lease),
                 };
-                runtime.conduct.pending_turn = false;
+                entry.grant_failures = 0;
+                entry.grant_after = 0;
+                runtime.conduct.pending_turn = None;
             }
             (Phase::Cancel(ready), Transition::Cancel) => {
-                if !runtime.conduct.pending_turn || !execution.observation().phase.terminal() {
+                if !execution.observation().phase.terminal() {
                     return Err(BulkError::Stale);
                 }
                 let _ = ready.take();
-                runtime.conduct.pending_turn = false;
+                runtime.conduct.pending_turn = None;
                 entry.phase = Phase::Finished;
             }
             (Phase::Waiting { .. } | Phase::Working | Phase::Returned(_), Transition::Cancel) => {
@@ -568,6 +634,33 @@ fn advance(
                 "Conduct trial reached its acknowledged terminal result.",
             );
             return Ok(());
+        }
+    }
+    if let Some(pending) = &mut entry.pending
+        && pending.ack.is_none()
+        && matches!(entry.phase, Phase::Grant(_))
+        && pending.phase == Transition::Grant
+    {
+        pending.attempt.poll();
+        let discard = matches!(pending.attempt, Attempt::NoIntent)
+            || (entry.cancel && matches!(pending.attempt, Attempt::Unsubmitted));
+        if discard {
+            let binding = entry.binding.ok_or(BulkError::Stale)?;
+            ctx.w
+                .module_state_mut::<Artifacts>()
+                .ok_or(BulkError::Missing)?
+                .conduct
+                .discard_ungranted(pending.ticket, binding)?;
+            entry.pending = None;
+            if !entry.cancel {
+                if let Phase::Grant(ready) = &mut entry.phase {
+                    entry.phase = Phase::Ready(ready.take());
+                }
+                entry.bump_grant_backoff(world::now_ms());
+                runtime.conduct.pending_turn = None;
+                return Ok(());
+            }
+            entry.next_ms = 0;
         }
     }
     if entry.pending.is_none() {
@@ -700,20 +793,108 @@ pub(super) fn completed(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, done: Complet
         .retry
         .push_back(super::world::PendingCompletion { done, blob: None });
 }
-pub(super) fn grant(_ctx: &mut Ctx<'_>, runtime: &mut Runtime, ready: Ready) {
-    if !runtime.conduct.pending_turn
-        && let Some(entry) = runtime.conduct.entry.as_mut().filter(|e| {
+fn god_live(w: &mush_core::World, account: AccountId) -> bool {
+    w.get(GOD).is_some_and(|o| {
+        o.kind == mush_core::ObjKind::Player && !o.flags.contains(mush_core::Flags::GOING)
+    }) && world::account(w, GOD) == Ok(account)
+}
+pub(super) fn prepare_drain(ctx: &mut Ctx<'_>, runtime: &mut Runtime, now: i64) {
+    let tickets = ctx
+        .w
+        .module_state_mut::<Artifacts>()
+        .map(|a| &mut a.conduct);
+    runtime
+        .conduct
+        .release_expired_turn(now, tickets, &mut runtime.queue);
+    if runtime.registry.has_pending_turn() || runtime.conduct.has_pending_turn() {
+        return;
+    }
+    let cancel_account = runtime
+        .conduct
+        .entry
+        .as_ref()
+        .filter(|entry| {
+            entry.cancel && matches!(entry.phase, Phase::Queued) && god_live(ctx.w, entry.account)
+        })
+        .map(|entry| entry.account);
+    if let Some(account) = cancel_account
+        && let Some(ready) = runtime.queue.remove(account)
+        && let Some(entry) = runtime.conduct.entry.as_mut()
+    {
+        runtime.conduct.pending_turn = Some(now);
+        entry.phase = Phase::Grant(Some(ready));
+        entry.next_ms = 0;
+    }
+}
+pub(super) fn grant(
+    ctx: &mut Ctx<'_>,
+    runtime: &mut Runtime,
+    ready: Ready,
+    now: i64,
+) -> super::registry_service::GrantOutcome {
+    use super::registry_service::GrantOutcome;
+    if runtime.conduct.has_pending_turn() {
+        if let Err((_, ready)) = runtime.queue.push_front(ready) {
+            runtime.conduct.stranded.push(ready);
+        }
+        return GrantOutcome::WorkersBusy;
+    }
+    let eligible = {
+        let Some(entry) = runtime.conduct.entry.as_mut().filter(|e| {
             e.account == ready.account()
                 && e.binding.is_some_and(|b| b.run == ready.run())
                 && matches!(e.phase, Phase::Queued)
-        })
-    {
-        runtime.conduct.pending_turn = true;
-        entry.phase = Phase::Grant(Some(ready));
-        return;
-    }
-    if let Err((_, ready)) = runtime.queue.push(ready) {
-        runtime.conduct.stranded.push(ready);
+        }) else {
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.conduct.stranded.push(ready);
+            }
+            return GrantOutcome::Skipped;
+        };
+        if !god_live(ctx.w, entry.account) {
+            entry.bump_grant_backoff(now);
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.conduct.stranded.push(ready);
+            }
+            return GrantOutcome::Skipped;
+        }
+        if entry.cancel {
+            Ok(())
+        } else if now < entry.grant_after {
+            Err(BulkError::Quota)
+        } else {
+            match ctx.w.module_state::<BulkStore>() {
+                Some(store) => {
+                    store.can_grant(ready.account(), ready.run(), now, ready.next_grant_ms())
+                }
+                None => Err(BulkError::Missing),
+            }
+        }
+    };
+    match eligible {
+        Ok(()) => {
+            if let Some(entry) = runtime.conduct.entry.as_mut() {
+                runtime.conduct.pending_turn = Some(now);
+                entry.phase = Phase::Grant(Some(ready));
+                entry.next_ms = 0;
+                return GrantOutcome::Taken;
+            }
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.conduct.stranded.push(ready);
+            }
+            GrantOutcome::Skipped
+        }
+        Err(BulkError::Busy) => {
+            if let Err((_, ready)) = runtime.queue.push_front(ready) {
+                runtime.conduct.stranded.push(ready);
+            }
+            GrantOutcome::WorkersBusy
+        }
+        Err(_) => {
+            if let Err((_, ready)) = runtime.queue.push(ready) {
+                runtime.conduct.stranded.push(ready);
+            }
+            GrantOutcome::Skipped
+        }
     }
 }
 pub(super) fn dispatch(ctx: &mut Ctx<'_>, runtime: &mut Runtime) {
@@ -736,6 +917,8 @@ pub(super) fn dispatch(ctx: &mut Ctx<'_>, runtime: &mut Runtime) {
             cancel: false,
             cancelled: false,
             next_ms: 0,
+            grant_after: 0,
+            grant_failures: 0,
         });
     }
     let Some(entry) = runtime.conduct.entry.as_mut() else {
@@ -792,4 +975,89 @@ pub(in crate::minds) fn fixture_entry(w: &mush_core::World) -> Option<u64> {
     let service = world::service(w).ok()?;
     let runtime = service.0.lock().ok()?;
     runtime.conduct.entry.as_ref().map(|e| e.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::minds::bulk::{
+        conduct_tickets::Tickets,
+        executor::{FairQueue, Turn},
+        model::{BulkConfig, RunId},
+    };
+    use mush_core::CommitToken;
+
+    struct DummyMachine;
+    impl Machine for DummyMachine {
+        fn native_substep_ms(&self) -> u32 {
+            250
+        }
+        fn next_simulation_ms(&self) -> u64 {
+            250
+        }
+        fn step(&mut self, _maximum_sim_ms: u64) -> Result<Turn, BulkError> {
+            Ok(Turn {
+                simulation_ms: 0,
+                result: None,
+                terminal: None,
+            })
+        }
+    }
+
+    #[test]
+    fn p2_tsc_5_conduct_turn_lease_timeout_releases_and_discards_ungranted_ticket() {
+        let account = AccountId::mint("conduct-timeout", 1).expect("account");
+        let binding = Binding {
+            job: CommitToken::from_bytes([9; 16]),
+            account,
+            character: GOD,
+            run: RunId(1),
+        };
+        let cfg = BulkConfig::default();
+        let mut queue = FairQueue::new(&cfg).expect("queue");
+        let mut tickets = Tickets::default();
+        let grant_ticket = tickets.grant(binding, 2_000).expect("grant ticket");
+        let mut lane = Lane {
+            loaded: true,
+            entry: Some(Entry {
+                id: 1,
+                account,
+                binding: Some(binding),
+                pending: Some(Pending::new(grant_ticket, Transition::Grant)),
+                phase: Phase::Grant(Some(Ready::conduct(
+                    binding,
+                    [1; 32],
+                    Box::new(DummyMachine),
+                ))),
+                cancel: false,
+                cancelled: false,
+                next_ms: 0,
+                grant_after: 0,
+                grant_failures: 0,
+            }),
+            stopped: VecDeque::new(),
+            pending_turn: Some(1_000),
+            stranded: Vec::new(),
+        };
+        lane.release_expired_turn(
+            1_000 + TURN_LEASE_TIMEOUT_MS - 1,
+            Some(&mut tickets),
+            &mut queue,
+        );
+        assert!(lane.has_pending_turn());
+        assert!(tickets.get(grant_ticket).is_ok());
+
+        lane.release_expired_turn(
+            1_000 + TURN_LEASE_TIMEOUT_MS,
+            Some(&mut tickets),
+            &mut queue,
+        );
+        assert!(!lane.has_pending_turn());
+        assert!(tickets.get(grant_ticket).is_err());
+        let entry = lane.entry.as_ref().expect("entry");
+        assert!(entry.pending.is_none());
+        assert!(matches!(entry.phase, Phase::Queued));
+        assert!(entry.grant_after > 1_000 + TURN_LEASE_TIMEOUT_MS);
+        assert_eq!(queue.len(), 1);
+    }
 }

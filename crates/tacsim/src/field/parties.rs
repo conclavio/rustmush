@@ -399,22 +399,22 @@ fn flight_of(ctx: &Ctx<'_>, unit: ObjId, entry: &CanonicalId) -> Option<FlightFa
     ))
 }
 
-/// **An operation's current leader** (doc 26): its command roster's, else its first slot's
-/// controller (a roster that has not reconciled yet).
+/// **An operation's current leader** (doc 26): once reconciled (`record.command` is `Some`),
+/// strictly its command roster's current leader (`None` if leaderless or unreadable — never
+/// falling back to a deposed or revoked slot-0 controller); before first reconciliation
+/// (`record.command` is `None`), its first slot's planned controller.
 pub(crate) fn roster_leader(record: &crate::detachment::sortie::OperationRecord) -> Option<ObjId> {
-    record
-        .command
-        .as_ref()
-        .and_then(|saved| mush_tactics::detachment::roster::DetachmentRoster::restore(saved).ok())
-        .and_then(|roster| roster.leader().map(|leader| leader.character))
-        .or_else(|| {
-            record
-                .roster
-                .plan
-                .slots
-                .first()
-                .and_then(|slot| slot.controller.character())
-        })
+    match record.command.as_deref() {
+        Some(saved) => mush_tactics::detachment::roster::DetachmentRoster::restore(saved)
+            .ok()
+            .and_then(|roster| roster.leader().map(|leader| leader.character)),
+        None => record
+            .roster
+            .plan
+            .slots
+            .first()
+            .and_then(|slot| slot.controller.character()),
+    }
 }
 
 /// **Who leads `party` now** (doc 36a §11 row 6): a roster party's leader is its operation's
@@ -1354,5 +1354,174 @@ mod tests {
         assert_eq!(on_ground(&engine.world, d1), vec![ObjId(5), ObjId(25)]);
         assert_eq!(on_ground(&engine.world, d2), vec![ObjId(12)]);
         assert!(on_ground(&engine.world, d_empty).is_empty());
+    }
+
+    /// **P2-TSC-3**: once an operation's command roster has reconciled (`record.command` is
+    /// `Some`), `roster_leader` must return strictly the reconciled roster's leader (`None` when
+    /// leaderless) with NO fallback to a deposed/revoked slot-0 controller; only pre-reconciliation
+    /// (`record.command` is `None`) falls back to slot 0.
+    #[test]
+    fn p2_tsc_3_roster_leader_does_not_fall_back_to_deposed_slot0_when_reconciled_leaderless() {
+        use crate::detachment::activation::ActiveDetachment;
+        use crate::detachment::crew::CrewDuty;
+        use crate::detachment::sortie::{OperationId, OperationRecord};
+        use mush_core::{ClockRef, ClockStamp};
+        use mush_tactics::detachment::planning::{
+            Plan, PlanHash, PlanId, PlannedController, SlotPlan,
+        };
+        use mush_tactics::detachment::roster::{
+            Connection, Controller as RosterController, DetachmentId, DetachmentRoster,
+            LeadershipPolicy, Member, MemberFacts, Slot,
+        };
+
+        let organizer = ObjId(10);
+        let slot0_pilot = ObjId(11);
+        let slot1_pilot = ObjId(12);
+        let unit0 = ObjId(100);
+        let unit1 = ObjId(101);
+        let carrier = ObjId(99);
+        let slot1 = Slot::new(1).expect("slot 1");
+        let slot2 = Slot::new(2).expect("slot 2");
+        let plan = Plan {
+            carrier,
+            slots: vec![
+                SlotPlan {
+                    slot: slot1,
+                    unit: Some(unit0),
+                    controller: PlannedController::Player {
+                        character: slot0_pilot,
+                    },
+                    role: None,
+                    mind: None,
+                },
+                SlotPlan {
+                    slot: slot2,
+                    unit: Some(unit1),
+                    controller: PlannedController::Player {
+                        character: slot1_pilot,
+                    },
+                    role: None,
+                    mind: None,
+                },
+            ],
+            npc_commander: None,
+            financial_terms: None,
+            work_point: None,
+        };
+        let stamp = ClockStamp {
+            clock: ClockRef::WorldIc { generation: 1 },
+            at: 1_000,
+        };
+        let active = ActiveDetachment {
+            schema: 1,
+            organizer,
+            draft: PlanId(1),
+            detachment: 1,
+            revision: 1,
+            source_revision: 1,
+            plan_hash: PlanHash::new("0".repeat(64)).expect("hash"),
+            plan,
+            duty: CrewDuty::Combat,
+            npc_terms: BTreeMap::new(),
+            activated_at: stamp.clone(),
+            closed_at: None,
+        };
+        let mut record = OperationRecord {
+            schema: 1,
+            id: OperationId::of(&active),
+            roster: active,
+            began: stamp,
+            ended: None,
+            flights: Vec::new(),
+            command: None,
+            orders: None,
+        };
+
+        // Pre-reconciliation (`command: None`): falls back to slot-0's planned controller.
+        assert_eq!(roster_leader(&record), Some(slot0_pilot));
+
+        let mut roster = DetachmentRoster::new(
+            DetachmentId(1),
+            1,
+            vec![
+                Member {
+                    slot: slot1,
+                    unit: unit0,
+                    controller: RosterController::Player {
+                        character: slot0_pilot,
+                    },
+                },
+                Member {
+                    slot: slot2,
+                    unit: unit1,
+                    controller: RosterController::Player {
+                        character: slot1_pilot,
+                    },
+                },
+            ],
+            None,
+            LeadershipPolicy::default(),
+        )
+        .expect("roster");
+
+        // Reconciled with slot 0 incapacitated/revoked and slot 1 eligible: successor leads.
+        roster
+            .reconcile(
+                1_000,
+                &[
+                    MemberFacts {
+                        slot: slot1,
+                        capable: false,
+                        controls_unit: false,
+                        unit_disabled: true,
+                        connection: Connection::Disconnected,
+                        command_authorized: false,
+                    },
+                    MemberFacts {
+                        slot: slot2,
+                        capable: true,
+                        controls_unit: true,
+                        unit_disabled: false,
+                        connection: Connection::Connected,
+                        command_authorized: true,
+                    },
+                ],
+            )
+            .expect("reconcile to successor");
+        record.command = Some(Box::new(roster.checkpoint()));
+        assert_eq!(roster_leader(&record), Some(slot1_pilot));
+
+        // Reconciled leaderless (slot 0's grant revoked / deposed and no eligible successor):
+        // MUST return `None`, NEVER falling back to slot-0!
+        roster
+            .reconcile(
+                2_000,
+                &[
+                    MemberFacts {
+                        slot: slot1,
+                        capable: true,
+                        controls_unit: true,
+                        unit_disabled: false,
+                        connection: Connection::Connected,
+                        command_authorized: false,
+                    },
+                    MemberFacts {
+                        slot: slot2,
+                        capable: false,
+                        controls_unit: false,
+                        unit_disabled: true,
+                        connection: Connection::Disconnected,
+                        command_authorized: false,
+                    },
+                ],
+            )
+            .expect("reconcile leaderless");
+        assert_eq!(roster.leader(), None, "reconciled roster is leaderless");
+        record.command = Some(Box::new(roster.checkpoint()));
+        assert_eq!(
+            roster_leader(&record),
+            None,
+            "reconciled leaderless operation must never reinstate deposed slot-0 controller"
+        );
     }
 }

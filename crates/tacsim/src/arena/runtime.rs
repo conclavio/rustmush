@@ -188,6 +188,11 @@ impl Arena {
             return Ok(());
         }
         let capacity = self.arming_capacity(unit);
+        let floor_lifted = self.floor_lifted(unit);
+        let seal_ungoverned = !own.seal.governed;
+        let core_missing_or_zero = self
+            .core_of(unit)
+            .is_none_or(|core| core.class == CoreClass::Zero);
         let mut next = self
             .profiles
             .get(&unit)
@@ -205,7 +210,13 @@ impl Arena {
                 rule.weapon()
                     .is_some_and(|weapon| own.weapon(weapon).is_none())
             });
-            if index >= capacity || missing {
+            let unlawful = !floor_lifted
+                && row.as_ref().is_some_and(|rule| {
+                    self.rule_breaks_floor(rule)
+                        || (seal_ungoverned && self.rule_unlawful(unit, rule))
+                });
+            let degraded_to_rom = core_missing_or_zero && !next.dropped;
+            if index >= capacity || missing || unlawful || degraded_to_rom {
                 *row = None;
                 if let Ok(slot) = u8::try_from(index.saturating_add(1)) {
                     next.override_slot(slot);

@@ -1,7 +1,11 @@
 //! Actual owner inventory comparison, including the all-missing typed case.
-use super::{records::Record, state::IcSorties};
+use super::{
+    records::{CompactedRecord, Record, StoredRecord, pruned_chain_digest},
+    state::IcSorties,
+};
 use mush_core::{ModError, World};
 use mush_roll::commerce::ic_claims::IcClaimHistory;
+use std::collections::BTreeMap;
 fn bad(_: impl std::fmt::Display) -> ModError {
     ModError::msg("IC seal and retained owner claim disagree")
 }
@@ -19,7 +23,12 @@ pub(super) fn claims(
     let state = world
         .module_state::<IcSorties>()
         .ok_or_else(|| bad("state"))?;
-    if !state.loaded || state.next_transition != next_transition || state.rows.len() != claims.len()
+    let expected_claims = state
+        .rows
+        .len()
+        .checked_add(usize::try_from(state.pruned_count).map_err(bad)?)
+        .ok_or_else(|| bad("inventory overflow"))?;
+    if !state.loaded || state.next_transition != next_transition || expected_claims != claims.len()
     {
         return Err(bad("inventory"));
     }
@@ -31,21 +40,108 @@ pub(super) fn claims(
     if units.len() != claims.len() {
         return Err(bad("units"));
     }
+    // Index physical custody rows once so boot verification is O(N log N) instead of O(N^2).
+    let mut units_by_open = BTreeMap::new();
+    for unit in &units {
+        if units_by_open.insert(unit.open(), unit).is_some() {
+            return Err(bad("duplicate physical open"));
+        }
+    }
+    let mut retained_matched = 0usize;
+    let mut pruned = Vec::new();
     for claim in claims {
-        let record = state
-            .rows
+        let unit = units_by_open
             .get(&claim.open())
-            .ok_or_else(|| bad("missing"))?;
-        verify(record, claim)?;
-        let unit = units
-            .iter()
-            .find(|u| u.open() == claim.open())
+            .copied()
             .ok_or_else(|| bad("physical open"))?;
-        unit.verify_open_unit(&record.open.unit).map_err(bad)?;
-        match (&record.closed, unit.closed()) {
-            (None, None) => {}
-            (Some(c), Some((_, _, _, digest))) if c.unit_digest == digest => {}
-            _ => return Err(bad("retained terminal unit differs")),
+        match state.rows.get(&claim.open()) {
+            Some(record) => {
+                retained_matched += 1;
+                match record.as_ref() {
+                    StoredRecord::Full(row) => {
+                        verify(row, claim)?;
+                        unit.verify_open_unit(&row.open.unit).map_err(bad)?;
+                        match (&row.closed, unit.closed()) {
+                            (None, None) => {}
+                            (Some(c), Some((_, _, _, digest))) if c.unit_digest == digest => {}
+                            _ => return Err(bad("retained terminal unit differs")),
+                        }
+                    }
+                    StoredRecord::Compacted(row) => {
+                        verify_compacted(row, claim)?;
+                        if unit.unit() != row.open.unit
+                            || unit.sortie() != row.open.transition
+                            || unit.seal_digest() != row.open.seal_digest
+                        {
+                            return Err(bad("compacted physical open differs"));
+                        }
+                        match unit.closed() {
+                            Some((_, _, _, digest)) if row.closed.unit_digest == digest => {}
+                            _ => return Err(bad("retained terminal unit differs")),
+                        }
+                    }
+                }
+            }
+            None if state.pruned_count > 0 => {
+                let Some((close_op, _, close_transition, _, _, _)) = claim.closed() else {
+                    return Err(bad("pruned open claim"));
+                };
+                let Some((_, _, _, close_unit_digest)) = unit.closed() else {
+                    return Err(bad("pruned open physical unit"));
+                };
+                if unit.unit() != claim.unit()
+                    || unit.sortie() != claim.sortie()
+                    || unit.seal_digest() != claim.seal_digest()
+                {
+                    return Err(bad("pruned physical open differs"));
+                }
+                pruned.push((
+                    close_transition,
+                    claim.open(),
+                    close_op,
+                    claim.sortie(),
+                    claim.unit(),
+                    claim.seal_digest(),
+                    close_unit_digest,
+                ));
+            }
+            None => return Err(bad("missing")),
+        }
+    }
+    if retained_matched != state.rows.len()
+        || u64::try_from(pruned.len()).map_err(bad)? != state.pruned_count
+    {
+        return Err(bad("pruned count differs"));
+    }
+    if state.pruned_count > 0 {
+        pruned.sort_by_key(|row| row.0);
+        let mut digest = None;
+        for (
+            close_transition,
+            open_op,
+            close_op,
+            open_transition,
+            unit,
+            seal_digest,
+            close_unit_digest,
+        ) in pruned
+        {
+            digest = Some(
+                pruned_chain_digest(
+                    digest,
+                    open_op,
+                    close_op,
+                    open_transition,
+                    close_transition,
+                    unit,
+                    seal_digest,
+                    close_unit_digest,
+                )
+                .map_err(bad)?,
+            );
+        }
+        if digest != state.pruned_digest {
+            return Err(bad("pruned checkpoint differs"));
         }
     }
     Ok(())
@@ -134,12 +230,45 @@ fn verify(row: &Record, claim: &IcClaimHistory) -> Result<(), ModError> {
     // the current seller/holder/parent for permission to resume a held sortie.
     // Doc 23 cut S.4b-3 (D-23-17 (b)): a row whose source no longer compiles is recorded, not a
     // refusal of the whole book — its hull flies the ROM when it is next installed.
+    // P2-TSC-6: restrict synchronous Rhai compilation on boot strictly to active unclosed rows;
+    // terminal closed sorties never execute again.
     row.open.execution.validate().map_err(bad)?;
-    if row.open.execution.compile().is_err() {
+    if row.closed.is_none() && row.open.execution.compile().is_err() {
         tracing::warn!(
             unit = row.open.unit.object().0,
             "tacsim: a retained IC mind no longer compiles; the book loads and its hull drops to the ROM at its next install"
         );
     }
     Ok(())
+}
+fn verify_compacted(row: &CompactedRecord, claim: &IcClaimHistory) -> Result<(), ModError> {
+    row.validate().map_err(bad)?;
+    let open = &row.open;
+    if open.action != *claim.action()
+        || open.protocol.manifest != *claim.manifest()
+        || open.protocol.participants != claim.participants()
+        || open.dispatcher != claim.dispatcher()
+        || open.admission_digest != claim.admission_digest().map_err(bad)?
+        || open.at_ic != *claim.opened_at_ic()
+        || open.unit != claim.unit()
+        || open.transition != claim.sortie()
+        || open.seal_digest != claim.seal_digest()
+    {
+        return Err(bad("compacted open"));
+    }
+    let c = &row.closed;
+    match claim.closed() {
+        Some((commit, action, transition, event, kind, at))
+            if c.operation == commit
+                && &c.action == action
+                && c.transition == transition
+                && c.sequence == event.sequence
+                && c.event_digest == event.digest
+                && c.kind.data() == kind
+                && &c.at_ic == at =>
+        {
+            Ok(())
+        }
+        _ => Err(bad("compacted close")),
+    }
 }

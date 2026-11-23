@@ -123,6 +123,9 @@ pub const DRIVE_DOWN: &str =
 /// A wrecked carrier's refusal: `{name}`.
 pub const HULL_DOWN: &str = "The {name} is a wreck: it will never lift again. Anyone aboard is \
      stranded and can ask +sortie/extract for a way out.";
+/// Fail-closed lift refusal when a tactical hull's schema is missing from the catalog (`P2-TSW-16`).
+const UNKNOWN_HULL_DOWN: &str =
+    "The {name}'s hull design cannot be verified in the catalog: it cannot lift.";
 
 /// **The parts of one carrier that are down.**
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -213,23 +216,54 @@ pub fn section_down(cells: &TacticalUnit, section: &str) -> bool {
     })
 }
 
-/// **The authored spec behind `cells`**, by its schema's definition id.
+/// **The authored spec behind `cells`**, by its schema's definition id (`P2-TSW-16`: checks the
+/// fitted cored-hull catalog first, then the fielded catalog, then falls back to normalizing via
+/// [`crate::definitions::core_replacement::surface_chassis`]).
 #[must_use]
 pub fn spec_of<'a>(w: &'a World, cells: &TacticalUnit) -> Option<&'a UnitSpec> {
+    let store = w.module_state::<crate::TacsimStore>()?;
     let wanted = cells.schema().key().id.as_str();
-    w.module_state::<crate::TacsimStore>()?
-        .definitions()
-        .specs
-        .iter()
-        .find(|(id, _)| id.as_str() == wanted)
-        .map(|(_, spec)| spec)
+    let find_in = |specs: &'a std::collections::BTreeMap<mush_core::CanonicalId, UnitSpec>,
+                   key: &str| {
+        specs
+            .iter()
+            .find(|(id, _)| id.as_str() == key)
+            .map(|(_, spec)| spec)
+    };
+    find_in(&store.fitted_definitions().specs, wanted)
+        .or_else(|| find_in(&store.definitions().specs, wanted))
+        .or_else(|| {
+            let base = crate::definitions::core_replacement::surface_chassis(wanted);
+            (base != wanted)
+                .then(|| find_in(&store.definitions().specs, base))
+                .flatten()
+        })
 }
 
-/// **`hull`'s damage now**, from its own unit record; `None` when it has no record or no spec.
+/// **`cells`' damage now**, using `spec_of` when known and falling back to live wreck/section
+/// inspection when the schema is missing from the catalog (`P2-TSW-16`).
+#[must_use]
+fn damage_of_unit(w: &World, cells: &TacticalUnit) -> CarrierDamage {
+    if let Some(spec) = spec_of(w, cells) {
+        return CarrierDamage::read(spec, cells);
+    }
+    let mut down = BTreeSet::new();
+    if crate::arena::damage::is_wreck(cells) || section_down(cells, HULL_SECTION) {
+        down.insert(CarrierPart::Hull);
+    }
+    if section_down(cells, "drive") || section_down(cells, "power") {
+        down.insert(CarrierPart::Drive);
+    }
+    CarrierDamage { down }
+}
+
+/// **`hull`'s damage now**, from its own unit record; `None` when it has no unit record.
+/// When the unit's schema is missing from the catalog (`P2-TSW-16`), falls back to inspecting the
+/// unit's live wreck/section state rather than failing open.
 #[must_use]
 pub fn damage_of(w: &World, hull: ObjId) -> Option<CarrierDamage> {
     let cells = mush_tactics::module::unit_of(w, hull)?;
-    Some(CarrierDamage::read(spec_of(w, cells)?, cells))
+    Some(damage_of_unit(w, cells))
 }
 
 /// **`unit`'s dry mass, kilograms** (FO-13's measure, `crate::field_ops::dry_mass_kg_for_spec`).
@@ -247,11 +281,26 @@ pub fn tug_floor_kg(carrier_kg: u64) -> u64 {
     u64::try_from(floor).unwrap_or(u64::MAX)
 }
 
+/// **The refusal a carrier's lift meets for `cells`**, named: `None` when it may lift.
+/// Fails closed when a live tactical hull's schema cannot be resolved in the catalog (`P2-TSW-16`).
+#[must_use]
+fn lift_refusal_of(w: &World, hull: ObjId, cells: &TacticalUnit) -> Option<String> {
+    let line = if let Some(spec) = spec_of(w, cells) {
+        CarrierDamage::read(spec, cells).lift_refusal()?
+    } else if crate::arena::damage::is_wreck(cells) || section_down(cells, HULL_SECTION) {
+        HULL_DOWN
+    } else {
+        UNKNOWN_HULL_DOWN
+    };
+    Some(line.replace("{name}", &crate::port::coop::name_of(w, hull)))
+}
+
 /// **The refusal a carrier's lift meets for its damage**, named: `None` when it may lift.
+/// Fails closed when a live tactical hull's schema cannot be resolved in the catalog (`P2-TSW-16`).
 #[must_use]
 pub fn lift_refusal(w: &World, hull: ObjId) -> Option<String> {
-    let line = damage_of(w, hull)?.lift_refusal()?;
-    Some(line.replace("{name}", &crate::port::coop::name_of(w, hull)))
+    let cells = mush_tactics::module::unit_of(w, hull)?;
+    lift_refusal_of(w, hull, cells)
 }
 
 /// **The plan that makes `cells` a wreck where it stands** (a wrecked carrier's bay rigs,
@@ -334,5 +383,82 @@ mod tests {
         assert_eq!(tug_floor_kg(3), 2);
         assert_eq!(tug_floor_kg(0), 0);
         assert_eq!(tug_floor_kg(u64::MAX), u64::MAX.div_ceil(2));
+    }
+
+    /// **P2-TSW-16**: cored Dray roots resolve through `spec_of`, `damage_of_unit`, and
+    /// `lift_refusal_of` identically to uncored Drays, while a live `TacticalUnit` whose schema is
+    /// missing from the catalog fails closed in `damage_of_unit` and `lift_refusal_of`.
+    #[test]
+    fn p2_tsw_16_cored_dray_resolves_and_unknown_schema_fails_closed() {
+        use mush_tactics::{CellSpec, SectionSpec};
+
+        let tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let cored_spec = tw
+            .world()
+            .module_state::<crate::TacsimStore>()
+            .expect("store")
+            .fitted_definitions()
+            .units
+            .get(crate::definitions::core_replacement::SHIP_III_UNGOVERNED)
+            .cloned()
+            .expect("dray_core_iii_ungoverned unit spec in fitted_definitions");
+
+        let cored_id = ObjId(500);
+        let cored_unit = TacticalUnit::from_spec(&cored_spec, cored_id).expect("unit");
+        let resolved_spec =
+            spec_of(tw.world(), &cored_unit).expect("spec_of must resolve cored Dray roots");
+        assert!(crate::field_ops::dry_mass_kg_for_spec(resolved_spec) > 0);
+        assert_eq!(damage_of_unit(tw.world(), &cored_unit).lift_refusal(), None);
+        assert_eq!(lift_refusal_of(tw.world(), cored_id, &cored_unit), None);
+
+        // Wrecked cored Dray must refuse lift via HULL_DOWN.
+        let mut wrecked_spec = cored_spec;
+        for sec in &mut wrecked_spec.sections {
+            if sec.id.as_str() == HULL_SECTION {
+                sec.condition = ConditionId::new(WRECK_CONDITION).expect("wreck");
+            }
+        }
+        let wrecked_unit = TacticalUnit::from_spec(&wrecked_spec, cored_id).expect("wrecked");
+        assert_eq!(
+            damage_of_unit(tw.world(), &wrecked_unit).lift_refusal(),
+            Some(HULL_DOWN),
+            "wrecked cored Dray must refuse lift"
+        );
+        assert!(
+            lift_refusal_of(tw.world(), cored_id, &wrecked_unit)
+                .is_some_and(|s| s.contains("is a wreck")),
+            "lift_refusal must block wrecked cored Dray"
+        );
+
+        // Unknown schema live TacticalUnit: `lift_refusal_of` fails closed even when intact.
+        let unknown_spec = mush_tactics::UnitSpec {
+            definition: crate::arena::test_support::dref("unit", "unknown_ghost_carrier"),
+            sections: vec![SectionSpec {
+                id: SectionId::new("hull").expect("hull"),
+                condition: ConditionId::new("operational").expect("op"),
+                facets: Vec::new(),
+                slots: Vec::new(),
+                cells: vec![CellSpec {
+                    id: CellId::new(INTERNALS_CELL).expect("internals"),
+                    min: 0,
+                    max: 100,
+                    init: 100,
+                }],
+            }],
+            unit_cells: Vec::new(),
+            components: Vec::new(),
+            capabilities: Vec::new(),
+            mobility: None,
+            rules: crate::arena::test_support::rules(),
+        };
+        let ghost_id = ObjId(501);
+        let ghost_unit = TacticalUnit::from_spec(&unknown_spec, ghost_id).expect("ghost");
+        assert!(spec_of(tw.world(), &ghost_unit).is_none());
+        assert!(
+            lift_refusal_of(tw.world(), ghost_id, &ghost_unit)
+                .is_some_and(|s| s.contains("cannot be verified in the catalog")),
+            "unknown live TacticalUnit schema must fail closed on lift_refusal"
+        );
     }
 }

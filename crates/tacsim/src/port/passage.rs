@@ -44,7 +44,7 @@
 //! indexing** anywhere in this file (tacsim's restriction census, reviewer F4):
 //! legs are walked with iterators, `.first()` and `.last()`.
 
-use mush_core::CanonicalId;
+use mush_core::{CanonicalId, DefinitionDigest};
 use mush_sim::{DistanceLaw, DriveProfile, RouteDefError};
 use serde::{Deserialize, Serialize};
 
@@ -764,6 +764,26 @@ pub fn plan_passage(
     occupants: u32,
     depart_ic: i64,
 ) -> Result<PassagePlan, PlanError> {
+    let sky_rev = sky.revision().map_err(|_| PlanError::SkyUnavailable)?;
+    plan_passage_with_rev(
+        sky, &sky_rev, pack, route, drive, dry_kg, payload_kg, occupants, depart_ic,
+    )
+}
+
+/// [`plan_passage`] reusing a caller-precomputed [`Sky::revision`] digest (`P2-TSW-19`) so
+/// multi-route and multi-day window/reach scans avoid hashing the ephemeris on every iteration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plan_passage_with_rev(
+    sky: &Sky,
+    sky_rev: &DefinitionDigest,
+    pack: &RulesPack,
+    route: &CanonicalId,
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    occupants: u32,
+    depart_ic: i64,
+) -> Result<PassagePlan, PlanError> {
     let Some(PackEntry::Route(entry)) = pack.entry(route) else {
         return Err(PlanError::UnknownRoute {
             route: route.to_string(),
@@ -845,7 +865,7 @@ pub fn plan_passage(
         route: route.clone(),
         law: CanonicalId::new(drive.law.word()).map_err(|_| PlanError::Overflow)?,
         depart_ic,
-        sky_rev: sky.revision().map_err(|_| PlanError::SkyUnavailable)?,
+        sky_rev: *sky_rev,
         legs,
         total_s,
         burn_t,
@@ -891,6 +911,27 @@ pub fn choose_route(
     policy: RoutePolicy,
     via: Option<&CanonicalId>,
 ) -> Result<PassagePlan, PlanError> {
+    let sky_rev = sky.revision().map_err(|_| PlanError::SkyUnavailable)?;
+    choose_route_with_rev(
+        sky, &sky_rev, pack, routes, drive, dry_kg, payload_kg, occupants, depart_ic, policy, via,
+    )
+}
+
+/// [`choose_route`] reusing a precomputed [`Sky::revision`] digest (`P2-TSW-19`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn choose_route_with_rev(
+    sky: &Sky,
+    sky_rev: &DefinitionDigest,
+    pack: &RulesPack,
+    routes: &[CanonicalId],
+    drive: &HullDrive,
+    dry_kg: u64,
+    payload_kg: u64,
+    occupants: u32,
+    depart_ic: i64,
+    policy: RoutePolicy,
+    via: Option<&CanonicalId>,
+) -> Result<PassagePlan, PlanError> {
     let considered: Vec<&CanonicalId> = match via {
         Some(via) => {
             let calling: Vec<&CanonicalId> = routes
@@ -908,8 +949,8 @@ pub fn choose_route(
     };
     let mut best: Option<PassagePlan> = None;
     for route in considered {
-        let plan = plan_passage(
-            sky, pack, route, drive, dry_kg, payload_kg, occupants, depart_ic,
+        let plan = plan_passage_with_rev(
+            sky, sky_rev, pack, route, drive, dry_kg, payload_kg, occupants, depart_ic,
         )?;
         let better = best.as_ref().is_none_or(|current| match policy {
             RoutePolicy::Fastest => plan.total_s < current.total_s,
